@@ -1,0 +1,119 @@
+import { ColorSchemes } from '../../display/theme_handler.js';
+import { Vector2 } from '../../../util/vector2.js';
+import { TitleEnemy } from './title_enemy.js';
+import { ObjectPool } from '../../object/object_pool.js';
+import { animate } from '../../animation/_animation_system.js';
+import { getWW, getWH, render } from '../../display/_display_system.js';
+import { getDelta } from '../../../time_handler.js';
+import { mathUtil } from '../../../util/math_util.js';
+import { TITLE_CONSTANTS } from '../../../data/title/title_constants.js';
+
+/**
+ * @class TitleBackGround
+ * @description 타이틀 화면의 배경을 관리하는 클래스입니다. 배경에 떠다니는 도형(TitleEnemy)들을 생성하고 관리합니다.
+ */
+export class TitleBackGround {
+    /**
+     * @param {TitleScene} titleScene - 이 배경이 속한 타이틀 씬
+     */
+    constructor(titleScene) {
+        this.titleScene = titleScene;
+        this.shapes = TITLE_CONSTANTS.TITLE_ENEMIES.SHAPES;
+        this.titleEnemies = [];
+        this.enemyPool = new ObjectPool(
+            () => new TitleEnemy(this), // 생성
+            (enemy) => { enemy.active = false; } // 초기화 (init에서 처리하므로 선택 사항)
+        );
+        this.shapesPerSecond = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SPAWN_RATE; // 초당 생성 개수
+        this.shapeSpawnCounter = 0;
+        this.logoMagneticPoint = null;
+        this.WW = getWW();
+        this.WH = getWH();
+
+        this.time = 0;
+        this.shieldRadius = 0;
+        animate(this, { variable: 'shieldRadius', startValue: 0, endValue: this.WW * 0.07, type: "easeOutExpo", duration: 1.2, delay: 1 });
+
+        this.init();
+    }
+
+    /**
+     * 배경 초기화
+     */
+    init() {
+        this.pushShape(TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_START_COUNT, true);
+    }
+
+    /**
+     * 매 프레임 업데이트
+     * @param {Vector2} logoMagneticPoint - 로고의 자석 효과 지점 (없으면 null)
+     */
+    update(logoMagneticPoint) {
+        this.logoMagneticPoint = logoMagneticPoint;
+        const delta = getDelta();
+        this.time += delta;
+
+        // 적들 업데이트 및 풀링 관리
+        for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
+            const c = this.titleEnemies[i];
+            if (!c.inScreen) {
+                this.enemyPool.release(c);
+                this.titleEnemies.splice(i, 1);
+                continue;
+            }
+
+            c.update(logoMagneticPoint);
+
+            if (logoMagneticPoint) {
+                const enemyPos = new Vector2(c.pos.x * this.WW, c.pos.y * this.WH);
+                const dist = enemyPos.sub(logoMagneticPoint).getLength();
+
+                if (Math.abs(dist - this.shieldRadius) < c.radius) {
+                    const impactAngle = Math.atan2(enemyPos.y - logoMagneticPoint.y, enemyPos.x - logoMagneticPoint.x);
+                }
+            }
+        }
+
+        if (this.titleEnemies.length < TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_LIMIT) {
+            this.shapeSpawnCounter += this.shapesPerSecond * delta;
+            let shapesToSpawn = Math.floor(this.shapeSpawnCounter);
+
+            // 생성 가능한 슬롯 내에서만 생성
+            const availableSlots = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_LIMIT - this.titleEnemies.length;
+            if (shapesToSpawn > availableSlots) {
+                shapesToSpawn = availableSlots;
+            }
+
+            if (shapesToSpawn > 0) {
+                this.pushShape(shapesToSpawn, false);
+                this.shapeSpawnCounter -= shapesToSpawn;
+            }
+        }
+
+    }
+
+    draw() {
+        render('background', {
+            shape: 'rect',
+            x: 0, y: 0, w: this.WW, h: this.WH,
+            fill: ColorSchemes.Title.Background
+        });
+        this.titleEnemies.forEach((c) => c.draw());
+    }
+
+    /**
+     * 도형(적)을 생성하여 배열에 추가
+     * @param {number} times - 생성할 개수
+     * @param {boolean} init - 초기 생성 여부 (애니메이션 효과 다름)
+     */
+    pushShape(times, init) {
+        for (let i = 0; i < times; i++) {
+            const randomShape = this.shapes[Math.floor(mathUtil().random(0, this.shapes.length))];
+            const randomSpeed = new Vector2(mathUtil().random(-0.07, -0.02), mathUtil().random(-0.02, 0.02));
+
+            const enemy = this.enemyPool.get();
+            enemy.init(1.1, Math.random(), ColorSchemes.Title.Enemy, randomSpeed, randomShape, init);
+            this.titleEnemies.push(enemy);
+        }
+    }
+}

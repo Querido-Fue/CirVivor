@@ -1,0 +1,239 @@
+import { TitleOverlay } from './title_overlay.js';
+import { ButtonElement } from '../../../ui/element/button.js';
+import { getLangString } from '../../../ui/_ui_system.js';
+import { ColorSchemes } from '../../../display/theme_handler.js';
+import { render, getWW, getWH } from '../../../display/_display_system.js';
+import { getSetting } from '../../../save/_save_system.js';
+
+export class ExitOverlay extends TitleOverlay {
+    constructor(TitleScene) {
+        super(TitleScene, '');
+
+        this.exitTitle = getLangString('title_exit_title');
+
+        this.width = this.WW * 0.32;
+        this.height = this.WH * 0.2;
+        this.x = (this.WW - this.width) / 2;
+        this.y = (this.WH - this.height) / 2;
+
+        if (this.closeButton) {
+            this.closeButton.destroy();
+            this.closeButton = null;
+        }
+
+        this.queryText = getLangString('title_exit_query');
+
+        const btnWidth = this.width * 0.25;
+        const btnHeight = this.WH * 0.04;
+        const gap = this.width * 0.05;
+        const rightAnchor = this.x + this.width - this.width * 0.05;
+
+        // 예 버튼
+        this.yesButton = new ButtonElement({
+            parent: this,
+            onClick: () => {
+                if (typeof window.close === 'function') {
+                    window.close();
+                } else if (typeof nw !== 'undefined') {
+                    nw.Window.get().close();
+                }
+            },
+            layer: "overlay",
+            x: rightAnchor - btnWidth,
+            y: this.y + this.height - btnHeight - this.WH * 0.03,
+            width: btnWidth,
+            height: btnHeight,
+            text: getLangString("title_exit_yes_label"),
+            font: "Pretendard Variable, arial",
+            fontWeight: 700,
+            size: this.WW * 0.01,
+            align: 'right',
+            margin: btnWidth * 0.1,
+            color: '#ffffff',
+            idleColor: '#166ffb',
+            hoverColor: '#5faaff',
+            enableHoverGradient: false,
+            radius: 8
+        });
+
+        // 아니오 버튼
+        this.noButton = new ButtonElement({
+            parent: this,
+            onClick: this.close.bind(this),
+            layer: "overlay",
+            x: rightAnchor - btnWidth * 2 - gap,
+            y: this.y + this.height - btnHeight - this.WH * 0.03,
+            width: btnWidth,
+            height: btnHeight,
+            text: getLangString("title_exit_no_label"),
+            font: "Pretendard Variable, arial",
+            fontWeight: 700,
+            size: this.WW * 0.01,
+            align: 'right',
+            margin: btnWidth * 0.1,
+            color: '#ffffff',
+            idleColor: '#ff5050',
+            hoverColor: '#ff8080',
+            enableHoverGradient: false,
+            radius: 8
+        });
+
+        this.yesButton.text = getLangString('title_exit_yes');
+        this.noButton.text = getLangString('title_exit_no');
+
+        // 디버그 전용: 새로고침 버튼
+        if (getSetting('debugMode')) {
+            this.refreshButton = new ButtonElement({
+                parent: this,
+                onClick: () => {
+                    location.reload();
+                },
+                layer: "overlay",
+                x: rightAnchor - btnWidth * 3 - gap * 2,
+                y: this.y + this.height - btnHeight - this.WH * 0.03,
+                width: btnHeight,
+                height: btnHeight,
+                text: "🔄",
+                font: "Pretendard Variable, arial",
+                size: this.WW * 0.015,
+                align: 'center',
+                margin: 0,
+                color: '#ffffff',
+                idleColor: '#555555',
+                hoverColor: '#777777',
+                enableHoverGradient: false,
+                radius: 8
+            });
+        }
+    }
+
+    update() {
+        super.update();
+        if (this.visible && this.alpha > 0) {
+            this.yesButton.update();
+            this.noButton.update();
+            if (this.refreshButton) this.refreshButton.update();
+        }
+    }
+
+    draw() {
+        if (!this.visible || this.alpha <= 0.01) return;
+
+        super.draw();
+
+        const scaledW = this.width * this.scale;
+        const scaledH = this.height * this.scale;
+        const cx = this.WW / 2;
+        const cy = this.WH / 2;
+        const scaledX = cx - scaledW / 2;
+        const scaledY = cy - scaledH / 2;
+
+        if (this.alpha > 0) {
+            // 제목
+            render('overlay', {
+                shape: 'text',
+                text: this.exitTitle,
+                x: scaledX + scaledW * 0.06,
+                y: scaledY + scaledH * 0.2,
+                font: `700 ${this.WW * 0.016 * this.scale}px "Pretendard Variable", arial`,
+                fill: ColorSchemes.Title.TextDark,
+                align: 'left',
+                baseline: 'middle',
+                alpha: this.alpha
+            });
+
+            // 질문 텍스트
+            render('overlay', {
+                shape: 'text',
+                text: this.queryText,
+                x: scaledX + scaledW * 0.06,
+                y: scaledY + scaledH * 0.45,
+                font: `300 ${this.WW * 0.012 * this.scale}px "Pretendard Variable", arial`,
+                fill: ColorSchemes.Overlay.Text.Item,
+                align: 'left',
+                alpha: this.alpha
+            });
+
+            // 버튼 레이아웃 (스케일 적용)
+            const btnWidth = this.width * 0.25 * this.scale;
+            const btnHeight = this.WH * 0.04 * this.scale;
+            const gap = this.width * 0.05 * this.scale;
+            const rightMargin = this.width * 0.05 * this.scale;
+            const startX = (cx + scaledW / 2) - rightMargin;
+
+            this.yesButton.width = btnWidth;
+            this.yesButton.height = btnHeight;
+            this.yesButton.x = startX - btnWidth;
+            this.yesButton.y = scaledY + scaledH - btnHeight - (this.WH * 0.03 * this.scale);
+            this.yesButton.size = this.WW * 0.01 * this.scale;
+            this.yesButton.alpha = this.alpha;
+            this.yesButton.radius = 8 * this.scale;
+            this.yesButton.draw();
+
+            this.noButton.width = btnWidth;
+            this.noButton.height = btnHeight;
+            this.noButton.x = startX - btnWidth * 2 - gap;
+            this.noButton.y = scaledY + scaledH - btnHeight - (this.WH * 0.03 * this.scale);
+            this.noButton.size = this.WW * 0.01 * this.scale;
+            this.noButton.alpha = this.alpha;
+            this.noButton.radius = 8 * this.scale;
+            this.noButton.draw();
+
+            const btnIconSize = btnHeight * 0.4;
+
+            // 예 아이콘 (O)
+            const yesIconX = this.yesButton.x + btnWidth * 0.15;
+            const yesIconY = this.yesButton.y + btnHeight / 2;
+
+            render('overlay', {
+                shape: 'circle',
+                x: yesIconX,
+                y: yesIconY,
+                radius: btnIconSize / 2,
+                fill: false,
+                stroke: '#ffffff',
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha
+            });
+
+            // 아니오 아이콘 (X)
+            const noIconX = this.noButton.x + btnWidth * 0.15;
+            const noIconY = this.noButton.y + btnHeight / 2;
+            const bxSize = btnIconSize * 0.6;
+
+            render('overlay', {
+                shape: 'line',
+                x1: noIconX - bxSize / 2,
+                y1: noIconY - bxSize / 2,
+                x2: noIconX + bxSize / 2,
+                y2: noIconY + bxSize / 2,
+                stroke: '#ffffff',
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+            render('overlay', {
+                shape: 'line',
+                x1: noIconX + bxSize / 2,
+                y1: noIconY - bxSize / 2,
+                x2: noIconX - bxSize / 2,
+                y2: noIconY + bxSize / 2,
+                stroke: '#ffffff',
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+
+            if (this.refreshButton) {
+                this.refreshButton.draw();
+            }
+        }
+    }
+
+    destroy() {
+        if (this.yesButton) this.yesButton.destroy();
+        if (this.noButton) this.noButton.destroy();
+        if (this.refreshButton) this.refreshButton.destroy();
+        super.destroy();
+    }
+}

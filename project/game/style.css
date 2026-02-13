@@ -1,0 +1,59 @@
+body {
+    margin: 0;
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    background-color: #202020;
+}
+
+html {
+    cursor: none;
+}
+
+.canvas {
+    position: absolute;
+    border-radius: 8px;
+}
+
+#background {
+    z-index: 0;
+}
+
+#background2 {
+    z-index: 1;
+}
+
+#main {
+    z-index: 10;
+}
+
+#main2 {
+    z-index: 21;
+}
+
+#overlay {
+    z-index: 20;
+}
+
+#overlay2 {
+    z-index: 21;
+}
+
+#top {
+    z-index: 30;
+}
+
+#top2 {
+    z-index: 31;
+}
+
+@font-face {
+    font-family: 'Pretendard Variable';
+    font-weight: 45 920;
+    font-style: normal;
+    font-display: swap;
+    src: url('./font/PretendardVariable.woff2') format('woff2-variations');
+}
