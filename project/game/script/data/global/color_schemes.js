@@ -30,7 +30,8 @@ export const LightTheme = {
             Border: '#cececeff',
             GlassBackground: 'rgba(255, 255, 255, 0.68)',
             GlassBorder: 'rgba(255, 255, 255, 0.45)',
-            Divider: 'rgba(0, 0, 0, 0.1)'
+            Divider: 'rgba(0, 0, 0, 0.1)',
+            Dim: 'rgba(0, 0, 0, 0.3)'
         },
         Control: {
             Inactive: 'rgba(0, 0, 0, 0.05)',
@@ -100,7 +101,8 @@ export const DarkTheme = {
             Border: '#1a1a1aff',
             GlassBackground: 'rgba(20, 20, 20, 0.78)',
             GlassBorder: 'rgba(255, 255, 255, 0.08)',
-            Divider: 'rgba(255, 255, 255, 0.08)'
+            Divider: 'rgba(255, 255, 255, 0.08)',
+            Dim: 'rgba(0, 0, 0, 0.5)'
         },
         Control: {
             Inactive: 'rgba(255, 255, 255, 0.06)',

@@ -16,7 +16,9 @@ export class SettingHandler {
             fullScreen: true,
             width: 1280,
             height: 720,
-            renderScale: 100
+            renderScale: 100,
+            colorBlindMode: false,
+            autoAttack: false
         };
     }
 

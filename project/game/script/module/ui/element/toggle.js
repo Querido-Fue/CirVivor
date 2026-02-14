@@ -25,6 +25,9 @@ export class ToggleElement extends BaseUIElement {
 
         this._animValue = this.value ? 1 : 0;
         this._animID = null;
+
+        this._hoverScale = 1;
+        this._hoverAnim = null;
     }
 
     /**
@@ -49,12 +52,29 @@ export class ToggleElement extends BaseUIElement {
     update() {
         if (!this.visible) return;
 
+        const mx = getMouseInput('x');
+        const my = getMouseInput('y');
+        const isOver = mx >= this.x && mx <= this.x + this.width &&
+            my >= this.y && my <= this.y + this.height;
+
         if (getMouseInput('leftClicked') && getMouseFocus() === this.layer) {
-            const mx = getMouseInput('x');
-            const my = getMouseInput('y');
-            if (mx >= this.x && mx <= this.x + this.width &&
-                my >= this.y && my <= this.y + this.height) {
+            if (isOver) {
                 this.setValue(!this.value);
+            }
+        }
+
+        const targetScale = isOver ? 1.15 : 1.0;
+        if (Math.abs(this._hoverScale - targetScale) > 0.001) {
+            // 애니메이션 중복 방지 (목표값이 다를 때만 새로 생성)
+            // 현재 진행 중인 애니메이션의 목표값과 새로운 목표값이 다르면
+            if (!this._hoverAnim || this._hoverAnim.endValue !== targetScale) {
+                if (this._hoverAnim) remove(this._hoverAnim.id);
+                this._hoverAnim = animate(this, {
+                    variable: '_hoverScale',
+                    endValue: targetScale,
+                    duration: 0.2,
+                    type: 'easeOutExpo'
+                });
             }
         }
     }
@@ -75,23 +95,29 @@ export class ToggleElement extends BaseUIElement {
 
         const trackColor = `rgba(${r}, ${g}, ${b}, ${a})`;
 
+        const scale = this._hoverScale || 1;
+        const w = this.width * scale;
+        const h = this.height * scale;
+        const x = this.x + (this.width - w) / 2;
+        const y = this.y + (this.height - h) / 2;
+
         render(this.layer, {
             shape: 'roundRect',
-            x: this.x,
-            y: this.y,
-            w: this.width,
-            h: this.height,
-            radius: this.height / 2,
+            x: x,
+            y: y,
+            w: w,
+            h: h,
+            radius: h / 2,
             fill: trackColor,
             alpha: this.alpha
         });
 
-        const knobR = this.height * 0.4;
-        const padding = this.height * 0.1;
-        const startX = this.x + padding + knobR;
-        const endX = this.x + this.width - padding - knobR;
+        const knobR = h * 0.4;
+        const padding = h * 0.1;
+        const startX = x + padding + knobR;
+        const endX = x + w - padding - knobR;
         const knobX = startX + (endX - startX) * this._animValue;
-        const knobY = this.y + this.height / 2;
+        const knobY = y + h / 2;
 
         render(this.layer, {
             shape: 'circle',

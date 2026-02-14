@@ -145,6 +145,11 @@ export const getCanvasOffset = () => ({ x: displaySystemInstance._screenHandler.
  * @returns {HTMLCanvasElement} 메인 캔버스
  */
 export const getMainCanvas = () => displaySystemInstance.mainCanvas;
+/**
+ * 배경 캔버스 요소를 반환합니다.
+ * @returns {HTMLCanvasElement} 배경 캔버스
+ */
+export const getBackgroundCanvas = () => displaySystemInstance.backgroundCanvas;
 
 /**
  * 특정 레이어에 그리기 작업을 수행합니다.

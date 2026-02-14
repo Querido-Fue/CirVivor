@@ -35,13 +35,20 @@ export class SettingsOverlay extends TitleOverlay {
             bgmVolume: getSetting('bgmVolume') !== undefined ? getSetting('bgmVolume') : 100,
             sfxVolume: getSetting('sfxVolume') !== undefined ? getSetting('sfxVolume') : 100,
             disableTransparency: getSetting('disableTransparency') || false,
-            reducePhysics: getSetting('reducePhysics') || false
+            reducePhysics: getSetting('reducePhysics') || false,
+            colorBlindMode: getSetting('colorBlindMode') || false,
+            autoAttack: getSetting('autoAttack') || false
         };
 
         // 왼쪽 열 섹션
         // 모든 설정 섹션 정의
         this.sections = [
-            { key: 'gameplay', label: 'title_settings_section_gameplay', items: [] },
+            {
+                key: 'accessibility', label: 'title_settings_section_accessibility', items: [
+                    { type: 'toggle', label: 'title_settings_color_blind', settingKey: 'colorBlindMode' },
+                    { type: 'toggle', label: 'title_settings_auto_attack', settingKey: 'autoAttack', description: 'title_settings_desc_auto_attack' }
+                ]
+            },
             {
                 key: 'display', label: 'title_settings_section_display', items: [
                     { type: 'toggle', label: 'title_settings_fullScreen', settingKey: 'fullScreen' },
@@ -259,7 +266,9 @@ export class SettingsOverlay extends TitleOverlay {
             bgmVolume: this.tempSettings.bgmVolume,
             sfxVolume: this.tempSettings.sfxVolume,
             disableTransparency: this.tempSettings.disableTransparency,
-            reducePhysics: this.tempSettings.reducePhysics
+            reducePhysics: this.tempSettings.reducePhysics,
+            colorBlindMode: this.tempSettings.colorBlindMode,
+            autoAttack: this.tempSettings.autoAttack
         });
     }
 
@@ -301,8 +310,8 @@ export class SettingsOverlay extends TitleOverlay {
 
         if (this.alpha > 0) {
             // 레이아웃 상수 정의
-            const outerPadding = scaledW * 0.05; // 전체 외곽 여백
-            const innerPadding = scaledW * 0.03; // 내부 구성 요소 간 여백
+            const outerPadding = scaledW * 0.045; // 전체 외곽 여백
+            const innerPadding = scaledW * 0.025; // 내부 구성 요소 간 여백
 
             // 헤더 영역
             const headerY = scaledY + scaledH * 0.08;
@@ -322,7 +331,7 @@ export class SettingsOverlay extends TitleOverlay {
             });
 
             // 구분선 렌더링
-            const lineY = scaledY + scaledH * 0.14;
+            const lineY = scaledY + scaledH * 0.13;
             render('overlay', {
                 shape: 'line',
                 x1: scaledX + outerPadding,
@@ -342,14 +351,14 @@ export class SettingsOverlay extends TitleOverlay {
             const col1X = contentStartX;
             const col2X = contentStartX + colWidth + innerPadding;
 
-            const contentStartY = scaledY + scaledH * 0.22;
+            const contentStartY = scaledY + scaledH * 0.19;
 
-            // 좌측 컬럼 (게임플레이, 디스플레이)
-            const leftSections = this.sections.filter(s => ['gameplay', 'display'].includes(s.key));
+            // 좌측 컬럼 (접근성, 디스플레이)
+            const leftSections = this.sections.filter(s => ['accessibility', 'display'].includes(s.key));
             this._drawSections(leftSections, col1X, colWidth, contentStartY, scaledH);
 
             // 우측 컬럼 (UI, 사운드, 조작)
-            const rightSections = this.sections.filter(s => !['gameplay', 'display'].includes(s.key));
+            const rightSections = this.sections.filter(s => !['accessibility', 'display'].includes(s.key));
             this._drawSections(rightSections, col2X, colWidth, contentStartY, scaledH);
 
 
@@ -430,7 +439,7 @@ export class SettingsOverlay extends TitleOverlay {
 
     _drawSections(sections, startX, columnWidth, startY, scaledH) {
         let cursorY = startY;
-        const sectionGap = scaledH * 0.045;
+        const sectionGap = scaledH * 0.04;
         const itemGap = scaledH * 0.07;
         const labelSize = this.WW * 0.013 * this.scale;
         const itemLabelSize = this.WW * 0.01 * this.scale;

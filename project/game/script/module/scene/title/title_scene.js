@@ -5,7 +5,7 @@ import { BaseScene } from '../base_scene.js';
 import { getWW, getWH } from '../../display/_display_system.js';
 import { setMouseFocus } from '../../input/_input_system.js';
 import { animate } from '../../animation/_animation_system.js';
-import { applyBlur } from '../../display/_display_system.js';
+
 import { CollectionOverlay } from './overlay/collection.js';
 import { SettingsOverlay } from './overlay/settings.js';
 import { CreditsOverlay } from './overlay/credits.js';
@@ -40,8 +40,6 @@ export class TitleScene extends BaseScene {
                 this.menuOpenAnimationInit = true;
                 animate(this, { variable: 'menuOpenAnimation', startValue: 0, endValue: 1, type: "easeOutExpo", duration: 0.5 });
             }
-            applyBlur("background", Math.min(this.menuOpenAnimation * 7, 7));
-            applyBlur("main", Math.min(this.menuOpenAnimation * 7, 7));
         }
     }
 

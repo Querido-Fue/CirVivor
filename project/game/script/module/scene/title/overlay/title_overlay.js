@@ -1,5 +1,5 @@
 import { ButtonElement } from '../../../ui/element/button.js';
-import { getWW, getWH, render, shadowOn, shadowOff, applyBlur, getMainCanvas } from '../../../display/_display_system.js';
+import { getWW, getWH, render, shadowOn, shadowOff, getBackgroundCanvas, getMainCanvas } from '../../../display/_display_system.js';
 import { ColorSchemes } from '../../../display/theme_handler.js';
 import { animate, remove } from '../../../animation/_animation_system.js';
 import { getLangString } from '../../../ui/_ui_system.js';
@@ -86,7 +86,14 @@ export class TitleOverlay {
         const scaledX = cx - scaledW / 2;
         const scaledY = cy - scaledH / 2;
 
-        // 유리 질감 배경 (Glassmorphism)
+        render('overlay', {
+            shape: 'rect',
+            x: 0, y: 0,
+            w: this.WW, h: this.WH,
+            fill: ColorSchemes.Overlay.Panel.Dim,
+            alpha: this.alpha
+        });
+
         shadowOn('overlay', 30, 'rgba(0,0,0,0.3)');
         render('overlay', {
             shape: getSetting('disableTransparency') ? 'roundRect' : 'glassRect',
@@ -95,8 +102,8 @@ export class TitleOverlay {
             w: scaledW,
             h: scaledH,
             radius: 15,
-            image: getMainCanvas(),
-            blur: 60,
+            image: [getBackgroundCanvas(), getMainCanvas()],
+            blur: 10,
             fill: getSetting('disableTransparency') ? ColorSchemes.Overlay.Panel.Background : ColorSchemes.Overlay.Panel.GlassBackground,
             stroke: getSetting('disableTransparency') ? ColorSchemes.Overlay.Panel.Background : ColorSchemes.Overlay.Panel.GlassBorder,
             lineWidth: 1,

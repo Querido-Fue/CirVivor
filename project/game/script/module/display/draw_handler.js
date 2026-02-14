@@ -143,11 +143,11 @@ export class DrawHandler {
                 ctx.clip();
 
                 if (options.image) {
-                    // 블러 효과 적용 (성능을 위해 필요한 부분만 그릴 수도 있지만, 끊김 방지를 위해 전체 그리기 시도)
-                    // 단, 필터는 그리기 작업에 적용되므로, 필요한 영역보다 크게 그려야 가장자리가 깨지지 않음
                     ctx.filter = `blur(${options.blur || 10}px)`;
-                    // 전체 화면을 기준으로 그려서 위치를 맞춤
-                    ctx.drawImage(options.image, 0, 0, ctx.canvas.width, ctx.canvas.height);
+                    const images = Array.isArray(options.image) ? options.image : [options.image];
+                    images.forEach(img => {
+                        ctx.drawImage(img, 0, 0, ctx.canvas.width, ctx.canvas.height);
+                    });
                     ctx.filter = 'none';
                 }
 
