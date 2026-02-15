@@ -1,8 +1,8 @@
 import { TitleOverlay } from './title_overlay.js';
-import { ButtonElement } from '../../../ui/element/button.js';
-import { getLangString } from '../../../ui/_ui_system.js';
-import { ColorSchemes } from '../../../display/theme_handler.js';
-import { render, measureText } from '../../../display/_display_system.js';
+import { ButtonElement } from 'ui/element/button.js';
+import { getLangString } from 'ui/_ui_system.js';
+import { render, getWW, getWH, measureText } from 'display/_display_system.js';
+import { ColorSchemes } from 'display/theme_handler.js';
 
 function openURL(url) {
     try {
@@ -115,9 +115,9 @@ export class CreditsOverlay extends TitleOverlay {
             size: this.WW * 0.01,
             align: 'right',
             margin: btnWidth * 0.12,
-            color: '#ffffff',
-            idleColor: '#166ffb',
-            hoverColor: '#4d8ffc',
+            color: ColorSchemes.Overlay.Button.Cancel.Text,
+            idleColor: ColorSchemes.Overlay.Button.Cancel.Idle,
+            hoverColor: ColorSchemes.Overlay.Button.Cancel.Hover,
             enableHoverGradient: false,
             radius: 8
         });
@@ -325,7 +325,7 @@ export class CreditsOverlay extends TitleOverlay {
                 y1: closeBtnY - xSize,
                 x2: closeBtnX + xSize,
                 y2: closeBtnY + xSize,
-                stroke: '#ffffff',
+                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
                 lineWidth: 1.2 * this.scale,
                 alpha: this.alpha,
                 lineCap: 'round'
@@ -336,7 +336,7 @@ export class CreditsOverlay extends TitleOverlay {
                 y1: closeBtnY - xSize,
                 x2: closeBtnX - xSize,
                 y2: closeBtnY + xSize,
-                stroke: '#ffffff',
+                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
                 lineWidth: 1.2 * this.scale,
                 alpha: this.alpha,
                 lineCap: 'round'

@@ -1,9 +1,9 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "../../display/_display_system.js";
-import { getMouseInput, getMouseFocus } from "../../input/_input_system.js";
-import { ColorSchemes } from "../../display/theme_handler.js";
-import { animate, remove } from "../../animation/_animation_system.js";
-import { cssToRgb } from "../../../util/color_util.js";
+import { render } from "display/_display_system.js";
+import { getMouseInput, getMouseFocus } from "input/_input_system.js";
+import { ColorSchemes } from "display/theme_handler.js";
+import { animate, remove } from "animation/_animation_system.js";
+import { cssToRgb } from "util/color_util.js";
 
 /**
  * @class ToggleElement

@@ -1,5 +1,5 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "../../display/_display_system.js";
+import { render } from "display/_display_system.js";
 
 /**
  * @class TextElement

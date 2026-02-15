@@ -5,17 +5,35 @@
     <meta charset="UTF-8">
     <link rel="stylesheet" type="text/css" href="./style.css">
     <link rel="icon" type="image/ico" href="./image/logo.ico">
+    <script type="importmap">
+    {
+        "imports": {
+            "display/": "./script/module/display/",
+            "scene/": "./script/module/scene/",
+            "ui/": "./script/module/ui/",
+            "util/": "./script/util/",
+            "animation/": "./script/module/animation/",
+            "input/": "./script/module/input/",
+            "save/": "./script/module/save/",
+            "data/": "./script/data/",
+            "object/": "./script/module/object/",
+            "debug/": "./script/module/debug/",
+            "game/": "./script/"
+        }
+    }
+    </script>
 </head>
 
 <body>
     <canvas class="canvas" id="background"></canvas>
-    <canvas class="canvas" id="background2"></canvas>
-    <canvas class="canvas" id="main"></canvas>
-    <canvas class="canvas" id="main2"></canvas>
+    <canvas class="canvas" id="object"></canvas>
+    <canvas class="canvas" id="effect"></canvas>
+    <canvas class="canvas" id="texteffect"></canvas>
+    <canvas class="canvas" id="ui"></canvas>
     <canvas class="canvas" id="overlay"></canvas>
-    <canvas class="canvas" id="overlay2"></canvas>
+    <canvas class="canvas" id="overlayeffect"></canvas>
+    <canvas class="canvas" id="overlayhigh"></canvas>
     <canvas class="canvas" id="top"></canvas>
-    <canvas class="canvas" id="top2"></canvas>
     <script type="module" src="./script/main.js"></script>
     <script src="./script/nw-setup.js"></script>
 </body>

@@ -1,5 +1,5 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "../../display/_display_system.js";
+import { render } from "display/_display_system.js";
 
 /**
  * @class LineElement
@@ -25,7 +25,7 @@ export class LineElement extends BaseUIElement {
         this.x2 = properties.x2 || 0;
         this.y2 = properties.y2 || 0;
         this.width = properties.width || 1;
-        this.color = properties.color || '#000000';
+        this.color = properties.color;
     }
 
     update() {

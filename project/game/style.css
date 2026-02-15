@@ -20,34 +20,47 @@ html {
 
 #background {
     z-index: 0;
+    background-color: rgba(0, 0, 0, 0);
 }
 
-#background2 {
-    z-index: 1;
-}
-
-#main {
+#object {
     z-index: 10;
+    background-color: rgba(0, 0, 0, 0);
 }
 
-#main2 {
-    z-index: 21;
+#effect {
+    z-index: 20;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#texteffect {
+    z-index: 30;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#ui {
+    z-index: 40;
+    background-color: rgba(0, 0, 0, 0);
 }
 
 #overlay {
-    z-index: 20;
+    z-index: 50;
+    background-color: rgba(0, 0, 0, 0);
 }
 
-#overlay2 {
-    z-index: 21;
+#overlayeffect {
+    z-index: 60;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#overlayhigh {
+    z-index: 70;
+    background-color: rgba(0, 0, 0, 0);
 }
 
 #top {
-    z-index: 30;
-}
-
-#top2 {
-    z-index: 31;
+    z-index: 80;
+    background-color: rgba(0, 0, 0, 0);
 }
 
 @font-face {

@@ -1,9 +1,9 @@
-import { ColorSchemes } from '../../display/theme_handler.js';
-import { LineElement } from '../../ui/element/line.js';
-import { ButtonElement } from '../../ui/element/button.js';
-import { getWW, getWH, render, shadowOn, shadowOff } from '../../display/_display_system.js';
-import { getLangString } from '../../ui/_ui_system.js';
-import { animate, remove } from '../../animation/_animation_system.js';
+import { ColorSchemes } from 'display/theme_handler.js';
+import { LineElement } from 'ui/element/line.js';
+import { ButtonElement } from 'ui/element/button.js';
+import { getWW, getWH, render, shadowOn, shadowOff } from 'display/_display_system.js';
+import { getLangString } from 'ui/_ui_system.js';
+import { animate, remove } from 'animation/_animation_system.js';
 
 /**
  * @class TitleMenu
@@ -34,7 +34,7 @@ export class TitleMenu {
             alpha: 0,
             update: function () { },
             draw: () => {
-                render('main', {
+                render('ui', {
                     shape: 'arrow',
                     x: this.selector.x,
                     y: this.selector.y,
@@ -49,7 +49,7 @@ export class TitleMenu {
 
         this.line = new LineElement({
             parent: this,
-            layer: "main",
+            layer: "ui",
             x1: this.WW,
             y1: this.WH * 0.4875 - this.WW * 0.07,
             x2: this.WW,
@@ -72,7 +72,7 @@ export class TitleMenu {
                 parent: this,
                 onClick: buttonData[i][2],
                 onHover: null,
-                layer: "main",
+                layer: "ui",
                 x: this.WW * 2,
                 y: this.WH * 0.4875 - this.WW * 0.032 * (2 - i),
                 width: this.WW * 0.13,
@@ -119,11 +119,11 @@ export class TitleMenu {
     }
 
     draw() {
-        shadowOn('main', 20, ColorSchemes.Title.Shadow);
+        shadowOn('ui', 20, ColorSchemes.Title.Shadow);
         this.selector.draw();
         this.line.draw();
         this.buttons.forEach((b) => b.draw());
-        shadowOff('main');
+        shadowOff('ui');
     }
 
     destroy() {

@@ -1,15 +1,15 @@
 import { TitleBackGround } from './title_background.js';
 import { TitleImage } from './title_image.js';
 import { TitleMenu } from './title_menu.js';
-import { BaseScene } from '../base_scene.js';
-import { getWW, getWH } from '../../display/_display_system.js';
-import { setMouseFocus } from '../../input/_input_system.js';
-import { animate } from '../../animation/_animation_system.js';
+import { BaseScene } from 'scene/base_scene.js';
+import { getWW, getWH } from 'display/_display_system.js';
+import { setMouseFocus } from 'input/_input_system.js';
+import { animate } from 'animation/_animation_system.js';
 
 import { CollectionOverlay } from './overlay/collection.js';
 import { SettingsOverlay } from './overlay/settings.js';
 import { CreditsOverlay } from './overlay/credits.js';
-import { ExitOverlay } from './overlay/exit_confirmation.js';
+import { showExitConfirmation } from 'ui/_ui_system.js';
 
 
 export class TitleScene extends BaseScene {
@@ -124,8 +124,6 @@ export class TitleScene extends BaseScene {
      * 게임을 종료합니다.
      */
     exit() {
-        if (this.menuOpened) return;
-        this.menu = new ExitOverlay(this);
-        this.menuOpened = true;
+        showExitConfirmation();
     }
 }

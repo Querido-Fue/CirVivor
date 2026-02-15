@@ -7,5 +7,6 @@ export const GLOBAL_CONSTANTS = {
     POOL_WARMUP: {
         ANIMATOR: 500,
     },
-    GAME_VERSION: "0.27"
+    GAME_VERSION: "0.28",
+    WEBGL_MAX_SPRITES: 2000
 };

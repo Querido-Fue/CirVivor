@@ -2,8 +2,8 @@ import { StandardAnimation } from './standard_animation.js';
 import { PersistentAnimation } from './persistent_animation.js';
 import { MixedAnimation } from './mixed_animation.js';
 import { ANIMATION_STATE } from './constants.js';
-import { GLOBAL_CONSTANTS } from '../../data/global/global_constants.js';
-import { getDelta } from '../../time_handler.js';
+import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
+import { getDelta } from 'game/time_handler.js';
 
 let animationSystemInstance = null;
 

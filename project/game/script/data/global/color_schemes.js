@@ -1,4 +1,5 @@
 export const LightTheme = {
+    Background: '#cececeff',
     Cursor: {
         Fill: '#cccccc',
         Active: '#166ffb',
@@ -31,7 +32,7 @@ export const LightTheme = {
             GlassBackground: 'rgba(255, 255, 255, 0.68)',
             GlassBorder: 'rgba(255, 255, 255, 0.45)',
             Divider: 'rgba(0, 0, 0, 0.1)',
-            Dim: 'rgba(0, 0, 0, 0.3)'
+            Dim: 'rgba(0, 0, 0, 0.6)'
         },
         Control: {
             Inactive: 'rgba(0, 0, 0, 0.05)',
@@ -99,10 +100,10 @@ export const DarkTheme = {
         Panel: {
             Background: '#1a1a1aff',
             Border: '#1a1a1aff',
-            GlassBackground: 'rgba(20, 20, 20, 0.78)',
+            GlassBackground: 'rgba(10, 10, 10, 0.80)',
             GlassBorder: 'rgba(255, 255, 255, 0.08)',
             Divider: 'rgba(255, 255, 255, 0.08)',
-            Dim: 'rgba(0, 0, 0, 0.5)'
+            Dim: 'rgba(0, 0, 0, 0.6)'
         },
         Control: {
             Inactive: 'rgba(255, 255, 255, 0.06)',

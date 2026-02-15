@@ -1,9 +1,9 @@
 
-import { getWW, getWH, render, shadowOn, shadowOff } from '../display/_display_system.js';
-import { getDelta } from '../../time_handler.js';
-import { animate, remove } from '../animation/_animation_system.js';
-import { getMouseInput } from '../input/_input_system.js';
-import { ColorSchemes } from '../display/theme_handler.js';
+import { getWW, getWH, render, shadowOn, shadowOff } from 'display/_display_system.js';
+import { getDelta } from 'game/time_handler.js';
+import { animate, remove } from 'animation/_animation_system.js';
+import { getMouseInput } from 'input/_input_system.js';
+import { ColorSchemes } from 'display/theme_handler.js';
 
 export class Cursor {
     constructor() {

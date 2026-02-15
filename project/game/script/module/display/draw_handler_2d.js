@@ -3,7 +3,7 @@
  * @description 캔버스 드로잉을 추상화하여 관리하는 유틸리티 클래스입니다.
  * 여러 캔버스 레이어(context)를 관리하고, 상태 캐싱 및 도형별 최적화된 그리기 기능을 제공합니다.
  */
-export class DrawHandler {
+export class DrawHandler2D {
     /**
      * @param {Object.<string, CanvasRenderingContext2D>} contexts - 레이어 이름을 키로 가지는 컨텍스트 객체
      */
@@ -19,6 +19,11 @@ export class DrawHandler {
         }
 
         this._generatePaths();
+
+        // 최적화를 위한 블러 처리용 오프스크린 캔버스
+        this._blurCanvas = document.createElement('canvas');
+        this._blurCtx = this._blurCanvas.getContext('2d');
+        this._blurScale = 0.25; // 1/4 크기로 축소하여 블러 처리 (성능 최적화)
 
         // 전용 측정용 캔버스/컨텍스트 생성 (메인 캔버스 오염 방지)
         const measureCanvas = document.createElement('canvas');
@@ -138,16 +143,38 @@ export class DrawHandler {
 
             case 'glassRect':
                 ctx.save();
+
+                // 1. 클리핑 영역 설정 (라운드 박스)
                 ctx.beginPath();
                 ctx.roundRect(options.x, options.y, options.w, options.h, options.radius);
                 ctx.clip();
 
                 if (options.image) {
-                    ctx.filter = `blur(${options.blur || 10}px)`;
+                    // 2. 블러 캔버스 크기 조정 (필요 시)
+                    const bw = ctx.canvas.width * this._blurScale;
+                    const bh = ctx.canvas.height * this._blurScale;
+                    if (this._blurCanvas.width !== bw || this._blurCanvas.height !== bh) {
+                        this._blurCanvas.width = bw;
+                        this._blurCanvas.height = bh;
+                    }
+
+                    // 3. 소스 이미지를 블러 캔버스에 축소하여 그리기 (이미지 합성)
+                    this._blurCtx.clearRect(0, 0, bw, bh);
+                    // 여러 이미지가 배열로 들어올 수 있음
                     const images = Array.isArray(options.image) ? options.image : [options.image];
+                    // console.log(`glassRect layer=${layerName} images=${images.length}`);
                     images.forEach(img => {
-                        ctx.drawImage(img, 0, 0, ctx.canvas.width, ctx.canvas.height);
+                        // 소스 이미지가 유효한지 확인
+                        if (img.width > 0 && img.height > 0) {
+                            this._blurCtx.drawImage(img, 0, 0, bw, bh);
+                        }
                     });
+
+                    // 4. 블러 캔버스를 본 캔버스에 확대하여 그리기 + 블러 필터 적용
+                    // 축소된 이미지를 확대해서 그리면 자연스럽게 픽셀화되지만 블러와 함께하면 문제 없음
+                    // 오히려 블러 연산량이 줄어듦
+                    ctx.filter = `blur(${options.blur || 10}px)`;
+                    ctx.drawImage(this._blurCanvas, 0, 0, bw, bh, 0, 0, ctx.canvas.width, ctx.canvas.height);
                     ctx.filter = 'none';
                 }
 

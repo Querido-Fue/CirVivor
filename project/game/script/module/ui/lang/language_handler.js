@@ -1,6 +1,6 @@
 import { korean } from './korean.js';
 import { english } from './english.js';
-import { getSetting, setSetting } from '../../save/_save_system.js';
+import { getSetting, setSetting } from 'save/_save_system.js';
 
 export class LanguageHandler {
     constructor(uiSystem) {

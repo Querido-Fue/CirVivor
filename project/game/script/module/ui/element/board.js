@@ -1,5 +1,6 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "../../display/_display_system.js";
+import { render } from "display/_display_system.js";
+import { ColorSchemes } from "display/theme_handler.js";
 
 /**
  * @class BoardElement
@@ -22,7 +23,7 @@ export class BoardElement extends BaseUIElement {
         super(properties);
         this.width = properties.width || 0;
         this.height = properties.height || 0;
-        this.color = properties.color || '#ffffff';
+        this.color = properties.color || ColorSchemes.Overlay.Panel.Background;
         this.round = properties.round || 0;
     }
 

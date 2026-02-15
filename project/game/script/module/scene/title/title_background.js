@@ -1,12 +1,12 @@
-import { ColorSchemes } from '../../display/theme_handler.js';
-import { Vector2 } from '../../../util/vector2.js';
+import { ColorSchemes } from 'display/theme_handler.js';
+import { Vector2 } from 'util/vector2.js';
 import { TitleEnemy } from './title_enemy.js';
-import { ObjectPool } from '../../object/object_pool.js';
-import { animate } from '../../animation/_animation_system.js';
-import { getWW, getWH, render } from '../../display/_display_system.js';
-import { getDelta } from '../../../time_handler.js';
-import { mathUtil } from '../../../util/math_util.js';
-import { TITLE_CONSTANTS } from '../../../data/title/title_constants.js';
+import { ObjectPool } from 'object/object_pool.js';
+import { animate } from 'animation/_animation_system.js';
+import { getWW, getWH, render, renderGL } from 'display/_display_system.js';
+import { getDelta } from 'game/time_handler.js';
+import { mathUtil } from 'util/math_util.js';
+import { TITLE_CONSTANTS } from 'data/title/title_constants.js';
 
 /**
  * @class TitleBackGround
@@ -93,9 +93,10 @@ export class TitleBackGround {
     }
 
     draw() {
-        render('background', {
+        renderGL('background', {
             shape: 'rect',
-            x: 0, y: 0, w: this.WW, h: this.WH,
+            x: this.WW / 2, y: this.WH / 2,
+            w: this.WW, h: this.WH,
             fill: ColorSchemes.Title.Background
         });
         this.titleEnemies.forEach((c) => c.draw());

@@ -1,7 +1,7 @@
-import { ColorSchemes } from '../display/theme_handler.js';
-import { getWW, getWH, render } from '../display/_display_system.js';
-import { getDebugData } from '../../time_handler.js';
-import { GLOBAL_CONSTANTS } from '../../data/global/global_constants.js';
+import { ColorSchemes } from 'display/theme_handler.js';
+import { getWW, getWH, render } from 'display/_display_system.js';
+import { getDebugData } from 'game/time_handler.js';
+import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
 
 export class FrameDebugger {
     constructor() {

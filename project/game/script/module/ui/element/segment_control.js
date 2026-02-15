@@ -1,8 +1,8 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "../../display/_display_system.js";
-import { getMouseInput, getMouseFocus } from "../../input/_input_system.js";
-import { animate } from "../../animation/_animation_system.js";
-import { ColorSchemes } from "../../display/theme_handler.js";
+import { render } from "display/_display_system.js";
+import { getMouseInput, getMouseFocus } from "input/_input_system.js";
+import { animate } from "animation/_animation_system.js";
+import { ColorSchemes } from "display/theme_handler.js";
 /**
  * @class SegmentControl
  * @description 여러 옵션 중 하나를 선택하는 세그먼트 컨트롤 UI입니다.

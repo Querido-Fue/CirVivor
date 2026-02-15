@@ -1,8 +1,8 @@
 import { TitleOverlay } from './title_overlay.js';
-import { ButtonElement } from '../../../ui/element/button.js';
-import { getLangString } from '../../../ui/_ui_system.js';
-import { ColorSchemes } from '../../../display/theme_handler.js';
-import { render } from '../../../display/_display_system.js';
+import { ButtonElement } from 'ui/element/button.js';
+import { getLangString } from 'ui/_ui_system.js';
+import { ColorSchemes } from 'display/theme_handler.js';
+import { render, getWW, getWH } from "display/_display_system.js";
 
 export class CollectionOverlay extends TitleOverlay {
     constructor(TitleScene) {
@@ -76,9 +76,9 @@ export class CollectionOverlay extends TitleOverlay {
             size: this.WW * 0.01,
             align: 'right',
             margin: closeBtnW * 0.12,
-            color: '#ffffff',
-            idleColor: '#166ffb',
-            hoverColor: '#4d8ffc',
+            color: ColorSchemes.Overlay.Button.Cancel.Text,
+            idleColor: ColorSchemes.Overlay.Button.Cancel.Idle,
+            hoverColor: ColorSchemes.Overlay.Button.Cancel.Hover,
             enableHoverGradient: false,
             radius: 8
         });
@@ -196,7 +196,7 @@ export class CollectionOverlay extends TitleOverlay {
                 x: achCx,
                 y: achCy + cardH * 0.34,
                 font: `700 ${this.WW * 0.012 * this.scale}px "Pretendard Variable", arial`,
-                fill: '#166ffb',
+                fill: ColorSchemes.Cursor.Active,
                 align: 'center',
                 baseline: 'middle',
                 alpha: this.alpha
@@ -238,7 +238,7 @@ export class CollectionOverlay extends TitleOverlay {
                 x: encCx,
                 y: encCy + cardH * 0.34,
                 font: `700 ${this.WW * 0.012 * this.scale}px "Pretendard Variable", arial`,
-                fill: '#166ffb',
+                fill: ColorSchemes.Cursor.Active,
                 align: 'center',
                 baseline: 'middle',
                 alpha: this.alpha
@@ -269,7 +269,7 @@ export class CollectionOverlay extends TitleOverlay {
                 y1: cancelIconY - xSize / 2,
                 x2: cancelIconX + xSize / 2,
                 y2: cancelIconY + xSize / 2,
-                stroke: '#ffffff',
+                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
                 lineWidth: 1.2 * this.scale,
                 alpha: this.alpha,
                 lineCap: 'round'
@@ -280,7 +280,7 @@ export class CollectionOverlay extends TitleOverlay {
                 y1: cancelIconY - xSize / 2,
                 x2: cancelIconX - xSize / 2,
                 y2: cancelIconY + xSize / 2,
-                stroke: '#ffffff',
+                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
                 lineWidth: 1.2 * this.scale,
                 alpha: this.alpha,
                 lineCap: 'round'
@@ -311,7 +311,7 @@ export class CollectionOverlay extends TitleOverlay {
                 w: fillW,
                 h: barH,
                 radius: barH / 2,
-                fill: '#166ffb',
+                fill: ColorSchemes.Title.Cursor.Active,
                 alpha: this.alpha
             });
         }

@@ -1,13 +1,13 @@
 import { TitleOverlay } from './title_overlay.js';
-import { ButtonElement } from '../../../ui/element/button.js';
-import { SliderElement } from '../../../ui/element/slider.js';
-import { ToggleElement } from '../../../ui/element/toggle.js';
-import { SegmentControl } from '../../../ui/element/segment_control.js';
-import { getLangString } from '../../../ui/_ui_system.js';
-import { ColorSchemes } from '../../../display/theme_handler.js';
-import { render, measureText, getBaseWW, getBaseWH } from '../../../display/_display_system.js';
-import { getSetting, setSettingBatch } from '../../../save/_save_system.js';
-import { getMouseInput, getMouseFocus } from '../../../input/_input_system.js';
+import { ButtonElement } from 'ui/element/button.js';
+import { SliderElement } from 'ui/element/slider.js';
+import { ToggleElement } from 'ui/element/toggle.js';
+import { SegmentControl } from 'ui/element/segment_control.js';
+import { getLangString } from 'ui/_ui_system.js';
+import { ColorSchemes } from 'display/theme_handler.js';
+import { render, measureText, getBaseWW, getBaseWH } from 'display/_display_system.js';
+import { getSetting, setSettingBatch } from 'save/_save_system.js';
+import { getMouseInput, getMouseFocus } from 'input/_input_system.js';
 
 export class SettingsOverlay extends TitleOverlay {
     constructor(TitleScene) {
@@ -392,7 +392,7 @@ export class SettingsOverlay extends TitleOverlay {
                 y: saveIconY,
                 radius: btnIconSize / 2,
                 fill: false,
-                stroke: '#ffffff',
+                stroke: ColorSchemes.Overlay.Button.Save.Text,
                 lineWidth: 1.2 * this.scale,
                 alpha: this.alpha
             });
@@ -418,7 +418,7 @@ export class SettingsOverlay extends TitleOverlay {
                 y1: cancelIconY - xSize / 2,
                 x2: cancelIconX + xSize / 2,
                 y2: cancelIconY + xSize / 2,
-                stroke: '#ffffff',
+                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
                 lineWidth: 1.2 * this.scale,
                 alpha: this.alpha,
                 lineCap: 'round'
@@ -429,7 +429,7 @@ export class SettingsOverlay extends TitleOverlay {
                 y1: cancelIconY - xSize / 2,
                 x2: cancelIconX - xSize / 2,
                 y2: cancelIconY + xSize / 2,
-                stroke: '#ffffff',
+                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
                 lineWidth: 1.2 * this.scale,
                 alpha: this.alpha,
                 lineCap: 'round'

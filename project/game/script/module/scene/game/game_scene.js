@@ -1,6 +1,6 @@
-import { ColorSchemes } from '../../display/theme_handler.js';
-import { getWW, getWH, render } from '../../display/_display_system.js';
-import { BaseScene } from '../base_scene.js';
+import { ColorSchemes } from 'display/theme_handler.js';
+import { getWW, getWH, render } from 'display/_display_system.js';
+import { BaseScene } from 'scene/base_scene.js';
 
 export class GameScene extends BaseScene {
     /**

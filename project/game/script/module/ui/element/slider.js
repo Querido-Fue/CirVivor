@@ -1,10 +1,10 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "../../display/_display_system.js";
-import { getMouseInput, getMouseFocus } from "../../input/_input_system.js";
-import { ColorSchemes } from "../../display/theme_handler.js";
-import { animate, remove } from "../../animation/_animation_system.js";
-import { lerpColor } from "../../../util/color_util.js";
-import { mathUtil } from "../../../util/math_util.js";
+import { render } from "display/_display_system.js";
+import { getMouseInput, getMouseFocus } from "input/_input_system.js";
+import { ColorSchemes } from "display/theme_handler.js";
+import { animate, remove } from "animation/_animation_system.js";
+import { lerpColor } from "util/color_util.js";
+import { mathUtil } from "util/math_util.js";
 
 const MAX_OVERFLOW = 20;
 
@@ -49,6 +49,17 @@ export class SliderElement extends BaseUIElement {
 
     update() {
         if (!this.visible) return;
+
+        // 포커스 확인: 현재 포커스 레이어와 다르면 입력 무시
+        if (getMouseFocus() !== this.layer) {
+            // 예외: UI 레이어는 기본값이므로 포커스가 null/undefined일 때 허용? (현재는 엄격하게 처리)
+            if (this.dragging) {
+                this.dragging = false;
+                this._isFocused = false;
+                this._isHovered = false;
+            }
+            return;
+        }
 
         const mx = getMouseInput('x');
         const my = getMouseInput('y');

@@ -1,4 +1,4 @@
-import { shadowOn, shadowOff } from '../../display/_display_system.js';
+import { shadowOn, shadowOff } from 'display/_display_system.js';
 
 export class BaseUIElement {
     constructor(properties) {

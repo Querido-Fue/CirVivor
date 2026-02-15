@@ -1,13 +1,13 @@
-import { SaveSystem } from './save/_save_system.js';
-import { DisplaySystem } from './display/_display_system.js';
-import { AnimationSystem } from './animation/_animation_system.js';
-import { InputSystem } from './input/_input_system.js';
-import { ObjectSystem } from './object/_object_system.js';
-import { SceneSystem } from './scene/_scene_system.js';
-import { UISystem } from './ui/_ui_system.js';
-import { DebugSystem } from './debug/_debug_system.js';
-import { getTimeHandler } from '../time_handler.js';
-import { ThemeHandler, setTheme } from './display/theme_handler.js';
+import { SaveSystem } from 'save/_save_system.js';
+import { DisplaySystem } from 'display/_display_system.js';
+import { AnimationSystem } from 'animation/_animation_system.js';
+import { InputSystem } from 'input/_input_system.js';
+import { ObjectSystem } from 'object/_object_system.js';
+import { SceneSystem } from 'scene/_scene_system.js';
+import { UISystem } from 'ui/_ui_system.js';
+import { DebugSystem } from 'debug/_debug_system.js';
+import { getTimeHandler } from 'game/time_handler.js';
+import { ThemeHandler, setTheme } from 'display/theme_handler.js';
 
 export class SystemHandler {
     constructor() {
@@ -20,14 +20,21 @@ export class SystemHandler {
      */
     async init() {
         this.loadTime = performance.now().toFixed(1);
-        this.themeHandler.init();
+
+        // 1. SaveSystem (설정 로드)
         this.saveSystem = new SaveSystem();
         await this.saveSystem.init();
-        setTheme(this.saveSystem.getSetting("darkMode"));
         this.logDebugInfo("SaveSystem");
+
+        // 2. DisplaySystem (화면/WebGL 초기화 - 설정 의존)
         this.displaySystem = new DisplaySystem();
         await this.displaySystem.init(this.saveSystem);
         this.logDebugInfo("DisplaySystem");
+
+        // 3. ThemeHandler (배경색 설정 - DisplaySystem 의존)
+        this.themeHandler.init();
+        setTheme(this.saveSystem.getSetting("darkMode")); // 초기 테마 적용
+
         this.animationSystem = new AnimationSystem();
         await this.animationSystem.init();
         this.logDebugInfo("AnimationSystem");
@@ -62,11 +69,17 @@ export class SystemHandler {
      */
     tick() {
         this.displaySystem.drawHandler.clearAll();
+        if (this.displaySystem.webGLHandler) {
+            this.displaySystem.webGLHandler.clearAll();
+        }
         getTimeHandler().markUpdateStart();
         this.update();
         getTimeHandler().markUpdateEnd();
         getTimeHandler().markDrawStart();
         this.draw();
+        if (this.displaySystem.webGLHandler) {
+            this.displaySystem.webGLHandler.flushAll();
+        }
         getTimeHandler().markDrawEnd();
     }
 
@@ -91,11 +104,10 @@ export class SystemHandler {
      * 모든 시스템의 그리기 로직을 호출합니다.
      */
     draw() {
-        //this.animationSystem.draw();
         this.inputSystem._draw();
-        this.uiSystem.draw();
         this.objectSystem.draw();
         this.sceneSystem.draw();
+        this.uiSystem.draw(); // UI와 오버레이는 가장 상위에 그려져야 함 (Scene 내용 반영 위해)
         this.debugSystem.draw();
     }
 }

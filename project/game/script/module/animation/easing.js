@@ -54,7 +54,7 @@ export const Easing = {
     },
     easeInOutBounce: p => p < 0.5 ? (1 - Easing.easeOutBounce(1 - 2 * p)) / 2 : (1 + Easing.easeOutBounce(2 * p - 1)) / 2,
 
-    // Back (Overflow types)
+    // Back (오버플로우 타입)
     easeInBack: (p, s = 1.70158) => p * p * ((s + 1) * p - s),
     easeOutBack: (p, s = 1.70158) => --p * p * ((s + 1) * p + s) + 1,
     easeInOutBack: (p, s = 1.70158) => {

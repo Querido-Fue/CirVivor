@@ -1,5 +1,5 @@
-import { Vector2 } from '../../util/vector2.js';
-import { getScaleRatio, getCanvasOffset } from '../display/_display_system.js';
+import { Vector2 } from 'util/vector2.js';
+import { getScaleRatio, getCanvasOffset } from 'display/_display_system.js';
 
 /**
  * @class MouseInputHandler
@@ -16,7 +16,7 @@ export class MouseInputHandler {
         this.mouseRightTemp = false;
         this.mouseRightClicked = false;
 
-        this.focus = "main";
+        this.focusList = ["ui"]; // 기본 포커스
 
         window.addEventListener("mousemove", (e) => {
             const scale = getScaleRatio();
@@ -97,10 +97,42 @@ export class MouseInputHandler {
     }
 
     /**
-     * 마우스 포커스 레이어를 설정합니다.
+     * 마우스 포커스 레이어를 설정합니다. (기존 포커스 리스트 초기화)
      * @param {string} focus - 포커스 레이어
      */
     setFocus(focus) {
-        this.focus = focus;
+        this.focusList = [focus];
+    }
+
+    /**
+     * 마우스 포커스 레이어를 추가합니다.
+     * @param {string} focus - 포커스 레이어
+     */
+    addFocus(focus) {
+        if (this.focusList.includes(focus)) {
+            // 이미 있으면 제거 후 다시 추가 (맨 위로 이동)
+            this.removeFocus(focus);
+        }
+        this.focusList.push(focus);
+    }
+
+    /**
+     * 마우스 포커스 레이어를 제거합니다.
+     * @param {string} focus - 포커스 레이어
+     */
+    removeFocus(focus) {
+        const index = this.focusList.indexOf(focus);
+        if (index > -1) {
+            this.focusList.splice(index, 1);
+        }
+    }
+
+    /**
+     * 현재 마우스 포커스 (최상위)를 반환합니다.
+     * @returns {string} 포커스 레이어 이름
+     */
+    get focus() {
+        if (this.focusList.length === 0) return "none";
+        return this.focusList[this.focusList.length - 1];
     }
 }

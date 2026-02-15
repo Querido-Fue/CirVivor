@@ -1,6 +1,6 @@
-import { ColorSchemes } from '../display/theme_handler.js';
-import { render, getWW } from '../display/_display_system.js';
-import { getMouseInput } from '../input/_input_system.js';
+import { ColorSchemes } from 'display/theme_handler.js';
+import { render, getWW } from 'display/_display_system.js';
+import { getMouseInput } from 'input/_input_system.js';
 
 
 export class MouseDebugger {

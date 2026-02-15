@@ -1,9 +1,9 @@
-import { Vector2 } from '../../../util/vector2.js';
-import { getWW, getWH, render } from '../../display/_display_system.js';
-import { mathUtil } from '../../../util/math_util.js';
-import { animate } from '../../animation/_animation_system.js';
-import { getMouseInput, getMouseFocus } from '../../input/_input_system.js';
-import { getDelta } from '../../../time_handler.js';
+import { Vector2 } from 'util/vector2.js';
+import { getWW, getWH, render, renderGL } from 'display/_display_system.js';
+import { mathUtil } from 'util/math_util.js';
+import { animate } from 'animation/_animation_system.js';
+import { getMouseInput, getMouseFocus } from 'input/_input_system.js';
+import { getDelta } from 'game/time_handler.js';
 
 /**
  * @class TitleEnemy
@@ -63,7 +63,7 @@ export class TitleEnemy {
         this.speedFromMagnetic = this.speedFromMagnetic.mul(1 - (1 - 0.9) * delta * 60);
 
         this.checkInScreen();
-        if (getMouseFocus() === "main") {
+        if (getMouseFocus() === "main" || getMouseFocus() === "ui") {
             this.magneticStrength = getMouseInput("leftClicking") ? 5 : 2;
             this.magneticDistance = getMouseInput("leftClicking") ? this.WW * 0.1 : this.WW * 0.05;
         } else {
@@ -92,7 +92,7 @@ export class TitleEnemy {
             drawOptions.radius = this.radius;
         }
 
-        render('background', drawOptions);
+        renderGL('object', drawOptions);
     }
 
     /**

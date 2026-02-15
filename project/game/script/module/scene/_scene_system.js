@@ -33,7 +33,6 @@ export class SceneSystem {
      * 타이틀 씬에서 게임 씬으로 전환합니다.
      */
     gameStart() {
-        console.log('gameStart!');
         if (this.scene && this.scene.destroy) {
             this.scene.destroy();
         }

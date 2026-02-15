@@ -1,6 +1,6 @@
-import { getWW, getWH, render } from '../../display/_display_system.js';
-import { animate } from '../../animation/_animation_system.js';
-import { Vector2 } from '../../../util/vector2.js';
+import { getWW, getWH, render } from 'display/_display_system.js';
+import { animate } from 'animation/_animation_system.js';
+import { Vector2 } from 'util/vector2.js';
 
 /**
  * @class TitleImage
@@ -26,7 +26,7 @@ export class TitleImage {
     }
 
     draw() {
-        render('main', {
+        render('ui', {
             shape: 'image',
             image: this.image,
             x: this.imageX,

@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-import { setTheme } from '../display/theme_handler.js';
+import { setTheme } from 'display/theme_handler.js';
 
 export class SettingHandler {
     constructor(dataDir) {

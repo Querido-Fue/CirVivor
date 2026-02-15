@@ -16,14 +16,15 @@ export class ColorUtil {
      * @returns {object} {r, g, b} 형태의 객체. 변환 실패 시 {0, 0, 0} 반환.
      */
     hexToRgb(hex) {
-        const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
-        hex = hex.replace(shorthandRegex, (m, r, g, b) => r + r + g + g + b + b);
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])([a-f\d])?$/i;
+        hex = hex.replace(shorthandRegex, (m, r, g, b, a) => r + r + g + g + b + b + (a ? a + a : ''));
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})?$/i.exec(hex);
         return result ? {
             r: parseInt(result[1], 16),
             g: parseInt(result[2], 16),
-            b: parseInt(result[3], 16)
-        } : { r: 0, g: 0, b: 0 };
+            b: parseInt(result[3], 16),
+            a: result[4] ? parseInt(result[4], 16) / 255 : 1
+        } : { r: 0, g: 0, b: 0, a: 1 };
     }
 
     /**
@@ -93,14 +94,15 @@ export function rgbParse(r, g, b, a = 1) {
 }
 
 export function hexToRgb(hex) {
-    const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
-    hex = hex.replace(shorthandRegex, (m, r, g, b) => r + r + g + g + b + b);
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])([a-f\d])?$/i;
+    hex = hex.replace(shorthandRegex, (m, r, g, b, a) => r + r + g + g + b + b + (a ? a + a : ''));
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})?$/i.exec(hex);
     return result ? {
         r: parseInt(result[1], 16),
         g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16)
-    } : { r: 0, g: 0, b: 0 };
+        b: parseInt(result[3], 16),
+        a: result[4] ? parseInt(result[4], 16) / 255 : 1
+    } : { r: 0, g: 0, b: 0, a: 1 };
 }
 
 export function lerpColor(c1, c2, t) {
@@ -117,7 +119,7 @@ export function rgbToHex(r, g, b) {
 }
 
 export function cssToRgb(c) {
-    if (c.startsWith('#')) return { ...hexToRgb(c), a: 1 };
+    if (c.startsWith('#')) return hexToRgb(c);
     if (c.startsWith('rgba') || c.startsWith('rgb')) {
         const parts = c.match(/([\d\.]+)/g);
         if (parts) return { r: parseInt(parts[0]), g: parseInt(parts[1]), b: parseInt(parts[2]), a: parts[3] ? parseFloat(parts[3]) : 1 };

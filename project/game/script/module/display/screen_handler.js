@@ -1,4 +1,4 @@
-import { GLOBAL_CONSTANTS } from '../../data/global/global_constants.js';
+import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
 
 export class ScreenHandler {
     constructor() {

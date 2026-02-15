@@ -1,10 +1,11 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "../../display/_display_system.js";
-import { getMouseInput, getMouseFocus } from "../../input/_input_system.js";
-import { animate, remove } from "../../animation/_animation_system.js";
-import { getDelta } from "../../../time_handler.js";
+import { render } from "display/_display_system.js";
+import { getMouseInput, getMouseFocus } from "input/_input_system.js";
+import { animate, remove } from "animation/_animation_system.js";
+import { getDelta } from "game/time_handler.js";
 
-import { cssToRgb, rgbParse } from "../../../util/color_util.js";
+import { cssToRgb, rgbParse } from "util/color_util.js";
+import { ColorSchemes } from "display/theme_handler.js";
 
 /**
  * @class ButtonElement
@@ -41,7 +42,7 @@ export class ButtonElement extends BaseUIElement {
         this.font = properties.font || 'arial';
         this.fontWeight = properties.fontWeight ? properties.fontWeight + " " : "";
         this.size = properties.size || 12;
-        this.color = properties.color || '#000000';
+        this.color = properties.color;
 
         this.margin = properties.margin || 0;
         this.verticalMargin = properties.verticalMargin || 0;
@@ -65,8 +66,8 @@ export class ButtonElement extends BaseUIElement {
             this.height = this.size + (this.verticalMargin * 2);
         }
 
-        this.idleColor = properties.idleColor || '#ffffff';
-        this.hoverColor = properties.hoverColor || '#cccccc';
+        this.idleColor = properties.idleColor || ColorSchemes.Overlay.Control.Inactive;
+        this.hoverColor = properties.hoverColor || ColorSchemes.Overlay.Control.Hover;
 
         this._idleColorStruct = cssToRgb(this.idleColor);
         this._hoverColorStruct = cssToRgb(this.hoverColor);
@@ -86,8 +87,12 @@ export class ButtonElement extends BaseUIElement {
     update() {
         if (!this.visible) return;
 
+        // 포커스 확인
+        if (getMouseFocus() !== this.layer) return;
+
         let isHovered = false;
-        if (getMouseInput("x") >= this.x && getMouseInput("x") <= this.x + this.width && getMouseInput("y") >= this.y && getMouseInput("y") <= this.y + this.height && getMouseFocus() === this.layer && this.clickAble) {
+        const mx = getMouseInput('x');
+        if (getMouseInput("x") >= this.x && getMouseInput("x") <= this.x + this.width && getMouseInput("y") >= this.y && getMouseInput("y") <= this.y + this.height && this.clickAble) {
             isHovered = true;
         }
 

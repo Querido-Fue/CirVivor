@@ -1,7 +1,7 @@
 import { FrameDebugger } from "./frame_debugger.js";
 import { MouseDebugger } from "./mouse_debugger.js";
 import { ErrorHandler } from "./error_handler.js";
-import { getSetting } from "../save/_save_system.js";
+import { getSetting } from "save/_save_system.js";
 
 let debugSystemInstance = null;
 

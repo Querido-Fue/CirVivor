@@ -1,5 +1,8 @@
 import { ScreenHandler } from "./screen_handler.js";
-import { DrawHandler } from "./draw_handler.js";
+import { DrawHandler2D } from "./draw_handler_2d.js";
+import { WebGLHandler } from "./webgl/webgl_handler.js";
+import { ColorSchemes } from "display/theme_handler.js";
+import { cssToRgb } from "util/color_util.js";
 
 let displaySystemInstance = null;
 
@@ -8,6 +11,7 @@ export class DisplaySystem {
         displaySystemInstance = this;
         this._screenHandler = new ScreenHandler();
         this.drawHandler = null;
+        this.webGLHandler = null;
     }
 
     /**
@@ -16,34 +20,87 @@ export class DisplaySystem {
      * @param {SaveSystem} saveSystem - 저장 시스템 (설정 접근용)
      */
     async init(saveSystem) {
-        this.mainCanvas = document.getElementById("main");
-        this.overlayCanvas = document.getElementById("overlay");
-        this.topCanvas = document.getElementById("top");
+        // 1. Background (WebGL)
         this.backgroundCanvas = document.getElementById("background");
-        this.mainCanvas2 = document.getElementById("main2");
-        this.overlayCanvas2 = document.getElementById("overlay2");
-        this.topCanvas2 = document.getElementById("top2");
-        this.backgroundCanvas2 = document.getElementById("background2");
+        this.glBackground = this.backgroundCanvas.getContext("webgl", { alpha: false, preserveDrawingBuffer: true });
 
-        this.ctx = this.mainCanvas.getContext("2d");
-        this.otx = this.overlayCanvas.getContext("2d");
-        this.ttx = this.topCanvas.getContext("2d");
-        this.btx = this.backgroundCanvas.getContext("2d");
-        this.ctx2 = this.mainCanvas2.getContext("2d");
-        this.otx2 = this.overlayCanvas2.getContext("2d");
-        this.ttx2 = this.topCanvas2.getContext("2d");
-        this.btx2 = this.backgroundCanvas2.getContext("2d");
+        // 2. Object (WebGL)
+        this.objectCanvas = document.getElementById("object");
+        this.glObject = this.objectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
 
-        this.allCanvases = [
-            this.mainCanvas, this.overlayCanvas, this.topCanvas, this.backgroundCanvas,
-            this.mainCanvas2, this.overlayCanvas2, this.topCanvas2, this.backgroundCanvas2
+        // 3. Effect (WebGL)
+        this.effectCanvas = document.getElementById("effect");
+        this.glEffect = this.effectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
+
+        // 4. TextEffect (2D)
+        this.textEffectCanvas = document.getElementById("texteffect");
+        this.ctxTextEffect = this.textEffectCanvas.getContext("2d");
+
+        // 5. UI (2D)
+        this.uiCanvas = document.getElementById("ui");
+        this.ctxUi = this.uiCanvas.getContext("2d");
+
+        // 6. Overlay (2D)
+        this.overlayCanvas = document.getElementById("overlay");
+        this.ctxOverlay = this.overlayCanvas.getContext("2d");
+
+        // 7. OverlayEffect (WebGL)
+        this.overlayEffectCanvas = document.getElementById("overlayeffect");
+        this.glOverlayEffect = this.overlayEffectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
+
+        // 8. OverlayHigh (2D)
+        this.overlayHighCanvas = document.getElementById("overlayhigh");
+        this.ctxOverlayHigh = this.overlayHighCanvas.getContext("2d");
+
+        // 9. Top (2D)
+        this.topCanvas = document.getElementById("top");
+        this.ctxTop = this.topCanvas.getContext("2d");
+
+        // Canvas Collections
+        this.all2DCanvases = [
+            this.textEffectCanvas,
+            this.uiCanvas,
+            this.overlayCanvas,
+            this.overlayHighCanvas,
+            this.topCanvas
         ];
 
+        this.allGLCanvases = [
+            this.backgroundCanvas,
+            this.objectCanvas,
+            this.effectCanvas,
+            this.overlayEffectCanvas
+        ];
+
+        // 호환성 매핑 (전체 리팩토링 전까지 하위 호환성 유지)
+
         this.allContexts = {
-            main: this.ctx, overlay: this.otx, top: this.ttx, background: this.btx,
-            main2: this.ctx2, overlay2: this.otx2, top2: this.ttx2, background2: this.btx2,
+            texteffect: this.ctxTextEffect,
+            ui: this.ctxUi,
+            overlay: this.ctxOverlay,
+            overlayhigh: this.ctxOverlayHigh,
+            top: this.ctxTop,
+            // 레거시 매핑
+            main: this.ctxUi,
+            top: this.ctxTop
         };
-        this.drawHandler = new DrawHandler(this.allContexts);
+
+        this.glContexts = {
+            background: this.glBackground,
+            object: this.glObject,
+            effect: this.glEffect,
+            overlayeffect: this.glOverlayEffect
+        };
+
+        this.drawHandler = new DrawHandler2D(this.allContexts);
+        this.webGLHandler = new WebGLHandler(this.glContexts);
+
+        // 초기 배경색 설정
+        if (ColorSchemes.Background) {
+            const rgb = cssToRgb(ColorSchemes.Background);
+            this.webGLHandler.setBackgroundColor(rgb.r / 255, rgb.g / 255, rgb.b / 255);
+        }
+
         await this._screenHandler._init(saveSystem);
 
         // 캔버스 내부 해상도 고정
@@ -54,6 +111,10 @@ export class DisplaySystem {
 
         // 초기 CSS 적용
         this.resize();
+    }
+
+    get allCanvases() {
+        return [...this.all2DCanvases, ...this.allGLCanvases];
     }
 
     resize() {
@@ -70,6 +131,27 @@ export class DisplaySystem {
         for (const canvas of this.allCanvases) {
             Object.assign(canvas.style, style);
         }
+
+        if (this.webGLHandler) {
+            this.webGLHandler.resize(this._screenHandler.width, this._screenHandler.height);
+        }
+    }
+
+    /**
+     * 화면을 지웁니다.
+     */
+    clear() {
+        this._clearCanvas(this.ctxTextEffect);
+        this._clearCanvas(this.ctxUi);
+        this._clearCanvas(this.ctxOverlay);
+        this._clearCanvas(this.ctxOverlayHigh);
+        this._clearCanvas(this.ctxTop);
+
+        // WebGL clearing is handled by WebGLHandler.begin()
+    }
+
+    _clearCanvas(ctx) {
+        if (ctx) ctx.clearRect(0, 0, this.uiCanvas.width, this.uiCanvas.height);
     }
 
     /**
@@ -78,34 +160,23 @@ export class DisplaySystem {
      * @param {number} blur - 블러 강도 (픽셀 단위)
      */
     applyBlur(layerName, blur) {
-        switch (layerName) {
-            case "background":
-                this.backgroundCanvas.style.filter = 'blur(' + blur + 'px)';
-                break;
-            case "main":
-                this.mainCanvas.style.filter = 'blur(' + blur + 'px)';
-                break;
-            case "overlay":
-                this.overlayCanvas.style.filter = 'blur(' + blur + 'px)';
-                break;
-            case "top":
-                this.topCanvas.style.filter = 'blur(' + blur + 'px)';
-                break;
-            case "background2":
-                this.backgroundCanvas2.style.filter = 'blur(' + blur + 'px)';
-                break;
-            case "main2":
-                this.mainCanvas2.style.filter = 'blur(' + blur + 'px)';
-                break;
-            case "overlay2":
-                this.overlayCanvas2.style.filter = 'blur(' + blur + 'px)';
-                break;
-            case "top2":
-                this.topCanvas2.style.filter = 'blur(' + blur + 'px)';
-                break;
-            default:
-                console.error("Invalid canvas layer: " + layerName);
-                break;
+        const canvasMap = {
+            background: this.backgroundCanvas,
+            object: this.objectCanvas,
+            effect: this.effectCanvas,
+            texteffect: this.textEffectCanvas,
+            ui: this.uiCanvas,
+            overlay: this.overlayCanvas,
+            overlayeffect: this.overlayEffectCanvas,
+            overlayhigh: this.overlayHighCanvas,
+            top: this.topCanvas
+        };
+
+        const canvas = canvasMap[layerName];
+        if (canvas) {
+            canvas.style.filter = 'blur(' + blur + 'px)';
+        } else {
+            console.warn("Invalid canvas layer for blur: " + layerName);
         }
     }
 }
@@ -150,6 +221,21 @@ export const getMainCanvas = () => displaySystemInstance.mainCanvas;
  * @returns {HTMLCanvasElement} 배경 캔버스
  */
 export const getBackgroundCanvas = () => displaySystemInstance.backgroundCanvas;
+/**
+ * 메인 WebGL 캔버스 요소를 반환합니다.
+ * @returns {HTMLCanvasElement} 메인 WebGL 캔버스
+ */
+export const getMainGLCanvas = () => displaySystemInstance.objectCanvas; // Legacy support
+export const getBackgroundGLCanvas = () => displaySystemInstance.backgroundCanvas; // Legacy support
+
+export const getObjectCanvas = () => displaySystemInstance.objectCanvas;
+export const getEffectCanvas = () => displaySystemInstance.effectCanvas;
+export const getTextEffectCanvas = () => displaySystemInstance.textEffectCanvas;
+export const getUiCanvas = () => displaySystemInstance.uiCanvas;
+export const getOverlayCanvas = () => displaySystemInstance.overlayCanvas;
+export const getOverlayEffectCanvas = () => displaySystemInstance.overlayEffectCanvas;
+export const getOverlayHighCanvas = () => displaySystemInstance.overlayHighCanvas;
+export const getTopCanvas = () => displaySystemInstance.topCanvas;
 
 /**
  * 특정 레이어에 그리기 작업을 수행합니다.
@@ -157,6 +243,29 @@ export const getBackgroundCanvas = () => displaySystemInstance.backgroundCanvas;
  * @param {object} options - 그리기 옵션 (형태, 좌표, 색상 등)
  */
 export const render = (layerName, options) => displaySystemInstance.drawHandler.render(layerName, options);
+
+/**
+ * 특정 레이어를 WebGL로 렌더링합니다.
+ * @param {string} layerName - 레이어 이름
+ * @param {object} options - 그리기 옵션
+ */
+export const renderGL = (layerName, options) => {
+    // Direct mapping now, but keeping function for extensibility/logging if needed.
+    // Legacy mapping if any old code calls 'mainGL' etc.
+    const glMapping = {
+        'main': 'object',
+        'mainGL': 'object',
+        'backgroundGL': 'background',
+        'overlayGL': 'overlayeffect',
+        'effectGL': 'effect'
+    };
+    const targetLayer = glMapping[layerName] || layerName;
+
+    if (displaySystemInstance.webGLHandler && displaySystemInstance.webGLHandler.batches[targetLayer]) {
+        return displaySystemInstance.webGLHandler.render(targetLayer, options);
+    }
+    console.warn(`WebGL Layer not found: ${targetLayer} (original: ${layerName})`);
+};
 /**
  * 특정 레이어에 그림자를 적용합니다.
  * @param {string} layerName - 레이어 이름
@@ -169,6 +278,18 @@ export const shadowOn = (layerName, blur, color) => displaySystemInstance.drawHa
  * @param {string} layerName - 레이어 이름
  */
 export const shadowOff = (layerName) => displaySystemInstance.drawHandler.shadowOff(layerName);
+/**
+ * 배경 색상을 설정합니다.
+ * @param {number} r - Red (0~1)
+ * @param {number} g - Green (0~1)
+ * @param {number} b - Blue (0~1)
+ */
+export const setBackgroundColor = (r, g, b) => {
+    if (displaySystemInstance.webGLHandler) {
+        displaySystemInstance.webGLHandler.setBackgroundColor(r, g, b);
+    }
+};
+
 /**
  * 특정 캔버스에 필터 블러를 적용합니다.
  * @param {string} layerName - 캔버스 레이어 이름
@@ -183,3 +304,4 @@ export const applyBlur = (layerName, blur) => displaySystemInstance.applyBlur(la
  * @returns {number} 텍스트 너비
  */
 export const measureText = (text, font) => displaySystemInstance.drawHandler.measureText(text, font);
+

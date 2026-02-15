@@ -38,6 +38,18 @@ export const getMouseInput = (key) => inputSystemInstance.mouseInputHandler.getM
  * @returns {string} 포커스 레이어 이름
  */
 export const getMouseFocus = () => inputSystemInstance.mouseInputHandler.focus;
+
+/**
+ * 마우스 포커스를 추가합니다.
+ * @param {string} focus - 추가할 포커스 레이어
+ */
+export const addMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.addFocus(focus);
+
+/**
+ * 마우스 포커스를 제거합니다.
+ * @param {string} focus - 제거할 포커스 레이어
+ */
+export const removeMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.removeFocus(focus);
 /**
  * 마우스 포커스 레이어를 설정합니다.
  * @param {string} focus - 포커스 레이어 이름
