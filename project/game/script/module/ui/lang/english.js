@@ -23,9 +23,9 @@ export const english = {
 
     "title_settings_title": "Settings",
     "title_settings_section_accessibility": "Accessibility",
-    "title_settings_color_blind": "Color Blind Mode",
-    "title_settings_auto_attack": "Auto Attack",
-    "title_settings_desc_auto_attack": "Automatically attacks enemies in range.",
+    "title_settings_color_blind": "Color Weakness Mode",
+    "title_settings_ui_scale": "UI Scale",
+    "title_settings_desc_ui_scale": "Adjusts UI size. Values higher than 100% may cause visual glitches.",
     "title_settings_section_display": "Display & Performance",
     "title_settings_section_ui": "UI",
     "title_settings_section_sound": "Sound",

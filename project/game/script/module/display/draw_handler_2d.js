@@ -118,6 +118,8 @@ export class DrawHandler2D {
             case 'hexagon':
             case 'octagon':
             case 'arrow':
+            case 'cross':
+            case 'check':
                 const path = this._pathCache[options.shape];
                 if (!path) return;
 
@@ -286,6 +288,64 @@ export class DrawHandler2D {
         arrowPath.lineTo(-0.5, 0.5); // 좌하단
         arrowPath.closePath();
         this._pathCache['arrow'] = arrowPath;
+
+        // X (Cross) 생성
+        const crossPath = new Path2D();
+        const cw = 0.15; // 십자가 두께의 절반
+        crossPath.moveTo(-0.5, -0.5 + cw * 2);
+        crossPath.lineTo(-0.5 + cw * 2, -0.5);
+        crossPath.lineTo(0, -cw * 2); // 중심 위쪽
+        crossPath.lineTo(0.5 - cw * 2, -0.5);
+        crossPath.lineTo(0.5, -0.5 + cw * 2);
+        crossPath.lineTo(cw * 2, 0); // 중심 오른쪽
+        crossPath.lineTo(0.5, 0.5 - cw * 2);
+        crossPath.lineTo(0.5 - cw * 2, 0.5);
+        crossPath.lineTo(0, cw * 2);
+        crossPath.lineTo(-0.5 + cw * 2, 0.5);
+        crossPath.lineTo(-0.5, 0.5 - cw * 2);
+        crossPath.lineTo(-cw * 2, 0);
+        crossPath.closePath();
+
+        // 십자가 (단순 선 2개로 구현하는 것이 나을 수도 있으나 fill을 위해 폴리곤으로)
+        // 더 단순한 형태 (두께 0.2)
+        const crossThick = 0.2;
+        const cp = new Path2D();
+        cp.moveTo(-0.5, -0.5 + crossThick);
+        cp.lineTo(-0.5 + crossThick, -0.5);
+        cp.lineTo(0, -crossThick * 0.5); // 중심 오차 보정? 아니 그냥 0,0 지나는 것
+        // 정확한 X자는 회전된 직사각형 2개의 합집합.
+        // 그냥 moveTo/lineTo로 그림.
+
+        const cPath = new Path2D();
+        // 45도 회전된 십자가를 0도로 생각하고 그리면 + 모양. 그걸 45도 돌리면 X.
+        // 여기선 그냥 X 모양 좌표를 찍음.
+        const t = 0.15; // thickness
+        cPath.moveTo(-0.5 + t, -0.5);
+        cPath.lineTo(0, -t);
+        cPath.lineTo(0.5 - t, -0.5);
+        cPath.lineTo(0.5, -0.5 + t);
+        cPath.lineTo(t, 0);
+        cPath.lineTo(0.5, 0.5 - t);
+        cPath.lineTo(0.5 - t, 0.5);
+        cPath.lineTo(0, t);
+        cPath.lineTo(-0.5 + t, 0.5);
+        cPath.lineTo(-0.5, 0.5 - t);
+        cPath.lineTo(-t, 0);
+        cPath.lineTo(-0.5, -0.5 + t);
+        cPath.closePath();
+        this._pathCache['cross'] = cPath;
+
+        // 체크 (Check) 생성
+        const checkPath = new Path2D();
+        // V 모양
+        checkPath.moveTo(-0.4, 0);
+        checkPath.lineTo(-0.1, 0.4);
+        checkPath.lineTo(0.4, -0.4);
+        checkPath.lineTo(0.3, -0.5); // 두께
+        checkPath.lineTo(-0.1, 0.2);
+        checkPath.lineTo(-0.3, -0.1);
+        checkPath.closePath();
+        this._pathCache['check'] = checkPath;
     }
 
     /**

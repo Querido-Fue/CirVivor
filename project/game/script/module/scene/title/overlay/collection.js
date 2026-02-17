@@ -2,7 +2,8 @@ import { TitleOverlay } from './title_overlay.js';
 import { ButtonElement } from 'ui/element/button.js';
 import { getLangString } from 'ui/_ui_system.js';
 import { ColorSchemes } from 'display/theme_handler.js';
-import { render, getWW, getWH } from "display/_display_system.js";
+import { render } from "display/_display_system.js";
+import { getSetting } from 'save/_save_system.js';
 
 export class CollectionOverlay extends TitleOverlay {
     constructor(TitleScene) {
@@ -76,11 +77,12 @@ export class CollectionOverlay extends TitleOverlay {
             size: this.WW * 0.01,
             align: 'right',
             margin: closeBtnW * 0.12,
-            color: ColorSchemes.Overlay.Button.Cancel.Text,
-            idleColor: ColorSchemes.Overlay.Button.Cancel.Idle,
-            hoverColor: ColorSchemes.Overlay.Button.Cancel.Hover,
+            color: ColorSchemes.Overlay.Button.Confirm.Text,
+            idleColor: ColorSchemes.Overlay.Button.Confirm.Idle,
+            hoverColor: ColorSchemes.Overlay.Button.Confirm.Hover,
             enableHoverGradient: false,
-            radius: 8
+            radius: 8,
+            iconType: 'check'
         });
     }
 
@@ -256,35 +258,6 @@ export class CollectionOverlay extends TitleOverlay {
             this.closeBtnCustom.alpha = this.alpha;
             this.closeBtnCustom.radius = 8 * this.scale;
             this.closeBtnCustom.draw();
-
-            // X 아이콘
-            const btnIconSize = closeBtnH * 0.4;
-            const cancelIconX = this.closeBtnCustom.x + closeBtnW * 0.15;
-            const cancelIconY = this.closeBtnCustom.y + closeBtnH / 2;
-            const xSize = btnIconSize * 0.6;
-
-            render('overlay', {
-                shape: 'line',
-                x1: cancelIconX - xSize / 2,
-                y1: cancelIconY - xSize / 2,
-                x2: cancelIconX + xSize / 2,
-                y2: cancelIconY + xSize / 2,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
-            render('overlay', {
-                shape: 'line',
-                x1: cancelIconX + xSize / 2,
-                y1: cancelIconY - xSize / 2,
-                x2: cancelIconX - xSize / 2,
-                y2: cancelIconY + xSize / 2,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
         }
     }
 

@@ -1,6 +1,6 @@
 {
     "name": "cirvivor",
-    "version": "0.27.1",
+    "version": "0.29",
     "main": "./game/index.html",
     "js-flags": "",
     "chromium-args": "--auto-open-devtools-for-tabs",

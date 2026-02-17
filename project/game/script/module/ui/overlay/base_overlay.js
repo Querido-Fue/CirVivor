@@ -27,7 +27,13 @@ export class BaseOverlay {
 
         this.title = "";
         this.alpha = 0;
-        this.scale = 0.9;
+
+        // UI 스케일 적용
+        const uiScale = getSetting('uiScale') || 100;
+        const targetScale = uiScale / 100;
+
+        // 초기 생성을 위해 목표 스케일의 90%로 설정 (애니메이션 시작점)
+        this.scale = targetScale * 0.9;
         this.visible = true;
         this.closeButton = null;
         this.previousFocus = 'ui'; // 기본값
@@ -42,16 +48,25 @@ export class BaseOverlay {
         this.visible = true;
         this.previousFocus = getMouseFocus(); // 현재 포커스 저장
         setMouseFocus(this.layer);
+
+        // 설정된 UI 스케일 가져오기
+        const uiScale = getSetting('uiScale') || 100;
+        const targetScale = uiScale / 100;
+
         animate(this, { variable: 'alpha', startValue: 0, endValue: 1, type: "easeOutExpo", duration: 0.3 });
-        animate(this, { variable: 'scale', startValue: 0.9, endValue: 1, type: "easeOutExpo", duration: 0.3 });
+        animate(this, { variable: 'scale', startValue: targetScale * 0.9, endValue: targetScale, type: "easeOutExpo", duration: 0.4 });
     }
 
     /**
      * 오버레이를 닫습니다.
      */
     close() {
-        animate(this, { variable: 'alpha', startValue: 1, endValue: 0, type: "easeInExpo", duration: 0.2 });
-        animate(this, { variable: 'scale', startValue: 1, endValue: 0.9, type: "easeInExpo", duration: 0.2 }).promise.then(() => {
+        // 설정된 UI 스케일 가져오기
+        const uiScale = getSetting('uiScale') || 100;
+        const targetScale = uiScale / 100;
+
+        animate(this, { variable: 'alpha', startValue: 1, endValue: 0, type: "easeInExpo", duration: 0.3 });
+        animate(this, { variable: 'scale', startValue: targetScale, endValue: targetScale * 0.9, type: "easeInExpo", duration: 0.3 }).promise.then(() => {
             this.onCloseComplete();
         });
     }

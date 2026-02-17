@@ -40,6 +40,17 @@ export class ProgressHandler {
      */
     save() {
         return new Promise((resolve, reject) => {
+            // 저장 경로가 존재하지 않으면 생성
+            if (!fs.existsSync(this.dataDir)) {
+                try {
+                    fs.mkdirSync(this.dataDir, { recursive: true });
+                } catch (e) {
+                    console.error("Failed to create progress directory:", e);
+                    reject(e);
+                    return;
+                }
+            }
+
             fs.writeFile(this.filePath, this.data, (err) => {
                 if (err) {
                     console.error("Failed to save progress data:", err);

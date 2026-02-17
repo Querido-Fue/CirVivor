@@ -3,6 +3,7 @@ import { SystemHandler } from './module/system_handler.js';
 import { TimeHandler } from './time_handler.js';
 import { MathUtil } from './util/math_util.js';
 import { ColorUtil } from './util/color_util.js';
+import { showExitConfirmation } from 'ui/_ui_system.js';
 
 let systemHandler;
 let Game;
@@ -81,14 +82,11 @@ class App {
      * 현재 씬에 exit 메서드가 있으면 호출하고, 없으면 바로 종료합니다.
      */
     tryClose() {
-        if (this.systemHandler && this.systemHandler.sceneSystem && this.systemHandler.sceneSystem.scene) {
-            const currentScene = this.systemHandler.sceneSystem.scene;
-            if (typeof currentScene.exit === 'function') {
-                currentScene.exit();
-                return;
-            }
+        try {
+            showExitConfirmation();
+        } catch (e) {
+            this.close();
         }
-        this.close();
     }
 
     /**
@@ -97,7 +95,7 @@ class App {
      */
     close() {
         this.systemHandler.saveSystem.saveAll().then(() => {
-            window.close();
+            setTimeout(() => window.close(), 100);
         });
     }
 }

@@ -27,7 +27,7 @@ export class TextElement extends BaseUIElement {
         this.font = properties.font || 'arial';
         this.fontWeight = properties.fontWeight ? properties.fontWeight + " " : "";
         this.size = properties.size || 12;
-        this.color = properties.color || '#000000';
+        this.color = properties.color
         this.rotation = properties.rotation || 0;
     }
 

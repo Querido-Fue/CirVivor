@@ -1,6 +1,5 @@
 import { BaseOverlay } from 'ui/overlay/base_overlay.js';
 import { ButtonElement } from 'ui/element/button.js';
-import { getWW, getWH } from 'display/_display_system.js';
 import { ColorSchemes } from 'display/theme_handler.js';
 import { animate } from 'animation/_animation_system.js';
 import { getLangString } from 'ui/_ui_system.js';

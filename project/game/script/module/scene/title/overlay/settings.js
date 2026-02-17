@@ -7,7 +7,6 @@ import { getLangString } from 'ui/_ui_system.js';
 import { ColorSchemes } from 'display/theme_handler.js';
 import { render, measureText, getBaseWW, getBaseWH } from 'display/_display_system.js';
 import { getSetting, setSettingBatch } from 'save/_save_system.js';
-import { getMouseInput, getMouseFocus } from 'input/_input_system.js';
 
 export class SettingsOverlay extends TitleOverlay {
     constructor(TitleScene) {
@@ -37,7 +36,8 @@ export class SettingsOverlay extends TitleOverlay {
             disableTransparency: getSetting('disableTransparency') || false,
             reducePhysics: getSetting('reducePhysics') || false,
             colorBlindMode: getSetting('colorBlindMode') || false,
-            autoAttack: getSetting('autoAttack') || false
+            autoAttack: getSetting('autoAttack') || false,
+            uiScale: getSetting('uiScale') || 100
         };
 
         // 왼쪽 열 섹션
@@ -46,7 +46,10 @@ export class SettingsOverlay extends TitleOverlay {
             {
                 key: 'accessibility', label: 'title_settings_section_accessibility', items: [
                     { type: 'toggle', label: 'title_settings_color_blind', settingKey: 'colorBlindMode' },
-                    { type: 'toggle', label: 'title_settings_auto_attack', settingKey: 'autoAttack', description: 'title_settings_desc_auto_attack' }
+                    {
+                        type: 'slider', label: 'title_settings_ui_scale', settingKey: 'uiScale', min: 75, max: 125, suffix: '%', description: 'title_settings_desc_ui_scale',
+                        valueFormatter: (v) => `${v}%`
+                    }
                 ]
             },
             {
@@ -100,14 +103,14 @@ export class SettingsOverlay extends TitleOverlay {
                         y: 0,
                         width: 100,
                         height: this.WH * 0.04,
-                        trackHeight: this.WH * 0.006,
-                        knobRadius: this.WH * 0.01,
+                        trackHeight: this.WH * 0.008,
+                        knobRadius: this.WH * 0.009,
                         min: item.min,
                         max: item.max,
                         value: this.tempSettings[item.settingKey],
                         valueSuffix: item.suffix || '',
                         valueOffsetX: this.WW * 0.015,
-                        valueFont: `500 ${this.WW * 0.009}px "Pretendard Variable", arial`,
+                        valueFont: `400 ${this.WW * 0.008}px "Pretendard Variable", arial`,
                         valueFormatter: item.valueFormatter || null,
                         onChange: (val) => { this.tempSettings[item.settingKey] = val; this.settingsChanged = true; }
                     });
@@ -141,6 +144,7 @@ export class SettingsOverlay extends TitleOverlay {
                         hoverColor: ColorSchemes.Overlay.Control.Hover,
                         enableHoverGradient: false,
                         radius: 6,
+                        iconType: 'arrow',
                         onClick: item.onClick
                     });
                 }
@@ -167,11 +171,12 @@ export class SettingsOverlay extends TitleOverlay {
             size: this.WW * 0.01,
             align: 'right',
             margin: btnWidth * 0.12,
-            color: ColorSchemes.Overlay.Button.Save.Text,
-            idleColor: ColorSchemes.Overlay.Button.Save.Idle,
-            hoverColor: ColorSchemes.Overlay.Button.Save.Hover,
+            color: ColorSchemes.Overlay.Button.Confirm.Text,
+            idleColor: ColorSchemes.Overlay.Button.Confirm.Idle,
+            hoverColor: ColorSchemes.Overlay.Button.Confirm.Hover,
             enableHoverGradient: false,
-            radius: 8
+            radius: 8,
+            iconType: 'confirm'
         });
 
         this.cancelBtnCustom = new ButtonElement({
@@ -192,7 +197,8 @@ export class SettingsOverlay extends TitleOverlay {
             idleColor: ColorSchemes.Overlay.Button.Cancel.Idle,
             hoverColor: ColorSchemes.Overlay.Button.Cancel.Hover,
             enableHoverGradient: false,
-            radius: 8
+            radius: 8,
+            iconType: 'deny'
         });
     }
 
@@ -205,9 +211,9 @@ export class SettingsOverlay extends TitleOverlay {
         s.y = y; // SliderElement는 y를 중심으로 처리하므로 y를 그대로 사용
         s.width = sliderW;
         s.trackHeight = this.WH * 0.008 * this.scale;
-        s.knobRadius = this.WH * 0.01 * this.scale;
+        s.knobRadius = this.WH * 0.009 * this.scale;
         s.valueOffsetX = this.WW * 0.015 * this.scale;
-        s.valueFont = `500 ${this.WW * 0.009 * this.scale}px "Pretendard Variable", arial`;
+        s.valueFont = `400 ${this.WW * 0.008 * this.scale}px "Pretendard Variable", arial`;
         s.alpha = this.alpha;
         s.value = this.tempSettings[item.settingKey]; // 값 동기화
         s.draw();
@@ -268,7 +274,8 @@ export class SettingsOverlay extends TitleOverlay {
             disableTransparency: this.tempSettings.disableTransparency,
             reducePhysics: this.tempSettings.reducePhysics,
             colorBlindMode: this.tempSettings.colorBlindMode,
-            autoAttack: this.tempSettings.autoAttack
+            autoAttack: this.tempSettings.autoAttack,
+            uiScale: this.tempSettings.uiScale
         });
     }
 
@@ -381,22 +388,6 @@ export class SettingsOverlay extends TitleOverlay {
             this.saveBtnCustom.radius = 8 * this.scale;
             this.saveBtnCustom.draw();
 
-            // 저장 버튼 아이콘 (O)
-            const btnIconSize = btnHeight * 0.4;
-            const saveIconX = this.saveBtnCustom.x + btnWidth * 0.15;
-            const saveIconY = this.saveBtnCustom.y + btnHeight / 2;
-
-            render('overlay', {
-                shape: 'circle',
-                x: saveIconX,
-                y: saveIconY,
-                radius: btnIconSize / 2,
-                fill: false,
-                stroke: ColorSchemes.Overlay.Button.Save.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha
-            });
-
             // 취소 버튼
             this.cancelBtnCustom.width = btnWidth;
             this.cancelBtnCustom.height = btnHeight;
@@ -406,34 +397,6 @@ export class SettingsOverlay extends TitleOverlay {
             this.cancelBtnCustom.alpha = this.alpha;
             this.cancelBtnCustom.radius = 8 * this.scale;
             this.cancelBtnCustom.draw();
-
-            // 취소 버튼 아이콘 (X)
-            const cancelIconX = this.cancelBtnCustom.x + btnWidth * 0.15;
-            const cancelIconY = this.cancelBtnCustom.y + btnHeight / 2;
-            const xSize = btnIconSize * 0.6;
-
-            render('overlay', {
-                shape: 'line',
-                x1: cancelIconX - xSize / 2,
-                y1: cancelIconY - xSize / 2,
-                x2: cancelIconX + xSize / 2,
-                y2: cancelIconY + xSize / 2,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
-            render('overlay', {
-                shape: 'line',
-                x1: cancelIconX + xSize / 2,
-                y1: cancelIconY - xSize / 2,
-                x2: cancelIconX - xSize / 2,
-                y2: cancelIconY + xSize / 2,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
         }
     }
 
@@ -583,40 +546,6 @@ export class SettingsOverlay extends TitleOverlay {
         btn.alpha = this.alpha;
         btn.update();
         btn.draw();
-
-        const arrowSize = this.WW * 0.004 * this.scale;
-        const arrowLeft = btn.x;
-        const arrowRight = btn.x + btnW * 0.25;
-        const arrowY = y;
-        const headSize = arrowSize * 0.9;
-
-        render('overlay', {
-            shape: 'line',
-            x1: arrowLeft, y1: arrowY,
-            x2: arrowRight, y2: arrowY,
-            stroke: ColorSchemes.Overlay.Text.Item,
-            lineWidth: 1.2 * this.scale,
-            alpha: this.alpha,
-            lineCap: 'round'
-        });
-        render('overlay', {
-            shape: 'line',
-            x1: arrowRight - headSize, y1: arrowY - headSize,
-            x2: arrowRight, y2: arrowY,
-            stroke: ColorSchemes.Overlay.Text.Item,
-            lineWidth: 1.2 * this.scale,
-            alpha: this.alpha,
-            lineCap: 'round'
-        });
-        render('overlay', {
-            shape: 'line',
-            x1: arrowRight - headSize, y1: arrowY + headSize,
-            x2: arrowRight, y2: arrowY,
-            stroke: ColorSchemes.Overlay.Text.Item,
-            lineWidth: 1.2 * this.scale,
-            alpha: this.alpha,
-            lineCap: 'round'
-        });
     }
 
     _openKeybindings() {

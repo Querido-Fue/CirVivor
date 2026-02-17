@@ -1,13 +1,12 @@
 import { BaseOverlay } from './base_overlay.js';
 import { ButtonElement } from 'ui/element/button.js';
 import { getLangString } from 'ui/_ui_system.js';
-import { render, getWW, getWH } from 'display/_display_system.js';
+import { render } from 'display/_display_system.js';
 import { ColorSchemes } from 'display/theme_handler.js';
 import { getSetting } from 'save/_save_system.js';
 
 export class ExitOverlay extends BaseOverlay {
     constructor() {
-        // 레이어는 항상 'overlayhigh'
         super('overlayhigh');
 
         this.exitTitle = getLangString('title_exit_title');
@@ -15,8 +14,6 @@ export class ExitOverlay extends BaseOverlay {
 
         this.width = this.WW * 0.32;
         this.height = this.WH * 0.2;
-        this.x = (this.WW - this.width) / 2;
-        this.y = (this.WH - this.height) / 2;
 
         // BaseOverlay의 닫기 버튼을 사용하지 않으므로 제거합니다.
         if (this.closeButton) {
@@ -35,15 +32,9 @@ export class ExitOverlay extends BaseOverlay {
         this.yesButton = new ButtonElement({
             parent: this,
             onClick: () => {
-                if (typeof window.close === 'function') {
-                    window.close();
-                } else if (typeof nw !== 'undefined') {
-                    nw.Window.get().close();
-                }
+                Game.close();
             },
             layer: this.layer,
-            x: rightAnchor - btnWidth,
-            y: this.y + this.height - btnHeight - this.WH * 0.03,
             width: btnWidth,
             height: btnHeight,
             text: getLangString("title_exit_yes_label"),
@@ -52,11 +43,12 @@ export class ExitOverlay extends BaseOverlay {
             size: this.WW * 0.01,
             align: 'right',
             margin: btnWidth * 0.1,
-            color: ColorSchemes.Overlay.Button.Save.Text,
-            idleColor: ColorSchemes.Overlay.Button.Save.Idle,
-            hoverColor: ColorSchemes.Overlay.Button.Save.Hover,
+            color: ColorSchemes.Overlay.Button.Confirm.Text,
+            idleColor: ColorSchemes.Overlay.Button.Confirm.Idle,
+            hoverColor: ColorSchemes.Overlay.Button.Confirm.Hover,
             enableHoverGradient: false,
-            radius: 8
+            radius: 8,
+            iconType: 'confirm'
         });
 
         // 아니오 버튼
@@ -64,8 +56,6 @@ export class ExitOverlay extends BaseOverlay {
             parent: this,
             onClick: this.close.bind(this),
             layer: this.layer,
-            x: rightAnchor - btnWidth * 2 - gap,
-            y: this.y + this.height - btnHeight - this.WH * 0.03,
             width: btnWidth,
             height: btnHeight,
             text: getLangString("title_exit_no_label"),
@@ -78,11 +68,9 @@ export class ExitOverlay extends BaseOverlay {
             idleColor: ColorSchemes.Overlay.Button.Cancel.Idle,
             hoverColor: ColorSchemes.Overlay.Button.Cancel.Hover,
             enableHoverGradient: false,
-            radius: 8
+            radius: 8,
+            iconType: 'deny'
         });
-
-        this.yesButton.text = getLangString('title_exit_yes');
-        this.noButton.text = getLangString('title_exit_no');
 
         // 디버그 전용: 새로고침 버튼
         if (getSetting('debugMode')) {
@@ -92,22 +80,24 @@ export class ExitOverlay extends BaseOverlay {
                     location.reload();
                 },
                 layer: this.layer,
-                x: rightAnchor - btnWidth * 3 - gap * 2,
-                y: this.y + this.height - btnHeight - this.WH * 0.03,
-                width: btnHeight,
+                width: btnWidth / 3,
                 height: btnHeight,
                 text: "🔄",
                 font: "Pretendard Variable, arial",
-                size: this.WW * 0.015,
+                fontWeight: 700,
+                size: this.WW * 0.01,
                 align: 'center',
-                margin: 0,
-                color: ColorSchemes.Overlay.Button.Cancel.Text, // Replaced explicit colors
+                margin: btnWidth * 0.1,
+                color: ColorSchemes.Overlay.Button.Cancel.Text,
                 idleColor: ColorSchemes.Overlay.Button.Cancel.Idle,
                 hoverColor: ColorSchemes.Overlay.Button.Cancel.Hover,
                 enableHoverGradient: false,
-                radius: 8
+                radius: 8,
             });
         }
+
+        this.yesButton.text = getLangString('title_exit_yes');
+        this.noButton.text = getLangString('title_exit_no');
 
         this.open();
     }
@@ -158,8 +148,8 @@ export class ExitOverlay extends BaseOverlay {
                 shape: 'text',
                 text: this.queryText,
                 x: scaledX + scaledW * 0.06,
-                y: scaledY + scaledH * 0.45,
-                font: `700 ${this.WW * 0.011 * this.scale}px "Pretendard Variable", arial`,
+                y: scaledY + scaledH * 0.4,
+                font: `300 ${this.WW * 0.011 * this.scale}px "Pretendard Variable", arial`,
                 fill: ColorSchemes.Overlay.Text.Item,
                 align: 'left',
                 baseline: 'middle',
@@ -193,50 +183,16 @@ export class ExitOverlay extends BaseOverlay {
 
             const btnIconSize = btnHeight * 0.4;
 
-            // 예 아이콘 (O)
-            const yesIconX = this.yesButton.x + btnWidth * 0.15;
-            const yesIconY = this.yesButton.y + btnHeight / 2;
-
-            render(this.layer, {
-                shape: 'circle',
-                x: yesIconX,
-                y: yesIconY,
-                radius: btnIconSize / 2,
-                fill: false,
-                stroke: ColorSchemes.Overlay.Button.Save.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha
-            });
-
-            // 아니오 아이콘 (X)
-            const noIconX = this.noButton.x + btnWidth * 0.15;
-            const noIconY = this.noButton.y + btnHeight / 2;
-            const bxSize = btnIconSize * 0.6;
-
-            render(this.layer, {
-                shape: 'line',
-                x1: noIconX - bxSize / 2,
-                y1: noIconY - bxSize / 2,
-                x2: noIconX + bxSize / 2,
-                y2: noIconY + bxSize / 2,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
-            render(this.layer, {
-                shape: 'line',
-                x1: noIconX + bxSize / 2,
-                y1: noIconY - bxSize / 2,
-                x2: noIconX - bxSize / 2,
-                y2: noIconY + bxSize / 2,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
+            // 예/아니오 아이콘 - ButtonElement에서 처리됨
 
             if (this.refreshButton) {
+                this.refreshButton.width = btnWidth / 3.5;
+                this.refreshButton.height = btnHeight;
+                this.refreshButton.x = (cx - scaledW / 2) + rightMargin;
+                this.refreshButton.y = scaledY + scaledH - btnHeight - (this.WH * 0.03 * this.scale);
+                this.refreshButton.size = this.WW * 0.01 * this.scale;
+                this.refreshButton.alpha = this.alpha;
+                this.refreshButton.radius = 8 * this.scale;
                 this.refreshButton.draw();
             }
         }

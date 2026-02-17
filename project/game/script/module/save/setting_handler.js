@@ -7,18 +7,27 @@ export class SettingHandler {
         this.dataDir = dataDir;
         this.filePath = path.join(this.dataDir, 'settings.json');
         this.data = {};
+
+        // 시스템 언어 감지
+        let defaultLang = 'english';
+        if (typeof navigator !== 'undefined' && navigator.language) {
+            if (navigator.language.startsWith('ko')) {
+                defaultLang = 'korean';
+            }
+        }
+
         this.defaultData = {
             debugMode: false,
-            darkMode: false,
+            darkMode: true,
             disableTransparency: false,
             reducePhysics: false,
-            language: 'korean',
+            language: defaultLang,
             fullScreen: true,
             width: 1280,
             height: 720,
             renderScale: 100,
             colorBlindMode: false,
-            autoAttack: false
+            uiScale: 100
         };
     }
 
@@ -68,6 +77,17 @@ export class SettingHandler {
      */
     save() {
         return new Promise((resolve, reject) => {
+            // 저장 경로가 존재하지 않으면 생성
+            if (!fs.existsSync(this.dataDir)) {
+                try {
+                    fs.mkdirSync(this.dataDir, { recursive: true });
+                } catch (e) {
+                    console.error("Failed to create settings directory:", e);
+                    reject(e);
+                    return;
+                }
+            }
+
             const dataStr = JSON.stringify(this.data, null, 4);
             fs.writeFile(this.filePath, dataStr, (err) => {
                 if (err) {
@@ -99,9 +119,6 @@ export class SettingHandler {
     setBatch(settings) {
         for (const key in settings) {
             this.data[key] = settings[key];
-            if (key === 'darkMode') {
-                setTheme(settings[key]);
-            }
         }
         return this.save();
     }

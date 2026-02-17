@@ -119,11 +119,4 @@ export class TitleScene extends BaseScene {
         this.menu = new CreditsOverlay(this);
         this.menuOpened = true;
     }
-
-    /**
-     * 게임을 종료합니다.
-     */
-    exit() {
-        showExitConfirmation();
-    }
 }

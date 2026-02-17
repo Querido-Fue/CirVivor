@@ -2,7 +2,7 @@ import { ColorSchemes } from 'display/theme_handler.js';
 import { LineElement } from 'ui/element/line.js';
 import { ButtonElement } from 'ui/element/button.js';
 import { getWW, getWH, render, shadowOn, shadowOff } from 'display/_display_system.js';
-import { getLangString } from 'ui/_ui_system.js';
+import { getLangString, showExitConfirmation } from 'ui/_ui_system.js';
 import { animate, remove } from 'animation/_animation_system.js';
 
 /**
@@ -65,7 +65,7 @@ export class TitleMenu {
             [getLangString("title_menu_collection"), "left", this.TitleScene.collection.bind(this.TitleScene)],
             [getLangString("title_menu_settings"), "left", this.TitleScene.setting.bind(this.TitleScene)],
             [getLangString("title_menu_credits"), "left", this.TitleScene.credits.bind(this.TitleScene)],
-            [getLangString("title_menu_exit"), "left", this.TitleScene.exit.bind(this.TitleScene)]
+            [getLangString("title_menu_exit"), "left", showExitConfirmation]
         ];
         for (let i = 0; i < buttonData.length; i++) {
             const button = new ButtonElement({

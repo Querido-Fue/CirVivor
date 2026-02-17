@@ -58,6 +58,17 @@ export class IngameHandler {
      */
     save() {
         return new Promise((resolve, reject) => {
+            // 저장 경로가 존재하지 않으면 생성
+            if (!fs.existsSync(this.dataDir)) {
+                try {
+                    fs.mkdirSync(this.dataDir, { recursive: true });
+                } catch (e) {
+                    console.error("Failed to create ingame data directory:", e);
+                    reject(e);
+                    return;
+                }
+            }
+
             const dataStr = JSON.stringify(this.data, null, 4);
             fs.writeFile(this.filePath, dataStr, (err) => {
                 if (err) {

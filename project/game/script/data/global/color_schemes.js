@@ -39,7 +39,7 @@ export const LightTheme = {
             Hover: 'rgba(0, 0, 0, 0.1)'
         },
         Button: {
-            Save: { Idle: '#166ffb', Hover: '#4d94ff', Text: '#ffffff' },
+            Confirm: { Idle: '#166ffb', Hover: '#4d94ff', Text: '#ffffff' },
             Cancel: { Idle: '#ff5050', Hover: '#ff7a7a', Text: '#ffffff' },
             Option: { Active: '#166ffb', ActiveText: '#ffffff' }
         },
@@ -110,7 +110,7 @@ export const DarkTheme = {
             Hover: 'rgba(255, 255, 255, 0.12)'
         },
         Button: {
-            Save: { Idle: '#166ffb', Hover: '#4d94ff', Text: '#ffffff' },
+            Confirm: { Idle: '#166ffb', Hover: '#4d94ff', Text: '#ffffff' },
             Cancel: { Idle: '#ff5050', Hover: '#ff7a7a', Text: '#ffffff' },
             Option: { Active: '#3b82f6', ActiveText: '#ffffff' }
         },

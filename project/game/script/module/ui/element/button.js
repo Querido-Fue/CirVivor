@@ -1,5 +1,5 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "display/_display_system.js";
+import { render, measureText } from "display/_display_system.js";
 import { getMouseInput, getMouseFocus } from "input/_input_system.js";
 import { animate, remove } from "animation/_animation_system.js";
 import { getDelta } from "game/time_handler.js";
@@ -30,6 +30,7 @@ import { ColorSchemes } from "display/theme_handler.js";
  * @param {number} [properties.alpha=1] - 투명도
  * @param {number} [properties.margin=0] - 텍스트 마진
  * @param {boolean} [properties.clickAble=true] - 클릭 가능 여부
+ * @param {string} [properties.iconType='none'] - 아이콘 타입 ('arrow', 'confirm', 'deny', 'none')
  */
 export class ButtonElement extends BaseUIElement {
     constructor(properties) {
@@ -82,13 +83,21 @@ export class ButtonElement extends BaseUIElement {
         this.clickAble = properties.clickAble === undefined ? true : properties.clickAble;
         this.enableHoverGradient = properties.enableHoverGradient !== undefined ? properties.enableHoverGradient : true;
         this.radius = properties.radius || 5;
+
+        // 애니메이션
+        this.scale = 1;
+        this.isPressed = false;
+
+        this.iconType = properties.iconType || 'none'; // 'arrow', 'confirm', 'deny', 'none'
     }
 
     update() {
         if (!this.visible) return;
 
         // 포커스 확인
-        if (getMouseFocus() !== this.layer) return;
+        if (getMouseFocus() !== this.layer) {
+            return;
+        };
 
         let isHovered = false;
         const mx = getMouseInput('x');
@@ -97,6 +106,22 @@ export class ButtonElement extends BaseUIElement {
         }
 
         const targetValue = isHovered ? 1.0 : 0.0;
+
+        // Hover & Press Animation Logic
+        const isLeftClicking = getMouseInput("leftClicking"); // Mouse Down status
+        const shouldBePressed = isHovered && isLeftClicking;
+
+        if (this.isPressed !== shouldBePressed) {
+            this.isPressed = shouldBePressed;
+            const targetScale = this.isPressed ? 0.95 : 1.0;
+
+            if (this.scaleAnimId) {
+                remove(this.scaleAnimId);
+                this.scaleAnimId = null;
+            }
+
+            this.scaleAnimId = animate(this, { variable: 'scale', startValue: this.scale, endValue: targetScale, type: "easeOutExpo", duration: 0.2 }).id;
+        }
 
         if (targetValue !== this._targetHoverValue) {
             this._targetHoverValue = targetValue;
@@ -110,7 +135,7 @@ export class ButtonElement extends BaseUIElement {
                 variable: 'hoverValue',
                 startValue: this.hoverValue,
                 endValue: this._targetHoverValue,
-                type: 'easeOutCubic',
+                type: 'easeOutExpo',
                 duration: 0.2
             });
             this.hoverAnimId = animObj.id;
@@ -121,10 +146,6 @@ export class ButtonElement extends BaseUIElement {
 
         if (isHovered && getMouseInput("leftClicked")) {
             this.onClick();
-            if (this.clickAnimationTimer === 0) {
-                animate(this, { variable: 'size', startValue: this.size * 0.9, endValue: this.size, type: "easeOutExpo", duration: 0.3 });
-                this.clickAnimationTimer = 0.3;
-            }
         }
 
         const t = this.hoverValue;
@@ -134,17 +155,18 @@ export class ButtonElement extends BaseUIElement {
         const a = this._idleColorStruct.a + (this._hoverColorStruct.a - this._idleColorStruct.a) * t;
 
         this.currentColor = rgbParse(r, g, b, a);
-
-        if (this.clickAnimationTimer > 0) {
-            this.clickAnimationTimer -= getDelta();
-        }
-        if (this.clickAnimationTimer < 0) {
-            this.clickAnimationTimer = 0;
-        }
     }
 
     draw() {
         if (!this.visible) return;
+
+        // 스케일 적용
+        const cx = this.x + this.width / 2;
+        const cy = this.y + this.height / 2;
+        const scaledW = this.width * this.scale;
+        const scaledH = this.height * this.scale;
+        const scaledX = cx - scaledW / 2;
+        const scaledY = cy - scaledH / 2;
 
         if (this.shadow) {
             shadowOn(this.layer, this.shadow.blur, this.shadow.color);
@@ -152,10 +174,10 @@ export class ButtonElement extends BaseUIElement {
 
         render(this.layer, {
             shape: 'roundRect',
-            x: this.x,
-            y: this.y,
-            w: this.width,
-            h: this.height,
+            x: scaledX,
+            y: scaledY,
+            w: scaledW,
+            h: scaledH,
             radius: this.radius,
             fill: this.currentColor,
             alpha: this.alpha
@@ -166,10 +188,10 @@ export class ButtonElement extends BaseUIElement {
 
             const gradient = {
                 type: 'linear',
-                x1: this.x,
-                y1: this.y,
-                x2: this.x + this.width,
-                y2: this.y,
+                x1: scaledX,
+                y1: scaledY,
+                x2: scaledX + scaledW,
+                y2: scaledY,
                 stops: [
                     { offset: 0, color: `rgba(255, 255, 255, ${startOpacity})` },
                     { offset: 0.8, color: `rgba(255, 255, 255, ${startOpacity})` },
@@ -179,36 +201,52 @@ export class ButtonElement extends BaseUIElement {
 
             render(this.layer, {
                 shape: 'roundRect',
-                x: this.x,
-                y: this.y,
-                w: this.width,
-                h: this.height,
+                x: scaledX,
+                y: scaledY,
+                w: scaledW,
+                h: scaledH,
                 radius: this.radius,
                 fill: gradient,
                 alpha: this.alpha
             });
         }
 
+        // 레이아웃 계산
+        const iconSize = this.iconType !== 'none' ? scaledH * 0.5 : 0;
+        if (this.iconType && this.iconType !== 'none') {
+            const iconSize = this.text ? scaledH * 0.4 : scaledH * 0.6; // 텍스트 유무에 따라 크기 조절
+            const iconX = scaledX; // 아이콘은 항상 왼쪽 시작점
+            const iconY = scaledY; // 아이콘 Y는 버튼 상단
+
+            this._drawIcon(this.iconType, scaledX, scaledY, scaledW, scaledH);
+        }
+
         let textX;
-        switch (this.align) {
-            case 'center':
-                textX = this.x + this.width / 2;
-                break;
-            case 'right':
-                textX = this.x + this.width - this.margin;
-                break;
-            case 'left':
-                textX = this.x + this.margin;
-                break;
+
+        if (this.align === 'center') {
+            textX = scaledX + scaledW / 2;
+        } else if (this.align === 'right') {
+            textX = scaledX + scaledW - this.margin;
+        } else if (this.align === 'left') {
+            textX = scaledX + this.margin;
+            // 아이콘이 있다면 텍스트 시작 위치를 아이콘 뒤로 미룸
+            if (this.iconType === 'arrow') {
+                textX += scaledW * 0.25; // 화살표 길이만큼 이동
+            } else if (['confirm', 'deny', 'check'].includes(this.iconType)) {
+                textX += scaledW * 0.15 + (scaledH * 0.4) / 2 + (scaledW * 0.05); // 아이콘 위치 + 반대편까지 + 여백
+            }
         }
 
         if (textX !== undefined) {
+            // 폰트 크기 스케일 적용
+            const scaledSize = this.size * this.scale;
+
             render(this.layer, {
                 shape: 'text',
                 text: this.text,
                 x: textX,
-                y: this.y + this.height / 2,
-                font: `${this.fontWeight}${this.size}px ${this.font}`,
+                y: scaledY + scaledH / 2,
+                font: `${this.fontWeight} ${scaledSize}px ${this.font}`,
                 fill: this.color,
                 alpha: this.alpha,
                 align: this.align,
@@ -218,6 +256,128 @@ export class ButtonElement extends BaseUIElement {
 
         if (this.shadow) {
             shadowOff(this.layer);
+        }
+    }
+    /**
+     * 아이콘을 그립니다.
+     * @param {string} type - 아이콘 타입
+     * @param {number} x - X 좌표
+     * @param {number} y - Y 좌표
+     * @param {number} w - 너비
+     * @param {number} h - 높이
+     */
+    _drawIcon(type, x, y, w, h) {
+        if (type === 'arrow') {
+            // 화살표 높이 및 크기 계산
+            const arrowH = (h * 0.13) * 0.7;
+
+            const arrowLeft = x;
+            const arrowLen = (w * 0.25) * 0.7;
+            const arrowRight = x + arrowLen;
+            const arrowY = y + h / 2;
+            const headSize = arrowH * 0.9 * 3;
+
+            render(this.layer, {
+                shape: 'line',
+                x1: arrowLeft, y1: arrowY,
+                x2: arrowRight, y2: arrowY,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+            render(this.layer, {
+                shape: 'line',
+                x1: arrowRight - headSize, y1: arrowY - headSize,
+                x2: arrowRight, y2: arrowY,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+            render(this.layer, {
+                shape: 'line',
+                x1: arrowRight - headSize, y1: arrowY + headSize,
+                x2: arrowRight, y2: arrowY,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+        } else if (type === 'confirm') {
+            // O 아이콘
+            const iconSize = (h * 0.4) * 0.85;
+            const iconX = x + w * 0.15;
+            const iconY = y + h / 2;
+
+            render(this.layer, {
+                shape: 'circle',
+                x: iconX,
+                y: iconY,
+                radius: iconSize / 2,
+                fill: false,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha
+            });
+        } else if (type === 'deny') {
+            // X 아이콘
+            const iconSize = h * 0.4;
+            const iconX = x + w * 0.15;
+            const iconY = y + h / 2;
+            const xSize = iconSize * 0.6;
+
+            render(this.layer, {
+                shape: 'line',
+                x1: iconX - xSize / 2,
+                y1: iconY - xSize / 2,
+                x2: iconX + xSize / 2,
+                y2: iconY + xSize / 2,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+            render(this.layer, {
+                shape: 'line',
+                x1: iconX + xSize / 2,
+                y1: iconY - xSize / 2,
+                x2: iconX - xSize / 2,
+                y2: iconY + xSize / 2,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+        } else if (type === 'check') {
+            const iconSize = h * 0.5;
+            const iconX = x + w * 0.15;
+            const iconY = y + h / 2;
+            const halfSize = iconSize / 2;
+
+            // 체크 아이콘 (V 형태)
+            // 왼쪽 점: (iconX - halfSize * 0.8, iconY)
+            // 중간 점: (iconX - halfSize * 0.2, iconY + halfSize * 0.8)
+            // 오른쪽 점: (iconX + halfSize * 0.8, iconY - halfSize * 0.8)
+
+            render(this.layer, {
+                shape: 'line',
+                x1: iconX - halfSize * 0.8, y1: iconY,
+                x2: iconX - halfSize * 0.2, y2: iconY + halfSize * 0.8,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
+            render(this.layer, {
+                shape: 'line',
+                x1: iconX - halfSize * 0.2, y1: iconY + halfSize * 0.8,
+                x2: iconX + halfSize * 0.8, y2: iconY - halfSize * 0.8,
+                stroke: this.color,
+                lineWidth: 1.2 * this.scale,
+                alpha: this.alpha,
+                lineCap: 'round'
+            });
         }
     }
 }

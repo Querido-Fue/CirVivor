@@ -19,14 +19,15 @@ export class MouseDebugger {
     draw() {
         const x = getMouseInput("x");
         const y = getMouseInput("y");
-        const lineHeight = 16;
+        const lineHeight = 20;
         const startX = x + 50;
         const startY = y + 50;
 
         const lines = [
             `${x.toFixed(2)}, ${y.toFixed(2)}`,
             `left: ${getMouseInput("leftClicked")}, ${getMouseInput("leftClicking")}`,
-            `right: ${getMouseInput("rightClicked")}, ${getMouseInput("rightClicking")}`
+            `right: ${getMouseInput("rightClicked")}, ${getMouseInput("rightClicking")}`,
+            `focus: ${getMouseInput("focusList")}`
         ];
 
         const WW = getWW();

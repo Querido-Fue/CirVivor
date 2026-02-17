@@ -92,6 +92,8 @@ export class MouseInputHandler {
                 return this.mouseRightClicking;
             case "rightClicked":
                 return this.mouseRightClicked;
+            case "focusList":
+                return this.focusList;
         }
         return null;
     }

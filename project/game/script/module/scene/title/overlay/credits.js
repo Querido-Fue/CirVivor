@@ -1,8 +1,9 @@
 import { TitleOverlay } from './title_overlay.js';
 import { ButtonElement } from 'ui/element/button.js';
 import { getLangString } from 'ui/_ui_system.js';
-import { render, getWW, getWH, measureText } from 'display/_display_system.js';
+import { render, measureText } from 'display/_display_system.js';
 import { ColorSchemes } from 'display/theme_handler.js';
+import { getSetting } from 'save/_save_system.js';
 
 function openURL(url) {
     try {
@@ -88,7 +89,8 @@ export class CreditsOverlay extends TitleOverlay {
                         idleColor: ColorSchemes.Overlay.Control.Inactive,
                         hoverColor: ColorSchemes.Overlay.Control.Hover,
                         enableHoverGradient: false,
-                        radius: 6
+                        radius: 6,
+                        iconType: 'arrow'
                     });
                     btn._linkRef = link;
                     this.linkButtons.push(btn);
@@ -115,11 +117,12 @@ export class CreditsOverlay extends TitleOverlay {
             size: this.WW * 0.01,
             align: 'right',
             margin: btnWidth * 0.12,
-            color: ColorSchemes.Overlay.Button.Cancel.Text,
-            idleColor: ColorSchemes.Overlay.Button.Cancel.Idle,
-            hoverColor: ColorSchemes.Overlay.Button.Cancel.Hover,
+            color: ColorSchemes.Overlay.Button.Confirm.Text,
+            idleColor: ColorSchemes.Overlay.Button.Confirm.Idle,
+            hoverColor: ColorSchemes.Overlay.Button.Confirm.Hover,
             enableHoverGradient: false,
-            radius: 8
+            radius: 8,
+            iconType: 'check'
         });
     }
 
@@ -246,49 +249,6 @@ export class CreditsOverlay extends TitleOverlay {
                         btn.radius = 6 * this.scale;
                         btn.draw();
 
-                        // → 화살표 아이콘
-                        const arrowLeft = btnX;
-                        const arrowY = cursorY;
-                        const arrowRight = btnX + linkBtnW * 0.25;
-                        const headSize = arrowSize * 0.9;
-
-                        // 수평선
-                        render('overlay', {
-                            shape: 'line',
-                            x1: arrowLeft,
-                            y1: arrowY,
-                            x2: arrowRight,
-                            y2: arrowY,
-                            stroke: ColorSchemes.Overlay.Text.Item,
-                            lineWidth: 1.2 * this.scale,
-                            alpha: this.alpha,
-                            lineCap: 'round'
-                        });
-                        // 화살촉 위
-                        render('overlay', {
-                            shape: 'line',
-                            x1: arrowRight - headSize,
-                            y1: arrowY - headSize,
-                            x2: arrowRight,
-                            y2: arrowY,
-                            stroke: ColorSchemes.Overlay.Text.Item,
-                            lineWidth: 1.2 * this.scale,
-                            alpha: this.alpha,
-                            lineCap: 'round'
-                        });
-                        // 화살촉 아래
-                        render('overlay', {
-                            shape: 'line',
-                            x1: arrowRight - headSize,
-                            y1: arrowY + headSize,
-                            x2: arrowRight,
-                            y2: arrowY,
-                            stroke: ColorSchemes.Overlay.Text.Item,
-                            lineWidth: 1.2 * this.scale,
-                            alpha: this.alpha,
-                            lineCap: 'round'
-                        });
-
                         btnX -= linkBtnGap;
                     }
                     linkBtnIdx += item.links.length;
@@ -313,34 +273,6 @@ export class CreditsOverlay extends TitleOverlay {
             this.closeBtnCustom.alpha = this.alpha;
             this.closeBtnCustom.radius = 8 * this.scale;
             this.closeBtnCustom.draw();
-
-            // 닫기 버튼 X 아이콘
-            const closeBtnX = this.closeBtnCustom.x + btnWidth * 0.18;
-            const closeBtnY = this.closeBtnCustom.y + btnHeight / 2;
-            const xSize = btnHeight * 0.2;
-
-            render('overlay', {
-                shape: 'line',
-                x1: closeBtnX - xSize,
-                y1: closeBtnY - xSize,
-                x2: closeBtnX + xSize,
-                y2: closeBtnY + xSize,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
-            render('overlay', {
-                shape: 'line',
-                x1: closeBtnX + xSize,
-                y1: closeBtnY - xSize,
-                x2: closeBtnX - xSize,
-                y2: closeBtnY + xSize,
-                stroke: ColorSchemes.Overlay.Button.Cancel.Text,
-                lineWidth: 1.2 * this.scale,
-                alpha: this.alpha,
-                lineCap: 'round'
-            });
         }
     }
 
