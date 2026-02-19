@@ -21,10 +21,10 @@ export const LightTheme = {
     },
     Overlay: {
         Text: {
-            Section: '#888888',
+            Section: '#666666',
             Item: '#2d2d2d',
-            Control: '#888888',
-            Value: '#666666'
+            Control: '#666666',
+            Value: '#4d4d4d'
         },
         Panel: {
             Background: '#cececeff',
@@ -51,11 +51,11 @@ export const LightTheme = {
         },
         Toggle: {
             Active: '#166ffb',
-            Inactive: '#c4c4c4',
+            Inactive: 'rgba(0, 0, 0, 0.1)',
             Knob: '#ffffff'
         },
         Slider: {
-            Track: 'rgba(0, 0, 0, 0.12)',
+            Track: 'rgba(0, 0, 0, 0.2)',
             ValueActive: '#166ffb',
             ValueInactive: '#888888',
             Knob: '#ffffff'
@@ -92,9 +92,9 @@ export const DarkTheme = {
     },
     Overlay: {
         Text: {
-            Section: '#808080',
+            Section: '#999999',
             Item: '#d5d5d5',
-            Control: '#808080',
+            Control: '#999999',
             Value: '#aaaaaa'
         },
         Panel: {
@@ -122,11 +122,11 @@ export const DarkTheme = {
         },
         Toggle: {
             Active: '#3b82f6',
-            Inactive: '#4a4a4a',
+            Inactive: 'rgba(255, 255, 255, 0.12)',
             Knob: '#ffffff'
         },
         Slider: {
-            Track: 'rgba(255, 255, 255, 0.15)',
+            Track: 'rgba(255, 255, 255, 0.12)',
             ValueActive: '#4fa3ff',
             ValueInactive: '#707070',
             Knob: '#ffffff'

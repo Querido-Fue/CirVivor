@@ -1,8 +1,6 @@
-import { ButtonElement } from 'ui/element/button.js';
 import { getWW, getWH, render, shadowOn, shadowOff, getBackgroundCanvas, getObjectCanvas, getEffectCanvas, getTextEffectCanvas, getUiCanvas, getOverlayCanvas } from 'display/_display_system.js';
 import { ColorSchemes } from 'display/theme_handler.js';
 import { animate, remove } from 'animation/_animation_system.js';
-import { getLangString } from 'ui/_ui_system.js';
 import { setMouseFocus, getMouseFocus } from 'input/_input_system.js';
 import { getSetting } from 'save/_save_system.js';
 
@@ -13,7 +11,7 @@ import { getSetting } from 'save/_save_system.js';
  */
 export class BaseOverlay {
     /**
-     * @param {string} layer - 오버레이가 그려질 레이어 이름 (예: 'overlay', 'overlayhigh')
+     * @param {string} layer - 오버레이가 그려질 레이어 이름
      */
     constructor(layer = 'overlay') {
         this.layer = layer;
@@ -32,13 +30,11 @@ export class BaseOverlay {
         const uiScale = getSetting('uiScale') || 100;
         const targetScale = uiScale / 100;
 
-        // 초기 생성을 위해 목표 스케일의 90%로 설정 (애니메이션 시작점)
+        // 애니메이션 시작점
         this.scale = targetScale * 0.9;
         this.visible = true;
         this.closeButton = null;
         this.previousFocus = 'ui'; // 기본값
-
-        // 초기화 시 자동으로 열리지 않음. 상속받은 클래스에서 open() 호출 필요.
     }
 
     /**

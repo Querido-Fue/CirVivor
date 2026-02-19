@@ -45,7 +45,7 @@ export class SettingsOverlay extends TitleOverlay {
         this.sections = [
             {
                 key: 'accessibility', label: 'title_settings_section_accessibility', items: [
-                    { type: 'toggle', label: 'title_settings_color_blind', settingKey: 'colorBlindMode' },
+                    { type: 'toggle', label: 'title_settings_color_blind', settingKey: 'colorBlindMode', description: 'title_settings_color_blind_desc' },
                     {
                         type: 'slider', label: 'title_settings_ui_scale', settingKey: 'uiScale', min: 75, max: 125, suffix: '%', description: 'title_settings_desc_ui_scale',
                         valueFormatter: (v) => `${v}%`
