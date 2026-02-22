@@ -19,10 +19,11 @@ export class AnimationBase {
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
      */
-    init(id, owner, variable) {
+    init(id, owner, variable, fixed = false) {
         this.id = id;
         this.owner = owner;
         this.variable = variable;
+        this.fixed = fixed;
         this.state = ANIMATION_STATE.RUNNING;
         this.next = null;
         this.prev = null;

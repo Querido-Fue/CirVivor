@@ -1,10 +1,10 @@
 import { BaseUIElement } from "./base_element.js";
-import { render } from "display/_display_system.js";
+import { render, shadowOn, shadowOff } from "display/_display_system.js";
 import { getMouseInput, getMouseFocus } from "input/_input_system.js";
 import { animate } from "animation/_animation_system.js";
 import { ColorSchemes } from "display/theme_handler.js";
 /**
- * @class SegmentControl
+ * @class SegmentControlElement
  * @description 여러 옵션 중 하나를 선택하는 세그먼트 컨트롤 UI입니다.
  * @param {object} properties - 속성
  * @param {object[]} properties.items - 옵션 배열 [{label: 'Text', value: 1}, ...]
@@ -13,7 +13,7 @@ import { ColorSchemes } from "display/theme_handler.js";
  * @param {number} properties.width - 전체 너비
  * @param {number} properties.height - 전체 높이
  */
-export class SegmentControl extends BaseUIElement {
+export class SegmentControlElement extends BaseUIElement {
     constructor(properties) {
         super(properties);
         this.items = properties.items || [];
@@ -37,8 +37,9 @@ export class SegmentControl extends BaseUIElement {
 
         this.selectionProgress = 0;
 
-        this._hoverScale = 1.0;
         this.clickAble = true;
+        this.hoverScaleMultiplier = 1.05;
+        this.pressScaleMultiplier = 1.05;
 
         if (properties.value !== undefined) {
             this.value = properties.value;
@@ -77,25 +78,12 @@ export class SegmentControl extends BaseUIElement {
         this.segmentWidth = (this.width - (this.padding * 2)) / this.items.length;
         this.thumbHeight = this.height - (this.padding * 2);
 
-        if (getMouseFocus() === this.layer && this.clickAble) {
-            const mx = getMouseInput("x");
-            const my = getMouseInput("y");
-            const isOver = mx >= this.x && mx <= this.x + this.width && my >= this.y && my <= this.y + this.height;
+        const mx = getMouseInput("x");
+        const my = getMouseInput("y");
+        let isOver = false;
 
-            const targetScale = isOver ? 1.05 : 1.0;
-            if (Math.abs(this._hoverScale - targetScale) > 0.001) {
-                if (this._lastTargetScale !== targetScale) {
-                    this._lastTargetScale = targetScale;
-                    animate(this, {
-                        variable: '_hoverScale',
-                        startValue: this._hoverScale || 1.0,
-                        endValue: targetScale,
-                        duration: 0.2,
-                        type: 'easeOutExpo'
-                    });
-                }
-            }
-            if (this._hoverScale === undefined) this._hoverScale = 1.0;
+        if (getMouseFocus().includes(this.layer) && this.clickAble) {
+            isOver = mx >= this.x && mx <= this.x + this.width && my >= this.y && my <= this.y + this.height;
 
             if (isOver && getMouseInput("leftClicked")) {
                 const relativeX = mx - this.x - this.padding;
@@ -111,53 +99,76 @@ export class SegmentControl extends BaseUIElement {
                 }
             }
         }
+
+        const isLeftClicking = getMouseInput("leftClicking");
+
+        // BaseUIElement의 공통 함수 호출 (_hoverScale은 this.scale로 활용)
+        this._handleInteractionState(isOver, isLeftClicking);
     }
 
     draw() {
         if (!this.visible) return;
 
-        const scale = this._hoverScale || 1.0;
+        // 스케일 적용 (중심점 기준 축소/확대가 아니라 top-left 부터 시작하는 LayoutHandler 룰에 맞춤)
+        const scale = this.scale;
 
         const cx = this.x + this.width / 2;
         const cy = this.y + this.height / 2;
 
         const w = this.width * scale;
         const h = this.height * scale;
-        const x = cx - w / 2;
-        const y = cy - h / 2;
+
+        // 버튼이 가운데로 모이도록 cx, cy를 기준으로 다시 x,y 계산
+        const scaledX = cx - w / 2;
+        const scaledY = cy - h / 2;
 
         const scaledPadding = this.padding * scale;
-        const scaledSegW = this.segmentWidth * scale;
+        const scaledSegW = (w - (scaledPadding * 2)) / this.items.length;
 
-        const thumbXOffset = scaledPadding + (scaledSegW * this.selectionProgress);
+        const thumbInset = scaledSegW * 0.03;
+        const thumbXOffset = scaledPadding + (scaledSegW * this.selectionProgress) + thumbInset;
 
         render(this.layer, {
             shape: 'roundRect',
-            x: x,
-            y: y,
-            w: w,
+            x: scaledX + w * 0.01, // 양 끝 부분 약간 잘라내기
+            y: scaledY,
+            w: w * 0.98,
             h: h,
             radius: this.radius * scale,
             fill: this.backgroundColor,
             alpha: this.alpha
         });
 
+        for (let i = 1; i < this.items.length; i++) {
+            const divX = scaledX + scaledPadding + (scaledSegW * i);
+            const divY1 = scaledY + h * 0.25;
+            const divY2 = scaledY + h * 0.75;
+            render(this.layer, {
+                shape: 'line',
+                x1: divX, y1: divY1,
+                x2: divX, y2: divY2,
+                stroke: this.textColorInactive,
+                lineWidth: 1 * scale,
+                alpha: this.alpha * 0.3
+            });
+        }
+        shadowOn(this.layer, 4 * scale, 'rgba(0,0,0,0.3)');
         render(this.layer, {
             shape: 'roundRect',
-            x: x + thumbXOffset,
-            y: y + scaledPadding,
-            w: scaledSegW,
-            h: h - (scaledPadding * 2), // height minus padding
+            x: scaledX + thumbXOffset,
+            y: scaledY + scaledPadding,
+            w: scaledSegW - (thumbInset * 2),
+            h: h - (scaledPadding * 2),
             radius: (this.radius - 2) * scale,
             fill: this.thumbColor,
             alpha: this.alpha,
-            shadow: { blur: 4 * scale, color: 'rgba(0,0,0,0.1)' }
         });
+        shadowOff(this.layer);
 
         for (let i = 0; i < this.items.length; i++) {
             const item = this.items[i];
-            const itemX = x + scaledPadding + (scaledSegW * i) + (scaledSegW / 2);
-            const itemY = y + h / 2;
+            const itemX = scaledX + scaledPadding + (scaledSegW * i) + (scaledSegW / 2);
+            const itemY = scaledY + h / 2;
 
             const isSelected = i === this.selectedIndex;
             const color = isSelected ? this.textColorActive : this.textColorInactive;

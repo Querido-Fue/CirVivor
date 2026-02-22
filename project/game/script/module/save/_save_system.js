@@ -77,3 +77,7 @@ export const setSetting = (key, value) => {
 export const setSettingBatch = (settings) => {
     return saveSystemInstance.setSettingBatch(settings);
 }
+
+export const getSaveSystemInstance = () => {
+    return saveSystemInstance;
+}

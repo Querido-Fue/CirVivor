@@ -30,8 +30,8 @@ export class StandardAnimation extends AnimationBase {
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
      */
-    init(id, owner, variable, startValue, endValue, type, duration, delay) {
-        super.init(id, owner, variable);
+    init(id, owner, variable, startValue, endValue, type, duration, delay, fixed) {
+        super.init(id, owner, variable, fixed);
         this.rawStartValue = startValue;
         this.rawEndValue = endValue;
         this.duration = duration;

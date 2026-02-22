@@ -1,3 +1,5 @@
+import { mathUtil } from 'util/math_util.js';
+
 export class Vector2 {
     constructor(x, y) {
         this.x = x;
@@ -42,9 +44,9 @@ export class Vector2 {
     }
 
     addDeg(degree) {
-        let deg = MathHelper.vecToDeg(this);
+        let deg = mathUtil().vecToDeg(this);
         deg += degree;
-        return MathHelper.degToVec(deg);
+        return mathUtil().degToVec(deg);
     }
 
     clone() {

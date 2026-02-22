@@ -32,7 +32,8 @@ export const LightTheme = {
             GlassBackground: 'rgba(255, 255, 255, 0.68)',
             GlassBorder: 'rgba(255, 255, 255, 0.45)',
             Divider: 'rgba(0, 0, 0, 0.1)',
-            Dim: 'rgba(0, 0, 0, 0.6)'
+            Dim: 0.5,
+            Shadow: 'rgba(0, 0, 0, 0.3)'
         },
         Control: {
             Inactive: 'rgba(0, 0, 0, 0.05)',
@@ -41,6 +42,7 @@ export const LightTheme = {
         Button: {
             Confirm: { Idle: '#166ffb', Hover: '#4d94ff', Text: '#ffffff' },
             Cancel: { Idle: '#ff5050', Hover: '#ff7a7a', Text: '#ffffff' },
+            Link: { Idle: 'rgba(0, 0, 0, 0.05)', Hover: 'rgba(0, 0, 0, 0.1)', Text: '#2d2d2d' },
             Option: { Active: '#166ffb', ActiveText: '#ffffff' }
         },
         Segment: {
@@ -103,7 +105,7 @@ export const DarkTheme = {
             GlassBackground: 'rgba(10, 10, 10, 0.80)',
             GlassBorder: 'rgba(255, 255, 255, 0.08)',
             Divider: 'rgba(255, 255, 255, 0.08)',
-            Dim: 'rgba(0, 0, 0, 0.6)'
+            Dim: 0.5
         },
         Control: {
             Inactive: 'rgba(255, 255, 255, 0.06)',
@@ -112,6 +114,7 @@ export const DarkTheme = {
         Button: {
             Confirm: { Idle: '#166ffb', Hover: '#4d94ff', Text: '#ffffff' },
             Cancel: { Idle: '#ff5050', Hover: '#ff7a7a', Text: '#ffffff' },
+            Link: { Idle: 'rgba(255, 255, 255, 0.06)', Hover: 'rgba(255, 255, 255, 0.12)', Text: '#d5d5d5' },
             Option: { Active: '#3b82f6', ActiveText: '#ffffff' }
         },
         Segment: {

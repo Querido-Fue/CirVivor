@@ -63,7 +63,7 @@ export class TitleEnemy {
         this.speedFromMagnetic = this.speedFromMagnetic.mul(1 - (1 - 0.9) * delta * 60);
 
         this.checkInScreen();
-        if (getMouseFocus() === "main" || getMouseFocus() === "ui") {
+        if (getMouseFocus().includes("background")) {
             this.magneticStrength = getMouseInput("leftClicking") ? 5 : 2;
             this.magneticDistance = getMouseInput("leftClicking") ? this.WW * 0.1 : this.WW * 0.05;
         } else {

@@ -1,8 +1,9 @@
-import { getWW, getWH, render, shadowOn, shadowOff, getBackgroundCanvas, getObjectCanvas, getEffectCanvas, getTextEffectCanvas, getUiCanvas, getOverlayCanvas } from 'display/_display_system.js';
+import { getWW, getWH, render, shadowOn, shadowOff, getBehindCanvases, getCanvas, setDim } from 'display/_display_system.js';
 import { ColorSchemes } from 'display/theme_handler.js';
-import { animate, remove } from 'animation/_animation_system.js';
+import { animate } from 'animation/_animation_system.js';
 import { setMouseFocus, getMouseFocus } from 'input/_input_system.js';
 import { getSetting } from 'save/_save_system.js';
+import { parseUIData } from '../_ui_system.js';
 
 /**
  * @class BaseOverlay
@@ -15,150 +16,118 @@ export class BaseOverlay {
      */
     constructor(layer = 'overlay') {
         this.layer = layer;
+        this.sourceCanvases = getBehindCanvases(layer);
         this.WW = getWW();
         this.WH = getWH();
 
-        this.width = this.WW * 0.6;
-        this.height = this.WH * 0.7;
-        this.x = (this.WW - this.width) / 2;
-        this.y = (this.WH - this.height) / 2;
-
-        this.title = "";
-        this.alpha = 0;
+        // 지오메트리 변수 초기화
+        this.width = 0;
+        this.height = 0;
+        this.dx = 0;
+        this.dy = 0;
 
         // UI 스케일 적용
-        const uiScale = getSetting('uiScale') || 100;
-        const targetScale = uiScale / 100;
+        this.uiScale = getSetting('uiScale') / 100 || 1;
 
-        // 애니메이션 시작점
-        this.scale = targetScale * 0.9;
-        this.visible = true;
-        this.closeButton = null;
-        this.previousFocus = 'ui'; // 기본값
+        // 애니메이션 처리
+        this.animating = false;
+        this.animScale = 0.9;
+        this.dim = 0;
+        this.alpha = 0;
+    }
+
+    _calculateGeometry() {
+        this.scaledW = this.width * this.uiScale;
+        this.scaledH = this.height * this.uiScale;
+        this.scaledX = (this.WW - this.scaledW) / 2 + this.dx;
+        this.scaledY = (this.WH - this.scaledH) / 2 + this.dy;
+    }
+
+    _generateLayout() {
+        // override
     }
 
     /**
      * 오버레이를 엽니다.
      */
     open() {
-        this.visible = true;
+        this.animating = true;
         this.previousFocus = getMouseFocus(); // 현재 포커스 저장
         setMouseFocus(this.layer);
 
-        // 설정된 UI 스케일 가져오기
-        const uiScale = getSetting('uiScale') || 100;
-        const targetScale = uiScale / 100;
-
         animate(this, { variable: 'alpha', startValue: 0, endValue: 1, type: "easeOutExpo", duration: 0.3 });
-        animate(this, { variable: 'scale', startValue: targetScale * 0.9, endValue: targetScale, type: "easeOutExpo", duration: 0.4 });
+        animate(this, { variable: 'dim', startValue: "current", endValue: ColorSchemes.Overlay.Panel.Dim, type: "easeOutExpo", duration: 0.3 });
+        animate(this, { variable: 'animScale', startValue: 0.9, endValue: 1.0, type: "easeOutExpo", duration: 0.4 }).promise.then(() => {
+            this.animating = false;
+            const canvas = getCanvas(this.layer);
+            canvas.style.transform = `scale(1)`;
+        });
     }
 
     /**
      * 오버레이를 닫습니다.
      */
     close() {
-        // 설정된 UI 스케일 가져오기
-        const uiScale = getSetting('uiScale') || 100;
-        const targetScale = uiScale / 100;
-
+        this.animating = true;
         animate(this, { variable: 'alpha', startValue: 1, endValue: 0, type: "easeInExpo", duration: 0.3 });
-        animate(this, { variable: 'scale', startValue: targetScale, endValue: targetScale * 0.9, type: "easeInExpo", duration: 0.3 }).promise.then(() => {
+        animate(this, { variable: 'animScale', startValue: 1.0, endValue: 0.9, type: "easeInExpo", duration: 0.3 }).promise.then(() => {
+            setMouseFocus(this.previousFocus || ['ui', 'background']); // 이전 포커스로 복귀
             this.onCloseComplete();
+            this.animating = false;
         });
+        animate(this, { variable: 'dim', startValue: "current", endValue: 0, type: "easeInExpo", duration: 0.3 });
     }
 
-    /**
-     * 닫기 애니메이션 완료 후 호출됩니다.
-     */
     onCloseComplete() {
-        setMouseFocus(this.previousFocus || 'ui'); // 이전 포커스로 복귀
-        this.destroy();
+        // override
     }
 
     update() {
-        if (this.visible && this.alpha > 0) {
-            if (this.closeButton) this.closeButton.update();
+        setDim(this.layer, this.dim);
+        if (this.dynamicItems) {
+            for (const key in this.dynamicItems) {
+                const item = this.dynamicItems[key].item;
+                if (item.update) item.update();
+            }
         }
+        if (!this.animating) return;
+        const canvas = getCanvas(this.layer);
+        canvas.style.opacity = this.alpha;
+        canvas.style.transform = `scale(${this.animScale})`;
     }
 
     /**
      * 배경과 기본 프레임을 그립니다.
      */
     draw() {
-        if (!this.visible || this.alpha <= 0.01) return;
-
-        const cx = this.WW / 2;
-        const cy = this.WH / 2;
-        const scaledW = this.width * this.scale;
-        const scaledH = this.height * this.scale;
-        const scaledX = cx - scaledW / 2;
-        const scaledY = cy - scaledH / 2;
-
-        // 1. 전체 화면 Dim 처리
-        render(this.layer, {
-            shape: 'rect',
-            x: 0, y: 0,
-            w: this.WW, h: this.WH,
-            fill: ColorSchemes.Overlay.Panel.Dim,
-            alpha: this.alpha
-        });
-
-        // Glassmorphism용 Canvas 소스 준비
-        const sourceCanvases = [getBackgroundCanvas(), getObjectCanvas(), getEffectCanvas(), getTextEffectCanvas(), getUiCanvas()];
-
-        // overlayhigh 레이어인 경우, 그 아래의 overlay 레이어도 블러 처리에 포함해야 자연스러움
-        if (this.layer === 'overlayhigh') {
-            sourceCanvases.push(getOverlayCanvas());
-        }
-
-        // 2. Glassmorphism 패널
-        shadowOn(this.layer, 30, 'rgba(0,0,0,0.3)');
+        if (this.alpha === 0) return;
+        // Glassmorphism 패널
+        shadowOn(this.layer, 30, ColorSchemes.Overlay.Panel.Shadow);
         render(this.layer, {
             shape: getSetting('disableTransparency') ? 'roundRect' : 'glassRect',
-            x: scaledX,
-            y: scaledY,
-            w: scaledW,
-            h: scaledH,
-            radius: 15,
-            image: sourceCanvases,
+            x: this.scaledX,
+            y: this.scaledY,
+            w: this.scaledW,
+            h: this.scaledH,
+            radius: parseUIData("UI_CONSTANTS.OVERLAY_PANEL_RADIUS", this.uiScale),
+            image: this.sourceCanvases,
             blur: 10,
             fill: getSetting('disableTransparency') ? ColorSchemes.Overlay.Panel.Background : ColorSchemes.Overlay.Panel.GlassBackground,
             stroke: getSetting('disableTransparency') ? ColorSchemes.Overlay.Panel.Background : ColorSchemes.Overlay.Panel.GlassBorder,
             lineWidth: 1,
-            alpha: this.alpha
         });
         shadowOff(this.layer);
 
-        // 3. 제목 (있을 경우)
-        if (this.title) {
-            render(this.layer, {
-                shape: 'text',
-                text: this.title,
-                x: scaledX + scaledW * 0.05,
-                y: scaledY + scaledH * 0.1,
-                font: `bold ${this.WW * 0.025}px Pretendard, arial`,
-                fill: ColorSchemes.Title.TextDark,
-                align: 'left',
-                alpha: this.alpha
-            });
+        if (this.staticItems) {
+            for (const key in this.staticItems) {
+                render(this.layer, this.staticItems[key].item);
+            }
         }
-
-        // 4. 닫기 버튼 (있을 경우)
-        if (this.closeButton) {
-            const btnWidth = this.width * 0.5 * this.scale;
-            const btnHeight = this.WH * 0.08 * this.scale;
-
-            this.closeButton.width = btnWidth;
-            this.closeButton.height = btnHeight;
-            this.closeButton.x = scaledX + (scaledW - btnWidth) / 2;
-            this.closeButton.y = scaledY + scaledH - btnHeight - (this.WH * 0.02 * this.scale);
-            this.closeButton.size = this.WW * 0.015 * this.scale;
-            this.closeButton.alpha = this.alpha;
-            this.closeButton.draw();
+        if (this.dynamicItems) {
+            for (const key in this.dynamicItems) {
+                const item = this.dynamicItems[key].item;
+                if (item.draw) item.draw();
+            }
         }
-    }
-
-    destroy() {
-        if (this.closeButton) this.closeButton.destroy();
     }
 }

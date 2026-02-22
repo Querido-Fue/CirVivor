@@ -21,7 +21,7 @@ export class InputSystem {
      * 입력 시스템의 상태를 업데이트합니다.
      * 마우스와 키보드 입력을 처리합니다.
      */
-    _update() {
+    update() {
         this.mouseInputHandler._update();
         this.keyboardInputHandler._update();
     }
@@ -37,7 +37,7 @@ export const getMouseInput = (key) => inputSystemInstance.mouseInputHandler.getM
  * 현재 마우스 포커스 레이어를 반환합니다.
  * @returns {string} 포커스 레이어 이름
  */
-export const getMouseFocus = () => inputSystemInstance.mouseInputHandler.focus;
+export const getMouseFocus = () => inputSystemInstance.mouseInputHandler.focusList;
 
 /**
  * 마우스 포커스를 추가합니다.

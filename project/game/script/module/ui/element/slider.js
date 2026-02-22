@@ -3,7 +3,7 @@ import { render } from "display/_display_system.js";
 import { getMouseInput, getMouseFocus } from "input/_input_system.js";
 import { ColorSchemes } from "display/theme_handler.js";
 import { animate, remove } from "animation/_animation_system.js";
-import { lerpColor } from "util/color_util.js";
+import { colorUtil } from "util/color_util.js";
 import { mathUtil } from "util/math_util.js";
 import { GLOBAL_CONSTANTS } from "data/global/global_constants.js";
 
@@ -28,55 +28,50 @@ export class SliderElement extends BaseUIElement {
         this.valueColor = properties.valueColor || ColorSchemes.Overlay.Slider.ValueInactive;
         this.valueFont = properties.valueFont || '500 12px "Pretendard Variable", arial';
         this.showValue = properties.showValue !== undefined ? properties.showValue : true;
-        this.valueSuffix = properties.valueSuffix !== undefined ? properties.valueSuffix : '%';
+        this.valuePrefix = properties.valuePrefix || '';
+        this.valueSuffix = properties.valueSuffix || '';
         this.valueOffsetX = properties.valueOffsetX || 15;
+        this.valueOffsetY = properties.valueOffsetY || 0;
 
         this.onChange = properties.onChange || null;
         this.valueFormatter = properties.valueFormatter || null;
         this.dragging = false;
 
         this._overflow = 0;
-        this._hoverScale = 1;
-        this._focusRatio = 0;
-        this._overflowAnim = null;
-        this._hoverAnim = null;
-        this._focusAnim = null;
-        this._isHovered = false;
-        this._isFocused = false;
         this.lastMouseX = 0;
+        this.hoverScaleMultiplier = 1.15;
+        this.pressScaleMultiplier = 1.15;
     }
 
     update() {
         if (!this.visible) return;
 
+        const mx = getMouseInput('x');
+        const my = getMouseInput('y');
+
         // 포커스 확인: 현재 포커스 레이어와 다르면 입력 무시
-        if (getMouseFocus() !== this.layer) {
+        if (!getMouseFocus().includes(this.layer)) {
             if (this.dragging) {
                 this.dragging = false;
-                this._isFocused = false;
-                this._isHovered = false;
             }
             return;
         }
 
-        const yOffset = this.trackHeight * 0.5 * this._hoverScale; // y 오프셋 조정
-        const drawY = this.y + yOffset;
+        const cx = this.x + this.width / 2;
+        const cy = this.y + this.height / 2;
+        const baseW = this.width * this.scale;
+        const baseH = this.trackHeight * this.scale;
+        const baseX = cx - baseW / 2;
+        const drawY = cy - baseH / 2 + this.valueOffsetY;
 
-        const mx = getMouseInput('x');
-        const my = getMouseInput('y');
-
-        const baseW = this.width * this._hoverScale;
-        const baseX = this.x + (this.width - baseW) / 2;
-
-        const centerX = this.x + this.width / 2;
         let pullDirection = 'none';
 
         if (this._overflow > 0.01) {
-            if (this.lastMouseX < centerX) pullDirection = 'left';
+            if (this.lastMouseX < cx) pullDirection = 'left';
             else pullDirection = 'right';
         }
 
-        const overflowValue = this._overflow * this._hoverScale;
+        const overflowValue = this._overflow * this.scale;
         const currentWidth = baseW + overflowValue;
 
         let hitX = baseX;
@@ -86,13 +81,13 @@ export class SliderElement extends BaseUIElement {
             hitX = baseX;
         }
 
-        const hitBuffer = this.knobRadius * 1.5 * this._hoverScale;
-        const hitBufferX = 20 * this._hoverScale;
+        const hitBuffer = this.knobRadius * 1.5 * this.scale;
+        const hitBufferX = 20 * this.scale;
 
         const isOverSlider = mx >= hitX - hitBufferX && mx <= hitX + currentWidth + hitBufferX &&
             my >= drawY - hitBuffer && my <= drawY + hitBuffer;
 
-        if (getMouseInput('leftClicking') && getMouseFocus() === this.layer) {
+        if (getMouseInput('leftClicking') && getMouseFocus().includes(this.layer)) {
             if (isOverSlider || this.dragging) {
                 if (!this.dragging) {
                     this.dragging = true;
@@ -129,7 +124,7 @@ export class SliderElement extends BaseUIElement {
             }
 
             // Max Overflow를 너비 비례로 설정 (해상도 독립적)
-            const maxOverflow = this.width * GLOBAL_CONSTANTS.SLIDER_MAX_OVERFLOW * this._hoverScale;
+            const maxOverflow = this.width * GLOBAL_CONSTANTS.SLIDER_MAX_OVERFLOW * this.scale;
 
             if (mx < this.x) {
                 this._overflow = mathUtil().decay(this.x - mx, maxOverflow);
@@ -140,49 +135,28 @@ export class SliderElement extends BaseUIElement {
             }
         }
 
-        const targetHover = (isOverSlider || this.dragging) ? 1.15 : 1.0;
-        if (this._isHovered !== (targetHover > 1.0)) {
-            this._isHovered = (targetHover > 1.0);
-            if (this._hoverAnim) remove(this._hoverAnim.id);
-            this._hoverAnim = animate(this, {
-                variable: '_hoverScale',
-                endValue: targetHover,
-                duration: 0.2,
-                type: 'easeOutExpo'
-            });
-        }
-
-        const targetFocus = (isOverSlider || this.dragging) ? 1.0 : 0.0;
-        if (this._isFocused !== (targetFocus > 0.5)) {
-            this._isFocused = (targetFocus > 0.5);
-            if (this._focusAnim) remove(this._focusAnim.id);
-            this._focusAnim = animate(this, {
-                variable: '_focusRatio',
-                endValue: targetFocus,
-                duration: 0.25,
-                type: 'easeOutExpo'
-            });
-        }
+        // BaseUIElement의 공통 함수 호출 (_isFocused는 this.isPressed 로 활용, _hoverScale은 this.scale로 대체)
+        this._handleInteractionState(isOverSlider || this.dragging, this.dragging);
     }
 
     draw() {
         if (!this.visible) return;
 
-        const yOffset = this.trackHeight * 0.5 * this._hoverScale; // y 오프셋 조정
-        const drawY = this.y + yOffset;
+        const cx = this.x + this.width / 2;
+        const cy = this.y + this.height / 2;
 
-        const baseW = this.width * this._hoverScale;
-        const baseH = this.trackHeight * this._hoverScale;
-        const baseX = this.x + (this.width - baseW) / 2;
+        const baseW = this.width * this.scale;
+        const baseH = this.trackHeight * this.scale;
+        const baseX = cx - baseW / 2;
+        const drawY = cy - baseH / 2 + this.valueOffsetY;
 
-        const centerX = this.x + this.width / 2;
         let pullDirection = 'right';
-        if (this._overflow > 0.01 && this.lastMouseX < centerX) {
+        if (this._overflow > 0.01 && this.lastMouseX < cx) {
             pullDirection = 'left';
         }
 
-        const maxOverflow = this.width * GLOBAL_CONSTANTS.SLIDER_MAX_OVERFLOW * this._hoverScale;
-        const overflowValue = this._overflow * this._hoverScale;
+        const maxOverflow = this.width * GLOBAL_CONSTANTS.SLIDER_MAX_OVERFLOW * this.scale;
+        const overflowValue = this._overflow * this.scale;
         const currentWidth = baseW + overflowValue;
         const currentHeight = baseH * (1 - (this._overflow / maxOverflow) * 0.2);
 
@@ -221,7 +195,7 @@ export class SliderElement extends BaseUIElement {
         }
 
         const knobX = drawX + fillW;
-        const knobR = this.knobRadius * this._hoverScale;
+        const knobR = this.knobRadius * this.scale;
 
         render(this.layer, {
             shape: 'circle',
@@ -233,15 +207,17 @@ export class SliderElement extends BaseUIElement {
         });
 
         if (this.showValue) {
-            const textY = drawY - (this.trackHeight * 1.5 * this._hoverScale) - 5;
+            const textY = drawY - (this.trackHeight * 2.25 * this.scale);
 
             const cNormal = this.valueColor || ColorSchemes.Overlay.Slider.ValueInactive;
             const cActive = this.activeColor || ColorSchemes.Overlay.Slider.ValueActive;
-            const vColor = lerpColor(cNormal, cActive, this._focusRatio);
+
+            // valueText 컬러 페이드는 isPressed 상태에 기반
+            const vColor = colorUtil().lerpColor(cNormal, cActive, this.isPressed ? 1.0 : this.hoverValue);
 
             render(this.layer, {
                 shape: 'text',
-                text: this.valueFormatter ? this.valueFormatter(this.value) : `${this.value}${this.valueSuffix}`,
+                text: this.valueFormatter ? this.valueFormatter(this.value) : `${this.valuePrefix}${this.value}${this.valueSuffix}`,
                 x: baseX + baseW / 2,
                 y: textY,
                 font: this.valueFont,

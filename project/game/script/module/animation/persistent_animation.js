@@ -27,8 +27,8 @@ export class PersistentAnimation extends AnimationBase {
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
      */
-    init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction) {
-        super.init(id, owner, variable);
+    init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction, fixed) {
+        super.init(id, owner, variable, fixed);
         this.startValue = startValue;
         this.endValue = endValue;
         this.easings = Array.isArray(easings) ? easings : [easings];

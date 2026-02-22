@@ -1,6 +1,7 @@
 import { compileShader, createProgram, DEFAULT_VERTEX_SHADER, DEFAULT_FRAGMENT_SHADER } from "./shader_utils.js";
 import { GLOBAL_CONSTANTS } from "data/global/global_constants.js";
-import { cssToRgb } from "util/color_util.js";
+import { colorUtil } from "util/color_util.js";
+import { ShapeGeometryBuilder } from "./shape_geometry_builder.js";
 
 class ShapeTextureCache {
     constructor(gl) {
@@ -105,7 +106,7 @@ class WebGLBatch {
         this.gl = gl;
         this.maxSprites = GLOBAL_CONSTANTS.WEBGL_MAX_SPRITES;
         this.vertexSize = 8; // x, y, u, v, r, g, b, a
-        this.vertices = new Float32Array(this.maxSprites * 6 * this.vertexSize);
+        this.vertices = new Float32Array(this.maxSprites * 4 * this.vertexSize);
         this.spriteCount = 0;
         this.currentTexture = null;
         this.textureCache = new Map();
@@ -125,6 +126,19 @@ class WebGLBatch {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, this.vertices.byteLength, gl.DYNAMIC_DRAW);
 
+        this.indexBuffer = gl.createBuffer();
+        const indices = new Uint16Array(this.maxSprites * 6);
+        for (let i = 0, j = 0; i < this.maxSprites; i++, j += 4) {
+            indices[i * 6 + 0] = j + 0;
+            indices[i * 6 + 1] = j + 1;
+            indices[i * 6 + 2] = j + 2;
+            indices[i * 6 + 3] = j + 0;
+            indices[i * 6 + 4] = j + 2;
+            indices[i * 6 + 5] = j + 3;
+        }
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
         this.aPosition = gl.getAttribLocation(this.program, "a_position");
         this.aTexCoord = gl.getAttribLocation(this.program, "a_texCoord");
         this.aColor = gl.getAttribLocation(this.program, "a_color");
@@ -140,6 +154,7 @@ class WebGLBatch {
         gl.uniform2f(this.uResolution, width, height);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
 
         const stride = this.vertexSize * 4;
         gl.enableVertexAttribArray(this.aPosition);
@@ -164,9 +179,9 @@ class WebGLBatch {
         gl.bindTexture(gl.TEXTURE_2D, this.currentTexture);
         gl.uniform1i(this.uImage, 0);
 
-        gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.vertices.subarray(0, this.spriteCount * 6 * this.vertexSize));
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.vertices.subarray(0, this.spriteCount * 4 * this.vertexSize));
 
-        gl.drawArrays(gl.TRIANGLES, 0, this.spriteCount * 6);
+        gl.drawElements(gl.TRIANGLES, this.spriteCount * 6, gl.UNSIGNED_SHORT, 0);
 
         this.spriteCount = 0;
     }
@@ -214,20 +229,10 @@ class WebGLBatch {
 
         const x = options.x;
         const y = options.y;
-        let w = options.w;
-        let h = options.h;
-
-        if (w === undefined && options.radius !== undefined) {
-            w = options.radius * 2;
-            h = options.radius * 2;
-        }
-        h = h || w; // h가 없으면 w와 동일
-
-        const rotation = options.rotation ? options.rotation * Math.PI / 180 : 0;
 
         let r = 1, g = 1, b = 1, a = 1;
         if (options.fill) {
-            const rgb = cssToRgb(options.fill);
+            const rgb = colorUtil().cssToRgb(options.fill);
             r = rgb.r / 255;
             g = rgb.g / 255;
             b = rgb.b / 255;
@@ -237,93 +242,30 @@ class WebGLBatch {
             a *= options.alpha;
         }
 
-        // 회전 계산을 위해 중심점 기준 좌표 계산
-        // 회전 중심은 (x + w/2, y + h/2)로 가정? drawHandler는 translate(x,y) 후 rotate이므로
-        // (0,0)을 기준으로 회전하고, (x,y)에 배치하는 방식임.
-        // 하지만 drawImage는 x,y가 좌상단.
-        // options.shape === 'text'는 (x,y) 기준.
-        // TitleEnemy.js를 보면:
-        // x: this.WW * this.pos.x, y: this.WH * this.pos.y
-        // render('background', { x, y, ... })
-        // DrawHandler2D에서:
-        // case 'triangle' ... : translate(options.x, options.y), rotate...
-        // 도형들은 (0,0) 중심으로 그려짐.
-        // 즉, options.x, options.y가 중심점임.
-        // 반면 이미지는 drawImage(img, x, y, w, h) -> x,y가 좌상단.
-        // TitleEnemy는 shape를 사용하므로 (x,y)가 중심점임.
+        // ShapeGeometryBuilder를 통해 점 계산 위임
+        const { x1, y1, x2, y2, x3, y3, x4, y4 } = ShapeGeometryBuilder.build(options);
 
-        let x1, y1, x2, y2, x3, y3, x4, y4;
-
-        if (options.shape) {
-            // 도형은 중심 기준
-            const hw = w / 2;
-            const hh = h / 2;
-            // 로컬 좌표
-            // (-hw, -hh) (hw, -hh)
-            // (-hw, hh)  (hw, hh)
-
-            const cos = Math.cos(rotation);
-            const sin = Math.sin(rotation);
-
-            const rx1 = -hw * cos - -hh * sin;
-            const ry1 = -hw * sin + -hh * cos;
-
-            const rx2 = hw * cos - -hh * sin;
-            const ry2 = hw * sin + -hh * cos;
-
-            const rx3 = hw * cos - hh * sin;
-            const ry3 = hw * sin + hh * cos;
-
-            const rx4 = -hw * cos - hh * sin;
-            const ry4 = -hw * sin + hh * cos;
-
-            x1 = x + rx1; y1 = y + ry1;
-            x2 = x + rx2; y2 = y + ry2;
-            x3 = x + rx3; y3 = y + ry3; // 우하단
-            x4 = x + rx4; y4 = y + ry4; // 좌하단
-            // 순서: 좌상, 우상, 우하, 좌하 (Quad)
-        } else {
-            // 이미지는 좌상단 기준 (회전 없음 가정하거나 처리 필요)
-            // 일반적인 2D 게임에서 이미지는 좌상단 기준이 많음.
-            // 하지만 rotation이 있다면? DrawHandler2D image case는 rotation 처리가 없음.
-            // 만약 필요하다면 추가. 현재 TitleEnemy는 shape만 씀.
-
-            x1 = x; y1 = y;
-            x2 = x + w; y2 = y;
-            x3 = x + w; y3 = y + h;
-            x4 = x; y4 = y + h;
-        }
-
-        const i = this.spriteCount * 6 * this.vertexSize;
+        const i = this.spriteCount * 4 * this.vertexSize;
         const v = this.vertices;
 
-        // Quad (2 triangles)
-        // 1-2-3, 1-3-4 order for CCW or similar.
-        // UV coordinates: (0,0), (1,0), (1,1), (0,1)
+        // Quad (4 vertices)
+        // Order: CCW 0-1-2 / 0-2-3
 
-        // Vertex 1 (Top-Left)
+        // Vertex 0 (Top-Left)
         v[i] = x1; v[i + 1] = y1; v[i + 2] = 0.0; v[i + 3] = 0.0;
         v[i + 4] = r; v[i + 5] = g; v[i + 6] = b; v[i + 7] = a;
 
-        // Vertex 2 (Top-Right)
+        // Vertex 1 (Top-Right)
         v[i + 8] = x2; v[i + 9] = y2; v[i + 10] = 1.0; v[i + 11] = 0.0;
         v[i + 12] = r; v[i + 13] = g; v[i + 14] = b; v[i + 15] = a;
 
-        // Vertex 3 (Bottom-Right)
+        // Vertex 2 (Bottom-Right)
         v[i + 16] = x3; v[i + 17] = y3; v[i + 18] = 1.0; v[i + 19] = 1.0;
         v[i + 20] = r; v[i + 21] = g; v[i + 22] = b; v[i + 23] = a;
 
-        // Vertex 4 (Top-Left)
-        v[i + 24] = x1; v[i + 25] = y1; v[i + 26] = 0.0; v[i + 27] = 0.0;
+        // Vertex 3 (Bottom-Left)
+        v[i + 24] = x4; v[i + 25] = y4; v[i + 26] = 0.0; v[i + 27] = 1.0;
         v[i + 28] = r; v[i + 29] = g; v[i + 30] = b; v[i + 31] = a;
-
-        // Vertex 5 (Bottom-Right)
-        v[i + 32] = x3; v[i + 33] = y3; v[i + 34] = 1.0; v[i + 35] = 1.0;
-        v[i + 36] = r; v[i + 37] = g; v[i + 38] = b; v[i + 39] = a;
-
-        // Vertex 6 (Bottom-Left)
-        v[i + 40] = x4; v[i + 41] = y4; v[i + 42] = 0.0; v[i + 43] = 1.0;
-        v[i + 44] = r; v[i + 45] = g; v[i + 46] = b; v[i + 47] = a;
 
         this.spriteCount++;
     }

@@ -1,6 +1,6 @@
 import { korean } from './korean.js';
 import { english } from './english.js';
-import { getSetting, setSetting } from 'save/_save_system.js';
+import { getSetting } from 'save/_save_system.js';
 
 export class LanguageHandler {
     constructor(uiSystem) {
@@ -17,20 +17,10 @@ export class LanguageHandler {
      * @returns {string} 번역된 문자열 (키를 찾지 못하면 키 자체 반환)
      */
     getString(key) {
-        return this.currentLanguage[key] || key; // Return key if string not found
-    }
-
-    /**
-     * 언어를 설정하고 저장합니다.
-     * @param {string} lang - 언어 코드 (korean, english)
-     */
-    setLanguage(lang) {
-        if (this.languages[lang]) {
-            this.currentLanguage = this.languages[lang];
-            setSetting('language', lang);
-            console.log(`Language changed to: ${lang}`);
-        } else {
-            console.error(`Language '${lang}' not found.`);
+        if (this.currentLanguage[key]) {
+            return this.currentLanguage[key];
         }
+        console.warn(`언어 키 '${key}'를 찾을 수 없습니다.`);
+        return key;
     }
 }

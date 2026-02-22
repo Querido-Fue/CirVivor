@@ -1,7 +1,8 @@
 import { LightTheme, DarkTheme } from 'data/global/color_schemes.js';
 import { setBackgroundColor } from 'display/_display_system.js';
-import { cssToRgb } from 'util/color_util.js';
+import { colorUtil } from 'util/color_util.js';
 const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
 
 export let ColorSchemes = {};
@@ -12,25 +13,30 @@ export class ThemeHandler {
     constructor() {
         themeHandlerInstance = this;
 
-        // 초기 테마 설정을 동기적으로 로드
+        // init() 내부에서 비동기로 호출되도록 설정하되 기본값은 임시 저장
+        this.currentTheme = 'dark'; // 임시 기본값
+    }
+
+    async init() {
         let isDarkMode = true;
         try {
             const dataDir = path.join(process.cwd(), 'save');
             const settingsPath = path.join(dataDir, 'settings.json');
-            if (fs.existsSync(settingsPath)) {
-                const data = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+
+            try {
+                await fsPromises.access(settingsPath);
+                const data = JSON.parse(await fsPromises.readFile(settingsPath, 'utf-8'));
                 if (data.darkMode !== undefined) {
                     isDarkMode = data.darkMode;
                 }
+            } catch (err) {
+                // 파일이 없거나 읽기 에러
             }
         } catch (e) {
             console.error("ThemeHandler failed to load initial settings:", e);
         }
 
-        this.setTheme(isDarkMode, false); // 생성 시점에는 ColorSchemes만 업데이트하고 화면 갱신은 안 함 (WebGL 미초기화)
-    }
-
-    init() {
+        this.setTheme(isDarkMode, false); // WebGL 미초기화 상태이므로 화면 갱신은 안 함
         this.updateBackgroundColor();
     }
 
@@ -49,7 +55,7 @@ export class ThemeHandler {
 
     updateBackgroundColor() {
         if (ColorSchemes.Background) {
-            const rgb = cssToRgb(ColorSchemes.Background);
+            const rgb = colorUtil().cssToRgb(ColorSchemes.Background);
             setBackgroundColor(rgb.r / 255, rgb.g / 255, rgb.b / 255);
         }
     }

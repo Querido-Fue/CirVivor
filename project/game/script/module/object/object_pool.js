@@ -38,6 +38,16 @@ export class ObjectPool {
     }
 
     /**
+     * 지정된 갯수만큼 객체를 미리 풀에 생성해 둡니다. (프레임 드랍 방지용)
+     * @param {number} count - 미리 생성할 객체 수
+     */
+    warmUp(count) {
+        for (let i = 0; i < count; i++) {
+            this.pool.push(this.createFn());
+        }
+    }
+
+    /**
      * 풀을 비웁니다.
      */
     clear() {

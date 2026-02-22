@@ -1,10 +1,9 @@
 import { BaseUIElement } from "./base_element.js";
-import { render, measureText } from "display/_display_system.js";
+import { render } from "display/_display_system.js";
 import { getMouseInput, getMouseFocus } from "input/_input_system.js";
 import { animate, remove } from "animation/_animation_system.js";
-import { getDelta } from "game/time_handler.js";
 
-import { cssToRgb, rgbParse } from "util/color_util.js";
+import { colorUtil } from "util/color_util.js";
 import { ColorSchemes } from "display/theme_handler.js";
 
 /**
@@ -70,23 +69,12 @@ export class ButtonElement extends BaseUIElement {
         this.idleColor = properties.idleColor || ColorSchemes.Overlay.Control.Inactive;
         this.hoverColor = properties.hoverColor || ColorSchemes.Overlay.Control.Hover;
 
-        this._idleColorStruct = cssToRgb(this.idleColor);
-        this._hoverColorStruct = cssToRgb(this.hoverColor);
-
-        this.hoverValue = 0;
-        this._targetHoverValue = 0;
-        this.hoverAnimId = -1;
-
+        this._idleColorStruct = colorUtil().cssToRgb(this.idleColor);
+        this._hoverColorStruct = colorUtil().cssToRgb(this.hoverColor);
         if (properties.color) this.color = properties.color;
 
-        this.clickAnimationTimer = 0;
-        this.clickAble = properties.clickAble === undefined ? true : properties.clickAble;
-        this.enableHoverGradient = properties.enableHoverGradient !== undefined ? properties.enableHoverGradient : true;
+        this.enableHoverGradient = properties.enableHoverGradient || false;
         this.radius = properties.radius || 5;
-
-        // 애니메이션
-        this.scale = 1;
-        this.isPressed = false;
 
         this.iconType = properties.iconType || 'none'; // 'arrow', 'confirm', 'deny', 'none'
     }
@@ -94,54 +82,19 @@ export class ButtonElement extends BaseUIElement {
     update() {
         if (!this.visible) return;
 
-        // 포커스 확인
-        if (getMouseFocus() !== this.layer) {
+        if (!getMouseFocus().includes(this.layer)) {
             return;
         };
 
         let isHovered = false;
-        const mx = getMouseInput('x');
         if (getMouseInput("x") >= this.x && getMouseInput("x") <= this.x + this.width && getMouseInput("y") >= this.y && getMouseInput("y") <= this.y + this.height && this.clickAble) {
             isHovered = true;
         }
 
-        const targetValue = isHovered ? 1.0 : 0.0;
+        const isLeftClicking = getMouseInput("leftClicking");
 
-        // Hover & Press Animation Logic
-        const isLeftClicking = getMouseInput("leftClicking"); // Mouse Down status
-        const shouldBePressed = isHovered && isLeftClicking;
-
-        if (this.isPressed !== shouldBePressed) {
-            this.isPressed = shouldBePressed;
-            const targetScale = this.isPressed ? 0.95 : 1.0;
-
-            if (this.scaleAnimId) {
-                remove(this.scaleAnimId);
-                this.scaleAnimId = null;
-            }
-
-            this.scaleAnimId = animate(this, { variable: 'scale', startValue: this.scale, endValue: targetScale, type: "easeOutExpo", duration: 0.2 }).id;
-        }
-
-        if (targetValue !== this._targetHoverValue) {
-            this._targetHoverValue = targetValue;
-
-            if (this.hoverAnimId !== -1) {
-                remove(this.hoverAnimId);
-                this.hoverAnimId = -1;
-            }
-
-            const animObj = animate(this, {
-                variable: 'hoverValue',
-                startValue: this.hoverValue,
-                endValue: this._targetHoverValue,
-                type: 'easeOutExpo',
-                duration: 0.2
-            });
-            this.hoverAnimId = animObj.id;
-
-            if (isHovered) this.onHover();
-        }
+        // 부모의 공통 호버, 클릭 스케일 애니메이션 처리
+        this._handleInteractionState(isHovered, isLeftClicking, this.onHover);
 
 
         if (isHovered && getMouseInput("leftClicked")) {
@@ -154,17 +107,19 @@ export class ButtonElement extends BaseUIElement {
         const b = this._idleColorStruct.b + (this._hoverColorStruct.b - this._idleColorStruct.b) * t;
         const a = this._idleColorStruct.a + (this._hoverColorStruct.a - this._idleColorStruct.a) * t;
 
-        this.currentColor = rgbParse(r, g, b, a);
+        this.currentColor = colorUtil().rgbParse(r, g, b, a);
     }
 
     draw() {
         if (!this.visible) return;
 
-        // 스케일 적용
+        // 스케일 적용 (중심점 기준 축소/확대가 아니라 top-left 부터 시작하는 LayoutHandler 룰에 맞춤)
         const cx = this.x + this.width / 2;
         const cy = this.y + this.height / 2;
         const scaledW = this.width * this.scale;
         const scaledH = this.height * this.scale;
+
+        // 버튼이 가운데로 모이도록 cx, cy를 기준으로 다시 x,y 계산
         const scaledX = cx - scaledW / 2;
         const scaledY = cy - scaledH / 2;
 
@@ -241,12 +196,18 @@ export class ButtonElement extends BaseUIElement {
             // 폰트 크기 스케일 적용
             const scaledSize = this.size * this.scale;
 
+            let familyName = this.font;
+            if (!familyName.includes('"') && !familyName.includes("'")) {
+                const parts = familyName.split(',');
+                familyName = `"${parts[0].trim()}"${parts[1] ? ',' + parts[1] : ''}`;
+            }
+
             render(this.layer, {
                 shape: 'text',
                 text: this.text,
                 x: textX,
                 y: scaledY + scaledH / 2,
-                font: `${this.fontWeight} ${scaledSize}px ${this.font}`,
+                font: `${this.fontWeight}${scaledSize}px ${familyName}`,
                 fill: this.color,
                 alpha: this.alpha,
                 align: this.align,
@@ -350,7 +311,7 @@ export class ButtonElement extends BaseUIElement {
                 lineCap: 'round'
             });
         } else if (type === 'check') {
-            const iconSize = h * 0.5;
+            const iconSize = h * 0.4;
             const iconX = x + w * 0.15;
             const iconY = y + h / 2;
             const halfSize = iconSize / 2;

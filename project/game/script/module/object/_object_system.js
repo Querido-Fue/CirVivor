@@ -18,6 +18,12 @@ export class ObjectSystem {
     }
 
     /**
+     * 모든 오브젝트를 고정 프레임으로 업데이트합니다.
+     */
+    fixedUpdate() {
+    }
+
+    /**
      * 모든 오브젝트를 그립니다.
      */
     draw() {

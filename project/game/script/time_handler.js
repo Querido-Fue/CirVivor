@@ -10,7 +10,9 @@ export class TimeHandler {
     constructor() {
         timeHandlerInstance = this;
         this.recentData = [];
+        this.recentFixedData = [];
         this.timeBefore = performance.now();
+        this.fixedTimeBefore = performance.now();
         this.updateStartTime = 0;
         this.drawStartTime = 0;
         this.updateTimeHistory = [];
@@ -19,9 +21,44 @@ export class TimeHandler {
             fps: 0,
             lowestFps: 0,
             lastFrameTimeDelta: 0,
+            lastFixedTimeDelta: 1 / 60,
+            currentFixedFps: 60,
             displayLastFrameTimeDelta: 0,
             lastUpdateTime: 0,
             lastDrawTime: 0,
+            rawFrameTimeDelta: 0,
+            avgFrameTime: 0,
+            avgUpdateTime: 0,
+            avgDrawTime: 0
+        }
+    }
+
+    /**
+     * 메인 루프 외에 고정 업데이트 루프의 시간 델타를 계산합니다.
+     */
+    fixedUpdate() {
+        const now = performance.now();
+        let delta = now - this.fixedTimeBefore;
+        this.fixedTimeBefore = now;
+
+        // 델타 값이 너무 튀는 것을 방지 (최대 0.1초)
+        if (delta > 100) delta = 100;
+        // 최소 2ms 보장
+        if (delta < 2) delta = 2;
+
+        this.data.lastFixedTimeDelta = delta / 1000;
+
+        const instantaneousFps = delta > 0 ? Math.round(1000 / delta) : 0;
+        this.recentFixedData.push({ time: now, fps: instantaneousFps });
+        this.recentFixedData = this.recentFixedData.filter(d => now - d.time <= 1000);
+
+        if (this.recentFixedData.length > 0) {
+            const fpsValues = this.recentFixedData.map(d => d.fps);
+            fpsValues.sort((a, b) => a - b);
+            const trimCount = Math.floor(fpsValues.length * 0.02);
+            const trimmedFpsValues = trimCount > 0 ? fpsValues.slice(0, -trimCount) : fpsValues;
+            const totalFps = trimmedFpsValues.reduce((a, b) => a + b, 0);
+            this.data.currentFixedFps = Math.floor(totalFps / trimmedFpsValues.length);
         }
     }
 
@@ -38,6 +75,11 @@ export class TimeHandler {
         // 델타 값이 너무 튀는 것을 방지 (최대 0.1초)
         if (delta > 100) delta = 100;
 
+        // 너무 짧은 프레임 델타 방지 (0으로 수렴하여 물리/애니가 멈추거나 튀는 현상 방지)
+        // RAF 밀림 후 연속 호출될 때 delta가 1~2ms로 찍히는 스파이크 방어
+        // 최소 2ms (약 500fps 한계) 보장
+        if (delta < 2) delta = 2;
+
         this.data.lastFrameTimeDelta = delta / 1000;
 
         // 디버그용 즉시 FPS (가독성을 위해 스무딩된 값 유지)
@@ -47,18 +89,34 @@ export class TimeHandler {
         // 최근 프레임 데이터 저장 (최근 1초간)
         this.recentData.push({
             time: now,
-            fps: currentFps
+            fps: currentFps,
+            rawFrameTimeDelta: this.data.rawFrameTimeDelta,
+            lastUpdateTime: this.data.lastUpdateTime,
+            lastDrawTime: this.data.lastDrawTime
         });
 
         this.recentData = this.recentData.filter(d => now - d.time <= 1000);
 
         if (this.recentData.length > 0) {
             const fpsValues = this.recentData.map(d => d.fps);
-
-            const totalFps = fpsValues.reduce((a, b) => a + b, 0);
-            this.data.fps = Math.floor(totalFps / this.recentData.length);
-
             this.data.lowestFps = Math.min(...fpsValues);
+
+            // FPS 평균 계산 (상위 2% 제외: 비정상적으로 튀는 값 방어)
+            fpsValues.sort((a, b) => a - b);
+            const trimCount = Math.floor(fpsValues.length * 0.02);
+            const trimmedFpsValues = trimCount > 0 ? fpsValues.slice(0, -trimCount) : fpsValues;
+
+            const totalFps = trimmedFpsValues.reduce((a, b) => a + b, 0);
+            this.data.fps = Math.floor(totalFps / trimmedFpsValues.length);
+
+            // 스무딩된 시간 데이터 계산
+            const rawFrameTimeValues = this.recentData.map(d => d.rawFrameTimeDelta);
+            const updateTimeValues = this.recentData.map(d => d.lastUpdateTime);
+            const drawTimeValues = this.recentData.map(d => d.lastDrawTime);
+
+            this.data.avgFrameTime = rawFrameTimeValues.reduce((a, b) => a + b, 0) / this.recentData.length;
+            this.data.avgUpdateTime = updateTimeValues.reduce((a, b) => a + b, 0) / this.recentData.length;
+            this.data.avgDrawTime = drawTimeValues.reduce((a, b) => a + b, 0) / this.recentData.length;
         }
     }
 
@@ -124,6 +182,13 @@ export function getDelta() {
         return timeHandlerInstance.getData('lastFrameTimeDelta');
     }
     return 0;
+}
+
+export function getFixedUpdateDelta() {
+    if (timeHandlerInstance) {
+        return timeHandlerInstance.getData('lastFixedTimeDelta');
+    }
+    return 1 / 60;
 }
 
 /**

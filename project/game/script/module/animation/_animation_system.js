@@ -3,7 +3,7 @@ import { PersistentAnimation } from './persistent_animation.js';
 import { MixedAnimation } from './mixed_animation.js';
 import { ANIMATION_STATE } from './constants.js';
 import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
-import { getDelta } from 'game/time_handler.js';
+import { getDelta, getFixedUpdateDelta } from 'game/time_handler.js';
 
 let animationSystemInstance = null;
 
@@ -20,16 +20,18 @@ export class AnimationSystem {
     }
 
     /**
-     * @private
      * 활성화된 모든 애니메이션을 업데이트합니다.
      * 완료된 애니메이션은 제거하고 풀로 반환합니다.
      */
-    _update() {
+    update() {
         const delta = getDelta();
 
         // 안전한 제거를 위해 역순으로 순회
         for (let i = this.activeAnimations.length - 1; i >= 0; i--) {
             const anim = this.activeAnimations[i];
+
+            if (anim.fixed) continue;
+
             anim.update(delta);
 
             if (anim.state === ANIMATION_STATE.FINISHED) {
@@ -45,6 +47,35 @@ export class AnimationSystem {
                 this.animationsById.delete(anim.id);
 
                 // 가능하다면 풀로 반환
+                if (anim instanceof StandardAnimation) {
+                    StandardAnimation.release(anim);
+                }
+            }
+        }
+    }
+
+    /**
+     * 모든 애니메이션을 고정 프레임으로 업데이트합니다.
+     */
+    fixedUpdate() {
+        const fixedDelta = getFixedUpdateDelta();
+
+        for (let i = this.activeAnimations.length - 1; i >= 0; i--) {
+            const anim = this.activeAnimations[i];
+
+            if (!anim.fixed) continue;
+
+            anim.update(fixedDelta);
+
+            if (anim.state === ANIMATION_STATE.FINISHED) {
+                const lastIdx = this.activeAnimations.length - 1;
+                if (i !== lastIdx) {
+                    this.activeAnimations[i] = this.activeAnimations[lastIdx];
+                }
+                this.activeAnimations.pop();
+
+                this.animationsById.delete(anim.id);
+
                 if (anim instanceof StandardAnimation) {
                     StandardAnimation.release(anim);
                 }
@@ -85,10 +116,11 @@ export class AnimationSystem {
         const type = properties.type || 'linear';
         const duration = properties.duration || 1;
         const delay = properties.delay || 0;
+        const fixed = properties.fixed || false;
 
         // 객체 풀 사용
         const animation = StandardAnimation.create();
-        animation.init(id, owner, variable, startValue, endValue, type, duration, delay);
+        animation.init(id, owner, variable, startValue, endValue, type, duration, delay, fixed);
 
         this.activeAnimations.push(animation);
         this.animationsById.set(id, animation);
@@ -105,8 +137,9 @@ export class AnimationSystem {
      * @param {Array} mixedDefs - 애니메이션 정의 배열
      * @returns {object} { id, promise } 형태의 결과 객체
      */
-    animateMixed(owner, mixedDefs) {
+    animateMixed(owner, mixedDefs, properties = {}) {
         const promises = [];
+        const fixed = properties.fixed || false;
 
         if (!Array.isArray(mixedDefs)) {
             this.utilities.errorHandler.errThrow(null, 'Animator: mixedDefs must be an array', 'error');
@@ -119,7 +152,7 @@ export class AnimationSystem {
 
             const subId = this.idCounter++;
             const anim = new MixedAnimation();
-            anim.init(subId, owner, def.variable, def.animations);
+            anim.init(subId, owner, def.variable, def.animations, fixed);
 
             this.activeAnimations.push(anim);
             this.animationsById.set(subId, anim);
@@ -145,9 +178,10 @@ export class AnimationSystem {
         const easings = properties.easings;
         const duration = properties.duration;
         const onCompleteAction = properties.onCompleteAction || 'stop';
+        const fixed = properties.fixed || false;
 
         const animation = new PersistentAnimation();
-        animation.init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction);
+        animation.init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction, fixed);
 
         this.activeAnimations.push(animation);
         this.animationsById.set(id, animation);

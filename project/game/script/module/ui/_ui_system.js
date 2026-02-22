@@ -1,6 +1,7 @@
 import { Cursor } from './cursor.js';
 import { LanguageHandler } from './lang/language_handler.js';
 import { ExitOverlay } from 'ui/overlay/exit_overlay.js';
+import { UIDataParser } from './ui_data_parser.js';
 
 let uiSystemInstance;
 
@@ -9,7 +10,10 @@ export class UISystem {
         uiSystemInstance = this;
         this.cursor = new Cursor(this);
         this.languageHandler = new LanguageHandler(this);
-        this.activeOverlay = null; // 현재 활성화된 전역 오버레이
+        this.exitConfirmOverlay = null;
+
+        // UI 데이터 파서 초기화
+        this.uiDataParser = new UIDataParser();
     }
 
     /**
@@ -22,22 +26,22 @@ export class UISystem {
 
     /**
      * 커서를 업데이트합니다.
-     * 활성화된 오버레이가 있다면 업데이트합니다.
+     * 오버레이가 있다면 업데이트합니다.
      */
     update() {
         this.cursor.update();
-        if (this.activeOverlay) {
-            this.activeOverlay.update();
+        if (this.exitConfirmOverlay) {
+            this.exitConfirmOverlay.update();
         }
     }
 
     /**
      * 커서를 그립니다.
-     * 활성화된 오버레이가 있다면 그립니다.
+     * 오버레이가 있다면 그립니다.
      */
     draw() {
-        if (this.activeOverlay) {
-            this.activeOverlay.draw();
+        if (this.exitConfirmOverlay) {
+            this.exitConfirmOverlay.draw();
         }
         this.cursor.draw(); // 커서는 항상 최상위
     }
@@ -46,21 +50,13 @@ export class UISystem {
      * 게임 종료 확인 오버레이를 표시합니다.
      */
     showExitConfirmation() {
-        if (this.activeOverlay instanceof ExitOverlay) return; // 이미 떠있으면 무시
+        if (this.exitConfirmOverlay) return; // 이미 떠있으면 무시
 
-        if (this.activeOverlay) {
-            this.activeOverlay.close();
-        }
+        this.exitConfirmOverlay = new ExitOverlay();
 
-        this.activeOverlay = new ExitOverlay();
-
-        // 오버레이가 닫힐 때 참조를 해제하기 위해 기존 콜백을 래핑합니다.
-        const originalClose = this.activeOverlay.onCloseComplete.bind(this.activeOverlay);
-        this.activeOverlay.onCloseComplete = () => {
-            originalClose();
-            if (this.activeOverlay === this.activeOverlay) { // 자신이 여전히 active라면 해제
-                this.activeOverlay = null;
-            }
+        // 오버레이 닫힘 처리
+        this.exitConfirmOverlay.onCloseComplete = () => {
+            this.exitConfirmOverlay = null;
         };
     }
 }
@@ -78,4 +74,8 @@ export const showExitConfirmation = () => {
     if (uiSystemInstance) {
         uiSystemInstance.showExitConfirmation();
     }
+}
+
+export const parseUIData = (data, uiScale = 1) => {
+    return uiSystemInstance.uiDataParser.parse(data, uiScale);
 }

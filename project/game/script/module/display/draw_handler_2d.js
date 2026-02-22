@@ -1,3 +1,5 @@
+import { getBlurCanvas, getBlurCtx, getBlurScale } from "./blur_canvas.js";
+
 /**
  * @class DrawUtil
  * @description 캔버스 드로잉을 추상화하여 관리하는 유틸리티 클래스입니다.
@@ -19,11 +21,6 @@ export class DrawHandler2D {
         }
 
         this._generatePaths();
-
-        // 최적화를 위한 블러 처리용 오프스크린 캔버스
-        this._blurCanvas = document.createElement('canvas');
-        this._blurCtx = this._blurCanvas.getContext('2d');
-        this._blurScale = 0.25; // 1/4 크기로 축소하여 블러 처리 (성능 최적화)
 
         // 전용 측정용 캔버스/컨텍스트 생성 (메인 캔버스 오염 방지)
         const measureCanvas = document.createElement('canvas');
@@ -146,37 +143,58 @@ export class DrawHandler2D {
             case 'glassRect':
                 ctx.save();
 
+                const isShadowActive = ctx.shadowBlur > 0 && ctx.shadowColor && ctx.shadowColor !== 'rgba(0,0,0,0)' && ctx.shadowColor !== 'undefined' && ctx.shadowColor !== 'transparent';
+                if (isShadowActive) {
+                    // 그림자만 독립적으로 그리기 (offset 트릭 활용)
+                    // 투명 패널(glass) 뒤에 solid fill 그림자가 보이지 않도록 패널 자체는 시야 밖에 그리고, 그림자만 제 위치에 떨어지게 함
+                    ctx.save();
+                    const offset = 10000;
+                    ctx.shadowOffsetX = offset;
+                    ctx.shadowOffsetY = 0;
+                    ctx.beginPath();
+                    ctx.roundRect(options.x - offset, options.y, options.w, options.h, options.radius);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fill();
+                    ctx.restore();
+                }
+
+                // 이미지와 내부 채색 시 무거운 섀도우 연산이 일어나는 것을 방지 (프레임 드랍 원인)
+                ctx.shadowColor = 'transparent';
+                ctx.shadowBlur = 0;
+
                 // 1. 클리핑 영역 설정 (라운드 박스)
                 ctx.beginPath();
                 ctx.roundRect(options.x, options.y, options.w, options.h, options.radius);
                 ctx.clip();
 
                 if (options.image) {
+                    const blurCanvas = getBlurCanvas();
+                    const blurCtx = getBlurCtx();
+                    const blurScale = getBlurScale();
+
                     // 2. 블러 캔버스 크기 조정 (필요 시)
-                    const bw = ctx.canvas.width * this._blurScale;
-                    const bh = ctx.canvas.height * this._blurScale;
-                    if (this._blurCanvas.width !== bw || this._blurCanvas.height !== bh) {
-                        this._blurCanvas.width = bw;
-                        this._blurCanvas.height = bh;
+                    const bw = Math.floor(ctx.canvas.width * blurScale);
+                    const bh = Math.floor(ctx.canvas.height * blurScale);
+                    if (blurCanvas.width !== bw || blurCanvas.height !== bh) {
+                        blurCanvas.width = bw;
+                        blurCanvas.height = bh;
                     }
 
                     // 3. 소스 이미지를 블러 캔버스에 축소하여 그리기 (이미지 합성)
-                    this._blurCtx.clearRect(0, 0, bw, bh);
+                    blurCtx.clearRect(0, 0, bw, bh);
                     // 여러 이미지가 배열로 들어올 수 있음
                     const images = Array.isArray(options.image) ? options.image : [options.image];
                     // console.log(`glassRect layer=${layerName} images=${images.length}`);
                     images.forEach(img => {
                         // 소스 이미지가 유효한지 확인
                         if (img.width > 0 && img.height > 0) {
-                            this._blurCtx.drawImage(img, 0, 0, bw, bh);
+                            blurCtx.drawImage(img, 0, 0, bw, bh);
                         }
                     });
 
                     // 4. 블러 캔버스를 본 캔버스에 확대하여 그리기 + 블러 필터 적용
-                    // 축소된 이미지를 확대해서 그리면 자연스럽게 픽셀화되지만 블러와 함께하면 문제 없음
-                    // 오히려 블러 연산량이 줄어듦
                     ctx.filter = `blur(${options.blur || 10}px)`;
-                    ctx.drawImage(this._blurCanvas, 0, 0, bw, bh, 0, 0, ctx.canvas.width, ctx.canvas.height);
+                    ctx.drawImage(blurCanvas, 0, 0, bw, bh, 0, 0, ctx.canvas.width, ctx.canvas.height);
                     ctx.filter = 'none';
                 }
 

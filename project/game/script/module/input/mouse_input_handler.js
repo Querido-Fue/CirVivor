@@ -15,8 +15,11 @@ export class MouseInputHandler {
         this.mouseRightClicking = false;
         this.mouseRightTemp = false;
         this.mouseRightClicked = false;
+        this.mouseMiddleClicking = false;
+        this.mouseMiddleTemp = false;
+        this.mouseMiddleClicked = false;
 
-        this.focusList = ["ui"]; // 기본 포커스
+        this.focusList = ["ui", "background"]; // 기본 포커스
 
         window.addEventListener("mousemove", (e) => {
             const scale = getScaleRatio();
@@ -26,6 +29,8 @@ export class MouseInputHandler {
         window.addEventListener("mousedown", (e) => {
             if (e.button === 0) {
                 this.mouseLeftClicking = true;
+            } else if (e.button === 1) {
+                this.mouseMiddleClicking = true;
             } else if (e.button === 2) {
                 this.mouseRightClicking = true;
             }
@@ -33,6 +38,8 @@ export class MouseInputHandler {
         window.addEventListener("mouseup", (e) => {
             if (e.button === 0) {
                 this.mouseLeftClicking = false;
+            } else if (e.button === 1) {
+                this.mouseMiddleClicking = false;
             } else if (e.button === 2) {
                 this.mouseRightClicking = false;
             }
@@ -47,11 +54,9 @@ export class MouseInputHandler {
         if (this.mouseLeftClicking) {
             this.mouseLeftTemp = true;
         }
-
         if (this.mouseLeftClicked) {
             this.mouseLeftClicked = false;
         }
-
         if (!this.mouseLeftClicking && this.mouseLeftTemp) {
             this.mouseLeftClicked = true;
             this.mouseLeftTemp = false;
@@ -60,14 +65,23 @@ export class MouseInputHandler {
         if (this.mouseRightClicking) {
             this.mouseRightTemp = true;
         }
-
         if (this.mouseRightClicked) {
             this.mouseRightClicked = false;
         }
-
         if (!this.mouseRightClicking && this.mouseRightTemp) {
             this.mouseRightClicked = true;
             this.mouseRightTemp = false;
+        }
+
+        if (this.mouseMiddleClicking) {
+            this.mouseMiddleTemp = true;
+        }
+        if (this.mouseMiddleClicked) {
+            this.mouseMiddleClicked = false;
+        }
+        if (!this.mouseMiddleClicking && this.mouseMiddleTemp) {
+            this.mouseMiddleClicked = true;
+            this.mouseMiddleTemp = false;
         }
     }
 
@@ -92,8 +106,10 @@ export class MouseInputHandler {
                 return this.mouseRightClicking;
             case "rightClicked":
                 return this.mouseRightClicked;
-            case "focusList":
-                return this.focusList;
+            case "middleClicking":
+                return this.mouseMiddleClicking;
+            case "middleClicked":
+                return this.mouseMiddleClicked;
         }
         return null;
     }
@@ -103,7 +119,7 @@ export class MouseInputHandler {
      * @param {string} focus - 포커스 레이어
      */
     setFocus(focus) {
-        this.focusList = [focus];
+        this.focusList = Array.isArray(focus) ? focus : [focus];
     }
 
     /**

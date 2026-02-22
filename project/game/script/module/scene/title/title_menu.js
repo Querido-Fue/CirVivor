@@ -61,10 +61,10 @@ export class TitleMenu {
 
         this.buttons = [];
         const buttonData = [
-            [getLangString("title_menu_start"), "left", this.TitleScene.gameStart.bind(this.TitleScene)],
-            [getLangString("title_menu_collection"), "left", this.TitleScene.collection.bind(this.TitleScene)],
-            [getLangString("title_menu_settings"), "left", this.TitleScene.setting.bind(this.TitleScene)],
-            [getLangString("title_menu_credits"), "left", this.TitleScene.credits.bind(this.TitleScene)],
+            [getLangString("title_menu_start"), "left", this.TitleScene.menuOpen.bind(this.TitleScene, "game")],
+            [getLangString("title_menu_collection"), "left", this.TitleScene.menuOpen.bind(this.TitleScene, "collection")],
+            [getLangString("title_menu_settings"), "left", this.TitleScene.menuOpen.bind(this.TitleScene, "setting")],
+            [getLangString("title_menu_credits"), "left", this.TitleScene.menuOpen.bind(this.TitleScene, "credits")],
             [getLangString("title_menu_exit"), "left", showExitConfirmation]
         ];
         for (let i = 0; i < buttonData.length; i++) {
@@ -86,7 +86,8 @@ export class TitleMenu {
                 size: this.WW * 0.02,
                 color: ColorSchemes.Title.Button.Text,
                 alpha: 1,
-                margin: 10
+                margin: 10,
+                enableHoverGradient: true
             });
             button.onHover = this.hover.bind(this, button.y + button.height / 2);
             animate(button, { variable: 'x', startValue: this.WW * 1.2, endValue: this.WW * 0.8, type: "easeOutExpo", duration: 0.8 + i * 0.1, delay: 0.5 });
@@ -109,7 +110,7 @@ export class TitleMenu {
         if (this.selectorAnimId !== -1) {
             remove(this.selectorAnimId);
         }
-        this.selectorAnimId = animate(this.selector, { variable: 'y', startValue: this.selector.y, endValue: y, type: "easeOutExpo", duration: 0.3 }).id;
+        this.selectorAnimId = animate(this.selector, { variable: 'y', startValue: "current", endValue: y, type: "easeOutExpo", duration: 0.3 }).id;
     }
 
     update() {

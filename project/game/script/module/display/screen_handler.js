@@ -1,4 +1,6 @@
 import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
+import { getSetting, setSetting } from 'save/_save_system.js';
+import { runtimeTool } from 'util/runtime_tool.js';
 
 export class ScreenHandler {
     constructor() {
@@ -17,28 +19,38 @@ export class ScreenHandler {
     /**
      * @private
      * 화면 크기를 초기화합니다.
-     * @param {SaveSystem} saveSystem - 저장 시스템
      */
-    async _init(saveSystem) {
-        const fullScreen = saveSystem.getSetting("fullScreen");
-        const settingWidth = saveSystem.getSetting("width");
-        const settingHeight = saveSystem.getSetting("height");
-        const renderScale = saveSystem.getSetting("renderScale") || 100;
+    async _init() {
+        const windowMode = getSetting("windowMode") || 'fullscreen';
+        const settingWidth = getSetting("width");
+        const settingHeight = getSetting("height");
+        const renderScale = getSetting("renderScale") || 100;
         const scaleFactor = renderScale / 100;
 
-        if (typeof nw !== 'undefined') {
-            const win = nw.Window.get();
-            if (fullScreen) {
-                win.enterFullscreen();
-            } else {
-                win.leaveFullscreen();
-                win.resizeTo(settingWidth, settingHeight);
-                win.setPosition('center');
-            }
+        const monitorWidth = Math.round(window.screen.width * window.devicePixelRatio);
+        const monitorHeight = Math.round(window.screen.height * window.devicePixelRatio);
+
+        runtimeTool().setZoomLevel(-1);
+
+        const screenModeChanged = getSetting("screenModeChanged") || false;
+
+        if (screenModeChanged) {
+            runtimeTool().setFullScreen(false);
+            runtimeTool().leaveKioskMode();
+
+            await new Promise(resolve => setTimeout(resolve, 30));
+
+            setSetting("screenModeChanged", false);
         }
 
-        let monitorWidth = window.screen.width * window.devicePixelRatio;
-        let monitorHeight = window.screen.height * window.devicePixelRatio;
+        if (windowMode === 'fullscreen') {
+            runtimeTool().setFullScreen(true);
+        } else if (windowMode === 'borderless') {
+            runtimeTool().enterKioskMode();
+        } else {
+            runtimeTool().setWindowSize(settingWidth, settingHeight);
+            runtimeTool().setWindowPositionCenter();
+        }
 
         const gameRatio = GLOBAL_CONSTANTS.ASPECT_RATIO.RATIO;
         let baseWidth, baseHeight;

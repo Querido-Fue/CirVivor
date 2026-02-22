@@ -3,7 +3,7 @@ import { render } from "display/_display_system.js";
 import { getMouseInput, getMouseFocus } from "input/_input_system.js";
 import { ColorSchemes } from "display/theme_handler.js";
 import { animate, remove } from "animation/_animation_system.js";
-import { cssToRgb } from "util/color_util.js";
+import { colorUtil } from "util/color_util.js";
 
 /**
  * @class ToggleElement
@@ -26,8 +26,8 @@ export class ToggleElement extends BaseUIElement {
         this._animValue = this.value ? 1 : 0;
         this._animID = null;
 
-        this._hoverScale = 1;
-        this._hoverAnim = null;
+        this.hoverScaleMultiplier = 1.15;
+        this.pressScaleMultiplier = 1.15;
     }
 
     /**
@@ -57,33 +57,23 @@ export class ToggleElement extends BaseUIElement {
         const isOver = mx >= this.x && mx <= this.x + this.width &&
             my >= this.y && my <= this.y + this.height;
 
-        if (getMouseInput('leftClicked') && getMouseFocus() === this.layer) {
+        if (getMouseInput('leftClicked') && getMouseFocus().includes(this.layer)) {
             if (isOver) {
                 this.setValue(!this.value);
             }
         }
 
-        const targetScale = isOver ? 1.15 : 1.0;
-        if (Math.abs(this._hoverScale - targetScale) > 0.001) {
-            // 애니메이션 중복 방지 (목표값이 다를 때만 새로 생성)
-            // 현재 진행 중인 애니메이션의 목표값과 새로운 목표값이 다르면
-            if (!this._hoverAnim || this._hoverAnim.endValue !== targetScale) {
-                if (this._hoverAnim) remove(this._hoverAnim.id);
-                this._hoverAnim = animate(this, {
-                    variable: '_hoverScale',
-                    endValue: targetScale,
-                    duration: 0.2,
-                    type: 'easeOutExpo'
-                });
-            }
-        }
+        const isLeftClicking = getMouseInput('leftClicking');
+
+        // BaseUIElement의 공통 함수 호출 (_hoverScale은 this.scale로 대체됨)
+        this._handleInteractionState(isOver, isLeftClicking);
     }
 
     draw() {
         if (!this.visible) return;
 
-        const c1 = cssToRgb(this.inactiveColor);
-        const c2 = cssToRgb(this.activeColor);
+        const c1 = colorUtil().cssToRgb(this.inactiveColor);
+        const c2 = colorUtil().cssToRgb(this.activeColor);
         const t = this._animValue;
 
         const r = Math.round(c1.r + (c2.r - c1.r) * t);
@@ -95,11 +85,14 @@ export class ToggleElement extends BaseUIElement {
 
         const trackColor = `rgba(${r}, ${g}, ${b}, ${a})`;
 
-        const scale = this._hoverScale || 1;
-        const w = this.width * scale;
-        const h = this.height * scale;
-        const x = this.x + (this.width - w) / 2;
-        const y = this.y + (this.height - h) / 2;
+        const cx = this.x + this.width / 2;
+        const cy = this.y + this.height / 2;
+
+        const w = this.width * this.scale;
+        const h = this.height * this.scale;
+
+        const x = cx - w / 2;
+        const y = cy - h / 2;
 
         render(this.layer, {
             shape: 'roundRect',

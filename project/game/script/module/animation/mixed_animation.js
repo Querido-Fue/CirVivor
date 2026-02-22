@@ -23,8 +23,8 @@ export class MixedAnimation extends AnimationBase {
      * @param {string} variable - 대상 속성 이름
      * @param {Array} animationDefs - 애니메이션 정의 배열
      */
-    init(id, owner, variable, animationDefs) {
-        super.init(id, owner, variable);
+    init(id, owner, variable, animationDefs, fixed) {
+        super.init(id, owner, variable, fixed);
         this.animationDefs = animationDefs;
 
         try {

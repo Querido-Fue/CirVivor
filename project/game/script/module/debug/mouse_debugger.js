@@ -1,6 +1,6 @@
 import { ColorSchemes } from 'display/theme_handler.js';
 import { render, getWW } from 'display/_display_system.js';
-import { getMouseInput } from 'input/_input_system.js';
+import { getMouseInput, getMouseFocus } from 'input/_input_system.js';
 
 
 export class MouseDebugger {
@@ -24,10 +24,10 @@ export class MouseDebugger {
         const startY = y + 50;
 
         const lines = [
-            `${x.toFixed(2)}, ${y.toFixed(2)}`,
+            `${x.toFixed(1)}, ${y.toFixed(1)}`,
             `left: ${getMouseInput("leftClicked")}, ${getMouseInput("leftClicking")}`,
             `right: ${getMouseInput("rightClicked")}, ${getMouseInput("rightClicking")}`,
-            `focus: ${getMouseInput("focusList")}`
+            `focus: ${getMouseFocus().join(", ")}`
         ];
 
         const WW = getWW();

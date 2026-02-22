@@ -1,9 +1,11 @@
 
-import { SystemHandler } from './module/system_handler.js';
-import { TimeHandler } from './time_handler.js';
-import { MathUtil } from './util/math_util.js';
-import { ColorUtil } from './util/color_util.js';
+import { SystemHandler } from 'game/module/system_handler.js';
+import { TimeHandler } from 'game/time_handler.js';
+import { MathUtil } from 'util/math_util.js';
+import { ColorUtil } from 'util/color_util.js';
+import { RuntimeTool, runtimeTool } from 'util/runtime_tool.js';
 import { showExitConfirmation } from 'ui/_ui_system.js';
+import { getSetting } from 'save/_save_system.js';
 
 let systemHandler;
 let Game;
@@ -19,6 +21,7 @@ window.onload = async () => {
     // 유틸리티 클래스 초기화
     new MathUtil();
     new ColorUtil();
+    new RuntimeTool();
 
     // 시스템 핸들러 초기화 및 모듈 로딩
     systemHandler = new SystemHandler();
@@ -28,8 +31,13 @@ window.onload = async () => {
     Game = new App(systemHandler);
     window.Game = Game;
 
-    // 게임 루프 시작
+    // rAF 호출
     loop();
+
+    // fixedUpdate 호출
+    setInterval(() => {
+        Game.fixedUpdate();
+    }, 1000 / getSetting('physicsFps'));
 }
 
 /**
@@ -38,7 +46,11 @@ window.onload = async () => {
  */
 const loop = () => {
     requestAnimationFrame(loop);
-    Game.tick();
+    try {
+        Game.tick();
+    } catch (e) {
+        console.warn("오류가 발생했습니다", e);
+    }
 }
 
 /**
@@ -73,6 +85,17 @@ class App {
         this.systemHandler.tick();
     }
 
+    /**
+     * 고정 프레임으로 실행되는 게임의 메인 로직입니다.
+     * SystemHandler의 fixedUpdate 메서드를 호출하여 모든 시스템을 업데이트합니다.
+     */
+    fixedUpdate() {
+        this.systemHandler.fixedUpdate();
+    }
+
+    /**
+     * 게임 화면 크기를 변경합니다. // TODO: 동적 리사이징
+     */
     resize() {
         this.systemHandler.resize();
     }
@@ -95,7 +118,7 @@ class App {
      */
     close() {
         this.systemHandler.saveSystem.saveAll().then(() => {
-            setTimeout(() => window.close(), 100);
+            setTimeout(() => runtimeTool().closeWindow(), 100);
         });
     }
 }

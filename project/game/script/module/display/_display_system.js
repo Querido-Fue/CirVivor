@@ -2,7 +2,10 @@ import { ScreenHandler } from "./screen_handler.js";
 import { DrawHandler2D } from "./draw_handler_2d.js";
 import { WebGLHandler } from "./webgl/webgl_handler.js";
 import { ColorSchemes } from "display/theme_handler.js";
-import { cssToRgb } from "util/color_util.js";
+import { colorUtil } from "util/color_util.js";
+import { ThemeHandler, setTheme } from "display/theme_handler.js";
+import { getSetting } from "save/_save_system.js";
+import { initBlurCanvas } from "./blur_canvas.js";
 
 let displaySystemInstance = null;
 
@@ -12,14 +15,18 @@ export class DisplaySystem {
         this._screenHandler = new ScreenHandler();
         this.drawHandler = null;
         this.webGLHandler = null;
+        this.themeHandler = new ThemeHandler();
     }
 
     /**
      * 디스플레이 시스템을 초기화합니다.
      * 캔버스 요소들을 가져오고 컨텍스트를 설정하며, 화면 크기를 맞춥니다.
-     * @param {SaveSystem} saveSystem - 저장 시스템 (설정 접근용)
      */
-    async init(saveSystem) {
+    async init() {
+        // ThemeHandler 초기화
+        await this.themeHandler.init();
+        setTheme(getSetting("darkMode")); // 초기 테마 적용
+
         // 1. Background (WebGL)
         this.backgroundCanvas = document.getElementById("background");
         this.glBackground = this.backgroundCanvas.getContext("webgl", { alpha: false, preserveDrawingBuffer: true });
@@ -43,65 +50,68 @@ export class DisplaySystem {
         // 6. Overlay (2D)
         this.overlayCanvas = document.getElementById("overlay");
         this.ctxOverlay = this.overlayCanvas.getContext("2d");
+        this.overlayDim = document.getElementById("overlaydim");
 
         // 7. OverlayEffect (WebGL)
         this.overlayEffectCanvas = document.getElementById("overlayeffect");
         this.glOverlayEffect = this.overlayEffectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
 
-        // 8. OverlayHigh (2D)
-        this.overlayHighCanvas = document.getElementById("overlayhigh");
-        this.ctxOverlayHigh = this.overlayHighCanvas.getContext("2d");
+        // 8. Popup (2D) - 게임 종료 확인 및 토스트 알림 팝업
+        this.popupCanvas = document.getElementById("popup");
+        this.ctxPopup = this.popupCanvas.getContext("2d");
+        this.popupDim = document.getElementById("popupdim");
 
         // 9. Top (2D)
         this.topCanvas = document.getElementById("top");
         this.ctxTop = this.topCanvas.getContext("2d");
 
         // Canvas Collections
-        this.all2DCanvases = [
-            this.textEffectCanvas,
-            this.uiCanvas,
-            this.overlayCanvas,
-            this.overlayHighCanvas,
-            this.topCanvas
-        ];
 
-        this.allGLCanvases = [
-            this.backgroundCanvas,
-            this.objectCanvas,
-            this.effectCanvas,
-            this.overlayEffectCanvas
-        ];
-
-        // 호환성 매핑 (전체 리팩토링 전까지 하위 호환성 유지)
-
-        this.allContexts = {
-            texteffect: this.ctxTextEffect,
-            ui: this.ctxUi,
-            overlay: this.ctxOverlay,
-            overlayhigh: this.ctxOverlayHigh,
-            top: this.ctxTop,
-            // 레거시 매핑
-            main: this.ctxUi,
-            top: this.ctxTop
+        this.canvasMap = {
+            background: { type: "webgl", canvas: this.backgroundCanvas, context: this.glBackground },
+            object: { type: "webgl", canvas: this.objectCanvas, context: this.glObject },
+            effect: { type: "webgl", canvas: this.effectCanvas, context: this.glEffect },
+            texteffect: { type: "2d", canvas: this.textEffectCanvas, context: this.ctxTextEffect },
+            ui: { type: "2d", canvas: this.uiCanvas, context: this.ctxUi },
+            overlay: { type: "2d", canvas: this.overlayCanvas, context: this.ctxOverlay },
+            overlayeffect: { type: "webgl", canvas: this.overlayEffectCanvas, context: this.glOverlayEffect },
+            popup: { type: "2d", canvas: this.popupCanvas, context: this.ctxPopup },
+            top: { type: "2d", canvas: this.topCanvas, context: this.ctxTop }
         };
 
-        this.glContexts = {
-            background: this.glBackground,
-            object: this.glObject,
-            effect: this.glEffect,
-            overlayeffect: this.glOverlayEffect
-        };
+        this.all2DCanvases = Object.values(this.canvasMap)
+            .filter(canvas => canvas.type === "2d")
+            .map(canvas => canvas.canvas);
 
-        this.drawHandler = new DrawHandler2D(this.allContexts);
-        this.webGLHandler = new WebGLHandler(this.glContexts);
+        this.allGLCanvases = Object.values(this.canvasMap)
+            .filter(canvas => canvas.type === "webgl")
+            .map(canvas => canvas.canvas);
+
+        this.allCanvases = Object.values(this.canvasMap)
+            .map(canvas => canvas.canvas);
+
+        this.all2DContexts = Object.fromEntries(
+            Object.entries(this.canvasMap)
+                .filter(([key, val]) => val.type === "2d")
+                .map(([key, val]) => [key, val.context])
+        );
+
+        this.allGLContexts = Object.fromEntries(
+            Object.entries(this.canvasMap)
+                .filter(([key, val]) => val.type === "webgl")
+                .map(([key, val]) => [key, val.context])
+        );
+
+        this.drawHandler = new DrawHandler2D(this.all2DContexts);
+        this.webGLHandler = new WebGLHandler(this.allGLContexts);
 
         // 초기 배경색 설정
         if (ColorSchemes.Background) {
-            const rgb = cssToRgb(ColorSchemes.Background);
+            const rgb = colorUtil().cssToRgb(ColorSchemes.Background);
             this.webGLHandler.setBackgroundColor(rgb.r / 255, rgb.g / 255, rgb.b / 255);
         }
 
-        await this._screenHandler._init(saveSystem);
+        await this._screenHandler._init();
 
         // 캔버스 내부 해상도 고정
         for (const canvas of this.allCanvases) {
@@ -109,12 +119,19 @@ export class DisplaySystem {
             canvas.height = this._screenHandler.height;
         }
 
+        initBlurCanvas(this._screenHandler.width, this._screenHandler.height);
+
         // 초기 CSS 적용
         this.resize();
     }
 
-    get allCanvases() {
-        return [...this.all2DCanvases, ...this.allGLCanvases];
+    getAllCanvases() {
+        return this.allCanvases;
+    }
+
+    getBehindCanvases(layer) {
+        const index = this.allCanvases.indexOf(layer);
+        return this.allCanvases.slice(0, index - 1);
     }
 
     resize() {
@@ -144,10 +161,10 @@ export class DisplaySystem {
         this._clearCanvas(this.ctxTextEffect);
         this._clearCanvas(this.ctxUi);
         this._clearCanvas(this.ctxOverlay);
-        this._clearCanvas(this.ctxOverlayHigh);
+        this._clearCanvas(this.ctxPopup);
         this._clearCanvas(this.ctxTop);
 
-        // WebGL clearing is handled by WebGLHandler.begin()
+        // WebGL clearing 은 WebGLHandler.begin() 으로 처리
     }
 
     _clearCanvas(ctx) {
@@ -160,19 +177,7 @@ export class DisplaySystem {
      * @param {number} blur - 블러 강도 (픽셀 단위)
      */
     applyBlur(layerName, blur) {
-        const canvasMap = {
-            background: this.backgroundCanvas,
-            object: this.objectCanvas,
-            effect: this.effectCanvas,
-            texteffect: this.textEffectCanvas,
-            ui: this.uiCanvas,
-            overlay: this.overlayCanvas,
-            overlayeffect: this.overlayEffectCanvas,
-            overlayhigh: this.overlayHighCanvas,
-            top: this.topCanvas
-        };
-
-        const canvas = canvasMap[layerName];
+        const canvas = this.canvasMap[layerName].canvas;
         if (canvas) {
             canvas.style.filter = 'blur(' + blur + 'px)';
         } else {
@@ -212,30 +217,10 @@ export const getScaleRatio = () => displaySystemInstance._screenHandler.scaleRat
  */
 export const getCanvasOffset = () => ({ x: displaySystemInstance._screenHandler.cssLeft, y: displaySystemInstance._screenHandler.cssTop });
 /**
- * 메인 캔버스(배경 컨텐츠가 있는) 요소를 반환합니다.
- * @returns {HTMLCanvasElement} 메인 캔버스
- */
-export const getMainCanvas = () => displaySystemInstance.mainCanvas;
-/**
  * 배경 캔버스 요소를 반환합니다.
  * @returns {HTMLCanvasElement} 배경 캔버스
  */
-export const getBackgroundCanvas = () => displaySystemInstance.backgroundCanvas;
-/**
- * 메인 WebGL 캔버스 요소를 반환합니다.
- * @returns {HTMLCanvasElement} 메인 WebGL 캔버스
- */
-export const getMainGLCanvas = () => displaySystemInstance.objectCanvas; // Legacy support
-export const getBackgroundGLCanvas = () => displaySystemInstance.backgroundCanvas; // Legacy support
-
-export const getObjectCanvas = () => displaySystemInstance.objectCanvas;
-export const getEffectCanvas = () => displaySystemInstance.effectCanvas;
-export const getTextEffectCanvas = () => displaySystemInstance.textEffectCanvas;
-export const getUiCanvas = () => displaySystemInstance.uiCanvas;
-export const getOverlayCanvas = () => displaySystemInstance.overlayCanvas;
-export const getOverlayEffectCanvas = () => displaySystemInstance.overlayEffectCanvas;
-export const getOverlayHighCanvas = () => displaySystemInstance.overlayHighCanvas;
-export const getTopCanvas = () => displaySystemInstance.topCanvas;
+export const getBehindCanvases = (layerName) => displaySystemInstance.getBehindCanvases(layerName);
 
 /**
  * 특정 레이어에 그리기 작업을 수행합니다.
@@ -266,6 +251,7 @@ export const renderGL = (layerName, options) => {
     }
     console.warn(`WebGL Layer not found: ${targetLayer} (original: ${layerName})`);
 };
+
 /**
  * 특정 레이어에 그림자를 적용합니다.
  * @param {string} layerName - 레이어 이름
@@ -273,11 +259,13 @@ export const renderGL = (layerName, options) => {
  * @param {string} color - 그림자 색상
  */
 export const shadowOn = (layerName, blur, color) => displaySystemInstance.drawHandler.shadowOn(layerName, blur, color);
+
 /**
  * 특정 레이어의 그림자 효과를 끕니다.
  * @param {string} layerName - 레이어 이름
  */
 export const shadowOff = (layerName) => displaySystemInstance.drawHandler.shadowOff(layerName);
+
 /**
  * 배경 색상을 설정합니다.
  * @param {number} r - Red (0~1)
@@ -305,3 +293,23 @@ export const applyBlur = (layerName, blur) => displaySystemInstance.applyBlur(la
  */
 export const measureText = (text, font) => displaySystemInstance.drawHandler.measureText(text, font);
 
+/**
+ * 특정 레이어의 캔버스를 가져옵니다.
+ * @param {string} layerName - 레이어 이름
+ * @returns {HTMLCanvasElement} 캔버스 요소
+ */
+export const getCanvas = (layerName) => displaySystemInstance.canvasMap[layerName].canvas;
+
+export const setDim = (layer, opacity) => {
+    switch (layer) {
+        case 'overlay':
+            displaySystemInstance.overlayDim.style.opacity = opacity;
+            break;
+        case 'popup':
+            displaySystemInstance.popupDim.style.opacity = opacity;
+            break;
+        default:
+            console.warn(`레이어 Dim 설정 중 오류가 발생했습니다. ${layer} 레이어가 없습니다.`);
+            break;
+    }
+};
