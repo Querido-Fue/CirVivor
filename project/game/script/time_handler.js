@@ -50,7 +50,9 @@ export class TimeHandler {
 
         const instantaneousFps = delta > 0 ? Math.round(1000 / delta) : 0;
         this.recentFixedData.push({ time: now, fps: instantaneousFps });
-        this.recentFixedData = this.recentFixedData.filter(d => now - d.time <= 1000);
+        while (this.recentFixedData.length > 0 && now - this.recentFixedData[0].time > 1000) {
+            this.recentFixedData.shift();
+        }
 
         if (this.recentFixedData.length > 0) {
             const fpsValues = this.recentFixedData.map(d => d.fps);
@@ -76,7 +78,7 @@ export class TimeHandler {
         if (delta > 100) delta = 100;
 
         // 너무 짧은 프레임 델타 방지 (0으로 수렴하여 물리/애니가 멈추거나 튀는 현상 방지)
-        // RAF 밀림 후 연속 호출될 때 delta가 1~2ms로 찍히는 스파이크 방어
+        // 렌더 루프 지연 후 연속 호출 시 delta가 1~2ms로 튀는 현상 방어
         // 최소 2ms (약 500fps 한계) 보장
         if (delta < 2) delta = 2;
 
@@ -95,13 +97,15 @@ export class TimeHandler {
             lastDrawTime: this.data.lastDrawTime
         });
 
-        this.recentData = this.recentData.filter(d => now - d.time <= 1000);
+        while (this.recentData.length > 0 && now - this.recentData[0].time > 1000) {
+            this.recentData.shift();
+        }
 
         if (this.recentData.length > 0) {
             const fpsValues = this.recentData.map(d => d.fps);
             this.data.lowestFps = Math.min(...fpsValues);
 
-            // FPS 평균 계산 (상위 2% 제외: 비정상적으로 튀는 값 방어)
+            // 평균 프레임 계산 (상위 2% 제외: 비정상적으로 튀는 값 방어)
             fpsValues.sort((a, b) => a - b);
             const trimCount = Math.floor(fpsValues.length * 0.02);
             const trimmedFpsValues = trimCount > 0 ? fpsValues.slice(0, -trimCount) : fpsValues;
@@ -173,10 +177,18 @@ export class TimeHandler {
     }
 }
 
+/**
+ * TimeHandler 싱글톤 인스턴스를 반환합니다.
+ * @returns {TimeHandler|null} 현재 TimeHandler 인스턴스
+ */
 export function getTimeHandler() {
     return timeHandlerInstance;
 }
 
+/**
+ * 가변 프레임 델타(초)를 반환합니다.
+ * @returns {number} 마지막 프레임 델타
+ */
 export function getDelta() {
     if (timeHandlerInstance) {
         return timeHandlerInstance.getData('lastFrameTimeDelta');
@@ -184,6 +196,10 @@ export function getDelta() {
     return 0;
 }
 
+/**
+ * 고정 업데이트 델타(초)를 반환합니다.
+ * @returns {number} 마지막 고정 업데이트 델타
+ */
 export function getFixedUpdateDelta() {
     if (timeHandlerInstance) {
         return timeHandlerInstance.getData('lastFixedTimeDelta');

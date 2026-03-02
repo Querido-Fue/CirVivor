@@ -1,3 +1,5 @@
+import { nw, isNwRuntime } from './nw_bridge.js';
+
 let runtimeToolInstance = null;
 
 /**
@@ -15,11 +17,12 @@ export class RuntimeTool {
      * @param {string} url - 열고자 하는 URL
      */
     openURL(url) {
-        try {
+        if (isNwRuntime()) {
             nw.Shell.openExternal(url);
-        } catch (e) {
-            window.open(url, '_blank');
+            return;
         }
+
+        window.open(url, '_blank');
     }
 
     /**
@@ -27,6 +30,10 @@ export class RuntimeTool {
      * @param {boolean} isFullScreen - 전체 화면 여부
      */
     setFullScreen(isFullScreen) {
+        if (!isNwRuntime()) {
+            return;
+        }
+
         if (isFullScreen) {
             nw.Window.get().enterFullscreen();
         } else {
@@ -40,6 +47,9 @@ export class RuntimeTool {
      * @param {number} height - 높이
      */
     setWindowSize(width, height) {
+        if (!isNwRuntime()) {
+            return;
+        }
         nw.Window.get().resizeTo(width, height);
     }
 
@@ -49,10 +59,20 @@ export class RuntimeTool {
      * @param {number} y - y 좌표
      */
     setWindowPosition(x, y) {
+        if (!isNwRuntime()) {
+            return;
+        }
         nw.Window.get().moveTo(x, y);
     }
 
+    /**
+     * 창을 화면 중앙으로 이동합니다.
+     */
     setWindowPositionCenter() {
+        if (!isNwRuntime()) {
+            return;
+        }
+
         const width = nw.Window.get().width;
         const height = nw.Window.get().height;
         const x = Math.round((window.screen.width - width) / 2);
@@ -64,6 +84,9 @@ export class RuntimeTool {
      * 키오스크 모드로 진입합니다 (경계 없는 전체화면).
      */
     enterKioskMode() {
+        if (!isNwRuntime()) {
+            return;
+        }
         nw.Window.get().enterKioskMode();
     }
 
@@ -71,6 +94,9 @@ export class RuntimeTool {
      * 키오스크 모드를 종료합니다.
      */
     leaveKioskMode() {
+        if (!isNwRuntime()) {
+            return;
+        }
         nw.Window.get().leaveKioskMode();
     }
 
@@ -78,6 +104,10 @@ export class RuntimeTool {
      * 창을 닫습니다.
      */
     closeWindow() {
+        if (!isNwRuntime()) {
+            window.close();
+            return;
+        }
         nw.Window.get().close(true);
     }
 
@@ -86,7 +116,20 @@ export class RuntimeTool {
      * @param {number} zoomLevel - 줌 레벨
      */
     setZoomLevel(zoomLevel) {
+        if (!isNwRuntime()) {
+            return;
+        }
         nw.Window.get().zoomLevel = zoomLevel;
+    }
+
+    /**
+     * 디버그 창을 엽니다.
+     */
+    openDebugWindow() {
+        if (!isNwRuntime()) {
+            return;
+        }
+        nw.Window.get().showDevTools();
     }
 }
 

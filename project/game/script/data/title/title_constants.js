@@ -5,4 +5,7 @@ export const TITLE_CONSTANTS = {
         ENEMY_LIMIT: 800,
         SHAPES: ['triangle', 'pentagon', 'hexagon', 'octagon', 'arrow'],
     },
+    TITLE_MENU: {
+        BUTTON_HEIGHT: 0.035,
+    }
 };

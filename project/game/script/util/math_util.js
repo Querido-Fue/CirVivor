@@ -1,3 +1,5 @@
+import { Vector2 } from "./vector2.js";
+
 let mathUtilInstance = null;
 
 /**
@@ -94,6 +96,21 @@ export class MathUtil {
         const entry = value / max;
         const sigmoid = 2 * (1 / (1 + Math.exp(-entry)) - 0.5);
         return sigmoid * max;
+    }
+
+    /**
+     * 값을 min~max 범위로 제한합니다.
+     * min 또는 max가 -1이면 해당 방향 제한을 적용하지 않습니다.
+     * @param {number} value - 제한할 값
+     * @param {number} min - 최솟값 (-1이면 하한 없음)
+     * @param {number} max - 최댓값 (-1이면 상한 없음)
+     * @returns {number} 범위 내로 제한된 값
+     */
+    cap(value, min, max) {
+        let result = value;
+        if (min !== -1) result = Math.max(result, min);
+        if (max !== -1) result = Math.min(result, max);
+        return result;
     }
 }
 

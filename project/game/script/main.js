@@ -4,8 +4,8 @@ import { TimeHandler } from 'game/time_handler.js';
 import { MathUtil } from 'util/math_util.js';
 import { ColorUtil } from 'util/color_util.js';
 import { RuntimeTool, runtimeTool } from 'util/runtime_tool.js';
-import { showExitConfirmation } from 'ui/_ui_system.js';
-import { getSetting } from 'save/_save_system.js';
+import { showExitConfirmation } from 'overlay/overlay_system.js';
+import { getSetting } from 'save/save_system.js';
 
 let systemHandler;
 let Game;
@@ -15,43 +15,33 @@ let Game;
  * 리소스 로딩, 시스템 초기화, 게임 루프 시작을 담당합니다.
  */
 window.onload = async () => {
-    // 시간 핸들러 초기화
-    new TimeHandler();
-
-    // 유틸리티 클래스 초기화
-    new MathUtil();
-    new ColorUtil();
-    new RuntimeTool();
-
-    // 시스템 핸들러 초기화 및 모듈 로딩
-    systemHandler = new SystemHandler();
-    await systemHandler.init();
-
-    // 게임 앱 인스턴스 생성 및 글로벌 변수 등록
-    Game = new App(systemHandler);
-    window.Game = Game;
-
-    // rAF 호출
-    loop();
-
-    // fixedUpdate 호출
-    setInterval(() => {
-        Game.fixedUpdate();
-    }, 1000 / getSetting('physicsFps'));
-}
-
-/**
- * 게임의 메인 루프 함수입니다.
- * 매 프레임마다 requestAnimationFrame을 통해 호출되며, 게임의 틱(tick)을 실행합니다.
- */
-const loop = () => {
-    requestAnimationFrame(loop);
     try {
-        Game.tick();
+        // 시간 핸들러 초기화
+        new TimeHandler(); ``
+
+        // 유틸리티 클래스 초기화
+        new MathUtil();
+        new ColorUtil();
+        new RuntimeTool();
+
+        // 시스템 핸들러 초기화 및 모듈 로딩
+        systemHandler = new SystemHandler();
+        await systemHandler.init();
+
+        // 게임 앱 인스턴스 생성 및 글로벌 변수 등록
+        Game = new App(systemHandler);
+        window.Game = Game;
+
+        // 브라우저 프레임 루프 시작
+        Game.loop();
+
+        // 고정 업데이트 루프 시작
+        Game.fixedLoop();
     } catch (e) {
-        console.warn("오류가 발생했습니다", e);
+        console.warn("게임 초기화 중 오류가 발생했습니다\n", e);
     }
 }
+
 
 /**
  * 창 크기 변경 시 호출되는 이벤트 핸들러입니다.
@@ -81,20 +71,31 @@ class App {
      * 매 프레임 실행되는 게임의 메인 로직입니다.
      * SystemHandler의 tick 메서드를 호출하여 모든 시스템을 업데이트하고 그립니다.
      */
-    tick() {
-        this.systemHandler.tick();
+    loop() {
+        requestAnimationFrame(this.loop.bind(this));
+        try {
+            this.systemHandler.tick();
+        } catch (e) {
+            console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
+        }
     }
 
     /**
      * 고정 프레임으로 실행되는 게임의 메인 로직입니다.
      * SystemHandler의 fixedUpdate 메서드를 호출하여 모든 시스템을 업데이트합니다.
      */
-    fixedUpdate() {
-        this.systemHandler.fixedUpdate();
+    fixedLoop() {
+        setInterval(() => {
+            try {
+                this.systemHandler.fixedUpdate();
+            } catch (e) {
+                console.warn("물리 프레임 루프 중 오류가 발생했습니다\n", e);
+            }
+        }, 1000 / getSetting("physicsFps"));
     }
 
     /**
-     * 게임 화면 크기를 변경합니다. // TODO: 동적 리사이징
+     * 게임 화면 크기를 변경합니다.
      */
     resize() {
         this.systemHandler.resize();

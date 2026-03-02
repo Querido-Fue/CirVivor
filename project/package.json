@@ -1,14 +1,14 @@
 {
     "name": "cirvivor",
-    "version": "0.3",
-    "main": "./game/index.html",
+    "version": "0.31",
+    "main": "game/index.html",
     "js-flags": "",
-    "chromium-args": "--auto-open-devtools-for-tabs",
+    "chromium-args": "",
     "window": {
         "title": "Cirvivor!",
         "toolbar": false,
         "fullscreen": true,
         "position": "center",
-        "icon": "./game/image/logo.png"
+        "icon": "game/image/logo.png"
     }
 }

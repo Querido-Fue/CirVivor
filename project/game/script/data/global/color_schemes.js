@@ -13,7 +13,14 @@ export const LightTheme = {
         Button: {
             Background: {
                 Normal: 'rgba(235, 235, 235, 0)',
-                Hover: 'rgba(0, 0, 0, 0)'
+                Hover: {
+                    type: 'linear',
+                    stops: [
+                        { offset: 0, color: 'rgba(0, 0, 0, 0.1)' },
+                        { offset: 0.8, color: 'rgba(0, 0, 0, 0.1)' },
+                        { offset: 1, color: 'rgba(0, 0, 0, 0)' }
+                    ]
+                }
             },
             Text: '#000000'
         },
@@ -54,13 +61,15 @@ export const LightTheme = {
         Toggle: {
             Active: '#166ffb',
             Inactive: 'rgba(0, 0, 0, 0.1)',
-            Knob: '#ffffff'
+            Knob: '#ffffff',
+            Shadow: 'rgba(0, 0, 0, 0.3)'
         },
         Slider: {
             Track: 'rgba(0, 0, 0, 0.2)',
             ValueActive: '#166ffb',
             ValueInactive: '#888888',
-            Knob: '#ffffff'
+            Knob: '#ffffff',
+            Shadow: 'rgba(0, 0, 0, 0.3)'
         }
     },
     Game: {
@@ -86,7 +95,14 @@ export const DarkTheme = {
         Button: {
             Background: {
                 Normal: 'rgba(30, 30, 30, 0)',
-                Hover: 'rgba(255, 255, 255, 0)'
+                Hover: {
+                    type: 'linear',
+                    stops: [
+                        { offset: 0, color: 'rgba(255, 255, 255, 0.2)' },
+                        { offset: 0.8, color: 'rgba(255, 255, 255, 0.2)' },
+                        { offset: 1, color: 'rgba(255, 255, 255, 0)' }
+                    ]
+                }
             },
             Text: '#ffffff'
         },
@@ -126,13 +142,15 @@ export const DarkTheme = {
         Toggle: {
             Active: '#3b82f6',
             Inactive: 'rgba(255, 255, 255, 0.12)',
-            Knob: '#ffffff'
+            Knob: '#ffffff',
+            Shadow: 'rgba(0, 0, 0, 0.3)'
         },
         Slider: {
             Track: 'rgba(255, 255, 255, 0.12)',
             ValueActive: '#4fa3ff',
             ValueInactive: '#707070',
-            Knob: '#ffffff'
+            Knob: '#ffffff',
+            Shadow: 'rgba(0, 0, 0, 0.3)'
         }
     },
     Game: {
