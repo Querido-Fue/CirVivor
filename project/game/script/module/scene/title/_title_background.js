@@ -1,9 +1,8 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { Vector2 } from 'util/vector2.js';
 import { TitleEnemy } from './_title_enemy.js';
 import { ObjectPool } from 'util/_object_pool.js';
 import { animate } from 'animation/animation_system.js';
-import { getWW, getWH, render, renderGL } from 'display/display_system.js';
+import { getWW, getWH, getUIWW, render, renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
 import { TITLE_CONSTANTS } from 'data/title/title_constants.js';
@@ -30,10 +29,11 @@ export class TitleBackGround {
         this.logoMagneticPoint = null;
         this.WW = getWW();
         this.WH = getWH();
+        this.UIWW = getUIWW();
 
         this.time = 0;
         this.shieldRadius = 0;
-        animate(this, { variable: 'shieldRadius', startValue: 0, endValue: this.WW * 0.07, type: "easeOutExpo", duration: 1.2, delay: 1 });
+        animate(this, { variable: 'shieldRadius', startValue: 0, endValue: this.UIWW * 0.07, type: "easeOutExpo", duration: 1.2, delay: 1 });
 
         this.init();
     }
@@ -45,9 +45,24 @@ export class TitleBackGround {
         this.pushShape(TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_START_COUNT, true);
     }
 
+    resize() {
+        const prevUIWW = this.UIWW || 1;
+        this.WW = getWW();
+        this.WH = getWH();
+        this.UIWW = getUIWW();
+        const ratio = this.UIWW / Math.max(1, prevUIWW);
+        this.shieldRadius *= ratio;
+
+        for (const enemy of this.titleEnemies) {
+            if (enemy && typeof enemy.resize === 'function') {
+                enemy.resize();
+            }
+        }
+    }
+
     /**
      * 매 프레임 업데이트
-     * @param {Vector2} logoMagneticPoint - 로고의 자석 효과 지점 (없으면 null)
+     * @param {{x:number, y:number}|null} logoMagneticPoint - 로고의 자석 효과 지점 (없으면 null)
      */
     update(logoMagneticPoint) {
         this.logoMagneticPoint = logoMagneticPoint;
@@ -66,11 +81,14 @@ export class TitleBackGround {
             c.update(logoMagneticPoint);
 
             if (logoMagneticPoint) {
-                const enemyPos = new Vector2(c.pos.x * this.WW, c.pos.y * this.WH);
-                const dist = enemyPos.sub(logoMagneticPoint).getLength();
+                const enemyX = c.pos.x * this.WW;
+                const enemyY = c.pos.y * this.WH;
+                const dx = enemyX - logoMagneticPoint.x;
+                const dy = enemyY - logoMagneticPoint.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
 
                 if (Math.abs(dist - this.shieldRadius) < c.radius) {
-                    const impactAngle = Math.atan2(enemyPos.y - logoMagneticPoint.y, enemyPos.x - logoMagneticPoint.x);
+                    // 충돌 이펙트 확장 포인트 (현재는 계산만 수행하지 않음)
                 }
             }
         }
@@ -111,10 +129,11 @@ export class TitleBackGround {
     pushShape(times, init) {
         for (let i = 0; i < times; i++) {
             const randomShape = this.shapes[Math.floor(mathUtil().random(0, this.shapes.length))];
-            const randomSpeed = new Vector2(mathUtil().random(-0.07, -0.02), mathUtil().random(-0.02, 0.02));
+            const speedX = mathUtil().random(-0.07, -0.02);
+            const speedY = mathUtil().random(-0.02, 0.02);
 
             const enemy = this.enemyPool.get();
-            enemy.init(1.1, Math.random(), ColorSchemes.Title.Enemy, randomSpeed, randomShape, init);
+            enemy.init(1.1, Math.random(), ColorSchemes.Title.Enemy, speedX, speedY, randomShape, init);
             this.titleEnemies.push(enemy);
         }
     }

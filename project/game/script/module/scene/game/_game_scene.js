@@ -21,6 +21,11 @@ export class GameScene extends BaseScene {
     update() {
     }
 
+    resize() {
+        this.WW = getWW();
+        this.WH = getWH();
+    }
+
     draw() {
         const fontSize = this.WW * 0.008;
         render('main', {

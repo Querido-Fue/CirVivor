@@ -1,6 +1,5 @@
-import { getWW, getWH, render } from 'display/display_system.js';
+import { getWW, getWH, getUIWW, render } from 'display/display_system.js';
 import { animate } from 'animation/animation_system.js';
-import { Vector2 } from 'util/vector2.js';
 
 /**
  * @class TitleImage
@@ -15,34 +14,54 @@ export class TitleImage {
         this.image = new Image();
         this.WW = getWW();
         this.WH = getWH();
+        this.UIWW = getUIWW();
+        this._magneticPoint = { x: 0, y: 0 };
         this.image.src = "image/title.png";
-        this.imageX = - this.WW * 0.3;
+        const imageW = this._getImageWidth();
+        this.imageX = -imageW;
         this.alpha = 0;
-        animate(this, { variable: 'imageX', startValue: -this.WW * 0.3, endValue: this.WW * 0.1, type: "easeOutExpo", duration: 0.6 });
+        animate(this, { variable: 'imageX', startValue: -imageW, endValue: this.UIWW * 0.1, type: "easeOutExpo", duration: 0.6 });
         animate(this, { variable: 'alpha', startValue: 0, endValue: 1, type: "easeOutExpo", duration: 0.6 });
     }
 
     update() {
     }
 
+    resize() {
+        const prevUIWW = this.UIWW || 1;
+        this.WW = getWW();
+        this.WH = getWH();
+        this.UIWW = getUIWW();
+        const ratio = this.UIWW / Math.max(1, prevUIWW);
+        this.imageX *= ratio;
+    }
+
     draw() {
+        const imageW = this._getImageWidth();
+        const imageH = imageW * this.image.height / this.image.width;
         render('ui', {
             shape: 'image',
             image: this.image,
             x: this.imageX,
-            y: this.WH / 2 - this.WW * 0.3 * this.image.height / this.image.width / 2,
-            w: this.WW * 0.3,
-            h: this.WW * 0.3 * this.image.height / this.image.width,
+            y: this.WH / 2 - imageH / 2,
+            w: imageW,
+            h: imageH,
             alpha: this.alpha
         });
     }
 
     /**
      * 로고의 자석 효과 중심점을 반환합니다.
-     * @returns {Vector2} 자석 효과 중심점
+     * @returns {{x:number, y:number}} 자석 효과 중심점
      */
     getMagneticPoint() {
-        const w = this.WW * 0.3;
-        return new Vector2(this.imageX + w, this.WH / 2);
+        const w = this._getImageWidth();
+        this._magneticPoint.x = this.imageX + w;
+        this._magneticPoint.y = this.WH / 2;
+        return this._magneticPoint;
+    }
+
+    _getImageWidth() {
+        return this.UIWW * 0.3;
     }
 }

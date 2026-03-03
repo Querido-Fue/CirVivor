@@ -6,6 +6,7 @@ import { animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
 import { mathUtil } from "util/math_util.js";
 import { GLOBAL_CONSTANTS } from "data/global/global_constants.js";
+import { DropdownElement } from "./_dropdown.js";
 
 /**
  * @class SliderElement
@@ -62,12 +63,23 @@ export class SliderElement extends BaseUIElement {
 
         const mx = getMouseInput('x');
         const my = getMouseInput('y');
+        const isLeftClicking = getMouseInput('leftClicking');
 
         // 포커스 확인: 현재 포커스 레이어와 다르면 입력 무시
         if (!getMouseFocus().includes(this.layer)) {
             if (this.dragging) {
                 this.dragging = false;
             }
+            this.prevLeftClicking = isLeftClicking;
+            return;
+        }
+
+        if (DropdownElement.isPointerBlockedFor(mx, my, this.layer, this.id)) {
+            if (this.dragging) {
+                this.dragging = false;
+            }
+            this._handleInteractionState(false, false);
+            this.prevLeftClicking = isLeftClicking;
             return;
         }
 
@@ -100,8 +112,6 @@ export class SliderElement extends BaseUIElement {
 
         const isOverSlider = mx >= hitX - hitBufferX && mx <= hitX + currentWidth + hitBufferX &&
             my >= drawY - hitBuffer && my <= drawY + hitBuffer;
-
-        const isLeftClicking = getMouseInput('leftClicking');
 
         // 드래그 시작 시점 (이전에 누르지 않았고, 지금 누르기 시작했고, 마우스가 슬라이더 위에 있을 때)
         if (isLeftClicking && !this.prevLeftClicking && getMouseFocus().includes(this.layer) && isOverSlider) {

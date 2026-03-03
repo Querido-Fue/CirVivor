@@ -11,16 +11,20 @@ import { LayoutHandler } from 'ui/_layout_handler.js';
 export class ExitOverlay extends BaseOverlay {
     constructor() {
         super('popup');
-        this.width = this.WW * 0.3;
-        this.height = this.WH * 0.2;
+        this._onResize();
         this._calculateGeometry();
 
         this._generateLayout();
     }
 
+    _onResize() {
+        this.width = this.UIWW * 0.3;
+        this.height = this.WH * 0.2;
+    }
+
     _generateLayout() {
         this._releaseElements();
-        const handler = new LayoutHandler(this).horMargin("WW", 1.5)
+        const handler = new LayoutHandler(this, this.positioningHandler).horMargin("WW", 1.5)
             .item("margin").value("WH", 2.5)
             .item("text").stylePreset("h2").text(getLangString('exit_title')).prop("fill", ColorSchemes.Title.TextDark)
             .item("margin").value("WH", 1.2)

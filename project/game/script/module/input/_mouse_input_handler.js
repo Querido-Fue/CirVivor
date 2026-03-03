@@ -1,4 +1,3 @@
-import { Vector2 } from 'util/vector2.js';
 import { getScaleRatio, getCanvasOffset } from 'display/display_system.js';
 
 /**
@@ -8,7 +7,7 @@ import { getScaleRatio, getCanvasOffset } from 'display/display_system.js';
  */
 export class MouseInputHandler {
     constructor() {
-        this.mousePos = new Vector2(0, 0);
+        this.mousePos = { x: 0, y: 0 };
         this.mouseLeftClicking = false;
         this.mouseLeftTemp = false;
         this.mouseLeftClicked = false;
@@ -24,7 +23,8 @@ export class MouseInputHandler {
         window.addEventListener("mousemove", (e) => {
             const scale = getScaleRatio();
             const offset = getCanvasOffset();
-            this.mousePos = new Vector2((e.clientX - offset.x) * scale, (e.clientY - offset.y) * scale);
+            this.mousePos.x = (e.clientX - offset.x) * scale;
+            this.mousePos.y = (e.clientY - offset.y) * scale;
         });
         window.addEventListener("mousedown", (e) => {
             if (e.button === 0) {

@@ -5,65 +5,95 @@ import { ShapeGeometryBuilder } from "./_shape_geometry_builder.js";
 
 /**
  * @class ShapeTextureCache
- * @description 도형을 오프스크린 캔버스에 그려 텍스처로 캐싱합니다.
+ * @description 도형을 하나의 아틀라스 텍스처에 그려 UV 정보와 함께 제공합니다.
  */
 class ShapeTextureCache {
     constructor(gl) {
         this.gl = gl;
-        this.cache = new Map();
-        this.canvas = document.createElement("canvas");
-        this.ctx = this.canvas.getContext("2d");
-        this.textureSize = 64; // 도형 텍스처 크기
-        this.canvas.width = this.textureSize;
-        this.canvas.height = this.textureSize;
+        this.textureSize = 64; // 도형 셀 크기
+        this.shapeOrder = ["rect", "square", "circle", "triangle", "pentagon", "hexagon", "octagon", "arrow"];
+        this.atlasCanvas = document.createElement("canvas");
+        this.atlasCtx = this.atlasCanvas.getContext("2d");
+        this.textureInfoCache = new Map();
+        this.defaultTextureInfo = null;
+
+        this.initAtlas();
     }
 
-    getTexture(shape) {
-        if (this.cache.has(shape)) {
-            return this.cache.get(shape);
+    initAtlas() {
+        const size = this.textureSize;
+        const atlasWidth = size * this.shapeOrder.length;
+        const atlasHeight = size;
+        const ctx = this.atlasCtx;
+        const halfTexelU = 0.5 / atlasWidth;
+        const halfTexelV = 0.5 / atlasHeight;
+
+        this.atlasCanvas.width = atlasWidth;
+        this.atlasCanvas.height = atlasHeight;
+        ctx.clearRect(0, 0, atlasWidth, atlasHeight);
+        ctx.fillStyle = "#FFFFFF";
+
+        for (let i = 0; i < this.shapeOrder.length; i++) {
+            const shape = this.shapeOrder[i];
+            const ox = i * size;
+
+            this.drawShape(ctx, shape, ox, 0, size);
+
+            this.textureInfoCache.set(shape, {
+                texture: null,
+                u0: (ox / atlasWidth) + halfTexelU,
+                v0: halfTexelV,
+                u1: ((ox + size) / atlasWidth) - halfTexelU,
+                v1: 1 - halfTexelV
+            });
         }
 
-        const ctx = this.ctx;
-        const size = this.textureSize;
-        const half = size / 2;
-        const radius = size * 0.45;
+        const atlasTexture = this.createTextureFromCanvas(this.atlasCanvas);
+        for (const textureInfo of this.textureInfoCache.values()) {
+            textureInfo.texture = atlasTexture;
+        }
+        this.defaultTextureInfo = this.textureInfoCache.get("rect");
+    }
 
-        ctx.clearRect(0, 0, size, size);
-        ctx.fillStyle = "#FFFFFF"; // 흰색으로 그리고 셰이더에서 색상 곱함
-        ctx.beginPath();
+    drawShape(ctx, shape, ox, oy, size) {
+        const half = size / 2;
+        const cx = ox + half;
+        const cy = oy + half;
+        const radius = size * 0.45;
 
         switch (shape) {
             case 'rect':
             case 'square':
-                ctx.fillRect(0, 0, size, size);
+                ctx.fillRect(ox, oy, size, size);
                 break;
             case 'circle':
-                ctx.arc(half, half, radius, 0, Math.PI * 2);
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius, 0, Math.PI * 2);
                 ctx.fill();
                 break;
             case 'triangle':
-                this.drawPolygon(ctx, half, half, radius, 3);
+                this.drawPolygon(ctx, cx, cy, radius, 3);
                 break;
             case 'pentagon':
-                this.drawPolygon(ctx, half, half, radius, 5);
+                this.drawPolygon(ctx, cx, cy, radius, 5);
                 break;
             case 'hexagon':
-                this.drawPolygon(ctx, half, half, radius, 6);
+                this.drawPolygon(ctx, cx, cy, radius, 6);
                 break;
             case 'octagon':
-                this.drawPolygon(ctx, half, half, radius, 8);
+                this.drawPolygon(ctx, cx, cy, radius, 8);
                 break;
             case 'arrow':
-                this.drawArrow(ctx, half, half, radius);
+                this.drawArrow(ctx, cx, cy, radius);
                 break;
             default:
-                ctx.fillRect(0, 0, size, size); // 기본 사각형
+                ctx.fillRect(ox, oy, size, size); // 기본 사각형
                 break;
         }
+    }
 
-        const texture = this.createTextureFromCanvas();
-        this.cache.set(shape, texture);
-        return texture;
+    getTextureInfo(shape) {
+        return this.textureInfoCache.get(shape) || this.defaultTextureInfo;
     }
 
     drawPolygon(ctx, x, y, radius, sides) {
@@ -92,7 +122,7 @@ class ShapeTextureCache {
         ctx.fill();
     }
 
-    createTextureFromCanvas() {
+    createTextureFromCanvas(canvas) {
         const gl = this.gl;
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -100,7 +130,7 @@ class ShapeTextureCache {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.canvas);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
         return texture;
     }
 }
@@ -118,9 +148,28 @@ class WebGLBatch {
         this.spriteCount = 0;
         this.currentTexture = null;
         this.textureCache = new Map();
+        this.colorCache = new Map();
+        this.geometryBuffer = new Float32Array(8);
         this.shapeCache = new ShapeTextureCache(gl);
 
         this.init();
+    }
+
+    getCachedColor(fill) {
+        let cached = this.colorCache.get(fill);
+        if (cached) return cached;
+
+        const rgb = colorUtil().cssToRgb(fill);
+        cached = new Float32Array([rgb.r / 255, rgb.g / 255, rgb.b / 255, rgb.a]);
+        this.colorCache.set(fill, cached);
+
+        // 동적 색상이 계속 들어오는 경우 무한 증가를 방지합니다.
+        if (this.colorCache.size > 256) {
+            this.colorCache.clear();
+            this.colorCache.set(fill, cached);
+        }
+
+        return cached;
     }
 
     init() {
@@ -222,8 +271,14 @@ class WebGLBatch {
 
     render(options) {
         let texture;
+        let u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0;
         if (options.shape) {
-            texture = this.shapeCache.getTexture(options.shape);
+            const textureInfo = this.shapeCache.getTextureInfo(options.shape);
+            texture = textureInfo.texture;
+            u0 = textureInfo.u0;
+            v0 = textureInfo.v0;
+            u1 = textureInfo.u1;
+            v1 = textureInfo.v1;
         } else if (options.image) {
             texture = this.getTexture(options.image);
         } else {
@@ -235,23 +290,28 @@ class WebGLBatch {
             this.currentTexture = texture;
         }
 
-        const x = options.x;
-        const y = options.y;
-
         let r = 1, g = 1, b = 1, a = 1;
         if (options.fill) {
-            const rgb = colorUtil().cssToRgb(options.fill);
-            r = rgb.r / 255;
-            g = rgb.g / 255;
-            b = rgb.b / 255;
-            a = rgb.a;
+            if (typeof options.fill === "string") {
+                const cachedColor = this.getCachedColor(options.fill);
+                r = cachedColor[0];
+                g = cachedColor[1];
+                b = cachedColor[2];
+                a = cachedColor[3];
+            } else {
+                const rgb = colorUtil().cssToRgb(options.fill);
+                r = rgb.r / 255;
+                g = rgb.g / 255;
+                b = rgb.b / 255;
+                a = rgb.a;
+            }
         }
         if (options.alpha !== undefined) {
             a *= options.alpha;
         }
 
-        // 도형 좌표 계산 유틸리티에 위임
-        const { x1, y1, x2, y2, x3, y3, x4, y4 } = ShapeGeometryBuilder.build(options);
+        // 재사용 버퍼에 좌표를 채워 객체 할당을 피합니다.
+        const geom = ShapeGeometryBuilder.buildInto(options, this.geometryBuffer);
 
         const i = this.spriteCount * 4 * this.vertexSize;
         const v = this.vertices;
@@ -260,19 +320,19 @@ class WebGLBatch {
         // 정점 순서: 반시계 0-1-2 / 0-2-3
 
         // 정점 0 (좌상단)
-        v[i] = x1; v[i + 1] = y1; v[i + 2] = 0.0; v[i + 3] = 0.0;
+        v[i] = geom[0]; v[i + 1] = geom[1]; v[i + 2] = u0; v[i + 3] = v0;
         v[i + 4] = r; v[i + 5] = g; v[i + 6] = b; v[i + 7] = a;
 
         // 정점 1 (우상단)
-        v[i + 8] = x2; v[i + 9] = y2; v[i + 10] = 1.0; v[i + 11] = 0.0;
+        v[i + 8] = geom[2]; v[i + 9] = geom[3]; v[i + 10] = u1; v[i + 11] = v0;
         v[i + 12] = r; v[i + 13] = g; v[i + 14] = b; v[i + 15] = a;
 
         // 정점 2 (우하단)
-        v[i + 16] = x3; v[i + 17] = y3; v[i + 18] = 1.0; v[i + 19] = 1.0;
+        v[i + 16] = geom[4]; v[i + 17] = geom[5]; v[i + 18] = u1; v[i + 19] = v1;
         v[i + 20] = r; v[i + 21] = g; v[i + 22] = b; v[i + 23] = a;
 
         // 정점 3 (좌하단)
-        v[i + 24] = x4; v[i + 25] = y4; v[i + 26] = 0.0; v[i + 27] = 1.0;
+        v[i + 24] = geom[6]; v[i + 25] = geom[7]; v[i + 26] = u0; v[i + 27] = v1;
         v[i + 28] = r; v[i + 29] = g; v[i + 30] = b; v[i + 31] = a;
 
         this.spriteCount++;

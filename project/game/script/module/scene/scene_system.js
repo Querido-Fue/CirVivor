@@ -32,6 +32,12 @@ export class SceneSystem {
         this.scene.draw();
     }
 
+    resize() {
+        if (this.scene && typeof this.scene.resize === 'function') {
+            this.scene.resize();
+        }
+    }
+
     /**
      * 게임을 시작합니다.
      * 타이틀 씬에서 게임 씬으로 전환합니다.

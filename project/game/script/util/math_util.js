@@ -1,11 +1,9 @@
-import { Vector2 } from "./vector2.js";
-
 let mathUtilInstance = null;
 
 /**
  * @class MathUtil
  * @description 게임에서 사용되는 수학 관련 유틸리티 함수들을 제공하는 클래스입니다.
- * 랜덤 값 생성, 각도 변환, Vector2 변환, Simplex Noise 등을 포함합니다.
+ * 랜덤 값 생성, 각도 변환, 2D 좌표 변환, Simplex Noise 등을 포함합니다.
  */
 export class MathUtil {
     constructor() {
@@ -51,7 +49,7 @@ export class MathUtil {
 
     /**
      * 벡터를 각도(도)로 변환합니다.
-     * @param {Vector2} vec - 벡터
+     * @param {{x:number, y:number}} vec - 벡터
      * @returns {number} 각도 (도)
      */
     vecToDeg(vec) {
@@ -60,7 +58,7 @@ export class MathUtil {
 
     /**
      * 벡터를 각도(라디안)로 변환합니다.
-     * @param {Vector2} vec - 벡터
+     * @param {{x:number, y:number}} vec - 벡터
      * @returns {number} 각도 (라디안)
      */
     vecToRad(vec) {
@@ -70,19 +68,19 @@ export class MathUtil {
     /**
      * 각도(도)를 단위 벡터로 변환합니다.
      * @param {number} degree - 각도 (도)
-     * @returns {Vector2} 단위 벡터
+     * @returns {{x:number, y:number}} 단위 벡터
      */
     degToVec(degree) {
-        return new Vector2(Math.cos(this.degToRad(degree)), Math.sin(this.degToRad(degree)))
+        return { x: Math.cos(this.degToRad(degree)), y: Math.sin(this.degToRad(degree)) }
     }
 
     /**
      * 각도(라디안)를 단위 벡터로 변환합니다.
      * @param {number} rad - 각도 (라디안)
-     * @returns {Vector2} 단위 벡터
+     * @returns {{x:number, y:number}} 단위 벡터
      */
     radToVec(rad) {
-        return new Vector2(Math.cos(rad), Math.sin(rad))
+        return { x: Math.cos(rad), y: Math.sin(rad) }
     }
 
     /**

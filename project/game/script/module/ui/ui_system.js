@@ -34,6 +34,12 @@ export class UISystem {
         this.cursor.update();
     }
 
+    resize() {
+        if (this.cursor && typeof this.cursor.resize === 'function') {
+            this.cursor.resize();
+        }
+    }
+
     /**
      * 커서를 그립니다.
      * 오버레이가 있다면 그립니다.

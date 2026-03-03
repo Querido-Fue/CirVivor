@@ -4,6 +4,7 @@ import { getMouseInput, getMouseFocus } from "input/input_system.js";
 import { colorUtil } from "util/color_util.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { shadowOn, shadowOff, measureText } from "display/display_system.js";
+import { DropdownElement } from "./_dropdown.js";
 
 /**
  * @class ButtonElement
@@ -72,8 +73,15 @@ export class ButtonElement extends BaseUIElement {
             return;
         }
 
+        const mx = getMouseInput("x");
+        const my = getMouseInput("y");
+        if (DropdownElement.isPointerBlockedFor(mx, my, this.layer, this.id)) {
+            this._handleInteractionState(false, false);
+            return;
+        }
+
         let isHovered = false;
-        if (getMouseInput("x") >= this.x && getMouseInput("x") <= this.x + this.width && getMouseInput("y") >= this.y && getMouseInput("y") <= this.y + this.height && this.clickAble) {
+        if (mx >= this.x && mx <= this.x + this.width && my >= this.y && my <= this.y + this.height && this.clickAble) {
             isHovered = true;
         }
 

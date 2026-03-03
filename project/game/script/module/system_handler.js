@@ -7,6 +7,7 @@ import { SceneSystem } from 'scene/scene_system.js';
 import { UISystem } from 'ui/ui_system.js';
 import { OverlaySystem } from 'overlay/overlay_system.js';
 import { DebugSystem } from 'debug/debug_system.js';
+import { SoundSystem } from 'sound/sound_system.js';
 import { getTimeHandler } from 'game/time_handler.js';
 import { warmupUIPools } from 'ui/_ui_pool.js';
 
@@ -28,47 +29,52 @@ export class SystemHandler {
         await this.saveSystem.init();
         this.logDebugInfo("SaveSystem 로드");
 
-        // 2. DisplaySystem (화면/WebGL 초기화 - 설정 의존)
+        // 2. SoundSystem (사운드 초기화 - 설정 의존)
+        this.soundSystem = new SoundSystem();
+        await this.soundSystem.init();
+        this.logDebugInfo("SoundSystem 로드");
+
+        // 3. DisplaySystem (화면/WebGL 초기화 - 설정 의존)
         this.displaySystem = new DisplaySystem();
         await this.displaySystem.init();
         this.logDebugInfo("DisplaySystem 로드");
 
-        // 3. AnimationSystem (애니메이션 초기화)
+        // 4. AnimationSystem (애니메이션 초기화)
         this.animationSystem = new AnimationSystem();
         await this.animationSystem.init();
         this.logDebugInfo("AnimationSystem 로드");
 
-        // 4. InputSystem (입력 초기화)
+        // 5. InputSystem (입력 초기화)
         this.inputSystem = new InputSystem();
         await this.inputSystem.init();
         this.logDebugInfo("InputSystem 로드");
 
-        // 5. UISystem (UI 초기화)
+        // 6. UISystem (UI 초기화)
         this.uiSystem = new UISystem();
         await this.uiSystem.init();
         this.logDebugInfo("UISystem 로드");
 
-        // 6. ObjectSystem (오브젝트 초기화)
+        // 7. ObjectSystem (오브젝트 초기화)
         this.objectSystem = new ObjectSystem();
         await this.objectSystem.init();
         this.logDebugInfo("ObjectSystem 로드");
 
-        // 7. SceneSystem (씬 초기화)
+        // 8. SceneSystem (씬 초기화)
         this.sceneSystem = new SceneSystem();
         await this.sceneSystem.init();
         this.logDebugInfo("SceneSystem 로드");
 
-        // 8. OverlaySystem (오버레이 초기화)
+        // 9. OverlaySystem (오버레이 초기화)
         this.overlaySystem = new OverlaySystem();
         await this.overlaySystem.init();
         this.logDebugInfo("OverlaySystem 로드");
 
-        // 9. DebugSystem (디버그 초기화)
+        // 10. DebugSystem (디버그 초기화)
         this.debugSystem = new DebugSystem();
         await this.debugSystem.init();
         this.logDebugInfo("DebugSystem 로드");
 
-        // 10. 풀 워밍업
+        // 11. 풀 워밍업
         await this.animationSystem._warmup();
         warmupUIPools();
         this.logDebugInfo("풀 워밍업");
@@ -95,15 +101,11 @@ export class SystemHandler {
         if (this.displaySystem.webGLHandler) {
             this.displaySystem.webGLHandler.clearAll();
         }
-        getTimeHandler().markUpdateStart();
         this.update();
-        getTimeHandler().markUpdateEnd();
-        getTimeHandler().markDrawStart();
         this.draw();
         if (this.displaySystem.webGLHandler) {
             this.displaySystem.webGLHandler.flushAll();
         }
-        getTimeHandler().markDrawEnd();
     }
 
     /**
@@ -111,6 +113,15 @@ export class SystemHandler {
      */
     resize() {
         this.displaySystem.resize();
+        if (this.uiSystem && typeof this.uiSystem.resize === 'function') {
+            this.uiSystem.resize();
+        }
+        if (this.overlaySystem) {
+            this.overlaySystem.resize();
+        }
+        if (this.sceneSystem && typeof this.sceneSystem.resize === 'function') {
+            this.sceneSystem.resize();
+        }
     }
 
     /**
@@ -118,6 +129,7 @@ export class SystemHandler {
      */
     update() {
         getTimeHandler().update();
+        this.soundSystem.update();
         this.animationSystem.update();
         this.inputSystem.update();
         this.uiSystem.update();
@@ -143,8 +155,15 @@ export class SystemHandler {
         this.inputSystem._draw();
         this.objectSystem.draw();
         this.sceneSystem.draw();
+        // 오버레이(glass blur)가 하위 캔버스를 샘플링할 때만 중간 flush를 수행합니다.
+        // 오버레이가 없을 때는 프레임 말미 flush만 사용해 불필요한 동기화를 줄입니다.
+        const needsOverlayComposite = this.overlaySystem?.activeOverlay || this.overlaySystem?.exitConfirmOverlay;
+        if (needsOverlayComposite && this.displaySystem.webGLHandler) {
+            this.displaySystem.webGLHandler.flushAll();
+        }
         this.uiSystem.draw(); // UI는 Scene 내용 반영
         this.overlaySystem.draw(); // 오버레이는 가장 상위에 그려져야 함
         this.debugSystem.draw();
+        this.soundSystem.draw();
     }
 }

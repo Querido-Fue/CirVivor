@@ -1,4 +1,3 @@
-import { FrameDebugger } from "./_frame_debugger.js";
 import { MouseDebugger } from "./_mouse_debugger.js";
 import { ErrorHandler } from "./_error_handler.js";
 import { PoolDebugger } from "./_pool_debug.js";
@@ -9,7 +8,7 @@ let debugSystemInstance = null;
 
 /**
  * @class DebugSystem
- * @description 게임의 디버그 기능(프레임, 마우스, 풀 디버깅 및 에러 핸들링)을 총괄하는 시스템입니다.
+ * @description 게임의 디버그 기능(마우스, 풀 디버깅 및 에러 핸들링)을 총괄하는 시스템입니다.
  */
 export class DebugSystem {
     constructor() {
@@ -18,10 +17,9 @@ export class DebugSystem {
 
     /**
      * 디버그 시스템을 초기화합니다.
-     * 프레임 디버거, 에러 핸들러, 마우스 디버거, 풀 디버거를 생성합니다.
+     * 에러 핸들러, 마우스 디버거, 풀 디버거를 생성합니다.
      */
     async init() {
-        this.frameDebugger = new FrameDebugger();
         this.errorHandler = new ErrorHandler();
         this.mouseDebugger = new MouseDebugger();
         this.poolDebugger = new PoolDebugger();
@@ -37,7 +35,6 @@ export class DebugSystem {
      */
     update() {
         if (getSetting('debugMode')) {
-            this.frameDebugger.update();
             this.mouseDebugger.update();
             this.poolDebugger.update();
         }
@@ -49,7 +46,6 @@ export class DebugSystem {
      */
     draw() {
         if (getSetting('debugMode')) {
-            this.frameDebugger.draw();
             this.mouseDebugger.draw();
             this.poolDebugger.draw();
         }

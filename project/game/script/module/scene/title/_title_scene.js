@@ -41,6 +41,20 @@ export class TitleScene extends BaseScene {
         this.titleMenu.draw();
     }
 
+    resize() {
+        this.WW = getWW();
+        this.WH = getWH();
+        if (this.titleBackGround && typeof this.titleBackGround.resize === 'function') {
+            this.titleBackGround.resize();
+        }
+        if (this.titleImage && typeof this.titleImage.resize === 'function') {
+            this.titleImage.resize();
+        }
+        if (this.titleMenu && typeof this.titleMenu.resize === 'function') {
+            this.titleMenu.resize();
+        }
+    }
+
     /**
      * 게임 시작 로직을 수행합니다.
      */
@@ -48,13 +62,15 @@ export class TitleScene extends BaseScene {
         if (hasMenuOverlay()) {
             return;
         }
+        const menuOffscreenX = this.titleMenu.getOffscreenRightX();
+        const logoOffscreenX = -this.titleImage.UIWW * 0.4;
         this.titleBackGround.titleEnemies.forEach((c) => animate(c, { variable: 'alpha', startValue: "current", endValue: 0, type: "easeIn", duration: 0.8 }));
-        animate(this.titleImage, { variable: 'imageX', startValue: "current", endValue: -this.WW * 0.4, type: "easeIn", duration: 1.1 });
-        this.titleMenu.buttons.forEach((b) => animate(b, { variable: 'x', startValue: "current", endValue: this.WW * 1.2, type: "easeIn", duration: 0.8 }));
+        animate(this.titleImage, { variable: 'imageX', startValue: "current", endValue: logoOffscreenX, type: "easeIn", duration: 1.1 });
+        this.titleMenu.buttons.forEach((b) => animate(b, { variable: 'x', startValue: "current", endValue: menuOffscreenX, type: "easeIn", duration: 0.8 }));
         this.titleMenu.buttons.forEach((b) => b.clickAble = false);
-        animate(this.titleMenu.line, { variable: 'x1', startValue: "current", endValue: this.WW * 1.2, type: "easeIn", duration: 0.8, delay: 0.1 });
-        animate(this.titleMenu.line, { variable: 'x2', startValue: "current", endValue: this.WW * 1.2, type: "easeIn", duration: 0.8, delay: 0.1 });
-        animate(this.titleMenu.selector, { variable: 'x', startValue: "current", endValue: this.WW * 1.2, type: "easeIn", duration: 0.8, delay: 0.2 }).promise.then(() => {
+        animate(this.titleMenu.line, { variable: 'x1', startValue: "current", endValue: menuOffscreenX, type: "easeIn", duration: 0.8, delay: 0.1 });
+        animate(this.titleMenu.line, { variable: 'x2', startValue: "current", endValue: menuOffscreenX, type: "easeIn", duration: 0.8, delay: 0.1 });
+        animate(this.titleMenu.selector, { variable: 'x', startValue: "current", endValue: menuOffscreenX, type: "easeIn", duration: 0.8, delay: 0.2 }).promise.then(() => {
             this.destroy(); // 전환 전 UI 정리
             this.sceneSystem.gameStart()
         });

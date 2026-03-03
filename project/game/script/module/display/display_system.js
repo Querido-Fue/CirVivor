@@ -33,15 +33,15 @@ export class DisplaySystem {
 
         // 1. Background (WebGL)
         this.backgroundCanvas = document.getElementById("background");
-        this.glBackground = this.backgroundCanvas.getContext("webgl", { alpha: false, preserveDrawingBuffer: true });
+        this.glBackground = this.backgroundCanvas.getContext("webgl", { alpha: false, preserveDrawingBuffer: false });
 
         // 2. Object (WebGL)
         this.objectCanvas = document.getElementById("object");
-        this.glObject = this.objectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
+        this.glObject = this.objectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: false });
 
         // 3. Effect (WebGL)
         this.effectCanvas = document.getElementById("effect");
-        this.glEffect = this.effectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
+        this.glEffect = this.effectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: false });
 
         // 4. TextEffect (2D)
         this.textEffectCanvas = document.getElementById("texteffect");
@@ -58,7 +58,7 @@ export class DisplaySystem {
 
         // 7. OverlayEffect (WebGL)
         this.overlayEffectCanvas = document.getElementById("overlayeffect");
-        this.glOverlayEffect = this.overlayEffectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: true });
+        this.glOverlayEffect = this.overlayEffectCanvas.getContext("webgl", { alpha: true, preserveDrawingBuffer: false });
 
         // 8. Popup (2D) - 게임 종료 확인 및 토스트 알림 팝업
         this.popupCanvas = document.getElementById("popup");
@@ -153,7 +153,15 @@ export class DisplaySystem {
      * 화면 크기에 맞게 모든 캔버스의 CSS 스타일을 갱신합니다.
      */
     resize() {
-        this._screenHandler.resize();
+        const renderTargetChanged = this._screenHandler.resize();
+
+        if (renderTargetChanged) {
+            for (const canvas of this.allCanvases) {
+                canvas.width = this._screenHandler.width;
+                canvas.height = this._screenHandler.height;
+            }
+            initBlurCanvas(this._screenHandler.width, this._screenHandler.height);
+        }
 
         const style = {
             width: `${this._screenHandler.cssWidth}px`,
@@ -197,6 +205,16 @@ export const getWW = () => displaySystemInstance._screenHandler.width;
  * @returns {number} 화면 높이
  */
 export const getWH = () => displaySystemInstance._screenHandler.height;
+/**
+ * UI 크기 계산에 사용하는 16:9 기준 너비를 반환합니다.
+ * @returns {number} UI 기준 너비
+ */
+export const getUIWW = () => displaySystemInstance._screenHandler.uiWidth;
+/**
+ * UI 기준 영역의 X 오프셋을 반환합니다.
+ * @returns {number} UI 기준 영역 X 시작점
+ */
+export const getUIOffsetX = () => displaySystemInstance._screenHandler.uiOffsetX;
 /**
  * 렌더 스케일 적용 전 기본 너비를 반환합니다.
  * @returns {number} 기본 너비

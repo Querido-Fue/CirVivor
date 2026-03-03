@@ -1,7 +1,7 @@
 import { BUTTON_CONSTANTS } from 'data/ui/button_constants.js';
 import { UI_CONSTANTS } from 'data/ui/ui_constants.js';
 import { TEXT_CONSTANTS } from 'data/ui/text_constants.js';
-import { getWW, getWH } from 'display/display_system.js';
+import { getWH, getUIWW } from 'display/display_system.js';
 
 let uiDataParserInstance = null;
 
@@ -49,7 +49,7 @@ export class UIDataParser {
             return 0;
         }
 
-        const WW = getWW();
+        const WW = getUIWW();
         const WH = getWH();
 
         switch (data.BASE) {

@@ -3,6 +3,7 @@ import { render, shadowOn, shadowOff } from "display/display_system.js";
 import { getMouseInput, getMouseFocus } from "input/input_system.js";
 import { animate } from "animation/animation_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
+import { DropdownElement } from "./_dropdown.js";
 /**
  * @class SegmentControlElement
  * @description 여러 옵션 중 하나를 선택하는 세그먼트 컨트롤 UI입니다.
@@ -90,6 +91,11 @@ export class SegmentControlElement extends BaseUIElement {
 
         const mx = getMouseInput("x");
         const my = getMouseInput("y");
+        if (DropdownElement.isPointerBlockedFor(mx, my, this.layer, this.id)) {
+            this._handleInteractionState(false, false);
+            return;
+        }
+
         let isOver = false;
 
         if (getMouseFocus().includes(this.layer) && this.clickAble) {

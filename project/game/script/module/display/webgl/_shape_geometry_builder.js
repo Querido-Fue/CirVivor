@@ -3,7 +3,7 @@
  * @description 렌더 옵션(크기/회전/반지름)으로부터 사각형 정점 좌표를 계산합니다.
  */
 export class ShapeGeometryBuilder {
-    static build(options) {
+    static buildInto(options, out) {
         let x1, y1, x2, y2, x3, y3, x4, y4;
 
         const x = options.x;
@@ -52,6 +52,22 @@ export class ShapeGeometryBuilder {
             x4 = x; y4 = y + h;
         }
 
-        return { x1, y1, x2, y2, x3, y3, x4, y4 };
+        if (Array.isArray(out) || ArrayBuffer.isView(out)) {
+            out[0] = x1; out[1] = y1;
+            out[2] = x2; out[3] = y2;
+            out[4] = x3; out[5] = y3;
+            out[6] = x4; out[7] = y4;
+            return out;
+        }
+
+        out.x1 = x1; out.y1 = y1;
+        out.x2 = x2; out.y2 = y2;
+        out.x3 = x3; out.y3 = y3;
+        out.x4 = x4; out.y4 = y4;
+        return out;
+    }
+
+    static build(options) {
+        return ShapeGeometryBuilder.buildInto(options, {});
     }
 }

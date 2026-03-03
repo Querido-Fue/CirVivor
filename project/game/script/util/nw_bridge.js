@@ -12,8 +12,8 @@ const isNw = hasNw && hasRequire;
  * 현재 런타임이 NW.js인지 여부를 반환합니다.
  * @returns {boolean}
  */
-//export const isNwRuntime = () => isNw;
-export const isNwRuntime = () => false;
+export const isNwRuntime = () => isNw;
+//export const isNwRuntime = () => false;
 
 /**
  * nw 전역 객체

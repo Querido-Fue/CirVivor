@@ -4,6 +4,7 @@ import { getMouseInput, getMouseFocus } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
+import { DropdownElement } from "./_dropdown.js";
 
 /**
  * @class ToggleElement
@@ -64,6 +65,11 @@ export class ToggleElement extends BaseUIElement {
 
         const mx = getMouseInput('x');
         const my = getMouseInput('y');
+        if (DropdownElement.isPointerBlockedFor(mx, my, this.layer, this.id)) {
+            this._handleInteractionState(false, false);
+            return;
+        }
+
         const isOver = mx >= this.x && mx <= this.x + this.width &&
             my >= this.y && my <= this.y + this.height;
 

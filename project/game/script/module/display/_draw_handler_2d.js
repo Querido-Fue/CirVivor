@@ -127,72 +127,7 @@ export class DrawHandler2D {
                 break;
 
             case 'glassRect':
-                ctx.save();
-
-                const isShadowActive = ctx.shadowBlur > 0 && ctx.shadowColor && ctx.shadowColor !== 'rgba(0,0,0,0)' && ctx.shadowColor !== 'undefined' && ctx.shadowColor !== 'transparent';
-                if (isShadowActive) {
-                    // 그림자만 독립적으로 그리기 (offset 트릭 활용)
-                    // 유리 패널 본체는 화면 밖에 두고 그림자만 원위치에 표시 (투명 패널의 그림자 가림 방지)
-                    ctx.save();
-                    const offset = 10000;
-                    ctx.shadowOffsetX = offset;
-                    ctx.shadowOffsetY = 0;
-                    ctx.beginPath();
-                    ctx.roundRect(options.x - offset, options.y, options.w, options.h, options.radius);
-                    ctx.fillStyle = '#ffffff';
-                    ctx.fill();
-                    ctx.restore();
-                }
-
-                // 이미지와 내부 채색 시 무거운 섀도우 연산이 일어나는 것을 방지 (프레임 드랍 원인)
-                ctx.shadowColor = 'transparent';
-                ctx.shadowBlur = 0;
-
-                // 1. 클리핑 영역 설정 (라운드 박스)
-                ctx.beginPath();
-                ctx.roundRect(options.x, options.y, options.w, options.h, options.radius);
-                ctx.clip();
-
-                if (options.image) {
-                    const blurCanvas = getBlurCanvas();
-                    const blurCtx = getBlurCtx();
-                    const blurScale = getBlurScale();
-
-                    // 2. 블러 캔버스 크기 조정 (필요 시)
-                    const bw = Math.floor(ctx.canvas.width * blurScale);
-                    const bh = Math.floor(ctx.canvas.height * blurScale);
-                    if (blurCanvas.width !== bw || blurCanvas.height !== bh) {
-                        blurCanvas.width = bw;
-                        blurCanvas.height = bh;
-                    }
-
-                    // 3. 소스 이미지를 블러 캔버스에 축소하여 그리기 (이미지 합성)
-                    blurCtx.clearRect(0, 0, bw, bh);
-                    // 여러 이미지가 배열로 들어올 수 있음
-                    const images = Array.isArray(options.image) ? options.image : [options.image];
-                    images.forEach(img => {
-                        // 소스 이미지가 유효한지 확인
-                        if (img.width > 0 && img.height > 0) {
-                            blurCtx.drawImage(img, 0, 0, bw, bh);
-                        }
-                    });
-
-                    // 4. 블러 캔버스를 본 캔버스에 확대하여 그리기 + 블러 필터 적용
-                    ctx.filter = `blur(${options.blur || 10}px)`;
-                    ctx.drawImage(blurCanvas, 0, 0, bw, bh, 0, 0, ctx.canvas.width, ctx.canvas.height);
-                    ctx.filter = 'none';
-                }
-
-                if (options.fill !== false) {
-                    ctx.fill();
-                }
-
-                if (options.stroke) {
-                    ctx.strokeStyle = options.stroke;
-                    ctx.lineWidth = options.lineWidth || 1;
-                    ctx.stroke();
-                }
-                ctx.restore();
+                this._renderGlassRect(ctx, options);
                 break;
 
             default:
@@ -246,6 +181,84 @@ export class DrawHandler2D {
             if (cache.textAlign !== align) { ctx.textAlign = align; cache.textAlign = align; }
             if (cache.textBaseline !== baseline) { ctx.textBaseline = baseline; cache.textBaseline = baseline; }
         }
+    }
+
+    _renderGlassRect(ctx, options) {
+        ctx.save();
+
+        if (this._isGlassShadowActive(ctx)) {
+            this._renderGlassShadowOnly(ctx, options);
+        }
+
+        // 이미지와 내부 채색 시 무거운 섀도우 연산이 일어나는 것을 방지 (프레임 드랍 원인)
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+
+        ctx.beginPath();
+        ctx.roundRect(options.x, options.y, options.w, options.h, options.radius);
+        ctx.clip();
+
+        this._drawGlassBlurImage(ctx, options);
+
+        if (options.fill !== false) {
+            ctx.fill();
+        }
+
+        if (options.stroke) {
+            ctx.strokeStyle = options.stroke;
+            ctx.lineWidth = options.lineWidth || 1;
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    _isGlassShadowActive(ctx) {
+        return ctx.shadowBlur > 0
+            && ctx.shadowColor
+            && ctx.shadowColor !== 'rgba(0,0,0,0)'
+            && ctx.shadowColor !== 'undefined'
+            && ctx.shadowColor !== 'transparent';
+    }
+
+    _renderGlassShadowOnly(ctx, options) {
+        // 그림자만 독립적으로 그리기 (offset 트릭 활용)
+        // 유리 패널 본체는 화면 밖에 두고 그림자만 원위치에 표시 (투명 패널의 그림자 가림 방지)
+        ctx.save();
+        const offset = 10000;
+        ctx.shadowOffsetX = offset;
+        ctx.shadowOffsetY = 0;
+        ctx.beginPath();
+        ctx.roundRect(options.x - offset, options.y, options.w, options.h, options.radius);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawGlassBlurImage(ctx, options) {
+        if (!options.image) return;
+
+        const blurCanvas = getBlurCanvas();
+        const blurCtx = getBlurCtx();
+        const blurScale = getBlurScale();
+
+        const bw = Math.floor(ctx.canvas.width * blurScale);
+        const bh = Math.floor(ctx.canvas.height * blurScale);
+        if (blurCanvas.width !== bw || blurCanvas.height !== bh) {
+            blurCanvas.width = bw;
+            blurCanvas.height = bh;
+        }
+
+        blurCtx.clearRect(0, 0, bw, bh);
+        const images = Array.isArray(options.image) ? options.image : [options.image];
+        for (const img of images) {
+            if (img.width > 0 && img.height > 0) {
+                blurCtx.drawImage(img, 0, 0, bw, bh);
+            }
+        }
+
+        ctx.filter = `blur(${options.blur || 10}px)`;
+        ctx.drawImage(blurCanvas, 0, 0, bw, bh, 0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.filter = 'none';
     }
 
     /**

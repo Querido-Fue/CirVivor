@@ -2,6 +2,7 @@ import { ExitOverlay } from './_exit_overlay.js';
 import { CollectionOverlay } from './title/_collection.js';
 import { SettingsOverlay } from './title/_settings.js';
 import { CreditsOverlay } from './title/_credits.js';
+import { DEFAULT_OVERLAY_ANIMATION_PRESET, OVERLAY_ANIMATION_PRESETS } from './_animation_presets.js';
 
 let overlaySystemInstance = null;
 
@@ -15,6 +16,7 @@ export class OverlaySystem {
         overlaySystemInstance = this;
         this.activeOverlay = null;
         this.exitConfirmOverlay = null;
+        this.animationPreset = DEFAULT_OVERLAY_ANIMATION_PRESET;
     }
 
     async init() {
@@ -45,6 +47,15 @@ export class OverlaySystem {
         }
     }
 
+    resize() {
+        if (this.activeOverlay && typeof this.activeOverlay.resize === 'function') {
+            this.activeOverlay.resize();
+        }
+        if (this.exitConfirmOverlay && typeof this.exitConfirmOverlay.resize === 'function') {
+            this.exitConfirmOverlay.resize();
+        }
+    }
+
     /**
      * 종료 확인 오버레이를 표시합니다. 이미 열려 있으면 업데이트하지 않습니다.
      */
@@ -52,6 +63,7 @@ export class OverlaySystem {
         if (this.exitConfirmOverlay) return;
 
         this.exitConfirmOverlay = new ExitOverlay();
+        this.exitConfirmOverlay.setAnimationPreset(this.animationPreset);
         this.exitConfirmOverlay.onCloseComplete = () => {
             this.exitConfirmOverlay = null;
         };
@@ -79,6 +91,7 @@ export class OverlaySystem {
                 console.warn(`메뉴 열림 처리 중 오류가 발생했습니다. ${menu} 메뉴가 없습니다.`);
                 return;
         }
+        this.activeOverlay.setAnimationPreset(this.animationPreset);
         this.activeOverlay.onCloseComplete = () => {
             this.activeOverlay = null;
         };
@@ -99,6 +112,16 @@ export class OverlaySystem {
      */
     hasOverlay() {
         return this.activeOverlay !== null;
+    }
+
+    setAnimationPreset(presetName) {
+        this.animationPreset = presetName || DEFAULT_OVERLAY_ANIMATION_PRESET;
+        if (this.activeOverlay) {
+            this.activeOverlay.setAnimationPreset(this.animationPreset);
+        }
+        if (this.exitConfirmOverlay) {
+            this.exitConfirmOverlay.setAnimationPreset(this.animationPreset);
+        }
     }
 }
 
@@ -138,3 +161,20 @@ export const titleMenuClose = () => {
 export const hasMenuOverlay = () => {
     return overlaySystemInstance ? overlaySystemInstance.hasOverlay() : false;
 }
+
+/**
+ * 오버레이 애니메이션 프리셋을 설정합니다.
+ * 다음에 열리는 오버레이와 현재 열린 오버레이에 즉시 적용됩니다.
+ * @param {string} presetName - 프리셋 이름 (예: uiAnimation)
+ */
+export const setOverlayAnimationPreset = (presetName) => {
+    if (overlaySystemInstance) {
+        overlaySystemInstance.setAnimationPreset(presetName);
+    }
+}
+
+/**
+ * 사용 가능한 오버레이 애니메이션 프리셋 이름 목록을 반환합니다.
+ * @returns {string[]} 프리셋 이름 배열
+ */
+export const getOverlayAnimationPresetNames = () => Object.keys(OVERLAY_ANIMATION_PRESETS);

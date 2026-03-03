@@ -3,6 +3,7 @@ import { ButtonElement } from 'ui/element/_button.js';
 import { SliderElement } from 'ui/element/_slider.js';
 import { ToggleElement } from 'ui/element/_toggle.js';
 import { SegmentControlElement } from 'ui/element/_segment_control.js';
+import { DropdownElement } from 'ui/element/_dropdown.js';
 import { TextElement } from 'ui/element/_text.js';
 import { LineElement } from 'ui/element/_line.js';
 import { ProgressBarElement } from 'ui/element/_progress_bar.js';
@@ -36,6 +37,12 @@ export const UIPool = {
         () => { const o = new SegmentControlElement({}); o.__poolType = 'segment_control'; return o; },
         (item) => item.reset(),
         "UI_SegmentControl"
+    ),
+    /** @type {ObjectPool} 드랍다운 풀 */
+    dropdown: new ObjectPool(
+        () => { const o = new DropdownElement({}); o.__poolType = 'dropdown'; return o; },
+        (item) => item.reset(),
+        "UI_Dropdown"
     ),
     /** @type {ObjectPool} 텍스트 엘리먼트 풀 */
     text_element: new ObjectPool(
@@ -84,6 +91,7 @@ export const UIPool = {
 export const releaseUIItem = (item) => {
     if (!item) return;
     if (item.__poolType && UIPool[item.__poolType]) {
+        const pool = UIPool[item.__poolType];
         if (item.left || item.center || item.right || item.children) {
             // 자식 요소가 있으면 재귀적으로 반납 (예: button 내부 text_element)
             const children = [
@@ -96,7 +104,11 @@ export const releaseUIItem = (item) => {
                 releaseUIItem(c);
             }
         }
-        UIPool[item.__poolType].release(item);
+        // 반납 즉시 reset을 적용해, 오버레이 종료 후에도 애니메이션/참조가 남지 않게 합니다.
+        if (pool.resetFn) {
+            pool.resetFn(item);
+        }
+        pool.release(item);
     }
 };
 
@@ -108,6 +120,7 @@ export const warmupUIPools = () => {
     UIPool.slider.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.SLIDER);
     UIPool.toggle.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.TOGGLE);
     UIPool.segment_control.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.SEGMENT_CONTROL);
+    UIPool.dropdown.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.DROPDOWN);
     UIPool.text.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.TEXT);
     UIPool.text_element.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.TEXT);
     UIPool.line.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.LINE);

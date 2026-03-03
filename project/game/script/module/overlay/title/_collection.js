@@ -11,8 +11,7 @@ export class CollectionOverlay extends TitleOverlay {
     constructor(TitleScene) {
         super(TitleScene);
 
-        this.width = this.WW * 0.65;
-        this.height = this.WH * 0.7;
+        this._onResize();
         this._calculateGeometry();
 
         this.achievementProgress = 0;
@@ -21,9 +20,14 @@ export class CollectionOverlay extends TitleOverlay {
         this._generateLayout();
     }
 
+    _onResize() {
+        this.width = this.UIWW * 0.65;
+        this.height = this.WH * 0.7;
+    }
+
     _generateLayout() {
         this._releaseElements();
-        const handler = new LayoutHandler(this).horMargin("WW", 1.8)
+        const handler = new LayoutHandler(this, this.positioningHandler).horMargin("WW", 1.8)
             .item("margin").value("WH", 2.5)
             .item("text", "title_text").stylePreset("h1").text(getLangString('title_collection_title')).prop("fill", ColorSchemes.Title.TextDark)
             .item("margin").value("WH", 1.5)
@@ -34,7 +38,7 @@ export class CollectionOverlay extends TitleOverlay {
             .groupItem("button", "achievement_btn").width("auto").height("OH", 65).prop("text", "").radius("preset", "overlay_panel_radius")
             .buttonColor(ColorSchemes.Overlay.Control).prop("enableHoverGradient", false)
             .innerItem("margin").value("parent", 20)
-            .innerItem("text").text("🏆").prop("font", `${this.WW * 0.04 * this.uiScale}px "Pretendard Variable", arial`).align("center").prop("align", "center").prop("fill", ColorSchemes.Title.TextDark)
+            .innerItem("text").text("🏆").prop("font", `${this.UIWW * 0.04 * this.uiScale}px "Pretendard Variable", arial`).align("center").prop("align", "center").prop("fill", ColorSchemes.Title.TextDark)
             .innerItem("margin").value("parent", 5)
             .innerItem("text").stylePreset("h3").text(getLangString('title_collection_achievements')).align("center").prop("align", "center").prop("fill", ColorSchemes.Title.TextDark)
             .innerItem("margin").value("parent", 25)
@@ -45,7 +49,7 @@ export class CollectionOverlay extends TitleOverlay {
             .groupItem("button", "encyclopedia_btn").width("auto").height("OH", 65).prop("text", "").radius("preset", "overlay_panel_radius")
             .buttonColor(ColorSchemes.Overlay.Control).prop("enableHoverGradient", false)
             .innerItem("margin").value("parent", 20)
-            .innerItem("text").text("📖").prop("font", `${this.WW * 0.04 * this.uiScale}px "Pretendard Variable", arial`).align("center").prop("align", "center").prop("fill", ColorSchemes.Title.TextDark)
+            .innerItem("text").text("📖").prop("font", `${this.UIWW * 0.04 * this.uiScale}px "Pretendard Variable", arial`).align("center").prop("align", "center").prop("fill", ColorSchemes.Title.TextDark)
             .innerItem("margin").value("parent", 5)
             .innerItem("text").stylePreset("h3").text(getLangString('title_collection_encyclopedia')).align("center").prop("align", "center").prop("fill", ColorSchemes.Title.TextDark)
             .innerItem("margin").value("parent", 25)

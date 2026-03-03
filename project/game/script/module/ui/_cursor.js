@@ -33,6 +33,15 @@ export class Cursor {
 
     }
 
+    resize() {
+        const prevWH = this.WH || 1;
+        this.WW = getWW();
+        this.WH = getWH();
+        const ratio = this.WH / Math.max(1, prevWH);
+        this._defaultSubCircleRadius = this.WH * 0.015;
+        this._subCircleRadius = Math.max(0, this._subCircleRadius * ratio);
+    }
+
     /**
      * 커서 상태를 업데이트합니다.
      * 마우스 입력에 따라 애니메이션을 처리합니다.

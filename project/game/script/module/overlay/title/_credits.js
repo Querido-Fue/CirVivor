@@ -12,16 +12,20 @@ export class CreditsOverlay extends TitleOverlay {
     constructor(TitleScene) {
         super(TitleScene);
 
-        this.width = this.WW * 0.4;
-        this.height = this.WH * 0.55;
+        this._onResize();
         this._calculateGeometry();
 
         this._generateLayout();
     }
 
+    _onResize() {
+        this.width = this.UIWW * 0.4;
+        this.height = this.WH * 0.55;
+    }
+
     _generateLayout() {
         this._releaseElements();
-        const handler = new LayoutHandler(this).horMargin("WW", 1.8)
+        const handler = new LayoutHandler(this, this.positioningHandler).horMargin("WW", 1.8)
             .item("margin").value("WH", 2.5)
             .item("text", "title_text").stylePreset("h1").text(getLangString('title_credits_title')).prop("fill", ColorSchemes.Title.TextDark)
             .item("margin").value("WH", 1.5)

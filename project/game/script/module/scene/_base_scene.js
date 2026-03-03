@@ -21,4 +21,7 @@ export class BaseScene {
      */
     draw() {
     }
+
+    resize() {
+    }
 }
