@@ -16,7 +16,7 @@ let displaySystemInstance = null;
 export class DisplaySystem {
     constructor() {
         displaySystemInstance = this;
-        this._screenHandler = new ScreenHandler();
+        this.screenHandler = new ScreenHandler();
         this.drawHandler = null;
         this.webGLHandler = null;
         this.themeHandler = new ThemeHandler();
@@ -115,15 +115,15 @@ export class DisplaySystem {
             this.webGLHandler.setBackgroundColor(rgb.r / 255, rgb.g / 255, rgb.b / 255);
         }
 
-        await this._screenHandler._init();
+        await this.screenHandler.init();
 
         // 캔버스 내부 해상도 고정
         for (const canvas of this.allCanvases) {
-            canvas.width = this._screenHandler.width;
-            canvas.height = this._screenHandler.height;
+            canvas.width = this.screenHandler.width;
+            canvas.height = this.screenHandler.height;
         }
 
-        initBlurCanvas(this._screenHandler.width, this._screenHandler.height);
+        initBlurCanvas(this.screenHandler.width, this.screenHandler.height);
 
         // 초기 CSS 적용
         this.resize();
@@ -153,21 +153,21 @@ export class DisplaySystem {
      * 화면 크기에 맞게 모든 캔버스의 CSS 스타일을 갱신합니다.
      */
     resize() {
-        const renderTargetChanged = this._screenHandler.resize();
+        const renderTargetChanged = this.screenHandler.resize();
 
         if (renderTargetChanged) {
             for (const canvas of this.allCanvases) {
-                canvas.width = this._screenHandler.width;
-                canvas.height = this._screenHandler.height;
+                canvas.width = this.screenHandler.width;
+                canvas.height = this.screenHandler.height;
             }
-            initBlurCanvas(this._screenHandler.width, this._screenHandler.height);
+            initBlurCanvas(this.screenHandler.width, this.screenHandler.height);
         }
 
         const style = {
-            width: `${this._screenHandler.cssWidth}px`,
-            height: `${this._screenHandler.cssHeight}px`,
-            left: `${this._screenHandler.cssLeft}px`,
-            top: `${this._screenHandler.cssTop}px`,
+            width: `${this.screenHandler.cssWidth}px`,
+            height: `${this.screenHandler.cssHeight}px`,
+            left: `${this.screenHandler.cssLeft}px`,
+            top: `${this.screenHandler.cssTop}px`,
             position: 'absolute'
         };
 
@@ -176,7 +176,7 @@ export class DisplaySystem {
         }
 
         if (this.webGLHandler) {
-            this.webGLHandler.resize(this._screenHandler.width, this._screenHandler.height);
+            this.webGLHandler.resize(this.screenHandler.width, this.screenHandler.height);
         }
     }
 
@@ -190,7 +190,7 @@ export class DisplaySystem {
         if (canvas) {
             canvas.style.filter = 'blur(' + blur + 'px)';
         } else {
-            console.warn("Invalid canvas layer for blur: " + layerName);
+            console.warn('블러를 적용할 수 없습니다. 유효하지 않은 캔버스 레이어: ' + layerName);
         }
     }
 }
@@ -199,42 +199,53 @@ export class DisplaySystem {
  * 화면 너비(Window Width)를 반환합니다.
  * @returns {number} 화면 너비
  */
-export const getWW = () => displaySystemInstance._screenHandler.width;
+export const getWW = () => displaySystemInstance.screenHandler.width;
 /**
  * 화면 높이(Window Height)를 반환합니다.
  * @returns {number} 화면 높이
  */
-export const getWH = () => displaySystemInstance._screenHandler.height;
+export const getWH = () => displaySystemInstance.screenHandler.height;
+/**
+ * 오브젝트(월드) 렌더링 기준 높이를 반환합니다.
+ * 와이드 화면에서는 16:9 기준 높이로 계산됩니다.
+ * @returns {number} 오브젝트 기준 높이
+ */
+export const getObjectWH = () => displaySystemInstance.screenHandler.objectHeight;
+/**
+ * 오브젝트 레이어 렌더링 시 중앙 크롭을 위한 Y 오프셋을 반환합니다.
+ * @returns {number} 오브젝트 Y 오프셋
+ */
+export const getObjectOffsetY = () => displaySystemInstance.screenHandler.objectOffsetY;
 /**
  * UI 크기 계산에 사용하는 16:9 기준 너비를 반환합니다.
  * @returns {number} UI 기준 너비
  */
-export const getUIWW = () => displaySystemInstance._screenHandler.uiWidth;
+export const getUIWW = () => displaySystemInstance.screenHandler.uiWidth;
 /**
  * UI 기준 영역의 X 오프셋을 반환합니다.
  * @returns {number} UI 기준 영역 X 시작점
  */
-export const getUIOffsetX = () => displaySystemInstance._screenHandler.uiOffsetX;
+export const getUIOffsetX = () => displaySystemInstance.screenHandler.uiOffsetX;
 /**
  * 렌더 스케일 적용 전 기본 너비를 반환합니다.
  * @returns {number} 기본 너비
  */
-export const getBaseWW = () => displaySystemInstance._screenHandler.baseWidth;
+export const getBaseWW = () => displaySystemInstance.screenHandler.baseWidth;
 /**
  * 렌더 스케일 적용 전 기본 높이를 반환합니다.
  * @returns {number} 기본 높이
  */
-export const getBaseWH = () => displaySystemInstance._screenHandler.baseHeight;
+export const getBaseWH = () => displaySystemInstance.screenHandler.baseHeight;
 /**
  * 현재 스케일 비율을 반환합니다. (내부해상도 / CSS해상도)
  * @returns {number} 스케일 비율
  */
-export const getScaleRatio = () => displaySystemInstance._screenHandler.scaleRatio;
+export const getScaleRatio = () => displaySystemInstance.screenHandler.scaleRatio;
 /**
  * 캔버스의 CSS 오프셋(위치)을 반환합니다.
  * @returns {object} {x, y} 오프셋
  */
-export const getCanvasOffset = () => ({ x: displaySystemInstance._screenHandler.cssLeft, y: displaySystemInstance._screenHandler.cssTop });
+export const getCanvasOffset = () => ({ x: displaySystemInstance.screenHandler.cssLeft, y: displaySystemInstance.screenHandler.cssTop });
 /**
  * 배경 캔버스 요소를 반환합니다.
  * @returns {HTMLCanvasElement} 배경 캔버스
@@ -268,7 +279,7 @@ export const renderGL = (layerName, options) => {
     if (displaySystemInstance.webGLHandler && displaySystemInstance.webGLHandler.batches[targetLayer]) {
         return displaySystemInstance.webGLHandler.render(targetLayer, options);
     }
-    console.warn(`WebGL Layer not found: ${targetLayer} (original: ${layerName})`);
+    console.warn(`WebGL 레이어를 찾을 수 없습니다: ${targetLayer} (원래 레이어: ${layerName})`);
 };
 
 /**

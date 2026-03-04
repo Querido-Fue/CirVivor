@@ -1,7 +1,7 @@
 export const english = {
     // 공통
     "language_name": "English",
-    "hidden": "false",
+    "hidden": false,
     "%": "%",
     "affirmative_icon": "check", // 문화권 차이를 반영한 아이콘
 
@@ -32,17 +32,20 @@ export const english = {
     "title_settings_section_display": "Display & Performance",
     "title_settings_window_mode": "Window Mode",
     "title_settings_window_mode_windowed": "Windowed",
-    "title_settings_window_mode_borderless": "Borderless FullScreen",
+    "title_settings_window_mode_borderless": "FullScreen",
+    "title_settings_window_mode_fullscreen": "FullScreen",
     "title_settings_window_mode_browser": "Browser",
+    "title_settings_widescreen_support": "Ultrawide Support",
+    "title_settings_desc_widescreen_support": "The game will be harder due to a limited FOV at aspect ratios above 16:9.",
     "title_settings_resolution": "Resolution",
     "title_settings_render_scale": "Render Scale",
     "title_settings_desc_render_scale": "Lower values improve performance at the cost of visual clarity.",
     "title_settings_ui_scale": "UI Scale",
-    "title_settings_desc_ui_scale": "Adjusts UI size. Values above 100% may cause visual glitches.",
-    "title_settings_disable_transparency": "Disable Transparency",
+    "title_settings_desc_ui_scale": "Adjusts UI size. Some UI elements may not be visible above 125%.",
+    "title_settings_disable_transparency": "Opacue UI Backgrounds",
     "title_settings_desc_transparency": "Makes UI backgrounds opaque to reduce graphics load.",
     "title_settings_physics_accuracy": "Physics Accuracy",
-    "title_settings_desc_physics_accuracy": "Higher values improve simulation precision but may cost performance.",
+    "title_settings_desc_physics_accuracy": "Lower values improve performance but may cause enemies to overlap.",
     "title_settings_section_ui": "UI",
     "title_settings_language": "Language",
     "title_settings_theme": "Theme",

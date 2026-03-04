@@ -2,14 +2,16 @@ import { getMouseInput, getMouseFocus } from 'input/input_system.js';
 import { getData } from 'data/data_handler.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const TITLE_ACCEL_RESPONSE = 6;
+const EPSILON = 1e-6;
 
 /**
- * 마우스 포커스가 화면 배경(타이틀 등)에 존재하는지 판별합니다.
- * @returns {boolean} 백그라운드 포커스 여부
+ * 마우스 포커스가 타이틀 적이 그려지는 오브젝트 레이어에 존재하는지 판별합니다.
+ * @returns {boolean} 오브젝트 레이어 포커스 여부
  */
-const hasBackgroundFocus = () => {
+const hasObjectFocus = () => {
     const focus = getMouseFocus();
-    return Array.isArray(focus) && focus.includes('background');
+    return Array.isArray(focus) && focus.includes('object');
 };
 
 /**
@@ -71,6 +73,17 @@ export const ensureTitleEnemyState = (enemy) => {
     if (!Number.isFinite(enemy._titleIntroPrevOffsetX)) {
         enemy._titleIntroPrevOffsetX = 0;
     }
+
+    if (!enemy._titleBaseSpeed || typeof enemy._titleBaseSpeed !== 'object') {
+        enemy._titleBaseSpeed = { x: 0, y: 0 };
+    } else {
+        if (!Number.isFinite(enemy._titleBaseSpeed.x)) enemy._titleBaseSpeed.x = 0;
+        if (!Number.isFinite(enemy._titleBaseSpeed.y)) enemy._titleBaseSpeed.y = 0;
+    }
+
+    if (!Number.isFinite(enemy._titleAccelResponse) || enemy._titleAccelResponse <= 0) {
+        enemy._titleAccelResponse = TITLE_ACCEL_RESPONSE;
+    }
 };
 
 /**
@@ -82,6 +95,8 @@ export const titleAI = {
 
     init(enemy) {
         ensureTitleEnemyState(enemy);
+        enemy._titleBaseSpeed.x = Number.isFinite(enemy.speed?.x) ? enemy.speed.x : 0;
+        enemy._titleBaseSpeed.y = Number.isFinite(enemy.speed?.y) ? enemy.speed.y : 0;
     },
 
     reset(enemy) {
@@ -93,6 +108,10 @@ export const titleAI = {
         enemy._titleIntroActive = false;
         enemy._titleIntroOffsetX = 0;
         enemy._titleIntroPrevOffsetX = 0;
+        enemy._titleBaseSpeed.x = 0;
+        enemy._titleBaseSpeed.y = 0;
+        enemy._titleAccelResponse = TITLE_ACCEL_RESPONSE;
+        enemy.setAcc(0, 0);
     },
 
     resize(enemy, context = {}) {
@@ -103,9 +122,11 @@ export const titleAI = {
         enemy._titleMagVel.y *= ratioY;
         enemy._titleIntroOffsetX *= ratioX;
         enemy._titleIntroPrevOffsetX *= ratioX;
+        enemy._titleBaseSpeed.x *= ratioX;
+        enemy._titleBaseSpeed.y *= ratioY;
     },
 
-    update(enemy, stepDelta, context = {}) {
+    fixedUpdate(enemy, stepDelta, context = {}) {
         ensureTitleEnemyState(enemy);
 
         if (enemy._titleIntroActive) {
@@ -114,23 +135,23 @@ export const titleAI = {
             const boost = enemy._spawnBoost || 1;
             const introOffsetDelta = enemy._titleIntroOffsetX - enemy._titleIntroPrevOffsetX;
             enemy._titleIntroPrevOffsetX = enemy._titleIntroOffsetX;
-            enemy.position.x += (enemy.speed.x * boost * stepDelta) + introOffsetDelta;
-            enemy.position.y += enemy.speed.y * boost * stepDelta;
-            return {
-                skipAcceleration: true,
-                skipDefaultMovement: true
-            };
+            const introVelX = stepDelta > EPSILON ? (introOffsetDelta / stepDelta) : 0;
+            const targetVx = (enemy._titleBaseSpeed.x * boost) + introVelX;
+            const targetVy = enemy._titleBaseSpeed.y * boost;
+            enemy.setAcc(targetVx - enemy.speed.x, targetVy - enemy.speed.y);
+            enemy.accSpeed = enemy._titleAccelResponse;
+            return;
         }
 
         const uiww = Number.isFinite(context.uiww) ? context.uiww : 0;
         const logoMagneticPoint = context.logoMagneticPoint ?? null;
-        const backgroundFocused = typeof context.backgroundFocused === 'boolean' ? context.backgroundFocused : hasBackgroundFocus();
+        const objectFocused = typeof context.objectFocused === 'boolean' ? context.objectFocused : hasObjectFocus();
         const leftClicking = typeof context.leftClicking === 'boolean' ? context.leftClicking : Boolean(getMouseInput('leftClicking'));
         const mousePos = context.mousePos ?? getMouseInput('pos');
 
         let mouseStrength = 0;
         let mouseDistance = 0;
-        if (backgroundFocused) {
+        if (objectFocused) {
             mouseStrength = leftClicking
                 ? TITLE_CONSTANTS.TITLE_AI.MOUSE_CLICK_STRENGTH
                 : TITLE_CONSTANTS.TITLE_AI.MOUSE_IDLE_STRENGTH;
@@ -151,16 +172,13 @@ export const titleAI = {
         }
 
         const boost = enemy._spawnBoost || 1;
-        enemy.position.x += ((enemy.speed.x * boost) + enemy._titleMagVel.x) * stepDelta;
-        enemy.position.y += ((enemy.speed.y * boost) + enemy._titleMagVel.y) * stepDelta;
+        const targetVx = (enemy._titleBaseSpeed.x * boost) + enemy._titleMagVel.x;
+        const targetVy = (enemy._titleBaseSpeed.y * boost) + enemy._titleMagVel.y;
+        enemy.setAcc(targetVx - enemy.speed.x, targetVy - enemy.speed.y);
+        enemy.accSpeed = enemy._titleAccelResponse;
 
         const damping = Math.max(0, 1 - (stepDelta * TITLE_CONSTANTS.TITLE_AI.MAGNETIC_DAMPING));
         enemy._titleMagVel.x *= damping;
         enemy._titleMagVel.y *= damping;
-
-        return {
-            skipAcceleration: true,
-            skipDefaultMovement: true
-        };
     }
 };

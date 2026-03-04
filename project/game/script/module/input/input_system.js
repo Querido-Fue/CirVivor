@@ -17,17 +17,16 @@ export class InputSystem {
     async init() {
     }
 
-    _draw() {
+    draw() {
     }
 
     /**
-     * @private
      * 입력 시스템의 상태를 업데이트합니다.
      * 마우스와 키보드 입력을 처리합니다.
      */
     update() {
-        this.mouseInputHandler._update();
-        this.keyboardInputHandler._update();
+        this.mouseInputHandler.update();
+        this.keyboardInputHandler.update();
     }
 }
 

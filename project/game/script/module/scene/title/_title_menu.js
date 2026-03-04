@@ -22,7 +22,7 @@ export class TitleMenu {
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
-        this._recalculateAnchors();
+        this.#recalculateAnchors();
 
         this.selector = new TitleSelector(
             this.selectorAnchorX - (this.UIWW * TITLE_CONSTANTS.TITLE_MENU.SELECTOR_OFFSET_RATIO),
@@ -155,7 +155,7 @@ export class TitleMenu {
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
-        this._recalculateAnchors();
+        this.#recalculateAnchors();
 
         this.line.x1 = this.menuAnchorX;
         this.line.x2 = this.menuAnchorX;
@@ -217,7 +217,7 @@ export class TitleMenu {
          * 버튼이 존재해야 하는 정확한 X축 앵커 위치 재설정
          * @private
          */
-    _recalculateAnchors() {
+    #recalculateAnchors() {
         this.buttonHeight = this.UIWW * TITLE_CONSTANTS.TITLE_MENU.BUTTON_HEIGHT;
         this.menuAnchorX = this.WW - (this.UIWW * TITLE_CONSTANTS.TITLE_MENU.MENU_ANCHOR_FROM_RIGHT_RATIO);
         this.selectorAnchorX = this.WW - (this.UIWW * TITLE_CONSTANTS.TITLE_MENU.SELECTOR_ANCHOR_FROM_RIGHT_RATIO);

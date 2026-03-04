@@ -18,6 +18,7 @@ import { render } from "display/display_system.js";
 export class ProgressBarElement extends BaseUIElement {
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
     /**

@@ -19,14 +19,14 @@ export class ProgressHandler {
      * 진행 데이터를 로드합니다.
      */
     async init() {
-        await this._load();
+        await this.#load();
     }
 
     /**
      * @private
      * 진행 데이터 파일을 로드합니다.
      */
-    async _load() {
+    async #load() {
         if (this.isNwRuntime) {
             let fileExists = false;
             try {
@@ -39,9 +39,9 @@ export class ProgressHandler {
             if (fileExists) {
                 try {
                     const readData = await fsPromises.readFile(this.filePath);
-                    this.data = this._fitDataLength(this._normalizeData(readData));
+                    this.data = this.#fitDataLength(this.#normalizeData(readData));
                 } catch (e) {
-                    console.error("Failed to load progress data:", e);
+                    console.error('진행 데이터 로드 실패:', e);
                     this.data = new Uint8Array(this.defaultData);
                 }
             } else {
@@ -59,9 +59,9 @@ export class ProgressHandler {
                 return;
             }
 
-            this.data = this._fitDataLength(this._decodeBase64(encoded));
+            this.data = this.#fitDataLength(this.#decodeBase64(encoded));
         } catch (e) {
-            console.error("Failed to load progress data from localStorage:", e);
+            console.error('localStorage에서 진행 데이터 로드 실패:', e);
             this.data = new Uint8Array(this.defaultData);
             await this.save();
         }
@@ -73,7 +73,7 @@ export class ProgressHandler {
          * @param {*} data 정규화할 원본 데이터
          * @returns {Uint8Array} 정규화된 바이트 배열
          */
-    _normalizeData(data) {
+    #normalizeData(data) {
         if (data instanceof Uint8Array) {
             return new Uint8Array(data);
         }
@@ -95,7 +95,7 @@ export class ProgressHandler {
          * @param {Uint8Array} data 원본 배열
          * @returns {Uint8Array} 크기가 맞춰진 배열
          */
-    _fitDataLength(data) {
+    #fitDataLength(data) {
         const fixed = new Uint8Array(this.defaultData);
         fixed.set(data.subarray(0, fixed.length));
         return fixed;
@@ -107,7 +107,7 @@ export class ProgressHandler {
          * @param {Uint8Array} uint8 인코딩할 데이터
          * @returns {string} Base64 문자열
          */
-    _encodeBase64(uint8) {
+    #encodeBase64(uint8) {
         if (typeof btoa === 'function') {
             let binary = '';
             for (let i = 0; i < uint8.length; i++) {
@@ -120,7 +120,7 @@ export class ProgressHandler {
             return Buffer.from(uint8).toString('base64');
         }
 
-        throw new Error('Base64 encoder is not available.');
+        throw new Error('Base64 인코더를 사용할 수 없습니다.');
     }
 
     /**
@@ -129,7 +129,7 @@ export class ProgressHandler {
          * @param {string} base64Text 디코딩할 Base64 문자열
          * @returns {Uint8Array} 디코딩된 바이트 배열
          */
-    _decodeBase64(base64Text) {
+    #decodeBase64(base64Text) {
         if (typeof atob === 'function') {
             const binary = atob(base64Text);
             const uint8 = new Uint8Array(binary.length);
@@ -143,7 +143,7 @@ export class ProgressHandler {
             return new Uint8Array(Buffer.from(base64Text, 'base64'));
         }
 
-        throw new Error('Base64 decoder is not available.');
+        throw new Error('Base64 디코더를 사용할 수 없습니다.');
     }
 
     /**
@@ -158,7 +158,7 @@ export class ProgressHandler {
                 try {
                     await fsPromises.mkdir(this.dataDir, { recursive: true });
                 } catch (e) {
-                    console.error("Failed to create progress directory:", e);
+                    console.error('진행 데이터 디렉토리 생성 실패:', e);
                     throw e;
                 }
             }
@@ -166,14 +166,14 @@ export class ProgressHandler {
             try {
                 await fsPromises.writeFile(this.filePath, this.data);
             } catch (err) {
-                console.error("Failed to save progress data:", err);
+                console.error('진행 데이터 저장 실패:', err);
                 throw err;
             }
         } else {
             try {
-                window.localStorage.setItem(this.storageKey, this._encodeBase64(this.data));
+                window.localStorage.setItem(this.storageKey, this.#encodeBase64(this.data));
             } catch (err) {
-                console.error("Failed to save progress data to localStorage:", err);
+                console.error('localStorage에 진행 데이터 저장 실패:', err);
                 throw err;
             }
         }
@@ -192,6 +192,6 @@ export class ProgressHandler {
          * @param {Uint8Array|Array} data 새로운 진행 데이터
          */
     setData(data) {
-        this.data = this._fitDataLength(this._normalizeData(data));
+        this.data = this.#fitDataLength(this.#normalizeData(data));
     }
 }

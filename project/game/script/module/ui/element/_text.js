@@ -22,6 +22,7 @@ export class TextElement extends BaseUIElement {
      */
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
     /**

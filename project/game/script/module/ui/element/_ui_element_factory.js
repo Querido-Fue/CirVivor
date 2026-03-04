@@ -45,12 +45,12 @@ export class UIElementFactory {
         const width = forcedW !== undefined
             ? forcedW
             : (item.widthObj
-                ? layoutHandler._parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
-                : layoutHandler._parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW));
+                ? layoutHandler.parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
+                : layoutHandler.parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW));
 
         const height = item.heightObj
-            ? layoutHandler._parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : layoutHandler._parseUnit(presetData.HEIGHT?.BASE || 'WH', presetData.HEIGHT?.VALUE || 5, parentH);
+            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
+            : layoutHandler.parseUnit(presetData.HEIGHT?.BASE || 'WH', presetData.HEIGHT?.VALUE || 5, parentH);
 
         const props = {
             parent: layoutHandler.parent,
@@ -67,16 +67,16 @@ export class UIElementFactory {
         const fontFam = props.font || presetData.FONT?.FAMILY || 'arial';
         const fontWeig = props.fontWeight || presetData.FONT?.WEIGHT || '';
         const fontSiz = props.size || (presetData.FONT
-            ? layoutHandler._parseUnit(presetData.FONT.SIZE?.BASE || 'WW', presetData.FONT.SIZE?.VALUE || 1, parentW)
+            ? layoutHandler.parseUnit(presetData.FONT.SIZE?.BASE || 'WW', presetData.FONT.SIZE?.VALUE || 1, parentW)
             : 12);
 
         const align = props.align || presetData.ALIGN || 'center';
 
         if (presetData.MARGIN) {
-            props.margin = layoutHandler._parseUnit(presetData.MARGIN.BASE || 'WW', presetData.MARGIN.VALUE || 0, parentW);
+            props.margin = layoutHandler.parseUnit(presetData.MARGIN.BASE || 'WW', presetData.MARGIN.VALUE || 0, parentW);
         }
         if (presetData.RADIUS) {
-            props.radius = layoutHandler._parseUnit(presetData.RADIUS.BASE || 'WW', presetData.RADIUS.VALUE || 0, parentW);
+            props.radius = layoutHandler.parseUnit(presetData.RADIUS.BASE || 'WW', presetData.RADIUS.VALUE || 0, parentW);
         }
 
         this._initializeButtonContentArrays(props);
@@ -120,7 +120,7 @@ export class UIElementFactory {
     static _createText(item, x, y, parentW, _parentH, _forcedW, layoutHandler) {
         const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
 
-        const fontSizePx = layoutHandler._parseUnit(
+        const fontSizePx = layoutHandler.parseUnit(
             presetData.FONT?.SIZE?.BASE || 'WW',
             presetData.FONT?.SIZE?.VALUE || 1,
             parentW
@@ -166,10 +166,10 @@ export class UIElementFactory {
 
         slider.width = forcedW !== undefined
             ? forcedW
-            : (slider.width || layoutHandler._parseUnit('WW', 10, parentW));
+            : (slider.width || layoutHandler.parseUnit('WW', 10, parentW));
         slider.height = item.heightObj
-            ? layoutHandler._parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : (slider.height || layoutHandler._parseUnit('WH', 2, parentH));
+            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
+            : (slider.height || layoutHandler.parseUnit('WH', 2, parentH));
 
         return slider;
     }
@@ -181,10 +181,10 @@ export class UIElementFactory {
 
         toggle.width = forcedW !== undefined
             ? forcedW
-            : (toggle.width || layoutHandler._parseUnit('WW', 5, parentW));
+            : (toggle.width || layoutHandler.parseUnit('WW', 5, parentW));
         toggle.height = item.heightObj
-            ? layoutHandler._parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : (toggle.height || layoutHandler._parseUnit('WH', 2.5, parentH));
+            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
+            : (toggle.height || layoutHandler.parseUnit('WH', 2.5, parentH));
 
         return toggle;
     }
@@ -201,10 +201,10 @@ export class UIElementFactory {
 
         segment.width = forcedW !== undefined
             ? forcedW
-            : (segment.width || layoutHandler._parseUnit('WW', 15, parentW));
+            : (segment.width || layoutHandler.parseUnit('WW', 15, parentW));
         segment.height = item.heightObj
-            ? layoutHandler._parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : (segment.height || layoutHandler._parseUnit('WH', 3, parentH));
+            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
+            : (segment.height || layoutHandler.parseUnit('WH', 3, parentH));
 
         return segment;
     }
@@ -217,10 +217,10 @@ export class UIElementFactory {
 
         const width = forcedW !== undefined
             ? forcedW
-            : layoutHandler._parseUnit('WW', 15, parentW);
+            : layoutHandler.parseUnit('WW', 15, parentW);
         const height = item.heightObj
-            ? layoutHandler._parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : layoutHandler._parseUnit('WH', 3, parentH);
+            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
+            : layoutHandler.parseUnit('WH', 3, parentH);
 
         const props = this._createCommonProps(item, x, y, layoutHandler);
         props.width = width;
@@ -236,8 +236,8 @@ export class UIElementFactory {
         const width = forcedW !== undefined
             ? forcedW
             : (item.widthObj
-                ? layoutHandler._parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
-                : layoutHandler._parseUnit('WW', 10, parentW));
+                ? layoutHandler.parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
+                : layoutHandler.parseUnit('WW', 10, parentW));
 
         const lineObj = UIPool.line.get();
         Object.assign(lineObj, {
@@ -287,11 +287,11 @@ export class UIElementFactory {
         const width = forcedW !== undefined
             ? forcedW
             : (item.widthObj
-                ? layoutHandler._parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
-                : layoutHandler._parseUnit('WW', 10, parentW));
+                ? layoutHandler.parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
+                : layoutHandler.parseUnit('WW', 10, parentW));
         const height = item.heightObj
-            ? layoutHandler._parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : layoutHandler._parseUnit('WH', 1, parentH);
+            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
+            : layoutHandler.parseUnit('WH', 1, parentH);
 
         const props = {
             parent: layoutHandler.parent,
@@ -361,7 +361,7 @@ export class UIElementFactory {
     }
 
     static _buildPresetFontString(presetData, defaultWeight, parentW, layoutHandler) {
-        const fontSizePx = layoutHandler._parseUnit(
+        const fontSizePx = layoutHandler.parseUnit(
             presetData.FONT?.SIZE?.BASE || 'WW',
             presetData.FONT?.SIZE?.VALUE || 1,
             parentW

@@ -75,7 +75,7 @@ export class SystemHandler {
         this.logDebugInfo("DebugSystem 로드");
 
         // 11. 풀 워밍업
-        await this.animationSystem._warmup();
+        await this.animationSystem.warmup();
         warmupUIPools();
         this.logDebugInfo("풀 워밍업");
         this.logDebugInfo("모든 모듈 로드");
@@ -143,10 +143,33 @@ export class SystemHandler {
     }
 
     /**
+     * 고정 틱(기본 60Hz)에서 실행되는 업데이트 로직입니다.
+     * 물리/전투 등 고정 시간 축이 필요한 모듈만 갱신합니다.
+     */
+    fixedUpdate() {
+        const timeHandler = getTimeHandler();
+        if (timeHandler && typeof timeHandler.updateFixed === 'function') {
+            timeHandler.updateFixed();
+        }
+
+        if (this.objectSystem && typeof this.objectSystem.fixedUpdate === 'function') {
+            this.objectSystem.fixedUpdate();
+        }
+
+        if (this.sceneSystem && typeof this.sceneSystem.fixedUpdate === 'function') {
+            this.sceneSystem.fixedUpdate();
+        }
+
+        if (this.gameManager && typeof this.gameManager.fixedUpdate === 'function') {
+            this.gameManager.fixedUpdate();
+        }
+    }
+
+    /**
      * 모든 시스템의 그리기 로직을 호출합니다.
      */
     draw() {
-        this.inputSystem._draw();
+        this.inputSystem.draw();
         this.objectSystem.draw();
         this.sceneSystem.draw();
         // 오버레이(glass blur)가 하위 캔버스를 샘플링할 때만 중간 flush를 수행합니다.

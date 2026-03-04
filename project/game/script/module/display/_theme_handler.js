@@ -13,6 +13,11 @@ export let ColorSchemes = {};
 
 let themeHandlerInstance = null;
 
+/**
+ * 테마 키 문자열을 정규화하여 유효한 키를 반환합니다. bool 값은 'dark'/'light'로 변환됩니다.
+ * @param {string|boolean} themeKeyOrDarkMode - 테마 키 또는 다크모드 여부
+ * @returns {string} 정규화된 테마 키
+ */
 const normalizeThemeKey = (themeKeyOrDarkMode) => {
     if (typeof themeKeyOrDarkMode === 'boolean') {
         return themeKeyOrDarkMode ? 'dark' : 'light';
@@ -59,7 +64,7 @@ export class ThemeHandler {
                 // 파일이 없거나 읽기 에러
             }
         } catch (e) {
-            console.error("ThemeHandler failed to load initial settings:", e);
+            console.error('ThemeHandler: 초기 설정 로드에 실패했습니다:', e);
         }
 
         this.setTheme(themeKey, false); // WebGL 미초기화 상태이므로 화면 갱신은 안 함

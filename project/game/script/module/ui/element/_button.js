@@ -31,6 +31,7 @@ import { DropdownElement } from "./_dropdown.js";
 export class ButtonElement extends BaseUIElement {
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
     /**
@@ -155,8 +156,8 @@ export class ButtonElement extends BaseUIElement {
         let currentLeftX = scaledX + scaledMargin;
         for (const item of this.left) {
             if (!item) continue;
-            const w = this._getItemWidth(item, scaledH);
-            this._drawItem(item, currentLeftX, scaledY, scaledH, 'left', w);
+            const w = this.#getItemWidth(item, scaledH);
+            this.#drawItem(item, currentLeftX, scaledY, scaledH, 'left', w);
             currentLeftX += w + scaledSpacing;
         }
 
@@ -165,9 +166,9 @@ export class ButtonElement extends BaseUIElement {
         for (let i = this.right.length - 1; i >= 0; i--) {
             const item = this.right[i];
             if (!item) continue;
-            const w = this._getItemWidth(item, scaledH);
+            const w = this.#getItemWidth(item, scaledH);
             currentRightX -= w;
-            this._drawItem(item, currentRightX, scaledY, scaledH, 'right', w);
+            this.#drawItem(item, currentRightX, scaledY, scaledH, 'right', w);
             currentRightX -= scaledSpacing;
         }
 
@@ -177,7 +178,7 @@ export class ButtonElement extends BaseUIElement {
         const centerItemsWidths = [];
         for (const item of this.center) {
             if (item) {
-                const w = this._getItemWidth(item, scaledH);
+                const w = this.#getItemWidth(item, scaledH);
                 centerItemsWidths.push(w);
                 totalCenterWidth += w;
             } else {
@@ -193,7 +194,7 @@ export class ButtonElement extends BaseUIElement {
             const item = this.center[i];
             const w = centerItemsWidths[i];
             if (item) {
-                this._drawItem(item, currentCenterX, scaledY, scaledH, 'center', w);
+                this.#drawItem(item, currentCenterX, scaledY, scaledH, 'center', w);
                 currentCenterX += w + scaledSpacing;
             }
         }
@@ -206,7 +207,7 @@ export class ButtonElement extends BaseUIElement {
     /**
      * 아이템의 예상 너비를 반환합니다.
      */
-    _getItemWidth(item, scaledButtonHeight) {
+    #getItemWidth(item, scaledButtonHeight) {
         if (item.width !== undefined && typeof item.width === 'number') {
             return item.width * this.scale;
         }
@@ -233,7 +234,7 @@ export class ButtonElement extends BaseUIElement {
     /**
      * 각 항목을 그립니다.
      */
-    _drawItem(item, x, y, h, slotName, itemWidth) {
+    #drawItem(item, x, y, h, slotName, itemWidth) {
         // 아이콘 요소
         if (item.constructor.name === 'Icon' || item.type !== undefined) {
             // 버튼 높이 기반 아이콘 크기 (itemWidth와 동일)

@@ -16,7 +16,7 @@ let Game;
 window.onload = async () => {
     try {
         // 시간 핸들러 초기화
-        new TimeHandler(); ``
+        new TimeHandler();
 
         // 유틸리티 클래스 초기화
         new MathUtil();
@@ -31,8 +31,8 @@ window.onload = async () => {
         Game = new App(systemHandler);
         window.Game = Game;
 
-        // 브라우저 프레임 루프 시작
-        Game.loop();
+        // 브라우저 프레임 루프 및 고정 틱 루프 시작
+        Game.start();
     } catch (e) {
         console.warn("게임 초기화 중 오류가 발생했습니다\n", e);
     }
@@ -61,6 +61,17 @@ class App {
      */
     constructor(systemHandler) {
         this.systemHandler = systemHandler;
+        this.fixedLoopId = null;
+        this._boundLoop = this.loop.bind(this);
+        this._boundFixedTick = this.fixedTick.bind(this);
+    }
+
+    /**
+     * 렌더 루프와 고정 틱 루프를 시작합니다.
+     */
+    start() {
+        this.loop();
+        this.startFixedTick();
     }
 
     /**
@@ -68,11 +79,41 @@ class App {
      * SystemHandler의 tick 메서드를 호출하여 모든 시스템을 업데이트하고 그립니다.
      */
     loop() {
-        requestAnimationFrame(this.loop.bind(this));
+        requestAnimationFrame(this._boundLoop);
         try {
             this.systemHandler.tick();
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
+        }
+    }
+
+    /**
+     * 60Hz 고정 업데이트 루프를 시작합니다.
+     */
+    startFixedTick() {
+        if (this.fixedLoopId !== null) {
+            clearInterval(this.fixedLoopId);
+        }
+        this.fixedLoopId = setInterval(this._boundFixedTick, 1000 / 60);
+    }
+
+    /**
+     * 고정 업데이트 루프를 정지합니다.
+     */
+    stopFixedTick() {
+        if (this.fixedLoopId === null) return;
+        clearInterval(this.fixedLoopId);
+        this.fixedLoopId = null;
+    }
+
+    /**
+     * 고정 틱에서 고정 업데이트 대상 모듈을 갱신합니다.
+     */
+    fixedTick() {
+        try {
+            this.systemHandler.fixedUpdate();
+        } catch (e) {
+            console.warn("고정 틱 루프 중 오류가 발생했습니다\n", e);
         }
     }
 
@@ -100,6 +141,7 @@ class App {
      * 모든 데이터를 저장한 후 창을 닫습니다.
      */
     close() {
+        this.stopFixedTick();
         this.systemHandler.saveSystem.saveAll().then(() => {
             setTimeout(() => runtimeTool().closeWindow(), 100);
         });

@@ -59,10 +59,9 @@ export class AnimationSystem {
     }
 
     /**
-     * @private
      * 애니메이션 풀을 미리 워밍업합니다.
      */
-    async _warmup() {
+    async warmup() {
         // 애니메이션 풀 미리 할당
         for (let i = 0; i < GLOBAL_CONSTANTS.POOL_WARMUP.ANIMATOR; i++) {
             standardAnimationPool.release(standardAnimationPool.get());
@@ -76,7 +75,7 @@ export class AnimationSystem {
      * @returns {object} { id, promise } 형태의 결과 객체
      */
     animate(owner, properties) {
-        if (!this._validateProperties(properties, ['variable'])) {
+        if (!this.#validateProperties(properties, ['variable'])) {
             return {
                 id: -1,
                 get promise() { return Promise.resolve(); }
@@ -114,7 +113,7 @@ export class AnimationSystem {
         const promises = [];
 
         if (!Array.isArray(mixedDefs)) {
-            errThrow(null, 'Animator: mixedDefs must be an array', 'error');
+            errThrow(null, 'Animator: mixedDefs 는 배열이어야 합니다', 'error');
             return { id: null, promise: Promise.resolve() };
         }
 
@@ -141,7 +140,7 @@ export class AnimationSystem {
      * @returns {number} 애니메이션 ID
      */
     animatePersist(owner, properties) {
-        if (!this._validateProperties(properties, ['variable', 'easings', 'duration'])) return -1;
+        if (!this.#validateProperties(properties, ['variable', 'easings', 'duration'])) return -1;
 
         const id = this.idCounter++;
         const variable = properties.variable;
@@ -161,14 +160,13 @@ export class AnimationSystem {
     }
 
     /**
-     * @private
      * PersistentAnimation을 전진 방향으로 트리거합니다.
      * @param {number} id - 애니메이션 ID
      * @param {number} duration - 지속 시간
      * @param {number} [speed=1] - 속도 배율
      * @param {boolean} [cancelOldProgress=false] - 기존 진행 취소 여부
      */
-    _forward(id, duration, speed = 1, cancelOldProgress = false) {
+    forward(id, duration, speed = 1, cancelOldProgress = false) {
         const anim = this.animationsById.get(id);
         if (anim && anim instanceof PersistentAnimation) {
             anim.trigger('forward', duration, speed, cancelOldProgress);
@@ -176,14 +174,13 @@ export class AnimationSystem {
     }
 
     /**
-     * @private
      * PersistentAnimation을 후진 방향으로 트리거합니다.
      * @param {number} id - 애니메이션 ID
      * @param {number} duration - 지속 시간
      * @param {number} [speed=1] - 속도 배율
      * @param {boolean} [cancelOldProgress=false] - 기존 진행 취소 여부
      */
-    _backward(id, duration, speed = 1, cancelOldProgress = false) {
+    backward(id, duration, speed = 1, cancelOldProgress = false) {
         const anim = this.animationsById.get(id);
         if (anim && anim instanceof PersistentAnimation) {
             anim.trigger('backward', duration, speed, cancelOldProgress);
@@ -208,14 +205,14 @@ export class AnimationSystem {
      * @param {string[]} required - 필수 필드 이름 배열
      * @returns {boolean} 유효성 여부
      */
-    _validateProperties(properties, required) {
+    #validateProperties(properties, required) {
         if (!properties) {
-            this.utilities.errorHandler.errThrow(null, 'Animator: properties object is missing', 'error');
+            errThrow(null, 'Animator: properties 객체가 없습니다', 'error');
             return false;
         }
         for (const field of required) {
             if (properties[field] === undefined || properties[field] === null || properties[field] === 'error') {
-                this.utilities.errorHandler.errThrow(null, `Animator: Missing required property '${field}'`, 'error');
+                errThrow(null, `Animator: 필수 속성 '${field}'이(가) 없습니다`, 'error');
                 return false;
             }
         }
@@ -252,4 +249,22 @@ export const animatePersist = (owner, properties) => animationSystemInstance.ani
  * @param {number} id - 제거할 애니메이션 ID
  */
 export const remove = (id) => animationSystemInstance.remove(id);
+
+/**
+ * PersistentAnimation을 전진 방향으로 트리거합니다.
+ * @param {number} id - 애니메이션 ID
+ * @param {number} duration - 지속 시간
+ * @param {number} [speed=1] - 속도 배율
+ * @param {boolean} [cancelOldProgress=false] - 기존 진행 취소 여부
+ */
+export const forward = (id, duration, speed = 1, cancelOldProgress = false) => animationSystemInstance.forward(id, duration, speed, cancelOldProgress);
+
+/**
+ * PersistentAnimation을 후진 방향으로 트리거합니다.
+ * @param {number} id - 애니메이션 ID
+ * @param {number} duration - 지속 시간
+ * @param {number} [speed=1] - 속도 배율
+ * @param {boolean} [cancelOldProgress=false] - 기존 진행 취소 여부
+ */
+export const backward = (id, duration, speed = 1, cancelOldProgress = false) => animationSystemInstance.backward(id, duration, speed, cancelOldProgress);
 

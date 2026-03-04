@@ -15,8 +15,10 @@ import { DropdownElement } from "./_dropdown.js";
  * @param {number} properties.height - 전체 높이
  */
 export class SegmentControlElement extends BaseUIElement {
+    #value;
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
     /**
@@ -41,7 +43,7 @@ export class SegmentControlElement extends BaseUIElement {
         this.font = properties.font || `600 ${this.height * 0.55}px "Pretendard Variable", arial`;
 
 
-        this._value = null;
+        this.#value = null;
         this.selectedIndex = 0;
 
         this.selectionProgress = 0;
@@ -64,11 +66,11 @@ export class SegmentControlElement extends BaseUIElement {
         this.onChange = () => { };
     }
 
-    get value() { return this._value; }
+    get value() { return this.#value; }
 
     set value(val) {
-        if (this._value === val) return;
-        this._value = val;
+        if (this.#value === val) return;
+        this.#value = val;
 
         const newIndex = this.items.findIndex(item => item.value === val);
         if (newIndex !== -1) {

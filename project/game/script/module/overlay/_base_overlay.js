@@ -17,8 +17,12 @@ const getOverlayAnimationPreset = getData('getOverlayAnimationPreset');
  * 공통적인 열기/닫기 애니메이션, 배경 그리기(Glassmorphism) 등을 처리합니다.
  */
 export class BaseOverlay {
+    #animIds;
+    #transitionToken;
+
     /**
      * @param {string} layer - 오버레이가 그려질 레이어 이름
+     * @param {string} animationPreset - 오버레이 애니메이션 프리셋 이름
      */
     constructor(layer = 'overlay', animationPreset = DEFAULT_OVERLAY_ANIMATION_PRESET) {
         this.layer = layer;
@@ -42,8 +46,8 @@ export class BaseOverlay {
         this.animScale = 0.9;
         this.animBlur = 0;
         this.alpha = 0;
-        this._animIds = { alpha: -1, scale: -1, blur: -1 };
-        this._transitionToken = 0;
+        this.#animIds = { alpha: -1, scale: -1, blur: -1 };
+        this.#transitionToken = 0;
         this.animationPreset = animationPreset;
     }
 
@@ -124,12 +128,12 @@ export class BaseOverlay {
          * 진행 중인 모든 오버레이 애니메이션을 취소합니다.
          */
     _cancelOverlayAnimations() {
-        for (const key of Object.keys(this._animIds)) {
-            const id = this._animIds[key];
+        for (const key of Object.keys(this.#animIds)) {
+            const id = this.#animIds[key];
             if (id >= 0) {
                 remove(id);
             }
-            this._animIds[key] = -1;
+            this.#animIds[key] = -1;
         }
     }
 
@@ -143,23 +147,27 @@ export class BaseOverlay {
             return;
         }
         if (name && !OVERLAY_ANIMATION_PRESETS[name]) {
-            console.warn(`Overlay animation preset not found: ${name}. Fallback to ${DEFAULT_OVERLAY_ANIMATION_PRESET}.`);
+            console.warn(`오버레이 애니메이션 프리셋 '${name}'을(를) 찾을 수 없습니다. '${DEFAULT_OVERLAY_ANIMATION_PRESET}'으로 대체합니다.`);
         }
         this.animationPreset = DEFAULT_OVERLAY_ANIMATION_PRESET;
     }
-
+    /**
+     * @private
+     * 현재 설정된 애니메이션 프리셋 데이터를 반환합니다.
+     * @returns {object}
+     */
     _getAnimationPreset() {
         return getOverlayAnimationPreset(this.animationPreset);
     }
 
     /**
-     * 오버레이를 엽니다.
+     * 오버레이를 엽니다. 상태를 초기화하고 오픈 애니메이션을 시작합니다.
      */
     open() {
         const preset = this._getAnimationPreset();
         const openPreset = preset.open;
         const dimPreset = preset.dim;
-        const token = ++this._transitionToken;
+        const token = ++this.#transitionToken;
         this._cancelOverlayAnimations();
 
         this.animating = true;
@@ -186,7 +194,7 @@ export class BaseOverlay {
             type: openPreset.alpha.easing,
             duration: openPreset.alpha.duration
         });
-        this._animIds.alpha = alphaAnim.id;
+        this.#animIds.alpha = alphaAnim.id;
 
         const blurAnim = animate(this, {
             variable: 'animBlur',
@@ -195,7 +203,7 @@ export class BaseOverlay {
             type: openPreset.blur.easing,
             duration: openPreset.blur.duration
         });
-        this._animIds.blur = blurAnim.id;
+        this.#animIds.blur = blurAnim.id;
 
         const scaleAnim = animate(this, {
             variable: 'animScale',
@@ -204,15 +212,15 @@ export class BaseOverlay {
             type: openPreset.scale.easing,
             duration: openPreset.scale.duration
         });
-        this._animIds.scale = scaleAnim.id;
+        this.#animIds.scale = scaleAnim.id;
 
         scaleAnim.promise.then(() => {
-            if (token !== this._transitionToken) return;
+            if (token !== this.#transitionToken) return;
 
             this.animating = false;
-            this._animIds.alpha = -1;
-            this._animIds.blur = -1;
-            this._animIds.scale = -1;
+            this.#animIds.alpha = -1;
+            this.#animIds.blur = -1;
+            this.#animIds.scale = -1;
 
             canvas.style.opacity = '1';
             canvas.style.transform = 'scale(1)';
@@ -227,7 +235,7 @@ export class BaseOverlay {
         const preset = this._getAnimationPreset();
         const closePreset = preset.close;
         const dimPreset = preset.dim;
-        const token = ++this._transitionToken;
+        const token = ++this.#transitionToken;
         this._cancelOverlayAnimations();
 
         this.animating = true;
@@ -242,7 +250,7 @@ export class BaseOverlay {
             type: closePreset.alpha.easing,
             duration: closePreset.alpha.duration
         });
-        this._animIds.alpha = alphaAnim.id;
+        this.#animIds.alpha = alphaAnim.id;
 
         const blurAnim = animate(this, {
             variable: 'animBlur',
@@ -251,7 +259,7 @@ export class BaseOverlay {
             type: closePreset.blur.easing,
             duration: closePreset.blur.duration
         });
-        this._animIds.blur = blurAnim.id;
+        this.#animIds.blur = blurAnim.id;
 
         const scaleAnim = animate(this, {
             variable: 'animScale',
@@ -260,10 +268,10 @@ export class BaseOverlay {
             type: closePreset.scale.easing,
             duration: closePreset.scale.duration
         });
-        this._animIds.scale = scaleAnim.id;
+        this.#animIds.scale = scaleAnim.id;
 
         scaleAnim.promise.then(() => {
-            if (token !== this._transitionToken) return;
+            if (token !== this.#transitionToken) return;
 
             const canvas = getCanvas(this.layer);
             canvas.style.opacity = '1';
@@ -273,14 +281,14 @@ export class BaseOverlay {
             if (dimPreset?.closeMode !== 'beforeAnimation') {
                 setDim(this.layer, 0);
             }
-            setMouseFocus(this.previousFocus || ['ui', 'background']);
+            setMouseFocus(this.previousFocus || ['ui', 'object']);
 
             this.alpha = 0;
             this.animScale = 1;
             this.animBlur = 0;
-            this._animIds.alpha = -1;
-            this._animIds.blur = -1;
-            this._animIds.scale = -1;
+            this.#animIds.alpha = -1;
+            this.#animIds.blur = -1;
+            this.#animIds.scale = -1;
 
             this.onCloseComplete();
             this._releaseElements();
@@ -316,8 +324,8 @@ export class BaseOverlay {
     }
 
     /**
-         * 활성화된 하위 동적 UI 요소들을 프레임마다 업데이트합니다.
-         */
+     * 활성화된 하위 동적 UI 요소들을 프레임마다 업데이트합니다. 오버레이 자체의 애니메이션 상태도 반영합니다.
+     */
     update() {
         if (this.dynamicItems) {
             for (const key in this.dynamicItems) {

@@ -304,7 +304,7 @@ export class WebGLHandler {
         for (const layerName in this.glContexts) {
             const gl = this.glContexts[layerName];
             if (!gl) {
-                console.error(`WebGL Context not found for layer: ${layerName}`);
+                console.error(`WebGL 컨텍스트를 찾을 수 없습니다. 레이어: ${layerName}`);
                 continue;
             }
 

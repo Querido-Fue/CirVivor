@@ -18,7 +18,7 @@ export class MouseInputHandler {
         this.mouseMiddleTemp = false;
         this.mouseMiddleClicked = false;
 
-        this.focusList = ["ui", "background"]; // 기본 포커스
+        this.focusList = ["ui", "object"]; // 기본 포커스
 
         window.addEventListener("mousemove", (e) => {
             const scale = getScaleRatio();
@@ -51,7 +51,7 @@ export class MouseInputHandler {
      * 단일 버튼의 클릭 상태를 업데이트합니다.
      * @param {'left'|'right'|'middle'} btn - 버튼 이름
      */
-    _updateButton(btn) {
+    #updateButton(btn) {
         const clicking = `mouse${btn.charAt(0).toUpperCase() + btn.slice(1)}Clicking`;
         const temp = `mouse${btn.charAt(0).toUpperCase() + btn.slice(1)}Temp`;
         const clicked = `mouse${btn.charAt(0).toUpperCase() + btn.slice(1)}Clicked`;
@@ -69,13 +69,12 @@ export class MouseInputHandler {
     }
 
     /**
-     * @private
      * 입력 상태를 업데이트합니다. (주로 마우스 클릭 상태 처리)
      */
-    _update() {
-        this._updateButton('left');
-        this._updateButton('right');
-        this._updateButton('middle');
+    update() {
+        this.#updateButton('left');
+        this.#updateButton('right');
+        this.#updateButton('middle');
     }
 
     /**

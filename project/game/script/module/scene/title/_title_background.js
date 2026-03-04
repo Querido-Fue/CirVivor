@@ -1,14 +1,16 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { animate } from 'animation/animation_system.js';
-import { getWW, getWH, getUIWW, renderGL } from 'display/display_system.js';
-import { getDelta } from 'game/time_handler.js';
+import { getWW, getWH, getObjectWH, getObjectOffsetY, getUIWW, renderGL } from 'display/display_system.js';
+import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
+import { getMouseFocus, getMouseInput } from 'input/input_system.js';
 import { getData } from 'data/data_handler.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { titleAI } from 'object/enemy/ai/_title_ai.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
+const TITLE_ENEMY_SPAWN_CULL_GUARD_PX = 0.5;
 
 /**
  * @class TitleBackGround
@@ -33,6 +35,8 @@ export class TitleBackGround {
         this.logoMagneticPoint = null;
         this.WW = getWW();
         this.WH = getWH();
+        this.objectWH = getObjectWH();
+        this.objectOffsetY = getObjectOffsetY();
         this.UIWW = getUIWW();
 
         this.time = 0;
@@ -61,21 +65,27 @@ export class TitleBackGround {
          */
     resize() {
         const prevWW = this.WW || 1;
-        const prevWH = this.WH || 1;
+        const prevObjectWH = this.objectWH || 1;
         const prevUIWW = this.UIWW || 1;
 
         this.WW = getWW();
         this.WH = getWH();
+        this.objectWH = getObjectWH();
+        this.objectOffsetY = getObjectOffsetY();
         this.UIWW = getUIWW();
 
         const ratioX = this.WW / Math.max(1, prevWW);
-        const ratioY = this.WH / Math.max(1, prevWH);
+        const ratioY = this.objectWH / Math.max(1, prevObjectWH);
         const ratioUI = this.UIWW / Math.max(1, prevUIWW);
         this.shieldRadius *= ratioUI;
 
         for (const enemy of this.titleEnemies) {
             enemy.position.x *= ratioX;
             enemy.position.y *= ratioY;
+            enemy.prevPosition.x = enemy.position.x;
+            enemy.prevPosition.y = enemy.position.y;
+            enemy.renderPosition.x = enemy.position.x;
+            enemy.renderPosition.y = enemy.position.y;
             enemy.speed.x *= ratioX;
             enemy.speed.y *= ratioY;
             enemy.resizeAI({
@@ -94,21 +104,57 @@ export class TitleBackGround {
      */
     update(logoMagneticPoint) {
         this.logoMagneticPoint = logoMagneticPoint;
-        const delta = getDelta();
+        const alpha = getFixedInterpolationAlpha();
+
+        for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
+            const enemy = this.titleEnemies[i];
+            if (!enemy || !enemy.active) {
+                this.#releaseEnemyAt(i);
+                continue;
+            }
+
+            enemy.interpolatePosition(alpha);
+            if (enemy.isOutsideScreen(this.WW, this.objectWH, TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_CULL_OUTSIDE_RATIO)) {
+                this.#releaseEnemyAt(i);
+            }
+        }
+    }
+
+    /**
+     * 고정 틱에서 타이틀 적의 이동/스폰/충돌을 처리합니다.
+     */
+    fixedUpdate() {
+        const delta = getFixedDelta();
+        if (!Number.isFinite(delta) || delta <= 0) return;
+
         this.time += delta;
+        const mousePos = getMouseInput('pos');
+        const focus = getMouseFocus();
+        const objectFocused = Array.isArray(focus) && focus.includes('object');
+        const mousePosInObject = mousePos
+            ? { x: mousePos.x, y: mousePos.y + this.objectOffsetY }
+            : null;
+        const logoMagneticPointInObject = this.logoMagneticPoint
+            ? { x: this.logoMagneticPoint.x, y: this.logoMagneticPoint.y + this.objectOffsetY }
+            : null;
 
         const aiContext = {
             uiww: this.UIWW,
-            logoMagneticPoint: this.logoMagneticPoint
+            logoMagneticPoint: logoMagneticPointInObject,
+            objectFocused,
+            leftClicking: Boolean(getMouseInput('leftClicking')),
+            mousePos: mousePosInObject
         };
 
         for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
             const enemy = this.titleEnemies[i];
-            enemy.update(delta, aiContext);
+            if (!enemy || !enemy.active) continue;
+            enemy.beginFixedStep();
+            enemy.fixedUpdate(delta, aiContext);
+        }
 
-            if (enemy.isOutsideScreen(this.WW, this.WH, TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_CULL_OUTSIDE_RATIO)) {
-                this._releaseEnemyAt(i);
-            }
+        if (this.objectSystem && typeof this.objectSystem.resolveEnemyCollisions === 'function') {
+            this.objectSystem.resolveEnemyCollisions(this.titleEnemies, { delta });
         }
 
         if (this.titleEnemies.length < TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_LIMIT) {
@@ -123,6 +169,9 @@ export class TitleBackGround {
             if (shapesToSpawn > 0) {
                 this.pushShape(shapesToSpawn, false);
                 this.shapeSpawnCounter -= shapesToSpawn;
+                if (this.objectSystem && typeof this.objectSystem.resolveEnemyCollisions === 'function') {
+                    this.objectSystem.resolveEnemyCollisions(this.titleEnemies, { delta });
+                }
             }
         }
     }
@@ -140,8 +189,8 @@ export class TitleBackGround {
             fill: ColorSchemes.Title.Background
         });
 
-        for (const enemy of this.titleEnemies) {
-            enemy.draw();
+        for (let i = 0; i < this.titleEnemies.length; i++) {
+            this.titleEnemies[i].draw();
         }
     }
 
@@ -158,10 +207,9 @@ export class TitleBackGround {
 
         for (let i = 0; i < times; i++) {
             const type = this.enemyTypes[Math.floor(mathUtil().random(0, this.enemyTypes.length))];
-            const spawn = this._buildSpawnData({ lockYInScreen: playInitAnim });
+            const spawn = this.#buildSpawnData({ lockYInScreen: playInitAnim });
             const startSpeed = playInitAnim ? { x: spawn.speed.x, y: 0 } : spawn.speed;
             const enemy = this.objectSystem.acquireEnemy(type, {
-                id: `title_enemy_${type}_${this.time.toFixed(3)}_${i}`,
                 type,
                 hp: 1,
                 maxHp: 1,
@@ -188,7 +236,7 @@ export class TitleBackGround {
             enemy._titleIntroActive = false;
 
             if (playInitAnim) {
-                const targetX = this._buildIntroTargetX();
+                const targetX = this.#buildIntroTargetX();
                 const duration = mathUtil().random(
                     TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.MIN_DURATION,
                     TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.MAX_DURATION
@@ -225,7 +273,7 @@ export class TitleBackGround {
          * @param {number} index
          * @private
          */
-    _releaseEnemyAt(index) {
+    #releaseEnemyAt(index) {
         const enemy = this.titleEnemies[index];
         if (!enemy) return;
 
@@ -247,7 +295,7 @@ export class TitleBackGround {
          */
     destroy() {
         for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
-            this._releaseEnemyAt(i);
+            this.#releaseEnemyAt(i);
         }
     }
 
@@ -258,8 +306,12 @@ export class TitleBackGround {
          * @returns {object} 위치 및 속도 데이터
          * @private
          */
-    _buildSpawnData({ lockYInScreen = false } = {}) {
-        const marginY = this.WH * TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_CULL_OUTSIDE_RATIO;
+    #buildSpawnData({ lockYInScreen = false } = {}) {
+        const cullRatio = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_CULL_OUTSIDE_RATIO;
+        const marginY = this.objectWH * cullRatio;
+        const marginX = this.WW * cullRatio;
+        const spawnXByRatio = this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SPAWN_X_RATIO;
+        const spawnX = Math.min(spawnXByRatio, (this.WW + marginX) - TITLE_ENEMY_SPAWN_CULL_GUARD_PX);
         const axisSpeed = this.UIWW * mathUtil().random(
             TITLE_CONSTANTS.TITLE_ENEMIES.AXIS_SPEED_MIN_RATIO,
             TITLE_CONSTANTS.TITLE_ENEMIES.AXIS_SPEED_MAX_RATIO
@@ -270,14 +322,14 @@ export class TitleBackGround {
         );
         const spawnY = lockYInScreen
             ? mathUtil().random(
-                this.WH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MIN_RATIO,
-                this.WH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MAX_RATIO
+                this.objectOffsetY + (this.WH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MIN_RATIO),
+                this.objectOffsetY + (this.WH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MAX_RATIO)
             )
-            : mathUtil().random(-marginY, this.WH + marginY);
+            : mathUtil().random(-marginY, this.objectWH + marginY);
 
         return {
             position: {
-                x: this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SPAWN_X_RATIO,
+                x: spawnX,
                 y: spawnY
             },
             speed: { x: -axisSpeed, y: driftSpeed }
@@ -289,7 +341,7 @@ export class TitleBackGround {
          * @returns {number} 
          * @private
          */
-    _buildIntroTargetX() {
+    #buildIntroTargetX() {
         return mathUtil().random(
             this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.TARGET_X_MIN_RATIO,
             this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.TARGET_X_MAX_RATIO

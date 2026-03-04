@@ -10,14 +10,20 @@ let soundSystemInstance = null;
  * @description 배경음(BGM) 리소스 초기화, 재생, 볼륨 반영을 담당합니다.
  */
 export class SoundSystem {
+    #lastBgmVolume;
+    #pendingAutoplay;
+    #unlockEvents;
+    #unlockAndPlayHandler;
+    #isUnlockListenerAttached;
+
     constructor() {
         soundSystemInstance = this;
         this.bgmAudio = null;
-        this._lastBgmVolume = null;
-        this._pendingAutoplay = false;
-        this._unlockEvents = [...SOUND_CONSTANTS.BGM.UNLOCK_EVENTS];
-        this._unlockAndPlayHandler = this._unlockAndPlay.bind(this);
-        this._isUnlockListenerAttached = false;
+        this.#lastBgmVolume = null;
+        this.#pendingAutoplay = false;
+        this.#unlockEvents = [...SOUND_CONSTANTS.BGM.UNLOCK_EVENTS];
+        this.#unlockAndPlayHandler = this.#unlockAndPlay.bind(this);
+        this.#isUnlockListenerAttached = false;
     }
 
     /**
@@ -27,7 +33,7 @@ export class SoundSystem {
         this.bgmAudio = new Audio(SOUND_CONSTANTS.BGM.PATH);
         this.bgmAudio.loop = true;
         this.bgmAudio.preload = 'auto';
-        this._syncBgmVolume();
+        this.#syncBgmVolume();
         await this.playBgm();
     }
 
@@ -35,7 +41,7 @@ export class SoundSystem {
      * 설정값 변경 시 BGM 볼륨을 동기화합니다.
      */
     update() {
-        this._syncBgmVolume();
+        this.#syncBgmVolume();
     }
 
     /**
@@ -52,11 +58,11 @@ export class SoundSystem {
 
         try {
             await this.bgmAudio.play();
-            this._pendingAutoplay = false;
-            this._detachUnlockListeners();
+            this.#pendingAutoplay = false;
+            this.#detachUnlockListeners();
         } catch (e) {
-            this._pendingAutoplay = true;
-            this._attachUnlockListeners();
+            this.#pendingAutoplay = true;
+            this.#attachUnlockListeners();
         }
     }
 
@@ -83,8 +89,8 @@ export class SoundSystem {
      */
     setBgmVolume(volume) {
         if (!this.bgmAudio) return;
-        const normalized = this._normalizeVolume(volume);
-        this._lastBgmVolume = this._sanitizeVolume(volume);
+        const normalized = this.#normalizeVolume(volume);
+        this.#lastBgmVolume = this.#sanitizeVolume(volume);
         this.bgmAudio.volume = normalized;
     }
 
@@ -94,7 +100,7 @@ export class SoundSystem {
          * @param {number|string} value 검사할 볼륨 수치
          * @returns {number} 안전하게 정규화된 0~100 사이 볼륨값
          */
-    _sanitizeVolume(value) {
+    #sanitizeVolume(value) {
         const parsed = Number(value);
         if (!Number.isFinite(parsed)) {
             return SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
@@ -108,23 +114,23 @@ export class SoundSystem {
          * @param {number|string} value 변경할 볼륨(0~100)
          * @returns {number} Audio API용 볼륨 계수
          */
-    _normalizeVolume(value) {
-        return this._sanitizeVolume(value) / SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
+    #normalizeVolume(value) {
+        return this.#sanitizeVolume(value) / SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
     }
 
     /**
          * @private
          * 설정(save_system)의 현재 볼륨 값을 확인하여 브라우저 Audio 객체에 동기화합니다.
          */
-    _syncBgmVolume() {
+    #syncBgmVolume() {
         if (!this.bgmAudio) return;
 
-        const settingVolume = this._sanitizeVolume(getSetting('bgmVolume'));
-        if (this._lastBgmVolume === settingVolume) {
+        const settingVolume = this.#sanitizeVolume(getSetting('bgmVolume'));
+        if (this.#lastBgmVolume === settingVolume) {
             return;
         }
 
-        this._lastBgmVolume = settingVolume;
+        this.#lastBgmVolume = settingVolume;
         this.bgmAudio.volume = settingVolume / SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
     }
 
@@ -132,39 +138,39 @@ export class SoundSystem {
          * @private
          * 브라우저 오디오 자동재생(Autoplay) 정책에 의해 막혔을 때, 사용자 첫 상호작용 후 재생되도록 이벤트를 겁니다.
          */
-    _attachUnlockListeners() {
-        if (this._isUnlockListenerAttached || typeof window === 'undefined') {
+    #attachUnlockListeners() {
+        if (this.#isUnlockListenerAttached || typeof window === 'undefined') {
             return;
         }
 
-        this._unlockEvents.forEach((eventName) => {
-            window.addEventListener(eventName, this._unlockAndPlayHandler, { once: true });
+        this.#unlockEvents.forEach((eventName) => {
+            window.addEventListener(eventName, this.#unlockAndPlayHandler, { once: true });
         });
-        this._isUnlockListenerAttached = true;
+        this.#isUnlockListenerAttached = true;
     }
 
     /**
          * @private
          * 오디오 잠금 해제 이벤트 리스너를 정리/제거합니다.
          */
-    _detachUnlockListeners() {
-        if (!this._isUnlockListenerAttached || typeof window === 'undefined') {
+    #detachUnlockListeners() {
+        if (!this.#isUnlockListenerAttached || typeof window === 'undefined') {
             return;
         }
 
-        this._unlockEvents.forEach((eventName) => {
-            window.removeEventListener(eventName, this._unlockAndPlayHandler);
+        this.#unlockEvents.forEach((eventName) => {
+            window.removeEventListener(eventName, this.#unlockAndPlayHandler);
         });
-        this._isUnlockListenerAttached = false;
+        this.#isUnlockListenerAttached = false;
     }
 
     /**
          * @private
          * 사용자 상호작용 후 브라우저 오디오 재생 제한이 풀리면 대기중인 BGM을 틀어줍니다.
          */
-    async _unlockAndPlay() {
-        this._detachUnlockListeners();
-        if (!this._pendingAutoplay) return;
+    async #unlockAndPlay() {
+        this.#detachUnlockListeners();
+        if (!this.#pendingAutoplay) return;
         await this.playBgm();
     }
 }

@@ -64,7 +64,7 @@ export class StandardAnimation extends AnimationBase {
         }
 
         if (!this.isInitialized) {
-            this._initializeValues();
+            this.#initializeValues();
             if (this.state === ANIMATION_STATE.FINISHED) return;
         }
 
@@ -82,11 +82,11 @@ export class StandardAnimation extends AnimationBase {
      * @private
      * 시작 및 종료 값을 초기화합니다.
      */
-    _initializeValues() {
+    #initializeValues() {
         try {
             const initialValue = this.owner[this.variable];
-            this.startValue = this._evaluate(this.rawStartValue, initialValue);
-            this.endValue = this._evaluate(this.rawEndValue, initialValue);
+            this.startValue = this.#evaluate(this.rawStartValue, initialValue);
+            this.endValue = this.#evaluate(this.rawEndValue, initialValue);
             this.isInitialized = true;
         } catch (e) {
             console.error("애니메이션 초기화 실패:", e);
@@ -98,7 +98,7 @@ export class StandardAnimation extends AnimationBase {
      * @private
      * 값을 평가합니다. (함수 또는 'current' 키워드 처리)
      */
-    _evaluate(value, initialValue) {
+    #evaluate(value, initialValue) {
         if (typeof value === 'function') return value(initialValue);
         if (value === 'current') return initialValue;
         return value;

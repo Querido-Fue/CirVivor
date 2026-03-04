@@ -1,9 +1,9 @@
 {
     "name": "cirvivor",
-    "version": "0.33",
+    "version": "0.34",
     "main": "game/index.html",
     "js-flags": "",
-    "chromium-args": "",
+    "chromium-args": "--enable-node-worker --auto-open-devtools-for-tabs",
     "window": {
         "title": "Cirvivor!",
         "toolbar": false,

@@ -9,6 +9,8 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
  * @description 타이틀 화면의 로고 및 메인 이미지를 관리하는 클래스입니다.
  */
 export class TitleImage {
+    #magneticPoint;
+
     /**
      * @param {TitleScene} TitleScene - 타이틀 씬 인스턴스
      */
@@ -18,9 +20,9 @@ export class TitleImage {
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
-        this._magneticPoint = { x: 0, y: 0 };
+        this.#magneticPoint = { x: 0, y: 0 };
         this.image.src = TITLE_CONSTANTS.TITLE_IMAGE.SRC;
-        const imageW = this._getImageWidth();
+        const imageW = this.#getImageWidth();
         this.imageX = -imageW;
         this.alpha = 0;
         animate(this, {
@@ -61,7 +63,7 @@ export class TitleImage {
          * 타이틀 이미지를 캔버스 UI 레이어에 렌더링
          */
     draw() {
-        const imageW = this._getImageWidth();
+        const imageW = this.#getImageWidth();
         const imageH = imageW * this.image.height / this.image.width;
         render('ui', {
             shape: 'image',
@@ -79,13 +81,13 @@ export class TitleImage {
      * @returns {{x:number, y:number}} 자석 효과 중심점
      */
     getMagneticPoint() {
-        const w = this._getImageWidth();
-        this._magneticPoint.x = this.imageX + w;
-        this._magneticPoint.y = this.WH / 2;
-        return this._magneticPoint;
+        const w = this.#getImageWidth();
+        this.#magneticPoint.x = this.imageX + w;
+        this.#magneticPoint.y = this.WH / 2;
+        return this.#magneticPoint;
     }
 
-    _getImageWidth() {
+    #getImageWidth() {
         return this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.WIDTH_RATIO;
     }
 }

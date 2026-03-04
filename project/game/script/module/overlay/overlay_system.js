@@ -22,6 +22,9 @@ export class OverlaySystem {
         this.animationPreset = DEFAULT_OVERLAY_ANIMATION_PRESET;
     }
 
+    /**
+     * 시스템 초기화 작업을 비동기적으로 수행합니다.
+     */
     async init() {
         // 추가 초기화가 필요하다면 여기에 작성합니다.
     }

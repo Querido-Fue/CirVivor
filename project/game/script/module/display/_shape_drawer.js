@@ -22,7 +22,7 @@ export class ShapeDrawer {
          */
     drawShape(ctx, shape, ox, oy, size) {
         if (shape.startsWith('enemy_')) {
-            this._drawEnemyShape(ctx, shape, ox, oy, size);
+            this.#drawEnemyShape(ctx, shape, ox, oy, size);
             return;
         }
 
@@ -42,19 +42,19 @@ export class ShapeDrawer {
                 ctx.fill();
                 break;
             case 'triangle':
-                this._drawPolygon(ctx, cx, cy, radius, 3);
+                this.#drawPolygon(ctx, cx, cy, radius, 3);
                 break;
             case 'pentagon':
-                this._drawPolygon(ctx, cx, cy, radius, 5);
+                this.#drawPolygon(ctx, cx, cy, radius, 5);
                 break;
             case 'hexagon':
-                this._drawPolygon(ctx, cx, cy, radius, 6);
+                this.#drawPolygon(ctx, cx, cy, radius, 6);
                 break;
             case 'octagon':
-                this._drawPolygon(ctx, cx, cy, radius, 8);
+                this.#drawPolygon(ctx, cx, cy, radius, 8);
                 break;
             case 'arrow':
-                this._drawArrow(ctx, cx, cy, radius);
+                this.#drawArrow(ctx, cx, cy, radius);
                 break;
             default:
                 ctx.fillRect(ox, oy, size, size);
@@ -71,7 +71,7 @@ export class ShapeDrawer {
          * @param {number} size 그리기 기준 크기
          * @private
          */
-    _drawEnemyShape(ctx, shape, ox, oy, size) {
+    #drawEnemyShape(ctx, shape, ox, oy, size) {
         const entries = ENEMY_SVG_SHAPES[shape];
         if (!entries) {
             ctx.fillRect(ox, oy, size, size);
@@ -97,7 +97,7 @@ export class ShapeDrawer {
          * @param {number} sides 구성 변의 개수
          * @private
          */
-    _drawPolygon(ctx, x, y, radius, sides) {
+    #drawPolygon(ctx, x, y, radius, sides) {
         const angleStep = (Math.PI * 2) / sides;
         const angleOffset = -Math.PI / 2;
         ctx.beginPath();
@@ -120,7 +120,7 @@ export class ShapeDrawer {
          * @param {number} radius 형태 반경 크기
          * @private
          */
-    _drawArrow(ctx, x, y, radius) {
+    #drawArrow(ctx, x, y, radius) {
         ctx.beginPath();
         ctx.moveTo(x - radius * 0.7, y + radius * 0.7);
         ctx.lineTo(x, y - radius * 0.7);

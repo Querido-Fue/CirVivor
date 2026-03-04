@@ -12,6 +12,14 @@ const UI_CONSTANTS = getData('UI_CONSTANTS');
  * @description 게임 UI 컴포넌트의 위치(x, y)를 단위(WW, WH 등) 기반으로 자동 계산해 주는 빌더 패턴 클래스입니다.
  */
 export class LayoutHandler {
+    #layoutSize;
+    #layoutStart;
+    #horMargin;
+    #items;
+    #groupStack;
+    #currentItem;
+    #parentItem;
+
     /**
      * @param {object} parent - 오버레이 등의 부모 객체 (scaledW, scaledH, x, y 등을 참조)
      * @param {PositioningHandler|null} positioningHandler - 좌표 계산 핸들러
@@ -24,14 +32,14 @@ export class LayoutHandler {
         this.positioningHandler.resize(parent, this.uiScale);
 
         // 기본값: 부모의 전체 크기(OW/OH)와 기준 위치(OX/OY)
-        this._layoutSize = { w: { unit: 'OW', value: 100 }, h: { unit: 'OH', value: 100 } };
-        this._layoutStart = { x: { unit: 'OX', value: 0 }, y: { unit: 'OY', value: 0 } };
-        this._horMargin = { unit: 'WW', value: 0 };
+        this.#layoutSize = { w: { unit: 'OW', value: 100 }, h: { unit: 'OH', value: 100 } };
+        this.#layoutStart = { x: { unit: 'OX', value: 0 }, y: { unit: 'OY', value: 0 } };
+        this.#horMargin = { unit: 'WW', value: 0 };
 
-        this._items = [];
-        this._groupStack = [];
-        this._currentItem = null;
-        this._parentItem = null;
+        this.#items = [];
+        this.#groupStack = [];
+        this.#currentItem = null;
+        this.#parentItem = null;
     }
 
     /**
@@ -48,17 +56,17 @@ export class LayoutHandler {
          * 현재 편집 중인 아이템 등록을 완료하고 렌더 목록/그룹으로 푸시합니다.
          * @private
          */
-    _commitCurrentItem() {
-        if (this._parentItem) {
-            const currentGroup = this._groupStack.length > 0 ? this._groupStack[this._groupStack.length - 1] : null;
+    #commitCurrentItem() {
+        if (this.#parentItem) {
+            const currentGroup = this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null;
             if (currentGroup) {
-                currentGroup.items.push(this._parentItem);
+                currentGroup.items.push(this.#parentItem);
             } else {
-                this._items.push(this._parentItem);
+                this.#items.push(this.#parentItem);
             }
         }
-        this._currentItem = null;
-        this._parentItem = null;
+        this.#currentItem = null;
+        this.#parentItem = null;
     }
 
     // --- 레이아웃 기본 설정 영역 ---
@@ -72,7 +80,7 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     layoutSize(wUnit, wValue, hUnit, hValue) {
-        this._layoutSize = { w: { unit: wUnit, value: wValue }, h: { unit: hUnit, value: hValue } };
+        this.#layoutSize = { w: { unit: wUnit, value: wValue }, h: { unit: hUnit, value: hValue } };
         return this;
     }
 
@@ -85,7 +93,7 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     layoutStartPos(xUnit, xValue, yUnit, yValue) {
-        this._layoutStart = { x: { unit: xUnit, value: xValue }, y: { unit: yUnit, value: yValue } };
+        this.#layoutStart = { x: { unit: xUnit, value: xValue }, y: { unit: yUnit, value: yValue } };
         return this;
     }
 
@@ -96,7 +104,7 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     horMargin(unit, value) {
-        this._horMargin = { unit, value };
+        this.#horMargin = { unit, value };
         return this;
     }
 
@@ -111,10 +119,10 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     item(type, id = null) {
-        if (this._groupStack.length > 0) {
+        if (this.#groupStack.length > 0) {
             console.warn(`LayoutHandler: item('${type}')이(가) 그룹 내부에 호출되었습니다. 가독성을 위해 .groupItem()을 사용하세요.`);
         }
-        return this._createItem(type, id);
+        return this.#createItem(type, id);
     }
 
     /**
@@ -124,10 +132,10 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     groupItem(type, id = null) {
-        if (this._groupStack.length === 0) {
+        if (this.#groupStack.length === 0) {
             console.warn(`LayoutHandler: groupItem('${type}')이(가) 그룹 외부에 호출되었습니다. .item()을 사용하세요.`);
         }
-        return this._createItem(type, id);
+        return this.#createItem(type, id);
     }
 
     /**
@@ -137,9 +145,9 @@ export class LayoutHandler {
      * @param {string} id - 고유 식별자 ID
      * @returns {LayoutHandler}
      */
-    _createItem(type, id) {
-        this._commitCurrentItem();
-        this._currentItem = {
+    #createItem(type, id) {
+        this.#commitCurrentItem();
+        this.#currentItem = {
             id: id || crypto.randomUUID(),
             type,
             props: {},
@@ -147,7 +155,7 @@ export class LayoutHandler {
             vAlign: 'top',
             dynamic: ['button', 'slider', 'toggle', 'segment_control', 'dropdown', 'progress_bar'].includes(type)
         };
-        this._parentItem = this._currentItem;
+        this.#parentItem = this.#currentItem;
         return this;
     }
 
@@ -165,12 +173,12 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     innerItem(type, id = null) {
-        if (!this._parentItem) {
+        if (!this.#parentItem) {
             console.warn("LayoutHandler: innerItem은 반드시 item() 호출 이후에 사용되어야 합니다.");
             return this.item(type, id);
         }
 
-        if (!this._parentItem.children) this._parentItem.children = [];
+        if (!this.#parentItem.children) this.#parentItem.children = [];
         const child = {
             id: id || crypto.randomUUID(),
             type,
@@ -179,9 +187,9 @@ export class LayoutHandler {
             vAlign: 'top',
             dynamic: ['button', 'slider', 'toggle', 'segment_control', 'dropdown', 'progress_bar'].includes(type)
         };
-        this._parentItem.children.push(child);
+        this.#parentItem.children.push(child);
 
-        this._currentItem = child; // innerItem을 _currentItem으로 대체하여 modifier가 적용되게 함
+        this.#currentItem = child; // innerItem을 _currentItem으로 대체하여 modifier가 적용되게 함
         return this;
     }
 
@@ -189,7 +197,7 @@ export class LayoutHandler {
      * 상위/수평 정렬을 설정합니다 ('left', 'center', 'right').
      */
     align(type) {
-        const target = this._currentItem || (this._groupStack.length > 0 ? this._groupStack[this._groupStack.length - 1] : null);
+        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
         if (target) target.align = type;
         return this;
     }
@@ -199,8 +207,8 @@ export class LayoutHandler {
      * groupItem() 또는 groupItemGroup() 내부에서 유효합니다.
      */
     vAlign(type) {
-        const inGroup = this._groupStack.length > 0;
-        const hasItem = this._currentItem !== null;
+        const inGroup = this.#groupStack.length > 0;
+        const hasItem = this.#currentItem !== null;
 
         if (!inGroup && type !== 'bottom') {
             console.warn(`LayoutHandler: vAlign('${type}')는 그룹(hbox) 내부에서만 사용할 수 있습니다. 외부 item에서는 무시됩니다.`);
@@ -208,9 +216,9 @@ export class LayoutHandler {
         }
 
         if (hasItem) {
-            this._currentItem.vAlign = type;
+            this.#currentItem.vAlign = type;
         } else if (inGroup) {
-            this._groupStack[this._groupStack.length - 1].vAlign = type;
+            this.#groupStack[this.#groupStack.length - 1].vAlign = type;
         }
         return this;
     }
@@ -219,26 +227,26 @@ export class LayoutHandler {
 
     /** 항목의 값(Value)을 지정합니다. margin 아이템 등의 크기를 지정할 때 사용합니다. */
     value(unit, val) {
-        if (this._currentItem) {
-            this._currentItem.unit = unit;
-            this._currentItem.value = val;
+        if (this.#currentItem) {
+            this.#currentItem.unit = unit;
+            this.#currentItem.value = val;
         }
         return this;
     }
 
     /** 프리셋 이름을 지정합니다. (내부 CONSTANTS 참고) */
     stylePreset(preset) {
-        if (this._currentItem) this._currentItem.preset = preset;
+        if (this.#currentItem) this.#currentItem.preset = preset;
         return this;
     }
 
     text(textStr) {
-        if (this._currentItem) this._currentItem.props.text = textStr;
+        if (this.#currentItem) this.#currentItem.props.text = textStr;
         return this;
     }
 
     buttonText(textStr) {
-        if (this._currentItem) this._currentItem.props.text = textStr;
+        if (this.#currentItem) this.#currentItem.props.text = textStr;
         return this;
     }
 
@@ -254,24 +262,24 @@ export class LayoutHandler {
             _text = text;
         }
 
-        if (this._currentItem) {
-            if (_text !== undefined) this._currentItem.props.color = _text;
-            if (_idle !== undefined) this._currentItem.props.idleColor = _idle;
-            if (_hover !== undefined) this._currentItem.props.hoverColor = _hover;
+        if (this.#currentItem) {
+            if (_text !== undefined) this.#currentItem.props.color = _text;
+            if (_idle !== undefined) this.#currentItem.props.idleColor = _idle;
+            if (_hover !== undefined) this.#currentItem.props.hoverColor = _hover;
         }
         return this;
     }
 
     valueRange(min, max) {
-        if (this._currentItem) {
-            this._currentItem.props.min = min;
-            this._currentItem.props.max = max;
+        if (this.#currentItem) {
+            this.#currentItem.props.min = min;
+            this.#currentItem.props.max = max;
         }
         return this;
     }
 
     onClick(callback) {
-        if (this._currentItem) this._currentItem.props.onClick = callback;
+        if (this.#currentItem) this.#currentItem.props.onClick = callback;
         return this;
     }
 
@@ -280,19 +288,19 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     makeDynamic() {
-        if (this._currentItem) this._currentItem.dynamic = true;
+        if (this.#currentItem) this.#currentItem.dynamic = true;
         return this;
     }
 
     radius(unitOrPreset, valueOrKey) {
-        if (this._currentItem) {
-            this._currentItem.radiusObj = { unit: unitOrPreset, value: valueOrKey };
+        if (this.#currentItem) {
+            this.#currentItem.radiusObj = { unit: unitOrPreset, value: valueOrKey };
         }
         return this;
     }
 
     width(unit, value) {
-        const target = this._currentItem || (this._groupStack.length > 0 ? this._groupStack[this._groupStack.length - 1] : null);
+        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
         if (target) {
             if (unit === 'auto') target.widthObj = { unit: 'auto', value: undefined };
             else target.widthObj = { unit, value };
@@ -301,7 +309,7 @@ export class LayoutHandler {
     }
 
     height(unit, value) {
-        const target = this._currentItem || (this._groupStack.length > 0 ? this._groupStack[this._groupStack.length - 1] : null);
+        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
         if (target) {
             if (unit === 'auto') target.heightObj = { unit: 'auto', value: undefined };
             else target.heightObj = { unit, value };
@@ -310,42 +318,42 @@ export class LayoutHandler {
     }
 
     customRenderOrder(orderInt) {
-        const target = this._currentItem || (this._groupStack.length > 0 ? this._groupStack[this._groupStack.length - 1] : null);
+        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
         if (target) target.customRenderOrder = orderInt;
         return this;
     }
 
     prop(key, value) {
-        if (this._currentItem) this._currentItem.props[key] = value;
+        if (this.#currentItem) this.#currentItem.props[key] = value;
         return this;
     }
 
     // --- 그룹(HBox) 설정 영역 ---
 
     newItemGroup(id = null) {
-        if (this._groupStack.length > 0) {
+        if (this.#groupStack.length > 0) {
             console.warn(`LayoutHandler: newItemGroup()이(가) 그룹 내부에 호출되었습니다. 가독성을 위해 .groupItemGroup()을 사용하세요.`);
         }
-        return this._createGroup(id);
+        return this.#createGroup(id);
     }
 
     groupItemGroup(id = null) {
-        if (this._groupStack.length === 0) {
+        if (this.#groupStack.length === 0) {
             console.warn(`LayoutHandler: groupItemGroup()이(가) 그룹 외부에 호출되었습니다. .newItemGroup()을 사용하세요.`);
         }
-        return this._createGroup(id);
+        return this.#createGroup(id);
     }
 
-    _createGroup(id) {
-        this._commitCurrentItem();
+    #createGroup(id) {
+        this.#commitCurrentItem();
         const group = { id: id || crypto.randomUUID(), type: 'hbox', items: [], props: {}, align: 'left', vAlign: 'top' };
 
-        if (this._groupStack.length > 0) {
-            this._groupStack[this._groupStack.length - 1].items.push(group);
+        if (this.#groupStack.length > 0) {
+            this.#groupStack[this.#groupStack.length - 1].items.push(group);
         } else {
-            this._items.push(group);
+            this.#items.push(group);
         }
-        this._groupStack.push(group);
+        this.#groupStack.push(group);
         return this;
     }
 
@@ -356,7 +364,7 @@ export class LayoutHandler {
     }
 
     justifyContent(type, gapUnit, gapValue) {
-        const targetGroup = this._groupStack.length > 0 ? this._groupStack[this._groupStack.length - 1] : null;
+        const targetGroup = this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null;
         if (targetGroup) {
             targetGroup.justifyContent = type;
             if (gapUnit && gapValue !== undefined) {
@@ -367,16 +375,16 @@ export class LayoutHandler {
     }
 
     closeGroup() {
-        this._commitCurrentItem();
-        if (this._groupStack.length > 0) {
-            this._groupStack.pop();
+        this.#commitCurrentItem();
+        if (this.#groupStack.length > 0) {
+            this.#groupStack.pop();
         }
         return this;
     }
 
     // --- 파싱 및 렌더 트리 빌드 영역 ---
 
-    _parseUnit(unit, value, refSize) {
+    parseUnit(unit, value, refSize) {
         return this.positioningHandler.parseUnit(unit, value, refSize);
     }
 
@@ -387,21 +395,21 @@ export class LayoutHandler {
     build() {
         this.resize();
 
-        if (this._groupStack.length > 0) {
+        if (this.#groupStack.length > 0) {
             console.warn("LayoutHandler: closeGroup이 모두 호출되지 않은 상태에서 build()가 실행되었습니다. 열려있는 모든 그룹을 강제로 닫습니다.");
-            while (this._groupStack.length > 0) {
+            while (this.#groupStack.length > 0) {
                 this.closeGroup();
             }
         }
-        this._commitCurrentItem();
+        this.#commitCurrentItem();
 
         const allGeneratedItems = [];
         const componentsMap = {};
 
         const frame = this.positioningHandler.resolveLayoutFrame(
-            this._layoutStart,
-            this._layoutSize,
-            this._horMargin
+            this.#layoutStart,
+            this.#layoutSize,
+            this.#horMargin
         );
         const startX = frame.startX;
         const startY = frame.startY;
@@ -418,9 +426,9 @@ export class LayoutHandler {
             orderRef: naturalOrderCounter
         };
 
-        for (const item of this._items) {
+        for (const item of this.#items) {
             const isBottom = item.vAlign === 'bottom';
-            const res = this._resolveLayout(item, innerW, layoutH, false);
+            const res = this.#resolveLayout(item, innerW, layoutH, false);
 
             let itemW = res.isAutoW ? innerW : res.w;
             let itemX = this.positioningHandler.resolveAlignedX(item.align, innerX, innerW, itemW);
@@ -464,28 +472,28 @@ export class LayoutHandler {
         return { dynamicItems: dynamicRet, staticItems: staticRet, components: componentsMap };
     }
 
-    _resolveLayout(item, parentW, parentH, isHboxChild) {
+    #resolveLayout(item, parentW, parentH, isHboxChild) {
         if (item.type === 'spacing' || item.type === 'margin') {
-            return this._resolveSpacingLayout(item, parentH);
+            return this.#resolveSpacingLayout(item, parentH);
         }
 
         if (item.type === 'horMargin') {
-            return this._resolveHorMarginLayout(item, parentW, isHboxChild);
+            return this.#resolveHorMarginLayout(item, parentW, isHboxChild);
         }
 
-        this._applyRadius(item, parentW);
+        this.#applyRadius(item, parentW);
         const isAutoW = item.widthObj && item.widthObj.unit === 'auto';
 
         if (item.type === 'hbox') {
-            return this._resolveHBoxLayout(item, parentW, parentH, isHboxChild, isAutoW);
+            return this.#resolveHBoxLayout(item, parentW, parentH, isHboxChild, isAutoW);
         }
 
-        const actualW = this._resolveActualWidth(item, parentW, parentH, isAutoW);
-        return this._resolveElementLayout(item, parentW, parentH, isHboxChild, isAutoW, actualW);
+        const actualW = this.#resolveActualWidth(item, parentW, parentH, isAutoW);
+        return this.#resolveElementLayout(item, parentW, parentH, isHboxChild, isAutoW, actualW);
     }
 
-    _resolveSpacingLayout(item, parentH) {
-        const val = this._parseUnit(item.unit, item.value, parentH);
+    #resolveSpacingLayout(item, parentH) {
+        const val = this.parseUnit(item.unit, item.value, parentH);
         return {
             isAutoW: false,
             w: 0,
@@ -494,7 +502,7 @@ export class LayoutHandler {
         };
     }
 
-    _resolveHorMarginLayout(item, parentW, isHboxChild) {
+    #resolveHorMarginLayout(item, parentW, isHboxChild) {
         if (!isHboxChild) {
             console.warn(`LayoutHandler: horMargin은 groupItem() 내부(hbox child)에서만 사용할 수 있습니다.`);
             return { isAutoW: false, w: 0, h: 0, finalize: () => ({ h: 0 }) };
@@ -502,11 +510,11 @@ export class LayoutHandler {
         if (item.unit === 'expand') {
             return { _vAlign: 'top', isAutoW: true, w: 0, h: 0, finalize: () => ({ h: 0 }) };
         }
-        const val = this._parseUnit(item.unit, item.value, parentW);
+        const val = this.parseUnit(item.unit, item.value, parentW);
         return { _vAlign: 'top', isAutoW: false, w: val, h: 0, finalize: () => ({ h: 0 }) };
     }
 
-    _applyRadius(item, parentW) {
+    #applyRadius(item, parentW) {
         if (!item.radiusObj || typeof item.props.radius !== 'undefined') return;
 
         if (item.radiusObj.unit === 'preset') {
@@ -514,19 +522,19 @@ export class LayoutHandler {
             if (key) key = key.toUpperCase();
             const presetData = UI_CONSTANTS[key];
             if (presetData) {
-                item.props.radius = this._parseUnit(presetData.BASE, presetData.VALUE, parentW);
+                item.props.radius = this.parseUnit(presetData.BASE, presetData.VALUE, parentW);
             } else {
                 item.props.radius = 0;
             }
             return;
         }
 
-        item.props.radius = this._parseUnit(item.radiusObj.unit, item.radiusObj.value, parentW);
+        item.props.radius = this.parseUnit(item.radiusObj.unit, item.radiusObj.value, parentW);
     }
 
-    _resolveActualWidth(item, parentW, parentH, isAutoW) {
+    #resolveActualWidth(item, parentW, parentH, isAutoW) {
         if (item.widthObj && !isAutoW) {
-            return this._parseUnit(item.widthObj.unit, item.widthObj.value, parentW);
+            return this.parseUnit(item.widthObj.unit, item.widthObj.value, parentW);
         }
 
         if (item.widthObj || isAutoW) {
@@ -538,22 +546,22 @@ export class LayoutHandler {
             : {};
 
         if (item.type === 'button') {
-            return this._parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW);
+            return this.parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW);
         }
         if (item.type === 'slider' || item.type === 'line' || item.type === 'progress_bar') {
-            return this._parseUnit('WW', 10, parentW);
+            return this.parseUnit('WW', 10, parentW);
         }
         if (item.type === 'toggle') {
-            return this._parseUnit('WW', 5, parentW);
+            return this.parseUnit('WW', 5, parentW);
         }
         if (item.type === 'segment_control') {
-            return this._parseUnit('WW', 15, parentW);
+            return this.parseUnit('WW', 15, parentW);
         }
         if (item.type === 'dropdown') {
-            return this._parseUnit('WW', 15, parentW);
+            return this.parseUnit('WW', 15, parentW);
         }
         if (item.type === 'text') {
-            const dummyEl = this._instantiateElement(item, 0, 0, parentW, parentH, undefined);
+            const dummyEl = this.#instantiateElement(item, 0, 0, parentW, parentH, undefined);
             const textW = dummyEl ? (dummyEl.width || 0) : 0;
             if (dummyEl) releaseUIItem(dummyEl);
             return textW;
@@ -561,39 +569,39 @@ export class LayoutHandler {
         return 0;
     }
 
-    _resolveHBoxLayout(item, parentW, parentH, isHboxChild, isAutoW) {
+    #resolveHBoxLayout(item, parentW, parentH, isHboxChild, isAutoW) {
         let initialW = parentW;
         if (item.widthObj && !isAutoW) {
-            initialW = this._parseUnit(item.widthObj.unit, item.widthObj.value, parentW);
+            initialW = this.parseUnit(item.widthObj.unit, item.widthObj.value, parentW);
         }
 
         const childResolvers = [];
         for (const subItem of item.items) {
-            const res = this._resolveLayout(subItem, initialW, parentH, true);
+            const res = this.#resolveLayout(subItem, initialW, parentH, true);
             res._vAlign = subItem.vAlign || 'top';
             childResolvers.push(res);
         }
 
-        const justifyContent = this._normalizeJustifyContent(item.justifyContent);
+        const justifyContent = this.#normalizeJustifyContent(item.justifyContent);
         let definedW = parentW;
         if (isAutoW && isHboxChild) {
             definedW = 0;
         } else if (item.widthObj && !isAutoW) {
             definedW = initialW;
         } else if (!isAutoW) {
-            const metrics = this._measureHBox(childResolvers, item, parentW, justifyContent);
+            const metrics = this.#measureHBox(childResolvers, item, parentW, justifyContent);
             definedW = metrics.numAuto === 0 ? (metrics.usedW + metrics.totalGaps) : parentW;
         }
 
-        const metrics = this._measureHBox(childResolvers, item, definedW, justifyContent);
+        const metrics = this.#measureHBox(childResolvers, item, definedW, justifyContent);
         return {
             isAutoW: isAutoW && isHboxChild,
             w: definedW,
             h: metrics.maxH,
             finalize: (x, y, overrideW, layoutCtx) => {
                 const finalW = overrideW !== undefined ? overrideW : definedW;
-                const finalMetrics = this._measureHBox(childResolvers, item, finalW, justifyContent);
-                const flow = this._resolveHBoxFlow(justifyContent, x, finalW, finalMetrics);
+                const finalMetrics = this.#measureHBox(childResolvers, item, finalW, justifyContent);
+                const flow = this.#resolveHBoxFlow(justifyContent, x, finalW, finalMetrics);
 
                 let iterX = flow.iterX;
                 for (const res of childResolvers) {
@@ -609,7 +617,7 @@ export class LayoutHandler {
         };
     }
 
-    _measureHBox(childResolvers, item, evalW, justifyContent) {
+    #measureHBox(childResolvers, item, evalW, justifyContent) {
         let usedW = 0;
         let numAuto = 0;
         let maxH = 0;
@@ -621,7 +629,7 @@ export class LayoutHandler {
         }
 
         const numItems = childResolvers.length;
-        const gapPx = item.gap ? this._parseUnit(item.gap.unit, item.gap.value, evalW) : 0;
+        const gapPx = item.gap ? this.parseUnit(item.gap.unit, item.gap.value, evalW) : 0;
 
         let totalGaps = gapPx * Math.max(0, numItems - 1);
         if (justifyContent === 'space-around') {
@@ -638,7 +646,7 @@ export class LayoutHandler {
         return { autoW, numAuto, gapPx, usedW, totalGaps, maxH, numItems };
     }
 
-    _resolveHBoxFlow(justifyContent, startX, finalW, metrics) {
+    #resolveHBoxFlow(justifyContent, startX, finalW, metrics) {
         let spacing = metrics.gapPx;
         let iterX = startX;
 
@@ -670,16 +678,16 @@ export class LayoutHandler {
         return { spacing, iterX };
     }
 
-    _normalizeJustifyContent(justifyContent) {
+    #normalizeJustifyContent(justifyContent) {
         if (justifyContent === 'space_around') return 'space-around';
         if (justifyContent === 'space_evenly') return 'space-evenly';
         if (justifyContent === 'space_between') return 'space-between';
         return justifyContent;
     }
 
-    _resolveElementLayout(item, parentW, parentH, isHboxChild, isAutoW, actualW) {
+    #resolveElementLayout(item, parentW, parentH, isHboxChild, isAutoW, actualW) {
         const evalWForDummy = isAutoW && isHboxChild ? parentW : actualW;
-        const dummyEl = this._instantiateElement(item, 0, 0, parentW, parentH, evalWForDummy);
+        const dummyEl = this.#instantiateElement(item, 0, 0, parentW, parentH, evalWForDummy);
         const elW = dummyEl ? (dummyEl.width || 0) : evalWForDummy;
         let exactH = dummyEl ? (dummyEl.height || 0) : 0;
         const baseElH = exactH; // 버튼 본래 높이 보존 ('parent' 단위 기준점)
@@ -688,7 +696,7 @@ export class LayoutHandler {
 
         if (item.children && item.children.length > 0) {
             for (const childItem of item.children) {
-                const childRes = this._resolveLayout(childItem, elW, baseElH, false);
+                const childRes = this.#resolveLayout(childItem, elW, baseElH, false);
                 exactH += childRes.h;
             }
         }
@@ -699,7 +707,7 @@ export class LayoutHandler {
             h: exactH,
             finalize: (x, y, overrideW, layoutCtx) => {
                 const evalW = overrideW !== undefined ? overrideW : (isAutoW ? parentW : actualW);
-                const el = this._instantiateElement(item, x, y, parentW, parentH, evalW);
+                const el = this.#instantiateElement(item, x, y, parentW, parentH, evalW);
                 if (!el) return { h: exactH };
 
                 const finalElW = el.width || 0;
@@ -721,7 +729,7 @@ export class LayoutHandler {
                 if (item.children && item.children.length > 0) {
                     let childY = y;
                     for (const childItem of item.children) {
-                        const childRes = this._resolveLayout(childItem, finalElW, baseElH, false);
+                        const childRes = this.#resolveLayout(childItem, finalElW, baseElH, false);
                         let childX = finalX;
                         if (childItem.align === 'center') childX = finalX + (finalElW / 2) - (childRes.w / 2);
                         else if (childItem.align === 'right') childX = finalX + finalElW - childRes.w;
@@ -735,7 +743,7 @@ export class LayoutHandler {
         };
     }
 
-    _instantiateElement(item, x, y, parentW, parentH, forcedW) {
+    #instantiateElement(item, x, y, parentW, parentH, forcedW) {
         return UIElementFactory.create(item, x, y, parentW, parentH, forcedW, this);
     }
 }

@@ -15,8 +15,11 @@ const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
  * @description 탄성 애니메이션이 적용된 드래그 가능한 슬라이더 UI 요소입니다.
  */
 export class SliderElement extends BaseUIElement {
+    #valueAnim;
+    #overflowAnim;
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
     /**
@@ -52,8 +55,8 @@ export class SliderElement extends BaseUIElement {
         this.pressScaleMultiplier = 1.1;
         this.prevLeftClicking = false;
 
-        if (this._valueAnim) { remove(this._valueAnim.id); this._valueAnim = null; }
-        if (this._overflowAnim) { remove(this._overflowAnim.id); this._overflowAnim = null; }
+        if (this.#valueAnim) { remove(this.#valueAnim.id); this.#valueAnim = null; }
+        if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
     }
 
     /**
@@ -61,8 +64,8 @@ export class SliderElement extends BaseUIElement {
          */
     reset() {
         super.reset();
-        if (this._valueAnim) { remove(this._valueAnim.id); this._valueAnim = null; }
-        if (this._overflowAnim) { remove(this._overflowAnim.id); this._overflowAnim = null; }
+        if (this.#valueAnim) { remove(this.#valueAnim.id); this.#valueAnim = null; }
+        if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
         this.onChange = null;
     }
 
@@ -129,9 +132,9 @@ export class SliderElement extends BaseUIElement {
         if (isLeftClicking && !this.prevLeftClicking && getMouseFocus().includes(this.layer) && isOverSlider) {
             if (!this.dragging) {
                 this.dragging = true;
-                if (this._overflowAnim) {
-                    remove(this._overflowAnim.id);
-                    this._overflowAnim = null;
+                if (this.#overflowAnim) {
+                    remove(this.#overflowAnim.id);
+                    this.#overflowAnim = null;
                 }
             }
         }
@@ -139,7 +142,7 @@ export class SliderElement extends BaseUIElement {
         if (!isLeftClicking) {
             if (this.dragging) {
                 this.dragging = false;
-                this._overflowAnim = animate(this, {
+                this.#overflowAnim = animate(this, {
                     variable: '_overflow',
                     endValue: 0,
                     duration: 0.3,
@@ -157,8 +160,8 @@ export class SliderElement extends BaseUIElement {
 
             if (newValue !== this.value) {
                 this.value = newValue;
-                if (this._valueAnim) remove(this._valueAnim.id);
-                this._valueAnim = animate(this, {
+                if (this.#valueAnim) remove(this.#valueAnim.id);
+                this.#valueAnim = animate(this, {
                     variable: 'animatedValue',
                     startValue: 'current',
                     endValue: this.value,

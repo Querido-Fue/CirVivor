@@ -11,12 +11,15 @@ import { getData } from 'data/data_handler.js';
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
+const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 
 /**
  * @class SettingsOverlay
  * @description 타이틀 화면의 설정 오버레이를 구성하고 변경된 옵션을 저장합니다.
  */
 export class SettingsOverlay extends TitleOverlay {
+    #openKeybindings;
+
     constructor(TitleScene) {
         super(TitleScene);
 
@@ -26,7 +29,12 @@ export class SettingsOverlay extends TitleOverlay {
         this.settingsChanged = false;
         this.isNwRuntime = isNwRuntime();
         const savedWindowMode = getSetting('windowMode');
-        const normalizedWindowMode = savedWindowMode === 'borderless' ? 'fullscreen' : savedWindowMode;
+        let normalizedWindowMode = savedWindowMode;
+        if (normalizedWindowMode === 'borderless') normalizedWindowMode = 'fullscreen';
+        if (normalizedWindowMode === 'browserMode') normalizedWindowMode = 'windowed';
+        if (normalizedWindowMode !== 'fullscreen' && normalizedWindowMode !== 'windowed') {
+            normalizedWindowMode = this.isNwRuntime ? 'fullscreen' : 'windowed';
+        }
         const availableLanguages = getAvailableLanguages();
         this.availableLanguages = availableLanguages;
         const savedLanguage = getSetting('language');
@@ -36,7 +44,8 @@ export class SettingsOverlay extends TitleOverlay {
             : fallbackLanguage;
 
         this.tempSettings = {
-            windowMode: normalizedWindowMode || (this.isNwRuntime ? 'fullscreen' : 'browserMode'),
+            windowMode: normalizedWindowMode || (this.isNwRuntime ? 'fullscreen' : 'windowed'),
+            widescreenSupport: getSetting('widescreenSupport') !== false,
             renderScale: getSetting('renderScale') || 100,
             uiScale: getSetting('uiScale') || 100,
             disableTransparency: getSetting('disableTransparency') || false,
@@ -48,7 +57,7 @@ export class SettingsOverlay extends TitleOverlay {
         };
 
         if (!this.isNwRuntime) {
-            this.tempSettings.windowMode = 'browserMode';
+            this.tempSettings.windowMode = 'windowed';
         }
 
         this._generateLayout();
@@ -132,11 +141,11 @@ export class SettingsOverlay extends TitleOverlay {
             ...Object.values(resFoot.dynamicItems)
         ];
     }
-
     _buildLeftColumn(handler) {
         const spacingScale = 0.9;
         const controlWrapWidth = 65;
         const controlMaxWidth = 66.66;
+        const sliderValueFont = this._getTextPresetFont('SETTINGS_SLIDER_VALUE');
 
         // --- 디스플레이 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_display');
@@ -147,10 +156,10 @@ export class SettingsOverlay extends TitleOverlay {
         const windowModeItems = this.isNwRuntime
             ? [
                 { label: getLangString('title_settings_window_mode_windowed'), value: 'windowed' },
-                { label: getLangString('title_settings_window_mode_borderless'), value: 'fullscreen' }
+                { label: getLangString('title_settings_window_mode_fullscreen'), value: 'fullscreen' }
             ]
             : [
-                { label: getLangString('title_settings_window_mode_browser'), value: 'browserMode' }
+                { label: getLangString('title_settings_window_mode_browser'), value: 'windowed' }
             ];
         handler.width("parent", controlWrapWidth).groupItem("dropdown", "control_windowMode").width("parent", controlMaxWidth).height("WH", 3)
             .prop("items", windowModeItems)
@@ -158,6 +167,16 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("openDirection", "down")
             .prop("onChange", (val) => { this.tempSettings.windowMode = val; this.settingsChanged = true; });
         this._addItemFooter(handler, null, spacingScale);
+
+        // 와이드스크린 지원
+        this._addItemHeader(handler, 'title_settings_widescreen_support');
+        handler.width("parent", controlWrapWidth)
+            .groupItemGroup().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
+            .groupItem("toggle", "control_widescreenSupport").width("WW", 2.55).height("WH", 2)
+            .prop("value", this.tempSettings.widescreenSupport)
+            .prop("onChange", (val) => { this.tempSettings.widescreenSupport = val; this.settingsChanged = true; });
+        handler.closeGroup();
+        this._addItemFooter(handler, 'title_settings_desc_widescreen_support', spacingScale);
 
         // 렌더 스케일
         this._addItemHeader(handler, 'title_settings_render_scale');
@@ -167,7 +186,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("min", rsSchema.min).prop("max", rsSchema.max).prop("value", this.tempSettings.renderScale)
             .prop("valueSuffix", '%')
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
-            .prop("valueFont", `400 ${this.UIWW * 0.008 * this.uiScale}px "Pretendard Variable", arial`)
+            .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
             .prop("valueFormatter", (v) => `${v}% (${Math.round(getBaseWW() * v / 100)}×${Math.round(getBaseWH() * v / 100)})`)
             .prop("onChange", (val) => { this.tempSettings.renderScale = val; this.settingsChanged = true; });
@@ -181,7 +200,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("min", usSchema.min).prop("max", usSchema.max).prop("value", this.tempSettings.uiScale)
             .prop("valueSuffix", '%')
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
-            .prop("valueFont", `400 ${this.UIWW * 0.008 * this.uiScale}px "Pretendard Variable", arial`)
+            .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
             .prop("valueFormatter", (v) => `${v}%`)
             .prop("onChange", (val) => { this.tempSettings.uiScale = val; this.settingsChanged = true; });
@@ -204,18 +223,18 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
             .prop("min", paSchema.min).prop("max", paSchema.max).prop("value", this.tempSettings.physicsAccuracy)
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
-            .prop("valueFont", `400 ${this.UIWW * 0.008 * this.uiScale}px "Pretendard Variable", arial`)
+            .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
             .prop("onChange", (val) => { this.tempSettings.physicsAccuracy = val; this.settingsChanged = true; });
         this._addItemFooter(handler, 'title_settings_desc_physics_accuracy', spacingScale);
 
         handler.item("margin").value("OH", 4 * spacingScale);
     }
-
     _buildRightColumn(handler) {
         const spacingScale = 0.9;
         const controlWrapWidth = 65;
         const controlMaxWidth = 66.66;
+        const sliderValueFont = this._getTextPresetFont('SETTINGS_SLIDER_VALUE');
 
         // --- UI 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_ui');
@@ -256,7 +275,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
             .prop("min", bgmSchema.min).prop("max", bgmSchema.max).prop("value", this.tempSettings.bgmVolume)
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
-            .prop("valueFont", `400 ${this.UIWW * 0.008 * this.uiScale}px "Pretendard Variable", arial`)
+            .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
             .prop("onChange", (val) => { this.tempSettings.bgmVolume = val; this.settingsChanged = true; });
         this._addItemFooter(handler, null, spacingScale);
@@ -268,7 +287,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
             .prop("min", sfxSchema.min).prop("max", sfxSchema.max).prop("value", this.tempSettings.sfxVolume)
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
-            .prop("valueFont", `400 ${this.UIWW * 0.008 * this.uiScale}px "Pretendard Variable", arial`)
+            .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
             .prop("onChange", (val) => { this.tempSettings.sfxVolume = val; this.settingsChanged = true; });
         this._addItemFooter(handler, null, spacingScale);
@@ -286,52 +305,67 @@ export class SettingsOverlay extends TitleOverlay {
             .groupItem("button", "control_keybindings").stylePreset("overlay_link_button")
             .buttonText(getLangString('title_settings_keybindings_open'))
             .buttonColor(ColorSchemes.Overlay.Button.Link).prop("iconType", "arrow")
-            .onClick(() => { this._openKeybindings(); });
+            .onClick(() => { this.#openKeybindings(); });
         handler.closeGroup();
         this._addItemFooter(handler, null, spacingScale);
 
         handler.item("margin").value("OH", 4 * spacingScale);
     }
-
     _addSectionHeader(handler, labelKey) {
         handler.newItemGroup().justifyContent("space_between", "WW", 1).width("parent", 100).align("center")
             .groupItem("text").text(getLangString(labelKey)).stylePreset("h3").prop("fill", ColorSchemes.Overlay.Text.Section).vAlign("center")
             .groupItem("line").width("auto").prop("stroke", ColorSchemes.Overlay.Panel.Divider).prop("lineWidth", 1).vAlign("center")
             .closeGroup();
     }
-
     _addItemHeader(handler, labelKey) {
         // 라벨 길이(언어별 차이)에 영향을 받지 않도록 라벨 영역을 고정 폭으로 분리
         handler.newItemGroup().justifyContent("left", "WW", 0).width("parent", 94).align("center")
             .groupItemGroup().justifyContent("left", "WW", 0).width("parent", 35).vAlign("center")
-            .groupItem("text").text(getLangString(labelKey)).stylePreset("h5 bold").prop("fill", ColorSchemes.Overlay.Text.Item).vAlign("center")
+            .groupItem("text").text(getLangString(labelKey)).stylePreset("h5_bold").prop("fill", ColorSchemes.Overlay.Text.Item).vAlign("center")
             .closeGroup()
             .groupItem("horMargin").value("expand")
             .groupItemGroup().justifyContent("right", "WW", 1).vAlign("center");
     }
-
     _addItemFooter(handler, descriptionKey, spacingScale) {
         handler.closeGroup().closeGroup();
         if (descriptionKey) {
             handler.item("margin").value("OH", 2.25);
             handler.newItemGroup().justifyContent("left", "WW", 0).width("parent", 94).align("center")
-                .groupItem("text").text(getLangString(descriptionKey)).stylePreset("h6").prop("fill", ColorSchemes.Overlay.Text.Item).prop("alpha", 0.8)
+                .groupItem("text").text(getLangString(descriptionKey)).stylePreset("settings_desc").prop("fill", ColorSchemes.Overlay.Text.Item).prop("alpha", 0.8)
                 .closeGroup()
                 .item("margin").value("OH", 4.5 * spacingScale);
         } else {
             handler.item("margin").value("OH", 5 * spacingScale);
         }
     }
+    _getTextPresetFont(presetKey) {
+        const fallback = TEXT_CONSTANTS.H6;
+        const preset = TEXT_CONSTANTS[presetKey] || fallback;
+        const fontData = preset.FONT || fallback.FONT;
+        const sizePx = this.positioningHandler.parseUIData(fontData.SIZE, this.uiScale);
+        const weight = fontData.WEIGHT || 400;
+        const family = this._normalizeFontFamily(fontData.FAMILY || 'Pretendard Variable, arial');
+        return `${weight} ${sizePx}px ${family}`;
+    }
+    _normalizeFontFamily(fontFamily) {
+        let familyStr = fontFamily;
+        if (!familyStr.includes('"') && !familyStr.includes("'")) {
+            const parts = familyStr.split(',');
+            familyStr = `"${parts[0].trim()}"${parts[1] ? ',' + parts[1] : ''}`;
+        }
+        return familyStr;
+    }
 
     /**
          * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
          */
     async save() {
-        const currentWindowMode = getSetting('windowMode') || (this.isNwRuntime ? 'fullscreen' : 'browserMode');
+        const currentWindowMode = getSetting('windowMode') || (this.isNwRuntime ? 'fullscreen' : 'windowed');
         const modeChanged = currentWindowMode !== this.tempSettings.windowMode;
 
         await setSettingBatch({
             windowMode: this.tempSettings.windowMode,
+            widescreenSupport: this.tempSettings.widescreenSupport,
             renderScale: this.tempSettings.renderScale,
             uiScale: this.tempSettings.uiScale,
             disableTransparency: this.tempSettings.disableTransparency,

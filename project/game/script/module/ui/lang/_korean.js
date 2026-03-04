@@ -1,7 +1,7 @@
 export const korean = {
     // 일반
     "language_name": "한국어",
-    "hidden": "false",
+    "hidden": false,
     "%": "%",
     "affirmative_icon": "circle", // 문화 차이에 기반한 아이콘 사용
 
@@ -32,16 +32,19 @@ export const korean = {
     "title_settings_window_mode": "화면 모드",
     "title_settings_window_mode_windowed": "창",
     "title_settings_window_mode_borderless": "전체화면",
+    "title_settings_window_mode_fullscreen": "전체화면",
     "title_settings_window_mode_browser": "브라우저",
+    "title_settings_widescreen_support": "울트라와이드 지원",
+    "title_settings_desc_widescreen_support": "16:9보다 넓은 화면에서는 시야 범위가 좁아져 게임이 어려워질 수 있습니다.",
     "title_settings_resolution": "해상도",
     "title_settings_render_scale": "렌더링 해상도",
     "title_settings_desc_render_scale": "렌더링 해상도를 낮추면 성능이 개선되지만, 화면이 흐릿하게 보일 수 있습니다.",
     "title_settings_ui_scale": "UI 크기",
-    "title_settings_desc_ui_scale": "UI 크기를 조절합니다. 100%보다 크게 설정하면 UI가 깨져 보일 수 있습니다.",
-    "title_settings_disable_transparency": "UI 투명도 제거",
+    "title_settings_desc_ui_scale": "UI 크기를 조절합니다. 125%보다 큰 값에선 일부 UI가 보이지 않을 수 있습니다.",
+    "title_settings_disable_transparency": "UI 글래스 효과 제거",
     "title_settings_desc_transparency": "UI 배경을 불투명하게 만들어 그래픽 부하를 줄입니다.",
     "title_settings_physics_accuracy": "물리 연산 정확도",
-    "title_settings_desc_physics_accuracy": "값이 높을수록 물리 계산이 더 세밀해지지만 성능 비용이 증가할 수 있습니다.",
+    "title_settings_desc_physics_accuracy": "낮은 값에서는 성능이 향상되지만 적끼리 겹치는 현상이 발생할 수 있습니다.",
     "title_settings_section_ui": "UI",
     "title_settings_language": "언어 (Language)",
     "title_settings_theme": "테마",

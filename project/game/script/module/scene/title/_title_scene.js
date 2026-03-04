@@ -38,6 +38,16 @@ export class TitleScene extends BaseScene {
     }
 
     /**
+     * @override
+     * 타이틀 배경 물리/충돌을 고정 틱으로 갱신합니다.
+     */
+    fixedUpdate() {
+        if (this.titleBackGround && typeof this.titleBackGround.fixedUpdate === 'function') {
+            this.titleBackGround.fixedUpdate();
+        }
+    }
+
+    /**
          * 씬을 닫거나 게임 시작 시 호출되어 타이틀 관련 리소스와 요소를 정리합니다.
          */
     destroy() {

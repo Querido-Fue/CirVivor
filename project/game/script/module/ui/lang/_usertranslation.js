@@ -1,7 +1,7 @@
 export const userLanguage = {
     // 공통
     "language_name": "User Language",
-    "hidden": "true", // 번역 완료 후 "false"로 변경
+    "hidden": true, // 번역 완료 후 false로 변경
     "%": "%", // 변경하지 않음
     "affirmative_icon": "check", // 문화권 차이를 반영한 아이콘
 
@@ -34,6 +34,8 @@ export const userLanguage = {
     "title_settings_window_mode_borderless": "",
     "title_settings_window_mode_fullscreen": "",
     "title_settings_window_mode_browser": "",
+    "title_settings_widescreen_support": "",
+    "title_settings_desc_widescreen_support": "",
     "title_settings_resolution": "",
     "title_settings_render_scale": "",
     "title_settings_desc_render_scale": "",

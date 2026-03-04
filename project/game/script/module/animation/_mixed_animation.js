@@ -42,11 +42,11 @@ export class MixedAnimation extends AnimationBase {
 
                 if (typeof def.endValue === 'function') def.endValue = def.endValue(initialValue);
 
-                // 이징 함수 미리 정의
+                // 이징 함수 미리 바인딩
                 def.easingFn = Easing[def.type] || Easing.linear;
             });
         } catch (e) {
-            console.error("MixedAnimation initialization failed:", e);
+            console.error('MixedAnimation 초기화 실패:', e);
             this.complete();
         }
     }

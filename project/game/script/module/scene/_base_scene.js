@@ -17,6 +17,12 @@ export class BaseScene {
     }
 
     /**
+     * 고정 틱 업데이트 훅입니다. (오버라이드 선택)
+     */
+    fixedUpdate() {
+    }
+
+    /**
      * 씬을 그립니다. (오버라이드 필요)
      */
     draw() {

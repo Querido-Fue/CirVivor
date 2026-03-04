@@ -5,8 +5,11 @@ import { animate, remove } from "animation/animation_system.js";
  * @description 모든 UI 요소가 공통으로 사용하는 기본 속성과 상호작용 애니메이션 로직을 제공합니다.
  */
 export class BaseUIElement {
+    #targetScale;
+    #targetHoverValue;
+
     constructor(properties) {
-        this.init(properties);
+        // 서브클래스의 private 필드 초기화를 위해 생성자에서 init()이 호출되지 않습니다.
     }
 
     /**
@@ -28,10 +31,10 @@ export class BaseUIElement {
 
         // 공통 애니메이션 상태
         this.scale = 1;
-        this._targetScale = 1;
+        this.#targetScale = 1;
         this.isPressed = false;
         this.hoverValue = 0;
-        this._targetHoverValue = 0;
+        this.#targetHoverValue = 0;
 
         if (this.scaleAnimId) { remove(this.scaleAnimId); this.scaleAnimId = null; }
         if (this.hoverAnimId !== -1) { remove(this.hoverAnimId); this.hoverAnimId = -1; }
@@ -67,8 +70,8 @@ export class BaseUIElement {
         }
 
         // 스케일 애니메이션
-        if (this._targetScale !== targetScale) {
-            this._targetScale = targetScale;
+        if (this.#targetScale !== targetScale) {
+            this.#targetScale = targetScale;
             this.isPressed = shouldBePressed;
 
             if (this.scaleAnimId) {
@@ -80,8 +83,8 @@ export class BaseUIElement {
         }
 
         // 호버 애니메이션
-        if (targetValue !== this._targetHoverValue) {
-            this._targetHoverValue = targetValue;
+        if (targetValue !== this.#targetHoverValue) {
+            this.#targetHoverValue = targetValue;
 
             if (this.hoverAnimId !== -1) {
                 remove(this.hoverAnimId);
@@ -91,7 +94,7 @@ export class BaseUIElement {
             const animObj = animate(this, {
                 variable: 'hoverValue',
                 startValue: this.hoverValue,
-                endValue: this._targetHoverValue,
+                endValue: this.#targetHoverValue,
                 type: 'easeOutExpo',
                 duration: 0.5
             });

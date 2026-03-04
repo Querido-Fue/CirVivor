@@ -5,13 +5,16 @@ import { ANIMATION_STATE } from './_constants.js';
  * @description 모든 애니메이션 구현체가 공유하는 공통 상태와 생명주기 인터페이스를 정의합니다.
  */
 export class AnimationBase {
+    #promise;
+    #resolve;
+
     constructor() {
         this.id = -1;
         this.owner = null;
         this.variable = null;
         this.state = ANIMATION_STATE.IDLE;
-        this._promise = null;
-        this._resolve = null;
+        this.#promise = null;
+        this.#resolve = null;
 
         this.next = null;
         this.prev = null;
@@ -32,8 +35,8 @@ export class AnimationBase {
         this.prev = null;
 
         // 재초기화를 위해 내부 프로미스/resolve 참조 초기화
-        this._promise = null;
-        this._resolve = null;
+        this.#promise = null;
+        this.#resolve = null;
     }
 
     /**
@@ -41,16 +44,16 @@ export class AnimationBase {
      * @returns {Promise} 완료 Promise
      */
     get promise() {
-        if (!this._promise) {
-            this._promise = new Promise(resolve => {
-                this._resolve = resolve;
+        if (!this.#promise) {
+            this.#promise = new Promise(resolve => {
+                this.#resolve = resolve;
                 // 요청 시 이미 완료된 상태라면 즉시 해결
                 if (this.state === ANIMATION_STATE.FINISHED) {
                     resolve();
                 }
             });
         }
-        return this._promise;
+        return this.#promise;
     }
 
     /**
@@ -65,10 +68,10 @@ export class AnimationBase {
      */
     complete() {
         this.state = ANIMATION_STATE.FINISHED;
-        if (this._resolve) {
-            this._resolve();
-            this._resolve = null;
+        if (this.#resolve) {
+            this.#resolve();
+            this.#resolve = null;
         }
-        this._promise = null; // 다른 곳에서 참조하지 않으면 GC 허용
+        this.#promise = null; // 다른 곳에서 참조하지 않으면 GC 허용
     }
 }

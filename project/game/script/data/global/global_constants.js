@@ -17,7 +17,7 @@ export const GLOBAL_CONSTANTS = {
         LINE: 30,
         TOGGLE: 10
     },
-    GAME_VERSION: "0.33",
+    GAME_VERSION: "0.34",
     WEBGL_MAX_SPRITES: 16000,
     SLIDER_MAX_OVERFLOW: 0.05,
     FALLBACK_LAYOUT: "ui"

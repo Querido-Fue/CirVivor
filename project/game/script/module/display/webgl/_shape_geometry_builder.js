@@ -23,33 +23,48 @@ export class ShapeGeometryBuilder {
         }
         h = h || w; // h가 없으면 w와 동일
 
-        const rotation = options.rotation ? options.rotation * Math.PI / 180 : 0;
-
         if (options.shape) {
             // 도형은 중심 기준
             const hw = w / 2;
             const hh = h / 2;
+            const hasPrecomputedTrig =
+                Number.isFinite(options.rotationCos)
+                && Number.isFinite(options.rotationSin);
+            const rotationDeg = Number.isFinite(options.rotation) ? options.rotation : 0;
+            const hasRotation = hasPrecomputedTrig || rotationDeg !== 0;
 
-            const cos = Math.cos(rotation);
-            const sin = Math.sin(rotation);
+            if (!hasRotation) {
+                // 회전이 없으면 삼각함수 없이 축 정렬 박스를 바로 계산합니다.
+                x1 = x - hw; y1 = y - hh;
+                x2 = x + hw; y2 = y - hh;
+                x3 = x + hw; y3 = y + hh;
+                x4 = x - hw; y4 = y + hh;
+            } else {
+                const cos = hasPrecomputedTrig
+                    ? options.rotationCos
+                    : Math.cos(rotationDeg * Math.PI / 180);
+                const sin = hasPrecomputedTrig
+                    ? options.rotationSin
+                    : Math.sin(rotationDeg * Math.PI / 180);
 
-            // 로컬 좌표
-            const rx1 = -hw * cos - (-hh) * sin;
-            const ry1 = -hw * sin + (-hh) * cos;
+                // 로컬 좌표
+                const rx1 = -hw * cos - (-hh) * sin;
+                const ry1 = -hw * sin + (-hh) * cos;
 
-            const rx2 = hw * cos - (-hh) * sin;
-            const ry2 = hw * sin + (-hh) * cos;
+                const rx2 = hw * cos - (-hh) * sin;
+                const ry2 = hw * sin + (-hh) * cos;
 
-            const rx3 = hw * cos - hh * sin;
-            const ry3 = hw * sin + hh * cos;
+                const rx3 = hw * cos - hh * sin;
+                const ry3 = hw * sin + hh * cos;
 
-            const rx4 = -hw * cos - hh * sin;
-            const ry4 = -hw * sin + hh * cos;
+                const rx4 = -hw * cos - hh * sin;
+                const ry4 = -hw * sin + hh * cos;
 
-            x1 = x + rx1; y1 = y + ry1; // 좌상단
-            x2 = x + rx2; y2 = y + ry2; // 우상단
-            x3 = x + rx3; y3 = y + ry3; // 우하단
-            x4 = x + rx4; y4 = y + ry4; // 좌하단
+                x1 = x + rx1; y1 = y + ry1; // 좌상단
+                x2 = x + rx2; y2 = y + ry2; // 우상단
+                x3 = x + rx3; y3 = y + ry3; // 우하단
+                x4 = x + rx4; y4 = y + ry4; // 좌하단
+            }
         } else {
             // 이미지는 좌상단 기준
             x1 = x; y1 = y;

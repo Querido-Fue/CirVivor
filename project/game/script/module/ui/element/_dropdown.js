@@ -11,14 +11,17 @@ import { getSetting } from "save/save_system.js";
  * @description Single-select dropdown with expandable option list.
  */
 export class DropdownElement extends BaseUIElement {
+    #value;
+    #openAnimId;
     static openedElementId = null;
     static inputBlocker = null;
 
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
-    _resolveSourceCanvases() {
+    #resolveSourceCanvases() {
         let backCanvases = [];
         let sameLayerCanvas = null;
 
@@ -46,7 +49,7 @@ export class DropdownElement extends BaseUIElement {
             && py >= blocker.y && py <= blocker.y + blocker.h;
     }
 
-    _syncInputBlocker(mainRect, panelRect) {
+    #syncInputBlocker(mainRect, panelRect) {
         const shouldBlock = this.isOpen || this.openProgress > 0.01;
         if (!shouldBlock) {
             if (DropdownElement.inputBlocker?.ownerId === this.id) {
@@ -103,12 +106,12 @@ export class DropdownElement extends BaseUIElement {
         this.hoverScaleMultiplier = 1.03;
         this.pressScaleMultiplier = 1.03;
 
-        this._value = null;
+        this.#value = null;
         this.selectedIndex = -1;
         this.isOpen = false;
         this.openProgress = 0;
         this.hoveredOptionIndex = -1;
-        this._openAnimId = -1;
+        this.#openAnimId = -1;
 
         if (properties.value !== undefined) {
             this.value = properties.value;
@@ -122,9 +125,9 @@ export class DropdownElement extends BaseUIElement {
          */
     reset() {
         super.reset();
-        if (this._openAnimId !== -1) {
-            remove(this._openAnimId);
-            this._openAnimId = -1;
+        if (this.#openAnimId !== -1) {
+            remove(this.#openAnimId);
+            this.#openAnimId = -1;
         }
 
         if (DropdownElement.openedElementId === this.id) {
@@ -140,31 +143,31 @@ export class DropdownElement extends BaseUIElement {
         this.openProgress = 0;
         this.hoveredOptionIndex = -1;
         this.selectedIndex = -1;
-        this._value = null;
+        this.#value = null;
     }
 
     get value() {
-        return this._value;
+        return this.#value;
     }
 
     set value(val) {
         const foundIndex = this.items.findIndex(item => item.value === val);
         if (foundIndex !== -1) {
-            this._value = val;
+            this.#value = val;
             this.selectedIndex = foundIndex;
             return;
         }
 
         if (this.items.length > 0) {
-            this._value = this.items[0].value;
+            this.#value = this.items[0].value;
             this.selectedIndex = 0;
         } else {
-            this._value = null;
+            this.#value = null;
             this.selectedIndex = -1;
         }
     }
 
-    _setOpen(open) {
+    #setOpen(open) {
         if (this.isOpen === open) return;
 
         this.isOpen = open;
@@ -174,11 +177,11 @@ export class DropdownElement extends BaseUIElement {
             DropdownElement.openedElementId = null;
         }
 
-        if (this._openAnimId !== -1) {
-            remove(this._openAnimId);
-            this._openAnimId = -1;
+        if (this.#openAnimId !== -1) {
+            remove(this.#openAnimId);
+            this.#openAnimId = -1;
         }
-        this._openAnimId = animate(this, {
+        this.#openAnimId = animate(this, {
             variable: "openProgress",
             startValue: "current",
             endValue: open ? 1 : 0,
@@ -187,7 +190,7 @@ export class DropdownElement extends BaseUIElement {
         }).id;
     }
 
-    _getMainRect() {
+    #getMainRect() {
         const cx = this.x + this.width / 2;
         const cy = this.y + this.height / 2;
         const w = this.width * this.scale;
@@ -196,13 +199,13 @@ export class DropdownElement extends BaseUIElement {
         return { x: (cx - w / 2) + inset, y: cy - h / 2, w: w * 0.98, h };
     }
 
-    _getVisibleItemCount() {
+    #getVisibleItemCount() {
         return this.items.length;
     }
 
-    _getPanelRect(mainRect) {
+    #getPanelRect(mainRect) {
         const optionH = this.optionHeight * this.scale;
-        const totalH = optionH * this._getVisibleItemCount();
+        const totalH = optionH * this.#getVisibleItemCount();
         const visibleH = totalH * this.openProgress;
 
         let y = mainRect.y + mainRect.h + (this.optionGap * this.scale);
@@ -219,20 +222,20 @@ export class DropdownElement extends BaseUIElement {
         };
     }
 
-    _isPointInsideRect(px, py, rect) {
+    #isPointInsideRect(px, py, rect) {
         return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
     }
 
-    _getOptionIndexByPointer(mouseX, mouseY, panelRect) {
+    #getOptionIndexByPointer(mouseX, mouseY, panelRect) {
         if (panelRect.h <= 0 || panelRect.optionH <= 0) return -1;
-        if (!this._isPointInsideRect(mouseX, mouseY, panelRect)) return -1;
+        if (!this.#isPointInsideRect(mouseX, mouseY, panelRect)) return -1;
 
         const idx = Math.floor((mouseY - panelRect.y) / panelRect.optionH);
         if (idx < 0 || idx >= this.items.length) return -1;
         return idx;
     }
 
-    _fitText(text, maxWidth) {
+    #fitText(text, maxWidth) {
         const raw = `${text ?? ""}`;
         if (maxWidth <= 0 || raw.length === 0) return "";
         if (measureText(raw, this.font) <= maxWidth) return raw;
@@ -259,7 +262,7 @@ export class DropdownElement extends BaseUIElement {
         }
 
         if (!getMouseFocus().includes(this.layer)) {
-            if (this.isOpen) this._setOpen(false);
+            if (this.isOpen) this.#setOpen(false);
             if (DropdownElement.inputBlocker?.ownerId === this.id) {
                 DropdownElement.inputBlocker = null;
             }
@@ -267,25 +270,25 @@ export class DropdownElement extends BaseUIElement {
         }
 
         if (DropdownElement.openedElementId !== null && DropdownElement.openedElementId !== this.id && this.isOpen) {
-            this._setOpen(false);
+            this.#setOpen(false);
         }
 
         const mx = getMouseInput("x");
         const my = getMouseInput("y");
 
-        const mainRect = this._getMainRect();
-        const panelRect = this._getPanelRect(mainRect);
-        this._syncInputBlocker(mainRect, panelRect);
+        const mainRect = this.#getMainRect();
+        const panelRect = this.#getPanelRect(mainRect);
+        this.#syncInputBlocker(mainRect, panelRect);
 
-        const isOverMain = this._isPointInsideRect(mx, my, mainRect);
+        const isOverMain = this.#isPointInsideRect(mx, my, mainRect);
         const openAreaRect = {
             x: Math.min(mainRect.x, panelRect.x),
             y: Math.min(mainRect.y, panelRect.y),
             w: Math.max(mainRect.x + mainRect.w, panelRect.x + panelRect.w) - Math.min(mainRect.x, panelRect.x),
             h: Math.max(mainRect.y + mainRect.h, panelRect.y + panelRect.h) - Math.min(mainRect.y, panelRect.y)
         };
-        const isOverOpenArea = (this.isOpen || this.openProgress > 0.01) && this._isPointInsideRect(mx, my, openAreaRect);
-        this.hoveredOptionIndex = this.openProgress > 0.1 ? this._getOptionIndexByPointer(mx, my, panelRect) : -1;
+        const isOverOpenArea = (this.isOpen || this.openProgress > 0.01) && this.#isPointInsideRect(mx, my, openAreaRect);
+        this.hoveredOptionIndex = this.openProgress > 0.1 ? this.#getOptionIndexByPointer(mx, my, panelRect) : -1;
 
         const isLeftClicking = getMouseInput("leftClicking");
         this._handleInteractionState(isOverMain || isOverOpenArea, isLeftClicking && isOverMain);
@@ -296,7 +299,7 @@ export class DropdownElement extends BaseUIElement {
             if (DropdownElement.openedElementId !== null && DropdownElement.openedElementId !== this.id) {
                 DropdownElement.openedElementId = null;
             }
-            this._setOpen(!this.isOpen);
+            this.#setOpen(!this.isOpen);
             return;
         }
 
@@ -305,12 +308,12 @@ export class DropdownElement extends BaseUIElement {
         if (this.hoveredOptionIndex !== -1) {
             const selected = this.items[this.hoveredOptionIndex];
             if (selected) {
-                const changed = this._value !== selected.value;
+                const changed = this.#value !== selected.value;
                 this.value = selected.value;
-                if (changed) this.onChange(this._value);
+                if (changed) this.onChange(this.#value);
             }
         }
-        this._setOpen(false);
+        this.#setOpen(false);
     }
 
     /**
@@ -320,7 +323,7 @@ export class DropdownElement extends BaseUIElement {
     draw() {
         if (!this.visible) return;
 
-        const mainRect = this._getMainRect();
+        const mainRect = this.#getMainRect();
         const basePad = mainRect.h * 0.3;
         const textMaxW = Math.max(0, mainRect.w - basePad * 2.4);
 
@@ -343,7 +346,7 @@ export class DropdownElement extends BaseUIElement {
 
         render(this.layer, {
             shape: "text",
-            text: this._fitText(selectedLabel, textMaxW),
+            text: this.#fitText(selectedLabel, textMaxW),
             x: mainRect.x + basePad,
             y: mainRect.y + (mainRect.h / 2),
             font: this.font,
@@ -403,11 +406,11 @@ export class DropdownElement extends BaseUIElement {
         if (this.openProgress <= 0.01 || this.items.length === 0) return;
 
         if (!this.sourceCanvases || this.sourceCanvases.length === 0) {
-            this._resolveSourceCanvases();
+            this.#resolveSourceCanvases();
         }
 
-        const mainRect = this._getMainRect();
-        const panelRect = this._getPanelRect(mainRect);
+        const mainRect = this.#getMainRect();
+        const panelRect = this.#getPanelRect(mainRect);
 
         const panelRadius = Math.max(2, (this.radius - 1) * this.scale);
         const panelAlpha = this.alpha * this.openProgress;
@@ -486,7 +489,7 @@ export class DropdownElement extends BaseUIElement {
             const optionTextWidth = panelRect.w - (textPad * 3.2);
             render(this.layer, {
                 shape: "text",
-                text: this._fitText(this.items[i].label, optionTextWidth),
+                text: this.#fitText(this.items[i].label, optionTextWidth),
                 x: panelRect.x + textPad,
                 y: rowY + (panelRect.optionH / 2),
                 font: this.font,

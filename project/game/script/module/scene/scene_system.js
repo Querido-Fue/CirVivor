@@ -26,6 +26,15 @@ export class SceneSystem {
     }
 
     /**
+     * 현재 씬의 고정 틱 업데이트를 호출합니다.
+     */
+    fixedUpdate() {
+        if (this.scene && typeof this.scene.fixedUpdate === 'function') {
+            this.scene.fixedUpdate();
+        }
+    }
+
+    /**
      * 현재 씬을 그립니다.
      */
     draw() {

@@ -3,8 +3,10 @@
  * @description SVG path 문자열을 Path2D로 캐시하여 캔버스 컨텍스트에 그립니다.
  */
 export class SVGDrawer {
+    #pathCache;
+
     constructor() {
-        this._pathCache = new Map();
+        this.#pathCache = new Map();
     }
 
     /**
@@ -12,11 +14,11 @@ export class SVGDrawer {
          * @param {string} d - 분석할 SVG path 문자열 데이터
          * @returns {Path2D} 생성 또는 캐시된 Path2D 객체
          */
-    _getPath(d) {
-        let path = this._pathCache.get(d);
+    #getPath(d) {
+        let path = this.#pathCache.get(d);
         if (!path) {
             path = new Path2D(d);
-            this._pathCache.set(d, path);
+            this.#pathCache.set(d, path);
         }
         return path;
     }
@@ -28,7 +30,7 @@ export class SVGDrawer {
          * @param {'nonzero'|'evenodd'} [fillRule='nonzero'] 내외부 판별 채우기 방식 옵션
          */
     fillPath(ctx, d, fillRule = 'nonzero') {
-        const path = this._getPath(d);
+        const path = this.#getPath(d);
         ctx.fill(path, fillRule);
     }
 

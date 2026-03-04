@@ -11,8 +11,10 @@ import { DropdownElement } from "./_dropdown.js";
  * @description ON/OFF 토글 스위치 UI 요소입니다.
  */
 export class ToggleElement extends BaseUIElement {
+    #animID;
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
     /**
@@ -31,8 +33,8 @@ export class ToggleElement extends BaseUIElement {
 
         this.onChange = properties.onChange || null;
 
-        this._animValue = this.value ? 1 : 0;
-        if (this._animID) { remove(this._animID.id); this._animID = null; }
+        this.animValue = this.value ? 1 : 0;
+        if (this.#animID) { remove(this.#animID.id); this.#animID = null; }
 
         this.hoverScaleMultiplier = 1.15;
         this.pressScaleMultiplier = 1.15;
@@ -43,7 +45,7 @@ export class ToggleElement extends BaseUIElement {
          */
     reset() {
         super.reset();
-        if (this._animID) { remove(this._animID.id); this._animID = null; }
+        if (this.#animID) { remove(this.#animID.id); this.#animID = null; }
         this.onChange = null;
     }
 
@@ -56,9 +58,9 @@ export class ToggleElement extends BaseUIElement {
             this.value = newValue;
             if (this.onChange) this.onChange(this.value);
 
-            if (this._animID) remove(this._animID.id);
-            this._animID = animate(this, {
-                variable: '_animValue',
+            if (this.#animID) remove(this.#animID.id);
+            this.#animID = animate(this, {
+                variable: 'animValue',
                 endValue: this.value ? 1 : 0,
                 duration: 0.3,
                 type: 'easeOutExpo'
@@ -67,8 +69,8 @@ export class ToggleElement extends BaseUIElement {
     }
 
     /**
-         * @override
-         */
+     * @override
+     */
     update() {
         if (!this.visible) return;
 
@@ -102,7 +104,7 @@ export class ToggleElement extends BaseUIElement {
 
         const c1 = colorUtil().cssToRgb(this.inactiveColor);
         const c2 = colorUtil().cssToRgb(this.activeColor);
-        const t = this._animValue;
+        const t = this.animValue;
 
         const r = Math.round(c1.r + (c2.r - c1.r) * t);
         const g = Math.round(c1.g + (c2.g - c1.g) * t);
@@ -137,7 +139,7 @@ export class ToggleElement extends BaseUIElement {
         const padding = h * 0.1;
         const startX = x + padding + knobR;
         const endX = x + w - padding - knobR;
-        const knobX = startX + (endX - startX) * this._animValue;
+        const knobX = startX + (endX - startX) * this.animValue;
         const knobY = y + h / 2;
 
         shadowOn(this.layer, 5, ColorSchemes.Overlay.Toggle.Shadow || 'rgba(0, 0, 0, 0.2)');

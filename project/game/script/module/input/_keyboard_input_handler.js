@@ -77,10 +77,9 @@ export class KeyboardInputHandler {
     }
 
     /**
-     * @private
      * 입력 상태를 업데이트합니다.
      */
-    _update() {
+    update() {
     }
 
     /**

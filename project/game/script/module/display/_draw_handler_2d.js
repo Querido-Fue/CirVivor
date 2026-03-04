@@ -6,25 +6,31 @@ import { getBlurCanvas, getBlurCtx, getBlurScale } from "./_blur_canvas.js";
  * 여러 캔버스 레이어(context)를 관리하고, 상태 캐싱 및 도형별 최적화된 그리기 기능을 제공합니다.
  */
 export class DrawHandler2D {
+    #contexts;
+    #stateCaches;
+    #shadowState;
+    #pathCache;
+    #measureCtx;
+
     /**
      * @param {Object.<string, CanvasRenderingContext2D>} contexts - 레이어 이름을 키로 가지는 컨텍스트 객체
      */
     constructor(contexts) {
-        this._contexts = contexts;
-        this._stateCaches = {};
-        this._shadowState = {};
-        this._pathCache = {};
+        this.#contexts = contexts;
+        this.#stateCaches = {};
+        this.#shadowState = {};
+        this.#pathCache = {};
 
         for (const key in contexts) {
-            this._stateCaches[key] = {};
-            this._shadowState[key] = { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' };
+            this.#stateCaches[key] = {};
+            this.#shadowState[key] = { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' };
         }
 
-        this._generatePaths();
+        this.#generatePaths();
 
         // 전용 측정용 캔버스/컨텍스트 생성 (메인 캔버스 오염 방지)
         const measureCanvas = document.createElement('canvas');
-        this._measureCtx = measureCanvas.getContext('2d');
+        this.#measureCtx = measureCanvas.getContext('2d');
     }
 
     /**
@@ -34,8 +40,8 @@ export class DrawHandler2D {
      * @returns {number} 텍스트 너비
      */
     measureText(text, font) {
-        this._measureCtx.font = font;
-        return this._measureCtx.measureText(text).width;
+        this.#measureCtx.font = font;
+        return this.#measureCtx.measureText(text).width;
     }
 
     /**
@@ -45,7 +51,7 @@ export class DrawHandler2D {
      * @param {string} color - 그림자 색상
      */
     shadowOn(layerName, blur, color) {
-        this._shadowState[layerName] = { shadowBlur: blur, shadowColor: color };
+        this.#shadowState[layerName] = { shadowBlur: blur, shadowColor: color };
     }
 
     /**
@@ -53,7 +59,7 @@ export class DrawHandler2D {
      * @param {string} layerName - 레이어 이름
      */
     shadowOff(layerName) {
-        this._shadowState[layerName] = { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' };
+        this.#shadowState[layerName] = { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' };
     }
 
     /**
@@ -62,10 +68,10 @@ export class DrawHandler2D {
      * @param {object} options - 그리기 옵션 (shape, x, y, w, h 등)
      */
     render(layerName, options) {
-        const ctx = this._contexts[layerName];
-        const cache = this._stateCaches[layerName];
+        const ctx = this.#contexts[layerName];
+        const cache = this.#stateCaches[layerName];
 
-        this._applyStyles(ctx, cache, options, layerName);
+        this.#applyStyles(ctx, cache, options, layerName);
 
         switch (options.shape) {
             case 'rect':
@@ -108,7 +114,7 @@ export class DrawHandler2D {
                 break;
 
             case 'arrow':
-                const path = this._pathCache['arrow'];
+                const path = this.#pathCache['arrow'];
                 if (!path) return;
 
                 ctx.save();
@@ -127,7 +133,7 @@ export class DrawHandler2D {
                 break;
 
             case 'glassRect':
-                this._renderGlassRect(ctx, options);
+                this.#renderGlassRect(ctx, options);
                 break;
 
             default:
@@ -143,8 +149,8 @@ export class DrawHandler2D {
      * @param {object} styles - 적용할 스타일
      * @param {string} layerName - 레이어 이름
      */
-    _applyStyles(ctx, cache, styles, layerName) {
-        const persistentShadow = this._shadowState[layerName];
+    #applyStyles(ctx, cache, styles, layerName) {
+        const persistentShadow = this.#shadowState[layerName];
 
         let fill = styles.fill || null;
 
@@ -183,11 +189,17 @@ export class DrawHandler2D {
         }
     }
 
-    _renderGlassRect(ctx, options) {
+    /**
+     * @private
+     * 유리패널(GlassRect) 효과를 렌더링합니다. 배경 블러 이미지를 샘플링하여 유리 소재 시각적 효과를 만듭니다.
+     * @param {CanvasRenderingContext2D} ctx
+     * @param {object} options
+     */
+    #renderGlassRect(ctx, options) {
         ctx.save();
 
-        if (this._isGlassShadowActive(ctx)) {
-            this._renderGlassShadowOnly(ctx, options);
+        if (this.#isGlassShadowActive(ctx)) {
+            this.#renderGlassShadowOnly(ctx, options);
         }
 
         // 이미지와 내부 채색 시 무거운 섀도우 연산이 일어나는 것을 방지 (프레임 드랍 원인)
@@ -198,7 +210,7 @@ export class DrawHandler2D {
         ctx.roundRect(options.x, options.y, options.w, options.h, options.radius);
         ctx.clip();
 
-        this._drawGlassBlurImage(ctx, options);
+        this.#drawGlassBlurImage(ctx, options);
 
         if (options.fill !== false) {
             ctx.fill();
@@ -212,7 +224,13 @@ export class DrawHandler2D {
         ctx.restore();
     }
 
-    _isGlassShadowActive(ctx) {
+    /**
+     * @private
+     * 현재 ctx에 그림자 속성이 활성 중인지 확인합니다.
+     * @param {CanvasRenderingContext2D} ctx
+     * @returns {boolean}
+     */
+    #isGlassShadowActive(ctx) {
         return ctx.shadowBlur > 0
             && ctx.shadowColor
             && ctx.shadowColor !== 'rgba(0,0,0,0)'
@@ -220,7 +238,13 @@ export class DrawHandler2D {
             && ctx.shadowColor !== 'transparent';
     }
 
-    _renderGlassShadowOnly(ctx, options) {
+    /**
+     * @private
+     * 그림자만 독립적으로 과도 화면 밖에 offset 트릭으로 그립니다. 유리 패널 본체가 그림자를 덮는 것을 방지합니다.
+     * @param {CanvasRenderingContext2D} ctx
+     * @param {object} options
+     */
+    #renderGlassShadowOnly(ctx, options) {
         // 그림자만 독립적으로 그리기 (offset 트릭 활용)
         // 유리 패널 본체는 화면 밖에 두고 그림자만 원위치에 표시 (투명 패널의 그림자 가림 방지)
         ctx.save();
@@ -234,7 +258,13 @@ export class DrawHandler2D {
         ctx.restore();
     }
 
-    _drawGlassBlurImage(ctx, options) {
+    /**
+     * @private
+     * 블러된 배경 이미지를 요소 내에 디로스케일링하여 그립니다. CSS filter 블러를 사용합니다.
+     * @param {CanvasRenderingContext2D} ctx
+     * @param {object} options
+     */
+    #drawGlassBlurImage(ctx, options) {
         if (!options.image) return;
 
         const blurCanvas = getBlurCanvas();
@@ -265,7 +295,7 @@ export class DrawHandler2D {
      * @private
      * 도형 경로를 미리 생성하여 캐시합니다.
      */
-    _generatePaths() {
+    #generatePaths() {
 
         // 화살표 생성 (너비/높이 1 기준, x/y를 중심으로)
         const arrowPath = new Path2D();
@@ -274,7 +304,7 @@ export class DrawHandler2D {
         arrowPath.lineTo(0, 0.3);
         arrowPath.lineTo(-0.5, 0.5);
         arrowPath.closePath();
-        this._pathCache['arrow'] = arrowPath;
+        this.#pathCache['arrow'] = arrowPath;
     }
 
     /**
@@ -282,7 +312,7 @@ export class DrawHandler2D {
      * @param {string} layerName - 레이어 이름
      */
     clear(layerName) {
-        const ctx = this._contexts[layerName];
+        const ctx = this.#contexts[layerName];
         if (!ctx) return;
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     }
@@ -291,8 +321,8 @@ export class DrawHandler2D {
      * 모든 레이어를 지웁니다.
      */
     clearAll() {
-        for (const key in this._contexts) {
-            const ctx = this._contexts[key];
+        for (const key in this.#contexts) {
+            const ctx = this.#contexts[key];
             ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         }
     }

@@ -17,6 +17,9 @@ const FALLBACK_LANGUAGE_KEY = AVAILABLE_LANGUAGE_KEYS.includes('english')
  * NW.js는 파일 저장, 브라우저는 localStorage 저장을 사용합니다.
  */
 export class SettingHandler {
+    #mathUtil;
+    #presentHiddenKeys;
+
     constructor(dataDir) {
         this.dataDir = dataDir;
         this.isNwRuntime = isNwRuntime();
@@ -39,36 +42,37 @@ export class SettingHandler {
             theme: { type: 'string', value: DEFAULT_THEME_KEY, min: -1, max: -1, hidden: false },
             disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: false },
             language: { type: 'string', value: defaultLang, min: -1, max: -1, hidden: false },
-            windowMode: { type: 'string', value: this.isNwRuntime ? 'fullscreen' : 'browserMode', min: -1, max: -1, hidden: false },
+            windowMode: { type: 'string', value: this.isNwRuntime ? 'fullscreen' : 'windowed', min: -1, max: -1, hidden: false },
+            widescreenSupport: { type: 'bool', value: true, min: -1, max: -1, hidden: false },
             width: { type: 'int', value: 1280, min: 1280, max: -1, hidden: false },
             height: { type: 'int', value: 720, min: 720, max: -1, hidden: false },
             renderScale: { type: 'int', value: 100, min: 75, max: 100, hidden: false },
-            uiScale: { type: 'int', value: 100, min: 75, max: 125, hidden: false },
-            physicsAccuracy: { type: 'int', value: 8, min: 4, max: 10, hidden: false },
+            uiScale: { type: 'int', value: 100, min: 75, max: 150, hidden: false },
+            physicsAccuracy: { type: 'int', value: 8, min: 4, max: 12, hidden: false },
             bgmVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             debugMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
         };
 
-        this._mathUtil = new MathUtil();
+        this.#mathUtil = new MathUtil();
 
         // 현재 유지해야 할 hidden 키 목록 (파일에 존재하거나 명시적으로 설정된 경우)
-        this._presentHiddenKeys = new Set();
+        this.#presentHiddenKeys = new Set();
     }
 
     /**
      * 설정 데이터를 로드합니다.
      */
     async init() {
-        await this._load();
+        await this.#load();
     }
 
     /**
      * @private
      * 스키마에서 기본값만 추출한 객체를 반환합니다.
      */
-    _getDefaults() {
+    #getDefaults() {
         const defaults = {};
         for (const key in this.schema) {
             defaults[key] = this.schema[key].value;
@@ -83,7 +87,7 @@ export class SettingHandler {
          * @param {*} value 외부로부터 받은 원시 값
          * @returns {*} 보정된 안전한 값
          */
-    _capValue(key, value) {
+    #capValue(key, value) {
         const entry = this.schema[key];
         if (!entry) return value;
 
@@ -104,6 +108,14 @@ export class SettingHandler {
             }
             return DEFAULT_THEME_KEY;
         }
+        if (key === 'windowMode') {
+            if (processedValue === 'borderless') processedValue = 'fullscreen';
+            if (processedValue === 'browserMode') processedValue = 'windowed';
+            if (processedValue === 'fullscreen' || processedValue === 'windowed') {
+                return processedValue;
+            }
+            return this.isNwRuntime ? 'fullscreen' : 'windowed';
+        }
         if (key === 'language') {
             if (AVAILABLE_LANGUAGE_KEYS.includes(processedValue)) {
                 return processedValue;
@@ -113,7 +125,7 @@ export class SettingHandler {
 
         // 숫자 타입인 경우 min/max 캡 적용
         if (entry.type === 'int') {
-            return this._mathUtil.cap(processedValue, entry.min, entry.max);
+            return this.#mathUtil.cap(processedValue, entry.min, entry.max);
         }
 
         return processedValue;
@@ -123,7 +135,7 @@ export class SettingHandler {
      * @private
      * 설정 데이터 파일을 비동기로 로드합니다.
      */
-    async _load() {
+    async #load() {
         let fileData = {};
 
         let fileExists = false;
@@ -168,6 +180,11 @@ export class SettingHandler {
             fileData.windowMode = 'fullscreen';
             needsSave = true;
         }
+        // 구버전 키 마이그레이션: browserMode -> windowed
+        if (fileData.windowMode === 'browserMode') {
+            fileData.windowMode = 'windowed';
+            needsSave = true;
+        }
         // 구버전 키 마이그레이션: darkMode(bool) -> theme(string)
         if (fileData.theme === undefined && typeof fileData.darkMode === 'boolean') {
             fileData.theme = fileData.darkMode ? 'dark' : 'light';
@@ -177,9 +194,9 @@ export class SettingHandler {
         // 스키마 기준으로 값 병합: 파일 값 우선, 없으면 기본값 사용
         for (const key in this.schema) {
             if (fileData[key] !== undefined) {
-                this.schema[key].value = this._capValue(key, fileData[key]);
+                this.schema[key].value = this.#capValue(key, fileData[key]);
                 if (this.schema[key].hidden) {
-                    this._presentHiddenKeys.add(key);
+                    this.#presentHiddenKeys.add(key);
                 }
             } else if (!this.schema[key].hidden) {
                 // 숨김 항목이 아닌 값은 파일에 없을 때 새로 저장해야 함
@@ -216,7 +233,7 @@ export class SettingHandler {
         const out = {};
         for (const key in this.schema) {
             // 숨김 항목이 아니거나, 숨김 항목이어도 파일에 명시되어 있던 경우에만 저장
-            if (!this.schema[key].hidden || this._presentHiddenKeys.has(key)) {
+            if (!this.schema[key].hidden || this.#presentHiddenKeys.has(key)) {
                 out[key] = this.schema[key].value;
             }
         }
@@ -266,10 +283,10 @@ export class SettingHandler {
     set(key, value) {
 
         if (!this.schema[key]) return Promise.resolve();
-        this.schema[key].value = this._capValue(key, value);
+        this.schema[key].value = this.#capValue(key, value);
 
         if (this.schema[key].hidden) {
-            this._presentHiddenKeys.add(key);
+            this.#presentHiddenKeys.add(key);
         }
 
         if (key === 'theme') {
@@ -286,9 +303,9 @@ export class SettingHandler {
     setBatch(settings) {
         for (const key in settings) {
             if (this.schema[key]) {
-                this.schema[key].value = this._capValue(key, settings[key]);
+                this.schema[key].value = this.#capValue(key, settings[key]);
                 if (this.schema[key].hidden) {
-                    this._presentHiddenKeys.add(key);
+                    this.#presentHiddenKeys.add(key);
                 }
             }
         }

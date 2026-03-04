@@ -20,6 +20,7 @@ import {
     ENEMY_SHAPE_TYPES,
     ENEMY_ASPECT_RATIO,
     ENEMY_HEIGHT_SCALE,
+    ENEMY_DEFAULT_WEIGHT,
     getEnemyShapeKey,
     ENEMY_WEBGL_SHAPES
 } from 'data/object/enemy/enemy_shape_data.js';
@@ -52,6 +53,7 @@ const DATA_REGISTRY = Object.freeze({
     ENEMY_SHAPE_TYPES,
     ENEMY_ASPECT_RATIO,
     ENEMY_HEIGHT_SCALE,
+    ENEMY_DEFAULT_WEIGHT,
     getEnemyShapeKey,
     ENEMY_WEBGL_SHAPES,
     ENEMY_SVG_SHAPES,

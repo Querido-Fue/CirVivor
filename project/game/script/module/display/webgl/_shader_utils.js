@@ -11,7 +11,7 @@ export function compileShader(gl, source, type) {
     gl.compileShader(shader);
 
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.error('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+        console.error('셈이더 코드 컴파일 실패: ' + gl.getShaderInfoLog(shader));
         gl.deleteShader(shader);
         return null;
     }
@@ -32,7 +32,7 @@ export function createProgram(gl, vertexShader, fragmentShader) {
     gl.linkProgram(program);
 
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.error('Unable to initialize the shader program: ' + gl.getProgramInfoLog(program));
+        console.error('셰이더 프로그램 링크 실패: ' + gl.getProgramInfoLog(program));
         return null;
     }
     return program;

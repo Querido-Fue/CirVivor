@@ -101,5 +101,25 @@ export const TEXT_CONSTANTS = {
             WEIGHT: 700,
             FAMILY: "Pretendard Variable, arial"
         }
+    },
+    SETTINGS_DESC: {
+        FONT: {
+            SIZE: {
+                BASE: "WW",
+                VALUE: 0.9
+            },
+            WEIGHT: 300,
+            FAMILY: "Pretendard Variable, arial"
+        }
+    },
+    SETTINGS_SLIDER_VALUE: {
+        FONT: {
+            SIZE: {
+                BASE: "WW",
+                VALUE: 0.9
+            },
+            WEIGHT: 400,
+            FAMILY: "Pretendard Variable, arial"
+        }
     }
 }

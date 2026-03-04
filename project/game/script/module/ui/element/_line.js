@@ -20,6 +20,7 @@ export class LineElement extends BaseUIElement {
      */
     constructor(properties) {
         super(properties);
+        this.init(properties);
     }
 
     /**

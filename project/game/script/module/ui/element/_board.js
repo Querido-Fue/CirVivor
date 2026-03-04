@@ -21,6 +21,7 @@ export class BoardElement extends BaseUIElement {
      */
     constructor(properties) {
         super(properties);
+        this.init(properties);
         this.width = properties.width || 0;
         this.height = properties.height || 0;
         this.color = properties.color || ColorSchemes.Overlay.Panel.Background;

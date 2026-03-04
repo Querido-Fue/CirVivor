@@ -23,14 +23,14 @@ export class IngameHandler {
      * 인게임 데이터를 로드합니다.
      */
     async init() {
-        await this._load();
+        await this.#load();
     }
 
     /**
      * @private
      * 인게임 데이터 파일을 로드합니다.
      */
-    async _load() {
+    async #load() {
         if (this.isNwRuntime) {
             let fileExists = false;
             try {
@@ -58,7 +58,7 @@ export class IngameHandler {
                     }
 
                 } catch (e) {
-                    console.error("Failed to load ingame data:", e);
+                    console.error('인게임 데이터 로드 실패:', e);
                     this.data = JSON.parse(JSON.stringify(this.defaultData));
                 }
             } else {
@@ -89,7 +89,7 @@ export class IngameHandler {
                 await this.save();
             }
         } catch (e) {
-            console.error("Failed to load ingame data from localStorage:", e);
+            console.error('localStorage에서 인게임 데이터 로드 실패:', e);
             this.data = JSON.parse(JSON.stringify(this.defaultData));
             await this.save();
         }
@@ -107,7 +107,7 @@ export class IngameHandler {
                 try {
                     await fsPromises.mkdir(this.dataDir, { recursive: true });
                 } catch (mkdirError) {
-                    console.error("Failed to create ingame data directory:", mkdirError);
+                    console.error('인게임 데이터 디렉토리 생성 실패:', mkdirError);
                     throw mkdirError;
                 }
             }
@@ -119,7 +119,7 @@ export class IngameHandler {
             try {
                 await fsPromises.writeFile(this.filePath, dataStr);
             } catch (err) {
-                console.error("Failed to save ingame data:", err);
+                console.error('인게임 데이터 저장 실패:', err);
                 throw err;
             }
             return;
@@ -128,7 +128,7 @@ export class IngameHandler {
         try {
             window.localStorage.setItem(this.storageKey, dataStr);
         } catch (err) {
-            console.error("Failed to save ingame data to localStorage:", err);
+            console.error('localStorage에 인게임 데이터 저장 실패:', err);
             throw err;
         }
     }
