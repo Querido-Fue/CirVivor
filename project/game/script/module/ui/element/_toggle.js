@@ -15,6 +15,9 @@ export class ToggleElement extends BaseUIElement {
         super(properties);
     }
 
+    /**
+         * @override
+         */
     init(properties) {
         super.init(properties);
         if (!properties) return;
@@ -35,6 +38,9 @@ export class ToggleElement extends BaseUIElement {
         this.pressScaleMultiplier = 1.15;
     }
 
+    /**
+         * @override
+         */
     reset() {
         super.reset();
         if (this._animID) { remove(this._animID.id); this._animID = null; }
@@ -60,6 +66,9 @@ export class ToggleElement extends BaseUIElement {
         }
     }
 
+    /**
+         * @override
+         */
     update() {
         if (!this.visible) return;
 
@@ -85,6 +94,9 @@ export class ToggleElement extends BaseUIElement {
         this._handleInteractionState(isOver, isLeftClicking);
     }
 
+    /**
+         * @override
+         */
     draw() {
         if (!this.visible) return;
 

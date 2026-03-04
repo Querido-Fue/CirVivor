@@ -1,44 +1,51 @@
-
 import { getWW, getWH, render, shadowOn, shadowOff } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { animate, remove } from 'animation/animation_system.js';
 import { getMouseInput } from 'input/input_system.js';
+import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 
+const CURSOR_CONSTANTS = getData('CURSOR_CONSTANTS');
+const NORMAL_CURSOR_CONSTANTS = CURSOR_CONSTANTS.NORMAL;
+const ATTACK_CURSOR_CONSTANTS = CURSOR_CONSTANTS.ATTACK;
+
 /**
- * @class Cursor
+ * @class UICursor
  * @description 게임 내 커서의 위치/상태를 업데이트하고 현재 커서 타입에 맞게 그립니다.
  */
-export class Cursor {
+export class UICursor {
     constructor() {
         this._x = 0;
         this._y = 0;
 
         this.WW = getWW();
         this.WH = getWH();
-        this._defaultSubCircleRadius = this.WH * 0.015;
+        this._defaultSubCircleRadius = this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_RADIUS_WH_RATIO;
         this._subCircleRadius = this._defaultSubCircleRadius;
-        this._defaultSubCircleAlpha = 0.5;
+        this._defaultSubCircleAlpha = NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_ALPHA;
         this._subCircleAlpha = this._defaultSubCircleAlpha;
-        this._lineLong = 8;
-        this._lineShort = 3;
+        this._lineLong = ATTACK_CURSOR_CONSTANTS.LINE_LONG_PX;
+        this._lineShort = ATTACK_CURSOR_CONSTANTS.LINE_SHORT_PX;
         this._type = 'normal'
         this._normalAnimTime = 0;
         this._attackAnimTime = 0;
-        this._normalAnimDuration = 0.5;
-        this._attackAnimDuration = 0.3;
+        this._normalAnimDuration = NORMAL_CURSOR_CONSTANTS.ANIM_DURATION;
+        this._attackAnimDuration = ATTACK_CURSOR_CONSTANTS.ANIM_DURATION;
         this._normalRadiusAnimId = -1;
         this._normalAlphaAnimId = -1;
         this._clicking = false;
 
     }
 
+    /**
+         * 해상도 변경 시 커서 내부 원 크기 등의 배율을 새 WH 기준으로 재계산합니다.
+         */
     resize() {
         const prevWH = this.WH || 1;
         this.WW = getWW();
         this.WH = getWH();
         const ratio = this.WH / Math.max(1, prevWH);
-        this._defaultSubCircleRadius = this.WH * 0.015;
+        this._defaultSubCircleRadius = this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_RADIUS_WH_RATIO;
         this._subCircleRadius = Math.max(0, this._subCircleRadius * ratio);
     }
 
@@ -55,8 +62,8 @@ export class Cursor {
                 if (!this._clicking) {
                     remove(this._normalRadiusAnimId);
                     remove(this._normalAlphaAnimId);
-                    this._normalRadiusAnimId = animate(this, { variable: '_subCircleRadius', startValue: 'current', endValue: this._defaultSubCircleRadius * 0.7, type: "easeOutExpo", duration: this._normalAnimDuration - this._normalAnimTime }).id;
-                    this._normalAlphaAnimId = animate(this, { variable: '_subCircleAlpha', startValue: 'current', endValue: this._defaultSubCircleAlpha * 1.5, type: "easeOutExpo", duration: this._normalAnimDuration - this._normalAnimTime }).id;
+                    this._normalRadiusAnimId = animate(this, { variable: '_subCircleRadius', startValue: 'current', endValue: this._defaultSubCircleRadius * NORMAL_CURSOR_CONSTANTS.CLICK_RADIUS_MULTIPLIER, type: "easeOutExpo", duration: this._normalAnimDuration - this._normalAnimTime }).id;
+                    this._normalAlphaAnimId = animate(this, { variable: '_subCircleAlpha', startValue: 'current', endValue: this._defaultSubCircleAlpha * NORMAL_CURSOR_CONSTANTS.CLICK_ALPHA_MULTIPLIER, type: "easeOutExpo", duration: this._normalAnimDuration - this._normalAnimTime }).id;
                 }
                 this._normalAnimTime += getDelta();
                 if (this._normalAnimTime >= this._normalAnimDuration) {
@@ -90,9 +97,9 @@ export class Cursor {
      */
     draw() {
         if (this._type === 'normal') {
-            const angle = 330;
+            const angle = NORMAL_CURSOR_CONSTANTS.ARROW_ROTATION_DEG;
             const angleRad = angle * Math.PI / 180;
-            const sizeBig = this.WH * 0.015;
+            const sizeBig = this.WH * NORMAL_CURSOR_CONSTANTS.LARGE_ARROW_SIZE_WH_RATIO;
             const offsetX1 = (sizeBig / 2) * Math.sin(angleRad);
             const offsetY1 = (-sizeBig / 2) * Math.cos(angleRad);
             render('top', {
@@ -106,7 +113,7 @@ export class Cursor {
             });
 
 
-            const sizeSmall = this.WH * 0.014;
+            const sizeSmall = this.WH * NORMAL_CURSOR_CONSTANTS.SMALL_ARROW_SIZE_WH_RATIO;
             const offsetX2 = (sizeSmall / 2) * Math.sin(angleRad);
             const offsetY2 = (-sizeSmall / 2) * Math.cos(angleRad);
             render('top', {
@@ -120,19 +127,57 @@ export class Cursor {
             });
             render('top', {
                 shape: 'circle',
-                x: this._x + this._subCircleRadius / 2 + this.WH * 0.01,
-                y: this._y + this._subCircleRadius / 2 + this.WH * 0.02,
+                x: this._x + this._subCircleRadius / 2 + this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_OFFSET_X_WH_RATIO,
+                y: this._y + this._subCircleRadius / 2 + this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_OFFSET_Y_WH_RATIO,
                 radius: this._subCircleRadius,
                 fill: ColorSchemes.Cursor.Active,
                 alpha: this._subCircleAlpha
             });
         } else if (this._type === 'attack') {
-            shadowOn('top', 10, ColorSchemes.Cursor.White);
-            render('top', { shape: 'circle', x: this._x, y: this._y, radius: 2, fill: ColorSchemes.Cursor.Active });
-            render('top', { shape: 'line', x1: this._x - this._lineLong, y1: this._y, x2: this._x - this._lineShort, y2: this._y, stroke: ColorSchemes.Cursor.Active, lineWidth: 1 });
-            render('top', { shape: 'line', x1: this._x + this._lineShort, y1: this._y, x2: this._x + this._lineLong, y2: this._y, stroke: ColorSchemes.Cursor.Active, lineWidth: 1 });
-            render('top', { shape: 'line', x1: this._x, y1: this._y - this._lineLong, x2: this._x, y2: this._y - this._lineShort, stroke: ColorSchemes.Cursor.Active, lineWidth: 1 });
-            render('top', { shape: 'line', x1: this._x, y1: this._y + this._lineShort, x2: this._x, y2: this._y + this._lineLong, stroke: ColorSchemes.Cursor.Active, lineWidth: 1 });
+            shadowOn('top', ATTACK_CURSOR_CONSTANTS.SHADOW_BLUR_PX, ColorSchemes.Cursor.White);
+            render('top', {
+                shape: 'circle',
+                x: this._x,
+                y: this._y,
+                radius: ATTACK_CURSOR_CONSTANTS.CENTER_DOT_RADIUS_PX,
+                fill: ColorSchemes.Cursor.Active
+            });
+            render('top', {
+                shape: 'line',
+                x1: this._x - this._lineLong,
+                y1: this._y,
+                x2: this._x - this._lineShort,
+                y2: this._y,
+                stroke: ColorSchemes.Cursor.Active,
+                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
+            });
+            render('top', {
+                shape: 'line',
+                x1: this._x + this._lineShort,
+                y1: this._y,
+                x2: this._x + this._lineLong,
+                y2: this._y,
+                stroke: ColorSchemes.Cursor.Active,
+                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
+            });
+            render('top', {
+                shape: 'line',
+                x1: this._x,
+                y1: this._y - this._lineLong,
+                x2: this._x,
+                y2: this._y - this._lineShort,
+                stroke: ColorSchemes.Cursor.Active,
+                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
+            });
+            render('top', {
+                shape: 'line',
+                x1: this._x,
+                y1: this._y + this._lineShort,
+                x2: this._x,
+                y2: this._y + this._lineLong,
+                stroke: ColorSchemes.Cursor.Active,
+                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
+            });
             shadowOff('top');
         }
     }

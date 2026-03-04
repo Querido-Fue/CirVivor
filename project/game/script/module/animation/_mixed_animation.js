@@ -26,10 +26,9 @@ export class MixedAnimation extends AnimationBase {
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
      * @param {Array} animationDefs - 애니메이션 정의 배열
-     * @param {boolean} fixed - fixedUpdate 사용 여부
      */
-    init(id, owner, variable, animationDefs, fixed) {
-        super.init(id, owner, variable, fixed);
+    init(id, owner, variable, animationDefs) {
+        super.init(id, owner, variable);
         this.animationDefs = animationDefs;
 
         try {

@@ -1,7 +1,10 @@
 import { TitleOverlay } from './_title_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { LayoutHandler } from 'ui/_layout_handler.js';
+import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { getData } from 'data/data_handler.js';
+
+const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
 /**
  * @class CollectionOverlay
@@ -20,11 +23,19 @@ export class CollectionOverlay extends TitleOverlay {
         this._generateLayout();
     }
 
+    /**
+         * @override
+         * 화면 크기 비율에 맞춰 오버레이 너비/높이를 재지정합니다.
+         */
     _onResize() {
-        this.width = this.UIWW * 0.65;
-        this.height = this.WH * 0.7;
+        this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.COLLECTION.WIDTH_UIWW_RATIO;
+        this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.COLLECTION.HEIGHT_WH_RATIO;
     }
 
+    /**
+         * @override
+         * 컬렉션 오버레이 내의 달성도 프로그레스 바 및 텍스트 레이아웃을 생성합니다.
+         */
     _generateLayout() {
         this._releaseElements();
         const handler = new LayoutHandler(this, this.positioningHandler).horMargin("WW", 1.8)

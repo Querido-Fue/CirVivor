@@ -1,9 +1,11 @@
-import { BUTTON_CONSTANTS } from 'data/ui/button_constants.js';
-import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
-import { UIElementFactory } from 'ui/_ui_element_factory.js';
+import { getData } from 'data/data_handler.js';
+import { UIElementFactory } from 'ui/element/_ui_element_factory.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
-import { UI_CONSTANTS } from 'data/ui/ui_constants.js';
-import { PositioningHandler } from 'ui/_positioning_handler.js';
+import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
+
+const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
+const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const UI_CONSTANTS = getData('UI_CONSTANTS');
 
 /**
  * @class LayoutHandler
@@ -32,12 +34,20 @@ export class LayoutHandler {
         this._parentItem = null;
     }
 
+    /**
+         * 부모 요소 또는 화면 크기 변경 시 스케일을 다시 계산합니다.
+         * @returns {LayoutHandler}
+         */
     resize() {
         this.uiScale = this.parent.uiScale || 1;
         this.positioningHandler.resize(this.parent, this.uiScale);
         return this;
     }
 
+    /**
+         * 현재 편집 중인 아이템 등록을 완료하고 렌더 목록/그룹으로 푸시합니다.
+         * @private
+         */
     _commitCurrentItem() {
         if (this._parentItem) {
             const currentGroup = this._groupStack.length > 0 ? this._groupStack[this._groupStack.length - 1] : null;

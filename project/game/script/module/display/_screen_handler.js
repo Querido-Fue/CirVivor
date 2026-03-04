@@ -1,7 +1,9 @@
-import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
+import { getData } from 'data/data_handler.js';
 import { getSetting, setSetting } from 'save/save_system.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { isNwRuntime, nw } from 'util/nw_bridge.js';
+
+const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 
 /**
  * @class ScreenHandler
@@ -25,6 +27,12 @@ export class ScreenHandler {
         this._nwScreenInited = false;
     }
 
+    /**
+         * 논리 픽셀을 디바이스 화면 배율이 적용된 물리 픽셀로 변환합니다.
+         * @param {number} cssPx 변환할 CSS 픽셀 값
+         * @param {number} [scaleFactor] 적용할 스케일 배율 (생략 시 devicePixelRatio 사용)
+         * @returns {number} 디바이스 픽셀로 변환된 값
+         */
     _toDevicePx(cssPx, scaleFactor) {
         const sf = (typeof scaleFactor === 'number' && Number.isFinite(scaleFactor) && scaleFactor > 0)
             ? scaleFactor
@@ -32,6 +40,10 @@ export class ScreenHandler {
         return Math.max(1, Math.floor((cssPx * sf) + 1e-6));
     }
 
+    /**
+         * 데스크톱 앱(NW.js 환경)일 경우 활성 디스플레이의 해상도 수치를 반환합니다.
+         * @returns {object|null} 디스플레이 메트릭스 또는 확인 불가 시 null
+         */
     _getNwDisplayMetrics() {
         if (!isNwRuntime() || !nw?.Screen) return null;
 
@@ -80,6 +92,12 @@ export class ScreenHandler {
         }
     }
 
+    /**
+         * 현재 화면 모드 상태 및 디스플레이 크기를 기준으로 내부 렌더 타깃을 재계산합니다.
+         * @param {boolean} isNw NW.js 환경인지 여부
+         * @param {string} windowMode 화면 모드 상태 ('fullscreen' | 'browserMode')
+         * @returns {boolean} 설정 변경 여부 (재렌더링 필요 시 true 반환)
+         */
     _recalculateRenderTarget(isNw, windowMode) {
         const gameRatio = GLOBAL_CONSTANTS.ASPECT_RATIO.RATIO;
         const renderScale = getSetting("renderScale") || 100;
@@ -99,7 +117,7 @@ export class ScreenHandler {
         const windowWidth = this._toDevicePx(window.innerWidth, displayScaleFactor);
         const windowHeight = this._toDevicePx(window.innerHeight, displayScaleFactor);
 
-        const useMonitorSource = isNw && (windowMode === 'fullscreen' || windowMode === 'borderless');
+        const useMonitorSource = isNw && (windowMode === 'fullscreen');
         const sourceWidth = useMonitorSource ? monitorWidth : windowWidth;
         const sourceHeight = useMonitorSource ? monitorHeight : windowHeight;
 
@@ -175,7 +193,6 @@ export class ScreenHandler {
 
             if (screenModeChanged) {
                 runtimeTool().setFullScreen(false);
-                runtimeTool().leaveKioskMode();
 
                 await new Promise(resolve => setTimeout(resolve, 30));
 
@@ -184,9 +201,8 @@ export class ScreenHandler {
 
             if (windowMode === 'fullscreen') {
                 runtimeTool().setFullScreen(true);
-            } else if (windowMode === 'borderless') {
-                runtimeTool().enterKioskMode();
             } else {
+                runtimeTool().setFullScreen(false);
                 // 창 모드에서는 매번 강제 크기 적용하지 않고, 모드 전환 직후에만 적용합니다.
                 if (screenModeChanged) {
                     runtimeTool().setWindowSize(settingWidth, settingHeight);
@@ -194,7 +210,7 @@ export class ScreenHandler {
                 }
             }
 
-            // NW 창 상태 반영(전체화면/키오스크/창 전환) 직후 측정 오차를 줄이기 위해 한 프레임 대기
+            // NW 창 상태 반영(전체화면/창 전환) 직후 측정 오차를 줄이기 위해 한 프레임 대기
             await this._waitForWindowSettle();
         }
 

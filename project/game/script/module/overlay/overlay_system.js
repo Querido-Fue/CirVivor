@@ -2,7 +2,10 @@ import { ExitOverlay } from './_exit_overlay.js';
 import { CollectionOverlay } from './title/_collection.js';
 import { SettingsOverlay } from './title/_settings.js';
 import { CreditsOverlay } from './title/_credits.js';
-import { DEFAULT_OVERLAY_ANIMATION_PRESET, OVERLAY_ANIMATION_PRESETS } from './_animation_presets.js';
+import { getData } from 'data/data_handler.js';
+
+const DEFAULT_OVERLAY_ANIMATION_PRESET = getData('DEFAULT_OVERLAY_ANIMATION_PRESET');
+const OVERLAY_ANIMATION_PRESETS = getData('OVERLAY_ANIMATION_PRESETS');
 
 let overlaySystemInstance = null;
 
@@ -47,6 +50,9 @@ export class OverlaySystem {
         }
     }
 
+    /**
+         * 화면 크기 변동 시, 활성화된 오버레이의 레이아웃을 다시 계산하도록 지시합니다.
+         */
     resize() {
         if (this.activeOverlay && typeof this.activeOverlay.resize === 'function') {
             this.activeOverlay.resize();
@@ -114,6 +120,10 @@ export class OverlaySystem {
         return this.activeOverlay !== null;
     }
 
+    /**
+         * 전역 오버레이 오프닝/클로징 애니메이션 프리셋을 설정하고, 현재 활성화된 오버레이에 반영합니다.
+         * @param {string} presetName 애니메이션 프리셋 식별자
+         */
     setAnimationPreset(presetName) {
         this.animationPreset = presetName || DEFAULT_OVERLAY_ANIMATION_PRESET;
         if (this.activeOverlay) {

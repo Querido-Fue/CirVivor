@@ -7,7 +7,7 @@ export class BaseScene {
      * @param {object} sceneHandler - 씬 핸들러 인스턴스
      */
     constructor(sceneHandler) {
-        this.sceneHandler = sceneHandler;
+        this.sceneSystem = sceneHandler;
     }
 
     /**
@@ -22,6 +22,9 @@ export class BaseScene {
     draw() {
     }
 
+    /**
+         * 창 크기 변경 시 씬 구성요소의 크기를 재산정합니다. (오버라이드 필요)
+         */
     resize() {
     }
 }

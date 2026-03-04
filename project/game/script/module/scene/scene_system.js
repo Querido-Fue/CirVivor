@@ -32,6 +32,9 @@ export class SceneSystem {
         this.scene.draw();
     }
 
+    /**
+         * 창 크기 변경 이벤트를 현재 활성화된 씬에 전달합니다.
+         */
     resize() {
         if (this.scene && typeof this.scene.resize === 'function') {
             this.scene.resize();

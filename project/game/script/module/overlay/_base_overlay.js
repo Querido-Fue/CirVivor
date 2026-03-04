@@ -3,10 +3,13 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { animate, remove } from 'animation/animation_system.js';
 import { setMouseFocus, getMouseFocus } from 'input/input_system.js';
 import { getSetting } from 'save/save_system.js';
-import { parseUIData } from 'ui/ui_system.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
-import { PositioningHandler } from 'ui/_positioning_handler.js';
-import { DEFAULT_OVERLAY_ANIMATION_PRESET, OVERLAY_ANIMATION_PRESETS, getOverlayAnimationPreset } from './_animation_presets.js';
+import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
+import { getData } from 'data/data_handler.js';
+
+const DEFAULT_OVERLAY_ANIMATION_PRESET = getData('DEFAULT_OVERLAY_ANIMATION_PRESET');
+const OVERLAY_ANIMATION_PRESETS = getData('OVERLAY_ANIMATION_PRESETS');
+const getOverlayAnimationPreset = getData('getOverlayAnimationPreset');
 
 /**
  * @class BaseOverlay
@@ -44,6 +47,10 @@ export class BaseOverlay {
         this.animationPreset = animationPreset;
     }
 
+    /**
+         * @private
+         * 화면 크기와 UI 배율을 바탕으로 오버레이 크기와 위치를 계산합니다.
+         */
     _calculateGeometry() {
         this.scaledW = this.width * this.uiScale;
         this.scaledH = this.height * this.uiScale;
@@ -51,14 +58,25 @@ export class BaseOverlay {
         this.scaledY = (this.WH - this.scaledH) / 2 + this.dy;
     }
 
+    /**
+         * @private
+         * 오버레이 내 표시될 항목(버튼, 텍스트 등)의 레이아웃을 생성합니다.
+         */
     _generateLayout() {
         // 하위 클래스에서 구현
     }
 
+    /**
+         * @private
+         * 화면 크기가 변경될 때 호출되며, 상속받는 자식 클래스에서 가로/세로 길이를 재정의합니다.
+         */
     _onResize() {
         // 하위 클래스에서 구현
     }
 
+    /**
+         * 리사이즈 이벤트를 수신하여 레이아웃 및 렌더링 맵을 재계산합니다.
+         */
     resize() {
         if (this.animating) return;
 
@@ -71,6 +89,11 @@ export class BaseOverlay {
         this._generateLayout();
     }
 
+    /**
+         * @private
+         * 애니메이션 없이 오버레이 딤(배경 어둡게 처리) 효과를 즉시 적용합니다.
+         * @param {number} opacity 적용할 불투명도 값
+         */
     _setDimInstant(opacity) {
         const dimId = this.layer === 'overlay'
             ? 'overlaydim'
@@ -96,6 +119,10 @@ export class BaseOverlay {
         dim.style.transition = previousTransition;
     }
 
+    /**
+         * @private
+         * 진행 중인 모든 오버레이 애니메이션을 취소합니다.
+         */
     _cancelOverlayAnimations() {
         for (const key of Object.keys(this._animIds)) {
             const id = this._animIds[key];
@@ -106,6 +133,10 @@ export class BaseOverlay {
         }
     }
 
+    /**
+         * 현재 오버레이에 사용될 애니메이션 프리셋을 지정합니다.
+         * @param {string} name 적용할 애니메이션 프리셋 이름
+         */
     setAnimationPreset(name) {
         if (name && OVERLAY_ANIMATION_PRESETS[name]) {
             this.animationPreset = name;
@@ -257,6 +288,10 @@ export class BaseOverlay {
         });
     }
 
+    /**
+         * @private
+         * 오버레이가 닫힐 때 내부의 UI 요소들을 모두 풀에 반환합니다.
+         */
     _releaseElements() {
         if (this.staticItems) {
             for (const key in this.staticItems) {
@@ -273,10 +308,16 @@ export class BaseOverlay {
         this._cancelOverlayAnimations();
     }
 
+    /**
+         * 오버레이 닫기 애니메이션과 요소 반납이 모두 완료된 시점에 호출됩니다.
+         */
     onCloseComplete() {
         // 하위 클래스에서 구현
     }
 
+    /**
+         * 활성화된 하위 동적 UI 요소들을 프레임마다 업데이트합니다.
+         */
     update() {
         if (this.dynamicItems) {
             for (const key in this.dynamicItems) {
@@ -306,7 +347,7 @@ export class BaseOverlay {
             y: this.scaledY,
             w: this.scaledW,
             h: this.scaledH,
-            radius: parseUIData('UI_CONSTANTS.OVERLAY_PANEL_RADIUS', this.uiScale),
+            radius: this.positioningHandler.parseUIData('UI_CONSTANTS.OVERLAY_PANEL_RADIUS', this.uiScale),
             image: this.sourceCanvases,
             blur: 10,
             fill: getSetting('disableTransparency') ? ColorSchemes.Overlay.Panel.Background : ColorSchemes.Overlay.Panel.GlassBackground,

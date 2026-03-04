@@ -2,7 +2,10 @@ import { BaseOverlay } from './_base_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getSetting } from 'save/save_system.js';
-import { LayoutHandler } from 'ui/_layout_handler.js';
+import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { getData } from 'data/data_handler.js';
+
+const OVERLAY_LAYOUT_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS');
 
 /**
  * @class ExitOverlay
@@ -17,11 +20,19 @@ export class ExitOverlay extends BaseOverlay {
         this._generateLayout();
     }
 
+    /**
+         * @override
+         * 종료 확인 팝업 크기를 화면 비율에 맞추어 조정합니다.
+         */
     _onResize() {
-        this.width = this.UIWW * 0.3;
-        this.height = this.WH * 0.2;
+        this.width = this.UIWW * OVERLAY_LAYOUT_CONSTANTS.EXIT.WIDTH_UIWW_RATIO;
+        this.height = this.WH * OVERLAY_LAYOUT_CONSTANTS.EXIT.HEIGHT_WH_RATIO;
     }
 
+    /**
+         * @override
+         * 종료 의사를 묻는 텍스트와 예/아니오 버튼 레이아웃을 빌드합니다.
+         */
     _generateLayout() {
         this._releaseElements();
         const handler = new LayoutHandler(this, this.positioningHandler).horMargin("WW", 1.5)

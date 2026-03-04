@@ -1,21 +1,18 @@
-import { Cursor } from './_cursor.js';
+import { UICursor } from './cursor/ui_cursor.js';
 import { LanguageHandler } from './lang/_language_handler.js';
-import { UIDataParser } from './_ui_data_parser.js';
+import { parseUIData as parseUIDataWithPositioning } from './layout/_positioning_handler.js';
 
 let uiSystemInstance;
 
 /**
  * @class UISystem
- * @description 커서, 다국어, UI 데이터 파싱 등 UI 관련 하위 모듈을 관리하는 시스템입니다.
+ * @description 커서와 다국어 등 UI 관련 하위 모듈을 관리하는 시스템입니다.
  */
 export class UISystem {
     constructor() {
         uiSystemInstance = this;
-        this.cursor = new Cursor(this);
+        this.cursor = new UICursor(this);
         this.languageHandler = new LanguageHandler(this);
-
-        // 인터페이스 데이터 파서 초기화
-        this.uiDataParser = new UIDataParser();
     }
 
     /**
@@ -34,6 +31,9 @@ export class UISystem {
         this.cursor.update();
     }
 
+    /**
+         * 화면 크기 변경 시 커서 등 하위 시스템의 리사이즈를 호출합니다.
+         */
     resize() {
         if (this.cursor && typeof this.cursor.resize === 'function') {
             this.cursor.resize();
@@ -65,5 +65,5 @@ export const getLangString = (key) => {
  * @returns {number} 파싱된 수치 값
  */
 export const parseUIData = (data, uiScale = 1) => {
-    return uiSystemInstance.uiDataParser.parse(data, uiScale);
+    return parseUIDataWithPositioning(data, uiScale);
 }

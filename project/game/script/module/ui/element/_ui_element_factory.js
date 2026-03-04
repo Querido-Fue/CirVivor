@@ -1,8 +1,10 @@
 import { measureText } from 'display/display_system.js';
-import { TEXT_CONSTANTS } from 'data/ui/text_constants.js';
-import { BUTTON_CONSTANTS } from 'data/ui/button_constants.js';
+import { getData } from 'data/data_handler.js';
 import { Icon } from 'ui/element/_icon.js';
 import { UIPool } from 'ui/_ui_pool.js';
+
+const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
 
 /**
  * @class UIElementFactory

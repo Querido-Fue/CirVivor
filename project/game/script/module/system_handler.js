@@ -113,6 +113,9 @@ export class SystemHandler {
      */
     resize() {
         this.displaySystem.resize();
+        if (this.objectSystem && typeof this.objectSystem.resize === 'function') {
+            this.objectSystem.resize();
+        }
         if (this.uiSystem && typeof this.uiSystem.resize === 'function') {
             this.uiSystem.resize();
         }
@@ -137,15 +140,6 @@ export class SystemHandler {
         this.objectSystem.update();
         this.sceneSystem.update();
         this.debugSystem.update();
-    }
-
-    /**
-     * 모든 시스템의 고정 프레임 업데이트 로직을 호출합니다.
-     */
-    fixedUpdate() {
-        getTimeHandler().fixedUpdate();
-        this.animationSystem.fixedUpdate();
-        this.objectSystem.fixedUpdate();
     }
 
     /**

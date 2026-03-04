@@ -1,3 +1,6 @@
+/**
+ * UI 버튼 레이아웃 및 폰트 관련 설정 상수 모음
+ */
 export const BUTTON_CONSTANTS = {
     // 오버레이 상호작용 버튼 (예, 아니오 등)
     OVERLAY_INTERACT_BUTTON: {

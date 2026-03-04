@@ -22,13 +22,11 @@ export class AnimationBase {
      * @param {number} id - 애니메이션 ID
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
-     * @param {boolean} [fixed=false] - fixedUpdate 루프에서 실행 여부
      */
-    init(id, owner, variable, fixed = false) {
+    init(id, owner, variable) {
         this.id = id;
         this.owner = owner;
         this.variable = variable;
-        this.fixed = fixed;
         this.state = ANIMATION_STATE.RUNNING;
         this.next = null;
         this.prev = null;

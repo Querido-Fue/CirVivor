@@ -33,6 +33,9 @@ export class ButtonElement extends BaseUIElement {
         super(properties);
     }
 
+    /**
+         * @override
+         */
     init(properties) {
         super.init(properties);
         if (!properties) return;
@@ -57,6 +60,9 @@ export class ButtonElement extends BaseUIElement {
         this.radius = properties.radius !== undefined ? properties.radius : 5;
     }
 
+    /**
+         * @override
+         */
     reset() {
         super.reset();
         this.left = [];
@@ -66,6 +72,10 @@ export class ButtonElement extends BaseUIElement {
         this.onHover = () => { };
     }
 
+    /**
+         * @override
+         * 버튼 내부의 자식 요소들과 자신의 호버/클릭 상호작용 및 애니메이션을 갱신합니다.
+         */
     update() {
         if (!this.visible) return;
 
@@ -103,6 +113,10 @@ export class ButtonElement extends BaseUIElement {
         });
     }
 
+    /**
+         * @override
+         * 둥근 사각형 버튼과 내부에 배치된 좌/중/우 컴포넌트들을 함께 그립니다.
+         */
     draw() {
         if (!this.visible) return;
 

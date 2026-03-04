@@ -2,7 +2,10 @@ import { TitleOverlay } from './_title_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { LayoutHandler } from 'ui/_layout_handler.js';
+import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { getData } from 'data/data_handler.js';
+
+const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
 /**
  * @class CreditsOverlay
@@ -18,11 +21,19 @@ export class CreditsOverlay extends TitleOverlay {
         this._generateLayout();
     }
 
+    /**
+         * @override
+         * 크레딧 팝업 지정 비율에 따라 크기를 갱신합니다.
+         */
     _onResize() {
-        this.width = this.UIWW * 0.4;
-        this.height = this.WH * 0.55;
+        this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.CREDITS.WIDTH_UIWW_RATIO;
+        this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.CREDITS.HEIGHT_WH_RATIO;
     }
 
+    /**
+         * @override
+         * 만든 이, 제작 에셋 등 텍스트 노드가 포함된 레이아웃을 구성합니다.
+         */
     _generateLayout() {
         this._releaseElements();
         const handler = new LayoutHandler(this, this.positioningHandler).horMargin("WW", 1.8)

@@ -9,6 +9,10 @@ export class BaseUIElement {
         this.init(properties);
     }
 
+    /**
+         * @override
+         * 전달된 속성을 바탕으로 요소의 초기 상태를 설정합니다.
+         */
     init(properties) {
         if (!properties) return;
         this.id = this.id || crypto.randomUUID();
@@ -33,6 +37,10 @@ export class BaseUIElement {
         if (this.hoverAnimId !== -1) { remove(this.hoverAnimId); this.hoverAnimId = -1; }
     }
 
+    /**
+         * @override
+         * 요소를 초기 기본 상태로 되돌리고 애니메이션 훅을 파괴합니다.
+         */
     reset() {
         if (this.scaleAnimId) { remove(this.scaleAnimId); this.scaleAnimId = null; }
         if (this.hoverAnimId !== -1) { remove(this.hoverAnimId); this.hoverAnimId = -1; }
@@ -95,10 +103,16 @@ export class BaseUIElement {
         }
     }
 
+    /**
+         * 매 프레임마다 요소의 상태 변화나 상호작용 피드백을 계산합니다.
+         */
     update() {
         // 하위 클래스에서 구현
     }
 
+    /**
+         * 설정된 레이어 캔버스에 이 요소를 그래픽으로 그립니다.
+         */
     draw() {
         // 하위 클래스에서 구현
     }

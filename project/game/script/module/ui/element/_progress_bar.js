@@ -20,6 +20,9 @@ export class ProgressBarElement extends BaseUIElement {
         super(properties);
     }
 
+    /**
+         * @override
+         */
     init(properties) {
         super.init(properties);
         if (!properties) return;
@@ -30,6 +33,9 @@ export class ProgressBarElement extends BaseUIElement {
         this.fillColor = properties.fillColor || '#FFFFFF';
     }
 
+    /**
+         * @override
+         */
     reset() {
         super.reset();
         this.percent = 0;
@@ -37,9 +43,15 @@ export class ProgressBarElement extends BaseUIElement {
         this.fillColor = '#FFFFFF';
     }
 
+    /**
+         * @override
+         */
     update() {
     }
 
+    /**
+         * @override
+         */
     draw() {
         if (!this.visible) return;
 

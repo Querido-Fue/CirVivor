@@ -5,7 +5,6 @@ import { MathUtil } from 'util/math_util.js';
 import { ColorUtil } from 'util/color_util.js';
 import { RuntimeTool, runtimeTool } from 'util/runtime_tool.js';
 import { showExitConfirmation } from 'overlay/overlay_system.js';
-import { getSetting } from 'save/save_system.js';
 
 let systemHandler;
 let Game;
@@ -34,9 +33,6 @@ window.onload = async () => {
 
         // 브라우저 프레임 루프 시작
         Game.loop();
-
-        // 고정 업데이트 루프 시작
-        Game.fixedLoop();
     } catch (e) {
         console.warn("게임 초기화 중 오류가 발생했습니다\n", e);
     }
@@ -78,20 +74,6 @@ class App {
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
         }
-    }
-
-    /**
-     * 고정 프레임으로 실행되는 게임의 메인 로직입니다.
-     * SystemHandler의 fixedUpdate 메서드를 호출하여 모든 시스템을 업데이트합니다.
-     */
-    fixedLoop() {
-        setInterval(() => {
-            try {
-                this.systemHandler.fixedUpdate();
-            } catch (e) {
-                console.warn("물리 프레임 루프 중 오류가 발생했습니다\n", e);
-            }
-        }, 1000 / getSetting("physicsFps"));
     }
 
     /**

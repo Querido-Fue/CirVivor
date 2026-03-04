@@ -1,7 +1,9 @@
 import { getSetting } from 'save/save_system.js';
+import { getData } from 'data/data_handler.js';
+
+const SOUND_CONSTANTS = getData('SOUND_CONSTANTS');
 
 let soundSystemInstance = null;
-const DEFAULT_BGM_PATH = './audio/bgm.mp3';
 
 /**
  * @class SoundSystem
@@ -13,7 +15,7 @@ export class SoundSystem {
         this.bgmAudio = null;
         this._lastBgmVolume = null;
         this._pendingAutoplay = false;
-        this._unlockEvents = ['pointerdown', 'keydown', 'touchstart'];
+        this._unlockEvents = [...SOUND_CONSTANTS.BGM.UNLOCK_EVENTS];
         this._unlockAndPlayHandler = this._unlockAndPlay.bind(this);
         this._isUnlockListenerAttached = false;
     }
@@ -22,7 +24,7 @@ export class SoundSystem {
      * 사운드 시스템을 초기화하고 BGM 재생을 시작합니다.
      */
     async init() {
-        this.bgmAudio = new Audio(DEFAULT_BGM_PATH);
+        this.bgmAudio = new Audio(SOUND_CONSTANTS.BGM.PATH);
         this.bgmAudio.loop = true;
         this.bgmAudio.preload = 'auto';
         this._syncBgmVolume();
@@ -86,18 +88,34 @@ export class SoundSystem {
         this.bgmAudio.volume = normalized;
     }
 
+    /**
+         * @private
+         * 입력된 볼륨 값이 유효한 숫자인지 확인하고 0 ~ 100 범위로 보정합니다.
+         * @param {number|string} value 검사할 볼륨 수치
+         * @returns {number} 안전하게 정규화된 0~100 사이 볼륨값
+         */
     _sanitizeVolume(value) {
         const parsed = Number(value);
         if (!Number.isFinite(parsed)) {
-            return 100;
+            return SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
         }
-        return Math.max(0, Math.min(100, parsed));
+        return Math.max(0, Math.min(SOUND_CONSTANTS.BGM.DEFAULT_VOLUME, parsed));
     }
 
+    /**
+         * @private
+         * Audio 요소에 대입할 수 있는 0.0 ~ 1.0 실수 스케일로 변환합니다.
+         * @param {number|string} value 변경할 볼륨(0~100)
+         * @returns {number} Audio API용 볼륨 계수
+         */
     _normalizeVolume(value) {
-        return this._sanitizeVolume(value) / 100;
+        return this._sanitizeVolume(value) / SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
     }
 
+    /**
+         * @private
+         * 설정(save_system)의 현재 볼륨 값을 확인하여 브라우저 Audio 객체에 동기화합니다.
+         */
     _syncBgmVolume() {
         if (!this.bgmAudio) return;
 
@@ -107,9 +125,13 @@ export class SoundSystem {
         }
 
         this._lastBgmVolume = settingVolume;
-        this.bgmAudio.volume = settingVolume / 100;
+        this.bgmAudio.volume = settingVolume / SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
     }
 
+    /**
+         * @private
+         * 브라우저 오디오 자동재생(Autoplay) 정책에 의해 막혔을 때, 사용자 첫 상호작용 후 재생되도록 이벤트를 겁니다.
+         */
     _attachUnlockListeners() {
         if (this._isUnlockListenerAttached || typeof window === 'undefined') {
             return;
@@ -121,6 +143,10 @@ export class SoundSystem {
         this._isUnlockListenerAttached = true;
     }
 
+    /**
+         * @private
+         * 오디오 잠금 해제 이벤트 리스너를 정리/제거합니다.
+         */
     _detachUnlockListeners() {
         if (!this._isUnlockListenerAttached || typeof window === 'undefined') {
             return;
@@ -132,6 +158,10 @@ export class SoundSystem {
         this._isUnlockListenerAttached = false;
     }
 
+    /**
+         * @private
+         * 사용자 상호작용 후 브라우저 오디오 재생 제한이 풀리면 대기중인 BGM을 틀어줍니다.
+         */
     async _unlockAndPlay() {
         this._detachUnlockListeners();
         if (!this._pendingAutoplay) return;

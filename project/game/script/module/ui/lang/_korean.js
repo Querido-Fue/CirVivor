@@ -1,5 +1,6 @@
 export const korean = {
     // 일반
+    "language_name": "한국어",
     "hidden": "false",
     "%": "%",
     "affirmative_icon": "circle", // 문화 차이에 기반한 아이콘 사용
@@ -30,8 +31,7 @@ export const korean = {
     "title_settings_section_display": "디스플레이 및 성능",
     "title_settings_window_mode": "화면 모드",
     "title_settings_window_mode_windowed": "창",
-    "title_settings_window_mode_borderless": "테두리 없는 전체 창",
-    "title_settings_window_mode_fullscreen": "전체화면",
+    "title_settings_window_mode_borderless": "전체화면",
     "title_settings_window_mode_browser": "브라우저",
     "title_settings_resolution": "해상도",
     "title_settings_render_scale": "렌더링 해상도",
@@ -40,15 +40,10 @@ export const korean = {
     "title_settings_desc_ui_scale": "UI 크기를 조절합니다. 100%보다 크게 설정하면 UI가 깨져 보일 수 있습니다.",
     "title_settings_disable_transparency": "UI 투명도 제거",
     "title_settings_desc_transparency": "UI 배경을 불투명하게 만들어 그래픽 부하를 줄입니다.",
-    "title_settings_physics_fps": "물리 연산 주기",
-    "title_settings_physics_fps_slider_front": "초당 ",
-    "title_settings_physics_fps_slider_back": "회",
-    "title_settings_desc_physics_fps": "물리 연산 주기를 낮추면 성능이 개선되지만, 물리 정확도가 떨어집니다.",
+    "title_settings_physics_accuracy": "물리 연산 정확도",
+    "title_settings_desc_physics_accuracy": "값이 높을수록 물리 계산이 더 세밀해지지만 성능 비용이 증가할 수 있습니다.",
     "title_settings_section_ui": "UI",
     "title_settings_language": "언어 (Language)",
-    "title_settings_lang_korean": "한국어",
-    "title_settings_lang_english": "English",
-    "title_settings_lang_userLanguage": "", // 필요 시 사용자 언어명 입력
     "title_settings_theme": "테마",
     "title_settings_theme_light": "밝게",
     "title_settings_theme_dark": "어둡게",

@@ -1,7 +1,10 @@
-import { korean } from './_korean.js';
-import { english } from './_english.js';
-import { userLanguage } from './_usertranslation.js';
 import { getSetting } from 'save/save_system.js';
+import {
+    LANGUAGE_REGISTRY,
+    DEFAULT_LANGUAGE_KEY,
+    getLanguagePack,
+    getAvailableLanguageEntries
+} from './_language_registry.js';
 
 let languageHandlerInstance = null;
 
@@ -16,10 +19,11 @@ export class LanguageHandler {
         }
         languageHandlerInstance = this;
         this.uiSystem = uiSystem;
-        this.languages = { korean, english, userLanguage };
+        this.languages = LANGUAGE_REGISTRY;
 
-        const langSetting = getSetting('language') || 'korean';
-        this.currentLanguage = this.languages[langSetting];
+        const langSetting = getSetting('language');
+        this.currentLanguage = getLanguagePack(langSetting || DEFAULT_LANGUAGE_KEY);
+        this.defaultLanguage = getLanguagePack(DEFAULT_LANGUAGE_KEY);
     }
 
     /**
@@ -28,8 +32,11 @@ export class LanguageHandler {
      * @returns {string} 번역된 문자열 (키를 찾지 못하면 키 자체 반환)
      */
     getString(key) {
-        if (this.currentLanguage[key]) {
+        if (this.currentLanguage && Object.prototype.hasOwnProperty.call(this.currentLanguage, key) && this.currentLanguage[key] !== '') {
             return this.currentLanguage[key];
+        }
+        if (this.defaultLanguage && Object.prototype.hasOwnProperty.call(this.defaultLanguage, key) && this.defaultLanguage[key] !== '') {
+            return this.defaultLanguage[key];
         }
         console.warn(`언어 키 '${key}'를 찾을 수 없습니다.`);
         return key;
@@ -38,11 +45,8 @@ export class LanguageHandler {
 
 /**
  * 사용자에게 표시 가능한 언어 목록을 반환합니다.
- * @returns {string[]} 표시 가능한 언어 키 목록
+ * @returns {{key:string, languageName:string}[]} 표시 가능한 언어 목록
  */
 export function getAvailableLanguages() {
-    if (!languageHandlerInstance) {
-        return [];
-    }
-    return Object.keys(languageHandlerInstance.languages).filter(lang => languageHandlerInstance.languages[lang].hidden !== 'true');
+    return getAvailableLanguageEntries();
 }

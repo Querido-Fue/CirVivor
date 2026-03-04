@@ -1,5 +1,8 @@
 import { render } from 'display/display_system.js';
 import { animate, remove } from 'animation/animation_system.js';
+import { getData } from 'data/data_handler.js';
+
+const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
 /**
  * @class TitleSelector
@@ -11,7 +14,7 @@ export class TitleSelector {
         this.y = y;
         this.w = size;
         this.h = size;
-        this.rotation = 90;
+        this.rotation = TITLE_CONSTANTS.TITLE_MENU.SELECTOR_ROTATION;
         this.color = color;
         this.alpha = 0;
         this.selectorAnimId = -1;
@@ -22,8 +25,22 @@ export class TitleSelector {
      * @param {number} endX - 애니메이션이 끝날 x 좌표
      */
     animateInitial(endX) {
-        animate(this, { variable: 'x', startValue: 'current', endValue: endX, type: "easeOutExpo", duration: 1, delay: 0.5 });
-        animate(this, { variable: 'alpha', startValue: 0, endValue: 1, type: "easeOutExpo", duration: 0.6, delay: 0.5 });
+        animate(this, {
+            variable: 'x',
+            startValue: 'current',
+            endValue: endX,
+            type: "easeOutExpo",
+            duration: TITLE_CONSTANTS.TITLE_MENU.SELECTOR_ENTER_DURATION,
+            delay: TITLE_CONSTANTS.TITLE_MENU.SELECTOR_ENTER_DELAY
+        });
+        animate(this, {
+            variable: 'alpha',
+            startValue: 0,
+            endValue: 1,
+            type: "easeOutExpo",
+            duration: TITLE_CONSTANTS.TITLE_MENU.SELECTOR_ALPHA_ENTER_DURATION,
+            delay: TITLE_CONSTANTS.TITLE_MENU.SELECTOR_ENTER_DELAY
+        });
     }
 
     /**
@@ -34,11 +51,23 @@ export class TitleSelector {
         if (this.selectorAnimId !== -1) {
             remove(this.selectorAnimId);
         }
-        this.selectorAnimId = animate(this, { variable: 'y', startValue: "current", endValue: targetY, type: "easeOutExpo", duration: 0.3 }).id;
+        this.selectorAnimId = animate(this, {
+            variable: 'y',
+            startValue: "current",
+            endValue: targetY,
+            type: "easeOutExpo",
+            duration: TITLE_CONSTANTS.TITLE_MENU.SELECTOR_MOVE_DURATION
+        }).id;
     }
 
+    /**
+         * 커서 갱신 로직
+         */
     update() { }
 
+    /**
+         * 셀렉터(커서) 화살표를 렌더링합니다.
+         */
     draw() {
         render('ui', {
             shape: 'arrow',
@@ -52,6 +81,9 @@ export class TitleSelector {
         });
     }
 
+    /**
+         * 셀렉터 객체를 소멸하고 애니메이션을 해제합니다.
+         */
     destroy() {
         if (this.selectorAnimId !== -1) {
             remove(this.selectorAnimId);

@@ -1,7 +1,12 @@
 import { compileShader, createProgram, DEFAULT_VERTEX_SHADER, DEFAULT_FRAGMENT_SHADER } from "./_shader_utils.js";
-import { GLOBAL_CONSTANTS } from "data/global/global_constants.js";
+import { getData } from "data/data_handler.js";
 import { colorUtil } from "util/color_util.js";
 import { ShapeGeometryBuilder } from "./_shape_geometry_builder.js";
+import { ShapeDrawer } from "display/_shape_drawer.js";
+
+const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
+const ENEMY_WEBGL_SHAPES = getData('ENEMY_WEBGL_SHAPES');
 
 /**
  * @class ShapeTextureCache
@@ -10,8 +15,19 @@ import { ShapeGeometryBuilder } from "./_shape_geometry_builder.js";
 class ShapeTextureCache {
     constructor(gl) {
         this.gl = gl;
-        this.textureSize = 64; // 도형 셀 크기
-        this.shapeOrder = ["rect", "square", "circle", "triangle", "pentagon", "hexagon", "octagon", "arrow"];
+        this.textureSize = WEBGL_CONSTANTS.SHAPE_TEXTURE_SIZE;
+        this.shapeOrder = [
+            "rect",
+            "square",
+            "circle",
+            "triangle",
+            "pentagon",
+            "hexagon",
+            "octagon",
+            "arrow",
+            ...ENEMY_WEBGL_SHAPES
+        ];
+        this.shapeDrawer = new ShapeDrawer();
         this.atlasCanvas = document.createElement("canvas");
         this.atlasCtx = this.atlasCanvas.getContext("2d");
         this.textureInfoCache = new Map();
@@ -37,7 +53,7 @@ class ShapeTextureCache {
             const shape = this.shapeOrder[i];
             const ox = i * size;
 
-            this.drawShape(ctx, shape, ox, 0, size);
+            this.shapeDrawer.drawShape(ctx, shape, ox, 0, size);
 
             this.textureInfoCache.set(shape, {
                 texture: null,
@@ -55,71 +71,8 @@ class ShapeTextureCache {
         this.defaultTextureInfo = this.textureInfoCache.get("rect");
     }
 
-    drawShape(ctx, shape, ox, oy, size) {
-        const half = size / 2;
-        const cx = ox + half;
-        const cy = oy + half;
-        const radius = size * 0.45;
-
-        switch (shape) {
-            case 'rect':
-            case 'square':
-                ctx.fillRect(ox, oy, size, size);
-                break;
-            case 'circle':
-                ctx.beginPath();
-                ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-                ctx.fill();
-                break;
-            case 'triangle':
-                this.drawPolygon(ctx, cx, cy, radius, 3);
-                break;
-            case 'pentagon':
-                this.drawPolygon(ctx, cx, cy, radius, 5);
-                break;
-            case 'hexagon':
-                this.drawPolygon(ctx, cx, cy, radius, 6);
-                break;
-            case 'octagon':
-                this.drawPolygon(ctx, cx, cy, radius, 8);
-                break;
-            case 'arrow':
-                this.drawArrow(ctx, cx, cy, radius);
-                break;
-            default:
-                ctx.fillRect(ox, oy, size, size); // 기본 사각형
-                break;
-        }
-    }
-
     getTextureInfo(shape) {
         return this.textureInfoCache.get(shape) || this.defaultTextureInfo;
-    }
-
-    drawPolygon(ctx, x, y, radius, sides) {
-        const angleStep = (Math.PI * 2) / sides;
-        const angleOffset = -Math.PI / 2;
-        ctx.beginPath();
-        for (let i = 0; i < sides; i++) {
-            const angle = angleOffset + i * angleStep;
-            const px = x + Math.cos(angle) * radius;
-            const py = y + Math.sin(angle) * radius;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fill();
-    }
-
-    drawArrow(ctx, x, y, radius) {
-        // 단순 화살표
-        ctx.beginPath();
-        ctx.moveTo(x - radius * 0.7, y + radius * 0.7);
-        ctx.lineTo(x, y - radius * 0.7);
-        ctx.lineTo(x + radius * 0.7, y + radius * 0.7);
-        ctx.lineTo(x, y + radius * 0.3);
-        ctx.closePath();
-        ctx.fill();
     }
 
     createTextureFromCanvas(canvas) {
@@ -143,7 +96,7 @@ class WebGLBatch {
     constructor(gl) {
         this.gl = gl;
         this.maxSprites = GLOBAL_CONSTANTS.WEBGL_MAX_SPRITES;
-        this.vertexSize = 8; // x, y, u, v, r, g, b, a
+        this.vertexSize = WEBGL_CONSTANTS.BATCH_VERTEX_SIZE; // x, y, u, v, r, g, b, a
         this.vertices = new Float32Array(this.maxSprites * 4 * this.vertexSize);
         this.spriteCount = 0;
         this.currentTexture = null;
@@ -163,8 +116,7 @@ class WebGLBatch {
         cached = new Float32Array([rgb.r / 255, rgb.g / 255, rgb.b / 255, rgb.a]);
         this.colorCache.set(fill, cached);
 
-        // 동적 색상이 계속 들어오는 경우 무한 증가를 방지합니다.
-        if (this.colorCache.size > 256) {
+        if (this.colorCache.size > WEBGL_CONSTANTS.COLOR_CACHE_LIMIT) {
             this.colorCache.clear();
             this.colorCache.set(fill, cached);
         }
@@ -257,12 +209,10 @@ class WebGLBatch {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-        // 이미지 로딩이 완료되었는지 확인 (HTMLImageElement)
         if (image.complete && image.naturalWidth > 0) {
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
         } else {
-            // 1x1 투명 텍스처로 대체하고 로드되면 업데이트 (여기서는 단순화)
-                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
         }
 
         this.textureCache.set(image, texture);
@@ -272,6 +222,7 @@ class WebGLBatch {
     render(options) {
         let texture;
         let u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0;
+
         if (options.shape) {
             const textureInfo = this.shapeCache.getTextureInfo(options.shape);
             texture = textureInfo.texture;
@@ -310,28 +261,20 @@ class WebGLBatch {
             a *= options.alpha;
         }
 
-        // 재사용 버퍼에 좌표를 채워 객체 할당을 피합니다.
         const geom = ShapeGeometryBuilder.buildInto(options, this.geometryBuffer);
 
         const i = this.spriteCount * 4 * this.vertexSize;
         const v = this.vertices;
 
-        // 사각형(정점 4개)
-        // 정점 순서: 반시계 0-1-2 / 0-2-3
-
-        // 정점 0 (좌상단)
         v[i] = geom[0]; v[i + 1] = geom[1]; v[i + 2] = u0; v[i + 3] = v0;
         v[i + 4] = r; v[i + 5] = g; v[i + 6] = b; v[i + 7] = a;
 
-        // 정점 1 (우상단)
         v[i + 8] = geom[2]; v[i + 9] = geom[3]; v[i + 10] = u1; v[i + 11] = v0;
         v[i + 12] = r; v[i + 13] = g; v[i + 14] = b; v[i + 15] = a;
 
-        // 정점 2 (우하단)
         v[i + 16] = geom[4]; v[i + 17] = geom[5]; v[i + 18] = u1; v[i + 19] = v1;
         v[i + 20] = r; v[i + 21] = g; v[i + 22] = b; v[i + 23] = a;
 
-        // 정점 3 (좌하단)
         v[i + 24] = geom[6]; v[i + 25] = geom[7]; v[i + 26] = u0; v[i + 27] = v1;
         v[i + 28] = r; v[i + 29] = g; v[i + 30] = b; v[i + 31] = a;
 
@@ -352,7 +295,7 @@ export class WebGLHandler {
         this.batches = {};
         this.width = 0;
         this.height = 0;
-        this.backgroundColor = [0.125, 0.125, 0.125, 1.0]; // 기본값 #202020
+        this.backgroundColor = [...WEBGL_CONSTANTS.DEFAULT_BACKGROUND_COLOR];
 
         this.init();
     }
@@ -365,7 +308,6 @@ export class WebGLHandler {
                 continue;
             }
 
-            // 기본 WebGL 설정
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
@@ -377,44 +319,31 @@ export class WebGLHandler {
         this.backgroundColor = [r, g, b, 1.0];
     }
 
-    /**
-     * 모든 WebGL 레이어를 지웁니다.
-     */
     clearAll() {
         for (const layerName in this.glContexts) {
             const gl = this.glContexts[layerName];
-            if (gl) {
-                if (layerName === 'background') {
-                    gl.clearColor(this.backgroundColor[0], this.backgroundColor[1], this.backgroundColor[2], this.backgroundColor[3]);
-                } else {
-                    gl.clearColor(0.0, 0.0, 0.0, 0.0);
-                }
+            if (!gl) continue;
 
-                gl.clear(gl.COLOR_BUFFER_BIT);
+            if (layerName === 'background') {
+                gl.clearColor(this.backgroundColor[0], this.backgroundColor[1], this.backgroundColor[2], this.backgroundColor[3]);
+            } else {
+                gl.clearColor(0.0, 0.0, 0.0, 0.0);
+            }
 
-                // 배치 초기화 (begin 호출)
-                // 주의: clearAll은 매 프레임 시작 시 호출된다고 가정
-                if (this.batches[layerName] && this.width > 0 && this.height > 0) {
-                    this.batches[layerName].begin(this.width, this.height);
-                }
+            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            if (this.batches[layerName] && this.width > 0 && this.height > 0) {
+                this.batches[layerName].begin(this.width, this.height);
             }
         }
     }
 
-    /**
-     * 프레임 끝에 호출하여 남은 배치를 그립니다.
-     */
     flushAll() {
         for (const layerName in this.batches) {
             this.batches[layerName].flush();
         }
     }
 
-    /**
-     * 뷰포트 크기를 설정합니다.
-     * @param {number} width 
-     * @param {number} height 
-     */
     resize(width, height) {
         this.width = width;
         this.height = height;
@@ -427,11 +356,6 @@ export class WebGLHandler {
         }
     }
 
-    /**
-     * 이미지를 그립니다.
-     * @param {string} layerName 
-     * @param {object} options 
-     */
     render(layerName, options) {
         const batch = this.batches[layerName];
         if (batch) {

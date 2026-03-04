@@ -1,3 +1,6 @@
+/**
+ * 텍스트 렌더링에 사용되는 타이포그래피(크기, 두께, 폰트 종류) 설정 상수 모음
+ */
 export const TEXT_CONSTANTS = {
     H1: {
         FONT: {

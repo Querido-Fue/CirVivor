@@ -1,3 +1,6 @@
+/**
+ * 다양한 수학적 보간 함수들을 제공하는 이징(Easing) 유틸리티 객체
+ */
 export const Easing = {
     linear: p => p,
 

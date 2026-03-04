@@ -29,7 +29,7 @@ export class DisplaySystem {
     async init() {
         // 테마 핸들러 초기화
         await this.themeHandler.init();
-        setTheme(getSetting("darkMode")); // 초기 테마 적용
+        setTheme(getSetting("theme")); // 로드된 설정값 기준으로 최종 테마 적용
 
         // 1. Background (WebGL)
         this.backgroundCanvas = document.getElementById("background");

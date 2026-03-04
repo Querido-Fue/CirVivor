@@ -9,24 +9,117 @@ export class MathUtil {
     constructor() {
         mathUtilInstance = this;
     }
+
+    /**
+     * 시드를 32bit 정수로 변환합니다.
+     * @param {string|number} seed - 시드 값
+     * @returns {number} 32bit 정수 시드
+     */
+    _seedToUint32(seed) {
+        const seedString = String(seed);
+        let hash = 2166136261;
+        for (let i = 0; i < seedString.length; i++) {
+            hash ^= seedString.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+    }
+
+    /**
+     * 시드 기반 난수 생성 함수를 반환합니다.
+     * @param {string|number|undefined|null} seed - 시드 값
+     * @returns {() => number} 0 이상 1 미만 난수 생성 함수
+     */
+    _getRandomGenerator(seed) {
+        if (seed === undefined || seed === null) {
+            return Math.random;
+        }
+
+        let state = this._seedToUint32(seed);
+        if (state === 0) {
+            state = 0x6D2B79F5;
+        }
+
+        return () => {
+            state = (state + 0x6D2B79F5) >>> 0;
+            let value = state;
+            value = Math.imul(value ^ (value >>> 15), value | 1);
+            value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+            return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
     /**
      * 최소값과 최대값 사이의 정수 난수를 반환합니다.
      * @param {number} min - 최소값
      * @param {number} max - 최대값
+     * @param {string|number} [seed] - 시드 (같은 시드면 같은 결과)
      * @returns {number} 랜덤 정수
      */
-    randInt(min, max) {
-        return Math.floor(Math.random() * (max - min + 1)) + min;
+    randInt(min, max, seed) {
+        const randomGenerator = this._getRandomGenerator(seed);
+        return Math.floor(randomGenerator() * (max - min + 1)) + min;
     }
 
     /**
      * 최소값과 최대값 사이의 실수 난수를 반환합니다.
      * @param {number} min - 최소값
      * @param {number} max - 최대값
+     * @param {string|number} [seed] - 시드 (같은 시드면 같은 결과)
      * @returns {number} 랜덤 실수
      */
-    random(min = 0, max = 1) {
-        return Math.random() * (max - min) + min;
+    random(min = 0, max = 1, seed) {
+        const randomGenerator = this._getRandomGenerator(seed);
+        return randomGenerator() * (max - min) + min;
+    }
+
+    /**
+     * 리스트에서 number 개의 값을 랜덤 추출하여 배열로 반환합니다.
+     * @param {Array<*>} list - 추출 대상 리스트
+     * @param {number} [number=1] - 추출 개수
+     * @param {string|number} [seed] - 시드 (같은 시드면 같은 결과)
+     * @param {boolean} [repeat=false] - 중복 허용 여부
+     * @returns {Array<*>} 추출된 값 리스트
+     */
+    randPick(list, number = 1, seed, repeat = false) {
+        if (!Array.isArray(list)) {
+            console.warn("[MathUtil.randPick] list is required.");
+            return [];
+        }
+
+        if (list.length === 0) {
+            return [];
+        }
+
+        let pickCount = Number.isFinite(number) ? Math.floor(number) : 1;
+        pickCount = Math.max(0, pickCount);
+
+        if (!repeat && pickCount > list.length) {
+            console.warn("[MathUtil.randPick] number is larger than list length; clamped to list length.");
+            pickCount = list.length;
+        }
+
+        const randomGenerator = this._getRandomGenerator(seed);
+
+        if (repeat) {
+            const result = [];
+            for (let i = 0; i < pickCount; i++) {
+                const index = Math.floor(randomGenerator() * list.length);
+                result.push(list[index]);
+            }
+            return result;
+        }
+
+        const pool = [...list];
+        const result = [];
+
+        for (let i = 0; i < pickCount; i++) {
+            const index = Math.floor(randomGenerator() * pool.length);
+            result.push(pool[index]);
+            pool.splice(index, 1);
+        }
+
+        return result;
     }
 
     /**

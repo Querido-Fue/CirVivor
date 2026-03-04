@@ -1,5 +1,5 @@
 import { render, getWH } from "display/display_system.js";
-import { activeObjectPools } from "util/_object_pool.js";
+import { activeObjectPools } from "object/_object_pool.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 
 /**

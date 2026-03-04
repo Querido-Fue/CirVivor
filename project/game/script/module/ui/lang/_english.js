@@ -1,5 +1,6 @@
 export const english = {
     // 공통
+    "language_name": "English",
     "hidden": "false",
     "%": "%",
     "affirmative_icon": "check", // 문화권 차이를 반영한 아이콘
@@ -31,8 +32,7 @@ export const english = {
     "title_settings_section_display": "Display & Performance",
     "title_settings_window_mode": "Window Mode",
     "title_settings_window_mode_windowed": "Windowed",
-    "title_settings_window_mode_borderless": "Borderless Fullscreen",
-    "title_settings_window_mode_fullscreen": "Exclusive Fullscreen",
+    "title_settings_window_mode_borderless": "Borderless FullScreen",
     "title_settings_window_mode_browser": "Browser",
     "title_settings_resolution": "Resolution",
     "title_settings_render_scale": "Render Scale",
@@ -41,15 +41,10 @@ export const english = {
     "title_settings_desc_ui_scale": "Adjusts UI size. Values above 100% may cause visual glitches.",
     "title_settings_disable_transparency": "Disable Transparency",
     "title_settings_desc_transparency": "Makes UI backgrounds opaque to reduce graphics load.",
-    "title_settings_physics_fps": "Physics Calculation",
-    "title_settings_physics_fps_slider_front": " ",
-    "title_settings_physics_fps_slider_back": " times per second ",
-    "title_settings_desc_physics_fps": "Lower values improve performance but reduce physics accuracy.",
+    "title_settings_physics_accuracy": "Physics Accuracy",
+    "title_settings_desc_physics_accuracy": "Higher values improve simulation precision but may cost performance.",
     "title_settings_section_ui": "UI",
-    "title_settings_language": "Language (언어)",
-    "title_settings_lang_korean": "한국어",
-    "title_settings_lang_english": "English",
-    "title_settings_lang_userLanguage": "", // 필요 시 사용자 언어명 입력
+    "title_settings_language": "Language",
     "title_settings_theme": "Theme",
     "title_settings_theme_light": "Light",
     "title_settings_theme_dark": "Dark",

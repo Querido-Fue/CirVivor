@@ -3,9 +3,14 @@ import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getBaseWW, getBaseWH } from 'display/display_system.js';
 import { getSetting, setSettingBatch, getSettingSchema } from 'save/save_system.js';
-import { LayoutHandler } from 'ui/_layout_handler.js';
+import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getAvailableLanguages } from 'ui/lang/_language_handler.js';
 import { isNwRuntime } from 'util/nw_bridge.js';
+import { getData } from 'data/data_handler.js';
+
+const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const THEME_OPTIONS = getData('THEME_OPTIONS');
+const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 
 /**
  * @class SettingsOverlay
@@ -20,15 +25,24 @@ export class SettingsOverlay extends TitleOverlay {
 
         this.settingsChanged = false;
         this.isNwRuntime = isNwRuntime();
+        const savedWindowMode = getSetting('windowMode');
+        const normalizedWindowMode = savedWindowMode === 'borderless' ? 'fullscreen' : savedWindowMode;
+        const availableLanguages = getAvailableLanguages();
+        this.availableLanguages = availableLanguages;
+        const savedLanguage = getSetting('language');
+        const fallbackLanguage = availableLanguages.length > 0 ? availableLanguages[0].key : 'korean';
+        const normalizedLanguage = availableLanguages.some((lang) => lang.key === savedLanguage)
+            ? savedLanguage
+            : fallbackLanguage;
 
         this.tempSettings = {
-            windowMode: getSetting('windowMode') || (this.isNwRuntime ? 'fullscreen' : 'browserMode'),
+            windowMode: normalizedWindowMode || (this.isNwRuntime ? 'fullscreen' : 'browserMode'),
             renderScale: getSetting('renderScale') || 100,
             uiScale: getSetting('uiScale') || 100,
             disableTransparency: getSetting('disableTransparency') || false,
-            physicsFps: getSetting('physicsFps') || 60,
-            language: getSetting('language') || 'korean',
-            darkMode: getSetting('darkMode') || false,
+            physicsAccuracy: getSetting('physicsAccuracy') || 8,
+            language: normalizedLanguage,
+            theme: getSetting('theme') || DEFAULT_THEME_KEY,
             bgmVolume: getSetting('bgmVolume') !== undefined ? getSetting('bgmVolume') : 100,
             sfxVolume: getSetting('sfxVolume') !== undefined ? getSetting('sfxVolume') : 100,
         };
@@ -40,11 +54,19 @@ export class SettingsOverlay extends TitleOverlay {
         this._generateLayout();
     }
 
+    /**
+         * @override
+         * 화면 크기에 비례하여 설정 메뉴 팝업 크기를 계산합니다.
+         */
     _onResize() {
-        this.width = this.UIWW * 0.65;
-        this.height = this.WH * 0.7;
+        this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.WIDTH_UIWW_RATIO;
+        this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.HEIGHT_WH_RATIO;
     }
 
+    /**
+         * @override
+         * 화면 내 설정 항목들(왼쪽/오른쪽 단)을 배치하여 레이아웃을 빌드합니다.
+         */
     _generateLayout() {
         this._releaseElements();
         const headerHandler = new LayoutHandler(this, this.positioningHandler)
@@ -125,8 +147,7 @@ export class SettingsOverlay extends TitleOverlay {
         const windowModeItems = this.isNwRuntime
             ? [
                 { label: getLangString('title_settings_window_mode_windowed'), value: 'windowed' },
-                { label: getLangString('title_settings_window_mode_borderless'), value: 'borderless' },
-                { label: getLangString('title_settings_window_mode_fullscreen'), value: 'fullscreen' }
+                { label: getLangString('title_settings_window_mode_borderless'), value: 'fullscreen' }
             ]
             : [
                 { label: getLangString('title_settings_window_mode_browser'), value: 'browserMode' }
@@ -176,18 +197,17 @@ export class SettingsOverlay extends TitleOverlay {
         handler.closeGroup();
         this._addItemFooter(handler, 'title_settings_desc_transparency', spacingScale);
 
-        // 물리 연산 FPS
-        this._addItemHeader(handler, 'title_settings_physics_fps');
-        const pfSchema = getSettingSchema('physicsFps');
-        handler.width("parent", controlWrapWidth).groupItem("slider", "control_physicsFps").width("parent", controlMaxWidth)
+        // 물리 연산 정확도
+        this._addItemHeader(handler, 'title_settings_physics_accuracy');
+        const paSchema = getSettingSchema('physicsAccuracy');
+        handler.width("parent", controlWrapWidth).groupItem("slider", "control_physicsAccuracy").width("parent", controlMaxWidth)
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
-            .prop("min", pfSchema.min).prop("max", pfSchema.max).prop("value", this.tempSettings.physicsFps)
+            .prop("min", paSchema.min).prop("max", paSchema.max).prop("value", this.tempSettings.physicsAccuracy)
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
             .prop("valueFont", `400 ${this.UIWW * 0.008 * this.uiScale}px "Pretendard Variable", arial`)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
-            .prop("valueFormatter", (v) => getLangString('title_settings_physics_fps_slider_front') + v + getLangString('title_settings_physics_fps_slider_back'))
-            .prop("onChange", (val) => { this.tempSettings.physicsFps = val; this.settingsChanged = true; });
-        this._addItemFooter(handler, 'title_settings_desc_physics_fps', spacingScale);
+            .prop("onChange", (val) => { this.tempSettings.physicsAccuracy = val; this.settingsChanged = true; });
+        this._addItemFooter(handler, 'title_settings_desc_physics_accuracy', spacingScale);
 
         handler.item("margin").value("OH", 4 * spacingScale);
     }
@@ -204,7 +224,7 @@ export class SettingsOverlay extends TitleOverlay {
         // 언어
         this._addItemHeader(handler, 'title_settings_language');
         handler.width("parent", controlWrapWidth).groupItem("dropdown", "control_language").width("parent", controlMaxWidth).height("WH", 3)
-            .prop("items", getAvailableLanguages().map(lang => ({ label: getLangString(`title_settings_lang_${lang}`), value: lang })))
+            .prop("items", this.availableLanguages.map((lang) => ({ label: lang.languageName, value: lang.key })))
             .prop("value", this.tempSettings.language).stylePreset("h6_bold")
             .prop("openDirection", "down")
             .prop("onChange", (val) => { this.tempSettings.language = val; this.settingsChanged = true; });
@@ -212,10 +232,15 @@ export class SettingsOverlay extends TitleOverlay {
 
         // 테마
         this._addItemHeader(handler, 'title_settings_theme');
-        handler.width("parent", controlWrapWidth).groupItem("segment_control", "control_darkMode").width("parent", controlMaxWidth).height("WH", 3)
-            .prop("items", [{ label: getLangString('title_settings_theme_light'), value: false }, { label: getLangString('title_settings_theme_dark'), value: true }])
-            .prop("value", this.tempSettings.darkMode).stylePreset("h6_bold")
-            .prop("onChange", (val) => { this.tempSettings.darkMode = val; this.settingsChanged = true; });
+        const themeItems = THEME_OPTIONS.map((option) => ({
+            label: getLangString(option.labelKey) || option.key,
+            value: option.key
+        }));
+        handler.width("parent", controlWrapWidth).groupItem("dropdown", "control_theme").width("parent", controlMaxWidth).height("WH", 3)
+            .prop("items", themeItems)
+            .prop("value", this.tempSettings.theme).stylePreset("h6_bold")
+            .prop("openDirection", "down")
+            .prop("onChange", (val) => { this.tempSettings.theme = val; this.settingsChanged = true; });
         this._addItemFooter(handler, null, spacingScale);
 
         handler.item("margin").value("OH", 4 * spacingScale);
@@ -298,6 +323,9 @@ export class SettingsOverlay extends TitleOverlay {
         }
     }
 
+    /**
+         * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
+         */
     async save() {
         const currentWindowMode = getSetting('windowMode') || (this.isNwRuntime ? 'fullscreen' : 'browserMode');
         const modeChanged = currentWindowMode !== this.tempSettings.windowMode;
@@ -307,9 +335,9 @@ export class SettingsOverlay extends TitleOverlay {
             renderScale: this.tempSettings.renderScale,
             uiScale: this.tempSettings.uiScale,
             disableTransparency: this.tempSettings.disableTransparency,
-            physicsFps: this.tempSettings.physicsFps,
+            physicsAccuracy: this.tempSettings.physicsAccuracy,
             language: this.tempSettings.language,
-            darkMode: this.tempSettings.darkMode,
+            theme: this.tempSettings.theme,
             bgmVolume: this.tempSettings.bgmVolume,
             sfxVolume: this.tempSettings.sfxVolume,
             screenModeChanged: this.isNwRuntime ? modeChanged : false

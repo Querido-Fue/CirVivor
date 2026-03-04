@@ -1,6 +1,15 @@
 import { fsPromises, path, isNwRuntime } from 'util/nw_bridge.js';
 import { setTheme } from 'display/_theme_handler.js';
 import { MathUtil } from 'util/math_util.js';
+import { getData } from 'data/data_handler.js';
+import { LANGUAGE_REGISTRY } from 'ui/lang/_language_registry.js';
+
+const THEME_KEYS = getData('THEME_KEYS');
+const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
+const AVAILABLE_LANGUAGE_KEYS = Object.keys(LANGUAGE_REGISTRY);
+const FALLBACK_LANGUAGE_KEY = AVAILABLE_LANGUAGE_KEYS.includes('english')
+    ? 'english'
+    : (AVAILABLE_LANGUAGE_KEYS[0] || 'korean');
 
 /**
  * @class SettingHandler
@@ -14,9 +23,9 @@ export class SettingHandler {
         this.storageKey = 'cirvivor.save.settings';
         this.filePath = this.isNwRuntime ? path.join(this.dataDir, 'settings.json') : null;
 
-        let defaultLang = 'english';
+        let defaultLang = FALLBACK_LANGUAGE_KEY;
         if (typeof navigator !== 'undefined' && navigator.language) {
-            if (navigator.language.startsWith('ko')) {
+            if (navigator.language.startsWith('ko') && AVAILABLE_LANGUAGE_KEYS.includes('korean')) {
                 defaultLang = 'korean';
             }
         }
@@ -27,16 +36,15 @@ export class SettingHandler {
          * value: 기본값, min: 최솟값 (-1=제한없음), max: 최댓값 (-1=제한없음), hidden: UI 옵션 메뉴에 표시하지 않음 (파일에는 조건부 저장됨)
          */
         this.schema = {
-            darkMode: { type: 'bool', value: true, min: -1, max: -1, hidden: false },
+            theme: { type: 'string', value: DEFAULT_THEME_KEY, min: -1, max: -1, hidden: false },
             disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: false },
             language: { type: 'string', value: defaultLang, min: -1, max: -1, hidden: false },
             windowMode: { type: 'string', value: this.isNwRuntime ? 'fullscreen' : 'browserMode', min: -1, max: -1, hidden: false },
             width: { type: 'int', value: 1280, min: 1280, max: -1, hidden: false },
             height: { type: 'int', value: 720, min: 720, max: -1, hidden: false },
             renderScale: { type: 'int', value: 100, min: 75, max: 100, hidden: false },
-            resolution: { type: 'int', value: 5, min: -1, max: -1, hidden: false },
             uiScale: { type: 'int', value: 100, min: 75, max: 125, hidden: false },
-            physicsFps: { type: 'int', value: 60, min: 30, max: 120, hidden: false },
+            physicsAccuracy: { type: 'int', value: 8, min: 4, max: 10, hidden: false },
             bgmVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
@@ -68,6 +76,13 @@ export class SettingHandler {
         return defaults;
     }
 
+    /**
+         * @private
+         * 스키마(min, max, type)에 기반하여 입력값이 범위를 벗어나지 않도록 보정(Cap)합니다.
+         * @param {string} key 보정할 설정 키
+         * @param {*} value 외부로부터 받은 원시 값
+         * @returns {*} 보정된 안전한 값
+         */
     _capValue(key, value) {
         const entry = this.schema[key];
         if (!entry) return value;
@@ -81,6 +96,19 @@ export class SettingHandler {
             processedValue = Boolean(value);
         } else if (entry.type === 'string') {
             processedValue = String(value);
+        }
+
+        if (key === 'theme') {
+            if (THEME_KEYS.includes(processedValue)) {
+                return processedValue;
+            }
+            return DEFAULT_THEME_KEY;
+        }
+        if (key === 'language') {
+            if (AVAILABLE_LANGUAGE_KEYS.includes(processedValue)) {
+                return processedValue;
+            }
+            return FALLBACK_LANGUAGE_KEY;
         }
 
         // 숫자 타입인 경우 min/max 캡 적용
@@ -128,8 +156,25 @@ export class SettingHandler {
             }
         }
 
-        // 스키마 기준으로 값 병합: 파일 값 우선, 없으면 기본값 사용
         let needsSave = false;
+
+        // 구버전 키 마이그레이션: physicsFps -> physicsAccuracy
+        if (fileData.physicsAccuracy === undefined && fileData.physicsFps !== undefined) {
+            fileData.physicsAccuracy = fileData.physicsFps;
+            needsSave = true;
+        }
+        // 구버전 키 마이그레이션: borderless -> fullscreen (키오스크 모드 제거)
+        if (fileData.windowMode === 'borderless') {
+            fileData.windowMode = 'fullscreen';
+            needsSave = true;
+        }
+        // 구버전 키 마이그레이션: darkMode(bool) -> theme(string)
+        if (fileData.theme === undefined && typeof fileData.darkMode === 'boolean') {
+            fileData.theme = fileData.darkMode ? 'dark' : 'light';
+            needsSave = true;
+        }
+
+        // 스키마 기준으로 값 병합: 파일 값 우선, 없으면 기본값 사용
         for (const key in this.schema) {
             if (fileData[key] !== undefined) {
                 this.schema[key].value = this._capValue(key, fileData[key]);
@@ -146,8 +191,8 @@ export class SettingHandler {
             await this.save();
         }
 
-        // 다크 모드 초기값 반영
-        setTheme(this.schema.darkMode.value);
+        // 테마 초기값 반영
+        setTheme(this.schema.theme.value);
     }
 
     /**
@@ -227,8 +272,8 @@ export class SettingHandler {
             this._presentHiddenKeys.add(key);
         }
 
-        if (key === 'darkMode') {
-            setTheme(value);
+        if (key === 'theme') {
+            setTheme(this.schema.theme.value);
         }
         return this.save();
     }
@@ -246,6 +291,10 @@ export class SettingHandler {
                     this._presentHiddenKeys.add(key);
                 }
             }
+        }
+
+        if (settings.theme !== undefined) {
+            setTheme(this.schema.theme.value);
         }
         return this.save();
     }

@@ -1,4 +1,4 @@
-import { ObjectPool } from 'util/_object_pool.js';
+import { ObjectPool } from 'object/_object_pool.js';
 import { ButtonElement } from 'ui/element/_button.js';
 import { SliderElement } from 'ui/element/_slider.js';
 import { ToggleElement } from 'ui/element/_toggle.js';
@@ -7,7 +7,9 @@ import { DropdownElement } from 'ui/element/_dropdown.js';
 import { TextElement } from 'ui/element/_text.js';
 import { LineElement } from 'ui/element/_line.js';
 import { ProgressBarElement } from 'ui/element/_progress_bar.js';
-import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
+import { getData } from 'data/data_handler.js';
+
+const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 
 /**
  * UI 요소 오브젝트 풀 모음. 각 UI 타입별로 ObjectPool 인스턴스를 관리합니다.

@@ -70,6 +70,9 @@ export class DropdownElement extends BaseUIElement {
         };
     }
 
+    /**
+         * @override
+         */
     init(properties) {
         super.init(properties);
         if (!properties) return;
@@ -114,6 +117,9 @@ export class DropdownElement extends BaseUIElement {
         }
     }
 
+    /**
+         * @override
+         */
     reset() {
         super.reset();
         if (this._openAnimId !== -1) {
@@ -240,6 +246,10 @@ export class DropdownElement extends BaseUIElement {
         return "...";
     }
 
+    /**
+         * @override
+         * 클릭 동작이나 드롭다운 패널 토글 시의 상호작용 상태를 갱신합니다.
+         */
     update() {
         if (!this.visible) {
             if (DropdownElement.inputBlocker?.ownerId === this.id) {
@@ -303,6 +313,10 @@ export class DropdownElement extends BaseUIElement {
         this._setOpen(false);
     }
 
+    /**
+         * @override
+         * 메인(선택된 상태) 표시부를 그립니다.
+         */
     draw() {
         if (!this.visible) return;
 
@@ -381,6 +395,9 @@ export class DropdownElement extends BaseUIElement {
         });
     }
 
+    /**
+         * 패널이 열렸을 때 상단(또는 하단)으로 부양되는 옵션 목록을 캔버스 최상단에 그립니다.
+         */
     drawFloating() {
         if (!this.visible) return;
         if (this.openProgress <= 0.01 || this.items.length === 0) return;

@@ -22,6 +22,9 @@ export class LineElement extends BaseUIElement {
         super(properties);
     }
 
+    /**
+         * @override
+         */
     init(properties) {
         super.init(properties);
         if (!properties) return;
@@ -33,13 +36,22 @@ export class LineElement extends BaseUIElement {
         this.color = properties.color;
     }
 
+    /**
+         * @override
+         */
     reset() {
         super.reset();
     }
 
+    /**
+         * @override
+         */
     update() {
     }
 
+    /**
+         * @override
+         */
     draw() {
         if (!this.visible) return;
 

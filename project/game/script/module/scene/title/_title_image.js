@@ -1,5 +1,8 @@
 import { getWW, getWH, getUIWW, render } from 'display/display_system.js';
 import { animate } from 'animation/animation_system.js';
+import { getData } from 'data/data_handler.js';
+
+const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
 /**
  * @class TitleImage
@@ -16,17 +19,35 @@ export class TitleImage {
         this.WH = getWH();
         this.UIWW = getUIWW();
         this._magneticPoint = { x: 0, y: 0 };
-        this.image.src = "image/title.png";
+        this.image.src = TITLE_CONSTANTS.TITLE_IMAGE.SRC;
         const imageW = this._getImageWidth();
         this.imageX = -imageW;
         this.alpha = 0;
-        animate(this, { variable: 'imageX', startValue: -imageW, endValue: this.UIWW * 0.1, type: "easeOutExpo", duration: 0.6 });
-        animate(this, { variable: 'alpha', startValue: 0, endValue: 1, type: "easeOutExpo", duration: 0.6 });
+        animate(this, {
+            variable: 'imageX',
+            startValue: -imageW,
+            endValue: this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.ENTER_X_RATIO,
+            type: "easeOutExpo",
+            duration: TITLE_CONSTANTS.TITLE_IMAGE.ENTER_DURATION
+        });
+        animate(this, {
+            variable: 'alpha',
+            startValue: 0,
+            endValue: 1,
+            type: "easeOutExpo",
+            duration: TITLE_CONSTANTS.TITLE_IMAGE.ENTER_ALPHA_DURATION
+        });
     }
 
+    /**
+         * 프레임별 타이틀 이미지 갱신 로직 (현재는 애니메이션 처리에 일임하여 사용하지 않음)
+         */
     update() {
     }
 
+    /**
+         * 화면 크기 변경 시 타이틀 스케일 및 X좌표 보정
+         */
     resize() {
         const prevUIWW = this.UIWW || 1;
         this.WW = getWW();
@@ -36,6 +57,9 @@ export class TitleImage {
         this.imageX *= ratio;
     }
 
+    /**
+         * 타이틀 이미지를 캔버스 UI 레이어에 렌더링
+         */
     draw() {
         const imageW = this._getImageWidth();
         const imageH = imageW * this.image.height / this.image.width;
@@ -62,6 +86,6 @@ export class TitleImage {
     }
 
     _getImageWidth() {
-        return this.UIWW * 0.3;
+        return this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.WIDTH_RATIO;
     }
 }

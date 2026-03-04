@@ -1,5 +1,6 @@
 export const userLanguage = {
     // 공통
+    "language_name": "User Language",
     "hidden": "true", // 번역 완료 후 "false"로 변경
     "%": "%", // 변경하지 않음
     "affirmative_icon": "check", // 문화권 차이를 반영한 아이콘
@@ -40,15 +41,12 @@ export const userLanguage = {
     "title_settings_desc_ui_scale": "",
     "title_settings_disable_transparency": "",
     "title_settings_desc_transparency": "",
-    "title_settings_physics_fps": "",
-    "title_settings_physics_fps_slider_front": "",
-    "title_settings_physics_fps_slider_back": "",
-    "title_settings_desc_physics_fps": "",
+    "title_settings_physics_accuracy": "",
+    "title_settings_physics_accuracy_slider_front": "",
+    "title_settings_physics_accuracy_slider_back": "",
+    "title_settings_desc_physics_accuracy": "",
     "title_settings_section_ui": "",
     "title_settings_language": "",
-    "title_settings_lang_korean": "",
-    "title_settings_lang_english": "",
-    "title_settings_lang_userLanguage": "",
     "title_settings_theme": "",
     "title_settings_theme_light": "",
     "title_settings_theme_dark": "",

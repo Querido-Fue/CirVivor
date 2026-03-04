@@ -133,14 +133,28 @@ export class IngameHandler {
         }
     }
 
+    /**
+         * 전체 인게임 데이터를 반환합니다.
+         * @returns {object} 인게임 데이터 객체
+         */
     getData() {
         return this.data;
     }
 
+    /**
+         * 특정 키에 인게임 상태값을 설정합니다. (단일 키 업데이트용)
+         * @param {string} key 저장할 키
+         * @param {*} value 저장할 값
+         */
     setData(key, value) {
         this.data[key] = value;
     }
 
+    /**
+         * 특정 키의 인게임 상태값을 가져옵니다.
+         * @param {string} key 조회할 키
+         * @returns {*} 해당하는 인게임 값
+         */
     getValue(key) {
         return this.data[key];
     }

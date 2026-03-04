@@ -12,6 +12,10 @@ export class TitleOverlay extends BaseOverlay {
         this.titleScene = titleScene;
     }
 
+    /**
+         * @override
+         * 타이틀 전용 오버레이가 완전히 닫힐 때 시스템 트리거를 호출합니다.
+         */
     onCloseComplete() {
         titleMenuClose();
     }

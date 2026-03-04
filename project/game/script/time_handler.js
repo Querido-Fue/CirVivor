@@ -1,6 +1,6 @@
 /**
  * @class TimeHandler
- * @description 게임의 시간 델타(delta time)와 고정 업데이트 델타를 관리하는 클래스입니다.
+ * @description 게임의 시간 델타(delta time)를 관리하는 클래스입니다.
  * 싱글톤 패턴으로 구현되어 전역적으로 접근 가능합니다.
  */
 
@@ -10,27 +10,7 @@ export class TimeHandler {
     constructor() {
         timeHandlerInstance = this;
         this.timeBefore = performance.now();
-        this.fixedTimeBefore = performance.now();
-        this.data = {
-            lastFrameTimeDelta: 0,
-            lastFixedTimeDelta: 1 / 60
-        };
-    }
-
-    /**
-     * 메인 루프 외에 고정 업데이트 루프의 시간 델타를 계산합니다.
-     */
-    fixedUpdate() {
-        const now = performance.now();
-        let delta = now - this.fixedTimeBefore;
-        this.fixedTimeBefore = now;
-
-        // 델타 값이 너무 튀는 것을 방지 (최대 0.1초)
-        if (delta > 100) delta = 100;
-        // 최소 2ms 보장
-        if (delta < 2) delta = 2;
-
-        this.data.lastFixedTimeDelta = delta / 1000;
+        this.lastFrameTimeDelta = 0;
     }
 
     /**
@@ -49,25 +29,7 @@ export class TimeHandler {
         // 최소 2ms (약 500fps 한계) 보장
         if (delta < 2) delta = 2;
 
-        this.data.lastFrameTimeDelta = delta / 1000;
-    }
-
-    /**
-     * 측정된 시간 데이터를 반환합니다.
-     * @param {string} key - 데이터 키 (lastFrameTimeDelta, lastFixedTimeDelta)
-     * @returns {number} 데이터 값
-     */
-    getData(key) {
-        return this.data[key];
-    }
-
-    /**
-     * 특정 키에 해당하는 시간 데이터를 설정합니다.
-     * @param {string} key - 데이터 키
-     * @param {any} value - 설정할 값
-     */
-    setData(key, value) {
-        this.data[key] = value;
+        this.lastFrameTimeDelta = delta / 1000;
     }
 }
 
@@ -85,18 +47,7 @@ export function getTimeHandler() {
  */
 export function getDelta() {
     if (timeHandlerInstance) {
-        return timeHandlerInstance.getData('lastFrameTimeDelta');
+        return timeHandlerInstance.lastFrameTimeDelta;
     }
     return 0;
-}
-
-/**
- * 고정 업데이트 델타(초)를 반환합니다.
- * @returns {number} 마지막 고정 업데이트 델타
- */
-export function getFixedUpdateDelta() {
-    if (timeHandlerInstance) {
-        return timeHandlerInstance.getData('lastFixedTimeDelta');
-    }
-    return 1 / 60;
 }

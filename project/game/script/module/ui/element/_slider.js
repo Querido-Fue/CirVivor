@@ -5,8 +5,10 @@ import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
 import { mathUtil } from "util/math_util.js";
-import { GLOBAL_CONSTANTS } from "data/global/global_constants.js";
+import { getData } from "data/data_handler.js";
 import { DropdownElement } from "./_dropdown.js";
+
+const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 
 /**
  * @class SliderElement
@@ -17,6 +19,9 @@ export class SliderElement extends BaseUIElement {
         super(properties);
     }
 
+    /**
+         * @override
+         */
     init(properties) {
         super.init(properties);
         if (!properties) return;
@@ -51,6 +56,9 @@ export class SliderElement extends BaseUIElement {
         if (this._overflowAnim) { remove(this._overflowAnim.id); this._overflowAnim = null; }
     }
 
+    /**
+         * @override
+         */
     reset() {
         super.reset();
         if (this._valueAnim) { remove(this._valueAnim.id); this._valueAnim = null; }
@@ -58,6 +66,10 @@ export class SliderElement extends BaseUIElement {
         this.onChange = null;
     }
 
+    /**
+         * @override
+         * 마우스 드래그 동작 등을 추적하여 슬라이더 값 및 오버플로우 애니메이션을 업데이트합니다.
+         */
     update() {
         if (!this.visible) return;
 
@@ -174,6 +186,10 @@ export class SliderElement extends BaseUIElement {
         this.prevLeftClicking = isLeftClicking;
     }
 
+    /**
+         * @override
+         * 내부 트랙, 슬라이더 동그라미(Knob) 및 텍스트 값을 화면에 그립니다.
+         */
     draw() {
         if (!this.visible) return;
 

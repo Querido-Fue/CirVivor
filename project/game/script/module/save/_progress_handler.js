@@ -67,6 +67,12 @@ export class ProgressHandler {
         }
     }
 
+    /**
+         * @private
+         * 입력된 진행 데이터를 항상 Uint8Array 꼴로 정규화합니다.
+         * @param {*} data 정규화할 원본 데이터
+         * @returns {Uint8Array} 정규화된 바이트 배열
+         */
     _normalizeData(data) {
         if (data instanceof Uint8Array) {
             return new Uint8Array(data);
@@ -83,12 +89,24 @@ export class ProgressHandler {
         return new Uint8Array(this.defaultData);
     }
 
+    /**
+         * @private
+         * 데이터의 크기를 디폴트 데이터 배열 크기(128바이트)에 맞게 강제 맞춥니다.
+         * @param {Uint8Array} data 원본 배열
+         * @returns {Uint8Array} 크기가 맞춰진 배열
+         */
     _fitDataLength(data) {
         const fixed = new Uint8Array(this.defaultData);
         fixed.set(data.subarray(0, fixed.length));
         return fixed;
     }
 
+    /**
+         * @private
+         * 바이너리 데이터를 Base64 텍스트로 인코딩합니다 (브라우저 또는 Buffer 사용).
+         * @param {Uint8Array} uint8 인코딩할 데이터
+         * @returns {string} Base64 문자열
+         */
     _encodeBase64(uint8) {
         if (typeof btoa === 'function') {
             let binary = '';
@@ -105,6 +123,12 @@ export class ProgressHandler {
         throw new Error('Base64 encoder is not available.');
     }
 
+    /**
+         * @private
+         * Base64 텍스트를 바이너리 배열로 디코딩합니다.
+         * @param {string} base64Text 디코딩할 Base64 문자열
+         * @returns {Uint8Array} 디코딩된 바이트 배열
+         */
     _decodeBase64(base64Text) {
         if (typeof atob === 'function') {
             const binary = atob(base64Text);
@@ -155,10 +179,18 @@ export class ProgressHandler {
         }
     }
 
+    /**
+         * 현재 로드된 진행 데이터 배열을 가져옵니다.
+         * @returns {Uint8Array} 진행 데이터 배열
+         */
     getData() {
         return this.data;
     }
 
+    /**
+         * 외부에서 덮어쓸 새로운 진행 데이터를 적용하고 길이와 타입을 정규화합니다.
+         * @param {Uint8Array|Array} data 새로운 진행 데이터
+         */
     setData(data) {
         this.data = this._fitDataLength(this._normalizeData(data));
     }

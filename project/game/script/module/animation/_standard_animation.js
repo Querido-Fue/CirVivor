@@ -1,7 +1,7 @@
 import { AnimationBase } from './_animation_base.js';
 import { Easing } from './_easing.js';
 import { ANIMATION_STATE } from './_constants.js';
-import { ObjectPool } from 'util/_object_pool.js';
+import { ObjectPool } from 'object/_object_pool.js';
 
 /**
  * @class StandardAnimation
@@ -39,10 +39,9 @@ export class StandardAnimation extends AnimationBase {
      * @param {string} type - 이징 함수 이름
      * @param {number} duration - 지속 시간 (초)
      * @param {number} delay - 시작 지연 (초)
-     * @param {boolean} fixed - fixedUpdate 사용 여부
      */
-    init(id, owner, variable, startValue, endValue, type, duration, delay, fixed) {
-        super.init(id, owner, variable, fixed);
+    init(id, owner, variable, startValue, endValue, type, duration, delay) {
+        super.init(id, owner, variable);
         this.rawStartValue = startValue;
         this.rawEndValue = endValue;
         this.duration = duration;

@@ -81,26 +81,6 @@ export class RuntimeTool {
     }
 
     /**
-     * 키오스크 모드로 진입합니다 (경계 없는 전체화면).
-     */
-    enterKioskMode() {
-        if (!isNwRuntime()) {
-            return;
-        }
-        nw.Window.get().enterKioskMode();
-    }
-
-    /**
-     * 키오스크 모드를 종료합니다.
-     */
-    leaveKioskMode() {
-        if (!isNwRuntime()) {
-            return;
-        }
-        nw.Window.get().leaveKioskMode();
-    }
-
-    /**
      * 창을 닫습니다.
      */
     closeWindow() {

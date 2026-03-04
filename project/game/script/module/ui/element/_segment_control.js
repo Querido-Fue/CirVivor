@@ -19,6 +19,9 @@ export class SegmentControlElement extends BaseUIElement {
         super(properties);
     }
 
+    /**
+         * @override
+         */
     init(properties) {
         super.init(properties);
         if (!properties) return;
@@ -53,6 +56,9 @@ export class SegmentControlElement extends BaseUIElement {
         }
     }
 
+    /**
+         * @override
+         */
     reset() {
         super.reset();
         this.onChange = () => { };
@@ -82,6 +88,9 @@ export class SegmentControlElement extends BaseUIElement {
         }
     }
 
+    /**
+         * @override
+         */
     update() {
         if (!this.visible) return;
 
@@ -122,6 +131,9 @@ export class SegmentControlElement extends BaseUIElement {
         this._handleInteractionState(isOver, isLeftClicking);
     }
 
+    /**
+         * @override
+         */
     draw() {
         if (!this.visible) return;
 
