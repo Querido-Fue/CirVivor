@@ -1,7 +1,7 @@
 import { BaseUIElement } from "./_base_element.js";
 import { animate, remove } from "animation/animation_system.js";
 import { render, shadowOn, shadowOff, measureText, getBehindCanvases, getCanvas } from "display/display_system.js";
-import { getMouseInput, getMouseFocus } from "input/input_system.js";
+import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { colorUtil } from "util/color_util.js";
 import { getSetting } from "save/save_system.js";
@@ -88,7 +88,7 @@ export class DropdownElement extends BaseUIElement {
         this.height = properties.height || 36;
         this.radius = properties.radius !== undefined ? properties.radius : 8;
 
-        this.optionHeight = properties.optionHeight || (this.height * 1.4);
+        this.optionHeight = properties.optionHeight || (this.height * 1.2);
         this.optionGap = properties.optionGap !== undefined ? properties.optionGap : this.height * 0.12;
         this.openDirection = properties.openDirection === "up" ? "up" : "down";
 
@@ -290,10 +290,10 @@ export class DropdownElement extends BaseUIElement {
         const isOverOpenArea = (this.isOpen || this.openProgress > 0.01) && this.#isPointInsideRect(mx, my, openAreaRect);
         this.hoveredOptionIndex = this.openProgress > 0.1 ? this.#getOptionIndexByPointer(mx, my, panelRect) : -1;
 
-        const isLeftClicking = getMouseInput("leftClicking");
-        this._handleInteractionState(isOverMain || isOverOpenArea, isLeftClicking && isOverMain);
+        const isLeftPressing = isMousePressing('left');
+        this._handleInteractionState(isOverMain || isOverOpenArea, isLeftPressing && isOverMain);
 
-        if (!getMouseInput("leftClicked")) return;
+        if (!hasMouseState('left', 'clicked')) return;
 
         if (isOverMain) {
             if (DropdownElement.openedElementId !== null && DropdownElement.openedElementId !== this.id) {

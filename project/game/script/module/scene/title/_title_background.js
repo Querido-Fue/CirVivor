@@ -3,7 +3,7 @@ import { animate } from 'animation/animation_system.js';
 import { getWW, getWH, getObjectWH, getObjectOffsetY, getUIWW, renderGL } from 'display/display_system.js';
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
-import { getMouseFocus, getMouseInput } from 'input/input_system.js';
+import { getMouseFocus, getMouseInput, isMousePressing } from 'input/input_system.js';
 import { getData } from 'data/data_handler.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { titleAI } from 'object/enemy/ai/_title_ai.js';
@@ -54,10 +54,10 @@ export class TitleBackGround {
     }
 
     /**
-         * 초기 시작 시점 타이틀 적 객체들을 최초 스폰합니다.
+         * 타이틀 적 스폰 카운터를 초기화합니다.
          */
     init() {
-        this.pushShape(TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_START_COUNT, true);
+        this.shapeSpawnCounter = 0;
     }
 
     /**
@@ -142,7 +142,7 @@ export class TitleBackGround {
             uiww: this.UIWW,
             logoMagneticPoint: logoMagneticPointInObject,
             objectFocused,
-            leftClicking: Boolean(getMouseInput('leftClicking')),
+            leftPressing: isMousePressing('left'),
             mousePos: mousePosInObject
         };
 
@@ -167,7 +167,7 @@ export class TitleBackGround {
             }
 
             if (shapesToSpawn > 0) {
-                this.pushShape(shapesToSpawn, false);
+                this.pushShape(shapesToSpawn);
                 this.shapeSpawnCounter -= shapesToSpawn;
                 if (this.objectSystem && typeof this.objectSystem.resolveEnemyCollisions === 'function') {
                     this.objectSystem.resolveEnemyCollisions(this.titleEnemies, { delta });
@@ -195,11 +195,10 @@ export class TitleBackGround {
     }
 
     /**
-         * 지정 횟수만큼 타이틀 적 형상을 배열에 추가, 초기 등장 애니메이션 옵션 제공
+         * 지정 횟수만큼 타이틀 적 형상을 배열에 추가합니다.
          * @param {number} times 스폰 횟수
-         * @param {boolean} playInitAnim 초기 등장 연출 실행 여부
          */
-    pushShape(times, playInitAnim) {
+    pushShape(times) {
         if (!this.objectSystem) {
             this.objectSystem = getObjectSystem();
         }
@@ -207,8 +206,7 @@ export class TitleBackGround {
 
         for (let i = 0; i < times; i++) {
             const type = this.enemyTypes[Math.floor(mathUtil().random(0, this.enemyTypes.length))];
-            const spawn = this.#buildSpawnData({ lockYInScreen: playInitAnim });
-            const startSpeed = playInitAnim ? { x: spawn.speed.x, y: 0 } : spawn.speed;
+            const spawn = this.#buildSpawnData();
             const enemy = this.objectSystem.acquireEnemy(type, {
                 type,
                 hp: 1,
@@ -221,7 +219,7 @@ export class TitleBackGround {
                     TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SIZE_MAX
                 ),
                 position: spawn.position,
-                speed: startSpeed,
+                speed: spawn.speed,
                 acc: { x: 0, y: 0 },
                 ai: titleAI,
                 fill: ColorSchemes.Title.Enemy,
@@ -232,38 +230,6 @@ export class TitleBackGround {
                 rotation: mathUtil().random(0, 360)
             });
             if (!enemy) continue;
-            enemy._spawnBoost = 1;
-            enemy._titleIntroActive = false;
-
-            if (playInitAnim) {
-                const targetX = this.#buildIntroTargetX();
-                const duration = mathUtil().random(
-                    TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.MIN_DURATION,
-                    TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.MAX_DURATION
-                );
-                const delay = mathUtil().random(0, TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.MAX_DELAY);
-                enemy._titleIntroActive = true;
-                enemy._titleIntroOffsetX = 0;
-                enemy._titleIntroPrevOffsetX = 0;
-                const enemyId = enemy.id;
-                const introEndOffsetX = targetX - (enemy.position.x + (enemy.speed.x * (delay + duration)));
-
-                const animX = animate(enemy, {
-                    variable: '_titleIntroOffsetX',
-                    startValue: 0,
-                    endValue: introEndOffsetX,
-                    type: 'easeOutExpo',
-                    duration,
-                    delay: 0.5
-                });
-
-                animX.promise.then(() => {
-                    if (!enemy.active || enemy.id !== enemyId) return;
-                    enemy._titleIntroActive = false;
-                    enemy._titleIntroPrevOffsetX = enemy._titleIntroOffsetX;
-                });
-            }
-
             this.titleEnemies.push(enemy);
         }
     }
@@ -300,13 +266,11 @@ export class TitleBackGround {
     }
 
     /**
-         * 적 생성 데이터 구조(위치, 속도 비율 등)를 반환합니다.
-         * @param {object} [options]
-         * @param {boolean} [options.lockYInScreen=false] 스폰 시 화면 내부 Y 위치 고정 여부
+     * 적 생성 데이터 구조(위치, 속도 비율 등)를 반환합니다.
          * @returns {object} 위치 및 속도 데이터
          * @private
          */
-    #buildSpawnData({ lockYInScreen = false } = {}) {
+    #buildSpawnData() {
         const cullRatio = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_CULL_OUTSIDE_RATIO;
         const marginY = this.objectWH * cullRatio;
         const marginX = this.WW * cullRatio;
@@ -320,12 +284,7 @@ export class TitleBackGround {
             TITLE_CONSTANTS.TITLE_ENEMIES.DRIFT_SPEED_MIN_RATIO,
             TITLE_CONSTANTS.TITLE_ENEMIES.DRIFT_SPEED_MAX_RATIO
         );
-        const spawnY = lockYInScreen
-            ? mathUtil().random(
-                this.objectOffsetY + (this.WH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MIN_RATIO),
-                this.objectOffsetY + (this.WH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MAX_RATIO)
-            )
-            : mathUtil().random(-marginY, this.objectWH + marginY);
+        const spawnY = mathUtil().random(-marginY, this.objectWH + marginY);
 
         return {
             position: {
@@ -336,15 +295,4 @@ export class TitleBackGround {
         };
     }
 
-    /**
-         * 최초 등장 애니메이션의 목표 X 좌표(등장 멈춤 점)를 계산
-         * @returns {number} 
-         * @private
-         */
-    #buildIntroTargetX() {
-        return mathUtil().random(
-            this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.TARGET_X_MIN_RATIO,
-            this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.INTRO.TARGET_X_MAX_RATIO
-        );
-    }
 }

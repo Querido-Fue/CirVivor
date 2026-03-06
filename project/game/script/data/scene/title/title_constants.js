@@ -3,7 +3,6 @@
  */
 export const TITLE_CONSTANTS = Object.freeze({
     TITLE_ENEMIES: Object.freeze({
-        ENEMY_START_COUNT: 600,
         ENEMY_SPAWN_RATE: 40,
         ENEMY_LIMIT: 700,
         ENEMY_EXCLUDED_TYPES: Object.freeze(['gen']),
@@ -11,7 +10,7 @@ export const TITLE_CONSTANTS = Object.freeze({
         SHIELD_ANIM_DURATION: 1.2,
         SHIELD_ANIM_DELAY: 1,
         ENEMY_CULL_OUTSIDE_RATIO: 0.1,
-        ENEMY_SPAWN_X_RATIO: 1.1,
+        ENEMY_SPAWN_X_RATIO: 1.05,
         ENEMY_SIZE_MIN: 1,
         ENEMY_SIZE_MAX: 1.2,
         ENEMY_ALPHA_MIN: 0.2,
@@ -21,14 +20,7 @@ export const TITLE_CONSTANTS = Object.freeze({
         DRIFT_SPEED_MIN_RATIO: -0.02,
         DRIFT_SPEED_MAX_RATIO: 0.02,
         SPAWN_Y_MIN_RATIO: 0.03,
-        SPAWN_Y_MAX_RATIO: 0.97,
-        INTRO: Object.freeze({
-            MIN_DURATION: 1.1,
-            MAX_DURATION: 2.2,
-            MAX_DELAY: 0.35,
-            TARGET_X_MIN_RATIO: 0.03,
-            TARGET_X_MAX_RATIO: 0.97
-        })
+        SPAWN_Y_MAX_RATIO: 0.97
     }),
     TITLE_AI: Object.freeze({
         MAGNETIC_IMPULSE: 2000,

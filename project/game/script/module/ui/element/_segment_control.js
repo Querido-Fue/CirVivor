@@ -1,6 +1,6 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render, shadowOn, shadowOff } from "display/display_system.js";
-import { getMouseInput, getMouseFocus } from "input/input_system.js";
+import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { animate } from "animation/animation_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { DropdownElement } from "./_dropdown.js";
@@ -112,7 +112,7 @@ export class SegmentControlElement extends BaseUIElement {
         if (getMouseFocus().includes(this.layer) && this.clickAble) {
             isOver = mx >= this.x && mx <= this.x + this.width && my >= this.y && my <= this.y + this.height;
 
-            if (isOver && getMouseInput("leftClicked")) {
+            if (isOver && hasMouseState('left', 'clicked')) {
                 const relativeX = mx - this.x - this.padding;
                 let clickedIndex = Math.floor(relativeX / this.segmentWidth);
 
@@ -127,10 +127,10 @@ export class SegmentControlElement extends BaseUIElement {
             }
         }
 
-        const isLeftClicking = getMouseInput("leftClicking");
+        const isLeftPressing = isMousePressing('left');
 
         // 기본 UI 요소의 공통 상호작용 처리 호출
-        this._handleInteractionState(isOver, isLeftClicking);
+        this._handleInteractionState(isOver, isLeftPressing);
     }
 
     /**

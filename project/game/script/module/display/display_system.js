@@ -65,7 +65,7 @@ export class DisplaySystem {
         this.ctxPopup = this.popupCanvas.getContext("2d");
         this.popupDim = document.getElementById("popupdim");
 
-        // 9. Top (2D)
+        // 9. Top (2D) - 마우스 커서, 디버그 정보
         this.topCanvas = document.getElementById("top");
         this.ctxTop = this.topCanvas.getContext("2d");
 

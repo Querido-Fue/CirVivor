@@ -45,15 +45,15 @@ const rectPath = (x, y, w, h) => `M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z`;
 export const ENEMY_SVG_SHAPES = Object.freeze({
     enemy_square: [rectPath(-0.42, -0.42, 0.84, 0.84)],
     enemy_triangle: [pointsToPath([
-        { x: 0.0, y: -0.45 },
-        { x: 0.462, y: 0.35 },
-        { x: -0.462, y: 0.35 }
+        { x: 0.0, y: -0.5333 },
+        { x: 0.462, y: 0.2667 },
+        { x: -0.462, y: 0.2667 }
     ])],
     enemy_arrow: [pointsToPath([
-        { x: 0.0, y: -0.50 },
-        { x: 0.46, y: 0.45 },
-        { x: 0.0, y: 0.28 },
-        { x: -0.46, y: 0.45 }
+        { x: 0.0, y: -0.5767 },
+        { x: 0.46, y: 0.3733 },
+        { x: 0.0, y: 0.2033 },
+        { x: -0.46, y: 0.3733 }
     ])],
     enemy_hexa: [pointsToPath(polygonPoints(6, 0.47, -Math.PI / 2))],
     enemy_penta: [pointsToPath(polygonPoints(5, 0.48, -Math.PI / 2))],

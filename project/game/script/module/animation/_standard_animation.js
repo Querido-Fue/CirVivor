@@ -39,9 +39,10 @@ export class StandardAnimation extends AnimationBase {
      * @param {string} type - 이징 함수 이름
      * @param {number} duration - 지속 시간 (초)
      * @param {number} delay - 시작 지연 (초)
+     * @param {boolean} [useFixedTick=false] - 고정 틱 업데이트 사용 여부
      */
-    init(id, owner, variable, startValue, endValue, type, duration, delay) {
-        super.init(id, owner, variable);
+    init(id, owner, variable, startValue, endValue, type, duration, delay, useFixedTick = false) {
+        super.init(id, owner, variable, useFixedTick);
         this.rawStartValue = startValue;
         this.rawEndValue = endValue;
         this.duration = duration;

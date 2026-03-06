@@ -12,6 +12,7 @@ export class AnimationBase {
         this.id = -1;
         this.owner = null;
         this.variable = null;
+        this.useFixedTick = false;
         this.state = ANIMATION_STATE.IDLE;
         this.#promise = null;
         this.#resolve = null;
@@ -25,11 +26,13 @@ export class AnimationBase {
      * @param {number} id - 애니메이션 ID
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
+     * @param {boolean} [useFixedTick=false] - 고정 틱 업데이트 사용 여부
      */
-    init(id, owner, variable) {
+    init(id, owner, variable, useFixedTick = false) {
         this.id = id;
         this.owner = owner;
         this.variable = variable;
+        this.useFixedTick = useFixedTick === true;
         this.state = ANIMATION_STATE.RUNNING;
         this.next = null;
         this.prev = null;

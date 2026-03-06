@@ -35,9 +35,10 @@ export class PersistentAnimation extends AnimationBase {
      * @param {string|string[]} easings - 사용할 이징 함수 이름 또는 배열
      * @param {number} duration - 전체 지속 시간 (초)
      * @param {string} onCompleteAction - 완료 시 동작 ('stop', 'reset', 'return')
+     * @param {boolean} [useFixedTick=false] - 고정 틱 업데이트 사용 여부
      */
-    init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction) {
-        super.init(id, owner, variable);
+    init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction, useFixedTick = false) {
+        super.init(id, owner, variable, useFixedTick);
         this.startValue = startValue;
         this.endValue = endValue;
         this.easings = Array.isArray(easings) ? easings : [easings];

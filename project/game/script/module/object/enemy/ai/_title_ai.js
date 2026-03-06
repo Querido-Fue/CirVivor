@@ -1,9 +1,8 @@
-import { getMouseInput, getMouseFocus } from 'input/input_system.js';
+import { getMouseInput, getMouseFocus, isMousePressing } from 'input/input_system.js';
 import { getData } from 'data/data_handler.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_ACCEL_RESPONSE = 6;
-const EPSILON = 1e-6;
 
 /**
  * 마우스 포커스가 타이틀 적이 그려지는 오브젝트 레이어에 존재하는지 판별합니다.
@@ -62,18 +61,6 @@ export const ensureTitleEnemyState = (enemy) => {
         enemy._spawnBoost = 1;
     }
 
-    if (typeof enemy._titleIntroActive !== 'boolean') {
-        enemy._titleIntroActive = false;
-    }
-
-    if (!Number.isFinite(enemy._titleIntroOffsetX)) {
-        enemy._titleIntroOffsetX = 0;
-    }
-
-    if (!Number.isFinite(enemy._titleIntroPrevOffsetX)) {
-        enemy._titleIntroPrevOffsetX = 0;
-    }
-
     if (!enemy._titleBaseSpeed || typeof enemy._titleBaseSpeed !== 'object') {
         enemy._titleBaseSpeed = { x: 0, y: 0 };
     } else {
@@ -105,9 +92,6 @@ export const titleAI = {
         enemy._titleMagVel.x = 0;
         enemy._titleMagVel.y = 0;
         enemy._spawnBoost = 1;
-        enemy._titleIntroActive = false;
-        enemy._titleIntroOffsetX = 0;
-        enemy._titleIntroPrevOffsetX = 0;
         enemy._titleBaseSpeed.x = 0;
         enemy._titleBaseSpeed.y = 0;
         enemy._titleAccelResponse = TITLE_ACCEL_RESPONSE;
@@ -120,8 +104,6 @@ export const titleAI = {
         const ratioY = Number.isFinite(context.ratioY) ? context.ratioY : 1;
         enemy._titleMagVel.x *= ratioX;
         enemy._titleMagVel.y *= ratioY;
-        enemy._titleIntroOffsetX *= ratioX;
-        enemy._titleIntroPrevOffsetX *= ratioX;
         enemy._titleBaseSpeed.x *= ratioX;
         enemy._titleBaseSpeed.y *= ratioY;
     },
@@ -129,33 +111,19 @@ export const titleAI = {
     fixedUpdate(enemy, stepDelta, context = {}) {
         ensureTitleEnemyState(enemy);
 
-        if (enemy._titleIntroActive) {
-            enemy._titleMagVel.x = 0;
-            enemy._titleMagVel.y = 0;
-            const boost = enemy._spawnBoost || 1;
-            const introOffsetDelta = enemy._titleIntroOffsetX - enemy._titleIntroPrevOffsetX;
-            enemy._titleIntroPrevOffsetX = enemy._titleIntroOffsetX;
-            const introVelX = stepDelta > EPSILON ? (introOffsetDelta / stepDelta) : 0;
-            const targetVx = (enemy._titleBaseSpeed.x * boost) + introVelX;
-            const targetVy = enemy._titleBaseSpeed.y * boost;
-            enemy.setAcc(targetVx - enemy.speed.x, targetVy - enemy.speed.y);
-            enemy.accSpeed = enemy._titleAccelResponse;
-            return;
-        }
-
         const uiww = Number.isFinite(context.uiww) ? context.uiww : 0;
         const logoMagneticPoint = context.logoMagneticPoint ?? null;
         const objectFocused = typeof context.objectFocused === 'boolean' ? context.objectFocused : hasObjectFocus();
-        const leftClicking = typeof context.leftClicking === 'boolean' ? context.leftClicking : Boolean(getMouseInput('leftClicking'));
+        const leftPressing = typeof context.leftPressing === 'boolean' ? context.leftPressing : isMousePressing('left');
         const mousePos = context.mousePos ?? getMouseInput('pos');
 
         let mouseStrength = 0;
         let mouseDistance = 0;
         if (objectFocused) {
-            mouseStrength = leftClicking
+            mouseStrength = leftPressing
                 ? TITLE_CONSTANTS.TITLE_AI.MOUSE_CLICK_STRENGTH
                 : TITLE_CONSTANTS.TITLE_AI.MOUSE_IDLE_STRENGTH;
-            mouseDistance = leftClicking
+            mouseDistance = leftPressing
                 ? uiww * TITLE_CONSTANTS.TITLE_AI.MOUSE_CLICK_DISTANCE_RATIO
                 : uiww * TITLE_CONSTANTS.TITLE_AI.MOUSE_IDLE_DISTANCE_RATIO;
         }

@@ -1,6 +1,6 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getObjectOffsetY, getObjectWH, getWH, getWW, render, renderGL } from 'display/display_system.js';
-import { getMouseInput } from 'input/input_system.js';
+import { getMouseInput, hasMouseState } from 'input/input_system.js';
 import { getData } from 'data/data_handler.js';
 import { BaseScene } from 'scene/_base_scene.js';
 import { getObjectSystem } from 'object/object_system.js';
@@ -356,7 +356,7 @@ export class GameScene extends BaseScene {
      */
     update() {
         const mousePos = getMouseInput('pos');
-        const clicked = Boolean(getMouseInput('leftClicked'));
+        const clicked = hasMouseState('left', 'clicked');
         if (clicked && mousePos) {
             for (let i = 0; i < this.buttons.length; i++) {
                 const button = this.buttons[i];

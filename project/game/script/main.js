@@ -31,7 +31,7 @@ window.onload = async () => {
         Game = new App(systemHandler);
         window.Game = Game;
 
-        // 브라우저 프레임 루프 및 고정 틱 루프 시작
+        // 단일 프레임 루프 시작 (고정 스텝 + 렌더 순차 처리)
         Game.start();
     } catch (e) {
         console.warn("게임 초기화 중 오류가 발생했습니다\n", e);
@@ -61,60 +61,85 @@ class App {
      */
     constructor(systemHandler) {
         this.systemHandler = systemHandler;
-        this.fixedLoopId = null;
+        this.loopRequestId = null;
+        this.running = false;
+        this.fixedStepSeconds = 1 / 60;
+        this.maxFrameDeltaSeconds = 0.1;
+        this.maxFixedStepsPerFrame = 6;
+        this.accumulatorSeconds = 0;
+        this.lastFrameTimestamp = 0;
         this._boundLoop = this.loop.bind(this);
-        this._boundFixedTick = this.fixedTick.bind(this);
     }
 
     /**
-     * 렌더 루프와 고정 틱 루프를 시작합니다.
+     * 메인 루프를 시작합니다.
      */
     start() {
-        this.loop();
-        this.startFixedTick();
+        if (this.running) return;
+        this.running = true;
+        this.accumulatorSeconds = 0;
+        this.lastFrameTimestamp = performance.now();
+        this.loopRequestId = requestAnimationFrame(this._boundLoop);
     }
 
     /**
      * 매 프레임 실행되는 게임의 메인 로직입니다.
-     * SystemHandler의 tick 메서드를 호출하여 모든 시스템을 업데이트하고 그립니다.
+     * accumulator 패턴으로 고정 스텝과 렌더를 단일 루프에서 순차 처리합니다.
+     * @param {number} now - requestAnimationFrame에서 전달되는 현재 시각(ms)
      */
-    loop() {
-        requestAnimationFrame(this._boundLoop);
+    loop(now) {
+        if (!this.running) return;
+        this.loopRequestId = requestAnimationFrame(this._boundLoop);
         try {
-            this.systemHandler.tick();
+            if (!Number.isFinite(this.lastFrameTimestamp) || this.lastFrameTimestamp <= 0) {
+                this.lastFrameTimestamp = now;
+            }
+
+            let frameDeltaSeconds = (now - this.lastFrameTimestamp) / 1000;
+            this.lastFrameTimestamp = now;
+
+            if (!Number.isFinite(frameDeltaSeconds) || frameDeltaSeconds < 0) {
+                frameDeltaSeconds = this.fixedStepSeconds;
+            } else if (frameDeltaSeconds > this.maxFrameDeltaSeconds) {
+                frameDeltaSeconds = this.maxFrameDeltaSeconds;
+            }
+
+            this.accumulatorSeconds += frameDeltaSeconds;
+
+            let fixedStepCount = 0;
+            while (this.accumulatorSeconds >= this.fixedStepSeconds && fixedStepCount < this.maxFixedStepsPerFrame) {
+                this.accumulatorSeconds -= this.fixedStepSeconds;
+                fixedStepCount++;
+            }
+
+            if (fixedStepCount >= this.maxFixedStepsPerFrame && this.accumulatorSeconds >= this.fixedStepSeconds) {
+                this.accumulatorSeconds = this.accumulatorSeconds % this.fixedStepSeconds;
+            }
+
+            const alpha = this.accumulatorSeconds / this.fixedStepSeconds;
+            this.systemHandler.tick({
+                frameDeltaSeconds,
+                fixedStepSeconds: this.fixedStepSeconds,
+                fixedStepCount,
+                fixedAlpha: alpha
+            });
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
         }
     }
 
     /**
-     * 60Hz 고정 업데이트 루프를 시작합니다.
+     * 메인 루프를 정지합니다.
      */
-    startFixedTick() {
-        if (this.fixedLoopId !== null) {
-            clearInterval(this.fixedLoopId);
+    stop() {
+        if (!this.running) return;
+        this.running = false;
+        if (this.loopRequestId !== null) {
+            cancelAnimationFrame(this.loopRequestId);
+            this.loopRequestId = null;
         }
-        this.fixedLoopId = setInterval(this._boundFixedTick, 1000 / 60);
-    }
-
-    /**
-     * 고정 업데이트 루프를 정지합니다.
-     */
-    stopFixedTick() {
-        if (this.fixedLoopId === null) return;
-        clearInterval(this.fixedLoopId);
-        this.fixedLoopId = null;
-    }
-
-    /**
-     * 고정 틱에서 고정 업데이트 대상 모듈을 갱신합니다.
-     */
-    fixedTick() {
-        try {
-            this.systemHandler.fixedUpdate();
-        } catch (e) {
-            console.warn("고정 틱 루프 중 오류가 발생했습니다\n", e);
-        }
+        this.accumulatorSeconds = 0;
+        this.lastFrameTimestamp = 0;
     }
 
     /**
@@ -141,7 +166,7 @@ class App {
      * 모든 데이터를 저장한 후 창을 닫습니다.
      */
     close() {
-        this.stopFixedTick();
+        this.stop();
         this.systemHandler.saveSystem.saveAll().then(() => {
             setTimeout(() => runtimeTool().closeWindow(), 100);
         });

@@ -1,6 +1,6 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render, shadowOn, shadowOff } from "display/display_system.js";
-import { getMouseInput, getMouseFocus } from "input/input_system.js";
+import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
@@ -53,7 +53,6 @@ export class SliderElement extends BaseUIElement {
         this.lastMouseX = 0;
         this.hoverScaleMultiplier = 1.1;
         this.pressScaleMultiplier = 1.1;
-        this.prevLeftClicking = false;
 
         if (this.#valueAnim) { remove(this.#valueAnim.id); this.#valueAnim = null; }
         if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
@@ -78,14 +77,14 @@ export class SliderElement extends BaseUIElement {
 
         const mx = getMouseInput('x');
         const my = getMouseInput('y');
-        const isLeftClicking = getMouseInput('leftClicking');
+        const isLeftPressing = isMousePressing('left');
+        const isLeftClick = hasMouseState('left', 'click');
 
         // 포커스 확인: 현재 포커스 레이어와 다르면 입력 무시
         if (!getMouseFocus().includes(this.layer)) {
             if (this.dragging) {
                 this.dragging = false;
             }
-            this.prevLeftClicking = isLeftClicking;
             return;
         }
 
@@ -94,7 +93,6 @@ export class SliderElement extends BaseUIElement {
                 this.dragging = false;
             }
             this._handleInteractionState(false, false);
-            this.prevLeftClicking = isLeftClicking;
             return;
         }
 
@@ -128,8 +126,8 @@ export class SliderElement extends BaseUIElement {
         const isOverSlider = mx >= hitX - hitBufferX && mx <= hitX + currentWidth + hitBufferX &&
             my >= drawY - hitBuffer && my <= drawY + hitBuffer;
 
-        // 드래그 시작 시점 (이전에 누르지 않았고, 지금 누르기 시작했고, 마우스가 슬라이더 위에 있을 때)
-        if (isLeftClicking && !this.prevLeftClicking && getMouseFocus().includes(this.layer) && isOverSlider) {
+        // 눌림 시작 프레임에 슬라이더 위였다면 드래그를 개시합니다.
+        if (isLeftClick && getMouseFocus().includes(this.layer) && isOverSlider) {
             if (!this.dragging) {
                 this.dragging = true;
                 if (this.#overflowAnim) {
@@ -139,7 +137,7 @@ export class SliderElement extends BaseUIElement {
             }
         }
 
-        if (!isLeftClicking) {
+        if (!isLeftPressing) {
             if (this.dragging) {
                 this.dragging = false;
                 this.#overflowAnim = animate(this, {
@@ -185,8 +183,6 @@ export class SliderElement extends BaseUIElement {
 
         // 기본 UI 요소의 공통 상호작용 처리 호출
         this._handleInteractionState(isOverSlider || this.dragging, this.dragging);
-
-        this.prevLeftClicking = isLeftClicking;
     }
 
     /**

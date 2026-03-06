@@ -1,7 +1,7 @@
 import { getWW, getWH, render, shadowOn, shadowOff } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { animate, remove } from 'animation/animation_system.js';
-import { getMouseInput } from 'input/input_system.js';
+import { getMouseInput, isMousePressing } from 'input/input_system.js';
 import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 
@@ -71,7 +71,7 @@ export class UICursor {
         this.#x = getMouseInput("x");
         this.#y = getMouseInput("y");
 
-        if (getMouseInput("leftClicking")) {
+        if (isMousePressing('left')) {
             if (this.#type === 'normal') {
                 if (!this.#clicking) {
                     remove(this.#normalRadiusAnimId);

@@ -45,7 +45,7 @@ export const english = {
     "title_settings_disable_transparency": "Opacue UI Backgrounds",
     "title_settings_desc_transparency": "Makes UI backgrounds opaque to reduce graphics load.",
     "title_settings_physics_accuracy": "Physics Accuracy",
-    "title_settings_desc_physics_accuracy": "Lower values improve performance but may cause enemies to overlap.",
+    "title_settings_desc_physics_accuracy": "Higher values reduce enemies overlapping at the cost of performance.",
     "title_settings_section_ui": "UI",
     "title_settings_language": "Language",
     "title_settings_theme": "Theme",

@@ -7,19 +7,28 @@
 let timeHandlerInstance = null;
 
 export class TimeHandler {
+    /**
+     * TimeHandler 인스턴스를 생성하고 기본 시간 상태를 초기화합니다.
+     */
     constructor() {
         timeHandlerInstance = this;
         this.timeBefore = performance.now();
-        this.timeBeforeFixed = this.timeBefore;
         this.fixedStepSeconds = 1 / 60;
-        this.lastFrameTimeDelta = 0;
+        this.lastFrameTimeDelta = this.fixedStepSeconds;
         this.lastFixedTimeDelta = this.fixedStepSeconds;
+        this.fixedInterpolationAlpha = 0;
     }
 
     /**
      * 매 프레임 호출되어 시간 델타를 업데이트합니다.
+     * @param {number} [deltaSeconds] - 프레임 루프에서 계산한 초 단위 델타(선택)
      */
-    update() {
+    update(deltaSeconds) {
+        if (Number.isFinite(deltaSeconds) && deltaSeconds > 0) {
+            this.lastFrameTimeDelta = this._normalizeDeltaMs(deltaSeconds * 1000);
+            return;
+        }
+
         const now = performance.now();
         const delta = now - this.timeBefore;
         this.timeBefore = now;
@@ -28,12 +37,35 @@ export class TimeHandler {
 
     /**
      * 고정 틱 루프에서 호출되어 시간 델타를 업데이트합니다.
+     * 고정 틱은 단일 루프에서 고정 스텝 값으로 주입됩니다.
+     * @param {number} [fixedStepSeconds] - 고정 스텝(초)
      */
-    updateFixed() {
-        const now = performance.now();
-        const delta = now - this.timeBeforeFixed;
-        this.timeBeforeFixed = now;
-        this.lastFixedTimeDelta = this._normalizeDeltaMs(delta);
+    updateFixed(fixedStepSeconds = this.fixedStepSeconds) {
+        if (!Number.isFinite(fixedStepSeconds) || fixedStepSeconds <= 0) {
+            this.lastFixedTimeDelta = this.fixedStepSeconds;
+            return;
+        }
+        this.lastFixedTimeDelta = fixedStepSeconds;
+    }
+
+    /**
+     * 현재 프레임에서 사용할 고정 틱 보간 계수를 갱신합니다.
+     * @param {number} alpha - 0~1 범위의 보간 계수
+     */
+    setFixedInterpolationAlpha(alpha) {
+        if (!Number.isFinite(alpha)) {
+            this.fixedInterpolationAlpha = 0;
+            return;
+        }
+        if (alpha <= 0) {
+            this.fixedInterpolationAlpha = 0;
+            return;
+        }
+        if (alpha >= 1) {
+            this.fixedInterpolationAlpha = 1;
+            return;
+        }
+        this.fixedInterpolationAlpha = alpha;
     }
 
     /**
@@ -93,15 +125,5 @@ export function getFixedDelta() {
  */
 export function getFixedInterpolationAlpha() {
     if (!timeHandlerInstance) return 1;
-
-    const stepSeconds = Number.isFinite(timeHandlerInstance.lastFixedTimeDelta) && timeHandlerInstance.lastFixedTimeDelta > 0
-        ? timeHandlerInstance.lastFixedTimeDelta
-        : timeHandlerInstance.fixedStepSeconds;
-    const elapsedSeconds = (performance.now() - timeHandlerInstance.timeBeforeFixed) / 1000;
-    if (!Number.isFinite(elapsedSeconds) || stepSeconds <= 0) return 1;
-
-    const alpha = elapsedSeconds / stepSeconds;
-    if (alpha <= 0) return 0;
-    if (alpha >= 1) return 1;
-    return alpha;
+    return timeHandlerInstance.fixedInterpolationAlpha;
 }

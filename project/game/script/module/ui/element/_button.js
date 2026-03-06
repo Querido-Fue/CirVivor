@@ -1,6 +1,6 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render } from "display/display_system.js";
-import { getMouseInput, getMouseFocus } from "input/input_system.js";
+import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { colorUtil } from "util/color_util.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { shadowOn, shadowOff, measureText } from "display/display_system.js";
@@ -96,12 +96,12 @@ export class ButtonElement extends BaseUIElement {
             isHovered = true;
         }
 
-        const isLeftClicking = getMouseInput("leftClicking");
+        const isLeftPressing = isMousePressing('left');
 
         // 부모의 공통 호버, 클릭 스케일 애니메이션 처리
-        this._handleInteractionState(isHovered, isLeftClicking, this.onHover);
+        this._handleInteractionState(isHovered, isLeftPressing, this.onHover);
 
-        if (isHovered && getMouseInput("leftClicked")) {
+        if (isHovered && hasMouseState('left', 'clicked')) {
             this.onClick();
         }
 

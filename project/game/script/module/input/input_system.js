@@ -32,10 +32,29 @@ export class InputSystem {
 
 /**
  * 마우스 입력 상태를 반환합니다.
- * @param {string} key - 입력 키 (x, y, leftClicked, leftClicking 등)
+ * @param {string} key - 입력 키 (x, y, left, right, middle 등)
  * @returns {any} 마우스 입력 값
  */
 export const getMouseInput = (key) => inputSystemInstance.mouseInputHandler.getMouseInput(key);
+
+/**
+ * 지정한 마우스 버튼 상태 배열에 특정 상태가 포함되어 있는지 검사합니다.
+ * @param {'left'|'right'|'middle'} button - 검사할 버튼 이름
+ * @param {'idle'|'click'|'clicking'|'clicked'} state - 검사할 상태 이름
+ * @returns {boolean} 상태 포함 여부
+ */
+export const hasMouseState = (button, state) => {
+    const mouseState = inputSystemInstance.mouseInputHandler.getMouseInput(button);
+    return Array.isArray(mouseState) ? mouseState.includes(state) : false;
+};
+
+/**
+ * 지정한 마우스 버튼이 현재 눌림 계열 상태인지 반환합니다.
+ * `click`과 `clicking`을 동일한 누름 계열로 취급합니다.
+ * @param {'left'|'right'|'middle'} button - 검사할 버튼 이름
+ * @returns {boolean} 누름 계열 상태 여부
+ */
+export const isMousePressing = (button) => hasMouseState(button, 'click') || hasMouseState(button, 'clicking');
 /**
  * 현재 마우스 포커스 레이어를 반환합니다.
  * @returns {string} 포커스 레이어 이름

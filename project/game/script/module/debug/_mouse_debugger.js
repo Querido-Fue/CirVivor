@@ -29,8 +29,9 @@ export class MouseDebugger {
 
         const lines = [
             `${x.toFixed(1)}, ${y.toFixed(1)}`,
-            `left: ${getMouseInput("leftClicked")}, ${getMouseInput("leftClicking")}`,
-            `right: ${getMouseInput("rightClicked")}, ${getMouseInput("rightClicking")}`,
+            `left: [${getMouseInput("left").join(", ")}]`,
+            `right: [${getMouseInput("right").join(", ")}]`,
+            `middle: [${getMouseInput("middle").join(", ")}]`,
             `focus: ${getMouseFocus().join(", ")}`
         ];
 

@@ -1,6 +1,6 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render, shadowOn, shadowOff } from "display/display_system.js";
-import { getMouseInput, getMouseFocus } from "input/input_system.js";
+import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
@@ -84,16 +84,16 @@ export class ToggleElement extends BaseUIElement {
         const isOver = mx >= this.x && mx <= this.x + this.width &&
             my >= this.y && my <= this.y + this.height;
 
-        if (getMouseInput('leftClicked') && getMouseFocus().includes(this.layer)) {
+        if (hasMouseState('left', 'clicked') && getMouseFocus().includes(this.layer)) {
             if (isOver) {
                 this.setValue(!this.value);
             }
         }
 
-        const isLeftClicking = getMouseInput('leftClicking');
+        const isLeftPressing = isMousePressing('left');
 
         // 기본 UI 요소의 공통 상호작용 처리 호출
-        this._handleInteractionState(isOver, isLeftClicking);
+        this._handleInteractionState(isOver, isLeftPressing);
     }
 
     /**

@@ -94,14 +94,44 @@ export class SystemHandler {
 
     /**
      * 매 프레임 실행되는 메인 틱 함수입니다.
-     * 화면을 클리어하고 업데이트 및 그리기 로직을 수행합니다.
+     * 단일 루프에서 고정 스텝 처리 후 가변 업데이트/렌더를 순차 실행합니다.
+     * @param {object} [frameContext={}] 프레임 컨텍스트
+     * @param {number} [frameContext.frameDeltaSeconds] 가변 프레임 델타(초)
+     * @param {number} [frameContext.fixedStepSeconds] 고정 스텝 델타(초)
+     * @param {number} [frameContext.fixedStepCount] 이번 프레임에 처리할 고정 스텝 횟수
+     * @param {number} [frameContext.fixedAlpha] 렌더 보간 계수(0~1)
      */
-    tick() {
+    tick(frameContext = {}) {
+        const timeHandler = getTimeHandler();
+        const frameDeltaSeconds = Number.isFinite(frameContext.frameDeltaSeconds) && frameContext.frameDeltaSeconds > 0
+            ? frameContext.frameDeltaSeconds
+            : undefined;
+        const fixedStepSeconds = Number.isFinite(frameContext.fixedStepSeconds) && frameContext.fixedStepSeconds > 0
+            ? frameContext.fixedStepSeconds
+            : (timeHandler?.fixedStepSeconds ?? (1 / 60));
+        const fixedStepCount = Number.isInteger(frameContext.fixedStepCount) && frameContext.fixedStepCount > 0
+            ? frameContext.fixedStepCount
+            : 0;
+        const fixedAlpha = Number.isFinite(frameContext.fixedAlpha)
+            ? frameContext.fixedAlpha
+            : 0;
+
+        for (let i = 0; i < fixedStepCount; i++) {
+            if (timeHandler && typeof timeHandler.updateFixed === 'function') {
+                timeHandler.updateFixed(fixedStepSeconds);
+            }
+            this.#runFixedStep();
+        }
+
+        if (timeHandler && typeof timeHandler.setFixedInterpolationAlpha === 'function') {
+            timeHandler.setFixedInterpolationAlpha(fixedAlpha);
+        }
+
         this.displaySystem.drawHandler.clearAll();
         if (this.displaySystem.webGLHandler) {
             this.displaySystem.webGLHandler.clearAll();
         }
-        this.update();
+        this.update(frameDeltaSeconds);
         this.draw();
         if (this.displaySystem.webGLHandler) {
             this.displaySystem.webGLHandler.flushAll();
@@ -129,11 +159,15 @@ export class SystemHandler {
 
     /**
      * 모든 시스템의 업데이트 로직을 호출합니다.
+     * @param {number} [frameDeltaSeconds] 가변 프레임 델타(초)
      */
-    update() {
-        getTimeHandler().update();
+    update(frameDeltaSeconds) {
+        const timeHandler = getTimeHandler();
+        if (timeHandler && typeof timeHandler.update === 'function') {
+            timeHandler.update(frameDeltaSeconds);
+        }
         this.soundSystem.update();
-        this.animationSystem.update();
+        this.animationSystem.update({ useFixedTick: false });
         this.inputSystem.update();
         this.uiSystem.update();
         this.overlaySystem.update();
@@ -143,13 +177,13 @@ export class SystemHandler {
     }
 
     /**
-     * 고정 틱(기본 60Hz)에서 실행되는 업데이트 로직입니다.
+     * @private
+     * 고정 스텝에서 실행되는 업데이트 로직입니다.
      * 물리/전투 등 고정 시간 축이 필요한 모듈만 갱신합니다.
      */
-    fixedUpdate() {
-        const timeHandler = getTimeHandler();
-        if (timeHandler && typeof timeHandler.updateFixed === 'function') {
-            timeHandler.updateFixed();
+    #runFixedStep() {
+        if (this.animationSystem && typeof this.animationSystem.update === 'function') {
+            this.animationSystem.update({ useFixedTick: true });
         }
 
         if (this.objectSystem && typeof this.objectSystem.fixedUpdate === 'function') {

@@ -3,7 +3,7 @@ import { PersistentAnimation } from './_persistent_animation.js';
 import { MixedAnimation } from './_mixed_animation.js';
 import { ANIMATION_STATE } from './_constants.js';
 import { getData } from 'data/data_handler.js';
-import { getDelta } from 'game/time_handler.js';
+import { getDelta, getFixedDelta } from 'game/time_handler.js';
 import { errThrow } from 'debug/debug_system.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
@@ -28,32 +28,38 @@ export class AnimationSystem {
     /**
      * 활성화된 모든 애니메이션을 업데이트합니다.
      * 완료된 애니메이션은 제거하고 풀로 반환합니다.
+     * @param {object} [options={}] - 업데이트 옵션
+     * @param {boolean} [options.useFixedTick=false] - 고정 틱 업데이트 모드 여부
+     * @param {number} [options.delta] - 외부에서 주입하는 델타(초)
      */
-    update() {
-        const delta = getDelta();
+    update(options = {}) {
+        const useFixedTick = options.useFixedTick === true;
+        const delta = Number.isFinite(options.delta) && options.delta > 0
+            ? options.delta
+            : (useFixedTick ? getFixedDelta() : getDelta());
+        const hasValidDelta = Number.isFinite(delta) && delta > 0;
 
         // 안전한 제거를 위해 역순으로 순회
         for (let i = this.activeAnimations.length - 1; i >= 0; i--) {
             const anim = this.activeAnimations[i];
 
+            if (anim.state === ANIMATION_STATE.FINISHED) {
+                this.#removeAnimationAtIndex(i, anim);
+                continue;
+            }
+
+            if ((anim.useFixedTick === true) !== useFixedTick) {
+                continue;
+            }
+
+            if (!hasValidDelta) {
+                continue;
+            }
+
             anim.update(delta);
 
             if (anim.state === ANIMATION_STATE.FINISHED) {
-                // 활성 목록에서 제거
-                // 상수 시간 제거를 위한 끝 요소 치환 방식(순서 비보장)
-                const lastIdx = this.activeAnimations.length - 1;
-                if (i !== lastIdx) {
-                    this.activeAnimations[i] = this.activeAnimations[lastIdx];
-                }
-                this.activeAnimations.pop();
-
-                // 맵 정리
-                this.animationsById.delete(anim.id);
-
-                // 가능하다면 풀로 반환
-                if (anim instanceof StandardAnimation) {
-                    standardAnimationPool.release(anim);
-                }
+                this.#removeAnimationAtIndex(i, anim);
             }
         }
     }
@@ -71,7 +77,7 @@ export class AnimationSystem {
     /**
      * 단일 변수에 대한 표준 애니메이션을 생성합니다.
      * @param {object} owner - 애니메이션 대상 객체
-     * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type 등)
+     * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type, useFixedTick 등)
      * @returns {object} { id, promise } 형태의 결과 객체
      */
     animate(owner, properties) {
@@ -89,10 +95,11 @@ export class AnimationSystem {
         const type = properties.type || 'linear';
         const duration = properties.duration || 1;
         const delay = properties.delay || 0;
+        const useFixedTick = properties.useFixedTick === true;
 
         // 객체 풀 사용
         const animation = standardAnimationPool.get();
-        animation.init(id, owner, variable, startValue, endValue, type, duration, delay);
+        animation.init(id, owner, variable, startValue, endValue, type, duration, delay, useFixedTick);
 
         this.activeAnimations.push(animation);
         this.animationsById.set(id, animation);
@@ -107,10 +114,13 @@ export class AnimationSystem {
      * 병렬로 실행되는 혼합 애니메이션을 생성합니다.
      * @param {object} owner - 애니메이션 대상 객체
      * @param {Array} mixedDefs - 애니메이션 정의 배열
+     * @param {object} [properties={}] - 공통 속성
+     * @param {boolean} [properties.useFixedTick=false] - 고정 틱 업데이트 사용 여부
      * @returns {object} { id, promise } 형태의 결과 객체
      */
     animateMixed(owner, mixedDefs, properties = {}) {
         const promises = [];
+        const useFixedTick = properties.useFixedTick === true;
 
         if (!Array.isArray(mixedDefs)) {
             errThrow(null, 'Animator: mixedDefs 는 배열이어야 합니다', 'error');
@@ -123,7 +133,7 @@ export class AnimationSystem {
 
             const subId = this.idCounter++;
             const anim = new MixedAnimation();
-            anim.init(subId, owner, def.variable, def.animations);
+            anim.init(subId, owner, def.variable, def.animations, useFixedTick);
 
             this.activeAnimations.push(anim);
             this.animationsById.set(subId, anim);
@@ -137,6 +147,7 @@ export class AnimationSystem {
      * 지속적인(Persistent) 애니메이션을 생성합니다.
      * @param {object} owner - 애니메이션 대상 객체
      * @param {object} properties - 애니메이션 속성
+     * @param {boolean} [properties.useFixedTick=false] - 고정 틱 업데이트 사용 여부
      * @returns {number} 애니메이션 ID
      */
     animatePersist(owner, properties) {
@@ -149,9 +160,10 @@ export class AnimationSystem {
         const easings = properties.easings;
         const duration = properties.duration;
         const onCompleteAction = properties.onCompleteAction || 'stop';
+        const useFixedTick = properties.useFixedTick === true;
 
         const animation = new PersistentAnimation();
-        animation.init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction);
+        animation.init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction, useFixedTick);
 
         this.activeAnimations.push(animation);
         this.animationsById.set(id, animation);
@@ -200,6 +212,30 @@ export class AnimationSystem {
 
     /**
      * @private
+     * 활성 애니메이션 목록에서 지정 인덱스의 애니메이션을 제거합니다.
+     * @param {number} index - 제거할 활성 목록 인덱스
+     * @param {StandardAnimation|PersistentAnimation|MixedAnimation} anim - 제거 대상 애니메이션
+     */
+    #removeAnimationAtIndex(index, anim) {
+        // 활성 목록에서 제거
+        // 상수 시간 제거를 위한 끝 요소 치환 방식(순서 비보장)
+        const lastIdx = this.activeAnimations.length - 1;
+        if (index !== lastIdx) {
+            this.activeAnimations[index] = this.activeAnimations[lastIdx];
+        }
+        this.activeAnimations.pop();
+
+        // 맵 정리
+        this.animationsById.delete(anim.id);
+
+        // 가능하다면 풀로 반환
+        if (anim instanceof StandardAnimation) {
+            standardAnimationPool.release(anim);
+        }
+    }
+
+    /**
+     * @private
      * 속성 객체의 필수 필드 존재 여부를 검증합니다.
      * @param {object} properties - 검증할 속성 객체
      * @param {string[]} required - 필수 필드 이름 배열
@@ -223,7 +259,7 @@ export class AnimationSystem {
 /**
  * 단일 변수에 대한 표준 애니메이션을 실행합니다.
  * @param {object} owner - 애니메이션 대상 객체
- * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type 등)
+ * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type, useFixedTick 등)
  * @returns {{ id: number, promise: Promise }} 애니메이션 ID와 완료 프로미스
  */
 export const animate = (owner, properties) => animationSystemInstance.animate(owner, properties);
@@ -232,9 +268,10 @@ export const animate = (owner, properties) => animationSystemInstance.animate(ow
  * 여러 변수에 대한 혼합(병렬) 애니메이션을 실행합니다.
  * @param {object} owner - 애니메이션 대상 객체
  * @param {Array} mixedDefs - 각 변수별 애니메이션 정의 배열
+ * @param {object} [properties={}] - 공통 애니메이션 속성
  * @returns {{ id: null, promise: Promise }} 전체 완료 프로미스
  */
-export const animateMixed = (owner, mixedDefs) => animationSystemInstance.animateMixed(owner, mixedDefs);
+export const animateMixed = (owner, mixedDefs, properties = {}) => animationSystemInstance.animateMixed(owner, mixedDefs, properties);
 
 /**
  * 지속형 애니메이션을 등록합니다. forward()/backward()로 재생 방향을 제어할 수 있습니다.
