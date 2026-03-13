@@ -74,6 +74,15 @@ export class KeyboardInputHandler {
                     break;
             }
         });
+
+        window.addEventListener("blur", () => {
+            this.resetKeyboardInput();
+        });
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) {
+                this.resetKeyboardInput();
+            }
+        });
     }
 
     /**

@@ -6,7 +6,11 @@ import { GameScene } from './game/_game_scene.js';
  * @description 현재 활성 씬을 보관하고 씬 전환을 관리합니다.
  */
 export class SceneSystem {
-    constructor() {
+    /**
+     * @param {object} systemHandler - 상위 시스템 핸들러입니다.
+     */
+    constructor(systemHandler) {
+        this.systemHandler = systemHandler;
         this.sceneState = "title";
     }
 
@@ -47,6 +51,16 @@ export class SceneSystem {
     resize() {
         if (this.scene && typeof this.scene.resize === 'function') {
             this.scene.resize();
+        }
+    }
+
+    /**
+     * 현재 활성 씬에 런타임 설정 변경을 전달합니다.
+     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
+     */
+    applyRuntimeSettings(changedSettings = {}) {
+        if (this.scene && typeof this.scene.applyRuntimeSettings === 'function') {
+            this.scene.applyRuntimeSettings(changedSettings);
         }
     }
 

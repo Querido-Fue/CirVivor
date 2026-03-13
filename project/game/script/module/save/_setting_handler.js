@@ -1,4 +1,4 @@
-import { fsPromises, path, isNwRuntime } from 'util/nw_bridge.js';
+import { fsPromises, path } from 'util/nw_bridge.js';
 import { setTheme } from 'display/_theme_handler.js';
 import { MathUtil } from 'util/math_util.js';
 import { getData } from 'data/data_handler.js';
@@ -14,7 +14,6 @@ const FALLBACK_LANGUAGE_KEY = AVAILABLE_LANGUAGE_KEYS.includes('english')
 /**
  * @class SettingHandler
  * @description 설정 스키마를 로드/검증/저장하고 테마 같은 즉시 반영 항목을 처리합니다.
- * NW.js는 파일 저장, 브라우저는 localStorage 저장을 사용합니다.
  */
 export class SettingHandler {
     #mathUtil;
@@ -22,9 +21,7 @@ export class SettingHandler {
 
     constructor(dataDir) {
         this.dataDir = dataDir;
-        this.isNwRuntime = isNwRuntime();
-        this.storageKey = 'cirvivor.save.settings';
-        this.filePath = this.isNwRuntime ? path.join(this.dataDir, 'settings.json') : null;
+        this.filePath = path.join(this.dataDir, 'settings.json');
 
         let defaultLang = FALLBACK_LANGUAGE_KEY;
         if (typeof navigator !== 'undefined' && navigator.language) {
@@ -42,7 +39,7 @@ export class SettingHandler {
             theme: { type: 'string', value: DEFAULT_THEME_KEY, min: -1, max: -1, hidden: false },
             disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: false },
             language: { type: 'string', value: defaultLang, min: -1, max: -1, hidden: false },
-            windowMode: { type: 'string', value: this.isNwRuntime ? 'fullscreen' : 'windowed', min: -1, max: -1, hidden: false },
+            windowMode: { type: 'string', value: 'fullscreen', min: -1, max: -1, hidden: false },
             widescreenSupport: { type: 'bool', value: true, min: -1, max: -1, hidden: false },
             width: { type: 'int', value: 1280, min: 1280, max: -1, hidden: false },
             height: { type: 'int', value: 720, min: 720, max: -1, hidden: false },
@@ -110,11 +107,10 @@ export class SettingHandler {
         }
         if (key === 'windowMode') {
             if (processedValue === 'borderless') processedValue = 'fullscreen';
-            if (processedValue === 'browserMode') processedValue = 'windowed';
             if (processedValue === 'fullscreen' || processedValue === 'windowed') {
                 return processedValue;
             }
-            return this.isNwRuntime ? 'fullscreen' : 'windowed';
+            return 'fullscreen';
         }
         if (key === 'language') {
             if (AVAILABLE_LANGUAGE_KEYS.includes(processedValue)) {
@@ -137,33 +133,19 @@ export class SettingHandler {
      */
     async #load() {
         let fileData = {};
-
         let fileExists = false;
-        if (this.isNwRuntime) {
-            try {
-                await fsPromises.access(this.filePath);
-                fileExists = true;
-            } catch {
-                fileExists = false;
-            }
+        try {
+            await fsPromises.access(this.filePath);
+            fileExists = true;
+        } catch {
+            fileExists = false;
+        }
 
-            if (fileExists) {
-                try {
-                    fileData = JSON.parse(await fsPromises.readFile(this.filePath, 'utf-8'));
-                } catch (e) {
-                    console.error("설정 파일 로드 실패:", e);
-                    fileExists = false;
-                }
-            }
-        } else {
+        if (fileExists) {
             try {
-                const raw = window.localStorage.getItem(this.storageKey);
-                if (raw) {
-                    fileData = JSON.parse(raw);
-                    fileExists = true;
-                }
+                fileData = JSON.parse(await fsPromises.readFile(this.filePath, 'utf-8'));
             } catch (e) {
-                console.error("localStorage 설정 로드 실패:", e);
+                console.error("설정 파일 로드 실패:", e);
                 fileExists = false;
             }
         }
@@ -179,9 +161,9 @@ export class SettingHandler {
         if (fileData.windowMode === 'borderless') {
             fileData.windowMode = 'fullscreen';
             needsSave = true;
-        }
-        // 구버전 키 마이그레이션: browserMode -> windowed
-        if (fileData.windowMode === 'browserMode') {
+        } else if (fileData.windowMode !== undefined
+            && fileData.windowMode !== 'fullscreen'
+            && fileData.windowMode !== 'windowed') {
             fileData.windowMode = 'windowed';
             needsSave = true;
         }
@@ -217,16 +199,14 @@ export class SettingHandler {
      * @returns {Promise}
      */
     async save() {
-        if (this.isNwRuntime) {
+        try {
+            await fsPromises.access(this.dataDir);
+        } catch (e) {
             try {
-                await fsPromises.access(this.dataDir);
-            } catch (e) {
-                try {
-                    await fsPromises.mkdir(this.dataDir, { recursive: true });
-                } catch (mkdirError) {
-                    console.error("설정 디렉토리 생성 실패:", mkdirError);
-                    throw mkdirError;
-                }
+                await fsPromises.mkdir(this.dataDir, { recursive: true });
+            } catch (mkdirError) {
+                console.error("설정 디렉토리 생성 실패:", mkdirError);
+                throw mkdirError;
             }
         }
 
@@ -238,20 +218,10 @@ export class SettingHandler {
             }
         }
 
-        if (this.isNwRuntime) {
-            try {
-                await fsPromises.writeFile(this.filePath, JSON.stringify(out, null, 4));
-            } catch (err) {
-                console.error("설정 파일 저장 실패:", err);
-                throw err;
-            }
-            return;
-        }
-
         try {
-            window.localStorage.setItem(this.storageKey, JSON.stringify(out));
+            await fsPromises.writeFile(this.filePath, JSON.stringify(out, null, 4));
         } catch (err) {
-            console.error("localStorage 설정 저장 실패:", err);
+            console.error("설정 파일 저장 실패:", err);
             throw err;
         }
     }
@@ -283,15 +253,7 @@ export class SettingHandler {
     set(key, value) {
 
         if (!this.schema[key]) return Promise.resolve();
-        this.schema[key].value = this.#capValue(key, value);
-
-        if (this.schema[key].hidden) {
-            this.#presentHiddenKeys.add(key);
-        }
-
-        if (key === 'theme') {
-            setTheme(this.schema.theme.value);
-        }
+        this.#applyValues({ [key]: value }, { markHidden: true });
         return this.save();
     }
 
@@ -301,18 +263,40 @@ export class SettingHandler {
      * @returns {Promise}
      */
     setBatch(settings) {
+        this.#applyValues(settings, { markHidden: true });
+        return this.save();
+    }
+
+    /**
+     * 설정 값을 메모리에만 즉시 반영합니다.
+     * @param {object} settings - 설정 객체
+     */
+    previewBatch(settings) {
+        this.#applyValues(settings, { markHidden: false });
+    }
+
+    /**
+     * @private
+     * 설정 값을 스키마 메모리에 반영하고 필요한 즉시 효과를 적용합니다.
+     * @param {object} settings - 반영할 설정 객체입니다.
+     * @param {{markHidden?: boolean}} [options={}] - 숨김 키 유지 여부 옵션입니다.
+     */
+    #applyValues(settings, options = {}) {
+        const markHidden = options.markHidden !== false;
+
         for (const key in settings) {
-            if (this.schema[key]) {
-                this.schema[key].value = this.#capValue(key, settings[key]);
-                if (this.schema[key].hidden) {
-                    this.#presentHiddenKeys.add(key);
-                }
+            if (!this.schema[key]) {
+                continue;
+            }
+
+            this.schema[key].value = this.#capValue(key, settings[key]);
+            if (markHidden && this.schema[key].hidden) {
+                this.#presentHiddenKeys.add(key);
             }
         }
 
         if (settings.theme !== undefined) {
             setTheme(this.schema.theme.value);
         }
-        return this.save();
     }
 }

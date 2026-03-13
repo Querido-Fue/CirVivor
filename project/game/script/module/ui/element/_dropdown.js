@@ -1,7 +1,7 @@
 import { BaseUIElement } from "./_base_element.js";
 import { animate, remove } from "animation/animation_system.js";
-import { render, shadowOn, shadowOff, measureText, getBehindCanvases, getCanvas } from "display/display_system.js";
-import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
+import { render, shadowOn, shadowOff, measureText } from "display/display_system.js";
+import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { colorUtil } from "util/color_util.js";
 import { getSetting } from "save/save_system.js";
@@ -21,30 +21,20 @@ export class DropdownElement extends BaseUIElement {
         this.init(properties);
     }
 
-    #resolveSourceCanvases() {
-        let backCanvases = [];
-        let sameLayerCanvas = null;
-
-        try {
-            backCanvases = getBehindCanvases(this.layer) || [];
-        } catch (_e) {
-            backCanvases = [];
-        }
-
-        try {
-            sameLayerCanvas = getCanvas(this.layer);
-        } catch (_e) {
-            sameLayerCanvas = null;
-        }
-
-        this.sourceCanvases = sameLayerCanvas ? [...backCanvases, sameLayerCanvas] : backCanvases;
-    }
-
+    /**
+     * 현재 드랍다운이 점유한 화면 영역 위에 포인터가 있는지 검사합니다.
+     * 레이어와 관계없이 동일 좌표의 하위 UI 상호작용을 막습니다.
+     * @param {number} px - 검사할 포인터 X 좌표입니다.
+     * @param {number} py - 검사할 포인터 Y 좌표입니다.
+     * @param {string} layer - 호출 측 레이어입니다.
+     * @param {string} requesterId - 차단 검사 요청 요소 ID입니다.
+     * @returns {boolean} 다른 드랍다운이 해당 좌표를 점유 중이면 true입니다.
+     */
     static isPointerBlockedFor(px, py, layer, requesterId) {
+        void layer;
         const blocker = DropdownElement.inputBlocker;
         if (!blocker) return false;
         if (blocker.ownerId === requesterId) return false;
-        if (blocker.layer && layer && blocker.layer !== layer) return false;
         return px >= blocker.x && px <= blocker.x + blocker.w
             && py >= blocker.y && py <= blocker.y + blocker.h;
     }
@@ -82,7 +72,6 @@ export class DropdownElement extends BaseUIElement {
 
         this.items = Array.isArray(properties.items) ? properties.items : [];
         this.onChange = properties.onChange || (() => { });
-        this.sourceCanvases = [];
 
         this.width = properties.width || 200;
         this.height = properties.height || 36;
@@ -296,6 +285,7 @@ export class DropdownElement extends BaseUIElement {
         if (!hasMouseState('left', 'clicked')) return;
 
         if (isOverMain) {
+            consumeMouseState('left', 'clicked');
             if (DropdownElement.openedElementId !== null && DropdownElement.openedElementId !== this.id) {
                 DropdownElement.openedElementId = null;
             }
@@ -304,6 +294,10 @@ export class DropdownElement extends BaseUIElement {
         }
 
         if (!this.isOpen) return;
+
+        if (isOverOpenArea) {
+            consumeMouseState('left', 'clicked');
+        }
 
         if (this.hoveredOptionIndex !== -1) {
             const selected = this.items[this.hoveredOptionIndex];
@@ -405,39 +399,56 @@ export class DropdownElement extends BaseUIElement {
         if (!this.visible) return;
         if (this.openProgress <= 0.01 || this.items.length === 0) return;
 
-        if (!this.sourceCanvases || this.sourceCanvases.length === 0) {
-            this.#resolveSourceCanvases();
-        }
-
         const mainRect = this.#getMainRect();
         const panelRect = this.#getPanelRect(mainRect);
 
         const panelRadius = Math.max(2, (this.radius - 1) * this.scale);
         const panelAlpha = this.alpha * this.openProgress;
         const disableTransparency = getSetting("disableTransparency");
+        const transparentPanelFill = (() => {
+            const rgb = colorUtil().cssToRgb(this.panelColor);
+            return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.97)`;
+        })();
         const panelFill = disableTransparency
             ? (ColorSchemes.Overlay.Panel.Background || this.panelColor)
-            : this.panelColor;
+            : transparentPanelFill;
         const panelStroke = disableTransparency
             ? (ColorSchemes.Overlay.Panel.Border || this.panelBorderColor)
-            : this.panelBorderColor;
+            : (ColorSchemes.Overlay.Panel.GlassBorder || this.panelBorderColor);
+        const overlaySession = this.parent?.session || null;
+        const floatingLayer = overlaySession?.uiLayerId || this.layer;
 
-        shadowOn(this.layer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
-        render(this.layer, {
-            shape: disableTransparency ? "roundRect" : "glassRect",
-            x: panelRect.x,
-            y: panelRect.y,
-            w: panelRect.w,
-            h: panelRect.h,
-            radius: panelRadius,
-            image: this.sourceCanvases,
-            blur: 8,
-            fill: panelFill,
-            stroke: panelStroke,
-            lineWidth: 1,
-            alpha: panelAlpha
-        });
-        shadowOff(this.layer);
+        if (!disableTransparency && overlaySession?.effectiveTransparent) {
+            shadowOn(floatingLayer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
+            render(floatingLayer, {
+                shape: "roundRect",
+                x: panelRect.x,
+                y: panelRect.y,
+                w: panelRect.w,
+                h: panelRect.h,
+                radius: panelRadius,
+                fill: panelFill,
+                stroke: panelStroke,
+                lineWidth: 1,
+                alpha: panelAlpha
+            });
+            shadowOff(floatingLayer);
+        } else {
+            shadowOn(floatingLayer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
+            render(floatingLayer, {
+                shape: "roundRect",
+                x: panelRect.x,
+                y: panelRect.y,
+                w: panelRect.w,
+                h: panelRect.h,
+                radius: panelRadius,
+                fill: panelFill,
+                stroke: panelStroke,
+                lineWidth: 1,
+                alpha: panelAlpha
+            });
+            shadowOff(floatingLayer);
+        }
 
         const textPad = panelRect.optionH * 0.3;
         for (let i = 0; i < this.items.length; i++) {
@@ -449,7 +460,7 @@ export class DropdownElement extends BaseUIElement {
             const isSelected = i === this.selectedIndex;
 
             if (isHovered) {
-                render(this.layer, {
+                render(floatingLayer, {
                     shape: "roundRect",
                     x: panelRect.x + (this.scale * 2),
                     y: rowY + (this.scale * 1),
@@ -462,7 +473,7 @@ export class DropdownElement extends BaseUIElement {
             }
 
             if (i > 0) {
-                render(this.layer, {
+                render(floatingLayer, {
                     shape: "line",
                     x1: panelRect.x + textPad,
                     y1: rowY,
@@ -476,7 +487,7 @@ export class DropdownElement extends BaseUIElement {
 
             const markerRadius = panelRect.optionH * 0.08;
             if (isSelected) {
-                render(this.layer, {
+                render(floatingLayer, {
                     shape: "circle",
                     x: panelRect.x + panelRect.w - (textPad * 1.2),
                     y: rowY + (panelRect.optionH / 2),
@@ -487,7 +498,7 @@ export class DropdownElement extends BaseUIElement {
             }
 
             const optionTextWidth = panelRect.w - (textPad * 3.2);
-            render(this.layer, {
+            render(floatingLayer, {
                 shape: "text",
                 text: this.#fitText(this.items[i].label, optionTextWidth),
                 x: panelRect.x + textPad,

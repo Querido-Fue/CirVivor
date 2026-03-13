@@ -1,11 +1,11 @@
 {
-    "name": "cirvivor",
-    "version": "0.34",
+    "name": "lonely_tower",
+    "version": "0.4",
     "main": "game/index.html",
     "js-flags": "",
-    "chromium-args": "--enable-node-worker --auto-open-devtools-for-tabs",
+    "chromium-args": "--enable-node-worker --auto-open-devtools-for-tabs1",
     "window": {
-        "title": "Cirvivor!",
+        "title": "Lonely Tower",
         "toolbar": false,
         "fullscreen": false,
         "position": "center",

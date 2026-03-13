@@ -1,4 +1,4 @@
-import { fsPromises, path, isNwRuntime } from 'util/nw_bridge.js';
+import { fsPromises, path } from 'util/nw_bridge.js';
 import { ProgressHandler } from './_progress_handler.js';
 import { IngameHandler } from './_ingame_handler.js';
 import { SettingHandler } from './_setting_handler.js';
@@ -7,14 +7,12 @@ let saveSystemInstance;
 
 /**
  * @class SaveSystem
- * @description 게임 시스템의 설정/진행도/인게임 데이터를 저장합니다.
- * NW.js에서는 로컬 파일을, 브라우저에서는 localStorage를 사용합니다.
+ * @description 게임 시스템의 설정/진행도/인게임 데이터를 NW.js 로컬 파일에 저장합니다.
  */
 export class SaveSystem {
     constructor() {
         saveSystemInstance = this;
-        this.isNwRuntime = isNwRuntime();
-        this.dataDir = this.isNwRuntime ? path.join(process.cwd(), 'save') : null;
+        this.dataDir = path.join(process.cwd(), 'save');
 
         this.settingHandler = new SettingHandler(this.dataDir);
         this.progressHandler = new ProgressHandler(this.dataDir);
@@ -25,10 +23,7 @@ export class SaveSystem {
      * 저장 시스템을 초기화하고 데이터를 로드합니다.
      */
     async init() {
-        if (this.isNwRuntime) {
-            await fsPromises.mkdir(this.dataDir, { recursive: true });
-        }
-
+        await fsPromises.mkdir(this.dataDir, { recursive: true });
         await this.settingHandler.init();
         await this.progressHandler.init();
         await this.ingameHandler.init();
@@ -50,6 +45,14 @@ export class SaveSystem {
      */
     setSettingBatch(settings) {
         return this.settingHandler.setBatch(settings);
+    }
+
+    /**
+     * 여러 설정 값을 메모리에만 임시 반영합니다.
+     * @param {object} settings - {key: value} 형태의 설정 객체
+     */
+    previewSettingBatch(settings) {
+        this.settingHandler.previewBatch(settings);
     }
 
     /**
@@ -98,6 +101,14 @@ export const setSetting = (key, value) => {
  */
 export const setSettingBatch = (settings) => {
     return saveSystemInstance.setSettingBatch(settings);
+}
+
+/**
+ * 여러 설정 값을 메모리에만 임시 반영합니다.
+ * @param {object} settings - {key: value} 형태의 설정 객체
+ */
+export const previewSettingBatch = (settings) => {
+    saveSystemInstance.previewSettingBatch(settings);
 }
 
 /**

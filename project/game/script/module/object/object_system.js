@@ -412,11 +412,18 @@ export class ObjectSystem {
 
     /**
      * 마지막 고정 틱 충돌 체크 통계를 반환합니다.
-     * @returns {{roughCircleChecks:number, polygonChecks:number, projectileEnemyChecks:number}}
+     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, polygonChecks:number}}
      */
     getCollisionStats() {
         if (!this.physicsSystem || typeof this.physicsSystem.getCollisionStats !== 'function') {
-            return { roughCircleChecks: 0, polygonChecks: 0, projectileEnemyChecks: 0 };
+            return {
+                collisionCheckCount: 0,
+                aabbPassCount: 0,
+                aabbRejectCount: 0,
+                circlePassCount: 0,
+                circleRejectCount: 0,
+                polygonChecks: 0
+            };
         }
         return this.physicsSystem.getCollisionStats();
     }

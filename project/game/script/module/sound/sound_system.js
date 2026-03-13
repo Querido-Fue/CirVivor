@@ -15,6 +15,8 @@ export class SoundSystem {
     #unlockEvents;
     #unlockAndPlayHandler;
     #isUnlockListenerAttached;
+    #runtimeSuspended;
+    #resumePlaybackAfterRuntimeSuspend;
 
     constructor() {
         soundSystemInstance = this;
@@ -24,6 +26,8 @@ export class SoundSystem {
         this.#unlockEvents = [...SOUND_CONSTANTS.BGM.UNLOCK_EVENTS];
         this.#unlockAndPlayHandler = this.#unlockAndPlay.bind(this);
         this.#isUnlockListenerAttached = false;
+        this.#runtimeSuspended = false;
+        this.#resumePlaybackAfterRuntimeSuspend = false;
     }
 
     /**
@@ -55,6 +59,11 @@ export class SoundSystem {
      */
     async playBgm() {
         if (!this.bgmAudio) return;
+        if (this.#runtimeSuspended) {
+            this.#pendingAutoplay = true;
+            this.#resumePlaybackAfterRuntimeSuspend = true;
+            return;
+        }
 
         try {
             await this.bgmAudio.play();
@@ -79,8 +88,36 @@ export class SoundSystem {
      */
     stopBgm() {
         if (!this.bgmAudio) return;
+        this.#pendingAutoplay = false;
+        this.#resumePlaybackAfterRuntimeSuspend = false;
         this.bgmAudio.pause();
         this.bgmAudio.currentTime = 0;
+    }
+
+    /**
+     * 런타임 일시정지 상태를 반영하여 BGM 재생을 멈추거나 재개합니다.
+     * 창 비활성화와 향후 인게임 일시정지 메뉴가 공통으로 사용할 수 있습니다.
+     * @param {boolean} isSuspended - 런타임 정지 여부입니다.
+     */
+    setRuntimeSuspended(isSuspended) {
+        const nextSuspended = isSuspended === true;
+        if (this.#runtimeSuspended === nextSuspended) {
+            return;
+        }
+
+        this.#runtimeSuspended = nextSuspended;
+        if (nextSuspended) {
+            this.#resumePlaybackAfterRuntimeSuspend = this.#pendingAutoplay
+                || Boolean(this.bgmAudio && this.bgmAudio.paused === false);
+            this.pauseBgm();
+            return;
+        }
+
+        const shouldResumePlayback = this.#resumePlaybackAfterRuntimeSuspend;
+        this.#resumePlaybackAfterRuntimeSuspend = false;
+        if (shouldResumePlayback) {
+            void this.playBgm();
+        }
     }
 
     /**

@@ -14,7 +14,7 @@ const UI_CONSTANTS = getData('UI_CONSTANTS');
 export class LayoutHandler {
     #layoutSize;
     #layoutStart;
-    #horMargin;
+    #paddingX;
     #items;
     #groupStack;
     #currentItem;
@@ -34,7 +34,7 @@ export class LayoutHandler {
         // 기본값: 부모의 전체 크기(OW/OH)와 기준 위치(OX/OY)
         this.#layoutSize = { w: { unit: 'OW', value: 100 }, h: { unit: 'OH', value: 100 } };
         this.#layoutStart = { x: { unit: 'OX', value: 0 }, y: { unit: 'OY', value: 0 } };
-        this.#horMargin = { unit: 'WW', value: 0 };
+        this.#paddingX = { unit: 'WW', value: 0 };
 
         this.#items = [];
         this.#groupStack = [];
@@ -98,43 +98,25 @@ export class LayoutHandler {
     }
 
     /**
-     * 레이아웃의 좌우 여백을 지정합니다.
-     * @param {string} unit - 여백 단위 ('WW', 'OW' 등)
-     * @param {number} value - 여백 크기
+     * 레이아웃 내부의 좌우 패딩을 지정합니다.
+     * @param {string} unit - 패딩 단위 ('WW', 'OW' 등)
+     * @param {number} value - 패딩 크기
      * @returns {LayoutHandler}
      */
-    horMargin(unit, value) {
-        this.#horMargin = { unit, value };
+    paddingX(unit, value) {
+        this.#paddingX = { unit, value };
         return this;
     }
-
-
 
     // --- 아이템 생성 영역 ---
 
     /**
-     * 새로운 UI 아이템을 레이아웃에 추가합니다. 그룹 외부에 사용됩니다.
+     * 현재 컨텍스트(루트 또는 열려 있는 그룹)에 새 UI 아이템을 추가합니다.
      * @param {string} type - UI 아이템 타입 (예: 'button', 'text' 등)
      * @param {string} [id=null] - 고유 식별자 ID
      * @returns {LayoutHandler}
      */
     item(type, id = null) {
-        if (this.#groupStack.length > 0) {
-            console.warn(`LayoutHandler: item('${type}')이(가) 그룹 내부에 호출되었습니다. 가독성을 위해 .groupItem()을 사용하세요.`);
-        }
-        return this.#createItem(type, id);
-    }
-
-    /**
-     * 새로운 UI 아이템을 현재 열려있는 그룹(newItemGroup) 내부에 추가합니다.
-     * @param {string} type - UI 아이템 타입
-     * @param {string} [id=null] - 고유 식별자 ID
-     * @returns {LayoutHandler}
-     */
-    groupItem(type, id = null) {
-        if (this.#groupStack.length === 0) {
-            console.warn(`LayoutHandler: groupItem('${type}')이(가) 그룹 외부에 호출되었습니다. .item()을 사용하세요.`);
-        }
         return this.#createItem(type, id);
     }
 
@@ -159,7 +141,12 @@ export class LayoutHandler {
         return this;
     }
 
-    /** 하단에서부터 위로 누적되는 아이템을 생성합니다. (vAlign: 'bottom' 자동 적용) */
+    /**
+     * 하단에서부터 위로 누적되는 아이템을 생성합니다.
+     * @param {string} type - UI 아이템 타입
+     * @param {string} [id=null] - 고유 식별자 ID
+     * @returns {LayoutHandler}
+     */
     bottomItem(type, id = null) {
         this.item(type, id);
         this.vAlign('bottom');
@@ -167,14 +154,14 @@ export class LayoutHandler {
     }
 
     /**
-     * 현재 아이템의 내부 자식 아이템으로 새로운 UI 요소를 추가합니다.
+     * 현재 편집 중인 아이템의 내부 자식 아이템을 추가합니다.
      * @param {string} type - UI 아이템 타입
      * @param {string} [id=null] - 고유 식별자 ID
      * @returns {LayoutHandler}
      */
-    innerItem(type, id = null) {
+    child(type, id = null) {
         if (!this.#parentItem) {
-            console.warn("LayoutHandler: innerItem은 반드시 item() 호출 이후에 사용되어야 합니다.");
+            console.warn("LayoutHandler: child()는 반드시 item() 호출 이후에 사용되어야 합니다.");
             return this.item(type, id);
         }
 
@@ -189,8 +176,52 @@ export class LayoutHandler {
         };
         this.#parentItem.children.push(child);
 
-        this.#currentItem = child; // innerItem을 _currentItem으로 대체하여 modifier가 적용되게 함
+        this.#currentItem = child;
         return this;
+    }
+
+    /**
+     * 현재 아이템 내부에 세로 공간을 추가합니다.
+     * @param {string} unit - 간격 단위
+     * @param {number} value - 간격 값
+     * @param {string} [id=null] - 고유 식별자 ID
+     * @returns {LayoutHandler}
+     */
+    childSpace(unit, value, id = null) {
+        return this.child('spacing', id).value(unit, value);
+    }
+
+    /**
+     * 현재 컨텍스트에 세로 공간을 추가합니다.
+     * @param {string} unit - 간격 단위
+     * @param {number} value - 간격 값
+     * @param {string} [id=null] - 고유 식별자 ID
+     * @returns {LayoutHandler}
+     */
+    space(unit, value, id = null) {
+        return this.item('spacing', id).value(unit, value);
+    }
+
+    /**
+     * 하단 누적 영역에 세로 공간을 추가합니다.
+     * @param {string} unit - 간격 단위
+     * @param {number} value - 간격 값
+     * @param {string} [id=null] - 고유 식별자 ID
+     * @returns {LayoutHandler}
+     */
+    bottomSpace(unit, value, id = null) {
+        return this.bottomItem('spacing', id).value(unit, value);
+    }
+
+    /**
+     * 현재 그룹 안에 수평 여백 또는 확장 스페이서를 추가합니다.
+     * @param {string} [unit='fill'] - `fill`이면 남는 폭을 채웁니다.
+     * @param {number} [value] - 고정 폭 스페이서 값
+     * @param {string} [id=null] - 고유 식별자 ID
+     * @returns {LayoutHandler}
+     */
+    spacer(unit = 'fill', value, id = null) {
+        return this.item('spacer', id).value(unit, value);
     }
 
     /**
@@ -198,13 +229,18 @@ export class LayoutHandler {
      */
     align(type) {
         const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
-        if (target) target.align = type;
+        if (target) {
+            target.align = type;
+            if (target.type === 'text' && target.props.align === undefined) {
+                target.props.align = type;
+            }
+        }
         return this;
     }
 
     /**
      * 수직 정렬을 설정합니다 ('top', 'center', 'bottom').
-     * groupItem() 또는 groupItemGroup() 내부에서 유효합니다.
+     * 그룹 내부 아이템 또는 하단 누적 아이템에서 유효합니다.
      */
     vAlign(type) {
         const inGroup = this.#groupStack.length > 0;
@@ -234,17 +270,31 @@ export class LayoutHandler {
         return this;
     }
 
-    /** 프리셋 이름을 지정합니다. (내부 CONSTANTS 참고) */
+    /**
+     * 프리셋 이름을 지정합니다.
+     * @param {string} preset - 프리셋 이름
+     * @returns {LayoutHandler}
+     */
     stylePreset(preset) {
         if (this.#currentItem) this.#currentItem.preset = preset;
         return this;
     }
 
+    /**
+     * 텍스트 값을 지정합니다.
+     * @param {string} textStr - 텍스트 문자열
+     * @returns {LayoutHandler}
+     */
     text(textStr) {
         if (this.#currentItem) this.#currentItem.props.text = textStr;
         return this;
     }
 
+    /**
+     * 버튼 텍스트를 지정합니다.
+     * @param {string} textStr - 버튼 텍스트
+     * @returns {LayoutHandler}
+     */
     buttonText(textStr) {
         if (this.#currentItem) this.#currentItem.props.text = textStr;
         return this;
@@ -284,6 +334,56 @@ export class LayoutHandler {
     }
 
     /**
+     * 호버 콜백을 지정합니다.
+     * @param {Function} callback - 호버 콜백
+     * @returns {LayoutHandler}
+     */
+    onHover(callback) {
+        if (this.#currentItem) this.#currentItem.props.onHover = callback;
+        return this;
+    }
+
+    /**
+     * 변경 콜백을 지정합니다.
+     * @param {Function} callback - 변경 콜백
+     * @returns {LayoutHandler}
+     */
+    onChange(callback) {
+        if (this.#currentItem) this.#currentItem.props.onChange = callback;
+        return this;
+    }
+
+    /**
+     * 변경 확정 콜백을 지정합니다.
+     * @param {Function} callback - 변경 확정 콜백
+     * @returns {LayoutHandler}
+     */
+    onCommit(callback) {
+        if (this.#currentItem) this.#currentItem.props.onCommit = callback;
+        return this;
+    }
+
+    /**
+     * 컨트롤 값(value)을 지정합니다.
+     * @param {*} value - 현재 값
+     * @returns {LayoutHandler}
+     */
+    setValue(value) {
+        if (this.#currentItem) this.#currentItem.props.value = value;
+        return this;
+    }
+
+    /**
+     * 선택 목록(items)을 지정합니다.
+     * @param {Array} items - 옵션 목록
+     * @returns {LayoutHandler}
+     */
+    items(items) {
+        if (this.#currentItem) this.#currentItem.props.items = items;
+        return this;
+    }
+
+    /**
      * 현재 아이템을 동적(dynamic) 요소로 설정합니다.
      * @returns {LayoutHandler}
      */
@@ -299,20 +399,32 @@ export class LayoutHandler {
         return this;
     }
 
+    /**
+     * 가로 크기 규칙을 지정합니다.
+     * `fill`은 남는 공간을 채우고, `content`는 내용 크기에 맞춥니다.
+     * @param {string} unit - 단위 또는 키워드
+     * @param {number} [value] - 단위 값
+     * @returns {LayoutHandler}
+     */
     width(unit, value) {
         const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
         if (target) {
-            if (unit === 'auto') target.widthObj = { unit: 'auto', value: undefined };
-            else target.widthObj = { unit, value };
+            target.widthObj = this.#normalizeMetricSpec(unit, value);
         }
         return this;
     }
 
+    /**
+     * 세로 크기 규칙을 지정합니다.
+     * `fill`은 부모 높이를 채우고, `content`는 내용 높이에 맞춥니다.
+     * @param {string} unit - 단위 또는 키워드
+     * @param {number} [value] - 단위 값
+     * @returns {LayoutHandler}
+     */
     height(unit, value) {
         const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
         if (target) {
-            if (unit === 'auto') target.heightObj = { unit: 'auto', value: undefined };
-            else target.heightObj = { unit, value };
+            target.heightObj = this.#normalizeMetricSpec(unit, value);
         }
         return this;
     }
@@ -328,19 +440,73 @@ export class LayoutHandler {
         return this;
     }
 
-    // --- 그룹(HBox) 설정 영역 ---
-
-    newItemGroup(id = null) {
-        if (this.#groupStack.length > 0) {
-            console.warn(`LayoutHandler: newItemGroup()이(가) 그룹 내부에 호출되었습니다. 가독성을 위해 .groupItemGroup()을 사용하세요.`);
-        }
-        return this.#createGroup(id);
+    /**
+     * 텍스트/컨텐츠 드로우 정렬을 지정합니다.
+     * @param {'left'|'center'|'right'} type - 컨텐츠 정렬
+     * @returns {LayoutHandler}
+     */
+    contentAlign(type) {
+        if (this.#currentItem) this.#currentItem.props.align = type;
+        return this;
     }
 
-    groupItemGroup(id = null) {
-        if (this.#groupStack.length === 0) {
-            console.warn(`LayoutHandler: groupItemGroup()이(가) 그룹 외부에 호출되었습니다. .newItemGroup()을 사용하세요.`);
-        }
+    /**
+     * 텍스트 드로우 정렬을 지정합니다.
+     * @param {'left'|'center'|'right'} type - 텍스트 정렬
+     * @returns {LayoutHandler}
+     */
+    textAlign(type) {
+        return this.contentAlign(type);
+    }
+
+    /**
+     * 아이콘 타입을 지정합니다.
+     * @param {string} type - 아이콘 타입
+     * @returns {LayoutHandler}
+     */
+    icon(type) {
+        if (this.#currentItem) this.#currentItem.props.iconType = type;
+        return this;
+    }
+
+    /**
+     * 채움 색상을 지정합니다.
+     * @param {string|object} color - 채움 색상
+     * @returns {LayoutHandler}
+     */
+    fill(color) {
+        if (this.#currentItem) this.#currentItem.props.fill = color;
+        return this;
+    }
+
+    /**
+     * 선 색상을 지정합니다.
+     * @param {string|object} color - 선 색상
+     * @returns {LayoutHandler}
+     */
+    stroke(color) {
+        if (this.#currentItem) this.#currentItem.props.stroke = color;
+        return this;
+    }
+
+    /**
+     * 선 두께를 지정합니다.
+     * @param {number} width - 선 두께
+     * @returns {LayoutHandler}
+     */
+    lineWidth(width) {
+        if (this.#currentItem) this.#currentItem.props.lineWidth = width;
+        return this;
+    }
+
+    // --- 그룹(HBox) 설정 영역 ---
+
+    /**
+     * 현재 컨텍스트에 새 수평 그룹을 추가합니다.
+     * @param {string} [id=null] - 고유 식별자 ID
+     * @returns {LayoutHandler}
+     */
+    group(id = null) {
         return this.#createGroup(id);
     }
 
@@ -357,8 +523,13 @@ export class LayoutHandler {
         return this;
     }
 
-    bottomItemGroup(id = null) {
-        this.newItemGroup(id);
+    /**
+     * 하단 정렬 그룹을 추가합니다.
+     * @param {string} [id=null] - 고유 식별자 ID
+     * @returns {LayoutHandler}
+     */
+    bottomGroup(id = null) {
+        this.group(id);
         this.vAlign('bottom');
         return this;
     }
@@ -374,7 +545,11 @@ export class LayoutHandler {
         return this;
     }
 
-    closeGroup() {
+    /**
+     * 현재 열려 있는 그룹을 닫습니다.
+     * @returns {LayoutHandler}
+     */
+    endGroup() {
         this.#commitCurrentItem();
         if (this.#groupStack.length > 0) {
             this.#groupStack.pop();
@@ -389,16 +564,30 @@ export class LayoutHandler {
     }
 
     /**
+     * 크기 지정 인자를 내부 규격으로 정규화합니다.
+     * @param {string} unit - 입력 단위 또는 키워드
+     * @param {number} [value] - 입력 값
+     * @returns {{unit:string, value:number|undefined}}
+     */
+    #normalizeMetricSpec(unit, value) {
+        if (unit === 'fit') return { unit: 'content', value: undefined };
+        if (unit === 'content') return { unit: 'content', value: undefined };
+        if (unit === 'expand') return { unit: 'fill', value: undefined };
+        if (unit === 'fill') return { unit: 'fill', value: undefined };
+        return { unit, value };
+    }
+
+    /**
      * 설정된 레이아웃 정보를 바탕으로 실제 좌표를 계산하여 반환합니다.
-     * @returns {{ dynamicItems: Object, staticItems: Object, components: Object }}
+     * @returns {{ dynamicItems: Array, staticItems: Array, components: Object }}
      */
     build() {
         this.resize();
 
         if (this.#groupStack.length > 0) {
-            console.warn("LayoutHandler: closeGroup이 모두 호출되지 않은 상태에서 build()가 실행되었습니다. 열려있는 모든 그룹을 강제로 닫습니다.");
+            console.warn("LayoutHandler: endGroup()이 모두 호출되지 않은 상태에서 build()가 실행되었습니다. 열려있는 모든 그룹을 강제로 닫습니다.");
             while (this.#groupStack.length > 0) {
-                this.closeGroup();
+                this.endGroup();
             }
         }
         this.#commitCurrentItem();
@@ -409,7 +598,7 @@ export class LayoutHandler {
         const frame = this.positioningHandler.resolveLayoutFrame(
             this.#layoutStart,
             this.#layoutSize,
-            this.#horMargin
+            this.#paddingX
         );
         const startX = frame.startX;
         const startY = frame.startY;
@@ -430,7 +619,7 @@ export class LayoutHandler {
             const isBottom = item.vAlign === 'bottom';
             const res = this.#resolveLayout(item, innerW, layoutH, false);
 
-            let itemW = res.isAutoW ? innerW : res.w;
+            let itemW = res.isFlexibleW ? innerW : res.w;
             let itemX = this.positioningHandler.resolveAlignedX(item.align, innerX, innerW, itemW);
 
             let finalH = 0;
@@ -447,12 +636,12 @@ export class LayoutHandler {
 
         allGeneratedItems.sort((a, b) => a.orderInt - b.orderInt);
 
-        let currentRank = 0;
-        const dynamicRet = {};
-        const staticRet = {};
+        const dynamicRet = [];
+        const staticRet = [];
         const orderTracker = new Set();
 
-        for (const gen of allGeneratedItems) {
+        for (let currentRank = 0; currentRank < allGeneratedItems.length; currentRank++) {
+            const gen = allGeneratedItems[currentRank];
             if (gen.orderInt !== undefined) {
                 if (orderTracker.has(gen.orderInt)) {
                     console.warn(`LayoutHandler 모순 발생: customRenderOrder(${gen.orderInt}) 값이 중복 지정되었습니다. ID: ${gen.id}. 이 순서를 무시하고 후순위로 자동 재배정합니다.`);
@@ -463,10 +652,8 @@ export class LayoutHandler {
 
             gen.item.renderOrder = currentRank;
 
-            if (gen.dynamic) dynamicRet[currentRank] = gen;
-            else staticRet[currentRank] = gen;
-
-            currentRank++;
+            if (gen.dynamic) dynamicRet.push(gen);
+            else staticRet.push(gen);
         }
 
         return { dynamicItems: dynamicRet, staticItems: staticRet, components: componentsMap };
@@ -477,45 +664,45 @@ export class LayoutHandler {
             return this.#resolveSpacingLayout(item, parentH);
         }
 
-        if (item.type === 'horMargin') {
-            return this.#resolveHorMarginLayout(item, parentW, isHboxChild);
+        if (item.type === 'spacer') {
+            return this.#resolveSpacerLayout(item, parentW, isHboxChild);
         }
 
         this.#applyRadius(item, parentW);
-        const isAutoW = item.widthObj && item.widthObj.unit === 'auto';
+        const widthMode = item.widthObj?.unit || null;
 
         if (item.type === 'hbox') {
-            return this.#resolveHBoxLayout(item, parentW, parentH, isHboxChild, isAutoW);
+            return this.#resolveHBoxLayout(item, parentW, parentH, isHboxChild, widthMode);
         }
 
-        const actualW = this.#resolveActualWidth(item, parentW, parentH, isAutoW);
-        return this.#resolveElementLayout(item, parentW, parentH, isHboxChild, isAutoW, actualW);
+        const actualW = this.#resolveActualWidth(item, parentW, parentH, widthMode);
+        return this.#resolveElementLayout(item, parentW, parentH, isHboxChild, widthMode, actualW);
     }
 
     #resolveSpacingLayout(item, parentH) {
         const val = this.parseUnit(item.unit, item.value, parentH);
         return {
-            isAutoW: false,
+            isFlexibleW: false,
             w: 0,
             h: val,
             finalize: () => ({ h: val })
         };
     }
 
-    #resolveHorMarginLayout(item, parentW, isHboxChild) {
+    #resolveSpacerLayout(item, parentW, isHboxChild) {
         if (!isHboxChild) {
-            console.warn(`LayoutHandler: horMargin은 groupItem() 내부(hbox child)에서만 사용할 수 있습니다.`);
-            return { isAutoW: false, w: 0, h: 0, finalize: () => ({ h: 0 }) };
+            console.warn("LayoutHandler: spacer()는 그룹 내부에서만 사용할 수 있습니다.");
+            return { isFlexibleW: false, w: 0, h: 0, finalize: () => ({ h: 0 }) };
         }
-        if (item.unit === 'expand') {
-            return { _vAlign: 'top', isAutoW: true, w: 0, h: 0, finalize: () => ({ h: 0 }) };
+        if (item.unit === 'fill') {
+            return { _vAlign: 'top', isFlexibleW: true, w: 0, h: 0, finalize: () => ({ h: 0 }) };
         }
         const val = this.parseUnit(item.unit, item.value, parentW);
-        return { _vAlign: 'top', isAutoW: false, w: val, h: 0, finalize: () => ({ h: 0 }) };
+        return { _vAlign: 'top', isFlexibleW: false, w: val, h: 0, finalize: () => ({ h: 0 }) };
     }
 
     #applyRadius(item, parentW) {
-        if (!item.radiusObj || typeof item.props.radius !== 'undefined') return;
+        if (!item.radiusObj) return;
 
         if (item.radiusObj.unit === 'preset') {
             let key = item.radiusObj.value;
@@ -532,13 +719,20 @@ export class LayoutHandler {
         item.props.radius = this.parseUnit(item.radiusObj.unit, item.radiusObj.value, parentW);
     }
 
-    #resolveActualWidth(item, parentW, parentH, isAutoW) {
-        if (item.widthObj && !isAutoW) {
+    #resolveActualWidth(item, parentW, parentH, widthMode) {
+        if (widthMode && widthMode !== 'fill' && widthMode !== 'content') {
             return this.parseUnit(item.widthObj.unit, item.widthObj.value, parentW);
         }
 
-        if (item.widthObj || isAutoW) {
+        if (widthMode === 'fill') {
             return parentW;
+        }
+
+        if (widthMode === 'content') {
+            const dummyEl = this.#instantiateElement(item, 0, 0, parentW, parentH, undefined);
+            const contentW = dummyEl ? (dummyEl.width || 0) : 0;
+            if (dummyEl) releaseUIItem(dummyEl);
+            return contentW;
         }
 
         const presetData = (item.type === 'button' && item.preset)
@@ -569,9 +763,11 @@ export class LayoutHandler {
         return 0;
     }
 
-    #resolveHBoxLayout(item, parentW, parentH, isHboxChild, isAutoW) {
+    #resolveHBoxLayout(item, parentW, parentH, isHboxChild, widthMode) {
+        const isFillW = widthMode === 'fill';
+        const isContentW = widthMode === 'content';
         let initialW = parentW;
-        if (item.widthObj && !isAutoW) {
+        if (item.widthObj && !isFillW && !isContentW) {
             initialW = this.parseUnit(item.widthObj.unit, item.widthObj.value, parentW);
         }
 
@@ -584,18 +780,20 @@ export class LayoutHandler {
 
         const justifyContent = this.#normalizeJustifyContent(item.justifyContent);
         let definedW = parentW;
-        if (isAutoW && isHboxChild) {
+        if (isFillW && isHboxChild) {
             definedW = 0;
-        } else if (item.widthObj && !isAutoW) {
+        } else if (isFillW) {
+            definedW = parentW;
+        } else if (item.widthObj && !isFillW && !isContentW) {
             definedW = initialW;
-        } else if (!isAutoW) {
+        } else {
             const metrics = this.#measureHBox(childResolvers, item, parentW, justifyContent);
-            definedW = metrics.numAuto === 0 ? (metrics.usedW + metrics.totalGaps) : parentW;
+            definedW = metrics.numFlexible === 0 ? (metrics.usedW + metrics.totalGaps) : parentW;
         }
 
         const metrics = this.#measureHBox(childResolvers, item, definedW, justifyContent);
         return {
-            isAutoW: isAutoW && isHboxChild,
+            isFlexibleW: isFillW && isHboxChild,
             w: definedW,
             h: metrics.maxH,
             finalize: (x, y, overrideW, layoutCtx) => {
@@ -605,7 +803,7 @@ export class LayoutHandler {
 
                 let iterX = flow.iterX;
                 for (const res of childResolvers) {
-                    const finalItemW = res.isAutoW ? finalMetrics.autoW : res.w;
+                    const finalItemW = res.isFlexibleW ? finalMetrics.flexibleW : res.w;
                     let itemY = y;
                     if (res._vAlign === 'center') itemY = y + Math.max(0, finalMetrics.maxH - res.h) / 2;
                     else if (res._vAlign === 'bottom') itemY = y + Math.max(0, finalMetrics.maxH - res.h);
@@ -619,11 +817,11 @@ export class LayoutHandler {
 
     #measureHBox(childResolvers, item, evalW, justifyContent) {
         let usedW = 0;
-        let numAuto = 0;
+        let numFlexible = 0;
         let maxH = 0;
 
         for (const res of childResolvers) {
-            if (res.isAutoW) numAuto++;
+            if (res.isFlexibleW) numFlexible++;
             else usedW += res.w;
             if (res.h > maxH) maxH = res.h;
         }
@@ -638,12 +836,12 @@ export class LayoutHandler {
             totalGaps = gapPx * (numItems + 1);
         }
 
-        let autoW = 0;
-        if (numAuto > 0) {
-            autoW = Math.max(0, (evalW - usedW - totalGaps) / numAuto);
+        let flexibleW = 0;
+        if (numFlexible > 0) {
+            flexibleW = Math.max(0, (evalW - usedW - totalGaps) / numFlexible);
         }
 
-        return { autoW, numAuto, gapPx, usedW, totalGaps, maxH, numItems };
+        return { flexibleW, numFlexible, gapPx, usedW, totalGaps, maxH, numItems };
     }
 
     #resolveHBoxFlow(justifyContent, startX, finalW, metrics) {
@@ -656,7 +854,7 @@ export class LayoutHandler {
             iterX = startX + spacing;
         }
 
-        if (metrics.numAuto > 0) {
+        if (metrics.numFlexible > 0) {
             return { spacing, iterX };
         }
 
@@ -679,14 +877,12 @@ export class LayoutHandler {
     }
 
     #normalizeJustifyContent(justifyContent) {
-        if (justifyContent === 'space_around') return 'space-around';
-        if (justifyContent === 'space_evenly') return 'space-evenly';
-        if (justifyContent === 'space_between') return 'space-between';
         return justifyContent;
     }
 
-    #resolveElementLayout(item, parentW, parentH, isHboxChild, isAutoW, actualW) {
-        const evalWForDummy = isAutoW && isHboxChild ? parentW : actualW;
+    #resolveElementLayout(item, parentW, parentH, isHboxChild, widthMode, actualW) {
+        const isFillW = widthMode === 'fill';
+        const evalWForDummy = isFillW && isHboxChild ? parentW : actualW;
         const dummyEl = this.#instantiateElement(item, 0, 0, parentW, parentH, evalWForDummy);
         const elW = dummyEl ? (dummyEl.width || 0) : evalWForDummy;
         let exactH = dummyEl ? (dummyEl.height || 0) : 0;
@@ -702,11 +898,11 @@ export class LayoutHandler {
         }
 
         return {
-            isAutoW: isAutoW && isHboxChild,
+            isFlexibleW: isFillW && isHboxChild,
             w: elW,
             h: exactH,
             finalize: (x, y, overrideW, layoutCtx) => {
-                const evalW = overrideW !== undefined ? overrideW : (isAutoW ? parentW : actualW);
+                const evalW = overrideW !== undefined ? overrideW : (isFillW ? parentW : actualW);
                 const el = this.#instantiateElement(item, x, y, parentW, parentH, evalW);
                 if (!el) return { h: exactH };
 

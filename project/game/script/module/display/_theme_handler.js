@@ -118,4 +118,10 @@ export const setTheme = (themeKeyOrDarkMode) => {
     if (themeHandlerInstance) {
         themeHandlerInstance.setTheme(themeKeyOrDarkMode);
     }
-}
+};
+
+/**
+ * 현재 적용 중인 테마 키를 반환합니다.
+ * @returns {string} 현재 테마 키입니다.
+ */
+export const getCurrentThemeKey = () => themeHandlerInstance?.getCurrentTheme?.() || DEFAULT_THEME_KEY;

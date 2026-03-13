@@ -1,16 +1,13 @@
-import { fsPromises, path, isNwRuntime } from 'util/nw_bridge.js';
+import { fsPromises, path } from 'util/nw_bridge.js';
 
 /**
  * @class IngameHandler
- * @description 인게임 상태(JSON) 데이터를 로드/병합/저장합니다.
- * NW.js는 파일 저장, 브라우저는 localStorage 저장을 사용합니다.
+ * @description 인게임 상태(JSON) 데이터를 NW.js 로컬 파일로 로드/병합/저장합니다.
  */
 export class IngameHandler {
     constructor(dataDir) {
         this.dataDir = dataDir;
-        this.isNwRuntime = isNwRuntime();
-        this.filePath = this.isNwRuntime ? path.join(this.dataDir, 'ingame.dat') : null;
-        this.storageKey = 'cirvivor.save.ingame';
+        this.filePath = path.join(this.dataDir, 'ingame.dat');
         this.data = {};
         this.defaultData = {
             current_level: 0,
@@ -31,65 +28,36 @@ export class IngameHandler {
      * 인게임 데이터 파일을 로드합니다.
      */
     async #load() {
-        if (this.isNwRuntime) {
-            let fileExists = false;
-            try {
-                await fsPromises.access(this.filePath);
-                fileExists = true;
-            } catch {
-                fileExists = false;
-            }
-
-            if (fileExists) {
-                try {
-                    this.data = JSON.parse(await fsPromises.readFile(this.filePath, 'utf-8'));
-
-                    // 병합 로직 (새로운 키가 추가되었을 경우를 대비)
-                    let updated = false;
-                    for (const key in this.defaultData) {
-                        if (this.data[key] === undefined) {
-                            this.data[key] = this.defaultData[key];
-                            updated = true;
-                        }
-                    }
-
-                    if (updated) {
-                        await this.save();
-                    }
-
-                } catch (e) {
-                    console.error('인게임 데이터 로드 실패:', e);
-                    this.data = JSON.parse(JSON.stringify(this.defaultData));
-                }
-            } else {
-                this.data = JSON.parse(JSON.stringify(this.defaultData));
-                await this.save();
-            }
-            return;
+        let fileExists = false;
+        try {
+            await fsPromises.access(this.filePath);
+            fileExists = true;
+        } catch {
+            fileExists = false;
         }
 
-        try {
-            const raw = window.localStorage.getItem(this.storageKey);
-            if (!raw) {
-                this.data = JSON.parse(JSON.stringify(this.defaultData));
-                await this.save();
-                return;
-            }
+        if (fileExists) {
+            try {
+                this.data = JSON.parse(await fsPromises.readFile(this.filePath, 'utf-8'));
 
-            this.data = JSON.parse(raw);
-            let updated = false;
-            for (const key in this.defaultData) {
-                if (this.data[key] === undefined) {
-                    this.data[key] = this.defaultData[key];
-                    updated = true;
+                // 병합 로직 (새로운 키가 추가되었을 경우를 대비)
+                let updated = false;
+                for (const key in this.defaultData) {
+                    if (this.data[key] === undefined) {
+                        this.data[key] = this.defaultData[key];
+                        updated = true;
+                    }
                 }
-            }
 
-            if (updated) {
-                await this.save();
+                if (updated) {
+                    await this.save();
+                }
+
+            } catch (e) {
+                console.error('인게임 데이터 로드 실패:', e);
+                this.data = JSON.parse(JSON.stringify(this.defaultData));
             }
-        } catch (e) {
-            console.error('localStorage에서 인게임 데이터 로드 실패:', e);
+        } else {
             this.data = JSON.parse(JSON.stringify(this.defaultData));
             await this.save();
         }
@@ -100,35 +68,23 @@ export class IngameHandler {
      * @returns {Promise} 저장 완료 Promise
      */
     async save() {
-        if (this.isNwRuntime) {
+        try {
+            await fsPromises.access(this.dataDir);
+        } catch (e) {
             try {
-                await fsPromises.access(this.dataDir);
-            } catch (e) {
-                try {
-                    await fsPromises.mkdir(this.dataDir, { recursive: true });
-                } catch (mkdirError) {
-                    console.error('인게임 데이터 디렉토리 생성 실패:', mkdirError);
-                    throw mkdirError;
-                }
+                await fsPromises.mkdir(this.dataDir, { recursive: true });
+            } catch (mkdirError) {
+                console.error('인게임 데이터 디렉토리 생성 실패:', mkdirError);
+                throw mkdirError;
             }
         }
 
         const dataStr = JSON.stringify(this.data, null, 4);
 
-        if (this.isNwRuntime) {
-            try {
-                await fsPromises.writeFile(this.filePath, dataStr);
-            } catch (err) {
-                console.error('인게임 데이터 저장 실패:', err);
-                throw err;
-            }
-            return;
-        }
-
         try {
-            window.localStorage.setItem(this.storageKey, dataStr);
+            await fsPromises.writeFile(this.filePath, dataStr);
         } catch (err) {
-            console.error('localStorage에 인게임 데이터 저장 실패:', err);
+            console.error('인게임 데이터 저장 실패:', err);
             throw err;
         }
     }

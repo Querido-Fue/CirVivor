@@ -41,11 +41,31 @@ export class UISystem {
     }
 
     /**
+     * UI 시스템의 현재 언어를 교체합니다.
+     * @param {string} languageKey - 적용할 언어 키입니다.
+     */
+    setLanguage(languageKey) {
+        if (this.languageHandler && typeof this.languageHandler.setLanguage === 'function') {
+            this.languageHandler.setLanguage(languageKey);
+        }
+    }
+
+    /**
      * 커서를 그립니다.
      * 오버레이가 있다면 그립니다.
      */
     draw() {
         this.cursor.draw(); // 커서는 항상 최상위
+    }
+
+    /**
+     * 런타임 상태에 맞춰 UI 커서 표시 여부를 전환합니다.
+     * @param {boolean} isVisible - 커서 표시 여부입니다.
+     */
+    setCursorVisible(isVisible) {
+        if (this.cursor && typeof this.cursor.setVisible === 'function') {
+            this.cursor.setVisible(isVisible);
+        }
     }
 }
 

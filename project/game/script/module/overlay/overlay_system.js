@@ -1,193 +1,271 @@
+import { getDisplaySystem } from 'display/display_system.js';
+import { getSetting } from 'save/save_system.js';
+import { OverlaySession } from './_overlay_session.js';
 import { ExitOverlay } from './_exit_overlay.js';
-import { CollectionOverlay } from './title/_collection.js';
+import { DeckOverlay } from './title/_deck.js';
 import { SettingsOverlay } from './title/_settings.js';
 import { CreditsOverlay } from './title/_credits.js';
-import { getData } from 'data/data_handler.js';
-
-const DEFAULT_OVERLAY_ANIMATION_PRESET = getData('DEFAULT_OVERLAY_ANIMATION_PRESET');
-const OVERLAY_ANIMATION_PRESETS = getData('OVERLAY_ANIMATION_PRESETS');
-
-let overlaySystemInstance = null;
+import { QuickStartOverlay } from './title/_quick_start.js';
+import { RecordsOverlay } from './title/_records.js';
+import { ResearchOverlay } from './title/_research.js';
+import { AchievementsOverlay } from './title/_achievements.js';
 
 /**
- * @class OverlaySystem
- * @description 게임 내 오버레이(팝업)를 관리하는 시스템입니다.
- * 일반 메뉴 오버레이와 종료 확인 팝업을 독립적으로 관리합니다.
+ * @class OverlayManager
+ * @description 동적 surface 기반 overlay session을 생성하고 수명주기를 관리합니다.
  */
-export class OverlaySystem {
+export class OverlayManager {
     constructor() {
-        overlaySystemInstance = this;
-        this.activeOverlay = null;
-        this.exitConfirmOverlay = null;
-        this.animationPreset = DEFAULT_OVERLAY_ANIMATION_PRESET;
+        this.displaySystem = null;
+        this.entries = new Map();
+        this.keyToIdMap = new Map();
+        this.sequence = 0;
     }
 
     /**
-     * 시스템 초기화 작업을 비동기적으로 수행합니다.
+     * 매니저를 초기화합니다.
      */
     async init() {
-        // 추가 초기화가 필요하다면 여기에 작성합니다.
+        this.displaySystem = getDisplaySystem();
     }
 
     /**
-     * 활성화된 오버레이를 업데이트합니다.
+     * overlay를 업데이트합니다.
      */
     update() {
-        if (this.activeOverlay) {
-            this.activeOverlay.update();
-        }
-        if (this.exitConfirmOverlay) {
-            this.exitConfirmOverlay.update();
+        for (const entry of this.#getSortedEntries()) {
+            entry.controller.update();
         }
     }
 
     /**
-     * 활성화된 오버레이를 화면에 그립니다.
+     * overlay를 그립니다.
      */
     draw() {
-        if (this.activeOverlay) {
-            this.activeOverlay.draw();
-        }
-        if (this.exitConfirmOverlay) {
-            this.exitConfirmOverlay.draw();
+        for (const entry of this.#getSortedEntries()) {
+            entry.controller.draw();
         }
     }
 
     /**
-         * 화면 크기 변동 시, 활성화된 오버레이의 레이아웃을 다시 계산하도록 지시합니다.
-         */
+     * overlay 레이아웃을 다시 계산합니다.
+     */
     resize() {
-        if (this.activeOverlay && typeof this.activeOverlay.resize === 'function') {
-            this.activeOverlay.resize();
+        for (const entry of this.entries.values()) {
+            entry.controller.resize();
         }
-        if (this.exitConfirmOverlay && typeof this.exitConfirmOverlay.resize === 'function') {
-            this.exitConfirmOverlay.resize();
-        }
+        this.#invalidateAboveOrder(-1);
     }
 
     /**
-     * 종료 확인 오버레이를 표시합니다. 이미 열려 있으면 업데이트하지 않습니다.
+     * 활성 overlay들에 런타임 설정 변경을 전달합니다.
+     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
-    showExitConfirmation() {
-        if (this.exitConfirmOverlay) return;
+    applyRuntimeSettings(changedSettings = {}) {
+        for (const entry of this.entries.values()) {
+            if (typeof entry.controller.applyRuntimeSettings === 'function') {
+                entry.controller.applyRuntimeSettings(changedSettings);
+            }
+        }
+        this.#invalidateAboveOrder(-1);
+    }
 
-        this.exitConfirmOverlay = new ExitOverlay();
-        this.exitConfirmOverlay.setAnimationPreset(this.animationPreset);
-        this.exitConfirmOverlay.onCloseComplete = () => {
-            this.exitConfirmOverlay = null;
+    /**
+     * 활성 overlay가 하나라도 있는지 반환합니다.
+     * @returns {boolean} 활성 overlay 존재 여부입니다.
+     */
+    hasAnyOverlay() {
+        return this.entries.size > 0;
+    }
+
+    /**
+     * key 기반 overlay를 닫습니다.
+     * @param {string} key - 닫을 overlay key입니다.
+     */
+    closeByKey(key) {
+        const overlayId = this.keyToIdMap.get(key);
+        if (!overlayId) {
+            return;
+        }
+
+        this.closeOverlay(overlayId);
+    }
+
+    /**
+     * id 기반 overlay를 닫습니다.
+     * @param {string} overlayId - 닫을 overlay id입니다.
+     */
+    closeOverlay(overlayId) {
+        const entry = this.entries.get(overlayId);
+        if (!entry) {
+            return;
+        }
+
+        entry.controller.close();
+    }
+
+    /**
+     * 종료 확인 overlay를 엽니다.
+     * @returns {string|null} 생성된 overlay id입니다.
+     */
+    openExitOverlay() {
+        if (this.keyToIdMap.has('exitConfirm')) {
+            return this.keyToIdMap.get('exitConfirm');
+        }
+
+        return this.openOverlay(new ExitOverlay(), { key: 'exitConfirm' });
+    }
+
+    /**
+     * 타이틀 메뉴 overlay를 엽니다.
+     * @param {'deck'|'setting'|'credits'|'quickStart'|'records'|'research'|'achievements'} menu - 열 메뉴 이름입니다.
+     * @param {object} titleScene - 타이틀 씬 인스턴스입니다.
+     * @returns {string|null} 생성된 overlay id입니다.
+     */
+    openTitleOverlay(menu, titleScene) {
+        if (this.keyToIdMap.has('titleMenu')) {
+            return this.keyToIdMap.get('titleMenu');
+        }
+
+        const controller = this.#createTitleOverlay(menu, titleScene);
+        if (!controller) {
+            return null;
+        }
+
+        return this.openOverlay(controller, { key: 'titleMenu' });
+    }
+
+    /**
+     * 타이틀 메뉴 overlay를 닫습니다.
+     */
+    closeTitleOverlay() {
+        this.closeByKey('titleMenu');
+    }
+
+    /**
+     * 일반 overlay를 엽니다.
+     * @param {import('./_base_overlay.js').BaseOverlay} controller - 열 overlay 컨트롤러입니다.
+     * @param {{key?: string}} [options={}] - 등록 옵션입니다.
+     * @returns {string|null} 생성된 overlay id입니다.
+     */
+    openOverlay(controller, options = {}) {
+        if (!controller) {
+            return null;
+        }
+
+        if (!this.displaySystem) {
+            this.displaySystem = getDisplaySystem();
+        }
+        if (!this.displaySystem) {
+            return null;
+        }
+
+        const overlayId = `overlay:${++this.sequence}`;
+        const session = new OverlaySession({
+            ...controller.getSessionOptions(),
+            displaySystem: this.displaySystem,
+            disableTransparency: getSetting('disableTransparency'),
+            orderSequence: this.sequence
+        });
+
+        controller.setCloseHandler(() => {
+            this.#releaseOverlay(overlayId);
+        });
+        controller.attach(session);
+
+        const entry = {
+            id: overlayId,
+            key: options.key || null,
+            order: session.layer,
+            sequence: this.sequence,
+            controller,
+            session
         };
-        this.exitConfirmOverlay.open();
+
+        this.entries.set(overlayId, entry);
+        if (entry.key) {
+            this.keyToIdMap.set(entry.key, overlayId);
+        }
+
+        this.#invalidateAboveOrder(session.sortOrderBase);
+        return overlayId;
     }
 
     /**
-     * 메뉴 이름에 해당하는 오버레이를 엽니다.
-     * @param {string} menu - 메뉴 이름 ('collection', 'setting', 'credits')
-     * @param {object} titleScene - 타이틀 씨닉 확장용 레퍼런스
+     * @private
+     * overlay를 내부 맵에서 제거하고 surface를 회수합니다.
+     * @param {string} overlayId - 제거할 overlay id입니다.
      */
-    menuOpen(menu, titleScene) {
-        if (this.activeOverlay) return;
+    #releaseOverlay(overlayId) {
+        const entry = this.entries.get(overlayId);
+        if (!entry) {
+            return;
+        }
+
+        const releasedOrder = entry.session.sortOrderBase;
+        entry.controller.destroy();
+        entry.session.release();
+        this.entries.delete(overlayId);
+
+        if (entry.key) {
+            this.keyToIdMap.delete(entry.key);
+        }
+
+        this.#invalidateAboveOrder(releasedOrder);
+    }
+
+    /**
+     * @private
+     * 타이틀 메뉴 이름에 맞는 overlay를 생성합니다.
+     * @param {string} menu - 열 메뉴 이름입니다.
+     * @param {object} titleScene - 타이틀 씬 인스턴스입니다.
+     * @returns {object|null} 생성된 overlay 컨트롤러입니다.
+     */
+    #createTitleOverlay(menu, titleScene) {
         switch (menu) {
-            case "collection":
-                this.activeOverlay = new CollectionOverlay(titleScene);
-                break;
-            case "setting":
-                this.activeOverlay = new SettingsOverlay(titleScene);
-                break;
-            case "credits":
-                this.activeOverlay = new CreditsOverlay(titleScene);
-                break;
+            case 'deck':
+                return new DeckOverlay(titleScene);
+            case 'setting':
+                return new SettingsOverlay(titleScene);
+            case 'credits':
+                return new CreditsOverlay(titleScene);
+            case 'quickStart':
+                return new QuickStartOverlay(titleScene);
+            case 'records':
+                return new RecordsOverlay(titleScene);
+            case 'research':
+                return new ResearchOverlay(titleScene);
+            case 'achievements':
+                return new AchievementsOverlay(titleScene);
             default:
-                console.warn(`메뉴 열림 처리 중 오류가 발생했습니다. ${menu} 메뉴가 없습니다.`);
-                return;
+                return null;
         }
-        this.activeOverlay.setAnimationPreset(this.animationPreset);
-        this.activeOverlay.onCloseComplete = () => {
-            this.activeOverlay = null;
-        };
-        this.activeOverlay.open();
     }
 
     /**
-     * 현재 활성화된 오버레이를 닫습니다.
+     * @private
+     * 특정 정렬 순서 위쪽 overlay의 blur 캐시를 무효화합니다.
+     * @param {number} order - 기준 정렬 순서입니다.
      */
-    menuClose() {
-        if (!this.activeOverlay) return;
-        this.activeOverlay.close();
+    #invalidateAboveOrder(order) {
+        for (const entry of this.entries.values()) {
+            if (entry.session.sortOrderBase > order) {
+                entry.session.invalidateBlur();
+            }
+        }
     }
 
     /**
-     * 현재 활성 오버레이 존재 여부를 반환합니다.
-     * @returns {boolean} 오버레이 활성 여부
+     * @private
+     * 표시 순서대로 정렬된 entry 목록을 반환합니다.
+     * @returns {Array<{order: number, sequence: number, controller: object}>} 정렬된 entry 목록입니다.
      */
-    hasOverlay() {
-        return this.activeOverlay !== null;
-    }
-
-    /**
-         * 전역 오버레이 오프닝/클로징 애니메이션 프리셋을 설정하고, 현재 활성화된 오버레이에 반영합니다.
-         * @param {string} presetName 애니메이션 프리셋 식별자
-         */
-    setAnimationPreset(presetName) {
-        this.animationPreset = presetName || DEFAULT_OVERLAY_ANIMATION_PRESET;
-        if (this.activeOverlay) {
-            this.activeOverlay.setAnimationPreset(this.animationPreset);
-        }
-        if (this.exitConfirmOverlay) {
-            this.exitConfirmOverlay.setAnimationPreset(this.animationPreset);
-        }
+    #getSortedEntries() {
+        return Array.from(this.entries.values()).sort((left, right) => {
+            if (left.order !== right.order) {
+                return left.order - right.order;
+            }
+            return left.sequence - right.sequence;
+        });
     }
 }
-
-/**
- * 종료 확인 오버레이 팝업을 표시합니다.
- */
-export const showExitConfirmation = () => {
-    if (overlaySystemInstance) {
-        overlaySystemInstance.showExitConfirmation();
-    }
-}
-
-/**
- * 주어진 메뉴 이름에 해당하는 타이틀 오버레이를 엽니다.
- * @param {string} menu - 메뉴 이름 ('collection', 'setting', 'credits')
- * @param {object} titleScene - 타이틀 씬 참조
- */
-export const titleMenuOpen = (menu, titleScene) => {
-    if (overlaySystemInstance) {
-        overlaySystemInstance.menuOpen(menu, titleScene);
-    }
-}
-
-/**
- * 현재 열려있는 타이틀 오버레이를 닫습니다.
- */
-export const titleMenuClose = () => {
-    if (overlaySystemInstance) {
-        overlaySystemInstance.menuClose();
-    }
-}
-
-/**
- * 현재 활성화된 오버레이가 있는지 여부를 확인합니다.
- * @returns {boolean} 오버레이 활성화 여부
- */
-export const hasMenuOverlay = () => {
-    return overlaySystemInstance ? overlaySystemInstance.hasOverlay() : false;
-}
-
-/**
- * 오버레이 애니메이션 프리셋을 설정합니다.
- * 다음에 열리는 오버레이와 현재 열린 오버레이에 즉시 적용됩니다.
- * @param {string} presetName - 프리셋 이름 (예: uiAnimation)
- */
-export const setOverlayAnimationPreset = (presetName) => {
-    if (overlaySystemInstance) {
-        overlaySystemInstance.setAnimationPreset(presetName);
-    }
-}
-
-/**
- * 사용 가능한 오버레이 애니메이션 프리셋 이름 목록을 반환합니다.
- * @returns {string[]} 프리셋 이름 배열
- */
-export const getOverlayAnimationPresetNames = () => Object.keys(OVERLAY_ANIMATION_PRESETS);

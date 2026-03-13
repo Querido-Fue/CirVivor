@@ -50,6 +50,21 @@ export class DebugSystem {
             this.poolDebugger.draw();
         }
     }
+
+    /**
+     * 런타임 설정 변경 중 디버그 관련 변경을 즉시 반영합니다.
+     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
+     */
+    applyRuntimeSettings(changedSettings = {}) {
+        if (changedSettings.debugMode !== true) {
+            return;
+        }
+
+        const tool = runtimeTool();
+        if (tool && typeof tool.openDebugWindow === 'function') {
+            tool.openDebugWindow();
+        }
+    }
 }
 
 export function errThrow(e, message, level) {

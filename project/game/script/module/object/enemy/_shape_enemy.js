@@ -223,22 +223,26 @@ export class ShapeEnemy extends BaseEnemy {
     }
 
     /**
-         * 디스플레이 시스템의 WebGL 오브젝트 레이어를 통해 스프라이트를 렌더링합니다.
+         * 디스플레이 시스템의 WebGL 레이어를 통해 스프라이트를 렌더링합니다.
+         * @param {{layer?: string, fill?: string, alpha?: number, sizeScale?: number, offsetX?: number, offsetY?: number}} [overrideOptions={}] - 임시 렌더 오버라이드 값입니다.
          */
-    draw() {
+    draw(overrideOptions = {}) {
         if (!this.active) return;
         this.#syncRotationCache();
 
-        const baseH = this.getRenderHeightPx();
+        const sizeScale = Number.isFinite(overrideOptions.sizeScale) ? overrideOptions.sizeScale : 1;
+        const offsetX = Number.isFinite(overrideOptions.offsetX) ? overrideOptions.offsetX : 0;
+        const offsetY = Number.isFinite(overrideOptions.offsetY) ? overrideOptions.offsetY : 0;
+        const baseH = this.getRenderHeightPx() * sizeScale;
         const h = baseH * this.heightScale;
         const w = baseH * this.aspectRatio;
         const options = this.#renderOptions;
-        options.x = this.renderPosition.x;
-        options.y = this.renderPosition.y - getObjectOffsetY();
+        options.x = this.renderPosition.x + offsetX;
+        options.y = (this.renderPosition.y - getObjectOffsetY()) + offsetY;
         options.w = w;
         options.h = h;
-        options.fill = this.fill;
-        options.alpha = this.alpha;
-        renderGL('object', options);
+        options.fill = overrideOptions.fill ?? this.fill;
+        options.alpha = overrideOptions.alpha ?? this.alpha;
+        renderGL(overrideOptions.layer || 'object', options);
     }
 }

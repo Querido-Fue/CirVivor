@@ -28,6 +28,16 @@ export class InputSystem {
         this.mouseInputHandler.update();
         this.keyboardInputHandler.update();
     }
+
+    /**
+     * 마우스와 키보드 입력 상태를 모두 초기화합니다.
+     * 창 비활성화 후 복귀 시 남아 있는 눌림 상태를 제거합니다.
+     * @param {{mouseInactive?: boolean}} [options={}] - 마우스를 inactive 상태로 둘지 여부입니다.
+     */
+    resetAllInputState(options = {}) {
+        this.mouseInputHandler.resetMouseInput({ inactive: options.mouseInactive === true });
+        this.keyboardInputHandler.resetKeyboardInput();
+    }
 }
 
 /**
@@ -40,13 +50,20 @@ export const getMouseInput = (key) => inputSystemInstance.mouseInputHandler.getM
 /**
  * 지정한 마우스 버튼 상태 배열에 특정 상태가 포함되어 있는지 검사합니다.
  * @param {'left'|'right'|'middle'} button - 검사할 버튼 이름
- * @param {'idle'|'click'|'clicking'|'clicked'} state - 검사할 상태 이름
+ * @param {'inactive'|'idle'|'click'|'clicking'|'clicked'} state - 검사할 상태 이름
+ * @param {{includeConsumed?: boolean}} [options={}] - 소비된 상태 포함 여부 옵션입니다.
  * @returns {boolean} 상태 포함 여부
  */
-export const hasMouseState = (button, state) => {
-    const mouseState = inputSystemInstance.mouseInputHandler.getMouseInput(button);
-    return Array.isArray(mouseState) ? mouseState.includes(state) : false;
-};
+export const hasMouseState = (button, state, options = {}) => inputSystemInstance.mouseInputHandler.hasButtonState(button, state, options);
+
+/**
+ * 지정한 마우스 버튼의 단발성 상태를 소비 처리합니다.
+ * 현재는 `clicked` 상태만 소비 대상으로 사용합니다.
+ * @param {'left'|'right'|'middle'} button - 소비할 버튼 이름입니다.
+ * @param {'clicked'} [state='clicked'] - 소비할 상태 이름입니다.
+ * @returns {boolean} 실제로 소비되었으면 true를 반환합니다.
+ */
+export const consumeMouseState = (button, state = 'clicked') => inputSystemInstance.mouseInputHandler.consumeButtonState(button, state);
 
 /**
  * 지정한 마우스 버튼이 현재 눌림 계열 상태인지 반환합니다.

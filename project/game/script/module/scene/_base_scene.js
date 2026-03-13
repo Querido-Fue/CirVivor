@@ -33,4 +33,12 @@ export class BaseScene {
          */
     resize() {
     }
+
+    /**
+     * 런타임 설정 변경을 현재 씬에 반영합니다. (오버라이드 선택)
+     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
+     */
+    applyRuntimeSettings(changedSettings = {}) {
+        void changedSettings;
+    }
 }

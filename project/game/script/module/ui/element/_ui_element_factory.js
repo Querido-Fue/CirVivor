@@ -41,23 +41,19 @@ export class UIElementFactory {
 
     static _createButton(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         const presetData = this._getPresetData(item.preset, BUTTON_CONSTANTS);
-
-        const width = forcedW !== undefined
-            ? forcedW
-            : (item.widthObj
-                ? layoutHandler.parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
-                : layoutHandler.parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW));
-
-        const height = item.heightObj
-            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : layoutHandler.parseUnit(presetData.HEIGHT?.BASE || 'WH', presetData.HEIGHT?.VALUE || 5, parentH);
+        const defaultHeight = layoutHandler.parseUnit(presetData.HEIGHT?.BASE || 'WH', presetData.HEIGHT?.VALUE || 5, parentH);
+        const height = this._resolveMetricValue(item.heightObj, {
+            layoutHandler,
+            parentSize: parentH,
+            defaultValue: defaultHeight,
+            fillValue: parentH
+        });
 
         const props = {
             parent: layoutHandler.parent,
             layer: layoutHandler.layer,
             x,
             y,
-            width,
             height,
             onClick: item.props.onClick || (() => { }),
             uiScale: layoutHandler.uiScale,
@@ -110,6 +106,18 @@ export class UIElementFactory {
 
         this._cleanupButtonLegacyProps(props);
 
+        const defaultWidth = layoutHandler.parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW);
+        const width = forcedW !== undefined
+            ? forcedW
+            : this._resolveMetricValue(item.widthObj, {
+                layoutHandler,
+                parentSize: parentW,
+                defaultValue: defaultWidth,
+                fillValue: parentW,
+                contentValue: this._measureButtonContentWidth(props, height)
+            });
+        props.width = width;
+
         const btn = UIPool.button.get();
         btn.init(props);
         btn.width = width;
@@ -117,7 +125,7 @@ export class UIElementFactory {
         return btn;
     }
 
-    static _createText(item, x, y, parentW, _parentH, _forcedW, layoutHandler) {
+    static _createText(item, x, y, parentW, parentH, _forcedW, layoutHandler) {
         const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
 
         const fontSizePx = layoutHandler.parseUnit(
@@ -137,6 +145,12 @@ export class UIElementFactory {
             const match = String(item.props.font).match(/(\d+(?:\.\d+)?)px/);
             if (match) resolvedHeight = parseFloat(match[1]);
         }
+        resolvedHeight = this._resolveMetricValue(item.heightObj, {
+            layoutHandler,
+            parentSize: parentH,
+            defaultValue: resolvedHeight,
+            fillValue: parentH
+        });
 
         const alignVal = item.props.align || 'left';
         const textObj = UIPool.text.get();
@@ -166,10 +180,18 @@ export class UIElementFactory {
 
         slider.width = forcedW !== undefined
             ? forcedW
-            : (slider.width || layoutHandler.parseUnit('WW', 10, parentW));
-        slider.height = item.heightObj
-            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : (slider.height || layoutHandler.parseUnit('WH', 2, parentH));
+            : this._resolveMetricValue(item.widthObj, {
+                layoutHandler,
+                parentSize: parentW,
+                defaultValue: slider.width || layoutHandler.parseUnit('WW', 10, parentW),
+                fillValue: parentW
+            });
+        slider.height = this._resolveMetricValue(item.heightObj, {
+            layoutHandler,
+            parentSize: parentH,
+            defaultValue: slider.height || layoutHandler.parseUnit('WH', 2, parentH),
+            fillValue: parentH
+        });
 
         return slider;
     }
@@ -181,10 +203,18 @@ export class UIElementFactory {
 
         toggle.width = forcedW !== undefined
             ? forcedW
-            : (toggle.width || layoutHandler.parseUnit('WW', 5, parentW));
-        toggle.height = item.heightObj
-            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : (toggle.height || layoutHandler.parseUnit('WH', 2.5, parentH));
+            : this._resolveMetricValue(item.widthObj, {
+                layoutHandler,
+                parentSize: parentW,
+                defaultValue: toggle.width || layoutHandler.parseUnit('WW', 5, parentW),
+                fillValue: parentW
+            });
+        toggle.height = this._resolveMetricValue(item.heightObj, {
+            layoutHandler,
+            parentSize: parentH,
+            defaultValue: toggle.height || layoutHandler.parseUnit('WH', 2.5, parentH),
+            fillValue: parentH
+        });
 
         return toggle;
     }
@@ -201,10 +231,18 @@ export class UIElementFactory {
 
         segment.width = forcedW !== undefined
             ? forcedW
-            : (segment.width || layoutHandler.parseUnit('WW', 15, parentW));
-        segment.height = item.heightObj
-            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : (segment.height || layoutHandler.parseUnit('WH', 3, parentH));
+            : this._resolveMetricValue(item.widthObj, {
+                layoutHandler,
+                parentSize: parentW,
+                defaultValue: segment.width || layoutHandler.parseUnit('WW', 15, parentW),
+                fillValue: parentW
+            });
+        segment.height = this._resolveMetricValue(item.heightObj, {
+            layoutHandler,
+            parentSize: parentH,
+            defaultValue: segment.height || layoutHandler.parseUnit('WH', 3, parentH),
+            fillValue: parentH
+        });
 
         return segment;
     }
@@ -217,10 +255,18 @@ export class UIElementFactory {
 
         const width = forcedW !== undefined
             ? forcedW
-            : layoutHandler.parseUnit('WW', 15, parentW);
-        const height = item.heightObj
-            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : layoutHandler.parseUnit('WH', 3, parentH);
+            : this._resolveMetricValue(item.widthObj, {
+                layoutHandler,
+                parentSize: parentW,
+                defaultValue: layoutHandler.parseUnit('WW', 15, parentW),
+                fillValue: parentW
+            });
+        const height = this._resolveMetricValue(item.heightObj, {
+            layoutHandler,
+            parentSize: parentH,
+            defaultValue: layoutHandler.parseUnit('WH', 3, parentH),
+            fillValue: parentH
+        });
 
         const props = this._createCommonProps(item, x, y, layoutHandler);
         props.width = width;
@@ -235,9 +281,13 @@ export class UIElementFactory {
     static _createLine(item, x, y, parentW, _parentH, forcedW, layoutHandler) {
         const width = forcedW !== undefined
             ? forcedW
-            : (item.widthObj
-                ? layoutHandler.parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
-                : layoutHandler.parseUnit('WW', 10, parentW));
+            : this._resolveMetricValue(item.widthObj, {
+                layoutHandler,
+                parentSize: parentW,
+                defaultValue: layoutHandler.parseUnit('WW', 10, parentW),
+                fillValue: parentW,
+                contentValue: 0
+            });
 
         const lineObj = UIPool.line.get();
         Object.assign(lineObj, {
@@ -286,16 +336,22 @@ export class UIElementFactory {
     static _createProgressBar(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         const width = forcedW !== undefined
             ? forcedW
-            : (item.widthObj
-                ? layoutHandler.parseUnit(item.widthObj.unit, item.widthObj.value, parentW)
-                : layoutHandler.parseUnit('WW', 10, parentW));
-        const height = item.heightObj
-            ? layoutHandler.parseUnit(item.heightObj.unit, item.heightObj.value, parentH)
-            : layoutHandler.parseUnit('WH', 1, parentH);
+            : this._resolveMetricValue(item.widthObj, {
+                layoutHandler,
+                parentSize: parentW,
+                defaultValue: layoutHandler.parseUnit('WW', 10, parentW),
+                fillValue: parentW
+            });
+        const height = this._resolveMetricValue(item.heightObj, {
+            layoutHandler,
+            parentSize: parentH,
+            defaultValue: layoutHandler.parseUnit('WH', 1, parentH),
+            fillValue: parentH
+        });
 
         const props = {
             parent: layoutHandler.parent,
-            layer: item.props.layer || layoutHandler.layer || 'overlay',
+            layer: item.props.layer || layoutHandler.layer || 'ui',
             x,
             y,
             width,
@@ -318,6 +374,94 @@ export class UIElementFactory {
             y,
             ...item.props
         };
+    }
+
+    /**
+     * 크기 규격 객체를 실제 수치로 변환합니다.
+     * @param {{unit:string, value:number}|undefined} metricObj - 크기 규격 객체
+     * @param {object} options - 변환 옵션
+     * @returns {number} 계산된 크기
+     */
+    static _resolveMetricValue(metricObj, options) {
+        const {
+            layoutHandler,
+            parentSize,
+            defaultValue,
+            fillValue,
+            contentValue = defaultValue
+        } = options;
+
+        if (!metricObj) return defaultValue;
+        if (metricObj.unit === 'content') return contentValue;
+        if (metricObj.unit === 'fill') return fillValue;
+        return layoutHandler.parseUnit(metricObj.unit, metricObj.value, parentSize);
+    }
+
+    /**
+     * 버튼 내부 콘텐츠를 모두 감싸는 최소 너비를 계산합니다.
+     * @param {object} props - 버튼 초기화 속성
+     * @param {number} buttonHeight - 버튼 높이
+     * @returns {number} 콘텐츠 기준 최소 너비
+     */
+    static _measureButtonContentWidth(props, buttonHeight) {
+        const margin = props.margin || 0;
+        const spacing = props.itemSpacing || 5;
+        const leftWidth = this._measureButtonSlotWidth(props.left, buttonHeight, spacing);
+        const centerWidth = this._measureButtonSlotWidth(props.center, buttonHeight, spacing);
+        const rightWidth = this._measureButtonSlotWidth(props.right, buttonHeight, spacing);
+        const edgeWidth = leftWidth + rightWidth;
+        return Math.max(
+            (margin * 2) + centerWidth,
+            (margin * 2) + edgeWidth,
+            (margin * 2) + leftWidth,
+            (margin * 2) + rightWidth
+        );
+    }
+
+    /**
+     * 버튼 슬롯(left/center/right) 하나의 총 너비를 계산합니다.
+     * @param {Array<object>} items - 슬롯 아이템 목록
+     * @param {number} buttonHeight - 버튼 높이
+     * @param {number} spacing - 슬롯 내부 간격
+     * @returns {number} 슬롯 총 너비
+     */
+    static _measureButtonSlotWidth(items, buttonHeight, spacing) {
+        const list = Array.isArray(items) ? items.filter(Boolean) : [];
+        if (list.length === 0) return 0;
+
+        let total = 0;
+        for (const item of list) {
+            total += this._measureButtonItemWidth(item, buttonHeight);
+        }
+
+        if (list.length > 1) {
+            total += spacing * (list.length - 1);
+        }
+
+        return total;
+    }
+
+    /**
+     * 버튼 내부 단일 아이템의 예상 너비를 계산합니다.
+     * @param {object} item - 버튼 내부 아이템
+     * @param {number} buttonHeight - 버튼 높이
+     * @returns {number} 아이템 예상 너비
+     */
+    static _measureButtonItemWidth(item, buttonHeight) {
+        if (item.width !== undefined && typeof item.width === 'number') {
+            return item.width;
+        }
+
+        if (item.text !== undefined && item.font && typeof item.size === 'number') {
+            const fontString = `${item.fontWeight || ''}${item.size}px ${this._normalizeFontFamily(item.font)}`;
+            return measureText(item.text, fontString);
+        }
+
+        if (item.constructor?.name === 'Icon' || item.type !== undefined) {
+            return buttonHeight * 0.5;
+        }
+
+        return 0;
     }
 
     static _initializeButtonContentArrays(props) {

@@ -58,9 +58,12 @@ export class GameScene extends BaseScene {
         this.boxWalls = [];
         this.buttons = [];
         this.collisionStats = {
-            roughCircleChecks: 0,
+            collisionCheckCount: 0,
+            aabbPassCount: 0,
+            aabbRejectCount: 0,
+            circlePassCount: 0,
+            circleRejectCount: 0,
             polygonChecks: 0,
-            projectileEnemyChecks: 0
         };
 
         this.wallIdCounter = 1;
@@ -558,9 +561,9 @@ export class GameScene extends BaseScene {
         });
         render('ui', {
             shape: 'text',
-            text: `proj-enemy checks: ${this.collisionStats.projectileEnemyChecks}`,
+            text: `Collision check count: ${this.collisionStats.collisionCheckCount}`,
             x: statsX,
-            y: statsY - (statsFont * 1.28),
+            y: statsY - (statsFont * 5.12),
             font: `400 ${statsFont}px "Pretendard Variable"`,
             fill: ColorSchemes.Game.Font,
             align: 'right',
@@ -569,7 +572,18 @@ export class GameScene extends BaseScene {
         });
         render('ui', {
             shape: 'text',
-            text: `polygon checks: ${this.collisionStats.polygonChecks}`,
+            text: `AABB pass: ${this.collisionStats.aabbPassCount} | reject: ${this.collisionStats.aabbRejectCount}`,
+            x: statsX,
+            y: statsY - (statsFont * 3.84),
+            font: `400 ${statsFont}px "Pretendard Variable"`,
+            fill: ColorSchemes.Game.Font,
+            align: 'right',
+            baseline: 'bottom',
+            alpha: 0.9
+        });
+        render('ui', {
+            shape: 'text',
+            text: `Circle pass: ${this.collisionStats.circlePassCount} | reject: ${this.collisionStats.circleRejectCount}`,
             x: statsX,
             y: statsY - (statsFont * 2.56),
             font: `400 ${statsFont}px "Pretendard Variable"`,
@@ -580,9 +594,9 @@ export class GameScene extends BaseScene {
         });
         render('ui', {
             shape: 'text',
-            text: `rough circle checks: ${this.collisionStats.roughCircleChecks}`,
+            text: `polygon check: ${this.collisionStats.polygonChecks}`,
             x: statsX,
-            y: statsY - (statsFont * 3.84),
+            y: statsY - (statsFont * 1.28),
             font: `400 ${statsFont}px "Pretendard Variable"`,
             fill: ColorSchemes.Game.Font,
             align: 'right',

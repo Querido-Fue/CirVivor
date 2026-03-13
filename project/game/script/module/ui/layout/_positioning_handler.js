@@ -145,20 +145,20 @@ export class PositioningHandler {
     }
 
     /**
-     * 루트 레이아웃 영역(start/size/margin)을 계산합니다.
+     * 루트 레이아웃 영역(start/size/padding)을 계산합니다.
      * @param {object} layoutStart
      * @param {object} layoutSize
-     * @param {object} horMargin
+     * @param {object} paddingX
      * @returns {{startX:number,startY:number,layoutW:number,layoutH:number,innerX:number,innerW:number}}
      */
-    resolveLayoutFrame(layoutStart, layoutSize, horMargin) {
+    resolveLayoutFrame(layoutStart, layoutSize, paddingX) {
         const startX = this.parseUnit(layoutStart.x.unit, layoutStart.x.value, getWW());
         const startY = this.parseUnit(layoutStart.y.unit, layoutStart.y.value, getWH());
         const layoutW = this.parseUnit(layoutSize.w.unit, layoutSize.w.value, getWW());
         const layoutH = this.parseUnit(layoutSize.h.unit, layoutSize.h.value, getWH());
-        const horMarginPx = this.parseUnit(horMargin.unit, horMargin.value, layoutW);
-        const innerW = layoutW - (horMarginPx * 2);
-        const innerX = startX + horMarginPx;
+        const paddingXPx = this.parseUnit(paddingX.unit, paddingX.value, layoutW);
+        const innerW = layoutW - (paddingXPx * 2);
+        const innerX = startX + paddingXPx;
 
         return { startX, startY, layoutW, layoutH, innerX, innerW };
     }

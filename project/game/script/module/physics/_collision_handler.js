@@ -135,9 +135,12 @@ export class CollisionHandler {
         this.#wallBodiesCache = [];
         this.#wallBodiesDirty = true;
         this.#frameStats = {
-            roughCircleChecks: 0,
+            collisionCheckCount: 0,
+            aabbPassCount: 0,
+            aabbRejectCount: 0,
+            circlePassCount: 0,
+            circleRejectCount: 0,
             polygonChecks: 0,
-            projectileEnemyChecks: 0
         };
         this.#bodyPool = [];
         this.#bodyPoolCursor = 0;
@@ -195,20 +198,26 @@ export class CollisionHandler {
      * 고정 틱 시작 시 충돌 체크 카운터를 초기화합니다.
      */
     resetFrameStats() {
-        this.#frameStats.roughCircleChecks = 0;
+        this.#frameStats.collisionCheckCount = 0;
+        this.#frameStats.aabbPassCount = 0;
+        this.#frameStats.aabbRejectCount = 0;
+        this.#frameStats.circlePassCount = 0;
+        this.#frameStats.circleRejectCount = 0;
         this.#frameStats.polygonChecks = 0;
-        this.#frameStats.projectileEnemyChecks = 0;
     }
 
     /**
      * 마지막 고정 틱의 충돌 체크 카운트를 반환합니다.
-     * @returns {{roughCircleChecks:number, polygonChecks:number, projectileEnemyChecks:number}}
+     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, polygonChecks:number}}
      */
     getFrameStats() {
         return {
-            roughCircleChecks: this.#frameStats.roughCircleChecks,
+            collisionCheckCount: this.#frameStats.collisionCheckCount,
+            aabbPassCount: this.#frameStats.aabbPassCount,
+            aabbRejectCount: this.#frameStats.aabbRejectCount,
+            circlePassCount: this.#frameStats.circlePassCount,
+            circleRejectCount: this.#frameStats.circleRejectCount,
             polygonChecks: this.#frameStats.polygonChecks,
-            projectileEnemyChecks: this.#frameStats.projectileEnemyChecks
         };
     }
 
@@ -396,10 +405,14 @@ export class CollisionHandler {
                     const enemyBody = enemyBodies[j];
                     const enemyId = enemyBody.id;
                     if (this.#hasProjectileHit(projectile, enemyId)) continue;
-                    if (!this.#aabbOverlap(circleBody, enemyBody, false)) continue;
+                    this.#frameStats.collisionCheckCount++;
+                    if (!this.#aabbOverlap(circleBody, enemyBody, false)) {
+                        this.#frameStats.aabbRejectCount++;
+                        continue;
+                    }
+                    this.#frameStats.aabbPassCount++;
                     if (!this.#roughBodyCircleOverlap(circleBody, enemyBody)) continue;
 
-                    this.#frameStats.projectileEnemyChecks++;
                     const manifold = this.#detectBodies(circleBody, enemyBody);
                     if (!manifold) continue;
 
@@ -481,18 +494,38 @@ export class CollisionHandler {
                     const high = a < c ? c : a;
                     if (this.#hasPair(low, high)) continue;
                     this.#markPair(low, high);
+                    const bodyA = bodies[low];
+                    const bodyB = bodies[high];
+                    if (bodyA?.ref && bodyA.ref === bodyB?.ref) continue;
+                    if (bodyA?.kind === 'enemy' && bodyB?.kind === 'enemy') {
+                        const idA = Number.isInteger(bodyA.id) ? bodyA.id : -1;
+                        const idB = Number.isInteger(bodyB.id) ? bodyB.id : -1;
+                        if (idA >= 0 && idA === idB) continue;
+                    }
+                    const rule = this.#getRule(bodyA.kind, bodyB.kind);
+                    if (!rule.check) continue;
+                    if (!rule.resolve && !applyNonPosition) continue;
+
+                    this.#frameStats.collisionCheckCount++;
                     const oA = low * BROAD_STRIDE;
                     const oB = high * BROAD_STRIDE;
                     if (bd[oA + 4] > bd[oB + 5] || bd[oA + 5] < bd[oB + 4] ||
-                        bd[oA + 6] > bd[oB + 7] || bd[oA + 7] < bd[oB + 6]) continue;
+                        bd[oA + 6] > bd[oB + 7] || bd[oA + 7] < bd[oB + 6]) {
+                        this.#frameStats.aabbRejectCount++;
+                        continue;
+                    }
+                    this.#frameStats.aabbPassCount++;
                     const dx = bd[oB + 8] - bd[oA + 8];
                     const dy = bd[oB + 9] - bd[oA + 9];
                     const rSum = bd[oA + 12] + bd[oB + 12];
-                    if ((dx * dx) + (dy * dy) > (rSum * rSum)) continue;
-                    this.#frameStats.roughCircleChecks++;
+                    if ((dx * dx) + (dy * dy) > (rSum * rSum)) {
+                        this.#frameStats.circleRejectCount++;
+                        continue;
+                    }
+                    this.#frameStats.circlePassCount++;
                     resolvedCount += this.#processPair(
-                        bodies[low],
-                        bodies[high],
+                        bodyA,
+                        bodyB,
                         resolvePositions,
                         applyNonPosition,
                         resolveBoost
@@ -988,23 +1021,34 @@ export class CollisionHandler {
      * @private
      */
     #roughBodyCircleOverlap(bodyA, bodyB) {
-        this.#frameStats.roughCircleChecks++;
         const ax = Number.isFinite(bodyA?.centerX) ? bodyA.centerX : bodyA?.x;
         const ay = Number.isFinite(bodyA?.centerY) ? bodyA.centerY : bodyA?.y;
         const bx = Number.isFinite(bodyB?.centerX) ? bodyB.centerX : bodyB?.x;
         const by = Number.isFinite(bodyB?.centerY) ? bodyB.centerY : bodyB?.y;
-        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) return true;
+        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) {
+            this.#frameStats.circlePassCount++;
+            return true;
+        }
 
         const ra = this.#getBodyBroadRadius(bodyA);
         const rb = this.#getBodyBroadRadius(bodyB);
-        if (!Number.isFinite(ra) || !Number.isFinite(rb) || ra <= 0 || rb <= 0) return true;
+        if (!Number.isFinite(ra) || !Number.isFinite(rb) || ra <= 0 || rb <= 0) {
+            this.#frameStats.circlePassCount++;
+            return true;
+        }
 
         const scaleA = bodyA?.kind === 'enemy' ? COLLISION_BROAD_RADIUS_SCALE_ENEMY : COLLISION_BROAD_RADIUS_SCALE_DEFAULT;
         const scaleB = bodyB?.kind === 'enemy' ? COLLISION_BROAD_RADIUS_SCALE_ENEMY : COLLISION_BROAD_RADIUS_SCALE_DEFAULT;
         const radiusSum = (ra * scaleA) + (rb * scaleB);
         const dx = bx - ax;
         const dy = by - ay;
-        return ((dx * dx) + (dy * dy)) <= (radiusSum * radiusSum);
+        const passed = ((dx * dx) + (dy * dy)) <= (radiusSum * radiusSum);
+        if (passed) {
+            this.#frameStats.circlePassCount++;
+        } else {
+            this.#frameStats.circleRejectCount++;
+        }
+        return passed;
     }
 
     /**

@@ -41,6 +41,14 @@ export class LanguageHandler {
         console.warn(`언어 키 '${key}'를 찾을 수 없습니다.`);
         return key;
     }
+
+    /**
+     * 현재 활성 언어팩을 즉시 교체합니다.
+     * @param {string} languageKey - 적용할 언어 키입니다.
+     */
+    setLanguage(languageKey) {
+        this.currentLanguage = getLanguagePack(languageKey || DEFAULT_LANGUAGE_KEY);
+    }
 }
 
 /**

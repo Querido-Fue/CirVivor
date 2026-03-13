@@ -2,16 +2,27 @@ import { TitleOverlay } from './_title_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getBaseWW, getBaseWH } from 'display/display_system.js';
-import { getSetting, setSettingBatch, getSettingSchema } from 'save/save_system.js';
+import { getSetting, previewSettingBatch, setSettingBatch, getSettingSchema } from 'save/save_system.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getAvailableLanguages } from 'ui/lang/_language_handler.js';
-import { isNwRuntime } from 'util/nw_bridge.js';
 import { getData } from 'data/data_handler.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const SETTING_LABEL_KEYS = {
+    windowMode: 'title_settings_window_mode',
+    widescreenSupport: 'title_settings_widescreen_support',
+    renderScale: 'title_settings_render_scale',
+    uiScale: 'title_settings_ui_scale',
+    disableTransparency: 'title_settings_disable_transparency',
+    physicsAccuracy: 'title_settings_physics_accuracy',
+    language: 'title_settings_language',
+    theme: 'title_settings_theme',
+    bgmVolume: 'title_settings_bgm',
+    sfxVolume: 'title_settings_sfx'
+};
 
 /**
  * @class SettingsOverlay
@@ -21,20 +32,15 @@ export class SettingsOverlay extends TitleOverlay {
     #openKeybindings;
 
     constructor(TitleScene) {
-        super(TitleScene);
-
-        this._onResize();
-        this._calculateGeometry();
+        super(TitleScene, { glOverlay: true });
 
         this.settingsChanged = false;
-        this.isNwRuntime = isNwRuntime();
+        this.settingComponents = {};
+        this.rollbackOnClose = true;
+        this.pendingPreviewSettings = {};
+        this.previewFlushPromise = null;
         const savedWindowMode = getSetting('windowMode');
-        let normalizedWindowMode = savedWindowMode;
-        if (normalizedWindowMode === 'borderless') normalizedWindowMode = 'fullscreen';
-        if (normalizedWindowMode === 'browserMode') normalizedWindowMode = 'windowed';
-        if (normalizedWindowMode !== 'fullscreen' && normalizedWindowMode !== 'windowed') {
-            normalizedWindowMode = this.isNwRuntime ? 'fullscreen' : 'windowed';
-        }
+        const normalizedWindowMode = savedWindowMode === 'windowed' ? 'windowed' : 'fullscreen';
         const availableLanguages = getAvailableLanguages();
         this.availableLanguages = availableLanguages;
         const savedLanguage = getSetting('language');
@@ -44,7 +50,7 @@ export class SettingsOverlay extends TitleOverlay {
             : fallbackLanguage;
 
         this.tempSettings = {
-            windowMode: normalizedWindowMode || (this.isNwRuntime ? 'fullscreen' : 'windowed'),
+            windowMode: normalizedWindowMode,
             widescreenSupport: getSetting('widescreenSupport') !== false,
             renderScale: getSetting('renderScale') || 100,
             uiScale: getSetting('uiScale') || 100,
@@ -56,11 +62,7 @@ export class SettingsOverlay extends TitleOverlay {
             sfxVolume: getSetting('sfxVolume') !== undefined ? getSetting('sfxVolume') : 100,
         };
 
-        if (!this.isNwRuntime) {
-            this.tempSettings.windowMode = 'windowed';
-        }
-
-        this._generateLayout();
+        this.initialSettings = { ...this.tempSettings };
     }
 
     /**
@@ -81,46 +83,59 @@ export class SettingsOverlay extends TitleOverlay {
         const headerHandler = new LayoutHandler(this, this.positioningHandler)
             .layoutStartPos("OX", 0, "OY", 0)
             .layoutSize("OW", 100, "OH", 19)
-            .horMargin("WW", 1.8)
-            .item("margin").value("WH", 2.5)
-            .item("text", "title_text").stylePreset("h1").text(getLangString('title_settings_title')).prop("fill", ColorSchemes.Title.TextDark)
-            .item("margin").value("WH", 1.5)
-            .item("line", "divider_line").width("parent", 100).prop("stroke", ColorSchemes.Overlay.Panel.Divider).prop("lineWidth", 1).align("center");
+            .paddingX("WW", 1.8)
+            .space("WH", 2.5)
+            .item("text", "title_text").stylePreset("h1").text(getLangString('title_settings_title')).fill(ColorSchemes.Title.TextDark)
+            .space("WH", 1.5)
+            .item("line", "divider_line").width("fill").stroke(ColorSchemes.Overlay.Panel.Divider).lineWidth(1).align("center");
 
         const leftHandler = new LayoutHandler(this, this.positioningHandler)
             .layoutStartPos("OX", 3, "OY", 15)
             .layoutSize("OW", 44, "OH", 100)
-            .horMargin("absolute", 0);
+            .paddingX("absolute", 0);
 
         this._buildLeftColumn(leftHandler);
 
         const rightHandler = new LayoutHandler(this, this.positioningHandler)
             .layoutStartPos("OX", 53, "OY", 15)
             .layoutSize("OW", 44, "OH", 100)
-            .horMargin("absolute", 0);
+            .paddingX("absolute", 0);
 
         this._buildRightColumn(rightHandler);
 
         const footHandler = new LayoutHandler(this, this.positioningHandler)
             .layoutStartPos("OX", 0, "OY", 0)
             .layoutSize("OW", 100, "OH", 100)
-            .horMargin("WW", 1.8);
+            .paddingX("WW", 1.8);
 
-        footHandler.bottomItem("margin").value("WH", 3)
-            .bottomItemGroup().justifyContent("right", "WW", 1).align("right")
-            .groupItem("button", "cancel_btn").stylePreset("overlay_interact_button")
-            .buttonText(getLangString('title_settings_cancel')).onClick(this.close.bind(this))
-            .buttonColor(ColorSchemes.Overlay.Button.Cancel).prop("iconType", "deny")
-            .groupItem("button", "save_btn").stylePreset("overlay_interact_button")
-            .buttonText(getLangString('title_settings_save')).onClick(async () => { if (this.settingsChanged) { await this.save(); location.reload(); } else { this.close.bind(this)(); } });
+        footHandler.bottomSpace("WH", 3)
+            .bottomGroup().justifyContent("right", "WW", 1).align("right")
+            .item("button", "cancel_btn").stylePreset("overlay_interact_button")
+            .buttonText(getLangString('title_settings_cancel')).onClick(async () => {
+                await this.#cancelChanges();
+            })
+            .buttonColor(ColorSchemes.Overlay.Button.Cancel).icon("deny")
+            .item("button", "save_btn").stylePreset("overlay_interact_button")
+            .buttonText(getLangString('title_settings_save')).onClick(async () => {
+                if (!this.settingsChanged) {
+                    this.rollbackOnClose = false;
+                    this.close();
+                    return;
+                }
+
+                await this.#flushPendingPreview();
+                await this.save();
+                this.rollbackOnClose = false;
+                this.close();
+            });
 
         if (getLangString("affirmative_icon") === "check") {
-            footHandler.prop("iconType", "check").buttonColor(ColorSchemes.Overlay.Button.Confirm);
+            footHandler.icon("check").buttonColor(ColorSchemes.Overlay.Button.Confirm);
         } else {
-            footHandler.prop("iconType", "confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm);
+            footHandler.icon("confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm);
         }
 
-        footHandler.closeGroup();
+        footHandler.endGroup();
 
         const resHead = headerHandler.build();
         const resLeft = leftHandler.build();
@@ -128,19 +143,204 @@ export class SettingsOverlay extends TitleOverlay {
         const resFoot = footHandler.build();
 
         this.staticItems = [
-            ...Object.values(resHead.staticItems),
-            ...Object.values(resLeft.staticItems),
-            ...Object.values(resRight.staticItems),
-            ...Object.values(resFoot.staticItems)
+            ...resHead.staticItems,
+            ...resLeft.staticItems,
+            ...resRight.staticItems,
+            ...resFoot.staticItems
         ];
 
         this.dynamicItems = [
-            ...Object.values(resHead.dynamicItems),
-            ...Object.values(resLeft.dynamicItems),
-            ...Object.values(resRight.dynamicItems),
-            ...Object.values(resFoot.dynamicItems)
+            ...resHead.dynamicItems,
+            ...resLeft.dynamicItems,
+            ...resRight.dynamicItems,
+            ...resFoot.dynamicItems
         ];
+
+        this.settingComponents = {
+            ...resHead.components,
+            ...resLeft.components,
+            ...resRight.components,
+            ...resFoot.components
+        };
+
+        this.#refreshChangedLabels();
     }
+
+    /**
+     * 설정값 변경 여부에 맞춰 항목 라벨과 저장 가능 상태를 갱신합니다.
+     */
+    #refreshChangedLabels() {
+        this.settingsChanged = this.#hasSettingsChanges();
+
+        for (const [settingKey, labelKey] of Object.entries(SETTING_LABEL_KEYS)) {
+            const labelComponent = this.settingComponents[this.#getSettingLabelId(settingKey)];
+            if (!labelComponent) {
+                continue;
+            }
+            labelComponent.text = this.#getSettingLabelText(settingKey, labelKey);
+        }
+    }
+
+    /**
+     * 현재 임시 설정과 초기 설정의 차이를 판정합니다.
+     * @returns {boolean} 하나라도 변경된 설정이 있으면 true를 반환합니다.
+     */
+    #hasSettingsChanges() {
+        return Object.keys(this.initialSettings).some((settingKey) => this.tempSettings[settingKey] !== this.initialSettings[settingKey]);
+    }
+
+    /**
+     * 설정값 변경을 반영하고 관련 라벨 상태를 즉시 갱신합니다.
+     * @param {keyof typeof SETTING_LABEL_KEYS} settingKey - 변경할 설정 키입니다.
+     * @param {string|number|boolean} value - 새 설정 값입니다.
+     */
+    #handleSettingChange(settingKey, value) {
+        this.tempSettings[settingKey] = value;
+        this.#refreshChangedLabels();
+    }
+
+    /**
+     * 설정값 변경을 미리보기까지 포함해 반영합니다.
+     * @param {keyof typeof SETTING_LABEL_KEYS} settingKey - 변경할 설정 키입니다.
+     * @param {string|number|boolean} value - 새 설정 값입니다.
+     * @param {{preview?: boolean}} [options={}] - 미리보기 반영 여부입니다.
+     */
+    #handleSettingInput(settingKey, value, options = {}) {
+        this.#handleSettingChange(settingKey, value);
+        if (options.preview === false) {
+            return;
+        }
+        this.#queuePreviewSettings({ [settingKey]: value });
+    }
+
+    /**
+     * 설정 항목 라벨의 UI 요소 id를 반환합니다.
+     * @param {keyof typeof SETTING_LABEL_KEYS} settingKey - 설정 키입니다.
+     * @returns {string} 라벨 UI 요소 id입니다.
+     */
+    #getSettingLabelId(settingKey) {
+        return `setting_label_${settingKey}`;
+    }
+
+    /**
+     * 설정 항목 라벨 텍스트를 변경 상태에 맞춰 반환합니다.
+     * @param {keyof typeof SETTING_LABEL_KEYS} settingKey - 설정 키입니다.
+     * @param {string} labelKey - 다국어 라벨 키입니다.
+     * @returns {string} 표시할 라벨 텍스트입니다.
+     */
+    #getSettingLabelText(settingKey, labelKey) {
+        const label = getLangString(labelKey);
+        return this.tempSettings[settingKey] !== this.initialSettings[settingKey] ? `${label}*` : label;
+    }
+
+    /**
+     * 초기 스냅샷 대비 실제로 변경된 설정만 추려 반환합니다.
+     * @returns {object} 변경된 설정 키와 값입니다.
+     */
+    #getChangedSettings() {
+        const changedSettings = {};
+
+        for (const settingKey of Object.keys(this.initialSettings)) {
+            if (this.tempSettings[settingKey] === this.initialSettings[settingKey]) {
+                continue;
+            }
+            changedSettings[settingKey] = this.tempSettings[settingKey];
+        }
+
+        return changedSettings;
+    }
+
+    /**
+     * 저장 완료 후 변경된 설정을 런타임에 즉시 반영합니다.
+     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
+     * @returns {Promise<void>}
+     */
+    async #applyRuntimeSettings(changedSettings = {}) {
+        const systemHandler = this.titleScene?.sceneSystem?.systemHandler;
+        if (!systemHandler || typeof systemHandler.applyRuntimeSettings !== 'function') {
+            return;
+        }
+
+        await systemHandler.applyRuntimeSettings(changedSettings);
+    }
+
+    /**
+     * 미리보기 반영이 현재 업데이트 루프를 끊지 않도록 다음 마이크로태스크로 지연합니다.
+     * @param {object} changedSettings - 반영할 설정 키와 값입니다.
+     * @returns {Promise<void>}
+     */
+    #queuePreviewSettings(changedSettings) {
+        Object.assign(this.pendingPreviewSettings, changedSettings);
+
+        if (!this.previewFlushPromise) {
+            this.previewFlushPromise = Promise.resolve().then(async () => {
+                const pending = this.pendingPreviewSettings;
+                this.pendingPreviewSettings = {};
+
+                if (Object.keys(pending).length > 0) {
+                    previewSettingBatch(pending);
+                    await this.#applyRuntimeSettings(pending);
+                }
+
+                this.previewFlushPromise = null;
+                if (Object.keys(this.pendingPreviewSettings).length > 0) {
+                    return this.#queuePreviewSettings({});
+                }
+            });
+        }
+
+        return this.previewFlushPromise;
+    }
+
+    /**
+     * 대기 중인 미리보기 반영 작업을 모두 끝낼 때까지 기다립니다.
+     * @returns {Promise<void>}
+     */
+    async #flushPendingPreview() {
+        while (this.previewFlushPromise) {
+            await this.previewFlushPromise;
+        }
+
+        if (Object.keys(this.pendingPreviewSettings).length > 0) {
+            await this.#queuePreviewSettings({});
+        }
+    }
+
+    /**
+     * 현재 미리보기 상태를 초기 스냅샷으로 되돌린 뒤 overlay를 닫습니다.
+     * @returns {Promise<void>}
+     */
+    async #cancelChanges() {
+        await this.#flushPendingPreview();
+        const revertedSettings = this.#getRevertedSettings();
+        if (Object.keys(revertedSettings).length > 0) {
+            previewSettingBatch(revertedSettings);
+            await this.#applyRuntimeSettings(revertedSettings);
+            this.tempSettings = { ...this.initialSettings };
+            this.#refreshChangedLabels();
+        }
+
+        this.rollbackOnClose = false;
+        this.close();
+    }
+
+    /**
+     * 현재 변경분을 초기 스냅샷 값으로 되돌리는 설정 객체를 반환합니다.
+     * @returns {object} 복원할 설정 키와 값입니다.
+     */
+    #getRevertedSettings() {
+        const revertedSettings = {};
+
+        for (const settingKey of Object.keys(this.initialSettings)) {
+            if (this.tempSettings[settingKey] === this.initialSettings[settingKey]) {
+                continue;
+            }
+            revertedSettings[settingKey] = this.initialSettings[settingKey];
+        }
+
+        return revertedSettings;
+    }
+
     _buildLeftColumn(handler) {
         const spacingScale = 0.9;
         const controlWrapWidth = 65;
@@ -149,86 +349,92 @@ export class SettingsOverlay extends TitleOverlay {
 
         // --- 디스플레이 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_display');
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
 
         // 창 모드
-        this._addItemHeader(handler, 'title_settings_window_mode');
-        const windowModeItems = this.isNwRuntime
-            ? [
-                { label: getLangString('title_settings_window_mode_windowed'), value: 'windowed' },
-                { label: getLangString('title_settings_window_mode_fullscreen'), value: 'fullscreen' }
-            ]
-            : [
-                { label: getLangString('title_settings_window_mode_browser'), value: 'windowed' }
-            ];
-        handler.width("parent", controlWrapWidth).groupItem("dropdown", "control_windowMode").width("parent", controlMaxWidth).height("WH", 3)
-            .prop("items", windowModeItems)
-            .prop("value", this.tempSettings.windowMode).stylePreset("h6_bold")
+        this._addItemHeader(handler, 'title_settings_window_mode', 'windowMode');
+        const windowModeItems = [
+            { label: getLangString('title_settings_window_mode_windowed'), value: 'windowed' },
+            { label: getLangString('title_settings_window_mode_fullscreen'), value: 'fullscreen' }
+        ];
+        handler.width("parent", controlWrapWidth).item("dropdown", "control_windowMode").width("parent", controlMaxWidth).height("WH", 3)
+            .items(windowModeItems)
+            .setValue(this.tempSettings.windowMode).stylePreset("h6_bold")
             .prop("openDirection", "down")
-            .prop("onChange", (val) => { this.tempSettings.windowMode = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('windowMode', val); });
         this._addItemFooter(handler, null, spacingScale);
 
         // 와이드스크린 지원
-        this._addItemHeader(handler, 'title_settings_widescreen_support');
+        this._addItemHeader(handler, 'title_settings_widescreen_support', 'widescreenSupport');
         handler.width("parent", controlWrapWidth)
-            .groupItemGroup().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .groupItem("toggle", "control_widescreenSupport").width("WW", 2.55).height("WH", 2)
-            .prop("value", this.tempSettings.widescreenSupport)
-            .prop("onChange", (val) => { this.tempSettings.widescreenSupport = val; this.settingsChanged = true; });
-        handler.closeGroup();
+            .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
+            .item("toggle", "control_widescreenSupport").width("WW", 2.55).height("WH", 2)
+            .setValue(this.tempSettings.widescreenSupport)
+            .onChange((val) => { this.#handleSettingInput('widescreenSupport', val); });
+        handler.endGroup();
         this._addItemFooter(handler, 'title_settings_desc_widescreen_support', spacingScale);
 
         // 렌더 스케일
-        this._addItemHeader(handler, 'title_settings_render_scale');
+        this._addItemHeader(handler, 'title_settings_render_scale', 'renderScale');
         const rsSchema = getSettingSchema('renderScale');
-        handler.width("parent", controlWrapWidth).groupItem("slider", "control_renderScale").width("parent", controlMaxWidth)
+        handler.width("parent", controlWrapWidth).item("slider", "control_renderScale").width("parent", controlMaxWidth)
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
-            .prop("min", rsSchema.min).prop("max", rsSchema.max).prop("value", this.tempSettings.renderScale)
+            .prop("min", rsSchema.min).prop("max", rsSchema.max).setValue(this.tempSettings.renderScale)
             .prop("valueSuffix", '%')
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
             .prop("valueFormatter", (v) => `${v}% (${Math.round(getBaseWW() * v / 100)}×${Math.round(getBaseWH() * v / 100)})`)
-            .prop("onChange", (val) => { this.tempSettings.renderScale = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('renderScale', val, { preview: false }); })
+            .onCommit((val) => { this.#handleSettingInput('renderScale', val); });
         this._addItemFooter(handler, 'title_settings_desc_render_scale', spacingScale);
 
         // 인터페이스 스케일
-        this._addItemHeader(handler, 'title_settings_ui_scale');
+        this._addItemHeader(handler, 'title_settings_ui_scale', 'uiScale');
         const usSchema = getSettingSchema('uiScale');
-        handler.width("parent", controlWrapWidth).groupItem("slider", "control_uiScale").width("parent", controlMaxWidth)
+        handler.width("parent", controlWrapWidth).item("slider", "control_uiScale").width("parent", controlMaxWidth)
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
-            .prop("min", usSchema.min).prop("max", usSchema.max).prop("value", this.tempSettings.uiScale)
+            .prop("min", usSchema.min).prop("max", usSchema.max).setValue(this.tempSettings.uiScale)
             .prop("valueSuffix", '%')
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
             .prop("valueFormatter", (v) => `${v}%`)
-            .prop("onChange", (val) => { this.tempSettings.uiScale = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('uiScale', val, { preview: false }); })
+            .onCommit((val) => { this.#handleSettingInput('uiScale', val); });
         this._addItemFooter(handler, 'title_settings_desc_ui_scale', spacingScale);
 
         // 투명도 비활성화
-        this._addItemHeader(handler, 'title_settings_disable_transparency');
+        this._addItemHeader(handler, 'title_settings_disable_transparency', 'disableTransparency');
         handler.width("parent", controlWrapWidth)
-            .groupItemGroup().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .groupItem("toggle", "control_disableTransparency").width("WW", 2.55).height("WH", 2)
-            .prop("value", this.tempSettings.disableTransparency)
-            .prop("onChange", (val) => { this.tempSettings.disableTransparency = val; this.settingsChanged = true; });
-        handler.closeGroup();
+            .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
+            .item("toggle", "control_disableTransparency").width("WW", 2.55).height("WH", 2)
+            .setValue(this.tempSettings.disableTransparency)
+            .onChange((val) => { this.#handleSettingInput('disableTransparency', val); });
+        handler.endGroup();
         this._addItemFooter(handler, 'title_settings_desc_transparency', spacingScale);
 
         // 물리 연산 정확도
-        this._addItemHeader(handler, 'title_settings_physics_accuracy');
+        this._addItemHeader(handler, 'title_settings_physics_accuracy', 'physicsAccuracy');
         const paSchema = getSettingSchema('physicsAccuracy');
-        handler.width("parent", controlWrapWidth).groupItem("slider", "control_physicsAccuracy").width("parent", controlMaxWidth)
+        handler.width("parent", controlWrapWidth).item("slider", "control_physicsAccuracy").width("parent", controlMaxWidth)
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
-            .prop("min", paSchema.min).prop("max", paSchema.max).prop("value", this.tempSettings.physicsAccuracy)
+            .prop("min", paSchema.min).prop("max", paSchema.max).setValue(this.tempSettings.physicsAccuracy)
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
-            .prop("onChange", (val) => { this.tempSettings.physicsAccuracy = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('physicsAccuracy', val, { preview: false }); })
+            .onCommit((val) => { this.#handleSettingInput('physicsAccuracy', val); })
+            .prop("valueFormatter", (v) => {
+                switch (v) {
+                    case 2: return getLangString('title_settings_physics_accuracy_low');
+                    case 3: return getLangString('title_settings_physics_accuracy_mid');
+                    case 4: return getLangString('title_settings_physics_accuracy_high');
+                }
+            })
         this._addItemFooter(handler, 'title_settings_desc_physics_accuracy', spacingScale);
 
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
     }
     _buildRightColumn(handler) {
         const spacingScale = 0.9;
@@ -238,104 +444,115 @@ export class SettingsOverlay extends TitleOverlay {
 
         // --- UI 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_ui');
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
 
         // 언어
-        this._addItemHeader(handler, 'title_settings_language');
-        handler.width("parent", controlWrapWidth).groupItem("dropdown", "control_language").width("parent", controlMaxWidth).height("WH", 3)
-            .prop("items", this.availableLanguages.map((lang) => ({ label: lang.languageName, value: lang.key })))
-            .prop("value", this.tempSettings.language).stylePreset("h6_bold")
+        this._addItemHeader(handler, 'title_settings_language', 'language');
+        handler.width("parent", controlWrapWidth).item("dropdown", "control_language").width("parent", controlMaxWidth).height("WH", 3)
+            .items(this.availableLanguages.map((lang) => ({ label: lang.languageName, value: lang.key })))
+            .setValue(this.tempSettings.language).stylePreset("h6_bold")
             .prop("openDirection", "down")
-            .prop("onChange", (val) => { this.tempSettings.language = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('language', val); });
         this._addItemFooter(handler, null, spacingScale);
 
         // 테마
-        this._addItemHeader(handler, 'title_settings_theme');
+        this._addItemHeader(handler, 'title_settings_theme', 'theme');
         const themeItems = THEME_OPTIONS.map((option) => ({
             label: getLangString(option.labelKey) || option.key,
             value: option.key
         }));
-        handler.width("parent", controlWrapWidth).groupItem("dropdown", "control_theme").width("parent", controlMaxWidth).height("WH", 3)
-            .prop("items", themeItems)
-            .prop("value", this.tempSettings.theme).stylePreset("h6_bold")
+        handler.width("parent", controlWrapWidth).item("dropdown", "control_theme").width("parent", controlMaxWidth).height("WH", 3)
+            .items(themeItems)
+            .setValue(this.tempSettings.theme).stylePreset("h6_bold")
             .prop("openDirection", "down")
-            .prop("onChange", (val) => { this.tempSettings.theme = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('theme', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
 
         // --- 사운드 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_sound');
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
 
         // 배경음
-        this._addItemHeader(handler, 'title_settings_bgm');
+        this._addItemHeader(handler, 'title_settings_bgm', 'bgmVolume');
         const bgmSchema = getSettingSchema('bgmVolume');
-        handler.width("parent", controlWrapWidth).groupItem("slider", "control_bgmVolume").width("parent", controlMaxWidth)
+        handler.width("parent", controlWrapWidth).item("slider", "control_bgmVolume").width("parent", controlMaxWidth)
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
-            .prop("min", bgmSchema.min).prop("max", bgmSchema.max).prop("value", this.tempSettings.bgmVolume)
+            .prop("min", bgmSchema.min).prop("max", bgmSchema.max).setValue(this.tempSettings.bgmVolume)
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
-            .prop("onChange", (val) => { this.tempSettings.bgmVolume = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('bgmVolume', val, { preview: false }); })
+            .onCommit((val) => { this.#handleSettingInput('bgmVolume', val); });
         this._addItemFooter(handler, null, spacingScale);
 
         // 효과음
-        this._addItemHeader(handler, 'title_settings_sfx');
+        this._addItemHeader(handler, 'title_settings_sfx', 'sfxVolume');
         const sfxSchema = getSettingSchema('sfxVolume');
-        handler.width("parent", controlWrapWidth).groupItem("slider", "control_sfxVolume").width("parent", controlMaxWidth)
+        handler.width("parent", controlWrapWidth).item("slider", "control_sfxVolume").width("parent", controlMaxWidth)
             .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
-            .prop("min", sfxSchema.min).prop("max", sfxSchema.max).prop("value", this.tempSettings.sfxVolume)
+            .prop("min", sfxSchema.min).prop("max", sfxSchema.max).setValue(this.tempSettings.sfxVolume)
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
-            .prop("onChange", (val) => { this.tempSettings.sfxVolume = val; this.settingsChanged = true; });
+            .onChange((val) => { this.#handleSettingInput('sfxVolume', val, { preview: false }); })
+            .onCommit((val) => { this.#handleSettingInput('sfxVolume', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
 
         // --- 조작 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_controls');
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
 
         // 키 설정
         this._addItemHeader(handler, 'title_settings_keybindings');
         handler.width("parent", controlWrapWidth)
-            .groupItemGroup().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .groupItem("button", "control_keybindings").stylePreset("overlay_link_button")
+            .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
+            .item("button", "control_keybindings").stylePreset("overlay_link_button")
             .buttonText(getLangString('title_settings_keybindings_open'))
-            .buttonColor(ColorSchemes.Overlay.Button.Link).prop("iconType", "arrow")
+            .buttonColor(ColorSchemes.Overlay.Button.Link).icon("arrow")
             .onClick(() => { this.#openKeybindings(); });
-        handler.closeGroup();
+        handler.endGroup();
         this._addItemFooter(handler, null, spacingScale);
 
-        handler.item("margin").value("OH", 4 * spacingScale);
+        handler.space("OH", 4 * spacingScale);
     }
     _addSectionHeader(handler, labelKey) {
-        handler.newItemGroup().justifyContent("space_between", "WW", 1).width("parent", 100).align("center")
-            .groupItem("text").text(getLangString(labelKey)).stylePreset("h3").prop("fill", ColorSchemes.Overlay.Text.Section).vAlign("center")
-            .groupItem("line").width("auto").prop("stroke", ColorSchemes.Overlay.Panel.Divider).prop("lineWidth", 1).vAlign("center")
-            .closeGroup();
+        handler.group().justifyContent("space-between", "WW", 1).width("parent", 100).align("center")
+            .item("text").text(getLangString(labelKey)).stylePreset("h3").fill(ColorSchemes.Overlay.Text.Section).vAlign("center")
+            .item("line").width("fill").stroke(ColorSchemes.Overlay.Panel.Divider).lineWidth(1).vAlign("center")
+            .endGroup();
     }
-    _addItemHeader(handler, labelKey) {
+    /**
+     * 설정 항목 헤더를 생성합니다.
+     * @param {LayoutHandler} handler - 레이아웃 핸들러입니다.
+     * @param {string} labelKey - 다국어 라벨 키입니다.
+     * @param {keyof typeof SETTING_LABEL_KEYS|null} [settingKey=null] - 변경 상태를 추적할 설정 키입니다.
+     */
+    _addItemHeader(handler, labelKey, settingKey = null) {
+        const labelId = settingKey ? this.#getSettingLabelId(settingKey) : null;
+        const labelText = settingKey ? this.#getSettingLabelText(settingKey, labelKey) : getLangString(labelKey);
+
         // 라벨 길이(언어별 차이)에 영향을 받지 않도록 라벨 영역을 고정 폭으로 분리
-        handler.newItemGroup().justifyContent("left", "WW", 0).width("parent", 94).align("center")
-            .groupItemGroup().justifyContent("left", "WW", 0).width("parent", 35).vAlign("center")
-            .groupItem("text").text(getLangString(labelKey)).stylePreset("h5_bold").prop("fill", ColorSchemes.Overlay.Text.Item).vAlign("center")
-            .closeGroup()
-            .groupItem("horMargin").value("expand")
-            .groupItemGroup().justifyContent("right", "WW", 1).vAlign("center");
+        handler.group().justifyContent("left", "WW", 0).width("parent", 94).align("center")
+            .group().justifyContent("left", "WW", 0).width("parent", 35).vAlign("center")
+            .item("text", labelId).text(labelText).stylePreset("h5_bold").fill(ColorSchemes.Overlay.Text.Item).vAlign("center")
+            .endGroup()
+            .spacer()
+            .group().justifyContent("right", "WW", 1).vAlign("center");
     }
     _addItemFooter(handler, descriptionKey, spacingScale) {
-        handler.closeGroup().closeGroup();
+        handler.endGroup().endGroup();
         if (descriptionKey) {
-            handler.item("margin").value("OH", 2.25);
-            handler.newItemGroup().justifyContent("left", "WW", 0).width("parent", 94).align("center")
-                .groupItem("text").text(getLangString(descriptionKey)).stylePreset("settings_desc").prop("fill", ColorSchemes.Overlay.Text.Item).prop("alpha", 0.8)
-                .closeGroup()
-                .item("margin").value("OH", 4.5 * spacingScale);
+            handler.space("OH", 2.25);
+            handler.group().justifyContent("left", "WW", 0).width("parent", 94).align("center")
+                .item("text").text(getLangString(descriptionKey)).stylePreset("settings_desc").fill(ColorSchemes.Overlay.Text.Item).prop("alpha", 0.8)
+                .endGroup()
+                .space("OH", 4.5 * spacingScale);
         } else {
-            handler.item("margin").value("OH", 5 * spacingScale);
+            handler.space("OH", 5 * spacingScale);
         }
     }
     _getTextPresetFont(presetKey) {
@@ -358,23 +575,54 @@ export class SettingsOverlay extends TitleOverlay {
 
     /**
          * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
+         * @returns {Promise<object>} 실제로 변경되어 저장된 설정 키와 값입니다.
          */
     async save() {
-        const currentWindowMode = getSetting('windowMode') || (this.isNwRuntime ? 'fullscreen' : 'windowed');
-        const modeChanged = currentWindowMode !== this.tempSettings.windowMode;
+        await this.#flushPendingPreview();
+        const changedSettings = this.#getChangedSettings();
+        if (Object.keys(changedSettings).length === 0) {
+            this.settingsChanged = false;
+            return changedSettings;
+        }
 
         await setSettingBatch({
-            windowMode: this.tempSettings.windowMode,
-            widescreenSupport: this.tempSettings.widescreenSupport,
-            renderScale: this.tempSettings.renderScale,
-            uiScale: this.tempSettings.uiScale,
-            disableTransparency: this.tempSettings.disableTransparency,
-            physicsAccuracy: this.tempSettings.physicsAccuracy,
-            language: this.tempSettings.language,
-            theme: this.tempSettings.theme,
-            bgmVolume: this.tempSettings.bgmVolume,
-            sfxVolume: this.tempSettings.sfxVolume,
-            screenModeChanged: this.isNwRuntime ? modeChanged : false
+            ...changedSettings,
+            screenModeChanged: false
         });
+
+        this.initialSettings = { ...this.tempSettings };
+        this.#refreshChangedLabels();
+        return changedSettings;
+    }
+
+    /**
+     * 런타임 설정 변경이 overlay 본인에게도 즉시 반영되도록 처리합니다.
+     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
+     */
+    applyRuntimeSettings(changedSettings = {}) {
+        super.applyRuntimeSettings(changedSettings);
+        if (changedSettings.theme !== undefined || changedSettings.language !== undefined) {
+            this.resize();
+        }
+    }
+
+    /**
+     * overlay가 저장 없이 닫히는 경우 미리보기 설정을 원복합니다.
+     */
+    onCloseComplete() {
+        if (!this.rollbackOnClose || !this.settingsChanged) {
+            return;
+        }
+
+        void (async () => {
+            await this.#flushPendingPreview();
+            const revertedSettings = this.#getRevertedSettings();
+            if (Object.keys(revertedSettings).length === 0) {
+                return;
+            }
+
+            previewSettingBatch(revertedSettings);
+            await this.#applyRuntimeSettings(revertedSettings);
+        })();
     }
 }

@@ -4,6 +4,11 @@ import { getData } from 'data/data_handler.js';
 const ENEMY_SVG_SHAPES = getData('ENEMY_SVG_SHAPES');
 
 /**
+ * @typedef {object} ShapeDrawOptions
+ * @property {{progress?: number, mode?: 'stroke'|'stroke-fill', sequential?: boolean, fillStart?: number, fillRule?: 'nonzero'|'evenodd'}} [svgAnimation] 적 SVG 도형에 적용할 애니메이션 옵션
+ */
+
+/**
  * @class ShapeDrawer
  * @description 기본 도형과 적 도형(내부 SVG path)을 캔버스 컨텍스트에 그립니다.
  */
@@ -19,10 +24,11 @@ export class ShapeDrawer {
          * @param {number} ox 도형의 x좌표 시작점
          * @param {number} oy 도형의 y좌표 시작점
          * @param {number} size 도형 크기 매개변수
+         * @param {ShapeDrawOptions} [drawOptions={}] 추가 렌더링 옵션
          */
-    drawShape(ctx, shape, ox, oy, size) {
+    drawShape(ctx, shape, ox, oy, size, drawOptions = {}) {
         if (shape.startsWith('enemy_')) {
-            this.#drawEnemyShape(ctx, shape, ox, oy, size);
+            this.#drawEnemyShape(ctx, shape, ox, oy, size, drawOptions);
             return;
         }
 
@@ -69,9 +75,10 @@ export class ShapeDrawer {
          * @param {number} ox 시작 x좌표
          * @param {number} oy 시작 y좌표
          * @param {number} size 그리기 기준 크기
+         * @param {ShapeDrawOptions} [drawOptions={}] 추가 렌더링 옵션
          * @private
          */
-    #drawEnemyShape(ctx, shape, ox, oy, size) {
+    #drawEnemyShape(ctx, shape, ox, oy, size, drawOptions = {}) {
         const entries = ENEMY_SVG_SHAPES[shape];
         if (!entries) {
             ctx.fillRect(ox, oy, size, size);
@@ -80,11 +87,16 @@ export class ShapeDrawer {
 
         const half = size / 2;
         const drawSize = size * 0.90;
+        const svgAnimation = drawOptions.svgAnimation || null;
 
         ctx.save();
         ctx.translate(ox + half, oy + half);
         ctx.scale(drawSize, drawSize);
-        this.svgDrawer.fillPaths(ctx, entries);
+        if (svgAnimation) {
+            this.svgDrawer.drawAnimatedPaths(ctx, entries, svgAnimation);
+        } else {
+            this.svgDrawer.fillPaths(ctx, entries);
+        }
         ctx.restore();
     }
 

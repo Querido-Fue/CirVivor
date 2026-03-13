@@ -46,8 +46,10 @@ export class SliderElement extends BaseUIElement {
         this.valueOffsetY = properties.valueOffsetY || 0;
 
         this.onChange = properties.onChange || null;
+        this.onCommit = properties.onCommit || null;
         this.valueFormatter = properties.valueFormatter || null;
         this.dragging = false;
+        this.dragChanged = false;
 
         this._overflow = 0;
         this.lastMouseX = 0;
@@ -66,6 +68,7 @@ export class SliderElement extends BaseUIElement {
         if (this.#valueAnim) { remove(this.#valueAnim.id); this.#valueAnim = null; }
         if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
         this.onChange = null;
+        this.onCommit = null;
     }
 
     /**
@@ -83,6 +86,7 @@ export class SliderElement extends BaseUIElement {
         // 포커스 확인: 현재 포커스 레이어와 다르면 입력 무시
         if (!getMouseFocus().includes(this.layer)) {
             if (this.dragging) {
+                this.#commitDragValue();
                 this.dragging = false;
             }
             return;
@@ -90,6 +94,7 @@ export class SliderElement extends BaseUIElement {
 
         if (DropdownElement.isPointerBlockedFor(mx, my, this.layer, this.id)) {
             if (this.dragging) {
+                this.#commitDragValue();
                 this.dragging = false;
             }
             this._handleInteractionState(false, false);
@@ -130,6 +135,7 @@ export class SliderElement extends BaseUIElement {
         if (isLeftClick && getMouseFocus().includes(this.layer) && isOverSlider) {
             if (!this.dragging) {
                 this.dragging = true;
+                this.dragChanged = false;
                 if (this.#overflowAnim) {
                     remove(this.#overflowAnim.id);
                     this.#overflowAnim = null;
@@ -139,6 +145,7 @@ export class SliderElement extends BaseUIElement {
 
         if (!isLeftPressing) {
             if (this.dragging) {
+                this.#commitDragValue();
                 this.dragging = false;
                 this.#overflowAnim = animate(this, {
                     variable: '_overflow',
@@ -158,6 +165,7 @@ export class SliderElement extends BaseUIElement {
 
             if (newValue !== this.value) {
                 this.value = newValue;
+                this.dragChanged = true;
                 if (this.#valueAnim) remove(this.#valueAnim.id);
                 this.#valueAnim = animate(this, {
                     variable: 'animatedValue',
@@ -183,6 +191,21 @@ export class SliderElement extends BaseUIElement {
 
         // 기본 UI 요소의 공통 상호작용 처리 호출
         this._handleInteractionState(isOverSlider || this.dragging, this.dragging);
+    }
+
+    /**
+     * @private
+     * 드래그 중 변경된 값을 마우스 해제 시점에 확정 콜백으로 전달합니다.
+     */
+    #commitDragValue() {
+        if (!this.dragChanged) {
+            return;
+        }
+
+        this.dragChanged = false;
+        if (this.onCommit) {
+            this.onCommit(this.value);
+        }
     }
 
     /**

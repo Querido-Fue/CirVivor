@@ -1,16 +1,13 @@
-import { fsPromises, path, isNwRuntime } from 'util/nw_bridge.js';
+import { fsPromises, path } from 'util/nw_bridge.js';
 
 /**
  * @class ProgressHandler
- * @description 진행도 바이너리 데이터를 로드/저장합니다.
- * NW.js는 파일 저장, 브라우저는 localStorage(Base64) 저장을 사용합니다.
+ * @description 진행도 바이너리 데이터를 NW.js 로컬 파일로 로드/저장합니다.
  */
 export class ProgressHandler {
     constructor(dataDir) {
         this.dataDir = dataDir;
-        this.isNwRuntime = isNwRuntime();
-        this.filePath = this.isNwRuntime ? path.join(this.dataDir, 'progress.dat') : null;
-        this.storageKey = 'cirvivor.save.progress';
+        this.filePath = path.join(this.dataDir, 'progress.dat');
         this.defaultData = new Uint8Array(128);
         this.data = new Uint8Array(this.defaultData);
     }
@@ -27,41 +24,23 @@ export class ProgressHandler {
      * 진행 데이터 파일을 로드합니다.
      */
     async #load() {
-        if (this.isNwRuntime) {
-            let fileExists = false;
-            try {
-                await fsPromises.access(this.filePath);
-                fileExists = true;
-            } catch {
-                fileExists = false;
-            }
-
-            if (fileExists) {
-                try {
-                    const readData = await fsPromises.readFile(this.filePath);
-                    this.data = this.#fitDataLength(this.#normalizeData(readData));
-                } catch (e) {
-                    console.error('진행 데이터 로드 실패:', e);
-                    this.data = new Uint8Array(this.defaultData);
-                }
-            } else {
-                this.data = new Uint8Array(this.defaultData);
-                await this.save();
-            }
-            return;
+        let fileExists = false;
+        try {
+            await fsPromises.access(this.filePath);
+            fileExists = true;
+        } catch {
+            fileExists = false;
         }
 
-        try {
-            const encoded = window.localStorage.getItem(this.storageKey);
-            if (!encoded) {
+        if (fileExists) {
+            try {
+                const readData = await fsPromises.readFile(this.filePath);
+                this.data = this.#fitDataLength(this.#normalizeData(readData));
+            } catch (e) {
+                console.error('진행 데이터 로드 실패:', e);
                 this.data = new Uint8Array(this.defaultData);
-                await this.save();
-                return;
             }
-
-            this.data = this.#fitDataLength(this.#decodeBase64(encoded));
-        } catch (e) {
-            console.error('localStorage에서 진행 데이터 로드 실패:', e);
+        } else {
             this.data = new Uint8Array(this.defaultData);
             await this.save();
         }
@@ -102,80 +81,26 @@ export class ProgressHandler {
     }
 
     /**
-         * @private
-         * 바이너리 데이터를 Base64 텍스트로 인코딩합니다 (브라우저 또는 Buffer 사용).
-         * @param {Uint8Array} uint8 인코딩할 데이터
-         * @returns {string} Base64 문자열
-         */
-    #encodeBase64(uint8) {
-        if (typeof btoa === 'function') {
-            let binary = '';
-            for (let i = 0; i < uint8.length; i++) {
-                binary += String.fromCharCode(uint8[i]);
-            }
-            return btoa(binary);
-        }
-
-        if (typeof Buffer !== 'undefined') {
-            return Buffer.from(uint8).toString('base64');
-        }
-
-        throw new Error('Base64 인코더를 사용할 수 없습니다.');
-    }
-
-    /**
-         * @private
-         * Base64 텍스트를 바이너리 배열로 디코딩합니다.
-         * @param {string} base64Text 디코딩할 Base64 문자열
-         * @returns {Uint8Array} 디코딩된 바이트 배열
-         */
-    #decodeBase64(base64Text) {
-        if (typeof atob === 'function') {
-            const binary = atob(base64Text);
-            const uint8 = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-                uint8[i] = binary.charCodeAt(i);
-            }
-            return uint8;
-        }
-
-        if (typeof Buffer !== 'undefined') {
-            return new Uint8Array(Buffer.from(base64Text, 'base64'));
-        }
-
-        throw new Error('Base64 디코더를 사용할 수 없습니다.');
-    }
-
-    /**
      * 진행 데이터를 저장합니다.
      * @returns {Promise} 저장 완료 Promise
      */
     async save() {
-        if (this.isNwRuntime) {
+        try {
+            await fsPromises.access(this.dataDir);
+        } catch {
             try {
-                await fsPromises.access(this.dataDir);
-            } catch {
-                try {
-                    await fsPromises.mkdir(this.dataDir, { recursive: true });
-                } catch (e) {
-                    console.error('진행 데이터 디렉토리 생성 실패:', e);
-                    throw e;
-                }
+                await fsPromises.mkdir(this.dataDir, { recursive: true });
+            } catch (e) {
+                console.error('진행 데이터 디렉토리 생성 실패:', e);
+                throw e;
             }
+        }
 
-            try {
-                await fsPromises.writeFile(this.filePath, this.data);
-            } catch (err) {
-                console.error('진행 데이터 저장 실패:', err);
-                throw err;
-            }
-        } else {
-            try {
-                window.localStorage.setItem(this.storageKey, this.#encodeBase64(this.data));
-            } catch (err) {
-                console.error('localStorage에 진행 데이터 저장 실패:', err);
-                throw err;
-            }
+        try {
+            await fsPromises.writeFile(this.filePath, this.data);
+        } catch (err) {
+            console.error('진행 데이터 저장 실패:', err);
+            throw err;
         }
     }
 

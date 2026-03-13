@@ -13,11 +13,12 @@ const OVERLAY_LAYOUT_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS');
  */
 export class ExitOverlay extends BaseOverlay {
     constructor() {
-        super('popup');
-        this._onResize();
-        this._calculateGeometry();
-
-        this._generateLayout();
+        super({
+            layer: 20,
+            dim: 0.28,
+            transparent: true,
+            blurUpdateMode: 'always'
+        });
     }
 
     /**
@@ -35,31 +36,31 @@ export class ExitOverlay extends BaseOverlay {
          */
     _generateLayout() {
         this._releaseElements();
-        const handler = new LayoutHandler(this, this.positioningHandler).horMargin("WW", 1.5)
-            .item("margin").value("WH", 2.5)
-            .item("text").stylePreset("h2").text(getLangString('exit_title')).prop("fill", ColorSchemes.Title.TextDark)
-            .item("margin").value("WH", 1.2)
-            .item("text").stylePreset("h4").text(getLangString('exit_query')).prop("fill", ColorSchemes.Overlay.Text.Item)
-            .bottomItem("margin").value("WH", 2.5)
-            .bottomItemGroup().justifyContent("right", "WW", 1).align("right");
+        const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.5)
+            .space("WH", 2.5)
+            .item("text").stylePreset("h2").text(getLangString('exit_title')).fill(ColorSchemes.Title.TextDark)
+            .space("WH", 1.2)
+            .item("text").stylePreset("h4").text(getLangString('exit_query')).fill(ColorSchemes.Overlay.Text.Item)
+            .bottomSpace("WH", 2.5)
+            .bottomGroup().justifyContent("right", "WW", 1).align("right");
 
         if (getSetting('debugMode')) {
-            handler.groupItem("button").stylePreset("overlay_interact_button").buttonText("재시작").onClick(() => { location.reload(); })
-                .prop("iconType", "deny").buttonColor(ColorSchemes.Overlay.Button.Cancel);
+            handler.item("button").stylePreset("overlay_interact_button").buttonText("재시작").onClick(() => { location.reload(); })
+                .icon("deny").buttonColor(ColorSchemes.Overlay.Button.Cancel);
         }
 
-        handler.groupItem("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_no")).onClick(this.close.bind(this))
-            .prop("iconType", "deny").buttonColor(ColorSchemes.Overlay.Button.Cancel)
+        handler.item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_no")).onClick(this.close.bind(this))
+            .icon("deny").buttonColor(ColorSchemes.Overlay.Button.Cancel)
 
-            .groupItem("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_yes")).onClick(() => { Game.close(); });
+            .item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_yes")).onClick(() => { Game.close(); });
 
         if (getLangString("affirmative_icon") === "check") {
-            handler.prop("iconType", "check").buttonColor(ColorSchemes.Overlay.Button.Confirm)
+            handler.icon("check").buttonColor(ColorSchemes.Overlay.Button.Confirm)
         } else {
-            handler.prop("iconType", "confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm)
+            handler.icon("confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm)
         }
 
-        handler.closeGroup();
+        handler.endGroup();
         const buildRes = handler.build();
 
         this.dynamicItems = buildRes.dynamicItems;

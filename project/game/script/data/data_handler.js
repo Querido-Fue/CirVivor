@@ -27,13 +27,10 @@ import {
 import { ENEMY_SVG_SHAPES } from 'data/object/enemy/enemy_svg_shape_data.js';
 import { TITLE_CONSTANTS } from 'data/scene/title/title_constants.js';
 import { SOUND_CONSTANTS } from 'data/sound/sound_constants.js';
-import {
-    DEFAULT_OVERLAY_ANIMATION_PRESET,
-    OVERLAY_ANIMATION_PRESETS,
-    getOverlayAnimationPreset
-} from 'data/overlay/overlay_animation_presets.js';
 import { OVERLAY_LAYOUT_CONSTANTS } from 'data/overlay/overlay_layout_constants.js';
 import { WEBGL_CONSTANTS } from 'data/display/webgl_constants.js';
+import { OVERLAY_RENDER_CONSTANTS } from 'data/display/overlay_render_constants.js';
+import { VIGNETTE_CONSTANTS } from 'data/display/vignette_constants.js';
 
 const DATA_REGISTRY = Object.freeze({
     GLOBAL_CONSTANTS,
@@ -59,11 +56,10 @@ const DATA_REGISTRY = Object.freeze({
     ENEMY_SVG_SHAPES,
     TITLE_CONSTANTS,
     SOUND_CONSTANTS,
-    DEFAULT_OVERLAY_ANIMATION_PRESET,
-    OVERLAY_ANIMATION_PRESETS,
-    getOverlayAnimationPreset,
     OVERLAY_LAYOUT_CONSTANTS,
-    WEBGL_CONSTANTS
+    WEBGL_CONSTANTS,
+    OVERLAY_RENDER_CONSTANTS,
+    VIGNETTE_CONSTANTS
 });
 
 /**

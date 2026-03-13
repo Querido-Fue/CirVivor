@@ -13,7 +13,7 @@ export const userLanguage = {
 
     // 타이틀
     "title_menu_start": "⚡",
-    "title_menu_collection": "📚",
+    "title_menu_deck": "📚",
     "title_menu_settings": "🔧",
     "title_menu_credits": "💎",
     "title_menu_exit": "❌",
@@ -33,7 +33,6 @@ export const userLanguage = {
     "title_settings_window_mode_windowed": "",
     "title_settings_window_mode_borderless": "",
     "title_settings_window_mode_fullscreen": "",
-    "title_settings_window_mode_browser": "",
     "title_settings_widescreen_support": "",
     "title_settings_desc_widescreen_support": "",
     "title_settings_resolution": "",
@@ -61,9 +60,9 @@ export const userLanguage = {
     "title_settings_save": "",
     "title_settings_cancel": "",
 
-    "title_collection_title": "",
-    "title_collection_achievements": "",
-    "title_collection_encyclopedia": "",
-    "title_collection_progress": "",
-    "title_collection_close": ""
+    "title_deck_title": "",
+    "title_deck_achievements": "",
+    "title_deck_encyclopedia": "",
+    "title_deck_progress": "",
+    "title_deck_close": ""
 };

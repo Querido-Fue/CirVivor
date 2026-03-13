@@ -1,7 +1,7 @@
 import { getData } from 'data/data_handler.js';
 import { getSetting, setSetting } from 'save/save_system.js';
 import { runtimeTool } from 'util/runtime_tool.js';
-import { isNwRuntime, nw } from 'util/nw_bridge.js';
+import { nw } from 'util/nw_bridge.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 
@@ -48,7 +48,7 @@ export class ScreenHandler {
          * @returns {object|null} 디스플레이 메트릭스 또는 확인 불가 시 null
          */
     #getNwDisplayMetrics() {
-        if (!isNwRuntime() || !nw?.Screen) return null;
+        if (!nw?.Screen) return null;
 
         try {
             if (!this.#nwScreenInited) {
@@ -97,11 +97,10 @@ export class ScreenHandler {
 
     /**
          * 현재 화면 모드 상태 및 디스플레이 크기를 기준으로 내부 렌더 타깃을 재계산합니다.
-         * @param {boolean} isNw NW.js 환경인지 여부
      * @param {string} windowMode 화면 모드 상태 ('fullscreen' | 'windowed')
      * @returns {boolean} 설정 변경 여부 (재렌더링 필요 시 true 반환)
      */
-    #recalculateRenderTarget(isNw, windowMode) {
+    #recalculateRenderTarget(windowMode) {
         const gameRatio = GLOBAL_CONSTANTS.ASPECT_RATIO.RATIO;
         const renderScale = getSetting("renderScale") || 100;
         const widescreenSupport = getSetting("widescreenSupport") !== false;
@@ -121,11 +120,11 @@ export class ScreenHandler {
         const windowWidth = this.#toDevicePx(window.innerWidth, displayScaleFactor);
         const windowHeight = this.#toDevicePx(window.innerHeight, displayScaleFactor);
 
-        const useMonitorSource = isNw && (windowMode === 'fullscreen');
+        const useMonitorSource = windowMode === 'fullscreen';
         const sourceWidth = useMonitorSource ? monitorWidth : windowWidth;
         const sourceHeight = useMonitorSource ? monitorHeight : windowHeight;
 
-        const isWindowedNw = isNw && windowMode === 'windowed';
+        const isWindowedNw = windowMode === 'windowed';
         const nearWorkAreaWidth = Math.abs(sourceWidth - monitorWorkWidth) <= 2;
         const nearWorkAreaHeight = Math.abs(sourceHeight - monitorWorkHeight) <= 2;
         const shouldClampWindowedWorkArea = isWindowedNw && (nearWorkAreaWidth || nearWorkAreaHeight);
@@ -211,50 +210,38 @@ export class ScreenHandler {
      * 화면 크기를 초기화합니다.
      */
     async init() {
-        const isNw = isNwRuntime();
-        let windowMode = getSetting("windowMode") || (isNw ? 'fullscreen' : 'windowed');
+        const windowMode = getSetting("windowMode") || 'fullscreen';
         const settingWidth = getSetting("width");
         const settingHeight = getSetting("height");
 
-        if (!isNw && windowMode !== 'windowed') {
-            windowMode = 'windowed';
-            await setSetting("windowMode", "windowed");
+        runtimeTool().setZoomLevel(windowMode === 'fullscreen' ? -1 : 0);
+
+        const screenModeChanged = getSetting("screenModeChanged") || false;
+
+        if (screenModeChanged) {
+            runtimeTool().setFullScreen(false);
+
+            await new Promise(resolve => setTimeout(resolve, 30));
+
+            await setSetting("screenModeChanged", false);
         }
 
-        if (isNw) {
-            runtimeTool().setZoomLevel(windowMode === 'fullscreen' ? -1 : 0);
-
-            const screenModeChanged = getSetting("screenModeChanged") || false;
-
-            if (screenModeChanged) {
-                runtimeTool().setFullScreen(false);
-
-                await new Promise(resolve => setTimeout(resolve, 30));
-
-                await setSetting("screenModeChanged", false);
-            }
-
-            if (windowMode === 'fullscreen') {
-                runtimeTool().setFullScreen(true);
-            }
-
-            // NW 창 상태 반영(전체화면/창 전환) 직후 측정 오차를 줄이기 위해 한 프레임 대기
-            await this.#waitForWindowSettle();
+        if (windowMode === 'fullscreen') {
+            runtimeTool().setFullScreen(true);
         }
 
-        this.#recalculateRenderTarget(isNw, windowMode);
+        // NW 창 상태 반영(전체화면/창 전환) 직후 측정 오차를 줄이기 위해 한 프레임 대기
+        await this.#waitForWindowSettle();
+
+        this.#recalculateRenderTarget(windowMode);
     }
 
     /**
      * 화면 크기 변경 시 호출되어 내부 해상도와 CSS 스타일을 다시 계산합니다.
      */
     resize() {
-        const isNw = isNwRuntime();
-        let windowMode = getSetting("windowMode") || (isNw ? 'fullscreen' : 'windowed');
-        if (!isNw) {
-            windowMode = 'windowed';
-        }
-        const renderTargetChanged = this.#recalculateRenderTarget(isNw, windowMode);
+        const windowMode = getSetting("windowMode") || 'fullscreen';
+        const renderTargetChanged = this.#recalculateRenderTarget(windowMode);
 
         const windowWidth = Math.max(1, window.innerWidth);
         const windowHeight = Math.max(1, window.innerHeight);
@@ -282,6 +269,24 @@ export class ScreenHandler {
 
         this.scaleRatio = this.width / Math.max(1, this.cssWidth);
         return renderTargetChanged;
+    }
+
+    /**
+     * 변경된 창 모드를 런타임에 즉시 반영합니다.
+     * @returns {Promise<void>}
+     */
+    async applyWindowMode() {
+        const windowMode = getSetting("windowMode") || 'fullscreen';
+        runtimeTool().setZoomLevel(windowMode === 'fullscreen' ? -1 : 0);
+        runtimeTool().setFullScreen(false);
+
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        if (windowMode === 'fullscreen') {
+            runtimeTool().setFullScreen(true);
+        }
+
+        await this.#waitForWindowSettle();
     }
 
     /**
@@ -351,7 +356,7 @@ export class ScreenHandler {
      * @returns {Promise<void>}
      */
     async #fitWindowedInnerSize(targetWidth, targetHeight) {
-        if (!isNwRuntime() || !nw?.Window) return;
+        if (!nw?.Window) return;
 
         const desiredW = Math.max(1, Math.floor(targetWidth || 1));
         const desiredH = Math.max(1, Math.floor(targetHeight || 1));

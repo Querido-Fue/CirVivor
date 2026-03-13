@@ -1,4 +1,4 @@
-import { getWW, getWH, render, shadowOn, shadowOff } from 'display/display_system.js';
+import { getCanvas, getWW, getWH, render, shadowOn, shadowOff } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { animate, remove } from 'animation/animation_system.js';
 import { getMouseInput, isMousePressing } from 'input/input_system.js';
@@ -28,6 +28,7 @@ export class UICursor {
     #normalRadiusAnimId;
     #normalAlphaAnimId;
     #clicking;
+    #visible;
 
     constructor() {
         this.#x = 0;
@@ -49,6 +50,7 @@ export class UICursor {
         this.#normalRadiusAnimId = -1;
         this.#normalAlphaAnimId = -1;
         this.#clicking = false;
+        this.#visible = true;
     }
 
     /**
@@ -68,6 +70,10 @@ export class UICursor {
      * 마우스 입력에 따라 애니메이션을 처리합니다.
      */
     update() {
+        if (!this.#visible) {
+            return;
+        }
+
         this.#x = getMouseInput("x");
         this.#y = getMouseInput("y");
 
@@ -110,6 +116,10 @@ export class UICursor {
      * 커서를 그립니다.
      */
     draw() {
+        if (!this.#visible) {
+            return;
+        }
+
         if (this.#type === 'normal') {
             const angle = NORMAL_CURSOR_CONSTANTS.ARROW_ROTATION_DEG;
             const angleRad = angle * Math.PI / 180;
@@ -200,4 +210,35 @@ export class UICursor {
      * 커서를 초기화합니다.
      */
     init() { return Promise.resolve(); }
+
+    /**
+     * 커서 가시성을 설정합니다.
+     * 비표시 전환 시 마지막 프레임 잔상을 제거하기 위해 top 캔버스를 즉시 비웁니다.
+     * @param {boolean} isVisible - 표시 여부입니다.
+     */
+    setVisible(isVisible) {
+        const nextVisible = isVisible === true;
+        if (this.#visible === nextVisible) {
+            return;
+        }
+
+        this.#visible = nextVisible;
+        if (!nextVisible) {
+            this.#clearCursorLayer();
+        }
+    }
+
+    /**
+     * @private
+     * 커서가 그려지는 top 캔버스를 즉시 비웁니다.
+     */
+    #clearCursorLayer() {
+        const canvas = getCanvas('top');
+        const context = canvas?.getContext?.('2d');
+        if (!canvas || !context) {
+            return;
+        }
+
+        context.clearRect(0, 0, canvas.width, canvas.height);
+    }
 }
