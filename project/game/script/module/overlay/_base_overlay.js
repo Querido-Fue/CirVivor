@@ -1,4 +1,5 @@
 import { animate, remove } from 'animation/animation_system.js';
+import { measurePerformanceSection } from 'debug/debug_system.js';
 import { getWH, getUIWW, getWW, render, shadowOff, shadowOn } from 'display/display_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getMouseFocus, getMouseInput, hasMouseState, setMouseFocus } from 'input/input_system.js';
@@ -114,6 +115,15 @@ export class BaseOverlay {
      */
     getSessionOptions() {
         return { ...this.overlayOptions };
+    }
+
+    /**
+     * @protected
+     * 성능 프로파일러에 사용할 overlay 섹션 접두사를 반환합니다.
+     * @returns {string} overlay 섹션 접두사입니다.
+     */
+    _getPerformanceSectionPrefix() {
+        return `overlay.${this.constructor?.name || 'Overlay'}`;
     }
 
     /**
@@ -333,64 +343,91 @@ export class BaseOverlay {
      * overlay 업데이트를 수행합니다.
      */
     update() {
-        if (this.session) {
-            this.session.updateEffects();
-            this.#syncPresentationToSession();
-        }
-
-        this.#updatePanelInteractions();
-
-        if (!this.dynamicItems) {
-            return;
-        }
-
-        for (const entry of this.dynamicItems) {
-            const item = entry.item;
-            if (item.update) {
-                item.update();
+        const performanceSectionPrefix = this._getPerformanceSectionPrefix();
+        measurePerformanceSection(`${performanceSectionPrefix}.update.total`, () => {
+            if (this.session) {
+                measurePerformanceSection(`${performanceSectionPrefix}.update.session`, () => {
+                    this.session.updateEffects();
+                    this.#syncPresentationToSession();
+                });
             }
-        }
+
+            measurePerformanceSection(`${performanceSectionPrefix}.update.interactions`, () => {
+                this.#updatePanelInteractions();
+            });
+
+            if (!this.dynamicItems) {
+                return;
+            }
+
+            measurePerformanceSection(`${performanceSectionPrefix}.update.dynamicItems`, () => {
+                for (const entry of this.dynamicItems) {
+                    const item = entry.item;
+                    if (item.update) {
+                        item.update();
+                    }
+                }
+            });
+        });
     }
 
     /**
      * overlay를 그립니다.
      */
     draw() {
-        if (!this.session || (this.alpha <= 0 && this.dimAlpha <= 0)) {
-            return;
-        }
-
-        this.session.renderDim();
-        if (this.alpha <= 0) {
-            return;
-        }
-        this.#drawPanels();
-        this._drawOverlayDecorations();
-
-        if (this.staticItems) {
-            for (const entry of this.staticItems) {
-                render(this.layer, entry.item);
+        const performanceSectionPrefix = this._getPerformanceSectionPrefix();
+        measurePerformanceSection(`${performanceSectionPrefix}.draw.total`, () => {
+            if (!this.session || (this.alpha <= 0 && this.dimAlpha <= 0)) {
+                return;
             }
-        }
 
-        if (!this.dynamicItems) {
-            return;
-        }
-
-        const floatingItems = [];
-        for (const entry of this.dynamicItems) {
-            const item = entry.item;
-            if (item.draw) {
-                item.draw();
+            measurePerformanceSection(`${performanceSectionPrefix}.draw.dim`, () => {
+                this.session.renderDim();
+            });
+            if (this.alpha <= 0) {
+                return;
             }
-            if (typeof item.drawFloating === 'function') {
-                floatingItems.push(item);
-            }
-        }
 
-        for (const item of floatingItems) {
-            item.drawFloating();
-        }
+            measurePerformanceSection(`${performanceSectionPrefix}.draw.panels`, () => {
+                this.#drawPanels(performanceSectionPrefix);
+            });
+            measurePerformanceSection(`${performanceSectionPrefix}.draw.decorations`, () => {
+                this._drawOverlayDecorations();
+            });
+
+            if (this.staticItems) {
+                measurePerformanceSection(`${performanceSectionPrefix}.draw.staticItems`, () => {
+                    for (const entry of this.staticItems) {
+                        render(this.layer, entry.item);
+                    }
+                });
+            }
+
+            if (!this.dynamicItems) {
+                return;
+            }
+
+            const floatingItems = [];
+            measurePerformanceSection(`${performanceSectionPrefix}.draw.dynamicItems`, () => {
+                for (const entry of this.dynamicItems) {
+                    const item = entry.item;
+                    if (item.draw) {
+                        item.draw();
+                    }
+                    if (typeof item.drawFloating === 'function') {
+                        floatingItems.push(item);
+                    }
+                }
+            });
+
+            if (floatingItems.length > 0) {
+                measurePerformanceSection(`${performanceSectionPrefix}.draw.floatingItems`, () => {
+                    for (const item of floatingItems) {
+                        item.drawFloating();
+                    }
+                });
+            }
+        });
     }
 
     /**
@@ -1197,7 +1234,7 @@ export class BaseOverlay {
      * @private
      * 현재 overlay에 정의된 패널을 렌더링합니다.
      */
-    #drawPanels() {
+    #drawPanels(performanceSectionPrefix = this._getPerformanceSectionPrefix()) {
         const disableTransparency = getSetting('disableTransparency');
         const defaultFill = disableTransparency
             ? ColorSchemes.Overlay.Panel.Background
@@ -1217,48 +1254,56 @@ export class BaseOverlay {
 
             const presentedPanel = this.#getPresentedPanelRegion(panel);
             const interactionState = this.#panelInteractionMap.get(panel.id);
-            const effectTextureCanvas = interactionState ? this.#buildPanelEffectCanvas(presentedPanel, interactionState) : null;
+            const effectTextureCanvas = interactionState
+                ? measurePerformanceSection(`${performanceSectionPrefix}.draw.panelEffectCanvas`, () => {
+                    return this.#buildPanelEffectCanvas(presentedPanel, interactionState);
+                })
+                : null;
             const usesEffectPipeline = Boolean(this.session.effectLayerId)
                 && (this.session.effectiveTransparent
                     || effectTextureCanvas
                     || (interactionState && (Math.abs(interactionState.rotateX) > 0.0001 || Math.abs(interactionState.rotateY) > 0.0001)));
 
             if (usesEffectPipeline) {
-                this.session.renderGlassPanel({
+                measurePerformanceSection(`${performanceSectionPrefix}.draw.glassPanel`, () => {
+                    this.session.renderGlassPanel({
+                        x: presentedPanel.x,
+                        y: presentedPanel.y,
+                        w: presentedPanel.w,
+                        h: presentedPanel.h,
+                        radius: presentedPanel.radius,
+                        blur: panel.blur,
+                        fill: panel.fill === undefined ? defaultFill : panel.fill,
+                        stroke: panel.stroke === undefined ? defaultStroke : panel.stroke,
+                        lineWidth: presentedPanel.lineWidth,
+                        tintColor: panel.tintColor === undefined ? defaultTintColor : panel.tintColor,
+                        edgeColor: panel.edgeColor === undefined ? defaultEdgeColor : panel.edgeColor,
+                        tintStrength: panel.tintStrength === undefined ? defaultTintStrength : panel.tintStrength,
+                        edgeStrength: panel.edgeStrength === undefined ? defaultEdgeStrength : panel.edgeStrength,
+                        refractionStrength: panel.refractionStrength,
+                        transformMatrix: interactionState?.transformMatrix,
+                        perspective: interactionState?.perspective,
+                        effectTextureCanvas
+                    });
+                });
+                continue;
+            }
+
+            measurePerformanceSection(`${performanceSectionPrefix}.draw.flatPanel`, () => {
+                shadowOn(this.layer, presentedPanel.shadowBlur, panel.shadowColor);
+                this.session.renderPanel({
+                    shape: 'roundRect',
                     x: presentedPanel.x,
                     y: presentedPanel.y,
                     w: presentedPanel.w,
                     h: presentedPanel.h,
                     radius: presentedPanel.radius,
-                    blur: panel.blur,
                     fill: panel.fill === undefined ? defaultFill : panel.fill,
                     stroke: panel.stroke === undefined ? defaultStroke : panel.stroke,
-                    lineWidth: presentedPanel.lineWidth,
-                    tintColor: panel.tintColor === undefined ? defaultTintColor : panel.tintColor,
-                    edgeColor: panel.edgeColor === undefined ? defaultEdgeColor : panel.edgeColor,
-                    tintStrength: panel.tintStrength === undefined ? defaultTintStrength : panel.tintStrength,
-                    edgeStrength: panel.edgeStrength === undefined ? defaultEdgeStrength : panel.edgeStrength,
-                    refractionStrength: panel.refractionStrength,
-                    transformMatrix: interactionState?.transformMatrix,
-                    perspective: interactionState?.perspective,
-                    effectTextureCanvas
+                    lineWidth: presentedPanel.lineWidth
                 });
-                continue;
-            }
-
-            shadowOn(this.layer, presentedPanel.shadowBlur, panel.shadowColor);
-            this.session.renderPanel({
-                shape: 'roundRect',
-                x: presentedPanel.x,
-                y: presentedPanel.y,
-                w: presentedPanel.w,
-                h: presentedPanel.h,
-                radius: presentedPanel.radius,
-                fill: panel.fill === undefined ? defaultFill : panel.fill,
-                stroke: panel.stroke === undefined ? defaultStroke : panel.stroke,
-                lineWidth: presentedPanel.lineWidth
+                shadowOff(this.layer);
             });
-            shadowOff(this.layer);
         }
     }
 

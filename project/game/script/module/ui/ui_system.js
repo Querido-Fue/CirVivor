@@ -1,6 +1,7 @@
 import { UICursor } from './cursor/ui_cursor.js';
 import { LanguageHandler } from './lang/_language_handler.js';
 import { parseUIData as parseUIDataWithPositioning } from './layout/_positioning_handler.js';
+import { UITooltipSystem } from './tooltip/ui_tooltip.js';
 
 let uiSystemInstance;
 
@@ -13,6 +14,7 @@ export class UISystem {
         uiSystemInstance = this;
         this.cursor = new UICursor(this);
         this.languageHandler = new LanguageHandler(this);
+        this.tooltip = new UITooltipSystem();
     }
 
     /**
@@ -21,6 +23,7 @@ export class UISystem {
      */
     async init() {
         await this.cursor.init();
+        await this.tooltip.init();
     }
 
     /**
@@ -28,6 +31,7 @@ export class UISystem {
      * 오버레이가 있다면 업데이트합니다.
      */
     update() {
+        this.tooltip.beginFrame();
         this.cursor.update();
     }
 
@@ -55,6 +59,7 @@ export class UISystem {
      * 오버레이가 있다면 그립니다.
      */
     draw() {
+        this.tooltip.draw();
         this.cursor.draw(); // 커서는 항상 최상위
     }
 
@@ -76,6 +81,21 @@ export class UISystem {
  */
 export const getLangString = (key) => {
     return uiSystemInstance.languageHandler.getString(key);
+}
+
+/**
+ * 현재 프레임에 툴팁 표시를 요청합니다.
+ * @param {string|string[]|object|null|undefined} content - 표시할 툴팁 콘텐츠입니다.
+ */
+export const requestTooltip = (content) => {
+    uiSystemInstance?.tooltip?.request(content);
+}
+
+/**
+ * 현재 툴팁 요청을 초기화합니다.
+ */
+export const clearTooltip = () => {
+    uiSystemInstance?.tooltip?.clear();
 }
 
 /**

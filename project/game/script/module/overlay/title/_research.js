@@ -15,6 +15,8 @@ export class ResearchOverlay extends DummyMenuOverlay {
         super(titleScene, {
             titleKey: 'title_overlay_research_title',
             bodyKey: 'title_overlay_research_body',
+            titleIconId: 'research',
+            titleIconScaleMultiplier: TITLE_CONSTANTS.TITLE_OVERLAY.RESEARCH.TITLE_ICON_SCALE_MULTIPLIER,
             widthRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RESEARCH.WIDTH_UIWW_RATIO,
             heightRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RESEARCH.HEIGHT_WH_RATIO
         });

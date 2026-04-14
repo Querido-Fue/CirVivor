@@ -344,6 +344,16 @@ export class LayoutHandler {
     }
 
     /**
+     * 현재 아이템에 hover 툴팁 콘텐츠를 지정합니다.
+     * @param {string|string[]|object|Function} content - 표시할 툴팁 콘텐츠 또는 resolver입니다.
+     * @returns {LayoutHandler}
+     */
+    tooltip(content) {
+        if (this.#currentItem) this.#currentItem.props.tooltip = content;
+        return this;
+    }
+
+    /**
      * 변경 콜백을 지정합니다.
      * @param {Function} callback - 변경 콜백
      * @returns {LayoutHandler}

@@ -1,6 +1,7 @@
 import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { BaseEnemy } from './_base_enemy.js';
 import { getData } from 'data/data_handler.js';
+import { colorUtil } from 'util/color_util.js';
 
 const ENEMY_ASPECT_RATIO = getData('ENEMY_ASPECT_RATIO');
 const ENEMY_HEIGHT_SCALE = getData('ENEMY_HEIGHT_SCALE');
@@ -12,7 +13,30 @@ const HEADING_TURN_DAMP_START_DEG = 45;
 const HEADING_TURN_SNAP_EPSILON_DEG = 0.15;
 const HEADING_FORWARD_OFFSET_DEG = 90;
 const HEADING_MIN_SPEED_SQ = 36; // 6px/s 미만은 정지로 간주
+const TITLE_AI_ID = 'titleAI';
 
+/**
+ * 타이틀 씬 적인지 판별합니다.
+ * @param {object} enemy
+ * @returns {boolean}
+ */
+function isTitleSceneEnemy(enemy) {
+    return typeof enemy?.ai?.id === 'string' && enemy.ai.id === TITLE_AI_ID;
+}
+
+/**
+ * 비타이틀 적 색상을 완전 불투명 문자열로 정규화합니다.
+ * @param {string} fill
+ * @returns {string}
+ */
+function normalizeOpaqueEnemyFill(fill) {
+    if (typeof fill !== 'string' || fill.length === 0) {
+        return ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
+    }
+
+    const parsed = colorUtil().cssToRgb(fill);
+    return colorUtil().rgbToString(parsed.r, parsed.g, parsed.b, 1);
+}
 /**
  * @class ShapeEnemy
  * @description WebGL 도형 아틀라스를 사용하는 적 공통 구현입니다.
@@ -62,8 +86,12 @@ export class ShapeEnemy extends BaseEnemy {
         super.init(data);
         this.type = data.type ?? this.shapeType;
         this.shapeKey = getEnemyShapeKey(this.type);
-        this.fill = data.fill ?? this.fill ?? ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
-        this.alpha = data.alpha ?? ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA;
+        this.fill = isTitleSceneEnemy(this)
+            ? (data.fill ?? this.fill ?? ENEMY_CONSTANTS.DEFAULT_STYLE.FILL)
+            : normalizeOpaqueEnemyFill(data.fill ?? this.fill ?? ENEMY_CONSTANTS.DEFAULT_STYLE.FILL);
+        this.alpha = isTitleSceneEnemy(this)
+            ? (data.alpha ?? ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA)
+            : 1;
         this.rotation = data.rotation ?? ENEMY_CONSTANTS.DEFAULT_STYLE.ROTATION;
         this.#renderOptions.shape = this.shapeKey;
         this.#renderOptions.fill = this.fill;

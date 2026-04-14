@@ -15,6 +15,8 @@ export class RecordsOverlay extends DummyMenuOverlay {
         super(titleScene, {
             titleKey: 'title_overlay_records_title',
             bodyKey: 'title_overlay_records_body',
+            titleIconId: 'records',
+            titleIconScaleMultiplier: TITLE_CONSTANTS.TITLE_OVERLAY.RECORDS.TITLE_ICON_SCALE_MULTIPLIER,
             widthRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RECORDS.WIDTH_UIWW_RATIO,
             heightRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RECORDS.HEIGHT_WH_RATIO
         });

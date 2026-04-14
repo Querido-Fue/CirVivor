@@ -1,6 +1,5 @@
-import { getObjectWH } from 'display/display_system.js';
-import { getSetting } from 'save/save_system.js';
 import { CollisionDetector } from './_collision_detector.js';
+import { getSimulationObjectWH, getSimulationSetting } from '../simulation/simulation_runtime.js';
 
 const EPSILON = 1e-6;
 const CELL_KEY_OFFSET = 4096;
@@ -17,6 +16,8 @@ const COLLISION_RESOLVE_MAX_RATIO = 0.16;
 const COLLISION_RESOLVE_MIN_MAX = 1.25;
 const COLLISION_RESOLVE_FRAME_MAX_RATIO = 0.42;
 const COLLISION_RESOLVE_FRAME_MIN_MAX = 2.2;
+const HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE = 1.1;
+const HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE = 0.55;
 const ENEMY_COLLISION_ROTATION_SCALE = 0.25;
 const ENEMY_COLLISION_SPEED_GAP_DEADZONE = 8;
 const ENEMY_COLLISION_CENTER_DEADZONE = 0.24;
@@ -47,13 +48,75 @@ const DENSE_FRAME_SCALE_PER_NEIGHBOR = 0.065;
 const DENSE_FRAME_SCALE_MAX = 2.5;
 const PRESSURE_WEIGHT_MIN = 0.35;
 const PRESSURE_WEIGHT_MAX = 8;
+const PRESSURE_HEXA_HIVE_WEIGHT_MAX = 64;
 const PRESSURE_WEIGHT_EXPONENT = 0.6;
+const MERGE_PENDING_RESOLVE_WEIGHT = 100000;
 const PRESSURE_ENTRY_THRESHOLD = 4;
 const PRESSURE_ENTRY_SCALE_PER_NEIGHBOR = 0.14;
 const PRESSURE_ENTRY_SCALE_MAX = 2.8;
 const PRESSURE_ESCAPE_THRESHOLD = 8;
 const PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR = 0.055;
 const PRESSURE_ESCAPE_SCALE_MAX = 1.45;
+const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
+const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
+
+/**
+ * 합체 적 충돌 형상 기준 셀 수를 반환합니다.
+ * @param {object|null|undefined} enemy
+ * @returns {number}
+ */
+function getHexaHiveCollisionCellCount(enemy) {
+    const candidateCounts = [
+        enemy?.hexaHiveLayout?.filledCells?.length,
+        enemy?.hexaHiveLayout?.visibleLocalCenters?.length,
+        enemy?.hexaHiveLayout?.collisionLocalParts?.length
+    ];
+
+    for (let i = 0; i < candidateCounts.length; i++) {
+        const count = candidateCounts[i];
+        if (Number.isInteger(count) && count > 0) {
+            return count;
+        }
+    }
+
+    return 1;
+}
+
+/**
+ * 큰 육각 합체 적은 전체 외곽 반경 기준으로 충돌 보정을 허용하면
+ * 양끝 동시 충돌 시 중심이 과도하게 밀릴 수 있으므로,
+ * 단일 셀 높이와 전체 외곽 반경의 중간값을 사용해 보정 상한을 조절합니다.
+ * @param {object|null|undefined} enemy
+ * @param {number} boundRadius
+ * @param {number} baseHeight
+ * @returns {number}
+ */
+function getEnemyResolveRadius(enemy, boundRadius, baseHeight) {
+    const safeBoundRadius = Number.isFinite(boundRadius) ? Math.max(COLLISION_RESOLVE_MIN_MAX, boundRadius) : COLLISION_RESOLVE_MIN_MAX;
+    if (enemy?.type !== 'hexa_hive') {
+        return safeBoundRadius;
+    }
+
+    const safeBaseHeight = Number.isFinite(baseHeight) ? Math.max(COLLISION_RESOLVE_MIN_MAX, baseHeight) : safeBoundRadius;
+    const cellCount = getHexaHiveCollisionCellCount(enemy);
+    const rootedCellCount = Math.max(1, Math.sqrt(cellCount));
+    const cellDrivenRadius = safeBaseHeight * (
+        HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE
+        + (Math.max(0, rootedCellCount - 1) * HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE)
+    );
+    const hybridRadius = Math.sqrt(safeBoundRadius * safeBaseHeight);
+    return Math.max(
+        COLLISION_RESOLVE_MIN_MAX,
+        Math.min(
+            safeBoundRadius,
+            Math.max(
+                safeBaseHeight * HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
+                hybridRadius,
+                cellDrivenRadius
+            )
+        )
+    );
+}
 
 const regularPolygon = (sides, radius, rotation = -Math.PI / 2) => {
     const points = [];
@@ -126,6 +189,9 @@ export class CollisionHandler {
     #bucketPool;
     #bucketPoolCursor;
     #activeGridBuckets;
+    #queryMarks;
+    #queryMarkStamp;
+    #queryCandidateIndices;
 
     constructor() {
         this.detector = new CollisionDetector();
@@ -153,7 +219,7 @@ export class CollisionHandler {
             minX: 0, maxX: 0, minY: 0, maxY: 0,
             sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
             boundRadius: 0, broadRadius: 0, velocityX: 0, velocityY: 0,
-            parts: null,
+            parts: null, partBounds: null, mergeLock: false,
             _candidatePairCount: 0, _resolvedPairCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
@@ -177,6 +243,9 @@ export class CollisionHandler {
         this.#bucketPool = [];
         this.#bucketPoolCursor = 0;
         this.#activeGridBuckets = [];
+        this.#queryMarks = new Int32Array(512);
+        this.#queryMarkStamp = 0;
+        this.#queryCandidateIndices = [];
     }
 
     /**
@@ -247,7 +316,12 @@ export class CollisionHandler {
             dynamicBodies[i]._candidatePairCount = 0;
             dynamicBodies[i]._resolvedPairCount = 0;
             dynamicBodies[i]._frameResolveMoved = 0;
-            const radius = Math.max(1, Number.isFinite(dynamicBodies[i].boundRadius) ? dynamicBodies[i].boundRadius : 1);
+            const radius = Math.max(
+                1,
+                Number.isFinite(dynamicBodies[i].resolveRadius)
+                    ? dynamicBodies[i].resolveRadius
+                    : (Number.isFinite(dynamicBodies[i].boundRadius) ? dynamicBodies[i].boundRadius : 1)
+            );
             dynamicBodies[i]._frameResolveMax = Math.max(
                 COLLISION_RESOLVE_FRAME_MIN_MAX,
                 radius * COLLISION_RESOLVE_FRAME_MAX_RATIO
@@ -355,6 +429,7 @@ export class CollisionHandler {
         this.#resetBodyPool();
         const enemyBodies = this.#buildEnemyBodies(enemies, Math.max(delta, EPSILON));
         if (enemyBodies.length === 0) return 0;
+        const enemyGridCellSize = this.#rebuildGridFromBodies(enemyBodies);
 
         const baseSteps = this.#resolveIterationCount();
         let hitCount = 0;
@@ -401,8 +476,13 @@ export class CollisionHandler {
                 circleBody.sweepMinY = cy - projectile.radius;
                 circleBody.sweepMaxY = cy + projectile.radius;
 
-                for (let j = 0; j < enemyBodies.length; j++) {
-                    const enemyBody = enemyBodies[j];
+                const candidateIndices = this.#collectGridCandidateIndices(
+                    circleBody,
+                    enemyGridCellSize,
+                    enemyBodies.length
+                );
+                for (let j = 0; j < candidateIndices.length; j++) {
+                    const enemyBody = enemyBodies[candidateIndices[j]];
                     const enemyId = enemyBody.id;
                     if (this.#hasProjectileHit(projectile, enemyId)) continue;
                     this.#frameStats.collisionCheckCount++;
@@ -430,12 +510,106 @@ export class CollisionHandler {
     }
 
     /**
+     * 적 목록 중 실제로 접촉하고 있는 쌍을 exact 판정으로 수집합니다.
+     * 충돌 통계에는 반영하지 않습니다.
+     * @param {object[]} enemies
+     * @param {{delta?: number}} [options]
+     * @returns {{enemyA: object, enemyB: object}[]}
+     */
+    collectEnemyContactPairs(enemies, options = {}) {
+        if (!Array.isArray(enemies) || enemies.length < 2) {
+            return [];
+        }
+
+        this.#resetBodyPool();
+        const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
+        const bodies = this.#buildEnemyBodies(enemies, delta);
+        if (bodies.length < 2) {
+            return [];
+        }
+
+        const savedStats = {
+            collisionCheckCount: this.#frameStats.collisionCheckCount,
+            aabbPassCount: this.#frameStats.aabbPassCount,
+            aabbRejectCount: this.#frameStats.aabbRejectCount,
+            circlePassCount: this.#frameStats.circlePassCount,
+            circleRejectCount: this.#frameStats.circleRejectCount,
+            polygonChecks: this.#frameStats.polygonChecks
+        };
+
+        this.#rebuildGridFromBodies(bodies);
+        this.#ensurePairBitmap(bodies.length);
+        const contactPairs = [];
+        const bd = this.#broadData;
+        const gridBuckets = this.#activeGridBuckets;
+
+        for (let bucketIndex = 0; bucketIndex < gridBuckets.length; bucketIndex++) {
+            const bucket = gridBuckets[bucketIndex];
+            const count = bucket.count;
+            if (count < 2) {
+                continue;
+            }
+
+            const indices = bucket.indices;
+            for (let left = 0; left < count - 1; left++) {
+                const bodyIndexA = indices[left];
+                for (let right = left + 1; right < count; right++) {
+                    const bodyIndexB = indices[right];
+                    const low = bodyIndexA < bodyIndexB ? bodyIndexA : bodyIndexB;
+                    const high = bodyIndexA < bodyIndexB ? bodyIndexB : bodyIndexA;
+                    if (this.#hasPair(low, high)) {
+                        continue;
+                    }
+                    this.#markPair(low, high);
+
+                    const bodyA = bodies[low];
+                    const bodyB = bodies[high];
+                    if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) {
+                        continue;
+                    }
+
+                    const offsetA = low * BROAD_STRIDE;
+                    const offsetB = high * BROAD_STRIDE;
+                    if (bd[offsetA + 4] > bd[offsetB + 5] || bd[offsetA + 5] < bd[offsetB + 4]
+                        || bd[offsetA + 6] > bd[offsetB + 7] || bd[offsetA + 7] < bd[offsetB + 6]) {
+                        continue;
+                    }
+
+                    const dx = bd[offsetB + 8] - bd[offsetA + 8];
+                    const dy = bd[offsetB + 9] - bd[offsetA + 9];
+                    const radiusSum = bd[offsetA + 12] + bd[offsetB + 12];
+                    if (((dx * dx) + (dy * dy)) > (radiusSum * radiusSum)) {
+                        continue;
+                    }
+
+                    if (!this.#detectBodies(bodyA, bodyB)) {
+                        continue;
+                    }
+
+                    contactPairs.push({
+                        enemyA: bodyA.ref,
+                        enemyB: bodyB.ref
+                    });
+                }
+            }
+        }
+
+        this.#frameStats.collisionCheckCount = savedStats.collisionCheckCount;
+        this.#frameStats.aabbPassCount = savedStats.aabbPassCount;
+        this.#frameStats.aabbRejectCount = savedStats.aabbRejectCount;
+        this.#frameStats.circlePassCount = savedStats.circlePassCount;
+        this.#frameStats.circleRejectCount = savedStats.circleRejectCount;
+        this.#frameStats.polygonChecks = savedStats.polygonChecks;
+        return contactPairs;
+    }
+
+    /**
      * @private
      * @param {number|undefined} iterations
      * @returns {number}
      */
     #resolveIterationCount(iterations) {
-        const fromSetting = Number(getSetting('physicsAccuracy'));
+        const fromSetting = Number(getSimulationSetting('physicsAccuracy'));
         const source = Number.isFinite(iterations) ? iterations : fromSetting;
         const normalized = Number.isFinite(source) ? Math.floor(source) : 1;
         return Math.max(1, Math.min(20, normalized));
@@ -462,16 +636,12 @@ export class CollisionHandler {
         const rebuildGrid = requestRebuildGrid || this.#activeGridBuckets.length === 0;
         const bodyCount = bodies.length;
 
-        this.#ensureBroadData(bodyCount);
-        for (let i = 0; i < bodyCount; i++) {
-            this.#writeBroadData(i, bodies[i]);
-        }
-
         if (rebuildGrid) {
-            const cellSize = this.#estimateCellSize(bodies);
-            this.#clearGrid();
+            this.#rebuildGridFromBodies(bodies);
+        } else {
+            this.#ensureBroadData(bodyCount);
             for (let i = 0; i < bodyCount; i++) {
-                this.#insertBodyToGridSoA(i, cellSize);
+                this.#writeBroadData(i, bodies[i]);
             }
         }
 
@@ -629,11 +799,11 @@ export class CollisionHandler {
         }
 
         if (bodyA.shape === 'polygon' && bodyB.shape === 'circle') {
-            return this.#detectPolygonPartsVsCircle(bodyA.parts, bodyB);
+            return this.#detectPolygonPartsVsCircle(bodyA.parts, bodyA.partBounds, bodyB);
         }
 
         if (bodyA.shape === 'circle' && bodyB.shape === 'polygon') {
-            const manifold = this.#detectPolygonPartsVsCircle(bodyB.parts, bodyA);
+            const manifold = this.#detectPolygonPartsVsCircle(bodyB.parts, bodyB.partBounds, bodyA);
             if (!manifold) return null;
             // poly->circle 기준 법선을 circle->poly 관점으로 뒤집습니다.
             manifold.normalX = -manifold.normalX;
@@ -642,7 +812,12 @@ export class CollisionHandler {
         }
 
         if (bodyA.shape === 'polygon' && bodyB.shape === 'polygon') {
-            return this.#detectPolygonPartsVsPolygonParts(bodyA.parts, bodyB.parts);
+            return this.#detectPolygonPartsVsPolygonParts(
+                bodyA.parts,
+                bodyA.partBounds,
+                bodyB.parts,
+                bodyB.partBounds
+            );
         }
 
         return null;
@@ -651,10 +826,20 @@ export class CollisionHandler {
     /**
      * @private
      */
-    #detectPolygonPartsVsCircle(parts, circle) {
+    #detectPolygonPartsVsCircle(parts, partBounds, circle) {
         const best = this.#scratchBestManifold;
         let hasBest = false;
+        let contactCount = 0;
+        let normalSumX = 0;
+        let normalSumY = 0;
+        let pointSumX = 0;
+        let pointSumY = 0;
+        let penetrationSum = 0;
+        let maxPenetration = 0;
         for (let i = 0; i < parts.length; i++) {
+            if (this.#partBoundsVsCircle(partBounds, i, circle) === false) {
+                continue;
+            }
             this.#frameStats.polygonChecks++;
             const manifold = this.detector.polygonVsCircle(
                 parts[i],
@@ -665,22 +850,53 @@ export class CollisionHandler {
                 this.#scratchCandidateManifold
             );
             if (!manifold) continue;
+            const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
+            if (penetration <= EPSILON) continue;
+            contactCount++;
+            normalSumX += manifold.normalX * penetration;
+            normalSumY += manifold.normalY * penetration;
+            pointSumX += manifold.pointX * penetration;
+            pointSumY += manifold.pointY * penetration;
+            penetrationSum += penetration;
+            if (penetration > maxPenetration) {
+                maxPenetration = penetration;
+            }
             if (!hasBest || manifold.penetration > best.penetration) {
                 this.#copyManifold(manifold, best);
                 hasBest = true;
             }
         }
-        return hasBest ? best : null;
+        return hasBest
+            ? this.#finalizeAggregatePartManifold(best, {
+                contactCount,
+                normalSumX,
+                normalSumY,
+                pointSumX,
+                pointSumY,
+                penetrationSum,
+                maxPenetration
+            })
+            : null;
     }
 
     /**
      * @private
      */
-    #detectPolygonPartsVsPolygonParts(partsA, partsB) {
+    #detectPolygonPartsVsPolygonParts(partsA, partBoundsA, partsB, partBoundsB) {
         const best = this.#scratchBestManifold;
         let hasBest = false;
+        let contactCount = 0;
+        let normalSumX = 0;
+        let normalSumY = 0;
+        let pointSumX = 0;
+        let pointSumY = 0;
+        let penetrationSum = 0;
+        let maxPenetration = 0;
         for (let i = 0; i < partsA.length; i++) {
             for (let j = 0; j < partsB.length; j++) {
+                if (this.#partBoundsOverlap(partBoundsA, i, partBoundsB, j) === false) {
+                    continue;
+                }
                 this.#frameStats.polygonChecks++;
                 const manifold = this.detector.polygonVsPolygon(
                     partsA[i],
@@ -691,13 +907,84 @@ export class CollisionHandler {
                     this.#scratchCandidateManifold
                 );
                 if (!manifold) continue;
+                const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
+                if (penetration <= EPSILON) continue;
+                contactCount++;
+                normalSumX += manifold.normalX * penetration;
+                normalSumY += manifold.normalY * penetration;
+                pointSumX += manifold.pointX * penetration;
+                pointSumY += manifold.pointY * penetration;
+                penetrationSum += penetration;
+                if (penetration > maxPenetration) {
+                    maxPenetration = penetration;
+                }
                 if (!hasBest || manifold.penetration > best.penetration) {
                     this.#copyManifold(manifold, best);
                     hasBest = true;
                 }
             }
         }
-        return hasBest ? best : null;
+        return hasBest
+            ? this.#finalizeAggregatePartManifold(best, {
+                contactCount,
+                normalSumX,
+                normalSumY,
+                pointSumX,
+                pointSumY,
+                penetrationSum,
+                maxPenetration
+            })
+            : null;
+    }
+
+    /**
+     * part별 AABB가 있으면 polygon-vs-circle 상세 판정 전 빠르게 거절합니다.
+     * @private
+     * @param {Float32Array|null|undefined} partBounds
+     * @param {number} partIndex
+     * @param {object} circle
+     * @returns {boolean}
+     */
+    #partBoundsVsCircle(partBounds, partIndex, circle) {
+        if (!(partBounds instanceof Float32Array)) {
+            return true;
+        }
+
+        const offset = partIndex * 4;
+        const radius = Number.isFinite(circle?.radius) ? circle.radius : 0;
+        const minX = partBounds[offset];
+        const maxX = partBounds[offset + 1];
+        const minY = partBounds[offset + 2];
+        const maxY = partBounds[offset + 3];
+        const circleMinX = (Number.isFinite(circle?.centerX) ? circle.centerX : 0) - radius;
+        const circleMaxX = (Number.isFinite(circle?.centerX) ? circle.centerX : 0) + radius;
+        const circleMinY = (Number.isFinite(circle?.centerY) ? circle.centerY : 0) - radius;
+        const circleMaxY = (Number.isFinite(circle?.centerY) ? circle.centerY : 0) + radius;
+        return !(minX > circleMaxX || maxX < circleMinX || minY > circleMaxY || maxY < circleMinY);
+    }
+
+    /**
+     * part별 AABB가 있으면 polygon-vs-polygon 상세 판정 전 빠르게 거절합니다.
+     * @private
+     * @param {Float32Array|null|undefined} partBoundsA
+     * @param {number} partIndexA
+     * @param {Float32Array|null|undefined} partBoundsB
+     * @param {number} partIndexB
+     * @returns {boolean}
+     */
+    #partBoundsOverlap(partBoundsA, partIndexA, partBoundsB, partIndexB) {
+        if (!(partBoundsA instanceof Float32Array) || !(partBoundsB instanceof Float32Array)) {
+            return true;
+        }
+
+        const offsetA = partIndexA * 4;
+        const offsetB = partIndexB * 4;
+        return !(
+            partBoundsA[offsetA] > partBoundsB[offsetB + 1]
+            || partBoundsA[offsetA + 1] < partBoundsB[offsetB]
+            || partBoundsA[offsetA + 2] > partBoundsB[offsetB + 3]
+            || partBoundsA[offsetA + 3] < partBoundsB[offsetB + 2]
+        );
     }
 
     /**
@@ -719,6 +1006,39 @@ export class CollisionHandler {
         target.moveBX = source.moveBX || 0;
         target.moveBY = source.moveBY || 0;
         return target;
+    }
+
+    /**
+     * 다중 part 접촉을 단일 대표 manifold로 누적합니다.
+     * @private
+     * @param {object} best
+     * @param {{contactCount:number, normalSumX:number, normalSumY:number, pointSumX:number, pointSumY:number, penetrationSum:number, maxPenetration:number}} aggregate
+     * @returns {object}
+     */
+    #finalizeAggregatePartManifold(best, aggregate) {
+        if (!best || !aggregate || aggregate.contactCount <= 1) {
+            return best;
+        }
+
+        const normalLen = Math.hypot(aggregate.normalSumX, aggregate.normalSumY);
+        if (normalLen <= EPSILON || aggregate.penetrationSum <= EPSILON) {
+            return best;
+        }
+
+        const alignment = Math.min(1, normalLen / aggregate.penetrationSum);
+        const diversity = Math.max(0, 1 - alignment);
+        const multiplier = Math.min(
+            MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX,
+            1 + (diversity * Math.min(aggregate.contactCount - 1, 3) * MULTI_CONTACT_NORMAL_DIVERSITY_SCALE)
+        );
+        const pointWeight = Math.max(EPSILON, aggregate.penetrationSum);
+
+        best.normalX = aggregate.normalSumX / normalLen;
+        best.normalY = aggregate.normalSumY / normalLen;
+        best.penetration = Math.max(best.penetration, aggregate.maxPenetration * multiplier);
+        best.pointX = aggregate.pointSumX / pointWeight;
+        best.pointY = aggregate.pointSumY / pointWeight;
+        return best;
     }
 
     /**
@@ -785,7 +1105,14 @@ export class CollisionHandler {
      */
     #getResolveWeight(body) {
         const rawWeight = Number.isFinite(body?.weight) ? body.weight : 1;
-        const clamped = Math.max(PRESSURE_WEIGHT_MIN, Math.min(PRESSURE_WEIGHT_MAX, rawWeight));
+        if (body?.mergeLock === true) {
+            return MERGE_PENDING_RESOLVE_WEIGHT;
+        }
+
+        const maxWeight = body?.ref?.type === 'hexa_hive'
+            ? PRESSURE_HEXA_HIVE_WEIGHT_MAX
+            : PRESSURE_WEIGHT_MAX;
+        const clamped = Math.max(PRESSURE_WEIGHT_MIN, Math.min(maxWeight, rawWeight));
         return Math.pow(clamped, PRESSURE_WEIGHT_EXPONENT);
     }
 
@@ -828,7 +1155,7 @@ export class CollisionHandler {
             radiusSum += radius;
             count++;
         }
-        const avgRadius = count > 0 ? (radiusSum / count) : Math.max(getObjectWH() * 0.015, 12);
+        const avgRadius = count > 0 ? (radiusSum / count) : Math.max(getSimulationObjectWH() * 0.015, 12);
         const cell = Math.floor(avgRadius * 2.4);
         return Math.max(MIN_CELL_SIZE, Math.min(MAX_CELL_SIZE, cell));
     }
@@ -853,7 +1180,8 @@ export class CollisionHandler {
             centerX: 0, centerY: 0, x: 0, y: 0, radius: 0,
             minX: 0, maxX: 0, minY: 0, maxY: 0,
             sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
-            boundRadius: 0, broadRadius: 0, velocityX: 0, velocityY: 0,
+            boundRadius: 0, broadRadius: 0, resolveRadius: 0, velocityX: 0, velocityY: 0,
+            partBounds: null, mergeLock: false,
             _candidatePairCount: 0, _resolvedPairCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
@@ -969,6 +1297,106 @@ export class CollisionHandler {
             this.#broadData = new Float32Array(Math.max(needed, this.#broadData.length * 2));
         }
         this.#broadBodyCount = bodyCount;
+    }
+
+    /**
+     * body 배열 기준으로 broad-phase SoA와 grid를 다시 구성합니다.
+     * @private
+     * @param {object[]} bodies
+     * @returns {number} 재구성에 사용한 grid cell size
+     */
+    #rebuildGridFromBodies(bodies) {
+        this.#ensureBroadData(bodies.length);
+        for (let i = 0; i < bodies.length; i++) {
+            this.#writeBroadData(i, bodies[i]);
+        }
+
+        const cellSize = this.#estimateCellSize(bodies);
+        this.#clearGrid();
+        for (let i = 0; i < bodies.length; i++) {
+            this.#insertBodyToGridSoA(i, cellSize);
+        }
+
+        return cellSize;
+    }
+
+    /**
+     * projectile broad-phase query에서 사용할 방문 마크 버퍼 크기를 확보합니다.
+     * @private
+     * @param {number} bodyCount
+     */
+    #ensureQueryMarks(bodyCount) {
+        if (this.#queryMarks.length >= bodyCount) {
+            return;
+        }
+
+        this.#queryMarks = new Int32Array(Math.max(bodyCount, this.#queryMarks.length * 2));
+    }
+
+    /**
+     * projectile broad-phase query용 방문 stamp를 갱신합니다.
+     * overflow 시 버퍼를 초기화하고 1부터 다시 사용합니다.
+     * @private
+     * @returns {number}
+     */
+    #advanceQueryStamp() {
+        this.#queryMarkStamp++;
+        if (this.#queryMarkStamp < 0x7fffffff) {
+            return this.#queryMarkStamp;
+        }
+
+        this.#queryMarks.fill(0);
+        this.#queryMarkStamp = 1;
+        return this.#queryMarkStamp;
+    }
+
+    /**
+     * 원형 query body가 현재 grid에서 겹치는 enemy 후보 인덱스를 수집합니다.
+     * @private
+     * @param {object} body
+     * @param {number} cellSize
+     * @param {number} bodyCount
+     * @returns {number[]}
+     */
+    #collectGridCandidateIndices(body, cellSize, bodyCount) {
+        const candidates = this.#queryCandidateIndices;
+        candidates.length = 0;
+        if (!body || cellSize <= 0 || bodyCount <= 0) {
+            return candidates;
+        }
+
+        this.#ensureQueryMarks(bodyCount);
+        const stamp = this.#advanceQueryStamp();
+        const minCellX = Math.floor(body.minX / cellSize);
+        const maxCellX = Math.floor(body.maxX / cellSize);
+        const minCellY = Math.floor(body.minY / cellSize);
+        const maxCellY = Math.floor(body.maxY / cellSize);
+
+        for (let cx = minCellX; cx <= maxCellX; cx++) {
+            for (let cy = minCellY; cy <= maxCellY; cy++) {
+                const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
+                const bucket = this.#grid.get(key);
+                if (!bucket || bucket.count <= 0) {
+                    continue;
+                }
+
+                const indices = bucket.indices;
+                for (let i = 0; i < bucket.count; i++) {
+                    const bodyIndex = indices[i];
+                    if (bodyIndex < 0 || bodyIndex >= bodyCount) {
+                        continue;
+                    }
+                    if (this.#queryMarks[bodyIndex] === stamp) {
+                        continue;
+                    }
+
+                    this.#queryMarks[bodyIndex] = stamp;
+                    candidates.push(bodyIndex);
+                }
+            }
+        }
+
+        return candidates;
     }
 
     /**
@@ -1130,7 +1558,9 @@ export class CollisionHandler {
         const mag = Math.hypot(dx, dy);
         if (mag <= EPSILON) return { x: 0, y: 0 };
 
-        const radius = Number.isFinite(body?.boundRadius) ? body.boundRadius : 16;
+        const radius = Number.isFinite(body?.resolveRadius)
+            ? body.resolveRadius
+            : (Number.isFinite(body?.boundRadius) ? body.boundRadius : 16);
         const baseMaxCorrection = Math.max(COLLISION_RESOLVE_MIN_MAX, radius * COLLISION_RESOLVE_MAX_RATIO);
         const maxCorrection = baseMaxCorrection * this.#getDenseCorrectionScale(body) * resolveBoost;
         if (mag <= maxCorrection) {
@@ -1185,6 +1615,14 @@ export class CollisionHandler {
                     part[i] += dx;
                     part[i + 1] += dy;
                 }
+            }
+        }
+        if (body.partBounds instanceof Float32Array) {
+            for (let i = 0; i < body.partBounds.length; i += 4) {
+                body.partBounds[i] += dx;
+                body.partBounds[i + 1] += dx;
+                body.partBounds[i + 2] += dy;
+                body.partBounds[i + 3] += dy;
             }
         }
 
@@ -1542,6 +1980,8 @@ export class CollisionHandler {
             body.weight = Math.max(EPSILON, Number.isFinite(player.weight) ? player.weight : 1);
             body.movable = true;
             body.parts = null;
+            body.partBounds = null;
+            body.mergeLock = false;
             body.minX = x - radius;
             body.maxX = x + radius;
             body.minY = y - radius;
@@ -1567,7 +2007,11 @@ export class CollisionHandler {
      * @private
      */
     #buildEnemyBody(enemy, delta, sleeping = false) {
-        const localParts = ENEMY_LOCAL_PARTS[enemy.type] || ENEMY_LOCAL_PARTS.square;
+        const localParts = Array.isArray(enemy?.collisionLocalParts)
+            ? enemy.collisionLocalParts
+            : (Array.isArray(enemy?.hexaHiveLayout?.collisionLocalParts)
+                ? enemy.hexaHiveLayout.collisionLocalParts
+                : (ENEMY_LOCAL_PARTS[enemy.type] || ENEMY_LOCAL_PARTS.square));
         const partCount = localParts.length;
         if (partCount === 0) return null;
 
@@ -1576,10 +2020,13 @@ export class CollisionHandler {
                 return new Float32Array(localParts[idx].length);
             });
         }
+        if (!(enemy.__collisionWorldPartBounds instanceof Float32Array) || enemy.__collisionWorldPartBounds.length !== (partCount * 4)) {
+            enemy.__collisionWorldPartBounds = new Float32Array(partCount * 4);
+        }
 
         const baseHeight = typeof enemy.getRenderHeightPx === 'function'
             ? enemy.getRenderHeightPx()
-            : (getObjectWH() * 0.03 * (enemy.size || 1));
+            : (getSimulationObjectWH() * 0.03 * (enemy.size || 1));
         const width = baseHeight * (enemy.aspectRatio ?? 1);
         const height = baseHeight * (enemy.heightScale ?? 1);
         const halfWScale = width;
@@ -1601,6 +2048,10 @@ export class CollisionHandler {
         for (let p = 0; p < partCount; p++) {
             const local = localParts[p];
             const world = enemy.__collisionWorldParts[p];
+            let partMinX = Number.POSITIVE_INFINITY;
+            let partMaxX = Number.NEGATIVE_INFINITY;
+            let partMinY = Number.POSITIVE_INFINITY;
+            let partMaxY = Number.NEGATIVE_INFINITY;
             for (let i = 0; i < local.length; i += 2) {
                 const lx = local[i] * halfWScale;
                 const ly = local[i + 1] * halfHScale;
@@ -1609,6 +2060,10 @@ export class CollisionHandler {
                 world[i] = wx;
                 world[i + 1] = wy;
 
+                if (wx < partMinX) partMinX = wx;
+                if (wx > partMaxX) partMaxX = wx;
+                if (wy < partMinY) partMinY = wy;
+                if (wy > partMaxY) partMaxY = wy;
                 if (wx < minX) minX = wx;
                 if (wx > maxX) maxX = wx;
                 if (wy < minY) minY = wy;
@@ -1618,6 +2073,12 @@ export class CollisionHandler {
                 const distSq = (ddx * ddx) + (ddy * ddy);
                 if (distSq > maxDistSq) maxDistSq = distSq;
             }
+
+            const partBoundsOffset = p * 4;
+            enemy.__collisionWorldPartBounds[partBoundsOffset] = partMinX;
+            enemy.__collisionWorldPartBounds[partBoundsOffset + 1] = partMaxX;
+            enemy.__collisionWorldPartBounds[partBoundsOffset + 2] = partMinY;
+            enemy.__collisionWorldPartBounds[partBoundsOffset + 3] = partMaxY;
         }
 
         const prevX = sleeping
@@ -1636,9 +2097,10 @@ export class CollisionHandler {
 
         const boundRadius = Math.max((maxX - minX) * 0.5, (maxY - minY) * 0.5);
         const broadRadius = Math.sqrt(Math.max(0, maxDistSq));
+        const resolveRadius = getEnemyResolveRadius(enemy, boundRadius, baseHeight);
         const frameResolvePad = Math.max(
             COLLISION_RESOLVE_FRAME_MIN_MAX,
-            boundRadius * COLLISION_RESOLVE_FRAME_MAX_RATIO
+            resolveRadius * COLLISION_RESOLVE_FRAME_MAX_RATIO
         );
         const velocitySweepPadX = sleeping ? 0 : (Math.abs(velX) * delta);
         const velocitySweepPadY = sleeping ? 0 : (Math.abs(velY) * delta);
@@ -1650,8 +2112,12 @@ export class CollisionHandler {
         body.kind = 'enemy';
         body.shape = 'polygon';
         body.parts = enemy.__collisionWorldParts;
+        body.partBounds = enemy.__collisionWorldPartBounds;
         body.ref = enemy;
-        body.weight = Math.max(EPSILON, Number.isFinite(enemy.weight) ? enemy.weight : 1);
+        body.mergeLock = enemy?.hexaHiveMergePending === true;
+        body.weight = body.mergeLock
+            ? Math.max(MERGE_PENDING_RESOLVE_WEIGHT, Number.isFinite(enemy.hexaHiveMergePendingWeight) ? enemy.hexaHiveMergePendingWeight : MERGE_PENDING_RESOLVE_WEIGHT)
+            : Math.max(EPSILON, Number.isFinite(enemy.weight) ? enemy.weight : 1);
         body.movable = true;
         body.centerX = centerX;
         body.centerY = centerY;
@@ -1668,6 +2134,7 @@ export class CollisionHandler {
         body.sweepMaxY = maxY + sweepPadY;
         body.boundRadius = boundRadius;
         body.broadRadius = broadRadius;
+        body.resolveRadius = resolveRadius;
         body.velocityX = velX;
         body.velocityY = velY;
         body._candidatePairCount = 0;
@@ -1722,6 +2189,8 @@ export class CollisionHandler {
                 ref: wall,
                 weight: Number.MAX_SAFE_INTEGER,
                 movable: false,
+                partBounds: new Float32Array([cx - hw, cx + hw, cy - hh, cy + hh]),
+                mergeLock: false,
                 centerX: cx,
                 centerY: cy,
                 x: cx,

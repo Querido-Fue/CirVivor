@@ -4,7 +4,22 @@
 export const TITLE_CONSTANTS = Object.freeze({
     TITLE_ENEMIES: Object.freeze({
         ENEMY_SPAWN_RATE: 40,
-        ENEMY_LIMIT: 400,
+        ENEMY_LIMIT: 420,
+        ENEMY_LIMIT_PER_LAYER: 140,
+        ENEMY_TARGET_OCCUPANCY_RATIO: 0.9,
+        INITIAL_BURST_FILL_RATIO: 0.7,
+        INITIAL_BURST_DURATION_SECONDS: 1,
+        INITIAL_BURST_COLLISION_GRACE_SECONDS: 0.3,
+        INITIAL_BURST_SPAWN_EASEOUT_EXPO_POWER: 14,
+        INITIAL_BURST_MAX_SPAWN_PER_STEP: 5,
+        INITIAL_BURST_SPAWN_X_MIN_RATIO: 1,
+        INITIAL_BURST_SPAWN_X_MAX_RATIO: 1.03,
+        INITIAL_BURST_AXIS_SPEED_MIN_MULTIPLIER: 0,
+        INITIAL_BURST_AXIS_SPEED_MAX_MULTIPLIER: 60,
+        INITIAL_BURST_DRIFT_SPEED_MIN_MULTIPLIER: 1.1,
+        INITIAL_BURST_DRIFT_SPEED_MAX_MULTIPLIER: 2.8,
+        INITIAL_BURST_LAYER_COMPENSATION_MIN: 0.4,
+        INITIAL_BURST_Y_JITTER_RATIO: 0.78,
         ENEMY_EXCLUDED_TYPES: Object.freeze(['gen']),
         SHIELD_RADIUS_RATIO: 0.07,
         SHIELD_ANIM_DURATION: 1.2,
@@ -17,6 +32,7 @@ export const TITLE_CONSTANTS = Object.freeze({
         ENEMY_ALPHA_MAX: 0.45,
         AXIS_SPEED_MIN_RATIO: 0.02,
         AXIS_SPEED_MAX_RATIO: 0.07,
+        AXIS_SPEED_LEFT_MULTIPLIER: 1.1,
         DRIFT_SPEED_MIN_RATIO: -0.02,
         DRIFT_SPEED_MAX_RATIO: 0.02,
         PARALLAX_LAYERS: Object.freeze([
@@ -26,7 +42,7 @@ export const TITLE_CONSTANTS = Object.freeze({
                 SizeMax: 0.56,
                 Alpha: 0.4,
                 SpeedScale: 0.3,
-                MagneticScale: 1,
+                MagneticScale: 0,
                 ColorMix: 0.72,
                 SoftnessScale: 1.14,
                 SoftnessAlpha: 0.16,
@@ -61,8 +77,13 @@ export const TITLE_CONSTANTS = Object.freeze({
         SPAWN_Y_MAX_RATIO: 0.97
     }),
     TITLE_AI: Object.freeze({
-        MAGNETIC_IMPULSE: 2000,
+        MAGNETIC_IMPULSE: 1400,
         MAGNETIC_DAMPING: 6,
+        MAX_SPEED_CAP_MULTIPLIER: 1.7,
+        BURST_MAX_SPEED_CAP_MULTIPLIER: 15,
+        MAX_SPEED_CAP_EASEOUT_EXPO_RATE: 12,
+        BURST_VELOCITY_EASEOUT_EXPO_RATE: 11.5,
+        BURST_ACCEL_RESPONSE_MULTIPLIER: 3.5,
         MOUSE_IDLE_STRENGTH: 2,
         MOUSE_CLICK_STRENGTH: 5,
         MOUSE_IDLE_DISTANCE_RATIO: 0.05,
@@ -117,6 +138,9 @@ export const TITLE_CONSTANTS = Object.freeze({
         TEXT_ALPHA: 0.7,
         TEXT_FADE_DURATION: 0.4,
         TEXT_EXIT_DISTANCE_RATIO: 0.009,
+        NOTICE_FADE_LEAD_TIME: 2.5,
+        NOTICE_FADE_DURATION: 1,
+        ENEMY_SPAWN_READY_LEAD_SECONDS: 0.5,
         CIRCLE_CENTER_X_RATIO: 0.35,
         CIRCLE_CENTER_Y_RATIO: 0.5,
         CIRCLE_RADIUS_WH_RATIO: 0.115,
@@ -133,19 +157,33 @@ export const TITLE_CONSTANTS = Object.freeze({
         LOGO_FINAL_WIDTH_UIWW_RATIO: 0.19
     }),
     TITLE_SHIELD: Object.freeze({
-        IMPACT_MAX_COUNT: 8,
-        DENT_MAX_COUNT: 6,
+        IMPACT_MAX_COUNT: 12,
+        DENT_MAX_COUNT: 8,
         BASE_ALPHA: 1,
         SHELL_RADIUS_MULTIPLIER: 1.4,
+        LAYOUT_FOLLOW_RATE: 18,
         RING_THICKNESS_PX: 1.75,
         GLOW_WIDTH_PX: 26,
-        FIELD_RADIUS_MULTIPLIER: 3,
+        FIELD_RADIUS_MULTIPLIER: 4,
         IMPACT_DURATION_SECONDS: 3,
         IMPACT_BAND_PX: 18,
         CONTACT_PADDING_PX: 10,
+        CONTACT_HYSTERESIS_PX: 8,
+        BOUNDARY_EPSILON_PX: 4,
         PRESSURE_INFLUENCE_PX: 54,
         VISUAL_TRIGGER_DISTANCE_MULTIPLIER: 1.2,
+        VISUAL_DELTA_CLAMP_SECONDS: 0.03333333333333333,
+        IMPACT_ANGLE_FOLLOW_RATE: 18,
+        IMPACT_INTENSITY_FOLLOW_RATE: 24,
+        IMPACT_WIDTH_FOLLOW_RATE: 20,
+        IMPACT_MERGE_ANGLE_RAD: 0.22,
+        IMPACT_REPLACEMENT_BIAS: 0.12,
+        IMPACT_IMMEDIATE_BOOST_RATIO: 0.55,
         PRESSURE_FOLLOW_RATE: 12,
+        PRESSURE_RELEASE_FOLLOW_RATE: 5.5,
+        DENT_ANGLE_FOLLOW_RATE: 14,
+        DENT_SWITCH_BIAS: 0.08,
+        DENT_DEPTH_SWITCH_BIAS: 2.16,
         PRESSURE_MAX_DEPTH_PX: 18,
         ANGULAR_WIDTH_PADDING_PX: 12,
         ANGULAR_WIDTH_SCALE: 1.15,
@@ -177,7 +215,7 @@ export const TITLE_CONSTANTS = Object.freeze({
         ENTRANCE_OFFSET_Y_WH_RATIO: 0.035,
         UTILITY_PANE_TOP_WH_RATIO: 0.72,
         UTILITY_TILE_GAP_UIWW_RATIO: 0.008,
-        UTILITY_TILE_TARGET_SIZE_PX: 68,
+        UTILITY_TILE_TARGET_SIZE_UIWW_RATIO: 68 / 2560,
         UTILITY_TILE_SCALE: 1.25,
         UTILITY_TILE_CORNER_RADIUS_RATIO: 0.18,
         UTILITY_TILE_PLACEHOLDER_SCALE: 0.34,
@@ -221,6 +259,16 @@ export const TITLE_CONSTANTS = Object.freeze({
         })
     }),
     TITLE_OVERLAY: Object.freeze({
+        TITLE_ICON: Object.freeze({
+            GAP: Object.freeze({
+                BASE: 'WW',
+                VALUE: 0.22
+            }),
+            MAX_HEIGHT_RATIO: 0.92,
+            SCALE_MULTIPLIER: 1.08,
+            GAP_MULTIPLIER: 2.5,
+            DEFAULT_SCALE_MULTIPLIER: 1
+        }),
         SETTINGS: Object.freeze({
             WIDTH_UIWW_RATIO: 0.65,
             HEIGHT_WH_RATIO: 0.7
@@ -239,15 +287,18 @@ export const TITLE_CONSTANTS = Object.freeze({
         }),
         RECORDS: Object.freeze({
             WIDTH_UIWW_RATIO: 0.5,
-            HEIGHT_WH_RATIO: 0.42
+            HEIGHT_WH_RATIO: 0.42,
+            TITLE_ICON_SCALE_MULTIPLIER: 0.75
         }),
         RESEARCH: Object.freeze({
             WIDTH_UIWW_RATIO: 0.54,
-            HEIGHT_WH_RATIO: 0.5
+            HEIGHT_WH_RATIO: 0.5,
+            TITLE_ICON_SCALE_MULTIPLIER: 0.9
         }),
         ACHIEVEMENTS: Object.freeze({
             WIDTH_UIWW_RATIO: 0.54,
-            HEIGHT_WH_RATIO: 0.5
+            HEIGHT_WH_RATIO: 0.5,
+            TITLE_ICON_SCALE_MULTIPLIER: 0.95
         })
     })
 });

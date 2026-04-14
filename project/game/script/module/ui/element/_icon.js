@@ -31,7 +31,9 @@ export class Icon {
         const strokeW = 1.3 * scale;
 
         if (this.type === 'arrow') {
-            const hs = w * 0.35;
+            const arrowSize = Math.min(w, h);
+            const hs = arrowSize * 0.385;
+            const headLength = hs * 0.88;
             // 몸통 선
             render(layer, {
                 shape: 'line',
@@ -45,7 +47,7 @@ export class Icon {
             // 위쪽 화살촉
             render(layer, {
                 shape: 'line',
-                x1: cx + hs - hs * 0.8, y1: cy - hs * 0.8,
+                x1: cx + hs - headLength, y1: cy - headLength,
                 x2: cx + hs, y2: cy,
                 stroke: renderColor,
                 lineWidth: strokeW,
@@ -55,7 +57,7 @@ export class Icon {
             // 아래쪽 화살촉
             render(layer, {
                 shape: 'line',
-                x1: cx + hs - hs * 0.8, y1: cy + hs * 0.8,
+                x1: cx + hs - headLength, y1: cy + headLength,
                 x2: cx + hs, y2: cy,
                 stroke: renderColor,
                 lineWidth: strokeW,

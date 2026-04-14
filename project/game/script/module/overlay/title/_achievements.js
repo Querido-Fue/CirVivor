@@ -15,6 +15,8 @@ export class AchievementsOverlay extends DummyMenuOverlay {
         super(titleScene, {
             titleKey: 'title_overlay_achievements_title',
             bodyKey: 'title_overlay_achievements_body',
+            titleIconId: 'achievements',
+            titleIconScaleMultiplier: TITLE_CONSTANTS.TITLE_OVERLAY.ACHIEVEMENTS.TITLE_ICON_SCALE_MULTIPLIER,
             widthRatio: TITLE_CONSTANTS.TITLE_OVERLAY.ACHIEVEMENTS.WIDTH_UIWW_RATIO,
             heightRatio: TITLE_CONSTANTS.TITLE_OVERLAY.ACHIEVEMENTS.HEIGHT_WH_RATIO
         });

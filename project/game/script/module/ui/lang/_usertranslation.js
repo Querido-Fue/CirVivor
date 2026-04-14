@@ -10,6 +10,8 @@ export const userLanguage = {
     "exit_query": "",
     "exit_yes": "",
     "exit_no": "",
+    "external_link_warning_title": "",
+    "external_link_warning_body": "",
 
     // 타이틀
     "title_menu_start": "⚡",
@@ -18,6 +20,7 @@ export const userLanguage = {
     "title_menu_credits": "💎",
     "title_menu_exit": "❌",
     "title_menu_close": "",
+    "title_version_history_link": "",
 
     "title_credits_title": "",
     "title_credits_section_dev": "",
@@ -51,6 +54,8 @@ export const userLanguage = {
     "title_settings_theme": "",
     "title_settings_theme_light": "",
     "title_settings_theme_dark": "",
+    "title_settings_tooltip_delay": "",
+    "title_settings_desc_tooltip_delay": "",
     "title_settings_section_sound": "",
     "title_settings_bgm": "",
     "title_settings_sfx": "",

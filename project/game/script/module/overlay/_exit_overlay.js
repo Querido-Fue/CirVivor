@@ -14,7 +14,7 @@ const OVERLAY_LAYOUT_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS');
 export class ExitOverlay extends BaseOverlay {
     constructor() {
         super({
-            layer: 20,
+            layer: 100,
             dim: 0.28,
             transparent: true,
             blurUpdateMode: 'always'
@@ -39,7 +39,7 @@ export class ExitOverlay extends BaseOverlay {
         const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.5)
             .space("WH", 2.5)
             .item("text").stylePreset("h2").text(getLangString('exit_title')).fill(ColorSchemes.Title.TextDark)
-            .space("WH", 1.2)
+            .space("WH", 1.4)
             .item("text").stylePreset("h4").text(getLangString('exit_query')).fill(ColorSchemes.Overlay.Text.Item)
             .bottomSpace("WH", 2.5)
             .bottomGroup().justifyContent("right", "WW", 1).align("right");

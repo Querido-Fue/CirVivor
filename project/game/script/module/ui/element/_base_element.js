@@ -1,4 +1,5 @@
 import { animate, remove } from "animation/animation_system.js";
+import { requestTooltip } from "ui/ui_system.js";
 
 /**
  * @class BaseUIElement
@@ -7,6 +8,8 @@ import { animate, remove } from "animation/animation_system.js";
 export class BaseUIElement {
     #targetScale;
     #targetHoverValue;
+    #hoverTooltipContent;
+    #isHovering;
 
     constructor(properties) {
         // 서브클래스의 private 필드 초기화를 위해 생성자에서 init()이 호출되지 않습니다.
@@ -28,6 +31,9 @@ export class BaseUIElement {
         this.shadow = properties.shadow || null;
         this.visible = true;
         this.clickAble = properties.clickAble === undefined ? true : properties.clickAble;
+        this.tooltip = properties.tooltip;
+        this.#hoverTooltipContent = null;
+        this.#isHovering = false;
 
         // 공통 애니메이션 상태
         this.scale = 1;
@@ -47,6 +53,9 @@ export class BaseUIElement {
     reset() {
         if (this.scaleAnimId) { remove(this.scaleAnimId); this.scaleAnimId = null; }
         if (this.hoverAnimId !== -1) { remove(this.hoverAnimId); this.hoverAnimId = -1; }
+        this.tooltip = null;
+        this.#hoverTooltipContent = null;
+        this.#isHovering = false;
     }
 
     /**
@@ -57,6 +66,8 @@ export class BaseUIElement {
      * @param {Function} [onHoverFn] - 호버 시 실행할 콜백 (선택)
      */
     _handleInteractionState(isHovered, isLeftClicking, onHoverFn) {
+        this.#updateTooltipState(isHovered, onHoverFn);
+
         if (!this.clickAble) return;
 
         const targetValue = isHovered ? 1.0 : 0.0;
@@ -99,11 +110,56 @@ export class BaseUIElement {
                 duration: 0.5
             });
             this.hoverAnimId = animObj.id;
+        }
+    }
 
-            if (isHovered && onHoverFn) {
-                onHoverFn();
+    /**
+     * @private
+     * hover 진입 시점과 유지 시간을 추적해 툴팁 표시 가능 여부를 계산합니다.
+     * @param {boolean} isHovered - 현재 hover 여부입니다.
+     * @param {Function|undefined} [onHoverFn] - hover 시작 시 실행할 콜백입니다.
+     */
+    #updateTooltipState(isHovered, onHoverFn) {
+        if (!isHovered) {
+            this.#isHovering = false;
+            this.#hoverTooltipContent = null;
+            return;
+        }
+
+        if (!this.#isHovering) {
+            this.#isHovering = true;
+            if (onHoverFn) {
+                const hoverResult = onHoverFn();
+                this.#hoverTooltipContent = hoverResult !== undefined && hoverResult !== null && hoverResult !== false
+                    ? hoverResult
+                    : null;
             }
         }
+
+        const tooltipContent = this.#resolveTooltipContent();
+        if (tooltipContent) {
+            requestTooltip(tooltipContent);
+        }
+    }
+
+    /**
+     * @private
+     * 현재 hover 상태에서 노출할 툴팁 콘텐츠를 계산합니다.
+     * @returns {string|string[]|object|null} 요청할 툴팁 콘텐츠입니다.
+     */
+    #resolveTooltipContent() {
+        const tooltipSource = this.tooltip !== undefined && this.tooltip !== null
+            ? this.tooltip
+            : this.#hoverTooltipContent;
+        if (tooltipSource === undefined || tooltipSource === null || tooltipSource === false) {
+            return null;
+        }
+
+        if (typeof tooltipSource === 'function') {
+            return tooltipSource(this);
+        }
+
+        return tooltipSource;
     }
 
     /**

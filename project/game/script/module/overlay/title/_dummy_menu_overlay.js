@@ -16,7 +16,11 @@ export class DummyMenuOverlay extends TitleOverlay {
      * @param {object} [options={}] - 더미 overlay 옵션입니다.
      */
     constructor(titleScene, options = {}) {
-        super(titleScene, options.overlayOptions || {});
+        super(titleScene, {
+            ...(options.overlayOptions || {}),
+            titleIconId: options.titleIconId || null,
+            titleIconScaleMultiplier: options.titleIconScaleMultiplier
+        });
 
         this.titleKey = options.titleKey || 'title_card_dummy_status';
         this.bodyKey = options.bodyKey || 'title_card_dummy_status';

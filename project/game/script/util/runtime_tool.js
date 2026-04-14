@@ -10,14 +10,51 @@ let runtimeToolInstance = null;
 export class RuntimeTool {
     constructor() {
         runtimeToolInstance = this;
+        this._externalURLHandler = null;
+    }
+
+    /**
+     * 외부 링크 열기 요청에 대한 확인 핸들러를 등록합니다.
+     * @param {(url: string) => (string|null|boolean|undefined)|null} handler - 외부 링크 확인 처리 함수입니다.
+     */
+    setExternalURLHandler(handler) {
+        this._externalURLHandler = typeof handler === 'function' ? handler : null;
     }
 
     /**
      * URL을 외부 시스템 브라우저에서 엽니다.
      * @param {string} url - 열고자 하는 URL
+     * @returns {string|boolean|null} 처리 결과입니다.
      */
     openURL(url) {
-        nw.Shell.openExternal(url);
+        const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+        if (!normalizedUrl) {
+            return false;
+        }
+
+        if (typeof this._externalURLHandler === 'function') {
+            const handledResult = this._externalURLHandler(normalizedUrl);
+            if (handledResult !== null && handledResult !== undefined && handledResult !== false) {
+                return handledResult;
+            }
+        }
+
+        return this._openURLDirect(normalizedUrl);
+    }
+
+    /**
+     * 확인 절차 없이 URL을 외부 시스템 브라우저에서 즉시 엽니다.
+     * @param {string} url - 열고자 하는 URL
+     * @returns {boolean} 브라우저 열기 시도 여부입니다.
+     */
+    _openURLDirect(url) {
+        const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+        if (!normalizedUrl) {
+            return false;
+        }
+
+        nw.Shell.openExternal(normalizedUrl);
+        return true;
     }
 
     /**

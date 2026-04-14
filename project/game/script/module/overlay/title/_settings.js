@@ -11,13 +11,23 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const SIMULATION_WORKER_SHADOW_SETTING_KEY = 'simulationWorkerShadowMode';
+const SIMULATION_WORKER_PRESENTATION_SETTING_KEY = 'simulationWorkerPresentationMode';
+const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
+const MULTICORE_SETTING_KEYS = Object.freeze([
+    SIMULATION_WORKER_SHADOW_SETTING_KEY,
+    SIMULATION_WORKER_PRESENTATION_SETTING_KEY,
+    SIMULATION_WORKER_AUTHORITY_SETTING_KEY
+]);
 const SETTING_LABEL_KEYS = {
     windowMode: 'title_settings_window_mode',
     widescreenSupport: 'title_settings_widescreen_support',
     renderScale: 'title_settings_render_scale',
     uiScale: 'title_settings_ui_scale',
     disableTransparency: 'title_settings_disable_transparency',
+    tooltipDelaySeconds: 'title_settings_tooltip_delay',
     physicsAccuracy: 'title_settings_physics_accuracy',
+    multicoreSupport: 'title_settings_multicore_support',
     language: 'title_settings_language',
     theme: 'title_settings_theme',
     bgmVolume: 'title_settings_bgm',
@@ -32,7 +42,7 @@ export class SettingsOverlay extends TitleOverlay {
     #openKeybindings;
 
     constructor(TitleScene) {
-        super(TitleScene, { glOverlay: true });
+        super(TitleScene, { glOverlay: true, titleIconId: 'setting' });
 
         this.settingsChanged = false;
         this.settingComponents = {};
@@ -55,7 +65,11 @@ export class SettingsOverlay extends TitleOverlay {
             renderScale: getSetting('renderScale') || 100,
             uiScale: getSetting('uiScale') || 100,
             disableTransparency: getSetting('disableTransparency') || false,
+            tooltipDelaySeconds: this.#normalizeTooltipDelaySeconds(
+                getSetting('tooltipDelaySeconds') !== undefined ? getSetting('tooltipDelaySeconds') : 0.7
+            ),
             physicsAccuracy: getSetting('physicsAccuracy') || 8,
+            multicoreSupport: this.#isMulticoreEnabled(),
             language: normalizedLanguage,
             theme: getSetting('theme') || DEFAULT_THEME_KEY,
             bgmVolume: getSetting('bgmVolume') !== undefined ? getSetting('bgmVolume') : 100,
@@ -251,6 +265,40 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
+     * 현재 저장된 워커 설정 기준으로 멀티코어 활성 여부를 반환합니다.
+     * @returns {boolean}
+     */
+    #isMulticoreEnabled() {
+        for (let i = 0; i < MULTICORE_SETTING_KEYS.length; i++) {
+            if (getSetting(MULTICORE_SETTING_KEYS[i]) !== true) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * 가상 설정 키를 실제 저장 키 묶음으로 확장합니다.
+     * @param {object} changedSettings - UI에서 변경된 설정 객체입니다.
+     * @returns {object} 저장/미리보기에 사용할 실제 설정 객체입니다.
+     */
+    #expandCompositeSettings(changedSettings = {}) {
+        const expandedSettings = { ...changedSettings };
+        if (expandedSettings.multicoreSupport === undefined) {
+            return expandedSettings;
+        }
+
+        const enableMulticore = expandedSettings.multicoreSupport === true;
+        delete expandedSettings.multicoreSupport;
+        for (let i = 0; i < MULTICORE_SETTING_KEYS.length; i++) {
+            expandedSettings[MULTICORE_SETTING_KEYS[i]] = enableMulticore;
+        }
+
+        return expandedSettings;
+    }
+
+    /**
      * 저장 완료 후 변경된 설정을 런타임에 즉시 반영합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      * @returns {Promise<void>}
@@ -270,7 +318,7 @@ export class SettingsOverlay extends TitleOverlay {
      * @returns {Promise<void>}
      */
     #queuePreviewSettings(changedSettings) {
-        Object.assign(this.pendingPreviewSettings, changedSettings);
+        Object.assign(this.pendingPreviewSettings, this.#expandCompositeSettings(changedSettings));
 
         if (!this.previewFlushPromise) {
             this.previewFlushPromise = Promise.resolve().then(async () => {
@@ -312,7 +360,7 @@ export class SettingsOverlay extends TitleOverlay {
      */
     async #cancelChanges() {
         await this.#flushPendingPreview();
-        const revertedSettings = this.#getRevertedSettings();
+        const revertedSettings = this.#expandCompositeSettings(this.#getRevertedSettings());
         if (Object.keys(revertedSettings).length > 0) {
             previewSettingBatch(revertedSettings);
             await this.#applyRuntimeSettings(revertedSettings);
@@ -434,6 +482,16 @@ export class SettingsOverlay extends TitleOverlay {
             })
         this._addItemFooter(handler, 'title_settings_desc_physics_accuracy', spacingScale);
 
+        // 멀티코어 지원
+        this._addItemHeader(handler, 'title_settings_multicore_support', 'multicoreSupport');
+        handler.width("parent", controlWrapWidth)
+            .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
+            .item("toggle", "control_multicoreSupport").width("WW", 2.55).height("WH", 2)
+            .setValue(this.tempSettings.multicoreSupport)
+            .onChange((val) => { this.#handleSettingInput('multicoreSupport', val); });
+        handler.endGroup();
+        this._addItemFooter(handler, 'title_settings_desc_multicore_support', spacingScale);
+
         handler.space("OH", 4 * spacingScale);
     }
     _buildRightColumn(handler) {
@@ -467,6 +525,20 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("openDirection", "down")
             .onChange((val) => { this.#handleSettingInput('theme', val); });
         this._addItemFooter(handler, null, spacingScale);
+
+        // 툴팁 표시 시간
+        this._addItemHeader(handler, 'title_settings_tooltip_delay', 'tooltipDelaySeconds');
+        const tooltipDelaySchema = getSettingSchema('tooltipDelaySeconds');
+        handler.width("parent", controlWrapWidth).item("slider", "control_tooltipDelaySeconds").width("parent", controlMaxWidth)
+            .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
+            .prop("min", tooltipDelaySchema.min).prop("max", tooltipDelaySchema.max).prop("step", 0.1).setValue(this.tempSettings.tooltipDelaySeconds)
+            .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
+            .prop("valueFont", sliderValueFont)
+            .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
+            .prop("valueFormatter", (v) => this.#formatTooltipDelayValue(v))
+            .onChange((val) => { this.#handleSettingInput('tooltipDelaySeconds', val, { preview: false }); })
+            .onCommit((val) => { this.#handleSettingInput('tooltipDelaySeconds', val); });
+        this._addItemFooter(handler, 'title_settings_desc_tooltip_delay', spacingScale);
 
         handler.space("OH", 4 * spacingScale);
 
@@ -574,6 +646,33 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
+     * @private
+     * 현재 언어 설정에 맞춰 툴팁 지연 시간을 포맷합니다.
+     * @param {number} value - 표시할 지연 시간입니다.
+     * @returns {string} 포맷된 표시 문자열입니다.
+     */
+    #formatTooltipDelayValue(value) {
+        const normalizedValue = this.#normalizeTooltipDelaySeconds(value);
+        const suffix = this.tempSettings.language === 'korean' ? '초' : 's';
+        return `${normalizedValue.toFixed(1)}${suffix}`;
+    }
+
+    /**
+     * @private
+     * 툴팁 지연 시간을 0.1초 단위 값으로 정규화합니다.
+     * @param {number} value - 정규화할 값입니다.
+     * @returns {number} 0.1초 단위로 보정된 값입니다.
+     */
+    #normalizeTooltipDelaySeconds(value) {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue)) {
+            return 0.7;
+        }
+
+        return Number(Math.max(0, Math.min(2, numericValue)).toFixed(1));
+    }
+
+    /**
          * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
          * @returns {Promise<object>} 실제로 변경되어 저장된 설정 키와 값입니다.
          */
@@ -585,14 +684,15 @@ export class SettingsOverlay extends TitleOverlay {
             return changedSettings;
         }
 
+        const persistedSettings = this.#expandCompositeSettings(changedSettings);
         await setSettingBatch({
-            ...changedSettings,
+            ...persistedSettings,
             screenModeChanged: false
         });
 
         this.initialSettings = { ...this.tempSettings };
         this.#refreshChangedLabels();
-        return changedSettings;
+        return persistedSettings;
     }
 
     /**

@@ -32,7 +32,7 @@ export class SettingHandler {
 
         /**
          * 설정 스키마 정의
-         * type: 데이터 타입 ('bool' | 'int' | 'string')
+         * type: 데이터 타입 ('bool' | 'int' | 'float' | 'string')
          * value: 기본값, min: 최솟값 (-1=제한없음), max: 최댓값 (-1=제한없음), hidden: UI 옵션 메뉴에 표시하지 않음 (파일에는 조건부 저장됨)
          */
         this.schema = {
@@ -45,11 +45,15 @@ export class SettingHandler {
             height: { type: 'int', value: 720, min: 720, max: -1, hidden: false },
             renderScale: { type: 'int', value: 100, min: 75, max: 100, hidden: false },
             uiScale: { type: 'int', value: 100, min: 75, max: 150, hidden: false },
+            tooltipDelaySeconds: { type: 'float', value: 0.7, min: 0, max: 2, hidden: false },
             physicsAccuracy: { type: 'int', value: 3, min: 2, max: 4, hidden: false },
             bgmVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             debugMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
+            simulationWorkerShadowMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
+            simulationWorkerPresentationMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
+            simulationWorkerAuthorityMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
         };
 
         this.#mathUtil = new MathUtil();
@@ -93,6 +97,9 @@ export class SettingHandler {
         if (entry.type === 'int') {
             processedValue = parseInt(value, 10);
             if (isNaN(processedValue)) return entry.value;
+        } else if (entry.type === 'float') {
+            processedValue = parseFloat(value);
+            if (isNaN(processedValue)) return entry.value;
         } else if (entry.type === 'bool') {
             processedValue = Boolean(value);
         } else if (entry.type === 'string') {
@@ -120,8 +127,12 @@ export class SettingHandler {
         }
 
         // 숫자 타입인 경우 min/max 캡 적용
-        if (entry.type === 'int') {
-            return this.#mathUtil.cap(processedValue, entry.min, entry.max);
+        if (entry.type === 'int' || entry.type === 'float') {
+            const cappedValue = this.#mathUtil.cap(processedValue, entry.min, entry.max);
+            if (key === 'tooltipDelaySeconds') {
+                return Number(cappedValue.toFixed(1));
+            }
+            return cappedValue;
         }
 
         return processedValue;

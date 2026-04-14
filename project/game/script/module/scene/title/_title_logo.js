@@ -256,6 +256,22 @@ export class TitleLogo {
     }
 
     /**
+     * 지정한 재생 진행률까지 남은 시간을 초 단위로 반환합니다.
+     * @param {number} targetProgress - 0~1 범위 목표 진행률입니다.
+     * @returns {number} 남은 시간(초)입니다.
+     */
+    getRemainingTimeToProgress(targetProgress) {
+        if (TITLE_LOGO_TOTAL_DURATION <= 0) {
+            return 0;
+        }
+
+        const safeTargetProgress = Number.isFinite(targetProgress) ? targetProgress : 0;
+        const clampedTargetProgress = Math.max(0, Math.min(1, safeTargetProgress));
+        const targetElapsed = TITLE_LOGO_TOTAL_DURATION * clampedTargetProgress;
+        return Math.max(0, targetElapsed - this.elapsed);
+    }
+
+    /**
      * 화면 크기 변경 시 로고 배치를 다시 계산합니다.
      */
     resize() {

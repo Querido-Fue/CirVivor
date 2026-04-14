@@ -103,6 +103,8 @@ class App {
     loop(now) {
         if (!this.running) return;
         this.loopRequestId = requestAnimationFrame(this._boundLoop);
+        const shouldMeasurePerformance = this.systemHandler?.debugSystem?.shouldTrackPerformance?.() === true;
+        const frameMeasureStart = shouldMeasurePerformance ? performance.now() : 0;
         try {
             if (!Number.isFinite(this.lastFrameTimestamp) || this.lastFrameTimestamp <= 0) {
                 this.lastFrameTimestamp = now;
@@ -145,6 +147,15 @@ class App {
             });
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
+        } finally {
+            if (shouldMeasurePerformance) {
+                const frameMeasureEnd = performance.now();
+                this.systemHandler?.debugSystem?.recordPerformanceSample(
+                    'frame.cpu',
+                    frameMeasureEnd - frameMeasureStart,
+                    frameMeasureEnd
+                );
+            }
         }
     }
 

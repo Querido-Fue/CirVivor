@@ -1,5 +1,6 @@
 import { TitleScene } from './title/_title_scene.js';
 import { GameScene } from './game/_game_scene.js';
+import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
 
 /**
  * @class SceneSystem
@@ -24,9 +25,10 @@ export class SceneSystem {
 
     /**
      * 현재 씬을 업데이트합니다.
+     * @param {object} [options={}] - 현재 프레임의 실행 보조 옵션입니다.
      */
-    update() {
-        this.scene.update();
+    update(options = {}) {
+        this.scene.update(options);
     }
 
     /**
@@ -43,6 +45,24 @@ export class SceneSystem {
      */
     draw() {
         this.scene.draw();
+    }
+
+    /**
+     * 현재 활성 씬을 읽기 전용 시뮬레이션 스냅샷으로 그립니다.
+     * @param {{sceneState?: string, scene?: object|null}|null} [sceneWrapper=null]
+     * @param {object} [options={}]
+     * @returns {boolean}
+     */
+    drawSimulationSnapshot(sceneWrapper = null, options = {}) {
+        if (!this.scene || typeof this.scene.drawSimulationSnapshot !== 'function') {
+            return false;
+        }
+
+        if (sceneWrapper?.sceneState && sceneWrapper.sceneState !== this.sceneState) {
+            return false;
+        }
+
+        return this.scene.drawSimulationSnapshot(sceneWrapper?.scene ?? null, options);
     }
 
     /**
@@ -65,10 +85,63 @@ export class SceneSystem {
     }
 
     /**
+     * 현재 활성 씬에 시뮬레이션 명령 목록을 전달합니다.
+     * @param {object[]} [commands=[]]
+     */
+    applySimulationCommands(commands = []) {
+        if (!Array.isArray(commands) || commands.length === 0) {
+            return;
+        }
+
+        if (this.scene && typeof this.scene.applySimulationCommands === 'function') {
+            this.scene.applySimulationCommands(commands);
+        }
+    }
+
+    /**
+     * 현재 활성 씬의 읽기 전용 시뮬레이션 스냅샷을 반환합니다.
+     * @returns {{sceneState: string, scene: object|null}}
+     */
+    createSimulationSnapshot() {
+        return {
+            sceneState: this.sceneState,
+            scene: this.scene && typeof this.scene.createSimulationSnapshot === 'function'
+                ? this.scene.createSimulationSnapshot()
+                : null
+        };
+    }
+
+    /**
+     * 현재 활성 씬의 프레임 동기화용 동적 스냅샷을 반환합니다.
+     * @returns {{sceneState: string, scene: object|null}}
+     */
+    createSimulationFrameSnapshot() {
+        return {
+            sceneState: this.sceneState,
+            scene: this.scene && typeof this.scene.createSimulationFrameSnapshot === 'function'
+                ? this.scene.createSimulationFrameSnapshot()
+                : null
+        };
+    }
+
+    /**
+     * 현재 활성 씬이 내부적으로 생성한 시뮬레이션 명령을 반환합니다.
+     * @returns {object[]}
+     */
+    consumeSimulationCommands() {
+        if (!this.scene || typeof this.scene.consumeSimulationCommands !== 'function') {
+            return [];
+        }
+
+        return this.scene.consumeSimulationCommands();
+    }
+
+    /**
      * 게임을 시작합니다.
      * 타이틀 씬에서 게임 씬으로 전환합니다.
      */
     gameStart() {
+        clearSimulationCommands();
         if (this.scene && this.scene.destroy) {
             this.scene.destroy();
         }

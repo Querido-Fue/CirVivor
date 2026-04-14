@@ -31,9 +31,10 @@ export class SliderElement extends BaseUIElement {
         this.width = properties.width || 100;
         this.trackHeight = properties.trackHeight || 4;
         this.knobRadius = properties.knobRadius || 2;
-        this.min = properties.min || 0;
-        this.max = properties.max || 100;
-        this.value = properties.value || this.min;
+        this.min = properties.min !== undefined ? properties.min : 0;
+        this.max = properties.max !== undefined ? properties.max : 100;
+        this.step = this.#normalizeStep(properties.step);
+        this.value = this.#quantizeValue(properties.value !== undefined ? properties.value : this.min);
         this.animatedValue = this.value;
 
         this.activeColor = properties.activeColor || ColorSchemes.Overlay.Slider.ValueActive;
@@ -161,7 +162,7 @@ export class SliderElement extends BaseUIElement {
 
             const relativeX = mx - hitX;
             const ratio = Math.max(0, Math.min(1, relativeX / currentWidth));
-            const newValue = Math.round(this.min + ratio * (this.max - this.min));
+            const newValue = this.#quantizeValue(this.min + ratio * (this.max - this.min));
 
             if (newValue !== this.value) {
                 this.value = newValue;
@@ -191,6 +192,56 @@ export class SliderElement extends BaseUIElement {
 
         // 기본 UI 요소의 공통 상호작용 처리 호출
         this._handleInteractionState(isOverSlider || this.dragging, this.dragging);
+    }
+
+    /**
+     * @private
+     * 슬라이더 step 값을 유효한 양수로 정규화합니다.
+     * @param {number|undefined} step - 입력 step 값입니다.
+     * @returns {number} 사용할 step 값입니다.
+     */
+    #normalizeStep(step) {
+        const normalizedStep = Number(step);
+        if (!Number.isFinite(normalizedStep) || normalizedStep <= 0) {
+            return 1;
+        }
+
+        return normalizedStep;
+    }
+
+    /**
+     * @private
+     * 현재 step 값 기준으로 소수점 정밀도를 계산합니다.
+     * @returns {number} 표시 및 반올림에 사용할 소수 자릿수입니다.
+     */
+    #getStepPrecision() {
+        const normalizedStep = this.step.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+        const dotIndex = normalizedStep.indexOf('.');
+        return dotIndex === -1 ? 0 : normalizedStep.length - dotIndex - 1;
+    }
+
+    /**
+     * @private
+     * 원시 입력값을 min/max와 step 기준으로 양자화합니다.
+     * @param {number} rawValue - 보정 전 값입니다.
+     * @returns {number} 슬라이더에서 사용할 보정된 값입니다.
+     */
+    #quantizeValue(rawValue) {
+        const cappedValue = mathUtil().cap(rawValue, this.min, this.max);
+        const steppedValue = this.min + (Math.round((cappedValue - this.min) / this.step) * this.step);
+        const precision = this.#getStepPrecision();
+        return Number(mathUtil().cap(steppedValue, this.min, this.max).toFixed(precision));
+    }
+
+    /**
+     * @private
+     * 포매터가 없을 때 사용할 기본 표시 값을 반환합니다.
+     * @param {number} value - 표시할 값입니다.
+     * @returns {number} step 정밀도에 맞춘 값입니다.
+     */
+    #getDisplayValue(value) {
+        const precision = this.#getStepPrecision();
+        return precision > 0 ? Number(value.toFixed(precision)) : Math.round(value);
     }
 
     /**
@@ -292,7 +343,7 @@ export class SliderElement extends BaseUIElement {
 
             render(this.layer, {
                 shape: 'text',
-                text: this.valueFormatter ? this.valueFormatter(this.value) : this.value,
+                text: this.valueFormatter ? this.valueFormatter(this.value) : this.#getDisplayValue(this.value),
                 x: baseX + baseW / 2,
                 y: textY,
                 font: this.valueFont,

@@ -63,6 +63,16 @@ export class PhysicsSystem {
     resolveProjectileVsEnemies(projectiles, enemies, delta) {
         return this.collisionHandler.resolveProjectileVsEnemies(projectiles, enemies, delta);
     }
+
+    /**
+     * 적 목록 중 실제 접촉 중인 적 쌍을 exact 판정으로 수집합니다.
+     * @param {object[]} enemies
+     * @param {{delta?: number}} [options]
+     * @returns {{enemyA: object, enemyB: object}[]}
+     */
+    collectEnemyContactPairs(enemies, options = {}) {
+        return this.collisionHandler.collectEnemyContactPairs(enemies, options);
+    }
 }
 
 export const getPhysicsSystem = () => physicsSystemInstance;

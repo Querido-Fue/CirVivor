@@ -6,14 +6,25 @@ import { ObjectSystem } from 'object/object_system.js';
 import { SceneSystem } from 'scene/scene_system.js';
 import { UISystem } from 'ui/ui_system.js';
 import { OverlayManager } from 'overlay/overlay_system.js';
-import { DebugSystem } from 'debug/debug_system.js';
+import { DebugSystem, measurePerformanceSection } from 'debug/debug_system.js';
 import { SoundSystem } from 'sound/sound_system.js';
 import { getTimeHandler } from 'game/time_handler.js';
 import { warmupUIPools } from 'ui/_ui_pool.js';
 import { getData } from 'data/data_handler.js';
+import { drainSimulationCommands } from 'simulation/simulation_command_queue.js';
+import { getSimulationRuntimeSnapshot, syncSimulationRuntime } from 'simulation/simulation_runtime.js';
+import { SimulationWorkerBridge } from 'simulation/simulation_worker_bridge.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 const DISPLAY_REFRESH_SETTING_KEYS = new Set(['windowMode', 'widescreenSupport', 'renderScale']);
+const SIMULATION_WORKER_SHADOW_SETTING_KEY = 'simulationWorkerShadowMode';
+const SIMULATION_WORKER_PRESENTATION_SETTING_KEY = 'simulationWorkerPresentationMode';
+const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
+const SIMULATION_RUNTIME_SETTING_KEYS = Object.freeze([
+    'physicsAccuracy',
+    SIMULATION_WORKER_SHADOW_SETTING_KEY,
+    SIMULATION_WORKER_AUTHORITY_SETTING_KEY
+]);
 const DEFAULT_FRAME_EXECUTION_POLICY = Object.freeze({
     keepLoopRunning: true,
     runFrameTimeUpdate: true,
@@ -68,6 +79,9 @@ export class SystemHandler {
     constructor() {
         this.pauseReasons = new Map();
         this.frameExecutionPolicy = this.createPausePolicy();
+        this.lastAppliedSimulationCommands = [];
+        this.simulationWorkerBridge = null;
+        this.lastSimulationWorkerSceneState = null;
     }
     /**
      * 모든 시스템을 초기화합니다.
@@ -100,6 +114,7 @@ export class SystemHandler {
         this.inputSystem = new InputSystem();
         await this.inputSystem.init();
         this.logDebugInfo("InputSystem 로드");
+        this.#syncSimulationRuntime();
 
         // 6. UISystem (UI 초기화)
         this.uiSystem = new UISystem();
@@ -126,7 +141,22 @@ export class SystemHandler {
         await this.debugSystem.init();
         this.logDebugInfo("DebugSystem 로드");
 
-        // 11. 풀 워밍업
+        // 11. 시뮬레이션 워커 브리지 초기화
+        const enableSimulationWorkerShadow = this.#isSimulationWorkerShadowModeEnabled();
+        const simulationWorkerBootstrapSnapshot = enableSimulationWorkerShadow
+            ? this.createSimulationSnapshot()
+            : null;
+        this.simulationWorkerBridge = new SimulationWorkerBridge();
+        this.simulationWorkerBridge.init({
+            enabled: enableSimulationWorkerShadow,
+            bootstrapSnapshot: simulationWorkerBootstrapSnapshot
+        });
+        this.lastSimulationWorkerSceneState = enableSimulationWorkerShadow
+            ? (simulationWorkerBootstrapSnapshot?.scene?.sceneState ?? null)
+            : null;
+        this.logDebugInfo("SimulationWorkerBridge 로드");
+
+        // 12. 풀 워밍업
         await this.animationSystem.warmup();
         warmupUIPools();
         this.displaySystem.warmupCanvasPools(
@@ -236,6 +266,60 @@ export class SystemHandler {
     }
 
     /**
+     * 현재 시뮬레이션 워커 브리지 상태를 반환합니다.
+     * @returns {{supported: boolean, enabled: boolean, running: boolean, ready: boolean, lastFrameId: number, lastAckFrameId: number, lastCommandCount: number, lastError: string|null, lastReadyAt: number, lastMessageAt: number, hasPresentationSnapshot: boolean, workerSnapshot: object|null}|null}
+     */
+    getSimulationWorkerStatus() {
+        if (!this.simulationWorkerBridge || typeof this.simulationWorkerBridge.getStatusSnapshot !== 'function') {
+            return null;
+        }
+
+        return this.simulationWorkerBridge.getStatusSnapshot();
+    }
+
+    /**
+     * 현재 프레임 기준 워커 요청/활성 상태를 요약해 반환합니다.
+     * @returns {{shadowEnabled: boolean, presentationEnabled: boolean, authorityRequested: boolean, authorityActive: boolean, presentationActive: boolean}}
+     */
+    getSimulationWorkerRuntimeStatus() {
+        return {
+            shadowEnabled: this.#isSimulationWorkerShadowModeEnabled(),
+            presentationEnabled: this.#isSimulationWorkerPresentationModeEnabled(),
+            authorityRequested: this.#isSimulationWorkerAuthorityModeEnabled(),
+            authorityActive: this.#shouldUseSimulationWorkerAuthority(),
+            presentationActive: this.#getSimulationWorkerPresentationScene() !== null
+        };
+    }
+
+    /**
+     * 워커 경계 전환을 위한 현재 시뮬레이션 스냅샷을 생성합니다.
+     * @returns {{runtime: {viewport: {ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}, input: {mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}, settings: Record<string, any>}, scene: {sceneState: string, scene: object|null}|null}}
+     */
+    createSimulationSnapshot() {
+        this.#syncSimulationRuntime();
+        return {
+            runtime: getSimulationRuntimeSnapshot(),
+            scene: this.sceneSystem && typeof this.sceneSystem.createSimulationSnapshot === 'function'
+                ? this.sceneSystem.createSimulationSnapshot()
+                : null
+        };
+    }
+
+    /**
+     * 워커의 프레임 동기화용 동적 시뮬레이션 스냅샷을 생성합니다.
+     * @returns {{runtime: {viewport: {ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}, input: {mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}, settings: Record<string, any>}, scene: {sceneState: string, scene: object|null}|null}}
+     */
+    createSimulationFrameSnapshot() {
+        this.#syncSimulationRuntime();
+        return {
+            runtime: getSimulationRuntimeSnapshot(),
+            scene: this.sceneSystem && typeof this.sceneSystem.createSimulationFrameSnapshot === 'function'
+                ? this.sceneSystem.createSimulationFrameSnapshot()
+                : null
+        };
+    }
+
+    /**
      * 현재 실행 정책상 고정 스텝을 진행해야 하는지 반환합니다.
      * @returns {boolean} 고정 스텝 진행 여부입니다.
      */
@@ -255,6 +339,8 @@ export class SystemHandler {
     tick(frameContext = {}) {
         const executionPolicy = this.frameExecutionPolicy || DEFAULT_FRAME_EXECUTION_POLICY;
         const timeHandler = getTimeHandler();
+        this.lastAppliedSimulationCommands = [];
+        this.#syncSimulationRuntime();
         const frameDeltaSeconds = executionPolicy.runFrameTimeUpdate
             && Number.isFinite(frameContext.frameDeltaSeconds)
             && frameContext.frameDeltaSeconds > 0
@@ -272,11 +358,17 @@ export class SystemHandler {
             ? frameContext.fixedAlpha
             : 0;
 
-        for (let i = 0; i < fixedStepCount; i++) {
-            if (timeHandler && typeof timeHandler.updateFixed === 'function') {
-                timeHandler.updateFixed(fixedStepSeconds);
-            }
-            this.#runFixedStep();
+        if (fixedStepCount > 0) {
+            measurePerformanceSection('frame.fixed.total', () => {
+                for (let i = 0; i < fixedStepCount; i++) {
+                    if (timeHandler && typeof timeHandler.updateFixed === 'function') {
+                        measurePerformanceSection('fixed.time', () => {
+                            timeHandler.updateFixed(fixedStepSeconds);
+                        });
+                    }
+                    this.#runFixedStep();
+                }
+            });
         }
 
         if (timeHandler && typeof timeHandler.setFixedInterpolationAlpha === 'function') {
@@ -284,18 +376,42 @@ export class SystemHandler {
         }
 
         if (executionPolicy.renderFrame) {
-            this.displaySystem.drawHandler.clearAll();
-            if (this.displaySystem.webGLHandler) {
-                this.displaySystem.webGLHandler.clearAll();
-            }
+            measurePerformanceSection('frame.clear', () => {
+                this.displaySystem.drawHandler.clearAll();
+                if (this.displaySystem.webGLHandler) {
+                    this.displaySystem.webGLHandler.clearAll();
+                }
+            });
         }
 
-        this.update(frameDeltaSeconds, executionPolicy);
+        measurePerformanceSection('frame.update.total', () => {
+            this.update(frameDeltaSeconds, executionPolicy);
+        });
+
+        if (this.simulationWorkerBridge && this.simulationWorkerBridge.isRunning()) {
+            measurePerformanceSection('frame.update.simulationWorkerBridge', () => {
+                this.#syncSimulationWorkerFrame(
+                    {
+                        frameDeltaSeconds,
+                        fixedStepSeconds,
+                        fixedStepCount,
+                        fixedAlpha
+                    },
+                    executionPolicy
+                );
+            });
+        } else {
+            this.lastAppliedSimulationCommands = [];
+        }
 
         if (executionPolicy.renderFrame) {
-            this.draw(executionPolicy);
+            measurePerformanceSection('frame.draw.total', () => {
+                this.draw(executionPolicy);
+            });
             if (this.displaySystem.webGLHandler) {
-                this.displaySystem.webGLHandler.flushAll();
+                measurePerformanceSection('frame.flush.final', () => {
+                    this.displaySystem.webGLHandler.flushAll();
+                });
             }
         }
     }
@@ -305,6 +421,7 @@ export class SystemHandler {
      */
     resize() {
         this.displaySystem.resize();
+        this.#syncSimulationRuntime();
         if (this.objectSystem && typeof this.objectSystem.resize === 'function') {
             this.objectSystem.resize();
         }
@@ -317,6 +434,7 @@ export class SystemHandler {
         if (this.sceneSystem && typeof this.sceneSystem.resize === 'function') {
             this.sceneSystem.resize();
         }
+        this.#refreshSimulationWorkerBridge();
     }
 
     /**
@@ -356,9 +474,13 @@ export class SystemHandler {
             this.resize();
         }
 
+        this.#syncSimulationRuntime();
+
         if (this.sceneSystem && typeof this.sceneSystem.applyRuntimeSettings === 'function') {
             this.sceneSystem.applyRuntimeSettings(changedSettings);
         }
+
+        this.#refreshSimulationWorkerBridge();
     }
 
     /**
@@ -368,32 +490,85 @@ export class SystemHandler {
      */
     update(frameDeltaSeconds, executionPolicy = this.frameExecutionPolicy) {
         const timeHandler = getTimeHandler();
+        const useSimulationWorkerAuthority = this.#shouldUseSimulationWorkerAuthority();
         if (executionPolicy.runFrameTimeUpdate && timeHandler && typeof timeHandler.update === 'function') {
-            timeHandler.update(frameDeltaSeconds);
+            measurePerformanceSection('frame.update.time', () => {
+                timeHandler.update(frameDeltaSeconds);
+            });
         }
         if (executionPolicy.runSoundUpdate) {
-            this.soundSystem.update();
+            measurePerformanceSection('frame.update.sound', () => {
+                this.soundSystem.update();
+            });
         }
         if (executionPolicy.runAnimationUpdate) {
-            this.animationSystem.update({ useFixedTick: false });
+            measurePerformanceSection('frame.update.animation', () => {
+                this.animationSystem.update({ useFixedTick: false });
+            });
         }
         if (executionPolicy.runInputUpdate) {
-            this.inputSystem.update();
+            measurePerformanceSection('frame.update.input', () => {
+                this.inputSystem.update();
+            });
         }
         if (executionPolicy.runUiUpdate) {
-            this.uiSystem.update();
+            measurePerformanceSection('frame.update.ui', () => {
+                this.uiSystem.update();
+            });
         }
         if (executionPolicy.runOverlayUpdate) {
-            this.overlayManager.update();
+            measurePerformanceSection('frame.update.overlay', () => {
+                this.overlayManager.update();
+            });
         }
-        if (executionPolicy.runObjectUpdate) {
-            this.objectSystem.update();
+        if (executionPolicy.runObjectUpdate && !useSimulationWorkerAuthority) {
+            measurePerformanceSection('frame.update.object', () => {
+                this.objectSystem.update();
+            });
         }
         if (executionPolicy.runSceneUpdate) {
-            this.sceneSystem.update();
+            measurePerformanceSection('frame.update.scene', () => {
+                this.sceneSystem.update({
+                    simulationWorkerAuthority: useSimulationWorkerAuthority
+                });
+            });
+        }
+        const drainedSimulationCommands = drainSimulationCommands();
+        this.lastAppliedSimulationCommands = drainedSimulationCommands;
+        if (!useSimulationWorkerAuthority
+            && drainedSimulationCommands.length > 0
+            && this.sceneSystem
+            && typeof this.sceneSystem.applySimulationCommands === 'function') {
+            measurePerformanceSection('frame.update.simulationCommands', () => {
+                this.sceneSystem.applySimulationCommands(drainedSimulationCommands);
+            });
+        }
+        if (!useSimulationWorkerAuthority
+            && this.sceneSystem
+            && typeof this.sceneSystem.consumeSimulationCommands === 'function') {
+            const sceneSimulationCommands = this.sceneSystem.consumeSimulationCommands();
+            if (Array.isArray(sceneSimulationCommands) && sceneSimulationCommands.length > 0) {
+                this.lastAppliedSimulationCommands = [
+                    ...this.lastAppliedSimulationCommands,
+                    ...sceneSimulationCommands
+                ];
+            }
+        }
+        if (!useSimulationWorkerAuthority
+            && this.objectSystem
+            && typeof this.objectSystem.consumeSimulationCommands === 'function') {
+            const objectSimulationCommands = this.objectSystem.consumeSimulationCommands();
+            if (Array.isArray(objectSimulationCommands) && objectSimulationCommands.length > 0) {
+                this.lastAppliedSimulationCommands = [
+                    ...this.lastAppliedSimulationCommands,
+                    ...objectSimulationCommands
+                ];
+            }
         }
         if (executionPolicy.runDebugUpdate) {
-            this.debugSystem.update();
+            measurePerformanceSection('frame.update.debug', () => {
+                this.debugSystem.update();
+            });
         }
     }
 
@@ -403,21 +578,36 @@ export class SystemHandler {
      * 물리/전투 등 고정 시간 축이 필요한 모듈만 갱신합니다.
      */
     #runFixedStep() {
-        if (this.animationSystem && typeof this.animationSystem.update === 'function') {
-            this.animationSystem.update({ useFixedTick: true });
-        }
+        const useSimulationWorkerAuthority = this.#shouldUseSimulationWorkerAuthority();
+        measurePerformanceSection('fixed.step.total', () => {
+            if (this.animationSystem && typeof this.animationSystem.update === 'function') {
+                measurePerformanceSection('fixed.animation', () => {
+                    this.animationSystem.update({ useFixedTick: true });
+                });
+            }
 
-        if (this.objectSystem && typeof this.objectSystem.fixedUpdate === 'function') {
-            this.objectSystem.fixedUpdate();
-        }
+            if (!useSimulationWorkerAuthority
+                && this.objectSystem
+                && typeof this.objectSystem.fixedUpdate === 'function') {
+                measurePerformanceSection('fixed.object', () => {
+                    this.objectSystem.fixedUpdate();
+                });
+            }
 
-        if (this.sceneSystem && typeof this.sceneSystem.fixedUpdate === 'function') {
-            this.sceneSystem.fixedUpdate();
-        }
+            if (!useSimulationWorkerAuthority
+                && this.sceneSystem
+                && typeof this.sceneSystem.fixedUpdate === 'function') {
+                measurePerformanceSection('fixed.scene', () => {
+                    this.sceneSystem.fixedUpdate();
+                });
+            }
 
-        if (this.gameManager && typeof this.gameManager.fixedUpdate === 'function') {
-            this.gameManager.fixedUpdate();
-        }
+            if (this.gameManager && typeof this.gameManager.fixedUpdate === 'function') {
+                measurePerformanceSection('fixed.gameManager', () => {
+                    this.gameManager.fixedUpdate();
+                });
+            }
+        });
     }
 
     /**
@@ -426,32 +616,80 @@ export class SystemHandler {
      */
     draw(executionPolicy = this.frameExecutionPolicy) {
         if (executionPolicy.renderInput) {
-            this.inputSystem.draw();
+            measurePerformanceSection('frame.draw.input', () => {
+                this.inputSystem.draw();
+            });
         }
-        if (executionPolicy.renderObject) {
-            this.objectSystem.draw();
-        }
-        if (executionPolicy.renderScene) {
-            this.sceneSystem.draw();
+        const simulationWorkerPresentationScene = this.#getSimulationWorkerPresentationScene();
+        const shouldDrawFromSimulationWorker = simulationWorkerPresentationScene
+            && (executionPolicy.renderObject || executionPolicy.renderScene);
+
+        if (shouldDrawFromSimulationWorker) {
+            let drewFromSimulationWorker = false;
+            measurePerformanceSection('frame.draw.simulationWorkerPresentation', () => {
+                drewFromSimulationWorker = this.sceneSystem.drawSimulationSnapshot(
+                    simulationWorkerPresentationScene,
+                    {
+                        renderEnemyObjects: executionPolicy.renderObject === true,
+                        renderSceneObjects: executionPolicy.renderScene === true
+                    }
+                );
+            });
+
+            if (!drewFromSimulationWorker) {
+                if (executionPolicy.renderObject) {
+                    measurePerformanceSection('frame.draw.object', () => {
+                        this.objectSystem.draw();
+                    });
+                }
+                if (executionPolicy.renderScene) {
+                    measurePerformanceSection('frame.draw.scene', () => {
+                        this.sceneSystem.draw();
+                    });
+                }
+            }
+        } else {
+            if (executionPolicy.renderObject) {
+                measurePerformanceSection('frame.draw.object', () => {
+                    this.objectSystem.draw();
+                });
+            }
+            if (executionPolicy.renderScene) {
+                measurePerformanceSection('frame.draw.scene', () => {
+                    this.sceneSystem.draw();
+                });
+            }
         }
         // 오버레이(glass blur)가 하위 캔버스를 샘플링할 때만 중간 flush를 수행합니다.
         // 오버레이가 없을 때는 프레임 말미 flush만 사용해 불필요한 동기화를 줄입니다.
         const needsOverlayComposite = executionPolicy.renderOverlay && this.overlayManager?.hasAnyOverlay();
         if (needsOverlayComposite && this.displaySystem.webGLHandler) {
-            this.displaySystem.webGLHandler.flushAll();
+            measurePerformanceSection('frame.flush.overlayComposite', () => {
+                this.displaySystem.webGLHandler.flushAll();
+            });
         }
         if (executionPolicy.renderUi) {
-            this.uiSystem.draw();
+            measurePerformanceSection('frame.draw.ui', () => {
+                this.uiSystem.draw();
+            });
         }
-        this.displaySystem.drawVignettes();
+        measurePerformanceSection('frame.draw.vignette', () => {
+            this.displaySystem.drawVignettes();
+        });
         if (executionPolicy.renderOverlay) {
-            this.overlayManager.draw();
+            measurePerformanceSection('frame.draw.overlay', () => {
+                this.overlayManager.draw();
+            });
         }
         if (executionPolicy.renderDebug) {
-            this.debugSystem.draw();
+            measurePerformanceSection('frame.draw.debug', () => {
+                this.debugSystem.draw();
+            });
         }
         if (executionPolicy.renderSound) {
-            this.soundSystem.draw();
+            measurePerformanceSection('frame.draw.sound', () => {
+                this.soundSystem.draw();
+            });
         }
     }
 
@@ -502,5 +740,237 @@ export class SystemHandler {
         }
 
         void this.soundSystem.playBgm();
+    }
+
+    /**
+     * @private
+     * 메인 스레드의 최신 뷰포트/입력/설정을 시뮬레이션 런타임에 복제합니다.
+     */
+    #syncSimulationRuntime() {
+        if (!this.displaySystem || !this.inputSystem || !this.saveSystem) {
+            return;
+        }
+
+        syncSimulationRuntime({
+            viewport: this.#buildSimulationViewportSnapshot(),
+            input: typeof this.inputSystem.getSimulationInputSnapshot === 'function'
+                ? this.inputSystem.getSimulationInputSnapshot()
+                : {},
+            settings: this.#buildSimulationSettingsSnapshot()
+        });
+    }
+
+    /**
+     * @private
+     * 시뮬레이션에 필요한 화면 정보를 추출합니다.
+     * @returns {{ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}}
+     */
+    #buildSimulationViewportSnapshot() {
+        const screenHandler = this.displaySystem?.screenHandler;
+        if (!screenHandler) {
+            return {
+                ww: 0,
+                wh: 0,
+                objectWH: 0,
+                objectOffsetY: 0,
+                uiww: 0,
+                uiOffsetX: 0
+            };
+        }
+
+        return {
+            ww: screenHandler.width,
+            wh: screenHandler.height,
+            objectWH: screenHandler.objectHeight,
+            objectOffsetY: screenHandler.objectOffsetY,
+            uiww: screenHandler.uiWidth,
+            uiOffsetX: screenHandler.uiOffsetX
+        };
+    }
+
+    /**
+     * @private
+     * 시뮬레이션 경로에서 참조하는 설정만 선별해 추출합니다.
+     * @returns {Record<string, any>}
+     */
+    #buildSimulationSettingsSnapshot() {
+        const settings = {};
+        if (!this.saveSystem || typeof this.saveSystem.getSetting !== 'function') {
+            return settings;
+        }
+
+        for (const key of SIMULATION_RUNTIME_SETTING_KEYS) {
+            settings[key] = this.saveSystem.getSetting(key);
+        }
+
+        return settings;
+    }
+
+    /**
+     * @private
+     * 섀도우 시뮬레이션 워커 사용 여부를 설정에서 확인합니다.
+     * @returns {boolean}
+     */
+    #isSimulationWorkerShadowModeEnabled() {
+        return this.saveSystem?.getSetting?.(SIMULATION_WORKER_SHADOW_SETTING_KEY) === true;
+    }
+
+    /**
+     * @private
+     * 워커 프레젠테이션 스냅샷 기반 렌더링 사용 여부를 설정에서 확인합니다.
+     * @returns {boolean}
+     */
+    #isSimulationWorkerPresentationModeEnabled() {
+        return this.saveSystem?.getSetting?.(SIMULATION_WORKER_PRESENTATION_SETTING_KEY) === true;
+    }
+
+    /**
+     * @private
+     * 워커 권한 시뮬레이션 사용 여부를 설정에서 확인합니다.
+     * @returns {boolean}
+     */
+    #isSimulationWorkerAuthorityModeEnabled() {
+        return this.saveSystem?.getSetting?.(SIMULATION_WORKER_AUTHORITY_SETTING_KEY) === true;
+    }
+
+    /**
+     * @private
+     * 현재 프레임에서 워커를 권한 있는 시뮬레이터로 사용할 수 있는지 반환합니다.
+     * @returns {boolean}
+     */
+    #shouldUseSimulationWorkerAuthority() {
+        if (!this.#isSimulationWorkerAuthorityModeEnabled()) {
+            return false;
+        }
+        if (!this.#isSimulationWorkerShadowModeEnabled() || !this.#isSimulationWorkerPresentationModeEnabled()) {
+            return false;
+        }
+        if (!this.simulationWorkerBridge || !this.simulationWorkerBridge.isRunning()) {
+            return false;
+        }
+
+        const bridgeStatus = this.simulationWorkerBridge.getStatusSnapshot?.() ?? null;
+        if (bridgeStatus?.ready !== true || bridgeStatus?.hasPresentationSnapshot !== true) {
+            return false;
+        }
+
+        const presentationSnapshot = this.simulationWorkerBridge.getPresentationSnapshot?.() ?? null;
+        if (presentationSnapshot?.sceneState && presentationSnapshot.sceneState !== this.sceneSystem?.sceneState) {
+            return false;
+        }
+
+        return presentationSnapshot?.scene?.sceneType === 'game'
+            && this.sceneSystem?.sceneState === 'inGame';
+    }
+
+    /**
+     * @private
+     * 현재 프레임에서 사용할 워커 프레젠테이션 스냅샷을 반환합니다.
+     * @returns {{sceneState?: string|null, scene?: object|null}|null}
+     */
+    #getSimulationWorkerPresentationScene() {
+        if (!this.#isSimulationWorkerPresentationModeEnabled()) {
+            return null;
+        }
+
+        if (!this.simulationWorkerBridge || !this.simulationWorkerBridge.isRunning()) {
+            return null;
+        }
+
+        const bridgeStatus = this.simulationWorkerBridge.getStatusSnapshot?.() ?? null;
+        if (bridgeStatus?.ready !== true || bridgeStatus?.hasPresentationSnapshot !== true) {
+            return null;
+        }
+
+        const presentationSnapshot = this.simulationWorkerBridge.getPresentationSnapshot?.() ?? null;
+        if (!presentationSnapshot || typeof presentationSnapshot !== 'object') {
+            return null;
+        }
+
+        if (presentationSnapshot.sceneState && presentationSnapshot.sceneState !== this.sceneSystem?.sceneState) {
+            return null;
+        }
+
+        return presentationSnapshot;
+    }
+
+    /**
+     * @private
+     * 현재 모드에 맞는 워커 프레임 스냅샷을 생성합니다.
+     * 권한 모드에서는 런타임과 씬 상태 식별자만 전송하고, 실제 동적 상태는 워커가 유지합니다.
+     * @param {boolean} useSimulationWorkerAuthority
+     * @returns {{runtime: object, scene: {sceneState: string|null, scene: object|null}}}
+     */
+    #createSimulationWorkerFrameSnapshot(useSimulationWorkerAuthority) {
+        if (!useSimulationWorkerAuthority) {
+            return this.createSimulationFrameSnapshot();
+        }
+
+        this.#syncSimulationRuntime();
+        return {
+            runtime: getSimulationRuntimeSnapshot(),
+            scene: {
+                sceneState: this.sceneSystem?.sceneState ?? null,
+                scene: null
+            }
+        };
+    }
+
+    /**
+     * @private
+     * 현재 프레임 상태를 시뮬레이션 워커로 전달합니다.
+     * @param {object} frameContext
+     * @param {object} executionPolicy
+     */
+    #syncSimulationWorkerFrame(frameContext, executionPolicy) {
+        if (!this.simulationWorkerBridge || !this.simulationWorkerBridge.isRunning()) {
+            this.lastAppliedSimulationCommands = [];
+            return;
+        }
+
+        const useSimulationWorkerAuthority = this.#shouldUseSimulationWorkerAuthority();
+        const frameSnapshot = this.#createSimulationWorkerFrameSnapshot(useSimulationWorkerAuthority);
+        const currentSceneState = frameSnapshot.scene?.sceneState ?? null;
+        if (currentSceneState !== this.lastSimulationWorkerSceneState) {
+            this.simulationWorkerBridge.bootstrap(this.createSimulationSnapshot());
+            this.lastSimulationWorkerSceneState = currentSceneState;
+            this.lastAppliedSimulationCommands = [];
+            return;
+        }
+
+        this.simulationWorkerBridge.syncFrame({
+            frameContext,
+            executionPolicy,
+            frameSnapshot,
+            commands: this.lastAppliedSimulationCommands
+        });
+        this.lastAppliedSimulationCommands = [];
+    }
+
+    /**
+     * @private
+     * 설정과 현재 씬 상태에 맞춰 시뮬레이션 워커 브리지를 재동기화합니다.
+     */
+    #refreshSimulationWorkerBridge() {
+        if (!this.simulationWorkerBridge) {
+            return;
+        }
+
+        const shouldEnableShadowWorker = this.#isSimulationWorkerShadowModeEnabled();
+        if (!shouldEnableShadowWorker) {
+            this.simulationWorkerBridge.setEnabled(false);
+            this.lastSimulationWorkerSceneState = null;
+            return;
+        }
+
+        const bootstrapSnapshot = this.createSimulationSnapshot();
+        if (!this.simulationWorkerBridge.isRunning()) {
+            this.simulationWorkerBridge.setEnabled(true, bootstrapSnapshot);
+            this.lastSimulationWorkerSceneState = bootstrapSnapshot.scene?.sceneState ?? null;
+            return;
+        }
+
+        this.simulationWorkerBridge.bootstrap(bootstrapSnapshot);
+        this.lastSimulationWorkerSceneState = bootstrapSnapshot.scene?.sceneState ?? null;
     }
 }

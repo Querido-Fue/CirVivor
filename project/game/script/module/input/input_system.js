@@ -38,6 +38,31 @@ export class InputSystem {
         this.mouseInputHandler.resetMouseInput({ inactive: options.mouseInactive === true });
         this.keyboardInputHandler.resetKeyboardInput();
     }
+
+    /**
+     * 시뮬레이션 런타임에 전달할 입력 스냅샷을 생성합니다.
+     * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}}
+     */
+    getSimulationInputSnapshot() {
+        const mouseButtons = this.mouseInputHandler?.mouseButtons || {};
+        const keyboardKeys = this.keyboardInputHandler?.keys || {};
+
+        return {
+            mousePos: {
+                x: Number.isFinite(this.mouseInputHandler?.mousePos?.x) ? this.mouseInputHandler.mousePos.x : 0,
+                y: Number.isFinite(this.mouseInputHandler?.mousePos?.y) ? this.mouseInputHandler.mousePos.y : 0
+            },
+            mouseButtons: {
+                left: Array.isArray(mouseButtons.left?.state) ? [...mouseButtons.left.state] : ['idle'],
+                right: Array.isArray(mouseButtons.right?.state) ? [...mouseButtons.right.state] : ['idle'],
+                middle: Array.isArray(mouseButtons.middle?.state) ? [...mouseButtons.middle.state] : ['idle']
+            },
+            focusList: Array.isArray(this.mouseInputHandler?.focusList)
+                ? [...this.mouseInputHandler.focusList]
+                : ['ui', 'object'],
+            keys: { ...keyboardKeys }
+        };
+    }
 }
 
 /**

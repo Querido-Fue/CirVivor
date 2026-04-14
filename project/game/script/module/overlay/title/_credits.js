@@ -13,7 +13,7 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
  */
 export class CreditsOverlay extends TitleOverlay {
     constructor(TitleScene) {
-        super(TitleScene);
+        super(TitleScene, { titleIconId: 'credits' });
     }
 
     /**

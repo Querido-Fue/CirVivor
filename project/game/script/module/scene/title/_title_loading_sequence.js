@@ -90,6 +90,7 @@ export class TitleLoadingSequence {
         this.loadingProgress = 0;
         this.loadingTextAlpha = TITLE_LOADING.TEXT_ALPHA;
         this.loadingTextExitProgress = 0;
+        this.loadingNoticeAlpha = TITLE_LOADING.TEXT_ALPHA;
         this.loadingElapsed = 0;
         this.loadingStepIndex = 0;
         this.loadingTextFontSize = 0;
@@ -111,6 +112,8 @@ export class TitleLoadingSequence {
         this.loadingProgressAnimId = -1;
         this.loadingTextAlphaAnimId = -1;
         this.loadingTextTranslateAnimId = -1;
+        this.loadingNoticeFadeAnimId = -1;
+        this.loadingNoticeFadeStarted = false;
         this.loadingGlowCompensationAnimId = -1;
         this.sceneTransitionProgress = 0;
         this.sceneTransitionStarted = false;
@@ -135,6 +138,7 @@ export class TitleLoadingSequence {
 
         if (this.titleLogo) {
             this.titleLogo.update();
+            this.#updateLoadingNoticeFade();
             this.#updateSceneTransition();
             this.#updateLoadingVisualPlacement();
             this.#updateLogoPlacement();
@@ -194,6 +198,7 @@ export class TitleLoadingSequence {
         remove(this.loadingProgressAnimId);
         remove(this.loadingTextAlphaAnimId);
         remove(this.loadingTextTranslateAnimId);
+        remove(this.loadingNoticeFadeAnimId);
         remove(this.loadingGlowCompensationAnimId);
         remove(this.sceneTransitionAnimId);
         this.#clearLoadingLogoTimeout();
@@ -281,7 +286,24 @@ export class TitleLoadingSequence {
      */
     isEnemySpawnReady() {
         return this.sceneTransitionStarted === true
-            && this.sceneTransitionProgress >= 0.999;
+            && this.sceneTransitionProgress >= this.#getEnemySpawnReadyProgressThreshold();
+    }
+
+    /**
+     * 적 스폰을 허용할 전환 진행률 기준을 반환합니다.
+     * 전환 종료 시점보다 일정 시간만큼 앞당겨 스폰을 시작합니다.
+     * @returns {number} 0~1 범위의 전환 진행률 기준값입니다.
+     * @private
+     */
+    #getEnemySpawnReadyProgressThreshold() {
+        const transitionDuration = Number.isFinite(TITLE_LOADING.SCENE_TRANSITION_DURATION)
+            && TITLE_LOADING.SCENE_TRANSITION_DURATION > 0
+            ? TITLE_LOADING.SCENE_TRANSITION_DURATION
+            : 1;
+        const spawnLeadSeconds = Number.isFinite(TITLE_LOADING.ENEMY_SPAWN_READY_LEAD_SECONDS)
+            ? Math.max(0, TITLE_LOADING.ENEMY_SPAWN_READY_LEAD_SECONDS)
+            : 0;
+        return Math.max(0, Math.min(1, 1 - (spawnLeadSeconds / transitionDuration)));
     }
 
     /**
@@ -388,7 +410,7 @@ export class TitleLoadingSequence {
     }
 
     /**
-     * 로딩 완료 후 텍스트만 사라지도록 fade out과 위 이동 애니메이션을 실행합니다.
+     * 로딩 완료 후 메인 텍스트만 사라지도록 fade out과 위 이동 애니메이션을 실행합니다.
      * @param {{showLogoDelayMs?: number, animateTextExit?: boolean}} [options] - 완료 연출 옵션입니다.
      * @private
      */
@@ -529,6 +551,65 @@ export class TitleLoadingSequence {
             endValue: TITLE_LOADING.GLOW_COMPENSATION_SCALE,
             type: 'easeInOutExpo',
             duration: TITLE_LOADING.SCENE_TRANSITION_DURATION
+        }).id;
+    }
+
+    /**
+     * 원/로고 전환 시작 전 지정된 시점에 맞춰 팁 문구 페이드아웃을 시작합니다.
+     * @private
+     */
+    #updateLoadingNoticeFade() {
+        if (!this.titleLogo || this.loadingNoticeFadeStarted || this.loadingNoticeAlpha <= 0) {
+            return;
+        }
+
+        const fadeLeadTime = Number.isFinite(TITLE_LOADING.NOTICE_FADE_LEAD_TIME)
+            ? TITLE_LOADING.NOTICE_FADE_LEAD_TIME
+            : 1;
+        const fadeDuration = Number.isFinite(TITLE_LOADING.NOTICE_FADE_DURATION)
+            ? TITLE_LOADING.NOTICE_FADE_DURATION
+            : 0.5;
+        const fadeEndLeadTime = Math.max(0, fadeLeadTime - fadeDuration);
+        const remainingTime = this.titleLogo.getRemainingTimeToProgress(
+            TITLE_LOADING.SCENE_TRANSITION_TRIGGER_PROGRESS
+        );
+
+        if (remainingTime > fadeLeadTime) {
+            return;
+        }
+
+        const availableFadeDuration = Math.min(
+            fadeDuration,
+            Math.max(0, remainingTime - fadeEndLeadTime)
+        );
+        this.#startLoadingNoticeFade(availableFadeDuration);
+    }
+
+    /**
+     * 로딩 팁 문구의 페이드아웃을 시작합니다.
+     * @param {number} duration - 페이드아웃 지속 시간입니다.
+     * @private
+     */
+    #startLoadingNoticeFade(duration) {
+        if (this.loadingNoticeFadeStarted) {
+            return;
+        }
+
+        this.loadingNoticeFadeStarted = true;
+        remove(this.loadingNoticeFadeAnimId);
+        this.loadingNoticeFadeAnimId = -1;
+
+        if (!Number.isFinite(duration) || duration <= 0) {
+            this.loadingNoticeAlpha = 0;
+            return;
+        }
+
+        this.loadingNoticeFadeAnimId = animate(this, {
+            variable: 'loadingNoticeAlpha',
+            startValue: 'current',
+            endValue: 0,
+            type: 'easeInExpo',
+            duration
         }).id;
     }
 
@@ -682,38 +763,44 @@ export class TitleLoadingSequence {
     }
 
     /**
-     * 현재 상태에 맞는 로딩 텍스트를 그립니다.
+     * 현재 상태에 맞는 메인 로딩 텍스트와 팁 문구를 그립니다.
      * @private
      */
     #drawLoadingText() {
-        if (this.loadingTextAlpha <= 0) {
+        if (this.loadingTextAlpha <= 0 && this.loadingNoticeAlpha <= 0) {
             return;
         }
 
         const translateY = this.loadingTextExitDistance * this.loadingTextExitProgress;
-        render('ui', {
-            shape: 'text',
-            text: getLangString('title_loading'),
-            x: this.loadingTextX,
-            y: this.loadingTextY - translateY,
-            font: this.loadingTextFont,
-            fill: getLoadingTextColor(),
-            align: 'center',
-            baseline: 'middle',
-            alpha: this.loadingTextAlpha
-        });
+        if (this.loadingTextAlpha > 0) {
+            render('ui', {
+                shape: 'text',
+                text: getLangString('title_loading'),
+                x: this.loadingTextX,
+                y: this.loadingTextY - translateY,
+                font: this.loadingTextFont,
+                fill: getLoadingTextColor(),
+                align: 'center',
+                baseline: 'middle',
+                alpha: this.loadingTextAlpha
+            });
+        }
+
+        if (this.loadingNoticeAlpha <= 0) {
+            return;
+        }
 
         for (let i = 0; i < this.loadingNoticeLines.length; i++) {
             render('ui', {
                 shape: 'text',
                 text: this.loadingNoticeLines[i],
                 x: this.loadingTextX,
-                y: this.loadingNoticeStartY + (this.loadingNoticeLineHeight * i) - translateY,
+                y: this.loadingNoticeStartY + (this.loadingNoticeLineHeight * i),
                 font: this.loadingNoticeFont,
                 fill: getLoadingTextColor(),
                 align: 'center',
                 baseline: 'middle',
-                alpha: this.loadingTextAlpha
+                alpha: this.loadingNoticeAlpha
             });
         }
     }

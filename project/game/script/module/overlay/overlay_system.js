@@ -1,7 +1,10 @@
 import { getDisplaySystem } from 'display/display_system.js';
+import { measurePerformanceSection } from 'debug/debug_system.js';
 import { getSetting } from 'save/save_system.js';
+import { runtimeTool } from 'util/runtime_tool.js';
 import { OverlaySession } from './_overlay_session.js';
 import { ExitOverlay } from './_exit_overlay.js';
+import { ExternalLinkWarningOverlay } from './_external_link_warning_overlay.js';
 import { DeckOverlay } from './title/_deck.js';
 import { SettingsOverlay } from './title/_settings.js';
 import { CreditsOverlay } from './title/_credits.js';
@@ -27,24 +30,39 @@ export class OverlayManager {
      */
     async init() {
         this.displaySystem = getDisplaySystem();
+        runtimeTool()?.setExternalURLHandler?.(this.openExternalLinkWarningOverlay.bind(this));
     }
 
     /**
      * overlay를 업데이트합니다.
      */
     update() {
-        for (const entry of this.#getSortedEntries()) {
-            entry.controller.update();
+        const sortedEntries = this.#getSortedEntries();
+        if (sortedEntries.length === 0) {
+            return;
         }
+
+        measurePerformanceSection('overlay.manager.update', () => {
+            for (const entry of sortedEntries) {
+                entry.controller.update();
+            }
+        });
     }
 
     /**
      * overlay를 그립니다.
      */
     draw() {
-        for (const entry of this.#getSortedEntries()) {
-            entry.controller.draw();
+        const sortedEntries = this.#getSortedEntries();
+        if (sortedEntries.length === 0) {
+            return;
         }
+
+        measurePerformanceSection('overlay.manager.draw', () => {
+            for (const entry of sortedEntries) {
+                entry.controller.draw();
+            }
+        });
     }
 
     /**
@@ -114,6 +132,24 @@ export class OverlayManager {
         }
 
         return this.openOverlay(new ExitOverlay(), { key: 'exitConfirm' });
+    }
+
+    /**
+     * 외부 링크 열기 확인 overlay를 엽니다.
+     * @param {string} url - 열기 확인 대상 URL입니다.
+     * @returns {string|null} 생성된 overlay id입니다.
+     */
+    openExternalLinkWarningOverlay(url) {
+        const normalizedURL = typeof url === 'string' ? url.trim() : '';
+        if (!normalizedURL) {
+            return null;
+        }
+
+        if (this.keyToIdMap.has('externalLinkWarning')) {
+            return this.keyToIdMap.get('externalLinkWarning');
+        }
+
+        return this.openOverlay(new ExternalLinkWarningOverlay(normalizedURL), { key: 'externalLinkWarning' });
     }
 
     /**

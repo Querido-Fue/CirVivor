@@ -18,8 +18,10 @@ import {
     projectPanelQuad
 } from 'overlay/_panel_effect_math.js';
 import { getSetting } from 'save/save_system.js';
-import { getLangString } from 'ui/ui_system.js';
+import { getLangString, requestTooltip } from 'ui/ui_system.js';
+import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
 import { colorUtil } from 'util/color_util.js';
+import { runtimeTool } from 'util/runtime_tool.js';
 import { ColorSchemes, getCurrentThemeKey } from 'display/_theme_handler.js';
 import { TitleMenuCard } from './_title_menu_card.js';
 import { TitleMenuCardRegistry } from './_title_menu_card_registry.js';
@@ -27,6 +29,8 @@ import { getTitleMenuIconSource } from './_title_menu_icon.js';
 import { TitleMenuLayout } from './_title_menu_layout.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const TITLE_LINK_DATA = getData('TITLE_LINK_DATA');
 const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const CARD_REVEAL_ORDER = Object.freeze(['start', 'quick_start', 'records', 'deck', 'research']);
@@ -193,10 +197,13 @@ export class TitleMenu {
         this.cardRevealStarted = false;
         this.currentPaneLayout = null;
         this.hoveredSecondaryMenuId = null;
+        this.versionHistoryLinkButton = null;
         this.paneTextureCanvas = null;
         this.paneTextureContext = null;
         this.cardPaneTextureCanvas = null;
         this.cardPaneTextureContext = null;
+        this.versionLabelMeasureCanvas = null;
+        this.versionLabelMeasureContext = null;
         this.cardPaneInteractionState = this.#createPaneRuntimeState();
         this.utilityPaneInteractionState = this.#createPaneRuntimeState();
         this.secondaryMenuEntries = Object.freeze([
@@ -226,6 +233,7 @@ export class TitleMenu {
             })
         ]);
         this.session = this.#createSession();
+        this.versionHistoryLinkButton = this.#createVersionHistoryLinkButton();
 
         this.#createCards();
         this.#createUtilityTileStates();
@@ -249,6 +257,7 @@ export class TitleMenu {
         const paneLayout = this.currentPaneLayout || this.#getRightPaneLayout();
         this.#updateCardInteractions(delta);
         this.#updateOuterPaneInteractions(delta, paneLayout);
+        this.#updateVersionHistoryLinkButton(paneLayout);
     }
 
     /**
@@ -376,6 +385,8 @@ export class TitleMenu {
                 effectTextureCanvas
             });
         }
+
+        this.#drawGameVersionLabel(paneLayout);
     }
 
     /**
@@ -435,6 +446,16 @@ export class TitleMenu {
             this.cardPaneTextureCanvas.width = 0;
             this.cardPaneTextureCanvas.height = 0;
             this.cardPaneTextureContext = null;
+        }
+        if (this.versionLabelMeasureCanvas) {
+            this.versionLabelMeasureCanvas.width = 0;
+            this.versionLabelMeasureCanvas.height = 0;
+            this.versionLabelMeasureCanvas = null;
+            this.versionLabelMeasureContext = null;
+        }
+        if (this.versionHistoryLinkButton) {
+            releaseUIItem(this.versionHistoryLinkButton);
+            this.versionHistoryLinkButton = null;
         }
 
         this.titleMenuIconSources.forEach((iconSource) => {
@@ -501,6 +522,34 @@ export class TitleMenu {
                 }
             }
         });
+    }
+
+    /**
+     * 우상단 업데이트 링크 상호작용에 사용할 투명 버튼을 생성합니다.
+     * @returns {import('ui/element/_button.js').ButtonElement} 생성된 버튼입니다.
+     * @private
+     */
+    #createVersionHistoryLinkButton() {
+        const button = UIPool.button.get();
+        button.init({
+            parent: this.TitleScene,
+            onClick: this.#handleVersionHistoryLinkClick.bind(this),
+            onHover: null,
+            layer: 'ui',
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            idleColor: 'rgba(0, 0, 0, 0)',
+            hoverColor: 'rgba(0, 0, 0, 0)',
+            center: [],
+            alpha: 1,
+            margin: 0,
+            radius: 0
+        });
+        button.hoverScaleMultiplier = 1;
+        button.pressScaleMultiplier = 1;
+        return button;
     }
 
     /**
@@ -796,6 +845,12 @@ export class TitleMenu {
         }
 
         this.hoveredSecondaryMenuId = hoveredMenuItemId;
+        const hoveredMenuEntry = hoveredMenuItemId
+            ? (this.secondaryMenuEntries.find((menuEntry) => menuEntry.id === hoveredMenuItemId) || null)
+            : null;
+        if (hoveredMenuEntry?.textKey) {
+            requestTooltip(getLangString(hoveredMenuEntry.textKey));
+        }
 
         for (const menuEntry of this.secondaryMenuEntries) {
             const runtimeState = this.utilityTileStateMap.get(menuEntry.id);
@@ -829,9 +884,7 @@ export class TitleMenu {
 
         if (clickedThisFrame && hoveredMenuItemId) {
             consumeMouseState('left');
-            this.#handleSecondaryMenuAction(
-                this.secondaryMenuEntries.find((menuEntry) => menuEntry.id === hoveredMenuItemId) || null
-            );
+            this.#handleSecondaryMenuAction(hoveredMenuEntry);
         }
     }
 
@@ -868,6 +921,58 @@ export class TitleMenu {
             spotlightOptions,
             borderOptions
         );
+    }
+
+    /**
+     * 우상단 업데이트 링크 버튼 상태를 현재 배치에 맞춰 갱신합니다.
+     * @param {object} paneLayout - 현재 오른쪽 패널 배치 정보입니다.
+     * @private
+     */
+    #updateVersionHistoryLinkButton(paneLayout) {
+        if (!this.versionHistoryLinkButton) {
+            return;
+        }
+
+        const layout = this.#buildVersionLabelLayout(paneLayout);
+        this.#layoutVersionHistoryLinkButton(layout);
+        const button = this.versionHistoryLinkButton;
+        const mouseX = getMouseInput('x');
+        const mouseY = getMouseInput('y');
+        const isHovered = this.pointerEnabled
+            && button.width > 0
+            && button.height > 0
+            && Number.isFinite(mouseX)
+            && Number.isFinite(mouseY)
+            && mouseX >= button.x
+            && mouseX <= button.x + button.width
+            && mouseY >= button.y
+            && mouseY <= button.y + button.height;
+        const isLeftPressing = hasMouseState('left', 'click') || hasMouseState('left', 'clicking');
+
+        button._handleInteractionState(isHovered, isLeftPressing, button.onHover);
+
+        if (isHovered && hasMouseState('left', 'clicked')) {
+            button.onClick();
+        }
+    }
+
+    /**
+     * 우상단 업데이트 링크 버튼 배치를 현재 렌더 레이아웃에 맞춥니다.
+     * @param {object|null} layout - 버전 정보 블록 렌더 레이아웃입니다.
+     * @private
+     */
+    #layoutVersionHistoryLinkButton(layout) {
+        if (!this.versionHistoryLinkButton) {
+            return;
+        }
+
+        const button = this.versionHistoryLinkButton;
+        const linkBounds = layout?.linkBounds || null;
+        button.x = linkBounds?.x || 0;
+        button.y = linkBounds?.y || 0;
+        button.width = this.pointerEnabled && linkBounds ? linkBounds.w : 0;
+        button.height = this.pointerEnabled && linkBounds ? linkBounds.h : 0;
+        button.radius = 0;
     }
 
     /**
@@ -1451,17 +1556,26 @@ export class TitleMenu {
             const fallbackSidePadding = fallbackVerticalPadding;
             const fallbackRight = fallbackLeft + fallbackWidth;
             const fallbackVerticalLayout = this.#resolveRightPaneVerticalLayout(fallbackCardHeight);
-            const fallbackUtilityLayout = this.#buildUtilityPaneLayout(
-                fallbackRight,
-                fallbackWidth,
-                fallbackVerticalLayout.utilityPaneTop,
-                fallbackSidePadding,
-                fallbackVerticalPadding
+            const fallbackShiftY = this.#resolveMainMenuVerticalShift(
+                fallbackVerticalLayout.cardPaneTop,
+                fallbackCardHeight
             );
+            const fallbackUtilityLayout = this.#translateUtilityPaneLayout(
+                this.#buildUtilityPaneLayout(
+                    fallbackRight,
+                    fallbackWidth,
+                    fallbackVerticalLayout.utilityPaneTop,
+                    fallbackSidePadding,
+                    fallbackVerticalPadding
+                ),
+                fallbackShiftY
+            );
+            const fallbackCardPaneTop = fallbackVerticalLayout.cardPaneTop + fallbackShiftY;
+
             return {
                 cardPane: {
                     x: fallbackLeft,
-                    y: fallbackVerticalLayout.cardPaneTop,
+                    y: fallbackCardPaneTop,
                     w: fallbackWidth,
                     h: fallbackCardHeight,
                     radius: Math.max(18, Math.min(fallbackWidth, fallbackCardHeight) * 0.06)
@@ -1496,17 +1610,23 @@ export class TitleMenu {
         const cardContentHeight = groupHeight;
         const cardPaneHeight = Math.max(1, cardContentHeight + (verticalPadding * 2));
         const verticalLayout = this.#resolveRightPaneVerticalLayout(cardPaneHeight);
-        const cardPaneTop = verticalLayout.cardPaneTop;
+        const paneShiftY = this.#resolveMainMenuVerticalShift(
+            verticalLayout.cardPaneTop,
+            cardPaneHeight
+        );
+        const cardPaneTop = verticalLayout.cardPaneTop + paneShiftY;
         const cardPaneBottom = cardPaneTop + cardPaneHeight;
-        const utilityPaneTop = verticalLayout.utilityPaneTop;
         const cardOffsetX = (paneLeft + sidePadding) - groupMinX;
         const cardOffsetY = (cardPaneTop + verticalPadding) - groupMinY;
-        const utilityPaneLayout = this.#buildUtilityPaneLayout(
-            paneRight,
-            paneWidth,
-            utilityPaneTop,
-            sidePadding,
-            verticalPadding
+        const utilityPaneLayout = this.#translateUtilityPaneLayout(
+            this.#buildUtilityPaneLayout(
+                paneRight,
+                paneWidth,
+                verticalLayout.utilityPaneTop,
+                sidePadding,
+                verticalPadding
+            ),
+            paneShiftY
         );
 
         return {
@@ -1521,6 +1641,39 @@ export class TitleMenu {
             cardOffsetX,
             cardOffsetY,
             secondaryMenuItems: utilityPaneLayout.secondaryMenuItems
+        };
+    }
+
+    /**
+     * 주 메뉴 pane을 화면 높이 중앙에 맞추기 위한 이동값을 계산합니다.
+     * @param {number} cardPaneTop - 기존 주 메뉴 pane 상단 위치입니다.
+     * @param {number} cardPaneHeight - 주 메뉴 pane 높이입니다.
+     * @returns {number} 주 메뉴와 서브 메뉴에 공통 적용할 Y 이동값입니다.
+     * @private
+     */
+    #resolveMainMenuVerticalShift(cardPaneTop, cardPaneHeight) {
+        const resolvedHeight = Math.max(1, cardPaneHeight);
+        const centeredCardPaneTop = (this.WH - resolvedHeight) * 0.5;
+        return centeredCardPaneTop - cardPaneTop;
+    }
+
+    /**
+     * 하단 서브 메뉴 레이아웃 전체를 지정한 Y 값만큼 이동합니다.
+     * @param {{utilityPane:object, secondaryMenuItems:object[]}} utilityPaneLayout - 이동할 서브 메뉴 배치입니다.
+     * @param {number} shiftY - 적용할 Y 이동값입니다.
+     * @returns {{utilityPane:object, secondaryMenuItems:object[]}} 이동이 반영된 서브 메뉴 배치입니다.
+     * @private
+     */
+    #translateUtilityPaneLayout(utilityPaneLayout, shiftY) {
+        return {
+            utilityPane: {
+                ...utilityPaneLayout.utilityPane,
+                y: utilityPaneLayout.utilityPane.y + shiftY
+            },
+            secondaryMenuItems: utilityPaneLayout.secondaryMenuItems.map((menuItem) => ({
+                ...menuItem,
+                y: menuItem.y + shiftY
+            }))
         };
     }
 
@@ -1560,10 +1713,14 @@ export class TitleMenu {
         const entryCount = Math.max(1, this.secondaryMenuEntries.length);
         const tileGap = Math.max(10, this.UIWW * TITLE_CARD_MENU.UTILITY_TILE_GAP_UIWW_RATIO);
         const baseContentWidth = Math.max(1, paneWidth - (sidePadding * 2));
+        const targetTileSize = Math.max(
+            1,
+            this.UIWW * TITLE_CARD_MENU.UTILITY_TILE_TARGET_SIZE_UIWW_RATIO
+        );
         const baseTileSize = Math.max(
             1,
             Math.min(
-                TITLE_CARD_MENU.UTILITY_TILE_TARGET_SIZE_PX,
+                targetTileSize,
                 (baseContentWidth - (tileGap * Math.max(0, entryCount - 1))) / entryCount
             )
         );
@@ -1619,12 +1776,8 @@ export class TitleMenu {
     #buildPaneRenderState(paneLayout) {
         const revealCoreDuration = this.#getCardRevealCoreDuration();
         const cardPaneProgress = this.#getRevealProgress(0, Math.max(0.28, revealCoreDuration * 0.54));
-        const utilityPaneProgress = this.#getRevealProgress(
-            Math.min(0.16, revealCoreDuration * 0.18),
-            Math.max(0.24, revealCoreDuration * 0.44)
-        );
         const cardPaneEase = easeOutCubic(cardPaneProgress);
-        const utilityPaneEase = easeOutCubic(utilityPaneProgress);
+        const utilityPaneEase = this.#getUtilityPaneRevealEase();
 
         return {
             cardPane: this.#createPaneRenderRect(
@@ -1640,6 +1793,21 @@ export class TitleMenu {
                 0
             )
         };
+    }
+
+    /**
+     * 하단 서브 메뉴 pane과 동기화된 등장 이징 값을 반환합니다.
+     * @returns {number} 서브 메뉴 등장 이징 값입니다.
+     * @private
+     */
+    #getUtilityPaneRevealEase() {
+        const revealCoreDuration = this.#getCardRevealCoreDuration();
+        const utilityPaneProgress = this.#getRevealProgress(
+            Math.min(0.16, revealCoreDuration * 0.18),
+            Math.max(0.24, revealCoreDuration * 0.44)
+        );
+
+        return easeOutCubic(utilityPaneProgress);
     }
 
     /**
@@ -2354,6 +2522,271 @@ export class TitleMenu {
     }
 
     /**
+     * 우상단에 현재 게임 버전 라벨을 렌더링합니다.
+     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
+     * @private
+     */
+    #drawGameVersionLabel(paneLayout = null) {
+        if (!this.session) {
+            return;
+        }
+
+        const layout = this.#buildVersionLabelLayout(paneLayout);
+        if (!layout || layout.alpha <= 0.005) {
+            return;
+        }
+        const linkHoverValue = clampNumber(this.versionHistoryLinkButton?.hoverValue || 0, 0, 1);
+        const linkColor = menuForegroundWithAlpha(lerpNumber(0.42, 1, linkHoverValue));
+        const textShadowBlur = Math.max(4, this.WH * 0.008);
+        const textShadowColor = menuForegroundWithAlpha(0.08);
+
+        this.session.renderPanel({
+            shape: 'text',
+            text: layout.versionText,
+            x: layout.versionX,
+            y: layout.versionY,
+            font: layout.versionFont,
+            fill: menuForegroundWithAlpha(0.42),
+            align: 'right',
+            baseline: 'top',
+            alpha: layout.alpha,
+            shadowBlur: textShadowBlur,
+            shadowColor: textShadowColor
+        });
+
+        if (!layout.linkText) {
+            return;
+        }
+
+        this.#drawVersionHistoryLinkArrow(layout, linkColor, textShadowBlur, textShadowColor);
+
+        this.session.renderPanel({
+            shape: 'text',
+            text: layout.linkText,
+            x: layout.linkTextX,
+            y: layout.linkY,
+            font: layout.linkFont,
+            fill: linkColor,
+            align: 'right',
+            baseline: 'top',
+            alpha: layout.alpha,
+            shadowBlur: textShadowBlur,
+            shadowColor: textShadowColor
+        });
+    }
+
+    /**
+     * 전역 상수에 정의된 게임 버전 문자열을 표시 형식으로 반환합니다.
+     * @returns {string} 렌더링할 버전 문자열입니다.
+     * @private
+     */
+    #getGameVersionText() {
+        const rawVersion = String(GLOBAL_CONSTANTS.GAME_VERSION || '').trim();
+        if (!rawVersion) {
+            return '';
+        }
+
+        return `ver ${rawVersion}`;
+    }
+
+    /**
+     * 버전 라벨 아래에 표시할 업데이트 링크 문자열을 반환합니다.
+     * @returns {string} 렌더링할 업데이트 링크 문자열입니다.
+     * @private
+     */
+    #getVersionHistoryLinkText() {
+        return String(getLangString('title_version_history_link') || '').trim();
+    }
+
+    /**
+     * 버전 정보 블록의 텍스트, 폰트, hitbox를 계산합니다.
+     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
+     * @returns {object|null} 버전 정보 블록 렌더 레이아웃입니다.
+     * @private
+     */
+    #buildVersionLabelLayout(paneLayout = null) {
+        const versionText = this.#getGameVersionText();
+        if (!versionText) {
+            return null;
+        }
+
+        const versionFontSize = this.#getTextPresetFontSize('H5');
+        const linkFontSize = this.#getTextPresetFontSize('H5_BOLD');
+        const lineGap = Math.max(4, this.WH * 0.005);
+        const versionFont = this.#getTextPresetFont('H5');
+        const linkFont = this.#getTextPresetFont('H5_BOLD');
+        const linkText = this.#getVersionHistoryLinkText();
+        const blockHeight = versionFontSize + (linkText ? linkFontSize + lineGap : 0);
+        const renderState = this.#buildVersionLabelRenderState(paneLayout, blockHeight);
+        const linkY = renderState.y + versionFontSize + lineGap;
+        const linkTextWidth = linkText ? this.#measureTextWidth(linkText, linkFont) : 0;
+        const linkIconSize = linkText ? Math.max(10, linkFontSize * 0.9504) : 0;
+        const linkIconGap = linkText ? Math.max(4, this.UIWW * 0.0034) : 0;
+        const linkBlockWidth = linkText ? linkIconSize + linkIconGap + linkTextWidth : 0;
+        const linkTextX = renderState.x;
+        const linkIconX = linkTextX - linkTextWidth - linkIconGap - linkIconSize;
+        const linkIconY = linkY + ((linkFontSize - linkIconSize) * 0.5);
+        const hitPaddingX = Math.max(6, this.UIWW * 0.004);
+        const hitPaddingY = Math.max(4, this.WH * 0.004);
+
+        return {
+            alpha: renderState.alpha,
+            versionText,
+            versionFont,
+            versionX: renderState.x,
+            versionY: renderState.y,
+            linkText,
+            linkFont,
+            linkTextX,
+            linkY,
+            linkIconX,
+            linkIconY,
+            linkIconSize,
+            linkBounds: linkText
+                ? {
+                    x: renderState.x - linkBlockWidth - hitPaddingX,
+                    y: linkY - hitPaddingY,
+                    w: linkBlockWidth + (hitPaddingX * 2),
+                    h: linkFontSize + (hitPaddingY * 2)
+                }
+                : null
+        };
+    }
+
+    /**
+     * 업데이트 링크 좌측의 화살표 아이콘을 그립니다.
+     * @param {object} layout - 버전 정보 블록 렌더 레이아웃입니다.
+     * @param {string} strokeColor - 화살표 선 색상입니다.
+     * @param {number} shadowBlur - 그림자 블러 값입니다.
+     * @param {string} shadowColor - 그림자 색상입니다.
+     * @private
+     */
+    #drawVersionHistoryLinkArrow(layout, strokeColor, shadowBlur, shadowColor) {
+        const iconSize = Number(layout?.linkIconSize) || 0;
+        if (!this.session || iconSize <= 0) {
+            return;
+        }
+
+        const x = Number(layout.linkIconX) || 0;
+        const y = Number(layout.linkIconY) || 0;
+        const centerX = x + (iconSize * 0.5);
+        const centerY = y + (iconSize * 0.5);
+        const halfSpan = iconSize * 0.308;
+        const headLength = halfSpan * 0.88;
+        const lineWidth = Math.max(1, iconSize * 0.1);
+        const commonOptions = {
+            shape: 'line',
+            stroke: strokeColor,
+            alpha: layout.alpha,
+            lineWidth,
+            lineCap: 'round',
+            shadowBlur,
+            shadowColor
+        };
+
+        this.session.renderPanel({
+            ...commonOptions,
+            x1: centerX - halfSpan,
+            y1: centerY,
+            x2: centerX + halfSpan,
+            y2: centerY
+        });
+        this.session.renderPanel({
+            ...commonOptions,
+            x1: centerX + halfSpan - headLength,
+            y1: centerY - headLength,
+            x2: centerX + halfSpan,
+            y2: centerY
+        });
+        this.session.renderPanel({
+            ...commonOptions,
+            x1: centerX + halfSpan - headLength,
+            y1: centerY + headLength,
+            x2: centerX + halfSpan,
+            y2: centerY
+        });
+    }
+
+    /**
+     * 버전 라벨의 등장 애니메이션 상태를 계산합니다.
+     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
+     * @param {number} [blockHeight=0] - 버전 정보 블록 전체 높이입니다.
+     * @returns {{x:number, y:number, alpha:number}} 렌더링에 사용할 버전 라벨 상태입니다.
+     * @private
+     */
+    #buildVersionLabelRenderState(paneLayout = null, blockHeight = 0) {
+        const utilityPaneEase = this.#getUtilityPaneRevealEase();
+        const safeAreaAnchor = this.#resolveVersionLabelSafeArea(paneLayout, blockHeight);
+
+        return {
+            x: safeAreaAnchor.x + ((1 - utilityPaneEase) * (this.UIWW * 0.026)),
+            y: safeAreaAnchor.y,
+            alpha: utilityPaneEase
+        };
+    }
+
+    /**
+     * 하단 서브 메뉴와 동일한 안전 영역 감각을 갖도록 버전 라벨 기준점을 계산합니다.
+     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
+     * @param {number} [blockHeight=0] - 버전 정보 블록 전체 높이입니다.
+     * @returns {{x:number, y:number}} 버전 라벨 우상단 기준점입니다.
+     * @private
+     */
+    #resolveVersionLabelSafeArea(paneLayout = null, blockHeight = 0) {
+        const utilityPane = paneLayout?.utilityPane || null;
+        const cardPane = paneLayout?.cardPane || null;
+        const resolvedBlockHeight = Math.max(0, blockHeight);
+        if (!utilityPane || !cardPane) {
+            const verticalOffset = this.WH * (100 / 1440);
+            return {
+                x: this.UIOffsetX + this.UIWW - Math.max(18, this.UIWW * 0.024),
+                y: Math.max(14, this.WH * 0.022) + verticalOffset
+            };
+        }
+
+        const paneGap = Math.max(0, utilityPane.y - (cardPane.y + cardPane.h));
+        const blockBottomY = cardPane.y - paneGap;
+        return {
+            x: utilityPane.x + utilityPane.w,
+            y: blockBottomY - resolvedBlockHeight
+        };
+    }
+
+    /**
+     * 업데이트 내역 링크를 외부 브라우저에서 엽니다.
+     * @private
+     */
+    #openVersionHistoryLink() {
+        const url = String(TITLE_LINK_DATA.UPDATE_HISTORY_URL || '').trim();
+        if (!url) {
+            return;
+        }
+
+        runtimeTool()?.openURL?.(url);
+    }
+
+    /**
+     * 업데이트 내역 버튼 클릭을 처리합니다.
+     * @private
+     */
+    #handleVersionHistoryLinkClick() {
+        if (!consumeMouseState('left')) {
+            return;
+        }
+
+        this.#openVersionHistoryLink();
+    }
+
+    /**
+     * 외곽 패널을 내부 카드선과 동일한 계열로 보이게 할 스트로크 색상을 반환합니다.
+     * @returns {string} 내부 카드선 기준 스트로크 색상입니다.
+     * @private
+     */
+    #getUnifiedOuterPaneStrokeColor() {
+        return menuForegroundWithAlpha(getMenuOpacity('CardInnerLine', 0.12));
+    }
+
+    /**
      * 카드 패널 스타일을 반환합니다.
      * @param {object} renderState - 카드 렌더 상태입니다.
      * @returns {object} 패널 렌더 옵션입니다.
@@ -2396,13 +2829,14 @@ export class TitleMenu {
      * @private
      */
     #getBackdropPaneStyle() {
+        const unifiedStroke = this.#getUnifiedOuterPaneStrokeColor();
         const disableTransparency = getSetting('disableTransparency') === true;
         if (disableTransparency) {
             return {
                 fill: ColorSchemes.Overlay.Panel.Background,
-                stroke: ColorSchemes.Overlay.Panel.Border || ColorSchemes.Overlay.Panel.Background,
+                stroke: unifiedStroke,
                 blur: Math.max(18, this.WH * 0.12),
-                lineWidth: 1.1,
+                lineWidth: 1.05,
                 tintColor: ColorSchemes.Overlay.Panel.GlassTint,
                 edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
                 tintStrength: 0,
@@ -2413,9 +2847,9 @@ export class TitleMenu {
 
         return {
             fill: ColorSchemes.Overlay.Panel.GlassBackground,
-            stroke: getMenuPanelStrokeColor(getMenuOpacity('UtilityPanelStroke', 0.2)),
+            stroke: unifiedStroke,
             blur: 0.1,
-            lineWidth: 1.1,
+            lineWidth: 1.05,
             tintColor: ColorSchemes.Overlay.Panel.GlassTint,
             edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
             tintStrength: ColorSchemes.Overlay.Panel.GlassTintStrength,
@@ -2450,6 +2884,76 @@ export class TitleMenu {
         const fontData = preset.FONT || fallback.FONT;
         const sizeValue = fontData?.SIZE?.VALUE || fallback.FONT.SIZE.VALUE;
         return this.UIWW * (sizeValue / 100);
+    }
+
+    /**
+     * 텍스트 프리셋을 캔버스용 폰트 문자열로 변환합니다.
+     * @param {string} presetKey - 조회할 텍스트 프리셋 키입니다.
+     * @param {number|null} [fontWeightOverride=null] - 강제로 적용할 폰트 굵기입니다.
+     * @returns {string} 캔버스에 적용할 폰트 문자열입니다.
+     * @private
+     */
+    #getTextPresetFont(presetKey, fontWeightOverride = null) {
+        const fallback = TEXT_CONSTANTS.H6;
+        const preset = TEXT_CONSTANTS[presetKey] || fallback;
+        const fontData = preset.FONT || fallback.FONT;
+        const weight = Number.isFinite(fontWeightOverride) ? fontWeightOverride : (fontData.WEIGHT || 400);
+        const family = this.#normalizeFontFamily(fontData.FAMILY || 'Pretendard Variable, arial');
+        return `${weight} ${this.#getTextPresetFontSize(presetKey)}px ${family}`;
+    }
+
+    /**
+     * 지정한 폰트 기준 텍스트 폭을 측정합니다.
+     * @param {string} text - 측정할 텍스트입니다.
+     * @param {string} font - 캔버스 폰트 문자열입니다.
+     * @returns {number} 측정된 텍스트 폭입니다.
+     * @private
+     */
+    #measureTextWidth(text, font) {
+        const context = this.#getVersionLabelMeasureContext();
+        if (!context) {
+            return Math.max(1, String(text || '').length * this.#getTextPresetFontSize('H6') * 0.6);
+        }
+
+        context.save();
+        context.font = font;
+        const measuredWidth = context.measureText(String(text || '')).width;
+        context.restore();
+        return measuredWidth;
+    }
+
+    /**
+     * 버전 라벨 텍스트 측정에 사용할 2D 컨텍스트를 반환합니다.
+     * @returns {CanvasRenderingContext2D|null} 텍스트 측정용 컨텍스트입니다.
+     * @private
+     */
+    #getVersionLabelMeasureContext() {
+        if (this.versionLabelMeasureContext) {
+            return this.versionLabelMeasureContext;
+        }
+
+        if (typeof document === 'undefined') {
+            return null;
+        }
+
+        this.versionLabelMeasureCanvas = document.createElement('canvas');
+        this.versionLabelMeasureContext = this.versionLabelMeasureCanvas.getContext('2d');
+        return this.versionLabelMeasureContext;
+    }
+
+    /**
+     * 캔버스 렌더링용 폰트 패밀리 문자열을 정규화합니다.
+     * @param {string} fontFamily - 원본 폰트 패밀리 문자열입니다.
+     * @returns {string} 정규화된 폰트 패밀리 문자열입니다.
+     * @private
+     */
+    #normalizeFontFamily(fontFamily) {
+        let familyStr = fontFamily;
+        if (!familyStr.includes('"') && !familyStr.includes("'")) {
+            const parts = familyStr.split(',');
+            familyStr = `"${parts[0].trim()}"${parts[1] ? `,${parts[1]}` : ''}`;
+        }
+        return familyStr;
     }
 
     /**

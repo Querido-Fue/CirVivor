@@ -82,4 +82,27 @@ export class BaseProj {
     clearHitHistory() {
         this.hitEnemyIds.clear();
     }
+
+    /**
+     * 현재 투사체의 프레임 동기화용 동적 상태만 복제합니다.
+     * @returns {{id: number, active: boolean, position: {x: number, y: number}, prevPosition: {x: number, y: number}, speed: {x: number, y: number}}}
+     */
+    createSimulationFrameSnapshot() {
+        return {
+            id: Number.isInteger(this.id) ? this.id : -1,
+            active: this.active === true,
+            position: {
+                x: Number.isFinite(this.position?.x) ? this.position.x : 0,
+                y: Number.isFinite(this.position?.y) ? this.position.y : 0
+            },
+            prevPosition: {
+                x: Number.isFinite(this.prevPosition?.x) ? this.prevPosition.x : 0,
+                y: Number.isFinite(this.prevPosition?.y) ? this.prevPosition.y : 0
+            },
+            speed: {
+                x: Number.isFinite(this.speed?.x) ? this.speed.x : 0,
+                y: Number.isFinite(this.speed?.y) ? this.speed.y : 0
+            }
+        };
+    }
 }

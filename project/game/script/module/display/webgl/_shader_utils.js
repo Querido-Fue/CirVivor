@@ -340,12 +340,12 @@ export const PANEL_TEXTURE_FRAGMENT_SHADER = `
 /**
  * 마그네틱 실드 셰이더가 동시에 처리할 최대 충돌 수입니다.
  */
-export const MAGNETIC_SHIELD_MAX_IMPACTS = 8;
+export const MAGNETIC_SHIELD_MAX_IMPACTS = 12;
 
 /**
  * 마그네틱 실드 셰이더가 동시에 처리할 최대 왜곡 수입니다.
  */
-export const MAGNETIC_SHIELD_MAX_DENTS = 6;
+export const MAGNETIC_SHIELD_MAX_DENTS = 8;
 
 /**
  * 마그네틱 실드 림/충돌/눌림 왜곡을 렌더링하는 프래그먼트 셰이더입니다.
@@ -428,9 +428,11 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
         vec3 baseColor = mix(lowColor, highColor, angleLight);
         baseColor = mix(baseColor, highlightColor, pow(angleLight, 6.0) * 0.55);
         vec3 ringColor = mix(shadowColor, baseColor, saturate(ringCore + (outerGlow * 0.7)));
-        float fieldDistance = max(distanceFromCenter - shieldRadius, 0.0);
+        float fieldSignedDistance = distanceFromCenter - shieldRadius;
+        float fieldDistance = max(fieldSignedDistance, 0.0);
         float fieldFade = 1.0 - smoothstep(0.0, fieldRange, fieldDistance);
-        float fieldMask = smoothstep(0.0, max(1.0, u_ringThickness * 1.5), distanceFromCenter - shieldRadius);
+        float fieldTransition = max(1.0, u_ringThickness * 2.4);
+        float fieldMask = smoothstep(-fieldTransition * 0.35, fieldTransition, fieldSignedDistance);
         float fieldNoise = 0.55 + (0.45 * sin((angle * 2.2) - (u_time * 0.65) + (ringNoise * 1.8)));
         float fieldVeil = pow(fieldFade, 1.18);
         float fieldBloom = exp(-pow(fieldDistance / max(1.0, fieldRange * 0.34), 1.28));

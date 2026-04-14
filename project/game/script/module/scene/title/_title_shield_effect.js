@@ -88,6 +88,10 @@ export class TitleShieldEffect {
      * 타이틀 실드 이펙트 상태 컨테이너를 생성합니다.
      */
     constructor() {
+        this.targetCenterX = 0;
+        this.targetCenterY = 0;
+        this.targetCoreRadius = 0;
+        this.targetRadius = 0;
         this.centerX = 0;
         this.centerY = 0;
         this.coreRadius = 0;
@@ -95,7 +99,10 @@ export class TitleShieldEffect {
         this.time = 0;
         this.impacts = [];
         this.dents = [];
+        this.dentCandidates = [];
+        this.activeDentKeys = [];
         this.enemyStateMap = new WeakMap();
+        this.visualLayoutInitialized = false;
     }
 
     /**
@@ -104,17 +111,27 @@ export class TitleShieldEffect {
      */
     syncLayout(layout) {
         if (!layout) {
-            this.centerX = 0;
-            this.centerY = 0;
-            this.coreRadius = 0;
-            this.radius = 0;
+            this.targetCenterX = 0;
+            this.targetCenterY = 0;
+            this.targetCoreRadius = 0;
+            this.targetRadius = 0;
             return;
         }
 
-        this.centerX = Number.isFinite(layout.centerX) ? layout.centerX : 0;
-        this.centerY = Number.isFinite(layout.centerY) ? layout.centerY : 0;
-        this.coreRadius = Number.isFinite(layout.radius) ? Math.max(0, layout.radius) : 0;
-        this.radius = this.coreRadius * this.#getShellRadiusMultiplier();
+        this.targetCenterX = Number.isFinite(layout.centerX) ? layout.centerX : 0;
+        this.targetCenterY = Number.isFinite(layout.centerY) ? layout.centerY : 0;
+        this.targetCoreRadius = Number.isFinite(layout.radius) ? Math.max(0, layout.radius) : 0;
+        this.targetRadius = this.targetCoreRadius * this.#getShellRadiusMultiplier();
+
+        if (this.visualLayoutInitialized) {
+            return;
+        }
+
+        this.centerX = this.targetCenterX;
+        this.centerY = this.targetCenterY;
+        this.coreRadius = this.targetCoreRadius;
+        this.radius = this.targetRadius;
+        this.visualLayoutInitialized = true;
     }
 
     /**
@@ -122,7 +139,7 @@ export class TitleShieldEffect {
      * @returns {number} 실드 반경입니다.
      */
     getShieldRadius() {
-        return this.radius;
+        return this.targetRadius;
     }
 
     /**
@@ -135,12 +152,16 @@ export class TitleShieldEffect {
         if (!Number.isFinite(delta) || delta < 0) {
             return;
         }
+        const visualDelta = this.#getVisualDelta(delta);
 
         this.time += delta;
-        this.#updateImpacts(delta);
+        this.#updateImpacts(delta, visualDelta);
+        this.#updateVisualLayout(visualDelta);
         this.dents.length = 0;
+        this.dentCandidates.length = 0;
 
         if (!Array.isArray(enemies) || this.radius <= 0) {
+            this.activeDentKeys.length = 0;
             return;
         }
 
@@ -149,21 +170,13 @@ export class TitleShieldEffect {
             if (!enemy || enemy.active === false) {
                 continue;
             }
-
-            this.#registerEnemy(enemy, objectOffsetY, delta);
-        }
-
-        this.dents.sort((left, right) => {
-            const strengthGap = right.strength - left.strength;
-            if (Math.abs(strengthGap) > 0.0001) {
-                return strengthGap;
+            if (!this.#isShieldReactiveEnemy(enemy)) {
+                continue;
             }
 
-            return right.depth - left.depth;
-        });
-        if (this.dents.length > this.#getDentMaxCount()) {
-            this.dents.length = this.#getDentMaxCount();
+            this.#registerEnemy(enemy, objectOffsetY, visualDelta);
         }
+        this.#syncVisibleDents();
     }
 
     /**
@@ -208,20 +221,37 @@ export class TitleShieldEffect {
      * 내부 상태를 정리합니다.
      */
     destroy() {
+        this.targetCenterX = 0;
+        this.targetCenterY = 0;
+        this.targetCoreRadius = 0;
+        this.targetRadius = 0;
+        this.centerX = 0;
+        this.centerY = 0;
+        this.coreRadius = 0;
+        this.radius = 0;
         this.impacts.length = 0;
         this.dents.length = 0;
+        this.dentCandidates.length = 0;
+        this.activeDentKeys.length = 0;
         this.enemyStateMap = new WeakMap();
+        this.visualLayoutInitialized = false;
     }
 
     /**
      * @private
      * @param {number} delta - 경과 시간입니다.
      */
-    #updateImpacts(delta) {
+    #updateImpacts(delta, visualDelta) {
         for (let index = this.impacts.length - 1; index >= 0; index--) {
             const impact = this.impacts[index];
             impact.age += delta;
             if (impact.age < impact.duration) {
+                const angleFollowFactor = 1 - Math.exp(-visualDelta * this.#getImpactAngleFollowRate());
+                const intensityFollowFactor = 1 - Math.exp(-visualDelta * this.#getImpactIntensityFollowRate());
+                const widthFollowFactor = 1 - Math.exp(-visualDelta * this.#getImpactWidthFollowRate());
+                impact.angle = this.#lerpAngle(impact.angle, impact.targetAngle, angleFollowFactor);
+                impact.intensity += (impact.targetIntensity - impact.intensity) * intensityFollowFactor;
+                impact.width += (impact.targetWidth - impact.width) * widthFollowFactor;
                 continue;
             }
 
@@ -231,11 +261,28 @@ export class TitleShieldEffect {
 
     /**
      * @private
-     * @param {object} enemy - 평가할 적 인스턴스입니다.
-     * @param {number} objectOffsetY - 화면 변환용 오프셋입니다.
      * @param {number} delta - 경과 시간입니다.
      */
-    #registerEnemy(enemy, objectOffsetY, delta) {
+    #updateVisualLayout(delta) {
+        if (!this.visualLayoutInitialized) {
+            return;
+        }
+
+        const followRate = this.#getLayoutFollowRate();
+        const lerpFactor = 1 - Math.exp(-delta * followRate);
+        this.centerX += (this.targetCenterX - this.centerX) * lerpFactor;
+        this.centerY += (this.targetCenterY - this.centerY) * lerpFactor;
+        this.coreRadius += (this.targetCoreRadius - this.coreRadius) * lerpFactor;
+        this.radius += (this.targetRadius - this.radius) * lerpFactor;
+    }
+
+    /**
+     * @private
+     * @param {object} enemy - 평가할 적 인스턴스입니다.
+     * @param {number} objectOffsetY - 화면 변환용 오프셋입니다.
+     * @param {number} visualDelta - 시각 보간에 사용할 경과 시간입니다.
+     */
+    #registerEnemy(enemy, objectOffsetY, visualDelta) {
         const radius = this.#getEnemyScreenRadius(enemy);
         if (!Number.isFinite(radius) || radius <= 0) {
             return;
@@ -254,21 +301,40 @@ export class TitleShieldEffect {
         const angle = Math.atan2(dy, dx);
         const impactBand = this.#getImpactBandPx();
         const contactPadding = this.#getContactPaddingPx();
-        const shieldBoundaryDistance = distance - this.radius - radius;
-        const contacting = Math.abs(shieldBoundaryDistance) <= (impactBand + contactPadding);
+        const shieldBoundaryDistance = this.#stabilizeBoundaryDistance(distance - this.radius - radius);
         const state = this.#getEnemyState(enemy);
+        const contactRange = impactBand + contactPadding + (
+            state.contacting
+                ? this.#getContactHysteresisPx()
+                : 0
+        );
+        const contacting = Math.abs(shieldBoundaryDistance) <= contactRange;
 
         const influenceRange = this.#getPressureInfluencePx();
-        const targetPressure = this.#calculatePressure(shieldBoundaryDistance, influenceRange, radius);
+        const targetPressure = this.#calculatePressure(
+            shieldBoundaryDistance,
+            influenceRange,
+            radius
+        );
         const visualInfluenceRange = influenceRange * this.#getVisualTriggerDistanceMultiplier();
-        const targetVisualPressure = this.#calculatePressure(shieldBoundaryDistance, visualInfluenceRange, radius);
-        const followRate = this.#getPressureFollowRate();
-        const lerpFactor = 1 - Math.exp(-delta * followRate);
-        state.pressure += (targetPressure - state.pressure) * lerpFactor;
-        state.visualPressure += (targetVisualPressure - state.visualPressure) * lerpFactor;
+        const targetVisualPressure = this.#calculatePressure(
+            shieldBoundaryDistance,
+            visualInfluenceRange,
+            radius
+        );
+        state.pressure = this.#followScalar(state.pressure, targetPressure, visualDelta);
+        state.visualPressure = this.#followScalar(state.visualPressure, targetVisualPressure, visualDelta);
+        state.displayAngle = this.#lerpAngle(
+            state.displayAngle,
+            angle,
+            state.angleInitialized
+                ? (1 - Math.exp(-visualDelta * this.#getDentAngleFollowRate()))
+                : 1
+        );
+        state.angleInitialized = true;
 
         if (contacting && !state.contacting) {
-            this.#pushImpact(enemy, angle, state.pressure, radius);
+            this.#pushImpact(enemy, state.displayAngle, state.pressure, radius);
         }
         state.contacting = contacting;
 
@@ -276,8 +342,9 @@ export class TitleShieldEffect {
             return;
         }
 
-        this.dents.push({
-            angle,
+        this.dentCandidates.push({
+            key: state,
+            angle: state.displayAngle,
             depth: this.#getMaxDepthPx() * state.pressure * state.pressure,
             width: this.#buildAngularWidth(radius),
             strength: state.visualPressure
@@ -287,15 +354,48 @@ export class TitleShieldEffect {
     /**
      * @private
      * @param {number} shieldBoundaryDistance - 적과 실드 경계 사이 거리입니다.
-     * @param {number} influenceRange - 압력이 시작될 영향 범위입니다.
+     * @param {number} outerInfluenceRange - 실드 바깥쪽 영향 범위입니다.
      * @param {number} enemyRadius - 적 반경입니다.
      * @returns {number} 0~1 범위의 정규화된 압력 값입니다.
      */
-    #calculatePressure(shieldBoundaryDistance, influenceRange, enemyRadius) {
+    #calculatePressure(shieldBoundaryDistance, outerInfluenceRange, enemyRadius) {
         return Math.max(
             0,
-            Math.min(1, (influenceRange - shieldBoundaryDistance) / Math.max(1, influenceRange + enemyRadius))
+            Math.min(1, (outerInfluenceRange - shieldBoundaryDistance) / Math.max(1, outerInfluenceRange + enemyRadius))
         );
+    }
+
+    /**
+     * @private
+     * @param {number} boundaryDistance - 원본 실드 경계 거리입니다.
+     * @returns {number} 경계선 0 부근의 흔들림을 제거한 거리입니다.
+     */
+    #stabilizeBoundaryDistance(boundaryDistance) {
+        if (!Number.isFinite(boundaryDistance)) {
+            return 0;
+        }
+
+        const epsilon = this.#getBoundaryEpsilonPx();
+        if (epsilon <= 0 || Math.abs(boundaryDistance) > epsilon) {
+            return boundaryDistance;
+        }
+
+        return 0;
+    }
+
+    /**
+     * @private
+     * @param {number} currentValue - 현재 값입니다.
+     * @param {number} targetValue - 목표 값입니다.
+     * @param {number} delta - 경과 시간입니다.
+     * @returns {number} 추종 결과 값입니다.
+     */
+    #followScalar(currentValue, targetValue, delta) {
+        const followRate = targetValue >= currentValue
+            ? this.#getPressureFollowRate()
+            : this.#getPressureReleaseFollowRate();
+        const lerpFactor = 1 - Math.exp(-delta * followRate);
+        return currentValue + ((targetValue - currentValue) * lerpFactor);
     }
 
     /**
@@ -319,38 +419,323 @@ export class TitleShieldEffect {
                 this.#getImpactIntensityMin() + (speedFactor * 0.4) + (pressure * 0.45)
             )
         );
-
-        this.impacts.unshift({
-            angle,
-            intensity,
-            width: this.#buildAngularWidth(enemyRadius) * 0.9,
-            age: 0,
-            duration: this.#getImpactDuration()
-        });
-
-        if (this.impacts.length > this.#getImpactMaxCount()) {
-            this.impacts.length = this.#getImpactMaxCount();
+        const width = this.#buildAngularWidth(enemyRadius) * 0.9;
+        const duration = this.#getImpactDuration();
+        const mergeableImpact = this.#findMergeableImpact(angle);
+        if (mergeableImpact) {
+            this.#retargetImpact(mergeableImpact, angle, intensity, width, duration);
+            return;
         }
+
+        if (this.impacts.length < this.#getImpactMaxCount()) {
+            this.impacts.unshift(this.#createImpact(angle, intensity, width, duration));
+            return;
+        }
+
+        const weakestImpact = this.#findWeakestImpact();
+        if (!this.#shouldReplaceImpact(weakestImpact, intensity)) {
+            return;
+        }
+
+        const weakestIndex = this.impacts.indexOf(weakestImpact);
+        if (weakestIndex < 0) {
+            return;
+        }
+
+        this.impacts[weakestIndex] = this.#createImpact(angle, intensity, width, duration);
+    }
+
+    /**
+     * @private
+     * @param {number} angle - impact 각도입니다.
+     * @param {number} intensity - impact 강도입니다.
+     * @param {number} width - impact 폭입니다.
+     * @param {number} duration - impact 유지 시간입니다.
+     * @returns {{angle:number, targetAngle:number, intensity:number, targetIntensity:number, width:number, targetWidth:number, age:number, duration:number}} 생성된 impact 상태입니다.
+     */
+    #createImpact(angle, intensity, width, duration) {
+        return {
+            angle,
+            targetAngle: angle,
+            intensity,
+            targetIntensity: intensity,
+            width,
+            targetWidth: width,
+            age: 0,
+            duration
+        };
+    }
+
+    /**
+     * @private
+     * @param {{angle:number, targetAngle:number, intensity:number, targetIntensity:number, width:number, targetWidth:number, age:number, duration:number}|undefined} impact - 갱신할 impact 상태입니다.
+     * @param {number} angle - 새 목표 각도입니다.
+     * @param {number} intensity - 새 목표 강도입니다.
+     * @param {number} width - 새 목표 폭입니다.
+     * @param {number} duration - 새 유지 시간입니다.
+     */
+    #retargetImpact(impact, angle, intensity, width, duration) {
+        if (!impact) {
+            return;
+        }
+
+        impact.targetAngle = angle;
+        impact.targetIntensity = Math.max(impact.targetIntensity, intensity);
+        impact.targetWidth = Math.max(impact.targetWidth, width);
+        impact.intensity = Math.max(impact.intensity, intensity * this.#getImpactImmediateBoostRatio());
+        impact.width = Math.max(impact.width, width * this.#getImpactImmediateBoostRatio());
+        impact.age = 0;
+        impact.duration = Math.max(impact.duration, duration);
+    }
+
+    /**
+     * @private
+     * @param {number} angle - 새 impact의 각도입니다.
+     * @returns {{angle:number, targetAngle:number, intensity:number, targetIntensity:number, width:number, targetWidth:number, age:number, duration:number}|null} 병합 가능한 impact입니다.
+     */
+    #findMergeableImpact(angle) {
+        const mergeThreshold = this.#getImpactMergeAngleThreshold();
+        let bestImpact = null;
+        let bestAngularDistance = Infinity;
+
+        for (let index = 0; index < this.impacts.length; index++) {
+            const impact = this.impacts[index];
+            if (!impact || impact.age >= impact.duration) {
+                continue;
+            }
+
+            const angularDistance = Math.abs(this.#getAngularDelta(impact.targetAngle, angle));
+            if (angularDistance > mergeThreshold || angularDistance >= bestAngularDistance) {
+                continue;
+            }
+
+            bestAngularDistance = angularDistance;
+            bestImpact = impact;
+        }
+
+        return bestImpact;
+    }
+
+    /**
+     * @private
+     * @returns {{angle:number, targetAngle:number, intensity:number, targetIntensity:number, width:number, targetWidth:number, age:number, duration:number}|null} 현재 가장 약한 impact입니다.
+     */
+    #findWeakestImpact() {
+        let weakestImpact = null;
+        let weakestScore = Infinity;
+
+        for (let index = 0; index < this.impacts.length; index++) {
+            const impact = this.impacts[index];
+            if (!impact) {
+                continue;
+            }
+
+            const remainingLifeRatio = Math.max(0, 1 - (impact.age / Math.max(0.0001, impact.duration)));
+            const impactScore = Math.max(impact.intensity, impact.targetIntensity) * remainingLifeRatio;
+            if (impactScore >= weakestScore) {
+                continue;
+            }
+
+            weakestScore = impactScore;
+            weakestImpact = impact;
+        }
+
+        return weakestImpact;
+    }
+
+    /**
+     * @private
+     * @param {{angle:number, targetAngle:number, intensity:number, targetIntensity:number, width:number, targetWidth:number, age:number, duration:number}|null} currentImpact - 현재 유지 중인 impact입니다.
+     * @param {number} newIntensity - 새 impact 강도입니다.
+     * @returns {boolean} 교체 여부입니다.
+     */
+    #shouldReplaceImpact(currentImpact, newIntensity) {
+        if (!currentImpact) {
+            return true;
+        }
+
+        const remainingLifeRatio = Math.max(0, 1 - (currentImpact.age / Math.max(0.0001, currentImpact.duration)));
+        const currentScore = Math.max(currentImpact.intensity, currentImpact.targetIntensity) * remainingLifeRatio;
+        return newIntensity > (currentScore + this.#getImpactReplacementBias());
     }
 
     /**
      * @private
      * @param {object} enemy - 평가할 적 인스턴스입니다.
-     * @returns {{contacting:boolean, pressure:number, visualPressure:number}} 적별 실드 상태입니다.
+     * @returns {{enemyId:number|null, contacting:boolean, pressure:number, visualPressure:number, displayAngle:number, angleInitialized:boolean}} 적별 실드 상태입니다.
      */
     #getEnemyState(enemy) {
+        const enemyId = Number.isInteger(enemy?.id) ? enemy.id : null;
         let state = this.enemyStateMap.get(enemy);
-        if (state) {
+        if (state && state.enemyId === enemyId) {
             return state;
         }
 
         state = {
+            enemyId,
             contacting: false,
             pressure: 0,
-            visualPressure: 0
+            visualPressure: 0,
+            displayAngle: 0,
+            angleInitialized: false
         };
         this.enemyStateMap.set(enemy, state);
         return state;
+    }
+
+    /**
+     * @private
+     * @param {object} enemy - 평가할 적 인스턴스입니다.
+     * @returns {boolean} 실드 자기장 반응 대상 여부입니다.
+     */
+    #isShieldReactiveEnemy(enemy) {
+        const motionScale = Number.isFinite(enemy?._titleParallaxMotionScale)
+            ? enemy._titleParallaxMotionScale
+            : 1;
+        return motionScale > 0;
+    }
+
+    /**
+     * @private
+     * @param {number} currentAngle - 현재 각도입니다.
+     * @param {number} targetAngle - 목표 각도입니다.
+     * @param {number} factor - 보간 비율입니다.
+     * @returns {number} 보간된 각도입니다.
+     */
+    #lerpAngle(currentAngle, targetAngle, factor) {
+        if (!Number.isFinite(currentAngle)) {
+            return targetAngle;
+        }
+
+        const safeFactor = Math.max(0, Math.min(1, factor));
+        if (safeFactor >= 1) {
+            return targetAngle;
+        }
+
+        const delta = Math.atan2(
+            Math.sin(targetAngle - currentAngle),
+            Math.cos(targetAngle - currentAngle)
+        );
+        return currentAngle + (delta * safeFactor);
+    }
+
+    /**
+     * @private
+     * @param {number} angleA - 첫 번째 각도입니다.
+     * @param {number} angleB - 두 번째 각도입니다.
+     * @returns {number} -PI~PI 범위의 각도 차이입니다.
+     */
+    #getAngularDelta(angleA, angleB) {
+        return Math.atan2(
+            Math.sin(angleB - angleA),
+            Math.cos(angleB - angleA)
+        );
+    }
+
+    /**
+     * @private
+     * 현재 프레임의 dent 후보를 안정적으로 선택해 가시 dent 목록을 구성합니다.
+     */
+    #syncVisibleDents() {
+        const maxDentCount = this.#getDentMaxCount();
+        if (maxDentCount <= 0 || this.dentCandidates.length === 0) {
+            this.activeDentKeys.length = 0;
+            this.dents.length = 0;
+            return;
+        }
+        const sortDentCandidates = (candidates) => candidates.sort(
+            (left, right) => this.#compareDentPriority(left, right)
+        );
+
+        const retainedCandidates = [];
+        const candidateMap = new Map();
+        for (let index = 0; index < this.dentCandidates.length; index++) {
+            const candidate = this.dentCandidates[index];
+            candidateMap.set(candidate.key, candidate);
+        }
+
+        for (let index = 0; index < this.activeDentKeys.length; index++) {
+            const key = this.activeDentKeys[index];
+            const candidate = candidateMap.get(key);
+            if (!candidate) {
+                continue;
+            }
+            retainedCandidates.push(candidate);
+            candidateMap.delete(key);
+        }
+
+        sortDentCandidates(retainedCandidates);
+        while (retainedCandidates.length > maxDentCount) {
+            retainedCandidates.pop();
+        }
+
+        const remainingCandidates = Array.from(candidateMap.values()).sort(
+            (left, right) => this.#compareDentPriority(left, right)
+        );
+        while (retainedCandidates.length < maxDentCount && remainingCandidates.length > 0) {
+            retainedCandidates.push(remainingCandidates.shift());
+            sortDentCandidates(retainedCandidates);
+        }
+
+        while (retainedCandidates.length > 0 && remainingCandidates.length > 0) {
+            const weakestRetained = retainedCandidates[retainedCandidates.length - 1];
+            const strongestIncoming = remainingCandidates[0];
+            if (!this.#shouldPromoteDentCandidate(strongestIncoming, weakestRetained)) {
+                break;
+            }
+
+            retainedCandidates[retainedCandidates.length - 1] = strongestIncoming;
+            remainingCandidates.shift();
+            sortDentCandidates(retainedCandidates);
+        }
+
+        this.activeDentKeys = retainedCandidates.map((candidate) => candidate.key);
+        this.dents.length = 0;
+        for (let index = 0; index < retainedCandidates.length; index++) {
+            const candidate = retainedCandidates[index];
+            this.dents.push({
+                angle: candidate.angle,
+                depth: candidate.depth,
+                width: candidate.width,
+                strength: candidate.strength
+            });
+        }
+    }
+
+    /**
+     * @private
+     * @param {{strength:number, depth:number}} left - 왼쪽 후보입니다.
+     * @param {{strength:number, depth:number}} right - 오른쪽 후보입니다.
+     * @returns {number} 정렬 비교 결과입니다.
+     */
+    #compareDentPriority(left, right) {
+        const strengthGap = right.strength - left.strength;
+        if (Math.abs(strengthGap) > 0.0001) {
+            return strengthGap;
+        }
+
+        return right.depth - left.depth;
+    }
+
+    /**
+     * @private
+     * @param {{strength:number, depth:number}} incomingCandidate - 새 후보입니다.
+     * @param {{strength:number, depth:number}|undefined} retainedCandidate - 유지 중인 후보입니다.
+     * @returns {boolean} 교체 여부입니다.
+     */
+    #shouldPromoteDentCandidate(incomingCandidate, retainedCandidate) {
+        if (!retainedCandidate) {
+            return true;
+        }
+
+        const switchBias = this.#getDentSwitchBias();
+        const depthBias = this.#getDentDepthSwitchBias();
+        if (incomingCandidate.strength > (retainedCandidate.strength + switchBias)) {
+            return true;
+        }
+
+        return incomingCandidate.strength > (retainedCandidate.strength - (switchBias * 0.5))
+            && incomingCandidate.depth > (retainedCandidate.depth + depthBias);
     }
 
     /**
@@ -479,6 +864,29 @@ export class TitleShieldEffect {
 
     /**
      * @private
+     * @returns {number} 눌림 압력이 줄어들 때의 추종 속도입니다.
+     */
+    #getPressureReleaseFollowRate() {
+        return Number.isFinite(TITLE_SHIELD.PRESSURE_RELEASE_FOLLOW_RATE)
+            ? Math.max(0.0001, TITLE_SHIELD.PRESSURE_RELEASE_FOLLOW_RATE)
+            : 5.5;
+    }
+
+    /**
+     * @private
+     * @param {number} delta - 원본 프레임 경과 시간입니다.
+     * @returns {number} 시각 보간에 사용할 안전한 경과 시간입니다.
+     */
+    #getVisualDelta(delta) {
+        if (!Number.isFinite(delta) || delta <= 0) {
+            return 0;
+        }
+
+        return Math.min(delta, this.#getVisualDeltaClampSeconds());
+    }
+
+    /**
+     * @private
      * @returns {number} 최대 눌림 깊이입니다.
      */
     #getMaxDepthPx() {
@@ -503,10 +911,140 @@ export class TitleShieldEffect {
 
     /**
      * @private
+     * @returns {number} impact 각도 추종 속도입니다.
+     */
+    #getImpactAngleFollowRate() {
+        return Number.isFinite(TITLE_SHIELD.IMPACT_ANGLE_FOLLOW_RATE)
+            ? Math.max(0.0001, TITLE_SHIELD.IMPACT_ANGLE_FOLLOW_RATE)
+            : 18;
+    }
+
+    /**
+     * @private
+     * @returns {number} impact 강도 추종 속도입니다.
+     */
+    #getImpactIntensityFollowRate() {
+        return Number.isFinite(TITLE_SHIELD.IMPACT_INTENSITY_FOLLOW_RATE)
+            ? Math.max(0.0001, TITLE_SHIELD.IMPACT_INTENSITY_FOLLOW_RATE)
+            : 24;
+    }
+
+    /**
+     * @private
+     * @returns {number} impact 폭 추종 속도입니다.
+     */
+    #getImpactWidthFollowRate() {
+        return Number.isFinite(TITLE_SHIELD.IMPACT_WIDTH_FOLLOW_RATE)
+            ? Math.max(0.0001, TITLE_SHIELD.IMPACT_WIDTH_FOLLOW_RATE)
+            : 20;
+    }
+
+    /**
+     * @private
+     * @returns {number} 실드 레이아웃 표시 추종 속도입니다.
+     */
+    #getLayoutFollowRate() {
+        return Number.isFinite(TITLE_SHIELD.LAYOUT_FOLLOW_RATE)
+            ? Math.max(0.0001, TITLE_SHIELD.LAYOUT_FOLLOW_RATE)
+            : 18;
+    }
+
+    /**
+     * @private
+     * @returns {number} dent 각도 표시 추종 속도입니다.
+     */
+    #getDentAngleFollowRate() {
+        return Number.isFinite(TITLE_SHIELD.DENT_ANGLE_FOLLOW_RATE)
+            ? Math.max(0.0001, TITLE_SHIELD.DENT_ANGLE_FOLLOW_RATE)
+            : 14;
+    }
+
+    /**
+     * @private
+     * @returns {number} 접촉 상태 유지용 히스테리시스 거리입니다.
+     */
+    #getContactHysteresisPx() {
+        return Number.isFinite(TITLE_SHIELD.CONTACT_HYSTERESIS_PX)
+            ? Math.max(0, TITLE_SHIELD.CONTACT_HYSTERESIS_PX)
+            : 8;
+    }
+
+    /**
+     * @private
+     * @returns {number} 실드 경계선 일치 구간을 안정화할 epsilon 거리입니다.
+     */
+    #getBoundaryEpsilonPx() {
+        return Number.isFinite(TITLE_SHIELD.BOUNDARY_EPSILON_PX)
+            ? Math.max(0, TITLE_SHIELD.BOUNDARY_EPSILON_PX)
+            : 4;
+    }
+
+    /**
+     * @private
+     * @returns {number} dent 후보 교체를 위한 최소 우위 값입니다.
+     */
+    #getDentSwitchBias() {
+        return Number.isFinite(TITLE_SHIELD.DENT_SWITCH_BIAS)
+            ? Math.max(0, TITLE_SHIELD.DENT_SWITCH_BIAS)
+            : 0.08;
+    }
+
+    /**
+     * @private
+     * @returns {number} dent 깊이 기준 후보 교체를 위한 최소 우위 값입니다.
+     */
+    #getDentDepthSwitchBias() {
+        return Number.isFinite(TITLE_SHIELD.DENT_DEPTH_SWITCH_BIAS)
+            ? Math.max(0, TITLE_SHIELD.DENT_DEPTH_SWITCH_BIAS)
+            : Math.max(1.2, this.#getMaxDepthPx() * 0.12);
+    }
+
+    /**
+     * @private
+     * @returns {number} 시각 보간에 허용할 최대 프레임 델타입니다.
+     */
+    #getVisualDeltaClampSeconds() {
+        return Number.isFinite(TITLE_SHIELD.VISUAL_DELTA_CLAMP_SECONDS)
+            ? Math.max(0.0001, TITLE_SHIELD.VISUAL_DELTA_CLAMP_SECONDS)
+            : (1 / 30);
+    }
+
+    /**
+     * @private
      * @returns {number} 최대 impact 개수입니다.
      */
     #getImpactMaxCount() {
-        return Number.isFinite(TITLE_SHIELD.IMPACT_MAX_COUNT) ? Math.max(1, TITLE_SHIELD.IMPACT_MAX_COUNT) : 8;
+        return Number.isFinite(TITLE_SHIELD.IMPACT_MAX_COUNT) ? Math.max(1, TITLE_SHIELD.IMPACT_MAX_COUNT) : 12;
+    }
+
+    /**
+     * @private
+     * @returns {number} impact 병합에 사용할 최대 각도 차이입니다.
+     */
+    #getImpactMergeAngleThreshold() {
+        return Number.isFinite(TITLE_SHIELD.IMPACT_MERGE_ANGLE_RAD)
+            ? Math.max(0.0001, TITLE_SHIELD.IMPACT_MERGE_ANGLE_RAD)
+            : 0.22;
+    }
+
+    /**
+     * @private
+     * @returns {number} impact 교체를 허용할 최소 강도 우위입니다.
+     */
+    #getImpactReplacementBias() {
+        return Number.isFinite(TITLE_SHIELD.IMPACT_REPLACEMENT_BIAS)
+            ? Math.max(0, TITLE_SHIELD.IMPACT_REPLACEMENT_BIAS)
+            : 0.12;
+    }
+
+    /**
+     * @private
+     * @returns {number} impact 병합 직후 즉시 반영할 최소 부스트 비율입니다.
+     */
+    #getImpactImmediateBoostRatio() {
+        return Number.isFinite(TITLE_SHIELD.IMPACT_IMMEDIATE_BOOST_RATIO)
+            ? Math.max(0, Math.min(1, TITLE_SHIELD.IMPACT_IMMEDIATE_BOOST_RATIO))
+            : 0.55;
     }
 
     /**
@@ -514,6 +1052,6 @@ export class TitleShieldEffect {
      * @returns {number} 최대 dent 개수입니다.
      */
     #getDentMaxCount() {
-        return Number.isFinite(TITLE_SHIELD.DENT_MAX_COUNT) ? Math.max(1, TITLE_SHIELD.DENT_MAX_COUNT) : 6;
+        return Number.isFinite(TITLE_SHIELD.DENT_MAX_COUNT) ? Math.max(1, TITLE_SHIELD.DENT_MAX_COUNT) : 8;
     }
 }

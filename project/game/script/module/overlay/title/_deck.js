@@ -12,7 +12,7 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
  */
 export class DeckOverlay extends TitleOverlay {
     constructor(TitleScene) {
-        super(TitleScene);
+        super(TitleScene, { titleIconId: 'deck' });
 
         this.achievementProgress = 0;
         this.encyclopediaProgress = 0;

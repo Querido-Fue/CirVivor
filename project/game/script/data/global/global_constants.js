@@ -19,7 +19,7 @@ export const GLOBAL_CONSTANTS = {
         CANVAS_2D: 16,
         CANVAS_WEBGL: 8
     },
-    GAME_VERSION: "0.4",
+    GAME_VERSION: "0.41",
     WEBGL_MAX_SPRITES: 16000,
     SLIDER_MAX_OVERFLOW: 0.05,
     DEBUG_MODE_TOGGLE: Object.freeze({
