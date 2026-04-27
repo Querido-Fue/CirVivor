@@ -13,7 +13,7 @@ import {
     isGameSceneSharedPresentationSupported,
     readGameSceneSharedPresentationState
 } from 'simulation/game_scene_shared_presentation.js';
-import { errThrow } from 'debug/debug_system.js';
+import { errThrow, getPerformanceDebugger } from 'debug/debug_system.js';
 
 const MAX_PENDING_FIXED_STEP_COUNT = 2;
 
@@ -72,6 +72,76 @@ function reportSimulationWorkerBridgeError(error, message) {
         if (reportedError !== error) {
             console.error(reportedError);
         }
+    }
+}
+
+/**
+ * 단순 통계 객체를 얕은 읽기 전용 스냅샷으로 복제합니다.
+ * @param {object|null|undefined} stats
+ * @returns {object|null}
+ */
+function cloneFlatStats(stats) {
+    return stats && typeof stats === 'object' ? { ...stats } : null;
+}
+
+/**
+ * ms 단위 숫자 필드를 성능 디버거 샘플로 기록합니다.
+ * @param {object} performanceDebugger
+ * @param {string} prefix
+ * @param {object|null|undefined} stats
+ * @param {number} timestamp
+ */
+function recordDurationFields(performanceDebugger, prefix, stats, timestamp) {
+    if (!stats || typeof stats !== 'object') {
+        return;
+    }
+
+    for (const [fieldName, durationMs] of Object.entries(stats)) {
+        if (!fieldName.endsWith('Ms') || !Number.isFinite(durationMs) || durationMs <= 0) {
+            continue;
+        }
+
+        performanceDebugger.recordSample(
+            `${prefix}.${fieldName.slice(0, -2)}`,
+            durationMs,
+            timestamp
+        );
+    }
+}
+
+/**
+ * 워커 스냅샷의 계측 값을 메인 스레드 성능 디버거에 병합합니다.
+ * @param {object|null|undefined} workerSnapshot
+ * @param {number} [timestamp=performance.now()]
+ */
+function recordWorkerProfileSamples(workerSnapshot, timestamp = performance.now()) {
+    if (!workerSnapshot || typeof workerSnapshot !== 'object') {
+        return;
+    }
+
+    const performanceDebugger = getPerformanceDebugger();
+    if (!performanceDebugger || !performanceDebugger.isEnabled()) {
+        return;
+    }
+
+    recordDurationFields(performanceDebugger, 'worker.frame', workerSnapshot.profileStats, timestamp);
+    recordDurationFields(performanceDebugger, 'worker.collision', workerSnapshot.collisionStats, timestamp);
+
+    const aiStats = workerSnapshot.aiStats;
+    if (Number.isFinite(aiStats?.totalMs) && aiStats.totalMs > 0) {
+        performanceDebugger.recordSample('worker.ai.total', aiStats.totalMs, timestamp);
+    }
+    if (aiStats?.policyMs && typeof aiStats.policyMs === 'object') {
+        for (const [policyName, durationMs] of Object.entries(aiStats.policyMs)) {
+            if (Number.isFinite(durationMs) && durationMs > 0) {
+                performanceDebugger.recordSample(`worker.ai.policy.${policyName}`, durationMs, timestamp);
+            }
+        }
+    }
+
+    const enemyAIWorker = workerSnapshot.enemyAIWorker;
+    if (Number.isFinite(enemyAIWorker?.lastLatencyMs) && enemyAIWorker.lastLatencyMs > 0) {
+        performanceDebugger.recordSample('worker.enemyAI.latency', enemyAIWorker.lastLatencyMs, timestamp);
     }
 }
 
@@ -147,7 +217,9 @@ export class SimulationWorkerBridge {
                 enemyAIWorker: this.status.workerSnapshot.enemyAIWorker
                     && typeof this.status.workerSnapshot.enemyAIWorker === 'object'
                     ? { ...this.status.workerSnapshot.enemyAIWorker }
-                    : null
+                    : null,
+                collisionStats: cloneFlatStats(this.status.workerSnapshot.collisionStats),
+                profileStats: cloneFlatStats(this.status.workerSnapshot.profileStats)
             }
             : null;
         return {
@@ -535,6 +607,7 @@ export class SimulationWorkerBridge {
         this.status.lastMessageAt = performance.now();
         if (message.workerSnapshot && typeof message.workerSnapshot === 'object') {
             this.status.workerSnapshot = { ...message.workerSnapshot };
+            recordWorkerProfileSamples(message.workerSnapshot, this.status.lastMessageAt);
         }
         if (message.presentationSharedState && this.sharedPresentationTransport) {
             const sceneState = typeof message.presentationSharedState.sceneState === 'string'

@@ -38,6 +38,7 @@ const DENSE_REBUILD_MAX_EXTRA_PASSES = 4;
 const DENSE_MIN_ITERATION_FLOOR = 5;
 const DENSE_LOCAL_CANDIDATE_THRESHOLD = 8;
 const DENSE_STABILIZE_MAX_PASSES = 4;
+const DENSE_STABILIZE_LIGHT_MAX_PASSES = 2;
 const DENSE_STABILIZE_MIN_RESOLVED = 4;
 const DENSE_RESOLVE_BOOST = 1.55;
 const DENSE_CORRECTION_CANDIDATE_THRESHOLD = 5;
@@ -59,6 +60,129 @@ const PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR = 0.055;
 const PRESSURE_ESCAPE_SCALE_MAX = 1.45;
 const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
 const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
+const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
+    'enemyTotalMs',
+    'enemyBodyBuildMs',
+    'playerBodyBuildMs',
+    'wallBodyBuildMs',
+    'enemyPositionSolveMs',
+    'enemyStabilizeMs',
+    'enemyNonPositionMs',
+    'solveGridMs',
+    'solvePairScanMs',
+    'solveCandidateBuildMs',
+    'solvePairProcessMs',
+    'projectileTotalMs',
+    'projectileEnemyBodyBuildMs',
+    'projectileGridBuildMs',
+    'projectileScanMs',
+    'projectileCandidateQueryMs',
+    'projectileNarrowphaseMs',
+    'contactTotalMs',
+    'contactBodyBuildMs',
+    'contactGridBuildMs',
+    'contactPairScanMs',
+    'solveBucketPairCount',
+    'solveCandidatePairCount',
+    'solveDuplicatePairSkipCount',
+    'solveRuleRejectCount'
+]);
+const COLLISION_RULE_NONE = Object.freeze({
+    check: false,
+    resolve: false,
+    movableA: null,
+    movableB: null,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_DYNAMIC_RESOLVE = Object.freeze({
+    check: true,
+    resolve: true,
+    movableA: null,
+    movableB: null,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_ENEMY_PLAYER = Object.freeze({
+    check: true,
+    resolve: true,
+    movableA: true,
+    movableB: false,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_PLAYER_ENEMY = Object.freeze({
+    check: true,
+    resolve: true,
+    movableA: false,
+    movableB: true,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_PROJECTILE_ENEMY = Object.freeze({
+    check: true,
+    resolve: false,
+    movableA: null,
+    movableB: null,
+    oneShotByProjectile: true,
+    applyImpactRotation: true
+});
+const COLLISION_RULE_PLAYER_PROJECTILE = Object.freeze({
+    check: true,
+    resolve: false,
+    movableA: null,
+    movableB: null,
+    oneShotByProjectile: true,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_PLAYER_ITEM = Object.freeze({
+    check: true,
+    resolve: false,
+    movableA: null,
+    movableB: null,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_PROJECTILE_PROJECTILE = Object.freeze({
+    check: true,
+    resolve: false,
+    movableA: null,
+    movableB: null,
+    oneShotByProjectile: true,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_WALL_PROJECTILE = Object.freeze({
+    check: true,
+    resolve: false,
+    movableA: false,
+    movableB: true,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_PROJECTILE_WALL = Object.freeze({
+    check: true,
+    resolve: false,
+    movableA: true,
+    movableB: false,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_WALL_OTHER = Object.freeze({
+    check: true,
+    resolve: true,
+    movableA: false,
+    movableB: true,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
+const COLLISION_RULE_OTHER_WALL = Object.freeze({
+    check: true,
+    resolve: true,
+    movableA: true,
+    movableB: false,
+    oneShotByProjectile: false,
+    applyImpactRotation: false
+});
 
 /**
  * 합체 적 충돌 형상 기준 셀 수를 반환합니다.
@@ -192,6 +316,11 @@ export class CollisionHandler {
     #queryMarks;
     #queryMarkStamp;
     #queryCandidateIndices;
+    #candidatePairLowIndices;
+    #candidatePairHighIndices;
+    #candidatePairCount;
+    #candidatePairBodyCount;
+    #profileEnabled;
 
     constructor() {
         this.detector = new CollisionDetector();
@@ -207,6 +336,31 @@ export class CollisionHandler {
             circlePassCount: 0,
             circleRejectCount: 0,
             polygonChecks: 0,
+            enemyTotalMs: 0,
+            enemyBodyBuildMs: 0,
+            playerBodyBuildMs: 0,
+            wallBodyBuildMs: 0,
+            enemyPositionSolveMs: 0,
+            enemyStabilizeMs: 0,
+            enemyNonPositionMs: 0,
+            solveGridMs: 0,
+            solvePairScanMs: 0,
+            solveCandidateBuildMs: 0,
+            solvePairProcessMs: 0,
+            projectileTotalMs: 0,
+            projectileEnemyBodyBuildMs: 0,
+            projectileGridBuildMs: 0,
+            projectileScanMs: 0,
+            projectileCandidateQueryMs: 0,
+            projectileNarrowphaseMs: 0,
+            contactTotalMs: 0,
+            contactBodyBuildMs: 0,
+            contactGridBuildMs: 0,
+            contactPairScanMs: 0,
+            solveBucketPairCount: 0,
+            solveCandidatePairCount: 0,
+            solveDuplicatePairSkipCount: 0,
+            solveRuleRejectCount: 0
         };
         this.#bodyPool = [];
         this.#bodyPoolCursor = 0;
@@ -246,6 +400,11 @@ export class CollisionHandler {
         this.#queryMarks = new Int32Array(512);
         this.#queryMarkStamp = 0;
         this.#queryCandidateIndices = [];
+        this.#candidatePairLowIndices = new Int32Array(1024);
+        this.#candidatePairHighIndices = new Int32Array(1024);
+        this.#candidatePairCount = 0;
+        this.#candidatePairBodyCount = 0;
+        this.#profileEnabled = false;
     }
 
     /**
@@ -267,27 +426,84 @@ export class CollisionHandler {
      * 고정 틱 시작 시 충돌 체크 카운터를 초기화합니다.
      */
     resetFrameStats() {
+        this.#profileEnabled = this.#isProfilingEnabled();
         this.#frameStats.collisionCheckCount = 0;
         this.#frameStats.aabbPassCount = 0;
         this.#frameStats.aabbRejectCount = 0;
         this.#frameStats.circlePassCount = 0;
         this.#frameStats.circleRejectCount = 0;
         this.#frameStats.polygonChecks = 0;
+        for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
+            this.#frameStats[COLLISION_PROFILE_STAT_FIELDS[i]] = 0;
+        }
     }
 
     /**
      * 마지막 고정 틱의 충돌 체크 카운트를 반환합니다.
-     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, polygonChecks:number}}
+     * @returns {object}
      */
     getFrameStats() {
-        return {
+        const stats = {
             collisionCheckCount: this.#frameStats.collisionCheckCount,
             aabbPassCount: this.#frameStats.aabbPassCount,
             aabbRejectCount: this.#frameStats.aabbRejectCount,
             circlePassCount: this.#frameStats.circlePassCount,
             circleRejectCount: this.#frameStats.circleRejectCount,
-            polygonChecks: this.#frameStats.polygonChecks,
+            polygonChecks: this.#frameStats.polygonChecks
         };
+        for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
+            const fieldName = COLLISION_PROFILE_STAT_FIELDS[i];
+            stats[fieldName] = Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0;
+        }
+        return stats;
+    }
+
+    /**
+     * @private
+     * 충돌 세부 계측 활성 여부를 반환합니다.
+     * @returns {boolean}
+     */
+    #isProfilingEnabled() {
+        return getSimulationSetting('debugMode', false) === true;
+    }
+
+    /**
+     * @private
+     * 충돌 계측 시작 시각을 반환합니다.
+     * @returns {number|null}
+     */
+    #startProfileTimer() {
+        return this.#profileEnabled ? performance.now() : null;
+    }
+
+    /**
+     * @private
+     * 충돌 계측 시간을 누적합니다.
+     * @param {string} fieldName
+     * @param {number|null} startTime
+     */
+    #recordProfileDuration(fieldName, startTime) {
+        if (!Number.isFinite(startTime)) {
+            return;
+        }
+
+        const durationMs = performance.now() - startTime;
+        this.#frameStats[fieldName] = (Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0) + durationMs;
+    }
+
+    /**
+     * @private
+     * 충돌 계측 카운터를 누적합니다.
+     * @param {string} fieldName
+     * @param {number} [amount=1]
+     */
+    #recordProfileCount(fieldName, amount = 1) {
+        if (!this.#profileEnabled) {
+            return;
+        }
+
+        const safeAmount = Number.isFinite(amount) ? amount : 1;
+        this.#frameStats[fieldName] = (Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0) + safeAmount;
     }
 
     /**
@@ -300,118 +516,141 @@ export class CollisionHandler {
      * @returns {number} 처리된 충돌 건수
      */
     resolveEnemyCollisions(enemies, options = {}) {
-        if (!Array.isArray(enemies) || enemies.length === 0) return 0;
+        const totalStart = this.#startProfileTimer();
+        try {
+            if (!Array.isArray(enemies) || enemies.length === 0) return 0;
 
-        this.#resetBodyPool();
-        const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
-        const maxIterations = this.#resolveIterationCount(options.iterations);
-        const players = Array.isArray(options.players) ? options.players : [];
+            this.#resetBodyPool();
+            const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
+            const maxIterations = this.#resolveIterationCount(options.iterations);
+            const players = Array.isArray(options.players) ? options.players : [];
 
-        const dynamicBodies = this.#buildEnemyBodies(enemies, delta);
-        const playerBodies = this.#buildPlayerBodies(players, delta);
-        const staticBodies = this.#buildWallBodies();
-        if (dynamicBodies.length === 0 && playerBodies.length === 0) return 0;
+            const enemyBodyBuildStart = this.#startProfileTimer();
+            const dynamicBodies = this.#buildEnemyBodies(enemies, delta);
+            this.#recordProfileDuration('enemyBodyBuildMs', enemyBodyBuildStart);
 
-        for (let i = 0; i < dynamicBodies.length; i++) {
-            dynamicBodies[i]._candidatePairCount = 0;
-            dynamicBodies[i]._resolvedPairCount = 0;
-            dynamicBodies[i]._frameResolveMoved = 0;
-            const radius = Math.max(
-                1,
-                Number.isFinite(dynamicBodies[i].resolveRadius)
-                    ? dynamicBodies[i].resolveRadius
-                    : (Number.isFinite(dynamicBodies[i].boundRadius) ? dynamicBodies[i].boundRadius : 1)
-            );
-            dynamicBodies[i]._frameResolveMax = Math.max(
-                COLLISION_RESOLVE_FRAME_MIN_MAX,
-                radius * COLLISION_RESOLVE_FRAME_MAX_RATIO
-            );
-        }
+            const playerBodyBuildStart = this.#startProfileTimer();
+            const playerBodies = this.#buildPlayerBodies(players, delta);
+            this.#recordProfileDuration('playerBodyBuildMs', playerBodyBuildStart);
 
-        const bodies = this.#tempBodies;
-        bodies.length = 0;
-        for (let i = 0; i < dynamicBodies.length; i++) bodies.push(dynamicBodies[i]);
-        for (let i = 0; i < playerBodies.length; i++) bodies.push(playerBodies[i]);
-        for (let i = 0; i < staticBodies.length; i++) bodies.push(staticBodies[i]);
+            const wallBodyBuildStart = this.#startProfileTimer();
+            const staticBodies = this.#buildWallBodies();
+            this.#recordProfileDuration('wallBodyBuildMs', wallBodyBuildStart);
+            if (dynamicBodies.length === 0 && playerBodies.length === 0) return 0;
 
-        let totalResolved = 0;
-        let adaptiveMax = maxIterations;
-        let minIterations = 1;
-        let lastResolved = 0;
-        let denseRebuildPasses = 0;
-        let denseMode = false;
-        for (let i = 0; i < adaptiveMax; i++) {
-            const shouldDenseRebuild = (
-                i > 0 &&
-                denseMode &&
-                denseRebuildPasses < DENSE_REBUILD_MAX_EXTRA_PASSES &&
-                lastResolved >= DENSE_REBUILD_MIN_RESOLVED
-            );
-            const resolved = this.#solveOnePass(bodies, {
-                resolvePositions: true,
-                applyNonPosition: false,
-                rebuildGrid: i === 0 || shouldDenseRebuild,
-                resolveBoost: denseMode && i > 0 ? 1.18 : 1
-            });
-            if (shouldDenseRebuild) denseRebuildPasses++;
-            totalResolved += resolved;
-            if (i === 0 && maxIterations > 2) {
-                const density = resolved / Math.max(1, bodies.length);
-                const peakCandidates = this.#getPeakCandidatePairs(dynamicBodies);
-                const localDense = peakCandidates >= DENSE_LOCAL_CANDIDATE_THRESHOLD;
-                if (density < 0.5 && !localDense) {
-                    adaptiveMax = Math.max(2, Math.ceil(maxIterations * Math.min(1, density * 2)));
-                } else {
-                    denseMode = density >= DENSE_REBUILD_DENSITY_THRESHOLD || localDense;
-                }
-                if (denseMode) {
-                    // 과밀 구간에서는 최소 반복 수를 소폭 보장해 중심 끼임을 줄입니다.
-                    minIterations = Math.min(maxIterations, DENSE_MIN_ITERATION_FLOOR);
-                }
+            for (let i = 0; i < dynamicBodies.length; i++) {
+                dynamicBodies[i]._candidatePairCount = 0;
+                dynamicBodies[i]._resolvedPairCount = 0;
+                dynamicBodies[i]._frameResolveMoved = 0;
+                const radius = Math.max(
+                    1,
+                    Number.isFinite(dynamicBodies[i].resolveRadius)
+                        ? dynamicBodies[i].resolveRadius
+                        : (Number.isFinite(dynamicBodies[i].boundRadius) ? dynamicBodies[i].boundRadius : 1)
+                );
+                dynamicBodies[i]._frameResolveMax = Math.max(
+                    COLLISION_RESOLVE_FRAME_MIN_MAX,
+                    radius * COLLISION_RESOLVE_FRAME_MAX_RATIO
+                );
             }
-            lastResolved = resolved;
-            if (resolved === 0 && (i + 1) >= minIterations) break;
-        }
 
-        if (denseMode && lastResolved >= DENSE_STABILIZE_MIN_RESOLVED) {
-            for (let pass = 0; pass < DENSE_STABILIZE_MAX_PASSES; pass++) {
-                const stabilized = this.#solveOnePass(bodies, {
+            const bodies = this.#tempBodies;
+            bodies.length = 0;
+            for (let i = 0; i < dynamicBodies.length; i++) bodies.push(dynamicBodies[i]);
+            for (let i = 0; i < playerBodies.length; i++) bodies.push(playerBodies[i]);
+            for (let i = 0; i < staticBodies.length; i++) bodies.push(staticBodies[i]);
+
+            let totalResolved = 0;
+            let adaptiveMax = maxIterations;
+            let minIterations = 1;
+            let lastResolved = 0;
+            let denseRebuildPasses = 0;
+            let denseMode = false;
+            let peakCandidatePairs = 0;
+            const positionSolveStart = this.#startProfileTimer();
+            for (let i = 0; i < adaptiveMax; i++) {
+                const shouldDenseRebuild = (
+                    i > 0 &&
+                    denseMode &&
+                    denseRebuildPasses < DENSE_REBUILD_MAX_EXTRA_PASSES &&
+                    lastResolved >= DENSE_REBUILD_MIN_RESOLVED
+                );
+                const resolved = this.#solveOnePass(bodies, {
                     resolvePositions: true,
                     applyNonPosition: false,
-                    rebuildGrid: true,
-                    resolveBoost: DENSE_RESOLVE_BOOST
+                    rebuildGrid: i === 0 || shouldDenseRebuild,
+                    resolveBoost: denseMode && i > 0 ? 1.18 : 1
                 });
-                totalResolved += stabilized;
-                lastResolved = stabilized;
-                if (stabilized === 0) break;
+                if (shouldDenseRebuild) denseRebuildPasses++;
+                totalResolved += resolved;
+                if (i === 0 && maxIterations > 2) {
+                    const density = resolved / Math.max(1, bodies.length);
+                    peakCandidatePairs = this.#getPeakCandidatePairs(dynamicBodies);
+                    const localDense = peakCandidatePairs >= DENSE_LOCAL_CANDIDATE_THRESHOLD;
+                    if (density < 0.5 && !localDense) {
+                        adaptiveMax = Math.max(2, Math.ceil(maxIterations * Math.min(1, density * 2)));
+                    } else {
+                        denseMode = density >= DENSE_REBUILD_DENSITY_THRESHOLD || localDense;
+                    }
+                    if (denseMode) {
+                        // 과밀 구간에서는 최소 반복 수를 소폭 보장해 중심 끼임을 줄입니다.
+                        minIterations = Math.min(maxIterations, DENSE_MIN_ITERATION_FLOOR);
+                    }
+                }
+                lastResolved = resolved;
+                if (resolved === 0 && (i + 1) >= minIterations) break;
             }
-        }
+            this.#recordProfileDuration('enemyPositionSolveMs', positionSolveStart);
 
-        if (totalResolved > 0) {
-            this.#solveOnePass(bodies, {
-                resolvePositions: false,
-                applyNonPosition: true,
-                rebuildGrid: false
-            });
-        }
+            if (denseMode && lastResolved >= DENSE_STABILIZE_MIN_RESOLVED) {
+                const stabilizeStart = this.#startProfileTimer();
+                const stabilizeMaxPasses = peakCandidatePairs >= (DENSE_LOCAL_CANDIDATE_THRESHOLD * 2)
+                    ? DENSE_STABILIZE_MAX_PASSES
+                    : DENSE_STABILIZE_LIGHT_MAX_PASSES;
+                for (let pass = 0; pass < stabilizeMaxPasses; pass++) {
+                    const stabilized = this.#solveOnePass(bodies, {
+                        resolvePositions: true,
+                        applyNonPosition: false,
+                        rebuildGrid: true,
+                        resolveBoost: DENSE_RESOLVE_BOOST
+                    });
+                    totalResolved += stabilized;
+                    lastResolved = stabilized;
+                    if (stabilized === 0) break;
+                }
+                this.#recordProfileDuration('enemyStabilizeMs', stabilizeStart);
+            }
 
-        for (let i = 0; i < dynamicBodies.length; i++) {
-            const enemy = dynamicBodies[i].ref;
-            enemy.__collisionPrevX = enemy.position.x;
-            enemy.__collisionPrevY = enemy.position.y;
-            if (dynamicBodies[i]._candidatePairCount > 0 || dynamicBodies[i]._resolvedPairCount > 0) {
-                enemy.__collisionIdleTicks = 0;
-                enemy.__collisionSleepTicks = 0;
-            } else {
-                const idleTicks = (enemy.__collisionIdleTicks || 0) + 1;
-                enemy.__collisionIdleTicks = idleTicks;
-                if (idleTicks >= COLLISION_IDLE_TICKS_TO_SLEEP) {
-                    enemy.__collisionSleepTicks = COLLISION_SLEEP_TICKS;
+            if (totalResolved > 0) {
+                const nonPositionStart = this.#startProfileTimer();
+                this.#solveOnePass(bodies, {
+                    resolvePositions: false,
+                    applyNonPosition: true,
+                    rebuildGrid: false
+                });
+                this.#recordProfileDuration('enemyNonPositionMs', nonPositionStart);
+            }
+
+            for (let i = 0; i < dynamicBodies.length; i++) {
+                const enemy = dynamicBodies[i].ref;
+                enemy.__collisionPrevX = enemy.position.x;
+                enemy.__collisionPrevY = enemy.position.y;
+                if (dynamicBodies[i]._candidatePairCount > 0 || dynamicBodies[i]._resolvedPairCount > 0) {
+                    enemy.__collisionIdleTicks = 0;
+                    enemy.__collisionSleepTicks = 0;
+                } else {
+                    const idleTicks = (enemy.__collisionIdleTicks || 0) + 1;
+                    enemy.__collisionIdleTicks = idleTicks;
+                    if (idleTicks >= COLLISION_IDLE_TICKS_TO_SLEEP) {
+                        enemy.__collisionSleepTicks = COLLISION_SLEEP_TICKS;
+                    }
                 }
             }
-        }
 
-        return totalResolved;
+            return totalResolved;
+        } finally {
+            this.#recordProfileDuration('enemyTotalMs', totalStart);
+        }
     }
 
     /**
@@ -423,90 +662,107 @@ export class CollisionHandler {
      * @returns {number}
      */
     resolveProjectileVsEnemies(projectiles, enemies, delta = 1 / 60) {
-        if (!Array.isArray(projectiles) || !Array.isArray(enemies)) return 0;
-        if (projectiles.length === 0 || enemies.length === 0) return 0;
+        const totalStart = this.#startProfileTimer();
+        try {
+            if (!Array.isArray(projectiles) || !Array.isArray(enemies)) return 0;
+            if (projectiles.length === 0 || enemies.length === 0) return 0;
 
-        this.#resetBodyPool();
-        const enemyBodies = this.#buildEnemyBodies(enemies, Math.max(delta, EPSILON));
-        if (enemyBodies.length === 0) return 0;
-        const enemyGridCellSize = this.#rebuildGridFromBodies(enemyBodies);
+            this.#resetBodyPool();
+            const enemyBodyBuildStart = this.#startProfileTimer();
+            const enemyBodies = this.#buildEnemyBodies(enemies, Math.max(delta, EPSILON));
+            this.#recordProfileDuration('projectileEnemyBodyBuildMs', enemyBodyBuildStart);
+            if (enemyBodies.length === 0) return 0;
 
-        const baseSteps = this.#resolveIterationCount();
-        let hitCount = 0;
+            const gridBuildStart = this.#startProfileTimer();
+            const enemyGridCellSize = this.#rebuildGridFromBodies(enemyBodies);
+            this.#recordProfileDuration('projectileGridBuildMs', gridBuildStart);
 
-        for (let i = 0; i < projectiles.length; i++) {
-            const projectile = projectiles[i];
-            if (!projectile || projectile.active === false) continue;
-            if (!Number.isFinite(projectile.radius) || projectile.radius <= 0) continue;
+            const baseSteps = this.#resolveIterationCount();
+            let hitCount = 0;
+            const projectileScanStart = this.#startProfileTimer();
 
-            const startX = Number.isFinite(projectile.prevPosition?.x) ? projectile.prevPosition.x : projectile.position.x;
-            const startY = Number.isFinite(projectile.prevPosition?.y) ? projectile.prevPosition.y : projectile.position.y;
-            const endX = projectile.position.x;
-            const endY = projectile.position.y;
+            for (let i = 0; i < projectiles.length; i++) {
+                const projectile = projectiles[i];
+                if (!projectile || projectile.active === false) continue;
+                if (!Number.isFinite(projectile.radius) || projectile.radius <= 0) continue;
 
-            const travelX = endX - startX;
-            const travelY = endY - startY;
-            const travelDist = Math.hypot(travelX, travelY);
-            const stepDistance = Math.max(projectile.radius * PROJECTILE_SWEEP_RADIUS_STEP, 1);
-            const travelSteps = Math.max(1, Math.ceil(travelDist / stepDistance));
-            const steps = Math.max(baseSteps, travelSteps);
+                const startX = Number.isFinite(projectile.prevPosition?.x) ? projectile.prevPosition.x : projectile.position.x;
+                const startY = Number.isFinite(projectile.prevPosition?.y) ? projectile.prevPosition.y : projectile.position.y;
+                const endX = projectile.position.x;
+                const endY = projectile.position.y;
 
-            let hitThisProjectile = false;
-            for (let s = 1; s <= steps; s++) {
-                const t = s / steps;
-                const cx = startX + (travelX * t);
-                const cy = startY + (travelY * t);
+                const travelX = endX - startX;
+                const travelY = endY - startY;
+                const travelDist = Math.hypot(travelX, travelY);
+                const stepDistance = Math.max(projectile.radius * PROJECTILE_SWEEP_RADIUS_STEP, 1);
+                const travelSteps = Math.max(1, Math.ceil(travelDist / stepDistance));
+                const steps = Math.max(baseSteps, travelSteps);
 
-                const circleBody = this.#scratchProjectileBody;
-                circleBody.x = cx;
-                circleBody.y = cy;
-                circleBody.centerX = cx;
-                circleBody.centerY = cy;
-                circleBody.radius = projectile.radius;
-                circleBody.boundRadius = projectile.radius;
-                circleBody.broadRadius = projectile.radius;
-                circleBody.weight = Math.max(EPSILON, Number.isFinite(projectile.weight) ? projectile.weight : 1);
-                circleBody.ref = projectile;
-                circleBody.minX = cx - projectile.radius;
-                circleBody.maxX = cx + projectile.radius;
-                circleBody.minY = cy - projectile.radius;
-                circleBody.maxY = cy + projectile.radius;
-                circleBody.sweepMinX = cx - projectile.radius;
-                circleBody.sweepMaxX = cx + projectile.radius;
-                circleBody.sweepMinY = cy - projectile.radius;
-                circleBody.sweepMaxY = cy + projectile.radius;
+                let hitThisProjectile = false;
+                for (let s = 1; s <= steps; s++) {
+                    const t = s / steps;
+                    const cx = startX + (travelX * t);
+                    const cy = startY + (travelY * t);
 
-                const candidateIndices = this.#collectGridCandidateIndices(
-                    circleBody,
-                    enemyGridCellSize,
-                    enemyBodies.length
-                );
-                for (let j = 0; j < candidateIndices.length; j++) {
-                    const enemyBody = enemyBodies[candidateIndices[j]];
-                    const enemyId = enemyBody.id;
-                    if (this.#hasProjectileHit(projectile, enemyId)) continue;
-                    this.#frameStats.collisionCheckCount++;
-                    if (!this.#aabbOverlap(circleBody, enemyBody, false)) {
-                        this.#frameStats.aabbRejectCount++;
-                        continue;
+                    const circleBody = this.#scratchProjectileBody;
+                    circleBody.x = cx;
+                    circleBody.y = cy;
+                    circleBody.centerX = cx;
+                    circleBody.centerY = cy;
+                    circleBody.radius = projectile.radius;
+                    circleBody.boundRadius = projectile.radius;
+                    circleBody.broadRadius = projectile.radius;
+                    circleBody.weight = Math.max(EPSILON, Number.isFinite(projectile.weight) ? projectile.weight : 1);
+                    circleBody.ref = projectile;
+                    circleBody.minX = cx - projectile.radius;
+                    circleBody.maxX = cx + projectile.radius;
+                    circleBody.minY = cy - projectile.radius;
+                    circleBody.maxY = cy + projectile.radius;
+                    circleBody.sweepMinX = cx - projectile.radius;
+                    circleBody.sweepMaxX = cx + projectile.radius;
+                    circleBody.sweepMinY = cy - projectile.radius;
+                    circleBody.sweepMaxY = cy + projectile.radius;
+
+                    const candidateQueryStart = this.#startProfileTimer();
+                    const candidateIndices = this.#collectGridCandidateIndices(
+                        circleBody,
+                        enemyGridCellSize,
+                        enemyBodies.length
+                    );
+                    this.#recordProfileDuration('projectileCandidateQueryMs', candidateQueryStart);
+
+                    const narrowphaseStart = this.#startProfileTimer();
+                    for (let j = 0; j < candidateIndices.length; j++) {
+                        const enemyBody = enemyBodies[candidateIndices[j]];
+                        const enemyId = enemyBody.id;
+                        if (this.#hasProjectileHit(projectile, enemyId)) continue;
+                        this.#frameStats.collisionCheckCount++;
+                        if (!this.#aabbOverlap(circleBody, enemyBody, false)) {
+                            this.#frameStats.aabbRejectCount++;
+                            continue;
+                        }
+                        this.#frameStats.aabbPassCount++;
+                        if (!this.#roughBodyCircleOverlap(circleBody, enemyBody)) continue;
+
+                        const manifold = this.#detectBodies(circleBody, enemyBody);
+                        if (!manifold) continue;
+
+                        this.#markProjectileHit(projectile, enemyId);
+                        this.#applyProjectileImpact(projectile, enemyBody.ref, manifold);
+                        hitCount++;
+                        hitThisProjectile = true;
+                        if (!projectile.piercing) break;
                     }
-                    this.#frameStats.aabbPassCount++;
-                    if (!this.#roughBodyCircleOverlap(circleBody, enemyBody)) continue;
-
-                    const manifold = this.#detectBodies(circleBody, enemyBody);
-                    if (!manifold) continue;
-
-                    this.#markProjectileHit(projectile, enemyId);
-                    this.#applyProjectileImpact(projectile, enemyBody.ref, manifold);
-                    hitCount++;
-                    hitThisProjectile = true;
-                    if (!projectile.piercing) break;
+                    this.#recordProfileDuration('projectileNarrowphaseMs', narrowphaseStart);
+                    if (hitThisProjectile && !projectile.piercing) break;
                 }
-                if (hitThisProjectile && !projectile.piercing) break;
             }
-        }
+            this.#recordProfileDuration('projectileScanMs', projectileScanStart);
 
-        return hitCount;
+            return hitCount;
+        } finally {
+            this.#recordProfileDuration('projectileTotalMs', totalStart);
+        }
     }
 
     /**
@@ -517,90 +773,101 @@ export class CollisionHandler {
      * @returns {{enemyA: object, enemyB: object}[]}
      */
     collectEnemyContactPairs(enemies, options = {}) {
-        if (!Array.isArray(enemies) || enemies.length < 2) {
-            return [];
-        }
-
-        this.#resetBodyPool();
-        const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
-        const bodies = this.#buildEnemyBodies(enemies, delta);
-        if (bodies.length < 2) {
-            return [];
-        }
-
-        const savedStats = {
-            collisionCheckCount: this.#frameStats.collisionCheckCount,
-            aabbPassCount: this.#frameStats.aabbPassCount,
-            aabbRejectCount: this.#frameStats.aabbRejectCount,
-            circlePassCount: this.#frameStats.circlePassCount,
-            circleRejectCount: this.#frameStats.circleRejectCount,
-            polygonChecks: this.#frameStats.polygonChecks
-        };
-
-        this.#rebuildGridFromBodies(bodies);
-        this.#ensurePairBitmap(bodies.length);
-        const contactPairs = [];
-        const bd = this.#broadData;
-        const gridBuckets = this.#activeGridBuckets;
-
-        for (let bucketIndex = 0; bucketIndex < gridBuckets.length; bucketIndex++) {
-            const bucket = gridBuckets[bucketIndex];
-            const count = bucket.count;
-            if (count < 2) {
-                continue;
+        const totalStart = this.#startProfileTimer();
+        try {
+            if (!Array.isArray(enemies) || enemies.length < 2) {
+                return [];
             }
 
-            const indices = bucket.indices;
-            for (let left = 0; left < count - 1; left++) {
-                const bodyIndexA = indices[left];
-                for (let right = left + 1; right < count; right++) {
-                    const bodyIndexB = indices[right];
-                    const low = bodyIndexA < bodyIndexB ? bodyIndexA : bodyIndexB;
-                    const high = bodyIndexA < bodyIndexB ? bodyIndexB : bodyIndexA;
-                    if (this.#hasPair(low, high)) {
-                        continue;
-                    }
-                    this.#markPair(low, high);
+            this.#resetBodyPool();
+            const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
+            const bodyBuildStart = this.#startProfileTimer();
+            const bodies = this.#buildEnemyBodies(enemies, delta);
+            this.#recordProfileDuration('contactBodyBuildMs', bodyBuildStart);
+            if (bodies.length < 2) {
+                return [];
+            }
 
-                    const bodyA = bodies[low];
-                    const bodyB = bodies[high];
-                    if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) {
-                        continue;
-                    }
+            const savedStats = {
+                collisionCheckCount: this.#frameStats.collisionCheckCount,
+                aabbPassCount: this.#frameStats.aabbPassCount,
+                aabbRejectCount: this.#frameStats.aabbRejectCount,
+                circlePassCount: this.#frameStats.circlePassCount,
+                circleRejectCount: this.#frameStats.circleRejectCount,
+                polygonChecks: this.#frameStats.polygonChecks
+            };
 
-                    const offsetA = low * BROAD_STRIDE;
-                    const offsetB = high * BROAD_STRIDE;
-                    if (bd[offsetA + 4] > bd[offsetB + 5] || bd[offsetA + 5] < bd[offsetB + 4]
-                        || bd[offsetA + 6] > bd[offsetB + 7] || bd[offsetA + 7] < bd[offsetB + 6]) {
-                        continue;
-                    }
+            const gridBuildStart = this.#startProfileTimer();
+            this.#rebuildGridFromBodies(bodies);
+            this.#recordProfileDuration('contactGridBuildMs', gridBuildStart);
+            this.#ensurePairBitmap(bodies.length);
+            const contactPairs = [];
+            const bd = this.#broadData;
+            const gridBuckets = this.#activeGridBuckets;
 
-                    const dx = bd[offsetB + 8] - bd[offsetA + 8];
-                    const dy = bd[offsetB + 9] - bd[offsetA + 9];
-                    const radiusSum = bd[offsetA + 12] + bd[offsetB + 12];
-                    if (((dx * dx) + (dy * dy)) > (radiusSum * radiusSum)) {
-                        continue;
-                    }
+            const pairScanStart = this.#startProfileTimer();
+            for (let bucketIndex = 0; bucketIndex < gridBuckets.length; bucketIndex++) {
+                const bucket = gridBuckets[bucketIndex];
+                const count = bucket.count;
+                if (count < 2) {
+                    continue;
+                }
 
-                    if (!this.#detectBodies(bodyA, bodyB)) {
-                        continue;
-                    }
+                const indices = bucket.indices;
+                for (let left = 0; left < count - 1; left++) {
+                    const bodyIndexA = indices[left];
+                    for (let right = left + 1; right < count; right++) {
+                        const bodyIndexB = indices[right];
+                        const low = bodyIndexA < bodyIndexB ? bodyIndexA : bodyIndexB;
+                        const high = bodyIndexA < bodyIndexB ? bodyIndexB : bodyIndexA;
+                        if (this.#hasPair(low, high)) {
+                            continue;
+                        }
+                        this.#markPair(low, high);
 
-                    contactPairs.push({
-                        enemyA: bodyA.ref,
-                        enemyB: bodyB.ref
-                    });
+                        const bodyA = bodies[low];
+                        const bodyB = bodies[high];
+                        if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) {
+                            continue;
+                        }
+
+                        const offsetA = low * BROAD_STRIDE;
+                        const offsetB = high * BROAD_STRIDE;
+                        if (bd[offsetA + 4] > bd[offsetB + 5] || bd[offsetA + 5] < bd[offsetB + 4]
+                            || bd[offsetA + 6] > bd[offsetB + 7] || bd[offsetA + 7] < bd[offsetB + 6]) {
+                            continue;
+                        }
+
+                        const dx = bd[offsetB + 8] - bd[offsetA + 8];
+                        const dy = bd[offsetB + 9] - bd[offsetA + 9];
+                        const radiusSum = bd[offsetA + 12] + bd[offsetB + 12];
+                        if (((dx * dx) + (dy * dy)) > (radiusSum * radiusSum)) {
+                            continue;
+                        }
+
+                        if (!this.#detectBodies(bodyA, bodyB)) {
+                            continue;
+                        }
+
+                        contactPairs.push({
+                            enemyA: bodyA.ref,
+                            enemyB: bodyB.ref
+                        });
+                    }
                 }
             }
-        }
+            this.#recordProfileDuration('contactPairScanMs', pairScanStart);
 
-        this.#frameStats.collisionCheckCount = savedStats.collisionCheckCount;
-        this.#frameStats.aabbPassCount = savedStats.aabbPassCount;
-        this.#frameStats.aabbRejectCount = savedStats.aabbRejectCount;
-        this.#frameStats.circlePassCount = savedStats.circlePassCount;
-        this.#frameStats.circleRejectCount = savedStats.circleRejectCount;
-        this.#frameStats.polygonChecks = savedStats.polygonChecks;
-        return contactPairs;
+            this.#frameStats.collisionCheckCount = savedStats.collisionCheckCount;
+            this.#frameStats.aabbPassCount = savedStats.aabbPassCount;
+            this.#frameStats.aabbRejectCount = savedStats.aabbRejectCount;
+            this.#frameStats.circlePassCount = savedStats.circlePassCount;
+            this.#frameStats.circleRejectCount = savedStats.circleRejectCount;
+            this.#frameStats.polygonChecks = savedStats.polygonChecks;
+            return contactPairs;
+        } finally {
+            this.#recordProfileDuration('contactTotalMs', totalStart);
+        }
     }
 
     /**
@@ -636,6 +903,7 @@ export class CollisionHandler {
         const rebuildGrid = requestRebuildGrid || this.#activeGridBuckets.length === 0;
         const bodyCount = bodies.length;
 
+        const gridStart = this.#startProfileTimer();
         if (rebuildGrid) {
             this.#rebuildGridFromBodies(bodies);
         } else {
@@ -644,65 +912,24 @@ export class CollisionHandler {
                 this.#writeBroadData(i, bodies[i]);
             }
         }
+        this.#recordProfileDuration('solveGridMs', gridStart);
 
-        this.#ensurePairBitmap(bodyCount);
-        const bd = this.#broadData;
-        const gridBuckets = this.#activeGridBuckets;
-
-        let resolvedCount = 0;
-        for (let b = 0; b < gridBuckets.length; b++) {
-            const bucket = gridBuckets[b];
-            const len = bucket.count;
-            if (len < 2) continue;
-            const indices = bucket.indices;
-
-            for (let i = 0; i < len - 1; i++) {
-                const a = indices[i];
-                for (let j = i + 1; j < len; j++) {
-                    const c = indices[j];
-                    const low = a < c ? a : c;
-                    const high = a < c ? c : a;
-                    if (this.#hasPair(low, high)) continue;
-                    this.#markPair(low, high);
-                    const bodyA = bodies[low];
-                    const bodyB = bodies[high];
-                    if (bodyA?.ref && bodyA.ref === bodyB?.ref) continue;
-                    if (bodyA?.kind === 'enemy' && bodyB?.kind === 'enemy') {
-                        const idA = Number.isInteger(bodyA.id) ? bodyA.id : -1;
-                        const idB = Number.isInteger(bodyB.id) ? bodyB.id : -1;
-                        if (idA >= 0 && idA === idB) continue;
-                    }
-                    const rule = this.#getRule(bodyA.kind, bodyB.kind);
-                    if (!rule.check) continue;
-                    if (!rule.resolve && !applyNonPosition) continue;
-
-                    this.#frameStats.collisionCheckCount++;
-                    const oA = low * BROAD_STRIDE;
-                    const oB = high * BROAD_STRIDE;
-                    if (bd[oA + 4] > bd[oB + 5] || bd[oA + 5] < bd[oB + 4] ||
-                        bd[oA + 6] > bd[oB + 7] || bd[oA + 7] < bd[oB + 6]) {
-                        this.#frameStats.aabbRejectCount++;
-                        continue;
-                    }
-                    this.#frameStats.aabbPassCount++;
-                    const dx = bd[oB + 8] - bd[oA + 8];
-                    const dy = bd[oB + 9] - bd[oA + 9];
-                    const rSum = bd[oA + 12] + bd[oB + 12];
-                    if ((dx * dx) + (dy * dy) > (rSum * rSum)) {
-                        this.#frameStats.circleRejectCount++;
-                        continue;
-                    }
-                    this.#frameStats.circlePassCount++;
-                    resolvedCount += this.#processPair(
-                        bodyA,
-                        bodyB,
-                        resolvePositions,
-                        applyNonPosition,
-                        resolveBoost
-                    );
-                }
-            }
+        const pairScanStart = this.#startProfileTimer();
+        const shouldRebuildCandidatePairs = rebuildGrid || this.#candidatePairBodyCount !== bodyCount;
+        if (shouldRebuildCandidatePairs) {
+            const candidateBuildStart = this.#startProfileTimer();
+            this.#buildCandidatePairsFromGrid(bodies);
+            this.#recordProfileDuration('solveCandidateBuildMs', candidateBuildStart);
         }
+        const pairProcessStart = this.#startProfileTimer();
+        const resolvedCount = this.#processCandidatePairs(
+            bodies,
+            resolvePositions,
+            applyNonPosition,
+            resolveBoost
+        );
+        this.#recordProfileDuration('solvePairProcessMs', pairProcessStart);
+        this.#recordProfileDuration('solvePairScanMs', pairScanStart);
 
         return resolvedCount;
     }
@@ -710,7 +937,7 @@ export class CollisionHandler {
     /**
      * @private
      */
-    #processPair(bodyA, bodyB, resolvePositions = true, applyNonPosition = false, resolveBoost = 1) {
+    #processPair(bodyA, bodyB, resolvePositions = true, applyNonPosition = false, resolveBoost = 1, pairRule = null) {
         if (bodyA?.ref && bodyA.ref === bodyB?.ref) return 0;
         if (bodyA?.kind === 'enemy' && bodyB?.kind === 'enemy') {
             const idA = Number.isInteger(bodyA.id) ? bodyA.id : -1;
@@ -718,7 +945,7 @@ export class CollisionHandler {
             if (idA >= 0 && idA === idB) return 0;
         }
 
-        const rule = this.#getRule(bodyA.kind, bodyB.kind);
+        const rule = pairRule ?? this.#getRule(bodyA.kind, bodyB.kind);
         if (!rule.check) return 0;
         if (!rule.resolve && !applyNonPosition) return 0;
 
@@ -1203,6 +1430,38 @@ export class CollisionHandler {
     }
 
     /**
+     * 후보 pair 버퍼 용량을 확보합니다.
+     * @private
+     * @param {number} pairCount
+     */
+    #ensureCandidatePairCapacity(pairCount) {
+        if (this.#candidatePairLowIndices.length >= pairCount) {
+            return;
+        }
+
+        const nextCapacity = Math.max(pairCount, this.#candidatePairLowIndices.length * 2);
+        const nextLowIndices = new Int32Array(nextCapacity);
+        const nextHighIndices = new Int32Array(nextCapacity);
+        nextLowIndices.set(this.#candidatePairLowIndices);
+        nextHighIndices.set(this.#candidatePairHighIndices);
+        this.#candidatePairLowIndices = nextLowIndices;
+        this.#candidatePairHighIndices = nextHighIndices;
+    }
+
+    /**
+     * 후보 pair를 재사용 버퍼에 추가합니다.
+     * @private
+     * @param {number} low
+     * @param {number} high
+     */
+    #appendCandidatePair(low, high) {
+        this.#ensureCandidatePairCapacity(this.#candidatePairCount + 1);
+        this.#candidatePairLowIndices[this.#candidatePairCount] = low;
+        this.#candidatePairHighIndices[this.#candidatePairCount] = high;
+        this.#candidatePairCount++;
+    }
+
+    /**
      * @private
      */
     #hasPair(low, high) {
@@ -1216,6 +1475,126 @@ export class CollisionHandler {
     #markPair(low, high) {
         const bitIndex = low * this.#pairBitmapBodyCount + high;
         this.#pairBitmap[bitIndex >>> 5] |= (1 << (bitIndex & 31));
+    }
+
+    /**
+     * 현재 패스에서 처리 가능한 충돌 규칙을 반환합니다.
+     * @private
+     * @param {object|null|undefined} bodyA
+     * @param {object|null|undefined} bodyB
+     * @param {boolean} applyNonPosition
+     * @returns {CollisionRule|null}
+     */
+    #getPassRule(bodyA, bodyB, applyNonPosition) {
+        if (!bodyA || !bodyB) return null;
+        if (bodyA?.ref && bodyA.ref === bodyB?.ref) return null;
+        if (bodyA?.kind === 'enemy' && bodyB?.kind === 'enemy') {
+            const idA = Number.isInteger(bodyA.id) ? bodyA.id : -1;
+            const idB = Number.isInteger(bodyB.id) ? bodyB.id : -1;
+            if (idA >= 0 && idA === idB) return null;
+        }
+
+        const rule = this.#getRule(bodyA.kind, bodyB.kind);
+        if (!rule.check) return null;
+        if (!rule.resolve && !applyNonPosition) return null;
+        return rule;
+    }
+
+    /**
+     * 현재 grid bucket에서 유효 후보 pair 목록을 재구성합니다.
+     * @private
+     * @param {object[]} bodies
+     */
+    #buildCandidatePairsFromGrid(bodies) {
+        const bodyCount = Array.isArray(bodies) ? bodies.length : 0;
+        this.#candidatePairCount = 0;
+        this.#candidatePairBodyCount = bodyCount;
+        if (bodyCount < 2) {
+            return;
+        }
+
+        this.#ensurePairBitmap(bodyCount);
+        const gridBuckets = this.#activeGridBuckets;
+        for (let b = 0; b < gridBuckets.length; b++) {
+            const bucket = gridBuckets[b];
+            const len = bucket.count;
+            if (len < 2) continue;
+            const indices = bucket.indices;
+
+            for (let i = 0; i < len - 1; i++) {
+                const a = indices[i];
+                for (let j = i + 1; j < len; j++) {
+                    const c = indices[j];
+                    const low = a < c ? a : c;
+                    const high = a < c ? c : a;
+                    this.#recordProfileCount('solveBucketPairCount');
+
+                    const rule = this.#getPassRule(bodies[low], bodies[high], true);
+                    if (!rule) {
+                        this.#recordProfileCount('solveRuleRejectCount');
+                        continue;
+                    }
+                    if (this.#hasPair(low, high)) {
+                        this.#recordProfileCount('solveDuplicatePairSkipCount');
+                        continue;
+                    }
+
+                    this.#markPair(low, high);
+                    this.#appendCandidatePair(low, high);
+                    this.#recordProfileCount('solveCandidatePairCount');
+                }
+            }
+        }
+    }
+
+    /**
+     * 후보 pair 목록을 현재 broad-phase 데이터 기준으로 판정합니다.
+     * @private
+     * @param {object[]} bodies
+     * @param {boolean} resolvePositions
+     * @param {boolean} applyNonPosition
+     * @param {number} resolveBoost
+     * @returns {number}
+     */
+    #processCandidatePairs(bodies, resolvePositions, applyNonPosition, resolveBoost) {
+        const bd = this.#broadData;
+        let resolvedCount = 0;
+        for (let pairIndex = 0; pairIndex < this.#candidatePairCount; pairIndex++) {
+            const low = this.#candidatePairLowIndices[pairIndex];
+            const high = this.#candidatePairHighIndices[pairIndex];
+            const bodyA = bodies[low];
+            const bodyB = bodies[high];
+            const rule = this.#getPassRule(bodyA, bodyB, applyNonPosition);
+            if (!rule) continue;
+
+            this.#frameStats.collisionCheckCount++;
+            const oA = low * BROAD_STRIDE;
+            const oB = high * BROAD_STRIDE;
+            if (bd[oA + 4] > bd[oB + 5] || bd[oA + 5] < bd[oB + 4] ||
+                bd[oA + 6] > bd[oB + 7] || bd[oA + 7] < bd[oB + 6]) {
+                this.#frameStats.aabbRejectCount++;
+                continue;
+            }
+            this.#frameStats.aabbPassCount++;
+            const dx = bd[oB + 8] - bd[oA + 8];
+            const dy = bd[oB + 9] - bd[oA + 9];
+            const rSum = bd[oA + 12] + bd[oB + 12];
+            if ((dx * dx) + (dy * dy) > (rSum * rSum)) {
+                this.#frameStats.circleRejectCount++;
+                continue;
+            }
+            this.#frameStats.circlePassCount++;
+            resolvedCount += this.#processPair(
+                bodyA,
+                bodyB,
+                resolvePositions,
+                applyNonPosition,
+                resolveBoost,
+                rule
+            );
+        }
+
+        return resolvedCount;
     }
 
     /**
@@ -1697,73 +2076,58 @@ export class CollisionHandler {
     #getRule(kindA, kindB) {
         // enemy vs enemy
         if (kindA === 'enemy' && kindB === 'enemy') {
-            return this.#rule(true, true, null, null, false, false);
+            return COLLISION_RULE_DYNAMIC_RESOLVE;
         }
         // enemy vs player: 플레이어는 밀리지 않음
         if (kindA === 'enemy' && kindB === 'player') {
-            return this.#rule(true, true, true, false, false, false);
+            return COLLISION_RULE_ENEMY_PLAYER;
         }
         if (kindA === 'player' && kindB === 'enemy') {
-            return this.#rule(true, true, false, true, false, false);
+            return COLLISION_RULE_PLAYER_ENEMY;
         }
         // enemy vs projectile: 관통 허용 + 중복 타격 방지
         if ((kindA === 'enemy' && kindB === 'projectile') || (kindA === 'projectile' && kindB === 'enemy')) {
-            return this.#rule(true, false, null, null, true, true);
+            return COLLISION_RULE_PROJECTILE_ENEMY;
         }
         // enemy vs item: 미판정
         if ((kindA === 'enemy' && kindB === 'item') || (kindA === 'item' && kindB === 'enemy')) {
-            return this.#rule(false, false, null, null, false, false);
+            return COLLISION_RULE_NONE;
         }
         // player vs player
         if (kindA === 'player' && kindB === 'player') {
-            return this.#rule(true, true, null, null, false, false);
+            return COLLISION_RULE_DYNAMIC_RESOLVE;
         }
         // player vs projectile: 관통 허용 + 중복 타격 방지
         if ((kindA === 'player' && kindB === 'projectile') || (kindA === 'projectile' && kindB === 'player')) {
-            return this.#rule(true, false, null, null, true, false);
+            return COLLISION_RULE_PLAYER_PROJECTILE;
         }
         // player vs item: 판정만
         if ((kindA === 'player' && kindB === 'item') || (kindA === 'item' && kindB === 'player')) {
-            return this.#rule(true, false, null, null, false, false);
+            return COLLISION_RULE_PLAYER_ITEM;
         }
         // projectile vs projectile: 관통 허용 + 중복 영향 방지
         if (kindA === 'projectile' && kindB === 'projectile') {
-            return this.#rule(true, false, null, null, true, false);
+            return COLLISION_RULE_PROJECTILE_PROJECTILE;
         }
         // projectile vs item: 미판정
         if ((kindA === 'projectile' && kindB === 'item') || (kindA === 'item' && kindB === 'projectile')) {
-            return this.#rule(false, false, null, null, false, false);
+            return COLLISION_RULE_NONE;
         }
         // item vs item
         if (kindA === 'item' && kindB === 'item') {
-            return this.#rule(true, true, null, null, false, false);
+            return COLLISION_RULE_DYNAMIC_RESOLVE;
         }
         // dynamic vs wall
         if (kindA === 'wall') {
-            if (kindB === 'projectile') return this.#rule(true, false, false, true, false, false);
-            return this.#rule(true, true, false, true, false, false);
+            if (kindB === 'projectile') return COLLISION_RULE_WALL_PROJECTILE;
+            return kindB === 'wall' ? COLLISION_RULE_NONE : COLLISION_RULE_WALL_OTHER;
         }
         if (kindB === 'wall') {
-            if (kindA === 'projectile') return this.#rule(true, false, true, false, false, false);
-            return this.#rule(true, true, true, false, false, false);
+            if (kindA === 'projectile') return COLLISION_RULE_PROJECTILE_WALL;
+            return kindA === 'wall' ? COLLISION_RULE_NONE : COLLISION_RULE_OTHER_WALL;
         }
 
-        return this.#rule(false, false, null, null, false, false);
-    }
-
-    /**
-     * @private
-     * @returns {CollisionRule}
-     */
-    #rule(check, resolve, movableA, movableB, oneShotByProjectile, applyImpactRotation) {
-        return {
-            check,
-            resolve,
-            movableA,
-            movableB,
-            oneShotByProjectile,
-            applyImpactRotation
-        };
+        return COLLISION_RULE_NONE;
     }
 
     /**

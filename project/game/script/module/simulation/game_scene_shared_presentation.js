@@ -595,11 +595,37 @@ function reuseSharedEnemyPresentation(meta, nextSlot, slotHeaderBase, enemies, t
 }
 
 /**
+ * 공유 프레젠테이션 publish 계측 시작 시각을 반환합니다.
+ * @param {object|null|undefined} profileStats
+ * @returns {number|null}
+ */
+function startSharedPresentationProfileTimer(profileStats) {
+    return profileStats && typeof profileStats === 'object'
+        ? performance.now()
+        : null;
+}
+
+/**
+ * 공유 프레젠테이션 publish 계측 결과를 누적합니다.
+ * @param {object|null|undefined} profileStats
+ * @param {string} fieldName
+ * @param {number|null} startTime
+ */
+function recordSharedPresentationProfileDuration(profileStats, fieldName, startTime) {
+    if (!profileStats || typeof profileStats !== 'object' || !Number.isFinite(startTime)) {
+        return;
+    }
+
+    const durationMs = performance.now() - startTime;
+    profileStats[fieldName] = (Number.isFinite(profileStats[fieldName]) ? profileStats[fieldName] : 0) + durationMs;
+}
+
+/**
  * 공유 프레젠테이션 슬롯에 게임 씬 렌더 데이터를 기록하고 publish합니다.
  * @param {object|null|undefined} transport
  * @param {object|null|undefined} sceneSnapshot
  * @param {number} [frameId=0]
- * @param {{reuseWallGeometry?: boolean, reuseProjectilePresentation?: boolean, reuseEnemyPresentation?: boolean}} [options={}]
+ * @param {{reuseWallGeometry?: boolean, reuseProjectilePresentation?: boolean, reuseEnemyPresentation?: boolean, profileStats?: object|null}} [options={}]
  * @returns {boolean}
  */
 export function publishGameSceneSharedPresentation(transport, sceneSnapshot, frameId = 0, options = {}) {
@@ -614,6 +640,10 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
         return false;
     }
 
+    const profileStats = options?.profileStats && typeof options.profileStats === 'object'
+        ? options.profileStats
+        : null;
+    const publishTotalStart = startSharedPresentationProfileTimer(profileStats);
     const meta = transport.meta;
     const currentPublishedSlot = Atomics.load(meta, SHARED_PRESENTATION_META_INDEX.PUBLISHED_SLOT);
     const nextSlot = currentPublishedSlot === 0 ? 1 : 0;
@@ -621,6 +651,11 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
     const shouldReuseWallGeometry = options?.reuseWallGeometry === true;
     const shouldReuseProjectilePresentation = options?.reuseProjectilePresentation === true;
     const shouldReuseEnemyPresentation = options?.reuseEnemyPresentation === true;
+    if (profileStats) {
+        profileStats.publishWallReused = shouldReuseWallGeometry ? 1 : 0;
+        profileStats.publishProjectileReused = shouldReuseProjectilePresentation ? 1 : 0;
+        profileStats.publishEnemyReused = shouldReuseEnemyPresentation ? 1 : 0;
+    }
 
     const playerBase = Array.isArray(transport.playerSlotBases)
         ? transport.playerSlotBases[nextSlot]
@@ -640,6 +675,7 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
             GAME_SCENE_SHARED_PRESENTATION_STRIDE.ENEMY
         );
 
+    const publishPlayerStart = startSharedPresentationProfileTimer(profileStats);
     const player = sceneSnapshot?.player;
     const playerActive = player && player.active !== false ? 1 : 0;
     transport.playerData[playerBase + 0] = playerActive ? normalizeSharedNumber(player.position?.x, 0) : 0;
@@ -647,6 +683,9 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
     transport.playerData[playerBase + 2] = playerActive ? normalizeSharedNumber(player.radius, 0) : 0;
 
     meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.PLAYER_ACTIVE] = playerActive;
+    recordSharedPresentationProfileDuration(profileStats, 'publishPlayerMs', publishPlayerStart);
+
+    const publishWallsStart = startSharedPresentationProfileTimer(profileStats);
     if (shouldReuseWallGeometry) {
         reuseSharedWallGeometry(meta, currentPublishedSlot, slotHeaderBase);
     } else {
@@ -663,6 +702,9 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.BOX_WALLS
         );
     }
+    recordSharedPresentationProfileDuration(profileStats, 'publishWallsMs', publishWallsStart);
+
+    const publishProjectilesStart = startSharedPresentationProfileTimer(profileStats);
     if (shouldReuseProjectilePresentation) {
         reuseSharedProjectilePresentation(
             meta,
@@ -684,6 +726,9 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.PROJECTILES
         );
     }
+    recordSharedPresentationProfileDuration(profileStats, 'publishProjectilesMs', publishProjectilesStart);
+
+    const publishEnemiesStart = startSharedPresentationProfileTimer(profileStats);
     if (shouldReuseEnemyPresentation) {
         reuseSharedEnemyPresentation(
             meta,
@@ -705,7 +750,9 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.ENEMIES
         );
     }
+    recordSharedPresentationProfileDuration(profileStats, 'publishEnemiesMs', publishEnemiesStart);
 
+    const publishCollisionStatsStart = startSharedPresentationProfileTimer(profileStats);
     meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.COLLISION_CHECK_COUNT] = Math.max(
         0,
         Math.floor(normalizeSharedNumber(sceneSnapshot?.collisionStats?.collisionCheckCount, 0))
@@ -730,7 +777,9 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
         0,
         Math.floor(normalizeSharedNumber(sceneSnapshot?.collisionStats?.polygonChecks, 0))
     );
+    recordSharedPresentationProfileDuration(profileStats, 'publishCollisionStatsMs', publishCollisionStatsStart);
 
+    const publishAtomicsStart = startSharedPresentationProfileTimer(profileStats);
     Atomics.store(
         meta,
         SHARED_PRESENTATION_META_INDEX.LAST_FRAME_ID,
@@ -738,6 +787,8 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
     );
     Atomics.store(meta, SHARED_PRESENTATION_META_INDEX.PUBLISHED_SLOT, nextSlot);
     Atomics.add(meta, SHARED_PRESENTATION_META_INDEX.VERSION, 1);
+    recordSharedPresentationProfileDuration(profileStats, 'publishAtomicsMs', publishAtomicsStart);
+    recordSharedPresentationProfileDuration(profileStats, 'publishTotalMs', publishTotalStart);
     return true;
 }
 

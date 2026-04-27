@@ -1,8 +1,8 @@
 import { getWH, getWW, render } from "display/display_system.js";
 
 const PERFORMANCE_WINDOW_MS = 1000;
-const MAX_VISIBLE_SECTIONS = 18;
-const MIN_VISIBLE_AVERAGE_MS = 0.05;
+const MAX_VISIBLE_SECTIONS = 42;
+const MIN_VISIBLE_AVERAGE_MS = 0.01;
 
 /**
  * @class PerformanceDebugger

@@ -42,6 +42,39 @@ const GAME_SCENE_AI_BY_ID = Object.freeze({
     enemyAI,
     tempAI: enemyAI
 });
+const COLLISION_STAT_FIELD_NAMES = Object.freeze([
+    'collisionCheckCount',
+    'aabbPassCount',
+    'aabbRejectCount',
+    'circlePassCount',
+    'circleRejectCount',
+    'polygonChecks',
+    'enemyTotalMs',
+    'enemyBodyBuildMs',
+    'playerBodyBuildMs',
+    'wallBodyBuildMs',
+    'enemyPositionSolveMs',
+    'enemyStabilizeMs',
+    'enemyNonPositionMs',
+    'solveGridMs',
+    'solvePairScanMs',
+    'solveCandidateBuildMs',
+    'solvePairProcessMs',
+    'projectileTotalMs',
+    'projectileEnemyBodyBuildMs',
+    'projectileGridBuildMs',
+    'projectileScanMs',
+    'projectileCandidateQueryMs',
+    'projectileNarrowphaseMs',
+    'contactTotalMs',
+    'contactBodyBuildMs',
+    'contactGridBuildMs',
+    'contactPairScanMs',
+    'solveBucketPairCount',
+    'solveCandidatePairCount',
+    'solveDuplicatePairSkipCount',
+    'solveRuleRejectCount'
+]);
 const shadowPhysicsSystem = new PhysicsSystem();
 const shadowGameSceneMetadata = {
     enemyAIStateById: new Map(),
@@ -155,6 +188,18 @@ function createDefaultEnemySystemState() {
         aiDecisionIntervalSeconds: DEFAULT_AI_DECISION_INTERVAL_SECONDS,
         enemyCullOutsideRatio: DEFAULT_OUTSIDE_CULL_RATIO
     };
+}
+
+/**
+ * 충돌 통계 기본값을 생성합니다.
+ * @returns {object}
+ */
+function createDefaultCollisionStats() {
+    const stats = {};
+    for (let i = 0; i < COLLISION_STAT_FIELD_NAMES.length; i++) {
+        stats[COLLISION_STAT_FIELD_NAMES[i]] = 0;
+    }
+    return stats;
 }
 
 /**
@@ -1614,12 +1659,17 @@ function assignShadowCollisionStats(targetStats, sourceStats) {
         return;
     }
 
-    if (Number.isFinite(sourceStats.collisionCheckCount)) targetStats.collisionCheckCount = sourceStats.collisionCheckCount;
-    if (Number.isFinite(sourceStats.aabbPassCount)) targetStats.aabbPassCount = sourceStats.aabbPassCount;
-    if (Number.isFinite(sourceStats.aabbRejectCount)) targetStats.aabbRejectCount = sourceStats.aabbRejectCount;
-    if (Number.isFinite(sourceStats.circlePassCount)) targetStats.circlePassCount = sourceStats.circlePassCount;
-    if (Number.isFinite(sourceStats.circleRejectCount)) targetStats.circleRejectCount = sourceStats.circleRejectCount;
-    if (Number.isFinite(sourceStats.polygonChecks)) targetStats.polygonChecks = sourceStats.polygonChecks;
+    for (let i = 0; i < COLLISION_STAT_FIELD_NAMES.length; i++) {
+        const fieldName = COLLISION_STAT_FIELD_NAMES[i];
+        if (Number.isFinite(sourceStats[fieldName])) {
+            targetStats[fieldName] = sourceStats[fieldName];
+        }
+    }
+    for (const [fieldName, value] of Object.entries(sourceStats)) {
+        if (Number.isFinite(value)) {
+            targetStats[fieldName] = value;
+        }
+    }
 }
 
 /**
@@ -2486,14 +2536,7 @@ export function createEmptyGameSceneShadowState() {
         boxWalls: [],
         projectiles: [],
         enemies: [],
-        collisionStats: {
-            collisionCheckCount: 0,
-            aabbPassCount: 0,
-            aabbRejectCount: 0,
-            circlePassCount: 0,
-            circleRejectCount: 0,
-            polygonChecks: 0
-        },
+        collisionStats: createDefaultCollisionStats(),
         aiStats: createDefaultAIStats(),
         buttons: []
     };
@@ -2535,16 +2578,11 @@ function getMutableGameSceneShadowState(currentState) {
     currentState.boxWalls = Array.isArray(currentState.boxWalls) ? currentState.boxWalls : [];
     currentState.projectiles = Array.isArray(currentState.projectiles) ? currentState.projectiles : [];
     currentState.enemies = Array.isArray(currentState.enemies) ? currentState.enemies : [];
-    currentState.collisionStats = currentState.collisionStats && typeof currentState.collisionStats === 'object'
-        ? currentState.collisionStats
-        : {
-            collisionCheckCount: 0,
-            aabbPassCount: 0,
-            aabbRejectCount: 0,
-            circlePassCount: 0,
-            circleRejectCount: 0,
-            polygonChecks: 0
-        };
+    const collisionStats = createDefaultCollisionStats();
+    if (currentState.collisionStats && typeof currentState.collisionStats === 'object') {
+        assignShadowCollisionStats(collisionStats, currentState.collisionStats);
+    }
+    currentState.collisionStats = collisionStats;
     currentState.aiStats = currentState.aiStats && typeof currentState.aiStats === 'object'
         ? currentState.aiStats
         : createDefaultAIStats();
@@ -2580,6 +2618,11 @@ export function replaceGameSceneShadowState(snapshot) {
         return baseState;
     }
 
+    const collisionStats = createDefaultCollisionStats();
+    if (snapshot.collisionStats && typeof snapshot.collisionStats === 'object') {
+        assignShadowCollisionStats(collisionStats, snapshot.collisionStats);
+    }
+
     const nextState = {
         ...baseState,
         ...snapshot,
@@ -2599,7 +2642,7 @@ export function replaceGameSceneShadowState(snapshot) {
         enemies: Array.isArray(snapshot.enemies)
             ? snapshot.enemies.map((enemy) => createShadowEnemyFromSpawnData(enemy)).filter(Boolean)
             : [],
-        collisionStats: snapshot.collisionStats ? { ...snapshot.collisionStats } : baseState.collisionStats,
+        collisionStats,
         aiStats: cloneShadowAIStats(snapshot.aiStats),
         buttons: Array.isArray(snapshot.buttons) ? [...snapshot.buttons] : []
     };

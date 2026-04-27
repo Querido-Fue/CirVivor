@@ -28,6 +28,7 @@ import {
     getSimulationWW,
     hasSimulationMouseState
 } from 'simulation/simulation_runtime.js';
+import { measurePerformanceSection } from 'debug/debug_system.js';
 
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
 const ENEMY_ASPECT_RATIO = getData('ENEMY_ASPECT_RATIO');
@@ -55,6 +56,33 @@ const GAME_SCENE_AI_BY_ID = Object.freeze({
     enemyAI,
     tempAI: enemyAI
 });
+const COLLISION_STAT_FIELD_NAMES = Object.freeze([
+    'collisionCheckCount',
+    'aabbPassCount',
+    'aabbRejectCount',
+    'circlePassCount',
+    'circleRejectCount',
+    'polygonChecks',
+    'enemyTotalMs',
+    'enemyBodyBuildMs',
+    'playerBodyBuildMs',
+    'wallBodyBuildMs',
+    'enemyPositionSolveMs',
+    'enemyStabilizeMs',
+    'enemyNonPositionMs',
+    'solveGridMs',
+    'solvePairScanMs',
+    'projectileTotalMs',
+    'projectileEnemyBodyBuildMs',
+    'projectileGridBuildMs',
+    'projectileScanMs',
+    'projectileCandidateQueryMs',
+    'projectileNarrowphaseMs',
+    'contactTotalMs',
+    'contactBodyBuildMs',
+    'contactGridBuildMs',
+    'contactPairScanMs'
+]);
 
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
 
@@ -81,6 +109,45 @@ const cloneSnapshotPoint = (point) => ({
     x: normalizeSnapshotNumber(point?.x, 0),
     y: normalizeSnapshotNumber(point?.y, 0)
 });
+
+/**
+ * 충돌 통계 기본값을 생성합니다.
+ * @returns {object}
+ */
+function createDefaultCollisionStats() {
+    const stats = {};
+    for (let i = 0; i < COLLISION_STAT_FIELD_NAMES.length; i++) {
+        stats[COLLISION_STAT_FIELD_NAMES[i]] = 0;
+    }
+    return stats;
+}
+
+/**
+ * 충돌 통계를 렌더/워커 전송용 숫자 스냅샷으로 복제합니다.
+ * @param {object|null|undefined} sourceStats
+ * @returns {object}
+ */
+function createCollisionStatsSnapshot(sourceStats) {
+    const stats = createDefaultCollisionStats();
+    if (!sourceStats || typeof sourceStats !== 'object') {
+        return stats;
+    }
+
+    for (let i = 0; i < COLLISION_STAT_FIELD_NAMES.length; i++) {
+        const fieldName = COLLISION_STAT_FIELD_NAMES[i];
+        stats[fieldName] = normalizeSnapshotNumber(sourceStats[fieldName], 0);
+    }
+    return stats;
+}
+
+/**
+ * HUD에 표시할 ms 값을 고정 소수점 문자열로 변환합니다.
+ * @param {number|null|undefined} value
+ * @returns {string}
+ */
+function formatDebugMs(value) {
+    return normalizeSnapshotNumber(value, 0).toFixed(2);
+}
 
 /**
  * 합체 적 조각 좌표를 회전합니다.
@@ -315,14 +382,7 @@ export class GameScene extends BaseScene {
         };
         this.isSimulationWorkerTogglePending = false;
         this.sharedPresentationReadState = null;
-        this.collisionStats = {
-            collisionCheckCount: 0,
-            aabbPassCount: 0,
-            aabbRejectCount: 0,
-            circlePassCount: 0,
-            circleRejectCount: 0,
-            polygonChecks: 0,
-        };
+        this.collisionStats = createDefaultCollisionStats();
 
         this.wallIdCounter = 1;
         this.projIdCounter = 1;
@@ -554,10 +614,46 @@ export class GameScene extends BaseScene {
         if (bridgeStatus) {
             lines.push(`worker ack: ${bridgeStatus.lastAckFrameId}/${bridgeStatus.lastFrameId}`);
         }
+        this.#appendSimulationWorkerProfileHudLines(lines, bridgeStatus);
         this.#appendSimulationWorkerAIHudLines(lines, bridgeStatus);
         this.#appendSimulationWorkerEnemyAIWorkerHudLines(lines, bridgeStatus);
 
         return lines;
+    }
+
+    /**
+     * @private
+     * @param {string[]} lines
+     * @param {object|null|undefined} bridgeStatus
+     */
+    #appendSimulationWorkerProfileHudLines(lines, bridgeStatus) {
+        if (!Array.isArray(lines)) {
+            return;
+        }
+
+        const profileStats = bridgeStatus?.workerSnapshot?.profileStats;
+        if (profileStats?.enabled === true) {
+            const publishMs = Number.isFinite(profileStats.publishTotalMs)
+                ? profileStats.publishTotalMs
+                : profileStats.sharedPublishCallMs;
+            lines.push(`worker frame ms: total ${formatDebugMs(profileStats.totalMs)} | scene ${formatDebugMs(profileStats.sceneWrapperMs)} | publish ${formatDebugMs(publishMs)}`);
+            lines.push(`worker publish ms: wall ${formatDebugMs(profileStats.publishWallsMs)} | proj ${formatDebugMs(profileStats.publishProjectilesMs)} | enemy ${formatDebugMs(profileStats.publishEnemiesMs)}`);
+        }
+
+        const collisionStats = bridgeStatus?.workerSnapshot?.collisionStats;
+        if (!collisionStats || typeof collisionStats !== 'object') {
+            return;
+        }
+
+        const collisionTotalMs = normalizeSnapshotNumber(collisionStats.enemyTotalMs, 0)
+            + normalizeSnapshotNumber(collisionStats.projectileTotalMs, 0)
+            + normalizeSnapshotNumber(collisionStats.contactTotalMs, 0);
+        if (collisionTotalMs <= 0) {
+            return;
+        }
+
+        lines.push(`collision ms: enemy ${formatDebugMs(collisionStats.enemyTotalMs)} | proj ${formatDebugMs(collisionStats.projectileTotalMs)} | contact ${formatDebugMs(collisionStats.contactTotalMs)}`);
+        lines.push(`collision detail ms: grid ${formatDebugMs(collisionStats.solveGridMs)} | pair ${formatDebugMs(collisionStats.solvePairScanMs)} | narrow ${formatDebugMs(collisionStats.projectileNarrowphaseMs)}`);
     }
 
     /**
@@ -1367,17 +1463,10 @@ export class GameScene extends BaseScene {
 
     /**
      * @private
-     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, polygonChecks:number}}
+     * @returns {object}
      */
     #createCollisionStatsSnapshot() {
-        return {
-            collisionCheckCount: normalizeSnapshotNumber(this.collisionStats?.collisionCheckCount, 0),
-            aabbPassCount: normalizeSnapshotNumber(this.collisionStats?.aabbPassCount, 0),
-            aabbRejectCount: normalizeSnapshotNumber(this.collisionStats?.aabbRejectCount, 0),
-            circlePassCount: normalizeSnapshotNumber(this.collisionStats?.circlePassCount, 0),
-            circleRejectCount: normalizeSnapshotNumber(this.collisionStats?.circleRejectCount, 0),
-            polygonChecks: normalizeSnapshotNumber(this.collisionStats?.polygonChecks, 0)
-        };
+        return createCollisionStatsSnapshot(this.collisionStats);
     }
 
     /**
@@ -1412,59 +1501,67 @@ export class GameScene extends BaseScene {
         const projectiles = Array.isArray(sceneSnapshot?.projectiles) ? sceneSnapshot.projectiles : this.projectiles;
         const offsetY = this.objectOffsetY;
 
-        for (let i = 0; i < staticWalls.length; i++) {
-            const wall = staticWalls[i];
-            if (!wall || wall.active === false) continue;
-            renderGL('object', {
-                shape: 'rect',
-                x: normalizeSnapshotNumber(wall.x, 0),
-                y: normalizeSnapshotNumber(wall.y, 0) - offsetY,
-                w: normalizeSnapshotNumber(wall.w, 0),
-                h: normalizeSnapshotNumber(wall.h, 0),
-                fill: 'rgba(120, 136, 156, 0.9)'
-            });
-        }
+        measurePerformanceSection('scene.game.world.staticWalls', () => {
+            for (let i = 0; i < staticWalls.length; i++) {
+                const wall = staticWalls[i];
+                if (!wall || wall.active === false) continue;
+                renderGL('object', {
+                    shape: 'rect',
+                    x: normalizeSnapshotNumber(wall.x, 0),
+                    y: normalizeSnapshotNumber(wall.y, 0) - offsetY,
+                    w: normalizeSnapshotNumber(wall.w, 0),
+                    h: normalizeSnapshotNumber(wall.h, 0),
+                    fill: 'rgba(120, 136, 156, 0.9)'
+                });
+            }
+        });
 
-        for (let i = 0; i < boxWalls.length; i++) {
-            const box = boxWalls[i];
-            if (!box || box.active === false) continue;
-            renderGL('object', {
-                shape: 'rect',
-                x: normalizeSnapshotNumber(box.x, 0),
-                y: normalizeSnapshotNumber(box.y, 0) - offsetY,
-                w: normalizeSnapshotNumber(box.w, 0),
-                h: normalizeSnapshotNumber(box.h, 0),
-                fill: 'rgba(182, 201, 214, 0.9)'
-            });
-        }
+        measurePerformanceSection('scene.game.world.boxWalls', () => {
+            for (let i = 0; i < boxWalls.length; i++) {
+                const box = boxWalls[i];
+                if (!box || box.active === false) continue;
+                renderGL('object', {
+                    shape: 'rect',
+                    x: normalizeSnapshotNumber(box.x, 0),
+                    y: normalizeSnapshotNumber(box.y, 0) - offsetY,
+                    w: normalizeSnapshotNumber(box.w, 0),
+                    h: normalizeSnapshotNumber(box.h, 0),
+                    fill: 'rgba(182, 201, 214, 0.9)'
+                });
+            }
+        });
 
-        if (player && player.active !== false) {
-            const diameter = normalizeSnapshotNumber(player.radius, 0) * 2;
-            renderGL('object', {
-                shape: 'circle',
-                x: normalizeSnapshotNumber(player.position?.x, 0),
-                y: normalizeSnapshotNumber(player.position?.y, 0) - offsetY,
-                w: diameter,
-                h: diameter,
-                fill: '#4fa3ff',
-                alpha: 0.95
-            });
-        }
+        measurePerformanceSection('scene.game.world.player', () => {
+            if (player && player.active !== false) {
+                const diameter = normalizeSnapshotNumber(player.radius, 0) * 2;
+                renderGL('object', {
+                    shape: 'circle',
+                    x: normalizeSnapshotNumber(player.position?.x, 0),
+                    y: normalizeSnapshotNumber(player.position?.y, 0) - offsetY,
+                    w: diameter,
+                    h: diameter,
+                    fill: '#4fa3ff',
+                    alpha: 0.95
+                });
+            }
+        });
 
-        for (let i = 0; i < projectiles.length; i++) {
-            const projectile = projectiles[i];
-            if (!projectile || projectile.active === false) continue;
-            const d = normalizeSnapshotNumber(projectile.radius, 0) * 2;
-            renderGL('object', {
-                shape: 'circle',
-                x: normalizeSnapshotNumber(projectile.position?.x, 0),
-                y: normalizeSnapshotNumber(projectile.position?.y, 0) - offsetY,
-                w: d,
-                h: d,
-                fill: '#ffc857',
-                alpha: 0.95
-            });
-        }
+        measurePerformanceSection('scene.game.world.projectiles', () => {
+            for (let i = 0; i < projectiles.length; i++) {
+                const projectile = projectiles[i];
+                if (!projectile || projectile.active === false) continue;
+                const d = normalizeSnapshotNumber(projectile.radius, 0) * 2;
+                renderGL('object', {
+                    shape: 'circle',
+                    x: normalizeSnapshotNumber(projectile.position?.x, 0),
+                    y: normalizeSnapshotNumber(projectile.position?.y, 0) - offsetY,
+                    w: d,
+                    h: d,
+                    fill: '#ffc857',
+                    alpha: 0.95
+                });
+            }
+        });
     }
 
     /**
@@ -1491,61 +1588,69 @@ export class GameScene extends BaseScene {
         const projectileBase = sharedState.projectileBase;
         const projectileStaticBase = sharedState.projectileStaticBase;
 
-        for (let i = 0; i < sharedState.staticWallCount; i++) {
-            const offset = staticWallBase + (i * wallStride);
-            renderGL('object', {
-                shape: 'rect',
-                x: staticWallData[offset + 0],
-                y: staticWallData[offset + 1] - offsetY,
-                w: staticWallData[offset + 2],
-                h: staticWallData[offset + 3],
-                fill: 'rgba(120, 136, 156, 0.9)'
-            });
-        }
+        measurePerformanceSection('scene.game.sharedWorld.staticWalls', () => {
+            for (let i = 0; i < sharedState.staticWallCount; i++) {
+                const offset = staticWallBase + (i * wallStride);
+                renderGL('object', {
+                    shape: 'rect',
+                    x: staticWallData[offset + 0],
+                    y: staticWallData[offset + 1] - offsetY,
+                    w: staticWallData[offset + 2],
+                    h: staticWallData[offset + 3],
+                    fill: 'rgba(120, 136, 156, 0.9)'
+                });
+            }
+        });
 
-        for (let i = 0; i < sharedState.boxWallCount; i++) {
-            const offset = boxWallBase + (i * wallStride);
-            renderGL('object', {
-                shape: 'rect',
-                x: boxWallData[offset + 0],
-                y: boxWallData[offset + 1] - offsetY,
-                w: boxWallData[offset + 2],
-                h: boxWallData[offset + 3],
-                fill: 'rgba(182, 201, 214, 0.9)'
-            });
-        }
+        measurePerformanceSection('scene.game.sharedWorld.boxWalls', () => {
+            for (let i = 0; i < sharedState.boxWallCount; i++) {
+                const offset = boxWallBase + (i * wallStride);
+                renderGL('object', {
+                    shape: 'rect',
+                    x: boxWallData[offset + 0],
+                    y: boxWallData[offset + 1] - offsetY,
+                    w: boxWallData[offset + 2],
+                    h: boxWallData[offset + 3],
+                    fill: 'rgba(182, 201, 214, 0.9)'
+                });
+            }
+        });
 
-        if (sharedState.playerActive === true) {
-            const px = playerData[playerBase + 0];
-            const py = playerData[playerBase + 1];
-            const pr = playerData[playerBase + 2];
-            const diameter = pr * 2;
-            renderGL('object', {
-                shape: 'circle',
-                x: px,
-                y: py - offsetY,
-                w: diameter,
-                h: diameter,
-                fill: '#4fa3ff',
-                alpha: 0.95
-            });
-        }
+        measurePerformanceSection('scene.game.sharedWorld.player', () => {
+            if (sharedState.playerActive === true) {
+                const px = playerData[playerBase + 0];
+                const py = playerData[playerBase + 1];
+                const pr = playerData[playerBase + 2];
+                const diameter = pr * 2;
+                renderGL('object', {
+                    shape: 'circle',
+                    x: px,
+                    y: py - offsetY,
+                    w: diameter,
+                    h: diameter,
+                    fill: '#4fa3ff',
+                    alpha: 0.95
+                });
+            }
+        });
 
-        for (let i = 0; i < sharedState.projectileCount; i++) {
-            const offset = projectileBase + (i * projectileStride);
-            const staticOffset = projectileStaticBase + (i * projectileStaticStride);
-            const radius = projectileStaticData[staticOffset + 0];
-            const diameter = radius * 2;
-            renderGL('object', {
-                shape: 'circle',
-                x: projectileData[offset + 0],
-                y: projectileData[offset + 1] - offsetY,
-                w: diameter,
-                h: diameter,
-                fill: '#ffc857',
-                alpha: 0.95
-            });
-        }
+        measurePerformanceSection('scene.game.sharedWorld.projectiles', () => {
+            for (let i = 0; i < sharedState.projectileCount; i++) {
+                const offset = projectileBase + (i * projectileStride);
+                const staticOffset = projectileStaticBase + (i * projectileStaticStride);
+                const radius = projectileStaticData[staticOffset + 0];
+                const diameter = radius * 2;
+                renderGL('object', {
+                    shape: 'circle',
+                    x: projectileData[offset + 0],
+                    y: projectileData[offset + 1] - offsetY,
+                    w: diameter,
+                    h: diameter,
+                    fill: '#ffc857',
+                    alpha: 0.95
+                });
+            }
+        });
     }
 
     /**
@@ -1556,31 +1661,33 @@ export class GameScene extends BaseScene {
         const fallbackFill = normalizeOpaqueBenchmarkEnemyFill(ColorSchemes?.Title?.Enemy || '#ff6c6c');
         const baseHeight = this.objectWH * ENEMY_DRAW_HEIGHT_RATIO;
 
-        for (let i = 0; i < enemies.length; i++) {
-            const enemy = enemies[i];
-            if (!enemy || enemy.active === false) continue;
+        measurePerformanceSection('scene.game.snapshot.enemies', () => {
+            for (let i = 0; i < enemies.length; i++) {
+                const enemy = enemies[i];
+                if (!enemy || enemy.active === false) continue;
 
-            const enemyType = typeof enemy.type === 'string' ? enemy.type : 'square';
-            if (enemyType === HEXA_HIVE_TYPE && drawHexaHiveSnapshot(enemy, offsetY, baseHeight, fallbackFill)) {
-                continue;
+                const enemyType = typeof enemy.type === 'string' ? enemy.type : 'square';
+                if (enemyType === HEXA_HIVE_TYPE && drawHexaHiveSnapshot(enemy, offsetY, baseHeight, fallbackFill)) {
+                    continue;
+                }
+                const shapeKey = getEnemyShapeKey(enemyType) || getEnemyShapeKey('square');
+                const renderPosition = enemy.renderPosition ?? enemy.position;
+                const size = normalizeSnapshotNumber(enemy.size, 1);
+                const baseH = baseHeight * size;
+                const w = baseH * (ENEMY_ASPECT_RATIO[enemyType] ?? 1);
+                const h = baseH * (ENEMY_HEIGHT_SCALE[enemyType] ?? 1);
+                renderGL('object', {
+                    shape: shapeKey,
+                    x: normalizeSnapshotNumber(renderPosition?.x, 0),
+                    y: normalizeSnapshotNumber(renderPosition?.y, 0) - offsetY,
+                    w,
+                    h,
+                    fill: normalizeOpaqueBenchmarkEnemyFill(typeof enemy.fill === 'string' ? enemy.fill : fallbackFill),
+                    alpha: 1,
+                    rotation: normalizeSnapshotNumber(enemy.rotation, 0)
+                });
             }
-            const shapeKey = getEnemyShapeKey(enemyType) || getEnemyShapeKey('square');
-            const renderPosition = enemy.renderPosition ?? enemy.position;
-            const size = normalizeSnapshotNumber(enemy.size, 1);
-            const baseH = baseHeight * size;
-            const w = baseH * (ENEMY_ASPECT_RATIO[enemyType] ?? 1);
-            const h = baseH * (ENEMY_HEIGHT_SCALE[enemyType] ?? 1);
-            renderGL('object', {
-                shape: shapeKey,
-                x: normalizeSnapshotNumber(renderPosition?.x, 0),
-                y: normalizeSnapshotNumber(renderPosition?.y, 0) - offsetY,
-                w,
-                h,
-                fill: normalizeOpaqueBenchmarkEnemyFill(typeof enemy.fill === 'string' ? enemy.fill : fallbackFill),
-                alpha: 1,
-                rotation: normalizeSnapshotNumber(enemy.rotation, 0)
-            });
-        }
+        });
     }
 
     /**
@@ -1605,26 +1712,28 @@ export class GameScene extends BaseScene {
         const aspectByCode = SHARED_ENEMY_RENDER_CONFIG.aspectByCode;
         const heightScaleByCode = SHARED_ENEMY_RENDER_CONFIG.heightScaleByCode;
 
-        for (let i = 0; i < sharedState.enemyCount; i++) {
-            const offset = enemyBase + (i * enemyStride);
-            const staticOffset = enemyStaticBase + (i * enemyStaticStride);
-            const enemyTypeCode = Math.round(enemyStaticData[staticOffset + 1]);
-            const shapeKey = shapeByCode[enemyTypeCode] || shapeByCode[0];
-            const size = normalizeSnapshotNumber(enemyStaticData[staticOffset + 0], 1);
-            const baseH = baseHeight * size;
-            const w = baseH * (aspectByCode[enemyTypeCode] ?? 1);
-            const h = baseH * (heightScaleByCode[enemyTypeCode] ?? 1);
-            renderGL('object', {
-                shape: shapeKey,
-                x: enemyData[offset + 0],
-                y: enemyData[offset + 1] - offsetY,
-                w,
-                h,
-                fill: fallbackFill,
-                alpha: 1,
-                rotation: normalizeSnapshotNumber(enemyData[offset + 2], 0)
-            });
-        }
+        measurePerformanceSection('scene.game.shared.enemies', () => {
+            for (let i = 0; i < sharedState.enemyCount; i++) {
+                const offset = enemyBase + (i * enemyStride);
+                const staticOffset = enemyStaticBase + (i * enemyStaticStride);
+                const enemyTypeCode = Math.round(enemyStaticData[staticOffset + 1]);
+                const shapeKey = shapeByCode[enemyTypeCode] || shapeByCode[0];
+                const size = normalizeSnapshotNumber(enemyStaticData[staticOffset + 0], 1);
+                const baseH = baseHeight * size;
+                const w = baseH * (aspectByCode[enemyTypeCode] ?? 1);
+                const h = baseH * (heightScaleByCode[enemyTypeCode] ?? 1);
+                renderGL('object', {
+                    shape: shapeKey,
+                    x: enemyData[offset + 0],
+                    y: enemyData[offset + 1] - offsetY,
+                    w,
+                    h,
+                    fill: fallbackFill,
+                    alpha: 1,
+                    rotation: normalizeSnapshotNumber(enemyData[offset + 2], 0)
+                });
+            }
+        });
     }
 
     /**
@@ -1871,9 +1980,15 @@ export class GameScene extends BaseScene {
      * @override
      */
     draw() {
-        this.#drawWorldObjects();
-        this.#drawButtons();
-        this.#drawHud();
+        measurePerformanceSection('scene.game.local.drawWorld', () => {
+            this.#drawWorldObjects();
+        });
+        measurePerformanceSection('scene.game.local.drawButtons', () => {
+            this.#drawButtons();
+        });
+        measurePerformanceSection('scene.game.local.drawHud', () => {
+            this.#drawHud();
+        });
     }
 
     /**
@@ -1888,9 +2003,12 @@ export class GameScene extends BaseScene {
         }
 
         if (sceneSnapshot.storageType === GAME_SCENE_SHARED_PRESENTATION_STORAGE_TYPE) {
-            this.sharedPresentationReadState = readGameSceneSharedPresentationState(
-                sceneSnapshot.sharedPresentation,
-                this.sharedPresentationReadState
+            this.sharedPresentationReadState = measurePerformanceSection(
+                'scene.game.shared.readState',
+                () => readGameSceneSharedPresentationState(
+                    sceneSnapshot.sharedPresentation,
+                    this.sharedPresentationReadState
+                )
             );
             const sharedState = this.sharedPresentationReadState;
             if (!sharedState) {
@@ -1898,12 +2016,20 @@ export class GameScene extends BaseScene {
             }
 
             if (options.renderEnemyObjects === true) {
-                this.#drawSharedEnemySnapshots(sharedState);
+                measurePerformanceSection('scene.game.shared.drawEnemies', () => {
+                    this.#drawSharedEnemySnapshots(sharedState);
+                });
             }
             if (options.renderSceneObjects !== false) {
-                this.#drawSharedWorldObjects(sharedState);
-                this.#drawButtons();
-                this.#drawSharedHud(sharedState);
+                measurePerformanceSection('scene.game.shared.drawWorld', () => {
+                    this.#drawSharedWorldObjects(sharedState);
+                });
+                measurePerformanceSection('scene.game.shared.drawButtons', () => {
+                    this.#drawButtons();
+                });
+                measurePerformanceSection('scene.game.shared.drawHud', () => {
+                    this.#drawSharedHud(sharedState);
+                });
             }
             return true;
         }
@@ -1912,12 +2038,20 @@ export class GameScene extends BaseScene {
         const renderSceneObjects = options.renderSceneObjects !== false;
 
         if (renderEnemyObjects && Array.isArray(sceneSnapshot.enemies)) {
-            this.#drawEnemySnapshots(sceneSnapshot.enemies);
+            measurePerformanceSection('scene.game.snapshot.drawEnemies', () => {
+                this.#drawEnemySnapshots(sceneSnapshot.enemies);
+            });
         }
         if (renderSceneObjects) {
-            this.#drawWorldObjects(sceneSnapshot);
-            this.#drawButtons(Array.isArray(sceneSnapshot.buttons) ? sceneSnapshot.buttons : null);
-            this.#drawHud(sceneSnapshot);
+            measurePerformanceSection('scene.game.snapshot.drawWorld', () => {
+                this.#drawWorldObjects(sceneSnapshot);
+            });
+            measurePerformanceSection('scene.game.snapshot.drawButtons', () => {
+                this.#drawButtons(Array.isArray(sceneSnapshot.buttons) ? sceneSnapshot.buttons : null);
+            });
+            measurePerformanceSection('scene.game.snapshot.drawHud', () => {
+                this.#drawHud(sceneSnapshot);
+            });
         }
         return true;
     }

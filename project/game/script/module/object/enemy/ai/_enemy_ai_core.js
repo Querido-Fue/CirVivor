@@ -1347,6 +1347,12 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     } else {
         if (context.shouldUpdateDecision === true || forcedPolicyRefresh || !state.flowData) {
             incrementEnemyAIDebugCounter(aiDebugStats, 'flowRefreshCount');
+            const shouldUseSharedPlayerFlowForKeepRange = state.policyId === ENEMY_AI_POLICY.KEEP_RANGE;
+            const flowTargetX = shouldUseSharedPlayerFlowForKeepRange ? targetX : state.targetX;
+            const flowTargetY = shouldUseSharedPlayerFlowForKeepRange ? targetY : state.targetY;
+            const flowPolicyKey = shouldUseSharedPlayerFlowForKeepRange
+                ? 'keep_range_player'
+                : state.flowPolicyKey;
             const flow = getSharedFlowFieldForTargetCoords(
                 context,
                 walls,
@@ -1354,15 +1360,15 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
                 getSimulationObjectWH(),
                 profile,
                 enemyRadius,
-                state.targetX,
-                state.targetY,
-                state.flowPolicyKey
+                flowTargetX,
+                flowTargetY,
+                flowPolicyKey
             );
             if (flow) {
                 state.flowData = flow;
                 state.flowKey = flow.key;
-                state.lastTargetCellX = Math.floor(state.targetX / profile.NAV_CELL_SIZE);
-                state.lastTargetCellY = Math.floor(state.targetY / profile.NAV_CELL_SIZE);
+                state.lastTargetCellX = Math.floor(flowTargetX / profile.NAV_CELL_SIZE);
+                state.lastTargetCellY = Math.floor(flowTargetY / profile.NAV_CELL_SIZE);
             } else {
                 state.flowData = null;
                 state.flowKey = '';

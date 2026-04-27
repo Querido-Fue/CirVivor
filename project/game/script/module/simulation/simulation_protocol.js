@@ -59,9 +59,28 @@ export function normalizeSimulationExecutionPolicy(executionPolicy = {}) {
 }
 
 /**
+ * 단순 숫자 필드 중심 통계 객체를 구조화 복제 가능한 형태로 복제합니다.
+ * @param {object|null|undefined} stats
+ * @returns {object|null}
+ */
+function cloneFlatStats(stats) {
+    if (!stats || typeof stats !== 'object') {
+        return null;
+    }
+
+    const clonedStats = {};
+    for (const [key, value] of Object.entries(stats)) {
+        clonedStats[key] = Number.isFinite(value) || typeof value === 'boolean' || typeof value === 'string'
+            ? value
+            : (value === null ? null : value);
+    }
+    return clonedStats;
+}
+
+/**
  * 워커 상태를 읽기 쉬운 경량 스냅샷으로 변환합니다.
  * @param {object} [state={}]
- * @returns {{ready: boolean, shadowMode: boolean, bootstrapped: boolean, frameCounter: number, lastFrameId: number, lastCommandCount: number, sceneState: string|null, sceneType: string|null, enemyCount: number, projectileCount: number, wallCount: number, fixedStepCount: number, fixedAlpha: number, mirroredAt: number, aiStats: object|null, enemyAIWorker: object|null}}
+ * @returns {{ready: boolean, shadowMode: boolean, bootstrapped: boolean, frameCounter: number, lastFrameId: number, lastCommandCount: number, sceneState: string|null, sceneType: string|null, enemyCount: number, projectileCount: number, wallCount: number, fixedStepCount: number, fixedAlpha: number, mirroredAt: number, aiStats: object|null, enemyAIWorker: object|null, collisionStats: object|null, profileStats: object|null}}
  */
 export function createSimulationWorkerSnapshot(state = {}) {
     const sceneState = typeof state.sceneState === 'string' ? state.sceneState : null;
@@ -94,6 +113,8 @@ export function createSimulationWorkerSnapshot(state = {}) {
         fixedAlpha: Number.isFinite(state.fixedAlpha) ? state.fixedAlpha : 0,
         mirroredAt: Number.isFinite(state.mirroredAt) ? state.mirroredAt : 0,
         aiStats,
+        collisionStats: cloneFlatStats(state.collisionStats),
+        profileStats: cloneFlatStats(state.profileStats),
         enemyAIWorker: state.enemyAIWorker && typeof state.enemyAIWorker === 'object'
             ? { ...state.enemyAIWorker }
             : null

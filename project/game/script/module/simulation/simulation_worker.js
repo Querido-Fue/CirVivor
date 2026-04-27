@@ -37,7 +37,8 @@ const workerState = {
     sharedPresentationTransport: null,
     sharedPresentationWallGeometryDirty: true,
     sharedPresentationProjectileTopologyDirty: true,
-    sharedPresentationEnemyTopologyDirty: true
+    sharedPresentationEnemyTopologyDirty: true,
+    profileStats: null
 };
 const PRESENTATION_HEXA_HIVE_TYPE = getHexaHiveType();
 
@@ -95,6 +96,101 @@ function getSceneAIStatsSnapshot() {
 }
 
 /**
+ * 현재 씬 충돌 통계를 읽기 전용 스냅샷으로 복제합니다.
+ * @returns {object|null}
+ */
+function getSceneCollisionStatsSnapshot() {
+    return clonePresentationCollisionStats(workerState.scene?.scene?.collisionStats);
+}
+
+/**
+ * 런타임 스냅샷에서 디버그 모드 활성 여부를 읽습니다.
+ * @param {object|null|undefined} runtime
+ * @returns {boolean}
+ */
+function isRuntimeDebugModeEnabled(runtime) {
+    return runtime?.settings?.debugMode === true;
+}
+
+/**
+ * 현재 메시지를 계측할지 반환합니다.
+ * @param {object|null|undefined} message
+ * @returns {boolean}
+ */
+function shouldProfileWorkerMessage(message = null) {
+    return isRuntimeDebugModeEnabled(message?.frameSnapshot?.runtime)
+        || isRuntimeDebugModeEnabled(workerState.runtime);
+}
+
+/**
+ * 워커 프레임 계측 통계 기본값을 생성합니다.
+ * @param {boolean} enabled
+ * @param {number} frameId
+ * @returns {object}
+ */
+function createWorkerProfileStats(enabled, frameId) {
+    return {
+        enabled: enabled === true,
+        frameId: Number.isInteger(frameId) ? frameId : 0,
+        totalMs: 0,
+        commandTopologyMs: 0,
+        runtimeSyncMs: 0,
+        sceneWrapperMs: 0,
+        commandPreStepMs: 0,
+        advanceSceneMs: 0,
+        commandPostStepMs: 0,
+        frameMergeMs: 0,
+        topologyCheckMs: 0,
+        sharedPublishCallMs: 0
+    };
+}
+
+/**
+ * 워커 프레임 계측 시작 시각을 반환합니다.
+ * @param {object|null|undefined} profileStats
+ * @returns {number|null}
+ */
+function startWorkerProfileTimer(profileStats) {
+    return profileStats?.enabled === true ? performance.now() : null;
+}
+
+/**
+ * 워커 프레임 계측 시간을 누적합니다.
+ * @param {object|null|undefined} profileStats
+ * @param {string} fieldName
+ * @param {number|null} startTime
+ */
+function recordWorkerProfileDuration(profileStats, fieldName, startTime) {
+    if (profileStats?.enabled !== true || !Number.isFinite(startTime)) {
+        return;
+    }
+
+    const durationMs = performance.now() - startTime;
+    profileStats[fieldName] = (Number.isFinite(profileStats[fieldName]) ? profileStats[fieldName] : 0) + durationMs;
+}
+
+/**
+ * 워커 프레임 구간을 계측하며 실행합니다.
+ * @template T
+ * @param {object|null|undefined} profileStats
+ * @param {string} fieldName
+ * @param {() => T} callback
+ * @returns {T}
+ */
+function measureWorkerProfileSection(profileStats, fieldName, callback) {
+    if (profileStats?.enabled !== true) {
+        return callback();
+    }
+
+    const startTime = performance.now();
+    try {
+        return callback();
+    } finally {
+        recordWorkerProfileDuration(profileStats, fieldName, startTime);
+    }
+}
+
+/**
  * 현재 워커 내부 상태를 메인 스레드로 내보낼 경량 스냅샷으로 변환합니다.
  * @returns {object}
  */
@@ -115,6 +211,8 @@ function buildWorkerSnapshot() {
         fixedAlpha: workerState.lastFrameContext.fixedAlpha,
         mirroredAt: workerState.lastAppliedAt,
         aiStats: getSceneAIStatsSnapshot(),
+        collisionStats: getSceneCollisionStatsSnapshot(),
+        profileStats: workerState.profileStats,
         enemyAIWorker: getGameSceneEnemyAIWorkerStatsSnapshot()
     });
 }
@@ -134,17 +232,47 @@ function clonePresentationPoint(point) {
 /**
  * 프레젠테이션 스냅샷용 충돌 통계를 복제합니다.
  * @param {object|null|undefined} collisionStats
- * @returns {{collisionCheckCount: number, aabbPassCount: number, aabbRejectCount: number, circlePassCount: number, circleRejectCount: number, polygonChecks: number}}
+ * @returns {object|null}
  */
 function clonePresentationCollisionStats(collisionStats) {
-    return {
+    if (!collisionStats || typeof collisionStats !== 'object') {
+        return null;
+    }
+
+    const clonedStats = {
         collisionCheckCount: Number.isFinite(collisionStats?.collisionCheckCount) ? collisionStats.collisionCheckCount : 0,
         aabbPassCount: Number.isFinite(collisionStats?.aabbPassCount) ? collisionStats.aabbPassCount : 0,
         aabbRejectCount: Number.isFinite(collisionStats?.aabbRejectCount) ? collisionStats.aabbRejectCount : 0,
         circlePassCount: Number.isFinite(collisionStats?.circlePassCount) ? collisionStats.circlePassCount : 0,
         circleRejectCount: Number.isFinite(collisionStats?.circleRejectCount) ? collisionStats.circleRejectCount : 0,
-        polygonChecks: Number.isFinite(collisionStats?.polygonChecks) ? collisionStats.polygonChecks : 0
+        polygonChecks: Number.isFinite(collisionStats?.polygonChecks) ? collisionStats.polygonChecks : 0,
+        enemyTotalMs: Number.isFinite(collisionStats?.enemyTotalMs) ? collisionStats.enemyTotalMs : 0,
+        enemyBodyBuildMs: Number.isFinite(collisionStats?.enemyBodyBuildMs) ? collisionStats.enemyBodyBuildMs : 0,
+        playerBodyBuildMs: Number.isFinite(collisionStats?.playerBodyBuildMs) ? collisionStats.playerBodyBuildMs : 0,
+        wallBodyBuildMs: Number.isFinite(collisionStats?.wallBodyBuildMs) ? collisionStats.wallBodyBuildMs : 0,
+        enemyPositionSolveMs: Number.isFinite(collisionStats?.enemyPositionSolveMs) ? collisionStats.enemyPositionSolveMs : 0,
+        enemyStabilizeMs: Number.isFinite(collisionStats?.enemyStabilizeMs) ? collisionStats.enemyStabilizeMs : 0,
+        enemyNonPositionMs: Number.isFinite(collisionStats?.enemyNonPositionMs) ? collisionStats.enemyNonPositionMs : 0,
+        solveGridMs: Number.isFinite(collisionStats?.solveGridMs) ? collisionStats.solveGridMs : 0,
+        solvePairScanMs: Number.isFinite(collisionStats?.solvePairScanMs) ? collisionStats.solvePairScanMs : 0,
+        projectileTotalMs: Number.isFinite(collisionStats?.projectileTotalMs) ? collisionStats.projectileTotalMs : 0,
+        projectileEnemyBodyBuildMs: Number.isFinite(collisionStats?.projectileEnemyBodyBuildMs) ? collisionStats.projectileEnemyBodyBuildMs : 0,
+        projectileGridBuildMs: Number.isFinite(collisionStats?.projectileGridBuildMs) ? collisionStats.projectileGridBuildMs : 0,
+        projectileScanMs: Number.isFinite(collisionStats?.projectileScanMs) ? collisionStats.projectileScanMs : 0,
+        projectileCandidateQueryMs: Number.isFinite(collisionStats?.projectileCandidateQueryMs) ? collisionStats.projectileCandidateQueryMs : 0,
+        projectileNarrowphaseMs: Number.isFinite(collisionStats?.projectileNarrowphaseMs) ? collisionStats.projectileNarrowphaseMs : 0,
+        contactTotalMs: Number.isFinite(collisionStats?.contactTotalMs) ? collisionStats.contactTotalMs : 0,
+        contactBodyBuildMs: Number.isFinite(collisionStats?.contactBodyBuildMs) ? collisionStats.contactBodyBuildMs : 0,
+        contactGridBuildMs: Number.isFinite(collisionStats?.contactGridBuildMs) ? collisionStats.contactGridBuildMs : 0,
+        contactPairScanMs: Number.isFinite(collisionStats?.contactPairScanMs) ? collisionStats.contactPairScanMs : 0
     };
+
+    for (const [fieldName, value] of Object.entries(collisionStats)) {
+        if (Number.isFinite(value)) {
+            clonedStats[fieldName] = value;
+        }
+    }
+    return clonedStats;
 }
 
 /**
@@ -474,8 +602,9 @@ function shouldRepublishSharedProjectileTopology(commands) {
 
 /**
  * 공유 프레젠테이션 버퍼가 연결되어 있으면 최신 상태를 publish합니다.
+ * @param {object|null} [profileStats=null]
  */
-function publishSharedPresentationIfNeeded() {
+function publishSharedPresentationIfNeeded(profileStats = null) {
     if (!workerState.sharedPresentationTransport
         || workerState.scene?.scene?.sceneType !== 'game'
         || hasComplexGameScenePresentation(workerState.scene?.scene)) {
@@ -489,7 +618,8 @@ function publishSharedPresentationIfNeeded() {
         {
             reuseWallGeometry: workerState.sharedPresentationWallGeometryDirty !== true,
             reuseProjectilePresentation: workerState.sharedPresentationProjectileTopologyDirty !== true,
-            reuseEnemyPresentation: workerState.sharedPresentationEnemyTopologyDirty !== true
+            reuseEnemyPresentation: workerState.sharedPresentationEnemyTopologyDirty !== true,
+            profileStats
         }
     );
     if (didPublish) {
@@ -527,9 +657,10 @@ function normalizeSceneWrapper(sceneWrapper) {
  * @param {object|null|undefined} frameContext
  * @param {object|null|undefined} executionPolicy
  * @param {object[]} [commands=[]]
+ * @param {object|null} [profileStats=null]
  * @returns {{sceneState: string|null, scene: object|null}}
  */
-function applyFrameSceneWrapper(currentWrapper, frameWrapper, frameContext, executionPolicy, commands = []) {
+function applyFrameSceneWrapper(currentWrapper, frameWrapper, frameContext, executionPolicy, commands = [], profileStats = null) {
     const currentSceneState = typeof currentWrapper?.sceneState === 'string' ? currentWrapper.sceneState : null;
     const nextSceneState = typeof frameWrapper?.sceneState === 'string'
         ? frameWrapper.sceneState
@@ -541,15 +672,31 @@ function applyFrameSceneWrapper(currentWrapper, frameWrapper, frameContext, exec
     if (sceneType === 'game') {
         const shouldApplyCommandsBeforeStep = frameScene == null && Array.isArray(commands) && commands.length > 0;
         const sceneBeforeStep = shouldApplyCommandsBeforeStep
-            ? applyGameSceneCommands(currentScene, commands)
+            ? measureWorkerProfileSection(
+                profileStats,
+                'commandPreStepMs',
+                () => applyGameSceneCommands(currentScene, commands)
+            )
             : currentScene;
-        const steppedScene = advanceGameSceneShadowState(sceneBeforeStep, frameContext, executionPolicy);
+        const steppedScene = measureWorkerProfileSection(
+            profileStats,
+            'advanceSceneMs',
+            () => advanceGameSceneShadowState(sceneBeforeStep, frameContext, executionPolicy)
+        );
         const commandAppliedScene = shouldApplyCommandsBeforeStep
             ? steppedScene
-            : applyGameSceneCommands(steppedScene, commands);
+            : measureWorkerProfileSection(
+                profileStats,
+                'commandPostStepMs',
+                () => applyGameSceneCommands(steppedScene, commands)
+            );
         return {
             sceneState: nextSceneState,
-            scene: applyGameSceneFrameSnapshot(commandAppliedScene, frameScene)
+            scene: measureWorkerProfileSection(
+                profileStats,
+                'frameMergeMs',
+                () => applyGameSceneFrameSnapshot(commandAppliedScene, frameScene)
+            )
         };
     }
 
@@ -573,6 +720,7 @@ function applyBootstrapSnapshot(snapshot) {
     workerState.sharedPresentationWallGeometryDirty = true;
     workerState.sharedPresentationProjectileTopologyDirty = true;
     workerState.sharedPresentationEnemyTopologyDirty = true;
+    workerState.profileStats = null;
     publishSharedPresentationIfNeeded();
 }
 
@@ -581,10 +729,16 @@ function applyBootstrapSnapshot(snapshot) {
  * @param {object} message
  */
 function applyFrameSyncMessage(message) {
+    const profileStats = createWorkerProfileStats(
+        shouldProfileWorkerMessage(message),
+        Number.isInteger(message.frameId) ? message.frameId : (workerState.lastFrameId + 1)
+    );
+    const frameTotalStart = startWorkerProfileTimer(profileStats);
     const previousScene = workerState.scene?.scene ?? null;
     const previousEnemyCount = Array.isArray(previousScene?.enemies) ? previousScene.enemies.length : 0;
     const previousProjectileCount = Array.isArray(previousScene?.projectiles) ? previousScene.projectiles.length : 0;
 
+    const commandTopologyStart = startWorkerProfileTimer(profileStats);
     if (shouldRepublishSharedWallGeometry(message.commands)) {
         workerState.sharedPresentationWallGeometryDirty = true;
     }
@@ -594,20 +748,32 @@ function applyFrameSyncMessage(message) {
     if (shouldRepublishSharedProjectileTopology(message.commands)) {
         workerState.sharedPresentationProjectileTopologyDirty = true;
     }
+    recordWorkerProfileDuration(profileStats, 'commandTopologyMs', commandTopologyStart);
+
     if (message.frameSnapshot) {
         workerState.runtime = message.frameSnapshot.runtime ?? workerState.runtime;
-        syncSimulationRuntime(workerState.runtime ?? {});
-        workerState.scene = applyFrameSceneWrapper(
-            workerState.scene,
-            message.frameSnapshot.scene,
-            message.frameContext,
-            message.executionPolicy,
-            message.commands
+        measureWorkerProfileSection(
+            profileStats,
+            'runtimeSyncMs',
+            () => syncSimulationRuntime(workerState.runtime ?? {})
+        );
+        workerState.scene = measureWorkerProfileSection(
+            profileStats,
+            'sceneWrapperMs',
+            () => applyFrameSceneWrapper(
+                workerState.scene,
+                message.frameSnapshot.scene,
+                message.frameContext,
+                message.executionPolicy,
+                message.commands,
+                profileStats
+            )
         );
         workerState.bootstrapped = true;
         workerState.ready = true;
     }
 
+    const topologyCheckStart = startWorkerProfileTimer(profileStats);
     const nextScene = workerState.scene?.scene ?? null;
     const nextEnemyCount = Array.isArray(nextScene?.enemies) ? nextScene.enemies.length : 0;
     const nextProjectileCount = Array.isArray(nextScene?.projectiles) ? nextScene.projectiles.length : 0;
@@ -617,6 +783,7 @@ function applyFrameSyncMessage(message) {
     if (nextProjectileCount !== previousProjectileCount) {
         workerState.sharedPresentationProjectileTopologyDirty = true;
     }
+    recordWorkerProfileDuration(profileStats, 'topologyCheckMs', topologyCheckStart);
 
     workerState.lastFrameId = Number.isInteger(message.frameId)
         ? message.frameId
@@ -626,7 +793,13 @@ function applyFrameSyncMessage(message) {
     workerState.lastExecutionPolicy = normalizeSimulationExecutionPolicy(message.executionPolicy);
     workerState.frameCounter++;
     workerState.lastAppliedAt = performance.now();
-    publishSharedPresentationIfNeeded();
+    measureWorkerProfileSection(
+        profileStats,
+        'sharedPublishCallMs',
+        () => publishSharedPresentationIfNeeded(profileStats.enabled === true ? profileStats : null)
+    );
+    recordWorkerProfileDuration(profileStats, 'totalMs', frameTotalStart);
+    workerState.profileStats = profileStats.enabled === true ? profileStats : null;
 }
 
 /**

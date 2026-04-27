@@ -37,7 +37,7 @@ export class PhysicsSystem {
 
     /**
      * 마지막 고정 틱 충돌 체크 통계를 반환합니다.
-     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, polygonChecks:number}}
+     * @returns {object}
      */
     getCollisionStats() {
         return this.collisionHandler.getFrameStats();

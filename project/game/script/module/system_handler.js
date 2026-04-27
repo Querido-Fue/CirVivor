@@ -21,6 +21,7 @@ const SIMULATION_WORKER_SHADOW_SETTING_KEY = 'simulationWorkerShadowMode';
 const SIMULATION_WORKER_PRESENTATION_SETTING_KEY = 'simulationWorkerPresentationMode';
 const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
 const SIMULATION_RUNTIME_SETTING_KEYS = Object.freeze([
+    'debugMode',
     'physicsAccuracy',
     SIMULATION_WORKER_SHADOW_SETTING_KEY,
     SIMULATION_WORKER_AUTHORITY_SETTING_KEY
