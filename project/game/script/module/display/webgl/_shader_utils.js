@@ -112,8 +112,8 @@ export const GLASS_PANEL_VERTEX_SHADER = `
 
         vec2 zeroToOne = projectedPosition / u_resolution;
         vec2 clipSpace = (zeroToOne * 2.0) - 1.0;
-    float clipW = max(0.0001, 1.0 / perspectiveScale);
-    gl_Position = vec4(clipSpace * vec2(1.0, -1.0) * clipW, 0.0, clipW);
+        float clipW = max(0.0001, 1.0 / perspectiveScale);
+        gl_Position = vec4(clipSpace * vec2(1.0, -1.0) * clipW, 0.0, clipW);
 
         v_panelLocal = drawPosition - u_panelRect.xy;
         v_panelSize = u_panelRect.zw;

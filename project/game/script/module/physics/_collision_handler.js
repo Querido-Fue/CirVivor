@@ -41,6 +41,9 @@ const DENSE_STABILIZE_MAX_PASSES = 4;
 const DENSE_STABILIZE_LIGHT_MAX_PASSES = 2;
 const DENSE_STABILIZE_MIN_RESOLVED = 4;
 const DENSE_RESOLVE_BOOST = 1.55;
+const ENEMY_PAIR_PROCESS_BUDGET_POSITION = 14;
+const ENEMY_PAIR_PROCESS_BUDGET_STABILIZE = 10;
+const ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION = 8;
 const DENSE_CORRECTION_CANDIDATE_THRESHOLD = 5;
 const DENSE_CORRECTION_SCALE_PER_NEIGHBOR = 0.06;
 const DENSE_CORRECTION_SCALE_MAX = 2.4;
@@ -72,6 +75,7 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solvePairScanMs',
     'solveCandidateBuildMs',
     'solvePairProcessMs',
+    'solveNarrowphaseMs',
     'projectileTotalMs',
     'projectileEnemyBodyBuildMs',
     'projectileGridBuildMs',
@@ -85,7 +89,11 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveBucketPairCount',
     'solveCandidatePairCount',
     'solveDuplicatePairSkipCount',
-    'solveRuleRejectCount'
+    'solveRuleRejectCount',
+    'solveAabbPassCount',
+    'solveCirclePassCount',
+    'solveResolvedPairCount',
+    'solveBudgetSkipCount'
 ]);
 const COLLISION_RULE_NONE = Object.freeze({
     check: false,
@@ -347,6 +355,7 @@ export class CollisionHandler {
             solvePairScanMs: 0,
             solveCandidateBuildMs: 0,
             solvePairProcessMs: 0,
+            solveNarrowphaseMs: 0,
             projectileTotalMs: 0,
             projectileEnemyBodyBuildMs: 0,
             projectileGridBuildMs: 0,
@@ -360,7 +369,11 @@ export class CollisionHandler {
             solveBucketPairCount: 0,
             solveCandidatePairCount: 0,
             solveDuplicatePairSkipCount: 0,
-            solveRuleRejectCount: 0
+            solveRuleRejectCount: 0,
+            solveAabbPassCount: 0,
+            solveCirclePassCount: 0,
+            solveResolvedPairCount: 0,
+            solveBudgetSkipCount: 0
         };
         this.#bodyPool = [];
         this.#bodyPoolCursor = 0;
@@ -374,7 +387,7 @@ export class CollisionHandler {
             sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
             boundRadius: 0, broadRadius: 0, velocityX: 0, velocityY: 0,
             parts: null, partBounds: null, mergeLock: false,
-            _candidatePairCount: 0, _resolvedPairCount: 0,
+            _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
         this.#scratchManifold = {
@@ -541,6 +554,7 @@ export class CollisionHandler {
             for (let i = 0; i < dynamicBodies.length; i++) {
                 dynamicBodies[i]._candidatePairCount = 0;
                 dynamicBodies[i]._resolvedPairCount = 0;
+                dynamicBodies[i]._passPairProcessCount = 0;
                 dynamicBodies[i]._frameResolveMoved = 0;
                 const radius = Math.max(
                     1,
@@ -1278,7 +1292,9 @@ export class CollisionHandler {
         if (!Array.isArray(bodies) || bodies.length === 0) return 0;
         let peak = 0;
         for (let i = 0; i < bodies.length; i++) {
-            const count = Number.isFinite(bodies[i]?._candidatePairCount) ? bodies[i]._candidatePairCount : 0;
+            const candidateCount = Number.isFinite(bodies[i]?._candidatePairCount) ? bodies[i]._candidatePairCount : 0;
+            const resolvedCount = Number.isFinite(bodies[i]?._resolvedPairCount) ? bodies[i]._resolvedPairCount : 0;
+            const count = Math.max(candidateCount, resolvedCount);
             if (count > peak) peak = count;
         }
         return peak;
@@ -1409,7 +1425,7 @@ export class CollisionHandler {
             sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
             boundRadius: 0, broadRadius: 0, resolveRadius: 0, velocityX: 0, velocityY: 0,
             partBounds: null, mergeLock: false,
-            _candidatePairCount: 0, _resolvedPairCount: 0,
+            _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
         this.#bodyPool.push(body);
@@ -1512,7 +1528,6 @@ export class CollisionHandler {
         if (bodyCount < 2) {
             return;
         }
-
         this.#ensurePairBitmap(bodyCount);
         const gridBuckets = this.#activeGridBuckets;
         for (let b = 0; b < gridBuckets.length; b++) {
@@ -1548,6 +1563,74 @@ export class CollisionHandler {
     }
 
     /**
+     * 현재 패스에서 적-적 narrowphase 처리에 적용할 상한을 반환합니다.
+     * @private
+     * @param {boolean} resolvePositions
+     * @param {boolean} applyNonPosition
+     * @param {number} resolveBoost
+     * @returns {number}
+     */
+    #getEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost) {
+        if (applyNonPosition) {
+            return ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION;
+        }
+        if (!resolvePositions) {
+            return Number.POSITIVE_INFINITY;
+        }
+        return resolveBoost > 1
+            ? ENEMY_PAIR_PROCESS_BUDGET_STABILIZE
+            : ENEMY_PAIR_PROCESS_BUDGET_POSITION;
+    }
+
+    /**
+     * 패스 단위 적-적 처리 카운터를 초기화합니다.
+     * @private
+     * @param {object[]} bodies
+     */
+    #resetPassPairProcessCounts(bodies) {
+        for (let i = 0; i < bodies.length; i++) {
+            if (bodies[i]) {
+                bodies[i]._passPairProcessCount = 0;
+            }
+        }
+    }
+
+    /**
+     * 과밀 적-적 후보가 현재 패스 처리 예산을 초과했는지 반환합니다.
+     * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @param {number} budget
+     * @returns {boolean}
+     */
+    #shouldSkipEnemyPairByBudget(bodyA, bodyB, budget) {
+        if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
+            return false;
+        }
+        if (!Number.isFinite(budget) || budget <= 0) {
+            return false;
+        }
+
+        const passCountA = Number.isFinite(bodyA._passPairProcessCount) ? bodyA._passPairProcessCount : 0;
+        const passCountB = Number.isFinite(bodyB._passPairProcessCount) ? bodyB._passPairProcessCount : 0;
+        return passCountA >= budget || passCountB >= budget;
+    }
+
+    /**
+     * 현재 패스에서 적-적 narrowphase 시도 횟수를 누적합니다.
+     * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     */
+    #markEnemyPairProcessAttempt(bodyA, bodyB) {
+        if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
+            return;
+        }
+        bodyA._passPairProcessCount = (bodyA._passPairProcessCount || 0) + 1;
+        bodyB._passPairProcessCount = (bodyB._passPairProcessCount || 0) + 1;
+    }
+
+    /**
      * 후보 pair 목록을 현재 broad-phase 데이터 기준으로 판정합니다.
      * @private
      * @param {object[]} bodies
@@ -1559,6 +1642,8 @@ export class CollisionHandler {
     #processCandidatePairs(bodies, resolvePositions, applyNonPosition, resolveBoost) {
         const bd = this.#broadData;
         let resolvedCount = 0;
+        const pairBudget = this.#getEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost);
+        this.#resetPassPairProcessCounts(bodies);
         for (let pairIndex = 0; pairIndex < this.#candidatePairCount; pairIndex++) {
             const low = this.#candidatePairLowIndices[pairIndex];
             const high = this.#candidatePairHighIndices[pairIndex];
@@ -1576,6 +1661,7 @@ export class CollisionHandler {
                 continue;
             }
             this.#frameStats.aabbPassCount++;
+            this.#recordProfileCount('solveAabbPassCount');
             const dx = bd[oB + 8] - bd[oA + 8];
             const dy = bd[oB + 9] - bd[oA + 9];
             const rSum = bd[oA + 12] + bd[oB + 12];
@@ -1584,7 +1670,16 @@ export class CollisionHandler {
                 continue;
             }
             this.#frameStats.circlePassCount++;
-            resolvedCount += this.#processPair(
+            this.#recordProfileCount('solveCirclePassCount');
+
+            if (this.#shouldSkipEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
+                this.#recordProfileCount('solveBudgetSkipCount');
+                continue;
+            }
+            this.#markEnemyPairProcessAttempt(bodyA, bodyB);
+
+            const narrowphaseStart = this.#startProfileTimer();
+            const pairResolved = this.#processPair(
                 bodyA,
                 bodyB,
                 resolvePositions,
@@ -1592,6 +1687,11 @@ export class CollisionHandler {
                 resolveBoost,
                 rule
             );
+            this.#recordProfileDuration('solveNarrowphaseMs', narrowphaseStart);
+            if (pairResolved > 0) {
+                this.#recordProfileCount('solveResolvedPairCount', pairResolved);
+            }
+            resolvedCount += pairResolved;
         }
 
         return resolvedCount;
@@ -2045,7 +2145,7 @@ export class CollisionHandler {
      * @returns {number}
      */
     #getDenseCorrectionScale(body) {
-        const candidateCount = Number.isFinite(body?._candidatePairCount) ? body._candidatePairCount : 0;
+        const candidateCount = this.#getBodyPressure(body);
         if (candidateCount < DENSE_CORRECTION_CANDIDATE_THRESHOLD) return 1;
         const extra = candidateCount - DENSE_CORRECTION_CANDIDATE_THRESHOLD + 1;
         return Math.min(
@@ -2061,7 +2161,7 @@ export class CollisionHandler {
      * @returns {number}
      */
     #getDenseFrameScale(body) {
-        const candidateCount = Number.isFinite(body?._candidatePairCount) ? body._candidatePairCount : 0;
+        const candidateCount = this.#getBodyPressure(body);
         if (candidateCount < DENSE_FRAME_CANDIDATE_THRESHOLD) return 1;
         const extra = candidateCount - DENSE_FRAME_CANDIDATE_THRESHOLD + 1;
         return Math.min(
@@ -2360,6 +2460,7 @@ export class CollisionHandler {
             body.velocityY = velY;
             body._candidatePairCount = 0;
             body._resolvedPairCount = 0;
+            body._passPairProcessCount = 0;
             body._frameResolveMoved = 0;
             body._frameResolveMax = frameResolvePad;
             bodies.push(body);
@@ -2503,6 +2604,7 @@ export class CollisionHandler {
         body.velocityY = velY;
         body._candidatePairCount = 0;
         body._resolvedPairCount = 0;
+        body._passPairProcessCount = 0;
         body._frameResolveMoved = 0;
         body._frameResolveMax = frameResolvePad;
         return body;
@@ -2570,7 +2672,10 @@ export class CollisionHandler {
                 boundRadius: Math.max(hw, hh),
                 broadRadius: Math.hypot(hw, hh),
                 velocityX: 0,
-                velocityY: 0
+                velocityY: 0,
+                _candidatePairCount: 0,
+                _resolvedPairCount: 0,
+                _passPairProcessCount: 0
             });
         }
         this.#wallBodiesDirty = false;

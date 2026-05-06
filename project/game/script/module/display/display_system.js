@@ -11,6 +11,16 @@ import { VignetteRenderer } from './_vignette_renderer.js';
 let displaySystemInstance = null;
 
 /**
+ * WebGL 렌더 별칭을 실제 surface 식별자로 변환합니다.
+ */
+const WEBGL_LAYER_NAME_MAP = Object.freeze({
+    main: 'object',
+    mainGL: 'object',
+    backgroundGL: 'background',
+    effectGL: 'effect'
+});
+
+/**
  * @typedef {object} DisplaySurfaceDescriptor
  * @property {string} id - surface 식별자입니다.
  * @property {'2d'|'webgl'} type - surface 타입입니다.
@@ -539,13 +549,7 @@ export const render = (layerName, options) => displaySystemInstance.drawHandler.
  * @param {object} options - 렌더링 옵션입니다.
  */
 export const renderGL = (layerName, options) => {
-    const glMapping = {
-        main: 'object',
-        mainGL: 'object',
-        backgroundGL: 'background',
-        effectGL: 'effect'
-    };
-    const targetLayer = glMapping[layerName] || layerName;
+    const targetLayer = WEBGL_LAYER_NAME_MAP[layerName] || layerName;
     displaySystemInstance.webGLHandler.render(targetLayer, options);
 };
 
