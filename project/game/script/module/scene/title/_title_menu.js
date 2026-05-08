@@ -192,6 +192,7 @@ export class TitleMenu {
         this.cardRenderMap = new Map();
         this.utilityTileStateMap = new Map();
         this.utilityTileRenderMap = new Map();
+        this.textureRevisionCounter = 0;
         this.pointerEnabled = false;
         this.cardRevealElapsed = 0;
         this.cardRevealStarted = false;
@@ -284,6 +285,7 @@ export class TitleMenu {
             w: paneRenderState.cardPane.w,
             h: paneRenderState.cardPane.h,
             radius: paneRenderState.cardPane.radius,
+            sampleBackdrop: backdropPanelStyle.sampleBackdrop,
             blur: backdropPanelStyle.blur,
             fill: backdropPanelStyle.fill,
             stroke: backdropPanelStyle.stroke,
@@ -303,6 +305,7 @@ export class TitleMenu {
             w: paneRenderState.utilityPane.w,
             h: paneRenderState.utilityPane.h,
             radius: paneRenderState.utilityPane.radius,
+            sampleBackdrop: backdropPanelStyle.sampleBackdrop,
             blur: backdropPanelStyle.blur,
             fill: backdropPanelStyle.fill,
             stroke: backdropPanelStyle.stroke,
@@ -430,11 +433,19 @@ export class TitleMenu {
                 runtimeState.textureCanvas.width = 0;
                 runtimeState.textureCanvas.height = 0;
             }
+            if (runtimeState.staticTextureCanvas) {
+                runtimeState.staticTextureCanvas.width = 0;
+                runtimeState.staticTextureCanvas.height = 0;
+            }
         }
         for (const runtimeState of this.utilityTileStateMap.values()) {
             if (runtimeState.textureCanvas) {
                 runtimeState.textureCanvas.width = 0;
                 runtimeState.textureCanvas.height = 0;
+            }
+            if (runtimeState.staticTextureCanvas) {
+                runtimeState.staticTextureCanvas.width = 0;
+                runtimeState.staticTextureCanvas.height = 0;
             }
         }
         if (this.paneTextureCanvas) {
@@ -669,7 +680,10 @@ export class TitleMenu {
             particles: [],
             ripples: [],
             textureCanvas: null,
-            textureContext: null
+            textureContext: null,
+            staticTextureCanvas: null,
+            staticTextureContext: null,
+            staticTextureSignature: ''
         };
     }
 
@@ -1871,6 +1885,7 @@ export class TitleMenu {
 
         this.#drawPaneForegroundEffects(context, this.cardPaneInteractionState, cardPaneRect);
         context.restore();
+        this.#markTextureCanvasUpdated(this.cardPaneTextureCanvas);
         return this.cardPaneTextureCanvas;
     }
 
@@ -1885,6 +1900,17 @@ export class TitleMenu {
         utilityPane,
         paneInteractionState = this.utilityPaneInteractionState
     ) {
+        if (
+            !utilityPane
+            || !paneInteractionState
+            || (
+                paneInteractionState.spotlightAlpha <= 0.005
+                && paneInteractionState.borderAlpha <= 0.005
+            )
+        ) {
+            return null;
+        }
+
         const canvasWidth = Math.max(1, Math.ceil(utilityPane.w));
         const canvasHeight = Math.max(1, Math.ceil(utilityPane.h));
 
@@ -1911,6 +1937,7 @@ export class TitleMenu {
 
         this.#drawPaneForegroundEffects(context, paneInteractionState, utilityPane);
         context.restore();
+        this.#markTextureCanvasUpdated(this.paneTextureCanvas);
         return this.paneTextureCanvas;
     }
 
@@ -1922,6 +1949,10 @@ export class TitleMenu {
      * @private
      */
     #buildUtilityTileTextureCanvas(renderState, runtimeState) {
+        if (!this.#hasDynamicTextureState(runtimeState)) {
+            return this.#getStaticUtilityTileTextureCanvas(renderState, runtimeState);
+        }
+
         const panelRect = renderState.panelRect;
         const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
         const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
@@ -1951,6 +1982,7 @@ export class TitleMenu {
         this.#drawUtilityTileContent(context, renderState, runtimeState.hovered);
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
+        this.#markTextureCanvasUpdated(runtimeState.textureCanvas);
         return runtimeState.textureCanvas;
     }
 
@@ -2008,6 +2040,10 @@ export class TitleMenu {
      * @private
      */
     #buildCardTextureCanvas(card, runtimeState, renderState) {
+        if (!this.#hasDynamicTextureState(runtimeState, renderState)) {
+            return this.#getStaticCardTextureCanvas(card, runtimeState, renderState);
+        }
+
         const panelRect = renderState.panelRect;
         const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
         const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
@@ -2037,7 +2073,239 @@ export class TitleMenu {
         this.#drawFrontfaceContent(context, card, renderState);
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
+        this.#markTextureCanvasUpdated(runtimeState.textureCanvas);
         return runtimeState.textureCanvas;
+    }
+
+    /**
+     * 카드의 정적 앞면 텍스처를 반환합니다.
+     * @param {TitleMenuCard} card - 대상 카드입니다.
+     * @param {object} runtimeState - 카드 런타임 상태입니다.
+     * @param {object} renderState - 카드 렌더 상태입니다.
+     * @returns {HTMLCanvasElement|null} 정적 카드 텍스처입니다.
+     * @private
+     */
+    #getStaticCardTextureCanvas(card, runtimeState, renderState) {
+        const panelRect = renderState?.panelRect;
+        if (!runtimeState || !panelRect) {
+            return null;
+        }
+
+        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
+        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
+        const signature = this.#buildCardStaticTextureSignature(card, renderState);
+
+        if (!runtimeState.staticTextureCanvas || !runtimeState.staticTextureContext) {
+            runtimeState.staticTextureCanvas = document.createElement('canvas');
+            runtimeState.staticTextureContext = runtimeState.staticTextureCanvas.getContext('2d');
+        }
+
+        const canvas = runtimeState.staticTextureCanvas;
+        const sizeChanged = canvas.width !== canvasWidth || canvas.height !== canvasHeight;
+        if (!sizeChanged && runtimeState.staticTextureSignature === signature) {
+            return canvas;
+        }
+
+        if (canvas.width !== canvasWidth) {
+            canvas.width = canvasWidth;
+        }
+        if (canvas.height !== canvasHeight) {
+            canvas.height = canvasHeight;
+        }
+
+        const context = runtimeState.staticTextureContext;
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, canvasWidth, canvasHeight);
+        context.save();
+        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
+        context.beginPath();
+        context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
+        context.clip();
+        this.#drawFrontfaceContent(context, card, {
+            ...renderState,
+            hoverProgress: 0
+        });
+        context.restore();
+
+        runtimeState.staticTextureSignature = signature;
+        this.#markTextureCanvasUpdated(canvas);
+        return canvas;
+    }
+
+    /**
+     * 유틸리티 타일의 정적 텍스처를 반환합니다.
+     * @param {object} renderState - 타일 렌더 상태입니다.
+     * @param {object} runtimeState - 타일 런타임 상태입니다.
+     * @returns {HTMLCanvasElement|null} 정적 타일 텍스처입니다.
+     * @private
+     */
+    #getStaticUtilityTileTextureCanvas(renderState, runtimeState) {
+        const panelRect = renderState?.panelRect;
+        if (!runtimeState || !panelRect) {
+            return null;
+        }
+
+        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
+        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
+        const signature = this.#buildUtilityTileStaticTextureSignature(renderState, runtimeState);
+
+        if (!runtimeState.staticTextureCanvas || !runtimeState.staticTextureContext) {
+            runtimeState.staticTextureCanvas = document.createElement('canvas');
+            runtimeState.staticTextureContext = runtimeState.staticTextureCanvas.getContext('2d');
+        }
+
+        const canvas = runtimeState.staticTextureCanvas;
+        const sizeChanged = canvas.width !== canvasWidth || canvas.height !== canvasHeight;
+        if (!sizeChanged && runtimeState.staticTextureSignature === signature) {
+            return canvas;
+        }
+
+        if (canvas.width !== canvasWidth) {
+            canvas.width = canvasWidth;
+        }
+        if (canvas.height !== canvasHeight) {
+            canvas.height = canvasHeight;
+        }
+
+        const context = runtimeState.staticTextureContext;
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, canvasWidth, canvasHeight);
+        context.save();
+        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
+        context.beginPath();
+        context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
+        context.clip();
+        this.#drawUtilityTileContent(context, renderState, runtimeState.hovered);
+        context.restore();
+
+        runtimeState.staticTextureSignature = signature;
+        this.#markTextureCanvasUpdated(canvas);
+        return canvas;
+    }
+
+    /**
+     * 현재 상태가 매 프레임 텍스처 재생성을 필요로 하는지 반환합니다.
+     * @param {object} runtimeState - 카드 또는 타일 런타임 상태입니다.
+     * @param {object|null} [renderState=null] - 렌더 상태입니다.
+     * @returns {boolean} 동적 텍스처 필요 여부입니다.
+     * @private
+     */
+    #hasDynamicTextureState(runtimeState, renderState = null) {
+        if (!runtimeState) {
+            return false;
+        }
+
+        const hoverProgress = Number.isFinite(renderState?.hoverProgress)
+            ? renderState.hoverProgress
+            : 0;
+        return hoverProgress > 0.005
+            || runtimeState.spotlightAlpha > 0.005
+            || runtimeState.borderAlpha > 0.005
+            || runtimeState.ripples.length > 0
+            || (runtimeState.particleAlpha > 0.005 && runtimeState.particles.length > 0);
+    }
+
+    /**
+     * 카드 정적 텍스처 캐시 식별자를 생성합니다.
+     * @param {TitleMenuCard} card - 대상 카드입니다.
+     * @param {object} renderState - 카드 렌더 상태입니다.
+     * @returns {string} 캐시 식별자입니다.
+     * @private
+     */
+    #buildCardStaticTextureSignature(card, renderState) {
+        const panelRect = renderState.panelRect;
+        const title = getLangString(card.cardDefinition.titleKey);
+        const description = card.cardDefinition.descriptionKey ? getLangString(card.cardDefinition.descriptionKey) : '';
+
+        return [
+            'card',
+            card.cardDefinition.id,
+            Math.ceil(panelRect.w),
+            Math.ceil(panelRect.h),
+            Math.ceil(panelRect.radius),
+            title,
+            description,
+            Math.round(this.UIWW),
+            Math.round(this.WH),
+            this.#getTextPresetFontSize('H6'),
+            this.#getStaticTextureThemeSignature(),
+            this.#getIconTextureSignature(card.cardDefinition.id)
+        ].join('|');
+    }
+
+    /**
+     * 유틸리티 타일 정적 텍스처 캐시 식별자를 생성합니다.
+     * @param {object} renderState - 타일 렌더 상태입니다.
+     * @param {object} runtimeState - 타일 런타임 상태입니다.
+     * @returns {string} 캐시 식별자입니다.
+     * @private
+     */
+    #buildUtilityTileStaticTextureSignature(renderState, runtimeState) {
+        const panelRect = renderState.panelRect;
+        return [
+            'utility',
+            renderState.id,
+            Math.ceil(panelRect.w),
+            Math.ceil(panelRect.h),
+            Math.ceil(panelRect.radius),
+            Number(runtimeState.hovered === true),
+            Math.ceil(renderState.placeholderSize || 0),
+            Math.round(this.UIWW),
+            Math.round(this.WH),
+            this.#getStaticTextureThemeSignature(),
+            this.#getIconTextureSignature(renderState.id)
+        ].join('|');
+    }
+
+    /**
+     * 정적 텍스처에 영향을 주는 테마 값을 문자열로 묶습니다.
+     * @returns {string} 테마 캐시 식별자입니다.
+     * @private
+     */
+    #getStaticTextureThemeSignature() {
+        return [
+            getCurrentThemeKey(),
+            getMenuForegroundColor(),
+            getMenuAccentColor(),
+            ColorSchemes?.Title?.Button?.Text,
+            ColorSchemes?.Overlay?.Text?.Item,
+            getMenuOpacity('Placeholder', 0.92),
+            getMenuOpacity('CardInnerLine', 0.08),
+            getMenuOpacity('CardInnerLineFocusDelta', 0.08)
+        ].join(':');
+    }
+
+    /**
+     * 아이콘 로딩 상태를 정적 텍스처 캐시에 반영할 식별자로 변환합니다.
+     * @param {string} iconId - 아이콘 식별자입니다.
+     * @returns {string} 아이콘 캐시 식별자입니다.
+     * @private
+     */
+    #getIconTextureSignature(iconId) {
+        const iconSource = getTitleMenuIconSource(iconId) || '';
+        const iconRecord = iconSource ? this.svgDrawer.getCachedSvgFile(iconSource) : null;
+        return [
+            iconSource,
+            Number(Boolean(iconRecord?.image)),
+            Number.isFinite(iconRecord?.aspectRatio) ? iconRecord.aspectRatio : 0
+        ].join(':');
+    }
+
+    /**
+     * 캔버스 텍스처 revision을 증가시켜 WebGL 업로드 캐시에 변경을 알립니다.
+     * @param {HTMLCanvasElement|null} canvas - 갱신된 텍스처 캔버스입니다.
+     * @private
+     */
+    #markTextureCanvasUpdated(canvas) {
+        if (!canvas) {
+            return;
+        }
+
+        this.textureRevisionCounter += 1;
+        if (this.textureRevisionCounter >= Number.MAX_SAFE_INTEGER) {
+            this.textureRevisionCounter = 1;
+        }
+        canvas.__overlayTextureRevision = this.textureRevisionCounter;
     }
 
     /**
@@ -2835,7 +3103,8 @@ export class TitleMenu {
             return {
                 fill: ColorSchemes.Overlay.Panel.Background,
                 stroke: unifiedStroke,
-                blur: Math.max(18, this.WH * 0.12),
+                sampleBackdrop: false,
+                blur: 0,
                 lineWidth: 1.05,
                 tintColor: ColorSchemes.Overlay.Panel.GlassTint,
                 edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
@@ -2848,6 +3117,7 @@ export class TitleMenu {
         return {
             fill: ColorSchemes.Overlay.Panel.GlassBackground,
             stroke: unifiedStroke,
+            sampleBackdrop: true,
             blur: 0.1,
             lineWidth: 1.05,
             tintColor: ColorSchemes.Overlay.Panel.GlassTint,

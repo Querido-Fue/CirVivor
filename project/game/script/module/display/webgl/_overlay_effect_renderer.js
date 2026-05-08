@@ -37,7 +37,12 @@ export class OverlayEffectRenderer {
         this.upTargets = [];
         this.sourceTexture = null;
         this.panelTexture = null;
+        this.panelTextureCache = new WeakMap();
+        this.panelTextureRecords = new Set();
+        this.activePanelTexture = null;
         this.emptyTexture = null;
+        this.frameSerial = 0;
+        this.lastBlurFrameSerial = -1;
 
         this.#initPrograms();
         this.#initBuffers();
@@ -76,6 +81,10 @@ export class OverlayEffectRenderer {
      */
     beginFrame(width, height) {
         this.resize(width, height);
+        this.frameSerial += 1;
+        if (this.frameSerial >= Number.MAX_SAFE_INTEGER) {
+            this.frameSerial = 1;
+        }
 
         this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
         this.gl.viewport(0, 0, this.width, this.height);
@@ -120,10 +129,15 @@ export class OverlayEffectRenderer {
             this.sourceTexture = null;
         }
 
-        if (this.panelTexture) {
-            gl.deleteTexture(this.panelTexture);
-            this.panelTexture = null;
+        for (const record of this.panelTextureRecords) {
+            if (record.texture) {
+                gl.deleteTexture(record.texture);
+            }
         }
+        this.panelTextureRecords.clear();
+        this.panelTextureCache = new WeakMap();
+        this.panelTexture = null;
+        this.activePanelTexture = null;
 
         if (this.emptyTexture) {
             gl.deleteTexture(this.emptyTexture);
@@ -265,8 +279,10 @@ export class OverlayEffectRenderer {
     #ensureBlurTexture(command) {
         const blurUpdateMode = command.blurUpdateMode || OVERLAY_RENDER_CONSTANTS.BLUR_UPDATE_MODE.DIRTY;
         const blurRevision = Number.isFinite(command.blurRevision) ? command.blurRevision : 0;
+        const needsFrameRefresh = blurUpdateMode === OVERLAY_RENDER_CONSTANTS.BLUR_UPDATE_MODE.ALWAYS
+            && this.lastBlurFrameSerial !== this.frameSerial;
         const shouldRefresh = command.forceBlurRefresh === true
-            || blurUpdateMode === OVERLAY_RENDER_CONSTANTS.BLUR_UPDATE_MODE.ALWAYS
+            || needsFrameRefresh
             || this.blurDirty
             || this.lastBlurRevision !== blurRevision
             || !this.finalBlurTexture;
@@ -283,6 +299,7 @@ export class OverlayEffectRenderer {
         this.#runKawaseBlur(command);
 
         this.lastBlurRevision = blurRevision;
+        this.lastBlurFrameSerial = this.frameSerial;
         this.blurDirty = false;
     }
 
@@ -480,16 +497,41 @@ export class OverlayEffectRenderer {
      */
     #uploadPanelTexture(canvas) {
         const gl = this.gl;
-        if (!this.panelTexture) {
-            this.panelTexture = this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height));
+        let record = this.panelTextureCache.get(canvas);
+        if (!record) {
+            record = {
+                texture: this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height)),
+                width: 0,
+                height: 0,
+                revision: Number.NaN
+            };
+            this.panelTextureCache.set(canvas, record);
+            this.panelTextureRecords.add(record);
         }
 
-        gl.bindTexture(gl.TEXTURE_2D, this.panelTexture);
+        const revision = Number.isFinite(canvas.__overlayTextureRevision)
+            ? canvas.__overlayTextureRevision
+            : Number.NaN;
+        const needsUpload = record.width !== canvas.width
+            || record.height !== canvas.height
+            || !Number.isFinite(revision)
+            || record.revision !== revision;
+
+        gl.bindTexture(gl.TEXTURE_2D, record.texture);
+        if (!needsUpload) {
+            this.activePanelTexture = record.texture;
+            return;
+        }
+
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        record.width = canvas.width;
+        record.height = canvas.height;
+        record.revision = revision;
+        this.activePanelTexture = record.texture;
     }
 
     /**
@@ -624,7 +666,7 @@ export class OverlayEffectRenderer {
         gl.uniform1f(this.panelTextureProgram.uniforms.u_radius, options.radius);
         gl.uniform1f(this.panelTextureProgram.uniforms.u_alpha, options.alpha);
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.panelTexture);
+        gl.bindTexture(gl.TEXTURE_2D, this.activePanelTexture);
         gl.uniform1i(this.panelTextureProgram.uniforms.u_texture, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }

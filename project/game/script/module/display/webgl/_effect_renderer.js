@@ -49,6 +49,14 @@ class MagneticShieldEffectPass {
         const fieldRadius = Number.isFinite(command.fieldRadius)
             ? Math.max(command.radius, command.fieldRadius)
             : command.radius;
+        const boundsRadius = Math.max(
+            fieldRadius,
+            command.radius + (glowWidth * 3) + (ringThickness * 8) + 16
+        );
+        const scissorRect = this.#buildScissorRect(centerX, centerY, boundsRadius, renderWidth, renderHeight);
+        if (!scissorRect) {
+            return;
+        }
         const impacts = Array.isArray(command.impacts) ? command.impacts : [];
         const dents = Array.isArray(command.dents) ? command.dents : [];
         const impactCount = this.#writeImpacts(impacts);
@@ -76,7 +84,9 @@ class MagneticShieldEffectPass {
         gl.uniform1i(this.programInfo.uniforms.u_dentCount, dentCount);
         gl.uniform4fv(this.programInfo.uniforms.u_dents, this.dentBuffer);
 
+        this.#applyScissorRect(scissorRect, renderHeight);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.disable(gl.SCISSOR_TEST);
     }
 
     /**
@@ -145,6 +155,56 @@ class MagneticShieldEffectPass {
             1, 1
         ]), gl.STATIC_DRAW);
         return buffer;
+    }
+
+    /**
+     * 실드가 실제로 보일 수 있는 화면 영역을 scissor 사각형으로 계산합니다.
+     * @param {number} centerX - 실드 중심 X 좌표입니다.
+     * @param {number} centerY - 실드 중심 Y 좌표입니다.
+     * @param {number} boundsRadius - 실드 렌더링 경계 반경입니다.
+     * @param {number} width - 렌더 타깃 너비입니다.
+     * @param {number} height - 렌더 타깃 높이입니다.
+     * @returns {{x:number, y:number, w:number, h:number}|null} scissor 사각형입니다.
+     * @private
+     */
+    #buildScissorRect(centerX, centerY, boundsRadius, width, height) {
+        if (!(Number.isFinite(boundsRadius) && boundsRadius > 0)) {
+            return null;
+        }
+
+        const left = Math.max(0, Math.floor(centerX - boundsRadius));
+        const top = Math.max(0, Math.floor(centerY - boundsRadius));
+        const right = Math.min(width, Math.ceil(centerX + boundsRadius));
+        const bottom = Math.min(height, Math.ceil(centerY + boundsRadius));
+        const rectWidth = right - left;
+        const rectHeight = bottom - top;
+        if (rectWidth <= 0 || rectHeight <= 0) {
+            return null;
+        }
+
+        return {
+            x: left,
+            y: top,
+            w: rectWidth,
+            h: rectHeight
+        };
+    }
+
+    /**
+     * WebGL 하단 원점 좌표계에 맞춰 scissor 영역을 적용합니다.
+     * @param {{x:number, y:number, w:number, h:number}} rect - 상단 원점 기준 scissor 영역입니다.
+     * @param {number} renderHeight - 렌더 타깃 높이입니다.
+     * @private
+     */
+    #applyScissorRect(rect, renderHeight) {
+        const gl = this.gl;
+        gl.enable(gl.SCISSOR_TEST);
+        gl.scissor(
+            rect.x,
+            Math.max(0, renderHeight - rect.y - rect.h),
+            rect.w,
+            rect.h
+        );
     }
 
     /**

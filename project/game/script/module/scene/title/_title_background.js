@@ -22,6 +22,8 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
 const TITLE_ENEMY_SPAWN_CULL_GUARD_PX = 0.5;
 const TITLE_PARALLAX_LAYERS = TITLE_CONSTANTS.TITLE_ENEMIES.PARALLAX_LAYERS || [];
+const TITLE_ENEMY_SOFTNESS_ALPHA_MULTIPLIER = 2.2;
+const TITLE_ENEMY_SOFTNESS_SCALE_EXPANSION = 1.035;
 
 /**
  * 로고/배경에서 사용할 기본 적 색상을 반환합니다.
@@ -656,39 +658,13 @@ export class TitleBackGround {
 
         if (softnessAlpha > 0.001 && softnessScale > 1) {
             const blurFill = this.#mixEnemyColorWithBackground(Math.min(1, (layerProfile.ColorMix || 0) + 0.12));
-            const blurAlpha = enemy.alpha * softnessAlpha;
+            const blurAlpha = Math.min(1, enemy.alpha * softnessAlpha * TITLE_ENEMY_SOFTNESS_ALPHA_MULTIPLIER);
             enemy.draw({
                 fill: blurFill,
                 alpha: blurAlpha,
-                sizeScale: softnessScale,
-                offsetX: -softnessOffsetPx,
-                offsetY: 0
-            });
-            enemy.draw({
-                fill: blurFill,
-                alpha: blurAlpha,
-                sizeScale: softnessScale,
-                offsetX: softnessOffsetPx,
-                offsetY: 0
-            });
-            enemy.draw({
-                fill: blurFill,
-                alpha: blurAlpha,
-                sizeScale: softnessScale,
-                offsetX: 0,
-                offsetY: -softnessOffsetPx
-            });
-            enemy.draw({
-                fill: blurFill,
-                alpha: blurAlpha,
-                sizeScale: softnessScale,
-                offsetX: 0,
-                offsetY: softnessOffsetPx
-            });
-            enemy.draw({
-                fill: blurFill,
-                alpha: blurAlpha * 0.85,
-                sizeScale: softnessScale * 1.02
+                sizeScale: softnessScale * TITLE_ENEMY_SOFTNESS_SCALE_EXPANSION,
+                offsetX: softnessOffsetPx * 0.25,
+                offsetY: softnessOffsetPx * 0.25
             });
         }
 
