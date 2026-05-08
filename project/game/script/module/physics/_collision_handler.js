@@ -402,6 +402,8 @@ export class CollisionHandler {
     #candidatePairHighIndices;
     #candidatePairCount;
     #candidatePairBodyCount;
+    #enemyBodyFrameToken;
+    #enemyBodyCache;
     #profileEnabled;
 
     constructor() {
@@ -497,6 +499,14 @@ export class CollisionHandler {
         this.#candidatePairHighIndices = new Int32Array(1024);
         this.#candidatePairCount = 0;
         this.#candidatePairBodyCount = 0;
+        this.#enemyBodyFrameToken = 0;
+        this.#enemyBodyCache = {
+            frameToken: -1,
+            enemies: null,
+            delta: 0,
+            sourceLength: 0,
+            bodies: this.#enemyBodiesBuffer
+        };
         this.#profileEnabled = false;
     }
 
@@ -520,6 +530,8 @@ export class CollisionHandler {
      */
     resetFrameStats() {
         this.#profileEnabled = this.#isProfilingEnabled();
+        this.#enemyBodyFrameToken++;
+        this.#invalidateEnemyBodyCache();
         this.#frameStats.collisionCheckCount = 0;
         this.#frameStats.aabbPassCount = 0;
         this.#frameStats.aabbRejectCount = 0;
@@ -620,13 +632,12 @@ export class CollisionHandler {
         try {
             if (!Array.isArray(enemies) || enemies.length === 0) return 0;
 
-            this.#resetBodyPool();
             const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
             const maxIterations = this.#resolveIterationCount();
             const players = Array.isArray(options.players) ? options.players : [];
 
             const enemyBodyBuildStart = this.#startProfileTimer();
-            const dynamicBodies = this.#buildEnemyBodies(enemies, delta);
+            const dynamicBodies = this.#buildFreshEnemyBodies(enemies, delta, true);
             this.#recordProfileDuration('enemyBodyBuildMs', enemyBodyBuildStart);
 
             const playerBodyBuildStart = this.#startProfileTimer();
@@ -771,9 +782,10 @@ export class CollisionHandler {
             if (!Array.isArray(projectiles) || !Array.isArray(enemies)) return 0;
             if (projectiles.length === 0 || enemies.length === 0) return 0;
 
-            this.#resetBodyPool();
+            const safeDelta = Math.max(delta, EPSILON);
             const enemyBodyBuildStart = this.#startProfileTimer();
-            const enemyBodies = this.#buildEnemyBodies(enemies, Math.max(delta, EPSILON));
+            const enemyBodies = this.#getReusableEnemyBodies(enemies, safeDelta)
+                ?? this.#buildFreshEnemyBodies(enemies, safeDelta, false);
             this.#recordProfileDuration('projectileEnemyBodyBuildMs', enemyBodyBuildStart);
             if (enemyBodies.length === 0) return 0;
 
@@ -873,6 +885,7 @@ export class CollisionHandler {
 
             return hitCount;
         } finally {
+            this.#invalidateEnemyBodyCache();
             this.#recordProfileDuration('projectileTotalMs', totalStart);
         }
     }
@@ -1881,6 +1894,71 @@ export class CollisionHandler {
      */
     #resetBodyPool() {
         this.#bodyPoolCursor = 0;
+        this.#invalidateEnemyBodyCache();
+    }
+
+    /**
+     * enemy body 재사용 캐시를 무효화합니다.
+     * @private
+     */
+    #invalidateEnemyBodyCache() {
+        this.#enemyBodyCache.frameToken = -1;
+        this.#enemyBodyCache.enemies = null;
+        this.#enemyBodyCache.delta = 0;
+        this.#enemyBodyCache.sourceLength = 0;
+    }
+
+    /**
+     * 새 body pool 세대에서 enemy body를 만들고 필요하면 같은 프레임 재사용 캐시에 보관합니다.
+     * @private
+     * @param {object[]} enemies
+     * @param {number} delta
+     * @param {boolean} [cacheForReuse=false]
+     * @returns {object[]}
+     */
+    #buildFreshEnemyBodies(enemies, delta, cacheForReuse = false) {
+        this.#resetBodyPool();
+        const bodies = this.#buildEnemyBodies(enemies, delta);
+        if (cacheForReuse) {
+            this.#storeEnemyBodyCache(enemies, delta, bodies);
+        }
+        return bodies;
+    }
+
+    /**
+     * 현재 fixed frame에서 같은 enemy 배열로 만든 body를 캐시에 기록합니다.
+     * @private
+     * @param {object[]} enemies
+     * @param {number} delta
+     * @param {object[]} bodies
+     */
+    #storeEnemyBodyCache(enemies, delta, bodies) {
+        this.#enemyBodyCache.frameToken = this.#enemyBodyFrameToken;
+        this.#enemyBodyCache.enemies = enemies;
+        this.#enemyBodyCache.delta = delta;
+        this.#enemyBodyCache.sourceLength = Array.isArray(enemies) ? enemies.length : 0;
+        this.#enemyBodyCache.bodies = bodies;
+    }
+
+    /**
+     * 같은 fixed frame에서 같은 enemy 배열과 delta로 만든 body를 반환합니다.
+     * @private
+     * @param {object[]} enemies
+     * @param {number} delta
+     * @returns {object[]|null}
+     */
+    #getReusableEnemyBodies(enemies, delta) {
+        const cache = this.#enemyBodyCache;
+        if (cache.frameToken !== this.#enemyBodyFrameToken) {
+            return null;
+        }
+        if (cache.enemies !== enemies || cache.sourceLength !== enemies.length) {
+            return null;
+        }
+        if (Math.abs(cache.delta - delta) > EPSILON) {
+            return null;
+        }
+        return Array.isArray(cache.bodies) ? cache.bodies : null;
     }
 
     /**

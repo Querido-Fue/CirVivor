@@ -1,83 +1,6 @@
 import { renderGL } from 'display/display_system.js';
-import { ColorSchemes } from 'display/_theme_handler.js';
 import { getDelta } from 'game/time_handler.js';
-import { getData } from 'data/data_handler.js';
-import { colorUtil } from 'util/color_util.js';
-
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_SHIELD = TITLE_CONSTANTS.TITLE_SHIELD || Object.freeze({});
-const DEFAULT_MAGNETIC_SHIELD_COLORS = Object.freeze({
-    shadow: Object.freeze([0.07, 0.04, 0.25]),
-    low: Object.freeze([0.60, 0.36, 0.98]),
-    high: Object.freeze([0.70, 0.93, 1.0]),
-    highlight: Object.freeze([0.96, 0.995, 1.0])
-});
-const THEME_SHIELD_PATHS = Object.freeze({
-    shadow: ['Title', 'Shield', 'Shadow'],
-    low: ['Title', 'Shield', 'Low'],
-    high: ['Title', 'Shield', 'High'],
-    highlight: ['Title', 'Shield', 'Highlight']
-});
-
-/**
- * @description 배열 인덱스로 객체 깊은 경로에 접근합니다.
- * @param {string[]} path - 테마 경로입니다.
- * @param {object} [fallback='#000000'] - 기본값입니다.
- * @returns {string|object|null} 경로 값입니다.
- */
-function getThemeValue(path, fallback = null) {
-    let value = ColorSchemes;
-    for (const key of path) {
-        value = value?.[key];
-        if (!value) {
-            return fallback;
-        }
-    }
-
-    return value;
-}
-
-/**
- * 0~1 범위의 색상 벡터를 반환합니다.
- * @param {string} color - css 색상 문자열입니다.
- * @param {Array<number>} fallback - 예비 색상입니다.
- * @returns {Array<number>} 0~1 색상 벡터입니다.
- */
-function colorToVec3(color, fallback = Object.freeze([0, 0, 0])) {
-    const colorString = typeof color === 'string' ? color.trim() : null;
-    if (!colorString) {
-        return fallback;
-    }
-
-    const parsed = colorUtil().cssToRgb(colorString);
-    if (!parsed || !Number.isFinite(parsed.r) || !Number.isFinite(parsed.g) || !Number.isFinite(parsed.b)) {
-        return fallback;
-    }
-
-    return Object.freeze([
-        Math.max(0, Math.min(1, parsed.r / 255)),
-        Math.max(0, Math.min(1, parsed.g / 255)),
-        Math.max(0, Math.min(1, parsed.b / 255))
-    ]);
-}
-
-/**
- * 실드 색상 설정을 반환합니다.
- * @returns {{shadow: number[], low: number[], high: number[], highlight: number[]}} 실드 색상 벡터입니다.
- */
-function getShieldColors() {
-    const shadow = colorToVec3(getThemeValue(THEME_SHIELD_PATHS.shadow), DEFAULT_MAGNETIC_SHIELD_COLORS.shadow);
-    const low = colorToVec3(getThemeValue(THEME_SHIELD_PATHS.low), DEFAULT_MAGNETIC_SHIELD_COLORS.low);
-    const high = colorToVec3(getThemeValue(THEME_SHIELD_PATHS.high), DEFAULT_MAGNETIC_SHIELD_COLORS.high);
-    const highlight = colorToVec3(getThemeValue(THEME_SHIELD_PATHS.highlight), DEFAULT_MAGNETIC_SHIELD_COLORS.highlight);
-
-    return {
-        shadow,
-        low,
-        high,
-        highlight
-    };
-}
+import { TitleShieldConfig } from './_title_shield_config.js';
 
 /**
  * @class TitleShieldEffect
@@ -103,6 +26,7 @@ export class TitleShieldEffect {
         this.activeDentKeys = [];
         this.enemyStateMap = new WeakMap();
         this.visualLayoutInitialized = false;
+        this.config = new TitleShieldConfig();
     }
 
     /**
@@ -121,7 +45,7 @@ export class TitleShieldEffect {
         this.targetCenterX = Number.isFinite(layout.centerX) ? layout.centerX : 0;
         this.targetCenterY = Number.isFinite(layout.centerY) ? layout.centerY : 0;
         this.targetCoreRadius = Number.isFinite(layout.radius) ? Math.max(0, layout.radius) : 0;
-        this.targetRadius = this.targetCoreRadius * this.#getShellRadiusMultiplier();
+        this.targetRadius = this.targetCoreRadius * this.config.getShellRadiusMultiplier();
 
         if (this.visualLayoutInitialized) {
             return;
@@ -152,7 +76,7 @@ export class TitleShieldEffect {
         if (!Number.isFinite(delta) || delta < 0) {
             return;
         }
-        const visualDelta = this.#getVisualDelta(delta);
+        const visualDelta = this.config.getVisualDelta(delta);
 
         this.time += delta;
         this.#updateImpacts(delta, visualDelta);
@@ -186,18 +110,18 @@ export class TitleShieldEffect {
         if (this.radius <= 0) {
             return;
         }
-        const shieldColors = getShieldColors();
+        const shieldColors = this.config.getColors();
 
         renderGL('effect', {
             effectType: 'magneticShield',
             x: this.centerX,
             y: this.centerY,
             radius: this.radius,
-            fieldRadius: this.#getFieldRadius(),
+            fieldRadius: this.config.getFieldRadius(this.radius),
             time: this.time,
-            alpha: this.#getBaseAlpha(),
-            ringThickness: this.#getRingThickness(),
-            glowWidth: this.#getGlowWidth(),
+            alpha: this.config.getBaseAlpha(),
+            ringThickness: this.config.getRingThickness(),
+            glowWidth: this.config.getGlowWidth(),
             shadowColor: shieldColors.shadow,
             lowColor: shieldColors.low,
             highColor: shieldColors.high,
