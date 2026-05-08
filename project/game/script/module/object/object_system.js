@@ -12,8 +12,13 @@ import {
     collectHexaMergeCandidates,
     syncHexaHiveMergeState
 } from './enemy/_hexa_hive_merge.js';
+import {
+    consumeObjectSystemSimulationCommands,
+    createObjectSystemSimulationCommandState,
+    queueObjectSystemEnemyDespawn,
+    queueObjectSystemEnemySpawn
+} from './object_system_simulation_commands.js';
 import { PhysicsSystem } from 'physics/physics_system.js';
-import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_protocol.js';
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
 
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
@@ -61,10 +66,7 @@ export class ObjectSystem {
         this.aiWallsVersion = 0;
         this.enemyCullOutsideRatio = DEFAULT_OUTSIDE_CULL_RATIO;
         this.hexaHiveContactSecondsByPair = new Map();
-        this.pendingSimulationCommandState = {
-            enemyDespawnIds: [],
-            enemySpawnSnapshots: []
-        };
+        this.pendingSimulationCommandState = createObjectSystemSimulationCommandState();
     }
 
     /**
@@ -679,27 +681,7 @@ export class ObjectSystem {
      * @returns {object[]}
      */
     consumeSimulationCommands() {
-        const commands = [];
-        if (Array.isArray(this.pendingSimulationCommandState.enemySpawnSnapshots)
-            && this.pendingSimulationCommandState.enemySpawnSnapshots.length > 0) {
-            commands.push({
-                type: GAME_SCENE_COMMAND_TYPES.SPAWN_ENEMY_BATCH,
-                enemies: [...this.pendingSimulationCommandState.enemySpawnSnapshots],
-                nextEnemyIdCounter: this.enemyIdCounter
-            });
-        }
-        const uniqueEnemyIds = [...new Set(this.pendingSimulationCommandState.enemyDespawnIds)];
-        if (uniqueEnemyIds.length > 0) {
-            commands.push({
-                type: GAME_SCENE_COMMAND_TYPES.DESPAWN_ENEMY_BATCH,
-                enemyIds: uniqueEnemyIds,
-                nextEnemyIdCounter: this.enemyIdCounter
-            });
-        }
-
-        this.pendingSimulationCommandState.enemySpawnSnapshots.length = 0;
-        this.pendingSimulationCommandState.enemyDespawnIds.length = 0;
-        return commands;
+        return consumeObjectSystemSimulationCommands(this.pendingSimulationCommandState, this.enemyIdCounter);
     }
 
     /**
@@ -719,11 +701,7 @@ export class ObjectSystem {
      * @param {number|null|undefined} enemyId
      */
     #queueEnemyDespawn(enemyId) {
-        if (!Number.isInteger(enemyId)) {
-            return;
-        }
-
-        this.pendingSimulationCommandState.enemyDespawnIds.push(enemyId);
+        queueObjectSystemEnemyDespawn(this.pendingSimulationCommandState, enemyId);
     }
 
     /**
@@ -731,11 +709,7 @@ export class ObjectSystem {
      * @param {object|null|undefined} enemy
      */
     #queueEnemySpawn(enemy) {
-        if (!enemy || typeof enemy.createSimulationSnapshot !== 'function') {
-            return;
-        }
-
-        this.pendingSimulationCommandState.enemySpawnSnapshots.push(enemy.createSimulationSnapshot());
+        queueObjectSystemEnemySpawn(this.pendingSimulationCommandState, enemy);
     }
 }
 
