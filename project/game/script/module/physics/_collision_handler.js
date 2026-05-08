@@ -848,11 +848,13 @@ export class CollisionHandler {
                             continue;
                         }
                         this.#frameStats.aabbPassCount++;
-                        if (!this.#bodyBroadCircleOverlap(circleBody, enemyBody)) {
-                            this.#frameStats.circleRejectCount++;
-                            continue;
+                        if (this.#shouldUseBroadCircleFilter(circleBody, enemyBody)) {
+                            if (!this.#bodyBroadCircleOverlap(circleBody, enemyBody)) {
+                                this.#frameStats.circleRejectCount++;
+                                continue;
+                            }
+                            this.#frameStats.circlePassCount++;
                         }
-                        this.#frameStats.circlePassCount++;
 
                         const manifold = this.#detectBodies(circleBody, enemyBody);
                         if (!manifold) continue;
@@ -940,7 +942,11 @@ export class CollisionHandler {
                             continue;
                         }
 
-                        if (!this.#bodyAabbOverlap(bodyA, bodyB) || !this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
+                        if (!this.#bodyAabbOverlap(bodyA, bodyB)) {
+                            continue;
+                        }
+
+                        if (this.#shouldUseBroadCircleFilter(bodyA, bodyB) && !this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
                             continue;
                         }
 
@@ -2137,12 +2143,14 @@ export class CollisionHandler {
             }
             this.#frameStats.aabbPassCount++;
             this.#recordProfileCount('solveAabbPassCount');
-            if (!this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
-                this.#frameStats.circleRejectCount++;
-                continue;
+            if (this.#shouldUseBroadCircleFilter(bodyA, bodyB)) {
+                if (!this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
+                    this.#frameStats.circleRejectCount++;
+                    continue;
+                }
+                this.#frameStats.circlePassCount++;
+                this.#recordProfileCount('solveCirclePassCount');
             }
-            this.#frameStats.circlePassCount++;
-            this.#recordProfileCount('solveCirclePassCount');
 
             this.#markEnemyPairProcessAttempt(bodyA, bodyB);
 
@@ -2438,6 +2446,17 @@ export class CollisionHandler {
             minAY <= maxBY &&
             maxAY >= minBY
         );
+    }
+
+    /**
+     * broad circle 필터가 narrowphase와 다른 의미를 갖는 쌍인지 반환합니다.
+     * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @returns {boolean}
+     */
+    #shouldUseBroadCircleFilter(bodyA, bodyB) {
+        return bodyA?.shape !== 'circle' || bodyB?.shape !== 'circle';
     }
 
     /**
