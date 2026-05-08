@@ -121,6 +121,8 @@ class WebGLBatch {
         this.colorCache = new Map();
         this.geometryBuffer = new Float32Array(8);
         this.shapeCache = new ShapeTextureCache(gl);
+        this.frameWidth = 1;
+        this.frameHeight = 1;
 
         this.#init();
     }
@@ -131,23 +133,9 @@ class WebGLBatch {
      * @param {number} height - 화면 높이입니다.
      */
     begin(width, height) {
-        const gl = this.gl;
-        gl.useProgram(this.program);
-        gl.uniform2f(this.uResolution, width, height);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
-
-        const stride = this.vertexSize * 4;
-        gl.enableVertexAttribArray(this.aPosition);
-        gl.vertexAttribPointer(this.aPosition, 2, gl.FLOAT, false, stride, 0);
-
-        gl.enableVertexAttribArray(this.aTexCoord);
-        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, stride, 2 * 4);
-
-        gl.enableVertexAttribArray(this.aColor);
-        gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, stride, 4 * 4);
-
+        this.frameWidth = width;
+        this.frameHeight = height;
+        this.#bindRenderState();
         this.spriteCount = 0;
         this.currentTexture = null;
     }
@@ -161,6 +149,7 @@ class WebGLBatch {
         }
 
         const gl = this.gl;
+        this.#bindRenderState();
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.currentTexture);
         gl.uniform1i(this.uImage, 0);
@@ -292,6 +281,32 @@ class WebGLBatch {
         this.aColor = gl.getAttribLocation(this.program, 'a_color');
         this.uResolution = gl.getUniformLocation(this.program, 'u_resolution');
         this.uImage = gl.getUniformLocation(this.program, 'u_image');
+    }
+
+    /**
+     * 외부 WebGL 패스가 바꾼 프로그램/버퍼 상태를 배치 렌더링용으로 복구합니다.
+     * @private
+     */
+    #bindRenderState() {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.useProgram(this.program);
+        gl.uniform2f(this.uResolution, this.frameWidth, this.frameHeight);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+
+        const stride = this.vertexSize * 4;
+        gl.enableVertexAttribArray(this.aPosition);
+        gl.vertexAttribPointer(this.aPosition, 2, gl.FLOAT, false, stride, 0);
+
+        gl.enableVertexAttribArray(this.aTexCoord);
+        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, stride, 2 * 4);
+
+        gl.enableVertexAttribArray(this.aColor);
+        gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, stride, 4 * 4);
     }
 
     /**
