@@ -1,7 +1,5 @@
 import { animate, remove } from 'animation/animation_system.js';
 import { getData } from 'data/data_handler.js';
-import { ColorSchemes } from 'display/_theme_handler.js';
-import { colorUtil } from 'util/color_util.js';
 import { getUIOffsetX, getUIWW, getWH, render } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getSetting } from 'save/save_system.js';
@@ -11,68 +9,18 @@ import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
 import { TitleMenu } from './_title_menu.js';
+import { buildTitleLoadingSchedule } from './_title_loading_schedule.js';
+import {
+    getLoadingLogoColor,
+    getLoadingSkipButtonStyle,
+    getLoadingTextColor
+} from './_title_loading_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
 const TITLE_LOGO_ASPECT_RATIO = 589.45 / 1178.8;
 const DEBUG_SKIP_LOADING_LABEL = '로딩 스킵';
-
-/**
- * 로딩 화면 텍스트에 사용할 기본 색상을 반환합니다.
- * @returns {string} 로딩 텍스트 색상
- */
-function getLoadingTextColor() {
-    return ColorSchemes?.Title?.Loading?.Text
-        || ColorSchemes?.Title?.TextDark
-        || ColorSchemes?.Title?.Button?.Text
-        || ColorSchemes?.Title?.Menu?.Foreground;
-}
-
-/**
- * 로딩 액센트 색상을 반환합니다.
- * @returns {string} 로딩 액센트 색상
- */
-function getLoadingAccentColor() {
-    return ColorSchemes?.Title?.Loading?.Accent
-        || ColorSchemes?.Title?.Menu?.Accent
-        || ColorSchemes?.Cursor?.Active
-        || ColorSchemes?.Title?.Menu?.Foreground
-        || ColorSchemes?.Title?.TextDark;
-}
-
-/**
- * rgba 형식 문자열에서 rgb 값으로 변환 후 알파를 붙여 반환합니다.
- * @param {string} color - css 색상 문자열
- * @param {number} alpha - 알파 값
- * @returns {string} rgba 문자열
- */
-function toAccentRgba(color, alpha) {
-    const safeAlpha = Number.isFinite(alpha) ? alpha : 1;
-    const parsed = colorUtil().cssToRgb(color);
-    if (!parsed) {
-        const fallback = colorUtil().cssToRgb(getLoadingTextColor());
-        if (!fallback) {
-            return 'transparent';
-        }
-        return `rgba(${fallback.r}, ${fallback.g}, ${fallback.b}, ${safeAlpha})`;
-    }
-    return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${safeAlpha})`;
-}
-
-/**
- * 로딩 skip 버튼의 기본 색상을 반환합니다.
- * @returns {{text:string, idleColor:string, hoverColor:string}} skip 버튼 색상
- */
-function getLoadingSkipButtonStyle() {
-    const accent = getLoadingAccentColor();
-    const skipButton = ColorSchemes?.Title?.Loading?.SkipButton;
-    return {
-        text: skipButton?.Text || getLoadingTextColor(),
-        idleColor: skipButton?.Idle || toAccentRgba(accent, 0.12),
-        hoverColor: skipButton?.Hover || toAccentRgba(accent, 0.22)
-    };
-}
 
 /**
  * @class TitleLoadingSequence
@@ -237,7 +185,7 @@ export class TitleLoadingSequence {
         if (changedSettings.theme !== undefined) {
             this.#applyDebugSkipButtonStyle();
             if (this.titleLogo && typeof this.titleLogo.setColor === 'function') {
-                this.titleLogo.setColor(ColorSchemes?.Title?.TextDark);
+                this.titleLogo.setColor(getLoadingLogoColor());
             }
             this.#layoutDebugSkipLoadingButton();
         }
@@ -311,7 +259,7 @@ export class TitleLoadingSequence {
      * @private
      */
     #startLoading() {
-        const loadingSchedule = this.#buildLoadingSchedule();
+        const loadingSchedule = buildTitleLoadingSchedule();
         this.loadingSegmentEndTimes = [];
         this.loadingSegmentTargetProgresses = [];
 
@@ -374,39 +322,6 @@ export class TitleLoadingSequence {
                 this.#finishLoading();
             });
         }
-    }
-
-    /**
-     * 가짜 로딩 체크포인트를 생성합니다.
-     * @returns {Array<{targetProgress:number, endTime:number}>} 목표 진행률과 도달 시간 리스트입니다.
-     * @private
-     */
-    #buildLoadingSchedule() {
-        return [
-            {
-                targetProgress: this.#getRandomValueInRange(0.2, 0.4),
-                endTime: this.#getRandomValueInRange(0.6, 1)
-            },
-            {
-                targetProgress: this.#getRandomValueInRange(0.7, 0.85),
-                endTime: this.#getRandomValueInRange(1.4, 1.8)
-            },
-            {
-                targetProgress: TITLE_LOADING.COMPLETE_PROGRESS,
-                endTime: this.#getRandomValueInRange(2.2, 2.5)
-            }
-        ];
-    }
-
-    /**
-     * 주어진 범위 안에서 랜덤 실수 값을 반환합니다.
-     * @param {number} min - 최소값입니다.
-     * @param {number} max - 최대값입니다.
-     * @returns {number} 랜덤으로 선택된 값입니다.
-     * @private
-     */
-    #getRandomValueInRange(min, max) {
-        return min + (Math.random() * (max - min));
     }
 
     /**
@@ -481,7 +396,7 @@ export class TitleLoadingSequence {
 
         if (createdLogo) {
             this.titleLogo = new TitleLogo(this.titleScene);
-            this.titleLogo.play(ColorSchemes?.Title?.TextDark);
+            this.titleLogo.play(getLoadingLogoColor());
         }
         if (createdMenu) {
             this.titleMenu = new TitleMenu(this.titleScene);

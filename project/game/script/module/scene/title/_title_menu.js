@@ -20,13 +20,26 @@ import {
 import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
-import { colorUtil } from 'util/color_util.js';
 import { runtimeTool } from 'util/runtime_tool.js';
-import { ColorSchemes, getCurrentThemeKey } from 'display/_theme_handler.js';
 import { TitleMenuCard } from './_title_menu_card.js';
 import { TitleMenuCardRegistry } from './_title_menu_card_registry.js';
 import { getTitleMenuIconSource } from './_title_menu_icon.js';
 import { TitleMenuLayout } from './_title_menu_layout.js';
+import {
+    buildMenuStaticTextureThemeSignature,
+    getMenuBackdropPaneStyle,
+    getMenuCardDescriptionColor,
+    getMenuCardTitleColor,
+    getMenuEffectColor,
+    getMenuForegroundColor,
+    getMenuOpacity,
+    getMenuPanelStyle,
+    getThemeAwareMenuBorderColor,
+    getUnifiedOuterPaneStrokeColor,
+    menuForegroundWithAlpha,
+    resolveMenuColorRgb,
+    toMenuRgba
+} from './_title_menu_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
@@ -38,88 +51,6 @@ const TITLE_MENU_ICON_DRAW_SCALES = Object.freeze({
     research: Object.freeze({ x: 0.9, y: 1, alignX: 'left' }),
     records: Object.freeze({ x: 0.85, y: 0.85, alignX: 'center' })
 });
-
-/**
- * 메뉴 기본 전경색을 반환합니다.
- * @returns {string} 메뉴 기본 전경색
- */
-function getMenuForegroundColor() {
-    return ColorSchemes?.Title?.Menu?.Foreground
-        || ColorSchemes?.Title?.TextDark
-        || ColorSchemes?.Title?.Button?.Text
-        || ColorSchemes?.Title?.Menu?.Accent;
-}
-
-/**
- * 메뉴 액센트 색상을 반환합니다.
- * @returns {string} 메뉴 액센트 색상
- */
-function getMenuAccentColor() {
-    return ColorSchemes?.Title?.Menu?.Accent
-        || ColorSchemes?.Cursor?.Active
-        || ColorSchemes?.Title?.Loading?.Accent
-        || ColorSchemes?.Title?.TextDark;
-}
-
-/**
- * 테마를 고려해 메뉴 액센트/보더 색상을 반환합니다.
- * @returns {string} 테마 반응형 테두리 색상입니다.
- */
-function getThemeAwareMenuBorderColor() {
-    const isDark = getCurrentThemeKey() === 'dark';
-    return isDark
-        ? (ColorSchemes?.Title?.Menu?.Accent || ColorSchemes?.Title?.TextDark || '#166ffb')
-        : (ColorSchemes?.Title?.Menu?.Foreground || ColorSchemes?.Title?.TextDark || '#202020');
-}
-
-/**
- * 테마를 고려해 메뉴 패널 stroke 색상을 반환합니다.
- * @param {number} alpha - 적용할 알파값입니다.
- * @returns {string} 테마 반응형 스트로크 색상입니다.
- */
-function getMenuPanelStrokeColor(alpha) {
-    return toRgba(getThemeAwareMenuBorderColor(), alpha);
-}
-
-/**
- * 메뉴 효과 알파값을 반환합니다.
- * @param {string} key - 메뉴 opacity 키
- * @param {number} fallback - 미설정 시 기본 알파
- * @returns {number} 알파 값
- */
-function getMenuOpacity(key, fallback = 0) {
-    const opacity = ColorSchemes?.Title?.Menu?.Opacity?.[key];
-    return Number.isFinite(opacity) ? opacity : fallback;
-}
-
-/**
- * 색상에 알파를 적용해 rgba 문자열로 반환합니다.
- * @param {string} color - 색상 문자열
- * @param {number} alpha - 알파 값
- * @returns {string} rgba 문자열
- */
-function toRgba(color, alpha) {
-    const safeAlpha = Number.isFinite(alpha) ? alpha : 0;
-    const parsedColor = colorUtil().cssToRgb(color);
-    if (!parsedColor) {
-        const fallback = colorUtil().cssToRgb(getMenuForegroundColor());
-        if (!fallback) {
-            return 'transparent';
-        }
-        return `rgba(${fallback.r}, ${fallback.g}, ${fallback.b}, ${safeAlpha})`;
-    }
-
-    return `rgba(${parsedColor.r}, ${parsedColor.g}, ${parsedColor.b}, ${safeAlpha})`;
-}
-
-/**
- * 메뉴 전경색에 알파를 적용해 반환합니다.
- * @param {number} alpha - 알파 값
- * @returns {string} rgba 문자열
- */
-function menuForegroundWithAlpha(alpha) {
-    return toRgba(getMenuForegroundColor(), alpha);
-}
 
 /**
  * 값을 주어진 범위로 제한합니다.
@@ -326,7 +257,7 @@ export class TitleMenu {
                 continue;
             }
 
-            const panelStyle = this.#getPanelStyle(renderState);
+            const panelStyle = this.#getPanelStyle();
             const effectTextureCanvas = this.#buildUtilityTileTextureCanvas(renderState, runtimeState);
             const panelRect = renderState.panelRect;
 
@@ -362,7 +293,7 @@ export class TitleMenu {
                 continue;
             }
 
-            const panelStyle = this.#getPanelStyle(renderState);
+            const panelStyle = this.#getPanelStyle();
             const effectTextureCanvas = this.#buildCardTextureCanvas(card, runtimeState, renderState);
             const panelRect = renderState.panelRect;
 
@@ -2263,16 +2194,7 @@ export class TitleMenu {
      * @private
      */
     #getStaticTextureThemeSignature() {
-        return [
-            getCurrentThemeKey(),
-            getMenuForegroundColor(),
-            getMenuAccentColor(),
-            ColorSchemes?.Title?.Button?.Text,
-            ColorSchemes?.Overlay?.Text?.Item,
-            getMenuOpacity('Placeholder', 0.92),
-            getMenuOpacity('CardInnerLine', 0.08),
-            getMenuOpacity('CardInnerLineFocusDelta', 0.08)
-        ].join(':');
+        return buildMenuStaticTextureThemeSignature();
     }
 
     /**
@@ -2363,7 +2285,7 @@ export class TitleMenu {
                 maxWidth: panelRect.w - titleX - inset,
                 lineHeight: titleLineHeight,
                 font: `700 ${titleFontSize}px "Pretendard Variable", arial`,
-                fillStyle: ColorSchemes.Title.Button.Text,
+                fillStyle: getMenuCardTitleColor(),
                 align: 'left'
             });
             return;
@@ -2376,7 +2298,7 @@ export class TitleMenu {
             maxWidth: panelRect.w - (inset * 2),
             lineHeight: titleLineHeight,
             font: `700 ${titleFontSize}px "Pretendard Variable", arial`,
-            fillStyle: ColorSchemes.Title.Button.Text,
+            fillStyle: getMenuCardTitleColor(),
             align: 'left'
         });
 
@@ -2388,7 +2310,7 @@ export class TitleMenu {
                 maxWidth: panelRect.w - (inset * 2),
                 lineHeight: descriptionLineHeight,
                 font: `500 ${descriptionFontSize}px "Pretendard Variable", arial`,
-                fillStyle: ColorSchemes.Overlay.Text.Item,
+                fillStyle: getMenuCardDescriptionColor(),
                 align: 'left'
             });
         }
@@ -2459,7 +2381,7 @@ export class TitleMenu {
         gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.16 * runtimeState.spotlightAlpha})`);
         gradient.addColorStop(0.2, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.07 * runtimeState.spotlightAlpha})`);
         gradient.addColorStop(0.5, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.015 * runtimeState.spotlightAlpha})`);
-        gradient.addColorStop(0.72, toRgba(getMenuForegroundColor(), 0));
+        gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
         context.fillStyle = gradient;
         context.beginPath();
         context.arc(runtimeState.localX, runtimeState.localY, spotlightOptions.radius, 0, Math.PI * 2);
@@ -2484,10 +2406,7 @@ export class TitleMenu {
         }
 
         const panelRect = renderState.panelRect;
-        const optionColor = colorUtil().cssToRgb(borderOptions.color);
-        const resolvedColor = Number.isFinite(optionColor?.r) && Number.isFinite(optionColor?.g) && Number.isFinite(optionColor?.b)
-            ? optionColor
-            : effectColor;
+        const resolvedColor = resolveMenuColorRgb(borderOptions.color, effectColor);
         const edgeAlpha = clampNumber(runtimeState.borderAlpha, 0, 1);
         const fadeStart = clampNumber(
             (borderOptions.radius - borderOptions.falloff) / Math.max(1, borderOptions.radius),
@@ -2574,7 +2493,7 @@ export class TitleMenu {
             const gradient = context.createRadialGradient(ripple.x, ripple.y, 0, ripple.x, ripple.y, radius);
             gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.38 * opacity})`);
             gradient.addColorStop(0.35, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.18 * opacity})`);
-            gradient.addColorStop(0.72, toRgba(getMenuForegroundColor(), 0));
+            gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
             context.fillStyle = gradient;
             context.beginPath();
             context.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
@@ -3051,44 +2970,17 @@ export class TitleMenu {
      * @private
      */
     #getUnifiedOuterPaneStrokeColor() {
-        return menuForegroundWithAlpha(getMenuOpacity('CardInnerLine', 0.12));
+        return getUnifiedOuterPaneStrokeColor();
     }
 
     /**
      * 카드 패널 스타일을 반환합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
      * @returns {object} 패널 렌더 옵션입니다.
      * @private
      */
-    #getPanelStyle(renderState) {
+    #getPanelStyle() {
         const disableTransparency = getSetting('disableTransparency') === true;
-        if (disableTransparency) {
-            return {
-                fill: ColorSchemes.Overlay.Panel.Background,
-                stroke: getMenuPanelStrokeColor(0.88),
-                sampleBackdrop: false,
-                blur: 0,
-                lineWidth: 1.35,
-                tintColor: ColorSchemes.Overlay.Panel.GlassTint,
-                edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
-                tintStrength: 0,
-                edgeStrength: 0.08,
-                refractionStrength: 0
-            };
-        }
-
-        return {
-            fill: menuForegroundWithAlpha(getMenuOpacity('PanelFill', 0.035)),
-            stroke: getMenuPanelStrokeColor(getMenuOpacity('PanelStroke', 0.26)),
-            sampleBackdrop: false,
-            blur: 0,
-            lineWidth: 1.05,
-            tintColor: menuForegroundWithAlpha(getMenuOpacity('PanelTint', 0.08)),
-            edgeColor: menuForegroundWithAlpha(getMenuOpacity('PanelEdge', 0.22)),
-            tintStrength: Math.max(0.02, ColorSchemes.Overlay.Panel.GlassTintStrength * 0.2),
-            edgeStrength: Math.max(0.08, ColorSchemes.Overlay.Panel.GlassEdgeStrength * 1.2),
-            refractionStrength: 0
-        };
+        return getMenuPanelStyle(disableTransparency);
     }
 
     /**
@@ -3099,33 +2991,7 @@ export class TitleMenu {
     #getBackdropPaneStyle() {
         const unifiedStroke = this.#getUnifiedOuterPaneStrokeColor();
         const disableTransparency = getSetting('disableTransparency') === true;
-        if (disableTransparency) {
-            return {
-                fill: ColorSchemes.Overlay.Panel.Background,
-                stroke: unifiedStroke,
-                sampleBackdrop: false,
-                blur: 0,
-                lineWidth: 1.05,
-                tintColor: ColorSchemes.Overlay.Panel.GlassTint,
-                edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
-                tintStrength: 0,
-                edgeStrength: 0.08,
-                refractionStrength: 0
-            };
-        }
-
-        return {
-            fill: ColorSchemes.Overlay.Panel.GlassBackground,
-            stroke: unifiedStroke,
-            sampleBackdrop: true,
-            blur: 0.1,
-            lineWidth: 1.05,
-            tintColor: ColorSchemes.Overlay.Panel.GlassTint,
-            edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
-            tintStrength: ColorSchemes.Overlay.Panel.GlassTintStrength,
-            edgeStrength: Math.max(0.06, ColorSchemes.Overlay.Panel.GlassEdgeStrength),
-            refractionStrength: 0
-        };
+        return getMenuBackdropPaneStyle(disableTransparency, unifiedStroke);
     }
 
     /**
@@ -3134,12 +3000,7 @@ export class TitleMenu {
      * @private
      */
     #getEffectColor() {
-        const rgb = colorUtil().cssToRgb(getMenuAccentColor());
-        return {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b
-        };
+        return getMenuEffectColor();
     }
 
     /**

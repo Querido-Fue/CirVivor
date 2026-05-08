@@ -7,6 +7,17 @@ const CELL_KEY_STRIDE = 8192;
 const MIN_CELL_SIZE = 20;
 const MAX_CELL_SIZE = 280;
 const BROAD_STRIDE = 14;
+const RELATION_BROAD_STRIDE = 8;
+const BODY_KIND_NONE = 0;
+const BODY_KIND_ENEMY = 1;
+const BODY_KIND_PLAYER = 2;
+const BODY_KIND_WALL = 3;
+const BODY_KIND_PROJECTILE = 4;
+const BODY_KIND_ITEM = 5;
+const BODY_SHAPE_NONE = 0;
+const BODY_SHAPE_CIRCLE = 1;
+const BODY_SHAPE_CIRCLE_PARTS = 2;
+const BODY_SHAPE_RECT = 3;
 const DEFAULT_PHYSICS_ITERATION_COUNT = 3;
 const GRID_BUCKET_INITIAL_CAPACITY = 8;
 const ROTATION_IMPULSE_SCALE = 0.12;
@@ -391,6 +402,9 @@ export class CollisionHandler {
     #scratchCandidateManifold;
     #scratchBestManifold;
     #broadData;
+    #relationBroadData;
+    #bodyKindCodes;
+    #bodyShapeCodes;
     #broadBodyCount;
     #bucketPool;
     #bucketPoolCursor;
@@ -469,6 +483,7 @@ export class CollisionHandler {
             projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
             enemyPairBroadRadius: 0, projectileBroadRadius: 0,
             circleParts: null, circlePartCount: 0, mergeLock: false,
+            _broadDataIndex: -1,
             _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
@@ -488,6 +503,9 @@ export class CollisionHandler {
             moveAX: 0, moveAY: 0, moveBX: 0, moveBY: 0
         };
         this.#broadData = new Float32Array(512 * BROAD_STRIDE);
+        this.#relationBroadData = new Float64Array(512 * RELATION_BROAD_STRIDE);
+        this.#bodyKindCodes = new Uint8Array(512);
+        this.#bodyShapeCodes = new Uint8Array(512);
         this.#broadBodyCount = 0;
         this.#bucketPool = [];
         this.#bucketPoolCursor = 0;
@@ -1979,6 +1997,7 @@ export class CollisionHandler {
             projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
             enemyPairBroadRadius: 0, projectileBroadRadius: 0,
             mergeLock: false,
+            _broadDataIndex: -1,
             _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
@@ -2185,6 +2204,206 @@ export class CollisionHandler {
     }
 
     /**
+     * enemy 원형 쌍을 SoA 중심/반경으로 직접 판정하고 해소합니다.
+     * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @param {Float64Array} relationData
+     * @param {number} relationOffsetA
+     * @param {number} relationOffsetB
+     * @param {boolean} resolvePositions
+     * @param {boolean} applyNonPosition
+     * @param {number} resolveBoost
+     * @returns {number}
+     */
+    #processEnemyCirclePairSoA(
+        bodyA,
+        bodyB,
+        relationData,
+        relationOffsetA,
+        relationOffsetB,
+        resolvePositions,
+        applyNonPosition,
+        resolveBoost
+    ) {
+        if (resolvePositions) {
+            bodyA._candidatePairCount = (bodyA._candidatePairCount || 0) + 1;
+            bodyB._candidatePairCount = (bodyB._candidatePairCount || 0) + 1;
+        }
+
+        const ax = relationData[relationOffsetA + 4];
+        const ay = relationData[relationOffsetA + 5];
+        const bx = relationData[relationOffsetB + 4];
+        const by = relationData[relationOffsetB + 5];
+        const radiusA = relationData[relationOffsetA + 6];
+        const radiusB = relationData[relationOffsetB + 6];
+        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(radiusA) || radiusA <= 0
+            || !Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(radiusB) || radiusB <= 0) {
+            return 0;
+        }
+
+        const dx = bx - ax;
+        const dy = by - ay;
+        const radiusSum = radiusA + radiusB;
+        const distSq = (dx * dx) + (dy * dy);
+        if (distSq >= (radiusSum * radiusSum)) {
+            return 0;
+        }
+
+        let distance = Math.sqrt(distSq);
+        let normalX = 1;
+        let normalY = 0;
+        if (distance > EPSILON) {
+            normalX = dx / distance;
+            normalY = dy / distance;
+        } else {
+            distance = 0;
+        }
+
+        const penetration = radiusSum - distance;
+        const manifold = this.#scratchManifold;
+        manifold.collided = true;
+        manifold.normalX = normalX;
+        manifold.normalY = normalY;
+        manifold.penetration = penetration;
+        manifold.pointX = ax + (normalX * radiusA);
+        manifold.pointY = ay + (normalY * radiusA);
+        manifold.moveAX = 0;
+        manifold.moveAY = 0;
+        manifold.moveBX = 0;
+        manifold.moveBY = 0;
+
+        if (resolvePositions) {
+            bodyA._resolvedPairCount = (bodyA._resolvedPairCount || 0) + 1;
+            bodyB._resolvedPairCount = (bodyB._resolvedPairCount || 0) + 1;
+        }
+
+        if (!resolvePositions) {
+            if (applyNonPosition) {
+                this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
+            }
+            return 1;
+        }
+
+        const candidateCountA = Number.isFinite(bodyA._candidatePairCount) ? bodyA._candidatePairCount : 0;
+        const candidateCountB = Number.isFinite(bodyB._candidatePairCount) ? bodyB._candidatePairCount : 0;
+        const resolvedCountA = Number.isFinite(bodyA._resolvedPairCount) ? bodyA._resolvedPairCount : 0;
+        const resolvedCountB = Number.isFinite(bodyB._resolvedPairCount) ? bodyB._resolvedPairCount : 0;
+        const pressureA = Math.max(candidateCountA, resolvedCountA);
+        const pressureB = Math.max(candidateCountB, resolvedCountB);
+
+        const rawWeightA = Number.isFinite(bodyA.weight) ? bodyA.weight : 1;
+        const rawWeightB = Number.isFinite(bodyB.weight) ? bodyB.weight : 1;
+        const maxWeightA = bodyA.ref?.type === 'hexa_hive' ? PRESSURE_HEXA_HIVE_WEIGHT_MAX : PRESSURE_WEIGHT_MAX;
+        const maxWeightB = bodyB.ref?.type === 'hexa_hive' ? PRESSURE_HEXA_HIVE_WEIGHT_MAX : PRESSURE_WEIGHT_MAX;
+        const resolveWeightA = bodyA.mergeLock === true
+            ? MERGE_PENDING_RESOLVE_WEIGHT
+            : Math.pow(Math.max(PRESSURE_WEIGHT_MIN, Math.min(maxWeightA, rawWeightA)), PRESSURE_WEIGHT_EXPONENT);
+        const resolveWeightB = bodyB.mergeLock === true
+            ? MERGE_PENDING_RESOLVE_WEIGHT
+            : Math.pow(Math.max(PRESSURE_WEIGHT_MIN, Math.min(maxWeightB, rawWeightB)), PRESSURE_WEIGHT_EXPONENT);
+        const entryScaleA = pressureA < PRESSURE_ENTRY_THRESHOLD
+            ? 1
+            : Math.min(
+                PRESSURE_ENTRY_SCALE_MAX,
+                1 + ((pressureA - PRESSURE_ENTRY_THRESHOLD + 1) * PRESSURE_ENTRY_SCALE_PER_NEIGHBOR)
+            );
+        const entryScaleB = pressureB < PRESSURE_ENTRY_THRESHOLD
+            ? 1
+            : Math.min(
+                PRESSURE_ENTRY_SCALE_MAX,
+                1 + ((pressureB - PRESSURE_ENTRY_THRESHOLD + 1) * PRESSURE_ENTRY_SCALE_PER_NEIGHBOR)
+            );
+        const weightA = resolveWeightA * entryScaleA;
+        const weightB = resolveWeightB * entryScaleB;
+
+        let ratioA = 0;
+        let ratioB = 0;
+        const movableA = bodyA.movable !== false;
+        const movableB = bodyB.movable !== false;
+        if (movableA && movableB) {
+            const weightSum = weightA + weightB;
+            ratioA = weightB / weightSum;
+            ratioB = weightA / weightSum;
+        } else if (movableA) {
+            ratioA = 1;
+        } else if (movableB) {
+            ratioB = 1;
+        }
+
+        manifold.moveAX = -normalX * penetration * ratioA;
+        manifold.moveAY = -normalY * penetration * ratioA;
+        manifold.moveBX = normalX * penetration * ratioB;
+        manifold.moveBY = normalY * penetration * ratioB;
+
+        const jamPressure = Math.min(pressureA, pressureB);
+        const pairEscapeBoost = jamPressure < PRESSURE_ESCAPE_THRESHOLD
+            ? 1
+            : Math.min(
+                PRESSURE_ESCAPE_SCALE_MAX,
+                1 + ((jamPressure - PRESSURE_ESCAPE_THRESHOLD + 1) * PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR)
+            );
+        const pairResolveBoost = resolveBoost * pairEscapeBoost;
+        const slopScale = pairResolveBoost > 1 ? (1 / pairResolveBoost) : 1;
+        const effectivePenetration = Math.max(0, penetration - (COLLISION_RESOLVE_SLOP * slopScale));
+        if (effectivePenetration > 0) {
+            const penetrationRatio = effectivePenetration / Math.max(EPSILON, penetration);
+            const correctionScale = COLLISION_RESOLVE_PERCENT * penetrationRatio * pairResolveBoost;
+            let moveAX = manifold.moveAX * correctionScale;
+            let moveAY = manifold.moveAY * correctionScale;
+            let moveBX = manifold.moveBX * correctionScale;
+            let moveBY = manifold.moveBY * correctionScale;
+            const moveAMag = Math.hypot(moveAX, moveAY);
+            if (moveAMag > EPSILON) {
+                const resolveRadiusA = Number.isFinite(bodyA.resolveRadius)
+                    ? bodyA.resolveRadius
+                    : (Number.isFinite(bodyA.boundRadius) ? bodyA.boundRadius : 16);
+                const correctionBaseA = Math.max(COLLISION_RESOLVE_MIN_MAX, resolveRadiusA * COLLISION_RESOLVE_MAX_RATIO);
+                const denseScaleA = pressureA < DENSE_CORRECTION_CANDIDATE_THRESHOLD
+                    ? 1
+                    : Math.min(
+                        DENSE_CORRECTION_SCALE_MAX,
+                        1 + ((pressureA - DENSE_CORRECTION_CANDIDATE_THRESHOLD + 1) * DENSE_CORRECTION_SCALE_PER_NEIGHBOR)
+                    );
+                const maxCorrectionA = correctionBaseA * denseScaleA * pairResolveBoost;
+                if (moveAMag > maxCorrectionA) {
+                    const scaleA = maxCorrectionA / moveAMag;
+                    moveAX *= scaleA;
+                    moveAY *= scaleA;
+                }
+                this.#applyBodyTranslation(bodyA, moveAX, moveAY, pairResolveBoost);
+            }
+
+            const moveBMag = Math.hypot(moveBX, moveBY);
+            if (moveBMag > EPSILON) {
+                const resolveRadiusB = Number.isFinite(bodyB.resolveRadius)
+                    ? bodyB.resolveRadius
+                    : (Number.isFinite(bodyB.boundRadius) ? bodyB.boundRadius : 16);
+                const correctionBaseB = Math.max(COLLISION_RESOLVE_MIN_MAX, resolveRadiusB * COLLISION_RESOLVE_MAX_RATIO);
+                const denseScaleB = pressureB < DENSE_CORRECTION_CANDIDATE_THRESHOLD
+                    ? 1
+                    : Math.min(
+                        DENSE_CORRECTION_SCALE_MAX,
+                        1 + ((pressureB - DENSE_CORRECTION_CANDIDATE_THRESHOLD + 1) * DENSE_CORRECTION_SCALE_PER_NEIGHBOR)
+                    );
+                const maxCorrectionB = correctionBaseB * denseScaleB * pairResolveBoost;
+                if (moveBMag > maxCorrectionB) {
+                    const scaleB = maxCorrectionB / moveBMag;
+                    moveBX *= scaleB;
+                    moveBY *= scaleB;
+                }
+                this.#applyBodyTranslation(bodyB, moveBX, moveBY, pairResolveBoost);
+            }
+        }
+
+        if (applyNonPosition) {
+            this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
+        }
+
+        return 1;
+    }
+
+    /**
      * 후보 pair 목록을 현재 broad-phase 데이터 기준으로 판정합니다.
      * @private
      * @param {object[]} bodies
@@ -2196,12 +2415,100 @@ export class CollisionHandler {
     #processCandidatePairs(bodies, resolvePositions, applyNonPosition, resolveBoost) {
         let resolvedCount = 0;
         const pairBudget = this.#getEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost);
+        const relationData = this.#relationBroadData;
+        const kindCodes = this.#bodyKindCodes;
+        const shapeCodes = this.#bodyShapeCodes;
+        const lowIndices = this.#candidatePairLowIndices;
+        const highIndices = this.#candidatePairHighIndices;
         this.#resetPassPairProcessCounts(bodies);
         for (let pairIndex = 0; pairIndex < this.#candidatePairCount; pairIndex++) {
-            const low = this.#candidatePairLowIndices[pairIndex];
-            const high = this.#candidatePairHighIndices[pairIndex];
+            const low = lowIndices[pairIndex];
+            const high = highIndices[pairIndex];
             const bodyA = bodies[low];
             const bodyB = bodies[high];
+            if (kindCodes[low] === BODY_KIND_ENEMY && kindCodes[high] === BODY_KIND_ENEMY) {
+                if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) continue;
+                const idA = Number.isInteger(bodyA.id) ? bodyA.id : -1;
+                const idB = Number.isInteger(bodyB.id) ? bodyB.id : -1;
+                if (idA >= 0 && idA === idB) continue;
+
+                if (Number.isFinite(pairBudget) && pairBudget > 0) {
+                    const passCountA = Number.isFinite(bodyA._passPairProcessCount) ? bodyA._passPairProcessCount : 0;
+                    const passCountB = Number.isFinite(bodyB._passPairProcessCount) ? bodyB._passPairProcessCount : 0;
+                    if (passCountA >= pairBudget || passCountB >= pairBudget) {
+                        this.#recordProfileCount('solveBudgetSkipCount');
+                        continue;
+                    }
+                }
+
+                this.#frameStats.collisionCheckCount++;
+                const relationOffsetA = low * RELATION_BROAD_STRIDE;
+                const relationOffsetB = high * RELATION_BROAD_STRIDE;
+                if (
+                    relationData[relationOffsetA + 0] > relationData[relationOffsetB + 1] ||
+                    relationData[relationOffsetA + 1] < relationData[relationOffsetB + 0] ||
+                    relationData[relationOffsetA + 2] > relationData[relationOffsetB + 3] ||
+                    relationData[relationOffsetA + 3] < relationData[relationOffsetB + 2]
+                ) {
+                    this.#frameStats.aabbRejectCount++;
+                    continue;
+                }
+
+                this.#frameStats.aabbPassCount++;
+                this.#recordProfileCount('solveAabbPassCount');
+                const isCirclePair = shapeCodes[low] === BODY_SHAPE_CIRCLE && shapeCodes[high] === BODY_SHAPE_CIRCLE;
+                if (!isCirclePair) {
+                    const ax = relationData[relationOffsetA + 4];
+                    const ay = relationData[relationOffsetA + 5];
+                    const bx = relationData[relationOffsetB + 4];
+                    const by = relationData[relationOffsetB + 5];
+                    const ra = relationData[relationOffsetA + 6];
+                    const rb = relationData[relationOffsetB + 6];
+                    if (Number.isFinite(ax) && Number.isFinite(ay) && Number.isFinite(bx) && Number.isFinite(by)
+                        && Number.isFinite(ra) && Number.isFinite(rb) && ra > 0 && rb > 0) {
+                        const radiusSum = ra + rb + EPSILON;
+                        const dx = bx - ax;
+                        const dy = by - ay;
+                        if (((dx * dx) + (dy * dy)) > (radiusSum * radiusSum)) {
+                            this.#frameStats.circleRejectCount++;
+                            continue;
+                        }
+                    }
+                    this.#frameStats.circlePassCount++;
+                    this.#recordProfileCount('solveCirclePassCount');
+                }
+
+                bodyA._passPairProcessCount = (bodyA._passPairProcessCount || 0) + 1;
+                bodyB._passPairProcessCount = (bodyB._passPairProcessCount || 0) + 1;
+
+                const narrowphaseStart = this.#startProfileTimer();
+                const pairResolved = isCirclePair
+                    ? this.#processEnemyCirclePairSoA(
+                        bodyA,
+                        bodyB,
+                        relationData,
+                        relationOffsetA,
+                        relationOffsetB,
+                        resolvePositions,
+                        applyNonPosition,
+                        resolveBoost
+                    )
+                    : this.#processPair(
+                        bodyA,
+                        bodyB,
+                        resolvePositions,
+                        applyNonPosition,
+                        resolveBoost,
+                        COLLISION_RULE_DYNAMIC_RESOLVE
+                    );
+                this.#recordProfileDuration('solveNarrowphaseMs', narrowphaseStart);
+                if (pairResolved > 0) {
+                    this.#recordProfileCount('solveResolvedPairCount', pairResolved);
+                }
+                resolvedCount += pairResolved;
+                continue;
+            }
+
             const rule = this.#getPassRule(bodyA, bodyB, applyNonPosition);
             if (!rule) continue;
 
@@ -2325,6 +2632,16 @@ export class CollisionHandler {
         if (this.#broadData.length < needed) {
             this.#broadData = new Float32Array(Math.max(needed, this.#broadData.length * 2));
         }
+        const relationNeeded = bodyCount * RELATION_BROAD_STRIDE;
+        if (this.#relationBroadData.length < relationNeeded) {
+            this.#relationBroadData = new Float64Array(Math.max(relationNeeded, this.#relationBroadData.length * 2));
+        }
+        if (this.#bodyKindCodes.length < bodyCount) {
+            this.#bodyKindCodes = new Uint8Array(Math.max(bodyCount, this.#bodyKindCodes.length * 2));
+        }
+        if (this.#bodyShapeCodes.length < bodyCount) {
+            this.#bodyShapeCodes = new Uint8Array(Math.max(bodyCount, this.#bodyShapeCodes.length * 2));
+        }
         this.#broadBodyCount = bodyCount;
     }
 
@@ -2430,6 +2747,34 @@ export class CollisionHandler {
     }
 
     /**
+     * body kind 문자열을 SoA fast path용 숫자 코드로 변환합니다.
+     * @private
+     * @param {string} kind
+     * @returns {number}
+     */
+    #getBodyKindCode(kind) {
+        if (kind === 'enemy') return BODY_KIND_ENEMY;
+        if (kind === 'player') return BODY_KIND_PLAYER;
+        if (kind === 'wall') return BODY_KIND_WALL;
+        if (kind === 'projectile') return BODY_KIND_PROJECTILE;
+        if (kind === 'item') return BODY_KIND_ITEM;
+        return BODY_KIND_NONE;
+    }
+
+    /**
+     * body shape 문자열을 SoA fast path용 숫자 코드로 변환합니다.
+     * @private
+     * @param {string} shape
+     * @returns {number}
+     */
+    #getBodyShapeCode(shape) {
+        if (shape === 'circle') return BODY_SHAPE_CIRCLE;
+        if (shape === 'circleParts') return BODY_SHAPE_CIRCLE_PARTS;
+        if (shape === 'rect') return BODY_SHAPE_RECT;
+        return BODY_SHAPE_NONE;
+    }
+
+    /**
      * grid 삽입용 broad-phase SoA 데이터를 씁니다.
      * @private
      * @param {number} index
@@ -2458,6 +2803,10 @@ export class CollisionHandler {
             broadRadius = Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
         }
 
+        body._broadDataIndex = index;
+        this.#bodyKindCodes[index] = this.#getBodyKindCode(body.kind);
+        this.#bodyShapeCodes[index] = this.#getBodyShapeCode(body.shape);
+
         bd[o + 0] = minX;
         bd[o + 1] = maxX;
         bd[o + 2] = minY;
@@ -2472,6 +2821,17 @@ export class CollisionHandler {
         bd[o + 11] = broadRadius;
         bd[o + 12] = broadRadius * COLLISION_GRID_RADIUS_SCALE;
         bd[o + 13] = body.shape === 'circle' ? body.radius : broadRadius;
+
+        const relationOffset = index * RELATION_BROAD_STRIDE;
+        const relationData = this.#relationBroadData;
+        relationData[relationOffset + 0] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
+        relationData[relationOffset + 1] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
+        relationData[relationOffset + 2] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
+        relationData[relationOffset + 3] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
+        relationData[relationOffset + 4] = Number.isFinite(body.centerX) ? body.centerX : body.x;
+        relationData[relationOffset + 5] = Number.isFinite(body.centerY) ? body.centerY : body.y;
+        relationData[relationOffset + 6] = body.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
+        relationData[relationOffset + 7] = body.kind === 'enemy' && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
     }
 
     /**
@@ -2667,6 +3027,42 @@ export class CollisionHandler {
     }
 
     /**
+     * body 이동량을 현재 broad-phase SoA 버퍼에 반영합니다.
+     * @private
+     * @param {object} body
+     * @param {number} dx
+     * @param {number} dy
+     */
+    #translateBodyBroadData(body, dx, dy) {
+        const bodyIndex = Number.isInteger(body?._broadDataIndex) ? body._broadDataIndex : -1;
+        if (bodyIndex < 0 || bodyIndex >= this.#broadBodyCount) {
+            return;
+        }
+
+        const broadOffset = bodyIndex * BROAD_STRIDE;
+        const broadData = this.#broadData;
+        broadData[broadOffset + 0] += dx;
+        broadData[broadOffset + 1] += dx;
+        broadData[broadOffset + 2] += dy;
+        broadData[broadOffset + 3] += dy;
+        broadData[broadOffset + 4] += dx;
+        broadData[broadOffset + 5] += dx;
+        broadData[broadOffset + 6] += dy;
+        broadData[broadOffset + 7] += dy;
+        broadData[broadOffset + 8] += dx;
+        broadData[broadOffset + 9] += dy;
+
+        const relationOffset = bodyIndex * RELATION_BROAD_STRIDE;
+        const relationData = this.#relationBroadData;
+        relationData[relationOffset + 0] += dx;
+        relationData[relationOffset + 1] += dx;
+        relationData[relationOffset + 2] += dy;
+        relationData[relationOffset + 3] += dy;
+        relationData[relationOffset + 4] += dx;
+        relationData[relationOffset + 5] += dy;
+    }
+
+    /**
      * @private
      */
     #applyBodyTranslation(body, dx, dy, resolveBoost = 1) {
@@ -2706,6 +3102,7 @@ export class CollisionHandler {
         if (Number.isFinite(body.projectileMaxY)) body.projectileMaxY += dy;
         body.x = body.centerX;
         body.y = body.centerY;
+        this.#translateBodyBroadData(body, dx, dy);
 
         if (body.circleParts instanceof Float32Array) {
             const limit = Math.max(0, Math.floor(body.circlePartCount || 0)) * 3;
