@@ -17,13 +17,10 @@ import { SimulationWorkerBridge } from 'simulation/simulation_worker_bridge.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 const DISPLAY_REFRESH_SETTING_KEYS = new Set(['windowMode', 'widescreenSupport', 'renderScale']);
-const SIMULATION_WORKER_SHADOW_SETTING_KEY = 'simulationWorkerShadowMode';
-const SIMULATION_WORKER_PRESENTATION_SETTING_KEY = 'simulationWorkerPresentationMode';
-const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
+const MULTICORE_SETTING_KEY = 'simulationWorkerAuthorityMode';
 const SIMULATION_RUNTIME_SETTING_KEYS = Object.freeze([
     'debugMode',
-    SIMULATION_WORKER_SHADOW_SETTING_KEY,
-    SIMULATION_WORKER_AUTHORITY_SETTING_KEY
+    MULTICORE_SETTING_KEY
 ]);
 const DEFAULT_FRAME_EXECUTION_POLICY = Object.freeze({
     keepLoopRunning: true,
@@ -142,7 +139,7 @@ export class SystemHandler {
         this.logDebugInfo("DebugSystem 로드");
 
         // 11. 시뮬레이션 워커 브리지 초기화
-        const enableSimulationWorkerShadow = this.#isSimulationWorkerShadowModeEnabled();
+        const enableSimulationWorkerShadow = this.#isMulticoreEnabled();
         const simulationWorkerBootstrapSnapshot = enableSimulationWorkerShadow
             ? this.createSimulationSnapshot()
             : null;
@@ -283,9 +280,9 @@ export class SystemHandler {
      */
     getSimulationWorkerRuntimeStatus() {
         return {
-            shadowEnabled: this.#isSimulationWorkerShadowModeEnabled(),
-            presentationEnabled: this.#isSimulationWorkerPresentationModeEnabled(),
-            authorityRequested: this.#isSimulationWorkerAuthorityModeEnabled(),
+            shadowEnabled: this.#isMulticoreEnabled(),
+            presentationEnabled: this.#isMulticoreEnabled(),
+            authorityRequested: this.#isMulticoreEnabled(),
             authorityActive: this.#shouldUseSimulationWorkerAuthority(),
             presentationActive: this.#getSimulationWorkerPresentationScene() !== null
         };
@@ -808,29 +805,11 @@ export class SystemHandler {
 
     /**
      * @private
-     * 섀도우 시뮬레이션 워커 사용 여부를 설정에서 확인합니다.
+     * 통합 멀티코어 워커 사용 여부를 설정에서 확인합니다.
      * @returns {boolean}
      */
-    #isSimulationWorkerShadowModeEnabled() {
-        return this.saveSystem?.getSetting?.(SIMULATION_WORKER_SHADOW_SETTING_KEY) === true;
-    }
-
-    /**
-     * @private
-     * 워커 프레젠테이션 스냅샷 기반 렌더링 사용 여부를 설정에서 확인합니다.
-     * @returns {boolean}
-     */
-    #isSimulationWorkerPresentationModeEnabled() {
-        return this.saveSystem?.getSetting?.(SIMULATION_WORKER_PRESENTATION_SETTING_KEY) === true;
-    }
-
-    /**
-     * @private
-     * 워커 권한 시뮬레이션 사용 여부를 설정에서 확인합니다.
-     * @returns {boolean}
-     */
-    #isSimulationWorkerAuthorityModeEnabled() {
-        return this.saveSystem?.getSetting?.(SIMULATION_WORKER_AUTHORITY_SETTING_KEY) === true;
+    #isMulticoreEnabled() {
+        return this.saveSystem?.getSetting?.(MULTICORE_SETTING_KEY) === true;
     }
 
     /**
@@ -839,10 +818,7 @@ export class SystemHandler {
      * @returns {boolean}
      */
     #shouldUseSimulationWorkerAuthority() {
-        if (!this.#isSimulationWorkerAuthorityModeEnabled()) {
-            return false;
-        }
-        if (!this.#isSimulationWorkerShadowModeEnabled() || !this.#isSimulationWorkerPresentationModeEnabled()) {
+        if (!this.#isMulticoreEnabled()) {
             return false;
         }
         if (!this.simulationWorkerBridge || !this.simulationWorkerBridge.isRunning()) {
@@ -869,7 +845,7 @@ export class SystemHandler {
      * @returns {{sceneState?: string|null, scene?: object|null}|null}
      */
     #getSimulationWorkerPresentationScene() {
-        if (!this.#isSimulationWorkerPresentationModeEnabled()) {
+        if (!this.#isMulticoreEnabled()) {
             return null;
         }
 
@@ -956,7 +932,7 @@ export class SystemHandler {
             return;
         }
 
-        const shouldEnableShadowWorker = this.#isSimulationWorkerShadowModeEnabled();
+        const shouldEnableShadowWorker = this.#isMulticoreEnabled();
         if (!shouldEnableShadowWorker) {
             this.simulationWorkerBridge.setEnabled(false);
             this.lastSimulationWorkerSceneState = null;

@@ -13,6 +13,7 @@ import { syncSimulationRuntime } from './simulation_runtime.js';
 import { fixedUpdateEnemyAI } from '../object/enemy/ai/_enemy_ai_core.js';
 
 let enemyAISharedTransport = null;
+let enemyAIWorkerIndex = -1;
 
 /**
  * 수치 값을 안전하게 정규화합니다.
@@ -180,7 +181,8 @@ function reportEnemyAIWorkerError(error) {
     console.error('[enemy-ai-worker]', message, error);
     self.postMessage(createEnemyAIWorkerMessage(ENEMY_AI_WORKER_MESSAGE_TYPES.ERROR, {
         error: message,
-        stack
+        stack,
+        workerIndex: enemyAIWorkerIndex
     }));
 }
 
@@ -201,6 +203,9 @@ function computeEnemyAIBatch(message) {
     const enemies = Array.isArray(message.enemies)
         ? message.enemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean)
         : [];
+    const targetEnemies = Array.isArray(message.targetEnemies)
+        ? message.targetEnemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean)
+        : enemies;
 
     const aiContext = {
         player,
@@ -227,8 +232,8 @@ function computeEnemyAIBatch(message) {
         : null;
     const results = sharedWriteState ? null : [];
     let resultCount = 0;
-    for (let i = 0; i < enemies.length; i++) {
-        const summary = enemies[i];
+    for (let i = 0; i < targetEnemies.length; i++) {
+        const summary = targetEnemies[i];
         if (!summary || summary.active === false) {
             continue;
         }
@@ -264,6 +269,10 @@ function computeEnemyAIBatch(message) {
 
     return {
         requestId: Number.isInteger(message.requestId) ? message.requestId : 0,
+        requestGroupId: Number.isInteger(message.requestGroupId) ? message.requestGroupId : 0,
+        chunkIndex: Number.isInteger(message.chunkIndex) ? message.chunkIndex : 0,
+        chunkCount: Number.isInteger(message.chunkCount) ? message.chunkCount : 1,
+        workerIndex: Number.isInteger(message.workerIndex) ? message.workerIndex : enemyAIWorkerIndex,
         wallsVersion: Number.isInteger(message.wallsVersion) ? message.wallsVersion : 0,
         enemyTopologyVersion: Number.isInteger(message.enemyTopologyVersion) ? message.enemyTopologyVersion : 0,
         enemyCount: sharedResult ? sharedResult.resultCount : resultCount,
@@ -284,13 +293,17 @@ self.addEventListener('message', (event) => {
 
         switch (message.type) {
             case ENEMY_AI_WORKER_MESSAGE_TYPES.BOOTSTRAP:
+                enemyAIWorkerIndex = Number.isInteger(message.workerIndex) ? message.workerIndex : enemyAIWorkerIndex;
                 if (message.runtimeSnapshot) {
                     syncSimulationRuntime(message.runtimeSnapshot);
                 }
                 enemyAISharedTransport = message.sharedResultBuffers
                     ? attachEnemyAISharedTransport(message.sharedResultBuffers)
                     : null;
-                self.postMessage(createEnemyAIWorkerMessage(ENEMY_AI_WORKER_MESSAGE_TYPES.READY));
+                self.postMessage(createEnemyAIWorkerMessage(ENEMY_AI_WORKER_MESSAGE_TYPES.READY, {
+                    bootstrapped: true,
+                    workerIndex: enemyAIWorkerIndex
+                }));
                 break;
             case ENEMY_AI_WORKER_MESSAGE_TYPES.COMPUTE_BATCH:
                 self.postMessage(createEnemyAIWorkerMessage(
@@ -307,4 +320,7 @@ self.addEventListener('message', (event) => {
     }
 });
 
-self.postMessage(createEnemyAIWorkerMessage(ENEMY_AI_WORKER_MESSAGE_TYPES.READY));
+self.postMessage(createEnemyAIWorkerMessage(ENEMY_AI_WORKER_MESSAGE_TYPES.READY, {
+    bootstrapped: false,
+    workerIndex: enemyAIWorkerIndex
+}));

@@ -143,6 +143,9 @@ function recordWorkerProfileSamples(workerSnapshot, timestamp = performance.now(
     if (Number.isFinite(enemyAIWorker?.lastLatencyMs) && enemyAIWorker.lastLatencyMs > 0) {
         performanceDebugger.recordSample('worker.enemyAI.latency', enemyAIWorker.lastLatencyMs, timestamp);
     }
+    if (Number.isFinite(enemyAIWorker?.waitMs) && enemyAIWorker.waitMs > 0) {
+        performanceDebugger.recordSample('worker.enemyAI.wait', enemyAIWorker.waitMs, timestamp);
+    }
 }
 
 /**

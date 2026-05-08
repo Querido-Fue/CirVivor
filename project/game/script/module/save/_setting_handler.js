@@ -50,8 +50,6 @@ export class SettingHandler {
             sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             debugMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-            simulationWorkerShadowMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-            simulationWorkerPresentationMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             simulationWorkerAuthorityMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
         };
 
@@ -180,6 +178,19 @@ export class SettingHandler {
         // 구버전 키 마이그레이션: darkMode(bool) -> theme(string)
         if (fileData.theme === undefined && typeof fileData.darkMode === 'boolean') {
             fileData.theme = fileData.darkMode ? 'dark' : 'light';
+            needsSave = true;
+        }
+        if (fileData.simulationWorkerShadowMode !== undefined
+            || fileData.simulationWorkerPresentationMode !== undefined) {
+            const hasAuthorityMode = fileData.simulationWorkerAuthorityMode !== undefined;
+            fileData.simulationWorkerAuthorityMode = hasAuthorityMode
+                ? fileData.simulationWorkerAuthorityMode === true
+                    && fileData.simulationWorkerShadowMode !== false
+                    && fileData.simulationWorkerPresentationMode !== false
+                : fileData.simulationWorkerShadowMode === true
+                    && fileData.simulationWorkerPresentationMode === true;
+            delete fileData.simulationWorkerShadowMode;
+            delete fileData.simulationWorkerPresentationMode;
             needsSave = true;
         }
 

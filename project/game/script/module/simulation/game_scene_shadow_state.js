@@ -467,6 +467,23 @@ function isSimulationWorkerAuthorityModeEnabled() {
 }
 
 /**
+ * 권한 모드 게임 씬 진입 시 적 AI 워커 풀을 미리 시작합니다.
+ * @returns {boolean} 워커 시작 요청 성공 여부입니다.
+ */
+function warmupAuthorityEnemyAIWorkers() {
+    if (!isSimulationWorkerAuthorityModeEnabled()) {
+        return false;
+    }
+
+    const coordinator = shadowGameSceneMetadata.enemyAIWorkerCoordinator;
+    if (!coordinator || typeof coordinator.ensureStarted !== 'function') {
+        return false;
+    }
+
+    return coordinator.ensureStarted();
+}
+
+/**
  * 현재 타입에 대응하는 AI 구현을 반환합니다.
  * @param {string|null|undefined} aiId
  * @returns {object|null}
@@ -2407,7 +2424,7 @@ function getMutableGameSceneShadowState(currentState) {
 
 /**
  * 적 AI 워커 현재 통계 스냅샷을 반환합니다.
- * @returns {{supported: boolean, running: boolean, ready: boolean, requestCount: number, responseCount: number, fallbackCount: number, staleDropCount: number, lastRequestId: number, lastCompletedRequestId: number, lastLatencyMs: number, lastEnemyCount: number, latestRequestedWallsVersion: number, latestRequestedEnemyTopologyVersion: number, lastWallsVersion: number, lastEnemyTopologyVersion: number, transportSupported: boolean, transportMode: string, lastSharedResultVersion: number, lastError: string|null}}
+ * @returns {{supported: boolean, running: boolean, ready: boolean, requestCount: number, responseCount: number, fallbackCount: number, staleDropCount: number, lastRequestId: number, lastCompletedRequestId: number, lastLatencyMs: number, waitMs: number, lastEnemyCount: number, poolSize: number, chunkCount: number, completedChunkCount: number, chunkResponseCount: number, latestRequestedWallsVersion: number, latestRequestedEnemyTopologyVersion: number, lastWallsVersion: number, lastEnemyTopologyVersion: number, transportSupported: boolean, transportMode: string, lastSharedResultVersion: number, lastError: string|null}}
  */
 export function getGameSceneEnemyAIWorkerStatsSnapshot() {
     return shadowGameSceneMetadata.enemyAIWorkerCoordinator.getStatsSnapshot();
@@ -2465,6 +2482,7 @@ export function replaceGameSceneShadowState(snapshot) {
     markShadowPhysicsWallsDirty();
     markShadowEnemyTopologyDirty();
     reconcileGameSceneShadowMetadata(nextState);
+    warmupAuthorityEnemyAIWorkers();
     return nextState;
 }
 
@@ -2481,6 +2499,7 @@ export function advanceGameSceneShadowState(currentState, frameContext = {}, exe
     syncShadowStateViewportFromRuntime(nextState);
 
     if (isSimulationWorkerAuthorityModeEnabled()) {
+        warmupAuthorityEnemyAIWorkers();
         const fixedStepCount = Number.isInteger(frameContext?.fixedStepCount)
             ? Math.max(0, frameContext.fixedStepCount)
             : 0;

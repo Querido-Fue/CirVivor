@@ -44,9 +44,7 @@ const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
 const ENEMY_HEIGHT_SCALE = getData('ENEMY_HEIGHT_SCALE');
 const getEnemyShapeKey = getData('getEnemyShapeKey');
 const BUTTON_RADIUS = 10;
-const SIMULATION_WORKER_SHADOW_SETTING_KEY = 'simulationWorkerShadowMode';
-const SIMULATION_WORKER_PRESENTATION_SETTING_KEY = 'simulationWorkerPresentationMode';
-const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
+const MULTICORE_SETTING_KEY = 'simulationWorkerAuthorityMode';
 const BENCHMARK_WALL_HEIGHT_RATIO = 0.5;
 const BENCHMARK_WALL_THICKNESS_RATIO = 0.008;
 const BENCHMARK_BOX_SIZE_RATIO = 0.05;
@@ -451,9 +449,7 @@ export class GameScene extends BaseScene {
             return false;
         }
 
-        return saveSystem.getSetting(SIMULATION_WORKER_SHADOW_SETTING_KEY) === true
-            && saveSystem.getSetting(SIMULATION_WORKER_PRESENTATION_SETTING_KEY) === true
-            && saveSystem.getSetting(SIMULATION_WORKER_AUTHORITY_SETTING_KEY) === true;
+        return saveSystem.getSetting(MULTICORE_SETTING_KEY) === true;
     }
 
     /**
@@ -642,7 +638,13 @@ export class GameScene extends BaseScene {
         const staleDropCount = Number.isFinite(enemyAIWorker.staleDropCount) ? enemyAIWorker.staleDropCount : 0;
         const fallbackCount = Number.isFinite(enemyAIWorker.fallbackCount) ? enemyAIWorker.fallbackCount : 0;
         const lastLatencyMs = Number.isFinite(enemyAIWorker.lastLatencyMs) ? enemyAIWorker.lastLatencyMs : 0;
+        const waitMs = Number.isFinite(enemyAIWorker.waitMs) ? enemyAIWorker.waitMs : lastLatencyMs;
         const lastEnemyCount = Number.isFinite(enemyAIWorker.lastEnemyCount) ? enemyAIWorker.lastEnemyCount : 0;
+        const poolSize = Number.isFinite(enemyAIWorker.poolSize) ? enemyAIWorker.poolSize : 0;
+        const chunkCount = Number.isFinite(enemyAIWorker.chunkCount) ? enemyAIWorker.chunkCount : 0;
+        const completedChunkCount = Number.isFinite(enemyAIWorker.completedChunkCount)
+            ? enemyAIWorker.completedChunkCount
+            : 0;
         const latestRequestedWallsVersion = Number.isFinite(enemyAIWorker.latestRequestedWallsVersion)
             ? enemyAIWorker.latestRequestedWallsVersion
             : -1;
@@ -661,6 +663,7 @@ export class GameScene extends BaseScene {
 
         lines.push(`enemyAI: ${readiness} | tx: ${transportMode} | req/resp: ${requestCount}/${responseCount}`);
         lines.push(`enemyAI stale/fb: ${staleDropCount}/${fallbackCount} | lat: ${lastLatencyMs.toFixed(2)}ms | batch: ${lastEnemyCount}`);
+        lines.push(`enemyAI pool/chunk: ${poolSize} | ${completedChunkCount}/${chunkCount} | wait: ${waitMs.toFixed(2)}ms`);
         lines.push(`enemyAI wall/topo req: ${latestRequestedWallsVersion}/${latestRequestedEnemyTopologyVersion} | done: ${lastWallsVersion}/${lastEnemyTopologyVersion} | ver: ${lastSharedResultVersion}`);
     }
 
@@ -684,9 +687,7 @@ export class GameScene extends BaseScene {
 
         const nextEnabled = !this.#isBenchmarkMulticoreEnabled();
         const changedSettings = {
-            [SIMULATION_WORKER_SHADOW_SETTING_KEY]: nextEnabled,
-            [SIMULATION_WORKER_PRESENTATION_SETTING_KEY]: nextEnabled,
-            [SIMULATION_WORKER_AUTHORITY_SETTING_KEY]: nextEnabled
+            [MULTICORE_SETTING_KEY]: nextEnabled
         };
 
         this.isSimulationWorkerTogglePending = true;

@@ -113,32 +113,28 @@ export class DrawHandler2D {
 
         switch (options.shape) {
             case 'rect':
-                if (options.fill !== false) context.fillRect(options.x, options.y, options.w, options.h);
-                else context.strokeRect(options.x, options.y, options.w, options.h);
+                this.#renderRect(context, options);
                 break;
             case 'roundRect':
-                context.beginPath();
-                context.roundRect(options.x, options.y, options.w, options.h, options.radius);
-                if (options.fill !== false) context.fill();
-                else context.stroke();
+                this.#renderRoundRect(context, options);
                 break;
             case 'circle':
                 context.beginPath();
                 context.arc(options.x, options.y, options.radius, 0, Math.PI * 2);
-                if (options.fill !== false) context.fill();
-                else context.stroke();
+                if (options.fill !== false) {
+                    context.fill();
+                    if (this.#shouldStroke(options)) {
+                        context.stroke();
+                    }
+                } else {
+                    context.stroke();
+                }
                 break;
             case 'line':
                 context.beginPath();
-                if (options.lineCap) {
-                    context.lineCap = options.lineCap;
-                }
                 context.moveTo(options.x1, options.y1);
                 context.lineTo(options.x2, options.y2);
                 context.stroke();
-                if (options.lineCap) {
-                    context.lineCap = 'butt';
-                }
                 break;
             case 'image':
                 context.drawImage(options.image, options.x, options.y, options.w, options.h);
@@ -210,6 +206,8 @@ export class DrawHandler2D {
         context.shadowBlur = 0;
         context.shadowColor = 'rgba(0,0,0,0)';
         context.lineWidth = 1;
+        context.lineCap = 'butt';
+        context.lineJoin = 'miter';
         context.filter = 'none';
         context.textAlign = 'start';
         context.textBaseline = 'alphabetic';
@@ -261,6 +259,18 @@ export class DrawHandler2D {
             cache.lineWidth = lineWidth;
         }
 
+        const lineCap = styles.lineCap || 'butt';
+        if (cache.lineCap !== lineCap) {
+            context.lineCap = lineCap;
+            cache.lineCap = lineCap;
+        }
+
+        const lineJoin = styles.lineJoin || 'miter';
+        if (cache.lineJoin !== lineJoin) {
+            context.lineJoin = lineJoin;
+            cache.lineJoin = lineJoin;
+        }
+
         const shadowBlur = styles.shadowBlur !== undefined ? styles.shadowBlur : persistentShadow.shadowBlur;
         const shadowColor = styles.shadowColor !== undefined ? styles.shadowColor : persistentShadow.shadowColor;
         if (cache.shadowBlur !== shadowBlur) {
@@ -290,6 +300,124 @@ export class DrawHandler2D {
                 cache.textBaseline = baseline;
             }
         }
+    }
+
+    /**
+     * @private
+     * 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
+     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+     * @param {object} options - 렌더링 옵션입니다.
+     */
+    #renderRect(context, options) {
+        if (options.fill !== false) {
+            context.fillRect(options.x, options.y, options.w, options.h);
+        }
+
+        if (!this.#shouldStroke(options)) {
+            return;
+        }
+
+        const lineWidth = this.#getLineWidth(options);
+        if (lineWidth <= 0) {
+            return;
+        }
+
+        const inset = lineWidth * 0.5;
+        const width = Math.max(0, options.w - lineWidth);
+        const height = Math.max(0, options.h - lineWidth);
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        context.strokeRect(options.x + inset, options.y + inset, width, height);
+    }
+
+    /**
+     * @private
+     * 둥근 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
+     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+     * @param {object} options - 렌더링 옵션입니다.
+     */
+    #renderRoundRect(context, options) {
+        if (options.fill !== false) {
+            context.beginPath();
+            context.roundRect(
+                options.x,
+                options.y,
+                options.w,
+                options.h,
+                this.#normalizeRadius(options.radius, options.w, options.h)
+            );
+            context.fill();
+        }
+
+        if (!this.#shouldStroke(options)) {
+            return;
+        }
+
+        const lineWidth = this.#getLineWidth(options);
+        if (lineWidth <= 0) {
+            return;
+        }
+
+        const inset = lineWidth * 0.5;
+        const width = Math.max(0, options.w - lineWidth);
+        const height = Math.max(0, options.h - lineWidth);
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        context.beginPath();
+        context.roundRect(
+            options.x + inset,
+            options.y + inset,
+            width,
+            height,
+            this.#normalizeRadius((options.radius || 0) - inset, width, height)
+        );
+        context.stroke();
+    }
+
+    /**
+     * @private
+     * 렌더 옵션이 스트로크를 요청하는지 반환합니다.
+     * @param {object} options - 렌더링 옵션입니다.
+     * @returns {boolean} 스트로크 렌더링 여부입니다.
+     */
+    #shouldStroke(options) {
+        if (options.stroke === false) {
+            return false;
+        }
+
+        return options.fill === false || options.stroke !== undefined;
+    }
+
+    /**
+     * @private
+     * 유효한 스트로크 두께를 반환합니다.
+     * @param {object} options - 렌더링 옵션입니다.
+     * @returns {number} 스트로크 두께입니다.
+     */
+    #getLineWidth(options) {
+        const lineWidth = Number(options.lineWidth);
+        return Number.isFinite(lineWidth) ? Math.max(0, lineWidth) : 1;
+    }
+
+    /**
+     * @private
+     * 둥근 사각형 반지름을 현재 사각형 크기에 맞게 보정합니다.
+     * @param {number} radius - 요청된 반지름입니다.
+     * @param {number} width - 사각형 너비입니다.
+     * @param {number} height - 사각형 높이입니다.
+     * @returns {number} 보정된 반지름입니다.
+     */
+    #normalizeRadius(radius, width, height) {
+        const resolvedRadius = Number(radius);
+        if (!Number.isFinite(resolvedRadius)) {
+            return 0;
+        }
+
+        return Math.max(0, Math.min(resolvedRadius, Math.max(0, Math.min(width, height) * 0.5)));
     }
 
     /**

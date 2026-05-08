@@ -11,14 +11,14 @@ const LIGHT_OVERLAY_THEME = Object.freeze({
         Value: '#4d4d4d'
     }),
     Panel: Object.freeze({
-        Background: '#cececeff',
-        Border: '#cececeff',
-        GlassBackground: 'rgba(250, 252, 255, 0.9)',
-        GlassBorder: 'rgba(255, 255, 255, 0.42)',
-        GlassTint: 'rgba(255, 255, 255, 1)',
-        GlassTintStrength: 0.28,
-        GlassEdge: 'rgba(224, 233, 247, 1)',
-        GlassEdgeStrength: 0.16,
+        Background: '#d2d2d2ff',
+        Border: '#c8c8c8ff',
+        GlassBackground: 'rgba(236, 237, 239, 0.88)',
+        GlassBorder: 'rgba(222, 224, 228, 0.56)',
+        GlassTint: 'rgba(236, 236, 236, 1)',
+        GlassTintStrength: 0.18,
+        GlassEdge: 'rgba(207, 213, 222, 1)',
+        GlassEdgeStrength: 0.1,
         Divider: 'rgba(70, 70, 70, 0.08)',
         Dim: 0.5,
         Shadow: 'rgba(0, 0, 0, 0.3)'
@@ -36,26 +36,26 @@ const LIGHT_OVERLAY_THEME = Object.freeze({
         }),
         Option: Object.freeze({
             Active: '#166ffb',
-            ActiveText: '#ffffff'
+            ActiveText: '#f4f7ff'
         })
     }),
     Segment: Object.freeze({
         Background: 'rgba(0, 0, 0, 0.05)',
-        Thumb: '#ffffff',
+        Thumb: '#ececec',
         TextActive: '#166ffb',
         TextInactive: '#666666'
     }),
     Toggle: Object.freeze({
         Active: '#166ffb',
         Inactive: 'rgba(0, 0, 0, 0.1)',
-        Knob: '#ffffff',
+        Knob: '#ececec',
         Shadow: 'rgba(0, 0, 0, 0.3)'
     }),
     Slider: Object.freeze({
         Track: 'rgba(0, 0, 0, 0.16)',
         ValueActive: '#166ffb',
         ValueInactive: '#888888',
-        Knob: '#ffffff',
+        Knob: '#ececec',
         Shadow: 'rgba(0, 0, 0, 0.3)'
     })
 });
@@ -65,8 +65,8 @@ const LIGHT_OVERLAY_THEME = Object.freeze({
  */
 const LIGHT_VIGNETTE_THEME = Object.freeze({
     WORLD: Object.freeze({
-        RGB: Object.freeze([0, 0, 0]),
-        AlphaMultiplier: 1.4688
+        RGB: Object.freeze([32, 32, 32]),
+        AlphaMultiplier: 0.58
     })
 });
 
@@ -78,7 +78,7 @@ export const LightTheme = Object.freeze({
     Cursor: Object.freeze({
         Fill: '#cccccc',
         Active: '#166ffb',
-        White: '#ffffff'
+        White: '#ececec'
     }),
     Title: Object.freeze({
         Background: '#cececeff',
@@ -138,17 +138,17 @@ export const LightTheme = Object.freeze({
             })
         }),
         Shield: Object.freeze({
-            Shadow: '#f7f9ff',
-            Low: '#2f74ed',
-            High: '#67aaff',
-            Highlight: '#ffffff'
+            Shadow: '#eef2f7',
+            Low: '#5c93df',
+            High: '#8dc2f4',
+            Highlight: '#f3f7fb'
         }),
         Menu: Object.freeze({
-            Foreground: '#202020',
+            Foreground: '#242424',
             Accent: '#166ffb',
             Icon: Object.freeze({
-                Fill: '#202020',
-                Shadow: '#666666'
+                Fill: '#242424',
+                Shadow: '#686868'
             }),
             Opacity: Object.freeze({
                 UtilityText: 0.82,
@@ -168,15 +168,15 @@ export const LightTheme = Object.freeze({
                 CardRow: 0.1
             })
         }),
-        TextDark: '#202020',
+        TextDark: '#242424',
         Line: '#888888',
-        Shadow: 'rgb(238, 238, 238)',
+        Shadow: 'rgb(224, 224, 224)',
         Button: Object.freeze({
             Background: Object.freeze({
                 Normal: 'rgba(238, 238, 238, 0)',
                 Hover: LIGHT_TITLE_BUTTON_HOVER
             }),
-            Text: '#000000'
+            Text: '#242424'
         }),
         Enemy: 'rgba(230, 90, 90, 0.85)'
     }),

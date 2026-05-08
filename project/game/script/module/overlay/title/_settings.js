@@ -11,14 +11,7 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-const SIMULATION_WORKER_SHADOW_SETTING_KEY = 'simulationWorkerShadowMode';
-const SIMULATION_WORKER_PRESENTATION_SETTING_KEY = 'simulationWorkerPresentationMode';
-const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
-const MULTICORE_SETTING_KEYS = Object.freeze([
-    SIMULATION_WORKER_SHADOW_SETTING_KEY,
-    SIMULATION_WORKER_PRESENTATION_SETTING_KEY,
-    SIMULATION_WORKER_AUTHORITY_SETTING_KEY
-]);
+const MULTICORE_SETTING_KEY = 'simulationWorkerAuthorityMode';
 const SETTING_LABEL_KEYS = {
     windowMode: 'title_settings_window_mode',
     widescreenSupport: 'title_settings_widescreen_support',
@@ -267,13 +260,7 @@ export class SettingsOverlay extends TitleOverlay {
      * @returns {boolean}
      */
     #isMulticoreEnabled() {
-        for (let i = 0; i < MULTICORE_SETTING_KEYS.length; i++) {
-            if (getSetting(MULTICORE_SETTING_KEYS[i]) !== true) {
-                return false;
-            }
-        }
-
-        return true;
+        return getSetting(MULTICORE_SETTING_KEY) === true;
     }
 
     /**
@@ -289,9 +276,7 @@ export class SettingsOverlay extends TitleOverlay {
 
         const enableMulticore = expandedSettings.multicoreSupport === true;
         delete expandedSettings.multicoreSupport;
-        for (let i = 0; i < MULTICORE_SETTING_KEYS.length; i++) {
-            expandedSettings[MULTICORE_SETTING_KEYS[i]] = enableMulticore;
-        }
+        expandedSettings[MULTICORE_SETTING_KEY] = enableMulticore;
 
         return expandedSettings;
     }
@@ -694,7 +679,7 @@ export class SettingsOverlay extends TitleOverlay {
 
         void (async () => {
             await this.#flushPendingPreview();
-            const revertedSettings = this.#getRevertedSettings();
+            const revertedSettings = this.#expandCompositeSettings(this.#getRevertedSettings());
             if (Object.keys(revertedSettings).length === 0) {
                 return;
             }

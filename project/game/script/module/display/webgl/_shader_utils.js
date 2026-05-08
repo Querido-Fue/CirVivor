@@ -254,14 +254,17 @@ export const GLASS_PANEL_FRAGMENT_SHADER = `
         glassColor = mix(glassColor, u_fillColor.rgb, fillBlend);
         glassColor = mix(glassColor, u_tintColor.rgb, tintBlend);
 
-        float edgeFactor = 1.0 - smoothstep(0.0, max(1.0, u_lineWidth * 2.0), abs(sdf));
+        float insideDistance = max(0.0, -sdf);
+        float innerMask = 1.0 - smoothstep(0.0, 1.5, sdf);
+        float edgeFactor = innerMask * (1.0 - smoothstep(0.0, max(1.0, u_lineWidth * 1.5), insideDistance));
+        float strokeFactor = innerMask * (1.0 - smoothstep(u_lineWidth, u_lineWidth + 1.0, insideDistance));
         float highlight = pow(1.0 - abs(centeredUv.y), 3.0) * 0.35;
 
         vec3 edgeLighting = u_edgeColor.rgb * edgeFactor * u_edgeStrength;
         vec3 topHighlight = u_edgeColor.rgb * highlight * u_edgeStrength * 0.4;
         vec4 fillColor = vec4(glassColor + edgeLighting + topHighlight, max(blurColor.a, u_fillColor.a));
 
-        vec4 strokeColor = u_strokeColor * edgeFactor;
+        vec4 strokeColor = u_strokeColor * strokeFactor;
         vec4 finalColor = mix(fillColor, strokeColor, strokeColor.a);
         finalColor.a = max(max(blurColor.a, u_fillColor.a), strokeColor.a) * baseMask * u_alpha;
 
@@ -471,7 +474,8 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
         fieldAlpha *= max(approachActivity, impactActivity * 0.55);
         vec3 color = (fieldColor * fieldAlpha) + (ringColor * baseAlpha) + impactColor;
         float alpha = saturate(fieldAlpha + baseAlpha + (impactAlpha * 0.85)) * u_alpha;
+        vec3 premultipliedColor = min(color * u_alpha, vec3(alpha));
 
-        gl_FragColor = vec4(color * alpha, alpha);
+        gl_FragColor = vec4(premultipliedColor, alpha);
     }
 `;
