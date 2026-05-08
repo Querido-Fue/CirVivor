@@ -276,6 +276,9 @@ function clonePresentationCollisionStats(collisionStats) {
         enemyNonPositionMs: Number.isFinite(collisionStats?.enemyNonPositionMs) ? collisionStats.enemyNonPositionMs : 0,
         solveGridMs: Number.isFinite(collisionStats?.solveGridMs) ? collisionStats.solveGridMs : 0,
         solvePairScanMs: Number.isFinite(collisionStats?.solvePairScanMs) ? collisionStats.solvePairScanMs : 0,
+        solveCandidateBuildMs: Number.isFinite(collisionStats?.solveCandidateBuildMs) ? collisionStats.solveCandidateBuildMs : 0,
+        solvePairProcessMs: Number.isFinite(collisionStats?.solvePairProcessMs) ? collisionStats.solvePairProcessMs : 0,
+        solveNarrowphaseMs: Number.isFinite(collisionStats?.solveNarrowphaseMs) ? collisionStats.solveNarrowphaseMs : 0,
         projectileTotalMs: Number.isFinite(collisionStats?.projectileTotalMs) ? collisionStats.projectileTotalMs : 0,
         projectileEnemyBodyBuildMs: Number.isFinite(collisionStats?.projectileEnemyBodyBuildMs) ? collisionStats.projectileEnemyBodyBuildMs : 0,
         projectileGridBuildMs: Number.isFinite(collisionStats?.projectileGridBuildMs) ? collisionStats.projectileGridBuildMs : 0,
@@ -285,7 +288,16 @@ function clonePresentationCollisionStats(collisionStats) {
         contactTotalMs: Number.isFinite(collisionStats?.contactTotalMs) ? collisionStats.contactTotalMs : 0,
         contactBodyBuildMs: Number.isFinite(collisionStats?.contactBodyBuildMs) ? collisionStats.contactBodyBuildMs : 0,
         contactGridBuildMs: Number.isFinite(collisionStats?.contactGridBuildMs) ? collisionStats.contactGridBuildMs : 0,
-        contactPairScanMs: Number.isFinite(collisionStats?.contactPairScanMs) ? collisionStats.contactPairScanMs : 0
+        contactPairScanMs: Number.isFinite(collisionStats?.contactPairScanMs) ? collisionStats.contactPairScanMs : 0,
+        solveBucketPairCount: Number.isFinite(collisionStats?.solveBucketPairCount) ? collisionStats.solveBucketPairCount : 0,
+        solveCandidatePairCount: Number.isFinite(collisionStats?.solveCandidatePairCount) ? collisionStats.solveCandidatePairCount : 0,
+        solveDuplicatePairSkipCount: Number.isFinite(collisionStats?.solveDuplicatePairSkipCount) ? collisionStats.solveDuplicatePairSkipCount : 0,
+        solveRuleRejectCount: Number.isFinite(collisionStats?.solveRuleRejectCount) ? collisionStats.solveRuleRejectCount : 0,
+        solveAabbPassCount: Number.isFinite(collisionStats?.solveAabbPassCount) ? collisionStats.solveAabbPassCount : 0,
+        solveCirclePassCount: Number.isFinite(collisionStats?.solveCirclePassCount) ? collisionStats.solveCirclePassCount : 0,
+        solveResolvedPairCount: Number.isFinite(collisionStats?.solveResolvedPairCount) ? collisionStats.solveResolvedPairCount : 0,
+        solveBudgetSkipCount: Number.isFinite(collisionStats?.solveBudgetSkipCount) ? collisionStats.solveBudgetSkipCount : 0,
+        solveLargePopulationMode: Number.isFinite(collisionStats?.solveLargePopulationMode) ? collisionStats.solveLargePopulationMode : 0
     };
 
     for (const [fieldName, value] of Object.entries(collisionStats)) {

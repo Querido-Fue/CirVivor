@@ -70,6 +70,9 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'enemyNonPositionMs',
     'solveGridMs',
     'solvePairScanMs',
+    'solveCandidateBuildMs',
+    'solvePairProcessMs',
+    'solveNarrowphaseMs',
     'projectileTotalMs',
     'projectileEnemyBodyBuildMs',
     'projectileGridBuildMs',
@@ -79,7 +82,16 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'contactTotalMs',
     'contactBodyBuildMs',
     'contactGridBuildMs',
-    'contactPairScanMs'
+    'contactPairScanMs',
+    'solveBucketPairCount',
+    'solveCandidatePairCount',
+    'solveDuplicatePairSkipCount',
+    'solveRuleRejectCount',
+    'solveAabbPassCount',
+    'solveCirclePassCount',
+    'solveResolvedPairCount',
+    'solveBudgetSkipCount',
+    'solveLargePopulationMode'
 ]);
 
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
@@ -145,6 +157,15 @@ function createCollisionStatsSnapshot(sourceStats) {
  */
 function formatDebugMs(value) {
     return normalizeSnapshotNumber(value, 0).toFixed(2);
+}
+
+/**
+ * HUD에 표시할 카운터 값을 정수 문자열로 변환합니다.
+ * @param {number|null|undefined} value
+ * @returns {string}
+ */
+function formatDebugCount(value) {
+    return `${Math.max(0, Math.round(normalizeSnapshotNumber(value, 0)))}`;
 }
 
 /**
@@ -638,7 +659,14 @@ export class GameScene extends BaseScene {
         }
 
         lines.push(`collision ms: enemy ${formatDebugMs(collisionStats.enemyTotalMs)} | proj ${formatDebugMs(collisionStats.projectileTotalMs)} | contact ${formatDebugMs(collisionStats.contactTotalMs)}`);
-        lines.push(`collision detail ms: grid ${formatDebugMs(collisionStats.solveGridMs)} | pair ${formatDebugMs(collisionStats.solvePairScanMs)} | narrow ${formatDebugMs(collisionStats.projectileNarrowphaseMs)}`);
+        lines.push(`collision detail ms: grid ${formatDebugMs(collisionStats.solveGridMs)} | build ${formatDebugMs(collisionStats.solveCandidateBuildMs)} | proc ${formatDebugMs(collisionStats.solvePairProcessMs)} | narrow ${formatDebugMs(collisionStats.solveNarrowphaseMs)}`);
+
+        const candidatePairCount = normalizeSnapshotNumber(collisionStats.solveCandidatePairCount, 0);
+        const budgetSkipCount = normalizeSnapshotNumber(collisionStats.solveBudgetSkipCount, 0);
+        if (candidatePairCount > 0 || budgetSkipCount > 0) {
+            lines.push(`collision pairs: bucket ${formatDebugCount(collisionStats.solveBucketPairCount)} | cand ${formatDebugCount(candidatePairCount)} | aabb ${formatDebugCount(collisionStats.solveAabbPassCount)} | circle ${formatDebugCount(collisionStats.solveCirclePassCount)}`);
+            lines.push(`collision solve: resolved ${formatDebugCount(collisionStats.solveResolvedPairCount)} | budget skip ${formatDebugCount(budgetSkipCount)} | large ${formatDebugCount(collisionStats.solveLargePopulationMode)}`);
+        }
     }
 
     /**

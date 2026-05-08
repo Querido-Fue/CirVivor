@@ -60,6 +60,7 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'solvePairScanMs',
     'solveCandidateBuildMs',
     'solvePairProcessMs',
+    'solveNarrowphaseMs',
     'projectileTotalMs',
     'projectileEnemyBodyBuildMs',
     'projectileGridBuildMs',
@@ -73,7 +74,12 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'solveBucketPairCount',
     'solveCandidatePairCount',
     'solveDuplicatePairSkipCount',
-    'solveRuleRejectCount'
+    'solveRuleRejectCount',
+    'solveAabbPassCount',
+    'solveCirclePassCount',
+    'solveResolvedPairCount',
+    'solveBudgetSkipCount',
+    'solveLargePopulationMode'
 ]);
 const shadowPhysicsSystem = new PhysicsSystem();
 const shadowGameSceneMetadata = {

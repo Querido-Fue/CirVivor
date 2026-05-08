@@ -46,6 +46,13 @@ const DENSE_STABILIZE_MAX_PASSES = 4;
 const DENSE_STABILIZE_LIGHT_MAX_PASSES = 2;
 const DENSE_STABILIZE_MIN_RESOLVED = 4;
 const DENSE_RESOLVE_BOOST = 1.55;
+const LARGE_POPULATION_DENSE_BODY_THRESHOLD = 512;
+const LARGE_POPULATION_DENSE_REBUILD_MAX_EXTRA_PASSES = 2;
+const LARGE_POPULATION_DENSE_MIN_ITERATION_FLOOR = 3;
+const LARGE_POPULATION_DENSE_STABILIZE_MAX_PASSES = 2;
+const LARGE_POPULATION_DENSE_STABILIZE_LIGHT_MAX_PASSES = 1;
+const LARGE_POPULATION_DENSE_ITERATION_RESOLVE_BOOST = 1.28;
+const LARGE_POPULATION_DENSE_RESOLVE_BOOST = 1.85;
 const ENEMY_PAIR_PROCESS_BUDGET_POSITION = 14;
 const ENEMY_PAIR_PROCESS_BUDGET_STABILIZE = 10;
 const ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION = 8;
@@ -98,7 +105,8 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveAabbPassCount',
     'solveCirclePassCount',
     'solveResolvedPairCount',
-    'solveBudgetSkipCount'
+    'solveBudgetSkipCount',
+    'solveLargePopulationMode'
 ]);
 const COLLISION_RULE_NONE = Object.freeze({
     check: false,
@@ -315,6 +323,37 @@ function getEnemyCircleCollisionRadius(enemyType, width, height) {
 }
 
 /**
+ * 적 수에 따라 dense 충돌 해소 반복 상한을 반환합니다.
+ * @param {number} dynamicBodyCount
+ * @returns {{largePopulation:boolean, denseRebuildMaxExtraPasses:number, denseMinIterationFloor:number, denseStabilizeMaxPasses:number, denseStabilizeLightMaxPasses:number, denseIterationResolveBoost:number, denseResolveBoost:number}}
+ */
+function getDenseSolveTuning(dynamicBodyCount) {
+    const largePopulation = Number.isFinite(dynamicBodyCount)
+        && dynamicBodyCount >= LARGE_POPULATION_DENSE_BODY_THRESHOLD;
+    if (!largePopulation) {
+        return {
+            largePopulation: false,
+            denseRebuildMaxExtraPasses: DENSE_REBUILD_MAX_EXTRA_PASSES,
+            denseMinIterationFloor: DENSE_MIN_ITERATION_FLOOR,
+            denseStabilizeMaxPasses: DENSE_STABILIZE_MAX_PASSES,
+            denseStabilizeLightMaxPasses: DENSE_STABILIZE_LIGHT_MAX_PASSES,
+            denseIterationResolveBoost: 1.18,
+            denseResolveBoost: DENSE_RESOLVE_BOOST
+        };
+    }
+
+    return {
+        largePopulation: true,
+        denseRebuildMaxExtraPasses: LARGE_POPULATION_DENSE_REBUILD_MAX_EXTRA_PASSES,
+        denseMinIterationFloor: LARGE_POPULATION_DENSE_MIN_ITERATION_FLOOR,
+        denseStabilizeMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_MAX_PASSES,
+        denseStabilizeLightMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_LIGHT_MAX_PASSES,
+        denseIterationResolveBoost: LARGE_POPULATION_DENSE_ITERATION_RESOLVE_BOOST,
+        denseResolveBoost: LARGE_POPULATION_DENSE_RESOLVE_BOOST
+    };
+}
+
+/**
  * @typedef {object} CollisionRule
  * @property {boolean} check
  * @property {boolean} resolve
@@ -407,7 +446,8 @@ export class CollisionHandler {
             solveAabbPassCount: 0,
             solveCirclePassCount: 0,
             solveResolvedPairCount: 0,
-            solveBudgetSkipCount: 0
+            solveBudgetSkipCount: 0,
+            solveLargePopulationMode: 0
         };
         this.#bodyPool = [];
         this.#bodyPoolCursor = 0;
@@ -628,19 +668,23 @@ export class CollisionHandler {
             let denseRebuildPasses = 0;
             let denseMode = false;
             let peakCandidatePairs = 0;
+            const denseSolveTuning = getDenseSolveTuning(dynamicBodies.length);
+            if (denseSolveTuning.largePopulation) {
+                this.#recordProfileCount('solveLargePopulationMode');
+            }
             const positionSolveStart = this.#startProfileTimer();
             for (let i = 0; i < adaptiveMax; i++) {
                 const shouldDenseRebuild = (
                     i > 0 &&
                     denseMode &&
-                    denseRebuildPasses < DENSE_REBUILD_MAX_EXTRA_PASSES &&
+                    denseRebuildPasses < denseSolveTuning.denseRebuildMaxExtraPasses &&
                     lastResolved >= DENSE_REBUILD_MIN_RESOLVED
                 );
                 const resolved = this.#solveOnePass(bodies, {
                     resolvePositions: true,
                     applyNonPosition: false,
                     rebuildGrid: i === 0 || shouldDenseRebuild,
-                    resolveBoost: denseMode && i > 0 ? 1.18 : 1
+                    resolveBoost: denseMode && i > 0 ? denseSolveTuning.denseIterationResolveBoost : 1
                 });
                 if (shouldDenseRebuild) denseRebuildPasses++;
                 totalResolved += resolved;
@@ -654,8 +698,7 @@ export class CollisionHandler {
                         denseMode = density >= DENSE_REBUILD_DENSITY_THRESHOLD || localDense;
                     }
                     if (denseMode) {
-                        // 과밀 구간에서는 최소 반복 수를 소폭 보장해 중심 끼임을 줄입니다.
-                        minIterations = Math.min(maxIterations, DENSE_MIN_ITERATION_FLOOR);
+                        minIterations = Math.min(maxIterations, denseSolveTuning.denseMinIterationFloor);
                     }
                 }
                 lastResolved = resolved;
@@ -666,14 +709,14 @@ export class CollisionHandler {
             if (denseMode && lastResolved >= DENSE_STABILIZE_MIN_RESOLVED) {
                 const stabilizeStart = this.#startProfileTimer();
                 const stabilizeMaxPasses = peakCandidatePairs >= (DENSE_LOCAL_CANDIDATE_THRESHOLD * 2)
-                    ? DENSE_STABILIZE_MAX_PASSES
-                    : DENSE_STABILIZE_LIGHT_MAX_PASSES;
+                    ? denseSolveTuning.denseStabilizeMaxPasses
+                    : denseSolveTuning.denseStabilizeLightMaxPasses;
                 for (let pass = 0; pass < stabilizeMaxPasses; pass++) {
                     const stabilized = this.#solveOnePass(bodies, {
                         resolvePositions: true,
                         applyNonPosition: false,
                         rebuildGrid: true,
-                        resolveBoost: DENSE_RESOLVE_BOOST
+                        resolveBoost: denseSolveTuning.denseResolveBoost
                     });
                     totalResolved += stabilized;
                     lastResolved = stabilized;
@@ -2082,6 +2125,11 @@ export class CollisionHandler {
             const rule = this.#getPassRule(bodyA, bodyB, applyNonPosition);
             if (!rule) continue;
 
+            if (this.#shouldSkipEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
+                this.#recordProfileCount('solveBudgetSkipCount');
+                continue;
+            }
+
             this.#frameStats.collisionCheckCount++;
             if (!this.#bodyAabbOverlap(bodyA, bodyB)) {
                 this.#frameStats.aabbRejectCount++;
@@ -2096,10 +2144,6 @@ export class CollisionHandler {
             this.#frameStats.circlePassCount++;
             this.#recordProfileCount('solveCirclePassCount');
 
-            if (this.#shouldSkipEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
-                this.#recordProfileCount('solveBudgetSkipCount');
-                continue;
-            }
             this.#markEnemyPairProcessAttempt(bodyA, bodyB);
 
             const narrowphaseStart = this.#startProfileTimer();
