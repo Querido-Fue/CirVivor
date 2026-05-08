@@ -237,6 +237,5 @@ export function updateBentoCardInteractionState(card, {
     card.localMouseY = localMouseY;
     card.tiltX = damp(card.tiltX, targetTiltX, motionSpeed);
     card.tiltY = damp(card.tiltY, targetTiltY, motionSpeed);
-    card.glowIntensity = damp(glowTarget * spotlightOpacity, card.glowIntensity, 0);
     card.glowIntensity = damp(card.glowIntensity, glowTarget * spotlightOpacity, clamp(delta * 14, 0, 1));
 }
