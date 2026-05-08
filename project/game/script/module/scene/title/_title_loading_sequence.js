@@ -5,22 +5,25 @@ import { getDelta } from 'game/time_handler.js';
 import { getSetting } from 'save/save_system.js';
 import { getLangString } from 'ui/ui_system.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
-import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
+import { releaseUIItem } from 'ui/_ui_pool.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
 import { TitleMenu } from './_title_menu.js';
+import {
+    applyTitleLoadingDebugSkipButtonStyle,
+    createTitleLoadingDebugSkipButton,
+    layoutTitleLoadingDebugSkipButton,
+    shouldShowTitleLoadingDebugSkipButton
+} from './_title_loading_debug_skip_button.js';
 import { buildTitleLoadingSchedule } from './_title_loading_schedule.js';
 import {
     getLoadingLogoColor,
-    getLoadingSkipButtonStyle,
     getLoadingTextColor
 } from './_title_loading_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
-const TITLE_LOGO_ASPECT_RATIO = 589.45 / 1178.8;
-const DEBUG_SKIP_LOADING_LABEL = '로딩 스킵';
 
 /**
  * @class TitleLoadingSequence
@@ -587,38 +590,12 @@ export class TitleLoadingSequence {
             return;
         }
 
-        const buttonText = UIPool.text_element.get();
-        buttonText.init({
-            parent: this.titleScene,
-            layer: 'ui',
-            text: DEBUG_SKIP_LOADING_LABEL,
-            font: 'Pretendard Variable',
-            fontWeight: '700',
-            size: Math.max(12, this.WH * 0.0145),
-            color: getLoadingSkipButtonStyle().text,
-            align: 'center'
-        });
-
-        const skipButtonStyle = getLoadingSkipButtonStyle();
-        this.debugSkipLoadingButton = UIPool.button.get();
-        this.debugSkipLoadingButton.init({
-            parent: this.titleScene,
+        this.debugSkipLoadingButton = createTitleLoadingDebugSkipButton({
+            titleScene: this.titleScene,
             onClick: this.#skipLoadingForDebug.bind(this),
-            onHover: null,
-            layer: 'ui',
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-            idleColor: skipButtonStyle.idleColor,
-            hoverColor: skipButtonStyle.hoverColor,
-            center: [buttonText],
-            alpha: 1,
-            margin: Math.max(12, this.UIWW * 0.012),
-            radius: Math.max(12, this.WH * 0.018)
+            wh: this.WH,
+            uiww: this.UIWW
         });
-        this.debugSkipLoadingButton.idleColor = skipButtonStyle.idleColor;
-        this.debugSkipLoadingButton.hoverColor = skipButtonStyle.hoverColor;
         this.#layoutDebugSkipLoadingButton();
     }
 
@@ -631,23 +608,12 @@ export class TitleLoadingSequence {
             return;
         }
 
-        const buttonWidth = Math.max(120, this.UIWW * 0.12);
-        const buttonHeight = Math.max(34, this.WH * 0.048);
-        this.debugSkipLoadingButton.width = buttonWidth;
-        this.debugSkipLoadingButton.height = buttonHeight;
-        this.debugSkipLoadingButton.x = this.loadingTextX - (buttonWidth * 0.5);
-        this.debugSkipLoadingButton.y = this.loadingTextBlockBottomY + Math.max(20, this.WH * 0.028);
-        this.debugSkipLoadingButton.margin = Math.max(12, this.UIWW * 0.012);
-        this.debugSkipLoadingButton.radius = Math.max(12, this.WH * 0.018);
-
-        const buttonText = this.debugSkipLoadingButton.center[0];
-        if (buttonText) {
-            buttonText.size = Math.max(12, this.WH * 0.0145);
-            buttonText.color = getLoadingSkipButtonStyle().text;
-        }
-
-        this.debugSkipLoadingButton.idleColor = getLoadingSkipButtonStyle().idleColor;
-        this.debugSkipLoadingButton.hoverColor = getLoadingSkipButtonStyle().hoverColor;
+        layoutTitleLoadingDebugSkipButton(this.debugSkipLoadingButton, {
+            wh: this.WH,
+            uiww: this.UIWW,
+            loadingTextX: this.loadingTextX,
+            loadingTextBlockBottomY: this.loadingTextBlockBottomY
+        });
     }
 
     /**
@@ -655,17 +621,7 @@ export class TitleLoadingSequence {
      * @private
      */
     #applyDebugSkipButtonStyle() {
-        if (!this.debugSkipLoadingButton) {
-            return;
-        }
-
-        const skipButtonStyle = getLoadingSkipButtonStyle();
-        const buttonText = this.debugSkipLoadingButton.center?.[0];
-        if (buttonText) {
-            buttonText.color = skipButtonStyle.text;
-        }
-        this.debugSkipLoadingButton.idleColor = skipButtonStyle.idleColor;
-        this.debugSkipLoadingButton.hoverColor = skipButtonStyle.hoverColor;
+        applyTitleLoadingDebugSkipButtonStyle(this.debugSkipLoadingButton);
     }
 
     /**
@@ -674,7 +630,11 @@ export class TitleLoadingSequence {
      * @private
      */
     #shouldShowDebugSkipButton() {
-        return Boolean(this.debugSkipLoadingButton) && !this.loadingFinished && !this.titleLogo;
+        return shouldShowTitleLoadingDebugSkipButton(
+            this.debugSkipLoadingButton,
+            this.loadingFinished,
+            this.titleLogo
+        );
     }
 
     /**

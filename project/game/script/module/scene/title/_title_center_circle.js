@@ -3,6 +3,7 @@ import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
 import { getLoadingAccentColor } from './_title_loading_theme.js';
 import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_theme.js';
+import { buildCenterCircleFillData } from './_title_center_circle_wave.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
@@ -561,7 +562,14 @@ export class TitleCenterCircle {
      */
     #drawFill(ctx, drawRadius) {
         const innerRadius = Math.max(1, drawRadius);
-        const fillData = this.#buildFillData(innerRadius);
+        const fillData = buildCenterCircleFillData({
+            centerX: this.centerX,
+            centerY: this.centerY,
+            innerRadius,
+            progress: this.progress,
+            wavePhase: this.wavePhase,
+            secondaryWavePhase: this.secondaryWavePhase
+        });
 
         ctx.save();
         ctx.beginPath();
@@ -573,57 +581,6 @@ export class TitleCenterCircle {
 
         this.#drawSurfaceHighlight(ctx, fillData, drawRadius);
         ctx.restore();
-    }
-
-    /**
-     * 진행률에 맞는 파도 형태의 내부 fill 경로를 계산합니다.
-     * @param {number} innerRadius - 내부 채움 반경
-     * @returns {{path: Path2D, surfacePoints: Array<{x:number, y:number}>}} fill 경로와 표면 포인트
-     * @private
-     */
-    #buildFillData(innerRadius) {
-        const fillBottomY = this.centerY + innerRadius;
-        const fillHeight = (innerRadius * 2) * this.progress;
-        const fillTopBaseY = fillBottomY - fillHeight;
-        const amplitudeLimit = innerRadius * 0.06;
-        const amplitude = this.progress >= 1
-            ? 0
-            : Math.min(amplitudeLimit, Math.max(1.5, fillHeight * 0.2));
-        const leftX = this.centerX - innerRadius - (amplitude * 2);
-        const rightX = this.centerX + innerRadius + (amplitude * 2);
-        const segments = 30;
-        const path = new Path2D();
-        const surfacePoints = [];
-
-        path.moveTo(leftX, fillBottomY + innerRadius);
-        path.lineTo(leftX, fillTopBaseY);
-
-        for (let i = 0; i <= segments; i++) {
-            const t = i / segments;
-            const x = leftX + ((rightX - leftX) * t);
-            const y = this.#getWaveY(t, fillTopBaseY, amplitude);
-            surfacePoints.push({ x, y });
-            path.lineTo(x, y);
-        }
-
-        path.lineTo(rightX, fillBottomY + innerRadius);
-        path.closePath();
-
-        return { path, surfacePoints };
-    }
-
-    /**
-     * 특정 정규화 위치에서 파도 표면의 y 좌표를 계산합니다.
-     * @param {number} normalizedX - 0~1 범위의 정규화 x 값
-     * @param {number} baseY - 표면 기준 y 값
-     * @param {number} amplitude - 파도 진폭
-     * @returns {number} 계산된 y 값
-     * @private
-     */
-    #getWaveY(normalizedX, baseY, amplitude) {
-        const primary = Math.sin((normalizedX * Math.PI * 2.2) + this.wavePhase) * amplitude;
-        const secondary = Math.sin((normalizedX * Math.PI * 5.2) - this.secondaryWavePhase) * (amplitude * 0.32);
-        return baseY + primary + secondary;
     }
 
     /**
