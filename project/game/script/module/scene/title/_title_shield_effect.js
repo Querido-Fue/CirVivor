@@ -170,9 +170,9 @@ export class TitleShieldEffect {
             const impact = this.impacts[index];
             impact.age += delta;
             if (impact.age < impact.duration) {
-                const angleFollowFactor = 1 - Math.exp(-visualDelta * this.#getImpactAngleFollowRate());
-                const intensityFollowFactor = 1 - Math.exp(-visualDelta * this.#getImpactIntensityFollowRate());
-                const widthFollowFactor = 1 - Math.exp(-visualDelta * this.#getImpactWidthFollowRate());
+                const angleFollowFactor = 1 - Math.exp(-visualDelta * this.config.getImpactAngleFollowRate());
+                const intensityFollowFactor = 1 - Math.exp(-visualDelta * this.config.getImpactIntensityFollowRate());
+                const widthFollowFactor = 1 - Math.exp(-visualDelta * this.config.getImpactWidthFollowRate());
                 impact.angle = this.#lerpAngle(impact.angle, impact.targetAngle, angleFollowFactor);
                 impact.intensity += (impact.targetIntensity - impact.intensity) * intensityFollowFactor;
                 impact.width += (impact.targetWidth - impact.width) * widthFollowFactor;
@@ -192,7 +192,7 @@ export class TitleShieldEffect {
             return;
         }
 
-        const followRate = this.#getLayoutFollowRate();
+        const followRate = this.config.getLayoutFollowRate();
         const lerpFactor = 1 - Math.exp(-delta * followRate);
         this.centerX += (this.targetCenterX - this.centerX) * lerpFactor;
         this.centerY += (this.targetCenterY - this.centerY) * lerpFactor;
@@ -223,24 +223,24 @@ export class TitleShieldEffect {
         }
 
         const angle = Math.atan2(dy, dx);
-        const impactBand = this.#getImpactBandPx();
-        const contactPadding = this.#getContactPaddingPx();
+        const impactBand = this.config.getImpactBandPx();
+        const contactPadding = this.config.getContactPaddingPx();
         const shieldBoundaryDistance = this.#stabilizeBoundaryDistance(distance - this.radius - radius);
         const state = this.#getEnemyState(enemy);
         const contactRange = impactBand + contactPadding + (
             state.contacting
-                ? this.#getContactHysteresisPx()
+                ? this.config.getContactHysteresisPx()
                 : 0
         );
         const contacting = Math.abs(shieldBoundaryDistance) <= contactRange;
 
-        const influenceRange = this.#getPressureInfluencePx();
+        const influenceRange = this.config.getPressureInfluencePx();
         const targetPressure = this.#calculatePressure(
             shieldBoundaryDistance,
             influenceRange,
             radius
         );
-        const visualInfluenceRange = influenceRange * this.#getVisualTriggerDistanceMultiplier();
+        const visualInfluenceRange = influenceRange * this.config.getVisualTriggerDistanceMultiplier();
         const targetVisualPressure = this.#calculatePressure(
             shieldBoundaryDistance,
             visualInfluenceRange,
@@ -252,7 +252,7 @@ export class TitleShieldEffect {
             state.displayAngle,
             angle,
             state.angleInitialized
-                ? (1 - Math.exp(-visualDelta * this.#getDentAngleFollowRate()))
+                ? (1 - Math.exp(-visualDelta * this.config.getDentAngleFollowRate()))
                 : 1
         );
         state.angleInitialized = true;
@@ -269,7 +269,7 @@ export class TitleShieldEffect {
         this.dentCandidates.push({
             key: state,
             angle: state.displayAngle,
-            depth: this.#getMaxDepthPx() * state.pressure * state.pressure,
+            depth: this.config.getMaxDepthPx() * state.pressure * state.pressure,
             width: this.#buildAngularWidth(radius),
             strength: state.visualPressure
         });
@@ -299,7 +299,7 @@ export class TitleShieldEffect {
             return 0;
         }
 
-        const epsilon = this.#getBoundaryEpsilonPx();
+        const epsilon = this.config.getBoundaryEpsilonPx();
         if (epsilon <= 0 || Math.abs(boundaryDistance) > epsilon) {
             return boundaryDistance;
         }
@@ -316,8 +316,8 @@ export class TitleShieldEffect {
      */
     #followScalar(currentValue, targetValue, delta) {
         const followRate = targetValue >= currentValue
-            ? this.#getPressureFollowRate()
-            : this.#getPressureReleaseFollowRate();
+            ? this.config.getPressureFollowRate()
+            : this.config.getPressureReleaseFollowRate();
         const lerpFactor = 1 - Math.exp(-delta * followRate);
         return currentValue + ((targetValue - currentValue) * lerpFactor);
     }
@@ -334,24 +334,24 @@ export class TitleShieldEffect {
             Math.pow((Number.isFinite(enemy.speed?.x) ? enemy.speed.x : 0) * (Number.isFinite(enemy.moveSpeed) ? enemy.moveSpeed : 1), 2)
             + Math.pow((Number.isFinite(enemy.speed?.y) ? enemy.speed.y : 0) * (Number.isFinite(enemy.moveSpeed) ? enemy.moveSpeed : 1), 2)
         );
-        const speedReference = Math.max(1, Number(TITLE_SHIELD.IMPACT_SPEED_REFERENCE_PX) || 120);
+        const speedReference = this.config.getImpactSpeedReferencePx();
         const speedFactor = Math.max(0, Math.min(1, impactSpeed / speedReference));
         const intensity = Math.max(
-            this.#getImpactIntensityMin(),
+            this.config.getImpactIntensityMin(),
             Math.min(
-                this.#getImpactIntensityMax(),
-                this.#getImpactIntensityMin() + (speedFactor * 0.4) + (pressure * 0.45)
+                this.config.getImpactIntensityMax(),
+                this.config.getImpactIntensityMin() + (speedFactor * 0.4) + (pressure * 0.45)
             )
         );
         const width = this.#buildAngularWidth(enemyRadius) * 0.9;
-        const duration = this.#getImpactDuration();
+        const duration = this.config.getImpactDuration();
         const mergeableImpact = this.#findMergeableImpact(angle);
         if (mergeableImpact) {
             this.#retargetImpact(mergeableImpact, angle, intensity, width, duration);
             return;
         }
 
-        if (this.impacts.length < this.#getImpactMaxCount()) {
+        if (this.impacts.length < this.config.getImpactMaxCount()) {
             this.impacts.unshift(this.#createImpact(angle, intensity, width, duration));
             return;
         }
@@ -406,8 +406,8 @@ export class TitleShieldEffect {
         impact.targetAngle = angle;
         impact.targetIntensity = Math.max(impact.targetIntensity, intensity);
         impact.targetWidth = Math.max(impact.targetWidth, width);
-        impact.intensity = Math.max(impact.intensity, intensity * this.#getImpactImmediateBoostRatio());
-        impact.width = Math.max(impact.width, width * this.#getImpactImmediateBoostRatio());
+        impact.intensity = Math.max(impact.intensity, intensity * this.config.getImpactImmediateBoostRatio());
+        impact.width = Math.max(impact.width, width * this.config.getImpactImmediateBoostRatio());
         impact.age = 0;
         impact.duration = Math.max(impact.duration, duration);
     }
@@ -418,7 +418,7 @@ export class TitleShieldEffect {
      * @returns {{angle:number, targetAngle:number, intensity:number, targetIntensity:number, width:number, targetWidth:number, age:number, duration:number}|null} 병합 가능한 impact입니다.
      */
     #findMergeableImpact(angle) {
-        const mergeThreshold = this.#getImpactMergeAngleThreshold();
+        const mergeThreshold = this.config.getImpactMergeAngleThreshold();
         let bestImpact = null;
         let bestAngularDistance = Infinity;
 
@@ -480,7 +480,7 @@ export class TitleShieldEffect {
 
         const remainingLifeRatio = Math.max(0, 1 - (currentImpact.age / Math.max(0.0001, currentImpact.duration)));
         const currentScore = Math.max(currentImpact.intensity, currentImpact.targetIntensity) * remainingLifeRatio;
-        return newIntensity > (currentScore + this.#getImpactReplacementBias());
+        return newIntensity > (currentScore + this.config.getImpactReplacementBias());
     }
 
     /**
@@ -561,7 +561,7 @@ export class TitleShieldEffect {
      * 현재 프레임의 dent 후보를 안정적으로 선택해 가시 dent 목록을 구성합니다.
      */
     #syncVisibleDents() {
-        const maxDentCount = this.#getDentMaxCount();
+        const maxDentCount = this.config.getDentMaxCount();
         if (maxDentCount <= 0 || this.dentCandidates.length === 0) {
             this.activeDentKeys.length = 0;
             this.dents.length = 0;
@@ -652,8 +652,8 @@ export class TitleShieldEffect {
             return true;
         }
 
-        const switchBias = this.#getDentSwitchBias();
-        const depthBias = this.#getDentDepthSwitchBias();
+        const switchBias = this.config.getDentSwitchBias();
+        const depthBias = this.config.getDentDepthSwitchBias();
         if (incomingCandidate.strength > (retainedCandidate.strength + switchBias)) {
             return true;
         }
@@ -668,11 +668,7 @@ export class TitleShieldEffect {
      * @returns {number} 각도 폭(rad)입니다.
      */
     #buildAngularWidth(enemyRadius) {
-        const padding = Number.isFinite(TITLE_SHIELD.ANGULAR_WIDTH_PADDING_PX) ? TITLE_SHIELD.ANGULAR_WIDTH_PADDING_PX : 12;
-        const widthScale = Number.isFinite(TITLE_SHIELD.ANGULAR_WIDTH_SCALE) ? TITLE_SHIELD.ANGULAR_WIDTH_SCALE : 1.15;
-        const projectedWidth = Math.max(4, enemyRadius + padding);
-        const ratio = Math.max(0.02, Math.min(0.98, projectedWidth / Math.max(1, this.radius)));
-        return Math.asin(ratio) * widthScale;
+        return this.config.buildAngularWidth(enemyRadius, this.radius);
     }
 
     /**
