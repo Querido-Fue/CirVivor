@@ -33,14 +33,31 @@ import {
     collectAuthorityShadowHexaHiveMergeGroups,
     syncAuthorityShadowHexaHiveMergeState
 } from './game_scene_shadow_hexa_hive_merge.js';
+import {
+    DEFAULT_AI_DECISION_GROUP_COUNT,
+    DEFAULT_AI_DECISION_INTERVAL_SECONDS,
+    assignShadowEnemySystem,
+    cloneEnemySystemSnapshot,
+    createDefaultEnemySystemState,
+    getShadowEnemyDecisionGroup
+} from './game_scene_shadow_enemy_system.js';
+import {
+    assignPointSnapshot,
+    assignShadowPlayerFromData,
+    clonePointSnapshot,
+    createShadowPlayerFromData,
+    createShadowProjectileFromData,
+    createShadowWallFromData
+} from './game_scene_shadow_snapshot_entities.js';
+import {
+    cullAuthorityShadowEnemies,
+    cullAuthorityShadowProjectiles,
+    updateAuthorityPresentationState
+} from './game_scene_shadow_authority_lifecycle.js';
 
 const AXIS_RESISTANCE_RECOVERY_SECONDS = 1;
 const AXIS_RESISTANCE_EPSILON = 1e-4;
-const DEFAULT_AI_DECISION_GROUP_COUNT = 60;
-const DEFAULT_AI_DECISION_INTERVAL_SECONDS = 1;
 const WORKER_ENEMY_AI_QUALITY_PROFILE = 'worker_balanced';
-const DEFAULT_OUTSIDE_CULL_RATIO = 0.1;
-const PROJECTILE_CULL_MARGIN_RATIO = 0.2;
 const MAX_ANGULAR_VELOCITY = 720;
 const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
 const GAME_SCENE_AI_BY_ID = Object.freeze({
@@ -147,167 +164,6 @@ function createShadowProjectileMetadata() {
     };
 
     return metadata;
-}
-
-/**
- * 적 시스템 상태의 기본값을 생성합니다.
- * @returns {{aiDecisionGroupCursor: number, aiDecisionGroupCount: number, aiDecisionIntervalSeconds: number, enemyCullOutsideRatio: number}}
- */
-function createDefaultEnemySystemState() {
-    return {
-        aiDecisionGroupCursor: 0,
-        aiDecisionGroupCount: DEFAULT_AI_DECISION_GROUP_COUNT,
-        aiDecisionIntervalSeconds: DEFAULT_AI_DECISION_INTERVAL_SECONDS,
-        enemyCullOutsideRatio: DEFAULT_OUTSIDE_CULL_RATIO
-    };
-}
-
-/**
- * 적 시스템 상태 스냅샷을 정규화합니다.
- * @param {object|null|undefined} enemySystem
- * @returns {{aiDecisionGroupCursor: number, aiDecisionGroupCount: number, aiDecisionIntervalSeconds: number, enemyCullOutsideRatio: number}}
- */
-function cloneEnemySystemSnapshot(enemySystem) {
-    const defaults = createDefaultEnemySystemState();
-    return {
-        aiDecisionGroupCursor: Number.isInteger(enemySystem?.aiDecisionGroupCursor)
-            ? Math.max(0, enemySystem.aiDecisionGroupCursor)
-            : defaults.aiDecisionGroupCursor,
-        aiDecisionGroupCount: Number.isInteger(enemySystem?.aiDecisionGroupCount) && enemySystem.aiDecisionGroupCount > 0
-            ? enemySystem.aiDecisionGroupCount
-            : defaults.aiDecisionGroupCount,
-        aiDecisionIntervalSeconds: Number.isFinite(enemySystem?.aiDecisionIntervalSeconds) && enemySystem.aiDecisionIntervalSeconds > 0
-            ? enemySystem.aiDecisionIntervalSeconds
-            : defaults.aiDecisionIntervalSeconds,
-        enemyCullOutsideRatio: Number.isFinite(enemySystem?.enemyCullOutsideRatio) && enemySystem.enemyCullOutsideRatio >= 0
-            ? enemySystem.enemyCullOutsideRatio
-            : defaults.enemyCullOutsideRatio
-    };
-}
-
-/**
- * 좌표 객체를 단순 스냅샷으로 복제합니다.
- * @param {{x?: number, y?: number}|null|undefined} point
- * @returns {{x: number, y: number}}
- */
-function clonePointSnapshot(point) {
-    return {
-        x: Number.isFinite(point?.x) ? point.x : 0,
-        y: Number.isFinite(point?.y) ? point.y : 0
-    };
-}
-
-/**
- * 좌표 스냅샷을 기존 객체에 in-place로 반영합니다.
- * @param {{x: number, y: number}} targetPoint
- * @param {{x?: number, y?: number}|null|undefined} sourcePoint
- * @returns {{x: number, y: number}}
- */
-function assignPointSnapshot(targetPoint, sourcePoint) {
-    if (!targetPoint || typeof targetPoint !== 'object') {
-        return clonePointSnapshot(sourcePoint);
-    }
-
-    targetPoint.x = Number.isFinite(sourcePoint?.x) ? sourcePoint.x : 0;
-    targetPoint.y = Number.isFinite(sourcePoint?.y) ? sourcePoint.y : 0;
-    return targetPoint;
-}
-
-/**
- * 플레이어 스냅샷을 정규화합니다.
- * @param {object|null|undefined} player
- * @returns {object|null}
- */
-function createShadowPlayerFromData(player) {
-    if (!player || typeof player !== 'object') {
-        return null;
-    }
-
-    const position = clonePointSnapshot(player.position);
-    const prevPosition = player.prevPosition ? clonePointSnapshot(player.prevPosition) : { ...position };
-    return {
-        id: Number.isInteger(player.id) ? player.id : null,
-        active: player.active !== false,
-        radius: Number.isFinite(player.radius) ? player.radius : 0,
-        weight: Number.isFinite(player.weight) ? player.weight : 0,
-        position,
-        prevPosition,
-        speed: clonePointSnapshot(player.speed)
-    };
-}
-
-/**
- * 플레이어 스냅샷을 기존 미러 객체에 in-place로 반영합니다.
- * @param {object|null|undefined} currentPlayer
- * @param {object|null|undefined} player
- * @returns {object|null}
- */
-function assignShadowPlayerFromData(currentPlayer, player) {
-    if (!player || typeof player !== 'object') {
-        return null;
-    }
-
-    const nextPlayer = currentPlayer && typeof currentPlayer === 'object'
-        ? currentPlayer
-        : createShadowPlayerFromData(player);
-    if (!nextPlayer) {
-        return null;
-    }
-
-    nextPlayer.id = Number.isInteger(player.id) ? player.id : null;
-    nextPlayer.active = player.active !== false;
-    nextPlayer.radius = Number.isFinite(player.radius) ? player.radius : 0;
-    nextPlayer.weight = Number.isFinite(player.weight) ? player.weight : 0;
-    nextPlayer.position = assignPointSnapshot(nextPlayer.position, player.position);
-    nextPlayer.prevPosition = assignPointSnapshot(nextPlayer.prevPosition, player.prevPosition ?? player.position);
-    nextPlayer.speed = assignPointSnapshot(nextPlayer.speed, player.speed);
-    return nextPlayer;
-}
-
-/**
- * 벽 스냅샷을 정규화합니다.
- * @param {object|null|undefined} wall
- * @returns {object|null}
- */
-function createShadowWallFromData(wall) {
-    if (!wall || typeof wall !== 'object') {
-        return null;
-    }
-
-    return {
-        id: Number.isInteger(wall.id) ? wall.id : null,
-        active: wall.active !== false,
-        x: Number.isFinite(wall.x) ? wall.x : 0,
-        y: Number.isFinite(wall.y) ? wall.y : 0,
-        w: Number.isFinite(wall.w) ? wall.w : 0,
-        h: Number.isFinite(wall.h) ? wall.h : 0,
-        origin: typeof wall.origin === 'string' ? wall.origin : 'center'
-    };
-}
-
-/**
- * 투사체 스냅샷을 정규화합니다.
- * @param {object|null|undefined} projectile
- * @returns {object|null}
- */
-function createShadowProjectileFromData(projectile) {
-    if (!projectile || typeof projectile !== 'object') {
-        return null;
-    }
-
-    const position = clonePointSnapshot(projectile.position);
-    const prevPosition = projectile.prevPosition ? clonePointSnapshot(projectile.prevPosition) : { ...position };
-    return {
-        id: Number.isInteger(projectile.id) ? projectile.id : null,
-        active: projectile.active !== false,
-        radius: Number.isFinite(projectile.radius) ? projectile.radius : 0,
-        weight: Number.isFinite(projectile.weight) ? projectile.weight : 0,
-        impactForce: Number.isFinite(projectile.impactForce) ? projectile.impactForce : 0,
-        piercing: projectile.piercing === true,
-        position,
-        prevPosition,
-        speed: clonePointSnapshot(projectile.speed)
-    };
 }
 
 /**
@@ -1552,33 +1408,6 @@ function assignShadowCounters(targetCounters, sourceCounters) {
 }
 
 /**
- * 적 시스템 상태를 기존 객체에 in-place로 반영합니다.
- * @param {object} targetEnemySystem
- * @param {object|null|undefined} sourceEnemySystem
- */
-function assignShadowEnemySystem(targetEnemySystem, sourceEnemySystem) {
-    if (!targetEnemySystem || !sourceEnemySystem || typeof sourceEnemySystem !== 'object') {
-        return;
-    }
-
-    targetEnemySystem.aiDecisionGroupCursor = Number.isInteger(sourceEnemySystem.aiDecisionGroupCursor)
-        ? Math.max(0, sourceEnemySystem.aiDecisionGroupCursor)
-        : 0;
-    targetEnemySystem.aiDecisionGroupCount = Number.isInteger(sourceEnemySystem.aiDecisionGroupCount)
-        && sourceEnemySystem.aiDecisionGroupCount > 0
-        ? sourceEnemySystem.aiDecisionGroupCount
-        : DEFAULT_AI_DECISION_GROUP_COUNT;
-    targetEnemySystem.aiDecisionIntervalSeconds = Number.isFinite(sourceEnemySystem.aiDecisionIntervalSeconds)
-        && sourceEnemySystem.aiDecisionIntervalSeconds > 0
-        ? sourceEnemySystem.aiDecisionIntervalSeconds
-        : DEFAULT_AI_DECISION_INTERVAL_SECONDS;
-    targetEnemySystem.enemyCullOutsideRatio = Number.isFinite(sourceEnemySystem.enemyCullOutsideRatio)
-        && sourceEnemySystem.enemyCullOutsideRatio >= 0
-        ? sourceEnemySystem.enemyCullOutsideRatio
-        : DEFAULT_OUTSIDE_CULL_RATIO;
-}
-
-/**
  * 생성 함수를 이용해 대상 배열을 in-place로 교체합니다.
  * @param {object[]} targetArray
  * @param {object[]|null|undefined} sourceArray
@@ -1621,37 +1450,6 @@ function appendShadowItemsInPlace(targetArray, sourceArray, createItem) {
     }
 
     return targetArray;
-}
-
-/**
- * 적의 렌더 좌표를 보간합니다.
- * @param {object|null|undefined} enemy
- * @param {number} alpha
- */
-function interpolateShadowEnemyRenderPosition(enemy, alpha) {
-    if (!enemy || typeof enemy !== 'object') {
-        return;
-    }
-
-    const t = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
-    enemy.renderPosition.x = enemy.prevPosition.x + ((enemy.position.x - enemy.prevPosition.x) * t);
-    enemy.renderPosition.y = enemy.prevPosition.y + ((enemy.position.y - enemy.prevPosition.y) * t);
-}
-
-/**
- * 적 ID를 바탕으로 AI 결정 그룹을 계산합니다.
- * @param {object|null|undefined} enemy
- * @param {number} fallbackIndex
- * @param {number} decisionGroupCount
- * @returns {number}
- */
-function getShadowEnemyDecisionGroup(enemy, fallbackIndex, decisionGroupCount) {
-    const safeCount = Number.isInteger(decisionGroupCount) && decisionGroupCount > 0
-        ? decisionGroupCount
-        : DEFAULT_AI_DECISION_GROUP_COUNT;
-    const sourceId = Number.isInteger(enemy?.id) ? enemy.id : fallbackIndex;
-    const mod = sourceId % safeCount;
-    return mod < 0 ? mod + safeCount : mod;
 }
 
 /**
@@ -1914,83 +1712,6 @@ function runAuthorityFixedSteps(nextState, fixedStepSeconds, fixedStepCount) {
         );
 
         assignShadowCollisionStats(nextState.collisionStats, shadowPhysicsSystem.getCollisionStats());
-    }
-}
-
-/**
- * 화면 밖으로 벗어난 적을 제거합니다.
- * @param {object} nextState
- */
-function cullAuthorityShadowEnemies(nextState) {
-    const ww = Number.isFinite(nextState.viewport?.ww) ? nextState.viewport.ww : getSimulationWW();
-    const objectWH = Number.isFinite(nextState.viewport?.objectWH) ? nextState.viewport.objectWH : getSimulationObjectWH();
-    const outsideRatio = Number.isFinite(nextState.enemySystem?.enemyCullOutsideRatio)
-        ? nextState.enemySystem.enemyCullOutsideRatio
-        : DEFAULT_OUTSIDE_CULL_RATIO;
-    const marginX = ww * outsideRatio;
-    const marginY = objectWH * outsideRatio;
-
-    let nextEnemyCount = 0;
-    for (let i = 0; i < nextState.enemies.length; i++) {
-        const enemy = nextState.enemies[i];
-        if (!enemy || enemy.active === false) {
-            continue;
-        }
-
-        const isOutside = enemy.position.x < -marginX
-            || enemy.position.x > ww + marginX
-            || enemy.position.y < -marginY
-            || enemy.position.y > objectWH + marginY;
-        if (isOutside) {
-            continue;
-        }
-
-        nextState.enemies[nextEnemyCount] = enemy;
-        nextEnemyCount++;
-    }
-    nextState.enemies.length = nextEnemyCount;
-}
-
-/**
- * 화면 밖으로 벗어난 투사체를 제거합니다.
- * @param {object} nextState
- */
-function cullAuthorityShadowProjectiles(nextState) {
-    const ww = Number.isFinite(nextState.viewport?.ww) ? nextState.viewport.ww : getSimulationWW();
-    const objectWH = Number.isFinite(nextState.viewport?.objectWH) ? nextState.viewport.objectWH : getSimulationObjectWH();
-    const cullMinX = -ww * PROJECTILE_CULL_MARGIN_RATIO;
-    const cullMaxX = ww * (1 + PROJECTILE_CULL_MARGIN_RATIO);
-    const cullMinY = -objectWH * PROJECTILE_CULL_MARGIN_RATIO;
-    const cullMaxY = objectWH * (1 + PROJECTILE_CULL_MARGIN_RATIO);
-
-    let nextProjectileCount = 0;
-    for (let i = 0; i < nextState.projectiles.length; i++) {
-        const projectile = nextState.projectiles[i];
-        if (!projectile || projectile.active === false) {
-            continue;
-        }
-
-        const x = projectile.position.x;
-        const y = projectile.position.y;
-        const isOutside = x < cullMinX || x > cullMaxX || y < cullMinY || y > cullMaxY;
-        if (isOutside) {
-            continue;
-        }
-
-        nextState.projectiles[nextProjectileCount] = projectile;
-        nextProjectileCount++;
-    }
-    nextState.projectiles.length = nextProjectileCount;
-}
-
-/**
- * 권한 모드 프레젠테이션용 렌더 좌표를 계산합니다.
- * @param {object} nextState
- * @param {number} fixedAlpha
- */
-function updateAuthorityPresentationState(nextState, fixedAlpha) {
-    for (let i = 0; i < nextState.enemies.length; i++) {
-        interpolateShadowEnemyRenderPosition(nextState.enemies[i], fixedAlpha);
     }
 }
 

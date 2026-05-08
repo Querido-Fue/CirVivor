@@ -18,6 +18,20 @@ import {
     queueObjectSystemEnemyDespawn,
     queueObjectSystemEnemySpawn
 } from './object_system_simulation_commands.js';
+import {
+    acquireObjectSystemEnemy,
+    releaseObjectSystemEnemyToPool,
+    reserveObjectSystemEnemyIds
+} from './object_system_enemy_lifecycle.js';
+import {
+    createObjectSystemSimulationFrameSnapshot,
+    createObjectSystemSimulationSnapshot
+} from './object_system_snapshot_builder.js';
+import {
+    clearObjectSystemAISharedCaches,
+    createObjectSystemAIContext,
+    fixedUpdateActiveObjectList
+} from './object_system_fixed_update_helpers.js';
 import { PhysicsSystem } from 'physics/physics_system.js';
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
 
@@ -109,47 +123,17 @@ export class ObjectSystem {
             this.physicsSystem.beginFrame();
         }
 
-        if (Array.isArray(this.players)) {
-            for (let i = 0; i < this.players.length; i++) {
-                const player = this.players[i];
-                if (!player || player.active === false) continue;
-                if (typeof player.fixedUpdate === 'function') {
-                    player.fixedUpdate(delta);
-                }
-            }
-        }
-
-        if (Array.isArray(this.items)) {
-            for (let i = 0; i < this.items.length; i++) {
-                const item = this.items[i];
-                if (!item || item.active === false) continue;
-                if (typeof item.fixedUpdate === 'function') {
-                    item.fixedUpdate(delta);
-                }
-            }
-        }
-
-        if (Array.isArray(this.projectiles)) {
-            for (let i = 0; i < this.projectiles.length; i++) {
-                const projectile = this.projectiles[i];
-                if (!projectile || projectile.active === false) continue;
-                if (typeof projectile.fixedUpdate === 'function') {
-                    projectile.fixedUpdate(delta);
-                }
-            }
-        }
+        fixedUpdateActiveObjectList(this.players, delta);
+        fixedUpdateActiveObjectList(this.items, delta);
+        fixedUpdateActiveObjectList(this.projectiles, delta);
 
         const decisionGroup = this.aiDecisionGroupCursor;
         this.aiDecisionGroupCursor = (this.aiDecisionGroupCursor + 1) % this.aiDecisionGroupCount;
-        this.aiSharedFlowFieldByKey.clear();
-        this.aiSharedDirectPathByKey.clear();
-        this.aiSharedDensityFieldByKey.clear();
-        this.aiSharedPolicyTargetByKey.clear();
-        const aiContext = {
+        clearObjectSystemAISharedCaches(this);
+        const aiContext = createObjectSystemAIContext({
             player: this.getPrimaryPlayer(),
             walls: this.walls,
             enemies: this.enemies,
-            shouldUpdateDecision: false,
             decisionInterval: this.aiDecisionIntervalSeconds,
             decisionGroup,
             enemyAIQualityProfile: INLINE_ENEMY_AI_QUALITY_PROFILE,
@@ -158,7 +142,7 @@ export class ObjectSystem {
             sharedDensityFieldByKey: this.aiSharedDensityFieldByKey,
             sharedPolicyTargetByKey: this.aiSharedPolicyTargetByKey,
             wallsVersion: this.aiWallsVersion
-        };
+        });
 
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             const enemy = this.enemies[i];
@@ -220,42 +204,15 @@ export class ObjectSystem {
          * @returns {object|null} 초기화된 적 인스턴스
          */
     acquireEnemy(type, data = {}) {
-        const pool = this.enemyPools[type];
-        if (!pool) return null;
-
-        const enemy = pool.get();
-        const hasNumericId = Number.isInteger(data.id) && data.id >= 0;
-        const enemyId = hasNumericId ? data.id : this.enemyIdCounter++;
-        if (hasNumericId && data.id >= this.enemyIdCounter) {
-            this.enemyIdCounter = data.id + 1;
-        }
-        enemy.init({
-            id: enemyId,
+        const result = acquireObjectSystemEnemy({
+            enemyPools: this.enemyPools,
             type,
-            hp: data.hp ?? 1,
-            maxHp: data.maxHp ?? 1,
-            atk: data.atk ?? 1,
-            moveSpeed: data.moveSpeed ?? 0,
-            accSpeed: data.accSpeed ?? 0,
-            size: data.size ?? 1,
-            weight: data.weight ?? ENEMY_DEFAULT_WEIGHT[type] ?? 1,
-            rotationResistance: data.rotationResistance,
-            projectileHitsToKill: data.projectileHitsToKill ?? 0,
-            position: data.position ?? { x: getSimulationWW() * 0.5, y: getSimulationObjectWH() * 0.5 },
-            speed: data.speed ?? { x: 0, y: 0 },
-            acc: data.acc ?? { x: 0, y: 0 },
-            status: data.status,
-            ai: data.ai ?? null,
-            fill: data.fill,
-            alpha: data.alpha,
-            rotation: data.rotation,
-            angularVelocity: data.angularVelocity,
-            angularDeceleration: data.angularDeceleration,
-            mergeBaseMoveSpeed: data.mergeBaseMoveSpeed,
-            hexaHiveLayout: data.hexaHiveLayout
+            data,
+            enemyIdCounter: this.enemyIdCounter,
+            enemyDefaultWeight: ENEMY_DEFAULT_WEIGHT
         });
-
-        return enemy;
+        this.enemyIdCounter = result.enemyIdCounter;
+        return result.enemy;
     }
 
     /**
@@ -290,16 +247,7 @@ export class ObjectSystem {
          * @param {object} enemy 반납할 적 객체
          */
     releaseEnemyToPool(enemy) {
-        if (!enemy) return;
-
-        if (enemy.id !== null && enemy.id !== undefined) {
-            this.enemyById.delete(enemy.id);
-        }
-
-        if (enemy.__poolType && this.enemyPools[enemy.__poolType]) {
-            enemy.release();
-            this.enemyPools[enemy.__poolType].release(enemy);
-        }
+        releaseObjectSystemEnemyToPool(enemy, this.enemyPools, this.enemyById);
     }
 
     /**
@@ -326,16 +274,9 @@ export class ObjectSystem {
      * @returns {number[]}
      */
     reserveEnemyIds(count = 1) {
-        const safeCount = Number.isInteger(count) ? Math.max(0, count) : 0;
-        if (safeCount <= 0) {
-            return [];
-        }
-
-        const reservedIds = [];
-        for (let i = 0; i < safeCount; i++) {
-            reservedIds.push(this.enemyIdCounter++);
-        }
-        return reservedIds;
+        const reservation = reserveObjectSystemEnemyIds(this.enemyIdCounter, count);
+        this.enemyIdCounter = reservation.nextEnemyIdCounter;
+        return reservation.reservedIds;
     }
 
     /**
@@ -351,28 +292,10 @@ export class ObjectSystem {
      * @returns {{enemyIdCounter: number, enemies: object[]}}
      */
     createSimulationFrameSnapshot() {
-        const enemyStates = [];
-        for (let i = 0; i < this.enemies.length; i++) {
-            const enemy = this.enemies[i];
-            if (!enemy || enemy.active === false) {
-                continue;
-            }
-
-            if (typeof enemy.createSimulationFrameSnapshot === 'function') {
-                enemyStates.push(enemy.createSimulationFrameSnapshot());
-                continue;
-            }
-
-            enemyStates.push({
-                id: enemy.id ?? null,
-                active: enemy.active === true
-            });
-        }
-
-        return {
+        return createObjectSystemSimulationFrameSnapshot({
             enemyIdCounter: this.enemyIdCounter,
-            enemies: enemyStates
-        };
+            enemies: this.enemies
+        });
     }
 
     /**
@@ -381,34 +304,15 @@ export class ObjectSystem {
      * @returns {{showcaseEnabled: boolean, enemyIdCounter: number, aiDecisionGroupCursor: number, aiDecisionGroupCount: number, aiDecisionIntervalSeconds: number, enemyCullOutsideRatio: number, enemies: object[]}}
      */
     createSimulationSnapshot() {
-        const enemySnapshots = [];
-        for (let i = 0; i < this.enemies.length; i++) {
-            const enemy = this.enemies[i];
-            if (!enemy || enemy.active === false) {
-                continue;
-            }
-
-            if (typeof enemy.createSimulationSnapshot === 'function') {
-                enemySnapshots.push(enemy.createSimulationSnapshot());
-                continue;
-            }
-
-            enemySnapshots.push({
-                id: enemy.id ?? null,
-                active: enemy.active === true,
-                type: enemy.type ?? 'none'
-            });
-        }
-
-        return {
-            showcaseEnabled: this.showcaseEnabled === true,
+        return createObjectSystemSimulationSnapshot({
+            showcaseEnabled: this.showcaseEnabled,
             enemyIdCounter: this.enemyIdCounter,
             aiDecisionGroupCursor: this.aiDecisionGroupCursor,
             aiDecisionGroupCount: this.aiDecisionGroupCount,
             aiDecisionIntervalSeconds: this.aiDecisionIntervalSeconds,
             enemyCullOutsideRatio: this.enemyCullOutsideRatio,
-            enemies: enemySnapshots
-        };
+            enemies: this.enemies
+        });
     }
 
     /**
