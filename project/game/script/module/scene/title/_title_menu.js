@@ -23,8 +23,14 @@ import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { TitleMenuCard } from './_title_menu_card.js';
 import { TitleMenuCardRegistry } from './_title_menu_card_registry.js';
+import {
+    getTitleMenuIconDrawScale,
+    TITLE_MENU_CARD_REVEAL_ORDER,
+    TITLE_MENU_SECONDARY_ENTRIES
+} from './_title_menu_config.js';
 import { getTitleMenuIconSource } from './_title_menu_icon.js';
 import { TitleMenuLayout } from './_title_menu_layout.js';
+import { clampNumber, easeOutCubic, easeOutExpo, lerpValue } from './_title_menu_motion.js';
 import {
     buildMenuStaticTextureThemeSignature,
     getMenuBackdropPaneStyle,
@@ -46,59 +52,6 @@ const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 const TITLE_LINK_DATA = getData('TITLE_LINK_DATA');
 const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-const CARD_REVEAL_ORDER = Object.freeze(['start', 'quick_start', 'records', 'deck', 'research']);
-const TITLE_MENU_ICON_DRAW_SCALES = Object.freeze({
-    research: Object.freeze({ x: 0.9, y: 1, alignX: 'left' }),
-    records: Object.freeze({ x: 0.85, y: 0.85, alignX: 'center' })
-});
-
-/**
- * 값을 주어진 범위로 제한합니다.
- * @param {number} value - 제한할 값입니다.
- * @param {number} min - 최소값입니다.
- * @param {number} max - 최대값입니다.
- * @returns {number} 제한된 값입니다.
- */
-function clampNumber(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-}
-
-/**
- * 선형 보간을 수행합니다.
- * @param {number} startValue - 시작 값입니다.
- * @param {number} endValue - 종료 값입니다.
- * @param {number} progress - 0~1 범위 보간 비율입니다.
- * @returns {number} 보간 결과입니다.
- */
-function lerpValue(startValue, endValue, progress) {
-    return startValue + ((endValue - startValue) * progress);
-}
-
-/**
- * 지수 감속 이징을 적용합니다.
- * @param {number} progress - 원본 진행률입니다.
- * @returns {number} 이징 적용 결과입니다.
- */
-function easeOutExpo(progress) {
-    const clamped = clampNumber(progress, 0, 1);
-    if (clamped <= 0) {
-        return 0;
-    }
-    if (clamped >= 1) {
-        return 1;
-    }
-    return 1 - Math.pow(2, -10 * clamped);
-}
-
-/**
- * 삼차 감속 이징을 적용합니다.
- * @param {number} progress - 원본 진행률입니다.
- * @returns {number} 이징 적용 결과입니다.
- */
-function easeOutCubic(progress) {
-    const clamped = clampNumber(progress, 0, 1);
-    return 1 - Math.pow(1 - clamped, 3);
-}
 
 /**
  * @class TitleMenu
@@ -138,32 +91,7 @@ export class TitleMenu {
         this.versionLabelMeasureContext = null;
         this.cardPaneInteractionState = this.#createPaneRuntimeState();
         this.utilityPaneInteractionState = this.#createPaneRuntimeState();
-        this.secondaryMenuEntries = Object.freeze([
-            Object.freeze({
-                id: 'setting',
-                textKey: 'title_settings_title',
-                actionType: 'overlay',
-                actionKey: 'setting'
-            }),
-            Object.freeze({
-                id: 'credits',
-                textKey: 'title_credits_title',
-                actionType: 'overlay',
-                actionKey: 'credits'
-            }),
-            Object.freeze({
-                id: 'achievements',
-                textKey: 'title_menu_achievements',
-                actionType: 'overlay',
-                actionKey: 'achievements'
-            }),
-            Object.freeze({
-                id: 'exit',
-                textKey: 'exit_title',
-                actionType: 'exit',
-                actionKey: null
-            })
-        ]);
+        this.secondaryMenuEntries = TITLE_MENU_SECONDARY_ENTRIES;
         this.session = this.#createSession();
         this.versionHistoryLinkButton = this.#createVersionHistoryLinkButton();
 
@@ -500,7 +428,7 @@ export class TitleMenu {
      */
     #createCards() {
         const cardDefinitions = this.cardRegistry.getAll();
-        const orderMap = new Map(CARD_REVEAL_ORDER.map((slotName, index) => [slotName, index]));
+        const orderMap = new Map(TITLE_MENU_CARD_REVEAL_ORDER.map((slotName, index) => [slotName, index]));
 
         for (const cardDefinition of cardDefinitions) {
             const card = new TitleMenuCard(cardDefinition, null);
@@ -2610,7 +2538,7 @@ export class TitleMenu {
      * @private
      */
     #getCardIconDrawScale(cardId) {
-        return TITLE_MENU_ICON_DRAW_SCALES[cardId] || { x: 1, y: 1, alignX: 'center' };
+        return getTitleMenuIconDrawScale(cardId);
     }
 
     /**

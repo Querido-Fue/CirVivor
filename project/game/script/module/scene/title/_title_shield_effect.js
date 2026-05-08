@@ -1,6 +1,14 @@
 import { renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { TitleShieldConfig } from './_title_shield_config.js';
+import {
+    calculateShieldPressure,
+    getEnemyScreenRadius,
+    getShieldAngularDelta,
+    isShieldReactiveEnemy,
+    lerpShieldAngle,
+    stabilizeShieldBoundaryDistance
+} from './_title_shield_geometry.js';
 
 /**
  * @class TitleShieldEffect
@@ -94,7 +102,7 @@ export class TitleShieldEffect {
             if (!enemy || enemy.active === false) {
                 continue;
             }
-            if (!this.#isShieldReactiveEnemy(enemy)) {
+            if (!isShieldReactiveEnemy(enemy)) {
                 continue;
             }
 
@@ -173,7 +181,7 @@ export class TitleShieldEffect {
                 const angleFollowFactor = 1 - Math.exp(-visualDelta * this.config.getImpactAngleFollowRate());
                 const intensityFollowFactor = 1 - Math.exp(-visualDelta * this.config.getImpactIntensityFollowRate());
                 const widthFollowFactor = 1 - Math.exp(-visualDelta * this.config.getImpactWidthFollowRate());
-                impact.angle = this.#lerpAngle(impact.angle, impact.targetAngle, angleFollowFactor);
+                impact.angle = lerpShieldAngle(impact.angle, impact.targetAngle, angleFollowFactor);
                 impact.intensity += (impact.targetIntensity - impact.intensity) * intensityFollowFactor;
                 impact.width += (impact.targetWidth - impact.width) * widthFollowFactor;
                 continue;
@@ -207,7 +215,7 @@ export class TitleShieldEffect {
      * @param {number} visualDelta - 시각 보간에 사용할 경과 시간입니다.
      */
     #registerEnemy(enemy, objectOffsetY, visualDelta) {
-        const radius = this.#getEnemyScreenRadius(enemy);
+        const radius = getEnemyScreenRadius(enemy);
         if (!Number.isFinite(radius) || radius <= 0) {
             return;
         }
@@ -225,7 +233,10 @@ export class TitleShieldEffect {
         const angle = Math.atan2(dy, dx);
         const impactBand = this.config.getImpactBandPx();
         const contactPadding = this.config.getContactPaddingPx();
-        const shieldBoundaryDistance = this.#stabilizeBoundaryDistance(distance - this.radius - radius);
+        const shieldBoundaryDistance = stabilizeShieldBoundaryDistance(
+            distance - this.radius - radius,
+            this.config.getBoundaryEpsilonPx()
+        );
         const state = this.#getEnemyState(enemy);
         const contactRange = impactBand + contactPadding + (
             state.contacting
@@ -235,20 +246,20 @@ export class TitleShieldEffect {
         const contacting = Math.abs(shieldBoundaryDistance) <= contactRange;
 
         const influenceRange = this.config.getPressureInfluencePx();
-        const targetPressure = this.#calculatePressure(
+        const targetPressure = calculateShieldPressure(
             shieldBoundaryDistance,
             influenceRange,
             radius
         );
         const visualInfluenceRange = influenceRange * this.config.getVisualTriggerDistanceMultiplier();
-        const targetVisualPressure = this.#calculatePressure(
+        const targetVisualPressure = calculateShieldPressure(
             shieldBoundaryDistance,
             visualInfluenceRange,
             radius
         );
         state.pressure = this.#followScalar(state.pressure, targetPressure, visualDelta);
         state.visualPressure = this.#followScalar(state.visualPressure, targetVisualPressure, visualDelta);
-        state.displayAngle = this.#lerpAngle(
+        state.displayAngle = lerpShieldAngle(
             state.displayAngle,
             angle,
             state.angleInitialized
@@ -273,38 +284,6 @@ export class TitleShieldEffect {
             width: this.#buildAngularWidth(radius),
             strength: state.visualPressure
         });
-    }
-
-    /**
-     * @private
-     * @param {number} shieldBoundaryDistance - 적과 실드 경계 사이 거리입니다.
-     * @param {number} outerInfluenceRange - 실드 바깥쪽 영향 범위입니다.
-     * @param {number} enemyRadius - 적 반경입니다.
-     * @returns {number} 0~1 범위의 정규화된 압력 값입니다.
-     */
-    #calculatePressure(shieldBoundaryDistance, outerInfluenceRange, enemyRadius) {
-        return Math.max(
-            0,
-            Math.min(1, (outerInfluenceRange - shieldBoundaryDistance) / Math.max(1, outerInfluenceRange + enemyRadius))
-        );
-    }
-
-    /**
-     * @private
-     * @param {number} boundaryDistance - 원본 실드 경계 거리입니다.
-     * @returns {number} 경계선 0 부근의 흔들림을 제거한 거리입니다.
-     */
-    #stabilizeBoundaryDistance(boundaryDistance) {
-        if (!Number.isFinite(boundaryDistance)) {
-            return 0;
-        }
-
-        const epsilon = this.config.getBoundaryEpsilonPx();
-        if (epsilon <= 0 || Math.abs(boundaryDistance) > epsilon) {
-            return boundaryDistance;
-        }
-
-        return 0;
     }
 
     /**
@@ -428,7 +407,7 @@ export class TitleShieldEffect {
                 continue;
             }
 
-            const angularDistance = Math.abs(this.#getAngularDelta(impact.targetAngle, angle));
+            const angularDistance = Math.abs(getShieldAngularDelta(impact.targetAngle, angle));
             if (angularDistance > mergeThreshold || angularDistance >= bestAngularDistance) {
                 continue;
             }
@@ -505,55 +484,6 @@ export class TitleShieldEffect {
         };
         this.enemyStateMap.set(enemy, state);
         return state;
-    }
-
-    /**
-     * @private
-     * @param {object} enemy - 평가할 적 인스턴스입니다.
-     * @returns {boolean} 실드 자기장 반응 대상 여부입니다.
-     */
-    #isShieldReactiveEnemy(enemy) {
-        const motionScale = Number.isFinite(enemy?._titleParallaxMotionScale)
-            ? enemy._titleParallaxMotionScale
-            : 1;
-        return motionScale > 0;
-    }
-
-    /**
-     * @private
-     * @param {number} currentAngle - 현재 각도입니다.
-     * @param {number} targetAngle - 목표 각도입니다.
-     * @param {number} factor - 보간 비율입니다.
-     * @returns {number} 보간된 각도입니다.
-     */
-    #lerpAngle(currentAngle, targetAngle, factor) {
-        if (!Number.isFinite(currentAngle)) {
-            return targetAngle;
-        }
-
-        const safeFactor = Math.max(0, Math.min(1, factor));
-        if (safeFactor >= 1) {
-            return targetAngle;
-        }
-
-        const delta = Math.atan2(
-            Math.sin(targetAngle - currentAngle),
-            Math.cos(targetAngle - currentAngle)
-        );
-        return currentAngle + (delta * safeFactor);
-    }
-
-    /**
-     * @private
-     * @param {number} angleA - 첫 번째 각도입니다.
-     * @param {number} angleB - 두 번째 각도입니다.
-     * @returns {number} -PI~PI 범위의 각도 차이입니다.
-     */
-    #getAngularDelta(angleA, angleB) {
-        return Math.atan2(
-            Math.sin(angleB - angleA),
-            Math.cos(angleB - angleA)
-        );
     }
 
     /**
@@ -671,19 +601,4 @@ export class TitleShieldEffect {
         return this.config.buildAngularWidth(enemyRadius, this.radius);
     }
 
-    /**
-     * @private
-     * @param {object} enemy - 적 인스턴스입니다.
-     * @returns {number} 화면 기준 근사 반경입니다.
-     */
-    #getEnemyScreenRadius(enemy) {
-        if (!enemy || typeof enemy.getRenderHeightPx !== 'function') {
-            return 0;
-        }
-
-        const baseHeight = enemy.getRenderHeightPx();
-        const renderHeight = baseHeight * (Number.isFinite(enemy.heightScale) ? enemy.heightScale : 1);
-        const renderWidth = baseHeight * (Number.isFinite(enemy.aspectRatio) ? enemy.aspectRatio : 1);
-        return Math.max(renderWidth, renderHeight) * 0.5;
-    }
 }

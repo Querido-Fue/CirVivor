@@ -1,19 +1,6 @@
 import { getScaleRatio, getCanvasOffset } from 'display/display_system.js';
 import { DebugModeToggleHandler } from './_debug_mode_toggle_handler.js';
-
-const MOUSE_BUTTON_STATE_LISTS = Object.freeze({
-    inactive: Object.freeze(['inactive']),
-    idle: Object.freeze(['idle']),
-    click: Object.freeze(['click', 'clicking']),
-    clicking: Object.freeze(['clicking']),
-    clicked: Object.freeze(['idle', 'clicked'])
-});
-
-const MOUSE_BUTTON_CODES = Object.freeze({
-    0: 'left',
-    1: 'middle',
-    2: 'right'
-});
+import { MouseButtonStateMachine } from './_mouse_button_state_machine.js';
 
 /**
  * @class MouseInputHandler
@@ -23,12 +10,8 @@ const MOUSE_BUTTON_CODES = Object.freeze({
 export class MouseInputHandler {
     constructor() {
         this.mousePos = { x: 0, y: 0 };
-        this.mouseButtons = {
-            left: this.#createButtonState(),
-            right: this.#createButtonState(),
-            middle: this.#createButtonState()
-        };
-        this.debugModeToggleHandler = new DebugModeToggleHandler();
+        this.buttonStateMachine = new MouseButtonStateMachine(new DebugModeToggleHandler());
+        this.mouseButtons = this.buttonStateMachine.mouseButtons;
 
         this.focusList = ["ui", "object"]; // 기본 포커스
 
@@ -40,40 +23,26 @@ export class MouseInputHandler {
         });
         window.addEventListener("mousedown", (e) => {
             this.#updateMousePosition(e);
-            this.#queueButtonStateChange(e.button, 'press', e.timeStamp);
+            this.buttonStateMachine.queueButtonStateChange(e.button, 'press', e.timeStamp);
         });
         window.addEventListener("mouseup", (e) => {
             this.#updateMousePosition(e);
-            this.#queueButtonStateChange(e.button, 'release', e.timeStamp);
+            this.buttonStateMachine.queueButtonStateChange(e.button, 'release', e.timeStamp);
         });
         window.addEventListener("blur", () => {
-            this.#setAllButtonsInactive();
+            this.buttonStateMachine.setAllButtonsInactive();
         });
         document.addEventListener("visibilitychange", () => {
             if (document.hidden) {
-                this.#setAllButtonsInactive();
+                this.buttonStateMachine.setAllButtonsInactive();
             }
         });
         document.addEventListener("mouseleave", () => {
             if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
                 return;
             }
-            this.#resetAllButtons();
+            this.buttonStateMachine.resetAllButtons();
         });
-    }
-
-    /**
-     * @private
-     * 버튼 상태 초기값을 생성합니다.
-     * @returns {{physicalDown: boolean, state: readonly string[], queuedEvents: string[], clickedConsumed: boolean}}
-     */
-    #createButtonState() {
-        return {
-            physicalDown: false,
-            state: MOUSE_BUTTON_STATE_LISTS.idle,
-            queuedEvents: [],
-            clickedConsumed: false
-        };
     }
 
     /**
@@ -88,160 +57,12 @@ export class MouseInputHandler {
         this.mousePos.y = (event.clientY - offset.y) * scale;
     }
 
-    /**
-     * @private
-     * 브라우저 버튼 번호를 내부 버튼 이름으로 변환합니다.
-     * @param {number} buttonCode - DOM 마우스 버튼 코드
-     * @returns {'left'|'right'|'middle'|null} 내부 버튼 이름
-     */
-    #resolveButtonName(buttonCode) {
-        return MOUSE_BUTTON_CODES[buttonCode] || null;
-    }
-
-    /**
-     * @private
-     * 버튼 상태 전이 이벤트를 큐에 적재합니다.
-     * @param {number} buttonCode - DOM 마우스 버튼 코드
-     * @param {'press'|'release'} eventType - 상태 전이 종류
-     * @param {number} [eventTimestamp=performance.now()] - 입력 발생 시각(ms)입니다.
-     */
-    #queueButtonStateChange(buttonCode, eventType, eventTimestamp = performance.now()) {
-        const buttonName = this.#resolveButtonName(buttonCode);
-        if (!buttonName) return;
-
-        const button = this.mouseButtons[buttonName];
-        if (!button) return;
-
-        if (button.state === MOUSE_BUTTON_STATE_LISTS.inactive) {
-            button.clickedConsumed = false;
-            button.queuedEvents.length = 0;
-
-            if (eventType === 'press') {
-                button.physicalDown = true;
-                button.queuedEvents.push('inactivePress');
-                return;
-            }
-
-            button.physicalDown = false;
-            button.queuedEvents.push('inactiveRelease');
-            return;
-        }
-
-        if (eventType === 'press') {
-            if (button.physicalDown) return;
-            button.physicalDown = true;
-            button.queuedEvents.push('press');
-            return;
-        }
-
-        if (!button.physicalDown) return;
-        button.physicalDown = false;
-        button.queuedEvents.push('release');
-
-        if (buttonName === 'middle') {
-            this.debugModeToggleHandler.registerClick(eventTimestamp);
-        }
-    }
-
-    /**
-     * @private
-     * 버튼별 상태머신을 한 프레임만큼 전진시킵니다.
-     * @param {'left'|'right'|'middle'} buttonName - 내부 버튼 이름
-     */
-    #updateButton(buttonName) {
-        const button = this.mouseButtons[buttonName];
-        if (!button) return;
-
-        if (button.queuedEvents.length > 0) {
-            const nextEvent = button.queuedEvents.shift();
-            if (nextEvent === 'inactivePress') {
-                button.clickedConsumed = false;
-                button.state = MOUSE_BUTTON_STATE_LISTS.inactive;
-                return;
-            }
-            if (nextEvent === 'inactiveRelease') {
-                this.#resetAllButtons();
-                return;
-            }
-            if (nextEvent === 'press') {
-                button.clickedConsumed = false;
-                button.state = MOUSE_BUTTON_STATE_LISTS.click;
-                return;
-            }
-            if (nextEvent === 'release') {
-                button.clickedConsumed = false;
-                button.state = MOUSE_BUTTON_STATE_LISTS.clicked;
-                return;
-            }
-        }
-
-        if (button.state === MOUSE_BUTTON_STATE_LISTS.click) {
-            button.state = button.physicalDown
-                ? MOUSE_BUTTON_STATE_LISTS.clicking
-                : MOUSE_BUTTON_STATE_LISTS.clicked;
-            button.clickedConsumed = false;
-            return;
-        }
-
-        if (button.state === MOUSE_BUTTON_STATE_LISTS.clicking) {
-            if (!button.physicalDown) {
-                button.clickedConsumed = false;
-                button.state = MOUSE_BUTTON_STATE_LISTS.clicked;
-            }
-            return;
-        }
-
-        if (button.state === MOUSE_BUTTON_STATE_LISTS.clicked) {
-            button.clickedConsumed = false;
-            button.state = MOUSE_BUTTON_STATE_LISTS.idle;
-            return;
-        }
-
-        if (button.state === MOUSE_BUTTON_STATE_LISTS.inactive) {
-            button.clickedConsumed = false;
-            return;
-        }
-
-        button.clickedConsumed = false;
-        button.state = MOUSE_BUTTON_STATE_LISTS.idle;
-    }
-
-    /**
-     * @private
-     * 모든 버튼 입력을 즉시 초기 상태로 리셋합니다.
-     */
-    #resetAllButtons() {
-        this.debugModeToggleHandler.reset();
-        Object.values(this.mouseButtons).forEach((button) => {
-            button.physicalDown = false;
-            button.queuedEvents.length = 0;
-            button.clickedConsumed = false;
-            button.state = MOUSE_BUTTON_STATE_LISTS.idle;
-        });
-    }
-
-    /**
-     * @private
-     * 모든 버튼 입력을 비활성 상태로 전환합니다.
-     * 창 포커스 복귀용 첫 클릭을 무시할 때 사용합니다.
-     */
-    #setAllButtonsInactive() {
-        this.debugModeToggleHandler.reset();
-        Object.values(this.mouseButtons).forEach((button) => {
-            button.physicalDown = false;
-            button.queuedEvents.length = 0;
-            button.clickedConsumed = false;
-            button.state = MOUSE_BUTTON_STATE_LISTS.inactive;
-        });
-    }
 
     /**
      * 입력 상태를 업데이트합니다. (주로 마우스 클릭 상태 처리)
      */
     update() {
-        this.#updateButton('left');
-        this.#updateButton('right');
-        this.#updateButton('middle');
+        this.buttonStateMachine.updateAll();
     }
 
     /**
@@ -251,11 +72,11 @@ export class MouseInputHandler {
      */
     resetMouseInput(options = {}) {
         if (options.inactive === true) {
-            this.#setAllButtonsInactive();
+            this.buttonStateMachine.setAllButtonsInactive();
             return;
         }
 
-        this.#resetAllButtons();
+        this.buttonStateMachine.resetAllButtons();
     }
 
     /**
@@ -272,11 +93,11 @@ export class MouseInputHandler {
             case "x":
                 return this.mousePos.x;
             case "left":
-                return this.mouseButtons.left.state;
+                return this.buttonStateMachine.getButtonState('left');
             case "right":
-                return this.mouseButtons.right.state;
+                return this.buttonStateMachine.getButtonState('right');
             case "middle":
-                return this.mouseButtons.middle.state;
+                return this.buttonStateMachine.getButtonState('middle');
         }
         return null;
     }
@@ -290,16 +111,7 @@ export class MouseInputHandler {
      * @returns {boolean} 상태 활성 여부입니다.
      */
     hasButtonState(buttonName, state, options = {}) {
-        const button = this.mouseButtons[buttonName];
-        if (!button || !Array.isArray(button.state)) {
-            return false;
-        }
-
-        if (state === 'clicked' && options.includeConsumed !== true && button.clickedConsumed) {
-            return false;
-        }
-
-        return button.state.includes(state);
+        return this.buttonStateMachine.hasButtonState(buttonName, state, options);
     }
 
     /**
@@ -310,17 +122,7 @@ export class MouseInputHandler {
      * @returns {boolean} 실제로 소비되었으면 true를 반환합니다.
      */
     consumeButtonState(buttonName, state = 'clicked') {
-        const button = this.mouseButtons[buttonName];
-        if (!button || state !== 'clicked' || !Array.isArray(button.state)) {
-            return false;
-        }
-
-        if (!button.state.includes('clicked') || button.clickedConsumed) {
-            return false;
-        }
-
-        button.clickedConsumed = true;
-        return true;
+        return this.buttonStateMachine.consumeButtonState(buttonName, state);
     }
 
     /**

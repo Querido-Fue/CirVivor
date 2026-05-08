@@ -1,7 +1,13 @@
 import { getData } from 'data/data_handler.js';
-import { OverlayEffectRenderer } from './_overlay_effect_renderer.js';
-import { EffectRenderer } from './_effect_renderer.js';
-import { WebGLBatch } from './_webgl_batch.js';
+import {
+    beginWebGLLayerFrame,
+    createWebGLLayerRenderer,
+    destroyWebGLLayerRenderer,
+    flushWebGLLayerRenderer,
+    initializeWebGLLayerRendererSize,
+    markOverlayLayerRendererDirty,
+    resizeWebGLLayerRenderer
+} from './_webgl_layer_renderer.js';
 
 const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
 
@@ -43,25 +49,15 @@ export class WebGLHandler {
 
         this.glContexts.set(layerName, gl);
         this.layerModes.set(layerName, mode);
-
-        if (mode === 'overlay-effect') {
-            this.layerRenderers.set(layerName, new OverlayEffectRenderer(gl));
-        } else if (mode === 'effect') {
-            this.layerRenderers.set(layerName, new EffectRenderer(gl));
-        } else {
-            this.layerRenderers.set(layerName, new WebGLBatch(gl));
-        }
+        this.layerRenderers.set(layerName, createWebGLLayerRenderer(mode, gl));
 
         if (this.width > 0 && this.height > 0) {
             gl.viewport(0, 0, this.width, this.height);
-            const renderer = this.layerRenderers.get(layerName);
-            if (renderer instanceof OverlayEffectRenderer) {
-                renderer.resize(this.width, this.height);
-            } else if (renderer instanceof EffectRenderer) {
-                renderer.resize(this.width, this.height);
-            } else {
-                renderer.begin(this.width, this.height);
-            }
+            initializeWebGLLayerRendererSize(
+                this.layerRenderers.get(layerName),
+                this.width,
+                this.height
+            );
         }
     }
 
@@ -70,10 +66,7 @@ export class WebGLHandler {
      * @param {string} layerName - 해제할 레이어 식별자입니다.
      */
     unregisterLayer(layerName) {
-        const renderer = this.layerRenderers.get(layerName);
-        if (renderer && typeof renderer.destroy === 'function') {
-            renderer.destroy();
-        }
+        destroyWebGLLayerRenderer(this.layerRenderers.get(layerName));
         this.glContexts.delete(layerName);
         this.layerModes.delete(layerName);
         this.layerRenderers.delete(layerName);
@@ -105,15 +98,7 @@ export class WebGLHandler {
 
             gl.clear(gl.COLOR_BUFFER_BIT);
 
-            if (!renderer || this.width <= 0 || this.height <= 0) {
-                continue;
-            }
-
-            if (mode === 'overlay-effect' || mode === 'effect') {
-                renderer.beginFrame(this.width, this.height);
-            } else {
-                renderer.begin(this.width, this.height);
-            }
+            beginWebGLLayerFrame(renderer, mode, this.width, this.height);
         }
     }
 
@@ -122,14 +107,7 @@ export class WebGLHandler {
      */
     flushAll() {
         for (const renderer of this.layerRenderers.values()) {
-            if (renderer instanceof WebGLBatch) {
-                renderer.flush();
-                continue;
-            }
-
-            if (renderer instanceof EffectRenderer) {
-                renderer.flush();
-            }
+            flushWebGLLayerRenderer(renderer);
         }
     }
 
@@ -144,12 +122,7 @@ export class WebGLHandler {
 
         for (const [layerName, gl] of this.glContexts.entries()) {
             gl.viewport(0, 0, width, height);
-            const renderer = this.layerRenderers.get(layerName);
-            if (renderer instanceof OverlayEffectRenderer) {
-                renderer.resize(width, height);
-            } else if (renderer instanceof EffectRenderer) {
-                renderer.resize(width, height);
-            }
+            resizeWebGLLayerRenderer(this.layerRenderers.get(layerName), width, height);
         }
     }
 
@@ -172,9 +145,6 @@ export class WebGLHandler {
      * @param {string} layerName - 대상 overlay effect 레이어입니다.
      */
     markDirty(layerName) {
-        const renderer = this.layerRenderers.get(layerName);
-        if (renderer instanceof OverlayEffectRenderer) {
-            renderer.markBlurDirty();
-        }
+        markOverlayLayerRendererDirty(this.layerRenderers.get(layerName));
     }
 }

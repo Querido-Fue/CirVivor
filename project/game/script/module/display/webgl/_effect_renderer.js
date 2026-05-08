@@ -1,4 +1,4 @@
-import { MagneticShieldEffectPass } from './_magnetic_shield_effect_pass.js';
+import { createEffectPassRegistry } from './_effect_pass_registry.js';
 
 /**
  * @class EffectRenderer
@@ -13,9 +13,7 @@ export class EffectRenderer {
         this.width = 0;
         this.height = 0;
         this.commands = [];
-        this.effectPasses = new Map([
-            ['magneticShield', new MagneticShieldEffectPass(gl)]
-        ]);
+        this.effectPasses = createEffectPassRegistry(gl);
     }
 
     /**
