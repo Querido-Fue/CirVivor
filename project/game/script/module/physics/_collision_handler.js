@@ -31,9 +31,12 @@ const COLLISION_AXIS_RESISTANCE_MIN = 0.25;
 const COLLISION_AXIS_RESISTANCE_GAIN = 0.85;
 const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = 0.35;
 const COLLISION_GRID_RADIUS_SCALE = 1.03;
-const ENEMY_PAIR_COLLISION_RADIUS_SCALE = 0.9;
-const ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE = 1.1;
-const HEXA_HIVE_CELL_COLLISION_RADIUS = 0.47 / ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+const COLLISION_RADIUS_TUNING_SCALE = 0.85;
+const ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE = 0.9;
+const ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE = 1.1;
+const ENEMY_PAIR_COLLISION_RADIUS_SCALE = ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
+const ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE = ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
+const HEXA_HIVE_CELL_COLLISION_RADIUS = 0.47 / ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE;
 const DENSE_REBUILD_DENSITY_THRESHOLD = 0.45;
 const DENSE_REBUILD_MIN_RESOLVED = 8;
 const DENSE_REBUILD_MAX_EXTRA_PASSES = 4;
@@ -344,6 +347,8 @@ export class CollisionHandler {
     #frameStats;
     #bodyPool;
     #bodyPoolCursor;
+    #enemyBodiesBuffer;
+    #playerBodiesBuffer;
     #pairBitmap;
     #pairBitmapBodyCount;
     #scratchProjectileBody;
@@ -378,6 +383,7 @@ export class CollisionHandler {
             circlePassCount: 0,
             circleRejectCount: 0,
             polygonChecks: 0,
+            partChecks: 0,
             enemyTotalMs: 0,
             enemyBodyBuildMs: 0,
             playerBodyBuildMs: 0,
@@ -411,6 +417,8 @@ export class CollisionHandler {
         };
         this.#bodyPool = [];
         this.#bodyPoolCursor = 0;
+        this.#enemyBodiesBuffer = [];
+        this.#playerBodiesBuffer = [];
         this.#pairBitmap = new Uint32Array(512);
         this.#pairBitmapBodyCount = 0;
         this.#scratchProjectileBody = {
@@ -483,6 +491,7 @@ export class CollisionHandler {
         this.#frameStats.circlePassCount = 0;
         this.#frameStats.circleRejectCount = 0;
         this.#frameStats.polygonChecks = 0;
+        this.#frameStats.partChecks = 0;
         for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
             this.#frameStats[COLLISION_PROFILE_STAT_FIELDS[i]] = 0;
         }
@@ -499,7 +508,8 @@ export class CollisionHandler {
             aabbRejectCount: this.#frameStats.aabbRejectCount,
             circlePassCount: this.#frameStats.circlePassCount,
             circleRejectCount: this.#frameStats.circleRejectCount,
-            polygonChecks: this.#frameStats.polygonChecks
+            polygonChecks: this.#frameStats.polygonChecks,
+            partChecks: this.#frameStats.partChecks
         };
         for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
             const fieldName = COLLISION_PROFILE_STAT_FIELDS[i];
@@ -554,6 +564,15 @@ export class CollisionHandler {
 
         const safeAmount = Number.isFinite(amount) ? amount : 1;
         this.#frameStats[fieldName] = (Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0) + safeAmount;
+    }
+
+    /**
+     * @private
+     * 원형 part 상세 검사 횟수를 누적합니다.
+     */
+    #recordPartCheck() {
+        this.#frameStats.partChecks++;
+        this.#frameStats.polygonChecks = this.#frameStats.partChecks;
     }
 
     /**
@@ -851,7 +870,8 @@ export class CollisionHandler {
                 aabbRejectCount: this.#frameStats.aabbRejectCount,
                 circlePassCount: this.#frameStats.circlePassCount,
                 circleRejectCount: this.#frameStats.circleRejectCount,
-                polygonChecks: this.#frameStats.polygonChecks
+                polygonChecks: this.#frameStats.polygonChecks,
+                partChecks: this.#frameStats.partChecks
             };
 
             const gridBuildStart = this.#startProfileTimer();
@@ -910,6 +930,7 @@ export class CollisionHandler {
             this.#frameStats.circlePassCount = savedStats.circlePassCount;
             this.#frameStats.circleRejectCount = savedStats.circleRejectCount;
             this.#frameStats.polygonChecks = savedStats.polygonChecks;
+            this.#frameStats.partChecks = savedStats.partChecks;
             return contactPairs;
         } finally {
             this.#recordProfileDuration('contactTotalMs', totalStart);
@@ -1164,16 +1185,33 @@ export class CollisionHandler {
             const ax = partsA[offsetA];
             const ay = partsA[offsetA + 1];
             const ar = partsA[offsetA + 2] * scaleA;
+            if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(ar) || ar <= 0) {
+                continue;
+            }
             for (let j = 0; j < countB; j++) {
                 const offsetB = j * 3;
-                this.#frameStats.polygonChecks++;
-                const manifold = this.#writeCircleOverlapManifold(
+                this.#recordPartCheck();
+                const bx = partsB[offsetB];
+                const by = partsB[offsetB + 1];
+                const br = partsB[offsetB + 2] * scaleB;
+                if (!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(br) || br <= 0) {
+                    continue;
+                }
+                const dx = bx - ax;
+                const dy = by - ay;
+                const radiusSum = ar + br;
+                const distSq = (dx * dx) + (dy * dy);
+                if (distSq >= (radiusSum * radiusSum)) {
+                    continue;
+                }
+                const manifold = this.#writeCircleOverlapManifoldFromDelta(
                     ax,
                     ay,
                     ar,
-                    partsB[offsetB],
-                    partsB[offsetB + 1],
-                    partsB[offsetB + 2] * scaleB,
+                    br,
+                    dx,
+                    dy,
+                    distSq,
                     this.#scratchCandidateManifold,
                     fallbackNormalX,
                     fallbackNormalY
@@ -1232,21 +1270,40 @@ export class CollisionHandler {
         let penetrationSum = 0;
         let maxPenetration = 0;
         const partScale = this.#getBodyCollisionRadiusScale(partBody, circleBody);
+        const circleX = circleBody.centerX;
+        const circleY = circleBody.centerY;
         const circleRadius = circleBody.radius * this.#getBodyCollisionRadiusScale(circleBody, partBody);
+        if (!Number.isFinite(circleX) || !Number.isFinite(circleY) || !Number.isFinite(circleRadius) || circleRadius <= 0) {
+            return null;
+        }
         const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
-        const fallbackNormalX = circleBody.centerX - partBody.centerX;
-        const fallbackNormalY = circleBody.centerY - partBody.centerY;
+        const fallbackNormalX = circleX - partBody.centerX;
+        const fallbackNormalY = circleY - partBody.centerY;
 
         for (let i = 0; i < count; i++) {
             const offset = i * 3;
-            this.#frameStats.polygonChecks++;
-            const manifold = this.#writeCircleOverlapManifold(
-                parts[offset],
-                parts[offset + 1],
-                parts[offset + 2] * partScale,
-                circleBody.centerX,
-                circleBody.centerY,
+            this.#recordPartCheck();
+            const ax = parts[offset];
+            const ay = parts[offset + 1];
+            const ar = parts[offset + 2] * partScale;
+            if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(ar) || ar <= 0) {
+                continue;
+            }
+            const dx = circleX - ax;
+            const dy = circleY - ay;
+            const radiusSum = ar + circleRadius;
+            const distSq = (dx * dx) + (dy * dy);
+            if (distSq >= (radiusSum * radiusSum)) {
+                continue;
+            }
+            const manifold = this.#writeCircleOverlapManifoldFromDelta(
+                ax,
+                ay,
+                ar,
                 circleRadius,
+                dx,
+                dy,
+                distSq,
                 this.#scratchCandidateManifold,
                 fallbackNormalX,
                 fallbackNormalY
@@ -1323,14 +1380,32 @@ export class CollisionHandler {
         let maxPenetration = 0;
         const partScale = this.#getBodyCollisionRadiusScale(partBody, rectBody);
         const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
+        const rectMinX = Number.isFinite(rectBody?.minX) ? rectBody.minX : 0;
+        const rectMaxX = Number.isFinite(rectBody?.maxX) ? rectBody.maxX : 0;
+        const rectMinY = Number.isFinite(rectBody?.minY) ? rectBody.minY : 0;
+        const rectMaxY = Number.isFinite(rectBody?.maxY) ? rectBody.maxY : 0;
 
         for (let i = 0; i < count; i++) {
             const offset = i * 3;
-            this.#frameStats.polygonChecks++;
+            this.#recordPartCheck();
+            const circleX = parts[offset];
+            const circleY = parts[offset + 1];
+            const radius = parts[offset + 2] * partScale;
+            if (!Number.isFinite(circleX) || !Number.isFinite(circleY) || !Number.isFinite(radius) || radius <= 0) {
+                continue;
+            }
+            if (
+                circleX + radius <= rectMinX ||
+                circleX - radius >= rectMaxX ||
+                circleY + radius <= rectMinY ||
+                circleY - radius >= rectMaxY
+            ) {
+                continue;
+            }
             const manifold = this.#writeCircleRectOverlapManifold(
-                parts[offset],
-                parts[offset + 1],
-                parts[offset + 2] * partScale,
+                circleX,
+                circleY,
+                radius,
                 rectBody,
                 this.#scratchCandidateManifold
             );
@@ -1407,8 +1482,38 @@ export class CollisionHandler {
 
         const dx = bx - ax;
         const dy = by - ay;
-        const radiusSum = ar + br;
         const distSq = (dx * dx) + (dy * dy);
+        return this.#writeCircleOverlapManifoldFromDelta(
+            ax,
+            ay,
+            ar,
+            br,
+            dx,
+            dy,
+            distSq,
+            out,
+            fallbackNormalX,
+            fallbackNormalY
+        );
+    }
+
+    /**
+     * 이미 계산된 중심 차이로 원-원 충돌 manifold를 씁니다.
+     * @private
+     * @param {number} ax
+     * @param {number} ay
+     * @param {number} ar
+     * @param {number} br
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} distSq
+     * @param {object} out
+     * @param {number} fallbackNormalX
+     * @param {number} fallbackNormalY
+     * @returns {object|null}
+     */
+    #writeCircleOverlapManifoldFromDelta(ax, ay, ar, br, dx, dy, distSq, out, fallbackNormalX = 1, fallbackNormalY = 0) {
+        const radiusSum = ar + br;
         if (distSq >= (radiusSum * radiusSum)) {
             return null;
         }
@@ -2759,7 +2864,8 @@ export class CollisionHandler {
      * @private
      */
     #buildEnemyBodies(enemies, delta) {
-        const bodies = [];
+        const bodies = this.#enemyBodiesBuffer;
+        bodies.length = 0;
         for (let i = 0; i < enemies.length; i++) {
             const enemy = enemies[i];
             if (!enemy || enemy.active === false) continue;
@@ -2785,7 +2891,8 @@ export class CollisionHandler {
      * @private
      */
     #buildPlayerBodies(players, delta) {
-        const bodies = [];
+        const bodies = this.#playerBodiesBuffer;
+        bodies.length = 0;
         for (let i = 0; i < players.length; i++) {
             const player = players[i];
             if (!player || player.active === false) continue;
@@ -2873,15 +2980,14 @@ export class CollisionHandler {
         const partCount = useHiveCells ? hexaHiveCenters.length : 1;
         if (partCount <= 0) return null;
 
-        const circleBufferLength = partCount * 3;
-        if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
-            enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
+        let cos = 1;
+        let sin = 0;
+        if (useHiveCells) {
+            const rotationDeg = Number.isFinite(enemy.rotation) ? enemy.rotation : 0;
+            const rad = rotationDeg * (Math.PI / 180);
+            cos = Math.cos(rad);
+            sin = Math.sin(rad);
         }
-
-        const rotationDeg = Number.isFinite(enemy.rotation) ? enemy.rotation : 0;
-        const rad = rotationDeg * (Math.PI / 180);
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
         const centerX = enemy.position.x;
         const centerY = enemy.position.y;
 
@@ -2908,39 +3014,63 @@ export class CollisionHandler {
                 height
             ));
 
-        for (let p = 0; p < partCount; p++) {
-            const localCenter = useHiveCells ? hexaHiveCenters[p] : null;
-            const lx = useHiveCells ? ((Number.isFinite(localCenter?.x) ? localCenter.x : 0) * width) : 0;
-            const ly = useHiveCells ? ((Number.isFinite(localCenter?.y) ? localCenter.y : 0) * height) : 0;
-            const wx = centerX + (lx * cos) - (ly * sin);
-            const wy = centerY + (lx * sin) + (ly * cos);
+        if (useHiveCells) {
+            const circleBufferLength = partCount * 3;
+            if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
+                enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
+            }
+
+            for (let p = 0; p < partCount; p++) {
+                const localCenter = hexaHiveCenters[p];
+                const lx = (Number.isFinite(localCenter?.x) ? localCenter.x : 0) * width;
+                const ly = (Number.isFinite(localCenter?.y) ? localCenter.y : 0) * height;
+                const wx = centerX + (lx * cos) - (ly * sin);
+                const wy = centerY + (lx * sin) + (ly * cos);
+                const radius = singleCircleRadius;
+                const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+                const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
+                const offset = p * 3;
+                enemy.__collisionWorldCircles[offset] = wx;
+                enemy.__collisionWorldCircles[offset + 1] = wy;
+                enemy.__collisionWorldCircles[offset + 2] = radius;
+
+                minX = Math.min(minX, wx - radius);
+                maxX = Math.max(maxX, wx + radius);
+                minY = Math.min(minY, wy - radius);
+                maxY = Math.max(maxY, wy + radius);
+                enemyPairMinX = Math.min(enemyPairMinX, wx - enemyPairRadius);
+                enemyPairMaxX = Math.max(enemyPairMaxX, wx + enemyPairRadius);
+                enemyPairMinY = Math.min(enemyPairMinY, wy - enemyPairRadius);
+                enemyPairMaxY = Math.max(enemyPairMaxY, wy + enemyPairRadius);
+                projectileMinX = Math.min(projectileMinX, wx - projectileRadius);
+                projectileMaxX = Math.max(projectileMaxX, wx + projectileRadius);
+                projectileMinY = Math.min(projectileMinY, wy - projectileRadius);
+                projectileMaxY = Math.max(projectileMaxY, wy + projectileRadius);
+
+                const centerDistance = Math.hypot(wx - centerX, wy - centerY);
+                broadRadius = Math.max(broadRadius, centerDistance + radius);
+                enemyPairBroadRadius = Math.max(enemyPairBroadRadius, centerDistance + enemyPairRadius);
+                projectileBroadRadius = Math.max(projectileBroadRadius, centerDistance + projectileRadius);
+            }
+        } else {
             const radius = singleCircleRadius;
             const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
             const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
-            const offset = p * 3;
-            enemy.__collisionWorldCircles[offset] = wx;
-            enemy.__collisionWorldCircles[offset + 1] = wy;
-            enemy.__collisionWorldCircles[offset + 2] = radius;
-
-            minX = Math.min(minX, wx - radius);
-            maxX = Math.max(maxX, wx + radius);
-            minY = Math.min(minY, wy - radius);
-            maxY = Math.max(maxY, wy + radius);
-            enemyPairMinX = Math.min(enemyPairMinX, wx - enemyPairRadius);
-            enemyPairMaxX = Math.max(enemyPairMaxX, wx + enemyPairRadius);
-            enemyPairMinY = Math.min(enemyPairMinY, wy - enemyPairRadius);
-            enemyPairMaxY = Math.max(enemyPairMaxY, wy + enemyPairRadius);
-            projectileMinX = Math.min(projectileMinX, wx - projectileRadius);
-            projectileMaxX = Math.max(projectileMaxX, wx + projectileRadius);
-            projectileMinY = Math.min(projectileMinY, wy - projectileRadius);
-            projectileMaxY = Math.max(projectileMaxY, wy + projectileRadius);
-
-            const ddx = wx - centerX;
-            const ddy = wy - centerY;
-            const centerDistance = Math.hypot(ddx, ddy);
-            broadRadius = Math.max(broadRadius, centerDistance + radius);
-            enemyPairBroadRadius = Math.max(enemyPairBroadRadius, centerDistance + enemyPairRadius);
-            projectileBroadRadius = Math.max(projectileBroadRadius, centerDistance + projectileRadius);
+            minX = centerX - radius;
+            maxX = centerX + radius;
+            minY = centerY - radius;
+            maxY = centerY + radius;
+            enemyPairMinX = centerX - enemyPairRadius;
+            enemyPairMaxX = centerX + enemyPairRadius;
+            enemyPairMinY = centerY - enemyPairRadius;
+            enemyPairMaxY = centerY + enemyPairRadius;
+            projectileMinX = centerX - projectileRadius;
+            projectileMaxX = centerX + projectileRadius;
+            projectileMinY = centerY - projectileRadius;
+            projectileMaxY = centerY + projectileRadius;
+            broadRadius = radius;
+            enemyPairBroadRadius = enemyPairRadius;
+            projectileBroadRadius = projectileRadius;
         }
 
         const prevX = sleeping
@@ -2971,9 +3101,9 @@ export class CollisionHandler {
         const body = this.#acquireBody();
         body.id = Number.isInteger(enemy.id) ? enemy.id : -1;
         body.kind = 'enemy';
-        body.shape = 'circleParts';
-        body.circleParts = enemy.__collisionWorldCircles;
-        body.circlePartCount = partCount;
+        body.shape = useHiveCells ? 'circleParts' : 'circle';
+        body.circleParts = useHiveCells ? enemy.__collisionWorldCircles : null;
+        body.circlePartCount = useHiveCells ? partCount : 0;
         body.ref = enemy;
         body.mergeLock = enemy?.hexaHiveMergePending === true;
         body.weight = body.mergeLock
