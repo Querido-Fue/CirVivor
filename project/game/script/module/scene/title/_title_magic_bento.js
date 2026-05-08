@@ -2,16 +2,17 @@ import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_
 import { getData } from 'data/data_handler.js';
 import { getMouseInput, hasMouseState } from 'input/input_system.js';
 import { getDelta } from 'game/time_handler.js';
-import { getLangString, parseUIData } from 'ui/ui_system.js';
+import { getLangString } from 'ui/ui_system.js';
 import { TITLE_BENTO_CARD_DEFINITIONS } from './_title_magic_bento_data.js';
+import { drawBentoCardIcon } from './_title_magic_bento_icon.js';
 import { getBentoAccentColor, getBentoCardPalette } from './_title_magic_bento_theme.js';
 import {
-    EQUILATERAL_TRIANGLE_WIDTH_RATIO,
     clamp,
     damp,
     easeOutExpo,
     lerp
 } from './_title_magic_bento_motion.js';
+import { drawBentoWrappedText, getBentoTypography } from './_title_magic_bento_text.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_MAGIC_BENTO = TITLE_CONSTANTS.TITLE_MAGIC_BENTO;
@@ -862,15 +863,15 @@ export class TitleMagicBento {
             ? (card.baseHeight - iconSize) * 0.5
             : padding;
 
-        this.#drawCardIcon(ctx, card.icon, iconX, iconY, iconSize, palette.text);
+        drawBentoCardIcon(ctx, card.icon, iconX, iconY, iconSize, palette.text);
 
         ctx.save();
         ctx.fillStyle = palette.text;
         ctx.textBaseline = 'top';
 
         if (card.variant === 'hero') {
-            const titleFont = this.#getTypography('H3_BOLD', 1.18);
-            const descriptionFont = this.#getTypography('H6', 1.04);
+            const titleFont = getBentoTypography(TEXT_CONSTANTS, 'H3_BOLD', 1.18);
+            const descriptionFont = getBentoTypography(TEXT_CONSTANTS, 'H6', 1.04);
             const titleY = card.baseHeight - padding - titleFont.size - (descriptionText ? (descriptionFont.size * 1.7) : 0);
 
             ctx.font = titleFont.font;
@@ -879,7 +880,7 @@ export class TitleMagicBento {
             if (descriptionText) {
                 ctx.fillStyle = palette.description;
                 ctx.font = descriptionFont.font;
-                this.#drawWrappedText(
+                drawBentoWrappedText(
                     ctx,
                     descriptionText,
                     padding,
@@ -894,7 +895,7 @@ export class TitleMagicBento {
         }
 
         if (card.variant === 'compact') {
-            const compactFont = this.#getTypography('H5_BOLD', 1.04);
+            const compactFont = getBentoTypography(TEXT_CONSTANTS, 'H5_BOLD', 1.04);
             const titleSize = compactFont.size;
             const compactX = padding + iconSize + Math.max(14, padding * 0.7);
             ctx.font = compactFont.font;
@@ -903,8 +904,8 @@ export class TitleMagicBento {
             return;
         }
 
-        const titleFont = this.#getTypography('H4_BOLD', 1.08);
-        const descriptionFont = this.#getTypography('H6', 1.12);
+        const titleFont = getBentoTypography(TEXT_CONSTANTS, 'H4_BOLD', 1.08);
+        const descriptionFont = getBentoTypography(TEXT_CONSTANTS, 'H6', 1.12);
         const titleSize = titleFont.size;
         const descriptionSize = descriptionFont.size;
         const contentX = padding;
@@ -917,7 +918,7 @@ export class TitleMagicBento {
         if (descriptionText) {
             ctx.fillStyle = palette.description;
             ctx.font = descriptionFont.font;
-            this.#drawWrappedText(ctx, descriptionText, contentX, titleY + titleSize + Math.max(8, descriptionSize * 0.35), maxWidth, descriptionSize * 1.35, 2);
+            drawBentoWrappedText(ctx, descriptionText, contentX, titleY + titleSize + Math.max(8, descriptionSize * 0.35), maxWidth, descriptionSize * 1.35, 2);
         }
 
         ctx.restore();
@@ -980,206 +981,6 @@ export class TitleMagicBento {
     }
 
     /**
-     * 카드 아이콘을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {string} iconType - 아이콘 타입
-     * @param {number} x - X 좌표
-     * @param {number} y - Y 좌표
-     * @param {number} size - 아이콘 크기
-     * @param {string} color - 아이콘 색상
-     * @private
-     */
-    #drawCardIcon(ctx, iconType, x, y, size, color) {
-        switch (iconType) {
-            case 'play':
-                this.#drawPlayIcon(ctx, x, y, size, color, false);
-                break;
-            case 'fast-forward':
-                this.#drawPlayIcon(ctx, x, y, size, color, true);
-                break;
-            case 'list':
-                this.#drawListIcon(ctx, x, y, size, color);
-                break;
-            case 'deck':
-                this.#drawDeckIcon(ctx, x, y, size, color);
-                break;
-            case 'flask':
-                this.#drawFlaskIcon(ctx, x, y, size, color);
-                break;
-        }
-    }
-
-    /**
-     * 플레이/빨리감기 아이콘을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {number} x - X 좌표
-     * @param {number} y - Y 좌표
-     * @param {number} size - 아이콘 크기
-     * @param {string} color - 아이콘 색상
-     * @param {boolean} doubled - 빨리감기 여부
-     * @private
-     */
-    #drawPlayIcon(ctx, x, y, size, color, doubled) {
-        const sideLength = doubled ? size * 0.66 : size * 0.92;
-        const triangleWidth = sideLength * EQUILATERAL_TRIANGLE_WIDTH_RATIO;
-        const overlap = doubled ? sideLength * 0.08 : 0;
-        const totalWidth = doubled ? ((triangleWidth * 2) - overlap) : triangleWidth;
-        const startX = x + ((size - totalWidth) * 0.5);
-        const startY = y + ((size - sideLength) * 0.5);
-
-        ctx.save();
-        ctx.fillStyle = color;
-        if (doubled) {
-            ctx.save();
-            ctx.globalAlpha = 0.34;
-            ctx.shadowBlur = sideLength * 0.18;
-            ctx.shadowColor = 'rgba(255, 255, 255, 0.2)';
-            this.#fillTriangle(ctx, startX + (sideLength * 0.1), startY + (sideLength * 0.08), sideLength);
-            this.#fillTriangle(ctx, startX + triangleWidth - overlap + (sideLength * 0.1), startY + (sideLength * 0.08), sideLength);
-            ctx.restore();
-        }
-
-        this.#fillTriangle(ctx, startX, startY, sideLength);
-        if (doubled) {
-            this.#fillTriangle(ctx, startX + triangleWidth - overlap, startY, sideLength);
-        }
-        ctx.restore();
-    }
-
-    /**
-     * 리스트 아이콘을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {number} x - X 좌표
-     * @param {number} y - Y 좌표
-     * @param {number} size - 아이콘 크기
-     * @param {string} color - 아이콘 색상
-     * @private
-     */
-    #drawListIcon(ctx, x, y, size, color) {
-        const lineWidth = Math.max(1.5, size * 0.08);
-        const shortLine = size * 0.18;
-        const longLine = size * 0.52;
-        const spacing = size * 0.2;
-        const startY = y + (size * 0.26);
-
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = lineWidth;
-        ctx.lineCap = 'round';
-
-        for (let index = 0; index < 3; index++) {
-            const lineY = startY + (spacing * index);
-            ctx.beginPath();
-            ctx.moveTo(x, lineY);
-            ctx.lineTo(x + shortLine, lineY);
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.moveTo(x + shortLine + (size * 0.14), lineY);
-            ctx.lineTo(x + shortLine + (size * 0.14) + longLine, lineY);
-            ctx.stroke();
-        }
-
-        ctx.restore();
-    }
-
-    /**
-     * 카드 묶음(덱) 아이콘을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {number} x - X 좌표
-     * @param {number} y - Y 좌표
-     * @param {number} size - 아이콘 크기
-     * @param {string} color - 아이콘 색상
-     * @private
-     */
-    #drawDeckIcon(ctx, x, y, size, color) {
-        const radius = size * 0.11;
-        const width = size * 0.58;
-        const height = size * 0.72;
-        const offset = size * 0.15;
-
-        ctx.save();
-        ctx.fillStyle = color;
-        ctx.globalAlpha = 0.72;
-        this.#traceRoundRect(ctx, x + offset, y, width, height, radius);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        this.#traceRoundRect(ctx, x, y + offset, width, height, radius);
-        ctx.fill();
-        ctx.restore();
-    }
-
-    /**
-     * 플라스크 아이콘을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {number} x - X 좌표
-     * @param {number} y - Y 좌표
-     * @param {number} size - 아이콘 크기
-     * @param {string} color - 아이콘 색상
-     * @private
-     */
-    #drawFlaskIcon(ctx, x, y, size, color) {
-        const stemWidth = size * 0.16;
-        const neckHeight = size * 0.22;
-        const bodyWidth = size * 0.56;
-        const bodyHeight = size * 0.48;
-        const centerX = x + (size * 0.5);
-        const stemLeft = centerX - (stemWidth * 0.5);
-        const stemRight = centerX + (stemWidth * 0.5);
-        const bodyTop = y + neckHeight + (size * 0.08);
-        const bodyBottom = bodyTop + bodyHeight;
-        const bodyLeft = centerX - (bodyWidth * 0.5);
-        const bodyRight = centerX + (bodyWidth * 0.5);
-
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(1.5, size * 0.07);
-        ctx.lineJoin = 'round';
-
-        ctx.beginPath();
-        ctx.moveTo(stemLeft, y);
-        ctx.lineTo(stemRight, y);
-        ctx.moveTo(centerX, y);
-        ctx.lineTo(centerX, y + neckHeight);
-        ctx.moveTo(stemLeft, y + neckHeight);
-        ctx.lineTo(bodyLeft, bodyTop);
-        ctx.lineTo(bodyLeft + (bodyWidth * 0.1), bodyBottom);
-        ctx.lineTo(bodyRight - (bodyWidth * 0.1), bodyBottom);
-        ctx.lineTo(bodyRight, bodyTop);
-        ctx.lineTo(stemRight, y + neckHeight);
-        ctx.stroke();
-
-        ctx.globalAlpha = 0.3;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(bodyLeft + (bodyWidth * 0.16), bodyBottom - (bodyHeight * 0.28));
-        ctx.lineTo(bodyRight - (bodyWidth * 0.16), bodyBottom - (bodyHeight * 0.28));
-        ctx.lineTo(bodyRight - (bodyWidth * 0.1), bodyBottom);
-        ctx.lineTo(bodyLeft + (bodyWidth * 0.1), bodyBottom);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-    }
-
-    /**
-     * 삼각형 경로를 채웁니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {number} x - 왼쪽 X 좌표
-     * @param {number} y - 위쪽 Y 좌표
-     * @param {number} sideLength - 정삼각형 한 변 길이
-     * @private
-     */
-    #fillTriangle(ctx, x, y, sideLength) {
-        const width = sideLength * EQUILATERAL_TRIANGLE_WIDTH_RATIO;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x + width, y + (sideLength * 0.5));
-        ctx.lineTo(x, y + sideLength);
-        ctx.closePath();
-        ctx.fill();
-    }
-
-    /**
      * 카드 팔레트를 현재 테마에 맞춰 계산합니다.
      * @returns {object} 카드 렌더링용 색상 팔레트
      * @private
@@ -1203,60 +1004,4 @@ export class TitleMagicBento {
         ctx.roundRect(x, y, width, height, radius);
     }
 
-    /**
-     * 설명 문구를 여러 줄로 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {string} text - 출력할 문구
-     * @param {number} x - 시작 X 좌표
-     * @param {number} y - 시작 Y 좌표
-     * @param {number} maxWidth - 최대 줄 너비
-     * @param {number} lineHeight - 줄 간격
-     * @param {number} maxLines - 최대 줄 수
-     * @private
-     */
-    #drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
-        const words = text.split(' ');
-        const lines = [];
-        let currentLine = '';
-
-        for (const word of words) {
-            const nextLine = currentLine ? `${currentLine} ${word}` : word;
-            if (ctx.measureText(nextLine).width <= maxWidth || currentLine.length === 0) {
-                currentLine = nextLine;
-                continue;
-            }
-
-            lines.push(currentLine);
-            currentLine = word;
-            if (lines.length >= maxLines) {
-                break;
-            }
-        }
-
-        if (currentLine && lines.length < maxLines) {
-            lines.push(currentLine);
-        }
-
-        for (let index = 0; index < lines.length; index++) {
-            ctx.fillText(lines[index], x, y + (lineHeight * index));
-        }
-    }
-
-    /**
-     * 공용 타이포그래피 프리셋으로부터 카드용 폰트를 계산합니다.
-     * @param {string} presetKey - TEXT_CONSTANTS 프리셋 키
-     * @param {number} [sizeMultiplier=1] - 크기 배율
-     * @returns {{size:number, font:string}} 계산된 폰트 정보
-     * @private
-     */
-    #getTypography(presetKey, sizeMultiplier = 1) {
-        const preset = TEXT_CONSTANTS[presetKey] || TEXT_CONSTANTS.H5;
-        const size = parseUIData(preset.FONT.SIZE) * sizeMultiplier;
-        const family = preset.FONT.FAMILY.split(',')[0].trim();
-
-        return {
-            size,
-            font: `${preset.FONT.WEIGHT} ${size}px "${family}"`
-        };
-    }
 }
