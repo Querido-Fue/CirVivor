@@ -1,9 +1,5 @@
 import { getScaleRatio, getCanvasOffset } from 'display/display_system.js';
-import { getData } from 'data/data_handler.js';
-import { getSetting, setSetting } from 'save/save_system.js';
-
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const DEBUG_MODE_TOGGLE = GLOBAL_CONSTANTS.DEBUG_MODE_TOGGLE;
+import { DebugModeToggleHandler } from './_debug_mode_toggle_handler.js';
 
 const MOUSE_BUTTON_STATE_LISTS = Object.freeze({
     inactive: Object.freeze(['inactive']),
@@ -32,8 +28,7 @@ export class MouseInputHandler {
             right: this.#createButtonState(),
             middle: this.#createButtonState()
         };
-        this.debugToggleClickTimestamps = [];
-        this.debugModeToggleJob = Promise.resolve();
+        this.debugModeToggleHandler = new DebugModeToggleHandler();
 
         this.focusList = ["ui", "object"]; // 기본 포커스
 
@@ -116,7 +111,6 @@ export class MouseInputHandler {
 
         const button = this.mouseButtons[buttonName];
         if (!button) return;
-        const normalizedTimestamp = this.#normalizeEventTimestamp(eventTimestamp);
 
         if (button.state === MOUSE_BUTTON_STATE_LISTS.inactive) {
             button.clickedConsumed = false;
@@ -145,82 +139,8 @@ export class MouseInputHandler {
         button.queuedEvents.push('release');
 
         if (buttonName === 'middle') {
-            this.#registerDebugModeToggleClick(normalizedTimestamp);
+            this.debugModeToggleHandler.registerClick(eventTimestamp);
         }
-    }
-
-    /**
-     * @private
-     * 디버그 모드 토글 판정에 사용할 이벤트 시각을 정규화합니다.
-     * @param {number} eventTimestamp - 원본 이벤트 시각(ms)입니다.
-     * @returns {number} 정규화된 시각(ms)입니다.
-     */
-    #normalizeEventTimestamp(eventTimestamp) {
-        return Number.isFinite(eventTimestamp) ? eventTimestamp : performance.now();
-    }
-
-    /**
-     * @private
-     * 디버그 토글 판정에 필요한 최근 휠클릭 시각만 유지합니다.
-     * @param {number} referenceTimestamp - 비교 기준 시각(ms)입니다.
-     */
-    #pruneDebugModeToggleClicks(referenceTimestamp) {
-        const minimumTimestamp = referenceTimestamp - DEBUG_MODE_TOGGLE.CLICK_WINDOW_MS;
-        while (
-            this.debugToggleClickTimestamps.length > 0
-            && this.debugToggleClickTimestamps[0] < minimumTimestamp
-        ) {
-            this.debugToggleClickTimestamps.shift();
-        }
-    }
-
-    /**
-     * @private
-     * 디버그 모드 토글용 휠클릭 시퀀스를 초기화합니다.
-     */
-    #resetDebugModeToggleClicks() {
-        this.debugToggleClickTimestamps.length = 0;
-    }
-
-    /**
-     * @private
-     * 휠클릭 누적 횟수를 기록하고 조건 충족 시 디버그 모드 토글을 예약합니다.
-     * @param {number} eventTimestamp - 클릭이 완료된 시각(ms)입니다.
-     */
-    #registerDebugModeToggleClick(eventTimestamp) {
-        this.#pruneDebugModeToggleClicks(eventTimestamp);
-        this.debugToggleClickTimestamps.push(eventTimestamp);
-
-        if (this.debugToggleClickTimestamps.length < DEBUG_MODE_TOGGLE.REQUIRED_MIDDLE_CLICKS) {
-            return;
-        }
-
-        this.#resetDebugModeToggleClicks();
-        this.#queueDebugModeToggle();
-    }
-
-    /**
-     * @private
-     * 디버그 모드 토글 저장과 런타임 반영을 직렬화하여 처리합니다.
-     */
-    #queueDebugModeToggle() {
-        this.debugModeToggleJob = this.debugModeToggleJob
-            .catch(() => undefined)
-            .then(async () => {
-                const nextDebugMode = !Boolean(getSetting('debugMode'));
-                await setSetting('debugMode', nextDebugMode);
-
-                const systemHandler = window.Game?.systemHandler;
-                if (systemHandler && typeof systemHandler.applyRuntimeSettings === 'function') {
-                    await systemHandler.applyRuntimeSettings({ debugMode: nextDebugMode });
-                }
-                if (systemHandler?.debugSystem && typeof systemHandler.debugSystem.applyRuntimeSettings === 'function') {
-                    systemHandler.debugSystem.applyRuntimeSettings({ debugMode: nextDebugMode });
-                }
-            })
-            .catch((error) => {
-                console.warn('디버그 모드 토글 처리 중 오류가 발생했습니다.', error);
-            });
     }
 
     /**
@@ -291,7 +211,7 @@ export class MouseInputHandler {
      * 모든 버튼 입력을 즉시 초기 상태로 리셋합니다.
      */
     #resetAllButtons() {
-        this.#resetDebugModeToggleClicks();
+        this.debugModeToggleHandler.reset();
         Object.values(this.mouseButtons).forEach((button) => {
             button.physicalDown = false;
             button.queuedEvents.length = 0;
@@ -306,7 +226,7 @@ export class MouseInputHandler {
      * 창 포커스 복귀용 첫 클릭을 무시할 때 사용합니다.
      */
     #setAllButtonsInactive() {
-        this.#resetDebugModeToggleClicks();
+        this.debugModeToggleHandler.reset();
         Object.values(this.mouseButtons).forEach((button) => {
             button.physicalDown = false;
             button.queuedEvents.length = 0;
