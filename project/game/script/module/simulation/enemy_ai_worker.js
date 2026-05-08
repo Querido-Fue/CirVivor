@@ -10,10 +10,15 @@ import {
     commitEnemyAISharedResultWrite,
     writeEnemyAISharedResult
 } from './enemy_ai_shared_transport.js';
+import {
+    attachEnemyAISharedInputTransport,
+    readEnemyAISharedInputSnapshot
+} from './enemy_ai_shared_input_transport.js';
 import { syncSimulationRuntime } from './simulation_runtime.js';
 import { fixedUpdateEnemyAI } from '../object/enemy/ai/_enemy_ai_core.js';
 
 let enemyAISharedTransport = null;
+let enemyAISharedInputTransport = null;
 let enemyAIWorkerIndex = -1;
 
 /**
@@ -169,6 +174,106 @@ function createEnemyAIActor(summary) {
 }
 
 /**
+ * 공유 입력 target range와 별도 전송된 AI 상태를 결합합니다.
+ * @param {object[]} enemies
+ * @param {object[]|null|undefined} targetEnemyStates
+ * @returns {object[]}
+ */
+function attachTargetEnemyAIStates(enemies, targetEnemyStates) {
+    if (!Array.isArray(enemies) || enemies.length === 0) {
+        return [];
+    }
+
+    const stateByEnemyId = new Map();
+    if (Array.isArray(targetEnemyStates)) {
+        for (let i = 0; i < targetEnemyStates.length; i++) {
+            const entry = targetEnemyStates[i];
+            if (!Number.isInteger(entry?.id)) {
+                continue;
+            }
+
+            stateByEnemyId.set(entry.id, cloneEnemyAIStateForTransfer(entry.enemyAIState));
+        }
+    }
+
+    for (let i = 0; i < enemies.length; i++) {
+        const enemy = enemies[i];
+        if (!Number.isInteger(enemy?.id)) {
+            continue;
+        }
+
+        enemy.enemyAIState = stateByEnemyId.get(enemy.id) ?? null;
+    }
+    return enemies;
+}
+
+/**
+ * 공유 입력 스냅샷에서 이번 chunk의 AI 입력을 복원합니다.
+ * @param {object} message
+ * @returns {{player: object|null, walls: object[], enemies: object[], targetEnemies: object[]}|null}
+ */
+function readSharedEnemyAIBatchInput(message) {
+    if (!enemyAISharedInputTransport || !message?.sharedInputDescriptor) {
+        return null;
+    }
+
+    const sharedInput = readEnemyAISharedInputSnapshot(
+        enemyAISharedInputTransport,
+        message.sharedInputDescriptor,
+        Array.isArray(message.enemyTypeTable) ? message.enemyTypeTable : []
+    );
+    if (!sharedInput) {
+        return null;
+    }
+
+    const enemies = Array.isArray(sharedInput.enemies) ? sharedInput.enemies : [];
+    const targetStart = Number.isInteger(message.targetRangeStart)
+        ? Math.max(0, Math.min(enemies.length, message.targetRangeStart))
+        : 0;
+    const targetCount = Number.isInteger(message.targetRangeCount)
+        ? Math.max(0, message.targetRangeCount)
+        : enemies.length;
+    const targetEnd = Math.max(targetStart, Math.min(enemies.length, targetStart + targetCount));
+    const targetEnemies = attachTargetEnemyAIStates(
+        enemies.slice(targetStart, targetEnd),
+        message.targetEnemyStates
+    );
+
+    return {
+        player: normalizePlayerSummary(sharedInput.player),
+        walls: sharedInput.walls.map((wall) => normalizeWallSummary(wall)).filter(Boolean),
+        enemies: enemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean),
+        targetEnemies: targetEnemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean)
+    };
+}
+
+/**
+ * 메시지에서 AI 입력을 기존 message 경로 또는 공유 입력 경로로 정규화합니다.
+ * @param {object} message
+ * @returns {{player: object|null, walls: object[], enemies: object[], targetEnemies: object[]}}
+ */
+function resolveEnemyAIBatchInput(message) {
+    const sharedInput = readSharedEnemyAIBatchInput(message);
+    if (sharedInput) {
+        return sharedInput;
+    }
+
+    const enemies = Array.isArray(message.enemies)
+        ? message.enemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean)
+        : [];
+    return {
+        player: normalizePlayerSummary(message.player),
+        walls: Array.isArray(message.walls)
+            ? message.walls.map((wall) => normalizeWallSummary(wall)).filter(Boolean)
+            : [],
+        enemies,
+        targetEnemies: Array.isArray(message.targetEnemies)
+            ? message.targetEnemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean)
+            : enemies
+    };
+}
+
+/**
  * 워커 내부 오류를 상위 워커에 보고합니다.
  * @param {unknown} error
  */
@@ -197,16 +302,11 @@ function computeEnemyAIBatch(message) {
         syncSimulationRuntime(message.runtimeSnapshot);
     }
 
-    const player = normalizePlayerSummary(message.player);
-    const walls = Array.isArray(message.walls)
-        ? message.walls.map((wall) => normalizeWallSummary(wall)).filter(Boolean)
-        : [];
-    const enemies = Array.isArray(message.enemies)
-        ? message.enemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean)
-        : [];
-    const targetEnemies = Array.isArray(message.targetEnemies)
-        ? message.targetEnemies.map((enemy) => normalizeEnemySummary(enemy)).filter(Boolean)
-        : enemies;
+    const batchInput = resolveEnemyAIBatchInput(message);
+    const player = batchInput.player;
+    const walls = batchInput.walls;
+    const enemies = batchInput.enemies;
+    const targetEnemies = batchInput.targetEnemies;
 
     const aiContext = {
         player,
@@ -314,6 +414,9 @@ self.addEventListener('message', (event) => {
                 }
                 enemyAISharedTransport = message.sharedResultBuffers
                     ? attachEnemyAISharedTransport(message.sharedResultBuffers)
+                    : null;
+                enemyAISharedInputTransport = message.sharedInputBuffers
+                    ? attachEnemyAISharedInputTransport(message.sharedInputBuffers)
                     : null;
                 self.postMessage(createEnemyAIWorkerMessage(ENEMY_AI_WORKER_MESSAGE_TYPES.READY, {
                     bootstrapped: true,

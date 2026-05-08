@@ -1427,6 +1427,47 @@ function compactShadowEnemiesByIdSet(enemies, despawnIds) {
 }
 
 /**
+ * 권한 fixed step 중 비활성화된 적을 즉시 제거합니다.
+ * @param {object|null|undefined} nextState
+ * @returns {boolean} 제거된 적이 있었는지 여부입니다.
+ */
+function compactAuthorityShadowInactiveEnemies(nextState) {
+    const enemies = Array.isArray(nextState?.enemies) ? nextState.enemies : null;
+    if (!enemies || enemies.length === 0) {
+        return false;
+    }
+
+    const removedEnemyIds = shadowGameSceneMetadata.despawnEnemyIds;
+    removedEnemyIds.clear();
+    let nextCount = 0;
+    let removed = false;
+    for (let i = 0; i < enemies.length; i++) {
+        const enemy = enemies[i];
+        if (!enemy || enemy.active === false) {
+            if (Number.isInteger(enemy?.id)) {
+                removedEnemyIds.add(enemy.id);
+            }
+            removed = true;
+            continue;
+        }
+
+        enemies[nextCount] = enemy;
+        nextCount++;
+    }
+
+    if (!removed) {
+        removedEnemyIds.clear();
+        return false;
+    }
+
+    enemies.length = nextCount;
+    clearShadowHexaHiveContactPairsForEnemyIds(removedEnemyIds);
+    syncShadowActiveEnemyIds(nextState);
+    removedEnemyIds.clear();
+    return true;
+}
+
+/**
  * ID Set에 포함된 투사체를 제외하도록 배열을 in-place compaction합니다.
  * @param {object[]} projectiles
  * @param {Set<number>} despawnIds
@@ -2261,7 +2302,13 @@ function runAuthorityFixedSteps(nextState, fixedStepSeconds, fixedStepCount) {
             shadowPhysicsSystem.resolveProjectileVsEnemies(projectileActors, enemyActors, fixedStepSeconds);
         }
 
-        resolveAuthorityShadowHexaHiveMerges(nextState, hexaMergeCandidatesById);
+        const removedInactiveEnemies = compactAuthorityShadowInactiveEnemies(nextState);
+        resolveAuthorityShadowHexaHiveMerges(
+            nextState,
+            removedInactiveEnemies
+                ? buildAuthorityShadowHexaMergeCandidatesById(nextState)
+                : hexaMergeCandidatesById
+        );
 
         assignShadowCollisionStats(nextState.collisionStats, shadowPhysicsSystem.getCollisionStats());
     }

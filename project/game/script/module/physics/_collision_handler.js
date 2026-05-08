@@ -89,6 +89,7 @@ const PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR = 0.055;
 const PRESSURE_ESCAPE_SCALE_MAX = 1.45;
 const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
 const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
+const HEXA_HIVE_WALL_MIN_PARTS = 2;
 const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'enemyTotalMs',
     'enemyBodyBuildMs',
@@ -658,6 +659,7 @@ export class CollisionHandler {
                     const narrowphaseStart = this.#startProfileTimer();
                     for (let j = 0; j < candidateIndices.length; j++) {
                         const enemyBody = enemyBodies[candidateIndices[j]];
+                        if (!enemyBody || enemyBody.ref?.active === false) continue;
                         const enemyId = enemyBody.id;
                         if (this.#hasProjectileHit(projectile, enemyId)) continue;
                         this.#frameStats.collisionCheckCount++;
@@ -907,15 +909,19 @@ export class CollisionHandler {
             return 1;
         }
 
+        if (this.#areBothEnemyPairAnchors(bodyA, bodyB)) {
+            return 0;
+        }
+
         const pairWeights = this.#getPairResolveWeights(bodyA, bodyB);
         const pairResolveBoost = resolveBoost * this.#getPairEscapeBoost(bodyA, bodyB);
         const resolveBodyA = {
             weight: pairWeights.weightA,
-            movable: rule.movableA === null ? bodyA.movable !== false : rule.movableA
+            movable: this.#isPairResolveMovable(bodyA, bodyB, rule.movableA)
         };
         const resolveBodyB = {
             weight: pairWeights.weightB,
-            movable: rule.movableB === null ? bodyB.movable !== false : rule.movableB
+            movable: this.#isPairResolveMovable(bodyB, bodyA, rule.movableB)
         };
 
         const resolved = this.detector.addResolution(manifold, resolveBodyA, resolveBodyB);
@@ -1311,6 +1317,70 @@ export class CollisionHandler {
             return ENEMY_PAIR_COLLISION_RADIUS_SCALE;
         }
         return 1;
+    }
+
+    /**
+     * 2셀 이상 합체한 hive가 적-적 충돌에서 벽처럼 고정되어야 하는지 반환합니다.
+     * @private
+     * @param {object} body
+     * @returns {boolean}
+     */
+    #isHexaHiveWallBody(body) {
+        if (body?.kind !== 'enemy' || body?.ref?.type !== 'hexa_hive') {
+            return false;
+        }
+
+        const partCount = Number.isFinite(body.circlePartCount)
+            ? Math.floor(body.circlePartCount)
+            : 0;
+        if (partCount >= HEXA_HIVE_WALL_MIN_PARTS) {
+            return true;
+        }
+
+        const layout = body.ref?.hexaHiveLayout;
+        const filledCount = Array.isArray(layout?.filledLocalCenters) ? layout.filledLocalCenters.length : 0;
+        const visibleCount = Array.isArray(layout?.visibleLocalCenters) ? layout.visibleLocalCenters.length : 0;
+        return Math.max(filledCount, visibleCount) >= HEXA_HIVE_WALL_MIN_PARTS;
+    }
+
+    /**
+     * body가 현재 적-적 pair에서 위치 보정 앵커인지 반환합니다.
+     * @private
+     * @param {object} body
+     * @param {object} otherBody
+     * @returns {boolean}
+     */
+    #isEnemyPairAnchorBody(body, otherBody) {
+        return otherBody?.kind === 'enemy' && this.#isHexaHiveWallBody(body);
+    }
+
+    /**
+     * 양쪽 모두 적-적 보정 앵커인지 반환합니다.
+     * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @returns {boolean}
+     */
+    #areBothEnemyPairAnchors(bodyA, bodyB) {
+        return this.#isEnemyPairAnchorBody(bodyA, bodyB)
+            && this.#isEnemyPairAnchorBody(bodyB, bodyA);
+    }
+
+    /**
+     * 현재 pair에서 body가 위치 보정으로 이동 가능한지 반환합니다.
+     * @private
+     * @param {object} body
+     * @param {object} otherBody
+     * @param {boolean|null} ruleMovable
+     * @returns {boolean}
+     */
+    #isPairResolveMovable(body, otherBody, ruleMovable) {
+        const movable = ruleMovable === null ? body?.movable !== false : ruleMovable !== false;
+        if (!movable) {
+            return false;
+        }
+
+        return !this.#isEnemyPairAnchorBody(body, otherBody);
     }
 
     /**
@@ -1968,6 +2038,9 @@ export class CollisionHandler {
         if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
             return false;
         }
+        if (this.#isEnemyPairAnchorBody(bodyA, bodyB) || this.#isEnemyPairAnchorBody(bodyB, bodyA)) {
+            return false;
+        }
         if (!Number.isFinite(budget) || budget <= 0) {
             return false;
         }
@@ -2073,6 +2146,10 @@ export class CollisionHandler {
             return 1;
         }
 
+        if (this.#areBothEnemyPairAnchors(bodyA, bodyB)) {
+            return 0;
+        }
+
         const candidateCountA = Number.isFinite(bodyA._candidatePairCount) ? bodyA._candidatePairCount : 0;
         const candidateCountB = Number.isFinite(bodyB._candidatePairCount) ? bodyB._candidatePairCount : 0;
         const resolvedCountA = Number.isFinite(bodyA._resolvedPairCount) ? bodyA._resolvedPairCount : 0;
@@ -2107,8 +2184,8 @@ export class CollisionHandler {
 
         let ratioA = 0;
         let ratioB = 0;
-        const movableA = bodyA.movable !== false;
-        const movableB = bodyB.movable !== false;
+        const movableA = this.#isPairResolveMovable(bodyA, bodyB, null);
+        const movableB = this.#isPairResolveMovable(bodyB, bodyA, null);
         if (movableA && movableB) {
             const weightSum = weightA + weightB;
             ratioA = weightB / weightSum;
@@ -2220,13 +2297,9 @@ export class CollisionHandler {
                 const idB = Number.isInteger(bodyB.id) ? bodyB.id : -1;
                 if (idA >= 0 && idA === idB) continue;
 
-                if (Number.isFinite(pairBudget) && pairBudget > 0) {
-                    const passCountA = Number.isFinite(bodyA._passPairProcessCount) ? bodyA._passPairProcessCount : 0;
-                    const passCountB = Number.isFinite(bodyB._passPairProcessCount) ? bodyB._passPairProcessCount : 0;
-                    if (passCountA >= pairBudget || passCountB >= pairBudget) {
-                        this.#recordProfileCount('solveBudgetSkipCount');
-                        continue;
-                    }
+                if (this.#shouldSkipEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
+                    this.#recordProfileCount('solveBudgetSkipCount');
+                    continue;
                 }
 
                 this.#frameStats.collisionCheckCount++;
@@ -3050,7 +3123,9 @@ export class CollisionHandler {
         const enemyA = bodyA?.ref;
         const enemyB = bodyB?.ref;
         if (!enemyA || !enemyB) return;
-        if (typeof enemyA.addAngularImpulse !== 'function' || typeof enemyB.addAngularImpulse !== 'function') return;
+        const canRotateA = !this.#isHexaHiveWallBody(bodyA) && typeof enemyA.addAngularImpulse === 'function';
+        const canRotateB = !this.#isHexaHiveWallBody(bodyB) && typeof enemyB.addAngularImpulse === 'function';
+        if (!canRotateA && !canRotateB) return;
 
         const rvx = (bodyA.velocityX || 0) - (bodyB.velocityX || 0);
         const rvy = (bodyA.velocityY || 0) - (bodyB.velocityY || 0);
@@ -3101,14 +3176,18 @@ export class CollisionHandler {
         const ampA = 0.3 + (offCenterA * 0.7);
         const ampB = 0.3 + (offCenterB * 0.7);
 
-        enemyA.lastImpactPoint = { x: pointX, y: pointY };
-        enemyB.lastImpactPoint = { x: pointX, y: pointY };
-        enemyA.lastImpactOffset = { x: relAX, y: relAY };
-        enemyB.lastImpactOffset = { x: relBX, y: relBY };
-        enemyA.lastImpactOffsetRatio = armRatioA;
-        enemyB.lastImpactOffsetRatio = armRatioB;
-        enemyA.addAngularImpulse(torqueSignA * baseImpulse * shareA * ampA, 1);
-        enemyB.addAngularImpulse(torqueSignB * baseImpulse * shareB * ampB, 1);
+        if (canRotateA) {
+            enemyA.lastImpactPoint = { x: pointX, y: pointY };
+            enemyA.lastImpactOffset = { x: relAX, y: relAY };
+            enemyA.lastImpactOffsetRatio = armRatioA;
+            enemyA.addAngularImpulse(torqueSignA * baseImpulse * shareA * ampA, 1);
+        }
+        if (canRotateB) {
+            enemyB.lastImpactPoint = { x: pointX, y: pointY };
+            enemyB.lastImpactOffset = { x: relBX, y: relBY };
+            enemyB.lastImpactOffsetRatio = armRatioB;
+            enemyB.addAngularImpulse(torqueSignB * baseImpulse * shareB * ampB, 1);
+        }
     }
 
     /**

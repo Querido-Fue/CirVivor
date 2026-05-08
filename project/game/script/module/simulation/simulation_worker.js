@@ -367,7 +367,7 @@ function createPresentationProjectile(projectile) {
  * @returns {object|null}
  */
 function createPresentationEnemy(enemy) {
-    if (!enemy || typeof enemy !== 'object') {
+    if (!enemy || typeof enemy !== 'object' || enemy.active === false) {
         return null;
     }
 
@@ -398,7 +398,7 @@ function hasComplexGameScenePresentation(sceneSnapshot) {
 
     for (let i = 0; i < sceneSnapshot.enemies.length; i++) {
         const enemy = sceneSnapshot.enemies[i];
-        if (enemy?.type === PRESENTATION_HEXA_HIVE_TYPE) {
+        if (enemy?.active !== false && enemy?.type === PRESENTATION_HEXA_HIVE_TYPE) {
             return true;
         }
     }

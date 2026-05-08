@@ -13,6 +13,12 @@ import {
     readEnemyAISharedResultRangeState,
     readEnemyAISharedResultState
 } from './enemy_ai_shared_transport.js';
+import {
+    createEnemyAISharedInputTransport,
+    exportEnemyAISharedInputTransportBuffers,
+    isEnemyAISharedInputTransportSupported,
+    writeEnemyAISharedInputSnapshot
+} from './enemy_ai_shared_input_transport.js';
 import { getSimulationRuntimeSnapshot } from './simulation_runtime.js';
 
 const ENEMY_AI_WORKER_POOL_MAX_SIZE = 3;
@@ -20,7 +26,7 @@ const ENEMY_AI_WORKER_POOL_RESERVED_THREAD_COUNT = 2;
 
 /**
  * 적 AI 워커 코디네이터 기본 통계를 생성합니다.
- * @returns {{supported: boolean, running: boolean, ready: boolean, requestCount: number, responseCount: number, fallbackCount: number, staleDropCount: number, lastRequestId: number, lastCompletedRequestId: number, lastLatencyMs: number, waitMs: number, lastEnemyCount: number, poolSize: number, chunkCount: number, completedChunkCount: number, chunkResponseCount: number, sharedResultRangeCount: number, latestRequestedWallsVersion: number, latestRequestedEnemyTopologyVersion: number, lastWallsVersion: number, lastEnemyTopologyVersion: number, transportSupported: boolean, transportMode: string, lastSharedResultVersion: number, lastError: string|null}}
+ * @returns {{supported: boolean, running: boolean, ready: boolean, requestCount: number, responseCount: number, fallbackCount: number, staleDropCount: number, lastRequestId: number, lastCompletedRequestId: number, lastLatencyMs: number, waitMs: number, lastEnemyCount: number, poolSize: number, chunkCount: number, completedChunkCount: number, chunkResponseCount: number, sharedResultRangeCount: number, sharedInputSnapshotCount: number, sharedInputEnemyCount: number, sharedInputWallCount: number, latestRequestedWallsVersion: number, latestRequestedEnemyTopologyVersion: number, lastWallsVersion: number, lastEnemyTopologyVersion: number, transportSupported: boolean, inputTransportSupported: boolean, transportMode: string, lastSharedResultVersion: number, lastError: string|null}}
  */
 function createDefaultEnemyAIWorkerStats() {
     return {
@@ -41,11 +47,15 @@ function createDefaultEnemyAIWorkerStats() {
         completedChunkCount: 0,
         chunkResponseCount: 0,
         sharedResultRangeCount: 0,
+        sharedInputSnapshotCount: 0,
+        sharedInputEnemyCount: 0,
+        sharedInputWallCount: 0,
         latestRequestedWallsVersion: -1,
         latestRequestedEnemyTopologyVersion: -1,
         lastWallsVersion: -1,
         lastEnemyTopologyVersion: -1,
         transportSupported: isEnemyAISharedTransportSupported(),
+        inputTransportSupported: isEnemyAISharedInputTransportSupported(),
         transportMode: 'message',
         lastSharedResultVersion: 0,
         lastError: null
@@ -104,6 +114,7 @@ export class EnemyAIWorkerCoordinator {
         this.latestRequestedWallsVersion = -1;
         this.latestRequestedEnemyTopologyVersion = -1;
         this.sharedResultTransport = null;
+        this.sharedInputTransport = null;
         this.sharedResultState = null;
         this.sharedResultScratch = null;
         this.requestSequence = 0;
@@ -163,19 +174,29 @@ export class EnemyAIWorkerCoordinator {
         try {
             const poolSize = resolveEnemyAIWorkerPoolSize();
             const useSharedResultTransport = isEnemyAISharedTransportSupported();
+            const useSharedInputTransport = poolSize > 1 && isEnemyAISharedInputTransportSupported();
             if (useSharedResultTransport && !this.sharedResultTransport) {
                 this.sharedResultTransport = createEnemyAISharedTransport();
             }
             if (!useSharedResultTransport) {
                 this.sharedResultTransport = null;
             }
+            if (useSharedInputTransport && !this.sharedInputTransport) {
+                this.sharedInputTransport = createEnemyAISharedInputTransport();
+            }
+            if (!useSharedInputTransport) {
+                this.sharedInputTransport = null;
+            }
 
             const sharedResultBuffers = useSharedResultTransport && this.sharedResultTransport
                 ? exportEnemyAISharedTransportBuffers(this.sharedResultTransport)
                 : null;
+            const sharedInputBuffers = useSharedInputTransport && this.sharedInputTransport
+                ? exportEnemyAISharedInputTransportBuffers(this.sharedInputTransport)
+                : null;
 
             for (let workerIndex = 0; workerIndex < poolSize; workerIndex++) {
-                this._spawnWorker(workerIndex, sharedResultBuffers);
+                this._spawnWorker(workerIndex, sharedResultBuffers, sharedInputBuffers);
             }
 
             this.worker = this.workers[0] ?? null;
@@ -183,9 +204,11 @@ export class EnemyAIWorkerCoordinator {
             this.stats.ready = false;
             this.stats.lastError = null;
             this.stats.poolSize = this.workers.length;
-            this.stats.transportMode = sharedResultBuffers
+            this.stats.transportMode = sharedResultBuffers && sharedInputBuffers && this.workers.length > 1
+                ? 'sab-pool-io'
+                : (sharedResultBuffers
                 ? (this.workers.length === 1 ? 'sab' : 'sab-pool')
-                : 'message';
+                : (sharedInputBuffers ? 'sab-input' : 'message'));
             return true;
         } catch (error) {
             this.stats.lastError = error instanceof Error ? error.message : String(error);
@@ -200,9 +223,10 @@ export class EnemyAIWorkerCoordinator {
      * 내부 pool 워커 하나를 생성하고 bootstrap 메시지를 보냅니다.
      * @param {number} workerIndex
      * @param {object|null} sharedResultBuffers
+     * @param {object|null} sharedInputBuffers
      * @private
      */
-    _spawnWorker(workerIndex, sharedResultBuffers) {
+    _spawnWorker(workerIndex, sharedResultBuffers, sharedInputBuffers) {
         const worker = new Worker(new URL('./enemy_ai_worker.js', import.meta.url), {
             type: 'module',
             name: `cirvivor-enemy-ai-${workerIndex}`
@@ -221,6 +245,7 @@ export class EnemyAIWorkerCoordinator {
         worker.postMessage(createEnemyAIWorkerMessage(ENEMY_AI_WORKER_MESSAGE_TYPES.BOOTSTRAP, {
             runtimeSnapshot: getSimulationRuntimeSnapshot(),
             sharedResultBuffers,
+            sharedInputBuffers,
             workerIndex
         }));
     }
@@ -325,7 +350,7 @@ export class EnemyAIWorkerCoordinator {
 
     /**
      * 현재 통계 스냅샷을 반환합니다.
-     * @returns {{supported: boolean, running: boolean, ready: boolean, requestCount: number, responseCount: number, fallbackCount: number, staleDropCount: number, lastRequestId: number, lastCompletedRequestId: number, lastLatencyMs: number, waitMs: number, lastEnemyCount: number, poolSize: number, chunkCount: number, completedChunkCount: number, chunkResponseCount: number, sharedResultRangeCount: number, latestRequestedWallsVersion: number, latestRequestedEnemyTopologyVersion: number, lastWallsVersion: number, lastEnemyTopologyVersion: number, transportSupported: boolean, transportMode: string, lastSharedResultVersion: number, lastError: string|null}}
+     * @returns {{supported: boolean, running: boolean, ready: boolean, requestCount: number, responseCount: number, fallbackCount: number, staleDropCount: number, lastRequestId: number, lastCompletedRequestId: number, lastLatencyMs: number, waitMs: number, lastEnemyCount: number, poolSize: number, chunkCount: number, completedChunkCount: number, chunkResponseCount: number, sharedResultRangeCount: number, sharedInputSnapshotCount: number, sharedInputEnemyCount: number, sharedInputWallCount: number, latestRequestedWallsVersion: number, latestRequestedEnemyTopologyVersion: number, lastWallsVersion: number, lastEnemyTopologyVersion: number, transportSupported: boolean, inputTransportSupported: boolean, transportMode: string, lastSharedResultVersion: number, lastError: string|null}}
      */
     getStatsSnapshot() {
         return {
@@ -365,6 +390,7 @@ export class EnemyAIWorkerCoordinator {
         this.latestRequestedWallsVersion = -1;
         this.latestRequestedEnemyTopologyVersion = -1;
         this.sharedResultTransport = null;
+        this.sharedInputTransport = null;
         this.sharedResultState = null;
         this.sharedResultScratch = null;
         this.stats.running = false;
@@ -373,6 +399,9 @@ export class EnemyAIWorkerCoordinator {
         this.stats.chunkCount = 0;
         this.stats.completedChunkCount = 0;
         this.stats.sharedResultRangeCount = 0;
+        this.stats.sharedInputSnapshotCount = 0;
+        this.stats.sharedInputEnemyCount = 0;
+        this.stats.sharedInputWallCount = 0;
         this.stats.waitMs = 0;
         this.stats.latestRequestedWallsVersion = -1;
         this.stats.latestRequestedEnemyTopologyVersion = -1;
@@ -393,12 +422,16 @@ export class EnemyAIWorkerCoordinator {
         }
 
         const useSharedResultRanges = this.sharedResultTransport !== null && this.workers.length > 1;
+        const sharedInputSnapshot = this.sharedInputTransport !== null && this.workers.length > 1
+            ? this._writeSharedInputSnapshot(payload)
+            : null;
         const sharedResultSlot = useSharedResultRanges
             ? getEnemyAISharedNextResultSlotIndex(this.sharedResultTransport)
             : -1;
         const chunks = this._createBatchChunks(payload, {
             useSharedResultRanges,
-            sharedResultSlot
+            sharedResultSlot,
+            sharedInputSnapshot
         });
         if (chunks.length === 0) {
             return false;
@@ -425,6 +458,8 @@ export class EnemyAIWorkerCoordinator {
         this.stats.poolSize = this.workers.length;
         this.stats.waitMs = 0;
         this.stats.sharedResultRangeCount = 0;
+        this.stats.sharedInputEnemyCount = sharedInputSnapshot ? sharedInputSnapshot.enemyCount : 0;
+        this.stats.sharedInputWallCount = sharedInputSnapshot ? sharedInputSnapshot.wallCount : 0;
 
         for (let i = 0; i < chunks.length; i++) {
             const worker = this.workers[chunks[i].workerIndex] ?? this.workers[i % this.workers.length];
@@ -446,9 +481,51 @@ export class EnemyAIWorkerCoordinator {
     }
 
     /**
+     * 현재 요청 payload를 공유 입력 스냅샷으로 기록합니다.
+     * @param {object} payload
+     * @returns {{descriptor: object, typeTable: string[], enemyCount: number, wallCount: number}|null}
+     * @private
+     */
+    _writeSharedInputSnapshot(payload) {
+        const snapshot = writeEnemyAISharedInputSnapshot(this.sharedInputTransport, payload);
+        if (!snapshot || snapshot.truncated === true) {
+            return null;
+        }
+
+        this.stats.sharedInputSnapshotCount++;
+        return snapshot;
+    }
+
+    /**
+     * 공유 입력 경로에서 chunk별로 필요한 target AI 상태만 추출합니다.
+     * @param {object[]} enemies
+     * @param {number} startIndex
+     * @param {number} endIndex
+     * @returns {{id: number, enemyAIState: object|null}[]}
+     * @private
+     */
+    _createTargetEnemyAIStates(enemies, startIndex, endIndex) {
+        const targetStates = [];
+        for (let i = startIndex; i < endIndex; i++) {
+            const enemy = enemies[i];
+            if (!Number.isInteger(enemy?.id)) {
+                continue;
+            }
+
+            targetStates.push({
+                id: enemy.id,
+                enemyAIState: enemy.enemyAIState && typeof enemy.enemyAIState === 'object'
+                    ? { ...enemy.enemyAIState }
+                    : null
+            });
+        }
+        return targetStates;
+    }
+
+    /**
      * 요청 배치를 pool worker별 chunk로 나눕니다.
      * @param {object} payload
-     * @param {{useSharedResultRanges?: boolean, sharedResultSlot?: number}} [options={}]
+     * @param {{useSharedResultRanges?: boolean, sharedResultSlot?: number, sharedInputSnapshot?: object|null}} [options={}]
      * @returns {object[]}
      * @private
      */
@@ -471,10 +548,13 @@ export class EnemyAIWorkerCoordinator {
 
         const chunkCount = Math.min(poolSize, enemies.length);
         const chunks = [];
+        const sharedInputSnapshot = options.sharedInputSnapshot && typeof options.sharedInputSnapshot === 'object'
+            ? options.sharedInputSnapshot
+            : null;
         for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
             const startIndex = Math.floor((enemies.length * chunkIndex) / chunkCount);
             const endIndex = Math.floor((enemies.length * (chunkIndex + 1)) / chunkCount);
-            chunks.push({
+            const chunkPayload = {
                 ...payload,
                 requestGroupId: payload.requestId,
                 chunkIndex,
@@ -486,7 +566,23 @@ export class EnemyAIWorkerCoordinator {
                     sharedResultCapacity: Math.max(0, endIndex - startIndex)
                 } : {}),
                 targetEnemies: enemies.slice(startIndex, endIndex)
-            });
+            };
+
+            if (sharedInputSnapshot) {
+                delete chunkPayload.player;
+                delete chunkPayload.walls;
+                delete chunkPayload.enemies;
+                delete chunkPayload.targetEnemies;
+                chunkPayload.sharedInputDescriptor = sharedInputSnapshot.descriptor;
+                chunkPayload.enemyTypeTable = Array.isArray(sharedInputSnapshot.typeTable)
+                    ? sharedInputSnapshot.typeTable
+                    : [];
+                chunkPayload.targetRangeStart = startIndex;
+                chunkPayload.targetRangeCount = Math.max(0, endIndex - startIndex);
+                chunkPayload.targetEnemyStates = this._createTargetEnemyAIStates(enemies, startIndex, endIndex);
+            }
+
+            chunks.push(chunkPayload);
         }
 
         return chunks;
