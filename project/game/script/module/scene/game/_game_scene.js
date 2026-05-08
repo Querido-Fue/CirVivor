@@ -7,6 +7,7 @@ import { getObjectSystem } from 'object/object_system.js';
 import {
     getHexaHiveType
 } from 'object/enemy/_hexa_hive_layout.js';
+import { drawEnemyCollisionDebugCircles } from 'object/enemy/_enemy_collision_debug.js';
 import { enemyAI } from 'object/enemy/ai/_enemy_ai.js';
 import { Player } from 'object/player/_player.js';
 import { BaseProj } from 'object/proj/_base_proj.js';
@@ -19,7 +20,6 @@ import {
     readGameSceneSharedPresentationState
 } from 'simulation/game_scene_shared_presentation.js';
 import { enqueueSimulationCommand } from 'simulation/simulation_command_queue.js';
-import { getSetting } from 'save/save_system.js';
 import {
     getSimulationMouseInput,
     getSimulationObjectOffsetY,
@@ -50,8 +50,6 @@ const HEXA_HIVE_TYPE = getHexaHiveType();
 const HEXA_HIVE_BACKDROP_FALLBACK_FILL = 'rgb(255, 212, 184)';
 const HEXA_SNAPSHOT_FRONT_SCALE = 1;
 const HEXA_SNAPSHOT_BACKDROP_SCALE = 1.14;
-const HEXA_HIVE_DEBUG_STROKE = 'rgba(64, 240, 255, 1)';
-const HEXA_HIVE_DEBUG_LINE_WIDTH = 2.25;
 const GAME_SCENE_AI_BY_ID = Object.freeze({
     enemyAI,
     tempAI: enemyAI
@@ -194,7 +192,7 @@ function normalizeOpaqueBenchmarkEnemyFill(fill) {
 
 /**
  * 육각형 셀 하나를 간단한 외곽 포함 형태로 렌더합니다.
- * @param {{x: number, y: number, size: number, fill: string, alpha?: number, rotation?: number}} options
+ * @param {{x: number, y: number, size: number, fill: string, alpha?: number, rotation?: number, front?: boolean}} options
  */
 function drawHexaSnapshotCell(options) {
     const alpha = Number.isFinite(options?.alpha) ? options.alpha : 1;
@@ -217,6 +215,10 @@ function drawHexaSnapshotCell(options) {
         alpha,
         rotation
     });
+    if (options?.front === false) {
+        return;
+    }
+
     renderGL('object', {
         shape: 'hexagon',
         x,
@@ -227,52 +229,6 @@ function drawHexaSnapshotCell(options) {
         alpha,
         rotation
     });
-}
-
-/**
- * 디버그 모드일 때 hexa_hive의 실제 충돌 part 외곽을 그립니다.
- * @param {number[][]|null|undefined} collisionLocalParts
- * @param {number} localBaseHeight
- * @param {number} rotationRadians
- * @param {number} renderX
- * @param {number} renderY
- */
-function drawHexaHiveSnapshotCollisionDebugParts(collisionLocalParts, localBaseHeight, rotationRadians, renderX, renderY) {
-    if (getSetting('debugMode') !== true || !Array.isArray(collisionLocalParts)) {
-        return;
-    }
-
-    for (let partIndex = 0; partIndex < collisionLocalParts.length; partIndex++) {
-        const part = collisionLocalParts[partIndex];
-        if (!Array.isArray(part) || part.length < 6) {
-            continue;
-        }
-
-        for (let i = 0; i < part.length; i += 2) {
-            const nextIndex = (i + 2) % part.length;
-            const start = rotateHiveSnapshotPoint(
-                (Number.isFinite(part[i]) ? part[i] : 0) * localBaseHeight,
-                (Number.isFinite(part[i + 1]) ? part[i + 1] : 0) * localBaseHeight,
-                rotationRadians
-            );
-            const end = rotateHiveSnapshotPoint(
-                (Number.isFinite(part[nextIndex]) ? part[nextIndex] : 0) * localBaseHeight,
-                (Number.isFinite(part[nextIndex + 1]) ? part[nextIndex + 1] : 0) * localBaseHeight,
-                rotationRadians
-            );
-
-            render('top', {
-                shape: 'line',
-                x1: renderX + start.x,
-                y1: renderY + start.y,
-                x2: renderX + end.x,
-                y2: renderY + end.y,
-                stroke: HEXA_HIVE_DEBUG_STROKE,
-                lineWidth: HEXA_HIVE_DEBUG_LINE_WIDTH,
-                alpha: 1
-            });
-        }
-    }
 }
 
 /**
@@ -297,12 +253,12 @@ function drawHexaHiveSnapshot(enemy, offsetY, baseHeight, fallbackFill) {
     const rotation = normalizeSnapshotNumber(enemy.rotation, 0);
     const rotationRadians = rotation * (Math.PI / 180);
     const fill = typeof enemy.fill === 'string' ? enemy.fill : fallbackFill;
-    const collisionLocalParts = Array.isArray(enemy?.collisionLocalParts)
-        ? enemy.collisionLocalParts
-        : enemy?.hexaHiveLayout?.collisionLocalParts;
+    const backdropCenters = Array.isArray(layout.filledLocalCenters) && layout.filledLocalCenters.length > 0
+        ? layout.filledLocalCenters
+        : layout.visibleLocalCenters;
 
-    for (let i = 0; i < layout.visibleLocalCenters.length; i++) {
-        const localCenter = layout.visibleLocalCenters[i];
+    for (let i = 0; i < backdropCenters.length; i++) {
+        const localCenter = backdropCenters[i];
         const rotated = rotateHiveSnapshotPoint(
             normalizeSnapshotNumber(localCenter?.x, 0) * localBaseHeight,
             normalizeSnapshotNumber(localCenter?.y, 0) * localBaseHeight,
@@ -314,17 +270,39 @@ function drawHexaHiveSnapshot(enemy, offsetY, baseHeight, fallbackFill) {
             size: localBaseHeight,
             fill,
             alpha: 1,
+            rotation,
+            front: false
+        });
+    }
+
+    for (let i = 0; i < layout.visibleLocalCenters.length; i++) {
+        const localCenter = layout.visibleLocalCenters[i];
+        const rotated = rotateHiveSnapshotPoint(
+            normalizeSnapshotNumber(localCenter?.x, 0) * localBaseHeight,
+            normalizeSnapshotNumber(localCenter?.y, 0) * localBaseHeight,
+            rotationRadians
+        );
+        renderGL('object', {
+            shape: 'hexagon',
+            x: renderX + rotated.x,
+            y: renderY + rotated.y,
+            w: localBaseHeight * HEXA_SNAPSHOT_FRONT_SCALE,
+            h: localBaseHeight * HEXA_SNAPSHOT_FRONT_SCALE,
+            fill: normalizeOpaqueBenchmarkEnemyFill(fill),
+            alpha: 1,
             rotation
         });
     }
 
-    drawHexaHiveSnapshotCollisionDebugParts(
-        collisionLocalParts,
-        localBaseHeight,
+    drawEnemyCollisionDebugCircles({
+        enemyType: HEXA_HIVE_TYPE,
+        localCenters: backdropCenters,
+        width: localBaseHeight,
+        height: localBaseHeight,
         rotationRadians,
         renderX,
         renderY
-    );
+    });
 
     return true;
 }
@@ -1683,15 +1661,26 @@ export class GameScene extends BaseScene {
                 const baseH = baseHeight * size;
                 const w = baseH * (ENEMY_ASPECT_RATIO[enemyType] ?? 1);
                 const h = baseH * (ENEMY_HEIGHT_SCALE[enemyType] ?? 1);
+                const renderX = normalizeSnapshotNumber(renderPosition?.x, 0);
+                const renderY = normalizeSnapshotNumber(renderPosition?.y, 0) - offsetY;
+                const rotation = normalizeSnapshotNumber(enemy.rotation, 0);
                 renderGL('object', {
                     shape: shapeKey,
-                    x: normalizeSnapshotNumber(renderPosition?.x, 0),
-                    y: normalizeSnapshotNumber(renderPosition?.y, 0) - offsetY,
+                    x: renderX,
+                    y: renderY,
                     w,
                     h,
                     fill: normalizeOpaqueBenchmarkEnemyFill(typeof enemy.fill === 'string' ? enemy.fill : fallbackFill),
                     alpha: 1,
-                    rotation: normalizeSnapshotNumber(enemy.rotation, 0)
+                    rotation
+                });
+                drawEnemyCollisionDebugCircles({
+                    enemyType,
+                    width: w,
+                    height: h,
+                    rotationRadians: rotation * (Math.PI / 180),
+                    renderX,
+                    renderY
                 });
             }
         });
@@ -1724,20 +1713,32 @@ export class GameScene extends BaseScene {
                 const offset = enemyBase + (i * enemyStride);
                 const staticOffset = enemyStaticBase + (i * enemyStaticStride);
                 const enemyTypeCode = Math.round(enemyStaticData[staticOffset + 1]);
+                const enemyType = getGameSceneEnemyTypeByCode(enemyTypeCode);
                 const shapeKey = shapeByCode[enemyTypeCode] || shapeByCode[0];
                 const size = normalizeSnapshotNumber(enemyStaticData[staticOffset + 0], 1);
                 const baseH = baseHeight * size;
                 const w = baseH * (aspectByCode[enemyTypeCode] ?? 1);
                 const h = baseH * (heightScaleByCode[enemyTypeCode] ?? 1);
+                const renderX = enemyData[offset + 0];
+                const renderY = enemyData[offset + 1] - offsetY;
+                const rotation = normalizeSnapshotNumber(enemyData[offset + 2], 0);
                 renderGL('object', {
                     shape: shapeKey,
-                    x: enemyData[offset + 0],
-                    y: enemyData[offset + 1] - offsetY,
+                    x: renderX,
+                    y: renderY,
                     w,
                     h,
                     fill: fallbackFill,
                     alpha: 1,
-                    rotation: normalizeSnapshotNumber(enemyData[offset + 2], 0)
+                    rotation
+                });
+                drawEnemyCollisionDebugCircles({
+                    enemyType,
+                    width: w,
+                    height: h,
+                    rotationRadians: rotation * (Math.PI / 180),
+                    renderX,
+                    renderY
                 });
             }
         });
@@ -1878,7 +1879,7 @@ export class GameScene extends BaseScene {
         });
         render('ui', {
             shape: 'text',
-            text: `polygon check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
+            text: `Part check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
             x: statsX,
             y: statsY - (statsFont * 1.28),
             font: `400 ${statsFont}px "Pretendard Variable"`,
@@ -1982,7 +1983,7 @@ export class GameScene extends BaseScene {
             });
             render('ui', {
                 shape: 'text',
-                text: `polygon check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
+                text: `Part check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
                 x: statsX,
                 y: statsY - (statsFont * 1.28),
                 font: `400 ${statsFont}px "Pretendard Variable"`,

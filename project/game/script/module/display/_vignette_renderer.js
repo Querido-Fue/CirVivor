@@ -150,7 +150,7 @@ export class VignetteRenderer {
         const maskCanvas = document.createElement('canvas');
         const maskContext = maskCanvas.getContext('2d');
         const blurCanvas = document.createElement('canvas');
-        const blurContext = blurCanvas.getContext('2d');
+        const blurContext = blurCanvas.getContext('2d', { willReadFrequently: true });
 
         return {
             canvas,

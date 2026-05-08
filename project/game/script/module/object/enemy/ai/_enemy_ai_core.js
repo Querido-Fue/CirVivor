@@ -934,6 +934,58 @@ const getSharedDensityGoal = (
 };
 
 /**
+ * 재사용 좌표 버퍼를 보장합니다.
+ * @param {{x?: number, y?: number}|null|undefined} point
+ * @param {number} fallbackX
+ * @param {number} fallbackY
+ * @returns {{x: number, y: number}}
+ */
+const ensureScratchPoint = (point, fallbackX, fallbackY) => {
+    const nextPoint = point && typeof point === 'object' ? point : {};
+    nextPoint.x = Number.isFinite(nextPoint.x) ? nextPoint.x : fallbackX;
+    nextPoint.y = Number.isFinite(nextPoint.y) ? nextPoint.y : fallbackY;
+    return nextPoint;
+};
+
+/**
+ * 재사용 셀 좌표 버퍼를 보장합니다.
+ * @param {{cx?: number, cy?: number}|null|undefined} cell
+ * @returns {{cx: number, cy: number}}
+ */
+const ensureScratchCell = (cell) => {
+    const nextCell = cell && typeof cell === 'object' ? cell : {};
+    nextCell.cx = Number.isFinite(nextCell.cx) ? nextCell.cx : 0;
+    nextCell.cy = Number.isFinite(nextCell.cy) ? nextCell.cy : 0;
+    return nextCell;
+};
+
+/**
+ * 재사용 밀도 목표 버퍼를 보장합니다.
+ * @param {{x?: number, y?: number, count?: number}|null|undefined} goal
+ * @returns {{x: number, y: number, count: number}}
+ */
+const ensureScratchDensityGoal = (goal) => {
+    const nextGoal = ensureScratchPoint(goal, 0, 0);
+    nextGoal.count = Number.isFinite(nextGoal.count) ? nextGoal.count : 0;
+    return nextGoal;
+};
+
+/**
+ * 전송 과정에서 생략될 수 있는 AI 임시 버퍼를 보장합니다.
+ * @param {object} state
+ * @returns {object}
+ */
+const ensureEnemyAIStateScratchObjects = (state) => {
+    state.flowData = state.flowData ?? null;
+    state.scratchDir = ensureScratchPoint(state.scratchDir, 1, 0);
+    state.scratchCell = ensureScratchCell(state.scratchCell);
+    state.scratchGoalCell = ensureScratchCell(state.scratchGoalCell);
+    state.scratchPolicyPoint = ensureScratchPoint(state.scratchPolicyPoint, 0, 0);
+    state.scratchDensityGoal = ensureScratchDensityGoal(state.scratchDensityGoal);
+    return state;
+};
+
+/**
  * 적 인스턴스에 AI 상태 저장소를 보장합니다.
  * @param {object} enemy
  * @param {object} [profile]
@@ -945,7 +997,7 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
         && enemy._enemyAIState.__initialized === true
         && enemy._enemyAIState.__schemaVersion === ENEMY_AI_STATE_SCHEMA_VERSION
     ) {
-        return enemy._enemyAIState;
+        return ensureEnemyAIStateScratchObjects(enemy._enemyAIState);
     }
 
     const currentSpeed = length(enemy.speed?.x ?? 0, enemy.speed?.y ?? 0);
@@ -1017,21 +1069,7 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
         : 0;
     nextState.chargeTargetX = Number.isFinite(nextState.chargeTargetX) ? nextState.chargeTargetX : 0;
     nextState.chargeTargetY = Number.isFinite(nextState.chargeTargetY) ? nextState.chargeTargetY : 0;
-    nextState.scratchDir = nextState.scratchDir && typeof nextState.scratchDir === 'object'
-        ? nextState.scratchDir
-        : { x: 1, y: 0 };
-    nextState.scratchCell = nextState.scratchCell && typeof nextState.scratchCell === 'object'
-        ? nextState.scratchCell
-        : { cx: 0, cy: 0 };
-    nextState.scratchGoalCell = nextState.scratchGoalCell && typeof nextState.scratchGoalCell === 'object'
-        ? nextState.scratchGoalCell
-        : { cx: 0, cy: 0 };
-    nextState.scratchPolicyPoint = nextState.scratchPolicyPoint && typeof nextState.scratchPolicyPoint === 'object'
-        ? nextState.scratchPolicyPoint
-        : { x: 0, y: 0 };
-    nextState.scratchDensityGoal = nextState.scratchDensityGoal && typeof nextState.scratchDensityGoal === 'object'
-        ? nextState.scratchDensityGoal
-        : { x: 0, y: 0, count: 0 };
+    ensureEnemyAIStateScratchObjects(nextState);
     enemy._enemyAIState = nextState;
     return nextState;
 };

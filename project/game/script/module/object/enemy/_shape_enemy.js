@@ -2,6 +2,7 @@ import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { BaseEnemy } from './_base_enemy.js';
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
 
 const ENEMY_ASPECT_RATIO = getData('ENEMY_ASPECT_RATIO');
 const ENEMY_HEIGHT_SCALE = getData('ENEMY_HEIGHT_SCALE');
@@ -272,5 +273,13 @@ export class ShapeEnemy extends BaseEnemy {
         options.fill = overrideOptions.fill ?? this.fill;
         options.alpha = overrideOptions.alpha ?? this.alpha;
         renderGL(overrideOptions.layer || 'object', options);
+        drawEnemyCollisionDebugCircles({
+            enemyType: this.type ?? this.shapeType,
+            width: w,
+            height: h,
+            rotationRadians: (Number.isFinite(options.rotation) ? options.rotation : 0) * (Math.PI / 180),
+            renderX: options.x,
+            renderY: options.y
+        });
     }
 }

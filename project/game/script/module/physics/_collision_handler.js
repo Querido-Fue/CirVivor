@@ -30,8 +30,10 @@ const COLLISION_SLEEP_SPEED_SQ = 9; // 3px/s 이하
 const COLLISION_AXIS_RESISTANCE_MIN = 0.25;
 const COLLISION_AXIS_RESISTANCE_GAIN = 0.85;
 const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = 0.35;
-const COLLISION_BROAD_RADIUS_SCALE_ENEMY = 1.08;
-const COLLISION_BROAD_RADIUS_SCALE_DEFAULT = 1.03;
+const COLLISION_GRID_RADIUS_SCALE = 1.03;
+const ENEMY_PAIR_COLLISION_RADIUS_SCALE = 0.9;
+const ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE = 1.1;
+const HEXA_HIVE_CELL_COLLISION_RADIUS = 0.47 / ENEMY_PAIR_COLLISION_RADIUS_SCALE;
 const DENSE_REBUILD_DENSITY_THRESHOLD = 0.45;
 const DENSE_REBUILD_MIN_RESOLVED = 8;
 const DENSE_REBUILD_MAX_EXTRA_PASSES = 4;
@@ -200,8 +202,8 @@ const COLLISION_RULE_OTHER_WALL = Object.freeze({
 function getHexaHiveCollisionCellCount(enemy) {
     const candidateCounts = [
         enemy?.hexaHiveLayout?.filledCells?.length,
-        enemy?.hexaHiveLayout?.visibleLocalCenters?.length,
-        enemy?.hexaHiveLayout?.collisionLocalParts?.length
+        enemy?.hexaHiveLayout?.filledLocalCenters?.length,
+        enemy?.hexaHiveLayout?.visibleLocalCenters?.length
     ];
 
     for (let i = 0; i < candidateCounts.length; i++) {
@@ -281,6 +283,38 @@ const ENEMY_LOCAL_PARTS = Object.freeze({
         Object.freeze([-0.44, -0.44, 0.44, -0.44, 0.44, 0.44, -0.44, 0.44])
     ])
 });
+
+/**
+ * 로컬 다각형 점 배열을 감싸는 가상 원 반지름을 계산합니다.
+ * @param {readonly number[][]} localParts
+ * @param {number} widthScale
+ * @param {number} heightScale
+ * @returns {number}
+ */
+function getScaledLocalPartsMaxRadius(localParts, widthScale, heightScale) {
+    let maxDistSq = 0;
+    if (!Array.isArray(localParts)) {
+        return 0;
+    }
+
+    for (let partIndex = 0; partIndex < localParts.length; partIndex++) {
+        const part = localParts[partIndex];
+        if (!Array.isArray(part)) {
+            continue;
+        }
+
+        for (let i = 0; i < part.length; i += 2) {
+            const x = (Number.isFinite(part[i]) ? part[i] : 0) * widthScale;
+            const y = (Number.isFinite(part[i + 1]) ? part[i + 1] : 0) * heightScale;
+            const distSq = (x * x) + (y * y);
+            if (distSq > maxDistSq) {
+                maxDistSq = distSq;
+            }
+        }
+    }
+
+    return Math.sqrt(maxDistSq);
+}
 
 /**
  * @typedef {object} CollisionRule
@@ -386,7 +420,10 @@ export class CollisionHandler {
             minX: 0, maxX: 0, minY: 0, maxY: 0,
             sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
             boundRadius: 0, broadRadius: 0, velocityX: 0, velocityY: 0,
-            parts: null, partBounds: null, mergeLock: false,
+            enemyPairMinX: 0, enemyPairMaxX: 0, enemyPairMinY: 0, enemyPairMaxY: 0,
+            projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
+            enemyPairBroadRadius: 0, projectileBroadRadius: 0,
+            circleParts: null, circlePartCount: 0, mergeLock: false,
             _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
@@ -688,7 +725,7 @@ export class CollisionHandler {
             if (enemyBodies.length === 0) return 0;
 
             const gridBuildStart = this.#startProfileTimer();
-            const enemyGridCellSize = this.#rebuildGridFromBodies(enemyBodies);
+            const enemyGridCellSize = this.#rebuildGridFromBodies(enemyBodies, 'projectile');
             this.#recordProfileDuration('projectileGridBuildMs', gridBuildStart);
 
             const baseSteps = this.#resolveIterationCount();
@@ -726,6 +763,8 @@ export class CollisionHandler {
                     circleBody.radius = projectile.radius;
                     circleBody.boundRadius = projectile.radius;
                     circleBody.broadRadius = projectile.radius;
+                    circleBody.circleParts = null;
+                    circleBody.circlePartCount = 0;
                     circleBody.weight = Math.max(EPSILON, Number.isFinite(projectile.weight) ? projectile.weight : 1);
                     circleBody.ref = projectile;
                     circleBody.minX = cx - projectile.radius;
@@ -751,12 +790,16 @@ export class CollisionHandler {
                         const enemyId = enemyBody.id;
                         if (this.#hasProjectileHit(projectile, enemyId)) continue;
                         this.#frameStats.collisionCheckCount++;
-                        if (!this.#aabbOverlap(circleBody, enemyBody, false)) {
+                        if (!this.#bodyAabbOverlap(circleBody, enemyBody)) {
                             this.#frameStats.aabbRejectCount++;
                             continue;
                         }
                         this.#frameStats.aabbPassCount++;
-                        if (!this.#roughBodyCircleOverlap(circleBody, enemyBody)) continue;
+                        if (!this.#bodyBroadCircleOverlap(circleBody, enemyBody)) {
+                            this.#frameStats.circleRejectCount++;
+                            continue;
+                        }
+                        this.#frameStats.circlePassCount++;
 
                         const manifold = this.#detectBodies(circleBody, enemyBody);
                         if (!manifold) continue;
@@ -812,11 +855,10 @@ export class CollisionHandler {
             };
 
             const gridBuildStart = this.#startProfileTimer();
-            this.#rebuildGridFromBodies(bodies);
+            this.#rebuildGridFromBodies(bodies, 'enemyPair');
             this.#recordProfileDuration('contactGridBuildMs', gridBuildStart);
             this.#ensurePairBitmap(bodies.length);
             const contactPairs = [];
-            const bd = this.#broadData;
             const gridBuckets = this.#activeGridBuckets;
 
             const pairScanStart = this.#startProfileTimer();
@@ -845,17 +887,7 @@ export class CollisionHandler {
                             continue;
                         }
 
-                        const offsetA = low * BROAD_STRIDE;
-                        const offsetB = high * BROAD_STRIDE;
-                        if (bd[offsetA + 4] > bd[offsetB + 5] || bd[offsetA + 5] < bd[offsetB + 4]
-                            || bd[offsetA + 6] > bd[offsetB + 7] || bd[offsetA + 7] < bd[offsetB + 6]) {
-                            continue;
-                        }
-
-                        const dx = bd[offsetB + 8] - bd[offsetA + 8];
-                        const dy = bd[offsetB + 9] - bd[offsetA + 9];
-                        const radiusSum = bd[offsetA + 12] + bd[offsetB + 12];
-                        if (((dx * dx) + (dy * dy)) > (radiusSum * radiusSum)) {
+                        if (!this.#bodyAabbOverlap(bodyA, bodyB) || !this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
                             continue;
                         }
 
@@ -1036,94 +1068,81 @@ export class CollisionHandler {
      */
     #detectBodies(bodyA, bodyB) {
         if (bodyA.shape === 'circle' && bodyB.shape === 'circle') {
-            return this.detector.circleVsCircle(bodyA, bodyB, false, this.#scratchManifold);
+            return this.#detectCircleVsCircleBody(bodyA, bodyB);
         }
 
-        if (bodyA.shape === 'polygon' && bodyB.shape === 'circle') {
-            return this.#detectPolygonPartsVsCircle(bodyA.parts, bodyA.partBounds, bodyB);
+        if (bodyA.shape === 'circleParts' && bodyB.shape === 'circleParts') {
+            return this.#detectCirclePartsVsCircleParts(bodyA, bodyB);
         }
 
-        if (bodyA.shape === 'circle' && bodyB.shape === 'polygon') {
-            const manifold = this.#detectPolygonPartsVsCircle(bodyB.parts, bodyB.partBounds, bodyA);
+        if (bodyA.shape === 'circleParts' && bodyB.shape === 'circle') {
+            return this.#detectCirclePartsVsCircle(bodyA, bodyB);
+        }
+
+        if (bodyA.shape === 'circle' && bodyB.shape === 'circleParts') {
+            const manifold = this.#detectCirclePartsVsCircle(bodyB, bodyA);
             if (!manifold) return null;
-            // poly->circle 기준 법선을 circle->poly 관점으로 뒤집습니다.
-            manifold.normalX = -manifold.normalX;
-            manifold.normalY = -manifold.normalY;
-            return manifold;
+            return this.#invertManifoldNormal(manifold);
         }
 
-        if (bodyA.shape === 'polygon' && bodyB.shape === 'polygon') {
-            return this.#detectPolygonPartsVsPolygonParts(
-                bodyA.parts,
-                bodyA.partBounds,
-                bodyB.parts,
-                bodyB.partBounds
-            );
+        if (bodyA.shape === 'circle' && bodyB.shape === 'rect') {
+            return this.#detectCircleVsRect(bodyA, bodyB);
+        }
+
+        if (bodyA.shape === 'rect' && bodyB.shape === 'circle') {
+            const manifold = this.#detectCircleVsRect(bodyB, bodyA);
+            if (!manifold) return null;
+            return this.#invertManifoldNormal(manifold);
+        }
+
+        if (bodyA.shape === 'circleParts' && bodyB.shape === 'rect') {
+            return this.#detectCirclePartsVsRect(bodyA, bodyB);
+        }
+
+        if (bodyA.shape === 'rect' && bodyB.shape === 'circleParts') {
+            const manifold = this.#detectCirclePartsVsRect(bodyB, bodyA);
+            if (!manifold) return null;
+            return this.#invertManifoldNormal(manifold);
         }
 
         return null;
     }
 
     /**
+     * 원형 body 두 개의 충돌을 판정합니다.
      * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @returns {object|null}
      */
-    #detectPolygonPartsVsCircle(parts, partBounds, circle) {
-        const best = this.#scratchBestManifold;
-        let hasBest = false;
-        let contactCount = 0;
-        let normalSumX = 0;
-        let normalSumY = 0;
-        let pointSumX = 0;
-        let pointSumY = 0;
-        let penetrationSum = 0;
-        let maxPenetration = 0;
-        for (let i = 0; i < parts.length; i++) {
-            if (this.#partBoundsVsCircle(partBounds, i, circle) === false) {
-                continue;
-            }
-            this.#frameStats.polygonChecks++;
-            const manifold = this.detector.polygonVsCircle(
-                parts[i],
-                circle,
-                false,
-                null,
-                null,
-                this.#scratchCandidateManifold
-            );
-            if (!manifold) continue;
-            const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-            if (penetration <= EPSILON) continue;
-            contactCount++;
-            normalSumX += manifold.normalX * penetration;
-            normalSumY += manifold.normalY * penetration;
-            pointSumX += manifold.pointX * penetration;
-            pointSumY += manifold.pointY * penetration;
-            penetrationSum += penetration;
-            if (penetration > maxPenetration) {
-                maxPenetration = penetration;
-            }
-            if (!hasBest || manifold.penetration > best.penetration) {
-                this.#copyManifold(manifold, best);
-                hasBest = true;
-            }
-        }
-        return hasBest
-            ? this.#finalizeAggregatePartManifold(best, {
-                contactCount,
-                normalSumX,
-                normalSumY,
-                pointSumX,
-                pointSumY,
-                penetrationSum,
-                maxPenetration
-            })
-            : null;
+    #detectCircleVsCircleBody(bodyA, bodyB) {
+        return this.#writeCircleOverlapManifold(
+            bodyA.centerX,
+            bodyA.centerY,
+            bodyA.radius * this.#getBodyCollisionRadiusScale(bodyA, bodyB),
+            bodyB.centerX,
+            bodyB.centerY,
+            bodyB.radius * this.#getBodyCollisionRadiusScale(bodyB, bodyA),
+            this.#scratchManifold,
+            bodyB.centerX - bodyA.centerX,
+            bodyB.centerY - bodyA.centerY
+        );
     }
 
     /**
+     * 원형 part body 두 개의 충돌을 판정합니다.
      * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @returns {object|null}
      */
-    #detectPolygonPartsVsPolygonParts(partsA, partBoundsA, partsB, partBoundsB) {
+    #detectCirclePartsVsCircleParts(bodyA, bodyB) {
+        const partsA = bodyA?.circleParts;
+        const partsB = bodyB?.circleParts;
+        if (!(partsA instanceof Float32Array) || !(partsB instanceof Float32Array)) {
+            return null;
+        }
+
         const best = this.#scratchBestManifold;
         let hasBest = false;
         let contactCount = 0;
@@ -1133,19 +1152,31 @@ export class CollisionHandler {
         let pointSumY = 0;
         let penetrationSum = 0;
         let maxPenetration = 0;
-        for (let i = 0; i < partsA.length; i++) {
-            for (let j = 0; j < partsB.length; j++) {
-                if (this.#partBoundsOverlap(partBoundsA, i, partBoundsB, j) === false) {
-                    continue;
-                }
+        const scaleA = this.#getBodyCollisionRadiusScale(bodyA, bodyB);
+        const scaleB = this.#getBodyCollisionRadiusScale(bodyB, bodyA);
+        const countA = Math.max(0, Math.floor(bodyA.circlePartCount || 0));
+        const countB = Math.max(0, Math.floor(bodyB.circlePartCount || 0));
+        const fallbackNormalX = bodyB.centerX - bodyA.centerX;
+        const fallbackNormalY = bodyB.centerY - bodyA.centerY;
+
+        for (let i = 0; i < countA; i++) {
+            const offsetA = i * 3;
+            const ax = partsA[offsetA];
+            const ay = partsA[offsetA + 1];
+            const ar = partsA[offsetA + 2] * scaleA;
+            for (let j = 0; j < countB; j++) {
+                const offsetB = j * 3;
                 this.#frameStats.polygonChecks++;
-                const manifold = this.detector.polygonVsPolygon(
-                    partsA[i],
-                    partsB[j],
-                    false,
-                    null,
-                    null,
-                    this.#scratchCandidateManifold
+                const manifold = this.#writeCircleOverlapManifold(
+                    ax,
+                    ay,
+                    ar,
+                    partsB[offsetB],
+                    partsB[offsetB + 1],
+                    partsB[offsetB + 2] * scaleB,
+                    this.#scratchCandidateManifold,
+                    fallbackNormalX,
+                    fallbackNormalY
                 );
                 if (!manifold) continue;
                 const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
@@ -1179,53 +1210,346 @@ export class CollisionHandler {
     }
 
     /**
-     * part별 AABB가 있으면 polygon-vs-circle 상세 판정 전 빠르게 거절합니다.
+     * 원형 part body와 원형 body의 충돌을 판정합니다.
      * @private
-     * @param {Float32Array|null|undefined} partBounds
-     * @param {number} partIndex
-     * @param {object} circle
-     * @returns {boolean}
+     * @param {object} partBody
+     * @param {object} circleBody
+     * @returns {object|null}
      */
-    #partBoundsVsCircle(partBounds, partIndex, circle) {
-        if (!(partBounds instanceof Float32Array)) {
-            return true;
+    #detectCirclePartsVsCircle(partBody, circleBody) {
+        const parts = partBody?.circleParts;
+        if (!(parts instanceof Float32Array)) {
+            return null;
         }
 
-        const offset = partIndex * 4;
-        const radius = Number.isFinite(circle?.radius) ? circle.radius : 0;
-        const minX = partBounds[offset];
-        const maxX = partBounds[offset + 1];
-        const minY = partBounds[offset + 2];
-        const maxY = partBounds[offset + 3];
-        const circleMinX = (Number.isFinite(circle?.centerX) ? circle.centerX : 0) - radius;
-        const circleMaxX = (Number.isFinite(circle?.centerX) ? circle.centerX : 0) + radius;
-        const circleMinY = (Number.isFinite(circle?.centerY) ? circle.centerY : 0) - radius;
-        const circleMaxY = (Number.isFinite(circle?.centerY) ? circle.centerY : 0) + radius;
-        return !(minX > circleMaxX || maxX < circleMinX || minY > circleMaxY || maxY < circleMinY);
+        const best = this.#scratchBestManifold;
+        let hasBest = false;
+        let contactCount = 0;
+        let normalSumX = 0;
+        let normalSumY = 0;
+        let pointSumX = 0;
+        let pointSumY = 0;
+        let penetrationSum = 0;
+        let maxPenetration = 0;
+        const partScale = this.#getBodyCollisionRadiusScale(partBody, circleBody);
+        const circleRadius = circleBody.radius * this.#getBodyCollisionRadiusScale(circleBody, partBody);
+        const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
+        const fallbackNormalX = circleBody.centerX - partBody.centerX;
+        const fallbackNormalY = circleBody.centerY - partBody.centerY;
+
+        for (let i = 0; i < count; i++) {
+            const offset = i * 3;
+            this.#frameStats.polygonChecks++;
+            const manifold = this.#writeCircleOverlapManifold(
+                parts[offset],
+                parts[offset + 1],
+                parts[offset + 2] * partScale,
+                circleBody.centerX,
+                circleBody.centerY,
+                circleRadius,
+                this.#scratchCandidateManifold,
+                fallbackNormalX,
+                fallbackNormalY
+            );
+            if (!manifold) continue;
+            const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
+            if (penetration <= EPSILON) continue;
+            contactCount++;
+            normalSumX += manifold.normalX * penetration;
+            normalSumY += manifold.normalY * penetration;
+            pointSumX += manifold.pointX * penetration;
+            pointSumY += manifold.pointY * penetration;
+            penetrationSum += penetration;
+            if (penetration > maxPenetration) {
+                maxPenetration = penetration;
+            }
+            if (!hasBest || manifold.penetration > best.penetration) {
+                this.#copyManifold(manifold, best);
+                hasBest = true;
+            }
+        }
+
+        return hasBest
+            ? this.#finalizeAggregatePartManifold(best, {
+                contactCount,
+                normalSumX,
+                normalSumY,
+                pointSumX,
+                pointSumY,
+                penetrationSum,
+                maxPenetration
+            })
+            : null;
     }
 
     /**
-     * part별 AABB가 있으면 polygon-vs-polygon 상세 판정 전 빠르게 거절합니다.
+     * 원형 body와 축 정렬 사각형 body의 충돌을 판정합니다.
      * @private
-     * @param {Float32Array|null|undefined} partBoundsA
-     * @param {number} partIndexA
-     * @param {Float32Array|null|undefined} partBoundsB
-     * @param {number} partIndexB
-     * @returns {boolean}
+     * @param {object} circleBody
+     * @param {object} rectBody
+     * @returns {object|null}
      */
-    #partBoundsOverlap(partBoundsA, partIndexA, partBoundsB, partIndexB) {
-        if (!(partBoundsA instanceof Float32Array) || !(partBoundsB instanceof Float32Array)) {
-            return true;
+    #detectCircleVsRect(circleBody, rectBody) {
+        return this.#writeCircleRectOverlapManifold(
+            circleBody.centerX,
+            circleBody.centerY,
+            circleBody.radius * this.#getBodyCollisionRadiusScale(circleBody, rectBody),
+            rectBody,
+            this.#scratchManifold
+        );
+    }
+
+    /**
+     * 원형 part body와 축 정렬 사각형 body의 충돌을 판정합니다.
+     * @private
+     * @param {object} partBody
+     * @param {object} rectBody
+     * @returns {object|null}
+     */
+    #detectCirclePartsVsRect(partBody, rectBody) {
+        const parts = partBody?.circleParts;
+        if (!(parts instanceof Float32Array)) {
+            return null;
         }
 
-        const offsetA = partIndexA * 4;
-        const offsetB = partIndexB * 4;
-        return !(
-            partBoundsA[offsetA] > partBoundsB[offsetB + 1]
-            || partBoundsA[offsetA + 1] < partBoundsB[offsetB]
-            || partBoundsA[offsetA + 2] > partBoundsB[offsetB + 3]
-            || partBoundsA[offsetA + 3] < partBoundsB[offsetB + 2]
+        const best = this.#scratchBestManifold;
+        let hasBest = false;
+        let contactCount = 0;
+        let normalSumX = 0;
+        let normalSumY = 0;
+        let pointSumX = 0;
+        let pointSumY = 0;
+        let penetrationSum = 0;
+        let maxPenetration = 0;
+        const partScale = this.#getBodyCollisionRadiusScale(partBody, rectBody);
+        const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
+
+        for (let i = 0; i < count; i++) {
+            const offset = i * 3;
+            this.#frameStats.polygonChecks++;
+            const manifold = this.#writeCircleRectOverlapManifold(
+                parts[offset],
+                parts[offset + 1],
+                parts[offset + 2] * partScale,
+                rectBody,
+                this.#scratchCandidateManifold
+            );
+            if (!manifold) continue;
+            const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
+            if (penetration <= EPSILON) continue;
+            contactCount++;
+            normalSumX += manifold.normalX * penetration;
+            normalSumY += manifold.normalY * penetration;
+            pointSumX += manifold.pointX * penetration;
+            pointSumY += manifold.pointY * penetration;
+            penetrationSum += penetration;
+            if (penetration > maxPenetration) {
+                maxPenetration = penetration;
+            }
+            if (!hasBest || manifold.penetration > best.penetration) {
+                this.#copyManifold(manifold, best);
+                hasBest = true;
+            }
+        }
+
+        return hasBest
+            ? this.#finalizeAggregatePartManifold(best, {
+                contactCount,
+                normalSumX,
+                normalSumY,
+                pointSumX,
+                pointSumY,
+                penetrationSum,
+                maxPenetration
+            })
+            : null;
+    }
+
+    /**
+     * 충돌 관계별 가상 원 반지름 스케일을 반환합니다.
+     * @private
+     * @param {object} body
+     * @param {object} otherBody
+     * @returns {number}
+     */
+    #getBodyCollisionRadiusScale(body, otherBody) {
+        if (body?.kind !== 'enemy') {
+            return 1;
+        }
+        if (otherBody?.kind === 'projectile') {
+            return ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
+        }
+        if (otherBody?.kind === 'enemy') {
+            return ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+        }
+        return 1;
+    }
+
+    /**
+     * 원-원 충돌 manifold를 씁니다.
+     * @private
+     * @param {number} ax
+     * @param {number} ay
+     * @param {number} ar
+     * @param {number} bx
+     * @param {number} by
+     * @param {number} br
+     * @param {object} out
+     * @param {number} fallbackNormalX
+     * @param {number} fallbackNormalY
+     * @returns {object|null}
+     */
+    #writeCircleOverlapManifold(ax, ay, ar, bx, by, br, out, fallbackNormalX = 1, fallbackNormalY = 0) {
+        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(ar) || ar <= 0
+            || !Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(br) || br <= 0) {
+            return null;
+        }
+
+        const dx = bx - ax;
+        const dy = by - ay;
+        const radiusSum = ar + br;
+        const distSq = (dx * dx) + (dy * dy);
+        if (distSq >= (radiusSum * radiusSum)) {
+            return null;
+        }
+
+        let distance = Math.sqrt(distSq);
+        let normalX = 1;
+        let normalY = 0;
+        if (distance > EPSILON) {
+            normalX = dx / distance;
+            normalY = dy / distance;
+        } else {
+            const fallbackLength = Math.hypot(fallbackNormalX, fallbackNormalY);
+            if (fallbackLength > EPSILON) {
+                normalX = fallbackNormalX / fallbackLength;
+                normalY = fallbackNormalY / fallbackLength;
+            }
+            distance = 0;
+        }
+
+        return this.#writeManifold(
+            out,
+            normalX,
+            normalY,
+            radiusSum - distance,
+            ax + (normalX * ar),
+            ay + (normalY * ar)
         );
+    }
+
+    /**
+     * 원-사각형 충돌 manifold를 씁니다.
+     * @private
+     * @param {number} circleX
+     * @param {number} circleY
+     * @param {number} radius
+     * @param {object} rectBody
+     * @param {object} out
+     * @returns {object|null}
+     */
+    #writeCircleRectOverlapManifold(circleX, circleY, radius, rectBody, out) {
+        if (!Number.isFinite(circleX) || !Number.isFinite(circleY) || !Number.isFinite(radius) || radius <= 0) {
+            return null;
+        }
+
+        const minX = Number.isFinite(rectBody?.minX) ? rectBody.minX : 0;
+        const maxX = Number.isFinite(rectBody?.maxX) ? rectBody.maxX : 0;
+        const minY = Number.isFinite(rectBody?.minY) ? rectBody.minY : 0;
+        const maxY = Number.isFinite(rectBody?.maxY) ? rectBody.maxY : 0;
+        const closestX = Math.max(minX, Math.min(circleX, maxX));
+        const closestY = Math.max(minY, Math.min(circleY, maxY));
+        const dx = closestX - circleX;
+        const dy = closestY - circleY;
+        const distSq = (dx * dx) + (dy * dy);
+        if (distSq >= (radius * radius)) {
+            return null;
+        }
+
+        if (distSq > EPSILON) {
+            const distance = Math.sqrt(distSq);
+            const normalX = dx / distance;
+            const normalY = dy / distance;
+            return this.#writeManifold(
+                out,
+                normalX,
+                normalY,
+                radius - distance,
+                closestX,
+                closestY
+            );
+        }
+
+        const leftDistance = Math.max(0, circleX - minX);
+        const rightDistance = Math.max(0, maxX - circleX);
+        const topDistance = Math.max(0, circleY - minY);
+        const bottomDistance = Math.max(0, maxY - circleY);
+        const minDistance = Math.min(leftDistance, rightDistance, topDistance, bottomDistance);
+        let normalX = 1;
+        let normalY = 0;
+        let pointX = minX;
+        let pointY = circleY;
+
+        if (minDistance === rightDistance) {
+            normalX = -1;
+            pointX = maxX;
+        } else if (minDistance === topDistance) {
+            normalX = 0;
+            normalY = 1;
+            pointX = circleX;
+            pointY = minY;
+        } else if (minDistance === bottomDistance) {
+            normalX = 0;
+            normalY = -1;
+            pointX = circleX;
+            pointY = maxY;
+        }
+
+        return this.#writeManifold(
+            out,
+            normalX,
+            normalY,
+            radius + minDistance,
+            pointX,
+            pointY
+        );
+    }
+
+    /**
+     * manifold 법선을 A->B 관점으로 뒤집습니다.
+     * @private
+     * @param {object} manifold
+     * @returns {object}
+     */
+    #invertManifoldNormal(manifold) {
+        manifold.normalX = -manifold.normalX;
+        manifold.normalY = -manifold.normalY;
+        return manifold;
+    }
+
+    /**
+     * manifold 출력 객체를 채웁니다.
+     * @private
+     * @param {object} out
+     * @param {number} normalX
+     * @param {number} normalY
+     * @param {number} penetration
+     * @param {number} pointX
+     * @param {number} pointY
+     * @returns {object}
+     */
+    #writeManifold(out, normalX, normalY, penetration, pointX, pointY) {
+        out.collided = true;
+        out.normalX = normalX;
+        out.normalY = normalY;
+        out.penetration = penetration;
+        out.pointX = pointX;
+        out.pointY = pointY;
+        out.moveAX = 0;
+        out.moveAY = 0;
+        out.moveBX = 0;
+        out.moveBY = 0;
+        return out;
     }
 
     /**
@@ -1387,13 +1711,23 @@ export class CollisionHandler {
     }
 
     /**
+     * grid 용도에 맞는 평균 broad radius로 셀 크기를 추정합니다.
      * @private
+     * @param {object[]} bodies
+     * @param {'default'|'enemyPair'|'projectile'} [gridMode='default']
+     * @returns {number}
      */
-    #estimateCellSize(bodies) {
+    #estimateCellSize(bodies, gridMode = 'default') {
         let radiusSum = 0;
         let count = 0;
         for (let i = 0; i < bodies.length; i++) {
-            const radius = bodies[i].boundRadius;
+            const body = bodies[i];
+            let radius = body?.boundRadius;
+            if (gridMode === 'enemyPair' && body?.kind === 'enemy') {
+                radius = body.enemyPairBroadRadius;
+            } else if (gridMode === 'projectile' && body?.kind === 'enemy') {
+                radius = body.projectileBroadRadius;
+            }
             if (!Number.isFinite(radius) || radius <= 0) continue;
             radiusSum += radius;
             count++;
@@ -1418,13 +1752,16 @@ export class CollisionHandler {
             return this.#bodyPool[this.#bodyPoolCursor++];
         }
         const body = {
-            id: -1, kind: '', shape: '', parts: null, ref: null,
+            id: -1, kind: '', shape: '', circleParts: null, circlePartCount: 0, ref: null,
             weight: 1, movable: true,
             centerX: 0, centerY: 0, x: 0, y: 0, radius: 0,
             minX: 0, maxX: 0, minY: 0, maxY: 0,
             sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
             boundRadius: 0, broadRadius: 0, resolveRadius: 0, velocityX: 0, velocityY: 0,
-            partBounds: null, mergeLock: false,
+            enemyPairMinX: 0, enemyPairMaxX: 0, enemyPairMinY: 0, enemyPairMaxY: 0,
+            projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
+            enemyPairBroadRadius: 0, projectileBroadRadius: 0,
+            mergeLock: false,
             _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
             _frameResolveMoved: 0, _frameResolveMax: Infinity
         };
@@ -1640,7 +1977,6 @@ export class CollisionHandler {
      * @returns {number}
      */
     #processCandidatePairs(bodies, resolvePositions, applyNonPosition, resolveBoost) {
-        const bd = this.#broadData;
         let resolvedCount = 0;
         const pairBudget = this.#getEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost);
         this.#resetPassPairProcessCounts(bodies);
@@ -1653,19 +1989,13 @@ export class CollisionHandler {
             if (!rule) continue;
 
             this.#frameStats.collisionCheckCount++;
-            const oA = low * BROAD_STRIDE;
-            const oB = high * BROAD_STRIDE;
-            if (bd[oA + 4] > bd[oB + 5] || bd[oA + 5] < bd[oB + 4] ||
-                bd[oA + 6] > bd[oB + 7] || bd[oA + 7] < bd[oB + 6]) {
+            if (!this.#bodyAabbOverlap(bodyA, bodyB)) {
                 this.#frameStats.aabbRejectCount++;
                 continue;
             }
             this.#frameStats.aabbPassCount++;
             this.#recordProfileCount('solveAabbPassCount');
-            const dx = bd[oB + 8] - bd[oA + 8];
-            const dy = bd[oB + 9] - bd[oA + 9];
-            const rSum = bd[oA + 12] + bd[oB + 12];
-            if ((dx * dx) + (dy * dy) > (rSum * rSum)) {
+            if (!this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
                 this.#frameStats.circleRejectCount++;
                 continue;
             }
@@ -1782,15 +2112,16 @@ export class CollisionHandler {
      * body 배열 기준으로 broad-phase SoA와 grid를 다시 구성합니다.
      * @private
      * @param {object[]} bodies
+     * @param {'default'|'enemyPair'|'projectile'} [gridMode='default']
      * @returns {number} 재구성에 사용한 grid cell size
      */
-    #rebuildGridFromBodies(bodies) {
+    #rebuildGridFromBodies(bodies, gridMode = 'default') {
         this.#ensureBroadData(bodies.length);
         for (let i = 0; i < bodies.length; i++) {
-            this.#writeBroadData(i, bodies[i]);
+            this.#writeBroadData(i, bodies[i], gridMode);
         }
 
-        const cellSize = this.#estimateCellSize(bodies);
+        const cellSize = this.#estimateCellSize(bodies, gridMode);
         this.#clearGrid();
         for (let i = 0; i < bodies.length; i++) {
             this.#insertBodyToGridSoA(i, cellSize);
@@ -1879,41 +2210,89 @@ export class CollisionHandler {
     }
 
     /**
+     * grid 삽입용 broad-phase SoA 데이터를 씁니다.
      * @private
+     * @param {number} index
+     * @param {object} body
+     * @param {'default'|'enemyPair'|'projectile'} [gridMode='default']
      */
-    #writeBroadData(index, body) {
+    #writeBroadData(index, body, gridMode = 'default') {
         const o = index * BROAD_STRIDE;
         const bd = this.#broadData;
-        bd[o + 0] = body.minX;
-        bd[o + 1] = body.maxX;
-        bd[o + 2] = body.minY;
-        bd[o + 3] = body.maxY;
-        bd[o + 4] = body.sweepMinX;
-        bd[o + 5] = body.sweepMaxX;
-        bd[o + 6] = body.sweepMinY;
-        bd[o + 7] = body.sweepMaxY;
+        let minX = body.minX;
+        let maxX = body.maxX;
+        let minY = body.minY;
+        let maxY = body.maxY;
+        let broadRadius = body.broadRadius;
+        if (body.kind === 'enemy' && gridMode === 'enemyPair') {
+            minX = Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : minX;
+            maxX = Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : maxX;
+            minY = Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : minY;
+            maxY = Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : maxY;
+            broadRadius = Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
+        } else if (body.kind === 'enemy' && gridMode === 'projectile') {
+            minX = Number.isFinite(body.projectileMinX) ? body.projectileMinX : minX;
+            maxX = Number.isFinite(body.projectileMaxX) ? body.projectileMaxX : maxX;
+            minY = Number.isFinite(body.projectileMinY) ? body.projectileMinY : minY;
+            maxY = Number.isFinite(body.projectileMaxY) ? body.projectileMaxY : maxY;
+            broadRadius = Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
+        }
+
+        bd[o + 0] = minX;
+        bd[o + 1] = maxX;
+        bd[o + 2] = minY;
+        bd[o + 3] = maxY;
+        bd[o + 4] = minX;
+        bd[o + 5] = maxX;
+        bd[o + 6] = minY;
+        bd[o + 7] = maxY;
         bd[o + 8] = body.centerX;
         bd[o + 9] = body.centerY;
         bd[o + 10] = body.boundRadius;
-        bd[o + 11] = body.broadRadius;
-        bd[o + 12] = body.kind === 'enemy'
-            ? body.broadRadius * COLLISION_BROAD_RADIUS_SCALE_ENEMY
-            : (body.shape === 'circle' ? body.radius * COLLISION_BROAD_RADIUS_SCALE_DEFAULT : body.broadRadius * COLLISION_BROAD_RADIUS_SCALE_DEFAULT);
-        bd[o + 13] = body.shape === 'circle' ? body.radius : body.broadRadius;
+        bd[o + 11] = broadRadius;
+        bd[o + 12] = broadRadius * COLLISION_GRID_RADIUS_SCALE;
+        bd[o + 13] = body.shape === 'circle' ? body.radius : broadRadius;
     }
 
     /**
+     * 관계별 원형 충돌 반경에 맞춘 AABB 중첩 여부를 반환합니다.
      * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @returns {boolean}
      */
-    #aabbOverlap(a, b, useSweep = false) {
-        const minAX = useSweep ? a.sweepMinX : a.minX;
-        const maxAX = useSweep ? a.sweepMaxX : a.maxX;
-        const minAY = useSweep ? a.sweepMinY : a.minY;
-        const maxAY = useSweep ? a.sweepMaxY : a.maxY;
-        const minBX = useSweep ? b.sweepMinX : b.minX;
-        const maxBX = useSweep ? b.sweepMaxX : b.maxX;
-        const minBY = useSweep ? b.sweepMinY : b.minY;
-        const maxBY = useSweep ? b.sweepMaxY : b.maxY;
+    #bodyAabbOverlap(bodyA, bodyB) {
+        if (!bodyA || !bodyB) return false;
+
+        let minAX = bodyA.minX;
+        let maxAX = bodyA.maxX;
+        let minAY = bodyA.minY;
+        let maxAY = bodyA.maxY;
+        let minBX = bodyB.minX;
+        let maxBX = bodyB.maxX;
+        let minBY = bodyB.minY;
+        let maxBY = bodyB.maxY;
+
+        if (bodyA.kind === 'enemy' && bodyB.kind === 'enemy') {
+            minAX = Number.isFinite(bodyA.enemyPairMinX) ? bodyA.enemyPairMinX : minAX;
+            maxAX = Number.isFinite(bodyA.enemyPairMaxX) ? bodyA.enemyPairMaxX : maxAX;
+            minAY = Number.isFinite(bodyA.enemyPairMinY) ? bodyA.enemyPairMinY : minAY;
+            maxAY = Number.isFinite(bodyA.enemyPairMaxY) ? bodyA.enemyPairMaxY : maxAY;
+            minBX = Number.isFinite(bodyB.enemyPairMinX) ? bodyB.enemyPairMinX : minBX;
+            maxBX = Number.isFinite(bodyB.enemyPairMaxX) ? bodyB.enemyPairMaxX : maxBX;
+            minBY = Number.isFinite(bodyB.enemyPairMinY) ? bodyB.enemyPairMinY : minBY;
+            maxBY = Number.isFinite(bodyB.enemyPairMaxY) ? bodyB.enemyPairMaxY : maxBY;
+        } else if (bodyA.kind === 'enemy' && bodyB.kind === 'projectile') {
+            minAX = Number.isFinite(bodyA.projectileMinX) ? bodyA.projectileMinX : minAX;
+            maxAX = Number.isFinite(bodyA.projectileMaxX) ? bodyA.projectileMaxX : maxAX;
+            minAY = Number.isFinite(bodyA.projectileMinY) ? bodyA.projectileMinY : minAY;
+            maxAY = Number.isFinite(bodyA.projectileMaxY) ? bodyA.projectileMaxY : maxAY;
+        } else if (bodyA.kind === 'projectile' && bodyB.kind === 'enemy') {
+            minBX = Number.isFinite(bodyB.projectileMinX) ? bodyB.projectileMinX : minBX;
+            maxBX = Number.isFinite(bodyB.projectileMaxX) ? bodyB.projectileMaxX : maxBX;
+            minBY = Number.isFinite(bodyB.projectileMinY) ? bodyB.projectileMinY : minBY;
+            maxBY = Number.isFinite(bodyB.projectileMaxY) ? bodyB.projectileMaxY : maxBY;
+        }
 
         return (
             minAX <= maxBX &&
@@ -1924,45 +2303,48 @@ export class CollisionHandler {
     }
 
     /**
-     * 다각형 상세 판정 전, 약간 확장된 가상 원으로 1차 필터링합니다.
+     * 관계별 union circle의 중첩 여부를 반환합니다.
      * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @returns {boolean}
      */
-    #roughBodyCircleOverlap(bodyA, bodyB) {
+    #bodyBroadCircleOverlap(bodyA, bodyB) {
         const ax = Number.isFinite(bodyA?.centerX) ? bodyA.centerX : bodyA?.x;
         const ay = Number.isFinite(bodyA?.centerY) ? bodyA.centerY : bodyA?.y;
         const bx = Number.isFinite(bodyB?.centerX) ? bodyB.centerX : bodyB?.x;
         const by = Number.isFinite(bodyB?.centerY) ? bodyB.centerY : bodyB?.y;
         if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) {
-            this.#frameStats.circlePassCount++;
             return true;
         }
 
-        const ra = this.#getBodyBroadRadius(bodyA);
-        const rb = this.#getBodyBroadRadius(bodyB);
+        const ra = this.#getBodyRelationBroadRadius(bodyA, bodyB);
+        const rb = this.#getBodyRelationBroadRadius(bodyB, bodyA);
         if (!Number.isFinite(ra) || !Number.isFinite(rb) || ra <= 0 || rb <= 0) {
-            this.#frameStats.circlePassCount++;
             return true;
         }
 
-        const scaleA = bodyA?.kind === 'enemy' ? COLLISION_BROAD_RADIUS_SCALE_ENEMY : COLLISION_BROAD_RADIUS_SCALE_DEFAULT;
-        const scaleB = bodyB?.kind === 'enemy' ? COLLISION_BROAD_RADIUS_SCALE_ENEMY : COLLISION_BROAD_RADIUS_SCALE_DEFAULT;
-        const radiusSum = (ra * scaleA) + (rb * scaleB);
+        const radiusSum = ra + rb + EPSILON;
         const dx = bx - ax;
         const dy = by - ay;
-        const passed = ((dx * dx) + (dy * dy)) <= (radiusSum * radiusSum);
-        if (passed) {
-            this.#frameStats.circlePassCount++;
-        } else {
-            this.#frameStats.circleRejectCount++;
-        }
-        return passed;
+        return ((dx * dx) + (dy * dy)) <= (radiusSum * radiusSum);
     }
 
     /**
+     * 관계별 broad-phase 반경을 반환합니다.
      * @private
+     * @param {object} body
+     * @param {object} otherBody
+     * @returns {number}
      */
-    #getBodyBroadRadius(body) {
+    #getBodyRelationBroadRadius(body, otherBody) {
         if (!body) return 0;
+        if (body.kind === 'enemy' && otherBody?.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius)) {
+            return body.enemyPairBroadRadius;
+        }
+        if (body.kind === 'enemy' && otherBody?.kind === 'projectile' && Number.isFinite(body.projectileBroadRadius)) {
+            return body.projectileBroadRadius;
+        }
         if (body.shape === 'circle') {
             return Number.isFinite(body.radius) ? body.radius : 0;
         }
@@ -2083,25 +2465,22 @@ export class CollisionHandler {
         body.maxX += dx;
         body.minY += dy;
         body.maxY += dy;
-        // sweep AABB는 고정 틱 시작 기준 보수 범위를 유지해 패스 간 grid 재구축 없이 재사용합니다.
+        if (Number.isFinite(body.enemyPairMinX)) body.enemyPairMinX += dx;
+        if (Number.isFinite(body.enemyPairMaxX)) body.enemyPairMaxX += dx;
+        if (Number.isFinite(body.enemyPairMinY)) body.enemyPairMinY += dy;
+        if (Number.isFinite(body.enemyPairMaxY)) body.enemyPairMaxY += dy;
+        if (Number.isFinite(body.projectileMinX)) body.projectileMinX += dx;
+        if (Number.isFinite(body.projectileMaxX)) body.projectileMaxX += dx;
+        if (Number.isFinite(body.projectileMinY)) body.projectileMinY += dy;
+        if (Number.isFinite(body.projectileMaxY)) body.projectileMaxY += dy;
         body.x = body.centerX;
         body.y = body.centerY;
 
-        if (body.parts) {
-            for (let p = 0; p < body.parts.length; p++) {
-                const part = body.parts[p];
-                for (let i = 0; i < part.length; i += 2) {
-                    part[i] += dx;
-                    part[i + 1] += dy;
-                }
-            }
-        }
-        if (body.partBounds instanceof Float32Array) {
-            for (let i = 0; i < body.partBounds.length; i += 4) {
-                body.partBounds[i] += dx;
-                body.partBounds[i + 1] += dx;
-                body.partBounds[i + 2] += dy;
-                body.partBounds[i + 3] += dy;
+        if (body.circleParts instanceof Float32Array) {
+            const limit = Math.max(0, Math.floor(body.circlePartCount || 0)) * 3;
+            for (let i = 0; i < limit; i += 3) {
+                body.circleParts[i] += dx;
+                body.circleParts[i + 1] += dy;
             }
         }
 
@@ -2443,19 +2822,29 @@ export class CollisionHandler {
             body.ref = player;
             body.weight = Math.max(EPSILON, Number.isFinite(player.weight) ? player.weight : 1);
             body.movable = true;
-            body.parts = null;
-            body.partBounds = null;
+            body.circleParts = null;
+            body.circlePartCount = 0;
             body.mergeLock = false;
             body.minX = x - radius;
             body.maxX = x + radius;
             body.minY = y - radius;
             body.maxY = y + radius;
+            body.enemyPairMinX = body.minX;
+            body.enemyPairMaxX = body.maxX;
+            body.enemyPairMinY = body.minY;
+            body.enemyPairMaxY = body.maxY;
+            body.projectileMinX = body.minX;
+            body.projectileMaxX = body.maxX;
+            body.projectileMinY = body.minY;
+            body.projectileMaxY = body.maxY;
             body.sweepMinX = x - radius - sweepPadX;
             body.sweepMaxX = x + radius + sweepPadX;
             body.sweepMinY = y - radius - sweepPadY;
             body.sweepMaxY = y + radius + sweepPadY;
             body.boundRadius = radius;
             body.broadRadius = radius;
+            body.enemyPairBroadRadius = radius;
+            body.projectileBroadRadius = radius;
             body.velocityX = velX;
             body.velocityY = velY;
             body._candidatePairCount = 0;
@@ -2472,30 +2861,22 @@ export class CollisionHandler {
      * @private
      */
     #buildEnemyBody(enemy, delta, sleeping = false) {
-        const localParts = Array.isArray(enemy?.collisionLocalParts)
-            ? enemy.collisionLocalParts
-            : (Array.isArray(enemy?.hexaHiveLayout?.collisionLocalParts)
-                ? enemy.hexaHiveLayout.collisionLocalParts
-                : (ENEMY_LOCAL_PARTS[enemy.type] || ENEMY_LOCAL_PARTS.square));
-        const partCount = localParts.length;
-        if (partCount === 0) return null;
-
-        if (!Array.isArray(enemy.__collisionWorldParts) || enemy.__collisionWorldParts.length !== partCount) {
-            enemy.__collisionWorldParts = Array.from({ length: partCount }, (_, idx) => {
-                return new Float32Array(localParts[idx].length);
-            });
-        }
-        if (!(enemy.__collisionWorldPartBounds instanceof Float32Array) || enemy.__collisionWorldPartBounds.length !== (partCount * 4)) {
-            enemy.__collisionWorldPartBounds = new Float32Array(partCount * 4);
-        }
-
         const baseHeight = typeof enemy.getRenderHeightPx === 'function'
             ? enemy.getRenderHeightPx()
             : (getSimulationObjectWH() * 0.03 * (enemy.size || 1));
         const width = baseHeight * (enemy.aspectRatio ?? 1);
         const height = baseHeight * (enemy.heightScale ?? 1);
-        const halfWScale = width;
-        const halfHScale = height;
+        const hexaHiveCenters = Array.isArray(enemy?.hexaHiveLayout?.filledLocalCenters) && enemy.hexaHiveLayout.filledLocalCenters.length > 0
+            ? enemy.hexaHiveLayout.filledLocalCenters
+            : (Array.isArray(enemy?.hexaHiveLayout?.visibleLocalCenters) ? enemy.hexaHiveLayout.visibleLocalCenters : null);
+        const useHiveCells = enemy?.type === 'hexa_hive' && Array.isArray(hexaHiveCenters) && hexaHiveCenters.length > 0;
+        const partCount = useHiveCells ? hexaHiveCenters.length : 1;
+        if (partCount <= 0) return null;
+
+        const circleBufferLength = partCount * 3;
+        if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
+            enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
+        }
 
         const rotationDeg = Number.isFinite(enemy.rotation) ? enemy.rotation : 0;
         const rad = rotationDeg * (Math.PI / 180);
@@ -2508,42 +2889,58 @@ export class CollisionHandler {
         let maxX = Number.NEGATIVE_INFINITY;
         let minY = Number.POSITIVE_INFINITY;
         let maxY = Number.NEGATIVE_INFINITY;
-        let maxDistSq = 0;
+        let enemyPairMinX = Number.POSITIVE_INFINITY;
+        let enemyPairMaxX = Number.NEGATIVE_INFINITY;
+        let enemyPairMinY = Number.POSITIVE_INFINITY;
+        let enemyPairMaxY = Number.NEGATIVE_INFINITY;
+        let projectileMinX = Number.POSITIVE_INFINITY;
+        let projectileMaxX = Number.NEGATIVE_INFINITY;
+        let projectileMinY = Number.POSITIVE_INFINITY;
+        let projectileMaxY = Number.NEGATIVE_INFINITY;
+        let broadRadius = 0;
+        let enemyPairBroadRadius = 0;
+        let projectileBroadRadius = 0;
+        const singleCircleRadius = useHiveCells
+            ? HEXA_HIVE_CELL_COLLISION_RADIUS * Math.max(width, height)
+            : Math.max(1, getScaledLocalPartsMaxRadius(
+                ENEMY_LOCAL_PARTS[enemy.type] || ENEMY_LOCAL_PARTS.square,
+                width,
+                height
+            ));
 
         for (let p = 0; p < partCount; p++) {
-            const local = localParts[p];
-            const world = enemy.__collisionWorldParts[p];
-            let partMinX = Number.POSITIVE_INFINITY;
-            let partMaxX = Number.NEGATIVE_INFINITY;
-            let partMinY = Number.POSITIVE_INFINITY;
-            let partMaxY = Number.NEGATIVE_INFINITY;
-            for (let i = 0; i < local.length; i += 2) {
-                const lx = local[i] * halfWScale;
-                const ly = local[i + 1] * halfHScale;
-                const wx = centerX + (lx * cos) - (ly * sin);
-                const wy = centerY + (lx * sin) + (ly * cos);
-                world[i] = wx;
-                world[i + 1] = wy;
+            const localCenter = useHiveCells ? hexaHiveCenters[p] : null;
+            const lx = useHiveCells ? ((Number.isFinite(localCenter?.x) ? localCenter.x : 0) * width) : 0;
+            const ly = useHiveCells ? ((Number.isFinite(localCenter?.y) ? localCenter.y : 0) * height) : 0;
+            const wx = centerX + (lx * cos) - (ly * sin);
+            const wy = centerY + (lx * sin) + (ly * cos);
+            const radius = singleCircleRadius;
+            const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+            const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
+            const offset = p * 3;
+            enemy.__collisionWorldCircles[offset] = wx;
+            enemy.__collisionWorldCircles[offset + 1] = wy;
+            enemy.__collisionWorldCircles[offset + 2] = radius;
 
-                if (wx < partMinX) partMinX = wx;
-                if (wx > partMaxX) partMaxX = wx;
-                if (wy < partMinY) partMinY = wy;
-                if (wy > partMaxY) partMaxY = wy;
-                if (wx < minX) minX = wx;
-                if (wx > maxX) maxX = wx;
-                if (wy < minY) minY = wy;
-                if (wy > maxY) maxY = wy;
-                const ddx = wx - centerX;
-                const ddy = wy - centerY;
-                const distSq = (ddx * ddx) + (ddy * ddy);
-                if (distSq > maxDistSq) maxDistSq = distSq;
-            }
+            minX = Math.min(minX, wx - radius);
+            maxX = Math.max(maxX, wx + radius);
+            minY = Math.min(minY, wy - radius);
+            maxY = Math.max(maxY, wy + radius);
+            enemyPairMinX = Math.min(enemyPairMinX, wx - enemyPairRadius);
+            enemyPairMaxX = Math.max(enemyPairMaxX, wx + enemyPairRadius);
+            enemyPairMinY = Math.min(enemyPairMinY, wy - enemyPairRadius);
+            enemyPairMaxY = Math.max(enemyPairMaxY, wy + enemyPairRadius);
+            projectileMinX = Math.min(projectileMinX, wx - projectileRadius);
+            projectileMaxX = Math.max(projectileMaxX, wx + projectileRadius);
+            projectileMinY = Math.min(projectileMinY, wy - projectileRadius);
+            projectileMaxY = Math.max(projectileMaxY, wy + projectileRadius);
 
-            const partBoundsOffset = p * 4;
-            enemy.__collisionWorldPartBounds[partBoundsOffset] = partMinX;
-            enemy.__collisionWorldPartBounds[partBoundsOffset + 1] = partMaxX;
-            enemy.__collisionWorldPartBounds[partBoundsOffset + 2] = partMinY;
-            enemy.__collisionWorldPartBounds[partBoundsOffset + 3] = partMaxY;
+            const ddx = wx - centerX;
+            const ddy = wy - centerY;
+            const centerDistance = Math.hypot(ddx, ddy);
+            broadRadius = Math.max(broadRadius, centerDistance + radius);
+            enemyPairBroadRadius = Math.max(enemyPairBroadRadius, centerDistance + enemyPairRadius);
+            projectileBroadRadius = Math.max(projectileBroadRadius, centerDistance + projectileRadius);
         }
 
         const prevX = sleeping
@@ -2561,7 +2958,6 @@ export class CollisionHandler {
         const velY = (centerY - prevY) * invDelta;
 
         const boundRadius = Math.max((maxX - minX) * 0.5, (maxY - minY) * 0.5);
-        const broadRadius = Math.sqrt(Math.max(0, maxDistSq));
         const resolveRadius = getEnemyResolveRadius(enemy, boundRadius, baseHeight);
         const frameResolvePad = Math.max(
             COLLISION_RESOLVE_FRAME_MIN_MAX,
@@ -2575,9 +2971,9 @@ export class CollisionHandler {
         const body = this.#acquireBody();
         body.id = Number.isInteger(enemy.id) ? enemy.id : -1;
         body.kind = 'enemy';
-        body.shape = 'polygon';
-        body.parts = enemy.__collisionWorldParts;
-        body.partBounds = enemy.__collisionWorldPartBounds;
+        body.shape = 'circleParts';
+        body.circleParts = enemy.__collisionWorldCircles;
+        body.circlePartCount = partCount;
         body.ref = enemy;
         body.mergeLock = enemy?.hexaHiveMergePending === true;
         body.weight = body.mergeLock
@@ -2588,17 +2984,27 @@ export class CollisionHandler {
         body.centerY = centerY;
         body.x = centerX;
         body.y = centerY;
-        body.radius = 0;
+        body.radius = singleCircleRadius;
         body.minX = minX;
         body.maxX = maxX;
         body.minY = minY;
         body.maxY = maxY;
+        body.enemyPairMinX = enemyPairMinX;
+        body.enemyPairMaxX = enemyPairMaxX;
+        body.enemyPairMinY = enemyPairMinY;
+        body.enemyPairMaxY = enemyPairMaxY;
+        body.projectileMinX = projectileMinX;
+        body.projectileMaxX = projectileMaxX;
+        body.projectileMinY = projectileMinY;
+        body.projectileMaxY = projectileMaxY;
         body.sweepMinX = minX - sweepPadX;
         body.sweepMaxX = maxX + sweepPadX;
         body.sweepMinY = minY - sweepPadY;
         body.sweepMaxY = maxY + sweepPadY;
         body.boundRadius = boundRadius;
         body.broadRadius = broadRadius;
+        body.enemyPairBroadRadius = enemyPairBroadRadius;
+        body.projectileBroadRadius = projectileBroadRadius;
         body.resolveRadius = resolveRadius;
         body.velocityX = velX;
         body.velocityY = velY;
@@ -2640,22 +3046,15 @@ export class CollisionHandler {
             const hw = w * 0.5;
             const hh = h * 0.5;
 
-            const points = new Float32Array([
-                cx - hw, cy - hh,
-                cx + hw, cy - hh,
-                cx + hw, cy + hh,
-                cx - hw, cy + hh
-            ]);
-
             out.push({
                 id: Number.isInteger(rect.id) ? rect.id : -1,
                 kind: 'wall',
-                shape: 'polygon',
-                parts: [points],
+                shape: 'rect',
+                circleParts: null,
+                circlePartCount: 0,
                 ref: wall,
                 weight: Number.MAX_SAFE_INTEGER,
                 movable: false,
-                partBounds: new Float32Array([cx - hw, cx + hw, cy - hh, cy + hh]),
                 mergeLock: false,
                 centerX: cx,
                 centerY: cy,
