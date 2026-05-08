@@ -296,6 +296,16 @@ function clonePresentationCollisionStats(collisionStats) {
         solveAabbPassCount: Number.isFinite(collisionStats?.solveAabbPassCount) ? collisionStats.solveAabbPassCount : 0,
         solveCirclePassCount: Number.isFinite(collisionStats?.solveCirclePassCount) ? collisionStats.solveCirclePassCount : 0,
         solveResolvedPairCount: Number.isFinite(collisionStats?.solveResolvedPairCount) ? collisionStats.solveResolvedPairCount : 0,
+        solveSoACirclePairCount: Number.isFinite(collisionStats?.solveSoACirclePairCount) ? collisionStats.solveSoACirclePairCount : 0,
+        solveObjectNarrowphasePairCount: Number.isFinite(collisionStats?.solveObjectNarrowphasePairCount) ? collisionStats.solveObjectNarrowphasePairCount : 0,
+        solveParallelNarrowphasePairCount: Number.isFinite(collisionStats?.solveParallelNarrowphasePairCount) ? collisionStats.solveParallelNarrowphasePairCount : 0,
+        solveParallelNarrowphaseContactCount: Number.isFinite(collisionStats?.solveParallelNarrowphaseContactCount) ? collisionStats.solveParallelNarrowphaseContactCount : 0,
+        solveParallelNarrowphasePoolSize: Number.isFinite(collisionStats?.solveParallelNarrowphasePoolSize) ? collisionStats.solveParallelNarrowphasePoolSize : 0,
+        solveParallelNarrowphaseChunkCount: Number.isFinite(collisionStats?.solveParallelNarrowphaseChunkCount) ? collisionStats.solveParallelNarrowphaseChunkCount : 0,
+        solveParallelNarrowphaseWaitMs: Number.isFinite(collisionStats?.solveParallelNarrowphaseWaitMs) ? collisionStats.solveParallelNarrowphaseWaitMs : 0,
+        solveParallelNarrowphaseFallbackCount: Number.isFinite(collisionStats?.solveParallelNarrowphaseFallbackCount) ? collisionStats.solveParallelNarrowphaseFallbackCount : 0,
+        solveParallelNarrowphaseFallbackPairCount: Number.isFinite(collisionStats?.solveParallelNarrowphaseFallbackPairCount) ? collisionStats.solveParallelNarrowphaseFallbackPairCount : 0,
+        solveParallelNarrowphaseOverflowCount: Number.isFinite(collisionStats?.solveParallelNarrowphaseOverflowCount) ? collisionStats.solveParallelNarrowphaseOverflowCount : 0,
         solveBudgetSkipCount: Number.isFinite(collisionStats?.solveBudgetSkipCount) ? collisionStats.solveBudgetSkipCount : 0,
         solveLargePopulationMode: Number.isFinite(collisionStats?.solveLargePopulationMode) ? collisionStats.solveLargePopulationMode : 0
     };

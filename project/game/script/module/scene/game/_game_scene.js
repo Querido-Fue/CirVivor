@@ -607,6 +607,23 @@ export class GameScene extends BaseScene {
         lines.push(`collision ms: enemy ${formatDebugMs(collisionStats.enemyTotalMs)} | proj ${formatDebugMs(collisionStats.projectileTotalMs)} | contact ${formatDebugMs(collisionStats.contactTotalMs)}`);
         lines.push(`collision detail ms: grid ${formatDebugMs(collisionStats.solveGridMs)} | build ${formatDebugMs(collisionStats.solveCandidateBuildMs)} | proc ${formatDebugMs(collisionStats.solvePairProcessMs)} | narrow ${formatDebugMs(collisionStats.solveNarrowphaseMs)}`);
 
+        const parallelNarrowphasePairCount = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphasePairCount, 0);
+        const parallelNarrowphaseContactCount = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphaseContactCount, 0);
+        const parallelNarrowphasePoolSize = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphasePoolSize, 0);
+        const parallelNarrowphaseChunkCount = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphaseChunkCount, 0);
+        const parallelNarrowphaseWaitMs = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphaseWaitMs, 0);
+        const parallelNarrowphaseFallbackCount = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphaseFallbackCount, 0);
+        const parallelNarrowphaseFallbackPairCount = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphaseFallbackPairCount, 0);
+        const parallelNarrowphaseOverflowCount = normalizeSnapshotNumber(collisionStats.solveParallelNarrowphaseOverflowCount, 0);
+        if (parallelNarrowphasePairCount > 0
+            || parallelNarrowphasePoolSize > 0
+            || parallelNarrowphaseWaitMs > 0
+            || parallelNarrowphaseFallbackCount > 0
+            || parallelNarrowphaseOverflowCount > 0) {
+            lines.push(`narrowphase worker: pool ${formatDebugCount(parallelNarrowphasePoolSize)} | chunks ${formatDebugCount(parallelNarrowphaseChunkCount)} | pairs ${formatDebugCount(parallelNarrowphasePairCount)} | contacts ${formatDebugCount(parallelNarrowphaseContactCount)}`);
+            lines.push(`narrowphase worker ms: wait ${formatDebugMs(parallelNarrowphaseWaitMs)} | fallback ${formatDebugCount(parallelNarrowphaseFallbackCount)}/${formatDebugCount(parallelNarrowphaseFallbackPairCount)} | overflow ${formatDebugCount(parallelNarrowphaseOverflowCount)}`);
+        }
+
         const candidatePairCount = normalizeSnapshotNumber(collisionStats.solveCandidatePairCount, 0);
         const budgetSkipCount = normalizeSnapshotNumber(collisionStats.solveBudgetSkipCount, 0);
         if (candidatePairCount > 0 || budgetSkipCount > 0) {

@@ -13,13 +13,13 @@ import {
     createTitleLoadingDebugSkipButton,
     layoutTitleLoadingDebugSkipButton,
     shouldShowTitleLoadingDebugSkipButton
-} from './_title_loading_debug_skip_button.js';
-import { buildTitleLoadingSchedule } from './_title_loading_schedule.js';
-import { buildTitleLoadingTextLayout } from './_title_loading_text_layout.js';
+} from './loading/_title_loading_debug_skip_button.js';
+import { buildTitleLoadingSchedule } from './loading/_title_loading_schedule.js';
+import { buildTitleLoadingTextLayout } from './loading/_title_loading_text_layout.js';
 import {
     getLoadingLogoColor,
     getLoadingTextColor
-} from './_title_loading_theme.js';
+} from './loading/_title_loading_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');

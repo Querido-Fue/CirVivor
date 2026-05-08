@@ -110,6 +110,37 @@ function recordDurationFields(performanceDebugger, prefix, stats, timestamp) {
 }
 
 /**
+ * parallel narrowphase 전용 샘플 이름으로 worker 충돌 통계를 기록합니다.
+ * @param {object} performanceDebugger
+ * @param {object|null|undefined} collisionStats
+ * @param {number} timestamp
+ */
+function recordWorkerNarrowphaseSamples(performanceDebugger, collisionStats, timestamp) {
+    if (!collisionStats || typeof collisionStats !== 'object') {
+        return;
+    }
+
+    const samples = [
+        ['poolSize', collisionStats.solveParallelNarrowphasePoolSize],
+        ['waitMs', collisionStats.solveParallelNarrowphaseWaitMs],
+        ['parallelPairs', collisionStats.solveParallelNarrowphasePairCount],
+        ['contacts', collisionStats.solveParallelNarrowphaseContactCount],
+        ['chunks', collisionStats.solveParallelNarrowphaseChunkCount],
+        ['fallbackCount', collisionStats.solveParallelNarrowphaseFallbackCount],
+        ['serialFallbackPairs', collisionStats.solveParallelNarrowphaseFallbackPairCount],
+        ['overflowCount', collisionStats.solveParallelNarrowphaseOverflowCount]
+    ];
+    for (let i = 0; i < samples.length; i++) {
+        const [sampleName, value] = samples[i];
+        if (!Number.isFinite(value) || value <= 0) {
+            continue;
+        }
+
+        performanceDebugger.recordSample(`worker.narrowphase.${sampleName}`, value, timestamp);
+    }
+}
+
+/**
  * 워커 스냅샷의 계측 값을 메인 스레드 성능 디버거에 병합합니다.
  * @param {object|null|undefined} workerSnapshot
  * @param {number} [timestamp=performance.now()]
@@ -126,6 +157,7 @@ function recordWorkerProfileSamples(workerSnapshot, timestamp = performance.now(
 
     recordDurationFields(performanceDebugger, 'worker.frame', workerSnapshot.profileStats, timestamp);
     recordDurationFields(performanceDebugger, 'worker.collision', workerSnapshot.collisionStats, timestamp);
+    recordWorkerNarrowphaseSamples(performanceDebugger, workerSnapshot.collisionStats, timestamp);
 
     const aiStats = workerSnapshot.aiStats;
     if (Number.isFinite(aiStats?.totalMs) && aiStats.totalMs > 0) {

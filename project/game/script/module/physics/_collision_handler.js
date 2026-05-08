@@ -129,9 +129,11 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveObjectNarrowphasePairCount',
     'solveParallelNarrowphasePairCount',
     'solveParallelNarrowphaseContactCount',
+    'solveParallelNarrowphasePoolSize',
     'solveParallelNarrowphaseChunkCount',
     'solveParallelNarrowphaseWaitMs',
     'solveParallelNarrowphaseFallbackCount',
+    'solveParallelNarrowphaseFallbackPairCount',
     'solveParallelNarrowphaseOverflowCount',
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
@@ -270,9 +272,11 @@ export class CollisionHandler {
             solveObjectNarrowphasePairCount: 0,
             solveParallelNarrowphasePairCount: 0,
             solveParallelNarrowphaseContactCount: 0,
+            solveParallelNarrowphasePoolSize: 0,
             solveParallelNarrowphaseChunkCount: 0,
             solveParallelNarrowphaseWaitMs: 0,
             solveParallelNarrowphaseFallbackCount: 0,
+            solveParallelNarrowphaseFallbackPairCount: 0,
             solveParallelNarrowphaseOverflowCount: 0,
             solveBudgetSkipCount: 0,
             solveLargePopulationMode: 0
@@ -439,6 +443,20 @@ export class CollisionHandler {
 
         const safeAmount = Number.isFinite(amount) ? amount : 1;
         this.#frameStats[fieldName] = (Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0) + safeAmount;
+    }
+
+    /**
+     * @private
+     * 충돌 계측 값을 현재 프레임 값으로 기록합니다.
+     * @param {string} fieldName
+     * @param {number} value
+     */
+    #recordProfileValue(fieldName, value) {
+        if (!this.#profileEnabled || !Number.isFinite(value)) {
+            return;
+        }
+
+        this.#frameStats[fieldName] = value;
     }
 
     /**
@@ -2339,7 +2357,8 @@ export class CollisionHandler {
         }
 
         const waitStart = this.#startProfileTimer();
-        const result = this.#getNarrowphaseWorkerPool().computeEnemyCircleContactsSync(
+        const workerPool = this.#getNarrowphaseWorkerPool();
+        const result = workerPool.computeEnemyCircleContactsSync(
             {
                 relationData: this.#relationBroadData,
                 bodyKindCodes: this.#bodyKindCodes,
@@ -2353,14 +2372,18 @@ export class CollisionHandler {
                 waitTimeoutMs: PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS
             }
         );
+        const poolStats = workerPool.getStatsSnapshot();
+        this.#recordProfileValue('solveParallelNarrowphasePoolSize', poolStats.poolSize);
         this.#recordProfileDuration('solveParallelNarrowphaseWaitMs', waitStart);
         if (!result || !(result.resultData instanceof Float64Array)) {
             this.#recordProfileCount('solveParallelNarrowphaseFallbackCount');
+            this.#recordProfileCount('solveParallelNarrowphaseFallbackPairCount', this.#candidatePairCount);
             return null;
         }
         if (result.overflow === true) {
             this.#recordProfileCount('solveParallelNarrowphaseOverflowCount');
             this.#recordProfileCount('solveParallelNarrowphaseFallbackCount');
+            this.#recordProfileCount('solveParallelNarrowphaseFallbackPairCount', this.#candidatePairCount);
             return null;
         }
 

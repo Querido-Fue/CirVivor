@@ -2,7 +2,7 @@ import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
 import { SVGDrawer } from 'display/_svg_drawer.js';
 import { BaseOverlay } from 'overlay/_base_overlay.js';
-import { getTitleMenuIconSource } from 'scene/title/_title_menu_icon.js';
+import { getTitleMenuIconSource } from 'scene/title/menu/_title_menu_icon.js';
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');

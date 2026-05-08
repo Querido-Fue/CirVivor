@@ -2,25 +2,24 @@ import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_
 import { getData } from 'data/data_handler.js';
 import { getMouseInput, hasMouseState } from 'input/input_system.js';
 import { getDelta } from 'game/time_handler.js';
-import { getLangString } from 'ui/ui_system.js';
-import { TITLE_BENTO_CARD_DEFINITIONS } from './_title_magic_bento_data.js';
+import { TITLE_BENTO_CARD_DEFINITIONS } from './magic_bento/_title_magic_bento_data.js';
 import {
     drawBentoCardBody,
     drawBentoCardBorder,
     drawBentoCardSurfaceGlow
-} from './_title_magic_bento_card_render.js';
+} from './magic_bento/_title_magic_bento_card_render.js';
+import { drawBentoCardContent } from './magic_bento/_title_magic_bento_content_render.js';
 import {
     drawBentoCardEffects,
     drawBentoGlobalSpotlight
-} from './_title_magic_bento_effect_render.js';
+} from './magic_bento/_title_magic_bento_effect_render.js';
 import {
     updateBentoCardParticles,
     updateBentoCardRipples
-} from './_title_magic_bento_effect_state.js';
-import { drawBentoCardIcon } from './_title_magic_bento_icon.js';
-import { recalculateBentoCardLayout } from './_title_magic_bento_layout.js';
-import { getBentoCardPalette } from './_title_magic_bento_theme.js';
-import { clamp } from './_title_magic_bento_motion.js';
+} from './magic_bento/_title_magic_bento_effect_state.js';
+import { recalculateBentoCardLayout } from './magic_bento/_title_magic_bento_layout.js';
+import { getBentoCardPalette } from './magic_bento/_title_magic_bento_theme.js';
+import { clamp } from './magic_bento/_title_magic_bento_motion.js';
 import {
     calculateBentoVisibleGroupBounds,
     isBentoPointInsideGroup,
@@ -28,13 +27,11 @@ import {
     resolveBentoHoveredCard,
     updateBentoCardInteractionState,
     updateBentoSpotlight
-} from './_title_magic_bento_state.js';
-import { drawBentoWrappedText, getBentoTypography } from './_title_magic_bento_text.js';
+} from './magic_bento/_title_magic_bento_state.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_MAGIC_BENTO = TITLE_CONSTANTS.TITLE_MAGIC_BENTO;
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 
 /**
  * @class TitleMagicBento
@@ -344,86 +341,8 @@ export class TitleMagicBento {
         drawBentoCardBody(ctx, card, palette, radius);
         drawBentoCardSurfaceGlow(ctx, card, radius);
         drawBentoCardEffects(ctx, card, radius);
-        this.#drawCardContent(ctx, card, palette);
+        drawBentoCardContent(ctx, card, palette, this.UIWW);
         drawBentoCardBorder(ctx, card, palette, radius, TITLE_MAGIC_BENTO);
-
-        ctx.restore();
-    }
-
-    /**
-     * 카드 아이콘과 텍스트를 렌더링합니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
-     * @param {object} card - 대상 카드
-     * @param {object} palette - 카드 팔레트
-     * @private
-     */
-    #drawCardContent(ctx, card, palette) {
-        const padding = Math.max(16, this.UIWW * TITLE_MAGIC_BENTO.CONTENT_PADDING_UIWW_RATIO);
-        const iconSize = Math.min(card.baseWidth, card.baseHeight) * (card.variant === 'compact' ? 0.19 : 0.21);
-        const titleText = getLangString(card.titleKey) || '';
-        const descriptionText = card.descriptionKey ? (getLangString(card.descriptionKey) || '') : '';
-        const iconX = padding;
-        const iconY = card.variant === 'compact'
-            ? (card.baseHeight - iconSize) * 0.5
-            : padding;
-
-        drawBentoCardIcon(ctx, card.icon, iconX, iconY, iconSize, palette.text);
-
-        ctx.save();
-        ctx.fillStyle = palette.text;
-        ctx.textBaseline = 'top';
-
-        if (card.variant === 'hero') {
-            const titleFont = getBentoTypography(TEXT_CONSTANTS, 'H3_BOLD', 1.18);
-            const descriptionFont = getBentoTypography(TEXT_CONSTANTS, 'H6', 1.04);
-            const titleY = card.baseHeight - padding - titleFont.size - (descriptionText ? (descriptionFont.size * 1.7) : 0);
-
-            ctx.font = titleFont.font;
-            ctx.fillText(titleText, padding, titleY);
-
-            if (descriptionText) {
-                ctx.fillStyle = palette.description;
-                ctx.font = descriptionFont.font;
-                drawBentoWrappedText(
-                    ctx,
-                    descriptionText,
-                    padding,
-                    titleY + titleFont.size + Math.max(8, descriptionFont.size * 0.28),
-                    card.baseWidth - (padding * 2),
-                    descriptionFont.size * 1.35,
-                    2
-                );
-            }
-            ctx.restore();
-            return;
-        }
-
-        if (card.variant === 'compact') {
-            const compactFont = getBentoTypography(TEXT_CONSTANTS, 'H5_BOLD', 1.04);
-            const titleSize = compactFont.size;
-            const compactX = padding + iconSize + Math.max(14, padding * 0.7);
-            ctx.font = compactFont.font;
-            ctx.fillText(titleText, compactX, (card.baseHeight - titleSize) * 0.5);
-            ctx.restore();
-            return;
-        }
-
-        const titleFont = getBentoTypography(TEXT_CONSTANTS, 'H4_BOLD', 1.08);
-        const descriptionFont = getBentoTypography(TEXT_CONSTANTS, 'H6', 1.12);
-        const titleSize = titleFont.size;
-        const descriptionSize = descriptionFont.size;
-        const contentX = padding;
-        const titleY = card.baseHeight - padding - (descriptionText ? (descriptionSize * 2.3) : titleSize);
-        const maxWidth = card.baseWidth - (padding * 2);
-
-        ctx.font = titleFont.font;
-        ctx.fillText(titleText, contentX, titleY);
-
-        if (descriptionText) {
-            ctx.fillStyle = palette.description;
-            ctx.font = descriptionFont.font;
-            drawBentoWrappedText(ctx, descriptionText, contentX, titleY + titleSize + Math.max(8, descriptionSize * 0.35), maxWidth, descriptionSize * 1.35, 2);
-        }
 
         ctx.restore();
     }

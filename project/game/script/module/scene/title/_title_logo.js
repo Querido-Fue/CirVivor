@@ -8,13 +8,13 @@ import {
     TITLE_LOGO_STROKE_DURATION,
     TITLE_LOGO_TOTAL_DURATION,
     TITLE_LOGO_VIEWBOX
-} from './_title_logo_data.js';
+} from './logo/_title_logo_data.js';
 import {
     calculateTitleLogoCachePadding,
     getTitleLogoShadowPasses,
     resizeTitleLogoCacheCanvas
-} from './_title_logo_cache.js';
-import { getDefaultLogoColor, getDefaultLogoShadowColor } from './_title_logo_theme.js';
+} from './logo/_title_logo_cache.js';
+import { getDefaultLogoColor, getDefaultLogoShadowColor } from './logo/_title_logo_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 

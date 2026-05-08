@@ -1,16 +1,16 @@
 import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
-import { getLoadingAccentColor } from './_title_loading_theme.js';
-import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_theme.js';
+import { getLoadingAccentColor } from './loading/_title_loading_theme.js';
+import { getLoadingGlowSettings, toLoadingRgba } from './center_circle/_title_center_circle_theme.js';
 import {
     createCenterCircleGlowNoiseCanvas,
     drawCenterCircleDitheredHaloNoise,
     drawCenterCircleGlowRing,
     drawCenterCircleHaloRing,
     resizeCenterCircleGlowCanvas
-} from './_title_center_circle_glow_canvas.js';
-import { buildCenterCircleFillData } from './_title_center_circle_wave.js';
+} from './center_circle/_title_center_circle_glow_canvas.js';
+import { buildCenterCircleFillData } from './center_circle/_title_center_circle_wave.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;

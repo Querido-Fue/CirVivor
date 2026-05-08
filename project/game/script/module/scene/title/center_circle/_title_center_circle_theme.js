@@ -1,6 +1,6 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
-import { getLoadingAccentColor } from './_title_loading_theme.js';
+import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 
 const DEFAULT_LOADING_GLOW_STOPS = Object.freeze([
     Object.freeze({ offset: 0, color: null, alphaScale: 0, maxAlpha: 0 }),

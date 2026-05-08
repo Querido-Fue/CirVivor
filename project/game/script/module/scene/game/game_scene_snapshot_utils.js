@@ -34,6 +34,16 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'solveAabbPassCount',
     'solveCirclePassCount',
     'solveResolvedPairCount',
+    'solveSoACirclePairCount',
+    'solveObjectNarrowphasePairCount',
+    'solveParallelNarrowphasePairCount',
+    'solveParallelNarrowphaseContactCount',
+    'solveParallelNarrowphasePoolSize',
+    'solveParallelNarrowphaseChunkCount',
+    'solveParallelNarrowphaseWaitMs',
+    'solveParallelNarrowphaseFallbackCount',
+    'solveParallelNarrowphaseFallbackPairCount',
+    'solveParallelNarrowphaseOverflowCount',
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
 ]);

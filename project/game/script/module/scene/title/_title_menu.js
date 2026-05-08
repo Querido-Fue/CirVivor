@@ -21,29 +21,29 @@ import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
 import { runtimeTool } from 'util/runtime_tool.js';
-import { TitleMenuCard } from './_title_menu_card.js';
-import { TitleMenuCardRegistry } from './_title_menu_card_registry.js';
+import { TitleMenuCard } from './menu/_title_menu_card.js';
+import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
 import {
     getTitleMenuIconDrawScale,
     TITLE_MENU_CARD_REVEAL_ORDER,
     TITLE_MENU_SECONDARY_ENTRIES
-} from './_title_menu_config.js';
-import { getTitleMenuIconSource } from './_title_menu_icon.js';
-import { TitleMenuLayout } from './_title_menu_layout.js';
-import { clampNumber, easeOutCubic, easeOutExpo, lerpValue } from './_title_menu_motion.js';
+} from './menu/_title_menu_config.js';
+import { getTitleMenuIconSource } from './menu/_title_menu_icon.js';
+import { TitleMenuLayout } from './menu/_title_menu_layout.js';
+import { clampNumber, easeOutCubic, easeOutExpo, lerpValue } from './menu/_title_menu_motion.js';
 import {
     createTitleMenuPaneRuntimeState,
     createTitleMenuRuntimeState
-} from './_title_menu_runtime_state.js';
+} from './menu/_title_menu_runtime_state.js';
 import {
     getTitleMenuTextPresetFont,
     getTitleMenuTextPresetFontSize
-} from './_title_menu_text_layout.js';
+} from './menu/_title_menu_text_layout.js';
 import {
     buildTitleMenuVersionLabelLayout,
     getTitleMenuGameVersionText,
     getTitleMenuVersionHistoryLinkText
-} from './_title_menu_version_label.js';
+} from './menu/_title_menu_version_label.js';
 import {
     buildMenuStaticTextureThemeSignature,
     getMenuBackdropPaneStyle,
@@ -58,7 +58,7 @@ import {
     menuForegroundWithAlpha,
     resolveMenuColorRgb,
     toMenuRgba
-} from './_title_menu_theme.js';
+} from './menu/_title_menu_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
