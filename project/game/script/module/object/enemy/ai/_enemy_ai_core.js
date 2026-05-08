@@ -1,6 +1,23 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
 import { incrementEnemyAIDebugCounter, recordEnemyAIDebugPolicySample } from './_enemy_ai_debug_stats.js';
+import {
+    projectEnemyAIFootprintRadiusForDirection,
+    readPositivePixelValue,
+    resolveEnemyAIFootprintMetricsPx,
+    resolveEnemyAINavigationRadiusPx,
+    resolveEnemyAIRenderHeightPx
+} from './_enemy_ai_footprint.js';
+import {
+    getDensityCountAtPosition,
+    getSharedDensityField,
+    getSharedDensityGoal
+} from './_enemy_ai_density_field.js';
+
+export {
+    resolveEnemyAIFootprintMetricsPx,
+    resolveEnemyAINavigationRadiusPx
+} from './_enemy_ai_footprint.js';
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const ENEMY_AI_POLICY_BY_TYPE = ENEMY_AI_CONSTANTS.POLICY_BY_TYPE;
@@ -10,7 +27,6 @@ const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
 const DIAGONAL_COST = ENEMY_AI_CONSTANTS.DIAGONAL_COST;
 const ENEMY_AI_STATE_SCHEMA_VERSION = ENEMY_AI_CONSTANTS.STATE_SCHEMA_VERSION;
-const HEXA_HIVE_NAV_CELL_RADIUS_RATIO = ENEMY_AI_CONSTANTS.HEXA_HIVE_NAV_CELL_RADIUS_RATIO;
 const HEXA_HIVE_TYPE = 'hexa_hive';
 
 const DIRS = Object.freeze([
@@ -66,151 +82,6 @@ const normalizeInto = (x, y, out) => {
 };
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-
-/**
- * 적의 렌더 높이를 AI 계산용 픽셀 값으로 정규화합니다.
- * @param {object|null|undefined} enemy
- * @param {number|null} [fallbackRenderHeightPx=null]
- * @returns {number}
- */
-const resolveEnemyAIRenderHeightPx = (enemy, fallbackRenderHeightPx = null) => {
-    if (Number.isFinite(fallbackRenderHeightPx) && fallbackRenderHeightPx > 0) {
-        return fallbackRenderHeightPx;
-    }
-
-    const methodHeight = typeof enemy?.getRenderHeightPx === 'function'
-        ? enemy.getRenderHeightPx()
-        : Number.NaN;
-    if (Number.isFinite(methodHeight) && methodHeight > 0) {
-        return methodHeight;
-    }
-
-    if (Number.isFinite(enemy?.renderHeightPx) && enemy.renderHeightPx > 0) {
-        return enemy.renderHeightPx;
-    }
-
-    return 24;
-};
-
-/**
- * 합체 육각형의 네비게이션용 로컬 중심 목록을 반환합니다.
- * @param {object|null|undefined} enemy
- * @returns {object[]|null}
- */
-const getHexaHiveNavigationLocalCenters = (enemy) => {
-    const layout = enemy?.hexaHiveLayout;
-    if (Array.isArray(layout?.filledLocalCenters) && layout.filledLocalCenters.length > 0) {
-        return layout.filledLocalCenters;
-    }
-    if (Array.isArray(layout?.visibleLocalCenters) && layout.visibleLocalCenters.length > 0) {
-        return layout.visibleLocalCenters;
-    }
-    return null;
-};
-
-/**
- * 양수 픽셀 값을 안전하게 읽습니다.
- * @param {number|null|undefined} value
- * @returns {number}
- */
-const readPositivePixelValue = (value) => (
-    Number.isFinite(value) && value > 0 ? value : 0
-);
-
-/**
- * 적의 AI용 footprint 크기를 계산합니다.
- * @param {object|null|undefined} enemy
- * @param {number|null} [fallbackRadius=null]
- * @param {number|null} [fallbackRenderHeightPx=null]
- * @returns {{baseHeight: number, baseRadius: number, halfWidth: number, halfHeight: number, radius: number}}
- */
-export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, fallbackRenderHeightPx = null) {
-    const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
-    const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
-        ? fallbackRadius
-        : Math.max(8, baseHeight * 0.45);
-    const aspectRatio = Number.isFinite(enemy?.aspectRatio) && enemy.aspectRatio > 0
-        ? enemy.aspectRatio
-        : 1;
-    const heightScale = Number.isFinite(enemy?.heightScale) && enemy.heightScale > 0
-        ? enemy.heightScale
-        : 1;
-    let halfWidth = Math.max(baseRadius, baseHeight * aspectRatio * 0.5);
-    let halfHeight = Math.max(baseRadius, baseHeight * heightScale * 0.5);
-    let radius = Math.max(baseRadius, readPositivePixelValue(enemy?.navigationRadiusPx));
-
-    if (enemy?.type === HEXA_HIVE_TYPE) {
-        const localCenters = getHexaHiveNavigationLocalCenters(enemy);
-        if (Array.isArray(localCenters) && localCenters.length > 0) {
-            const cellRadius = Math.max(baseRadius, baseHeight * HEXA_HIVE_NAV_CELL_RADIUS_RATIO);
-            const rotationRadians = (Number.isFinite(enemy?.rotation) ? enemy.rotation : 0) * (Math.PI / 180);
-            const cos = Math.cos(rotationRadians);
-            const sin = Math.sin(rotationRadians);
-
-            halfWidth = Math.max(halfWidth, cellRadius);
-            halfHeight = Math.max(halfHeight, cellRadius);
-            radius = Math.max(radius, cellRadius);
-            for (let i = 0; i < localCenters.length; i++) {
-                const localCenter = localCenters[i];
-                const localX = (Number.isFinite(localCenter?.x) ? localCenter.x : 0) * baseHeight;
-                const localY = (Number.isFinite(localCenter?.y) ? localCenter.y : 0) * baseHeight;
-                const worldLocalX = (localX * cos) - (localY * sin);
-                const worldLocalY = (localX * sin) + (localY * cos);
-                halfWidth = Math.max(halfWidth, Math.abs(worldLocalX) + cellRadius);
-                halfHeight = Math.max(halfHeight, Math.abs(worldLocalY) + cellRadius);
-                radius = Math.max(radius, Math.hypot(worldLocalX, worldLocalY) + cellRadius);
-            }
-        }
-    }
-
-    halfWidth = Math.max(halfWidth, readPositivePixelValue(enemy?.navigationHalfWidthPx));
-    halfHeight = Math.max(halfHeight, readPositivePixelValue(enemy?.navigationHalfHeightPx));
-    radius = Math.max(radius, readPositivePixelValue(enemy?.navigationRadiusPx));
-
-    return {
-        baseHeight,
-        baseRadius,
-        halfWidth,
-        halfHeight,
-        radius
-    };
-}
-
-/**
- * 적이 벽을 피할 때 사용할 네비게이션 반경을 계산합니다.
- * @param {object|null|undefined} enemy
- * @param {number|null} [fallbackRadius=null]
- * @param {number|null} [fallbackRenderHeightPx=null]
- * @returns {number}
- */
-export function resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius = null, fallbackRenderHeightPx = null) {
-    const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
-    const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
-        ? fallbackRadius
-        : Math.max(8, baseHeight * 0.45);
-    const explicitRadius = readPositivePixelValue(enemy?.navigationRadiusPx);
-    if (enemy?.type !== HEXA_HIVE_TYPE) {
-        return Math.max(baseRadius, explicitRadius);
-    }
-
-    return resolveEnemyAIFootprintMetricsPx(enemy, baseRadius, baseHeight).radius;
-}
-
-/**
- * 지정 방향에서 footprint가 차지하는 반지름을 추정합니다.
- * @param {{baseRadius: number, halfWidth: number, halfHeight: number, radius: number}} metrics
- * @param {number} dirX
- * @param {number} dirY
- * @returns {number}
- */
-const projectEnemyAIFootprintRadiusForDirection = (metrics, dirX, dirY) => {
-    const halfWidth = readPositivePixelValue(metrics?.halfWidth);
-    const halfHeight = readPositivePixelValue(metrics?.halfHeight);
-    const baseRadius = readPositivePixelValue(metrics?.baseRadius);
-    const maxRadius = readPositivePixelValue(metrics?.radius);
-    const projectedRadius = (Math.abs(dirX) * halfWidth) + (Math.abs(dirY) * halfHeight);
-    return Math.max(baseRadius, Math.min(maxRadius || projectedRadius, projectedRadius));
-};
 
 /**
  * 직선 추적 판정에 사용할 벽 확장 반경을 반환합니다.
@@ -868,202 +739,6 @@ const requiresDensityAnchor = (policyId) => (
     policyId === ENEMY_AI_POLICY.CLUSTER_JOIN
     || policyId === ENEMY_AI_POLICY.ALLY_DENSITY_SEEK
 );
-
-/**
- * 적 목록에서 공유 밀도 필드를 생성합니다.
- * @param {object[]|null|undefined} enemies
- * @param {number} width
- * @param {number} height
- * @param {string} filterType
- * @param {object} profile
- * @returns {{cols: number, rows: number, cellSize: number, counts: Uint16Array}}
- */
-const buildDensityField = (enemies, width, height, filterType, profile) => {
-    const densityCellSize = profile.DENSITY_CELL_SIZE;
-    const cols = Math.max(2, Math.ceil(width / densityCellSize));
-    const rows = Math.max(2, Math.ceil(height / densityCellSize));
-    const counts = new Uint16Array(cols * rows);
-
-    if (!Array.isArray(enemies)) {
-        return { cols, rows, cellSize: densityCellSize, counts };
-    }
-
-    for (let i = 0; i < enemies.length; i++) {
-        const enemy = enemies[i];
-        if (!enemy || enemy.active === false || !enemy.position) {
-            continue;
-        }
-
-        if (filterType !== 'all' && enemy.type !== filterType) {
-            continue;
-        }
-
-        const cx = clamp(Math.floor(enemy.position.x / densityCellSize), 0, cols - 1);
-        const cy = clamp(Math.floor(enemy.position.y / densityCellSize), 0, rows - 1);
-        const index = (cy * cols) + cx;
-        counts[index] = Math.min(65535, counts[index] + 1);
-    }
-
-    return { cols, rows, cellSize: densityCellSize, counts };
-};
-
-/**
- * decision tick 동안 공유 밀도 필드를 조회하거나 생성합니다.
- * @param {object} context
- * @param {object[]|null|undefined} enemies
- * @param {number} width
- * @param {number} height
- * @param {string} filterType
- * @param {object} profile
- * @returns {{cols: number, rows: number, cellSize: number, counts: Uint16Array}}
- */
-const getSharedDensityField = (context, enemies, width, height, filterType, profile) => {
-    const aiDebugStats = context?.aiDebugStats ?? null;
-    const sharedDensityFieldByKey = context?.sharedDensityFieldByKey instanceof Map
-        ? context.sharedDensityFieldByKey
-        : null;
-    const densityKey = `${profile.KEY}|${filterType}|${Math.round(width)}|${Math.round(height)}|${profile.DENSITY_CELL_SIZE}`;
-
-    if (sharedDensityFieldByKey?.has(densityKey)) {
-        incrementEnemyAIDebugCounter(aiDebugStats, 'sharedDensityFieldCacheHitCount');
-        return sharedDensityFieldByKey.get(densityKey);
-    }
-
-    const densityField = buildDensityField(enemies, width, height, filterType, profile);
-    incrementEnemyAIDebugCounter(aiDebugStats, 'densityFieldBuildCount');
-    if (sharedDensityFieldByKey) {
-        sharedDensityFieldByKey.set(densityKey, densityField);
-    }
-    return densityField;
-};
-
-/**
- * 밀도 필드에서 현재 위치 기준으로 가장 유리한 셀 중심을 찾습니다.
- * @param {{cols: number, rows: number, cellSize: number, counts: Uint16Array}} densityField
- * @param {number} startX
- * @param {number} startY
- * @param {number} searchRadiusCells
- * @param {number} minCount
- * @param {{x: number, y: number, count: number}} out
- * @returns {{x: number, y: number, count: number}|null}
- */
-const findDensityGoalInto = (densityField, startX, startY, searchRadiusCells, minCount, out) => {
-    if (!densityField || !(densityField.counts instanceof Uint16Array)) {
-        return null;
-    }
-
-    const originCx = clamp(Math.floor(startX / densityField.cellSize), 0, densityField.cols - 1);
-    const originCy = clamp(Math.floor(startY / densityField.cellSize), 0, densityField.rows - 1);
-    const radius = Math.max(1, Math.floor(searchRadiusCells));
-
-    let bestScore = -INF;
-    let found = false;
-    for (let cy = Math.max(0, originCy - radius); cy <= Math.min(densityField.rows - 1, originCy + radius); cy++) {
-        for (let cx = Math.max(0, originCx - radius); cx <= Math.min(densityField.cols - 1, originCx + radius); cx++) {
-            const count = densityField.counts[(cy * densityField.cols) + cx];
-            if (count < minCount) {
-                continue;
-            }
-
-            const dx = cx - originCx;
-            const dy = cy - originCy;
-            const distancePenalty = (dx * dx) + (dy * dy);
-            const score = (count * 12) - (distancePenalty * 1.75);
-            if (score <= bestScore) {
-                continue;
-            }
-
-            bestScore = score;
-            found = true;
-            out.x = (cx + 0.5) * densityField.cellSize;
-            out.y = (cy + 0.5) * densityField.cellSize;
-            out.count = count;
-        }
-    }
-
-    return found ? out : null;
-};
-
-/**
- * 현재 좌표가 속한 밀도 셀의 적 수를 반환합니다.
- * @param {{cols: number, rows: number, cellSize: number, counts: Uint16Array}|null|undefined} densityField
- * @param {number} x
- * @param {number} y
- * @returns {number}
- */
-const getDensityCountAtPosition = (densityField, x, y) => {
-    if (!densityField || !(densityField.counts instanceof Uint16Array)) {
-        return 0;
-    }
-
-    const cx = clamp(Math.floor(x / densityField.cellSize), 0, densityField.cols - 1);
-    const cy = clamp(Math.floor(y / densityField.cellSize), 0, densityField.rows - 1);
-    const index = (cy * densityField.cols) + cx;
-    return Number.isFinite(densityField.counts[index]) ? densityField.counts[index] : 0;
-};
-
-/**
- * 정책 기반 밀도 앵커를 decision tick 동안 재사용합니다.
- * @param {object} context
- * @param {object[]|null|undefined} enemies
- * @param {number} width
- * @param {number} height
- * @param {object} profile
- * @param {string} filterType
- * @param {string} policyKey
- * @param {number} startX
- * @param {number} startY
- * @param {number} searchRadiusCells
- * @param {number} minCount
- * @param {{x: number, y: number, count: number}} out
- * @returns {{x: number, y: number, count: number}|null}
- */
-const getSharedDensityGoal = (
-    context,
-    enemies,
-    width,
-    height,
-    profile,
-    filterType,
-    policyKey,
-    startX,
-    startY,
-    searchRadiusCells,
-    minCount,
-    out
-) => {
-    const aiDebugStats = context?.aiDebugStats ?? null;
-    const sharedPolicyTargetByKey = context?.sharedPolicyTargetByKey instanceof Map
-        ? context.sharedPolicyTargetByKey
-        : null;
-    const densityCellSize = profile.DENSITY_CELL_SIZE;
-    const originCx = Math.floor(startX / densityCellSize);
-    const originCy = Math.floor(startY / densityCellSize);
-    const decisionKey = `${profile.KEY}|${policyKey}|${filterType}|${originCx}|${originCy}|${searchRadiusCells}|${minCount}`;
-
-    if (sharedPolicyTargetByKey?.has(decisionKey)) {
-        incrementEnemyAIDebugCounter(aiDebugStats, 'sharedPolicyTargetCacheHitCount');
-        const cachedGoal = sharedPolicyTargetByKey.get(decisionKey);
-        if (!cachedGoal) {
-            return null;
-        }
-
-        out.x = cachedGoal.x;
-        out.y = cachedGoal.y;
-        out.count = cachedGoal.count;
-        return out;
-    }
-
-    const densityField = getSharedDensityField(context, enemies, width, height, filterType, profile);
-    const goal = findDensityGoalInto(densityField, startX, startY, searchRadiusCells, minCount, out);
-    if (sharedPolicyTargetByKey) {
-        sharedPolicyTargetByKey.set(
-            decisionKey,
-            goal ? { x: goal.x, y: goal.y, count: goal.count } : null
-        );
-    }
-    return goal;
-};
 
 /**
  * 재사용 좌표 버퍼를 보장합니다.

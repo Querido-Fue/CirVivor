@@ -3,13 +3,15 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { getData } from 'data/data_handler.js';
 import { enemyAI } from './enemy/ai/_enemy_ai.js';
 import { createEnemyPools } from './enemy/_enemy_pool_factory.js';
+import { getHexaHiveType } from './enemy/_hexa_hive_layout.js';
 import {
-    collectHexaWorldCellsFromEnemy,
-    createHexaHiveLayoutFromWorldCells,
-    getHexaHiveType,
-    isHexaMergeEnemyType,
-    snapHexaRotationDegToSymmetry
-} from './enemy/_hexa_hive_layout.js';
+    buildActiveHexaMergeCandidatesById,
+    buildHexaHiveSpawnData,
+    clearHexaHiveContactPairsForEnemyIds,
+    collectHexaHiveMergeGroups,
+    collectHexaMergeCandidates,
+    syncHexaHiveMergeState
+} from './enemy/_hexa_hive_merge.js';
 import { PhysicsSystem } from 'physics/physics_system.js';
 import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_protocol.js';
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
@@ -21,12 +23,6 @@ const AI_DECISION_INTERVAL_SECONDS = 1.0;
 const INLINE_ENEMY_AI_QUALITY_PROFILE = 'inline_safe';
 const DEFAULT_OUTSIDE_CULL_RATIO = 0.1;
 const HEXA_HIVE_TYPE = getHexaHiveType();
-const HEXA_HIVE_MERGE_CONTACT_SECONDS = 0.5;
-const HEXA_HIVE_MOVE_SPEED_DECAY = 0.95;
-const HEXA_HIVE_MOVE_SPEED_FLOOR_RATIO = 0.5;
-const HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL = 0.5;
-const HEXA_HIVE_MERGE_PENDING_WEIGHT = 100000;
-const HEXA_HIVE_EPSILON = 1e-6;
 
 let objectSystemInstance = null;
 
@@ -183,7 +179,12 @@ export class ObjectSystem {
         }
 
         const hexaContactPairs = this.collectHexaHiveContactPairs(delta);
-        const hexaMergeCandidatesById = this.#syncHexaHiveMergeState(delta, hexaContactPairs);
+        const hexaMergeCandidatesById = syncHexaHiveMergeState({
+            enemies: this.enemies,
+            contactSecondsByPair: this.hexaHiveContactSecondsByPair,
+            delta,
+            contactPairs: hexaContactPairs
+        });
         this.resolveEnemyCollisions(this.enemies, {
             delta,
             players: this.players
@@ -414,16 +415,7 @@ export class ObjectSystem {
      * @returns {{enemyA: object, enemyB: object}[]}
      */
     collectHexaHiveContactPairs(delta) {
-        const mergeCandidates = [];
-        for (let i = 0; i < this.enemies.length; i++) {
-            const enemy = this.enemies[i];
-            if (!enemy || enemy.active === false || !isHexaMergeEnemyType(enemy.type)) {
-                continue;
-            }
-
-            mergeCandidates.push(enemy);
-        }
-
+        const mergeCandidates = collectHexaMergeCandidates(this.enemies);
         if (mergeCandidates.length < 2 || !this.physicsSystem || typeof this.physicsSystem.collectEnemyContactPairs !== 'function') {
             return [];
         }
@@ -437,10 +429,11 @@ export class ObjectSystem {
      * @returns {number}
      */
     resolveHexaHiveMerges(activeMergeCandidatesById = null) {
-        const mergeGroups = this.#collectHexaHiveMergeGroups(
+        const mergeGroups = collectHexaHiveMergeGroups(
+            this.hexaHiveContactSecondsByPair,
             activeMergeCandidatesById instanceof Map
                 ? activeMergeCandidatesById
-                : this.#buildActiveHexaMergeCandidatesById()
+                : buildActiveHexaMergeCandidatesById(this.enemies)
         );
         if (mergeGroups.length === 0) {
             return 0;
@@ -454,7 +447,7 @@ export class ObjectSystem {
                 continue;
             }
 
-            const spawnData = this.#buildHexaHiveSpawnData(mergeGroup);
+            const spawnData = buildHexaHiveSpawnData(mergeGroup);
             if (!spawnData) {
                 continue;
             }
@@ -472,7 +465,7 @@ export class ObjectSystem {
             return 0;
         }
 
-        this.#clearHexaHiveContactPairsForEnemyIds(releaseIds);
+        clearHexaHiveContactPairsForEnemyIds(this.hexaHiveContactSecondsByPair, releaseIds);
 
         const releaseIndices = [];
         for (let i = 0; i < this.enemies.length; i++) {
@@ -629,369 +622,6 @@ export class ObjectSystem {
     }
 
     /**
-     * @private
-     * @param {object} enemy
-     * @returns {number}
-     */
-    #getHexaHiveBaseMoveSpeed(enemy) {
-        if (Number.isFinite(enemy?.mergeBaseMoveSpeed) && enemy.mergeBaseMoveSpeed > 0) {
-            return enemy.mergeBaseMoveSpeed;
-        }
-        if (Number.isFinite(enemy?.moveSpeed) && enemy.moveSpeed > 0) {
-            return enemy.moveSpeed;
-        }
-        return 0;
-    }
-
-    /**
-     * @private
-     * @param {number} enemyIdA
-     * @param {number} enemyIdB
-     * @returns {string}
-     */
-    #buildHexaHivePairKey(enemyIdA, enemyIdB) {
-        const firstId = enemyIdA < enemyIdB ? enemyIdA : enemyIdB;
-        const secondId = enemyIdA < enemyIdB ? enemyIdB : enemyIdA;
-        return `${firstId}:${secondId}`;
-    }
-
-    /**
-     * @private
-     * @param {string} pairKey
-     * @returns {number[]}
-     */
-    #parseHexaHivePairKey(pairKey) {
-        if (typeof pairKey !== 'string') {
-            return [];
-        }
-
-        const [left, right] = pairKey.split(':');
-        const enemyIdA = Number.parseInt(left, 10);
-        const enemyIdB = Number.parseInt(right, 10);
-        if (!Number.isInteger(enemyIdA) || !Number.isInteger(enemyIdB)) {
-            return [];
-        }
-        return [enemyIdA, enemyIdB];
-    }
-
-    /**
-     * @private
-     * @param {Set<number>} enemyIds
-     */
-    #clearHexaHiveContactPairsForEnemyIds(enemyIds) {
-        if (!(enemyIds instanceof Set) || enemyIds.size === 0) {
-            return;
-        }
-
-        for (const pairKey of this.hexaHiveContactSecondsByPair.keys()) {
-            const [enemyIdA, enemyIdB] = this.#parseHexaHivePairKey(pairKey);
-            if (enemyIds.has(enemyIdA) || enemyIds.has(enemyIdB)) {
-                this.hexaHiveContactSecondsByPair.delete(pairKey);
-            }
-        }
-    }
-
-    /**
-     * @private
-     * @returns {Map<number, object>}
-     */
-    #buildActiveHexaMergeCandidatesById() {
-        const activeMergeCandidatesById = new Map();
-        for (let i = 0; i < this.enemies.length; i++) {
-            const enemy = this.enemies[i];
-            if (!enemy || enemy.active === false || !isHexaMergeEnemyType(enemy.type) || !Number.isInteger(enemy.id)) {
-                continue;
-            }
-
-            activeMergeCandidatesById.set(enemy.id, enemy);
-        }
-
-        return activeMergeCandidatesById;
-    }
-
-    /**
-     * @private
-     * @param {Map<number, object>} activeMergeCandidatesById
-     * @param {number} delta
-     * @param {{enemyA: object, enemyB: object}[]} contactPairs
-     */
-    #updateHexaHiveContactTimers(activeMergeCandidatesById, delta, contactPairs) {
-        const activePairKeys = new Set();
-        if (Array.isArray(contactPairs)) {
-            for (let i = 0; i < contactPairs.length; i++) {
-                const pair = contactPairs[i];
-                const enemyA = pair?.enemyA;
-                const enemyB = pair?.enemyB;
-                if (!enemyA || !enemyB || enemyA === enemyB) {
-                    continue;
-                }
-
-                if (!activeMergeCandidatesById.has(enemyA.id) || !activeMergeCandidatesById.has(enemyB.id)) {
-                    continue;
-                }
-
-                const pairKey = this.#buildHexaHivePairKey(enemyA.id, enemyB.id);
-                activePairKeys.add(pairKey);
-                this.hexaHiveContactSecondsByPair.set(
-                    pairKey,
-                    (this.hexaHiveContactSecondsByPair.get(pairKey) || 0) + delta
-                );
-            }
-        }
-
-        for (const pairKey of [...this.hexaHiveContactSecondsByPair.keys()]) {
-            if (!activePairKeys.has(pairKey)) {
-                this.hexaHiveContactSecondsByPair.delete(pairKey);
-            }
-        }
-    }
-
-    /**
-     * @private
-     * @param {Map<number, object>} activeMergeCandidatesById
-     */
-    #applyHexaHiveMergePendingState(activeMergeCandidatesById) {
-        const pendingEnemyIds = new Set();
-        for (const [pairKey, contactSeconds] of this.hexaHiveContactSecondsByPair.entries()) {
-            if (!Number.isFinite(contactSeconds) || contactSeconds <= 0) {
-                continue;
-            }
-
-            const [enemyIdA, enemyIdB] = this.#parseHexaHivePairKey(pairKey);
-            if (!activeMergeCandidatesById.has(enemyIdA) || !activeMergeCandidatesById.has(enemyIdB)) {
-                continue;
-            }
-
-            pendingEnemyIds.add(enemyIdA);
-            pendingEnemyIds.add(enemyIdB);
-        }
-
-        for (const enemy of activeMergeCandidatesById.values()) {
-            enemy.hexaHiveMergePending = pendingEnemyIds.has(enemy.id);
-            enemy.hexaHiveMergePendingWeight = enemy.hexaHiveMergePending
-                ? HEXA_HIVE_MERGE_PENDING_WEIGHT
-                : null;
-        }
-    }
-
-    /**
-     * @private
-     * @param {number} delta
-     * @param {{enemyA: object, enemyB: object}[]} contactPairs
-     * @returns {Map<number, object>}
-     */
-    #syncHexaHiveMergeState(delta, contactPairs) {
-        const activeMergeCandidatesById = this.#buildActiveHexaMergeCandidatesById();
-        this.#updateHexaHiveContactTimers(activeMergeCandidatesById, delta, contactPairs);
-        this.#applyHexaHiveMergePendingState(activeMergeCandidatesById);
-        return activeMergeCandidatesById;
-    }
-
-    /**
-     * @private
-     * @param {Map<number, object>} activeMergeCandidatesById
-     * @returns {object[][]}
-     */
-    #collectHexaHiveMergeGroups(activeMergeCandidatesById) {
-        if (!(activeMergeCandidatesById instanceof Map) || activeMergeCandidatesById.size === 0) {
-            return [];
-        }
-
-        const adjacency = new Map();
-        for (const [pairKey, contactSeconds] of this.hexaHiveContactSecondsByPair.entries()) {
-            if (!Number.isFinite(contactSeconds) || contactSeconds < HEXA_HIVE_MERGE_CONTACT_SECONDS) {
-                continue;
-            }
-
-            const [enemyIdA, enemyIdB] = this.#parseHexaHivePairKey(pairKey);
-            if (!activeMergeCandidatesById.has(enemyIdA) || !activeMergeCandidatesById.has(enemyIdB)) {
-                continue;
-            }
-
-            if (!adjacency.has(enemyIdA)) adjacency.set(enemyIdA, new Set());
-            if (!adjacency.has(enemyIdB)) adjacency.set(enemyIdB, new Set());
-            adjacency.get(enemyIdA).add(enemyIdB);
-            adjacency.get(enemyIdB).add(enemyIdA);
-        }
-
-        const visited = new Set();
-        const mergeGroups = [];
-        for (const [enemyId, enemy] of activeMergeCandidatesById.entries()) {
-            if (visited.has(enemyId) || !adjacency.has(enemyId)) {
-                continue;
-            }
-
-            const queue = [enemyId];
-            const mergeGroup = [];
-            visited.add(enemyId);
-            while (queue.length > 0) {
-                const currentId = queue.shift();
-                const currentEnemy = activeMergeCandidatesById.get(currentId);
-                if (currentEnemy) {
-                    mergeGroup.push(currentEnemy);
-                }
-
-                const neighbors = adjacency.get(currentId);
-                if (!neighbors) {
-                    continue;
-                }
-
-                for (const neighborId of neighbors) {
-                    if (visited.has(neighborId)) {
-                        continue;
-                    }
-                    visited.add(neighborId);
-                    queue.push(neighborId);
-                }
-            }
-
-            if (mergeGroup.length >= 2) {
-                mergeGroups.push(mergeGroup);
-            }
-        }
-
-        return mergeGroups;
-    }
-
-    /**
-     * @private
-     * @param {object[]} mergeGroup
-     * @returns {object|null}
-     */
-    #buildHexaHiveSpawnData(mergeGroup) {
-        if (!Array.isArray(mergeGroup) || mergeGroup.length < 2) {
-            return null;
-        }
-
-        const worldCells = [];
-        let totalMass = 0;
-        let weightedCenterX = 0;
-        let weightedCenterY = 0;
-        let weightedRotationSin = 0;
-        let weightedRotationCos = 0;
-        let weightedSpeedX = 0;
-        let weightedSpeedY = 0;
-        let weightedAngularVelocity = 0;
-        let weightedBaseMoveSpeed = 0;
-        let weightedCurrentMoveSpeed = 0;
-        let weightedAccSpeed = 0;
-        let weightedSize = 0;
-        let weightedBaseHeight = 0;
-        let weightedAlpha = 0;
-        let alphaWeight = 0;
-        let totalWeight = 0;
-        let totalMaxHp = 0;
-        let totalHp = 0;
-        let totalAtk = 0;
-        let totalProjectileHitsToKill = 0;
-        let totalCells = 0;
-        let preferredFill = null;
-
-        for (let i = 0; i < mergeGroup.length; i++) {
-            const enemy = mergeGroup[i];
-            const enemyCells = collectHexaWorldCellsFromEnemy(enemy);
-            if (enemyCells.length === 0) {
-                continue;
-            }
-
-            const enemyWeight = Math.max(HEXA_HIVE_EPSILON, Number.isFinite(enemy.weight) ? enemy.weight : 1);
-            const cellMass = enemyWeight / enemyCells.length;
-            const baseMoveSpeed = this.#getHexaHiveBaseMoveSpeed(enemy);
-            const currentMoveSpeed = Number.isFinite(enemy.moveSpeed) ? enemy.moveSpeed : baseMoveSpeed;
-            const accSpeed = Number.isFinite(enemy.accSpeed) ? enemy.accSpeed : 0;
-            const size = Number.isFinite(enemy.size) ? enemy.size : 1;
-            const baseHeight = typeof enemy.getRenderHeightPx === 'function'
-                ? enemy.getRenderHeightPx()
-                : (getSimulationObjectWH() * 0.03 * size);
-            const rotationRadians = (Number.isFinite(enemy.rotation) ? enemy.rotation : 0) * (Math.PI / 180);
-
-            for (let j = 0; j < enemyCells.length; j++) {
-                worldCells.push(enemyCells[j]);
-                totalMass += cellMass;
-                weightedCenterX += enemyCells[j].x * cellMass;
-                weightedCenterY += enemyCells[j].y * cellMass;
-            }
-
-            totalCells += enemyCells.length;
-            totalWeight += enemyWeight;
-            totalMaxHp += Number.isFinite(enemy.maxHp) ? enemy.maxHp : 0;
-            totalHp += Number.isFinite(enemy.hp) ? enemy.hp : 0;
-            totalAtk += Number.isFinite(enemy.atk) ? enemy.atk : 0;
-            totalProjectileHitsToKill += Number.isFinite(enemy.projectileHitsToKill) ? enemy.projectileHitsToKill : 0;
-            weightedRotationSin += Math.sin(rotationRadians) * enemyWeight;
-            weightedRotationCos += Math.cos(rotationRadians) * enemyWeight;
-            weightedSpeedX += (Number.isFinite(enemy.speed?.x) ? enemy.speed.x : 0) * enemyWeight;
-            weightedSpeedY += (Number.isFinite(enemy.speed?.y) ? enemy.speed.y : 0) * enemyWeight;
-            weightedAngularVelocity += (Number.isFinite(enemy.angularVelocity) ? enemy.angularVelocity : 0) * enemyWeight;
-            weightedBaseMoveSpeed += baseMoveSpeed * enemyCells.length;
-            weightedCurrentMoveSpeed += currentMoveSpeed * enemyCells.length;
-            weightedAccSpeed += accSpeed * enemyCells.length;
-            weightedSize += size * enemyCells.length;
-            weightedBaseHeight += baseHeight * enemyCells.length;
-            if (Number.isFinite(enemy.alpha)) {
-                weightedAlpha += enemy.alpha * enemyCells.length;
-                alphaWeight += enemyCells.length;
-            }
-            if (preferredFill === null && typeof enemy.fill === 'string') {
-                preferredFill = enemy.fill;
-            }
-        }
-
-        if (worldCells.length === 0 || totalMass <= HEXA_HIVE_EPSILON || totalCells <= 0) {
-            return null;
-        }
-
-        const centerX = weightedCenterX / totalMass;
-        const centerY = weightedCenterY / totalMass;
-        const baseHeight = weightedBaseHeight / totalCells;
-        const mergedRotation = snapHexaRotationDegToSymmetry(
-            Math.atan2(weightedRotationSin, weightedRotationCos) * (180 / Math.PI)
-        );
-        const mergedBaseMoveSpeed = weightedBaseMoveSpeed / totalCells;
-        const mergedCurrentMoveSpeed = weightedCurrentMoveSpeed / totalCells;
-        const mergedMoveSpeed = Math.max(
-            mergedBaseMoveSpeed * HEXA_HIVE_MOVE_SPEED_FLOOR_RATIO,
-            mergedCurrentMoveSpeed * HEXA_HIVE_MOVE_SPEED_DECAY
-        );
-        const mergedWeight = totalWeight * (1 + ((Math.max(1, totalCells) - 1) * HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL));
-        const mergedMaxHp = totalMaxHp;
-        const mergedHp = Math.min(mergedMaxHp, totalHp + (mergedMaxHp * 0.1));
-        const mergedLayout = createHexaHiveLayoutFromWorldCells(worldCells, {
-            originX: centerX,
-            originY: centerY,
-            baseHeight,
-            rotationDeg: mergedRotation
-        });
-
-        return {
-            type: HEXA_HIVE_TYPE,
-            hp: mergedHp,
-            maxHp: mergedMaxHp,
-            atk: totalAtk,
-            moveSpeed: mergedMoveSpeed,
-            mergeBaseMoveSpeed: mergedBaseMoveSpeed,
-            accSpeed: weightedAccSpeed / totalCells,
-            size: weightedSize / totalCells,
-            weight: mergedWeight,
-            rotationResistance: Math.max(1, totalCells),
-            projectileHitsToKill: Math.max(0, Math.round(totalProjectileHitsToKill)),
-            position: { x: centerX, y: centerY },
-            speed: {
-                x: weightedSpeedX / Math.max(HEXA_HIVE_EPSILON, totalWeight),
-                y: weightedSpeedY / Math.max(HEXA_HIVE_EPSILON, totalWeight)
-            },
-            acc: { x: 0, y: 0 },
-            ai: enemyAI,
-            fill: preferredFill,
-            alpha: alphaWeight > 0 ? (weightedAlpha / alphaWeight) : 1,
-            rotation: mergedRotation,
-            angularVelocity: weightedAngularVelocity / Math.max(HEXA_HIVE_EPSILON, totalWeight),
-            angularDeceleration: Math.abs(weightedAngularVelocity / Math.max(HEXA_HIVE_EPSILON, totalWeight)),
-            hexaHiveLayout: mergedLayout
-        };
-    }
-
-    /**
      * 요청하신 도형 샘플을 한 화면에 배치합니다.
      * 위치는 모두 중심 좌표 기준입니다.
      */
@@ -1032,7 +662,7 @@ export class ObjectSystem {
         if (!enemy) return;
         this.#queueEnemyDespawn(enemy.id);
         if (Number.isInteger(enemy.id)) {
-            this.#clearHexaHiveContactPairsForEnemyIds(new Set([enemy.id]));
+            clearHexaHiveContactPairsForEnemyIds(this.hexaHiveContactSecondsByPair, new Set([enemy.id]));
         }
 
         this.releaseEnemyToPool(enemy);

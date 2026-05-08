@@ -1,5 +1,34 @@
 import { CollisionDetector } from './_collision_detector.js';
 import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
+import {
+    areCollisionEnemyPairAnchors,
+    COLLISION_RESOLVE_FRAME_MAX_RATIO,
+    COLLISION_RESOLVE_FRAME_MIN_MAX,
+    COLLISION_RESOLVE_MIN_MAX,
+    DENSE_LOCAL_CANDIDATE_THRESHOLD,
+    DENSE_REBUILD_DENSITY_THRESHOLD,
+    DENSE_REBUILD_MIN_RESOLVED,
+    DENSE_STABILIZE_MIN_RESOLVED,
+    ENEMY_PAIR_COLLISION_RADIUS_SCALE,
+    ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE,
+    getCollisionBodyCollisionRadiusScale,
+    getCollisionDenseFrameScale,
+    getCollisionPairEscapeBoost,
+    getCollisionPairResolveWeights,
+    getDenseSolveTuning,
+    HEXA_HIVE_CELL_COLLISION_RADIUS,
+    HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE,
+    HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
+    isCollisionEnemyPairAnchorBody,
+    isCollisionPairResolveMovable,
+    MERGE_PENDING_RESOLVE_WEIGHT,
+    tuneCollisionResolutionMoves
+} from './_collision_resolve_tuning.js';
+import {
+    applyCollisionProjectileImpact,
+    hasCollisionProjectileHit,
+    markCollisionProjectileHit
+} from './_collision_projectile_effect.js';
 import { COLLISION_RULE_DYNAMIC_RESOLVE, getCollisionRule } from './_collision_rules.js';
 import {
     COLLISION_BODY_KIND_ENEMY as BODY_KIND_ENEMY,
@@ -25,16 +54,6 @@ const MIN_CELL_SIZE = 20;
 const MAX_CELL_SIZE = 280;
 const DEFAULT_PHYSICS_ITERATION_COUNT = 3;
 const GRID_BUCKET_INITIAL_CAPACITY = 8;
-const ROTATION_IMPULSE_SCALE = 0.12;
-const ROTATION_RESPONSE_MULTIPLIER = 1.3;
-const COLLISION_RESOLVE_PERCENT = 0.55;
-const COLLISION_RESOLVE_SLOP = 0.8;
-const COLLISION_RESOLVE_MAX_RATIO = 0.16;
-const COLLISION_RESOLVE_MIN_MAX = 1.25;
-const COLLISION_RESOLVE_FRAME_MAX_RATIO = 0.42;
-const COLLISION_RESOLVE_FRAME_MIN_MAX = 2.2;
-const HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE = 1.1;
-const HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE = 0.55;
 const PROJECTILE_SWEEP_RADIUS_STEP = 0.45;
 const COLLISION_IDLE_TICKS_TO_SLEEP = 45;
 const COLLISION_SLEEP_TICKS = 2;
@@ -43,51 +62,11 @@ const COLLISION_AXIS_RESISTANCE_MIN = 0.25;
 const COLLISION_AXIS_RESISTANCE_GAIN = 0.85;
 const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = 0.35;
 const COLLISION_GRID_RADIUS_SCALE = 1.03;
-const COLLISION_RADIUS_TUNING_SCALE = 0.85;
-const ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE = 0.9;
-const ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE = 1.1;
-const ENEMY_PAIR_COLLISION_RADIUS_SCALE = ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
-const ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE = ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
-const HEXA_HIVE_CELL_COLLISION_RADIUS = 0.47 / ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE;
-const DENSE_REBUILD_DENSITY_THRESHOLD = 0.45;
-const DENSE_REBUILD_MIN_RESOLVED = 8;
-const DENSE_REBUILD_MAX_EXTRA_PASSES = 4;
-const DENSE_MIN_ITERATION_FLOOR = 5;
-const DENSE_LOCAL_CANDIDATE_THRESHOLD = 8;
-const DENSE_STABILIZE_MAX_PASSES = 4;
-const DENSE_STABILIZE_LIGHT_MAX_PASSES = 2;
-const DENSE_STABILIZE_MIN_RESOLVED = 4;
-const DENSE_RESOLVE_BOOST = 1.55;
-const LARGE_POPULATION_DENSE_BODY_THRESHOLD = 512;
-const LARGE_POPULATION_DENSE_REBUILD_MAX_EXTRA_PASSES = 2;
-const LARGE_POPULATION_DENSE_MIN_ITERATION_FLOOR = 3;
-const LARGE_POPULATION_DENSE_STABILIZE_MAX_PASSES = 2;
-const LARGE_POPULATION_DENSE_STABILIZE_LIGHT_MAX_PASSES = 1;
-const LARGE_POPULATION_DENSE_ITERATION_RESOLVE_BOOST = 1.28;
-const LARGE_POPULATION_DENSE_RESOLVE_BOOST = 1.85;
 const ENEMY_PAIR_PROCESS_BUDGET_POSITION = 14;
 const ENEMY_PAIR_PROCESS_BUDGET_STABILIZE = 10;
 const ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION = 8;
-const DENSE_CORRECTION_CANDIDATE_THRESHOLD = 5;
-const DENSE_CORRECTION_SCALE_PER_NEIGHBOR = 0.06;
-const DENSE_CORRECTION_SCALE_MAX = 2.4;
-const DENSE_FRAME_CANDIDATE_THRESHOLD = 6;
-const DENSE_FRAME_SCALE_PER_NEIGHBOR = 0.065;
-const DENSE_FRAME_SCALE_MAX = 2.5;
-const PRESSURE_WEIGHT_MIN = 0.35;
-const PRESSURE_WEIGHT_MAX = 8;
-const PRESSURE_HEXA_HIVE_WEIGHT_MAX = 64;
-const PRESSURE_WEIGHT_EXPONENT = 0.6;
-const MERGE_PENDING_RESOLVE_WEIGHT = 100000;
-const PRESSURE_ENTRY_THRESHOLD = 4;
-const PRESSURE_ENTRY_SCALE_PER_NEIGHBOR = 0.14;
-const PRESSURE_ENTRY_SCALE_MAX = 2.8;
-const PRESSURE_ESCAPE_THRESHOLD = 8;
-const PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR = 0.055;
-const PRESSURE_ESCAPE_SCALE_MAX = 1.45;
 const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
 const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
-const HEXA_HIVE_WALL_MIN_PARTS = 2;
 const PARALLEL_NARROWPHASE_MIN_PAIR_COUNT = 512;
 const PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS = 4;
 const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
@@ -133,37 +112,6 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
 ]);
-/**
- * 적 수에 따라 dense 충돌 해소 반복 상한을 반환합니다.
- * @param {number} dynamicBodyCount
- * @returns {{largePopulation:boolean, denseRebuildMaxExtraPasses:number, denseMinIterationFloor:number, denseStabilizeMaxPasses:number, denseStabilizeLightMaxPasses:number, denseIterationResolveBoost:number, denseResolveBoost:number}}
- */
-function getDenseSolveTuning(dynamicBodyCount) {
-    const largePopulation = Number.isFinite(dynamicBodyCount)
-        && dynamicBodyCount >= LARGE_POPULATION_DENSE_BODY_THRESHOLD;
-    if (!largePopulation) {
-        return {
-            largePopulation: false,
-            denseRebuildMaxExtraPasses: DENSE_REBUILD_MAX_EXTRA_PASSES,
-            denseMinIterationFloor: DENSE_MIN_ITERATION_FLOOR,
-            denseStabilizeMaxPasses: DENSE_STABILIZE_MAX_PASSES,
-            denseStabilizeLightMaxPasses: DENSE_STABILIZE_LIGHT_MAX_PASSES,
-            denseIterationResolveBoost: 1.18,
-            denseResolveBoost: DENSE_RESOLVE_BOOST
-        };
-    }
-
-    return {
-        largePopulation: true,
-        denseRebuildMaxExtraPasses: LARGE_POPULATION_DENSE_REBUILD_MAX_EXTRA_PASSES,
-        denseMinIterationFloor: LARGE_POPULATION_DENSE_MIN_ITERATION_FLOOR,
-        denseStabilizeMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_MAX_PASSES,
-        denseStabilizeLightMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_LIGHT_MAX_PASSES,
-        denseIterationResolveBoost: LARGE_POPULATION_DENSE_ITERATION_RESOLVE_BOOST,
-        denseResolveBoost: LARGE_POPULATION_DENSE_RESOLVE_BOOST
-    };
-}
-
 /**
  * @typedef {object} CollisionRule
  * @property {boolean} check
@@ -687,7 +635,7 @@ export class CollisionHandler {
                         const enemyBody = enemyBodies[candidateIndices[j]];
                         if (!enemyBody || enemyBody.ref?.active === false) continue;
                         const enemyId = enemyBody.id;
-                        if (this.#hasProjectileHit(projectile, enemyId)) continue;
+                        if (hasCollisionProjectileHit(projectile, enemyId)) continue;
                         this.#frameStats.collisionCheckCount++;
                         if (!this.#bodyAabbOverlap(circleBody, enemyBody)) {
                             this.#frameStats.aabbRejectCount++;
@@ -705,8 +653,8 @@ export class CollisionHandler {
                         const manifold = this.#detectBodies(circleBody, enemyBody);
                         if (!manifold) continue;
 
-                        this.#markProjectileHit(projectile, enemyId);
-                        this.#applyProjectileImpact(projectile, enemyBody.ref, manifold);
+                        markCollisionProjectileHit(projectile, enemyId);
+                        applyCollisionProjectileImpact(projectile, enemyBody.ref, manifold);
                         hitCount++;
                         hitThisProjectile = true;
                         if (!projectile.piercing) break;
@@ -903,8 +851,8 @@ export class CollisionHandler {
         }
 
         if (rule.oneShotByProjectile && applyNonPosition) {
-            if (bodyA.kind === 'projectile' && this.#hasProjectileHit(bodyA.ref, bodyB.id)) return 0;
-            if (bodyB.kind === 'projectile' && this.#hasProjectileHit(bodyB.ref, bodyA.id)) return 0;
+            if (bodyA.kind === 'projectile' && hasCollisionProjectileHit(bodyA.ref, bodyB.id)) return 0;
+            if (bodyB.kind === 'projectile' && hasCollisionProjectileHit(bodyB.ref, bodyA.id)) return 0;
         }
 
         const manifold = this.#detectBodies(bodyA, bodyB);
@@ -916,37 +864,37 @@ export class CollisionHandler {
         }
 
         if (rule.oneShotByProjectile && applyNonPosition) {
-            if (bodyA.kind === 'projectile') this.#markProjectileHit(bodyA.ref, bodyB.id);
-            if (bodyB.kind === 'projectile') this.#markProjectileHit(bodyB.ref, bodyA.id);
+            if (bodyA.kind === 'projectile') markCollisionProjectileHit(bodyA.ref, bodyB.id);
+            if (bodyB.kind === 'projectile') markCollisionProjectileHit(bodyB.ref, bodyA.id);
         }
 
         if (rule.applyImpactRotation && applyNonPosition) {
             if (bodyA.kind === 'projectile' && bodyB.kind === 'enemy') {
-                this.#applyProjectileImpact(bodyA.ref, bodyB.ref, manifold);
+                applyCollisionProjectileImpact(bodyA.ref, bodyB.ref, manifold);
             } else if (bodyB.kind === 'projectile' && bodyA.kind === 'enemy') {
-                this.#applyProjectileImpact(bodyB.ref, bodyA.ref, manifold);
+                applyCollisionProjectileImpact(bodyB.ref, bodyA.ref, manifold);
             }
         }
 
         if (!rule.resolve || !resolvePositions) return 1;
 
-        if (this.#areBothEnemyPairAnchors(bodyA, bodyB)) {
+        if (areCollisionEnemyPairAnchors(bodyA, bodyB)) {
             return 0;
         }
 
-        const pairWeights = this.#getPairResolveWeights(bodyA, bodyB);
-        const pairResolveBoost = resolveBoost * this.#getPairEscapeBoost(bodyA, bodyB);
+        const pairWeights = getCollisionPairResolveWeights(bodyA, bodyB);
+        const pairResolveBoost = resolveBoost * getCollisionPairEscapeBoost(bodyA, bodyB);
         const resolveBodyA = {
             weight: pairWeights.weightA,
-            movable: this.#isPairResolveMovable(bodyA, bodyB, rule.movableA)
+            movable: isCollisionPairResolveMovable(bodyA, bodyB, rule.movableA)
         };
         const resolveBodyB = {
             weight: pairWeights.weightB,
-            movable: this.#isPairResolveMovable(bodyB, bodyA, rule.movableB)
+            movable: isCollisionPairResolveMovable(bodyB, bodyA, rule.movableB)
         };
 
         const resolved = this.detector.addResolution(manifold, resolveBodyA, resolveBodyB);
-        const tunedResolve = this.#tuneResolutionMoves(resolved, manifold, bodyA, bodyB, pairResolveBoost);
+        const tunedResolve = tuneCollisionResolutionMoves(resolved, manifold, bodyA, bodyB, pairResolveBoost);
         if (tunedResolve.moveAX || tunedResolve.moveAY) {
             this.#applyBodyTranslation(bodyA, tunedResolve.moveAX, tunedResolve.moveAY, pairResolveBoost);
         }
@@ -1016,10 +964,10 @@ export class CollisionHandler {
         return this.#writeCircleOverlapManifold(
             bodyA.centerX,
             bodyA.centerY,
-            bodyA.radius * this.#getBodyCollisionRadiusScale(bodyA, bodyB),
+            bodyA.radius * getCollisionBodyCollisionRadiusScale(bodyA, bodyB),
             bodyB.centerX,
             bodyB.centerY,
-            bodyB.radius * this.#getBodyCollisionRadiusScale(bodyB, bodyA),
+            bodyB.radius * getCollisionBodyCollisionRadiusScale(bodyB, bodyA),
             this.#scratchManifold,
             bodyB.centerX - bodyA.centerX,
             bodyB.centerY - bodyA.centerY
@@ -1049,8 +997,8 @@ export class CollisionHandler {
         let pointSumY = 0;
         let penetrationSum = 0;
         let maxPenetration = 0;
-        const scaleA = this.#getBodyCollisionRadiusScale(bodyA, bodyB);
-        const scaleB = this.#getBodyCollisionRadiusScale(bodyB, bodyA);
+        const scaleA = getCollisionBodyCollisionRadiusScale(bodyA, bodyB);
+        const scaleB = getCollisionBodyCollisionRadiusScale(bodyB, bodyA);
         const countA = Math.max(0, Math.floor(bodyA.circlePartCount || 0));
         const countB = Math.max(0, Math.floor(bodyB.circlePartCount || 0));
         const fallbackNormalX = bodyB.centerX - bodyA.centerX;
@@ -1145,10 +1093,10 @@ export class CollisionHandler {
         let pointSumY = 0;
         let penetrationSum = 0;
         let maxPenetration = 0;
-        const partScale = this.#getBodyCollisionRadiusScale(partBody, circleBody);
+        const partScale = getCollisionBodyCollisionRadiusScale(partBody, circleBody);
         const circleX = circleBody.centerX;
         const circleY = circleBody.centerY;
-        const circleRadius = circleBody.radius * this.#getBodyCollisionRadiusScale(circleBody, partBody);
+        const circleRadius = circleBody.radius * getCollisionBodyCollisionRadiusScale(circleBody, partBody);
         if (!Number.isFinite(circleX) || !Number.isFinite(circleY) || !Number.isFinite(circleRadius) || circleRadius <= 0) {
             return null;
         }
@@ -1226,7 +1174,7 @@ export class CollisionHandler {
         return this.#writeCircleRectOverlapManifold(
             circleBody.centerX,
             circleBody.centerY,
-            circleBody.radius * this.#getBodyCollisionRadiusScale(circleBody, rectBody),
+            circleBody.radius * getCollisionBodyCollisionRadiusScale(circleBody, rectBody),
             rectBody,
             this.#scratchManifold
         );
@@ -1254,7 +1202,7 @@ export class CollisionHandler {
         let pointSumY = 0;
         let penetrationSum = 0;
         let maxPenetration = 0;
-        const partScale = this.#getBodyCollisionRadiusScale(partBody, rectBody);
+        const partScale = getCollisionBodyCollisionRadiusScale(partBody, rectBody);
         const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
         const rectMinX = Number.isFinite(rectBody?.minX) ? rectBody.minX : 0;
         const rectMaxX = Number.isFinite(rectBody?.maxX) ? rectBody.maxX : 0;
@@ -1314,94 +1262,6 @@ export class CollisionHandler {
                 maxPenetration
             })
             : null;
-    }
-
-    /**
-     * 충돌 관계별 가상 원 반지름 스케일을 반환합니다.
-     * @private
-     * @param {object} body
-     * @param {object} otherBody
-     * @returns {number}
-     */
-    #getBodyCollisionRadiusScale(body, otherBody) {
-        if (body?.kind !== 'enemy') {
-            return 1;
-        }
-        if (otherBody?.kind === 'projectile') {
-            return ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
-        }
-        if (otherBody?.kind === 'enemy') {
-            return ENEMY_PAIR_COLLISION_RADIUS_SCALE;
-        }
-        return 1;
-    }
-
-    /**
-     * 2셀 이상 합체한 hive가 적-적 충돌에서 벽처럼 고정되어야 하는지 반환합니다.
-     * @private
-     * @param {object} body
-     * @returns {boolean}
-     */
-    #isHexaHiveWallBody(body) {
-        if (body?.kind !== 'enemy' || body?.ref?.type !== 'hexa_hive') {
-            return false;
-        }
-
-        const partCount = Number.isFinite(body.circlePartCount)
-            ? Math.floor(body.circlePartCount)
-            : 0;
-        if (partCount >= HEXA_HIVE_WALL_MIN_PARTS) {
-            return true;
-        }
-
-        const layout = body.ref?.hexaHiveLayout;
-        const filledCount = Array.isArray(layout?.filledLocalCenters) ? layout.filledLocalCenters.length : 0;
-        const visibleCount = Array.isArray(layout?.visibleLocalCenters) ? layout.visibleLocalCenters.length : 0;
-        return Math.max(filledCount, visibleCount) >= HEXA_HIVE_WALL_MIN_PARTS;
-    }
-
-    /**
-     * body가 현재 적-적 pair에서 위치 보정 앵커인지 반환합니다.
-     * @private
-     * @param {object} body
-     * @param {object} otherBody
-     * @returns {boolean}
-     */
-    #isEnemyPairAnchorBody(body, otherBody) {
-        if (otherBody?.kind !== 'enemy' || !this.#isHexaHiveWallBody(body)) {
-            return false;
-        }
-
-        return !this.#isHexaHiveWallBody(otherBody);
-    }
-
-    /**
-     * 양쪽 모두 적-적 보정 앵커인지 반환합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {boolean}
-     */
-    #areBothEnemyPairAnchors(bodyA, bodyB) {
-        return this.#isEnemyPairAnchorBody(bodyA, bodyB)
-            && this.#isEnemyPairAnchorBody(bodyB, bodyA);
-    }
-
-    /**
-     * 현재 pair에서 body가 위치 보정으로 이동 가능한지 반환합니다.
-     * @private
-     * @param {object} body
-     * @param {object} otherBody
-     * @param {boolean|null} ruleMovable
-     * @returns {boolean}
-     */
-    #isPairResolveMovable(body, otherBody, ruleMovable) {
-        const movable = ruleMovable === null ? body?.movable !== false : ruleMovable !== false;
-        if (!movable) {
-            return false;
-        }
-
-        return !this.#isEnemyPairAnchorBody(body, otherBody);
     }
 
     /**
@@ -1671,92 +1531,6 @@ export class CollisionHandler {
             if (count > peak) peak = count;
         }
         return peak;
-    }
-
-    /**
-     * 과밀한 쪽이 덜 과밀한 쪽에게 밀리지 않도록 해소용 weight를 재계산합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {{weightA:number, weightB:number}}
-     */
-    #getPairResolveWeights(bodyA, bodyB) {
-        const weightA = Number.isFinite(bodyA?.weight) ? bodyA.weight : 1;
-        const weightB = Number.isFinite(bodyB?.weight) ? bodyB.weight : 1;
-        if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
-            return { weightA, weightB };
-        }
-
-        const pressureA = this.#getBodyPressure(bodyA);
-        const pressureB = this.#getBodyPressure(bodyB);
-        return {
-            weightA: this.#getResolveWeight(bodyA) * this.#getEntryResistanceScale(pressureA),
-            weightB: this.#getResolveWeight(bodyB) * this.#getEntryResistanceScale(pressureB)
-        };
-    }
-
-    /**
-     * 과밀 코어에 끼인 적끼리의 충돌은 추가 분리 부스트를 적용합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {number}
-     */
-    #getPairEscapeBoost(bodyA, bodyB) {
-        if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') return 1;
-        const jamPressure = Math.min(this.#getBodyPressure(bodyA), this.#getBodyPressure(bodyB));
-        if (jamPressure < PRESSURE_ESCAPE_THRESHOLD) return 1;
-        const extra = jamPressure - PRESSURE_ESCAPE_THRESHOLD + 1;
-        return Math.min(
-            PRESSURE_ESCAPE_SCALE_MAX,
-            1 + (extra * PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR)
-        );
-    }
-
-    /**
-     * 해소에 쓰는 weight는 원본 차이를 압축해 과도한 고정벽화를 줄입니다.
-     * @private
-     * @param {object} body
-     * @returns {number}
-     */
-    #getResolveWeight(body) {
-        const rawWeight = Number.isFinite(body?.weight) ? body.weight : 1;
-        if (body?.mergeLock === true) {
-            return MERGE_PENDING_RESOLVE_WEIGHT;
-        }
-
-        const maxWeight = body?.ref?.type === 'hexa_hive'
-            ? PRESSURE_HEXA_HIVE_WEIGHT_MAX
-            : PRESSURE_WEIGHT_MAX;
-        const clamped = Math.max(PRESSURE_WEIGHT_MIN, Math.min(maxWeight, rawWeight));
-        return Math.pow(clamped, PRESSURE_WEIGHT_EXPONENT);
-    }
-
-    /**
-     * body가 현재 얼마나 압축된 상태인지 후보/해결 충돌 수로 추정합니다.
-     * @private
-     * @param {object} body
-     * @returns {number}
-     */
-    #getBodyPressure(body) {
-        const candidateCount = Number.isFinite(body?._candidatePairCount) ? body._candidatePairCount : 0;
-        const resolvedCount = Number.isFinite(body?._resolvedPairCount) ? body._resolvedPairCount : 0;
-        return Math.max(candidateCount, resolvedCount);
-    }
-
-    /**
-     * 과밀할수록 entry resistance를 키워 덜 과밀한 적이 안쪽으로 파고드는 것을 줄입니다.
-     * @private
-     * @param {number} pressure
-     * @returns {number}
-     */
-    #getEntryResistanceScale(pressure) {
-        if (!Number.isFinite(pressure) || pressure < PRESSURE_ENTRY_THRESHOLD) return 1;
-        const extra = pressure - PRESSURE_ENTRY_THRESHOLD + 1;
-        return Math.min(
-            PRESSURE_ENTRY_SCALE_MAX,
-            1 + (extra * PRESSURE_ENTRY_SCALE_PER_NEIGHBOR)
-        );
     }
 
     /**
@@ -2059,7 +1833,7 @@ export class CollisionHandler {
         if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
             return false;
         }
-        if (this.#isEnemyPairAnchorBody(bodyA, bodyB) || this.#isEnemyPairAnchorBody(bodyB, bodyA)) {
+        if (isCollisionEnemyPairAnchorBody(bodyA, bodyB) || isCollisionEnemyPairAnchorBody(bodyB, bodyA)) {
             return false;
         }
         if (!Number.isFinite(budget) || budget <= 0) {
@@ -2160,119 +1934,29 @@ export class CollisionHandler {
 
         if (!resolvePositions) return 1;
 
-        if (this.#areBothEnemyPairAnchors(bodyA, bodyB)) {
+        if (areCollisionEnemyPairAnchors(bodyA, bodyB)) {
             return 0;
         }
 
-        const candidateCountA = Number.isFinite(bodyA._candidatePairCount) ? bodyA._candidatePairCount : 0;
-        const candidateCountB = Number.isFinite(bodyB._candidatePairCount) ? bodyB._candidatePairCount : 0;
-        const resolvedCountA = Number.isFinite(bodyA._resolvedPairCount) ? bodyA._resolvedPairCount : 0;
-        const resolvedCountB = Number.isFinite(bodyB._resolvedPairCount) ? bodyB._resolvedPairCount : 0;
-        const pressureA = Math.max(candidateCountA, resolvedCountA);
-        const pressureB = Math.max(candidateCountB, resolvedCountB);
-
-        const rawWeightA = Number.isFinite(bodyA.weight) ? bodyA.weight : 1;
-        const rawWeightB = Number.isFinite(bodyB.weight) ? bodyB.weight : 1;
-        const maxWeightA = bodyA.ref?.type === 'hexa_hive' ? PRESSURE_HEXA_HIVE_WEIGHT_MAX : PRESSURE_WEIGHT_MAX;
-        const maxWeightB = bodyB.ref?.type === 'hexa_hive' ? PRESSURE_HEXA_HIVE_WEIGHT_MAX : PRESSURE_WEIGHT_MAX;
-        const resolveWeightA = bodyA.mergeLock === true
-            ? MERGE_PENDING_RESOLVE_WEIGHT
-            : Math.pow(Math.max(PRESSURE_WEIGHT_MIN, Math.min(maxWeightA, rawWeightA)), PRESSURE_WEIGHT_EXPONENT);
-        const resolveWeightB = bodyB.mergeLock === true
-            ? MERGE_PENDING_RESOLVE_WEIGHT
-            : Math.pow(Math.max(PRESSURE_WEIGHT_MIN, Math.min(maxWeightB, rawWeightB)), PRESSURE_WEIGHT_EXPONENT);
-        const entryScaleA = pressureA < PRESSURE_ENTRY_THRESHOLD
-            ? 1
-            : Math.min(
-                PRESSURE_ENTRY_SCALE_MAX,
-                1 + ((pressureA - PRESSURE_ENTRY_THRESHOLD + 1) * PRESSURE_ENTRY_SCALE_PER_NEIGHBOR)
-            );
-        const entryScaleB = pressureB < PRESSURE_ENTRY_THRESHOLD
-            ? 1
-            : Math.min(
-                PRESSURE_ENTRY_SCALE_MAX,
-                1 + ((pressureB - PRESSURE_ENTRY_THRESHOLD + 1) * PRESSURE_ENTRY_SCALE_PER_NEIGHBOR)
-            );
-        const weightA = resolveWeightA * entryScaleA;
-        const weightB = resolveWeightB * entryScaleB;
-
-        let ratioA = 0;
-        let ratioB = 0;
-        const movableA = this.#isPairResolveMovable(bodyA, bodyB, null);
-        const movableB = this.#isPairResolveMovable(bodyB, bodyA, null);
-        if (movableA && movableB) {
-            const weightSum = weightA + weightB;
-            ratioA = weightB / weightSum;
-            ratioB = weightA / weightSum;
-        } else if (movableA) {
-            ratioA = 1;
-        } else if (movableB) {
-            ratioB = 1;
+        const pairWeights = getCollisionPairResolveWeights(bodyA, bodyB);
+        const pairResolveBoost = resolveBoost * getCollisionPairEscapeBoost(bodyA, bodyB);
+        const resolved = this.detector.addResolution(
+            manifold,
+            {
+                weight: pairWeights.weightA,
+                movable: isCollisionPairResolveMovable(bodyA, bodyB, null)
+            },
+            {
+                weight: pairWeights.weightB,
+                movable: isCollisionPairResolveMovable(bodyB, bodyA, null)
+            }
+        );
+        const tunedResolve = tuneCollisionResolutionMoves(resolved, manifold, bodyA, bodyB, pairResolveBoost);
+        if (tunedResolve.moveAX || tunedResolve.moveAY) {
+            this.#applyBodyTranslation(bodyA, tunedResolve.moveAX, tunedResolve.moveAY, pairResolveBoost);
         }
-
-        manifold.moveAX = -normalX * penetration * ratioA;
-        manifold.moveAY = -normalY * penetration * ratioA;
-        manifold.moveBX = normalX * penetration * ratioB;
-        manifold.moveBY = normalY * penetration * ratioB;
-
-        const jamPressure = Math.min(pressureA, pressureB);
-        const pairEscapeBoost = jamPressure < PRESSURE_ESCAPE_THRESHOLD
-            ? 1
-            : Math.min(
-                PRESSURE_ESCAPE_SCALE_MAX,
-                1 + ((jamPressure - PRESSURE_ESCAPE_THRESHOLD + 1) * PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR)
-            );
-        const pairResolveBoost = resolveBoost * pairEscapeBoost;
-        const slopScale = pairResolveBoost > 1 ? (1 / pairResolveBoost) : 1;
-        const effectivePenetration = Math.max(0, penetration - (COLLISION_RESOLVE_SLOP * slopScale));
-        if (effectivePenetration > 0) {
-            const penetrationRatio = effectivePenetration / Math.max(EPSILON, penetration);
-            const correctionScale = COLLISION_RESOLVE_PERCENT * penetrationRatio * pairResolveBoost;
-            let moveAX = manifold.moveAX * correctionScale;
-            let moveAY = manifold.moveAY * correctionScale;
-            let moveBX = manifold.moveBX * correctionScale;
-            let moveBY = manifold.moveBY * correctionScale;
-            const moveAMag = Math.hypot(moveAX, moveAY);
-            if (moveAMag > EPSILON) {
-                const resolveRadiusA = Number.isFinite(bodyA.resolveRadius)
-                    ? bodyA.resolveRadius
-                    : (Number.isFinite(bodyA.boundRadius) ? bodyA.boundRadius : 16);
-                const correctionBaseA = Math.max(COLLISION_RESOLVE_MIN_MAX, resolveRadiusA * COLLISION_RESOLVE_MAX_RATIO);
-                const denseScaleA = pressureA < DENSE_CORRECTION_CANDIDATE_THRESHOLD
-                    ? 1
-                    : Math.min(
-                        DENSE_CORRECTION_SCALE_MAX,
-                        1 + ((pressureA - DENSE_CORRECTION_CANDIDATE_THRESHOLD + 1) * DENSE_CORRECTION_SCALE_PER_NEIGHBOR)
-                    );
-                const maxCorrectionA = correctionBaseA * denseScaleA * pairResolveBoost;
-                if (moveAMag > maxCorrectionA) {
-                    const scaleA = maxCorrectionA / moveAMag;
-                    moveAX *= scaleA;
-                    moveAY *= scaleA;
-                }
-                this.#applyBodyTranslation(bodyA, moveAX, moveAY, pairResolveBoost);
-            }
-
-            const moveBMag = Math.hypot(moveBX, moveBY);
-            if (moveBMag > EPSILON) {
-                const resolveRadiusB = Number.isFinite(bodyB.resolveRadius)
-                    ? bodyB.resolveRadius
-                    : (Number.isFinite(bodyB.boundRadius) ? bodyB.boundRadius : 16);
-                const correctionBaseB = Math.max(COLLISION_RESOLVE_MIN_MAX, resolveRadiusB * COLLISION_RESOLVE_MAX_RATIO);
-                const denseScaleB = pressureB < DENSE_CORRECTION_CANDIDATE_THRESHOLD
-                    ? 1
-                    : Math.min(
-                        DENSE_CORRECTION_SCALE_MAX,
-                        1 + ((pressureB - DENSE_CORRECTION_CANDIDATE_THRESHOLD + 1) * DENSE_CORRECTION_SCALE_PER_NEIGHBOR)
-                    );
-                const maxCorrectionB = correctionBaseB * denseScaleB * pairResolveBoost;
-                if (moveBMag > maxCorrectionB) {
-                    const scaleB = maxCorrectionB / moveBMag;
-                    moveBX *= scaleB;
-                    moveBY *= scaleB;
-                }
-                this.#applyBodyTranslation(bodyB, moveBX, moveBY, pairResolveBoost);
-            }
+        if (tunedResolve.moveBX || tunedResolve.moveBY) {
+            this.#applyBodyTranslation(bodyB, tunedResolve.moveBX, tunedResolve.moveBY, pairResolveBoost);
         }
 
         return 1;
@@ -3009,80 +2693,6 @@ export class CollisionHandler {
     }
 
     /**
-     * 침투량 보정 이동을 감쇠/상한 처리하여 과도한 순간 이동을 억제합니다.
-     * @private
-     */
-    #tuneResolutionMoves(resolved, manifold, bodyA, bodyB, resolveBoost = 1) {
-        if (!resolved || !manifold) {
-            return {
-                moveAX: 0,
-                moveAY: 0,
-                moveBX: 0,
-                moveBY: 0
-            };
-        }
-
-        const rawPenetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-        const slopScale = resolveBoost > 1 ? (1 / resolveBoost) : 1;
-        const effectivePenetration = Math.max(0, rawPenetration - (COLLISION_RESOLVE_SLOP * slopScale));
-        if (effectivePenetration <= 0) {
-            return {
-                moveAX: 0,
-                moveAY: 0,
-                moveBX: 0,
-                moveBY: 0
-            };
-        }
-
-        const penetrationRatio = effectivePenetration / Math.max(EPSILON, rawPenetration);
-        const correctionScale = COLLISION_RESOLVE_PERCENT * penetrationRatio * resolveBoost;
-
-        const moveA = this.#clampCorrectionVector(
-            (resolved.moveAX || 0) * correctionScale,
-            (resolved.moveAY || 0) * correctionScale,
-            bodyA,
-            resolveBoost
-        );
-        const moveB = this.#clampCorrectionVector(
-            (resolved.moveBX || 0) * correctionScale,
-            (resolved.moveBY || 0) * correctionScale,
-            bodyB,
-            resolveBoost
-        );
-
-        return {
-            moveAX: moveA.x,
-            moveAY: moveA.y,
-            moveBX: moveB.x,
-            moveBY: moveB.y
-        };
-    }
-
-    /**
-     * @private
-     */
-    #clampCorrectionVector(dx, dy, body, resolveBoost = 1) {
-        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return { x: 0, y: 0 };
-        const mag = Math.hypot(dx, dy);
-        if (mag <= EPSILON) return { x: 0, y: 0 };
-
-        const radius = Number.isFinite(body?.resolveRadius)
-            ? body.resolveRadius
-            : (Number.isFinite(body?.boundRadius) ? body.boundRadius : 16);
-        const baseMaxCorrection = Math.max(COLLISION_RESOLVE_MIN_MAX, radius * COLLISION_RESOLVE_MAX_RATIO);
-        const maxCorrection = baseMaxCorrection * this.#getDenseCorrectionScale(body) * resolveBoost;
-        if (mag <= maxCorrection) {
-            return { x: dx, y: dy };
-        }
-
-        const scale = maxCorrection / mag;
-        return {
-            x: dx * scale,
-            y: dy * scale
-        };
-    }
-
-    /**
      * body 이동량을 현재 broad-phase SoA 버퍼에 반영합니다.
      * @private
      * @param {object} body
@@ -3129,7 +2739,7 @@ export class CollisionHandler {
         const moveMag = Math.hypot(dx, dy);
         if (moveMag <= EPSILON) return;
         const baseFrameMax = Number.isFinite(body._frameResolveMax) ? body._frameResolveMax : Number.POSITIVE_INFINITY;
-        const frameMax = baseFrameMax * this.#getDenseFrameScale(body) * resolveBoost;
+        const frameMax = baseFrameMax * getCollisionDenseFrameScale(body) * resolveBoost;
         const frameMoved = Number.isFinite(body._frameResolveMoved) ? body._frameResolveMoved : 0;
         if (frameMoved >= frameMax) return;
         const remain = frameMax - frameMoved;
@@ -3197,115 +2807,6 @@ export class CollisionHandler {
                 if (resistX < 1 || resistY < 1) {
                     body.ref.applyAxisResistance(resistX, resistY);
                 }
-            }
-        }
-    }
-
-    /**
-     * 고밀도 접촉 상태에서만 분리 보정 상한을 제한적으로 높입니다.
-     * @private
-     * @param {object} body
-     * @returns {number}
-     */
-    #getDenseCorrectionScale(body) {
-        const candidateCount = this.#getBodyPressure(body);
-        if (candidateCount < DENSE_CORRECTION_CANDIDATE_THRESHOLD) return 1;
-        const extra = candidateCount - DENSE_CORRECTION_CANDIDATE_THRESHOLD + 1;
-        return Math.min(
-            DENSE_CORRECTION_SCALE_MAX,
-            1 + (extra * DENSE_CORRECTION_SCALE_PER_NEIGHBOR)
-        );
-    }
-
-    /**
-     * 과밀 구간에서 프레임당 이동 상한을 소폭 완화합니다.
-     * @private
-     * @param {object} body
-     * @returns {number}
-     */
-    #getDenseFrameScale(body) {
-        const candidateCount = this.#getBodyPressure(body);
-        if (candidateCount < DENSE_FRAME_CANDIDATE_THRESHOLD) return 1;
-        const extra = candidateCount - DENSE_FRAME_CANDIDATE_THRESHOLD + 1;
-        return Math.min(
-            DENSE_FRAME_SCALE_MAX,
-            1 + (extra * DENSE_FRAME_SCALE_PER_NEIGHBOR)
-        );
-    }
-
-    /**
-     * @private
-     */
-    #hasProjectileHit(projectile, targetId) {
-        if (!projectile || !Number.isInteger(targetId)) return false;
-        if (typeof projectile.hasHitEnemy === 'function') {
-            return projectile.hasHitEnemy(targetId);
-        }
-        if (projectile.hitEnemyIds instanceof Set) {
-            return projectile.hitEnemyIds.has(targetId);
-        }
-        return false;
-    }
-
-    /**
-     * @private
-     */
-    #markProjectileHit(projectile, targetId) {
-        if (!projectile || !Number.isInteger(targetId)) return;
-        if (typeof projectile.markEnemyHit === 'function') {
-            projectile.markEnemyHit(targetId);
-            return;
-        }
-        if (!(projectile.hitEnemyIds instanceof Set)) {
-            projectile.hitEnemyIds = new Set();
-        }
-        projectile.hitEnemyIds.add(targetId);
-    }
-
-    /**
-     * @private
-     */
-    #applyProjectileImpact(projectile, enemy, manifold) {
-        if (!projectile || !enemy || !manifold) return;
-        if (typeof enemy.addAngularImpulse !== 'function') return;
-
-        const vx = Number.isFinite(projectile.velocity?.x)
-            ? projectile.velocity.x
-            : (Number.isFinite(projectile.speed?.x) ? projectile.speed.x : 0);
-        const vy = Number.isFinite(projectile.velocity?.y)
-            ? projectile.velocity.y
-            : (Number.isFinite(projectile.speed?.y) ? projectile.speed.y : 0);
-        const speed = Math.hypot(vx, vy);
-        if (speed <= EPSILON) return;
-
-        const impactX = Number.isFinite(manifold.pointX) ? manifold.pointX : enemy.position.x;
-        const impactY = Number.isFinite(manifold.pointY) ? manifold.pointY : enemy.position.y;
-
-        const relX = impactX - enemy.position.x;
-        const relY = impactY - enemy.position.y;
-        const projectileWeight = Math.max(0.01, Number.isFinite(projectile.weight) ? projectile.weight : 1);
-        const forceScale = (Number.isFinite(projectile.impactForce) ? projectile.impactForce : 1) * projectileWeight;
-        const impulseX = (vx / speed) * speed * forceScale;
-        const impulseY = (vy / speed) * speed * forceScale;
-        const torque = (relX * impulseY) - (relY * impulseX);
-        const weight = Math.max(0.1, Number.isFinite(enemy.weight) ? enemy.weight : 1);
-        const angularImpulse = (torque / weight) * ROTATION_IMPULSE_SCALE * ROTATION_RESPONSE_MULTIPLIER;
-
-        enemy.lastImpactPoint = { x: impactX, y: impactY };
-        enemy.lastImpactOffset = { x: relX, y: relY };
-        enemy.lastImpactOffsetRatio = Math.min(
-            1,
-            Math.hypot(relX, relY) / Math.max(enemy.getRenderHeightPx?.() || 1, 1)
-        );
-        enemy.addAngularImpulse(angularImpulse, 1);
-
-        if (typeof enemy.registerProjectileHit === 'function') {
-            enemy.registerProjectileHit();
-        } else if (Number.isFinite(enemy.projectileHitsToKill) && enemy.projectileHitsToKill > 0) {
-            const hitCount = (Number.isFinite(enemy.projectileHitCount) ? enemy.projectileHitCount : 0) + 1;
-            enemy.projectileHitCount = hitCount;
-            if (hitCount >= enemy.projectileHitsToKill) {
-                enemy.active = false;
             }
         }
     }
