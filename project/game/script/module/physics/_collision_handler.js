@@ -1,6 +1,15 @@
 import { CollisionDetector } from './_collision_detector.js';
 import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
 import { COLLISION_RULE_DYNAMIC_RESOLVE, getCollisionRule } from './_collision_rules.js';
+import {
+    COLLISION_BODY_KIND_ENEMY as BODY_KIND_ENEMY,
+    COLLISION_BODY_SHAPE_CIRCLE as BODY_SHAPE_CIRCLE,
+    COLLISION_BROAD_STRIDE as BROAD_STRIDE,
+    COLLISION_RELATION_INDEX as RELATION_INDEX,
+    COLLISION_RELATION_BROAD_STRIDE as RELATION_BROAD_STRIDE,
+    getCollisionBodyKindCode,
+    getCollisionBodyShapeCode
+} from './collision_soa_layout.js';
 import { getSimulationObjectWH, getSimulationSetting } from '../simulation/simulation_runtime.js';
 
 const EPSILON = 1e-6;
@@ -8,18 +17,6 @@ const CELL_KEY_OFFSET = 4096;
 const CELL_KEY_STRIDE = 8192;
 const MIN_CELL_SIZE = 20;
 const MAX_CELL_SIZE = 280;
-const BROAD_STRIDE = 14;
-const RELATION_BROAD_STRIDE = 8;
-const BODY_KIND_NONE = 0;
-const BODY_KIND_ENEMY = 1;
-const BODY_KIND_PLAYER = 2;
-const BODY_KIND_WALL = 3;
-const BODY_KIND_PROJECTILE = 4;
-const BODY_KIND_ITEM = 5;
-const BODY_SHAPE_NONE = 0;
-const BODY_SHAPE_CIRCLE = 1;
-const BODY_SHAPE_CIRCLE_PARTS = 2;
-const BODY_SHAPE_RECT = 3;
 const DEFAULT_PHYSICS_ITERATION_COUNT = 3;
 const GRID_BUCKET_INITIAL_CAPACITY = 8;
 const ROTATION_IMPULSE_SCALE = 0.12;
@@ -120,6 +117,8 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveAabbPassCount',
     'solveCirclePassCount',
     'solveResolvedPairCount',
+    'solveSoACirclePairCount',
+    'solveObjectNarrowphasePairCount',
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
 ]);
@@ -252,6 +251,8 @@ export class CollisionHandler {
             solveAabbPassCount: 0,
             solveCirclePassCount: 0,
             solveResolvedPairCount: 0,
+            solveSoACirclePairCount: 0,
+            solveObjectNarrowphasePairCount: 0,
             solveBudgetSkipCount: 0,
             solveLargePopulationMode: 0
         };
@@ -2092,12 +2093,12 @@ export class CollisionHandler {
             bodyB._candidatePairCount = (bodyB._candidatePairCount || 0) + 1;
         }
 
-        const ax = relationData[relationOffsetA + 4];
-        const ay = relationData[relationOffsetA + 5];
-        const bx = relationData[relationOffsetB + 4];
-        const by = relationData[relationOffsetB + 5];
-        const radiusA = relationData[relationOffsetA + 6];
-        const radiusB = relationData[relationOffsetB + 6];
+        const ax = relationData[relationOffsetA + RELATION_INDEX.CENTER_X];
+        const ay = relationData[relationOffsetA + RELATION_INDEX.CENTER_Y];
+        const bx = relationData[relationOffsetB + RELATION_INDEX.CENTER_X];
+        const by = relationData[relationOffsetB + RELATION_INDEX.CENTER_Y];
+        const radiusA = relationData[relationOffsetA + RELATION_INDEX.ENEMY_PAIR_RADIUS];
+        const radiusB = relationData[relationOffsetB + RELATION_INDEX.ENEMY_PAIR_RADIUS];
         if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(radiusA) || radiusA <= 0
             || !Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(radiusB) || radiusB <= 0) {
             return 0;
@@ -2306,10 +2307,10 @@ export class CollisionHandler {
                 const relationOffsetA = low * RELATION_BROAD_STRIDE;
                 const relationOffsetB = high * RELATION_BROAD_STRIDE;
                 if (
-                    relationData[relationOffsetA + 0] > relationData[relationOffsetB + 1] ||
-                    relationData[relationOffsetA + 1] < relationData[relationOffsetB + 0] ||
-                    relationData[relationOffsetA + 2] > relationData[relationOffsetB + 3] ||
-                    relationData[relationOffsetA + 3] < relationData[relationOffsetB + 2]
+                    relationData[relationOffsetA + RELATION_INDEX.MIN_X] > relationData[relationOffsetB + RELATION_INDEX.MAX_X] ||
+                    relationData[relationOffsetA + RELATION_INDEX.MAX_X] < relationData[relationOffsetB + RELATION_INDEX.MIN_X] ||
+                    relationData[relationOffsetA + RELATION_INDEX.MIN_Y] > relationData[relationOffsetB + RELATION_INDEX.MAX_Y] ||
+                    relationData[relationOffsetA + RELATION_INDEX.MAX_Y] < relationData[relationOffsetB + RELATION_INDEX.MIN_Y]
                 ) {
                     this.#frameStats.aabbRejectCount++;
                     continue;
@@ -2319,12 +2320,12 @@ export class CollisionHandler {
                 this.#recordProfileCount('solveAabbPassCount');
                 const isCirclePair = shapeCodes[low] === BODY_SHAPE_CIRCLE && shapeCodes[high] === BODY_SHAPE_CIRCLE;
                 if (!isCirclePair) {
-                    const ax = relationData[relationOffsetA + 4];
-                    const ay = relationData[relationOffsetA + 5];
-                    const bx = relationData[relationOffsetB + 4];
-                    const by = relationData[relationOffsetB + 5];
-                    const ra = relationData[relationOffsetA + 6];
-                    const rb = relationData[relationOffsetB + 6];
+                    const ax = relationData[relationOffsetA + RELATION_INDEX.CENTER_X];
+                    const ay = relationData[relationOffsetA + RELATION_INDEX.CENTER_Y];
+                    const bx = relationData[relationOffsetB + RELATION_INDEX.CENTER_X];
+                    const by = relationData[relationOffsetB + RELATION_INDEX.CENTER_Y];
+                    const ra = relationData[relationOffsetA + RELATION_INDEX.ENEMY_PAIR_RADIUS];
+                    const rb = relationData[relationOffsetB + RELATION_INDEX.ENEMY_PAIR_RADIUS];
                     if (Number.isFinite(ax) && Number.isFinite(ay) && Number.isFinite(bx) && Number.isFinite(by)
                         && Number.isFinite(ra) && Number.isFinite(rb) && ra > 0 && rb > 0) {
                         const radiusSum = ra + rb + EPSILON;
@@ -2362,6 +2363,9 @@ export class CollisionHandler {
                         resolveBoost,
                         COLLISION_RULE_DYNAMIC_RESOLVE
                     );
+                this.#recordProfileCount(
+                    isCirclePair ? 'solveSoACirclePairCount' : 'solveObjectNarrowphasePairCount'
+                );
                 this.#recordProfileDuration('solveNarrowphaseMs', narrowphaseStart);
                 if (pairResolved > 0) {
                     this.#recordProfileCount('solveResolvedPairCount', pairResolved);
@@ -2405,6 +2409,7 @@ export class CollisionHandler {
                 resolveBoost,
                 rule
             );
+            this.#recordProfileCount('solveObjectNarrowphasePairCount');
             this.#recordProfileDuration('solveNarrowphaseMs', narrowphaseStart);
             if (pairResolved > 0) {
                 this.#recordProfileCount('solveResolvedPairCount', pairResolved);
@@ -2608,34 +2613,6 @@ export class CollisionHandler {
     }
 
     /**
-     * body kind 문자열을 SoA fast path용 숫자 코드로 변환합니다.
-     * @private
-     * @param {string} kind
-     * @returns {number}
-     */
-    #getBodyKindCode(kind) {
-        if (kind === 'enemy') return BODY_KIND_ENEMY;
-        if (kind === 'player') return BODY_KIND_PLAYER;
-        if (kind === 'wall') return BODY_KIND_WALL;
-        if (kind === 'projectile') return BODY_KIND_PROJECTILE;
-        if (kind === 'item') return BODY_KIND_ITEM;
-        return BODY_KIND_NONE;
-    }
-
-    /**
-     * body shape 문자열을 SoA fast path용 숫자 코드로 변환합니다.
-     * @private
-     * @param {string} shape
-     * @returns {number}
-     */
-    #getBodyShapeCode(shape) {
-        if (shape === 'circle') return BODY_SHAPE_CIRCLE;
-        if (shape === 'circleParts') return BODY_SHAPE_CIRCLE_PARTS;
-        if (shape === 'rect') return BODY_SHAPE_RECT;
-        return BODY_SHAPE_NONE;
-    }
-
-    /**
      * grid 삽입용 broad-phase SoA 데이터를 씁니다.
      * @private
      * @param {number} index
@@ -2665,8 +2642,8 @@ export class CollisionHandler {
         }
 
         body._broadDataIndex = index;
-        this.#bodyKindCodes[index] = this.#getBodyKindCode(body.kind);
-        this.#bodyShapeCodes[index] = this.#getBodyShapeCode(body.shape);
+        this.#bodyKindCodes[index] = getCollisionBodyKindCode(body.kind);
+        this.#bodyShapeCodes[index] = getCollisionBodyShapeCode(body.shape);
 
         bd[o + 0] = minX;
         bd[o + 1] = maxX;
@@ -2685,14 +2662,14 @@ export class CollisionHandler {
 
         const relationOffset = index * RELATION_BROAD_STRIDE;
         const relationData = this.#relationBroadData;
-        relationData[relationOffset + 0] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
-        relationData[relationOffset + 1] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
-        relationData[relationOffset + 2] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
-        relationData[relationOffset + 3] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
-        relationData[relationOffset + 4] = Number.isFinite(body.centerX) ? body.centerX : body.x;
-        relationData[relationOffset + 5] = Number.isFinite(body.centerY) ? body.centerY : body.y;
-        relationData[relationOffset + 6] = body.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
-        relationData[relationOffset + 7] = body.kind === 'enemy' && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
+        relationData[relationOffset + RELATION_INDEX.MIN_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
+        relationData[relationOffset + RELATION_INDEX.MAX_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
+        relationData[relationOffset + RELATION_INDEX.MIN_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
+        relationData[relationOffset + RELATION_INDEX.MAX_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
+        relationData[relationOffset + RELATION_INDEX.CENTER_X] = Number.isFinite(body.centerX) ? body.centerX : body.x;
+        relationData[relationOffset + RELATION_INDEX.CENTER_Y] = Number.isFinite(body.centerY) ? body.centerY : body.y;
+        relationData[relationOffset + RELATION_INDEX.ENEMY_PAIR_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
+        relationData[relationOffset + RELATION_INDEX.PROJECTILE_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
     }
 
     /**
@@ -2915,12 +2892,12 @@ export class CollisionHandler {
 
         const relationOffset = bodyIndex * RELATION_BROAD_STRIDE;
         const relationData = this.#relationBroadData;
-        relationData[relationOffset + 0] += dx;
-        relationData[relationOffset + 1] += dx;
-        relationData[relationOffset + 2] += dy;
-        relationData[relationOffset + 3] += dy;
-        relationData[relationOffset + 4] += dx;
-        relationData[relationOffset + 5] += dy;
+        relationData[relationOffset + RELATION_INDEX.MIN_X] += dx;
+        relationData[relationOffset + RELATION_INDEX.MAX_X] += dx;
+        relationData[relationOffset + RELATION_INDEX.MIN_Y] += dy;
+        relationData[relationOffset + RELATION_INDEX.MAX_Y] += dy;
+        relationData[relationOffset + RELATION_INDEX.CENTER_X] += dx;
+        relationData[relationOffset + RELATION_INDEX.CENTER_Y] += dy;
     }
 
     /**
