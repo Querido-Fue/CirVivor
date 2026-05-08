@@ -3,6 +3,13 @@ import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
 import { getLoadingAccentColor } from './_title_loading_theme.js';
 import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_theme.js';
+import {
+    createCenterCircleGlowNoiseCanvas,
+    drawCenterCircleDitheredHaloNoise,
+    drawCenterCircleGlowRing,
+    drawCenterCircleHaloRing,
+    resizeCenterCircleGlowCanvas
+} from './_title_center_circle_glow_canvas.js';
 import { buildCenterCircleFillData } from './_title_center_circle_wave.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -43,7 +50,7 @@ export class TitleCenterCircle {
         this.visualScale = 1;
         this.placementProgress = 0;
         this.glowCompensationScale = 1;
-        this.glowNoiseCanvas = this.#createGlowNoiseCanvas();
+        this.glowNoiseCanvas = createCenterCircleGlowNoiseCanvas();
         this.glowCacheEntries = new Map();
         this.#recalculateLayout();
     }
@@ -338,7 +345,7 @@ export class TitleCenterCircle {
         const center = canvasSize * 0.5;
         let haloGradient;
 
-        this.#resizeGlowCanvas(entry.canvas, canvasSize, canvasSize);
+        resizeCenterCircleGlowCanvas(entry.canvas, canvasSize, canvasSize);
         glowContext.clearRect(0, 0, canvasSize, canvasSize);
 
         haloGradient = glowContext.createRadialGradient(
@@ -366,9 +373,10 @@ export class TitleCenterCircle {
 
         glowContext.save();
         glowContext.globalCompositeOperation = 'screen';
-        this.#drawHaloRing(glowContext, center, center, haloInnerRadius, haloOuterRadius, haloGradient);
-        this.#drawDitheredHaloNoise(
+        drawCenterCircleHaloRing(glowContext, center, center, haloInnerRadius, haloOuterRadius, haloGradient);
+        drawCenterCircleDitheredHaloNoise(
             glowContext,
+            this.glowNoiseCanvas,
             center,
             center,
             haloInnerRadius,
@@ -385,7 +393,7 @@ export class TitleCenterCircle {
             Number.isFinite(ringSettings?.ShadowAlphaMax) ? ringSettings.ShadowAlphaMax : 0,
             (Number.isFinite(ringSettings?.ShadowAlphaScale) ? ringSettings.ShadowAlphaScale : 0) * baseBloomStrength
         );
-        this.#drawGlowRing(
+        drawCenterCircleGlowRing(
             glowContext,
             center,
             center,
@@ -402,27 +410,6 @@ export class TitleCenterCircle {
     }
 
     /**
-     * glow 캐시 캔버스 크기를 필요한 경우에만 갱신합니다.
-     * @param {HTMLCanvasElement} canvas - 대상 캐시 캔버스입니다.
-     * @param {number} width - 목표 너비입니다.
-     * @param {number} height - 목표 높이입니다.
-     * @private
-     */
-    #resizeGlowCanvas(canvas, width, height) {
-        const nextWidth = Math.max(1, Math.ceil(width));
-        const nextHeight = Math.max(1, Math.ceil(height));
-        if (!canvas) {
-            return;
-        }
-        if (canvas.width === nextWidth && canvas.height === nextHeight) {
-            return;
-        }
-
-        canvas.width = nextWidth;
-        canvas.height = nextHeight;
-    }
-
-    /**
      * glow 캐시 엔트리를 모두 정리합니다.
      * @private
      */
@@ -432,109 +419,6 @@ export class TitleCenterCircle {
             entry.canvas.height = 0;
         }
         this.glowCacheEntries.clear();
-    }
-
-    /**
-     * glow 밴딩 완화를 위한 디더링 노이즈 캔버스를 생성합니다.
-     * @returns {HTMLCanvasElement|null} 생성된 노이즈 캔버스
-     * @private
-     */
-    #createGlowNoiseCanvas() {
-        const noiseCanvas = document.createElement('canvas');
-        const noiseSize = 96;
-        noiseCanvas.width = noiseSize;
-        noiseCanvas.height = noiseSize;
-
-        const noiseCtx = noiseCanvas.getContext('2d');
-        if (!noiseCtx) {
-            return null;
-        }
-
-        const imageData = noiseCtx.createImageData(noiseSize, noiseSize);
-        const pixels = imageData.data;
-
-        for (let i = 0; i < pixels.length; i += 4) {
-            const intensity = 200 + Math.floor(Math.random() * 56);
-            const alpha = Math.floor(Math.random() * 38);
-            pixels[i] = intensity - 18;
-            pixels[i + 1] = intensity;
-            pixels[i + 2] = 255;
-            pixels[i + 3] = alpha;
-        }
-
-        noiseCtx.putImageData(imageData, 0, 0);
-        return noiseCanvas;
-    }
-
-    /**
-     * bloom의 바깥 halo 링을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트
-     * @param {number} centerX - 캐시 내부 중심 X 좌표입니다.
-     * @param {number} centerY - 캐시 내부 중심 Y 좌표입니다.
-     * @param {number} innerRadius - halo 시작 반경
-     * @param {number} outerRadius - halo 종료 반경
-     * @param {CanvasGradient|CanvasPattern|string} fillStyle - 적용할 채우기 스타일
-     * @private
-     */
-    #drawHaloRing(ctx, centerX, centerY, innerRadius, outerRadius, fillStyle) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, outerRadius, 0, TWO_PI);
-        ctx.arc(centerX, centerY, innerRadius, 0, TWO_PI, true);
-        ctx.fillStyle = fillStyle;
-        ctx.fill();
-        ctx.restore();
-    }
-
-    /**
-     * glow 밴딩을 줄이기 위해 halo 영역에 약한 노이즈를 덮습니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트
-     * @param {number} centerX - 캐시 내부 중심 X 좌표입니다.
-     * @param {number} centerY - 캐시 내부 중심 Y 좌표입니다.
-     * @param {number} innerRadius - halo 시작 반경
-     * @param {number} outerRadius - halo 종료 반경
-     * @param {number} alpha - 디더링 알파 값
-     * @private
-     */
-    #drawDitheredHaloNoise(ctx, centerX, centerY, innerRadius, outerRadius, alpha) {
-        if (!this.glowNoiseCanvas || alpha <= 0) {
-            return;
-        }
-
-        const pattern = ctx.createPattern(this.glowNoiseCanvas, 'repeat');
-        if (!pattern) {
-            return;
-        }
-
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.globalCompositeOperation = 'soft-light';
-        this.#drawHaloRing(ctx, centerX, centerY, innerRadius, outerRadius, pattern);
-        ctx.restore();
-    }
-
-    /**
-     * bloom의 링 형태 glow 패스를 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트
-     * @param {number} centerX - 캐시 내부 중심 X 좌표입니다.
-     * @param {number} centerY - 캐시 내부 중심 Y 좌표입니다.
-     * @param {number} radius - 링 반경
-     * @param {number} lineWidth - 링 두께
-     * @param {string} strokeStyle - 링 색상
-     * @param {number} shadowBlur - 그림자 블러 반경
-     * @param {string} shadowColor - 그림자 색상
-     * @private
-     */
-    #drawGlowRing(ctx, centerX, centerY, radius, lineWidth, strokeStyle, shadowBlur, shadowColor) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, TWO_PI);
-        ctx.lineWidth = lineWidth;
-        ctx.strokeStyle = strokeStyle;
-        ctx.shadowBlur = shadowBlur;
-        ctx.shadowColor = shadowColor;
-        ctx.stroke();
-        ctx.restore();
     }
 
     /**

@@ -9,6 +9,11 @@ import {
     TITLE_LOGO_TOTAL_DURATION,
     TITLE_LOGO_VIEWBOX
 } from './_title_logo_data.js';
+import {
+    calculateTitleLogoCachePadding,
+    getTitleLogoShadowPasses,
+    resizeTitleLogoCacheCanvas
+} from './_title_logo_cache.js';
 import { getDefaultLogoColor, getDefaultLogoShadowColor } from './_title_logo_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -285,8 +290,8 @@ export class TitleLogo {
      * @private
      */
     #rebuildRenderCache(shadowColor) {
-        const shadowPasses = this.#getShadowPasses();
-        const cachePadding = this.#calculateCachePadding(shadowPasses);
+        const shadowPasses = getTitleLogoShadowPasses(this.scale);
+        const cachePadding = calculateTitleLogoCachePadding(shadowPasses);
         const logoWidth = Math.max(1, Math.ceil(this.logoWidth));
         const logoHeight = Math.max(1, Math.ceil(this.logoHeight));
         const renderWidth = Math.max(1, Math.ceil(logoWidth + cachePadding.left + cachePadding.right));
@@ -297,10 +302,10 @@ export class TitleLogo {
             return;
         }
 
-        this.#resizeCacheCanvas(this.logoMaskCanvas, logoWidth, logoHeight);
-        this.#resizeCacheCanvas(this.shadowMaskCanvas, logoWidth, logoHeight);
-        this.#resizeCacheCanvas(this.tintCanvas, logoWidth, logoHeight);
-        this.#resizeCacheCanvas(this.renderCanvas, renderWidth, renderHeight);
+        resizeTitleLogoCacheCanvas(this.logoMaskCanvas, logoWidth, logoHeight);
+        resizeTitleLogoCacheCanvas(this.shadowMaskCanvas, logoWidth, logoHeight);
+        resizeTitleLogoCacheCanvas(this.tintCanvas, logoWidth, logoHeight);
+        resizeTitleLogoCacheCanvas(this.renderCanvas, renderWidth, renderHeight);
 
         this.cacheOffsetX = cachePadding.left;
         this.cacheOffsetY = cachePadding.top;
@@ -381,76 +386,6 @@ export class TitleLogo {
         );
         context.filter = 'none';
         context.restore();
-    }
-
-    /**
-     * 그림자 패스 정의를 현재 스케일 기준으로 반환합니다.
-     * @returns {Array<{alpha:number, blur:number, offsetX:number, offsetY:number, lineWidth:number}>} 그림자 패스 목록입니다.
-     * @private
-     */
-    #getShadowPasses() {
-        return [
-            {
-                alpha: 0.96,
-                blur: Math.max(44, 132 * this.scale),
-                offsetX: 0,
-                offsetY: Math.max(8, 20 * this.scale),
-                lineWidth: 2.35
-            },
-            {
-                alpha: 1,
-                blur: Math.max(20, 62 * this.scale),
-                offsetX: 0,
-                offsetY: Math.max(10, 28 * this.scale),
-                lineWidth: 2.05
-            }
-        ];
-    }
-
-    /**
-     * 그림자 블러를 포함할 오프스크린 패딩을 계산합니다.
-     * @param {Array<{blur:number, offsetX:number, offsetY:number}>} shadowPasses - 그림자 패스 목록입니다.
-     * @returns {{left:number, top:number, right:number, bottom:number}} 각 방향 패딩입니다.
-     * @private
-     */
-    #calculateCachePadding(shadowPasses) {
-        let left = 0;
-        let top = 0;
-        let right = 0;
-        let bottom = 0;
-
-        shadowPasses.forEach((shadowPass) => {
-            const spread = Math.ceil(shadowPass.blur * 2.5) + 6;
-            left = Math.max(left, spread - shadowPass.offsetX);
-            top = Math.max(top, spread - shadowPass.offsetY);
-            right = Math.max(right, spread + shadowPass.offsetX);
-            bottom = Math.max(bottom, spread + shadowPass.offsetY);
-        });
-
-        return {
-            left: Math.max(1, Math.ceil(left)),
-            top: Math.max(1, Math.ceil(top)),
-            right: Math.max(1, Math.ceil(right)),
-            bottom: Math.max(1, Math.ceil(bottom))
-        };
-    }
-
-    /**
-     * 오프스크린 캔버스 크기를 필요한 경우에만 갱신합니다.
-     * @param {HTMLCanvasElement} canvas - 대상 캔버스입니다.
-     * @param {number} width - 목표 너비입니다.
-     * @param {number} height - 목표 높이입니다.
-     * @private
-     */
-    #resizeCacheCanvas(canvas, width, height) {
-        const nextWidth = Math.max(1, Math.ceil(width));
-        const nextHeight = Math.max(1, Math.ceil(height));
-        if (canvas.width === nextWidth && canvas.height === nextHeight) {
-            return;
-        }
-
-        canvas.width = nextWidth;
-        canvas.height = nextHeight;
     }
 
     /**

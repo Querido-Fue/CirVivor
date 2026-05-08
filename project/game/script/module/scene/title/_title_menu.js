@@ -32,6 +32,19 @@ import { getTitleMenuIconSource } from './_title_menu_icon.js';
 import { TitleMenuLayout } from './_title_menu_layout.js';
 import { clampNumber, easeOutCubic, easeOutExpo, lerpValue } from './_title_menu_motion.js';
 import {
+    createTitleMenuPaneRuntimeState,
+    createTitleMenuRuntimeState
+} from './_title_menu_runtime_state.js';
+import {
+    getTitleMenuTextPresetFont,
+    getTitleMenuTextPresetFontSize
+} from './_title_menu_text_layout.js';
+import {
+    buildTitleMenuVersionLabelLayout,
+    getTitleMenuGameVersionText,
+    getTitleMenuVersionHistoryLinkText
+} from './_title_menu_version_label.js';
+import {
     buildMenuStaticTextureThemeSignature,
     getMenuBackdropPaneStyle,
     getMenuCardDescriptionColor,
@@ -89,8 +102,8 @@ export class TitleMenu {
         this.cardPaneTextureContext = null;
         this.versionLabelMeasureCanvas = null;
         this.versionLabelMeasureContext = null;
-        this.cardPaneInteractionState = this.#createPaneRuntimeState();
-        this.utilityPaneInteractionState = this.#createPaneRuntimeState();
+        this.cardPaneInteractionState = createTitleMenuPaneRuntimeState();
+        this.utilityPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.secondaryMenuEntries = TITLE_MENU_SECONDARY_ENTRIES;
         this.session = this.#createSession();
         this.versionHistoryLinkButton = this.#createVersionHistoryLinkButton();
@@ -435,7 +448,7 @@ export class TitleMenu {
             card.animator.setRevealOrder(orderMap.get(cardDefinition.layoutSlot) || 0);
             card.animator.show();
             this.cards.push(card);
-            this.cardStateMap.set(cardDefinition.id, this.#createRuntimeState());
+            this.cardStateMap.set(cardDefinition.id, createTitleMenuRuntimeState());
         }
     }
 
@@ -445,7 +458,7 @@ export class TitleMenu {
      */
     #createUtilityTileStates() {
         for (const menuEntry of this.secondaryMenuEntries) {
-            this.utilityTileStateMap.set(menuEntry.id, this.#createRuntimeState());
+            this.utilityTileStateMap.set(menuEntry.id, createTitleMenuRuntimeState());
         }
     }
 
@@ -509,57 +522,6 @@ export class TitleMenu {
             runtimeState.textureCanvas = null;
             runtimeState.textureContext = null;
         }
-    }
-
-    /**
-     * 카드별 런타임 상태를 생성합니다.
-     * @returns {object} 생성된 런타임 상태입니다.
-     * @private
-     */
-    #createRuntimeState() {
-        return {
-            hovered: false,
-            wasHovered: false,
-            localX: 0,
-            localY: 0,
-            normalizedX: 0,
-            normalizedY: 0,
-            targetRotateX: 0,
-            targetRotateY: 0,
-            rotateX: 0,
-            rotateY: 0,
-            perspective: 1180,
-            transformMatrix: multiplyMat4(createRotationYMatrix(0), createRotationXMatrix(0)),
-            projectedQuad: null,
-            inverseHomography: null,
-            spotlightAlpha: 0,
-            borderAlpha: 0,
-            particleAlpha: 0,
-            hoverElapsed: 0,
-            particles: [],
-            ripples: [],
-            textureCanvas: null,
-            textureContext: null,
-            staticTextureCanvas: null,
-            staticTextureContext: null,
-            staticTextureSignature: ''
-        };
-    }
-
-    /**
-     * 바깥 glass 영역 상호작용 상태를 생성합니다.
-     * @returns {object} 생성된 pane 상호작용 상태입니다.
-     * @private
-     */
-    #createPaneRuntimeState() {
-        return {
-            hovered: false,
-            spotlightAlpha: 0,
-            borderAlpha: 0,
-            localX: 0,
-            localY: 0,
-            wasHovered: false
-        };
     }
 
     /**
@@ -2086,7 +2048,7 @@ export class TitleMenu {
             description,
             Math.round(this.UIWW),
             Math.round(this.WH),
-            this.#getTextPresetFontSize('H6'),
+            getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H6'),
             this.#getStaticTextureThemeSignature(),
             this.#getIconTextureSignature(card.cardDefinition.id)
         ].join('|');
@@ -2192,7 +2154,7 @@ export class TitleMenu {
             panelRect.w * (panelRect.h > panelRect.w * 0.7 ? 0.095 : 0.08),
             isCompactHorizontalCard ? panelRect.h * 0.28 : 0
         );
-        const descriptionFontSize = this.#getTextPresetFontSize('H6');
+        const descriptionFontSize = getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H6');
         const descriptionLineHeight = descriptionFontSize * 1.32;
         const titleLineHeight = titleFontSize * 1.06;
         const bottomPadding = inset * 0.8;
@@ -2691,81 +2653,38 @@ export class TitleMenu {
     }
 
     /**
-     * 전역 상수에 정의된 게임 버전 문자열을 표시 형식으로 반환합니다.
-     * @returns {string} 렌더링할 버전 문자열입니다.
-     * @private
-     */
-    #getGameVersionText() {
-        const rawVersion = String(GLOBAL_CONSTANTS.GAME_VERSION || '').trim();
-        if (!rawVersion) {
-            return '';
-        }
-
-        return `ver ${rawVersion}`;
-    }
-
-    /**
-     * 버전 라벨 아래에 표시할 업데이트 링크 문자열을 반환합니다.
-     * @returns {string} 렌더링할 업데이트 링크 문자열입니다.
-     * @private
-     */
-    #getVersionHistoryLinkText() {
-        return String(getLangString('title_version_history_link') || '').trim();
-    }
-
-    /**
      * 버전 정보 블록의 텍스트, 폰트, hitbox를 계산합니다.
      * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
      * @returns {object|null} 버전 정보 블록 렌더 레이아웃입니다.
      * @private
      */
     #buildVersionLabelLayout(paneLayout = null) {
-        const versionText = this.#getGameVersionText();
+        const versionText = getTitleMenuGameVersionText(GLOBAL_CONSTANTS);
         if (!versionText) {
             return null;
         }
 
-        const versionFontSize = this.#getTextPresetFontSize('H5');
-        const linkFontSize = this.#getTextPresetFontSize('H5_BOLD');
-        const lineGap = Math.max(4, this.WH * 0.005);
-        const versionFont = this.#getTextPresetFont('H5');
-        const linkFont = this.#getTextPresetFont('H5_BOLD');
-        const linkText = this.#getVersionHistoryLinkText();
-        const blockHeight = versionFontSize + (linkText ? linkFontSize + lineGap : 0);
-        const renderState = this.#buildVersionLabelRenderState(paneLayout, blockHeight);
-        const linkY = renderState.y + versionFontSize + lineGap;
+        const versionFontSize = getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H5');
+        const linkFontSize = getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H5_BOLD');
+        const versionFont = getTitleMenuTextPresetFont(TEXT_CONSTANTS, this.UIWW, 'H5');
+        const linkFont = getTitleMenuTextPresetFont(TEXT_CONSTANTS, this.UIWW, 'H5_BOLD');
+        const linkText = getTitleMenuVersionHistoryLinkText();
         const linkTextWidth = linkText ? this.#measureTextWidth(linkText, linkFont) : 0;
-        const linkIconSize = linkText ? Math.max(10, linkFontSize * 0.9504) : 0;
-        const linkIconGap = linkText ? Math.max(4, this.UIWW * 0.0034) : 0;
-        const linkBlockWidth = linkText ? linkIconSize + linkIconGap + linkTextWidth : 0;
-        const linkTextX = renderState.x;
-        const linkIconX = linkTextX - linkTextWidth - linkIconGap - linkIconSize;
-        const linkIconY = linkY + ((linkFontSize - linkIconSize) * 0.5);
-        const hitPaddingX = Math.max(6, this.UIWW * 0.004);
-        const hitPaddingY = Math.max(4, this.WH * 0.004);
 
-        return {
-            alpha: renderState.alpha,
+        return buildTitleMenuVersionLabelLayout({
+            paneLayout,
+            uiww: this.UIWW,
+            wh: this.WH,
+            uiOffsetX: this.UIOffsetX,
+            utilityPaneRevealEase: this.#getUtilityPaneRevealEase(),
             versionText,
             versionFont,
-            versionX: renderState.x,
-            versionY: renderState.y,
+            versionFontSize,
             linkText,
             linkFont,
-            linkTextX,
-            linkY,
-            linkIconX,
-            linkIconY,
-            linkIconSize,
-            linkBounds: linkText
-                ? {
-                    x: renderState.x - linkBlockWidth - hitPaddingX,
-                    y: linkY - hitPaddingY,
-                    w: linkBlockWidth + (hitPaddingX * 2),
-                    h: linkFontSize + (hitPaddingY * 2)
-                }
-                : null
-        };
+            linkFontSize,
+            linkTextWidth
+        });
     }
 
     /**
@@ -2820,51 +2739,6 @@ export class TitleMenu {
             x2: centerX + halfSpan,
             y2: centerY
         });
-    }
-
-    /**
-     * 버전 라벨의 등장 애니메이션 상태를 계산합니다.
-     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
-     * @param {number} [blockHeight=0] - 버전 정보 블록 전체 높이입니다.
-     * @returns {{x:number, y:number, alpha:number}} 렌더링에 사용할 버전 라벨 상태입니다.
-     * @private
-     */
-    #buildVersionLabelRenderState(paneLayout = null, blockHeight = 0) {
-        const utilityPaneEase = this.#getUtilityPaneRevealEase();
-        const safeAreaAnchor = this.#resolveVersionLabelSafeArea(paneLayout, blockHeight);
-
-        return {
-            x: safeAreaAnchor.x + ((1 - utilityPaneEase) * (this.UIWW * 0.026)),
-            y: safeAreaAnchor.y,
-            alpha: utilityPaneEase
-        };
-    }
-
-    /**
-     * 하단 서브 메뉴와 동일한 안전 영역 감각을 갖도록 버전 라벨 기준점을 계산합니다.
-     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
-     * @param {number} [blockHeight=0] - 버전 정보 블록 전체 높이입니다.
-     * @returns {{x:number, y:number}} 버전 라벨 우상단 기준점입니다.
-     * @private
-     */
-    #resolveVersionLabelSafeArea(paneLayout = null, blockHeight = 0) {
-        const utilityPane = paneLayout?.utilityPane || null;
-        const cardPane = paneLayout?.cardPane || null;
-        const resolvedBlockHeight = Math.max(0, blockHeight);
-        if (!utilityPane || !cardPane) {
-            const verticalOffset = this.WH * (100 / 1440);
-            return {
-                x: this.UIOffsetX + this.UIWW - Math.max(18, this.UIWW * 0.024),
-                y: Math.max(14, this.WH * 0.022) + verticalOffset
-            };
-        }
-
-        const paneGap = Math.max(0, utilityPane.y - (cardPane.y + cardPane.h));
-        const blockBottomY = cardPane.y - paneGap;
-        return {
-            x: utilityPane.x + utilityPane.w,
-            y: blockBottomY - resolvedBlockHeight
-        };
     }
 
     /**
@@ -2932,36 +2806,6 @@ export class TitleMenu {
     }
 
     /**
-     * 텍스트 프리셋 기준 폰트 크기를 반환합니다.
-     * @param {string} presetKey - 텍스트 프리셋 키입니다.
-     * @returns {number} 계산된 폰트 크기(px)입니다.
-     * @private
-     */
-    #getTextPresetFontSize(presetKey) {
-        const fallback = TEXT_CONSTANTS.H6;
-        const preset = TEXT_CONSTANTS[presetKey] || fallback;
-        const fontData = preset.FONT || fallback.FONT;
-        const sizeValue = fontData?.SIZE?.VALUE || fallback.FONT.SIZE.VALUE;
-        return this.UIWW * (sizeValue / 100);
-    }
-
-    /**
-     * 텍스트 프리셋을 캔버스용 폰트 문자열로 변환합니다.
-     * @param {string} presetKey - 조회할 텍스트 프리셋 키입니다.
-     * @param {number|null} [fontWeightOverride=null] - 강제로 적용할 폰트 굵기입니다.
-     * @returns {string} 캔버스에 적용할 폰트 문자열입니다.
-     * @private
-     */
-    #getTextPresetFont(presetKey, fontWeightOverride = null) {
-        const fallback = TEXT_CONSTANTS.H6;
-        const preset = TEXT_CONSTANTS[presetKey] || fallback;
-        const fontData = preset.FONT || fallback.FONT;
-        const weight = Number.isFinite(fontWeightOverride) ? fontWeightOverride : (fontData.WEIGHT || 400);
-        const family = this.#normalizeFontFamily(fontData.FAMILY || 'Pretendard Variable, arial');
-        return `${weight} ${this.#getTextPresetFontSize(presetKey)}px ${family}`;
-    }
-
-    /**
      * 지정한 폰트 기준 텍스트 폭을 측정합니다.
      * @param {string} text - 측정할 텍스트입니다.
      * @param {string} font - 캔버스 폰트 문자열입니다.
@@ -2971,7 +2815,7 @@ export class TitleMenu {
     #measureTextWidth(text, font) {
         const context = this.#getVersionLabelMeasureContext();
         if (!context) {
-            return Math.max(1, String(text || '').length * this.#getTextPresetFontSize('H6') * 0.6);
+            return Math.max(1, String(text || '').length * getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H6') * 0.6);
         }
 
         context.save();
@@ -2998,21 +2842,6 @@ export class TitleMenu {
         this.versionLabelMeasureCanvas = document.createElement('canvas');
         this.versionLabelMeasureContext = this.versionLabelMeasureCanvas.getContext('2d');
         return this.versionLabelMeasureContext;
-    }
-
-    /**
-     * 캔버스 렌더링용 폰트 패밀리 문자열을 정규화합니다.
-     * @param {string} fontFamily - 원본 폰트 패밀리 문자열입니다.
-     * @returns {string} 정규화된 폰트 패밀리 문자열입니다.
-     * @private
-     */
-    #normalizeFontFamily(fontFamily) {
-        let familyStr = fontFamily;
-        if (!familyStr.includes('"') && !familyStr.includes("'")) {
-            const parts = familyStr.split(',');
-            familyStr = `"${parts[0].trim()}"${parts[1] ? `,${parts[1]}` : ''}`;
-        }
-        return familyStr;
     }
 
     /**

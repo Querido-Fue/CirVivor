@@ -60,6 +60,16 @@ export function getMenuPanelStrokeColor(alpha) {
 }
 
 /**
+ * 투명도 제거 상태의 메뉴 패널 stroke 색상을 반환합니다.
+ * @returns {string} 불투명 패널용 스트로크 색상입니다.
+ */
+function getOpaqueMenuPanelStrokeColor() {
+    return ColorSchemes?.Overlay?.Panel?.Border
+        || ColorSchemes?.Overlay?.Panel?.Background
+        || getThemeAwareMenuBorderColor();
+}
+
+/**
  * 메뉴 효과 알파값을 반환합니다.
  * @param {string} key - 메뉴 opacity 키
  * @param {number} fallback - 미설정 시 기본 알파
@@ -149,14 +159,14 @@ export function getMenuPanelStyle(disableTransparency) {
     if (disableTransparency) {
         return {
             fill: ColorSchemes.Overlay.Panel.Background,
-            stroke: getMenuPanelStrokeColor(0.88),
+            stroke: getOpaqueMenuPanelStrokeColor(),
             sampleBackdrop: false,
             blur: 0,
             lineWidth: 1.35,
             tintColor: ColorSchemes.Overlay.Panel.GlassTint,
             edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
             tintStrength: 0,
-            edgeStrength: 0.08,
+            edgeStrength: 0,
             refractionStrength: 0
         };
     }
@@ -185,14 +195,14 @@ export function getMenuBackdropPaneStyle(disableTransparency, unifiedStroke) {
     if (disableTransparency) {
         return {
             fill: ColorSchemes.Overlay.Panel.Background,
-            stroke: unifiedStroke,
+            stroke: getOpaqueMenuPanelStrokeColor(),
             sampleBackdrop: false,
             blur: 0,
             lineWidth: 1.05,
             tintColor: ColorSchemes.Overlay.Panel.GlassTint,
             edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
             tintStrength: 0,
-            edgeStrength: 0.08,
+            edgeStrength: 0,
             refractionStrength: 0
         };
     }

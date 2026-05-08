@@ -4,7 +4,6 @@ import { getUIOffsetX, getUIWW, getWH, render } from 'display/display_system.js'
 import { getDelta } from 'game/time_handler.js';
 import { getSetting } from 'save/save_system.js';
 import { getLangString } from 'ui/ui_system.js';
-import { parseUIData } from 'ui/layout/_positioning_handler.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
@@ -16,6 +15,7 @@ import {
     shouldShowTitleLoadingDebugSkipButton
 } from './_title_loading_debug_skip_button.js';
 import { buildTitleLoadingSchedule } from './_title_loading_schedule.js';
+import { buildTitleLoadingTextLayout } from './_title_loading_text_layout.js';
 import {
     getLoadingLogoColor,
     getLoadingTextColor
@@ -685,78 +685,11 @@ export class TitleLoadingSequence {
      * @private
      */
     #recalculateLayout() {
-        const textAnchor = this.centerCircle.getTextAnchor();
-        const titleFontSize = this.#getTextPresetFontSize('H5');
-        const noticeFontSize = this.#getTextPresetFontSize('H6');
-        const noticeGap = Math.max(10, this.WH * 0.014);
-
-        this.loadingTextX = textAnchor.x;
-        this.loadingTextY = textAnchor.y;
-        this.loadingTextFontSize = titleFontSize;
-        this.loadingTextFont = this.#getTextPresetFont('H5');
-        this.loadingNoticeFontSize = noticeFontSize;
-        this.loadingNoticeFont = this.#getTextPresetFont('H6');
-        this.loadingNoticeLines = this.#getLoadingNoticeLines();
-        this.loadingNoticeLineHeight = Math.max(this.loadingNoticeFontSize * 1.45, this.WH * 0.018);
-        this.loadingNoticeStartY = this.loadingTextY + (this.loadingTextFontSize * 0.5) + noticeGap + (this.loadingNoticeFontSize * 0.5);
-        this.loadingTextBlockBottomY = this.loadingNoticeLines.length > 0
-            ? this.loadingNoticeStartY + (this.loadingNoticeLineHeight * (this.loadingNoticeLines.length - 1)) + (this.loadingNoticeFontSize * 0.5)
-            : this.loadingTextY + (this.loadingTextFontSize * 0.5);
-        this.loadingTextExitDistance = Math.max(10, this.WH * TITLE_LOADING.TEXT_EXIT_DISTANCE_RATIO);
-    }
-
-    /**
-     * 로딩 안내 문구를 줄 단위 배열로 반환합니다.
-     * @returns {string[]} 렌더링할 안내 문구 줄 목록입니다.
-     * @private
-     */
-    #getLoadingNoticeLines() {
-        return String(getLangString('title_loading_notice') || '')
-            .split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean);
-    }
-
-    /**
-     * 지정한 텍스트 프리셋의 폰트 크기를 픽셀 단위로 반환합니다.
-     * @param {string} presetKey - 조회할 텍스트 프리셋 키입니다.
-     * @returns {number} 프리셋에서 계산된 폰트 크기입니다.
-     * @private
-     */
-    #getTextPresetFontSize(presetKey) {
-        const fallback = TEXT_CONSTANTS.H6;
-        const preset = TEXT_CONSTANTS[presetKey] || fallback;
-        const fontData = preset.FONT || fallback.FONT;
-        return Math.max(8, parseUIData(fontData.SIZE));
-    }
-
-    /**
-     * 지정한 텍스트 프리셋을 캔버스용 폰트 문자열로 변환합니다.
-     * @param {string} presetKey - 조회할 텍스트 프리셋 키입니다.
-     * @returns {string} 캔버스 렌더링에 사용할 폰트 문자열입니다.
-     * @private
-     */
-    #getTextPresetFont(presetKey) {
-        const fallback = TEXT_CONSTANTS.H6;
-        const preset = TEXT_CONSTANTS[presetKey] || fallback;
-        const fontData = preset.FONT || fallback.FONT;
-        const weight = fontData.WEIGHT || 400;
-        const family = this.#normalizeFontFamily(fontData.FAMILY || 'Pretendard Variable, arial');
-        return `${weight} ${this.#getTextPresetFontSize(presetKey)}px ${family}`;
-    }
-
-    /**
-     * 캔버스 렌더링용 폰트 패밀리 문자열을 정규화합니다.
-     * @param {string} fontFamily - 원본 폰트 패밀리 문자열입니다.
-     * @returns {string} 따옴표가 보정된 폰트 패밀리 문자열입니다.
-     * @private
-     */
-    #normalizeFontFamily(fontFamily) {
-        let familyStr = fontFamily;
-        if (!familyStr.includes('"') && !familyStr.includes("'")) {
-            const parts = familyStr.split(',');
-            familyStr = `"${parts[0].trim()}"${parts[1] ? `,${parts[1]}` : ''}`;
-        }
-        return familyStr;
+        Object.assign(this, buildTitleLoadingTextLayout({
+            textAnchor: this.centerCircle.getTextAnchor(),
+            textConstants: TEXT_CONSTANTS,
+            titleLoading: TITLE_LOADING,
+            wh: this.WH
+        }));
     }
 }

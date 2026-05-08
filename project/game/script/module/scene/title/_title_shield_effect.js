@@ -1,6 +1,7 @@
 import { renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { TitleShieldConfig } from './_title_shield_config.js';
+import { buildTitleShieldRenderCommand } from './_title_shield_render_command.js';
 import {
     calculateShieldPressure,
     getEnemyScreenRadius,
@@ -118,35 +119,16 @@ export class TitleShieldEffect {
         if (this.radius <= 0) {
             return;
         }
-        const shieldColors = this.config.getColors();
 
-        renderGL('effect', {
-            effectType: 'magneticShield',
-            x: this.centerX,
-            y: this.centerY,
+        renderGL('effect', buildTitleShieldRenderCommand({
+            centerX: this.centerX,
+            centerY: this.centerY,
             radius: this.radius,
-            fieldRadius: this.config.getFieldRadius(this.radius),
             time: this.time,
-            alpha: this.config.getBaseAlpha(),
-            ringThickness: this.config.getRingThickness(),
-            glowWidth: this.config.getGlowWidth(),
-            shadowColor: shieldColors.shadow,
-            lowColor: shieldColors.low,
-            highColor: shieldColors.high,
-            highlightColor: shieldColors.highlight,
-            impacts: this.impacts.map((impact) => ({
-                angle: impact.angle,
-                intensity: impact.intensity,
-                width: impact.width,
-                progress: impact.age / Math.max(0.0001, impact.duration)
-            })),
-            dents: this.dents.map((dent) => ({
-                angle: dent.angle,
-                depth: dent.depth,
-                width: dent.width,
-                strength: dent.strength
-            }))
-        });
+            impacts: this.impacts,
+            dents: this.dents,
+            config: this.config
+        }));
     }
 
     /**

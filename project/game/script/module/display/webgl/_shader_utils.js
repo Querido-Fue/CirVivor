@@ -249,7 +249,7 @@ export const GLASS_PANEL_FRAGMENT_SHADER = `
 
         vec4 blurColor = texture2D(u_blurTexture, screenUv + refractOffset);
         vec3 glassColor = blurColor.rgb;
-        float fillBlend = min(u_fillColor.a, 0.24);
+        float fillBlend = mix(min(u_fillColor.a, 0.24), 1.0, step(0.999, u_fillColor.a));
         float tintBlend = clamp(u_tintStrength * u_tintColor.a, 0.0, 1.0);
         glassColor = mix(glassColor, u_fillColor.rgb, fillBlend);
         glassColor = mix(glassColor, u_tintColor.rgb, tintBlend);
