@@ -20,7 +20,7 @@ const SHARED_PRESENTATION_SLOT_INDEX = Object.freeze({
     AABB_REJECT_COUNT: 7,
     CIRCLE_PASS_COUNT: 8,
     CIRCLE_REJECT_COUNT: 9,
-    POLYGON_CHECKS: 10
+    PART_CHECKS: 10
 });
 
 export const GAME_SCENE_SHARED_PRESENTATION_STORAGE_TYPE = 'sharedGameScenePresentation';
@@ -825,9 +825,9 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
         0,
         Math.floor(normalizeSharedNumber(sceneSnapshot?.collisionStats?.circleRejectCount, 0))
     );
-    meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.POLYGON_CHECKS] = Math.max(
+    meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.PART_CHECKS] = Math.max(
         0,
-        Math.floor(normalizeSharedNumber(sceneSnapshot?.collisionStats?.polygonChecks, 0))
+        Math.floor(normalizeSharedNumber(sceneSnapshot?.collisionStats?.partChecks, 0))
     );
     recordSharedPresentationProfileDuration(profileStats, 'publishCollisionStatsMs', publishCollisionStatsStart);
 
@@ -892,9 +892,9 @@ export function readGameSceneSharedPresentationState(transport, outState = null)
         transport.meta,
         slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.CIRCLE_REJECT_COUNT
     );
-    collisionStats.polygonChecks = Atomics.load(
+    collisionStats.partChecks = Atomics.load(
         transport.meta,
-        slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.POLYGON_CHECKS
+        slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.PART_CHECKS
     );
     nextState.collisionStats = collisionStats;
     nextState.playerBase = Array.isArray(transport.playerSlotBases)

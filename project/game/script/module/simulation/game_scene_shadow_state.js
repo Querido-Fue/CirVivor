@@ -48,7 +48,7 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'aabbRejectCount',
     'circlePassCount',
     'circleRejectCount',
-    'polygonChecks',
+    'partChecks',
     'enemyTotalMs',
     'enemyBodyBuildMs',
     'playerBodyBuildMs',

@@ -266,7 +266,7 @@ function clonePresentationCollisionStats(collisionStats) {
         aabbRejectCount: Number.isFinite(collisionStats?.aabbRejectCount) ? collisionStats.aabbRejectCount : 0,
         circlePassCount: Number.isFinite(collisionStats?.circlePassCount) ? collisionStats.circlePassCount : 0,
         circleRejectCount: Number.isFinite(collisionStats?.circleRejectCount) ? collisionStats.circleRejectCount : 0,
-        polygonChecks: Number.isFinite(collisionStats?.polygonChecks) ? collisionStats.polygonChecks : 0,
+        partChecks: Number.isFinite(collisionStats?.partChecks) ? collisionStats.partChecks : 0,
         enemyTotalMs: Number.isFinite(collisionStats?.enemyTotalMs) ? collisionStats.enemyTotalMs : 0,
         enemyBodyBuildMs: Number.isFinite(collisionStats?.enemyBodyBuildMs) ? collisionStats.enemyBodyBuildMs : 0,
         playerBodyBuildMs: Number.isFinite(collisionStats?.playerBodyBuildMs) ? collisionStats.playerBodyBuildMs : 0,

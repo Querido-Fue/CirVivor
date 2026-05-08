@@ -5,82 +5,75 @@ import {
     getHexaNormalizedRadius
 } from './_hexa_hive_layout.js';
 
-const ENEMY_PAIR_COLLISION_RADIUS_SCALE = 0.9;
-const ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE = 1.1;
+const COLLISION_RADIUS_TUNING_SCALE = 0.85;
+const ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE = 0.9;
+const ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE = 1.1;
+const ENEMY_PAIR_COLLISION_RADIUS_SCALE = ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
+const ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE = ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
 const ENEMY_PAIR_DEBUG_STROKE = 'rgba(255, 96, 96, 0.95)';
 const PROJECTILE_DEBUG_STROKE = 'rgba(64, 240, 255, 0.95)';
 const ENEMY_PAIR_DEBUG_LINE_WIDTH = 1.65;
 const PROJECTILE_DEBUG_LINE_WIDTH = 1.85;
 const HEXA_HIVE_TYPE = getHexaHiveType();
+const HEXA_HIVE_CELL_COLLISION_RADIUS = getHexaNormalizedRadius() / ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE;
 
 /**
- * 정다각형의 로컬 꼭지점 배열을 생성합니다.
- * @param {number} sides
- * @param {number} radius
- * @param {number} [rotation=-Math.PI / 2]
- * @returns {number[]}
- */
-const regularPolygon = (sides, radius, rotation = -Math.PI / 2) => {
-    const points = [];
-    const step = (Math.PI * 2) / sides;
-    for (let i = 0; i < sides; i++) {
-        const a = rotation + (i * step);
-        points.push(Math.cos(a) * radius, Math.sin(a) * radius);
-    }
-    return points;
-};
-
-const ENEMY_LOCAL_PARTS = Object.freeze({
-    square: Object.freeze([
-        Object.freeze([-0.42, -0.42, 0.42, -0.42, 0.42, 0.42, -0.42, 0.42])
-    ]),
-    triangle: Object.freeze([
-        Object.freeze([0.0, -0.5333, 0.462, 0.2667, -0.462, 0.2667])
-    ]),
-    arrow: Object.freeze([
-        Object.freeze([0.0, -0.5767, 0.46, 0.3733, -0.46, 0.3733])
-    ]),
-    hexa: Object.freeze([Object.freeze(regularPolygon(6, 0.47, -Math.PI / 2))]),
-    penta: Object.freeze([Object.freeze(regularPolygon(5, 0.48, -Math.PI / 2))]),
-    rhom: Object.freeze([
-        Object.freeze([0.0, -0.50, 0.34, 0.0, 0.0, 0.50, -0.34, 0.0])
-    ]),
-    octa: Object.freeze([Object.freeze(regularPolygon(8, 0.47, Math.PI / 8))]),
-    gen: Object.freeze([
-        Object.freeze([-0.44, -0.44, 0.44, -0.44, 0.44, 0.44, -0.44, 0.44])
-    ])
-});
-
-/**
- * 로컬 다각형 점 배열을 감싸는 가상 원 반지름을 계산합니다.
- * @param {readonly number[][]} localParts
- * @param {number} widthScale
- * @param {number} heightScale
+ * 적 타입별 단일 원 충돌 반지름을 계산합니다.
+ * @param {string|null|undefined} enemyType
+ * @param {number} width
+ * @param {number} height
  * @returns {number}
  */
-function getScaledLocalPartsMaxRadius(localParts, widthScale, heightScale) {
-    let maxDistSq = 0;
-    if (!Array.isArray(localParts)) {
-        return 0;
+function getEnemyCircleCollisionRadius(enemyType, width, height) {
+    const safeWidth = Number.isFinite(width) ? Math.max(1, width) : 1;
+    const safeHeight = Number.isFinite(height) ? Math.max(1, height) : safeWidth;
+    let radius = 0;
+
+    switch (enemyType) {
+        case 'triangle':
+            radius = Math.max(
+                safeHeight * 0.5333,
+                Math.hypot(safeWidth * 0.462, safeHeight * 0.2667)
+            );
+            break;
+        case 'arrow':
+            radius = Math.max(
+                safeHeight * 0.5767,
+                Math.hypot(safeWidth * 0.46, safeHeight * 0.3733)
+            );
+            break;
+        case 'hexa':
+            radius = 0.47 * Math.max(
+                safeHeight,
+                Math.hypot(safeWidth * 0.8660254037844386, safeHeight * 0.5)
+            );
+            break;
+        case 'penta':
+            radius = 0.48 * Math.max(
+                safeHeight,
+                Math.hypot(safeWidth * 0.9510565162951535, safeHeight * 0.3090169943749474),
+                Math.hypot(safeWidth * 0.5877852522924731, safeHeight * 0.8090169943749475)
+            );
+            break;
+        case 'rhom':
+            radius = Math.max(safeWidth * 0.34, safeHeight * 0.5);
+            break;
+        case 'octa':
+            radius = 0.47 * Math.max(
+                Math.hypot(safeWidth * 0.9238795325112867, safeHeight * 0.3826834323650898),
+                Math.hypot(safeWidth * 0.3826834323650898, safeHeight * 0.9238795325112867)
+            );
+            break;
+        case 'gen':
+            radius = Math.hypot(safeWidth * 0.44, safeHeight * 0.44);
+            break;
+        case 'square':
+        default:
+            radius = Math.hypot(safeWidth * 0.42, safeHeight * 0.42);
+            break;
     }
 
-    for (let partIndex = 0; partIndex < localParts.length; partIndex++) {
-        const part = localParts[partIndex];
-        if (!Array.isArray(part)) {
-            continue;
-        }
-
-        for (let i = 0; i < part.length; i += 2) {
-            const x = (Number.isFinite(part[i]) ? part[i] : 0) * widthScale;
-            const y = (Number.isFinite(part[i + 1]) ? part[i + 1] : 0) * heightScale;
-            const distSq = (x * x) + (y * y);
-            if (distSq > maxDistSq) {
-                maxDistSq = distSq;
-            }
-        }
-    }
-
-    return Math.sqrt(maxDistSq);
+    return Math.max(1, radius);
 }
 
 /**
@@ -108,17 +101,10 @@ function rotateLocalOffset(x, y, radians) {
  */
 function getEnemyBaseCollisionRadius(enemyType, width, height) {
     if (enemyType === HEXA_HIVE_TYPE) {
-        return (getHexaNormalizedRadius() / ENEMY_PAIR_COLLISION_RADIUS_SCALE) * Math.max(width, height);
+        return HEXA_HIVE_CELL_COLLISION_RADIUS * Math.max(width, height);
     }
 
-    return Math.max(
-        1,
-        getScaledLocalPartsMaxRadius(
-            ENEMY_LOCAL_PARTS[enemyType] || ENEMY_LOCAL_PARTS.square,
-            width,
-            height
-        )
-    );
+    return getEnemyCircleCollisionRadius(enemyType, width, height);
 }
 
 /**

@@ -649,7 +649,7 @@ export class ObjectSystem {
 
     /**
      * 마지막 고정 틱 충돌 체크 통계를 반환합니다.
-     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, polygonChecks:number}}
+     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, partChecks:number}}
      */
     getCollisionStats() {
         if (!this.physicsSystem || typeof this.physicsSystem.getCollisionStats !== 'function') {
@@ -659,7 +659,7 @@ export class ObjectSystem {
                 aabbRejectCount: 0,
                 circlePassCount: 0,
                 circleRejectCount: 0,
-                polygonChecks: 0
+                partChecks: 0
             };
         }
         return this.physicsSystem.getCollisionStats();

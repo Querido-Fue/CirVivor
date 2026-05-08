@@ -60,7 +60,7 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'aabbRejectCount',
     'circlePassCount',
     'circleRejectCount',
-    'polygonChecks',
+    'partChecks',
     'enemyTotalMs',
     'enemyBodyBuildMs',
     'playerBodyBuildMs',
@@ -1879,7 +1879,7 @@ export class GameScene extends BaseScene {
         });
         render('ui', {
             shape: 'text',
-            text: `Part check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
+            text: `Part check: ${normalizeSnapshotNumber(collisionStats?.partChecks, 0)}`,
             x: statsX,
             y: statsY - (statsFont * 1.28),
             font: `400 ${statsFont}px "Pretendard Variable"`,
@@ -1983,7 +1983,7 @@ export class GameScene extends BaseScene {
             });
             render('ui', {
                 shape: 'text',
-                text: `Part check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
+                text: `Part check: ${normalizeSnapshotNumber(collisionStats?.partChecks, 0)}`,
                 x: statsX,
                 y: statsY - (statsFont * 1.28),
                 font: `400 ${statsFont}px "Pretendard Variable"`,

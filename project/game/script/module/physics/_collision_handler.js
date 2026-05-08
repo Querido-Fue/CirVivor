@@ -255,68 +255,63 @@ function getEnemyResolveRadius(enemy, boundRadius, baseHeight) {
     );
 }
 
-const regularPolygon = (sides, radius, rotation = -Math.PI / 2) => {
-    const points = [];
-    const step = (Math.PI * 2) / sides;
-    for (let i = 0; i < sides; i++) {
-        const a = rotation + (i * step);
-        points.push(Math.cos(a) * radius, Math.sin(a) * radius);
-    }
-    return points;
-};
-
-const ENEMY_LOCAL_PARTS = Object.freeze({
-    square: Object.freeze([
-        Object.freeze([-0.42, -0.42, 0.42, -0.42, 0.42, 0.42, -0.42, 0.42])
-    ]),
-    triangle: Object.freeze([
-        Object.freeze([0.0, -0.5333, 0.462, 0.2667, -0.462, 0.2667])
-    ]),
-    arrow: Object.freeze([
-        // 안쪽 꼭지점을 제외한 바깥 3개 꼭지점으로 단일 삼각형 hull을 구성합니다.
-        Object.freeze([0.0, -0.5767, 0.46, 0.3733, -0.46, 0.3733])
-    ]),
-    hexa: Object.freeze([Object.freeze(regularPolygon(6, 0.47, -Math.PI / 2))]),
-    penta: Object.freeze([Object.freeze(regularPolygon(5, 0.48, -Math.PI / 2))]),
-    rhom: Object.freeze([
-        Object.freeze([0.0, -0.50, 0.34, 0.0, 0.0, 0.50, -0.34, 0.0])
-    ]),
-    octa: Object.freeze([Object.freeze(regularPolygon(8, 0.47, Math.PI / 8))]),
-    gen: Object.freeze([
-        Object.freeze([-0.44, -0.44, 0.44, -0.44, 0.44, 0.44, -0.44, 0.44])
-    ])
-});
-
 /**
- * 로컬 다각형 점 배열을 감싸는 가상 원 반지름을 계산합니다.
- * @param {readonly number[][]} localParts
- * @param {number} widthScale
- * @param {number} heightScale
+ * 적 타입별 단일 원 충돌 반지름을 계산합니다.
+ * @param {string|null|undefined} enemyType
+ * @param {number} width
+ * @param {number} height
  * @returns {number}
  */
-function getScaledLocalPartsMaxRadius(localParts, widthScale, heightScale) {
-    let maxDistSq = 0;
-    if (!Array.isArray(localParts)) {
-        return 0;
+function getEnemyCircleCollisionRadius(enemyType, width, height) {
+    const safeWidth = Number.isFinite(width) ? Math.max(1, width) : 1;
+    const safeHeight = Number.isFinite(height) ? Math.max(1, height) : safeWidth;
+    let radius = 0;
+
+    switch (enemyType) {
+        case 'triangle':
+            radius = Math.max(
+                safeHeight * 0.5333,
+                Math.hypot(safeWidth * 0.462, safeHeight * 0.2667)
+            );
+            break;
+        case 'arrow':
+            radius = Math.max(
+                safeHeight * 0.5767,
+                Math.hypot(safeWidth * 0.46, safeHeight * 0.3733)
+            );
+            break;
+        case 'hexa':
+            radius = 0.47 * Math.max(
+                safeHeight,
+                Math.hypot(safeWidth * 0.8660254037844386, safeHeight * 0.5)
+            );
+            break;
+        case 'penta':
+            radius = 0.48 * Math.max(
+                safeHeight,
+                Math.hypot(safeWidth * 0.9510565162951535, safeHeight * 0.3090169943749474),
+                Math.hypot(safeWidth * 0.5877852522924731, safeHeight * 0.8090169943749475)
+            );
+            break;
+        case 'rhom':
+            radius = Math.max(safeWidth * 0.34, safeHeight * 0.5);
+            break;
+        case 'octa':
+            radius = 0.47 * Math.max(
+                Math.hypot(safeWidth * 0.9238795325112867, safeHeight * 0.3826834323650898),
+                Math.hypot(safeWidth * 0.3826834323650898, safeHeight * 0.9238795325112867)
+            );
+            break;
+        case 'gen':
+            radius = Math.hypot(safeWidth * 0.44, safeHeight * 0.44);
+            break;
+        case 'square':
+        default:
+            radius = Math.hypot(safeWidth * 0.42, safeHeight * 0.42);
+            break;
     }
 
-    for (let partIndex = 0; partIndex < localParts.length; partIndex++) {
-        const part = localParts[partIndex];
-        if (!Array.isArray(part)) {
-            continue;
-        }
-
-        for (let i = 0; i < part.length; i += 2) {
-            const x = (Number.isFinite(part[i]) ? part[i] : 0) * widthScale;
-            const y = (Number.isFinite(part[i + 1]) ? part[i + 1] : 0) * heightScale;
-            const distSq = (x * x) + (y * y);
-            if (distSq > maxDistSq) {
-                maxDistSq = distSq;
-            }
-        }
-    }
-
-    return Math.sqrt(maxDistSq);
+    return Math.max(1, radius);
 }
 
 /**
@@ -382,7 +377,6 @@ export class CollisionHandler {
             aabbRejectCount: 0,
             circlePassCount: 0,
             circleRejectCount: 0,
-            polygonChecks: 0,
             partChecks: 0,
             enemyTotalMs: 0,
             enemyBodyBuildMs: 0,
@@ -490,7 +484,6 @@ export class CollisionHandler {
         this.#frameStats.aabbRejectCount = 0;
         this.#frameStats.circlePassCount = 0;
         this.#frameStats.circleRejectCount = 0;
-        this.#frameStats.polygonChecks = 0;
         this.#frameStats.partChecks = 0;
         for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
             this.#frameStats[COLLISION_PROFILE_STAT_FIELDS[i]] = 0;
@@ -508,7 +501,6 @@ export class CollisionHandler {
             aabbRejectCount: this.#frameStats.aabbRejectCount,
             circlePassCount: this.#frameStats.circlePassCount,
             circleRejectCount: this.#frameStats.circleRejectCount,
-            polygonChecks: this.#frameStats.polygonChecks,
             partChecks: this.#frameStats.partChecks
         };
         for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
@@ -572,7 +564,6 @@ export class CollisionHandler {
      */
     #recordPartCheck() {
         this.#frameStats.partChecks++;
-        this.#frameStats.polygonChecks = this.#frameStats.partChecks;
     }
 
     /**
@@ -870,7 +861,6 @@ export class CollisionHandler {
                 aabbRejectCount: this.#frameStats.aabbRejectCount,
                 circlePassCount: this.#frameStats.circlePassCount,
                 circleRejectCount: this.#frameStats.circleRejectCount,
-                polygonChecks: this.#frameStats.polygonChecks,
                 partChecks: this.#frameStats.partChecks
             };
 
@@ -929,7 +919,6 @@ export class CollisionHandler {
             this.#frameStats.aabbRejectCount = savedStats.aabbRejectCount;
             this.#frameStats.circlePassCount = savedStats.circlePassCount;
             this.#frameStats.circleRejectCount = savedStats.circleRejectCount;
-            this.#frameStats.polygonChecks = savedStats.polygonChecks;
             this.#frameStats.partChecks = savedStats.partChecks;
             return contactPairs;
         } finally {
@@ -3008,11 +2997,7 @@ export class CollisionHandler {
         let projectileBroadRadius = 0;
         const singleCircleRadius = useHiveCells
             ? HEXA_HIVE_CELL_COLLISION_RADIUS * Math.max(width, height)
-            : Math.max(1, getScaledLocalPartsMaxRadius(
-                ENEMY_LOCAL_PARTS[enemy.type] || ENEMY_LOCAL_PARTS.square,
-                width,
-                height
-            ));
+            : getEnemyCircleCollisionRadius(enemy.type, width, height);
 
         if (useHiveCells) {
             const circleBufferLength = partCount * 3;
