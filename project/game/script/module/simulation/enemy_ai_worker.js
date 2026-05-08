@@ -6,6 +6,7 @@ import {
 import {
     attachEnemyAISharedTransport,
     beginEnemyAISharedResultWrite,
+    beginEnemyAISharedResultRangeWrite,
     commitEnemyAISharedResultWrite,
     writeEnemyAISharedResult
 } from './enemy_ai_shared_transport.js';
@@ -189,7 +190,7 @@ function reportEnemyAIWorkerError(error) {
 /**
  * 적 AI 배치를 계산합니다.
  * @param {object} message
- * @returns {{requestId: number, wallsVersion: number, enemyTopologyVersion: number, enemyCount: number, durationMs: number, sharedResult: boolean, sharedResultVersion: number, sharedResultSlot: number, results: object[]}}
+ * @returns {{requestId: number, requestGroupId: number, chunkIndex: number, chunkCount: number, workerIndex: number, wallsVersion: number, enemyTopologyVersion: number, enemyCount: number, durationMs: number, sharedResult: boolean, sharedResultVersion: number, sharedResultSlot: number, sharedResultOffset: number, sharedResultCount: number, results: object[]}}
  */
 function computeEnemyAIBatch(message) {
     if (message.runtimeSnapshot) {
@@ -227,9 +228,17 @@ function computeEnemyAIBatch(message) {
 
     const stepDelta = normalizeNumber(message.stepDelta, 0);
     const startTime = performance.now();
-    const sharedWriteState = enemyAISharedTransport
-        ? beginEnemyAISharedResultWrite(enemyAISharedTransport)
-        : null;
+    const shouldUseSharedRange = enemyAISharedTransport
+        && Number.isInteger(message.sharedResultSlot)
+        && Number.isInteger(message.sharedResultOffset)
+        && Number.isInteger(message.sharedResultCapacity);
+    const sharedWriteState = shouldUseSharedRange
+        ? beginEnemyAISharedResultRangeWrite(enemyAISharedTransport, {
+            slotIndex: message.sharedResultSlot,
+            resultOffset: message.sharedResultOffset,
+            resultCapacity: message.sharedResultCapacity
+        })
+        : (enemyAISharedTransport ? beginEnemyAISharedResultWrite(enemyAISharedTransport) : null);
     const results = sharedWriteState ? null : [];
     let resultCount = 0;
     for (let i = 0; i < targetEnemies.length; i++) {
@@ -258,7 +267,7 @@ function computeEnemyAIBatch(message) {
         resultCount++;
     }
 
-    const sharedResult = sharedWriteState
+    const sharedResult = sharedWriteState && !shouldUseSharedRange
         ? commitEnemyAISharedResultWrite(
             sharedWriteState,
             message.requestId,
@@ -279,7 +288,13 @@ function computeEnemyAIBatch(message) {
         durationMs: Math.max(0, performance.now() - startTime),
         sharedResult: sharedResult !== null,
         sharedResultVersion: Number.isInteger(sharedResult?.version) ? sharedResult.version : 0,
-        sharedResultSlot: Number.isInteger(sharedResult?.slotIndex) ? sharedResult.slotIndex : -1,
+        sharedResultSlot: shouldUseSharedRange && Number.isInteger(message.sharedResultSlot)
+            ? message.sharedResultSlot
+            : (Number.isInteger(sharedResult?.slotIndex) ? sharedResult.slotIndex : -1),
+        sharedResultOffset: shouldUseSharedRange && Number.isInteger(message.sharedResultOffset)
+            ? message.sharedResultOffset
+            : 0,
+        sharedResultCount: shouldUseSharedRange ? resultCount : 0,
         results: Array.isArray(results) ? results : []
     };
 }

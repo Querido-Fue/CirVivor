@@ -183,7 +183,19 @@ export const LightTheme = Object.freeze({
     Overlay: LIGHT_OVERLAY_THEME,
     Vignette: LIGHT_VIGNETTE_THEME,
     Game: Object.freeze({
-        Font: '#ffffff'
+        Font: '#242424',
+        Benchmark: Object.freeze({
+            StaticWall: 'rgba(116, 130, 148, 0.9)',
+            BoxWall: 'rgba(150, 168, 184, 0.9)',
+            Player: '#166ffb',
+            Projectile: '#b57900',
+            EnemyFill: 'rgba(210, 76, 76, 0.9)',
+            HexaBackdropFallback: 'rgb(224, 184, 160)',
+            ButtonIdle: 'rgba(236, 237, 239, 0.86)',
+            ButtonHover: 'rgba(224, 226, 230, 0.94)',
+            ButtonStroke: 'rgba(70, 70, 70, 0.24)',
+            ButtonText: '#242424'
+        })
     }),
     Debug: Object.freeze({
         Background: '#101010',

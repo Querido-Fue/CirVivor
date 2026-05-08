@@ -53,7 +53,18 @@ const BENCHMARK_PROJECTILE_TRAVEL_SECONDS = 2;
 const PROJECTILE_CULL_MARGIN_RATIO = 0.2;
 const BENCHMARK_ENEMY_SPEED_MULTIPLIER = 2.5;
 const HEXA_HIVE_TYPE = getHexaHiveType();
-const HEXA_HIVE_BACKDROP_FALLBACK_FILL = 'rgb(255, 212, 184)';
+const BENCHMARK_COLOR_FALLBACKS = Object.freeze({
+    StaticWall: 'rgba(120, 136, 156, 0.9)',
+    BoxWall: 'rgba(182, 201, 214, 0.9)',
+    Player: '#4fa3ff',
+    Projectile: '#ffc857',
+    EnemyFill: '#ff6c6c',
+    HexaBackdropFallback: 'rgb(255, 212, 184)',
+    ButtonIdle: 'rgba(26, 32, 40, 0.74)',
+    ButtonHover: 'rgba(26, 32, 40, 0.86)',
+    ButtonStroke: 'rgba(255, 255, 255, 0.55)',
+    ButtonText: '#f5f8ff'
+});
 const HEXA_SNAPSHOT_FRONT_SCALE = 1;
 const HEXA_SNAPSHOT_BACKDROP_SCALE = 1.14;
 const GAME_SCENE_AI_BY_ID = Object.freeze({
@@ -62,6 +73,33 @@ const GAME_SCENE_AI_BY_ID = Object.freeze({
 });
 
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
+
+/**
+ * 벤치마크 씬 전용 테마 색상을 반환합니다.
+ * @param {string} key - 색상 키입니다.
+ * @returns {string} 색상 문자열입니다.
+ */
+function getBenchmarkColor(key) {
+    const themeColor = ColorSchemes?.Game?.Benchmark?.[key];
+    if (typeof themeColor === 'string' && themeColor.length > 0) {
+        return themeColor;
+    }
+
+    return BENCHMARK_COLOR_FALLBACKS[key] || '#ffffff';
+}
+
+/**
+ * 벤치마크 씬 적 기본 색상을 반환합니다.
+ * @returns {string} 적 색상 문자열입니다.
+ */
+function getBenchmarkEnemyFill() {
+    const themeFill = ColorSchemes?.Game?.Benchmark?.EnemyFill;
+    if (typeof themeFill === 'string' && themeFill.length > 0) {
+        return themeFill;
+    }
+
+    return ColorSchemes?.Title?.Enemy || BENCHMARK_COLOR_FALLBACKS.EnemyFill;
+}
 
 const pointInRect = (x, y, rect) => (
     x >= rect.x &&
@@ -101,10 +139,10 @@ function rotateHiveSnapshotPoint(x, y, radians) {
  */
 function resolveHiveSnapshotBackdropFill(sourceFill) {
     if (typeof sourceFill === 'string' && sourceFill.length > 0) {
-        return colorUtil().lerpColor(sourceFill, HEXA_HIVE_BACKDROP_FALLBACK_FILL, 0.72);
+        return colorUtil().lerpColor(sourceFill, getBenchmarkColor('HexaBackdropFallback'), 0.72);
     }
 
-    return HEXA_HIVE_BACKDROP_FALLBACK_FILL;
+    return getBenchmarkColor('HexaBackdropFallback');
 }
 
 /**
@@ -114,7 +152,7 @@ function resolveHiveSnapshotBackdropFill(sourceFill) {
  */
 function normalizeOpaqueBenchmarkEnemyFill(fill) {
     if (typeof fill !== 'string' || fill.length === 0) {
-        return '#ff6c6c';
+        return BENCHMARK_COLOR_FALLBACKS.EnemyFill;
     }
 
     const parsed = colorUtil().cssToRgb(fill);
@@ -645,6 +683,9 @@ export class GameScene extends BaseScene {
         const completedChunkCount = Number.isFinite(enemyAIWorker.completedChunkCount)
             ? enemyAIWorker.completedChunkCount
             : 0;
+        const sharedResultRangeCount = Number.isFinite(enemyAIWorker.sharedResultRangeCount)
+            ? enemyAIWorker.sharedResultRangeCount
+            : 0;
         const latestRequestedWallsVersion = Number.isFinite(enemyAIWorker.latestRequestedWallsVersion)
             ? enemyAIWorker.latestRequestedWallsVersion
             : -1;
@@ -663,7 +704,7 @@ export class GameScene extends BaseScene {
 
         lines.push(`enemyAI: ${readiness} | tx: ${transportMode} | req/resp: ${requestCount}/${responseCount}`);
         lines.push(`enemyAI stale/fb: ${staleDropCount}/${fallbackCount} | lat: ${lastLatencyMs.toFixed(2)}ms | batch: ${lastEnemyCount}`);
-        lines.push(`enemyAI pool/chunk: ${poolSize} | ${completedChunkCount}/${chunkCount} | wait: ${waitMs.toFixed(2)}ms`);
+        lines.push(`enemyAI pool/chunk: ${poolSize} | ${completedChunkCount}/${chunkCount} | sab ranges: ${sharedResultRangeCount} | wait: ${waitMs.toFixed(2)}ms`);
         lines.push(`enemyAI wall/topo req: ${latestRequestedWallsVersion}/${latestRequestedEnemyTopologyVersion} | done: ${lastWallsVersion}/${lastEnemyTopologyVersion} | ver: ${lastSharedResultVersion}`);
     }
 
@@ -860,7 +901,7 @@ export class GameScene extends BaseScene {
      * @param {number} [count=100]
      */
     #buildSpawnEnemiesCommand(count = 100) {
-        const fill = ColorSchemes?.Title?.Enemy || '#ff6c6c';
+        const fill = getBenchmarkEnemyFill();
         const enemies = [];
         const reservedEnemyIds = this.objectSystem && typeof this.objectSystem.reserveEnemyIds === 'function'
             ? this.objectSystem.reserveEnemyIds(count)
@@ -1039,6 +1080,16 @@ export class GameScene extends BaseScene {
      */
     fixedUpdate() {
         // 벤치마크 씬의 고정 물리 루프는 ObjectSystem에서 처리됩니다.
+    }
+
+    /**
+     * 런타임 설정 변경을 벤치마크 씬에 반영합니다.
+     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
+     */
+    applyRuntimeSettings(changedSettings = {}) {
+        if (changedSettings.theme !== undefined) {
+            this.#refreshBenchmarkEnemyFills();
+        }
     }
 
     /**
@@ -1298,6 +1349,24 @@ export class GameScene extends BaseScene {
     }
 
     /**
+     * 현재 테마의 벤치마크 적 색상을 기존 적 인스턴스에 반영합니다.
+     * @private
+     */
+    #refreshBenchmarkEnemyFills() {
+        const enemies = this.objectSystem && typeof this.objectSystem.getEnemies === 'function'
+            ? this.objectSystem.getEnemies()
+            : [];
+        const fill = normalizeOpaqueBenchmarkEnemyFill(getBenchmarkEnemyFill());
+
+        for (let i = 0; i < enemies.length; i++) {
+            const enemy = enemies[i];
+            if (enemy && enemy.active !== false) {
+                enemy.fill = fill;
+            }
+        }
+    }
+
+    /**
      * @private
      * @param {string|undefined} aiId
      * @returns {object|null}
@@ -1437,7 +1506,7 @@ export class GameScene extends BaseScene {
                     y: normalizeSnapshotNumber(wall.y, 0) - offsetY,
                     w: normalizeSnapshotNumber(wall.w, 0),
                     h: normalizeSnapshotNumber(wall.h, 0),
-                    fill: 'rgba(120, 136, 156, 0.9)'
+                    fill: getBenchmarkColor('StaticWall')
                 });
             }
         });
@@ -1452,7 +1521,7 @@ export class GameScene extends BaseScene {
                     y: normalizeSnapshotNumber(box.y, 0) - offsetY,
                     w: normalizeSnapshotNumber(box.w, 0),
                     h: normalizeSnapshotNumber(box.h, 0),
-                    fill: 'rgba(182, 201, 214, 0.9)'
+                    fill: getBenchmarkColor('BoxWall')
                 });
             }
         });
@@ -1466,7 +1535,7 @@ export class GameScene extends BaseScene {
                     y: normalizeSnapshotNumber(player.position?.y, 0) - offsetY,
                     w: diameter,
                     h: diameter,
-                    fill: '#4fa3ff',
+                    fill: getBenchmarkColor('Player'),
                     alpha: 0.95
                 });
             }
@@ -1483,7 +1552,7 @@ export class GameScene extends BaseScene {
                     y: normalizeSnapshotNumber(projectile.position?.y, 0) - offsetY,
                     w: d,
                     h: d,
-                    fill: '#ffc857',
+                    fill: getBenchmarkColor('Projectile'),
                     alpha: 0.95
                 });
             }
@@ -1523,7 +1592,7 @@ export class GameScene extends BaseScene {
                     y: staticWallData[offset + 1] - offsetY,
                     w: staticWallData[offset + 2],
                     h: staticWallData[offset + 3],
-                    fill: 'rgba(120, 136, 156, 0.9)'
+                    fill: getBenchmarkColor('StaticWall')
                 });
             }
         });
@@ -1537,7 +1606,7 @@ export class GameScene extends BaseScene {
                     y: boxWallData[offset + 1] - offsetY,
                     w: boxWallData[offset + 2],
                     h: boxWallData[offset + 3],
-                    fill: 'rgba(182, 201, 214, 0.9)'
+                    fill: getBenchmarkColor('BoxWall')
                 });
             }
         });
@@ -1554,7 +1623,7 @@ export class GameScene extends BaseScene {
                     y: py - offsetY,
                     w: diameter,
                     h: diameter,
-                    fill: '#4fa3ff',
+                    fill: getBenchmarkColor('Player'),
                     alpha: 0.95
                 });
             }
@@ -1572,7 +1641,7 @@ export class GameScene extends BaseScene {
                     y: projectileData[offset + 1] - offsetY,
                     w: diameter,
                     h: diameter,
-                    fill: '#ffc857',
+                    fill: getBenchmarkColor('Projectile'),
                     alpha: 0.95
                 });
             }
@@ -1584,7 +1653,7 @@ export class GameScene extends BaseScene {
      */
     #drawEnemySnapshots(enemies = []) {
         const offsetY = this.objectOffsetY;
-        const fallbackFill = normalizeOpaqueBenchmarkEnemyFill(ColorSchemes?.Title?.Enemy || '#ff6c6c');
+        const fallbackFill = normalizeOpaqueBenchmarkEnemyFill(getBenchmarkEnemyFill());
         const baseHeight = this.objectWH * ENEMY_DRAW_HEIGHT_RATIO;
 
         measurePerformanceSection('scene.game.snapshot.enemies', () => {
@@ -1637,7 +1706,7 @@ export class GameScene extends BaseScene {
         }
 
         const offsetY = this.objectOffsetY;
-        const fallbackFill = normalizeOpaqueBenchmarkEnemyFill(ColorSchemes?.Title?.Enemy || '#ff6c6c');
+        const fallbackFill = normalizeOpaqueBenchmarkEnemyFill(getBenchmarkEnemyFill());
         const baseHeight = this.objectWH * ENEMY_DRAW_HEIGHT_RATIO;
         const enemyStride = GAME_SCENE_SHARED_PRESENTATION_STRIDE.ENEMY;
         const enemyStaticStride = GAME_SCENE_SHARED_PRESENTATION_STRIDE.ENEMY_STATIC;
@@ -1699,7 +1768,6 @@ export class GameScene extends BaseScene {
             if (!button) continue;
             const hovering = mousePos ? pointInRect(mousePos.x, mousePos.y, button) : false;
             const hoverBlend = clamp01(hovering ? 1 : 0);
-            const fillAlpha = 0.74 + (hoverBlend * 0.12);
 
             render('ui', {
                 shape: 'roundRect',
@@ -1708,7 +1776,7 @@ export class GameScene extends BaseScene {
                 w: button.w,
                 h: button.h,
                 radius: BUTTON_RADIUS,
-                fill: `rgba(26, 32, 40, ${fillAlpha})`
+                fill: hoverBlend > 0 ? getBenchmarkColor('ButtonHover') : getBenchmarkColor('ButtonIdle')
             });
             render('ui', {
                 shape: 'roundRect',
@@ -1718,7 +1786,7 @@ export class GameScene extends BaseScene {
                 h: button.h,
                 radius: BUTTON_RADIUS,
                 fill: false,
-                stroke: 'rgba(255, 255, 255, 0.55)',
+                stroke: getBenchmarkColor('ButtonStroke'),
                 lineWidth: 1
             });
             render('ui', {
@@ -1727,7 +1795,7 @@ export class GameScene extends BaseScene {
                 x: button.x + (button.w * 0.5),
                 y: button.y + (button.h * 0.54),
                 font: `500 ${fontSize}px "Pretendard Variable"`,
-                fill: '#f5f8ff',
+                fill: getBenchmarkColor('ButtonText'),
                 align: 'center',
                 baseline: 'middle'
             });

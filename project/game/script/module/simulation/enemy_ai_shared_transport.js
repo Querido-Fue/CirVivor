@@ -283,6 +283,56 @@ export function beginEnemyAISharedResultWrite(transport) {
 }
 
 /**
+ * 다음 결과 publish에 사용할 슬롯 번호를 반환합니다.
+ * @param {object|null|undefined} transport
+ * @returns {number}
+ */
+export function getEnemyAISharedNextResultSlotIndex(transport) {
+    if (!transport?.meta) {
+        return 0;
+    }
+
+    const currentPublishedSlot = Atomics.load(transport.meta, ENEMY_AI_SHARED_META_INDEX.PUBLISHED_SLOT);
+    return currentPublishedSlot === 0 ? 1 : 0;
+}
+
+/**
+ * pool worker가 공유 결과 버퍼의 고정 range에 쓸 상태를 준비합니다.
+ * @param {object|null|undefined} transport
+ * @param {{slotIndex?: number, resultOffset?: number, resultCapacity?: number}} [options={}]
+ * @returns {{transport: object, slotIndex: number, slotHeaderBase: number, baseIndex: number, count: number, maxCount: number}|null}
+ */
+export function beginEnemyAISharedResultRangeWrite(transport, options = {}) {
+    if (!transport?.meta || !(transport.resultData instanceof Float32Array)) {
+        return null;
+    }
+
+    const capacity = normalizeEnemyAISharedCapacity(transport.capacity);
+    const slotIndex = Number.isInteger(options.slotIndex)
+        ? Math.max(0, Math.min(ENEMY_AI_SHARED_SLOT_COUNT - 1, options.slotIndex))
+        : getEnemyAISharedNextResultSlotIndex(transport);
+    const resultOffset = Number.isInteger(options.resultOffset)
+        ? Math.max(0, Math.min(capacity, options.resultOffset))
+        : 0;
+    const requestedCapacity = Number.isInteger(options.resultCapacity) && options.resultCapacity >= 0
+        ? options.resultCapacity
+        : capacity - resultOffset;
+    const maxCount = Math.max(0, Math.min(requestedCapacity, capacity - resultOffset));
+    const slotBase = Array.isArray(transport.slotBases)
+        ? transport.slotBases[slotIndex]
+        : getEnemyAISharedSlotBaseIndex(slotIndex, capacity);
+
+    return {
+        transport,
+        slotIndex,
+        slotHeaderBase: getEnemyAISharedSlotHeaderBaseIndex(slotIndex),
+        baseIndex: slotBase + (resultOffset * ENEMY_AI_SHARED_RESULT_STRIDE),
+        count: 0,
+        maxCount
+    };
+}
+
+/**
  * 준비된 슬롯에 적 AI 결과 한 건을 기록합니다.
  * @param {{transport: object, slotIndex: number, slotHeaderBase: number, baseIndex: number, count: number}|null|undefined} writeState
  * @param {object|null|undefined} result
@@ -293,7 +343,10 @@ export function writeEnemyAISharedResult(writeState, result) {
         return false;
     }
 
-    if (writeState.count >= normalizeEnemyAISharedCapacity(writeState.transport.capacity)) {
+    const maxCount = Number.isInteger(writeState.maxCount)
+        ? writeState.maxCount
+        : normalizeEnemyAISharedCapacity(writeState.transport.capacity);
+    if (writeState.count >= maxCount) {
         return false;
     }
 
@@ -353,6 +406,92 @@ export function writeEnemyAISharedResult(writeState, result) {
 
     writeState.count++;
     return true;
+}
+
+/**
+ * pool worker range 쓰기 완료 후 결과 슬롯을 publish합니다.
+ * @param {object|null|undefined} transport
+ * @param {number|null|undefined} slotIndex
+ * @param {number|null|undefined} requestId
+ * @param {number|null|undefined} wallsVersion
+ * @param {number|null|undefined} enemyTopologyVersion
+ * @param {number|null|undefined} resultCount
+ * @returns {{slotIndex: number, resultCount: number, version: number}|null}
+ */
+export function publishEnemyAISharedResultSlot(
+    transport,
+    slotIndex,
+    requestId,
+    wallsVersion,
+    enemyTopologyVersion,
+    resultCount
+) {
+    if (!transport?.meta) {
+        return null;
+    }
+
+    const normalizedSlotIndex = Number.isInteger(slotIndex)
+        ? Math.max(0, Math.min(ENEMY_AI_SHARED_SLOT_COUNT - 1, slotIndex))
+        : getEnemyAISharedNextResultSlotIndex(transport);
+    const slotHeaderBase = getEnemyAISharedSlotHeaderBaseIndex(normalizedSlotIndex);
+    const meta = transport.meta;
+    meta[slotHeaderBase + ENEMY_AI_SHARED_SLOT_INDEX.REQUEST_ID] = Number.isInteger(requestId) ? requestId : 0;
+    meta[slotHeaderBase + ENEMY_AI_SHARED_SLOT_INDEX.WALLS_VERSION] = Number.isInteger(wallsVersion) ? wallsVersion : 0;
+    meta[slotHeaderBase + ENEMY_AI_SHARED_SLOT_INDEX.ENEMY_TOPOLOGY_VERSION] = Number.isInteger(enemyTopologyVersion)
+        ? enemyTopologyVersion
+        : 0;
+    meta[slotHeaderBase + ENEMY_AI_SHARED_SLOT_INDEX.RESULT_COUNT] = Number.isInteger(resultCount)
+        ? Math.max(0, resultCount)
+        : 0;
+
+    Atomics.store(meta, ENEMY_AI_SHARED_META_INDEX.PUBLISHED_SLOT, normalizedSlotIndex);
+    const version = Atomics.add(meta, ENEMY_AI_SHARED_META_INDEX.VERSION, 1) + 1;
+    return {
+        slotIndex: normalizedSlotIndex,
+        resultCount: meta[slotHeaderBase + ENEMY_AI_SHARED_SLOT_INDEX.RESULT_COUNT],
+        version
+    };
+}
+
+/**
+ * 공유 결과 버퍼의 특정 range를 읽기 상태로 감쌉니다.
+ * @param {object|null|undefined} transport
+ * @param {{slotIndex?: number, resultOffset?: number, resultCount?: number, requestId?: number, wallsVersion?: number, enemyTopologyVersion?: number}} [options={}]
+ * @param {object|null|undefined} [outState=null]
+ * @returns {object|null}
+ */
+export function readEnemyAISharedResultRangeState(transport, options = {}, outState = null) {
+    if (!transport?.meta || !(transport.resultData instanceof Float32Array)) {
+        return null;
+    }
+
+    const capacity = normalizeEnemyAISharedCapacity(transport.capacity);
+    const slotIndex = Number.isInteger(options.slotIndex)
+        ? Math.max(0, Math.min(ENEMY_AI_SHARED_SLOT_COUNT - 1, options.slotIndex))
+        : Atomics.load(transport.meta, ENEMY_AI_SHARED_META_INDEX.PUBLISHED_SLOT);
+    const resultOffset = Number.isInteger(options.resultOffset)
+        ? Math.max(0, Math.min(capacity, options.resultOffset))
+        : 0;
+    const requestedCount = Number.isInteger(options.resultCount) && options.resultCount >= 0
+        ? options.resultCount
+        : 0;
+    const resultCount = Math.max(0, Math.min(requestedCount, capacity - resultOffset));
+    const slotBase = Array.isArray(transport.slotBases)
+        ? transport.slotBases[slotIndex]
+        : getEnemyAISharedSlotBaseIndex(slotIndex, capacity);
+    const nextState = outState && typeof outState === 'object'
+        ? outState
+        : {};
+
+    nextState.slotIndex = slotIndex;
+    nextState.version = Atomics.load(transport.meta, ENEMY_AI_SHARED_META_INDEX.VERSION);
+    nextState.requestId = Number.isInteger(options.requestId) ? options.requestId : 0;
+    nextState.wallsVersion = Number.isInteger(options.wallsVersion) ? options.wallsVersion : 0;
+    nextState.enemyTopologyVersion = Number.isInteger(options.enemyTopologyVersion) ? options.enemyTopologyVersion : 0;
+    nextState.resultCount = resultCount;
+    nextState.resultBase = slotBase + (resultOffset * ENEMY_AI_SHARED_RESULT_STRIDE);
+    nextState.resultData = transport.resultData;
+    return nextState;
 }
 
 /**

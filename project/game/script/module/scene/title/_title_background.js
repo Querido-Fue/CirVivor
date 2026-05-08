@@ -249,9 +249,14 @@ export class TitleBackGround {
             if (!enemy) {
                 continue;
             }
+            const layerIndex = Array.isArray(TITLE_PARALLAX_LAYERS) && TITLE_PARALLAX_LAYERS.length > 0
+                && Number.isInteger(enemy._titleParallaxLayerIndex)
+                ? Math.max(0, Math.min(TITLE_PARALLAX_LAYERS.length - 1, enemy._titleParallaxLayerIndex))
+                : 0;
             this.#applyParallaxVisualProfile(
                 enemy,
-                this.#getParallaxLayerProfile(enemy._titleParallaxLayerIndex)
+                this.#getParallaxLayerProfile(layerIndex),
+                layerIndex
             );
         }
     }
@@ -676,13 +681,7 @@ export class TitleBackGround {
         if (!Array.isArray(TITLE_PARALLAX_LAYERS) || TITLE_PARALLAX_LAYERS.length === 0) {
             return {
                 index: 0,
-                profile: {
-                    Id: 'default',
-                    SizeMin: TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SIZE_MIN,
-                    SizeMax: Math.min(1, TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SIZE_MAX),
-                    Alpha: 0.55,
-                    SpeedScale: 1
-                }
+                profile: this.#getDefaultParallaxLayerProfile()
             };
         }
 
@@ -1158,21 +1157,33 @@ export class TitleBackGround {
      */
     #getParallaxLayerProfile(layerIndex) {
         if (!Array.isArray(TITLE_PARALLAX_LAYERS) || TITLE_PARALLAX_LAYERS.length === 0) {
-            return {
-                Id: 'default',
-                Alpha: 1,
-                MagneticScale: 1,
-                ColorMix: 0,
-                SoftnessScale: 1,
-                SoftnessAlpha: 0,
-                SoftnessOffsetPx: 0
-            };
+            return this.#getDefaultParallaxLayerProfile();
         }
 
         const resolvedIndex = Number.isInteger(layerIndex)
             ? Math.max(0, Math.min(TITLE_PARALLAX_LAYERS.length - 1, layerIndex))
             : 0;
         return TITLE_PARALLAX_LAYERS[resolvedIndex];
+    }
+
+    /**
+     * 페럴렉스 계층이 없을 때 사용할 기본 시각 프로필을 반환합니다.
+     * @returns {object} 기본 페럴렉스 프로필입니다.
+     * @private
+     */
+    #getDefaultParallaxLayerProfile() {
+        return {
+            Id: 'default',
+            SizeMin: TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SIZE_MIN,
+            SizeMax: Math.min(1, TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SIZE_MAX),
+            Alpha: 0.55,
+            SpeedScale: 1,
+            MagneticScale: 1,
+            ColorMix: 0,
+            SoftnessScale: 1,
+            SoftnessAlpha: 0,
+            SoftnessOffsetPx: 0
+        };
     }
 
 }
