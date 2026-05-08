@@ -7,6 +7,7 @@ const CELL_KEY_STRIDE = 8192;
 const MIN_CELL_SIZE = 20;
 const MAX_CELL_SIZE = 280;
 const BROAD_STRIDE = 14;
+const DEFAULT_PHYSICS_ITERATION_COUNT = 3;
 const GRID_BUCKET_INITIAL_CAPACITY = 8;
 const ROTATION_IMPULSE_SCALE = 0.12;
 const ROTATION_RESPONSE_MULTIPLIER = 1.3;
@@ -611,7 +612,6 @@ export class CollisionHandler {
      * @param {object[]} enemies
      * @param {object} [options]
      * @param {number} [options.delta=1/60]
-     * @param {number} [options.iterations]
      * @param {object[]} [options.players]
      * @returns {number} 처리된 충돌 건수
      */
@@ -622,7 +622,7 @@ export class CollisionHandler {
 
             this.#resetBodyPool();
             const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
-            const maxIterations = this.#resolveIterationCount(options.iterations);
+            const maxIterations = this.#resolveIterationCount();
             const players = Array.isArray(options.players) ? options.players : [];
 
             const enemyBodyBuildStart = this.#startProfileTimer();
@@ -977,14 +977,10 @@ export class CollisionHandler {
 
     /**
      * @private
-     * @param {number|undefined} iterations
      * @returns {number}
      */
-    #resolveIterationCount(iterations) {
-        const fromSetting = Number(getSimulationSetting('physicsAccuracy'));
-        const source = Number.isFinite(iterations) ? iterations : fromSetting;
-        const normalized = Number.isFinite(source) ? Math.floor(source) : 1;
-        return Math.max(1, Math.min(20, normalized));
+    #resolveIterationCount() {
+        return DEFAULT_PHYSICS_ITERATION_COUNT;
     }
 
     /**

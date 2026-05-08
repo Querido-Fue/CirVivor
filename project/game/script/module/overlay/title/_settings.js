@@ -26,7 +26,6 @@ const SETTING_LABEL_KEYS = {
     uiScale: 'title_settings_ui_scale',
     disableTransparency: 'title_settings_disable_transparency',
     tooltipDelaySeconds: 'title_settings_tooltip_delay',
-    physicsAccuracy: 'title_settings_physics_accuracy',
     multicoreSupport: 'title_settings_multicore_support',
     language: 'title_settings_language',
     theme: 'title_settings_theme',
@@ -68,7 +67,6 @@ export class SettingsOverlay extends TitleOverlay {
             tooltipDelaySeconds: this.#normalizeTooltipDelaySeconds(
                 getSetting('tooltipDelaySeconds') !== undefined ? getSetting('tooltipDelaySeconds') : 0.7
             ),
-            physicsAccuracy: getSetting('physicsAccuracy') || 8,
             multicoreSupport: this.#isMulticoreEnabled(),
             language: normalizedLanguage,
             theme: getSetting('theme') || DEFAULT_THEME_KEY,
@@ -397,7 +395,7 @@ export class SettingsOverlay extends TitleOverlay {
 
         // --- 디스플레이 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_display');
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", 3.5 * spacingScale);
 
         // 창 모드
         this._addItemHeader(handler, 'title_settings_window_mode', 'windowMode');
@@ -462,26 +460,6 @@ export class SettingsOverlay extends TitleOverlay {
         handler.endGroup();
         this._addItemFooter(handler, 'title_settings_desc_transparency', spacingScale);
 
-        // 물리 연산 정확도
-        this._addItemHeader(handler, 'title_settings_physics_accuracy', 'physicsAccuracy');
-        const paSchema = getSettingSchema('physicsAccuracy');
-        handler.width("parent", controlWrapWidth).item("slider", "control_physicsAccuracy").width("parent", controlMaxWidth)
-            .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
-            .prop("min", paSchema.min).prop("max", paSchema.max).setValue(this.tempSettings.physicsAccuracy)
-            .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
-            .prop("valueFont", sliderValueFont)
-            .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
-            .onChange((val) => { this.#handleSettingInput('physicsAccuracy', val, { preview: false }); })
-            .onCommit((val) => { this.#handleSettingInput('physicsAccuracy', val); })
-            .prop("valueFormatter", (v) => {
-                switch (v) {
-                    case 2: return getLangString('title_settings_physics_accuracy_low');
-                    case 3: return getLangString('title_settings_physics_accuracy_mid');
-                    case 4: return getLangString('title_settings_physics_accuracy_high');
-                }
-            })
-        this._addItemFooter(handler, 'title_settings_desc_physics_accuracy', spacingScale);
-
         // 멀티코어 지원
         this._addItemHeader(handler, 'title_settings_multicore_support', 'multicoreSupport');
         handler.width("parent", controlWrapWidth)
@@ -502,7 +480,7 @@ export class SettingsOverlay extends TitleOverlay {
 
         // --- UI 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_ui');
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", 3.5 * spacingScale);
 
         // 언어
         this._addItemHeader(handler, 'title_settings_language', 'language');
@@ -540,11 +518,11 @@ export class SettingsOverlay extends TitleOverlay {
             .onCommit((val) => { this.#handleSettingInput('tooltipDelaySeconds', val); });
         this._addItemFooter(handler, 'title_settings_desc_tooltip_delay', spacingScale);
 
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", spacingScale);
 
         // --- 사운드 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_sound');
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", 3.5 * spacingScale);
 
         // 배경음
         this._addItemHeader(handler, 'title_settings_bgm', 'bgmVolume');
@@ -572,11 +550,11 @@ export class SettingsOverlay extends TitleOverlay {
             .onCommit((val) => { this.#handleSettingInput('sfxVolume', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", spacingScale);
 
         // --- 조작 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_controls');
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", 3.5 * spacingScale);
 
         // 키 설정
         this._addItemHeader(handler, 'title_settings_keybindings');

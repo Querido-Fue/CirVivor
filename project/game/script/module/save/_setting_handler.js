@@ -46,7 +46,6 @@ export class SettingHandler {
             renderScale: { type: 'int', value: 100, min: 75, max: 100, hidden: false },
             uiScale: { type: 'int', value: 100, min: 75, max: 150, hidden: false },
             tooltipDelaySeconds: { type: 'float', value: 0.7, min: 0, max: 2, hidden: false },
-            physicsAccuracy: { type: 'int', value: 3, min: 2, max: 4, hidden: false },
             bgmVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
@@ -163,9 +162,9 @@ export class SettingHandler {
 
         let needsSave = false;
 
-        // 구버전 키 마이그레이션: physicsFps -> physicsAccuracy
-        if (fileData.physicsAccuracy === undefined && fileData.physicsFps !== undefined) {
-            fileData.physicsAccuracy = fileData.physicsFps;
+        if (fileData.physicsAccuracy !== undefined || fileData.physicsFps !== undefined) {
+            delete fileData.physicsAccuracy;
+            delete fileData.physicsFps;
             needsSave = true;
         }
         // 구버전 키 마이그레이션: borderless -> fullscreen (키오스크 모드 제거)
