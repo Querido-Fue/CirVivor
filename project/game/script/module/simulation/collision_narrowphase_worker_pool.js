@@ -3,6 +3,9 @@ import {
     COLLISION_RELATION_BROAD_STRIDE
 } from '../physics/collision_soa_layout.js';
 import {
+    COLLISION_NARROWPHASE_COMPLETION_INDEX,
+    COLLISION_NARROWPHASE_COMPLETION_STATE,
+    COLLISION_NARROWPHASE_COMPLETION_STRIDE,
     COLLISION_NARROWPHASE_WORKER_MESSAGE_TYPES,
     createCollisionNarrowphaseWorkerMessage,
     isCollisionNarrowphaseWorkerMessage
@@ -13,6 +16,7 @@ const COLLISION_NARROWPHASE_WORKER_POOL_MAX_SIZE = 3;
 const COLLISION_NARROWPHASE_WORKER_POOL_RESERVED_THREAD_COUNT = 2;
 const COLLISION_NARROWPHASE_INITIAL_BODY_CAPACITY = 4096;
 const COLLISION_NARROWPHASE_INITIAL_PAIR_CAPACITY = 65536;
+const COLLISION_NARROWPHASE_DEFAULT_SYNC_WAIT_TIMEOUT_MS = 4;
 
 /**
  * 충돌 narrowphase worker pool 기본 통계를 생성합니다.
@@ -49,6 +53,17 @@ function createDefaultCollisionNarrowphaseWorkerStats() {
  */
 export function isCollisionNarrowphaseWorkerPoolSupported() {
     return typeof Worker === 'function' && typeof SharedArrayBuffer === 'function';
+}
+
+/**
+ * 현재 실행 컨텍스트에서 Atomics.wait 기반 동기 대기를 사용할 수 있는지 반환합니다.
+ * @returns {boolean}
+ */
+export function isCollisionNarrowphaseSyncWaitSupported() {
+    return typeof document === 'undefined'
+        && typeof Atomics === 'object'
+        && typeof Atomics.wait === 'function'
+        && typeof Atomics.notify === 'function';
 }
 
 /**
@@ -122,6 +137,8 @@ export class CollisionNarrowphaseWorkerPool {
         this.pairLowIndices = null;
         this.pairHighIndices = null;
         this.contactResultData = null;
+        this.completionBuffer = null;
+        this.completionState = null;
         this.inFlightRequest = null;
         this.requestSequence = 0;
         this.stats = createDefaultCollisionNarrowphaseWorkerStats();
@@ -321,6 +338,119 @@ export class CollisionNarrowphaseWorkerPool {
     }
 
     /**
+     * Atomics.wait로 같은 fixed pass 안에서 enemy circle contact 계산 완료를 기다립니다.
+     * @param {{relationData: Float64Array, bodyKindCodes: Uint8Array, bodyShapeCodes: Uint8Array, pairLowIndices: Int32Array, pairHighIndices: Int32Array, bodyCount: number, pairCount: number}} payload
+     * @param {{waitTimeoutMs?: number}} [options={}]
+     * @returns {object|null}
+     */
+    computeEnemyCircleContactsSync(payload, options = {}) {
+        if (this.inFlightRequest || !isCollisionNarrowphaseSyncWaitSupported()) {
+            this.stats.fallbackCount++;
+            return null;
+        }
+        if (!this.ensureStarted() || !this.isReady()) {
+            this.stats.fallbackCount++;
+            return null;
+        }
+
+        const counts = this._normalizeInputCounts(payload);
+        const bodyCount = counts.bodyCount;
+        const pairCount = counts.pairCount;
+        if (bodyCount <= 0 || pairCount <= 0) {
+            return {
+                resultCount: 0,
+                resultRanges: [],
+                resultData: this.contactResultData,
+                overflow: false,
+                durationMs: 0
+            };
+        }
+        if (!this._ensureCapacity(bodyCount, pairCount) || !this.isReady()) {
+            this.stats.fallbackCount++;
+            return null;
+        }
+
+        this._writeInputSnapshot(payload, bodyCount, pairCount);
+        const chunks = this._createRangeChunks(pairCount);
+        if (chunks.length === 0) {
+            return {
+                resultCount: 0,
+                resultRanges: [],
+                resultData: this.contactResultData,
+                overflow: false,
+                durationMs: 0
+            };
+        }
+
+        const waitTimeoutMs = Number.isFinite(options.waitTimeoutMs)
+            ? Math.max(0, options.waitTimeoutMs)
+            : COLLISION_NARROWPHASE_DEFAULT_SYNC_WAIT_TIMEOUT_MS;
+        const requestId = ++this.requestSequence;
+        const requestedAt = performance.now();
+        this._resetCompletionState(chunks.length, requestId);
+        this.stats.requestCount++;
+        this.stats.lastRequestId = requestId;
+        this.stats.lastPairCount = pairCount;
+        this.stats.lastContactCount = 0;
+        this.stats.chunkCount = chunks.length;
+        this.stats.completedChunkCount = 0;
+
+        for (let i = 0; i < chunks.length; i++) {
+            const worker = this.workers[chunks[i].workerIndex] ?? this.workers[i % this.workers.length];
+            if (!worker) {
+                this.stats.fallbackCount++;
+                this.stats.lastError = '충돌 narrowphase worker chunk를 보낼 수 없습니다.';
+                this.stop();
+                return null;
+            }
+
+            try {
+                worker.postMessage(createCollisionNarrowphaseWorkerMessage(
+                    COLLISION_NARROWPHASE_WORKER_MESSAGE_TYPES.COMPUTE_RANGE,
+                    {
+                        ...chunks[i],
+                        requestId,
+                        requestGroupId: requestId,
+                        bodyCount,
+                        maxPairCount: pairCount,
+                        completionBuffer: this.completionBuffer,
+                        completionOffset: i * COLLISION_NARROWPHASE_COMPLETION_STRIDE,
+                        suppressResultMessage: true
+                    }
+                ));
+            } catch (error) {
+                this.stats.fallbackCount++;
+                this.stats.lastError = error instanceof Error ? error.message : String(error);
+                this.stop();
+                return null;
+            }
+        }
+
+        const result = this._waitForSyncCompletion({
+            requestId,
+            pairCount,
+            chunks,
+            requestedAt,
+            waitTimeoutMs
+        });
+        if (!result) {
+            this.stats.fallbackCount++;
+            this.stop();
+            return null;
+        }
+
+        this.stats.responseCount++;
+        this.stats.lastCompletedRequestId = requestId;
+        this.stats.lastLatencyMs = result.durationMs;
+        this.stats.lastContactCount = result.resultCount;
+        this.stats.completedChunkCount = chunks.length;
+        if (result.overflow) {
+            this.stats.overflowCount++;
+        }
+        return result;
+    }
+
+    /**
      * 공유 버퍼와 typed array view를 생성합니다.
      * @param {number} bodyCapacity
      * @param {number} pairCapacity
@@ -334,8 +464,144 @@ export class CollisionNarrowphaseWorkerPool {
         this.pairLowIndices = new Int32Array(this.sharedBuffers.pairLowBuffer);
         this.pairHighIndices = new Int32Array(this.sharedBuffers.pairHighBuffer);
         this.contactResultData = new Float64Array(this.sharedBuffers.contactResultBuffer);
+        if (!this.completionBuffer) {
+            this.completionBuffer = new SharedArrayBuffer(
+                Int32Array.BYTES_PER_ELEMENT
+                    * COLLISION_NARROWPHASE_COMPLETION_STRIDE
+                    * COLLISION_NARROWPHASE_WORKER_POOL_MAX_SIZE
+            );
+            this.completionState = new Int32Array(this.completionBuffer);
+        }
         this.stats.bodyCapacity = this.sharedBuffers.bodyCapacity;
         this.stats.pairCapacity = this.sharedBuffers.pairCapacity;
+    }
+
+    /**
+     * payload에서 안전한 body/pair count를 계산합니다.
+     * @param {object|null|undefined} payload
+     * @returns {{bodyCount: number, pairCount: number}}
+     * @private
+     */
+    _normalizeInputCounts(payload) {
+        return {
+            bodyCount: Math.max(0, Math.min(
+                Number.isInteger(payload?.bodyCount) ? payload.bodyCount : 0,
+                Math.floor((payload?.relationData?.length ?? 0) / COLLISION_RELATION_BROAD_STRIDE),
+                payload?.bodyKindCodes?.length ?? 0,
+                payload?.bodyShapeCodes?.length ?? 0
+            )),
+            pairCount: Math.max(0, Math.min(
+                Number.isInteger(payload?.pairCount) ? payload.pairCount : 0,
+                payload?.pairLowIndices?.length ?? 0,
+                payload?.pairHighIndices?.length ?? 0
+            ))
+        };
+    }
+
+    /**
+     * sync completion header를 초기화합니다.
+     * @param {number} chunkCount
+     * @param {number} requestId
+     * @private
+     */
+    _resetCompletionState(chunkCount, requestId) {
+        const limit = Math.min(
+            this.completionState.length,
+            Math.max(0, chunkCount) * COLLISION_NARROWPHASE_COMPLETION_STRIDE
+        );
+        for (let i = 0; i < limit; i++) {
+            this.completionState[i] = 0;
+        }
+        for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+            const offset = chunkIndex * COLLISION_NARROWPHASE_COMPLETION_STRIDE;
+            Atomics.store(
+                this.completionState,
+                offset + COLLISION_NARROWPHASE_COMPLETION_INDEX.REQUEST_ID,
+                requestId
+            );
+            Atomics.store(
+                this.completionState,
+                offset + COLLISION_NARROWPHASE_COMPLETION_INDEX.STATE,
+                COLLISION_NARROWPHASE_COMPLETION_STATE.RUNNING
+            );
+        }
+    }
+
+    /**
+     * sync completion header를 기다리고 result range 목록을 만듭니다.
+     * @param {{requestId: number, pairCount: number, chunks: object[], requestedAt: number, waitTimeoutMs: number}} waitState
+     * @returns {object|null}
+     * @private
+     */
+    _waitForSyncCompletion(waitState) {
+        const deadline = performance.now() + waitState.waitTimeoutMs;
+        const resultRanges = [];
+        let resultCount = 0;
+        let overflow = false;
+
+        for (let i = 0; i < waitState.chunks.length; i++) {
+            const chunk = waitState.chunks[i];
+            const offset = i * COLLISION_NARROWPHASE_COMPLETION_STRIDE;
+            const stateIndex = offset + COLLISION_NARROWPHASE_COMPLETION_INDEX.STATE;
+            let state = Atomics.load(this.completionState, stateIndex);
+            while (state === COLLISION_NARROWPHASE_COMPLETION_STATE.RUNNING) {
+                const remainingMs = Math.max(0, deadline - performance.now());
+                if (remainingMs <= 0) {
+                    this.stats.lastError = '충돌 narrowphase worker sync 대기 시간이 초과되었습니다.';
+                    return null;
+                }
+                try {
+                    Atomics.wait(this.completionState, stateIndex, state, remainingMs);
+                } catch (error) {
+                    this.stats.lastError = error instanceof Error ? error.message : String(error);
+                    return null;
+                }
+                state = Atomics.load(this.completionState, stateIndex);
+            }
+
+            if (state !== COLLISION_NARROWPHASE_COMPLETION_STATE.DONE) {
+                this.stats.lastError = '충돌 narrowphase worker sync 결과가 오류 상태입니다.';
+                return null;
+            }
+
+            const completedRequestId = Atomics.load(
+                this.completionState,
+                offset + COLLISION_NARROWPHASE_COMPLETION_INDEX.REQUEST_ID
+            );
+            if (completedRequestId !== waitState.requestId) {
+                this.stats.staleDropCount++;
+                this.stats.lastError = '충돌 narrowphase worker sync request id가 일치하지 않습니다.';
+                return null;
+            }
+
+            const chunkResultCount = Math.max(0, Atomics.load(
+                this.completionState,
+                offset + COLLISION_NARROWPHASE_COMPLETION_INDEX.RESULT_COUNT
+            ));
+            resultCount += chunkResultCount;
+            overflow = overflow || Atomics.load(
+                this.completionState,
+                offset + COLLISION_NARROWPHASE_COMPLETION_INDEX.OVERFLOW
+            ) !== 0;
+            resultRanges.push({
+                chunkIndex: chunk.chunkIndex,
+                pairStart: chunk.pairStart,
+                pairCount: chunk.pairCount,
+                resultOffset: chunk.resultOffset,
+                resultCount: chunkResultCount
+            });
+        }
+
+        resultRanges.sort((a, b) => a.pairStart - b.pairStart);
+        return {
+            requestId: waitState.requestId,
+            pairCount: waitState.pairCount,
+            resultCount,
+            resultRanges,
+            resultData: this.contactResultData,
+            overflow,
+            durationMs: Math.max(0, performance.now() - waitState.requestedAt)
+        };
     }
 
     /**

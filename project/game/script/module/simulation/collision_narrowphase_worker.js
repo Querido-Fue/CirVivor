@@ -7,6 +7,9 @@ import {
     COLLISION_RELATION_INDEX
 } from '../physics/collision_soa_layout.js';
 import {
+    COLLISION_NARROWPHASE_COMPLETION_INDEX,
+    COLLISION_NARROWPHASE_COMPLETION_STATE,
+    COLLISION_NARROWPHASE_COMPLETION_STRIDE,
     COLLISION_NARROWPHASE_WORKER_MESSAGE_TYPES,
     createCollisionNarrowphaseWorkerMessage,
     isCollisionNarrowphaseWorkerMessage
@@ -266,6 +269,52 @@ function computeCollisionNarrowphaseRange(message) {
 }
 
 /**
+ * 동기 대기 호출자를 깨우기 위해 completion buffer에 결과를 기록합니다.
+ * @param {object|null|undefined} message
+ * @param {object|null|undefined} result
+ * @param {number} state
+ */
+function signalCollisionNarrowphaseCompletion(message, result, state) {
+    if (typeof Atomics !== 'object' || !isBufferLike(message?.completionBuffer)) {
+        return;
+    }
+
+    const completionOffset = Number.isInteger(message.completionOffset) ? message.completionOffset : -1;
+    const completionState = new Int32Array(message.completionBuffer);
+    if (completionOffset < 0 || completionOffset + COLLISION_NARROWPHASE_COMPLETION_STRIDE > completionState.length) {
+        return;
+    }
+
+    Atomics.store(
+        completionState,
+        completionOffset + COLLISION_NARROWPHASE_COMPLETION_INDEX.REQUEST_ID,
+        Number.isInteger(result?.requestId) ? result.requestId : (Number.isInteger(message.requestId) ? message.requestId : 0)
+    );
+    Atomics.store(
+        completionState,
+        completionOffset + COLLISION_NARROWPHASE_COMPLETION_INDEX.RESULT_COUNT,
+        Number.isInteger(result?.resultCount) ? Math.max(0, result.resultCount) : 0
+    );
+    Atomics.store(
+        completionState,
+        completionOffset + COLLISION_NARROWPHASE_COMPLETION_INDEX.OVERFLOW,
+        result?.overflow === true ? 1 : 0
+    );
+    Atomics.store(
+        completionState,
+        completionOffset + COLLISION_NARROWPHASE_COMPLETION_INDEX.DURATION_US,
+        Number.isFinite(result?.durationMs) ? Math.max(0, Math.round(result.durationMs * 1000)) : 0
+    );
+    Atomics.store(
+        completionState,
+        completionOffset + COLLISION_NARROWPHASE_COMPLETION_INDEX.SKIPPED_PAIR_COUNT,
+        Number.isInteger(result?.skippedPairCount) ? Math.max(0, result.skippedPairCount) : 0
+    );
+    Atomics.store(completionState, completionOffset + COLLISION_NARROWPHASE_COMPLETION_INDEX.STATE, state);
+    Atomics.notify(completionState, completionOffset + COLLISION_NARROWPHASE_COMPLETION_INDEX.STATE, 1);
+}
+
+/**
  * 워커 내부 오류를 상위 워커에 보고합니다.
  * @param {unknown} error
  */
@@ -285,8 +334,9 @@ function reportCollisionNarrowphaseWorkerError(error) {
 }
 
 self.addEventListener('message', (event) => {
+    let message = null;
     try {
-        const message = event.data;
+        message = event.data;
         if (!isCollisionNarrowphaseWorkerMessage(message)) {
             return;
         }
@@ -303,16 +353,31 @@ self.addEventListener('message', (event) => {
                 }));
                 break;
             case COLLISION_NARROWPHASE_WORKER_MESSAGE_TYPES.COMPUTE_RANGE:
-                self.postMessage(createCollisionNarrowphaseWorkerMessage(
-                    COLLISION_NARROWPHASE_WORKER_MESSAGE_TYPES.RESULT_RANGE,
-                    computeCollisionNarrowphaseRange(message)
-                ));
+                {
+                    const result = computeCollisionNarrowphaseRange(message);
+                    signalCollisionNarrowphaseCompletion(
+                        message,
+                        result,
+                        COLLISION_NARROWPHASE_COMPLETION_STATE.DONE
+                    );
+                    if (message.suppressResultMessage !== true) {
+                        self.postMessage(createCollisionNarrowphaseWorkerMessage(
+                            COLLISION_NARROWPHASE_WORKER_MESSAGE_TYPES.RESULT_RANGE,
+                            result
+                        ));
+                    }
+                }
                 break;
             case COLLISION_NARROWPHASE_WORKER_MESSAGE_TYPES.SHUTDOWN:
                 self.close();
                 break;
         }
     } catch (error) {
+        signalCollisionNarrowphaseCompletion(
+            message,
+            null,
+            COLLISION_NARROWPHASE_COMPLETION_STATE.ERROR
+        );
         reportCollisionNarrowphaseWorkerError(error);
     }
 });

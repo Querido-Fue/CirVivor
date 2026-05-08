@@ -5,11 +5,17 @@ import {
     COLLISION_BODY_KIND_ENEMY as BODY_KIND_ENEMY,
     COLLISION_BODY_SHAPE_CIRCLE as BODY_SHAPE_CIRCLE,
     COLLISION_BROAD_STRIDE as BROAD_STRIDE,
+    COLLISION_CONTACT_RESULT_INDEX as CONTACT_RESULT_INDEX,
+    COLLISION_CONTACT_RESULT_STRIDE as CONTACT_RESULT_STRIDE,
     COLLISION_RELATION_INDEX as RELATION_INDEX,
     COLLISION_RELATION_BROAD_STRIDE as RELATION_BROAD_STRIDE,
     getCollisionBodyKindCode,
     getCollisionBodyShapeCode
 } from './collision_soa_layout.js';
+import {
+    CollisionNarrowphaseWorkerPool,
+    isCollisionNarrowphaseSyncWaitSupported
+} from '../simulation/collision_narrowphase_worker_pool.js';
 import { getSimulationObjectWH, getSimulationSetting } from '../simulation/simulation_runtime.js';
 
 const EPSILON = 1e-6;
@@ -87,6 +93,8 @@ const PRESSURE_ESCAPE_SCALE_MAX = 1.45;
 const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
 const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
 const HEXA_HIVE_WALL_MIN_PARTS = 2;
+const PARALLEL_NARROWPHASE_MIN_PAIR_COUNT = 512;
+const PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS = 4;
 const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'enemyTotalMs',
     'enemyBodyBuildMs',
@@ -119,6 +127,12 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveResolvedPairCount',
     'solveSoACirclePairCount',
     'solveObjectNarrowphasePairCount',
+    'solveParallelNarrowphasePairCount',
+    'solveParallelNarrowphaseContactCount',
+    'solveParallelNarrowphaseChunkCount',
+    'solveParallelNarrowphaseWaitMs',
+    'solveParallelNarrowphaseFallbackCount',
+    'solveParallelNarrowphaseOverflowCount',
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
 ]);
@@ -206,6 +220,7 @@ export class CollisionHandler {
     #candidatePairBodyCount;
     #enemyBodyFrameToken;
     #enemyBodyCache;
+    #narrowphaseWorkerPool;
     #profileEnabled;
 
     constructor() {
@@ -253,6 +268,12 @@ export class CollisionHandler {
             solveResolvedPairCount: 0,
             solveSoACirclePairCount: 0,
             solveObjectNarrowphasePairCount: 0,
+            solveParallelNarrowphasePairCount: 0,
+            solveParallelNarrowphaseContactCount: 0,
+            solveParallelNarrowphaseChunkCount: 0,
+            solveParallelNarrowphaseWaitMs: 0,
+            solveParallelNarrowphaseFallbackCount: 0,
+            solveParallelNarrowphaseOverflowCount: 0,
             solveBudgetSkipCount: 0,
             solveLargePopulationMode: 0
         };
@@ -315,6 +336,7 @@ export class CollisionHandler {
             sourceLength: 0,
             bodies: this.#enemyBodiesBuffer
         };
+        this.#narrowphaseWorkerPool = null;
         this.#profileEnabled = false;
     }
 
@@ -2270,6 +2292,195 @@ export class CollisionHandler {
     }
 
     /**
+     * 충돌 narrowphase worker pool 인스턴스를 지연 생성합니다.
+     * @private
+     * @returns {CollisionNarrowphaseWorkerPool}
+     */
+    #getNarrowphaseWorkerPool() {
+        if (!this.#narrowphaseWorkerPool) {
+            this.#narrowphaseWorkerPool = new CollisionNarrowphaseWorkerPool();
+        }
+
+        return this.#narrowphaseWorkerPool;
+    }
+
+    /**
+     * 현재 패스에서 parallel narrowphase를 시도해도 되는지 반환합니다.
+     * @private
+     * @param {boolean} resolvePositions
+     * @param {boolean} applyNonPosition
+     * @returns {boolean}
+     */
+    #shouldUseParallelNarrowphase(resolvePositions, applyNonPosition) {
+        if (resolvePositions || !applyNonPosition) {
+            return false;
+        }
+        if (this.#candidatePairCount < PARALLEL_NARROWPHASE_MIN_PAIR_COUNT) {
+            return false;
+        }
+        if (getSimulationSetting('simulationWorkerAuthorityMode', false) !== true) {
+            return false;
+        }
+
+        return isCollisionNarrowphaseSyncWaitSupported();
+    }
+
+    /**
+     * non-position pass에서 사용할 enemy circle contact 결과를 worker pool로 미리 계산합니다.
+     * @private
+     * @param {object[]} bodies
+     * @param {boolean} resolvePositions
+     * @param {boolean} applyNonPosition
+     * @returns {{resultData: Float64Array, resultRanges: object[], rangeIndex: number, rowIndex: number}|null}
+     */
+    #prepareParallelNarrowphaseContacts(bodies, resolvePositions, applyNonPosition) {
+        if (!this.#shouldUseParallelNarrowphase(resolvePositions, applyNonPosition)) {
+            return null;
+        }
+
+        const waitStart = this.#startProfileTimer();
+        const result = this.#getNarrowphaseWorkerPool().computeEnemyCircleContactsSync(
+            {
+                relationData: this.#relationBroadData,
+                bodyKindCodes: this.#bodyKindCodes,
+                bodyShapeCodes: this.#bodyShapeCodes,
+                pairLowIndices: this.#candidatePairLowIndices,
+                pairHighIndices: this.#candidatePairHighIndices,
+                bodyCount: Array.isArray(bodies) ? bodies.length : 0,
+                pairCount: this.#candidatePairCount
+            },
+            {
+                waitTimeoutMs: PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS
+            }
+        );
+        this.#recordProfileDuration('solveParallelNarrowphaseWaitMs', waitStart);
+        if (!result || !(result.resultData instanceof Float64Array)) {
+            this.#recordProfileCount('solveParallelNarrowphaseFallbackCount');
+            return null;
+        }
+        if (result.overflow === true) {
+            this.#recordProfileCount('solveParallelNarrowphaseOverflowCount');
+            this.#recordProfileCount('solveParallelNarrowphaseFallbackCount');
+            return null;
+        }
+
+        const resultRanges = Array.isArray(result.resultRanges) ? result.resultRanges : [];
+        this.#recordProfileCount('solveParallelNarrowphasePairCount', result.pairCount);
+        this.#recordProfileCount('solveParallelNarrowphaseContactCount', result.resultCount);
+        this.#recordProfileCount('solveParallelNarrowphaseChunkCount', resultRanges.length);
+        return {
+            resultData: result.resultData,
+            resultRanges,
+            rangeIndex: 0,
+            rowIndex: Number.isInteger(resultRanges[0]?.resultOffset) ? resultRanges[0].resultOffset : 0
+        };
+    }
+
+    /**
+     * pair index에 대응하는 parallel contact result row를 찾습니다.
+     * @private
+     * @param {{resultData: Float64Array, resultRanges: object[], rangeIndex: number, rowIndex: number}|null} state
+     * @param {number} pairIndex
+     * @returns {number}
+     */
+    #findParallelNarrowphaseContactRow(state, pairIndex) {
+        if (!state || !(state.resultData instanceof Float64Array) || !Number.isInteger(pairIndex)) {
+            return -1;
+        }
+
+        const ranges = state.resultRanges;
+        const resultData = state.resultData;
+        while (state.rangeIndex < ranges.length) {
+            const range = ranges[state.rangeIndex];
+            const resultOffset = Number.isInteger(range?.resultOffset) ? range.resultOffset : 0;
+            const resultCount = Number.isInteger(range?.resultCount) ? Math.max(0, range.resultCount) : 0;
+            const rowEnd = resultOffset + resultCount;
+            if (state.rowIndex < resultOffset) {
+                state.rowIndex = resultOffset;
+            }
+
+            while (state.rowIndex < rowEnd) {
+                const offset = state.rowIndex * CONTACT_RESULT_STRIDE;
+                const resultPairIndex = Math.trunc(resultData[offset + CONTACT_RESULT_INDEX.PAIR_INDEX]);
+                if (resultPairIndex < pairIndex) {
+                    state.rowIndex++;
+                    continue;
+                }
+                if (resultPairIndex === pairIndex) {
+                    return state.rowIndex;
+                }
+                return -1;
+            }
+            state.rangeIndex++;
+        }
+
+        return -1;
+    }
+
+    /**
+     * worker가 미리 계산한 enemy circle contact로 non-position 효과를 적용합니다.
+     * @private
+     * @param {object} bodyA
+     * @param {object} bodyB
+     * @param {number} low
+     * @param {number} high
+     * @param {Float64Array} resultData
+     * @param {number} contactRowIndex
+     * @param {boolean} resolvePositions
+     * @param {boolean} applyNonPosition
+     * @returns {number}
+     */
+    #processEnemyCircleContactResultSoA(
+        bodyA,
+        bodyB,
+        low,
+        high,
+        resultData,
+        contactRowIndex,
+        resolvePositions,
+        applyNonPosition
+    ) {
+        if (resolvePositions || !Number.isInteger(contactRowIndex) || contactRowIndex < 0) {
+            return 0;
+        }
+
+        const offset = contactRowIndex * CONTACT_RESULT_STRIDE;
+        const resultLow = Math.trunc(resultData[offset + CONTACT_RESULT_INDEX.BODY_A_INDEX]);
+        const resultHigh = Math.trunc(resultData[offset + CONTACT_RESULT_INDEX.BODY_B_INDEX]);
+        if (resultLow !== low || resultHigh !== high) {
+            return 0;
+        }
+
+        const normalX = resultData[offset + CONTACT_RESULT_INDEX.NORMAL_X];
+        const normalY = resultData[offset + CONTACT_RESULT_INDEX.NORMAL_Y];
+        const penetration = resultData[offset + CONTACT_RESULT_INDEX.PENETRATION];
+        const pointX = resultData[offset + CONTACT_RESULT_INDEX.POINT_X];
+        const pointY = resultData[offset + CONTACT_RESULT_INDEX.POINT_Y];
+        if (!Number.isFinite(normalX) || !Number.isFinite(normalY)
+            || !Number.isFinite(penetration) || penetration <= 0
+            || !Number.isFinite(pointX) || !Number.isFinite(pointY)) {
+            return 0;
+        }
+
+        const manifold = this.#scratchManifold;
+        manifold.collided = true;
+        manifold.normalX = normalX;
+        manifold.normalY = normalY;
+        manifold.penetration = penetration;
+        manifold.pointX = pointX;
+        manifold.pointY = pointY;
+        manifold.moveAX = 0;
+        manifold.moveAY = 0;
+        manifold.moveBX = 0;
+        manifold.moveBY = 0;
+
+        if (applyNonPosition) {
+            this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
+        }
+        return 1;
+    }
+
+    /**
      * 후보 pair 목록을 현재 broad-phase 데이터 기준으로 판정합니다.
      * @private
      * @param {object[]} bodies
@@ -2286,6 +2497,11 @@ export class CollisionHandler {
         const shapeCodes = this.#bodyShapeCodes;
         const lowIndices = this.#candidatePairLowIndices;
         const highIndices = this.#candidatePairHighIndices;
+        const parallelContactState = this.#prepareParallelNarrowphaseContacts(
+            bodies,
+            resolvePositions,
+            applyNonPosition
+        );
         this.#resetPassPairProcessCounts(bodies);
         for (let pairIndex = 0; pairIndex < this.#candidatePairCount; pairIndex++) {
             const low = lowIndices[pairIndex];
@@ -2344,8 +2560,23 @@ export class CollisionHandler {
                 bodyB._passPairProcessCount = (bodyB._passPairProcessCount || 0) + 1;
 
                 const narrowphaseStart = this.#startProfileTimer();
-                const pairResolved = isCirclePair
-                    ? this.#processEnemyCirclePairSoA(
+                let pairResolved = 0;
+                if (isCirclePair && parallelContactState) {
+                    const contactRowIndex = this.#findParallelNarrowphaseContactRow(parallelContactState, pairIndex);
+                    pairResolved = contactRowIndex >= 0
+                        ? this.#processEnemyCircleContactResultSoA(
+                            bodyA,
+                            bodyB,
+                            low,
+                            high,
+                            parallelContactState.resultData,
+                            contactRowIndex,
+                            resolvePositions,
+                            applyNonPosition
+                        )
+                        : 0;
+                } else if (isCirclePair) {
+                    pairResolved = this.#processEnemyCirclePairSoA(
                         bodyA,
                         bodyB,
                         relationData,
@@ -2354,8 +2585,9 @@ export class CollisionHandler {
                         resolvePositions,
                         applyNonPosition,
                         resolveBoost
-                    )
-                    : this.#processPair(
+                    );
+                } else {
+                    pairResolved = this.#processPair(
                         bodyA,
                         bodyB,
                         resolvePositions,
@@ -2363,6 +2595,7 @@ export class CollisionHandler {
                         resolveBoost,
                         COLLISION_RULE_DYNAMIC_RESOLVE
                     );
+                }
                 this.#recordProfileCount(
                     isCirclePair ? 'solveSoACirclePairCount' : 'solveObjectNarrowphasePairCount'
                 );
