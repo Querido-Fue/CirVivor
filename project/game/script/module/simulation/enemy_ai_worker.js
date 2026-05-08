@@ -143,6 +143,8 @@ function normalizeEnemySummary(enemy) {
         accSpeed: normalizeNumber(enemy.accSpeed, 0),
         renderHeightPx: normalizeNumber(enemy.renderHeightPx, 24),
         navigationRadiusPx: normalizeNumber(enemy.navigationRadiusPx, 0),
+        navigationHalfWidthPx: normalizeNumber(enemy.navigationHalfWidthPx, 0),
+        navigationHalfHeightPx: normalizeNumber(enemy.navigationHalfHeightPx, 0),
         shouldUpdateDecision: enemy.shouldUpdateDecision === true,
         enemyAIState: cloneEnemyAIStateForTransfer(enemy.enemyAIState)
     };
@@ -163,6 +165,8 @@ function createEnemyAIActor(summary) {
         acc: { x: 0, y: 0 },
         accSpeed: normalizeNumber(summary.accSpeed, 0),
         navigationRadiusPx: normalizeNumber(summary.navigationRadiusPx, 0),
+        navigationHalfWidthPx: normalizeNumber(summary.navigationHalfWidthPx, 0),
+        navigationHalfHeightPx: normalizeNumber(summary.navigationHalfHeightPx, 0),
         _enemyAIState: cloneEnemyAIStateForTransfer(summary.enemyAIState),
         setAcc(x, y) {
             this.acc.x = normalizeNumber(x, 0);

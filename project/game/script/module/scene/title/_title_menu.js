@@ -4,29 +4,19 @@ import { getDisplaySystem, getUIOffsetX, getWH, getUIWW, getWW } from 'display/d
 import { getDelta } from 'game/time_handler.js';
 import { consumeMouseState, getMouseInput, hasMouseState } from 'input/input_system.js';
 import { OverlaySession } from 'overlay/_overlay_session.js';
-import {
-    createRectToQuadHomography,
-    createRotationXMatrix,
-    createRotationYMatrix,
-    getDeltaLerpFactor,
-    invertMat3,
-    isPointInsideQuad,
-    isPointInsideRoundedRect,
-    lerpNumber,
-    mapScreenPointToPanelLocal,
-    multiplyMat4,
-    projectPanelQuad
-} from 'overlay/_panel_effect_math.js';
+import { lerpNumber } from 'overlay/_panel_effect_math.js';
 import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
-import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
-import { runtimeTool } from 'util/runtime_tool.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
 import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
 import {
     TITLE_MENU_CARD_REVEAL_ORDER,
     TITLE_MENU_SECONDARY_ENTRIES
 } from './menu/_title_menu_config.js';
+import {
+    drawTitleMenuCardFrontfaceContent,
+    drawTitleMenuUtilityTileContent
+} from './menu/_title_menu_content_render.js';
 import {
     drawTitleMenuCardBorder,
     drawTitleMenuCardParticles,
@@ -42,38 +32,47 @@ import {
     updateTitleMenuSpotlightState,
     updateTitleMenuTiltState
 } from './menu/_title_menu_effect_state.js';
-import {
-    drawTitleMenuCardIcon,
-    drawTitleMenuIcon,
-    drawTitleMenuPlaceholderIcon,
-    getTitleMenuCardIconMetrics,
-    getTitleMenuUtilityTileIconMetrics
-} from './menu/_title_menu_icon_render.js';
 import { getTitleMenuIconSource } from './menu/_title_menu_icon.js';
+import {
+    resolveTitleMenuCardPointerInfo,
+    updateTitleMenuCardProjection,
+    updateTitleMenuPaneInteractionState
+} from './menu/_title_menu_interaction.js';
 import { TitleMenuLayout } from './menu/_title_menu_layout.js';
-import { clampNumber, easeOutCubic, easeOutExpo, lerpValue } from './menu/_title_menu_motion.js';
+import { clampNumber } from './menu/_title_menu_motion.js';
 import {
     createTitleMenuPaneRuntimeState,
     createTitleMenuRuntimeState
 } from './menu/_title_menu_runtime_state.js';
 import { buildTitleMenuRightPaneLayout } from './menu/_title_menu_pane_layout.js';
 import {
+    buildTitleMenuCardRenderState,
+    buildTitleMenuPaneRenderState,
+    buildTitleMenuUtilityTileRenderState,
+    getTitleMenuUtilityPaneRevealEase
+} from './menu/_title_menu_render_state.js';
+import {
     getTitleMenuTextPresetFont,
     getTitleMenuTextPresetFontSize
 } from './menu/_title_menu_text_layout.js';
-import { drawTitleMenuWrappedText } from './menu/_title_menu_text_render.js';
+import {
+    buildTitleMenuCardStaticTextureSignature,
+    buildTitleMenuUtilityTileStaticTextureSignature
+} from './menu/_title_menu_texture_signature.js';
 import {
     buildTitleMenuVersionLabelLayout,
     getTitleMenuGameVersionText,
     getTitleMenuVersionHistoryLinkText
 } from './menu/_title_menu_version_label.js';
 import {
-    buildMenuStaticTextureThemeSignature,
+    createTitleMenuVersionHistoryLinkButton,
+    drawTitleMenuVersionHistoryLinkArrow,
+    releaseTitleMenuVersionHistoryLinkButton,
+    updateTitleMenuVersionHistoryLinkButton
+} from './menu/_title_menu_version_link.js';
+import {
     getMenuBackdropPaneStyle,
-    getMenuCardDescriptionColor,
-    getMenuCardTitleColor,
     getMenuEffectColor,
-    getMenuOpacity,
     getMenuPanelStyle,
     getThemeAwareMenuBorderColor,
     getUnifiedOuterPaneStrokeColor,
@@ -82,7 +81,6 @@ import {
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const TITLE_LINK_DATA = getData('TITLE_LINK_DATA');
 const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 
@@ -126,7 +124,7 @@ export class TitleMenu {
         this.utilityPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.secondaryMenuEntries = TITLE_MENU_SECONDARY_ENTRIES;
         this.session = this.#createSession();
-        this.versionHistoryLinkButton = this.#createVersionHistoryLinkButton();
+        this.versionHistoryLinkButton = createTitleMenuVersionHistoryLinkButton(this.TitleScene);
 
         this.#createCards();
         this.#createUtilityTileStates();
@@ -163,7 +161,12 @@ export class TitleMenu {
 
         getDisplaySystem()?.webGLHandler?.flushAll();
         const paneLayout = this.currentPaneLayout || this.#getRightPaneLayout();
-        const paneRenderState = this.#buildPaneRenderState(paneLayout);
+        const paneRenderState = buildTitleMenuPaneRenderState({
+            paneLayout,
+            uiww: this.UIWW,
+            revealCoreDuration: this.#getCardRevealCoreDuration(),
+            getRevealProgress: this.#getRevealProgress.bind(this)
+        });
         const cardPaneTextureCanvas = this.#buildCardPaneTextureCanvas(paneRenderState.cardPane);
         const utilityPaneTextureCanvas = this.#buildRightPaneTextureCanvas(
             paneRenderState.utilityPane,
@@ -357,7 +360,7 @@ export class TitleMenu {
             this.versionLabelMeasureContext = null;
         }
         if (this.versionHistoryLinkButton) {
-            releaseUIItem(this.versionHistoryLinkButton);
+            releaseTitleMenuVersionHistoryLinkButton(this.versionHistoryLinkButton);
             this.versionHistoryLinkButton = null;
         }
 
@@ -425,34 +428,6 @@ export class TitleMenu {
                 }
             }
         });
-    }
-
-    /**
-     * 우상단 업데이트 링크 상호작용에 사용할 투명 버튼을 생성합니다.
-     * @returns {import('ui/element/_button.js').ButtonElement} 생성된 버튼입니다.
-     * @private
-     */
-    #createVersionHistoryLinkButton() {
-        const button = UIPool.button.get();
-        button.init({
-            parent: this.TitleScene,
-            onClick: this.#handleVersionHistoryLinkClick.bind(this),
-            onHover: null,
-            layer: 'ui',
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-            idleColor: 'rgba(0, 0, 0, 0)',
-            hoverColor: 'rgba(0, 0, 0, 0)',
-            center: [],
-            alpha: 1,
-            margin: 0,
-            radius: 0
-        });
-        button.hoverScaleMultiplier = 1;
-        button.pressScaleMultiplier = 1;
-        return button;
     }
 
     /**
@@ -557,13 +532,30 @@ export class TitleMenu {
         for (const card of this.cards) {
             this.cardRenderMap.set(
                 card.cardDefinition.id,
-                this.#buildCardRenderState(card, transitionProgress, paneLayout.cardOffsetX, paneLayout.cardOffsetY)
+                buildTitleMenuCardRenderState({
+                    card,
+                    transitionProgress,
+                    groupOffsetX: paneLayout.cardOffsetX,
+                    groupOffsetY: paneLayout.cardOffsetY,
+                    ww: this.WW,
+                    wh: this.WH,
+                    uiww: this.UIWW,
+                    titleCardMenu: TITLE_CARD_MENU,
+                    getRevealConfig: this.#getCardRevealConfig.bind(this),
+                    getRevealProgress: this.#getRevealProgress.bind(this)
+                })
             );
         }
         for (const [index, menuItem] of paneLayout.secondaryMenuItems.entries()) {
             this.utilityTileRenderMap.set(
                 menuItem.id,
-                this.#buildUtilityTileRenderState(menuItem, index)
+                buildTitleMenuUtilityTileRenderState({
+                    menuItem,
+                    index,
+                    uiww: this.UIWW,
+                    revealCoreDuration: this.#getCardRevealCoreDuration(),
+                    getRevealProgress: this.#getRevealProgress.bind(this)
+                })
             );
         }
     }
@@ -593,8 +585,8 @@ export class TitleMenu {
                 continue;
             }
 
-            this.#updateCardProjection(renderState, runtimeState);
-            const pointerInfo = this.#resolveCardPointerInfo(renderState, runtimeState, mouseX, mouseY);
+            updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
+            const pointerInfo = resolveTitleMenuCardPointerInfo(renderState, runtimeState, mouseX, mouseY);
             if (pointerInfo?.hovered) {
                 hoveredCardId = card.cardDefinition.id;
                 hoveredPointerInfo = pointerInfo;
@@ -628,7 +620,7 @@ export class TitleMenu {
             }
 
             updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions);
-            this.#updateCardProjection(renderState, runtimeState);
+            updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
             updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions);
             updateTitleMenuBorderState(runtimeState, delta, borderOptions);
             updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions);
@@ -689,8 +681,8 @@ export class TitleMenu {
                     continue;
                 }
 
-                this.#updateCardProjection(renderState, runtimeState);
-                const pointerInfo = this.#resolveCardPointerInfo(renderState, runtimeState, mouseX, mouseY);
+                updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
+                const pointerInfo = resolveTitleMenuCardPointerInfo(renderState, runtimeState, mouseX, mouseY);
                 if (pointerInfo?.hovered) {
                     hoveredMenuItemId = menuEntry.id;
                     hoveredPointerInfo = pointerInfo;
@@ -724,7 +716,7 @@ export class TitleMenu {
             }
 
             updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions);
-            this.#updateCardProjection(renderState, runtimeState);
+            updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
             updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions);
             updateTitleMenuBorderState(runtimeState, delta, borderOptions);
             updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions);
@@ -756,26 +748,26 @@ export class TitleMenu {
         const borderOptions = this.session?.getEffectOptions('hoverBorder') || null;
         const isInteractive = this.pointerEnabled;
 
-        this.#updatePaneInteractionState(
-            this.cardPaneInteractionState,
-            paneLayout?.cardPane,
+        updateTitleMenuPaneInteractionState({
+            paneState: this.cardPaneInteractionState,
+            paneRect: paneLayout?.cardPane,
             mouseX,
             mouseY,
             delta,
             isInteractive,
             spotlightOptions,
             borderOptions
-        );
-        this.#updatePaneInteractionState(
-            this.utilityPaneInteractionState,
-            paneLayout?.utilityPane,
+        });
+        updateTitleMenuPaneInteractionState({
+            paneState: this.utilityPaneInteractionState,
+            paneRect: paneLayout?.utilityPane,
             mouseX,
             mouseY,
             delta,
-            isInteractive && !this.hoveredSecondaryMenuId,
+            isInteractive: isInteractive && !this.hoveredSecondaryMenuId,
             spotlightOptions,
             borderOptions
-        );
+        });
     }
 
     /**
@@ -789,180 +781,13 @@ export class TitleMenu {
         }
 
         const layout = this.#buildVersionLabelLayout(paneLayout);
-        this.#layoutVersionHistoryLinkButton(layout);
-        const button = this.versionHistoryLinkButton;
-        const mouseX = getMouseInput('x');
-        const mouseY = getMouseInput('y');
-        const isHovered = this.pointerEnabled
-            && button.width > 0
-            && button.height > 0
-            && Number.isFinite(mouseX)
-            && Number.isFinite(mouseY)
-            && mouseX >= button.x
-            && mouseX <= button.x + button.width
-            && mouseY >= button.y
-            && mouseY <= button.y + button.height;
-        const isLeftPressing = hasMouseState('left', 'click') || hasMouseState('left', 'clicking');
-
-        button._handleInteractionState(isHovered, isLeftPressing, button.onHover);
-
-        if (isHovered && hasMouseState('left', 'clicked')) {
-            button.onClick();
-        }
-    }
-
-    /**
-     * 우상단 업데이트 링크 버튼 배치를 현재 렌더 레이아웃에 맞춥니다.
-     * @param {object|null} layout - 버전 정보 블록 렌더 레이아웃입니다.
-     * @private
-     */
-    #layoutVersionHistoryLinkButton(layout) {
-        if (!this.versionHistoryLinkButton) {
-            return;
-        }
-
-        const button = this.versionHistoryLinkButton;
-        const linkBounds = layout?.linkBounds || null;
-        button.x = linkBounds?.x || 0;
-        button.y = linkBounds?.y || 0;
-        button.width = this.pointerEnabled && linkBounds ? linkBounds.w : 0;
-        button.height = this.pointerEnabled && linkBounds ? linkBounds.h : 0;
-        button.radius = 0;
-    }
-
-    /**
-     * pane 상호작용 단위를 갱신합니다.
-     * @param {object} paneState - pane 상호작용 상태입니다.
-     * @param {object} paneRect - pane 영역입니다.
-     * @param {number} mouseX - 마우스 X 좌표입니다.
-     * @param {number} mouseY - 마우스 Y 좌표입니다.
-     * @param {number} delta - 프레임 델타입니다.
-     * @param {boolean} isInteractive - 상호작용 가능 여부입니다.
-     * @param {object|null} spotlightOptions - hoverSpotlight 옵션입니다.
-     * @param {object|null} borderOptions - hoverBorder 옵션입니다.
-     * @private
-     */
-    #updatePaneInteractionState(
-        paneState,
-        paneRect,
-        mouseX,
-        mouseY,
-        delta,
-        isInteractive,
-        spotlightOptions,
-        borderOptions
-    ) {
-        if (!paneState || !paneRect) {
-            return;
-        }
-
-        if (!isInteractive) {
-            paneState.hovered = false;
-            paneState.spotlightAlpha = lerpNumber(
-                paneState.spotlightAlpha,
-                0,
-                getDeltaLerpFactor(0.24, delta)
-            );
-            paneState.borderAlpha = lerpNumber(
-                paneState.borderAlpha,
-                0,
-                getDeltaLerpFactor(0.24, delta)
-            );
-            paneState.wasHovered = false;
-            return;
-        }
-
-        const pointerInfo = this.#resolvePanePointerInfo(paneRect, mouseX, mouseY);
-        paneState.hovered = pointerInfo.hovered;
-
-        if (pointerInfo.hovered && pointerInfo.localPoint) {
-            paneState.localX = pointerInfo.localPoint.x;
-            paneState.localY = pointerInfo.localPoint.y;
-        }
-
-        if (!spotlightOptions) {
-            paneState.spotlightAlpha = lerpNumber(
-                paneState.spotlightAlpha,
-                0,
-                getDeltaLerpFactor(0.24, delta)
-            );
-        } else {
-            paneState.spotlightAlpha = lerpNumber(
-                paneState.spotlightAlpha,
-                paneState.hovered ? spotlightOptions.opacity : 0,
-                getDeltaLerpFactor(spotlightOptions.smoothing, delta)
-            );
-        }
-
-        if (!borderOptions) {
-            paneState.borderAlpha = lerpNumber(
-                paneState.borderAlpha,
-                0,
-                getDeltaLerpFactor(0.24, delta)
-            );
-        } else {
-            paneState.borderAlpha = lerpNumber(
-                paneState.borderAlpha,
-                paneState.hovered ? borderOptions.opacity : 0,
-                getDeltaLerpFactor(borderOptions.smoothing, delta)
-            );
-        }
-
-        paneState.wasHovered = paneState.hovered;
-    }
-
-    /**
-     * pane 내부 hover 판정을 계산합니다.
-     * @param {object} paneRect - pane 영역입니다.
-     * @param {number} mouseX - 마우스 X 좌표입니다.
-     * @param {number} mouseY - 마우스 Y 좌표입니다.
-     * @returns {{hovered:boolean, localPoint:{x:number, y:number}|null}} 판정 결과입니다.
-     * @private
-     */
-    #resolvePanePointerInfo(paneRect, mouseX, mouseY) {
-        if (!Number.isFinite(mouseX) || !Number.isFinite(mouseY)) {
-            return {
-                hovered: false,
-                localPoint: null
-            };
-        }
-
-        if (
-            mouseX < paneRect.x
-            || mouseX > paneRect.x + paneRect.w
-            || mouseY < paneRect.y
-            || mouseY > paneRect.y + paneRect.h
-        ) {
-            return {
-                hovered: false,
-                localPoint: null
-            };
-        }
-
-        const localPoint = {
-            x: mouseX - paneRect.x,
-            y: mouseY - paneRect.y
-        };
-
-        const hovered = isPointInsideRoundedRect(
-            localPoint.x,
-            localPoint.y,
-            paneRect.w,
-            paneRect.h,
-            paneRect.radius
-        );
-
-        if (!hovered) {
-            return {
-                hovered: false,
-                localPoint: null
-            };
-        }
-
-        return {
-            hovered,
-            localPoint
-        };
+        updateTitleMenuVersionHistoryLinkButton({
+            button: this.versionHistoryLinkButton,
+            layout,
+            pointerEnabled: this.pointerEnabled,
+            mouseX: getMouseInput('x'),
+            mouseY: getMouseInput('y')
+        });
     }
 
     /**
@@ -986,176 +811,6 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 현재 렌더 상태를 계산합니다.
-     * @param {TitleMenuCard} card - 대상 카드입니다.
-     * @param {number} transitionProgress - 타이틀 전환 진행률입니다.
-     * @returns {object} 계산된 렌더 상태입니다.
-     * @private
-     */
-    #buildCardRenderState(card, transitionProgress, groupOffsetX = 0, groupOffsetY = 0) {
-        const layoutRect = card.layoutRect;
-        const animationState = card.animator.getState();
-        if (!layoutRect) {
-            return {
-                alpha: 0,
-                hoverProgress: 0,
-                panelRect: {
-                    x: 0,
-                    y: 0,
-                    w: 0,
-                    h: 0,
-                    radius: 0
-                }
-            };
-        }
-
-        const revealConfig = this.#getCardRevealConfig(card.cardDefinition.id);
-        const revealProgress = this.#getRevealProgress(revealConfig.delaySeconds, revealConfig.durationSeconds);
-        const revealEase = easeOutExpo(revealProgress);
-        const motionEase = easeOutExpo(revealProgress);
-        const transitionEase = easeOutExpo(transitionProgress);
-        const worldScale = lerpValue(TITLE_CARD_MENU.ENTRANCE_START_SCALE, 1, transitionEase);
-        const entryScale = lerpValue(1 + revealConfig.scaleOffset, 1, revealEase);
-        const hoverProgress = easeOutCubic(animationState.hoverProgress || 0);
-        const finalCenterX = layoutRect.x + groupOffsetX + (layoutRect.w * 0.5);
-        const finalCenterY = layoutRect.y + groupOffsetY + (layoutRect.h * 0.5);
-        const screenCenterX = this.WW * 0.5;
-        const screenCenterY = this.WH * 0.5;
-        const width = layoutRect.w * worldScale * entryScale;
-        const height = layoutRect.h * worldScale * entryScale;
-        const baseCenterX = screenCenterX + ((finalCenterX - screenCenterX) * worldScale);
-        const baseCenterY = screenCenterY + ((finalCenterY - screenCenterY) * worldScale);
-        const startOffsetX = this.UIWW * (TITLE_CARD_MENU.ENTRANCE_OFFSET_X_UIWW_RATIO + revealConfig.offsetXRatio);
-        const offscreenStartX = Math.max(this.WW + (layoutRect.w * 0.12), finalCenterX + startOffsetX);
-        const offscreenStartY = baseCenterY;
-        const centerX = lerpValue(offscreenStartX, baseCenterX, motionEase);
-        const centerY = lerpValue(offscreenStartY, baseCenterY, motionEase);
-        const radius = Math.max(12, Math.min(width, height) * 0.08);
-
-        return {
-            revealProgress,
-            revealEase,
-            alpha: clampNumber(clampNumber((revealProgress - 0.08) / 0.42, 0, 1), 0, 1),
-            hoverProgress,
-            panelRect: {
-                x: centerX - (width * 0.5),
-                y: centerY - (height * 0.5),
-                w: width,
-                h: height,
-                radius
-            }
-        };
-    }
-
-    /**
-     * 하단 보조 메뉴 타일의 렌더 상태를 계산합니다.
-     * @param {object} menuItem - 대상 보조 메뉴 항목입니다.
-     * @param {number} index - 항목 순서입니다.
-     * @returns {object} 계산된 타일 렌더 상태입니다.
-     * @private
-     */
-    #buildUtilityTileRenderState(menuItem, index) {
-        const revealCoreDuration = this.#getCardRevealCoreDuration();
-        const utilityPaneProgress = this.#getRevealProgress(
-            Math.min(0.16, revealCoreDuration * 0.18),
-            Math.max(0.24, revealCoreDuration * 0.44)
-        );
-        const utilityPaneEase = easeOutCubic(utilityPaneProgress);
-        const secondaryBaseDelay = Math.min(0.24, revealCoreDuration * 0.26);
-        const secondaryStepDelay = Math.min(0.05, revealCoreDuration * 0.08);
-        const secondaryDuration = Math.max(0.22, revealCoreDuration * 0.32);
-        const itemProgress = this.#getRevealProgress(
-            secondaryBaseDelay + (secondaryStepDelay * index),
-            secondaryDuration
-        );
-        const itemEase = easeOutCubic(itemProgress);
-        const paneTranslateX = (1 - utilityPaneEase) * (this.UIWW * 0.026);
-        const translateX = paneTranslateX + ((1 - itemEase) * Math.min(this.UIWW * 0.014, menuItem.w * 0.28));
-
-        return {
-            ...menuItem,
-            alpha: itemEase,
-            translateX,
-            translateY: 0,
-            panelRect: {
-                x: menuItem.x + translateX,
-                y: menuItem.y,
-                w: menuItem.w,
-                h: menuItem.h,
-                radius: menuItem.radius
-            }
-        };
-    }
-
-    /**
-     * 현재 카드의 투영 상태를 갱신합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @private
-     */
-    #updateCardProjection(renderState, runtimeState) {
-        const hoverTiltOptions = this.session?.getEffectOptions('hoverTilt');
-        const perspectiveBase = hoverTiltOptions?.perspective || 1180;
-        runtimeState.perspective = perspectiveBase;
-
-        runtimeState.transformMatrix = multiplyMat4(
-            createRotationYMatrix(runtimeState.rotateY),
-            createRotationXMatrix(runtimeState.rotateX)
-        );
-        runtimeState.projectedQuad = projectPanelQuad(renderState.panelRect, runtimeState.transformMatrix, runtimeState.perspective);
-
-        const homography = createRectToQuadHomography(
-            renderState.panelRect.w,
-            renderState.panelRect.h,
-            runtimeState.projectedQuad
-        );
-        runtimeState.inverseHomography = homography ? invertMat3(homography) : null;
-    }
-
-    /**
-     * 화면 좌표가 현재 카드 내부에 있는지 판정합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {number} mouseX - 현재 마우스 X 좌표입니다.
-     * @param {number} mouseY - 현재 마우스 Y 좌표입니다.
-     * @returns {{hovered:boolean, localPoint:{x:number, y:number}|null}} 판정 결과입니다.
-     * @private
-     */
-    #resolveCardPointerInfo(renderState, runtimeState, mouseX, mouseY) {
-        if (!Number.isFinite(mouseX) || !Number.isFinite(mouseY) || !runtimeState.projectedQuad) {
-            return {
-                hovered: false,
-                localPoint: null
-            };
-        }
-
-        if (!isPointInsideQuad(mouseX, mouseY, runtimeState.projectedQuad)) {
-            return {
-                hovered: false,
-                localPoint: null
-            };
-        }
-
-        const localPoint = mapScreenPointToPanelLocal(mouseX, mouseY, runtimeState.inverseHomography)
-            || {
-                x: mouseX - renderState.panelRect.x,
-                y: mouseY - renderState.panelRect.y
-            };
-        const hovered = isPointInsideRoundedRect(
-            localPoint.x,
-            localPoint.y,
-            renderState.panelRect.w,
-            renderState.panelRect.h,
-            renderState.panelRect.radius
-        );
-
-        return {
-            hovered,
-            localPoint
-        };
-    }
-
-    /**
      * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 계산합니다.
      * @returns {object} 오른쪽 패널 배치 정보입니다.
      * @private
@@ -1173,46 +828,16 @@ export class TitleMenu {
     }
 
     /**
-     * 현재 카드 등장 시간축을 기준으로 오른쪽 패널 렌더 상태를 계산합니다.
-     * @param {object} paneLayout - 최종 패널 배치 정보입니다.
-     * @returns {{cardPane:object, utilityPane:object}} 렌더용 패널 상태입니다.
-     * @private
-     */
-    #buildPaneRenderState(paneLayout) {
-        const revealCoreDuration = this.#getCardRevealCoreDuration();
-        const cardPaneProgress = this.#getRevealProgress(0, Math.max(0.28, revealCoreDuration * 0.54));
-        const cardPaneEase = easeOutCubic(cardPaneProgress);
-        const utilityPaneEase = this.#getUtilityPaneRevealEase();
-
-        return {
-            cardPane: this.#createPaneRenderRect(
-                paneLayout.cardPane,
-                cardPaneEase,
-                this.UIWW * 0.032,
-                0
-            ),
-            utilityPane: this.#createPaneRenderRect(
-                paneLayout.utilityPane,
-                utilityPaneEase,
-                this.UIWW * 0.026,
-                0
-            )
-        };
-    }
-
-    /**
      * 하단 서브 메뉴 pane과 동기화된 등장 이징 값을 반환합니다.
      * @returns {number} 서브 메뉴 등장 이징 값입니다.
      * @private
      */
     #getUtilityPaneRevealEase() {
         const revealCoreDuration = this.#getCardRevealCoreDuration();
-        const utilityPaneProgress = this.#getRevealProgress(
-            Math.min(0.16, revealCoreDuration * 0.18),
-            Math.max(0.24, revealCoreDuration * 0.44)
-        );
-
-        return easeOutCubic(utilityPaneProgress);
+        return getTitleMenuUtilityPaneRevealEase({
+            revealCoreDuration,
+            getRevealProgress: this.#getRevealProgress.bind(this)
+        });
     }
 
     /**
@@ -1370,35 +995,17 @@ export class TitleMenu {
         context.clip();
 
         this.#drawCardBackgroundEffects(context, runtimeState, renderState);
-        this.#drawUtilityTileContent(context, renderState, runtimeState.hovered);
+        drawTitleMenuUtilityTileContent({
+            context,
+            svgDrawer: this.svgDrawer,
+            renderState,
+            hovered: runtimeState.hovered,
+            titleCardMenu: TITLE_CARD_MENU
+        });
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
         this.#markTextureCanvasUpdated(runtimeState.textureCanvas);
         return runtimeState.textureCanvas;
-    }
-
-    /**
-     * 하단 보조 메뉴 타일 콘텐츠를 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} renderState - 타일 렌더 상태입니다.
-     * @param {boolean} hovered - hover 여부입니다.
-     * @private
-     */
-    #drawUtilityTileContent(context, renderState, hovered) {
-        const panelRect = renderState.panelRect;
-        const placeholderSize = Number.isFinite(renderState.placeholderSize)
-            ? renderState.placeholderSize
-            : Math.max(12, Math.min(panelRect.w, panelRect.h) * TITLE_CARD_MENU.UTILITY_TILE_PLACEHOLDER_SCALE);
-        const iconMetrics = getTitleMenuUtilityTileIconMetrics(panelRect, placeholderSize);
-        const placeholderAlpha = hovered ? 1 : getMenuOpacity('Placeholder', 0.92);
-        const placeholderRadius = Math.max(4, placeholderSize * TITLE_CARD_MENU.UTILITY_TILE_PLACEHOLDER_RADIUS_RATIO);
-
-        this.#drawInnerEdges(context, panelRect, hovered ? 0.16 : 0);
-        if (drawTitleMenuIcon(context, this.svgDrawer, renderState.id, iconMetrics, placeholderAlpha)) {
-            return;
-        }
-
-        drawTitleMenuPlaceholderIcon(context, iconMetrics, placeholderAlpha, placeholderRadius);
     }
 
     /**
@@ -1461,7 +1068,14 @@ export class TitleMenu {
         context.clip();
 
         this.#drawCardBackgroundEffects(context, runtimeState, renderState);
-        this.#drawFrontfaceContent(context, card, renderState);
+        drawTitleMenuCardFrontfaceContent({
+            context,
+            svgDrawer: this.svgDrawer,
+            card,
+            renderState,
+            textConstants: TEXT_CONSTANTS,
+            uiww: this.UIWW
+        });
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
         this.#markTextureCanvasUpdated(runtimeState.textureCanvas);
@@ -1484,7 +1098,14 @@ export class TitleMenu {
 
         const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
         const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
-        const signature = this.#buildCardStaticTextureSignature(card, renderState);
+        const signature = buildTitleMenuCardStaticTextureSignature({
+            card,
+            renderState,
+            uiww: this.UIWW,
+            wh: this.WH,
+            textConstants: TEXT_CONSTANTS,
+            svgDrawer: this.svgDrawer
+        });
 
         if (!runtimeState.staticTextureCanvas || !runtimeState.staticTextureContext) {
             runtimeState.staticTextureCanvas = document.createElement('canvas');
@@ -1512,9 +1133,16 @@ export class TitleMenu {
         context.beginPath();
         context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
         context.clip();
-        this.#drawFrontfaceContent(context, card, {
-            ...renderState,
-            hoverProgress: 0
+        drawTitleMenuCardFrontfaceContent({
+            context,
+            svgDrawer: this.svgDrawer,
+            card,
+            renderState: {
+                ...renderState,
+                hoverProgress: 0
+            },
+            textConstants: TEXT_CONSTANTS,
+            uiww: this.UIWW
         });
         context.restore();
 
@@ -1538,7 +1166,13 @@ export class TitleMenu {
 
         const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
         const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
-        const signature = this.#buildUtilityTileStaticTextureSignature(renderState, runtimeState);
+        const signature = buildTitleMenuUtilityTileStaticTextureSignature({
+            renderState,
+            runtimeState,
+            uiww: this.UIWW,
+            wh: this.WH,
+            svgDrawer: this.svgDrawer
+        });
 
         if (!runtimeState.staticTextureCanvas || !runtimeState.staticTextureContext) {
             runtimeState.staticTextureCanvas = document.createElement('canvas');
@@ -1566,89 +1200,18 @@ export class TitleMenu {
         context.beginPath();
         context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
         context.clip();
-        this.#drawUtilityTileContent(context, renderState, runtimeState.hovered);
+        drawTitleMenuUtilityTileContent({
+            context,
+            svgDrawer: this.svgDrawer,
+            renderState,
+            hovered: runtimeState.hovered,
+            titleCardMenu: TITLE_CARD_MENU
+        });
         context.restore();
 
         runtimeState.staticTextureSignature = signature;
         this.#markTextureCanvasUpdated(canvas);
         return canvas;
-    }
-
-    /**
-     * 카드 정적 텍스처 캐시 식별자를 생성합니다.
-     * @param {TitleMenuCard} card - 대상 카드입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @returns {string} 캐시 식별자입니다.
-     * @private
-     */
-    #buildCardStaticTextureSignature(card, renderState) {
-        const panelRect = renderState.panelRect;
-        const title = getLangString(card.cardDefinition.titleKey);
-        const description = card.cardDefinition.descriptionKey ? getLangString(card.cardDefinition.descriptionKey) : '';
-
-        return [
-            'card',
-            card.cardDefinition.id,
-            Math.ceil(panelRect.w),
-            Math.ceil(panelRect.h),
-            Math.ceil(panelRect.radius),
-            title,
-            description,
-            Math.round(this.UIWW),
-            Math.round(this.WH),
-            getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H6'),
-            this.#getStaticTextureThemeSignature(),
-            this.#getIconTextureSignature(card.cardDefinition.id)
-        ].join('|');
-    }
-
-    /**
-     * 유틸리티 타일 정적 텍스처 캐시 식별자를 생성합니다.
-     * @param {object} renderState - 타일 렌더 상태입니다.
-     * @param {object} runtimeState - 타일 런타임 상태입니다.
-     * @returns {string} 캐시 식별자입니다.
-     * @private
-     */
-    #buildUtilityTileStaticTextureSignature(renderState, runtimeState) {
-        const panelRect = renderState.panelRect;
-        return [
-            'utility',
-            renderState.id,
-            Math.ceil(panelRect.w),
-            Math.ceil(panelRect.h),
-            Math.ceil(panelRect.radius),
-            Number(runtimeState.hovered === true),
-            Math.ceil(renderState.placeholderSize || 0),
-            Math.round(this.UIWW),
-            Math.round(this.WH),
-            this.#getStaticTextureThemeSignature(),
-            this.#getIconTextureSignature(renderState.id)
-        ].join('|');
-    }
-
-    /**
-     * 정적 텍스처에 영향을 주는 테마 값을 문자열로 묶습니다.
-     * @returns {string} 테마 캐시 식별자입니다.
-     * @private
-     */
-    #getStaticTextureThemeSignature() {
-        return buildMenuStaticTextureThemeSignature();
-    }
-
-    /**
-     * 아이콘 로딩 상태를 정적 텍스처 캐시에 반영할 식별자로 변환합니다.
-     * @param {string} iconId - 아이콘 식별자입니다.
-     * @returns {string} 아이콘 캐시 식별자입니다.
-     * @private
-     */
-    #getIconTextureSignature(iconId) {
-        const iconSource = getTitleMenuIconSource(iconId) || '';
-        const iconRecord = iconSource ? this.svgDrawer.getCachedSvgFile(iconSource) : null;
-        return [
-            iconSource,
-            Number(Boolean(iconRecord?.image)),
-            Number.isFinite(iconRecord?.aspectRatio) ? iconRecord.aspectRatio : 0
-        ].join(':');
     }
 
     /**
@@ -1681,97 +1244,6 @@ export class TitleMenu {
         }
 
         drawTitleMenuCardParticles(context, renderState, runtimeState, this.#getEffectColor());
-    }
-
-    /**
-     * 카드 앞면 콘텐츠를 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {TitleMenuCard} card - 대상 카드입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @private
-     */
-    #drawFrontfaceContent(context, card, renderState) {
-        const panelRect = renderState.panelRect;
-        const inset = Math.max(16, panelRect.w * 0.08);
-        const title = getLangString(card.cardDefinition.titleKey);
-        const description = card.cardDefinition.descriptionKey ? getLangString(card.cardDefinition.descriptionKey) : '';
-        const isCompactHorizontalCard = card.cardDefinition.id === 'records';
-        const iconMetrics = getTitleMenuCardIconMetrics(card.cardDefinition.id, panelRect, inset);
-        const titleFontSize = Math.max(
-            16,
-            panelRect.w * (panelRect.h > panelRect.w * 0.7 ? 0.095 : 0.08),
-            isCompactHorizontalCard ? panelRect.h * 0.28 : 0
-        );
-        const descriptionFontSize = getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H6');
-        const descriptionLineHeight = descriptionFontSize * 1.32;
-        const titleLineHeight = titleFontSize * 1.06;
-        const bottomPadding = inset * 0.8;
-        const descriptionY = panelRect.h - bottomPadding - descriptionLineHeight;
-        const titleY = description
-            ? descriptionY - (descriptionLineHeight * 0.4928) - titleLineHeight
-            : panelRect.h - bottomPadding - titleLineHeight;
-
-        drawTitleMenuCardIcon(context, this.svgDrawer, card.cardDefinition.id, iconMetrics);
-        this.#drawInnerEdges(context, panelRect, renderState.hoverProgress || 0);
-
-        if (isCompactHorizontalCard) {
-            const titleX = iconMetrics.x + iconMetrics.w + Math.max(14, panelRect.w * 0.06);
-            drawTitleMenuWrappedText(context, {
-                text: title,
-                x: titleX,
-                y: (panelRect.h - titleLineHeight) * 0.5,
-                maxWidth: panelRect.w - titleX - inset,
-                lineHeight: titleLineHeight,
-                font: `700 ${titleFontSize}px "Pretendard Variable", arial`,
-                fillStyle: getMenuCardTitleColor(),
-                align: 'left'
-            });
-            return;
-        }
-
-        drawTitleMenuWrappedText(context, {
-            text: title,
-            x: inset,
-            y: titleY,
-            maxWidth: panelRect.w - (inset * 2),
-            lineHeight: titleLineHeight,
-            font: `700 ${titleFontSize}px "Pretendard Variable", arial`,
-            fillStyle: getMenuCardTitleColor(),
-            align: 'left'
-        });
-
-        if (description) {
-            drawTitleMenuWrappedText(context, {
-                text: description,
-                x: inset,
-                y: descriptionY,
-                maxWidth: panelRect.w - (inset * 2),
-                lineHeight: descriptionLineHeight,
-                font: `500 ${descriptionFontSize}px "Pretendard Variable", arial`,
-                fillStyle: getMenuCardDescriptionColor(),
-                align: 'left'
-            });
-        }
-    }
-
-    /**
-     * 카드 내부 장식선을 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {{w:number, h:number}} panelRect - 카드 패널 영역입니다.
-     * @param {number} emphasisProgress - 카드 강조 진행률입니다.
-     * @private
-     */
-    #drawInnerEdges(context, panelRect, emphasisProgress) {
-        context.save();
-        context.strokeStyle = menuForegroundWithAlpha(
-            getMenuOpacity('CardInnerLine', 0.08)
-            + (emphasisProgress * getMenuOpacity('CardInnerLineFocusDelta', 0.08))
-        );
-        context.lineWidth = 1;
-        context.beginPath();
-        context.roundRect(1.5, 1.5, panelRect.w - 3, panelRect.h - 3, Math.max(8, panelRect.radius - 3));
-        context.stroke();
-        context.restore();
     }
 
     /**
@@ -1836,7 +1308,7 @@ export class TitleMenu {
             return;
         }
 
-        this.#drawVersionHistoryLinkArrow(layout, linkColor, textShadowBlur, textShadowColor);
+        drawTitleMenuVersionHistoryLinkArrow(this.session, layout, linkColor, textShadowBlur, textShadowColor);
 
         this.session.renderPanel({
             shape: 'text',
@@ -1886,85 +1358,6 @@ export class TitleMenu {
             linkFontSize,
             linkTextWidth
         });
-    }
-
-    /**
-     * 업데이트 링크 좌측의 화살표 아이콘을 그립니다.
-     * @param {object} layout - 버전 정보 블록 렌더 레이아웃입니다.
-     * @param {string} strokeColor - 화살표 선 색상입니다.
-     * @param {number} shadowBlur - 그림자 블러 값입니다.
-     * @param {string} shadowColor - 그림자 색상입니다.
-     * @private
-     */
-    #drawVersionHistoryLinkArrow(layout, strokeColor, shadowBlur, shadowColor) {
-        const iconSize = Number(layout?.linkIconSize) || 0;
-        if (!this.session || iconSize <= 0) {
-            return;
-        }
-
-        const x = Number(layout.linkIconX) || 0;
-        const y = Number(layout.linkIconY) || 0;
-        const centerX = x + (iconSize * 0.5);
-        const centerY = y + (iconSize * 0.5);
-        const halfSpan = iconSize * 0.308;
-        const headLength = halfSpan * 0.88;
-        const lineWidth = Math.max(1, iconSize * 0.1);
-        const commonOptions = {
-            shape: 'line',
-            stroke: strokeColor,
-            alpha: layout.alpha,
-            lineWidth,
-            lineCap: 'round',
-            shadowBlur,
-            shadowColor
-        };
-
-        this.session.renderPanel({
-            ...commonOptions,
-            x1: centerX - halfSpan,
-            y1: centerY,
-            x2: centerX + halfSpan,
-            y2: centerY
-        });
-        this.session.renderPanel({
-            ...commonOptions,
-            x1: centerX + halfSpan - headLength,
-            y1: centerY - headLength,
-            x2: centerX + halfSpan,
-            y2: centerY
-        });
-        this.session.renderPanel({
-            ...commonOptions,
-            x1: centerX + halfSpan - headLength,
-            y1: centerY + headLength,
-            x2: centerX + halfSpan,
-            y2: centerY
-        });
-    }
-
-    /**
-     * 업데이트 내역 링크를 외부 브라우저에서 엽니다.
-     * @private
-     */
-    #openVersionHistoryLink() {
-        const url = String(TITLE_LINK_DATA.UPDATE_HISTORY_URL || '').trim();
-        if (!url) {
-            return;
-        }
-
-        runtimeTool()?.openURL?.(url);
-    }
-
-    /**
-     * 업데이트 내역 버튼 클릭을 처리합니다.
-     * @private
-     */
-    #handleVersionHistoryLinkClick() {
-        if (!consumeMouseState('left')) {
-            return;
-        }
-
-        this.#openVersionHistoryLink();
     }
 
     /**
@@ -2164,27 +1557,6 @@ export class TitleMenu {
      */
     #getCardRevealConfig(cardId) {
         return TITLE_CARD_MENU.REVEAL_CONFIGS[cardId] || TITLE_CARD_MENU.REVEAL_CONFIGS.start;
-    }
-
-    /**
-     * 최종 패널 rect를 현재 등장 진행률에 맞는 렌더 rect로 변환합니다.
-     * @param {{x:number, y:number, w:number, h:number, radius:number}} layoutRect - 최종 패널 rect입니다.
-     * @param {number} revealEase - 패널 등장 이징 결과입니다.
-     * @param {number} offsetX - 등장 전 X축 오프셋입니다.
-     * @param {number} offsetY - 등장 전 Y축 오프셋입니다.
-     * @returns {{x:number, y:number, w:number, h:number, radius:number, alpha:number}} 렌더용 rect입니다.
-     * @private
-     */
-    #createPaneRenderRect(layoutRect, revealEase, offsetX, offsetY) {
-        const clampedEase = clampNumber(revealEase, 0, 1);
-        return {
-            x: layoutRect.x + ((1 - clampedEase) * offsetX),
-            y: layoutRect.y + ((1 - clampedEase) * offsetY),
-            w: layoutRect.w,
-            h: layoutRect.h,
-            radius: layoutRect.radius,
-            alpha: clampedEase
-        };
     }
 
 }

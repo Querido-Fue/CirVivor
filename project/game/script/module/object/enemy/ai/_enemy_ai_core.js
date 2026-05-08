@@ -109,6 +109,74 @@ const getHexaHiveNavigationLocalCenters = (enemy) => {
 };
 
 /**
+ * 양수 픽셀 값을 안전하게 읽습니다.
+ * @param {number|null|undefined} value
+ * @returns {number}
+ */
+const readPositivePixelValue = (value) => (
+    Number.isFinite(value) && value > 0 ? value : 0
+);
+
+/**
+ * 적의 AI용 footprint 크기를 계산합니다.
+ * @param {object|null|undefined} enemy
+ * @param {number|null} [fallbackRadius=null]
+ * @param {number|null} [fallbackRenderHeightPx=null]
+ * @returns {{baseHeight: number, baseRadius: number, halfWidth: number, halfHeight: number, radius: number}}
+ */
+export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, fallbackRenderHeightPx = null) {
+    const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
+    const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
+        ? fallbackRadius
+        : Math.max(8, baseHeight * 0.45);
+    const aspectRatio = Number.isFinite(enemy?.aspectRatio) && enemy.aspectRatio > 0
+        ? enemy.aspectRatio
+        : 1;
+    const heightScale = Number.isFinite(enemy?.heightScale) && enemy.heightScale > 0
+        ? enemy.heightScale
+        : 1;
+    let halfWidth = Math.max(baseRadius, baseHeight * aspectRatio * 0.5);
+    let halfHeight = Math.max(baseRadius, baseHeight * heightScale * 0.5);
+    let radius = Math.max(baseRadius, readPositivePixelValue(enemy?.navigationRadiusPx));
+
+    if (enemy?.type === HEXA_HIVE_TYPE) {
+        const localCenters = getHexaHiveNavigationLocalCenters(enemy);
+        if (Array.isArray(localCenters) && localCenters.length > 0) {
+            const cellRadius = Math.max(baseRadius, baseHeight * HEXA_HIVE_NAV_CELL_RADIUS_RATIO);
+            const rotationRadians = (Number.isFinite(enemy?.rotation) ? enemy.rotation : 0) * (Math.PI / 180);
+            const cos = Math.cos(rotationRadians);
+            const sin = Math.sin(rotationRadians);
+
+            halfWidth = Math.max(halfWidth, cellRadius);
+            halfHeight = Math.max(halfHeight, cellRadius);
+            radius = Math.max(radius, cellRadius);
+            for (let i = 0; i < localCenters.length; i++) {
+                const localCenter = localCenters[i];
+                const localX = (Number.isFinite(localCenter?.x) ? localCenter.x : 0) * baseHeight;
+                const localY = (Number.isFinite(localCenter?.y) ? localCenter.y : 0) * baseHeight;
+                const worldLocalX = (localX * cos) - (localY * sin);
+                const worldLocalY = (localX * sin) + (localY * cos);
+                halfWidth = Math.max(halfWidth, Math.abs(worldLocalX) + cellRadius);
+                halfHeight = Math.max(halfHeight, Math.abs(worldLocalY) + cellRadius);
+                radius = Math.max(radius, Math.hypot(worldLocalX, worldLocalY) + cellRadius);
+            }
+        }
+    }
+
+    halfWidth = Math.max(halfWidth, readPositivePixelValue(enemy?.navigationHalfWidthPx));
+    halfHeight = Math.max(halfHeight, readPositivePixelValue(enemy?.navigationHalfHeightPx));
+    radius = Math.max(radius, readPositivePixelValue(enemy?.navigationRadiusPx));
+
+    return {
+        baseHeight,
+        baseRadius,
+        halfWidth,
+        halfHeight,
+        radius
+    };
+}
+
+/**
  * 적이 벽을 피할 때 사용할 네비게이션 반경을 계산합니다.
  * @param {object|null|undefined} enemy
  * @param {number|null} [fallbackRadius=null]
@@ -120,31 +188,29 @@ export function resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius = null, f
     const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
         ? fallbackRadius
         : Math.max(8, baseHeight * 0.45);
-    const explicitRadius = Number.isFinite(enemy?.navigationRadiusPx) && enemy.navigationRadiusPx > 0
-        ? enemy.navigationRadiusPx
-        : 0;
-    let navigationRadius = Math.max(baseRadius, explicitRadius);
-
+    const explicitRadius = readPositivePixelValue(enemy?.navigationRadiusPx);
     if (enemy?.type !== HEXA_HIVE_TYPE) {
-        return navigationRadius;
+        return Math.max(baseRadius, explicitRadius);
     }
 
-    const localCenters = getHexaHiveNavigationLocalCenters(enemy);
-    if (!Array.isArray(localCenters) || localCenters.length === 0) {
-        return navigationRadius;
-    }
-
-    const cellRadius = Math.max(baseRadius, baseHeight * HEXA_HIVE_NAV_CELL_RADIUS_RATIO);
-    for (let i = 0; i < localCenters.length; i++) {
-        const localCenter = localCenters[i];
-        const localX = Number.isFinite(localCenter?.x) ? localCenter.x : 0;
-        const localY = Number.isFinite(localCenter?.y) ? localCenter.y : 0;
-        const centerDistance = Math.hypot(localX * baseHeight, localY * baseHeight);
-        navigationRadius = Math.max(navigationRadius, centerDistance + cellRadius);
-    }
-
-    return navigationRadius;
+    return resolveEnemyAIFootprintMetricsPx(enemy, baseRadius, baseHeight).radius;
 }
+
+/**
+ * 지정 방향에서 footprint가 차지하는 반지름을 추정합니다.
+ * @param {{baseRadius: number, halfWidth: number, halfHeight: number, radius: number}} metrics
+ * @param {number} dirX
+ * @param {number} dirY
+ * @returns {number}
+ */
+const projectEnemyAIFootprintRadiusForDirection = (metrics, dirX, dirY) => {
+    const halfWidth = readPositivePixelValue(metrics?.halfWidth);
+    const halfHeight = readPositivePixelValue(metrics?.halfHeight);
+    const baseRadius = readPositivePixelValue(metrics?.baseRadius);
+    const maxRadius = readPositivePixelValue(metrics?.radius);
+    const projectedRadius = (Math.abs(dirX) * halfWidth) + (Math.abs(dirY) * halfHeight);
+    return Math.max(baseRadius, Math.min(maxRadius || projectedRadius, projectedRadius));
+};
 
 /**
  * 직선 추적 판정에 사용할 벽 확장 반경을 반환합니다.
@@ -1228,6 +1294,180 @@ const stepArrowChargeState = (state, stepDelta, targetX, targetY, profile) => {
 };
 
 /**
+ * 합체 육각형이 실제 footprint로 닿을 수 있는 플레이어 주변 목표를 고릅니다.
+ * @param {object} enemy
+ * @param {object} state
+ * @param {object} context
+ * @param {object} profile
+ * @param {number} startX
+ * @param {number} startY
+ * @param {number} playerX
+ * @param {number} playerY
+ * @param {number} navigationRadius
+ * @param {{baseRadius: number, halfWidth: number, halfHeight: number, radius: number}|null} footprintMetrics
+ * @param {{x: number, y: number}} out
+ * @returns {{x: number, y: number}}
+ */
+const resolveHexaHiveApproachGoalInto = (
+    enemy,
+    state,
+    context,
+    profile,
+    startX,
+    startY,
+    playerX,
+    playerY,
+    navigationRadius,
+    footprintMetrics,
+    out
+) => {
+    out.x = playerX;
+    out.y = playerY;
+    if (enemy?.type !== HEXA_HIVE_TYPE) {
+        return out;
+    }
+
+    const metrics = footprintMetrics ?? resolveEnemyAIFootprintMetricsPx(enemy, navigationRadius);
+    const clearance = Math.max(readPositivePixelValue(navigationRadius), readPositivePixelValue(metrics?.radius));
+    const walls = Array.isArray(context?.walls) ? context.walls : [];
+    const nav = getNavGrid(walls, getSimulationWW(), getSimulationObjectWH(), profile, clearance);
+    const grid = nav.grid;
+    let baseDirX = startX - playerX;
+    let baseDirY = startY - playerY;
+    const baseDistance = Math.hypot(baseDirX, baseDirY);
+    if (baseDistance > EPSILON) {
+        baseDirX /= baseDistance;
+        baseDirY /= baseDistance;
+    } else {
+        baseDirX = Number.isFinite(state.dirX) ? state.dirX : 1;
+        baseDirY = Number.isFinite(state.dirY) ? state.dirY : 0;
+        const fallbackDistance = Math.hypot(baseDirX, baseDirY);
+        if (fallbackDistance > EPSILON) {
+            baseDirX /= fallbackDistance;
+            baseDirY /= fallbackDistance;
+        } else {
+            baseDirX = 1;
+            baseDirY = 0;
+        }
+    }
+
+    const sampleCount = Math.max(
+        8,
+        Number.isInteger(profile.HEXA_HIVE_APPROACH_GOAL_SAMPLE_COUNT)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_SAMPLE_COUNT
+            : 16
+    );
+    const innerRingRatio = clamp(
+        Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_INNER_RING_RATIO)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_INNER_RING_RATIO
+            : 0.82,
+        0.25,
+        1
+    );
+    const outerRingRatio = Math.max(
+        1,
+        Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_OUTER_RING_RATIO)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_OUTER_RING_RATIO
+            : 1.18
+    );
+    const extraRatio = Math.max(
+        0,
+        Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_EXTRA_RATIO)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_EXTRA_RATIO
+            : 0.12
+    );
+    const minExtraPx = Math.max(
+        0,
+        Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_MIN_EXTRA_PX)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_MIN_EXTRA_PX
+            : 10
+    );
+    const directPenaltyRatio = Math.max(
+        0,
+        Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_DIRECT_BLOCK_PENALTY)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_DIRECT_BLOCK_PENALTY
+            : 0.35
+    );
+    const alignmentWeight = Math.max(
+        0,
+        Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_ALIGNMENT_WEIGHT)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_ALIGNMENT_WEIGHT
+            : 0.25
+    );
+    const distanceErrorWeight = Math.max(
+        0,
+        Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_DISTANCE_ERROR_WEIGHT)
+            ? profile.HEXA_HIVE_APPROACH_GOAL_DISTANCE_ERROR_WEIGHT
+            : 4
+    );
+    const playerRadius = readPositivePixelValue(context?.player?.radius);
+    const directPad = resolveDirectPathPad(enemy, clearance, profile);
+    const baseAngle = Math.atan2(baseDirY, baseDirX);
+    const angleStep = (Math.PI * 2) / sampleCount;
+    let bestScore = INF;
+
+    for (let ringIndex = 0; ringIndex < 3; ringIndex++) {
+        const ringRatio = ringIndex === 0
+            ? innerRingRatio
+            : (ringIndex === 1 ? 1 : outerRingRatio);
+        for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+            const offsetIndex = sampleIndex === 0
+                ? 0
+                : Math.ceil(sampleIndex * 0.5) * (sampleIndex % 2 === 1 ? 1 : -1);
+            const angle = baseAngle + (offsetIndex * angleStep);
+            const dirX = Math.cos(angle);
+            const dirY = Math.sin(angle);
+            const projectedRadius = projectEnemyAIFootprintRadiusForDirection(metrics, dirX, dirY);
+            const desiredDistance = playerRadius + projectedRadius + Math.max(minExtraPx, projectedRadius * extraRatio);
+            const candidateDistance = desiredDistance * ringRatio;
+            const candidateX = playerX + (dirX * candidateDistance);
+            const candidateY = playerY + (dirY * candidateDistance);
+            const rawCell = worldToCellInto(candidateX, candidateY, grid, state.scratchCell);
+            const walkableCell = findNearestWalkableCellInto(
+                grid,
+                rawCell.cx,
+                rawCell.cy,
+                state.scratchGoalCell,
+                profile,
+                nav.clearance
+            );
+            if (!walkableCell) {
+                continue;
+            }
+
+            const snappedX = (walkableCell.cx + 0.5) * grid.cellSize;
+            const snappedY = (walkableCell.cy + 0.5) * grid.cellSize;
+            const startDistanceSq = ((snappedX - startX) * (snappedX - startX))
+                + ((snappedY - startY) * (snappedY - startY));
+            const playerDeltaX = snappedX - playerX;
+            const playerDeltaY = snappedY - playerY;
+            const snappedPlayerDistance = Math.hypot(playerDeltaX, playerDeltaY);
+            const distanceError = Math.abs(snappedPlayerDistance - desiredDistance);
+            const snappedDirX = snappedPlayerDistance > EPSILON ? playerDeltaX / snappedPlayerDistance : dirX;
+            const snappedDirY = snappedPlayerDistance > EPSILON ? playerDeltaY / snappedPlayerDistance : dirY;
+            const alignmentPenalty = 1 - clamp((snappedDirX * baseDirX) + (snappedDirY * baseDirY), -1, 1);
+            const isDirectBlocked = isSegmentBlockedByCoords(startX, startY, snappedX, snappedY, walls, directPad);
+            const directPenalty = isDirectBlocked
+                ? desiredDistance * desiredDistance * directPenaltyRatio
+                : 0;
+            const score = startDistanceSq
+                + (distanceError * distanceError * distanceErrorWeight)
+                + (alignmentPenalty * desiredDistance * desiredDistance * alignmentWeight)
+                + directPenalty;
+            if (score >= bestScore) {
+                continue;
+            }
+
+            bestScore = score;
+            out.x = snappedX;
+            out.y = snappedY;
+        }
+    }
+
+    return out;
+};
+
+/**
  * 현재 정책에 맞는 목표 좌표와 이동 배율을 계산합니다.
  * @param {object} enemy
  * @param {object} state
@@ -1237,8 +1477,21 @@ const stepArrowChargeState = (state, stepDelta, targetX, targetY, profile) => {
  * @param {number} startY
  * @param {number} playerX
  * @param {number} playerY
+ * @param {number} navigationRadius
+ * @param {{baseRadius: number, halfWidth: number, halfHeight: number, radius: number}|null} footprintMetrics
  */
-const updatePolicyIntent = (enemy, state, context, profile, startX, startY, playerX, playerY) => {
+const updatePolicyIntent = (
+    enemy,
+    state,
+    context,
+    profile,
+    startX,
+    startY,
+    playerX,
+    playerY,
+    navigationRadius,
+    footprintMetrics
+) => {
     const simulationWW = getSimulationWW();
     const simulationObjectWH = getSimulationObjectWH();
     const enemies = Array.isArray(context?.enemies) ? context.enemies : null;
@@ -1345,6 +1598,26 @@ const updatePolicyIntent = (enemy, state, context, profile, startX, startY, play
         return;
     }
 
+    if (policyId === ENEMY_AI_POLICY.CHASE && enemy?.type === HEXA_HIVE_TYPE) {
+        resolveHexaHiveApproachGoalInto(
+            enemy,
+            state,
+            context,
+            profile,
+            startX,
+            startY,
+            playerX,
+            playerY,
+            navigationRadius,
+            footprintMetrics,
+            policyPoint
+        );
+        state.targetX = policyPoint.x;
+        state.targetY = policyPoint.y;
+        state.flowPolicyKey = 'hexa_hive_approach';
+        return;
+    }
+
     state.targetX = playerX;
     state.targetY = playerY;
 };
@@ -1384,7 +1657,12 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     const targetY = player.position.y;
     const walls = Array.isArray(context.walls) ? context.walls : [];
     const fallbackRadius = Math.max(8, resolveEnemyAIRenderHeightPx(enemy) * 0.45);
-    const enemyRadius = resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius);
+    const footprintMetrics = enemy?.type === HEXA_HIVE_TYPE
+        ? resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius)
+        : null;
+    const enemyRadius = footprintMetrics
+        ? footprintMetrics.radius
+        : resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius);
     const directPad = resolveDirectPathPad(enemy, enemyRadius, profile);
     const scratchDir = state.scratchDir;
     const scratchCell = state.scratchCell;
@@ -1396,7 +1674,18 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
         || !Number.isFinite(state.targetY);
 
     if (shouldRefreshDecision || !requiresDensityAnchor(state.policyId)) {
-        updatePolicyIntent(enemy, state, context, profile, startX, startY, targetX, targetY);
+        updatePolicyIntent(
+            enemy,
+            state,
+            context,
+            profile,
+            startX,
+            startY,
+            targetX,
+            targetY,
+            enemyRadius,
+            footprintMetrics
+        );
         state.lastDecisionGroup = Number.isInteger(context?.decisionGroup) ? context.decisionGroup : -1;
     }
     if (shouldRefreshDecision) {

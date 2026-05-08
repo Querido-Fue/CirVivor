@@ -1368,7 +1368,11 @@ export class CollisionHandler {
      * @returns {boolean}
      */
     #isEnemyPairAnchorBody(body, otherBody) {
-        return otherBody?.kind === 'enemy' && this.#isHexaHiveWallBody(body);
+        if (otherBody?.kind !== 'enemy' || !this.#isHexaHiveWallBody(body)) {
+            return false;
+        }
+
+        return !this.#isHexaHiveWallBody(otherBody);
     }
 
     /**

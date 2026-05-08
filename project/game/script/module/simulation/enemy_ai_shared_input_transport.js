@@ -2,11 +2,11 @@ const ENEMY_AI_SHARED_INPUT_DEFAULT_ENEMY_CAPACITY = 16384;
 const ENEMY_AI_SHARED_INPUT_DEFAULT_WALL_CAPACITY = 2048;
 const ENEMY_AI_SHARED_INPUT_HEADER_LENGTH = 8;
 const ENEMY_AI_SHARED_INPUT_ENEMY_INT_STRIDE = 4;
-const ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_STRIDE = 7;
+const ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_STRIDE = 9;
 const ENEMY_AI_SHARED_INPUT_WALL_INT_STRIDE = 2;
 const ENEMY_AI_SHARED_INPUT_WALL_FLOAT_STRIDE = 4;
 const ENEMY_AI_SHARED_INPUT_PLAYER_FLOAT_STRIDE = 2;
-const ENEMY_AI_SHARED_INPUT_LAYOUT_VERSION = 2;
+const ENEMY_AI_SHARED_INPUT_LAYOUT_VERSION = 3;
 
 const ENEMY_AI_SHARED_INPUT_HEADER_INDEX = Object.freeze({
     LAYOUT_VERSION: 0,
@@ -33,7 +33,9 @@ const ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX = Object.freeze({
     SPEED_Y: 3,
     ACC_SPEED: 4,
     RENDER_HEIGHT_PX: 5,
-    NAVIGATION_RADIUS_PX: 6
+    NAVIGATION_RADIUS_PX: 6,
+    NAVIGATION_HALF_WIDTH_PX: 7,
+    NAVIGATION_HALF_HEIGHT_PX: 8
 });
 
 const ENEMY_AI_SHARED_INPUT_WALL_INT_INDEX = Object.freeze({
@@ -351,6 +353,10 @@ export function writeEnemyAISharedInputSnapshot(transport, payload) {
             normalizeEnemyAISharedInputNumber(enemy?.renderHeightPx, 24);
         transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_RADIUS_PX] =
             normalizeEnemyAISharedInputNumber(enemy?.navigationRadiusPx, 0);
+        transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_HALF_WIDTH_PX] =
+            normalizeEnemyAISharedInputNumber(enemy?.navigationHalfWidthPx, 0);
+        transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_HALF_HEIGHT_PX] =
+            normalizeEnemyAISharedInputNumber(enemy?.navigationHalfHeightPx, 0);
     }
 
     for (let i = 0; i < wallCount; i++) {
@@ -545,6 +551,14 @@ function readEnemyAISharedInputEnemies(transport, enemyCount, typeTable) {
             ),
             navigationRadiusPx: normalizeEnemyAISharedInputNumber(
                 transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_RADIUS_PX],
+                0
+            ),
+            navigationHalfWidthPx: normalizeEnemyAISharedInputNumber(
+                transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_HALF_WIDTH_PX],
+                0
+            ),
+            navigationHalfHeightPx: normalizeEnemyAISharedInputNumber(
+                transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_HALF_HEIGHT_PX],
                 0
             ),
             shouldUpdateDecision:

@@ -11,7 +11,7 @@ import {
     snapHexaRotationDegToSymmetry
 } from '../object/enemy/_hexa_hive_layout.js';
 import { enemyAI } from '../object/enemy/ai/_enemy_ai.js';
-import { resolveEnemyAINavigationRadiusPx } from '../object/enemy/ai/_enemy_ai_core.js';
+import { resolveEnemyAIFootprintMetricsPx } from '../object/enemy/ai/_enemy_ai_core.js';
 import { PhysicsSystem } from '../physics/physics_system.js';
 import {
     getSimulationObjectOffsetY,
@@ -582,6 +582,7 @@ function createShadowEnemyAIWorkerEnemySummary(enemy, shouldUpdateDecision) {
 
     const metadata = getShadowEnemyMetadata(enemy.id);
     const renderHeightPx = getShadowEnemyRenderHeight(enemy);
+    const footprintMetrics = resolveEnemyAIFootprintMetricsPx(enemy, null, renderHeightPx);
     return {
         id: enemy.id,
         active: enemy.active !== false,
@@ -590,7 +591,9 @@ function createShadowEnemyAIWorkerEnemySummary(enemy, shouldUpdateDecision) {
         speed: clonePointSnapshot(enemy.speed),
         accSpeed: Number.isFinite(enemy.accSpeed) ? enemy.accSpeed : 0,
         renderHeightPx,
-        navigationRadiusPx: resolveEnemyAINavigationRadiusPx(enemy, null, renderHeightPx),
+        navigationRadiusPx: footprintMetrics.radius,
+        navigationHalfWidthPx: footprintMetrics.halfWidth,
+        navigationHalfHeightPx: footprintMetrics.halfHeight,
         shouldUpdateDecision: shouldUpdateDecision === true,
         enemyAIState: cloneEnemyAIStateForWorkerTransfer(metadata.enemyAIState)
     };
