@@ -1,8 +1,8 @@
-import { ColorSchemes } from 'display/_theme_handler.js';
 import { SVGDrawer } from 'display/_svg_drawer.js';
 import { getCanvas, getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
+import { getDefaultLogoColor, getDefaultLogoShadowColor } from './_title_logo_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
@@ -120,28 +120,6 @@ function easeOutExpo(progress) {
         return 1;
     }
     return 1 - Math.pow(2, -10 * progress);
-}
-
-/**
- * 현재 테마를 기준으로 기본 로고 색상을 반환합니다.
- * @returns {string} 로고 기본 색상
- */
-function getDefaultLogoColor() {
-    return ColorSchemes?.Title?.Logo?.Fill
-        || ColorSchemes?.Title?.TextDark
-        || ColorSchemes?.Title?.Button?.Text
-        || ColorSchemes?.Title?.Menu?.Foreground;
-}
-
-/**
- * 현재 테마를 기준으로 로고 그림자 색상을 반환합니다.
- * @returns {string} 로고 그림자 색상
- */
-function getDefaultLogoShadowColor() {
-    return ColorSchemes?.Title?.Logo?.Shadow
-        || ColorSchemes?.Title?.Background
-        || ColorSchemes?.Background
-        || ColorSchemes?.Title?.TextDark;
 }
 
 /**
