@@ -10,6 +10,8 @@ const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
 const DIAGONAL_COST = ENEMY_AI_CONSTANTS.DIAGONAL_COST;
 const ENEMY_AI_STATE_SCHEMA_VERSION = ENEMY_AI_CONSTANTS.STATE_SCHEMA_VERSION;
+const HEXA_HIVE_NAV_CELL_RADIUS_RATIO = ENEMY_AI_CONSTANTS.HEXA_HIVE_NAV_CELL_RADIUS_RATIO;
+const HEXA_HIVE_TYPE = 'hexa_hive';
 
 const DIRS = Object.freeze([
     Object.freeze({ dx: 1, dy: 0, cost: 1 }),
@@ -64,6 +66,121 @@ const normalizeInto = (x, y, out) => {
 };
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+/**
+ * 적의 렌더 높이를 AI 계산용 픽셀 값으로 정규화합니다.
+ * @param {object|null|undefined} enemy
+ * @param {number|null} [fallbackRenderHeightPx=null]
+ * @returns {number}
+ */
+const resolveEnemyAIRenderHeightPx = (enemy, fallbackRenderHeightPx = null) => {
+    if (Number.isFinite(fallbackRenderHeightPx) && fallbackRenderHeightPx > 0) {
+        return fallbackRenderHeightPx;
+    }
+
+    const methodHeight = typeof enemy?.getRenderHeightPx === 'function'
+        ? enemy.getRenderHeightPx()
+        : Number.NaN;
+    if (Number.isFinite(methodHeight) && methodHeight > 0) {
+        return methodHeight;
+    }
+
+    if (Number.isFinite(enemy?.renderHeightPx) && enemy.renderHeightPx > 0) {
+        return enemy.renderHeightPx;
+    }
+
+    return 24;
+};
+
+/**
+ * 합체 육각형의 네비게이션용 로컬 중심 목록을 반환합니다.
+ * @param {object|null|undefined} enemy
+ * @returns {object[]|null}
+ */
+const getHexaHiveNavigationLocalCenters = (enemy) => {
+    const layout = enemy?.hexaHiveLayout;
+    if (Array.isArray(layout?.filledLocalCenters) && layout.filledLocalCenters.length > 0) {
+        return layout.filledLocalCenters;
+    }
+    if (Array.isArray(layout?.visibleLocalCenters) && layout.visibleLocalCenters.length > 0) {
+        return layout.visibleLocalCenters;
+    }
+    return null;
+};
+
+/**
+ * 적이 벽을 피할 때 사용할 네비게이션 반경을 계산합니다.
+ * @param {object|null|undefined} enemy
+ * @param {number|null} [fallbackRadius=null]
+ * @param {number|null} [fallbackRenderHeightPx=null]
+ * @returns {number}
+ */
+export function resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius = null, fallbackRenderHeightPx = null) {
+    const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
+    const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
+        ? fallbackRadius
+        : Math.max(8, baseHeight * 0.45);
+    const explicitRadius = Number.isFinite(enemy?.navigationRadiusPx) && enemy.navigationRadiusPx > 0
+        ? enemy.navigationRadiusPx
+        : 0;
+    let navigationRadius = Math.max(baseRadius, explicitRadius);
+
+    if (enemy?.type !== HEXA_HIVE_TYPE) {
+        return navigationRadius;
+    }
+
+    const localCenters = getHexaHiveNavigationLocalCenters(enemy);
+    if (!Array.isArray(localCenters) || localCenters.length === 0) {
+        return navigationRadius;
+    }
+
+    const cellRadius = Math.max(baseRadius, baseHeight * HEXA_HIVE_NAV_CELL_RADIUS_RATIO);
+    for (let i = 0; i < localCenters.length; i++) {
+        const localCenter = localCenters[i];
+        const localX = Number.isFinite(localCenter?.x) ? localCenter.x : 0;
+        const localY = Number.isFinite(localCenter?.y) ? localCenter.y : 0;
+        const centerDistance = Math.hypot(localX * baseHeight, localY * baseHeight);
+        navigationRadius = Math.max(navigationRadius, centerDistance + cellRadius);
+    }
+
+    return navigationRadius;
+}
+
+/**
+ * 직선 추적 판정에 사용할 벽 확장 반경을 반환합니다.
+ * @param {object|null|undefined} enemy
+ * @param {number} navigationRadius
+ * @param {object} profile
+ * @returns {number}
+ */
+const resolveDirectPathPad = (enemy, navigationRadius, profile) => {
+    const ratio = enemy?.type === HEXA_HIVE_TYPE
+        ? profile.HEXA_HIVE_NAV_DIRECT_CHECK_PAD_RATIO
+        : profile.NAV_DIRECT_CHECK_PAD_RATIO;
+    const safeRatio = Number.isFinite(ratio) && ratio >= 0
+        ? ratio
+        : profile.NAV_DIRECT_CHECK_PAD_RATIO;
+    return Math.max(0, navigationRadius * safeRatio);
+};
+
+/**
+ * clearance가 큰 적도 막힌 셀 밖의 후보를 찾을 수 있도록 탐색 반경을 계산합니다.
+ * @param {object} profile
+ * @param {number} clearance
+ * @returns {number}
+ */
+const getNearestWalkableSearchRadius = (profile, clearance) => {
+    const baseRadius = Number.isInteger(profile.NAV_NEAREST_FREE_RADIUS)
+        ? profile.NAV_NEAREST_FREE_RADIUS
+        : 1;
+    const extraCells = Number.isInteger(profile.NAV_NEAREST_FREE_CLEARANCE_EXTRA_CELLS)
+        ? Math.max(0, profile.NAV_NEAREST_FREE_CLEARANCE_EXTRA_CELLS)
+        : 0;
+    const clearanceCells = Number.isFinite(clearance) && clearance > 0
+        ? Math.ceil(clearance / Math.max(1, profile.NAV_CELL_SIZE))
+        : 0;
+    return Math.max(baseRadius, clearanceCells + extraCells);
+};
 
 const getRectBounds = (wall) => {
     if (!wall) return null;
@@ -255,9 +372,11 @@ const isBlockedCell = (grid, cx, cy) => {
  * @param {number} cx
  * @param {number} cy
  * @param {{cx: number, cy: number}} out
+ * @param {object} profile
+ * @param {number} [clearance=0]
  * @returns {{cx: number, cy: number}|null}
  */
-const findNearestWalkableCellInto = (grid, cx, cy, out, profile) => {
+const findNearestWalkableCellInto = (grid, cx, cy, out, profile, clearance = 0) => {
     if (!isBlockedCell(grid, cx, cy)) {
         out.cx = cx;
         out.cy = cy;
@@ -266,7 +385,8 @@ const findNearestWalkableCellInto = (grid, cx, cy, out, profile) => {
 
     let best = null;
     let bestDistSq = Number.POSITIVE_INFINITY;
-    for (let r = 1; r <= profile.NAV_NEAREST_FREE_RADIUS; r++) {
+    const searchRadius = getNearestWalkableSearchRadius(profile, clearance);
+    for (let r = 1; r <= searchRadius; r++) {
         const minX = cx - r;
         const maxX = cx + r;
         const minY = cy - r;
@@ -412,7 +532,8 @@ const getFlowField = (walls, width, height, profile, clearance, target) => {
         goalCellRaw.cx,
         goalCellRaw.cy,
         flowFieldScratchGoalCell,
-        profile
+        profile,
+        nav.clearance
     );
     if (!goalCell) return null;
 
@@ -422,6 +543,7 @@ const getFlowField = (walls, width, height, profile, clearance, target) => {
         return {
             key,
             grid,
+            clearance: nav.clearance,
             field: cached
         };
     }
@@ -436,6 +558,7 @@ const getFlowField = (walls, width, height, profile, clearance, target) => {
     return {
         key,
         grid,
+        clearance: nav.clearance,
         field
     };
 };
@@ -459,7 +582,8 @@ const getFlowFieldForTargetCoords = (walls, width, height, profile, clearance, t
         goalCellRaw.cx,
         goalCellRaw.cy,
         flowFieldScratchGoalCell,
-        profile
+        profile,
+        nav.clearance
     );
     if (!goalCell) return null;
 
@@ -469,6 +593,7 @@ const getFlowFieldForTargetCoords = (walls, width, height, profile, clearance, t
         return {
             key,
             grid,
+            clearance: nav.clearance,
             field: cached
         };
     }
@@ -483,6 +608,7 @@ const getFlowFieldForTargetCoords = (walls, width, height, profile, clearance, t
     return {
         key,
         grid,
+        clearance: nav.clearance,
         field
     };
 };
@@ -1257,8 +1383,9 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     const targetX = player.position.x;
     const targetY = player.position.y;
     const walls = Array.isArray(context.walls) ? context.walls : [];
-    const enemyRadius = Math.max(8, (enemy.getRenderHeightPx?.() || 24) * 0.45);
-    const directPad = enemyRadius * profile.NAV_DIRECT_CHECK_PAD_RATIO;
+    const fallbackRadius = Math.max(8, resolveEnemyAIRenderHeightPx(enemy) * 0.45);
+    const enemyRadius = resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius);
+    const directPad = resolveDirectPathPad(enemy, enemyRadius, profile);
     const scratchDir = state.scratchDir;
     const scratchCell = state.scratchCell;
     const wallsVersion = Number.isInteger(context?.wallsVersion) ? context.wallsVersion : 0;
@@ -1357,18 +1484,42 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
             const grid = state.flowData.grid;
             const field = state.flowData.field;
             const cellRaw = worldToCellInto(startX, startY, grid, scratchCell);
-            const cell = isBlockedCell(grid, cellRaw.cx, cellRaw.cy)
-                ? findNearestWalkableCellInto(grid, cellRaw.cx, cellRaw.cy, state.scratchGoalCell, profile)
+            const flowClearance = Number.isFinite(state.flowData.clearance)
+                ? state.flowData.clearance
+                : enemyRadius;
+            const isCurrentCellBlocked = isBlockedCell(grid, cellRaw.cx, cellRaw.cy);
+            const cell = isCurrentCellBlocked
+                ? findNearestWalkableCellInto(
+                    grid,
+                    cellRaw.cx,
+                    cellRaw.cy,
+                    state.scratchGoalCell,
+                    profile,
+                    flowClearance
+                )
                 : cellRaw;
 
             if (cell) {
-                const idx = toIndex(cell.cx, cell.cy, grid.cols);
-                const fx = field.dirX[idx];
-                const fy = field.dirY[idx];
-                if (Math.abs(fx) > EPSILON || Math.abs(fy) > EPSILON) {
-                    scratchDir.x = fx;
-                    scratchDir.y = fy;
-                    hasDirection = true;
+                if (isCurrentCellBlocked) {
+                    const escapeX = (cell.cx + 0.5) * grid.cellSize;
+                    const escapeY = (cell.cy + 0.5) * grid.cellSize;
+                    const escapeDx = escapeX - startX;
+                    const escapeDy = escapeY - startY;
+                    if (Math.hypot(escapeDx, escapeDy) > EPSILON) {
+                        normalizeInto(escapeDx, escapeDy, scratchDir);
+                        hasDirection = true;
+                    }
+                }
+
+                if (!hasDirection) {
+                    const idx = toIndex(cell.cx, cell.cy, grid.cols);
+                    const fx = field.dirX[idx];
+                    const fy = field.dirY[idx];
+                    if (Math.abs(fx) > EPSILON || Math.abs(fy) > EPSILON) {
+                        scratchDir.x = fx;
+                        scratchDir.y = fy;
+                        hasDirection = true;
+                    }
                 }
             }
         }
