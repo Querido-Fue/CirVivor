@@ -1,17 +1,18 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { incrementEnemyAIDebugCounter, recordEnemyAIDebugPolicySample } from './_enemy_ai_debug_stats.js';
 import {
-    resolveEnemyAIFootprintMetricsPx,
-    resolveEnemyAINavigationRadiusPx,
-    resolveEnemyAIRenderHeightPx
-} from './_enemy_ai_footprint.js';
-import {
     requiresDensityAnchor,
     resolveEnemyAIPolicy,
     stepArrowChargeState,
     updatePolicyIntent
 } from './_enemy_ai_policy_intent.js';
 import { resolveEnemyAISteeringDirection } from './_enemy_ai_steering.js';
+import {
+    applyEnemyAISteeringResult,
+    ensureEnemyAIUpdateFrame,
+    resolveEnemyAIUpdateFrameInto,
+    shouldRefreshEnemyAIDecision
+} from './_enemy_ai_fixed_update_context.js';
 
 export {
     resolveEnemyAIFootprintMetricsPx,
@@ -22,7 +23,6 @@ const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const ENEMY_AI_QUALITY_PROFILES = ENEMY_AI_CONSTANTS.QUALITY_PROFILES;
 const DEFAULT_ENEMY_AI_QUALITY_PROFILE = ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE;
 const ENEMY_AI_STATE_SCHEMA_VERSION = ENEMY_AI_CONSTANTS.STATE_SCHEMA_VERSION;
-const HEXA_HIVE_TYPE = 'hexa_hive';
 
 const length = (x, y) => Math.hypot(x, y);
 
@@ -88,6 +88,7 @@ const ensureEnemyAIStateScratchObjects = (state) => {
     state.scratchGoalCell = ensureScratchCell(state.scratchGoalCell);
     state.scratchPolicyPoint = ensureScratchPoint(state.scratchPolicyPoint, 0, 0);
     state.scratchDensityGoal = ensureScratchDensityGoal(state.scratchDensityGoal);
+    state.scratchUpdateFrame = ensureEnemyAIUpdateFrame(state.scratchUpdateFrame);
     return state;
 };
 
@@ -203,30 +204,20 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     const aiDebugStats = context?.aiDebugStats ?? null;
     const profileStartTime = aiDebugStats?.enabled === true ? performance.now() : -1;
 
-    const player = context.player;
-    if (!player || !player.position) {
+    const updateFrame = resolveEnemyAIUpdateFrameInto(enemy, context, state.scratchUpdateFrame);
+    if (!updateFrame) {
         enemy.setAcc(0, 0);
         return;
     }
 
-    const startX = enemy.position.x;
-    const startY = enemy.position.y;
-    const targetX = player.position.x;
-    const targetY = player.position.y;
-    const walls = Array.isArray(context.walls) ? context.walls : [];
-    const fallbackRadius = Math.max(8, resolveEnemyAIRenderHeightPx(enemy) * 0.45);
-    const footprintMetrics = enemy?.type === HEXA_HIVE_TYPE
-        ? resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius)
-        : null;
-    const enemyRadius = footprintMetrics
-        ? footprintMetrics.radius
-        : resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius);
-    const wallsVersion = Number.isInteger(context?.wallsVersion) ? context.wallsVersion : 0;
-    const forcedPolicyRefresh = stepArrowChargeState(state, stepDelta, targetX, targetY, profile);
-    const shouldRefreshDecision = context.shouldUpdateDecision === true
-        || forcedPolicyRefresh
-        || !Number.isFinite(state.targetX)
-        || !Number.isFinite(state.targetY);
+    const forcedPolicyRefresh = stepArrowChargeState(
+        state,
+        stepDelta,
+        updateFrame.targetX,
+        updateFrame.targetY,
+        profile
+    );
+    const shouldRefreshDecision = shouldRefreshEnemyAIDecision(state, context, forcedPolicyRefresh);
 
     if (shouldRefreshDecision || !requiresDensityAnchor(state.policyId)) {
         updatePolicyIntent(
@@ -234,12 +225,12 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
             state,
             context,
             profile,
-            startX,
-            startY,
-            targetX,
-            targetY,
-            enemyRadius,
-            footprintMetrics
+            updateFrame.startX,
+            updateFrame.startY,
+            updateFrame.targetX,
+            updateFrame.targetY,
+            updateFrame.enemyRadius,
+            updateFrame.footprintMetrics
         );
         state.lastDecisionGroup = Number.isInteger(context?.decisionGroup) ? context.decisionGroup : -1;
     }
@@ -252,24 +243,18 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
         state,
         context,
         profile,
-        startX,
-        startY,
-        targetX,
-        targetY,
-        walls,
-        enemyRadius,
-        wallsVersion,
+        startX: updateFrame.startX,
+        startY: updateFrame.startY,
+        targetX: updateFrame.targetX,
+        targetY: updateFrame.targetY,
+        walls: updateFrame.walls,
+        enemyRadius: updateFrame.enemyRadius,
+        wallsVersion: updateFrame.wallsVersion,
         forcedPolicyRefresh,
         aiDebugStats
     });
 
-    state.dirX = scratchDir.x;
-    state.dirY = scratchDir.y;
-
-    const desiredVx = state.dirX * state.desiredSpeed;
-    const desiredVy = state.dirY * state.desiredSpeed;
-    enemy.setAcc(desiredVx - enemy.speed.x, desiredVy - enemy.speed.y);
-    enemy.accSpeed = state.accelResponse;
+    applyEnemyAISteeringResult(enemy, state, scratchDir);
 
     if (profileStartTime >= 0) {
         const durationMs = performance.now() - profileStartTime;
