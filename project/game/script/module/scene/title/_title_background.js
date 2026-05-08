@@ -22,7 +22,15 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
 const TITLE_ENEMY_SPAWN_CULL_GUARD_PX = 0.5;
 const TITLE_PARALLAX_LAYERS = TITLE_CONSTANTS.TITLE_ENEMIES.PARALLAX_LAYERS || [];
+/**
+ * 다중 softness 보조 패스를 단일 패스로 압축할 때 보정하는 알파 배율입니다.
+ * @type {number}
+ */
 const TITLE_ENEMY_SOFTNESS_ALPHA_MULTIPLIER = 2.2;
+/**
+ * 다중 softness 보조 패스를 단일 패스로 압축할 때 보정하는 크기 배율입니다.
+ * @type {number}
+ */
 const TITLE_ENEMY_SOFTNESS_SCALE_EXPANSION = 1.035;
 
 /**
