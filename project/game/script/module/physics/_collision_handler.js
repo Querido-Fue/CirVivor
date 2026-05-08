@@ -35,11 +35,6 @@ const COLLISION_RESOLVE_FRAME_MAX_RATIO = 0.42;
 const COLLISION_RESOLVE_FRAME_MIN_MAX = 2.2;
 const HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE = 1.1;
 const HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE = 0.55;
-const ENEMY_COLLISION_ROTATION_SCALE = 0.25;
-const ENEMY_COLLISION_SPEED_GAP_DEADZONE = 8;
-const ENEMY_COLLISION_CENTER_DEADZONE = 0.24;
-const ENEMY_COLLISION_MIN_EFFECTIVE_IMPULSE = 0.35;
-const ENEMY_COLLISION_MAX_ANGULAR_IMPULSE = 42;
 const PROJECTILE_SWEEP_RADIUS_STEP = 0.45;
 const COLLISION_IDLE_TICKS_TO_SLEEP = 45;
 const COLLISION_SLEEP_TICKS = 2;
@@ -584,16 +579,6 @@ export class CollisionHandler {
                 this.#recordProfileDuration('enemyStabilizeMs', stabilizeStart);
             }
 
-            if (totalResolved > 0) {
-                const nonPositionStart = this.#startProfileTimer();
-                this.#solveOnePass(bodies, {
-                    resolvePositions: false,
-                    applyNonPosition: true,
-                    rebuildGrid: false
-                });
-                this.#recordProfileDuration('enemyNonPositionMs', nonPositionStart);
-            }
-
             for (let i = 0; i < dynamicBodies.length; i++) {
                 const enemy = dynamicBodies[i].ref;
                 enemy.__collisionPrevX = enemy.position.x;
@@ -943,12 +928,7 @@ export class CollisionHandler {
             }
         }
 
-        if (!rule.resolve || !resolvePositions) {
-            if (applyNonPosition && bodyA.kind === 'enemy' && bodyB.kind === 'enemy') {
-                this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
-            }
-            return 1;
-        }
+        if (!rule.resolve || !resolvePositions) return 1;
 
         if (this.#areBothEnemyPairAnchors(bodyA, bodyB)) {
             return 0;
@@ -972,10 +952,6 @@ export class CollisionHandler {
         }
         if (tunedResolve.moveBX || tunedResolve.moveBY) {
             this.#applyBodyTranslation(bodyB, tunedResolve.moveBX, tunedResolve.moveBY, pairResolveBoost);
-        }
-
-        if (applyNonPosition && bodyA.kind === 'enemy' && bodyB.kind === 'enemy') {
-            this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
         }
 
         return 1;
@@ -2114,7 +2090,6 @@ export class CollisionHandler {
      * @param {number} relationOffsetA
      * @param {number} relationOffsetB
      * @param {boolean} resolvePositions
-     * @param {boolean} applyNonPosition
      * @param {number} resolveBoost
      * @returns {number}
      */
@@ -2125,7 +2100,6 @@ export class CollisionHandler {
         relationOffsetA,
         relationOffsetB,
         resolvePositions,
-        applyNonPosition,
         resolveBoost
     ) {
         if (resolvePositions) {
@@ -2180,12 +2154,7 @@ export class CollisionHandler {
             bodyB._resolvedPairCount = (bodyB._resolvedPairCount || 0) + 1;
         }
 
-        if (!resolvePositions) {
-            if (applyNonPosition) {
-                this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
-            }
-            return 1;
-        }
+        if (!resolvePositions) return 1;
 
         if (this.#areBothEnemyPairAnchors(bodyA, bodyB)) {
             return 0;
@@ -2300,10 +2269,6 @@ export class CollisionHandler {
                 }
                 this.#applyBodyTranslation(bodyB, moveBX, moveBY, pairResolveBoost);
             }
-        }
-
-        if (applyNonPosition) {
-            this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
         }
 
         return 1;
@@ -2441,7 +2406,7 @@ export class CollisionHandler {
     }
 
     /**
-     * worker가 미리 계산한 enemy circle contact로 non-position 효과를 적용합니다.
+     * worker가 미리 계산한 enemy circle contact를 판정합니다.
      * @private
      * @param {object} bodyA
      * @param {object} bodyB
@@ -2450,7 +2415,6 @@ export class CollisionHandler {
      * @param {Float64Array} resultData
      * @param {number} contactRowIndex
      * @param {boolean} resolvePositions
-     * @param {boolean} applyNonPosition
      * @returns {number}
      */
     #processEnemyCircleContactResultSoA(
@@ -2460,8 +2424,7 @@ export class CollisionHandler {
         high,
         resultData,
         contactRowIndex,
-        resolvePositions,
-        applyNonPosition
+        resolvePositions
     ) {
         if (resolvePositions || !Number.isInteger(contactRowIndex) || contactRowIndex < 0) {
             return 0;
@@ -2497,9 +2460,6 @@ export class CollisionHandler {
         manifold.moveBX = 0;
         manifold.moveBY = 0;
 
-        if (applyNonPosition) {
-            this.#applyEnemyCollisionRotation(bodyA, bodyB, manifold);
-        }
         return 1;
     }
 
@@ -2594,8 +2554,7 @@ export class CollisionHandler {
                             high,
                             parallelContactState.resultData,
                             contactRowIndex,
-                            resolvePositions,
-                            applyNonPosition
+                            resolvePositions
                         )
                         : 0;
                 } else if (isCirclePair) {
@@ -2606,7 +2565,6 @@ export class CollisionHandler {
                         relationOffsetA,
                         relationOffsetB,
                         resolvePositions,
-                        applyNonPosition,
                         resolveBoost
                     );
                 } else {
@@ -3345,81 +3303,6 @@ export class CollisionHandler {
             if (hitCount >= enemy.projectileHitsToKill) {
                 enemy.active = false;
             }
-        }
-    }
-
-    /**
-     * enemy-enemy 충돌 시 충돌 지점/무게를 반영한 회전 반동을 적용합니다.
-     * @private
-     */
-    #applyEnemyCollisionRotation(bodyA, bodyB, manifold) {
-        const enemyA = bodyA?.ref;
-        const enemyB = bodyB?.ref;
-        if (!enemyA || !enemyB) return;
-        const canRotateA = !this.#isHexaHiveWallBody(bodyA) && typeof enemyA.addAngularImpulse === 'function';
-        const canRotateB = !this.#isHexaHiveWallBody(bodyB) && typeof enemyB.addAngularImpulse === 'function';
-        if (!canRotateA && !canRotateB) return;
-
-        const rvx = (bodyA.velocityX || 0) - (bodyB.velocityX || 0);
-        const rvy = (bodyA.velocityY || 0) - (bodyB.velocityY || 0);
-        const speedA = Math.hypot(bodyA.velocityX || 0, bodyA.velocityY || 0);
-        const speedB = Math.hypot(bodyB.velocityX || 0, bodyB.velocityY || 0);
-        const speedGap = Math.abs(speedA - speedB);
-        const gap = speedGap - ENEMY_COLLISION_SPEED_GAP_DEADZONE;
-        if (gap <= 0) return;
-
-        const nx = Number.isFinite(manifold.normalX) ? manifold.normalX : 1;
-        const ny = Number.isFinite(manifold.normalY) ? manifold.normalY : 0;
-        const closingSpeed = Math.max(0, (rvx * nx) + (rvy * ny));
-        if (closingSpeed <= EPSILON) return;
-
-        const pointX = Number.isFinite(manifold.pointX) ? manifold.pointX : ((bodyA.centerX + bodyB.centerX) * 0.5);
-        const pointY = Number.isFinite(manifold.pointY) ? manifold.pointY : ((bodyA.centerY + bodyB.centerY) * 0.5);
-
-        const relAX = pointX - bodyA.centerX;
-        const relAY = pointY - bodyA.centerY;
-        const relBX = pointX - bodyB.centerX;
-        const relBY = pointY - bodyB.centerY;
-
-        const torqueSignA = Math.sign((relAX * rvy) - (relAY * rvx)) || 1;
-        const torqueSignB = -torqueSignA;
-        const armA = Math.hypot(relAX, relAY);
-        const armB = Math.hypot(relBX, relBY);
-        const sizeA = Math.max(1, enemyA.getRenderHeightPx?.() || 1);
-        const sizeB = Math.max(1, enemyB.getRenderHeightPx?.() || 1);
-        const armRatioA = Math.min(1, armA / sizeA);
-        const armRatioB = Math.min(1, armB / sizeB);
-        const offCenterA = Math.max(0, armRatioA - ENEMY_COLLISION_CENTER_DEADZONE);
-        const offCenterB = Math.max(0, armRatioB - ENEMY_COLLISION_CENTER_DEADZONE);
-        if (offCenterA <= 0 && offCenterB <= 0) return;
-
-        const weightA = Math.max(0.1, Number.isFinite(enemyA.weight) ? enemyA.weight : 1);
-        const weightB = Math.max(0.1, Number.isFinite(enemyB.weight) ? enemyB.weight : 1);
-        const sumWeight = weightA + weightB;
-        const shareA = weightB / sumWeight;
-        const shareB = weightA / sumWeight;
-        const offCenterFactor = Math.min(1, ((offCenterA + offCenterB) * 0.5) / Math.max(EPSILON, 1 - ENEMY_COLLISION_CENTER_DEADZONE));
-        const baseImpulseRaw = gap * ENEMY_COLLISION_ROTATION_SCALE * (offCenterFactor * offCenterFactor);
-        const dynamicScale = Math.min(1, closingSpeed / Math.max(speedGap, EPSILON));
-        const baseImpulse = Math.min(
-            ENEMY_COLLISION_MAX_ANGULAR_IMPULSE,
-            baseImpulseRaw * dynamicScale * ROTATION_RESPONSE_MULTIPLIER
-        );
-        if (baseImpulse < ENEMY_COLLISION_MIN_EFFECTIVE_IMPULSE) return;
-        const ampA = 0.3 + (offCenterA * 0.7);
-        const ampB = 0.3 + (offCenterB * 0.7);
-
-        if (canRotateA) {
-            enemyA.lastImpactPoint = { x: pointX, y: pointY };
-            enemyA.lastImpactOffset = { x: relAX, y: relAY };
-            enemyA.lastImpactOffsetRatio = armRatioA;
-            enemyA.addAngularImpulse(torqueSignA * baseImpulse * shareA * ampA, 1);
-        }
-        if (canRotateB) {
-            enemyB.lastImpactPoint = { x: pointX, y: pointY };
-            enemyB.lastImpactOffset = { x: relBX, y: relBY };
-            enemyB.lastImpactOffsetRatio = armRatioB;
-            enemyB.addAngularImpulse(torqueSignB * baseImpulse * shareB * ampB, 1);
         }
     }
 

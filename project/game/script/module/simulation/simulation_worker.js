@@ -920,7 +920,7 @@ self.addEventListener('message', (event) => {
                     postWorkerMessage(SIMULATION_WORKER_MESSAGE_TYPES.FRAME_ACK, {
                         frameId: workerState.lastFrameId,
                         workerSnapshot: buildWorkerSnapshot(),
-                        ...(!hasSharedPresentationChannel() ? buildPresentationPayload() : {})
+                        ...buildPresentationPayload()
                     });
                 }
                 break;

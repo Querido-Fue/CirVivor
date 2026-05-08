@@ -575,14 +575,39 @@ export class SimulationWorkerBridge {
      * @private
      */
     _syncSharedPresentationStatus() {
-        if (!this.sharedPresentationTransport
-            || this.presentationSnapshot?.scene?.storageType !== GAME_SCENE_SHARED_PRESENTATION_STORAGE_TYPE) {
+        if (!this.sharedPresentationTransport) {
             return;
         }
 
         const previousAckFrameId = this.status.lastAckFrameId;
         const sharedState = readGameSceneSharedPresentationState(this.sharedPresentationTransport);
         if (!sharedState) {
+            return;
+        }
+
+        const hasSharedPresentationSnapshot = this.presentationSnapshot?.scene?.storageType
+            === GAME_SCENE_SHARED_PRESENTATION_STORAGE_TYPE;
+        const currentWorkerSnapshot = this.status.workerSnapshot ?? {};
+        const sceneState = typeof this.presentationSnapshot?.sceneState === 'string'
+            ? this.presentationSnapshot.sceneState
+            : (typeof currentWorkerSnapshot.sceneState === 'string' ? currentWorkerSnapshot.sceneState : null);
+        const shouldAdoptSharedSnapshot = sharedState.version > 0
+            && !hasSharedPresentationSnapshot
+            && sharedState.lastFrameId > 0
+            && (
+                sharedState.lastFrameId > previousAckFrameId
+                || sharedState.lastFrameId === this.status.lastFrameId
+            );
+        if (shouldAdoptSharedSnapshot) {
+            this.presentationSnapshot = createGameSceneSharedPresentationSnapshot(
+                this.sharedPresentationTransport,
+                sceneState
+            );
+        }
+        const shouldUseSharedState = hasSharedPresentationSnapshot
+            || shouldAdoptSharedSnapshot
+            || sharedState.lastFrameId > previousAckFrameId;
+        if (!shouldUseSharedState) {
             return;
         }
 
@@ -593,7 +618,6 @@ export class SimulationWorkerBridge {
             this.status.lastAckFrameId = sharedState.lastFrameId;
         }
 
-        const currentWorkerSnapshot = this.status.workerSnapshot ?? {};
         const currentFrameCounter = Number.isInteger(currentWorkerSnapshot.frameCounter)
             ? currentWorkerSnapshot.frameCounter
             : 0;

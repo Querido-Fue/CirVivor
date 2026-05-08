@@ -24,10 +24,31 @@ import { runtimeTool } from 'util/runtime_tool.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
 import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
 import {
-    getTitleMenuIconDrawScale,
     TITLE_MENU_CARD_REVEAL_ORDER,
     TITLE_MENU_SECONDARY_ENTRIES
 } from './menu/_title_menu_config.js';
+import {
+    drawTitleMenuCardBorder,
+    drawTitleMenuCardParticles,
+    drawTitleMenuCardRipples,
+    drawTitleMenuCardSpotlight
+} from './menu/_title_menu_effect_render.js';
+import {
+    hasTitleMenuDynamicTextureState,
+    pushTitleMenuRipple,
+    updateTitleMenuBorderState,
+    updateTitleMenuParticleState,
+    updateTitleMenuRippleState,
+    updateTitleMenuSpotlightState,
+    updateTitleMenuTiltState
+} from './menu/_title_menu_effect_state.js';
+import {
+    drawTitleMenuCardIcon,
+    drawTitleMenuIcon,
+    drawTitleMenuPlaceholderIcon,
+    getTitleMenuCardIconMetrics,
+    getTitleMenuUtilityTileIconMetrics
+} from './menu/_title_menu_icon_render.js';
 import { getTitleMenuIconSource } from './menu/_title_menu_icon.js';
 import { TitleMenuLayout } from './menu/_title_menu_layout.js';
 import { clampNumber, easeOutCubic, easeOutExpo, lerpValue } from './menu/_title_menu_motion.js';
@@ -39,6 +60,7 @@ import {
     getTitleMenuTextPresetFont,
     getTitleMenuTextPresetFontSize
 } from './menu/_title_menu_text_layout.js';
+import { drawTitleMenuWrappedText } from './menu/_title_menu_text_render.js';
 import {
     buildTitleMenuVersionLabelLayout,
     getTitleMenuGameVersionText,
@@ -50,14 +72,11 @@ import {
     getMenuCardDescriptionColor,
     getMenuCardTitleColor,
     getMenuEffectColor,
-    getMenuForegroundColor,
     getMenuOpacity,
     getMenuPanelStyle,
     getThemeAwareMenuBorderColor,
     getUnifiedOuterPaneStrokeColor,
-    menuForegroundWithAlpha,
-    resolveMenuColorRgb,
-    toMenuRgba
+    menuForegroundWithAlpha
 } from './menu/_title_menu_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -601,18 +620,18 @@ export class TitleMenu {
             card.setHovered(isHovered);
             if (clickedThisFrame && isHovered) {
                 if (rippleOptions) {
-                    this.#pushRipple(renderState, runtimeState, rippleOptions);
+                    pushTitleMenuRipple(renderState, runtimeState, rippleOptions);
                 }
                 consumeMouseState('left');
                 this.#handleCardClick(card);
             }
 
-            this.#updateTiltState(renderState, runtimeState, delta, hoverTiltOptions);
+            updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions);
             this.#updateCardProjection(renderState, runtimeState);
-            this.#updateSpotlightState(runtimeState, delta, spotlightOptions);
-            this.#updateBorderState(runtimeState, delta, borderOptions);
-            this.#updateParticleState(renderState, runtimeState, delta, particleOptions);
-            this.#updateRippleState(runtimeState, delta);
+            updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions);
+            updateTitleMenuBorderState(runtimeState, delta, borderOptions);
+            updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions);
+            updateTitleMenuRippleState(runtimeState, delta);
             runtimeState.wasHovered = runtimeState.hovered;
             card.update(delta);
         }
@@ -703,15 +722,15 @@ export class TitleMenu {
                 runtimeState.normalizedY = clampNumber(((runtimeState.localY / Math.max(1, renderState.panelRect.h)) * 2) - 1, -1, 1);
             }
 
-            this.#updateTiltState(renderState, runtimeState, delta, hoverTiltOptions);
+            updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions);
             this.#updateCardProjection(renderState, runtimeState);
-            this.#updateSpotlightState(runtimeState, delta, spotlightOptions);
-            this.#updateBorderState(runtimeState, delta, borderOptions);
-            this.#updateParticleState(renderState, runtimeState, delta, particleOptions);
-            this.#updateRippleState(runtimeState, delta);
+            updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions);
+            updateTitleMenuBorderState(runtimeState, delta, borderOptions);
+            updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions);
+            updateTitleMenuRippleState(runtimeState, delta);
 
             if (clickedThisFrame && isHovered && rippleOptions) {
-                this.#pushRipple(renderState, runtimeState, rippleOptions);
+                pushTitleMenuRipple(renderState, runtimeState, rippleOptions);
             }
 
             runtimeState.wasHovered = runtimeState.hovered;
@@ -1136,244 +1155,6 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 hover tilt 상태를 갱신합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {number} delta - 프레임 델타 시간입니다.
-     * @param {object|null} hoverTiltOptions - hover tilt 옵션입니다.
-     * @private
-     */
-    #updateTiltState(renderState, runtimeState, delta, hoverTiltOptions) {
-        if (!hoverTiltOptions) {
-            runtimeState.rotateX = lerpNumber(runtimeState.rotateX, 0, getDeltaLerpFactor(0.2, delta));
-            runtimeState.rotateY = lerpNumber(runtimeState.rotateY, 0, getDeltaLerpFactor(0.2, delta));
-            runtimeState.targetRotateX = 0;
-            runtimeState.targetRotateY = 0;
-            return;
-        }
-
-        const maxAngle = (hoverTiltOptions.maxAngleDeg * Math.PI) / 180;
-        runtimeState.targetRotateX = runtimeState.hovered ? (-runtimeState.normalizedY * maxAngle) : 0;
-        runtimeState.targetRotateY = runtimeState.hovered ? (runtimeState.normalizedX * maxAngle) : 0;
-
-        const lerpFactor = getDeltaLerpFactor(hoverTiltOptions.smoothing, delta);
-        runtimeState.rotateX = lerpNumber(runtimeState.rotateX, runtimeState.targetRotateX, lerpFactor);
-        runtimeState.rotateY = lerpNumber(runtimeState.rotateY, runtimeState.targetRotateY, lerpFactor);
-    }
-
-    /**
-     * 카드 spotlight 상태를 갱신합니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {number} delta - 프레임 델타 시간입니다.
-     * @param {object|null} spotlightOptions - spotlight 옵션입니다.
-     * @private
-     */
-    #updateSpotlightState(runtimeState, delta, spotlightOptions) {
-        if (!spotlightOptions) {
-            runtimeState.spotlightAlpha = lerpNumber(runtimeState.spotlightAlpha, 0, getDeltaLerpFactor(0.24, delta));
-            return;
-        }
-
-        runtimeState.spotlightAlpha = lerpNumber(
-            runtimeState.spotlightAlpha,
-            runtimeState.hovered ? spotlightOptions.opacity : 0,
-            getDeltaLerpFactor(spotlightOptions.smoothing, delta)
-        );
-    }
-
-    /**
-     * 카드 hover border 상태를 갱신합니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {number} delta - 프레임 델타 시간입니다.
-     * @param {object|null} borderOptions - hoverBorder 옵션입니다.
-     * @private
-     */
-    #updateBorderState(runtimeState, delta, borderOptions) {
-        if (!borderOptions) {
-            runtimeState.borderAlpha = lerpNumber(runtimeState.borderAlpha, 0, getDeltaLerpFactor(0.24, delta));
-            return;
-        }
-
-        runtimeState.borderAlpha = lerpNumber(
-            runtimeState.borderAlpha,
-            runtimeState.hovered ? borderOptions.opacity : 0,
-            getDeltaLerpFactor(borderOptions.smoothing, delta)
-        );
-    }
-
-    /**
-     * 카드 hover particle 상태를 갱신합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {number} delta - 프레임 델타 시간입니다.
-     * @param {object|null} particleOptions - particle 옵션입니다.
-     * @private
-     */
-    #updateParticleState(renderState, runtimeState, delta, particleOptions) {
-        if (!particleOptions) {
-            runtimeState.particles = [];
-            runtimeState.particleAlpha = 0;
-            return;
-        }
-
-        const resolvedParticleOptions = this.#resolveCardParticleOptions(renderState, particleOptions);
-
-        if (!runtimeState.wasHovered && runtimeState.hovered) {
-            runtimeState.particles = this.#createCardParticles(renderState, resolvedParticleOptions);
-            runtimeState.hoverElapsed = 0;
-        }
-
-        if (runtimeState.hovered) {
-            runtimeState.hoverElapsed += delta;
-        }
-
-        runtimeState.particleAlpha = lerpNumber(
-            runtimeState.particleAlpha,
-            runtimeState.hovered ? 1 : 0,
-            getDeltaLerpFactor(0.22, delta)
-        );
-
-        if (!runtimeState.hovered && runtimeState.particleAlpha <= 0.01) {
-            runtimeState.particles = [];
-            return;
-        }
-
-        for (const particle of runtimeState.particles) {
-            particle.elapsed += delta;
-            if (particle.elapsed < particle.spawnDelay) {
-                particle.visible = false;
-                continue;
-            }
-
-            particle.visible = true;
-            const cycleTime = particle.elapsed - particle.spawnDelay;
-            const cycleProgress = clampNumber(cycleTime / particle.duration, 0, 1);
-            const travelProgress = 0.5 - (0.5 * Math.cos((cycleTime / particle.duration) * Math.PI));
-            const fadeInAlpha = clampNumber(cycleTime / 0.24, 0, 1);
-            const fadeOutAlpha = clampNumber((particle.duration - cycleTime) / Math.max(0.16, particle.duration * 0.22), 0, 1);
-            const lifeAlpha = Math.min(fadeInAlpha, fadeOutAlpha);
-            particle.currentX = lerpNumber(particle.originX, particle.targetX, travelProgress);
-            particle.currentY = lerpNumber(particle.originY, particle.targetY, travelProgress);
-            particle.scale = Math.min(1, cycleTime / 0.3);
-            particle.opacity = (0.65 + (0.35 * Math.sin(cycleProgress * Math.PI))) * lifeAlpha * runtimeState.particleAlpha;
-
-            if (cycleTime >= particle.duration) {
-                this.#resetCardParticle(particle, renderState, resolvedParticleOptions);
-            }
-        }
-    }
-
-    /**
-     * 카드 크기에 맞춰 particle 옵션을 보정합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} particleOptions - 기본 particle 옵션입니다.
-     * @returns {object} 카드 크기 기준으로 보정된 particle 옵션입니다.
-     * @private
-     */
-    #resolveCardParticleOptions(renderState, particleOptions) {
-        const panelWidth = Math.max(1, renderState.panelRect.w);
-        const panelHeight = Math.max(1, renderState.panelRect.h);
-        const panelArea = panelWidth * panelHeight;
-        const panelMinSize = Math.min(panelWidth, panelHeight);
-        const areaScale = clampNumber(panelArea / 42000, 0.45, 1.5);
-        const sizeScale = clampNumber(panelMinSize / 160, 0.72, 1.28);
-
-        return {
-            count: Math.round(clampNumber(particleOptions.count * areaScale, 5, 18)),
-            spawnInterval: particleOptions.spawnInterval,
-            driftDistance: particleOptions.driftDistance * sizeScale,
-            minDuration: particleOptions.minDuration * sizeScale,
-            maxDuration: particleOptions.maxDuration * sizeScale
-        };
-    }
-
-    /**
-     * 카드 ripple 상태를 갱신합니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {number} delta - 프레임 델타 시간입니다.
-     * @private
-     */
-    #updateRippleState(runtimeState, delta) {
-        runtimeState.ripples = runtimeState.ripples.filter((ripple) => {
-            ripple.elapsed += delta;
-            return ripple.elapsed < ripple.duration;
-        });
-    }
-
-    /**
-     * 카드 클릭 ripple을 추가합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {object} rippleOptions - ripple 옵션입니다.
-     * @private
-     */
-    #pushRipple(renderState, runtimeState, rippleOptions) {
-        runtimeState.ripples.push({
-            x: runtimeState.localX,
-            y: runtimeState.localY,
-            maxDistance: Math.max(
-                Math.hypot(runtimeState.localX, runtimeState.localY),
-                Math.hypot(runtimeState.localX - renderState.panelRect.w, runtimeState.localY),
-                Math.hypot(runtimeState.localX, runtimeState.localY - renderState.panelRect.h),
-                Math.hypot(runtimeState.localX - renderState.panelRect.w, runtimeState.localY - renderState.panelRect.h)
-            ),
-            elapsed: 0,
-            duration: rippleOptions.duration
-        });
-    }
-
-    /**
-     * 카드 particle 목록을 생성합니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} particleOptions - particle 옵션입니다.
-     * @returns {object[]} 생성된 particle 목록입니다.
-     * @private
-     */
-    #createCardParticles(renderState, particleOptions) {
-        return Array.from({ length: particleOptions.count }, (_value, index) => {
-            const particle = {
-                elapsed: 0,
-                opacity: 0,
-                originX: 0,
-                originY: 0,
-                targetX: 0,
-                targetY: 0,
-                currentX: 0,
-                currentY: 0,
-                scale: 0,
-                spawnDelay: index * particleOptions.spawnInterval,
-                duration: particleOptions.minDuration,
-                visible: false
-            };
-            this.#resetCardParticle(particle, renderState, particleOptions);
-            particle.elapsed = 0;
-            return particle;
-        });
-    }
-
-    /**
-     * 카드 particle 이동 경로를 재설정합니다.
-     * @param {object} particle - 재설정할 particle입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} particleOptions - particle 옵션입니다.
-     * @private
-     */
-    #resetCardParticle(particle, renderState, particleOptions) {
-        const panelRect = renderState.panelRect;
-        particle.originX = (Math.random() - 0.5) * panelRect.w;
-        particle.originY = (Math.random() - 0.5) * panelRect.h;
-        particle.targetX = particle.originX + ((Math.random() - 0.5) * particleOptions.driftDistance);
-        particle.targetY = particle.originY + ((Math.random() - 0.5) * particleOptions.driftDistance);
-        particle.currentX = particle.originX;
-        particle.currentY = particle.originY;
-        particle.duration = particleOptions.minDuration + (Math.random() * Math.max(0, particleOptions.maxDuration - particleOptions.minDuration));
-        particle.elapsed = particle.spawnDelay;
-        particle.opacity = 0;
-        particle.scale = 0;
-        particle.visible = false;
-    }
-
-    /**
      * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 계산합니다.
      * @returns {object} 오른쪽 패널 배치 정보입니다.
      * @private
@@ -1770,7 +1551,7 @@ export class TitleMenu {
      * @private
      */
     #buildUtilityTileTextureCanvas(renderState, runtimeState) {
-        if (!this.#hasDynamicTextureState(runtimeState)) {
+        if (!hasTitleMenuDynamicTextureState(runtimeState)) {
             return this.#getStaticUtilityTileTextureCanvas(renderState, runtimeState);
         }
 
@@ -1819,16 +1600,16 @@ export class TitleMenu {
         const placeholderSize = Number.isFinite(renderState.placeholderSize)
             ? renderState.placeholderSize
             : Math.max(12, Math.min(panelRect.w, panelRect.h) * TITLE_CARD_MENU.UTILITY_TILE_PLACEHOLDER_SCALE);
-        const iconMetrics = this.#getUtilityTileIconMetrics(panelRect, placeholderSize);
+        const iconMetrics = getTitleMenuUtilityTileIconMetrics(panelRect, placeholderSize);
         const placeholderAlpha = hovered ? 1 : getMenuOpacity('Placeholder', 0.92);
         const placeholderRadius = Math.max(4, placeholderSize * TITLE_CARD_MENU.UTILITY_TILE_PLACEHOLDER_RADIUS_RATIO);
 
         this.#drawInnerEdges(context, panelRect, hovered ? 0.16 : 0);
-        if (this.#drawMenuIcon(context, renderState.id, iconMetrics, placeholderAlpha)) {
+        if (drawTitleMenuIcon(context, this.svgDrawer, renderState.id, iconMetrics, placeholderAlpha)) {
             return;
         }
 
-        this.#drawPlaceholderIcon(context, iconMetrics, placeholderAlpha, placeholderRadius);
+        drawTitleMenuPlaceholderIcon(context, iconMetrics, placeholderAlpha, placeholderRadius);
     }
 
     /**
@@ -1844,11 +1625,11 @@ export class TitleMenu {
         const effectColor = this.#getEffectColor();
 
         if (spotlightOptions && paneState.spotlightAlpha > 0.005) {
-            this.#drawCardSpotlight(context, paneState, spotlightOptions, effectColor);
+            drawTitleMenuCardSpotlight(context, paneState, spotlightOptions, effectColor);
         }
 
         if (borderOptions && paneState.borderAlpha > 0.005) {
-            this.#drawCardBorder(context, paneState, { panelRect }, borderOptions, effectColor);
+            drawTitleMenuCardBorder(context, paneState, { panelRect }, borderOptions, effectColor);
         }
     }
 
@@ -1861,7 +1642,7 @@ export class TitleMenu {
      * @private
      */
     #buildCardTextureCanvas(card, runtimeState, renderState) {
-        if (!this.#hasDynamicTextureState(runtimeState, renderState)) {
+        if (!hasTitleMenuDynamicTextureState(runtimeState, renderState)) {
             return this.#getStaticCardTextureCanvas(card, runtimeState, renderState);
         }
 
@@ -2005,28 +1786,6 @@ export class TitleMenu {
     }
 
     /**
-     * 현재 상태가 매 프레임 텍스처 재생성을 필요로 하는지 반환합니다.
-     * @param {object} runtimeState - 카드 또는 타일 런타임 상태입니다.
-     * @param {object|null} [renderState=null] - 렌더 상태입니다.
-     * @returns {boolean} 동적 텍스처 필요 여부입니다.
-     * @private
-     */
-    #hasDynamicTextureState(runtimeState, renderState = null) {
-        if (!runtimeState) {
-            return false;
-        }
-
-        const hoverProgress = Number.isFinite(renderState?.hoverProgress)
-            ? renderState.hoverProgress
-            : 0;
-        return hoverProgress > 0.005
-            || runtimeState.spotlightAlpha > 0.005
-            || runtimeState.borderAlpha > 0.005
-            || runtimeState.ripples.length > 0
-            || (runtimeState.particleAlpha > 0.005 && runtimeState.particles.length > 0);
-    }
-
-    /**
      * 카드 정적 텍스처 캐시 식별자를 생성합니다.
      * @param {TitleMenuCard} card - 대상 카드입니다.
      * @param {object} renderState - 카드 렌더 상태입니다.
@@ -2132,7 +1891,7 @@ export class TitleMenu {
             return;
         }
 
-        this.#drawCardParticles(context, renderState, runtimeState, this.#getEffectColor());
+        drawTitleMenuCardParticles(context, renderState, runtimeState, this.#getEffectColor());
     }
 
     /**
@@ -2148,7 +1907,7 @@ export class TitleMenu {
         const title = getLangString(card.cardDefinition.titleKey);
         const description = card.cardDefinition.descriptionKey ? getLangString(card.cardDefinition.descriptionKey) : '';
         const isCompactHorizontalCard = card.cardDefinition.id === 'records';
-        const iconMetrics = this.#getCardIconMetrics(card.cardDefinition.id, panelRect, inset);
+        const iconMetrics = getTitleMenuCardIconMetrics(card.cardDefinition.id, panelRect, inset);
         const titleFontSize = Math.max(
             16,
             panelRect.w * (panelRect.h > panelRect.w * 0.7 ? 0.095 : 0.08),
@@ -2163,12 +1922,12 @@ export class TitleMenu {
             ? descriptionY - (descriptionLineHeight * 0.4928) - titleLineHeight
             : panelRect.h - bottomPadding - titleLineHeight;
 
-        this.#drawCardIcon(context, card.cardDefinition.id, iconMetrics);
+        drawTitleMenuCardIcon(context, this.svgDrawer, card.cardDefinition.id, iconMetrics);
         this.#drawInnerEdges(context, panelRect, renderState.hoverProgress || 0);
 
         if (isCompactHorizontalCard) {
             const titleX = iconMetrics.x + iconMetrics.w + Math.max(14, panelRect.w * 0.06);
-            this.#drawWrappedText(context, {
+            drawTitleMenuWrappedText(context, {
                 text: title,
                 x: titleX,
                 y: (panelRect.h - titleLineHeight) * 0.5,
@@ -2181,7 +1940,7 @@ export class TitleMenu {
             return;
         }
 
-        this.#drawWrappedText(context, {
+        drawTitleMenuWrappedText(context, {
             text: title,
             x: inset,
             y: titleY,
@@ -2193,7 +1952,7 @@ export class TitleMenu {
         });
 
         if (description) {
-            this.#drawWrappedText(context, {
+            drawTitleMenuWrappedText(context, {
                 text: description,
                 x: inset,
                 y: descriptionY,
@@ -2239,363 +1998,16 @@ export class TitleMenu {
         const borderOptions = this.session?.getEffectOptions('hoverBorder');
 
         if (spotlightOptions && runtimeState.spotlightAlpha > 0.005) {
-            this.#drawCardSpotlight(context, runtimeState, spotlightOptions, effectColor);
+            drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptions, effectColor);
         }
 
         if (borderOptions && runtimeState.borderAlpha > 0.005) {
-            this.#drawCardBorder(context, runtimeState, renderState, borderOptions, effectColor);
+            drawTitleMenuCardBorder(context, runtimeState, renderState, borderOptions, effectColor);
         }
 
         if (runtimeState.ripples.length > 0) {
-            this.#drawCardRipples(context, runtimeState, effectColor);
+            drawTitleMenuCardRipples(context, runtimeState, effectColor);
         }
-    }
-
-    /**
-     * 카드 spotlight를 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {object} spotlightOptions - spotlight 옵션입니다.
-     * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
-     * @private
-     */
-    #drawCardSpotlight(context, runtimeState, spotlightOptions, effectColor) {
-        const gradient = context.createRadialGradient(
-            runtimeState.localX,
-            runtimeState.localY,
-            0,
-            runtimeState.localX,
-            runtimeState.localY,
-            spotlightOptions.radius
-        );
-        gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.16 * runtimeState.spotlightAlpha})`);
-        gradient.addColorStop(0.2, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.07 * runtimeState.spotlightAlpha})`);
-        gradient.addColorStop(0.5, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.015 * runtimeState.spotlightAlpha})`);
-        gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
-        context.fillStyle = gradient;
-        context.beginPath();
-        context.arc(runtimeState.localX, runtimeState.localY, spotlightOptions.radius, 0, Math.PI * 2);
-        context.fill();
-    }
-
-    /**
-     * 카드 border 반응형 이펙트를 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} borderOptions - hoverBorder 옵션입니다.
-     * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
-     * @private
-     */
-    #drawCardBorder(context, runtimeState, renderState, borderOptions, effectColor) {
-        const baseWidth = Math.max(0.5, borderOptions.width || 1);
-        const hoverWidth = Math.max(baseWidth, borderOptions.hoverWidth || baseWidth);
-        const borderWidth = Math.max(0.5, lerpNumber(baseWidth, hoverWidth, runtimeState.borderAlpha));
-        if (borderWidth <= 0.01) {
-            return;
-        }
-
-        const panelRect = renderState.panelRect;
-        const resolvedColor = resolveMenuColorRgb(borderOptions.color, effectColor);
-        const edgeAlpha = clampNumber(runtimeState.borderAlpha, 0, 1);
-        const fadeStart = clampNumber(
-            (borderOptions.radius - borderOptions.falloff) / Math.max(1, borderOptions.radius),
-            0,
-            1
-        );
-        const spotlightRadius = Math.max(1, borderOptions.radius);
-
-        context.save();
-        const gradient = context.createRadialGradient(
-            runtimeState.localX,
-            runtimeState.localY,
-            0,
-            runtimeState.localX,
-            runtimeState.localY,
-            spotlightRadius
-        );
-        gradient.addColorStop(0, `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, ${edgeAlpha})`);
-        gradient.addColorStop(Math.max(0, Math.min(1, fadeStart * 0.62)), `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, ${edgeAlpha * 0.82})`);
-        gradient.addColorStop(Math.max(0, Math.min(1, fadeStart)), `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, ${edgeAlpha * 0.55})`);
-        gradient.addColorStop(1, `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, 0)`);
-
-        context.beginPath();
-        context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
-        context.lineWidth = borderWidth;
-        context.lineJoin = 'round';
-        context.lineCap = 'round';
-        context.strokeStyle = gradient;
-        context.stroke();
-        context.restore();
-    }
-
-    /**
-     * 카드 particle을 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
-     * @private
-     */
-    #drawCardParticles(context, renderState, runtimeState, effectColor) {
-        const centerX = renderState.panelRect.w * 0.5;
-        const centerY = renderState.panelRect.h * 0.5;
-        const panelMinSize = Math.min(renderState.panelRect.w, renderState.panelRect.h);
-        const outerRadius = clampNumber(panelMinSize * 0.022, 2, 3.2);
-        const innerRadius = outerRadius * 0.5;
-
-        for (const particle of runtimeState.particles) {
-            if (!particle.visible || particle.opacity <= 0.01 || particle.scale <= 0.01) {
-                continue;
-            }
-
-            context.save();
-            context.translate(centerX + particle.currentX, centerY + particle.currentY);
-            context.scale(particle.scale, particle.scale);
-            context.beginPath();
-            context.arc(0, 0, innerRadius, 0, Math.PI * 2);
-            context.fillStyle = `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${particle.opacity})`;
-            context.fill();
-            context.beginPath();
-            context.arc(0, 0, outerRadius, 0, Math.PI * 2);
-            context.fillStyle = `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${particle.opacity * 0.18})`;
-            context.fill();
-            context.restore();
-        }
-    }
-
-    /**
-     * 카드 ripple을 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
-     * @private
-     */
-    #drawCardRipples(context, runtimeState, effectColor) {
-        for (const ripple of runtimeState.ripples) {
-            const progress = clampNumber(ripple.elapsed / ripple.duration, 0, 1);
-            const opacity = 1 - progress;
-            const radius = ripple.maxDistance * progress;
-            if (radius <= 0) {
-                continue;
-            }
-
-            const gradient = context.createRadialGradient(ripple.x, ripple.y, 0, ripple.x, ripple.y, radius);
-            gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.38 * opacity})`);
-            gradient.addColorStop(0.35, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.18 * opacity})`);
-            gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
-            context.fillStyle = gradient;
-            context.beginPath();
-            context.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
-            context.fill();
-        }
-    }
-
-    /**
-     * 메뉴 식별자에 대응하는 SVG 아이콘을 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {string} cardId - 메뉴 식별자입니다.
-     * @param {{x:number, y:number, w:number, h:number}} iconMetrics - 아이콘 레이아웃 정보입니다.
-     * @param {number} [alpha=getMenuOpacity('Placeholder', 0.92)] - 아이콘 알파값입니다.
-     * @returns {boolean} 렌더 성공 여부입니다.
-     * @private
-     */
-    #drawMenuIcon(context, cardId, iconMetrics, alpha = getMenuOpacity('Placeholder', 0.92)) {
-        const iconSource = getTitleMenuIconSource(cardId);
-        const iconRecord = iconSource ? this.svgDrawer.getCachedSvgFile(iconSource) : null;
-        if (!iconRecord?.image) {
-            return false;
-        }
-
-        const drawRect = this.#getContainedIconRect(cardId, iconMetrics, iconRecord.aspectRatio);
-        this.svgDrawer.drawLoadedSvgFile(context, iconRecord, {
-            x: drawRect.x,
-            y: drawRect.y,
-            width: drawRect.w,
-            height: drawRect.h,
-            alpha
-        });
-        return true;
-    }
-
-    /**
-     * 카드 좌상단 SVG 아이콘을 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {string} cardId - 카드 식별자입니다.
-     * @param {{x:number, y:number, w:number, h:number}} iconMetrics - 아이콘 레이아웃 정보입니다.
-     * @private
-     */
-    #drawCardIcon(context, cardId, iconMetrics) {
-        if (this.#drawMenuIcon(context, cardId, iconMetrics)) {
-            return;
-        }
-
-        this.#drawPlaceholderIcon(context, iconMetrics);
-    }
-
-    /**
-     * SVG 아이콘이 준비되지 않았을 때 임시 플레이스홀더를 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {{x:number, y:number, w:number, h:number}} iconMetrics - 아이콘 레이아웃 정보입니다.
-     * @param {number} [alpha=getMenuOpacity('Placeholder', 0.92)] - 플레이스홀더 알파값입니다.
-     * @param {number} [cornerRadius=Math.max(4, iconMetrics.h * 0.18)] - 플레이스홀더 라운드 반경입니다.
-     * @private
-     */
-    #drawPlaceholderIcon(
-        context,
-        iconMetrics,
-        alpha = getMenuOpacity('Placeholder', 0.92),
-        cornerRadius = Math.max(4, iconMetrics.h * 0.18)
-    ) {
-        context.fillStyle = menuForegroundWithAlpha(alpha);
-        context.beginPath();
-        context.roundRect(
-            iconMetrics.x,
-            iconMetrics.y,
-            iconMetrics.w,
-            iconMetrics.h,
-            cornerRadius
-        );
-        context.fill();
-    }
-
-    /**
-     * 아이콘 영역 안에 원본 종횡비를 유지한 실제 그리기 영역을 계산합니다.
-     * @param {string} cardId - 카드 식별자입니다.
-     * @param {{x:number, y:number, w:number, h:number}} iconMetrics - 아이콘 레이아웃 정보입니다.
-     * @param {number} aspectRatio - SVG 원본 종횡비입니다.
-     * @returns {{x:number, y:number, w:number, h:number}} 실제 그리기 영역입니다.
-     * @private
-     */
-    #getContainedIconRect(cardId, iconMetrics, aspectRatio) {
-        const safeAspectRatio = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 1;
-        const drawScale = this.#getCardIconDrawScale(cardId);
-        const maxWidth = iconMetrics.w * 0.96;
-        const maxHeight = iconMetrics.h * 0.96;
-        let baseWidth = maxWidth;
-        let baseHeight = baseWidth / safeAspectRatio;
-
-        if (baseHeight > maxHeight) {
-            baseHeight = maxHeight;
-            baseWidth = baseHeight * safeAspectRatio;
-        }
-
-        const drawWidth = baseWidth * drawScale.x;
-        const drawHeight = baseHeight * drawScale.y;
-
-        return {
-            x: drawScale.alignX === 'left'
-                ? iconMetrics.x + (iconMetrics.w * 0.02)
-                : iconMetrics.x + ((iconMetrics.w - drawWidth) * 0.5),
-            y: iconMetrics.y + ((iconMetrics.h - drawHeight) * 0.5),
-            w: drawWidth,
-            h: drawHeight
-        };
-    }
-
-    /**
-     * 카드별 아이콘 실제 렌더 스케일을 반환합니다.
-     * @param {string} cardId - 카드 식별자입니다.
-     * @returns {{x:number, y:number, alignX:'left'|'center'}} 아이콘 축별 스케일 값입니다.
-     * @private
-     */
-    #getCardIconDrawScale(cardId) {
-        return getTitleMenuIconDrawScale(cardId);
-    }
-
-    /**
-     * 카드 종류에 맞는 아이콘 레이아웃 정보를 반환합니다.
-     * @param {string} cardId - 카드 식별자입니다.
-     * @param {{w:number, h:number}} panelRect - 카드 패널 영역입니다.
-     * @param {number} inset - 카드 내부 여백입니다.
-     * @returns {{x:number, y:number, w:number, h:number}} 아이콘 레이아웃 정보입니다.
-     * @private
-     */
-    #getCardIconMetrics(cardId, panelRect, inset) {
-        const baseSize = Math.max(20, panelRect.w * 0.14);
-        const iconWidth = cardId === 'quick_start' ? baseSize * 1.38 : baseSize;
-        const iconHeight = baseSize;
-        const iconY = cardId === 'records'
-            ? (panelRect.h - iconHeight) * 0.5
-            : inset;
-
-        return {
-            x: inset,
-            y: iconY,
-            w: iconWidth,
-            h: iconHeight
-        };
-    }
-
-    /**
-     * 하단 보조 메뉴 타일에 사용할 아이콘 레이아웃 정보를 반환합니다.
-     * @param {{w:number, h:number}} panelRect - 타일 패널 영역입니다.
-     * @param {number} iconSize - 기준 아이콘 크기입니다.
-     * @returns {{x:number, y:number, w:number, h:number}} 아이콘 레이아웃 정보입니다.
-     * @private
-     */
-    #getUtilityTileIconMetrics(panelRect, iconSize) {
-        const resolvedSize = Math.min(
-            Math.max(12, iconSize),
-            Math.max(1, Math.min(panelRect.w, panelRect.h))
-        );
-
-        return {
-            x: (panelRect.w - resolvedSize) * 0.5,
-            y: (panelRect.h - resolvedSize) * 0.5,
-            w: resolvedSize,
-            h: resolvedSize
-        };
-    }
-
-    /**
-     * 폭 제한에 맞춰 텍스트를 줄바꿈해 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} options - 텍스트 렌더 옵션입니다.
-     * @private
-     */
-    #drawWrappedText(context, options) {
-        const text = String(options.text || '').trim();
-        if (!text) {
-            return;
-        }
-
-        context.save();
-        context.font = options.font;
-        context.fillStyle = options.fillStyle;
-        context.textAlign = options.align || 'left';
-        context.textBaseline = 'top';
-
-        const paragraphs = text.split('\n');
-        let currentY = options.y;
-
-        for (const paragraph of paragraphs) {
-            const words = paragraph.split(/\s+/).filter(Boolean);
-            if (words.length === 0) {
-                currentY += options.lineHeight;
-                continue;
-            }
-
-            let line = '';
-            for (const word of words) {
-                const nextLine = line ? `${line} ${word}` : word;
-                const metrics = context.measureText(nextLine);
-                if (metrics.width > options.maxWidth && line) {
-                    context.fillText(line, options.x, currentY);
-                    currentY += options.lineHeight;
-                    line = word;
-                } else {
-                    line = nextLine;
-                }
-            }
-
-            if (line) {
-                context.fillText(line, options.x, currentY);
-                currentY += options.lineHeight;
-            }
-        }
-
-        context.restore();
     }
 
     /**
