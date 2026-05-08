@@ -141,7 +141,28 @@ function createWorkerProfileStats(enabled, frameId) {
         commandPostStepMs: 0,
         frameMergeMs: 0,
         topologyCheckMs: 0,
-        sharedPublishCallMs: 0
+        sharedPublishCallMs: 0,
+        publishTotalMs: 0,
+        publishPlayerMs: 0,
+        publishWallsMs: 0,
+        publishWallReuseMs: 0,
+        publishStaticWallsMs: 0,
+        publishBoxWallsMs: 0,
+        publishProjectilesMs: 0,
+        publishProjectileDynamicMs: 0,
+        publishProjectileStaticMs: 0,
+        publishEnemiesMs: 0,
+        publishEnemyDynamicMs: 0,
+        publishEnemyStaticMs: 0,
+        publishCollisionStatsMs: 0,
+        publishAtomicsMs: 0,
+        publishWallReused: 0,
+        publishProjectileReused: 0,
+        publishEnemyReused: 0,
+        publishStaticWallCount: 0,
+        publishBoxWallCount: 0,
+        publishProjectileCount: 0,
+        publishEnemyCount: 0
     };
 }
 

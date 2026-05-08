@@ -638,6 +638,13 @@ export class GameScene extends BaseScene {
                 : profileStats.sharedPublishCallMs;
             lines.push(`worker frame ms: total ${formatDebugMs(profileStats.totalMs)} | scene ${formatDebugMs(profileStats.sceneWrapperMs)} | publish ${formatDebugMs(publishMs)}`);
             lines.push(`worker publish ms: wall ${formatDebugMs(profileStats.publishWallsMs)} | proj ${formatDebugMs(profileStats.publishProjectilesMs)} | enemy ${formatDebugMs(profileStats.publishEnemiesMs)}`);
+            if (publishMs > 0) {
+                const wallCount = normalizeSnapshotNumber(profileStats.publishStaticWallCount, 0)
+                    + normalizeSnapshotNumber(profileStats.publishBoxWallCount, 0);
+                lines.push(`publish wall detail: static ${formatDebugMs(profileStats.publishStaticWallsMs)} | box ${formatDebugMs(profileStats.publishBoxWallsMs)} | reuse ${formatDebugMs(profileStats.publishWallReuseMs)}`);
+                lines.push(`publish actor detail: p ${formatDebugMs(profileStats.publishProjectileDynamicMs)}/${formatDebugMs(profileStats.publishProjectileStaticMs)} | e ${formatDebugMs(profileStats.publishEnemyDynamicMs)}/${formatDebugMs(profileStats.publishEnemyStaticMs)}`);
+                lines.push(`publish count: wall ${wallCount} | proj ${normalizeSnapshotNumber(profileStats.publishProjectileCount, 0)} | enemy ${normalizeSnapshotNumber(profileStats.publishEnemyCount, 0)}`);
+            }
         }
 
         const collisionStats = bridgeStatus?.workerSnapshot?.collisionStats;
@@ -1588,7 +1595,7 @@ export class GameScene extends BaseScene {
         const projectileBase = sharedState.projectileBase;
         const projectileStaticBase = sharedState.projectileStaticBase;
 
-        measurePerformanceSection('scene.game.sharedWorld.staticWalls', () => {
+        measurePerformanceSection('scene.game.shared.world.staticWalls', () => {
             for (let i = 0; i < sharedState.staticWallCount; i++) {
                 const offset = staticWallBase + (i * wallStride);
                 renderGL('object', {
@@ -1602,7 +1609,7 @@ export class GameScene extends BaseScene {
             }
         });
 
-        measurePerformanceSection('scene.game.sharedWorld.boxWalls', () => {
+        measurePerformanceSection('scene.game.shared.world.boxWalls', () => {
             for (let i = 0; i < sharedState.boxWallCount; i++) {
                 const offset = boxWallBase + (i * wallStride);
                 renderGL('object', {
@@ -1616,7 +1623,7 @@ export class GameScene extends BaseScene {
             }
         });
 
-        measurePerformanceSection('scene.game.sharedWorld.player', () => {
+        measurePerformanceSection('scene.game.shared.world.player', () => {
             if (sharedState.playerActive === true) {
                 const px = playerData[playerBase + 0];
                 const py = playerData[playerBase + 1];
@@ -1634,7 +1641,7 @@ export class GameScene extends BaseScene {
             }
         });
 
-        measurePerformanceSection('scene.game.sharedWorld.projectiles', () => {
+        measurePerformanceSection('scene.game.shared.world.projectiles', () => {
             for (let i = 0; i < sharedState.projectileCount; i++) {
                 const offset = projectileBase + (i * projectileStride);
                 const staticOffset = projectileStaticBase + (i * projectileStaticStride);
@@ -1712,7 +1719,7 @@ export class GameScene extends BaseScene {
         const aspectByCode = SHARED_ENEMY_RENDER_CONFIG.aspectByCode;
         const heightScaleByCode = SHARED_ENEMY_RENDER_CONFIG.heightScaleByCode;
 
-        measurePerformanceSection('scene.game.shared.enemies', () => {
+        measurePerformanceSection('scene.game.shared.enemy.loop', () => {
             for (let i = 0; i < sharedState.enemyCount; i++) {
                 const offset = enemyBase + (i * enemyStride);
                 const staticOffset = enemyStaticBase + (i * enemyStaticStride);
@@ -1895,84 +1902,95 @@ export class GameScene extends BaseScene {
         const collisionStats = sharedState?.collisionStats ?? this.collisionStats;
         const enemyCount = Math.max(0, Math.floor(sharedState?.enemyCount ?? 0));
 
-        render('ui', {
-            shape: 'text',
-            text: 'Benchmark Scene',
-            x: this.WW * 0.03,
-            y: this.WH * 0.04,
-            font: `500 ${titleFont}px "Pretendard Variable"`,
-            fill: ColorSchemes.Game.Font,
-            align: 'left',
-            baseline: 'middle'
-        });
-        render('ui', {
-            shape: 'text',
-            text: `enemy count: ${enemyCount}`,
-            x: statsX,
-            y: statsY,
-            font: `400 ${statsFont}px "Pretendard Variable"`,
-            fill: ColorSchemes.Game.Font,
-            align: 'right',
-            baseline: 'bottom',
-            alpha: 0.9
-        });
-        for (let i = 0; i < simulationWorkerHudLines.length; i++) {
-            const reverseIndex = simulationWorkerHudLines.length - 1 - i;
+        measurePerformanceSection('scene.game.shared.hud.title', () => {
             render('ui', {
                 shape: 'text',
-                text: simulationWorkerHudLines[i],
+                text: 'Benchmark Scene',
+                x: this.WW * 0.03,
+                y: this.WH * 0.04,
+                font: `500 ${titleFont}px "Pretendard Variable"`,
+                fill: ColorSchemes.Game.Font,
+                align: 'left',
+                baseline: 'middle'
+            });
+        });
+
+        measurePerformanceSection('scene.game.shared.hud.enemyCount', () => {
+            render('ui', {
+                shape: 'text',
+                text: `enemy count: ${enemyCount}`,
                 x: statsX,
-                y: statsY - (statsFont * (6.4 + (reverseIndex * 1.28))),
+                y: statsY,
                 font: `400 ${statsFont}px "Pretendard Variable"`,
                 fill: ColorSchemes.Game.Font,
                 align: 'right',
                 baseline: 'bottom',
                 alpha: 0.9
             });
-        }
-        render('ui', {
-            shape: 'text',
-            text: `Collision check count: ${normalizeSnapshotNumber(collisionStats?.collisionCheckCount, 0)}`,
-            x: statsX,
-            y: statsY - (statsFont * 5.12),
-            font: `400 ${statsFont}px "Pretendard Variable"`,
-            fill: ColorSchemes.Game.Font,
-            align: 'right',
-            baseline: 'bottom',
-            alpha: 0.9
         });
-        render('ui', {
-            shape: 'text',
-            text: `AABB pass: ${normalizeSnapshotNumber(collisionStats?.aabbPassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.aabbRejectCount, 0)}`,
-            x: statsX,
-            y: statsY - (statsFont * 3.84),
-            font: `400 ${statsFont}px "Pretendard Variable"`,
-            fill: ColorSchemes.Game.Font,
-            align: 'right',
-            baseline: 'bottom',
-            alpha: 0.9
+
+        measurePerformanceSection('scene.game.shared.hud.workerLines', () => {
+            for (let i = 0; i < simulationWorkerHudLines.length; i++) {
+                const reverseIndex = simulationWorkerHudLines.length - 1 - i;
+                render('ui', {
+                    shape: 'text',
+                    text: simulationWorkerHudLines[i],
+                    x: statsX,
+                    y: statsY - (statsFont * (6.4 + (reverseIndex * 1.28))),
+                    font: `400 ${statsFont}px "Pretendard Variable"`,
+                    fill: ColorSchemes.Game.Font,
+                    align: 'right',
+                    baseline: 'bottom',
+                    alpha: 0.9
+                });
+            }
         });
-        render('ui', {
-            shape: 'text',
-            text: `Circle pass: ${normalizeSnapshotNumber(collisionStats?.circlePassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.circleRejectCount, 0)}`,
-            x: statsX,
-            y: statsY - (statsFont * 2.56),
-            font: `400 ${statsFont}px "Pretendard Variable"`,
-            fill: ColorSchemes.Game.Font,
-            align: 'right',
-            baseline: 'bottom',
-            alpha: 0.9
-        });
-        render('ui', {
-            shape: 'text',
-            text: `polygon check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
-            x: statsX,
-            y: statsY - (statsFont * 1.28),
-            font: `400 ${statsFont}px "Pretendard Variable"`,
-            fill: ColorSchemes.Game.Font,
-            align: 'right',
-            baseline: 'bottom',
-            alpha: 0.9
+
+        measurePerformanceSection('scene.game.shared.hud.collisionStats', () => {
+            render('ui', {
+                shape: 'text',
+                text: `Collision check count: ${normalizeSnapshotNumber(collisionStats?.collisionCheckCount, 0)}`,
+                x: statsX,
+                y: statsY - (statsFont * 5.12),
+                font: `400 ${statsFont}px "Pretendard Variable"`,
+                fill: ColorSchemes.Game.Font,
+                align: 'right',
+                baseline: 'bottom',
+                alpha: 0.9
+            });
+            render('ui', {
+                shape: 'text',
+                text: `AABB pass: ${normalizeSnapshotNumber(collisionStats?.aabbPassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.aabbRejectCount, 0)}`,
+                x: statsX,
+                y: statsY - (statsFont * 3.84),
+                font: `400 ${statsFont}px "Pretendard Variable"`,
+                fill: ColorSchemes.Game.Font,
+                align: 'right',
+                baseline: 'bottom',
+                alpha: 0.9
+            });
+            render('ui', {
+                shape: 'text',
+                text: `Circle pass: ${normalizeSnapshotNumber(collisionStats?.circlePassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.circleRejectCount, 0)}`,
+                x: statsX,
+                y: statsY - (statsFont * 2.56),
+                font: `400 ${statsFont}px "Pretendard Variable"`,
+                fill: ColorSchemes.Game.Font,
+                align: 'right',
+                baseline: 'bottom',
+                alpha: 0.9
+            });
+            render('ui', {
+                shape: 'text',
+                text: `polygon check: ${normalizeSnapshotNumber(collisionStats?.polygonChecks, 0)}`,
+                x: statsX,
+                y: statsY - (statsFont * 1.28),
+                font: `400 ${statsFont}px "Pretendard Variable"`,
+                fill: ColorSchemes.Game.Font,
+                align: 'right',
+                baseline: 'bottom',
+                alpha: 0.9
+            });
         });
     }
 

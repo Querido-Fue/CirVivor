@@ -528,6 +528,7 @@ function writeSharedEnemyStaticData(target, enemies, capacity) {
  * @param {Int32Array} meta
  * @param {number} currentSlot
  * @param {number} slotHeaderBase
+ * @returns {{staticWallCount: number, boxWallCount: number}}
  */
 function reuseSharedWallGeometry(meta, currentSlot, slotHeaderBase) {
     const currentSlotHeaderBase = getSlotHeaderBaseIndex(currentSlot);
@@ -542,6 +543,10 @@ function reuseSharedWallGeometry(meta, currentSlot, slotHeaderBase) {
 
     meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.STATIC_WALL_COUNT] = currentStaticWallCount;
     meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.BOX_WALL_COUNT] = currentBoxWallCount;
+    return {
+        staticWallCount: currentStaticWallCount,
+        boxWallCount: currentBoxWallCount
+    };
 }
 
 /**
@@ -551,6 +556,7 @@ function reuseSharedWallGeometry(meta, currentSlot, slotHeaderBase) {
  * @param {number} slotHeaderBase
  * @param {object[]|null|undefined} projectiles
  * @param {object} transport
+ * @returns {number}
  */
 function reuseSharedProjectilePresentation(meta, nextSlot, slotHeaderBase, projectiles, transport) {
     const nextProjectileBase = Array.isArray(transport?.projectileDynamicSlotBases)
@@ -561,12 +567,14 @@ function reuseSharedProjectilePresentation(meta, nextSlot, slotHeaderBase, proje
             GAME_SCENE_SHARED_PRESENTATION_STRIDE.PROJECTILE
         );
 
-    meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.PROJECTILE_COUNT] = writeSharedProjectileDynamicData(
+    const projectileCount = writeSharedProjectileDynamicData(
         transport.projectileDynamicData,
         nextProjectileBase,
         projectiles,
         GAME_SCENE_SHARED_PRESENTATION_CAPACITY.PROJECTILES
     );
+    meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.PROJECTILE_COUNT] = projectileCount;
+    return projectileCount;
 }
 
 /**
@@ -576,6 +584,7 @@ function reuseSharedProjectilePresentation(meta, nextSlot, slotHeaderBase, proje
  * @param {number} slotHeaderBase
  * @param {object[]|null|undefined} enemies
  * @param {object} transport
+ * @returns {number}
  */
 function reuseSharedEnemyPresentation(meta, nextSlot, slotHeaderBase, enemies, transport) {
     const nextEnemyBase = Array.isArray(transport?.enemyDynamicSlotBases)
@@ -586,12 +595,14 @@ function reuseSharedEnemyPresentation(meta, nextSlot, slotHeaderBase, enemies, t
             GAME_SCENE_SHARED_PRESENTATION_STRIDE.ENEMY
         );
 
-    meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.ENEMY_COUNT] = writeSharedEnemyDynamicData(
+    const enemyCount = writeSharedEnemyDynamicData(
         transport.enemyDynamicData,
         nextEnemyBase,
         enemies,
         GAME_SCENE_SHARED_PRESENTATION_CAPACITY.ENEMIES
     );
+    meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.ENEMY_COUNT] = enemyCount;
+    return enemyCount;
 }
 
 /**
@@ -686,69 +697,110 @@ export function publishGameSceneSharedPresentation(transport, sceneSnapshot, fra
     recordSharedPresentationProfileDuration(profileStats, 'publishPlayerMs', publishPlayerStart);
 
     const publishWallsStart = startSharedPresentationProfileTimer(profileStats);
+    let staticWallCount = 0;
+    let boxWallCount = 0;
     if (shouldReuseWallGeometry) {
-        reuseSharedWallGeometry(meta, currentPublishedSlot, slotHeaderBase);
+        const publishWallReuseStart = startSharedPresentationProfileTimer(profileStats);
+        const reusedWallCounts = reuseSharedWallGeometry(meta, currentPublishedSlot, slotHeaderBase);
+        staticWallCount = reusedWallCounts.staticWallCount;
+        boxWallCount = reusedWallCounts.boxWallCount;
+        recordSharedPresentationProfileDuration(profileStats, 'publishWallReuseMs', publishWallReuseStart);
     } else {
-        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.STATIC_WALL_COUNT] = writeSharedWalls(
+        const publishStaticWallsStart = startSharedPresentationProfileTimer(profileStats);
+        staticWallCount = writeSharedWalls(
             transport.staticWallData,
             0,
             sceneSnapshot?.staticWalls,
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.STATIC_WALLS
         );
-        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.BOX_WALL_COUNT] = writeSharedWalls(
+        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.STATIC_WALL_COUNT] = staticWallCount;
+        recordSharedPresentationProfileDuration(profileStats, 'publishStaticWallsMs', publishStaticWallsStart);
+
+        const publishBoxWallsStart = startSharedPresentationProfileTimer(profileStats);
+        boxWallCount = writeSharedWalls(
             transport.boxWallData,
             0,
             sceneSnapshot?.boxWalls,
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.BOX_WALLS
         );
+        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.BOX_WALL_COUNT] = boxWallCount;
+        recordSharedPresentationProfileDuration(profileStats, 'publishBoxWallsMs', publishBoxWallsStart);
+    }
+    if (profileStats) {
+        profileStats.publishStaticWallCount = staticWallCount;
+        profileStats.publishBoxWallCount = boxWallCount;
     }
     recordSharedPresentationProfileDuration(profileStats, 'publishWallsMs', publishWallsStart);
 
     const publishProjectilesStart = startSharedPresentationProfileTimer(profileStats);
+    let projectileCount = 0;
     if (shouldReuseProjectilePresentation) {
-        reuseSharedProjectilePresentation(
+        const publishProjectileDynamicStart = startSharedPresentationProfileTimer(profileStats);
+        projectileCount = reuseSharedProjectilePresentation(
             meta,
             nextSlot,
             slotHeaderBase,
             sceneSnapshot?.projectiles,
             transport
         );
+        recordSharedPresentationProfileDuration(profileStats, 'publishProjectileDynamicMs', publishProjectileDynamicStart);
     } else {
-        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.PROJECTILE_COUNT] = writeSharedProjectiles(
+        const publishProjectileDynamicStart = startSharedPresentationProfileTimer(profileStats);
+        projectileCount = writeSharedProjectiles(
             transport.projectileDynamicData,
             projectileBase,
             sceneSnapshot?.projectiles,
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.PROJECTILES
         );
+        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.PROJECTILE_COUNT] = projectileCount;
+        recordSharedPresentationProfileDuration(profileStats, 'publishProjectileDynamicMs', publishProjectileDynamicStart);
+
+        const publishProjectileStaticStart = startSharedPresentationProfileTimer(profileStats);
         writeSharedProjectileStaticData(
             transport.projectileStaticData,
             sceneSnapshot?.projectiles,
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.PROJECTILES
         );
+        recordSharedPresentationProfileDuration(profileStats, 'publishProjectileStaticMs', publishProjectileStaticStart);
+    }
+    if (profileStats) {
+        profileStats.publishProjectileCount = projectileCount;
     }
     recordSharedPresentationProfileDuration(profileStats, 'publishProjectilesMs', publishProjectilesStart);
 
     const publishEnemiesStart = startSharedPresentationProfileTimer(profileStats);
+    let enemyCount = 0;
     if (shouldReuseEnemyPresentation) {
-        reuseSharedEnemyPresentation(
+        const publishEnemyDynamicStart = startSharedPresentationProfileTimer(profileStats);
+        enemyCount = reuseSharedEnemyPresentation(
             meta,
             nextSlot,
             slotHeaderBase,
             sceneSnapshot?.enemies,
             transport
         );
+        recordSharedPresentationProfileDuration(profileStats, 'publishEnemyDynamicMs', publishEnemyDynamicStart);
     } else {
-        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.ENEMY_COUNT] = writeSharedEnemies(
+        const publishEnemyDynamicStart = startSharedPresentationProfileTimer(profileStats);
+        enemyCount = writeSharedEnemies(
             transport.enemyDynamicData,
             enemyBase,
             sceneSnapshot?.enemies,
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.ENEMIES
         );
+        meta[slotHeaderBase + SHARED_PRESENTATION_SLOT_INDEX.ENEMY_COUNT] = enemyCount;
+        recordSharedPresentationProfileDuration(profileStats, 'publishEnemyDynamicMs', publishEnemyDynamicStart);
+
+        const publishEnemyStaticStart = startSharedPresentationProfileTimer(profileStats);
         writeSharedEnemyStaticData(
             transport.enemyStaticData,
             sceneSnapshot?.enemies,
             GAME_SCENE_SHARED_PRESENTATION_CAPACITY.ENEMIES
         );
+        recordSharedPresentationProfileDuration(profileStats, 'publishEnemyStaticMs', publishEnemyStaticStart);
+    }
+    if (profileStats) {
+        profileStats.publishEnemyCount = enemyCount;
     }
     recordSharedPresentationProfileDuration(profileStats, 'publishEnemiesMs', publishEnemiesStart);
 
