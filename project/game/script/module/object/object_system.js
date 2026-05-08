@@ -1,17 +1,8 @@
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { ObjectPool } from './_object_pool.js';
 import { getData } from 'data/data_handler.js';
-import { SquareEnemy } from './enemy/_square_enemy.js';
-import { TriangleEnemy } from './enemy/_triangle_enemy.js';
-import { ArrowEnemy } from './enemy/_arrow_enemy.js';
-import { HexaEnemy } from './enemy/_hexa_enemy.js';
-import { HexaHiveEnemy } from './enemy/_hexa_hive_enemy.js';
-import { PentaEnemy } from './enemy/_penta_enemy.js';
-import { RhomEnemy } from './enemy/_rhom_enemy.js';
-import { OctaEnemy } from './enemy/_octa_enemy.js';
-import { GenEnemy } from './enemy/_gen_enemy.js';
 import { enemyAI } from './enemy/ai/_enemy_ai.js';
+import { createEnemyPools } from './enemy/_enemy_pool_factory.js';
 import {
     collectHexaWorldCellsFromEnemy,
     createHexaHiveLayoutFromWorldCells,
@@ -24,7 +15,6 @@ import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_proto
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
 
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
-const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
 const ENEMY_DEFAULT_WEIGHT = getData('ENEMY_DEFAULT_WEIGHT');
 const AI_DECISION_GROUP_COUNT = 60;
 const AI_DECISION_INTERVAL_SECONDS = 1.0;
@@ -39,21 +29,6 @@ const HEXA_HIVE_MERGE_PENDING_WEIGHT = 100000;
 const HEXA_HIVE_EPSILON = 1e-6;
 
 let objectSystemInstance = null;
-const ENEMY_CLASS_BY_TYPE = {
-    square: SquareEnemy,
-    triangle: TriangleEnemy,
-    arrow: ArrowEnemy,
-    hexa: HexaEnemy,
-    hexa_hive: HexaHiveEnemy,
-    penta: PentaEnemy,
-    rhom: RhomEnemy,
-    octa: OctaEnemy,
-    gen: GenEnemy
-};
-const ENEMY_POOL_TYPES = Object.freeze([
-    ...ENEMY_SHAPE_TYPES,
-    HEXA_HIVE_TYPE
-]);
 
 /**
  * @class ObjectSystem
@@ -100,19 +75,7 @@ export class ObjectSystem {
      * 오브젝트 시스템을 초기화합니다.
      */
     async init() {
-        for (const type of ENEMY_POOL_TYPES) {
-            const EnemyClass = ENEMY_CLASS_BY_TYPE[type];
-            this.enemyPools[type] = new ObjectPool(
-                () => {
-                    const enemy = new EnemyClass();
-                    enemy.__poolType = type;
-                    return enemy;
-                },
-                (enemy) => enemy.reset(),
-                `Enemy.${type}`
-            );
-            this.enemyPools[type].warmUp(ENEMY_CONSTANTS.POOL_WARMUP_COUNT);
-        }
+        this.enemyPools = createEnemyPools();
     }
 
     /**

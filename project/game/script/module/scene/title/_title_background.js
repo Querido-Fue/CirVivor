@@ -1,12 +1,15 @@
-import { ColorSchemes } from 'display/_theme_handler.js';
 import { renderGL } from 'display/display_system.js';
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
-import { colorUtil } from 'util/color_util.js';
 import { getData } from 'data/data_handler.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { titleAI } from 'object/enemy/ai/_title_ai.js';
 import { TitleShieldEffect } from './_title_shield_effect.js';
+import {
+    getTitleBackgroundColor,
+    getTitleEnemyColor,
+    mixTitleEnemyColorWithBackground
+} from './_title_background_theme.js';
 import {
     getSimulationMouseFocus,
     getSimulationMouseInput,
@@ -32,27 +35,6 @@ const TITLE_ENEMY_SOFTNESS_ALPHA_MULTIPLIER = 2.2;
  * @type {number}
  */
 const TITLE_ENEMY_SOFTNESS_SCALE_EXPANSION = 1.035;
-
-/**
- * 로고/배경에서 사용할 기본 적 색상을 반환합니다.
- * @returns {string} 적 기본 색상
- */
-function getTitleEnemyColor() {
-    return ColorSchemes?.Title?.Enemy
-        || ColorSchemes?.Title?.TextDark
-        || ColorSchemes?.Title?.Button?.Text
-        || ColorSchemes?.Title?.Menu?.Foreground
-        || ColorSchemes?.Background;
-}
-
-/**
- * 배경에서 사용할 기본 색상을 반환합니다.
- * @returns {string} 배경 기본 색상
- */
-function getTitleBackgroundColor() {
-    return ColorSchemes?.Title?.Background
-        || ColorSchemes?.Background;
-}
 
 /**
  * @class TitleBackGround
@@ -233,7 +215,7 @@ export class TitleBackGround {
                 y: this.WH / 2,
                 w: this.WW,
                 h: this.WH,
-                fill: ColorSchemes.Title.Background
+                fill: getTitleBackgroundColor()
             });
         }
 
@@ -328,7 +310,7 @@ export class TitleBackGround {
                 speed: spawn.speed,
                 acc: { x: 0, y: 0 },
                 ai: titleAI,
-                fill: ColorSchemes.Title.Enemy,
+                fill: getTitleEnemyColor(),
                 alpha: layerProfile.Alpha,
                 rotation: mathUtil().random(0, 360)
             });
@@ -644,7 +626,7 @@ export class TitleBackGround {
         enemy._titleParallaxMotionScale = Number.isFinite(layerProfile.MagneticScale)
             ? layerProfile.MagneticScale
             : 1;
-        enemy._titleParallaxFill = this.#mixEnemyColorWithBackground(layerProfile.ColorMix);
+        enemy._titleParallaxFill = mixTitleEnemyColorWithBackground(layerProfile.ColorMix);
         enemy.fill = enemy._titleParallaxFill;
         enemy.alpha = Number.isFinite(layerProfile.Alpha) ? layerProfile.Alpha : 1;
     }
@@ -665,7 +647,7 @@ export class TitleBackGround {
         const softnessOffsetPx = Number.isFinite(layerProfile.SoftnessOffsetPx) ? layerProfile.SoftnessOffsetPx : 0;
 
         if (softnessAlpha > 0.001 && softnessScale > 1) {
-            const blurFill = this.#mixEnemyColorWithBackground(Math.min(1, (layerProfile.ColorMix || 0) + 0.12));
+            const blurFill = mixTitleEnemyColorWithBackground(Math.min(1, (layerProfile.ColorMix || 0) + 0.12));
             const blurAlpha = Math.min(1, enemy.alpha * softnessAlpha * TITLE_ENEMY_SOFTNESS_ALPHA_MULTIPLIER);
             enemy.draw({
                 fill: blurFill,
@@ -1208,26 +1190,6 @@ export class TitleBackGround {
         }
 
         return targetCount / travelSeconds;
-    }
-
-    /**
-     * 적 색상과 배경색을 RGB 기준으로 섞어 거리감을 만듭니다.
-     * @param {number} mixRatio - 배경색으로 섞을 비율입니다.
-     * @returns {string} 혼합된 RGBA 문자열입니다.
-     * @private
-     */
-    #mixEnemyColorWithBackground(mixRatio) {
-        const ratio = Number.isFinite(mixRatio) ? Math.max(0, Math.min(1, mixRatio)) : 0;
-        const util = colorUtil();
-        const enemyColor = util.cssToRgb(getTitleEnemyColor());
-        const backgroundColor = util.cssToRgb(getTitleBackgroundColor());
-        if (!enemyColor || !backgroundColor) {
-            return 'transparent';
-        }
-        const r = enemyColor.r + ((backgroundColor.r - enemyColor.r) * ratio);
-        const g = enemyColor.g + ((backgroundColor.g - enemyColor.g) * ratio);
-        const b = enemyColor.b + ((backgroundColor.b - enemyColor.b) * ratio);
-        return util.rgbToString(r, g, b, 1);
     }
 
     /**

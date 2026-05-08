@@ -21,6 +21,14 @@ import {
 } from 'simulation/game_scene_shared_presentation.js';
 import { enqueueSimulationCommand } from 'simulation/simulation_command_queue.js';
 import {
+    cloneSnapshotPoint,
+    createCollisionStatsSnapshot,
+    createDefaultCollisionStats,
+    formatDebugCount,
+    formatDebugMs,
+    normalizeSnapshotNumber
+} from './game_scene_snapshot_utils.js';
+import {
     getSimulationMouseInput,
     getSimulationObjectOffsetY,
     getSimulationObjectWH,
@@ -54,45 +62,6 @@ const GAME_SCENE_AI_BY_ID = Object.freeze({
     enemyAI,
     tempAI: enemyAI
 });
-const COLLISION_STAT_FIELD_NAMES = Object.freeze([
-    'collisionCheckCount',
-    'aabbPassCount',
-    'aabbRejectCount',
-    'circlePassCount',
-    'circleRejectCount',
-    'partChecks',
-    'enemyTotalMs',
-    'enemyBodyBuildMs',
-    'playerBodyBuildMs',
-    'wallBodyBuildMs',
-    'enemyPositionSolveMs',
-    'enemyStabilizeMs',
-    'enemyNonPositionMs',
-    'solveGridMs',
-    'solvePairScanMs',
-    'solveCandidateBuildMs',
-    'solvePairProcessMs',
-    'solveNarrowphaseMs',
-    'projectileTotalMs',
-    'projectileEnemyBodyBuildMs',
-    'projectileGridBuildMs',
-    'projectileScanMs',
-    'projectileCandidateQueryMs',
-    'projectileNarrowphaseMs',
-    'contactTotalMs',
-    'contactBodyBuildMs',
-    'contactGridBuildMs',
-    'contactPairScanMs',
-    'solveBucketPairCount',
-    'solveCandidatePairCount',
-    'solveDuplicatePairSkipCount',
-    'solveRuleRejectCount',
-    'solveAabbPassCount',
-    'solveCirclePassCount',
-    'solveResolvedPairCount',
-    'solveBudgetSkipCount',
-    'solveLargePopulationMode'
-]);
 
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
 
@@ -110,63 +79,6 @@ const rectCircleOverlap = (rect, x, y, radius) => {
     const dy = y - closestY;
     return ((dx * dx) + (dy * dy)) <= (radius * radius);
 };
-
-const normalizeSnapshotNumber = (value, fallback = 0) => (
-    Number.isFinite(value) ? value : fallback
-);
-
-const cloneSnapshotPoint = (point) => ({
-    x: normalizeSnapshotNumber(point?.x, 0),
-    y: normalizeSnapshotNumber(point?.y, 0)
-});
-
-/**
- * 충돌 통계 기본값을 생성합니다.
- * @returns {object}
- */
-function createDefaultCollisionStats() {
-    const stats = {};
-    for (let i = 0; i < COLLISION_STAT_FIELD_NAMES.length; i++) {
-        stats[COLLISION_STAT_FIELD_NAMES[i]] = 0;
-    }
-    return stats;
-}
-
-/**
- * 충돌 통계를 렌더/워커 전송용 숫자 스냅샷으로 복제합니다.
- * @param {object|null|undefined} sourceStats
- * @returns {object}
- */
-function createCollisionStatsSnapshot(sourceStats) {
-    const stats = createDefaultCollisionStats();
-    if (!sourceStats || typeof sourceStats !== 'object') {
-        return stats;
-    }
-
-    for (let i = 0; i < COLLISION_STAT_FIELD_NAMES.length; i++) {
-        const fieldName = COLLISION_STAT_FIELD_NAMES[i];
-        stats[fieldName] = normalizeSnapshotNumber(sourceStats[fieldName], 0);
-    }
-    return stats;
-}
-
-/**
- * HUD에 표시할 ms 값을 고정 소수점 문자열로 변환합니다.
- * @param {number|null|undefined} value
- * @returns {string}
- */
-function formatDebugMs(value) {
-    return normalizeSnapshotNumber(value, 0).toFixed(2);
-}
-
-/**
- * HUD에 표시할 카운터 값을 정수 문자열로 변환합니다.
- * @param {number|null|undefined} value
- * @returns {string}
- */
-function formatDebugCount(value) {
-    return `${Math.max(0, Math.round(normalizeSnapshotNumber(value, 0)))}`;
-}
 
 /**
  * 합체 적 조각 좌표를 회전합니다.

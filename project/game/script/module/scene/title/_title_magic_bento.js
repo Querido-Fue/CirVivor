@@ -1,10 +1,10 @@
-import { ColorSchemes } from 'display/_theme_handler.js';
 import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
 import { getData } from 'data/data_handler.js';
 import { getMouseInput, hasMouseState } from 'input/input_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getLangString, parseUIData } from 'ui/ui_system.js';
-import { colorUtil } from 'util/color_util.js';
+import { TITLE_BENTO_CARD_DEFINITIONS } from './_title_magic_bento_data.js';
+import { getBentoAccentColor, getBentoCardPalette } from './_title_magic_bento_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_MAGIC_BENTO = TITLE_CONSTANTS.TITLE_MAGIC_BENTO;
@@ -16,81 +16,6 @@ const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
  * @type {number}
  */
 const EQUILATERAL_TRIANGLE_WIDTH_RATIO = Math.sqrt(3) / 2;
-
-/**
- * 타이틀 카드 연출에서 사용할 포인트 블루 색상입니다.
- * @type {{readonly r:number, readonly g:number, readonly b:number}}
- */
-const TITLE_BENTO_ACCENT_RGB = Object.freeze({
-    r: 22,
-    g: 111,
-    b: 251
-});
-
-/**
- * 카드별 기본 메타데이터입니다.
- * @type {ReadonlyArray<object>}
- */
-const TITLE_BENTO_CARD_DEFINITIONS = Object.freeze([
-    Object.freeze({
-        id: 'play',
-        icon: 'play',
-        variant: 'hero',
-        titleKey: 'title_bento_play_title',
-        entranceDelaySeconds: 0,
-        entranceDurationSeconds: 0.58,
-        entranceOffsetXRatio: 0.01,
-        entranceOffsetYRatio: 0.015,
-        entranceScaleOffset: 0.06
-    }),
-    Object.freeze({
-        id: 'quick',
-        icon: 'fast-forward',
-        variant: 'standard',
-        titleKey: 'title_bento_quick_title',
-        descriptionKey: 'title_bento_quick_desc',
-        entranceDelaySeconds: 0.05,
-        entranceDurationSeconds: 0.66,
-        entranceOffsetXRatio: 0.03,
-        entranceOffsetYRatio: -0.01,
-        entranceScaleOffset: 0.04
-    }),
-    Object.freeze({
-        id: 'records',
-        icon: 'list',
-        variant: 'compact',
-        titleKey: 'title_bento_records_title',
-        entranceDelaySeconds: 0.11,
-        entranceDurationSeconds: 0.74,
-        entranceOffsetXRatio: 0.04,
-        entranceOffsetYRatio: 0.01,
-        entranceScaleOffset: 0.02
-    }),
-    Object.freeze({
-        id: 'deck',
-        icon: 'deck',
-        variant: 'standard',
-        titleKey: 'title_bento_deck_title',
-        descriptionKey: 'title_bento_deck_desc',
-        entranceDelaySeconds: 0.14,
-        entranceDurationSeconds: 0.82,
-        entranceOffsetXRatio: 0.02,
-        entranceOffsetYRatio: 0.03,
-        entranceScaleOffset: 0.045
-    }),
-    Object.freeze({
-        id: 'research',
-        icon: 'flask',
-        variant: 'standard',
-        titleKey: 'title_bento_research_title',
-        descriptionKey: 'title_bento_research_desc',
-        entranceDelaySeconds: 0.19,
-        entranceDurationSeconds: 0.9,
-        entranceOffsetXRatio: 0.035,
-        entranceOffsetYRatio: 0.04,
-        entranceScaleOffset: 0.03
-    })
-]);
 
 /**
  * 값을 지정 범위로 제한합니다.
@@ -138,30 +63,6 @@ function easeOutExpo(progress) {
         return 1;
     }
     return 1 - Math.pow(2, -10 * progress);
-}
-
-/**
- * 액센트 컬러를 rgba 문자열로 반환합니다.
- * @param {number} alpha - 알파값
- * @returns {string} rgba 색상 문자열
- */
-function getAccentColor(alpha) {
-    return `rgba(${TITLE_BENTO_ACCENT_RGB.r}, ${TITLE_BENTO_ACCENT_RGB.g}, ${TITLE_BENTO_ACCENT_RGB.b}, ${alpha})`;
-}
-
-/**
- * 테마 배경의 지각 밝기를 계산합니다.
- * @param {string} cssColor - CSS 색상 문자열
- * @returns {number} 0~255 범위 밝기
- */
-function getPerceivedBrightness(cssColor) {
-    const util = colorUtil();
-    if (!util) {
-        return 0;
-    }
-
-    const rgb = util.cssToRgb(cssColor);
-    return ((rgb.r * 299) + (rgb.g * 587) + (rgb.b * 114)) / 1000;
 }
 
 /**
@@ -781,11 +682,11 @@ export class TitleMagicBento {
         );
         const gradient = ctx.createRadialGradient(this.spotlightX, this.spotlightY, 0, this.spotlightX, this.spotlightY, radius);
 
-        gradient.addColorStop(0, getAccentColor(0.22 * this.spotlightOpacity));
-        gradient.addColorStop(0.2, getAccentColor(0.14 * this.spotlightOpacity));
-        gradient.addColorStop(0.4, getAccentColor(0.08 * this.spotlightOpacity));
-        gradient.addColorStop(0.72, getAccentColor(0.02 * this.spotlightOpacity));
-        gradient.addColorStop(1, getAccentColor(0));
+        gradient.addColorStop(0, getBentoAccentColor(0.22 * this.spotlightOpacity));
+        gradient.addColorStop(0.2, getBentoAccentColor(0.14 * this.spotlightOpacity));
+        gradient.addColorStop(0.4, getBentoAccentColor(0.08 * this.spotlightOpacity));
+        gradient.addColorStop(0.72, getBentoAccentColor(0.02 * this.spotlightOpacity));
+        gradient.addColorStop(1, getBentoAccentColor(0));
 
         ctx.save();
         ctx.beginPath();
@@ -897,10 +798,10 @@ export class TitleMagicBento {
             glowRadius
         );
 
-        gradient.addColorStop(0, getAccentColor(0.2 * card.glowIntensity));
-        gradient.addColorStop(0.28, getAccentColor(0.12 * card.glowIntensity));
-        gradient.addColorStop(0.58, getAccentColor(0.05 * card.glowIntensity));
-        gradient.addColorStop(1, getAccentColor(0));
+        gradient.addColorStop(0, getBentoAccentColor(0.2 * card.glowIntensity));
+        gradient.addColorStop(0.28, getBentoAccentColor(0.12 * card.glowIntensity));
+        gradient.addColorStop(0.58, getBentoAccentColor(0.05 * card.glowIntensity));
+        gradient.addColorStop(1, getBentoAccentColor(0));
 
         ctx.save();
         this.#traceRoundRect(ctx, 0, 0, card.baseWidth, card.baseHeight, radius);
@@ -951,9 +852,9 @@ export class TitleMagicBento {
             );
             const alpha = (1 - progress) * 0.36;
 
-            gradient.addColorStop(0, getAccentColor(alpha));
-            gradient.addColorStop(0.35, getAccentColor(alpha * 0.55));
-            gradient.addColorStop(1, getAccentColor(0));
+            gradient.addColorStop(0, getBentoAccentColor(alpha));
+            gradient.addColorStop(0.35, getBentoAccentColor(alpha * 0.55));
+            gradient.addColorStop(1, getBentoAccentColor(0));
 
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
@@ -981,9 +882,9 @@ export class TitleMagicBento {
 
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
-            ctx.fillStyle = getAccentColor(alpha);
+            ctx.fillStyle = getBentoAccentColor(alpha);
             ctx.shadowBlur = particle.size * 3.8;
-            ctx.shadowColor = getAccentColor(alpha * 0.95);
+            ctx.shadowColor = getBentoAccentColor(alpha * 0.95);
             ctx.beginPath();
             ctx.arc(x, y, particle.size, 0, Math.PI * 2);
             ctx.fill();
@@ -1110,17 +1011,17 @@ export class TitleMagicBento {
             glowRadius
         );
 
-        borderGradient.addColorStop(0, getAccentColor(0.75 * card.glowIntensity));
-        borderGradient.addColorStop(0.26, getAccentColor(0.38 * card.glowIntensity));
-        borderGradient.addColorStop(0.65, getAccentColor(0.08 * card.glowIntensity));
-        borderGradient.addColorStop(1, getAccentColor(0));
+        borderGradient.addColorStop(0, getBentoAccentColor(0.75 * card.glowIntensity));
+        borderGradient.addColorStop(0.26, getBentoAccentColor(0.38 * card.glowIntensity));
+        borderGradient.addColorStop(0.65, getBentoAccentColor(0.08 * card.glowIntensity));
+        borderGradient.addColorStop(1, getBentoAccentColor(0));
 
         ctx.save();
         this.#traceRoundRect(ctx, 0, 0, card.baseWidth, card.baseHeight, radius);
         ctx.lineWidth = TITLE_MAGIC_BENTO.BORDER_WIDTH * (2.6 + (card.hoverProgress * 1.8));
         ctx.strokeStyle = borderGradient;
         ctx.shadowBlur = 22 + (card.glowIntensity * 18) + (card.hoverProgress * 16);
-        ctx.shadowColor = getAccentColor(0.82 * card.glowIntensity);
+        ctx.shadowColor = getBentoAccentColor(0.82 * card.glowIntensity);
         ctx.stroke();
         ctx.restore();
     }
@@ -1331,32 +1232,7 @@ export class TitleMagicBento {
      * @private
      */
     #getCardPalette() {
-        const titleBackground = ColorSchemes?.Title?.Background || '#101010';
-        const isDarkTheme = getPerceivedBrightness(titleBackground) < 140;
-
-        if (isDarkTheme) {
-            return {
-                topFill: 'rgba(8, 11, 18, 0.84)',
-                bottomFill: 'rgba(12, 16, 24, 0.78)',
-                overlayTop: 'rgba(255, 255, 255, 0.03)',
-                overlayBottom: 'rgba(255, 255, 255, 0.01)',
-                border: 'rgba(255, 255, 255, 0.78)',
-                text: '#f7f9fc',
-                description: 'rgba(247, 249, 252, 0.78)',
-                shadow: 'rgba(0, 0, 0, 0.32)'
-            };
-        }
-
-        return {
-            topFill: 'rgba(255, 255, 255, 0.8)',
-            bottomFill: 'rgba(244, 248, 255, 0.76)',
-            overlayTop: 'rgba(255, 255, 255, 0.12)',
-            overlayBottom: 'rgba(22, 32, 46, 0.03)',
-            border: 'rgba(32, 32, 32, 0.48)',
-            text: '#141821',
-            description: 'rgba(20, 24, 33, 0.78)',
-            shadow: 'rgba(16, 22, 32, 0.15)'
-        };
+        return getBentoCardPalette();
     }
 
     /**

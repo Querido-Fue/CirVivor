@@ -1,4 +1,6 @@
 import { CollisionDetector } from './_collision_detector.js';
+import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
+import { COLLISION_RULE_DYNAMIC_RESOLVE, getCollisionRule } from './_collision_rules.js';
 import { getSimulationObjectWH, getSimulationSetting } from '../simulation/simulation_runtime.js';
 
 const EPSILON = 1e-6;
@@ -120,220 +122,6 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
 ]);
-const COLLISION_RULE_NONE = Object.freeze({
-    check: false,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_DYNAMIC_RESOLVE = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_ENEMY_PLAYER = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: true,
-    movableB: false,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PLAYER_ENEMY = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: false,
-    movableB: true,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PROJECTILE_ENEMY = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: true,
-    applyImpactRotation: true
-});
-const COLLISION_RULE_PLAYER_PROJECTILE = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: true,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PLAYER_ITEM = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PROJECTILE_PROJECTILE = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: true,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_WALL_PROJECTILE = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: false,
-    movableB: true,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PROJECTILE_WALL = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: true,
-    movableB: false,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_WALL_OTHER = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: false,
-    movableB: true,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_OTHER_WALL = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: true,
-    movableB: false,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-
-/**
- * 합체 적 충돌 형상 기준 셀 수를 반환합니다.
- * @param {object|null|undefined} enemy
- * @returns {number}
- */
-function getHexaHiveCollisionCellCount(enemy) {
-    const candidateCounts = [
-        enemy?.hexaHiveLayout?.filledCells?.length,
-        enemy?.hexaHiveLayout?.filledLocalCenters?.length,
-        enemy?.hexaHiveLayout?.visibleLocalCenters?.length
-    ];
-
-    for (let i = 0; i < candidateCounts.length; i++) {
-        const count = candidateCounts[i];
-        if (Number.isInteger(count) && count > 0) {
-            return count;
-        }
-    }
-
-    return 1;
-}
-
-/**
- * 큰 육각 합체 적은 전체 외곽 반경 기준으로 충돌 보정을 허용하면
- * 양끝 동시 충돌 시 중심이 과도하게 밀릴 수 있으므로,
- * 단일 셀 높이와 전체 외곽 반경의 중간값을 사용해 보정 상한을 조절합니다.
- * @param {object|null|undefined} enemy
- * @param {number} boundRadius
- * @param {number} baseHeight
- * @returns {number}
- */
-function getEnemyResolveRadius(enemy, boundRadius, baseHeight) {
-    const safeBoundRadius = Number.isFinite(boundRadius) ? Math.max(COLLISION_RESOLVE_MIN_MAX, boundRadius) : COLLISION_RESOLVE_MIN_MAX;
-    if (enemy?.type !== 'hexa_hive') {
-        return safeBoundRadius;
-    }
-
-    const safeBaseHeight = Number.isFinite(baseHeight) ? Math.max(COLLISION_RESOLVE_MIN_MAX, baseHeight) : safeBoundRadius;
-    const cellCount = getHexaHiveCollisionCellCount(enemy);
-    const rootedCellCount = Math.max(1, Math.sqrt(cellCount));
-    const cellDrivenRadius = safeBaseHeight * (
-        HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE
-        + (Math.max(0, rootedCellCount - 1) * HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE)
-    );
-    const hybridRadius = Math.sqrt(safeBoundRadius * safeBaseHeight);
-    return Math.max(
-        COLLISION_RESOLVE_MIN_MAX,
-        Math.min(
-            safeBoundRadius,
-            Math.max(
-                safeBaseHeight * HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
-                hybridRadius,
-                cellDrivenRadius
-            )
-        )
-    );
-}
-
-/**
- * 적 타입별 단일 원 충돌 반지름을 계산합니다.
- * @param {string|null|undefined} enemyType
- * @param {number} width
- * @param {number} height
- * @returns {number}
- */
-function getEnemyCircleCollisionRadius(enemyType, width, height) {
-    const safeWidth = Number.isFinite(width) ? Math.max(1, width) : 1;
-    const safeHeight = Number.isFinite(height) ? Math.max(1, height) : safeWidth;
-    let radius = 0;
-
-    switch (enemyType) {
-        case 'triangle':
-            radius = Math.max(
-                safeHeight * 0.5333,
-                Math.hypot(safeWidth * 0.462, safeHeight * 0.2667)
-            );
-            break;
-        case 'arrow':
-            radius = Math.max(
-                safeHeight * 0.5767,
-                Math.hypot(safeWidth * 0.46, safeHeight * 0.3733)
-            );
-            break;
-        case 'hexa':
-            radius = 0.47 * Math.max(
-                safeHeight,
-                Math.hypot(safeWidth * 0.8660254037844386, safeHeight * 0.5)
-            );
-            break;
-        case 'penta':
-            radius = 0.48 * Math.max(
-                safeHeight,
-                Math.hypot(safeWidth * 0.9510565162951535, safeHeight * 0.3090169943749474),
-                Math.hypot(safeWidth * 0.5877852522924731, safeHeight * 0.8090169943749475)
-            );
-            break;
-        case 'rhom':
-            radius = Math.max(safeWidth * 0.34, safeHeight * 0.5);
-            break;
-        case 'octa':
-            radius = 0.47 * Math.max(
-                Math.hypot(safeWidth * 0.9238795325112867, safeHeight * 0.3826834323650898),
-                Math.hypot(safeWidth * 0.3826834323650898, safeHeight * 0.9238795325112867)
-            );
-            break;
-        case 'gen':
-            radius = Math.hypot(safeWidth * 0.44, safeHeight * 0.44);
-            break;
-        case 'square':
-        default:
-            radius = Math.hypot(safeWidth * 0.42, safeHeight * 0.42);
-            break;
-    }
-
-    return Math.max(1, radius);
-}
-
 /**
  * 적 수에 따라 dense 충돌 해소 반복 상한을 반환합니다.
  * @param {number} dynamicBodyCount
@@ -1077,7 +865,7 @@ export class CollisionHandler {
             if (idA >= 0 && idA === idB) return 0;
         }
 
-        const rule = pairRule ?? this.#getRule(bodyA.kind, bodyB.kind);
+        const rule = pairRule ?? getCollisionRule(bodyA.kind, bodyB.kind);
         if (!rule.check) return 0;
         if (!rule.resolve && !applyNonPosition) return 0;
 
@@ -2083,7 +1871,7 @@ export class CollisionHandler {
             if (idA >= 0 && idA === idB) return null;
         }
 
-        const rule = this.#getRule(bodyA.kind, bodyB.kind);
+        const rule = getCollisionRule(bodyA.kind, bodyB.kind);
         if (!rule.check) return null;
         if (!rule.resolve && !applyNonPosition) return null;
         return rule;
@@ -3180,66 +2968,6 @@ export class CollisionHandler {
     /**
      * @private
      */
-    #getRule(kindA, kindB) {
-        // enemy vs enemy
-        if (kindA === 'enemy' && kindB === 'enemy') {
-            return COLLISION_RULE_DYNAMIC_RESOLVE;
-        }
-        // enemy vs player: 플레이어는 밀리지 않음
-        if (kindA === 'enemy' && kindB === 'player') {
-            return COLLISION_RULE_ENEMY_PLAYER;
-        }
-        if (kindA === 'player' && kindB === 'enemy') {
-            return COLLISION_RULE_PLAYER_ENEMY;
-        }
-        // enemy vs projectile: 관통 허용 + 중복 타격 방지
-        if ((kindA === 'enemy' && kindB === 'projectile') || (kindA === 'projectile' && kindB === 'enemy')) {
-            return COLLISION_RULE_PROJECTILE_ENEMY;
-        }
-        // enemy vs item: 미판정
-        if ((kindA === 'enemy' && kindB === 'item') || (kindA === 'item' && kindB === 'enemy')) {
-            return COLLISION_RULE_NONE;
-        }
-        // player vs player
-        if (kindA === 'player' && kindB === 'player') {
-            return COLLISION_RULE_DYNAMIC_RESOLVE;
-        }
-        // player vs projectile: 관통 허용 + 중복 타격 방지
-        if ((kindA === 'player' && kindB === 'projectile') || (kindA === 'projectile' && kindB === 'player')) {
-            return COLLISION_RULE_PLAYER_PROJECTILE;
-        }
-        // player vs item: 판정만
-        if ((kindA === 'player' && kindB === 'item') || (kindA === 'item' && kindB === 'player')) {
-            return COLLISION_RULE_PLAYER_ITEM;
-        }
-        // projectile vs projectile: 관통 허용 + 중복 영향 방지
-        if (kindA === 'projectile' && kindB === 'projectile') {
-            return COLLISION_RULE_PROJECTILE_PROJECTILE;
-        }
-        // projectile vs item: 미판정
-        if ((kindA === 'projectile' && kindB === 'item') || (kindA === 'item' && kindB === 'projectile')) {
-            return COLLISION_RULE_NONE;
-        }
-        // item vs item
-        if (kindA === 'item' && kindB === 'item') {
-            return COLLISION_RULE_DYNAMIC_RESOLVE;
-        }
-        // dynamic vs wall
-        if (kindA === 'wall') {
-            if (kindB === 'projectile') return COLLISION_RULE_WALL_PROJECTILE;
-            return kindB === 'wall' ? COLLISION_RULE_NONE : COLLISION_RULE_WALL_OTHER;
-        }
-        if (kindB === 'wall') {
-            if (kindA === 'projectile') return COLLISION_RULE_PROJECTILE_WALL;
-            return kindA === 'wall' ? COLLISION_RULE_NONE : COLLISION_RULE_OTHER_WALL;
-        }
-
-        return COLLISION_RULE_NONE;
-    }
-
-    /**
-     * @private
-     */
     #hasProjectileHit(projectile, targetId) {
         if (!projectile || !Number.isInteger(targetId)) return false;
         if (typeof projectile.hasHitEnemy === 'function') {
@@ -3607,7 +3335,11 @@ export class CollisionHandler {
         const velY = (centerY - prevY) * invDelta;
 
         const boundRadius = Math.max((maxX - minX) * 0.5, (maxY - minY) * 0.5);
-        const resolveRadius = getEnemyResolveRadius(enemy, boundRadius, baseHeight);
+        const resolveRadius = getEnemyResolveRadius(enemy, boundRadius, baseHeight, {
+            minRadius: COLLISION_RESOLVE_MIN_MAX,
+            hexaHiveRadiusScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
+            hexaHiveRootScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE
+        });
         const frameResolvePad = Math.max(
             COLLISION_RESOLVE_FRAME_MIN_MAX,
             resolveRadius * COLLISION_RESOLVE_FRAME_MAX_RATIO

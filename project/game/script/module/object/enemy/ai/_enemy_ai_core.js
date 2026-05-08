@@ -1,5 +1,6 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
+import { incrementEnemyAIDebugCounter, recordEnemyAIDebugPolicySample } from './_enemy_ai_debug_stats.js';
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const ENEMY_AI_POLICY_BY_TYPE = ENEMY_AI_CONSTANTS.POLICY_BY_TYPE;
@@ -675,67 +676,6 @@ const requiresDensityAnchor = (policyId) => (
     policyId === ENEMY_AI_POLICY.CLUSTER_JOIN
     || policyId === ENEMY_AI_POLICY.ALLY_DENSITY_SEEK
 );
-
-/**
- * 정책 ID를 디버그 카운터 키로 변환합니다.
- * @param {string} policyId
- * @returns {string}
- */
-const getEnemyAIDebugPolicyKey = (policyId) => {
-    switch (policyId) {
-        case ENEMY_AI_POLICY.CHARGE_CHASE:
-            return 'chargeChase';
-        case ENEMY_AI_POLICY.KEEP_RANGE:
-            return 'keepRange';
-        case ENEMY_AI_POLICY.CLUSTER_JOIN:
-            return 'clusterJoin';
-        case ENEMY_AI_POLICY.ALLY_DENSITY_SEEK:
-            return 'allyDensitySeek';
-        case ENEMY_AI_POLICY.FORMATION_FOLLOW:
-            return 'formationFollow';
-        case ENEMY_AI_POLICY.CHASE:
-        default:
-            return 'chase';
-    }
-};
-
-/**
- * AI 디버그 통계 카운터를 증가시킵니다.
- * @param {object|null|undefined} stats
- * @param {string} fieldName
- * @param {number} [amount=1]
- */
-const incrementEnemyAIDebugCounter = (stats, fieldName, amount = 1) => {
-    if (stats?.enabled !== true || typeof fieldName !== 'string' || fieldName.length === 0) {
-        return;
-    }
-
-    const safeAmount = Number.isFinite(amount) ? amount : 1;
-    stats[fieldName] = (Number.isFinite(stats[fieldName]) ? stats[fieldName] : 0) + safeAmount;
-};
-
-/**
- * 정책별 실행 시간과 호출 수를 누적합니다.
- * @param {object|null|undefined} stats
- * @param {string} policyId
- * @param {number} durationMs
- */
-const recordEnemyAIDebugPolicySample = (stats, policyId, durationMs) => {
-    if (stats?.enabled !== true || !Number.isFinite(durationMs) || durationMs < 0) {
-        return;
-    }
-
-    const policyKey = getEnemyAIDebugPolicyKey(policyId);
-    if (!stats.policyCounts || typeof stats.policyCounts !== 'object') {
-        stats.policyCounts = {};
-    }
-    if (!stats.policyMs || typeof stats.policyMs !== 'object') {
-        stats.policyMs = {};
-    }
-
-    stats.policyCounts[policyKey] = (Number.isFinite(stats.policyCounts[policyKey]) ? stats.policyCounts[policyKey] : 0) + 1;
-    stats.policyMs[policyKey] = (Number.isFinite(stats.policyMs[policyKey]) ? stats.policyMs[policyKey] : 0) + durationMs;
-};
 
 /**
  * 적 목록에서 공유 밀도 필드를 생성합니다.
