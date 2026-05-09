@@ -4,18 +4,13 @@ import { TimeHandler } from 'game/time_handler.js';
 import { MathUtil } from 'util/math_util.js';
 import { ColorUtil } from 'util/color_util.js';
 import { RuntimeTool, runtimeTool } from 'util/runtime_tool.js';
+import { getData } from 'data/data_handler.js';
 
 let systemHandler;
 let Game;
-const APP_PAUSE_REASONS = Object.freeze({
-    APP_INACTIVE: 'app-inactive'
-});
-const APP_INACTIVE_PAUSE_POLICY = Object.freeze({
-    keepLoopRunning: false,
-    pauseBgm: true,
-    resetInputOnEnter: true,
-    setMouseInactiveOnEnter: true
-});
+const APP_PAUSE_DATA = getData('APP_PAUSE_DATA');
+const APP_PAUSE_REASONS = APP_PAUSE_DATA.REASONS;
+const APP_INACTIVE_PAUSE_POLICY = APP_PAUSE_DATA.INACTIVE_POLICY;
 
 /**
  * 게임의 메인 진입점입니다.
