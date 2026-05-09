@@ -184,7 +184,7 @@ export class TitleCenterCircle {
     #recalculateLayout() {
         this.loadingCenterX = this.UIOffsetX + (this.UIWW * 0.5);
         this.loadingCenterY = this.WH * 0.5;
-        this.finalCenterX = this.UIOffsetX + (this.UIWW * (TITLE_LOADING.CIRCLE_CENTER_X_RATIO || 0.5));
+        this.finalCenterX = this.UIWW * (TITLE_LOADING.CIRCLE_CENTER_X_RATIO || 0.5);
         this.finalCenterY = this.WH * TITLE_LOADING.CIRCLE_CENTER_Y_RATIO;
         this.radius = Math.max(
             48,

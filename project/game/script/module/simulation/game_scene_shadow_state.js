@@ -3,10 +3,7 @@ import {
     ENEMY_DRAW_HEIGHT_RATIO,
     ENEMY_HEIGHT_SCALE
 } from '../../data/object/enemy/enemy_shape_data.js';
-import {
-    cloneHexaHiveLayout,
-    isHexaMergeEnemyType
-} from '../object/enemy/_hexa_hive_layout.js';
+import { cloneHexaHiveLayout } from '../object/enemy/_hexa_hive_layout.js';
 import { enemyAI } from '../object/enemy/ai/_enemy_ai.js';
 import { resolveEnemyAIFootprintMetricsPx } from '../object/enemy/ai/_enemy_ai_core.js';
 import { PhysicsSystem } from '../physics/physics_system.js';
@@ -54,6 +51,12 @@ import {
     cullAuthorityShadowProjectiles,
     updateAuthorityPresentationState
 } from './game_scene_shadow_authority_lifecycle.js';
+import {
+    advanceAuthorityShadowProjectiles,
+    collectAuthorityShadowHexaMergeActors,
+    configureAuthorityShadowAIContext,
+    fillAuthorityShadowProjectileActors
+} from './game_scene_shadow_authority_step_helpers.js';
 import {
     DEFAULT_SHADOW_AXIS_RESISTANCE_RECOVERY_SECONDS,
     addShadowEnemyAngularImpulse,
@@ -1292,17 +1295,7 @@ function runAuthorityFixedSteps(nextState, fixedStepSeconds, fixedStepCount) {
         enemyActors.length = 0;
         projectileActors.length = 0;
 
-        for (let i = 0; i < nextState.projectiles.length; i++) {
-            const projectile = nextState.projectiles[i];
-            if (!projectile || projectile.active === false) {
-                continue;
-            }
-
-            projectile.prevPosition.x = projectile.position.x;
-            projectile.prevPosition.y = projectile.position.y;
-            projectile.position.x += projectile.speed.x * fixedStepSeconds;
-            projectile.position.y += projectile.speed.y * fixedStepSeconds;
-        }
+        advanceAuthorityShadowProjectiles(nextState.projectiles, fixedStepSeconds);
 
         const enemySystem = nextState.enemySystem || createDefaultEnemySystemState();
         const decisionGroupCount = Number.isInteger(enemySystem.aiDecisionGroupCount) && enemySystem.aiDecisionGroupCount > 0
@@ -1315,30 +1308,15 @@ function runAuthorityFixedSteps(nextState, fixedStepSeconds, fixedStepCount) {
         nextState.enemySystem = enemySystem;
         syncShadowActiveEnemyIds(nextState);
 
-        const aiContext = shadowGameSceneMetadata.authorityAiContext;
-        aiContext.player = nextState.player;
-        aiContext.walls = walls;
-        aiContext.enemies = nextState.enemies;
-        aiContext.shouldUpdateDecision = false;
-        aiContext.decisionInterval = Number.isFinite(enemySystem.aiDecisionIntervalSeconds)
-            ? enemySystem.aiDecisionIntervalSeconds
-            : DEFAULT_AI_DECISION_INTERVAL_SECONDS;
-        aiContext.decisionGroup = decisionGroup;
-        aiContext.wallsVersion = shadowGameSceneMetadata.wallTopologyVersion;
-        aiContext.enemyTopologyVersion = shadowGameSceneMetadata.enemyTopologyVersion;
-        aiContext.aiDebugStats = nextState.aiStats;
-        if (aiContext.sharedFlowFieldByKey instanceof Map) {
-            aiContext.sharedFlowFieldByKey.clear();
-        }
-        if (aiContext.sharedDirectPathByKey instanceof Map) {
-            aiContext.sharedDirectPathByKey.clear();
-        }
-        if (aiContext.sharedDensityFieldByKey instanceof Map) {
-            aiContext.sharedDensityFieldByKey.clear();
-        }
-        if (aiContext.sharedPolicyTargetByKey instanceof Map) {
-            aiContext.sharedPolicyTargetByKey.clear();
-        }
+        const aiContext = configureAuthorityShadowAIContext({
+            aiContext: shadowGameSceneMetadata.authorityAiContext,
+            nextState,
+            walls,
+            enemySystem,
+            decisionGroup,
+            wallTopologyVersion: shadowGameSceneMetadata.wallTopologyVersion,
+            enemyTopologyVersion: shadowGameSceneMetadata.enemyTopologyVersion
+        });
         requestAuthorityShadowEnemyAIBatch(nextState, aiContext, decisionGroupCount, fixedStepSeconds);
 
         for (let i = 0; i < nextState.enemies.length; i++) {
@@ -1361,13 +1339,7 @@ function runAuthorityFixedSteps(nextState, fixedStepSeconds, fixedStepCount) {
             }
         }
 
-        const hexaMergeActors = [];
-        for (let i = 0; i < enemyActors.length; i++) {
-            const actor = enemyActors[i];
-            if (actor && isHexaMergeEnemyType(actor.type)) {
-                hexaMergeActors.push(actor);
-            }
-        }
+        const hexaMergeActors = collectAuthorityShadowHexaMergeActors(enemyActors);
         const hexaContactPairs = hexaMergeActors.length >= 2
             ? shadowPhysicsSystem.collectEnemyContactPairs(hexaMergeActors, { delta: fixedStepSeconds })
             : [];
@@ -1386,12 +1358,11 @@ function runAuthorityFixedSteps(nextState, fixedStepSeconds, fixedStepCount) {
         }
 
         if (nextState.projectiles.length > 0 && enemyActors.length > 0) {
-            for (let i = 0; i < nextState.projectiles.length; i++) {
-                const actor = createShadowProjectileSimulationActor(nextState.projectiles[i]);
-                if (actor) {
-                    projectileActors.push(actor);
-                }
-            }
+            fillAuthorityShadowProjectileActors(
+                nextState.projectiles,
+                projectileActors,
+                createShadowProjectileSimulationActor
+            );
             shadowPhysicsSystem.resolveProjectileVsEnemies(projectileActors, enemyActors, fixedStepSeconds);
         }
 

@@ -51,7 +51,7 @@ export function buildTitleMenuRightPaneLayout({
     const verticalPadding = Math.max(24, wh * 0.026);
     const sidePadding = verticalPadding;
     const rightOuterGap = Math.max(28, uiww * 0.024);
-    const paneRight = uiOffsetX + uiww - rightOuterGap;
+    const paneRight = ww - rightOuterGap;
     const paneLeft = paneRight - groupWidth - (sidePadding * 2);
     const paneWidth = groupWidth + (sidePadding * 2);
     const cardContentHeight = groupHeight;
@@ -109,12 +109,13 @@ function _buildFallbackTitleMenuRightPaneLayout({
     uiOffsetX,
     titleCardMenu
 }) {
-    const fallbackLeft = uiOffsetX + (uiww * 0.62);
+    const fallbackRightOuterGap = Math.max(28, uiww * 0.024);
     const fallbackWidth = uiww * 0.26;
+    const fallbackRight = ww - fallbackRightOuterGap;
+    const fallbackLeft = fallbackRight - fallbackWidth;
     const fallbackCardHeight = wh * 0.36;
     const fallbackVerticalPadding = Math.max(18, wh * 0.022);
     const fallbackSidePadding = fallbackVerticalPadding;
-    const fallbackRight = fallbackLeft + fallbackWidth;
     const fallbackVerticalLayout = _resolveTitleMenuRightPaneVerticalLayout(fallbackCardHeight, wh, titleCardMenu);
     const fallbackShiftY = _resolveTitleMenuMainPaneVerticalShift(
         fallbackVerticalLayout.cardPaneTop,

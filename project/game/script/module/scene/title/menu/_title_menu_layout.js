@@ -1,5 +1,5 @@
 import { getData } from 'data/data_handler.js';
-import { getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
+import { getUIWW, getWH, getWW } from 'display/display_system.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
@@ -23,7 +23,6 @@ export class TitleMenuLayout {
         this.WW = 0;
         this.WH = 0;
         this.UIWW = 0;
-        this.UIOffsetX = 0;
         this.metrics = {};
         this.resize();
     }
@@ -36,7 +35,6 @@ export class TitleMenuLayout {
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
-        this.UIOffsetX = getUIOffsetX();
         this.metrics = this._buildMetrics();
         return this.metrics;
     }
@@ -47,7 +45,7 @@ export class TitleMenuLayout {
      */
     getLogoAnchor() {
         return {
-            x: this.UIOffsetX + (this.UIWW * TITLE_CARD_MENU.LOGO_LEFT_MARGIN_UIWW_RATIO),
+            x: this.UIWW * TITLE_CARD_MENU.LOGO_LEFT_MARGIN_UIWW_RATIO,
             y: this.WH * TITLE_CARD_MENU.LOGO_TOP_MARGIN_WH_RATIO
         };
     }

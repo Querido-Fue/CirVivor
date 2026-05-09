@@ -554,7 +554,7 @@ export class TitleLoadingSequence {
             (circleLayout.centerX - circleLayout.radius) - horizontalGap - logoWidth
         );
         const finalLogoWidth = this.UIWW * TITLE_LOADING.LOGO_FINAL_WIDTH_UIWW_RATIO * 0.8;
-        const finalLogoX = this.UIOffsetX + (this.UIWW * TITLE_LOADING.LOGO_FINAL_LEFT_UIWW_RATIO);
+        const finalLogoX = this.UIWW * TITLE_LOADING.LOGO_FINAL_LEFT_UIWW_RATIO;
         const finalLogoCenterY = this.WH * (TITLE_LOADING.LOGO_FINAL_CENTER_Y_RATIO || 0.5);
         const transition = this.sceneTransitionProgress;
         const blendedWidth = logoWidth + ((finalLogoWidth - logoWidth) * transition);

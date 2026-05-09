@@ -3,13 +3,8 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { getData } from 'data/data_handler.js';
 import { enemyAI } from './enemy/ai/_enemy_ai.js';
 import { createEnemyPools } from './enemy/_enemy_pool_factory.js';
-import { getHexaHiveType } from './enemy/_hexa_hive_layout.js';
 import {
-    buildActiveHexaMergeCandidatesById,
-    buildHexaHiveSpawnData,
     clearHexaHiveContactPairsForEnemyIds,
-    collectHexaHiveMergeGroups,
-    collectHexaMergeCandidates,
     syncHexaHiveMergeState
 } from './enemy/_hexa_hive_merge.js';
 import {
@@ -33,6 +28,11 @@ import {
     fixedUpdateActiveObjectList,
     fixedUpdateObjectSystemEnemies
 } from './object_system_fixed_update_helpers.js';
+import {
+    collectObjectSystemHexaHiveContactPairs,
+    resolveObjectSystemHexaHiveMerges
+} from './object_system_hexa_hive_orchestration.js';
+import { updateObjectSystemEnemies } from './object_system_update_helpers.js';
 import { PhysicsSystem } from 'physics/physics_system.js';
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
 
@@ -42,7 +42,6 @@ const AI_DECISION_GROUP_COUNT = 60;
 const AI_DECISION_INTERVAL_SECONDS = 1.0;
 const INLINE_ENEMY_AI_QUALITY_PROFILE = 'inline_safe';
 const DEFAULT_OUTSIDE_CULL_RATIO = 0.1;
-const HEXA_HIVE_TYPE = getHexaHiveType();
 
 let objectSystemInstance = null;
 
@@ -98,20 +97,14 @@ export class ObjectSystem {
         const alpha = getFixedInterpolationAlpha();
         const ww = getSimulationWW();
         const objectWH = getSimulationObjectWH();
-
-        for (let i = this.enemies.length - 1; i >= 0; i--) {
-            const enemy = this.enemies[i];
-            if (!enemy || !enemy.active) {
-                this.#releaseEnemyAt(i);
-                continue;
-            }
-
-            enemy.interpolatePosition(alpha);
-
-            if (enemy.isOutsideScreen(ww, objectWH, this.enemyCullOutsideRatio)) {
-                this.#releaseEnemyAt(i);
-            }
-        }
+        updateObjectSystemEnemies({
+            enemies: this.enemies,
+            alpha,
+            ww,
+            objectWH,
+            enemyCullOutsideRatio: this.enemyCullOutsideRatio,
+            releaseEnemyAt: (index) => this.#releaseEnemyAt(index)
+        });
     }
 
     /**
@@ -311,12 +304,11 @@ export class ObjectSystem {
      * @returns {{enemyA: object, enemyB: object}[]}
      */
     collectHexaHiveContactPairs(delta) {
-        const mergeCandidates = collectHexaMergeCandidates(this.enemies);
-        if (mergeCandidates.length < 2 || !this.physicsSystem || typeof this.physicsSystem.collectEnemyContactPairs !== 'function') {
-            return [];
-        }
-
-        return this.physicsSystem.collectEnemyContactPairs(mergeCandidates, { delta });
+        return collectObjectSystemHexaHiveContactPairs({
+            enemies: this.enemies,
+            physicsSystem: this.physicsSystem,
+            delta
+        });
     }
 
     /**
@@ -325,69 +317,14 @@ export class ObjectSystem {
      * @returns {number}
      */
     resolveHexaHiveMerges(activeMergeCandidatesById = null) {
-        const mergeGroups = collectHexaHiveMergeGroups(
-            this.hexaHiveContactSecondsByPair,
-            activeMergeCandidatesById instanceof Map
-                ? activeMergeCandidatesById
-                : buildActiveHexaMergeCandidatesById(this.enemies)
-        );
-        if (mergeGroups.length === 0) {
-            return 0;
-        }
-
-        const releaseIds = new Set();
-        const spawnDataList = [];
-        for (let i = 0; i < mergeGroups.length; i++) {
-            const mergeGroup = mergeGroups[i];
-            if (!Array.isArray(mergeGroup) || mergeGroup.length < 2) {
-                continue;
-            }
-
-            const spawnData = buildHexaHiveSpawnData(mergeGroup);
-            if (!spawnData) {
-                continue;
-            }
-
-            spawnDataList.push(spawnData);
-            for (let j = 0; j < mergeGroup.length; j++) {
-                const enemyId = mergeGroup[j]?.id;
-                if (Number.isInteger(enemyId)) {
-                    releaseIds.add(enemyId);
-                }
-            }
-        }
-
-        if (spawnDataList.length === 0 || releaseIds.size === 0) {
-            return 0;
-        }
-
-        clearHexaHiveContactPairsForEnemyIds(this.hexaHiveContactSecondsByPair, releaseIds);
-
-        const releaseIndices = [];
-        for (let i = 0; i < this.enemies.length; i++) {
-            const enemy = this.enemies[i];
-            if (enemy && releaseIds.has(enemy.id)) {
-                releaseIndices.push(i);
-            }
-        }
-
-        releaseIndices.sort((left, right) => right - left);
-        for (let i = 0; i < releaseIndices.length; i++) {
-            this.#releaseEnemyAt(releaseIndices[i]);
-        }
-
-        let mergedCount = 0;
-        for (let i = 0; i < spawnDataList.length; i++) {
-            const hexaHive = this.spawnEnemy(HEXA_HIVE_TYPE, spawnDataList[i]);
-            if (!hexaHive) {
-                continue;
-            }
-
-            this.#queueEnemySpawn(hexaHive);
-            mergedCount++;
-        }
-
-        return mergedCount;
+        return resolveObjectSystemHexaHiveMerges({
+            enemies: this.enemies,
+            contactSecondsByPair: this.hexaHiveContactSecondsByPair,
+            activeMergeCandidatesById,
+            releaseEnemyAt: (index) => this.#releaseEnemyAt(index),
+            spawnEnemy: (type, data) => this.spawnEnemy(type, data),
+            queueEnemySpawn: (enemy) => this.#queueEnemySpawn(enemy)
+        });
     }
 
     /**
