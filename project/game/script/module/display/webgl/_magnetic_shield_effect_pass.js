@@ -1,3 +1,4 @@
+import { clamp01 } from 'util/number_util.js';
 import {
     compileShader,
     createProgram,
@@ -39,7 +40,7 @@ export class MagneticShieldEffectPass {
         const renderHeight = Math.max(1, gl.drawingBufferHeight || height);
         const centerX = Number.isFinite(command.x) ? command.x : 0;
         const centerY = Number.isFinite(command.y) ? command.y : 0;
-        const alpha = Number.isFinite(command.alpha) ? Math.max(0, Math.min(1, command.alpha)) : 1;
+        const alpha = Number.isFinite(command.alpha) ? clamp01(command.alpha) : 1;
         const ringThickness = Number.isFinite(command.ringThickness)
             ? Math.max(1, command.ringThickness)
             : 6;

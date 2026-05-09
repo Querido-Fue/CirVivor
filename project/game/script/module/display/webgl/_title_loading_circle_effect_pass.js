@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clamp01 } from 'util/number_util.js';
 import {
     COMPOSITE_TEXTURE_FRAGMENT_SHADER,
     compileShader,
@@ -70,7 +71,7 @@ export class TitleLoadingCircleEffectPass {
         const outlineWidth = Number.isFinite(command.outlineWidth)
             ? Math.max(1, command.outlineWidth)
             : Math.max(1, radius * 0.025);
-        const alpha = Number.isFinite(command.alpha) ? Math.max(0, Math.min(1, command.alpha)) : 1;
+        const alpha = Number.isFinite(command.alpha) ? clamp01(command.alpha) : 1;
         const scissorPadding = Math.max(
             Number.isFinite(command.scissorPaddingMin) ? command.scissorPaddingMin : 28,
             radius * (Number.isFinite(command.scissorPaddingRatio) ? Math.max(0, command.scissorPaddingRatio) : 0.86)
