@@ -1,4 +1,8 @@
 import { clampNumber } from 'util/number_util.js';
+import { toRadians } from 'util/math_util.js';
+
+/** 원형 경로를 닫는 라디안 값입니다. */
+const FULL_CIRCLE_RADIANS = Math.PI * 2;
 
 /**
  * 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
@@ -75,6 +79,64 @@ export function renderDrawRoundRect(context, options) {
 }
 
 /**
+ * 원형을 채움과 스트로크 요청에 맞춰 렌더링합니다.
+ * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+ * @param {object} options - 렌더링 옵션입니다.
+ */
+export function renderDrawCircle(context, options) {
+    context.beginPath();
+    context.arc(options.x, options.y, options.radius, 0, FULL_CIRCLE_RADIANS);
+    if (options.fill !== false) {
+        context.fill();
+        if (shouldDrawStroke(options)) {
+            context.stroke();
+        }
+        return;
+    }
+
+    context.stroke();
+}
+
+/**
+ * 선분을 렌더링합니다.
+ * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+ * @param {object} options - 렌더링 옵션입니다.
+ */
+export function renderDrawLine(context, options) {
+    context.beginPath();
+    context.moveTo(options.x1, options.y1);
+    context.lineTo(options.x2, options.y2);
+    context.stroke();
+}
+
+/**
+ * 이미지를 렌더링합니다.
+ * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+ * @param {object} options - 렌더링 옵션입니다.
+ */
+export function renderDrawImage(context, options) {
+    context.drawImage(options.image, options.x, options.y, options.w, options.h);
+}
+
+/**
+ * 텍스트를 렌더링합니다.
+ * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+ * @param {object} options - 렌더링 옵션입니다.
+ */
+export function renderDrawText(context, options) {
+    if (options.rotation) {
+        context.save();
+        context.translate(options.x, options.y);
+        context.rotate(toRadians(options.rotation));
+        context.fillText(options.text, 0, 0);
+        context.restore();
+        return;
+    }
+
+    context.fillText(options.text, options.x, options.y);
+}
+
+/**
  * 화살표 도형을 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
@@ -88,7 +150,7 @@ export function renderDrawArrow(context, options, path) {
     context.save();
     context.translate(options.x, options.y);
     if (options.rotation) {
-        context.rotate((options.rotation * Math.PI) / 180);
+        context.rotate(toRadians(options.rotation));
     }
     context.scale(options.w, options.h);
 

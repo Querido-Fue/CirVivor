@@ -1,9 +1,12 @@
 import {
     createDrawArrowPath,
     renderDrawArrow,
+    renderDrawCircle,
+    renderDrawImage,
+    renderDrawLine,
     renderDrawRect,
     renderDrawRoundRect,
-    shouldDrawStroke
+    renderDrawText
 } from './draw_2d_shapes.js';
 import {
     applyDraw2DStyles,
@@ -163,36 +166,16 @@ export class DrawHandler2D {
                 renderDrawRoundRect(context, options);
                 break;
             case 'circle':
-                context.beginPath();
-                context.arc(options.x, options.y, options.radius, 0, Math.PI * 2);
-                if (options.fill !== false) {
-                    context.fill();
-                    if (shouldDrawStroke(options)) {
-                        context.stroke();
-                    }
-                } else {
-                    context.stroke();
-                }
+                renderDrawCircle(context, options);
                 break;
             case 'line':
-                context.beginPath();
-                context.moveTo(options.x1, options.y1);
-                context.lineTo(options.x2, options.y2);
-                context.stroke();
+                renderDrawLine(context, options);
                 break;
             case 'image':
-                context.drawImage(options.image, options.x, options.y, options.w, options.h);
+                renderDrawImage(context, options);
                 break;
             case 'text':
-                if (options.rotation) {
-                    context.save();
-                    context.translate(options.x, options.y);
-                    context.rotate((options.rotation * Math.PI) / 180);
-                    context.fillText(options.text, 0, 0);
-                    context.restore();
-                } else {
-                    context.fillText(options.text, options.x, options.y);
-                }
+                renderDrawText(context, options);
                 break;
             case 'arrow':
                 renderDrawArrow(context, options, this.#pathCache.get('arrow'));
