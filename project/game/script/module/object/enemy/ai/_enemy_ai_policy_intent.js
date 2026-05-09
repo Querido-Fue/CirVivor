@@ -1,6 +1,7 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
 import { clampNumber } from 'util/number_util.js';
+import { getHexaHiveType } from '../_hexa_hive_layout.js';
 import {
     resolveEnemyAIFootprintPathClearancePx,
     projectEnemyAIFootprintRadiusForDirection,
@@ -25,7 +26,7 @@ const ENEMY_AI_POLICY_BY_TYPE = ENEMY_AI_CONSTANTS.POLICY_BY_TYPE;
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
 const HEXA_TYPE = 'hexa';
-const HEXA_HIVE_TYPE = 'hexa_hive';
+const HEXA_HIVE_TYPE = getHexaHiveType();
 
 /**
  * 두 성분으로 구성된 벡터 길이를 반환합니다.

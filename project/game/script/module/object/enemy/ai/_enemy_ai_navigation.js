@@ -1,11 +1,12 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { clampNumber } from 'util/number_util.js';
+import { getHexaHiveType } from '../_hexa_hive_layout.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
 const DIAGONAL_COST = ENEMY_AI_CONSTANTS.DIAGONAL_COST;
-const HEXA_HIVE_TYPE = 'hexa_hive';
+const HEXA_HIVE_TYPE = getHexaHiveType();
 
 const DIRS = Object.freeze([
     Object.freeze({ dx: 1, dy: 0, cost: 1 }),

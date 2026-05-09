@@ -3,8 +3,9 @@ import {
     resolveEnemyAINavigationRadiusPx,
     resolveEnemyAIRenderHeightPx
 } from './_enemy_ai_footprint.js';
+import { getHexaHiveType } from '../_hexa_hive_layout.js';
 
-const HEXA_HIVE_TYPE = 'hexa_hive';
+const HEXA_HIVE_TYPE = getHexaHiveType();
 
 /**
  * fixedUpdate 중 재사용할 문맥 버퍼를 보장합니다.
