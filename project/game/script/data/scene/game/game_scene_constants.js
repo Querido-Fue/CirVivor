@@ -65,6 +65,34 @@ export const GAME_SCENE_CONSTANTS = Object.freeze({
         FONT_WW_RATIO: 0.0092,
         TEXT_X_RATIO: 0.5,
         TEXT_Y_RATIO: 0.54,
-        BORDER_LINE_WIDTH: 1
+        BORDER_LINE_WIDTH: 1,
+        LAYOUT: Object.freeze({
+            WIDTH_MIN: 160,
+            WIDTH_WW_RATIO: 0.13,
+            HEIGHT_MIN: 38,
+            HEIGHT_WH_RATIO: 0.052,
+            GAP_MIN: 10,
+            GAP_HEIGHT_RATIO: 0.24,
+            X_WW_RATIO: 0.03,
+            Y_WH_RATIO: 0.08
+        }),
+        ACTIONS: Object.freeze([
+            Object.freeze({
+                id: 'spawnEnemy100',
+                label: 'Spawn 100 Enemies',
+                type: 'spawnEnemies',
+                count: 100
+            }),
+            Object.freeze({
+                id: 'spawnBox',
+                label: 'Spawn Box',
+                type: 'spawnBox'
+            }),
+            Object.freeze({
+                id: 'spawnProjectile10',
+                label: 'Spawn 10 Projectiles',
+                type: 'spawnProjectiles'
+            })
+        ])
     })
 });

@@ -31,7 +31,97 @@ import {
 } from 'simulation/simulation_runtime.js';
 import { measurePerformanceSection } from 'debug/debug_system.js';
 
+const GAME_SCENE_CONSTANTS = getData('GAME_SCENE_CONSTANTS');
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
+const GAME_SCENE_BENCHMARK_CONSTANTS = GAME_SCENE_CONSTANTS.BENCHMARK;
+const GAME_SCENE_BUTTON_CONSTANTS = GAME_SCENE_CONSTANTS.BUTTON;
+const GAME_SCENE_BUTTON_LAYOUT = GAME_SCENE_BUTTON_CONSTANTS.LAYOUT;
+const GAME_SCENE_BUTTON_ACTION_TYPES = Object.freeze({
+    SPAWN_ENEMIES: 'spawnEnemies',
+    SPAWN_BOX: 'spawnBox',
+    SPAWN_PROJECTILES: 'spawnProjectiles'
+});
+const GAME_SCENE_DRAW_SECTIONS = Object.freeze({
+    WORLD: 'scene.game.local.drawWorld',
+    BUTTONS: 'scene.game.local.drawButtons',
+    HUD: 'scene.game.local.drawHud'
+});
+
+/**
+ * 벤치마크 버튼 배치 값을 계산합니다.
+ * @param {object} scene - 게임 씬 인스턴스입니다.
+ * @returns {{x:number, y:number, w:number, h:number, rowStride:number}} 버튼 배치 값입니다.
+ */
+function createGameSceneButtonMetrics(scene) {
+    const width = Math.max(
+        GAME_SCENE_BUTTON_LAYOUT.WIDTH_MIN,
+        scene.WW * GAME_SCENE_BUTTON_LAYOUT.WIDTH_WW_RATIO
+    );
+    const height = Math.max(
+        GAME_SCENE_BUTTON_LAYOUT.HEIGHT_MIN,
+        scene.WH * GAME_SCENE_BUTTON_LAYOUT.HEIGHT_WH_RATIO
+    );
+    const gap = Math.max(
+        GAME_SCENE_BUTTON_LAYOUT.GAP_MIN,
+        height * GAME_SCENE_BUTTON_LAYOUT.GAP_HEIGHT_RATIO
+    );
+
+    return {
+        x: scene.WW * GAME_SCENE_BUTTON_LAYOUT.X_WW_RATIO,
+        y: scene.WH * GAME_SCENE_BUTTON_LAYOUT.Y_WH_RATIO,
+        w: width,
+        h: height,
+        rowStride: height + gap
+    };
+}
+
+/**
+ * 버튼 action 데이터에 맞는 클릭 handler를 생성합니다.
+ * @param {GameScene} scene - 게임 씬 인스턴스입니다.
+ * @param {object} action - 버튼 action 데이터입니다.
+ * @returns {Function} 클릭 handler입니다.
+ */
+function createGameSceneButtonClickHandler(scene, action) {
+    if (action.type === GAME_SCENE_BUTTON_ACTION_TYPES.SPAWN_ENEMIES) {
+        return () => scene.queueSpawnEnemies(action.count);
+    }
+    if (action.type === GAME_SCENE_BUTTON_ACTION_TYPES.SPAWN_BOX) {
+        return () => scene.queueSpawnRandomBox();
+    }
+    if (action.type === GAME_SCENE_BUTTON_ACTION_TYPES.SPAWN_PROJECTILES) {
+        return () => scene.queueSpawnProjectileBurst();
+    }
+    return () => false;
+}
+
+/**
+ * 벤치마크 버튼 데이터를 생성합니다.
+ * @param {GameScene} scene - 게임 씬 인스턴스입니다.
+ * @param {object} action - 버튼 action 데이터입니다.
+ * @param {{x:number, y:number, w:number, h:number, rowStride:number}} metrics - 버튼 배치 값입니다.
+ * @param {number} index - 버튼 순서입니다.
+ * @returns {object} 버튼 데이터입니다.
+ */
+function createGameSceneButton(scene, action, metrics, index) {
+    return {
+        id: action.id,
+        label: action.label,
+        x: metrics.x,
+        y: metrics.y + (metrics.rowStride * index),
+        w: metrics.w,
+        h: metrics.h,
+        onClick: createGameSceneButtonClickHandler(scene, action)
+    };
+}
+
+/**
+ * 시뮬레이션 명령을 큐에 적재합니다.
+ * @param {object|null} command - 적재할 시뮬레이션 명령입니다.
+ * @returns {boolean} 명령 적재 여부입니다.
+ */
+function enqueueGameSceneCommand(command) {
+    return command ? enqueueSimulationCommand(command) : false;
+}
 
 /**
  * @class GameScene
@@ -88,50 +178,19 @@ export class GameScene extends BaseScene {
      * @private
      */
     #buildButtons() {
-        const btnW = Math.max(160, this.WW * 0.13);
-        const btnH = Math.max(38, this.WH * 0.052);
-        const gap = Math.max(10, btnH * 0.24);
-        const x = this.WW * 0.03;
-        const y = this.WH * 0.08;
-
-        this.buttons = [
-            {
-                id: 'spawnEnemy100',
-                label: 'Spawn 100 Enemies',
-                x,
-                y,
-                w: btnW,
-                h: btnH,
-                onClick: () => this.queueSpawnEnemies(100)
-            },
-            {
-                id: 'spawnBox',
-                label: 'Spawn Box',
-                x,
-                y: y + btnH + gap,
-                w: btnW,
-                h: btnH,
-                onClick: () => this.queueSpawnRandomBox()
-            },
-            {
-                id: 'spawnProjectile10',
-                label: 'Spawn 10 Projectiles',
-                x,
-                y: y + ((btnH + gap) * 2),
-                w: btnW,
-                h: btnH,
-                onClick: () => this.queueSpawnProjectileBurst()
-            }
-        ];
+        const metrics = createGameSceneButtonMetrics(this);
+        this.buttons = GAME_SCENE_BUTTON_CONSTANTS.ACTIONS.map((action, index) => {
+            return createGameSceneButton(this, action, metrics, index);
+        });
     }
 
     /**
      * 적 스폰 명령을 큐에 적재합니다.
-     * @param {number} [count=100]
+     * @param {number} [count] - 생성할 적 수입니다.
      * @returns {boolean}
      */
-    queueSpawnEnemies(count = 100) {
-        return enqueueSimulationCommand(buildGameSceneSpawnEnemiesCommand(this, count));
+    queueSpawnEnemies(count = GAME_SCENE_BENCHMARK_CONSTANTS.DEFAULT_ENEMY_COUNT) {
+        return enqueueGameSceneCommand(buildGameSceneSpawnEnemiesCommand(this, count));
     }
 
     /**
@@ -139,12 +198,7 @@ export class GameScene extends BaseScene {
      * @returns {boolean}
      */
     queueSpawnRandomBox() {
-        const command = buildGameSceneSpawnRandomBoxCommand(this);
-        if (!command) {
-            return false;
-        }
-
-        return enqueueSimulationCommand(command);
+        return enqueueGameSceneCommand(buildGameSceneSpawnRandomBoxCommand(this));
     }
 
     /**
@@ -152,7 +206,7 @@ export class GameScene extends BaseScene {
      * @returns {boolean}
      */
     queueSpawnProjectileBurst() {
-        return enqueueSimulationCommand(buildGameSceneSpawnProjectileBurstCommand(this));
+        return enqueueGameSceneCommand(buildGameSceneSpawnProjectileBurstCommand(this));
     }
 
     /**
@@ -263,13 +317,13 @@ export class GameScene extends BaseScene {
      * @override
      */
     draw() {
-        measurePerformanceSection('scene.game.local.drawWorld', () => {
+        measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.WORLD, () => {
             this.#drawWorldObjects();
         });
-        measurePerformanceSection('scene.game.local.drawButtons', () => {
+        measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.BUTTONS, () => {
             this.#drawButtons();
         });
-        measurePerformanceSection('scene.game.local.drawHud', () => {
+        measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.HUD, () => {
             this.#drawHud();
         });
     }
