@@ -7,6 +7,7 @@ import { releaseUIItem } from 'ui/_ui_pool.js';
 import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
 import { getData } from 'data/data_handler.js';
 import { getSetting } from 'save/save_system.js';
+import { clampNumber } from 'util/number_util.js';
 import {
     DEFAULT_OVERLAY_PANEL_ID,
     createOverlayPanelMap,
@@ -76,7 +77,7 @@ export class BaseOverlay {
     constructor(options = {}) {
         this.overlayOptions = {
             layer: Math.max(0, options.layer || 0),
-            dim: Math.max(0, Math.min(1, options.dim === undefined ? 0.32 : options.dim)),
+            dim: clampNumber(options.dim === undefined ? 0.32 : options.dim, 0, 1),
             transparent: options.transparent !== false,
             glOverlay: options.glOverlay === true,
             blurUpdateMode: options.blurUpdateMode || 'dirty',
