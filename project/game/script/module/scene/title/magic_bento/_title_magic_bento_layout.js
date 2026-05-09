@@ -1,4 +1,4 @@
-import { clamp } from './_title_magic_bento_motion.js';
+import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 
 /**
  * 타이틀 bento 카드 레이아웃을 계산하고 카드 런타임 좌표를 갱신합니다.
@@ -18,22 +18,30 @@ export function recalculateBentoCardLayout(cards, {
     uiww,
     uiOffsetX
 }, titleMagicBento, titleLoading) {
-    const baseGroupWidth = clamp(
+    const baseGroupWidth = clampFiniteNumber(
         uiww * titleMagicBento.GROUP_WIDTH_UIWW_RATIO,
         titleMagicBento.GROUP_MIN_WIDTH,
-        titleMagicBento.GROUP_MAX_WIDTH
+        titleMagicBento.GROUP_MAX_WIDTH,
+        titleMagicBento.GROUP_MIN_WIDTH
     );
-    const gap = Math.max(titleMagicBento.CARD_GAP_MIN, uiww * titleMagicBento.CARD_GAP_UIWW_RATIO);
+    const gap = clampFiniteNumber(
+        uiww * titleMagicBento.CARD_GAP_UIWW_RATIO,
+        titleMagicBento.CARD_GAP_MIN,
+        Infinity,
+        titleMagicBento.CARD_GAP_MIN
+    );
     const baseAvailableWidth = baseGroupWidth - gap;
     const playHeightFactor = 1.12 * (0.68 + 0.2);
-    const baseRightWidth = Math.max(
+    const baseRightWidth = clampFiniteNumber(
+        (baseAvailableWidth - (gap * 1.12)) / (1 + playHeightFactor),
         baseAvailableWidth * 0.42,
-        (baseAvailableWidth - (gap * 1.12)) / (1 + playHeightFactor)
+        Infinity,
+        baseAvailableWidth * 0.42
     );
     const leftWidth = baseAvailableWidth - baseRightWidth;
     const rightWidth = baseRightWidth * titleMagicBento.RIGHT_COLUMN_WIDTH_SCALE;
     const recordsHeight = (baseRightWidth * 0.2) * titleMagicBento.RECORDS_HEIGHT_SCALE;
-    const quickHeight = Math.max(0, leftWidth - gap - recordsHeight);
+    const quickHeight = clampFiniteNumber(leftWidth - gap - recordsHeight, 0, Infinity, 0);
     const bottomHeight = baseRightWidth * 0.62;
     const mainHeight = leftWidth;
     const groupWidth = leftWidth + gap + rightWidth;
@@ -160,16 +168,21 @@ function applyBentoCardLayout(cards, layoutMap, {
 
         const startOffsetX = uiww * (titleMagicBento.ENTRANCE_OFFSET_X_UIWW_RATIO + card.entranceOffsetXRatio);
         const startOffsetY = wh * (titleMagicBento.ENTRANCE_OFFSET_Y_WH_RATIO + card.entranceOffsetYRatio);
-        card.startCenterX = Math.max(ww + (layout.w * 0.12), card.finalCenterX + startOffsetX);
+        card.startCenterX = clampFiniteNumber(
+            card.finalCenterX + startOffsetX,
+            ww + (layout.w * 0.12),
+            Infinity,
+            ww + (layout.w * 0.12)
+        );
         card.startCenterY = card.finalCenterY + startOffsetY;
 
         for (const particle of card.particles) {
-            particle.localX = clamp(particle.localX, 0, layout.w);
-            particle.localY = clamp(particle.localY, 0, layout.h);
+            particle.localX = clampNumber(particle.localX, 0, layout.w);
+            particle.localY = clampNumber(particle.localY, 0, layout.h);
         }
         for (const ripple of card.ripples) {
-            ripple.localX = clamp(ripple.localX, 0, layout.w);
-            ripple.localY = clamp(ripple.localY, 0, layout.h);
+            ripple.localX = clampNumber(ripple.localX, 0, layout.w);
+            ripple.localY = clampNumber(ripple.localY, 0, layout.h);
         }
     }
 }
