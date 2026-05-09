@@ -94,18 +94,3 @@ export const TITLE_LOGO_TOTAL_DURATION = TITLE_LOGO_GROUPS.reduce(
  * @type {number}
  */
 export const TITLE_LOGO_STROKE_DURATION = 0.6;
-
-/**
- * 0~1 범위 진행률에 지수형 감속 이징을 적용합니다.
- * @param {number} progress - 선형 진행률입니다.
- * @returns {number} 이징이 적용된 진행률입니다.
- */
-export function easeOutLogoExpo(progress) {
-    if (progress <= 0) {
-        return 0;
-    }
-    if (progress >= 1) {
-        return 1;
-    }
-    return 1 - Math.pow(2, -10 * progress);
-}

@@ -1,6 +1,6 @@
 import { SVGDrawer } from 'display/_svg_drawer.js';
+import { easeOutExpo } from 'util/number_util.js';
 import {
-    easeOutLogoExpo,
     TITLE_LOGO_GROUPS,
     TITLE_LOGO_STROKE_DURATION
 } from './_title_logo_data.js';
@@ -260,7 +260,7 @@ export class TitleLogoRenderCache {
             return;
         }
 
-        const easedProgress = easeOutLogoExpo(moveProgress);
+        const easedProgress = easeOutExpo(moveProgress);
         const offsetX = group.startX * (1 - easedProgress);
 
         ctx.save();
