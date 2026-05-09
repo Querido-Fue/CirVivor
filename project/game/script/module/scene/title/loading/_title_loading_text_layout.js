@@ -1,5 +1,6 @@
 import { getLangString } from 'ui/ui_system.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
+import { createFontString } from 'util/font_util.js';
 
 /**
  * 현재 화면 기준으로 로딩 텍스트 배치 정보를 계산합니다.
@@ -72,21 +73,9 @@ export function getTitleLoadingTextPresetFont(textConstants, presetKey) {
     const fallback = textConstants.H6;
     const preset = textConstants[presetKey] || fallback;
     const fontData = preset.FONT || fallback.FONT;
-    const weight = fontData.WEIGHT || 400;
-    const family = normalizeTitleLoadingFontFamily(fontData.FAMILY || 'Pretendard Variable, arial');
-    return `${weight} ${getTitleLoadingTextPresetFontSize(textConstants, presetKey)}px ${family}`;
-}
-
-/**
- * 캔버스 렌더링용 폰트 패밀리 문자열을 정규화합니다.
- * @param {string} fontFamily - 원본 폰트 패밀리 문자열입니다.
- * @returns {string} 따옴표가 보정된 폰트 패밀리 문자열입니다.
- */
-export function normalizeTitleLoadingFontFamily(fontFamily) {
-    let familyStr = fontFamily;
-    if (!familyStr.includes('"') && !familyStr.includes("'")) {
-        const parts = familyStr.split(',');
-        familyStr = `"${parts[0].trim()}"${parts[1] ? `,${parts[1]}` : ''}`;
-    }
-    return familyStr;
+    return createFontString({
+        weight: fontData.WEIGHT || 400,
+        sizePx: getTitleLoadingTextPresetFontSize(textConstants, presetKey),
+        family: fontData.FAMILY
+    });
 }
