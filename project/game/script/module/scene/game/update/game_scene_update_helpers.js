@@ -6,6 +6,56 @@ import {
 import { isPointInRect } from 'util/geometry_util.js';
 
 const PROJECTILE_CULL_MARGIN_RATIO = getData('GAME_SCENE_CONSTANTS').PROJECTILE.CULL_MARGIN_RATIO;
+const GAME_SCENE_BUTTON_MOUSE_BUTTON = 'left';
+const GAME_SCENE_BUTTON_CLICK_STATE = 'clicked';
+
+/**
+ * 버튼이 현재 마우스 위치에 닿아 있으면 클릭 콜백을 실행합니다.
+ * @param {object|null|undefined} button - 벤치마크 버튼 데이터입니다.
+ * @param {{x:number, y:number}} mousePos - 현재 마우스 위치입니다.
+ * @returns {boolean} 클릭 콜백 실행 여부입니다.
+ */
+function triggerGameSceneButtonIfHit(button, mousePos) {
+    if (!button || typeof button.onClick !== 'function') {
+        return false;
+    }
+    if (!isPointInRect(mousePos.x, mousePos.y, button)) {
+        return false;
+    }
+
+    button.onClick();
+    return true;
+}
+
+/**
+ * 로컬 투사체 제거 판정에 사용할 월드 경계를 계산합니다.
+ * @param {object} scene - 게임 씬 인스턴스입니다.
+ * @returns {{minX:number, maxX:number, minY:number, maxY:number}} 투사체 제거 경계입니다.
+ */
+function createProjectileCullBounds(scene) {
+    return {
+        minX: -scene.WW * PROJECTILE_CULL_MARGIN_RATIO,
+        maxX: scene.WW * (1 + PROJECTILE_CULL_MARGIN_RATIO),
+        minY: -scene.objectWH * PROJECTILE_CULL_MARGIN_RATIO,
+        maxY: scene.objectWH * (1 + PROJECTILE_CULL_MARGIN_RATIO)
+    };
+}
+
+/**
+ * 로컬 투사체를 제거해야 하는지 확인합니다.
+ * @param {object|null|undefined} projectile - 투사체 인스턴스입니다.
+ * @param {{minX:number, maxX:number, minY:number, maxY:number}} bounds - 제거 경계입니다.
+ * @returns {boolean} 제거 여부입니다.
+ */
+function shouldCullLocalProjectile(projectile, bounds) {
+    if (!projectile || projectile.active === false || !projectile.position) {
+        return true;
+    }
+
+    const x = projectile.position.x;
+    const y = projectile.position.y;
+    return x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY;
+}
 
 /**
  * 현재 마우스 입력으로 벤치마크 버튼 클릭을 처리합니다.
@@ -14,15 +64,13 @@ const PROJECTILE_CULL_MARGIN_RATIO = getData('GAME_SCENE_CONSTANTS').PROJECTILE.
  */
 export function updateGameSceneButtonInput(buttons) {
     const mousePos = getSimulationMouseInput('pos');
-    const clicked = hasSimulationMouseState('left', 'clicked');
+    const clicked = hasSimulationMouseState(GAME_SCENE_BUTTON_MOUSE_BUTTON, GAME_SCENE_BUTTON_CLICK_STATE);
     if (!clicked || !mousePos || !Array.isArray(buttons)) {
         return false;
     }
 
     for (let i = 0; i < buttons.length; i++) {
-        const button = buttons[i];
-        if (button && isPointInRect(mousePos.x, mousePos.y, button)) {
-            button.onClick();
+        if (triggerGameSceneButtonIfHit(buttons[i], mousePos)) {
             return true;
         }
     }
@@ -39,20 +87,9 @@ export function cullLocalGameSceneProjectiles(scene) {
         return;
     }
 
-    const cullMinX = -scene.WW * PROJECTILE_CULL_MARGIN_RATIO;
-    const cullMaxX = scene.WW * (1 + PROJECTILE_CULL_MARGIN_RATIO);
-    const cullMinY = -scene.objectWH * PROJECTILE_CULL_MARGIN_RATIO;
-    const cullMaxY = scene.objectWH * (1 + PROJECTILE_CULL_MARGIN_RATIO);
+    const bounds = createProjectileCullBounds(scene);
     for (let i = scene.projectiles.length - 1; i >= 0; i--) {
-        const projectile = scene.projectiles[i];
-        if (!projectile || projectile.active === false) {
-            scene.projectiles.splice(i, 1);
-            continue;
-        }
-
-        const x = projectile.position.x;
-        const y = projectile.position.y;
-        if (x < cullMinX || x > cullMaxX || y < cullMinY || y > cullMaxY) {
+        if (shouldCullLocalProjectile(scene.projectiles[i], bounds)) {
             scene.projectiles.splice(i, 1);
         }
     }
