@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clampNumber } from 'util/number_util.js';
 import { getSimulationObjectWH } from '../simulation/simulation_runtime.js';
 
 const COLLISION_GRID_CONSTANTS = getData('COLLISION_CONSTANTS').GRID;
@@ -33,5 +34,5 @@ export function estimateCollisionGridCellSize(bodies, gridMode = 'default') {
         ? (radiusSum / count)
         : Math.max(getSimulationObjectWH() * DEFAULT_RADIUS_WORLD_RATIO, DEFAULT_RADIUS_MIN);
     const cell = Math.floor(avgRadius * CELL_SIZE_RADIUS_SCALE);
-    return Math.max(MIN_CELL_SIZE, Math.min(MAX_CELL_SIZE, cell));
+    return clampNumber(cell, MIN_CELL_SIZE, MAX_CELL_SIZE);
 }
