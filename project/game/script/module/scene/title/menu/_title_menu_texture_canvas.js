@@ -1,3 +1,5 @@
+import { clampFiniteNumber } from 'util/number_util.js';
+
 /**
  * 타이틀 메뉴 텍스처용 캔버스와 2D 컨텍스트를 확보하고 크기를 동기화합니다.
  * @param {object} target - 캔버스/컨텍스트를 보관할 객체입니다.
@@ -8,8 +10,8 @@
  * @returns {{canvas:HTMLCanvasElement, context:CanvasRenderingContext2D, width:number, height:number}} 캔버스와 컨텍스트입니다.
  */
 export function ensureTitleMenuTextureCanvas(target, canvasKey, contextKey, width, height) {
-    const canvasWidth = Math.max(1, Math.ceil(width));
-    const canvasHeight = Math.max(1, Math.ceil(height));
+    const canvasWidth = Math.ceil(clampFiniteNumber(width, 1, Infinity, 1));
+    const canvasHeight = Math.ceil(clampFiniteNumber(height, 1, Infinity, 1));
 
     if (!target[canvasKey] || !target[contextKey]) {
         target[canvasKey] = document.createElement('canvas');
