@@ -1,3 +1,4 @@
+import { formatRgba } from 'util/color_util.js';
 import { getBentoAccentColor } from './_title_magic_bento_theme.js';
 
 /**
@@ -89,7 +90,7 @@ export function drawBentoCardBorder(ctx, card, palette, radius, titleMagicBento)
         ctx.save();
         traceBentoRoundRect(ctx, 0, 0, card.baseWidth, card.baseHeight, radius);
         ctx.lineWidth = baseBorderWidth + (1.2 * card.hoverProgress);
-        ctx.strokeStyle = `rgba(255, 255, 255, ${0.16 * card.hoverProgress})`;
+        ctx.strokeStyle = formatRgba(255, 255, 255, 0.16 * card.hoverProgress);
         ctx.stroke();
         ctx.restore();
     }

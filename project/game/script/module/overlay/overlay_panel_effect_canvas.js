@@ -90,9 +90,9 @@ function drawOverlayPanelBorder(context, panel, interactionState, borderOptions,
         interactionState.localY,
         spotlightRadius
     );
-    gradient.addColorStop(0, `rgba(255, 255, 255, ${edgeAlpha})`);
-    gradient.addColorStop(clampFiniteNumber(fadeStart * 0.62, 0, 1), `rgba(255, 255, 255, ${edgeAlpha * 0.82})`);
-    gradient.addColorStop(clampFiniteNumber(fadeStart, 0, 1), `rgba(255, 255, 255, ${edgeAlpha * 0.55})`);
+    gradient.addColorStop(0, formatRgba(255, 255, 255, edgeAlpha));
+    gradient.addColorStop(clampFiniteNumber(fadeStart * 0.62, 0, 1), formatRgba(255, 255, 255, edgeAlpha * 0.82));
+    gradient.addColorStop(clampFiniteNumber(fadeStart, 0, 1), formatRgba(255, 255, 255, edgeAlpha * 0.55));
     gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
     context.fillStyle = gradient;
     context.fillRect(0, 0, panel.w, panel.h);
