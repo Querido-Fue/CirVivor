@@ -1,14 +1,13 @@
+import { getData } from 'data/data_handler.js';
 import { SVGDrawer } from 'display/_svg_drawer.js';
 import { easeOutExpo } from 'util/number_util.js';
-import {
-    TITLE_LOGO_GROUPS,
-    TITLE_LOGO_STROKE_DURATION
-} from './_title_logo_data.js';
 import {
     calculateTitleLogoCachePadding,
     getTitleLogoShadowPasses,
     resizeTitleLogoCacheCanvas
 } from './_title_logo_cache.js';
+
+const TITLE_LOGO_DATA = getData('TITLE_LOGO_DATA');
 
 /**
  * 타이틀 로고의 마스크, 틴트, 그림자 합성 캐시를 관리합니다.
@@ -241,7 +240,7 @@ export class TitleLogoRenderCache {
      * @param {number} elapsed - 현재 누적 재생 시간입니다.
      */
     _drawLogoGroups(ctx, elapsed) {
-        for (const group of TITLE_LOGO_GROUPS) {
+        for (const group of TITLE_LOGO_DATA.GROUPS) {
             this._drawLetterGroup(ctx, group, elapsed);
         }
     }
@@ -309,7 +308,7 @@ export class TitleLogoRenderCache {
         const fillStart = Number.isFinite(this.drawOptions.fillStart)
             ? Math.max(this.drawOptions.fillStart, 0.0001)
             : 1;
-        const totalDrawDuration = TITLE_LOGO_STROKE_DURATION / fillStart;
+        const totalDrawDuration = TITLE_LOGO_DATA.STROKE_DURATION / fillStart;
         return Math.min(localTime / totalDrawDuration, 1);
     }
 }

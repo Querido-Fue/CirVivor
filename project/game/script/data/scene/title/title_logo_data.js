@@ -1,16 +1,11 @@
 /**
- * 로고 원본 SVG의 기준 뷰박스 크기입니다.
- * @type {{width:number, height:number}}
+ * 타이틀 로고 SVG path와 재생 순서 데이터입니다.
  */
-export const TITLE_LOGO_VIEWBOX = Object.freeze({
+const TITLE_LOGO_VIEWBOX = Object.freeze({
     width: 1178.8,
     height: 589.45
 });
 
-/**
- * 로고 각 글자의 SVG path 원본 데이터입니다.
- * @type {{top: Object<string, string[]>, bottom: Object<string, string[]>}}
- */
 const TITLE_LOGO_PATHS = Object.freeze({
     top: Object.freeze({
         L: Object.freeze([
@@ -66,11 +61,7 @@ const TITLE_LOGO_SEQUENCE = Object.freeze([
     Object.freeze({ topKey: 'Y', bottomKey: null, delay: 1.75, startX: 90, duration: 1.25 })
 ]);
 
-/**
- * 렌더링에 바로 사용할 글자 그룹 데이터입니다.
- * @type {Array<{delay:number, startX:number, duration:number, topPaths:string[], bottomPaths:string[]}>}
- */
-export const TITLE_LOGO_GROUPS = Object.freeze(
+const TITLE_LOGO_GROUPS = Object.freeze(
     TITLE_LOGO_SEQUENCE.map((sequence) => Object.freeze({
         delay: sequence.delay,
         startX: sequence.startX,
@@ -80,17 +71,18 @@ export const TITLE_LOGO_GROUPS = Object.freeze(
     }))
 );
 
-/**
- * 전체 로고 애니메이션의 총 재생 시간입니다.
- * @type {number}
- */
-export const TITLE_LOGO_TOTAL_DURATION = TITLE_LOGO_GROUPS.reduce(
+const TITLE_LOGO_STROKE_DURATION = 0.6;
+const TITLE_LOGO_TOTAL_DURATION = TITLE_LOGO_GROUPS.reduce(
     (maxDuration, group) => Math.max(maxDuration, group.delay + group.duration),
     0
 );
 
 /**
- * 각 글자의 선 드로잉이 완료되는 목표 시간입니다.
- * @type {number}
+ * 타이틀 로고 렌더링과 재생에 사용하는 정적 데이터입니다.
  */
-export const TITLE_LOGO_STROKE_DURATION = 0.6;
+export const TITLE_LOGO_DATA = Object.freeze({
+    VIEWBOX: TITLE_LOGO_VIEWBOX,
+    GROUPS: TITLE_LOGO_GROUPS,
+    TOTAL_DURATION: TITLE_LOGO_TOTAL_DURATION,
+    STROKE_DURATION: TITLE_LOGO_STROKE_DURATION
+});

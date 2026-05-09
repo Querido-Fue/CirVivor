@@ -1,4 +1,6 @@
-import { TITLE_LOGO_TOTAL_DURATION } from './_title_logo_data.js';
+import { getData } from 'data/data_handler.js';
+
+const TITLE_LOGO_DATA = getData('TITLE_LOGO_DATA');
 
 /**
  * 로고 재생 상태를 다음 프레임으로 진행합니다.
@@ -15,7 +17,7 @@ export function advanceTitleLogoPlayback({
     delta,
     isPlaying,
     isFinished,
-    totalDuration = TITLE_LOGO_TOTAL_DURATION
+    totalDuration = TITLE_LOGO_DATA.TOTAL_DURATION
 }) {
     const safeElapsed = Number.isFinite(elapsed) ? elapsed : 0;
     const safeDuration = Math.max(0, Number.isFinite(totalDuration) ? totalDuration : 0);
@@ -44,7 +46,7 @@ export function advanceTitleLogoPlayback({
  * @param {number} [totalDuration] - 전체 재생 시간입니다.
  * @returns {number} 0~1 범위의 재생 진행률입니다.
  */
-export function calculateTitleLogoPlaybackProgress(elapsed, totalDuration = TITLE_LOGO_TOTAL_DURATION) {
+export function calculateTitleLogoPlaybackProgress(elapsed, totalDuration = TITLE_LOGO_DATA.TOTAL_DURATION) {
     const safeDuration = Number.isFinite(totalDuration) ? totalDuration : 0;
     if (safeDuration <= 0) {
         return 1;
@@ -64,7 +66,7 @@ export function calculateTitleLogoPlaybackProgress(elapsed, totalDuration = TITL
 export function calculateTitleLogoRemainingTimeToProgress(
     elapsed,
     targetProgress,
-    totalDuration = TITLE_LOGO_TOTAL_DURATION
+    totalDuration = TITLE_LOGO_DATA.TOTAL_DURATION
 ) {
     const safeDuration = Number.isFinite(totalDuration) ? totalDuration : 0;
     if (safeDuration <= 0) {
