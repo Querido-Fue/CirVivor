@@ -10,6 +10,7 @@ import { getSetting } from 'save/save_system.js';
 import {
     getHexaHiveType
 } from './_hexa_hive_layout.js';
+import { rotatePoint } from './_hexa_hive_layout_math.js';
 
 const ENEMY_COLLISION_DEBUG_CONSTANTS = getData('ENEMY_CONSTANTS').COLLISION_DEBUG;
 const ENEMY_COLLISION_RADIUS_DATA = getData('ENEMY_COLLISION_RADIUS_DATA');
@@ -20,22 +21,6 @@ const PROJECTILE_DEBUG_LINE_WIDTH = ENEMY_COLLISION_DEBUG_CONSTANTS.PROJECTILE_L
 const DEFAULT_DEBUG_LAYER = ENEMY_COLLISION_DEBUG_CONSTANTS.DEFAULT_LAYER;
 const MIN_COLLISION_DIMENSION = ENEMY_COLLISION_RADIUS_DATA.MIN_DIMENSION;
 const HEXA_HIVE_TYPE = getHexaHiveType();
-
-/**
- * 로컬 좌표를 회전한 월드 오프셋으로 변환합니다.
- * @param {number} x
- * @param {number} y
- * @param {number} radians
- * @returns {{x: number, y: number}}
- */
-function rotateLocalOffset(x, y, radians) {
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    return {
-        x: (x * cos) - (y * sin),
-        y: (x * sin) + (y * cos)
-    };
-}
 
 /**
  * 적 타입별 기본 충돌 원 반경을 반환합니다.
@@ -119,7 +104,7 @@ export function drawEnemyCollisionDebugCircles(options = {}) {
 
         const localX = (Number.isFinite(localCenter.x) ? localCenter.x : 0) * width;
         const localY = (Number.isFinite(localCenter.y) ? localCenter.y : 0) * height;
-        const rotated = rotateLocalOffset(localX, localY, rotationRadians);
+        const rotated = rotatePoint(localX, localY, rotationRadians);
         const x = renderX + rotated.x;
         const y = renderY + rotated.y;
 

@@ -7,6 +7,7 @@ import {
     cloneHexaHiveLayout,
     getHexaHiveType
 } from './_hexa_hive_layout.js';
+import { rotatePoint } from './_hexa_hive_layout_math.js';
 
 const getEnemyShapeKey = getData('getEnemyShapeKey');
 const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
@@ -19,22 +20,6 @@ const HEXA_HIVE_CELL_SHAPE = ENEMY_HEXA_HIVE_RENDER.CELL_SHAPE;
 const HEXA_HIVE_FRONT_SCALE = ENEMY_HEXA_HIVE_RENDER.FRONT_SCALE;
 const HEXA_HIVE_BACKDROP_SCALE = ENEMY_HEXA_HIVE_RENDER.BACKDROP_SCALE;
 const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
-
-/**
- * 좌표를 회전합니다.
- * @param {number} x
- * @param {number} y
- * @param {number} radians
- * @returns {{x: number, y: number}}
- */
-function rotateHivePoint(x, y, radians) {
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    return {
-        x: (x * cos) - (y * sin),
-        y: (x * sin) + (y * cos)
-    };
-}
 
 /**
  * @class HexaHiveEnemy
@@ -127,7 +112,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
 
         for (let i = 0; i < backdropCenters.length; i++) {
             const localCenter = backdropCenters[i];
-            const rotated = rotateHivePoint(
+            const rotated = rotatePoint(
                 localCenter.x * baseHeight,
                 localCenter.y * baseHeight,
                 rotationRadians
@@ -146,7 +131,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
 
         for (let i = 0; i < layout.visibleLocalCenters.length; i++) {
             const localCenter = layout.visibleLocalCenters[i];
-            const rotated = rotateHivePoint(
+            const rotated = rotatePoint(
                 localCenter.x * baseHeight,
                 localCenter.y * baseHeight,
                 rotationRadians
