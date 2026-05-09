@@ -1,4 +1,5 @@
 import { getLangString } from 'ui/ui_system.js';
+import { createFontString } from 'util/font_util.js';
 import {
     drawTitleMenuCardIcon,
     drawTitleMenuIcon,
@@ -93,6 +94,8 @@ export function drawTitleMenuCardFrontfaceContent({
         isCompactHorizontalCard ? panelRect.h * 0.28 : 0
     );
     const descriptionFontSize = getTitleMenuTextPresetFontSize(textConstants, uiww, 'H6', resolvedUiScale);
+    const titleFont = createFontString({ weight: 700, sizePx: titleFontSize });
+    const descriptionFont = createFontString({ weight: 500, sizePx: descriptionFontSize });
     const descriptionLineHeight = descriptionFontSize * 1.32;
     const titleLineHeight = titleFontSize * 1.06;
     const bottomPadding = inset * 0.8;
@@ -112,7 +115,7 @@ export function drawTitleMenuCardFrontfaceContent({
             y: (panelRect.h - titleLineHeight) * 0.5,
             maxWidth: panelRect.w - titleX - inset,
             lineHeight: titleLineHeight,
-            font: `700 ${titleFontSize}px "Pretendard Variable", arial`,
+            font: titleFont,
             fillStyle: getMenuCardTitleColor(),
             align: 'left'
         });
@@ -125,7 +128,7 @@ export function drawTitleMenuCardFrontfaceContent({
         y: titleY,
         maxWidth: panelRect.w - (inset * 2),
         lineHeight: titleLineHeight,
-        font: `700 ${titleFontSize}px "Pretendard Variable", arial`,
+        font: titleFont,
         fillStyle: getMenuCardTitleColor(),
         align: 'left'
     });
@@ -137,7 +140,7 @@ export function drawTitleMenuCardFrontfaceContent({
             y: descriptionY,
             maxWidth: panelRect.w - (inset * 2),
             lineHeight: descriptionLineHeight,
-            font: `500 ${descriptionFontSize}px "Pretendard Variable", arial`,
+            font: descriptionFont,
             fillStyle: getMenuCardDescriptionColor(),
             align: 'left'
         });
