@@ -68,12 +68,12 @@ export function buildTitleMenuCardRenderState({
     const offscreenStartY = baseCenterY;
     const centerX = lerpValue(offscreenStartX, baseCenterX, motionEase);
     const centerY = lerpValue(offscreenStartY, baseCenterY, motionEase);
-    const radius = Math.max(12 * resolvedUiScale, Math.min(width, height) * 0.08);
+    const radius = clampNumber(Math.min(width, height) * 0.08, 12 * resolvedUiScale, Infinity);
 
     return {
         revealProgress,
         revealEase,
-        alpha: clampNumber(clampNumber((revealProgress - 0.08) / 0.42, 0, 1), 0, 1),
+        alpha: clampNumber((revealProgress - 0.08) / 0.42, 0, 1),
         hoverProgress,
         panelRect: {
             x: centerX - (width * 0.5),
@@ -288,7 +288,8 @@ export function advanceTitleMenuCardRevealClock({
     }
 
     const totalDuration = getTitleMenuCardRevealTotalDuration(titleCardMenu);
-    const nextElapsed = Math.min(totalDuration, cardRevealElapsed + Math.max(0, delta));
+    const elapsedDelta = clampNumber(delta, 0, Infinity);
+    const nextElapsed = clampNumber(cardRevealElapsed + elapsedDelta, -Infinity, totalDuration);
     return {
         cardRevealStarted: true,
         cardRevealElapsed: nextElapsed,
