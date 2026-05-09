@@ -11,7 +11,7 @@ import { getDelta } from 'game/time_handler.js';
 import { getMouseInput } from 'input/input_system.js';
 import { getSetting } from 'save/save_system.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
-import { wrapTextByCharacters } from 'util/font_util.js';
+import { createFontString, wrapTextByCharacters } from 'util/font_util.js';
 import { clampNumber } from 'util/number_util.js';
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
@@ -471,7 +471,11 @@ export class UITooltipSystem {
      */
     #buildFontString(fontPreset, uiScale) {
         const fontSize = parseUIData(fontPreset.SIZE, uiScale);
-        return `${fontPreset.WEIGHT} ${fontSize}px ${fontPreset.FAMILY}`;
+        return createFontString({
+            weight: fontPreset.WEIGHT,
+            sizePx: fontSize,
+            family: fontPreset.FAMILY
+        });
     }
 
     /**

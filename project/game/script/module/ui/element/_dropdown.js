@@ -4,7 +4,7 @@ import { render, shadowOn, shadowOff, measureText } from "display/display_system
 import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { colorUtil, formatRgba } from "util/color_util.js";
-import { truncateTextToWidth } from "util/font_util.js";
+import { createFontString, truncateTextToWidth } from "util/font_util.js";
 import { getSetting } from "save/save_system.js";
 
 /**
@@ -91,7 +91,11 @@ export class DropdownElement extends BaseUIElement {
         this.textActiveColor = properties.textActiveColor || ColorSchemes.Overlay.Segment.TextActive;
         this.iconColor = properties.iconColor || ColorSchemes.Overlay.Text.Control || this.textColor;
 
-        this.font = properties.font || `600 ${this.height * 0.5}px "Pretendard Variable", arial`;
+        this.font = properties.font || createFontString({
+            weight: 600,
+            sizePx: this.height * 0.5,
+            family: "Pretendard Variable, arial"
+        });
 
         this.hoverScaleMultiplier = 1.03;
         this.pressScaleMultiplier = 1.03;
