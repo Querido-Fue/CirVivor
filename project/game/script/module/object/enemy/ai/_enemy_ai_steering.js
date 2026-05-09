@@ -45,6 +45,30 @@ const normalizeInto = (x, y, out) => {
 };
 
 /**
+ * 정책 목표에 도착했을 때 사용할 안정적인 방향을 기록합니다.
+ * @param {object} state - 적 AI 상태입니다.
+ * @param {number} startX - 현재 X 좌표입니다.
+ * @param {number} startY - 현재 Y 좌표입니다.
+ * @param {number} playerX - 플레이어 X 좌표입니다.
+ * @param {number} playerY - 플레이어 Y 좌표입니다.
+ * @param {{x: number, y: number}} out - 출력 버퍼입니다.
+ * @returns {{x: number, y: number}} 출력 버퍼입니다.
+ */
+const resolveArrivedTargetDirectionInto = (state, startX, startY, playerX, playerY, out) => {
+    if (state.flowPolicyKey === 'hexa_hive_approach') {
+        const playerDx = playerX - startX;
+        const playerDy = playerY - startY;
+        if (length(playerDx, playerDy) > EPSILON) {
+            return normalizeInto(playerDx, playerDy, out);
+        }
+    }
+
+    out.x = 0;
+    out.y = 0;
+    return out;
+};
+
+/**
  * 적 AI의 현재 target 기준 steering 방향을 계산하고 flow/direct-path 캐시 상태를 갱신합니다.
  * @param {object} options - steering 계산 옵션입니다.
  * @param {object} options.enemy - 적 객체입니다.
@@ -122,7 +146,16 @@ export function resolveEnemyAISteeringDirection({
     }
 
     if (hasDirectPath) {
-        normalizeInto(state.targetX - startX, state.targetY - startY, scratchDir);
+        const targetDx = state.targetX - startX;
+        const targetDy = state.targetY - startY;
+        const arriveEpsilon = Number.isFinite(profile.NAV_TARGET_ARRIVE_EPSILON_PX)
+            ? Math.max(0, profile.NAV_TARGET_ARRIVE_EPSILON_PX)
+            : 2;
+        if (length(targetDx, targetDy) <= arriveEpsilon) {
+            resolveArrivedTargetDirectionInto(state, startX, startY, targetX, targetY, scratchDir);
+        } else {
+            normalizeInto(targetDx, targetDy, scratchDir);
+        }
         state.flowData = null;
         state.flowKey = '';
         return scratchDir;
@@ -203,7 +236,16 @@ export function resolveEnemyAISteeringDirection({
     }
 
     if (!hasDirection) {
-        normalizeInto(state.targetX - startX, state.targetY - startY, scratchDir);
+        const targetDx = state.targetX - startX;
+        const targetDy = state.targetY - startY;
+        const arriveEpsilon = Number.isFinite(profile.NAV_TARGET_ARRIVE_EPSILON_PX)
+            ? Math.max(0, profile.NAV_TARGET_ARRIVE_EPSILON_PX)
+            : 2;
+        if (length(targetDx, targetDy) <= arriveEpsilon) {
+            resolveArrivedTargetDirectionInto(state, startX, startY, targetX, targetY, scratchDir);
+        } else {
+            normalizeInto(targetDx, targetDy, scratchDir);
+        }
     }
     return scratchDir;
 }

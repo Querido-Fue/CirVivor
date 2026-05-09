@@ -22,6 +22,7 @@ const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const ENEMY_AI_POLICY_BY_TYPE = ENEMY_AI_CONSTANTS.POLICY_BY_TYPE;
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
+const HEXA_TYPE = 'hexa';
 const HEXA_HIVE_TYPE = 'hexa_hive';
 
 /**
@@ -149,6 +150,80 @@ export const stepArrowChargeState = (state, stepDelta, targetX, targetY, profile
     state.chargeTargetX = targetX;
     state.chargeTargetY = targetY;
     return true;
+};
+
+/**
+ * 합체 대상으로 추적할 수 있는 육각형 계열 적인지 확인합니다.
+ * @param {object|null|undefined} enemy - 검사 대상 적입니다.
+ * @returns {boolean} 합체 대상 여부입니다.
+ */
+const isHexaMergeTargetEnemy = (enemy) => (
+    enemy?.type === HEXA_TYPE
+    || enemy?.type === HEXA_HIVE_TYPE
+);
+
+/**
+ * 현재 육각형 적이 따라갈 실제 합체 후보 목표를 찾습니다.
+ * @param {object} enemy - 현재 적 객체입니다.
+ * @param {object[]|null} enemies - 전체 적 목록입니다.
+ * @param {number} startX - 현재 X 좌표입니다.
+ * @param {number} startY - 현재 Y 좌표입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @param {{x: number, y: number, count?: number}} out - 출력 버퍼입니다.
+ * @returns {{x: number, y: number, count?: number}|null} 선택한 합체 후보 목표입니다.
+ */
+const findHexaMergePartnerGoalInto = (enemy, enemies, startX, startY, profile, out) => {
+    if (!Array.isArray(enemies) || enemies.length === 0) {
+        return null;
+    }
+
+    const currentId = Number.isInteger(enemy?.id) ? enemy.id : null;
+    const searchRadius = Number.isFinite(profile.HEXA_CLUSTER_PARTNER_SEARCH_RADIUS_PX)
+        ? Math.max(0, profile.HEXA_CLUSTER_PARTNER_SEARCH_RADIUS_PX)
+        : 640;
+    const searchRadiusSq = searchRadius * searchRadius;
+    const hiveJoinMultiplier = Number.isFinite(profile.HEXA_CLUSTER_HIVE_JOIN_SCORE_MULTIPLIER)
+        ? Math.max(0.1, profile.HEXA_CLUSTER_HIVE_JOIN_SCORE_MULTIPLIER)
+        : 0.85;
+    let bestScore = INF;
+    let found = false;
+
+    for (let i = 0; i < enemies.length; i++) {
+        const candidate = enemies[i];
+        if (!candidate || candidate === enemy || candidate.active === false || !candidate.position) {
+            continue;
+        }
+        if (currentId !== null && candidate.id === currentId) {
+            continue;
+        }
+        if (!isHexaMergeTargetEnemy(candidate)) {
+            continue;
+        }
+
+        const candidateX = Number.isFinite(candidate.position.x) ? candidate.position.x : 0;
+        const candidateY = Number.isFinite(candidate.position.y) ? candidate.position.y : 0;
+        const dx = candidateX - startX;
+        const dy = candidateY - startY;
+        const distanceSq = (dx * dx) + (dy * dy);
+        if (distanceSq > searchRadiusSq) {
+            continue;
+        }
+
+        const score = candidate.type === HEXA_HIVE_TYPE
+            ? distanceSq * hiveJoinMultiplier
+            : distanceSq;
+        if (score >= bestScore) {
+            continue;
+        }
+
+        bestScore = score;
+        found = true;
+        out.x = candidateX;
+        out.y = candidateY;
+        out.count = 1;
+    }
+
+    return found ? out : null;
 };
 
 /**
@@ -392,30 +467,23 @@ export const updatePolicyIntent = (
     }
 
     if (policyId === ENEMY_AI_POLICY.CLUSTER_JOIN) {
-        if (isHeavyRefresh || !Number.isFinite(state.targetX) || !Number.isFinite(state.targetY)) {
-            const densityGoal = getSharedDensityGoal(
-                context,
-                enemies,
-                simulationWW,
-                simulationObjectWH,
-                profile,
-                'hexa',
-                'cluster_join',
-                startX,
-                startY,
-                3,
-                2,
-                state.scratchDensityGoal
-            );
-            if (densityGoal) {
-                state.targetX = densityGoal.x;
-                state.targetY = densityGoal.y;
-            } else {
-                state.targetX = playerX;
-                state.targetY = playerY;
-            }
+        const partnerGoal = findHexaMergePartnerGoalInto(
+            enemy,
+            enemies,
+            startX,
+            startY,
+            profile,
+            state.scratchDensityGoal
+        );
+        if (partnerGoal) {
+            state.targetX = partnerGoal.x;
+            state.targetY = partnerGoal.y;
+            state.flowPolicyKey = 'cluster_partner_join';
+        } else {
+            state.targetX = playerX;
+            state.targetY = playerY;
+            state.flowPolicyKey = 'cluster_join_player';
         }
-        state.flowPolicyKey = 'cluster_join';
         return;
     }
 

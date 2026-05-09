@@ -29,6 +29,18 @@ import {
     hasCollisionProjectileHit,
     markCollisionProjectileHit
 } from './_collision_projectile_effect.js';
+import {
+    createCollisionFrameStats,
+    createCollisionFrameStatsSnapshot,
+    resetCollisionFrameStats
+} from './collision_frame_stats.js';
+import {
+    createCollisionBody,
+    createCollisionGridBucket,
+    createCollisionManifold,
+    createCollisionScratchProjectileBody,
+    createCollisionWallBody
+} from './collision_scratch_objects.js';
 import { COLLISION_RULE_DYNAMIC_RESOLVE, getCollisionRule } from './_collision_rules.js';
 import {
     COLLISION_BODY_KIND_ENEMY as BODY_KIND_ENEMY,
@@ -69,49 +81,7 @@ const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
 const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
 const PARALLEL_NARROWPHASE_MIN_PAIR_COUNT = 512;
 const PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS = 4;
-const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
-    'enemyTotalMs',
-    'enemyBodyBuildMs',
-    'playerBodyBuildMs',
-    'wallBodyBuildMs',
-    'enemyPositionSolveMs',
-    'enemyStabilizeMs',
-    'enemyNonPositionMs',
-    'solveGridMs',
-    'solvePairScanMs',
-    'solveCandidateBuildMs',
-    'solvePairProcessMs',
-    'solveNarrowphaseMs',
-    'projectileTotalMs',
-    'projectileEnemyBodyBuildMs',
-    'projectileGridBuildMs',
-    'projectileScanMs',
-    'projectileCandidateQueryMs',
-    'projectileNarrowphaseMs',
-    'contactTotalMs',
-    'contactBodyBuildMs',
-    'contactGridBuildMs',
-    'contactPairScanMs',
-    'solveBucketPairCount',
-    'solveCandidatePairCount',
-    'solveDuplicatePairSkipCount',
-    'solveRuleRejectCount',
-    'solveAabbPassCount',
-    'solveCirclePassCount',
-    'solveResolvedPairCount',
-    'solveSoACirclePairCount',
-    'solveObjectNarrowphasePairCount',
-    'solveParallelNarrowphasePairCount',
-    'solveParallelNarrowphaseContactCount',
-    'solveParallelNarrowphasePoolSize',
-    'solveParallelNarrowphaseChunkCount',
-    'solveParallelNarrowphaseWaitMs',
-    'solveParallelNarrowphaseFallbackCount',
-    'solveParallelNarrowphaseFallbackPairCount',
-    'solveParallelNarrowphaseOverflowCount',
-    'solveBudgetSkipCount',
-    'solveLargePopulationMode'
-]);
+
 /**
  * @typedef {object} CollisionRule
  * @property {boolean} check
@@ -175,91 +145,17 @@ export class CollisionHandler {
         this.#tempBodies = [];
         this.#wallBodiesCache = [];
         this.#wallBodiesDirty = true;
-        this.#frameStats = {
-            collisionCheckCount: 0,
-            aabbPassCount: 0,
-            aabbRejectCount: 0,
-            circlePassCount: 0,
-            circleRejectCount: 0,
-            partChecks: 0,
-            enemyTotalMs: 0,
-            enemyBodyBuildMs: 0,
-            playerBodyBuildMs: 0,
-            wallBodyBuildMs: 0,
-            enemyPositionSolveMs: 0,
-            enemyStabilizeMs: 0,
-            enemyNonPositionMs: 0,
-            solveGridMs: 0,
-            solvePairScanMs: 0,
-            solveCandidateBuildMs: 0,
-            solvePairProcessMs: 0,
-            solveNarrowphaseMs: 0,
-            projectileTotalMs: 0,
-            projectileEnemyBodyBuildMs: 0,
-            projectileGridBuildMs: 0,
-            projectileScanMs: 0,
-            projectileCandidateQueryMs: 0,
-            projectileNarrowphaseMs: 0,
-            contactTotalMs: 0,
-            contactBodyBuildMs: 0,
-            contactGridBuildMs: 0,
-            contactPairScanMs: 0,
-            solveBucketPairCount: 0,
-            solveCandidatePairCount: 0,
-            solveDuplicatePairSkipCount: 0,
-            solveRuleRejectCount: 0,
-            solveAabbPassCount: 0,
-            solveCirclePassCount: 0,
-            solveResolvedPairCount: 0,
-            solveSoACirclePairCount: 0,
-            solveObjectNarrowphasePairCount: 0,
-            solveParallelNarrowphasePairCount: 0,
-            solveParallelNarrowphaseContactCount: 0,
-            solveParallelNarrowphasePoolSize: 0,
-            solveParallelNarrowphaseChunkCount: 0,
-            solveParallelNarrowphaseWaitMs: 0,
-            solveParallelNarrowphaseFallbackCount: 0,
-            solveParallelNarrowphaseFallbackPairCount: 0,
-            solveParallelNarrowphaseOverflowCount: 0,
-            solveBudgetSkipCount: 0,
-            solveLargePopulationMode: 0
-        };
+        this.#frameStats = createCollisionFrameStats();
         this.#bodyPool = [];
         this.#bodyPoolCursor = 0;
         this.#enemyBodiesBuffer = [];
         this.#playerBodiesBuffer = [];
         this.#pairBitmap = new Uint32Array(512);
         this.#pairBitmapBodyCount = 0;
-        this.#scratchProjectileBody = {
-            kind: 'projectile', shape: 'circle',
-            x: 0, y: 0, centerX: 0, centerY: 0, radius: 0,
-            weight: 1, movable: false, ref: null, id: -1,
-            minX: 0, maxX: 0, minY: 0, maxY: 0,
-            sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
-            boundRadius: 0, broadRadius: 0, velocityX: 0, velocityY: 0,
-            enemyPairMinX: 0, enemyPairMaxX: 0, enemyPairMinY: 0, enemyPairMaxY: 0,
-            projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
-            enemyPairBroadRadius: 0, projectileBroadRadius: 0,
-            circleParts: null, circlePartCount: 0, mergeLock: false,
-            _broadDataIndex: -1,
-            _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
-            _frameResolveMoved: 0, _frameResolveMax: Infinity
-        };
-        this.#scratchManifold = {
-            collided: false,
-            normalX: 1, normalY: 0, penetration: 0, pointX: 0, pointY: 0,
-            moveAX: 0, moveAY: 0, moveBX: 0, moveBY: 0
-        };
-        this.#scratchCandidateManifold = {
-            collided: false,
-            normalX: 1, normalY: 0, penetration: 0, pointX: 0, pointY: 0,
-            moveAX: 0, moveAY: 0, moveBX: 0, moveBY: 0
-        };
-        this.#scratchBestManifold = {
-            collided: false,
-            normalX: 1, normalY: 0, penetration: 0, pointX: 0, pointY: 0,
-            moveAX: 0, moveAY: 0, moveBX: 0, moveBY: 0
-        };
+        this.#scratchProjectileBody = createCollisionScratchProjectileBody();
+        this.#scratchManifold = createCollisionManifold();
+        this.#scratchCandidateManifold = createCollisionManifold();
+        this.#scratchBestManifold = createCollisionManifold();
         this.#broadData = new Float32Array(512 * BROAD_STRIDE);
         this.#relationBroadData = new Float64Array(512 * RELATION_BROAD_STRIDE);
         this.#bodyKindCodes = new Uint8Array(512);
@@ -309,15 +205,7 @@ export class CollisionHandler {
         this.#profileEnabled = this.#isProfilingEnabled();
         this.#enemyBodyFrameToken++;
         this.#invalidateEnemyBodyCache();
-        this.#frameStats.collisionCheckCount = 0;
-        this.#frameStats.aabbPassCount = 0;
-        this.#frameStats.aabbRejectCount = 0;
-        this.#frameStats.circlePassCount = 0;
-        this.#frameStats.circleRejectCount = 0;
-        this.#frameStats.partChecks = 0;
-        for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
-            this.#frameStats[COLLISION_PROFILE_STAT_FIELDS[i]] = 0;
-        }
+        resetCollisionFrameStats(this.#frameStats);
     }
 
     /**
@@ -325,19 +213,7 @@ export class CollisionHandler {
      * @returns {object}
      */
     getFrameStats() {
-        const stats = {
-            collisionCheckCount: this.#frameStats.collisionCheckCount,
-            aabbPassCount: this.#frameStats.aabbPassCount,
-            aabbRejectCount: this.#frameStats.aabbRejectCount,
-            circlePassCount: this.#frameStats.circlePassCount,
-            circleRejectCount: this.#frameStats.circleRejectCount,
-            partChecks: this.#frameStats.partChecks
-        };
-        for (let i = 0; i < COLLISION_PROFILE_STAT_FIELDS.length; i++) {
-            const fieldName = COLLISION_PROFILE_STAT_FIELDS[i];
-            stats[fieldName] = Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0;
-        }
-        return stats;
+        return createCollisionFrameStatsSnapshot(this.#frameStats);
     }
 
     /**
@@ -1639,21 +1515,7 @@ export class CollisionHandler {
         if (this.#bodyPoolCursor < this.#bodyPool.length) {
             return this.#bodyPool[this.#bodyPoolCursor++];
         }
-        const body = {
-            id: -1, kind: '', shape: '', circleParts: null, circlePartCount: 0, ref: null,
-            weight: 1, movable: true,
-            centerX: 0, centerY: 0, x: 0, y: 0, radius: 0,
-            minX: 0, maxX: 0, minY: 0, maxY: 0,
-            sweepMinX: 0, sweepMaxX: 0, sweepMinY: 0, sweepMaxY: 0,
-            boundRadius: 0, broadRadius: 0, resolveRadius: 0, velocityX: 0, velocityY: 0,
-            enemyPairMinX: 0, enemyPairMaxX: 0, enemyPairMinY: 0, enemyPairMaxY: 0,
-            projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
-            enemyPairBroadRadius: 0, projectileBroadRadius: 0,
-            mergeLock: false,
-            _broadDataIndex: -1,
-            _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
-            _frameResolveMoved: 0, _frameResolveMax: Infinity
-        };
+        const body = createCollisionBody();
         this.#bodyPool.push(body);
         this.#bodyPoolCursor++;
         return body;
@@ -2369,10 +2231,7 @@ export class CollisionHandler {
             bucket.count = 0;
             return bucket;
         }
-        const b = {
-            indices: new Int32Array(GRID_BUCKET_INITIAL_CAPACITY),
-            count: 0
-        };
+        const b = createCollisionGridBucket(GRID_BUCKET_INITIAL_CAPACITY);
         this.#bucketPool.push(b);
         this.#bucketPoolCursor++;
         return b;
@@ -3121,42 +2980,8 @@ export class CollisionHandler {
             const w = Number.isFinite(rect.w) ? rect.w : 0;
             const h = Number.isFinite(rect.h) ? rect.h : 0;
             if (w <= 0 || h <= 0) continue;
-            const isCenter = rect.origin === 'center' || rect.isCenter === true;
-            const cx = isCenter ? rect.x : (rect.x + (w * 0.5));
-            const cy = isCenter ? rect.y : (rect.y + (h * 0.5));
-            const hw = w * 0.5;
-            const hh = h * 0.5;
 
-            out.push({
-                id: Number.isInteger(rect.id) ? rect.id : -1,
-                kind: 'wall',
-                shape: 'rect',
-                circleParts: null,
-                circlePartCount: 0,
-                ref: wall,
-                weight: Number.MAX_SAFE_INTEGER,
-                movable: false,
-                mergeLock: false,
-                centerX: cx,
-                centerY: cy,
-                x: cx,
-                y: cy,
-                minX: cx - hw,
-                maxX: cx + hw,
-                minY: cy - hh,
-                maxY: cy + hh,
-                sweepMinX: cx - hw,
-                sweepMaxX: cx + hw,
-                sweepMinY: cy - hh,
-                sweepMaxY: cy + hh,
-                boundRadius: Math.max(hw, hh),
-                broadRadius: Math.hypot(hw, hh),
-                velocityX: 0,
-                velocityY: 0,
-                _candidatePairCount: 0,
-                _resolvedPairCount: 0,
-                _passPairProcessCount: 0
-            });
+            out.push(createCollisionWallBody(rect, wall));
         }
         this.#wallBodiesDirty = false;
         return out;

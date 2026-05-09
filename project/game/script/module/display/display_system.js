@@ -20,6 +20,8 @@ const WEBGL_LAYER_NAME_MAP = Object.freeze({
     effectGL: 'effect'
 });
 
+const NATIVE_2D_SURFACE_IDS = new Set(['texteffect', 'ui', 'vignette', 'top']);
+
 /**
  * @typedef {object} DisplaySurfaceDescriptor
  * @property {string} id - surface 식별자입니다.
@@ -84,8 +86,7 @@ export class DisplaySystem {
         await this.screenHandler.init();
 
         for (const descriptor of this.surfaceMap.values()) {
-            descriptor.canvas.width = this.screenHandler.width;
-            descriptor.canvas.height = this.screenHandler.height;
+            this.#syncSurfaceBackingStore(descriptor);
         }
 
         this.resize();
@@ -103,8 +104,6 @@ export class DisplaySystem {
         const entry = pool.acquire();
         const surfaceId = `dynamic:${type}:${++this.dynamicSequence}`;
 
-        entry.canvas.width = this.screenHandler.width;
-        entry.canvas.height = this.screenHandler.height;
         entry.canvas.dataset.surfaceId = surfaceId;
 
         const descriptor = {
@@ -125,7 +124,9 @@ export class DisplaySystem {
 
         this.surfaceMap.set(surfaceId, descriptor);
         this.dynamicSurfaceIds.push(surfaceId);
+        this.#syncSurfaceBackingStore(descriptor);
         this.#registerDescriptor(descriptor);
+        this.#syncSurfaceCoordinateTransform(descriptor);
         this.#applyCanvasStyle(descriptor);
         this.#syncDynamicHostOrder();
         return descriptor;
@@ -271,8 +272,7 @@ export class DisplaySystem {
 
         if (renderTargetChanged) {
             for (const descriptor of this.surfaceMap.values()) {
-                descriptor.canvas.width = this.screenHandler.width;
-                descriptor.canvas.height = this.screenHandler.height;
+                this.#syncSurfaceBackingStore(descriptor);
             }
         }
 
@@ -369,6 +369,57 @@ export class DisplaySystem {
         }
 
         this.webGLHandler.registerLayer(descriptor.id, descriptor.context, { mode: descriptor.mode });
+    }
+
+    /**
+     * @private
+     * 렌더 스케일과 독립적으로 네이티브 해상도를 유지할 2D surface인지 반환합니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 검사할 surface descriptor입니다.
+     * @returns {boolean} 네이티브 2D surface 여부입니다.
+     */
+    #usesNative2DResolution(descriptor) {
+        return descriptor?.type === '2d'
+            && (descriptor.dynamic === true || NATIVE_2D_SURFACE_IDS.has(descriptor.id));
+    }
+
+    /**
+     * @private
+     * surface의 backing store 크기를 현재 렌더/표시 해상도에 맞춥니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 동기화할 surface descriptor입니다.
+     */
+    #syncSurfaceBackingStore(descriptor) {
+        if (!descriptor?.canvas) {
+            return;
+        }
+
+        const width = this.#usesNative2DResolution(descriptor)
+            ? this.screenHandler.baseWidth
+            : this.screenHandler.width;
+        const height = this.#usesNative2DResolution(descriptor)
+            ? this.screenHandler.baseHeight
+            : this.screenHandler.height;
+        descriptor.canvas.width = Math.max(1, width);
+        descriptor.canvas.height = Math.max(1, height);
+        this.#syncSurfaceCoordinateTransform(descriptor);
+    }
+
+    /**
+     * @private
+     * 네이티브 2D surface가 기존 렌더 좌표계를 그대로 쓰도록 컨텍스트 transform을 맞춥니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 동기화할 surface descriptor입니다.
+     */
+    #syncSurfaceCoordinateTransform(descriptor) {
+        if (descriptor?.type !== '2d' || !this.drawHandler) {
+            return;
+        }
+
+        const scaleX = this.#usesNative2DResolution(descriptor)
+            ? this.screenHandler.baseWidth / Math.max(1, this.screenHandler.width)
+            : 1;
+        const scaleY = this.#usesNative2DResolution(descriptor)
+            ? this.screenHandler.baseHeight / Math.max(1, this.screenHandler.height)
+            : 1;
+        this.drawHandler.setLayerTransform(descriptor.id, scaleX, scaleY);
     }
 
     /**

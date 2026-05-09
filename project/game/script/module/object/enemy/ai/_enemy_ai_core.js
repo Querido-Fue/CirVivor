@@ -40,6 +40,29 @@ function getEnemyAIProfile(context) {
 }
 
 /**
+ * 육각형 합체 추적 목표에 충분히 가까워져 재선택이 필요한지 확인합니다.
+ * @param {object} state - 적 AI 상태입니다.
+ * @param {object} updateFrame - 현재 fixedUpdate 좌표 문맥입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @returns {boolean} 목표 재선택 필요 여부입니다.
+ */
+const shouldRefreshHexaClusterTarget = (state, updateFrame, profile) => {
+    if (state.policyId !== ENEMY_AI_POLICY.CLUSTER_JOIN) {
+        return false;
+    }
+    if (!Number.isFinite(state.targetX) || !Number.isFinite(state.targetY)) {
+        return true;
+    }
+
+    const refreshDistance = Number.isFinite(profile.HEXA_CLUSTER_TARGET_REFRESH_DISTANCE_PX)
+        ? Math.max(0, profile.HEXA_CLUSTER_TARGET_REFRESH_DISTANCE_PX)
+        : 32;
+    const dx = state.targetX - updateFrame.startX;
+    const dy = state.targetY - updateFrame.startY;
+    return length(dx, dy) <= refreshDistance;
+};
+
+/**
  * 재사용 좌표 버퍼를 보장합니다.
  * @param {{x?: number, y?: number}|null|undefined} point
  * @param {number} fallbackX
@@ -218,8 +241,9 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
         profile
     );
     const shouldRefreshDecision = shouldRefreshEnemyAIDecision(state, context, forcedPolicyRefresh);
+    const shouldRefreshClusterTarget = shouldRefreshHexaClusterTarget(state, updateFrame, profile);
 
-    if (shouldRefreshDecision || !requiresDensityAnchor(state.policyId)) {
+    if (shouldRefreshDecision || shouldRefreshClusterTarget || !requiresDensityAnchor(state.policyId)) {
         updatePolicyIntent(
             enemy,
             state,

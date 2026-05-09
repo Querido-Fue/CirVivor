@@ -9,6 +9,7 @@ export class DrawHandler2D {
     #pathCache;
     #measureCtx;
     #layerOptions;
+    #layerTransforms;
 
     /**
      * @param {Object.<string, CanvasRenderingContext2D>} contexts - 초기 레이어 컨텍스트 맵입니다.
@@ -19,6 +20,7 @@ export class DrawHandler2D {
         this.#shadowState = new Map();
         this.#pathCache = new Map();
         this.#layerOptions = new Map();
+        this.#layerTransforms = new Map();
 
         this.#generatePaths();
 
@@ -34,7 +36,7 @@ export class DrawHandler2D {
      * 레이어를 등록합니다.
      * @param {string} layerName - 레이어 식별자입니다.
      * @param {CanvasRenderingContext2D} context - 연결할 2D 컨텍스트입니다.
-     * @param {{persistent?: boolean}} [options={}] - 레이어 동작 옵션입니다.
+     * @param {{persistent?: boolean, transformScaleX?: number, transformScaleY?: number}} [options={}] - 레이어 동작 옵션입니다.
      */
     registerLayer(layerName, context, options = {}) {
         if (!layerName || !context) {
@@ -47,6 +49,8 @@ export class DrawHandler2D {
         this.#layerOptions.set(layerName, {
             persistent: options.persistent === true
         });
+        this.#layerTransforms.set(layerName, this.#normalizeLayerTransform(options));
+        this.#applyLayerTransform(layerName, context);
     }
 
     /**
@@ -58,6 +62,26 @@ export class DrawHandler2D {
         this.#stateCaches.delete(layerName);
         this.#shadowState.delete(layerName);
         this.#layerOptions.delete(layerName);
+        this.#layerTransforms.delete(layerName);
+    }
+
+    /**
+     * 레이어별 좌표계 transform을 설정합니다.
+     * @param {string} layerName - 레이어 식별자입니다.
+     * @param {number} scaleX - X축 배율입니다.
+     * @param {number} scaleY - Y축 배율입니다.
+     */
+    setLayerTransform(layerName, scaleX = 1, scaleY = 1) {
+        if (!this.#contexts.has(layerName)) {
+            return;
+        }
+
+        this.#layerTransforms.set(layerName, this.#normalizeLayerTransform({
+            transformScaleX: scaleX,
+            transformScaleY: scaleY
+        }));
+        this.#stateCaches.set(layerName, {});
+        this.#applyLayerTransform(layerName, this.#contexts.get(layerName));
     }
 
     /**
@@ -168,8 +192,9 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#resetLayerState(layerName, context);
+        this.#resetLayerState(layerName, context, { applyTransform: false });
         context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+        this.#applyLayerTransform(layerName, context);
     }
 
     /**
@@ -181,8 +206,9 @@ export class DrawHandler2D {
             if (layerOptions?.persistent === true) {
                 continue;
             }
-            this.#resetLayerState(layerName, context);
+            this.#resetLayerState(layerName, context, { applyTransform: false });
             context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+            this.#applyLayerTransform(layerName, context);
         }
     }
 
@@ -193,8 +219,9 @@ export class DrawHandler2D {
      * 항상 동일한 시작 상태에서 렌더링되도록 보장합니다.
      * @param {string} layerName - 초기화할 레이어 식별자입니다.
      * @param {CanvasRenderingContext2D} context - 초기화할 컨텍스트입니다.
+     * @param {{applyTransform?: boolean}} [options={}] - 초기화 후 레이어 transform을 복원할지 여부입니다.
      */
-    #resetLayerState(layerName, context) {
+    #resetLayerState(layerName, context, options = {}) {
         if (typeof context.resetTransform === 'function') {
             context.resetTransform();
         } else if (typeof context.setTransform === 'function') {
@@ -214,6 +241,41 @@ export class DrawHandler2D {
         context.font = '10px sans-serif';
 
         this.#stateCaches.set(layerName, {});
+        if (options.applyTransform !== false) {
+            this.#applyLayerTransform(layerName, context);
+        }
+    }
+
+    /**
+     * 레이어 transform 옵션을 유효한 배율로 정규화합니다.
+     * @param {{transformScaleX?: number, transformScaleY?: number}} [options={}] - transform 옵션입니다.
+     * @returns {{scaleX:number, scaleY:number}} 정규화된 transform입니다.
+     * @private
+     */
+    #normalizeLayerTransform(options = {}) {
+        const scaleX = Number.isFinite(options.transformScaleX) && options.transformScaleX > 0
+            ? options.transformScaleX
+            : 1;
+        const scaleY = Number.isFinite(options.transformScaleY) && options.transformScaleY > 0
+            ? options.transformScaleY
+            : 1;
+
+        return { scaleX, scaleY };
+    }
+
+    /**
+     * 등록된 레이어 transform을 컨텍스트에 적용합니다.
+     * @param {string} layerName - 레이어 식별자입니다.
+     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+     * @private
+     */
+    #applyLayerTransform(layerName, context) {
+        if (!context || typeof context.setTransform !== 'function') {
+            return;
+        }
+
+        const transform = this.#layerTransforms.get(layerName) || { scaleX: 1, scaleY: 1 };
+        context.setTransform(transform.scaleX, 0, 0, transform.scaleY, 0, 0);
     }
 
     /**
