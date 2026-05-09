@@ -1,3 +1,5 @@
+import { clampFiniteNumber } from 'util/number_util.js';
+
 /**
  * 활성화된 모든 오브젝트 풀의 참조를 저장합니다. 디버그 표시에 사용됩니다.
  * @type {Object.<string, ObjectPool>}
@@ -11,6 +13,12 @@ export const activeObjectPools = {};
  */
 
 export class ObjectPool {
+    /**
+     * 객체 풀을 생성합니다.
+     * @param {Function} createFn - 새 객체를 생성하는 함수입니다.
+     * @param {?Function} [resetFn=null] - 객체를 재사용하기 전에 초기화하는 함수입니다.
+     * @param {?string} [name=null] - 디버그 목록에 등록할 풀 이름입니다.
+     */
     constructor(createFn, resetFn = null, name = null) {
         this.createFn = createFn;
         this.resetFn = resetFn;
@@ -51,7 +59,8 @@ export class ObjectPool {
      * @param {number} count - 미리 생성할 객체 수
      */
     warmUp(count) {
-        for (let i = 0; i < count; i++) {
+        const safeCount = Math.floor(clampFiniteNumber(Number(count), 0, Infinity, 0));
+        for (let i = 0; i < safeCount; i++) {
             this.pool.push(this.createFn());
             this.createdCount++;
         }
