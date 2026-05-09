@@ -3,6 +3,7 @@ import { compileShader, createProgram } from 'display/webgl/_shader_utils.js';
 import { getDelta } from 'game/time_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 
 /**
  * 타이틀 그라디언트에서 사용하는 색상 개수입니다.
@@ -21,6 +22,12 @@ const TITLE_GRADIENT_TIME_WRAP = 4096;
  * @type {number}
  */
 const TITLE_GRADIENT_TIME_SCALE = 1;
+
+/**
+ * 테마 색상 조회가 모두 실패했을 때 사용하는 최종 fallback 색상입니다.
+ * @type {string}
+ */
+const TITLE_GRADIENT_FALLBACK_COLOR = '#000000';
 
 /**
  * 타이틀 전용 풀스크린 버텍스 셰이더입니다.
@@ -189,8 +196,8 @@ export class TitleGradientBackground {
      * 프레임 시간에 맞춰 내부 시간 축을 갱신합니다.
      */
     update() {
-        const delta = getDelta();
-        if (!Number.isFinite(delta) || delta <= 0) {
+        const delta = clampFiniteNumber(getDelta(), 0, Infinity, 0);
+        if (delta <= 0) {
             return;
         }
 
@@ -421,8 +428,8 @@ export class TitleGradientBackground {
             return false;
         }
 
-        const nextWidth = Math.max(1, this.canvas.width || 1);
-        const nextHeight = Math.max(1, this.canvas.height || 1);
+        const nextWidth = clampFiniteNumber(Number(this.canvas.width), 1, Infinity, 1);
+        const nextHeight = clampFiniteNumber(Number(this.canvas.height), 1, Infinity, 1);
         const changed = nextWidth !== this.width || nextHeight !== this.height;
         this.width = nextWidth;
         this.height = nextHeight;
@@ -452,9 +459,9 @@ export class TitleGradientBackground {
                 : { r: 0, g: 0, b: 0 };
             const baseIndex = index * 3;
 
-            this.colorData[baseIndex] = rgb.r / 255;
-            this.colorData[baseIndex + 1] = rgb.g / 255;
-            this.colorData[baseIndex + 2] = rgb.b / 255;
+            this.colorData[baseIndex] = clampFiniteNumber(Number(rgb.r), 0, 255, 0) / 255;
+            this.colorData[baseIndex + 1] = clampFiniteNumber(Number(rgb.g), 0, 255, 0) / 255;
+            this.colorData[baseIndex + 2] = clampFiniteNumber(Number(rgb.b), 0, 255, 0) / 255;
         }
 
         this.cachedPaletteSignature = paletteSignature;
@@ -530,10 +537,9 @@ export class TitleGradientBackground {
             return themeFallbackColors.slice(0, TITLE_GRADIENT_COLOR_COUNT);
         }
 
-        const fallbackColor = ColorSchemes?.Title?.Background || ColorSchemes?.Background;
-        if (typeof fallbackColor === 'string' && fallbackColor) {
-            return Array(TITLE_GRADIENT_COLOR_COUNT).fill(fallbackColor);
-        }
-        return [];
+        const fallbackColor = ColorSchemes?.Title?.Background
+            || ColorSchemes?.Background
+            || TITLE_GRADIENT_FALLBACK_COLOR;
+        return Array(TITLE_GRADIENT_COLOR_COUNT).fill(fallbackColor);
     }
 }
