@@ -1,80 +1,25 @@
+import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
+import {
+    ENEMY_PAIR_COLLISION_RADIUS_SCALE,
+    ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE,
+    HEXA_HIVE_CELL_COLLISION_RADIUS
+} from 'physics/_collision_resolve_tuning.js';
+import { getEnemyCircleCollisionRadius } from 'physics/_collision_enemy_geometry.js';
 import { getSetting } from 'save/save_system.js';
 import {
-    getHexaHiveType,
-    getHexaNormalizedRadius
+    getHexaHiveType
 } from './_hexa_hive_layout.js';
 
-const COLLISION_RADIUS_TUNING_SCALE = 0.85;
-const ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE = 0.9;
-const ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE = 1.1;
-const ENEMY_PAIR_COLLISION_RADIUS_SCALE = ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
-const ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE = ENEMY_PROJECTILE_COLLISION_RADIUS_BASE_SCALE * COLLISION_RADIUS_TUNING_SCALE;
-const ENEMY_PAIR_DEBUG_STROKE = 'rgba(255, 96, 96, 0.95)';
-const PROJECTILE_DEBUG_STROKE = 'rgba(64, 240, 255, 0.95)';
-const ENEMY_PAIR_DEBUG_LINE_WIDTH = 1.65;
-const PROJECTILE_DEBUG_LINE_WIDTH = 1.85;
+const ENEMY_COLLISION_DEBUG_CONSTANTS = getData('ENEMY_CONSTANTS').COLLISION_DEBUG;
+const ENEMY_COLLISION_RADIUS_DATA = getData('ENEMY_COLLISION_RADIUS_DATA');
+const ENEMY_PAIR_DEBUG_STROKE = ENEMY_COLLISION_DEBUG_CONSTANTS.ENEMY_PAIR_STROKE;
+const PROJECTILE_DEBUG_STROKE = ENEMY_COLLISION_DEBUG_CONSTANTS.PROJECTILE_STROKE;
+const ENEMY_PAIR_DEBUG_LINE_WIDTH = ENEMY_COLLISION_DEBUG_CONSTANTS.ENEMY_PAIR_LINE_WIDTH;
+const PROJECTILE_DEBUG_LINE_WIDTH = ENEMY_COLLISION_DEBUG_CONSTANTS.PROJECTILE_LINE_WIDTH;
+const DEFAULT_DEBUG_LAYER = ENEMY_COLLISION_DEBUG_CONSTANTS.DEFAULT_LAYER;
+const MIN_COLLISION_DIMENSION = ENEMY_COLLISION_RADIUS_DATA.MIN_DIMENSION;
 const HEXA_HIVE_TYPE = getHexaHiveType();
-const HEXA_HIVE_CELL_COLLISION_RADIUS = getHexaNormalizedRadius() / ENEMY_PAIR_COLLISION_RADIUS_BASE_SCALE;
-
-/**
- * 적 타입별 단일 원 충돌 반지름을 계산합니다.
- * @param {string|null|undefined} enemyType
- * @param {number} width
- * @param {number} height
- * @returns {number}
- */
-function getEnemyCircleCollisionRadius(enemyType, width, height) {
-    const safeWidth = Number.isFinite(width) ? Math.max(1, width) : 1;
-    const safeHeight = Number.isFinite(height) ? Math.max(1, height) : safeWidth;
-    let radius = 0;
-
-    switch (enemyType) {
-        case 'triangle':
-            radius = Math.max(
-                safeHeight * 0.5333,
-                Math.hypot(safeWidth * 0.462, safeHeight * 0.2667)
-            );
-            break;
-        case 'arrow':
-            radius = Math.max(
-                safeHeight * 0.5767,
-                Math.hypot(safeWidth * 0.46, safeHeight * 0.3733)
-            );
-            break;
-        case 'hexa':
-            radius = 0.47 * Math.max(
-                safeHeight,
-                Math.hypot(safeWidth * 0.8660254037844386, safeHeight * 0.5)
-            );
-            break;
-        case 'penta':
-            radius = 0.48 * Math.max(
-                safeHeight,
-                Math.hypot(safeWidth * 0.9510565162951535, safeHeight * 0.3090169943749474),
-                Math.hypot(safeWidth * 0.5877852522924731, safeHeight * 0.8090169943749475)
-            );
-            break;
-        case 'rhom':
-            radius = Math.max(safeWidth * 0.34, safeHeight * 0.5);
-            break;
-        case 'octa':
-            radius = 0.47 * Math.max(
-                Math.hypot(safeWidth * 0.9238795325112867, safeHeight * 0.3826834323650898),
-                Math.hypot(safeWidth * 0.3826834323650898, safeHeight * 0.9238795325112867)
-            );
-            break;
-        case 'gen':
-            radius = Math.hypot(safeWidth * 0.44, safeHeight * 0.44);
-            break;
-        case 'square':
-        default:
-            radius = Math.hypot(safeWidth * 0.42, safeHeight * 0.42);
-            break;
-    }
-
-    return Math.max(1, radius);
-}
 
 /**
  * 로컬 좌표를 회전한 월드 오프셋으로 변환합니다.
@@ -143,12 +88,16 @@ export function drawEnemyCollisionDebugCircles(options = {}) {
     }
 
     const enemyType = typeof options.enemyType === 'string' ? options.enemyType : 'square';
-    const width = Number.isFinite(options.width) ? Math.max(1, options.width) : 1;
-    const height = Number.isFinite(options.height) ? Math.max(1, options.height) : width;
+    const width = Number.isFinite(options.width)
+        ? Math.max(MIN_COLLISION_DIMENSION, options.width)
+        : MIN_COLLISION_DIMENSION;
+    const height = Number.isFinite(options.height)
+        ? Math.max(MIN_COLLISION_DIMENSION, options.height)
+        : width;
     const renderX = Number.isFinite(options.renderX) ? options.renderX : 0;
     const renderY = Number.isFinite(options.renderY) ? options.renderY : 0;
     const rotationRadians = Number.isFinite(options.rotationRadians) ? options.rotationRadians : 0;
-    const layer = typeof options.layer === 'string' ? options.layer : 'top';
+    const layer = typeof options.layer === 'string' ? options.layer : DEFAULT_DEBUG_LAYER;
     const isHive = enemyType === HEXA_HIVE_TYPE;
     const centers = isHive
         ? (Array.isArray(options.localCenters) ? options.localCenters : null)

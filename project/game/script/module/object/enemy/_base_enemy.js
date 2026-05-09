@@ -3,10 +3,12 @@ import { getSimulationObjectWH } from 'simulation/simulation_runtime.js';
 
 const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
 const ENEMY_DEFAULT_WEIGHT = getData('ENEMY_DEFAULT_WEIGHT');
-const MAX_ANGULAR_VELOCITY = 720;
-const AXIS_RESISTANCE_RECOVERY_SECONDS = 1;
-const AXIS_RESISTANCE_RECOVER_DELAY_SECONDS = 0.08;
-const AXIS_RESISTANCE_EPSILON = 1e-4;
+const ENEMY_MOTION_CONSTANTS = getData('ENEMY_CONSTANTS').MOTION;
+const MAX_ANGULAR_VELOCITY = ENEMY_MOTION_CONSTANTS.MAX_ANGULAR_VELOCITY;
+const AXIS_RESISTANCE_RECOVERY_SECONDS = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_RECOVERY_SECONDS;
+const AXIS_RESISTANCE_RECOVER_DELAY_SECONDS = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_RECOVER_DELAY_SECONDS;
+const AXIS_RESISTANCE_EPSILON = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_EPSILON;
+const ANGULAR_DECAY_MIN_SECONDS = ENEMY_MOTION_CONSTANTS.ANGULAR_DECAY_MIN_SECONDS;
 
 /**
  * @typedef {Object} EnemyVector2
@@ -397,7 +399,7 @@ export class BaseEnemy {
         this.angularVelocity += impulse / rotationResistance;
         if (this.angularVelocity > MAX_ANGULAR_VELOCITY) this.angularVelocity = MAX_ANGULAR_VELOCITY;
         if (this.angularVelocity < -MAX_ANGULAR_VELOCITY) this.angularVelocity = -MAX_ANGULAR_VELOCITY;
-        const safeDecay = Math.max(0.016, Number.isFinite(decaySeconds) ? decaySeconds : 1);
+        const safeDecay = Math.max(ANGULAR_DECAY_MIN_SECONDS, Number.isFinite(decaySeconds) ? decaySeconds : 1);
         this.angularDeceleration = Math.abs(this.angularVelocity) / safeDecay;
     }
 

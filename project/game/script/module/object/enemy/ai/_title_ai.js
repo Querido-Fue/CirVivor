@@ -7,8 +7,12 @@ import {
 } from 'simulation/simulation_runtime.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_ACCEL_RESPONSE = 6;
-const TITLE_PARALLAX_DEFAULT_SCALE = 1;
+const TITLE_AI_CONSTANTS = TITLE_CONSTANTS.TITLE_AI;
+const TITLE_ACCEL_RESPONSE = TITLE_AI_CONSTANTS.ACCEL_RESPONSE;
+const TITLE_PARALLAX_DEFAULT_SCALE = TITLE_AI_CONSTANTS.PARALLAX_DEFAULT_SCALE;
+const TITLE_AI_ID = TITLE_AI_CONSTANTS.ID;
+const SPAWN_BOOST_SETTLE_EPSILON = TITLE_AI_CONSTANTS.SPAWN_BOOST_SETTLE_EPSILON;
+const BURST_VELOCITY_SETTLE_EPSILON = TITLE_AI_CONSTANTS.BURST_VELOCITY_SETTLE_EPSILON;
 const TITLE_SPEED_CAP_EASEOUT_EXPO_RATE = Number.isFinite(TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
     ? Math.max(0, TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
     : 0;
@@ -175,7 +179,7 @@ export const ensureTitleEnemyState = (enemy) => {
  * 기본 물리 이동을 대체하고, 기존 자석/부스트 이동 공식을 유지합니다.
  */
 export const titleAI = {
-    id: 'titleAI',
+    id: TITLE_AI_ID,
 
     init(enemy) {
         ensureTitleEnemyState(enemy);
@@ -278,7 +282,7 @@ export const titleAI = {
         if (enemy._spawnBoost > 1 && enemy._spawnBoostDecayRate > 0) {
             const nextBoostOverflow = (enemy._spawnBoost - 1) * Math.pow(2, -(enemy._spawnBoostDecayRate * stepDelta));
             enemy._spawnBoost = 1 + nextBoostOverflow;
-            if ((enemy._spawnBoost - 1) < 0.001) {
+            if ((enemy._spawnBoost - 1) < SPAWN_BOOST_SETTLE_EPSILON) {
                 enemy._spawnBoost = 1;
                 enemy._spawnBoostDecayRate = 0;
             }
@@ -288,8 +292,8 @@ export const titleAI = {
             const burstDecayFactor = Math.pow(2, -(enemy._titleBurstDecayRate * stepDelta));
             enemy._titleBurstVel.x *= burstDecayFactor;
             enemy._titleBurstVel.y *= burstDecayFactor;
-            if (Math.abs(enemy._titleBurstVel.x) < 0.01) enemy._titleBurstVel.x = 0;
-            if (Math.abs(enemy._titleBurstVel.y) < 0.01) enemy._titleBurstVel.y = 0;
+            if (Math.abs(enemy._titleBurstVel.x) < BURST_VELOCITY_SETTLE_EPSILON) enemy._titleBurstVel.x = 0;
+            if (Math.abs(enemy._titleBurstVel.y) < BURST_VELOCITY_SETTLE_EPSILON) enemy._titleBurstVel.y = 0;
         }
     }
 };

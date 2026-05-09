@@ -1,5 +1,14 @@
-const HEXA_HIVE_TYPE = 'hexa_hive';
-const ROTATION_EPSILON = 1e-6;
+import { getData } from 'data/data_handler.js';
+import { getHexaHiveType } from '../_hexa_hive_layout.js';
+
+const ENEMY_AI_CONSTANTS = getData('ENEMY_AI_CONSTANTS');
+const ENEMY_ANGLE_CONSTANTS = getData('ENEMY_CONSTANTS').ANGLE;
+const DEFAULT_AI_PROFILE = ENEMY_AI_CONSTANTS.QUALITY_PROFILES[ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE];
+const HEXA_HIVE_TYPE = getHexaHiveType();
+const ROTATION_EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
+const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
+const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
+const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 
 /**
  * 값을 지정 범위로 제한합니다.
@@ -20,9 +29,9 @@ const normalizeDegrees = (degrees) => {
         return 0;
     }
 
-    let normalized = degrees % 360;
-    if (normalized <= -180) normalized += 360;
-    if (normalized > 180) normalized -= 360;
+    let normalized = degrees % FULL_TURN_DEG;
+    if (normalized <= -STRAIGHT_DEG) normalized += FULL_TURN_DEG;
+    if (normalized > STRAIGHT_DEG) normalized -= FULL_TURN_DEG;
     return normalized;
 };
 
@@ -42,8 +51,18 @@ const getShortestAngleDeltaDeg = (targetDeg, currentDeg) => normalizeDegrees(tar
  */
 const getSymmetricAxisDeltaDeg = (targetDeg, currentDeg) => {
     const directDelta = getShortestAngleDeltaDeg(targetDeg, currentDeg);
-    const flippedDelta = getShortestAngleDeltaDeg(targetDeg + 180, currentDeg);
+    const flippedDelta = getShortestAngleDeltaDeg(targetDeg + STRAIGHT_DEG, currentDeg);
     return Math.abs(flippedDelta) < Math.abs(directDelta) ? flippedDelta : directDelta;
+};
+
+/**
+ * 기본 AI 프로필에서 숫자 fallback을 읽습니다.
+ * @param {string} key - 읽을 프로필 키입니다.
+ * @returns {number} 기본 프로필 값입니다.
+ */
+const readDefaultProfileNumber = (key) => {
+    const value = DEFAULT_AI_PROFILE?.[key];
+    return Number.isFinite(value) ? value : 0;
 };
 
 /**
@@ -141,7 +160,7 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
     const minAnisotropy = readUnitProfileNumber(
         profile,
         'HEXA_HIVE_AI_ROTATION_MIN_ANISOTROPY_RATIO',
-        0.12
+        readDefaultProfileNumber('HEXA_HIVE_AI_ROTATION_MIN_ANISOTROPY_RATIO')
     );
     if (axisAnisotropy < minAnisotropy) {
         return;
@@ -158,21 +177,41 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
     const axisLocalDeg = Number.isFinite(footprintMetrics?.axisLocalDeg)
         ? footprintMetrics.axisLocalDeg
         : (Number.isFinite(enemy.navigationAxisLocalDeg) ? enemy.navigationAxisLocalDeg : 0);
-    const targetMoveDeg = Math.atan2(targetDirection.y, targetDirection.x) * (180 / Math.PI);
+    const targetMoveDeg = Math.atan2(targetDirection.y, targetDirection.x) * RADIANS_TO_DEGREES;
     const targetRotation = targetMoveDeg - axisLocalDeg;
     const deltaDeg = getSymmetricAxisDeltaDeg(targetRotation, currentRotation);
     const absDeltaDeg = Math.abs(deltaDeg);
-    const deadZoneDeg = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_DEAD_ZONE_DEG', 3.5);
+    const deadZoneDeg = readPositiveProfileNumber(
+        profile,
+        'HEXA_HIVE_AI_ROTATION_DEAD_ZONE_DEG',
+        readDefaultProfileNumber('HEXA_HIVE_AI_ROTATION_DEAD_ZONE_DEG')
+    );
     if (absDeltaDeg <= deadZoneDeg) {
         enemy.angularVelocity = 0;
         enemy.angularDeceleration = 0;
         return;
     }
 
-    const maxDegPerSec = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_MAX_DEG_PER_SEC', 110);
-    const dampStartDeg = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_DAMP_START_DEG', 72);
-    const responseRatio = readUnitProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_RESPONSE_RATIO', 0.38);
-    const gainPerSecond = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_GAIN_PER_SEC', 4.6);
+    const maxDegPerSec = readPositiveProfileNumber(
+        profile,
+        'HEXA_HIVE_AI_ROTATION_MAX_DEG_PER_SEC',
+        readDefaultProfileNumber('HEXA_HIVE_AI_ROTATION_MAX_DEG_PER_SEC')
+    );
+    const dampStartDeg = readPositiveProfileNumber(
+        profile,
+        'HEXA_HIVE_AI_ROTATION_DAMP_START_DEG',
+        readDefaultProfileNumber('HEXA_HIVE_AI_ROTATION_DAMP_START_DEG')
+    );
+    const responseRatio = readUnitProfileNumber(
+        profile,
+        'HEXA_HIVE_AI_ROTATION_RESPONSE_RATIO',
+        readDefaultProfileNumber('HEXA_HIVE_AI_ROTATION_RESPONSE_RATIO')
+    );
+    const gainPerSecond = readPositiveProfileNumber(
+        profile,
+        'HEXA_HIVE_AI_ROTATION_GAIN_PER_SEC',
+        readDefaultProfileNumber('HEXA_HIVE_AI_ROTATION_GAIN_PER_SEC')
+    );
     const rampedMaxDegPerSec = maxDegPerSec * clamp(absDeltaDeg / dampStartDeg, 0, 1);
     const targetAngularVelocity = clamp(
         deltaDeg * gainPerSecond,

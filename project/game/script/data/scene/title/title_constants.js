@@ -77,6 +77,11 @@ export const TITLE_CONSTANTS = Object.freeze({
         SPAWN_Y_MAX_RATIO: 0.97
     }),
     TITLE_AI: Object.freeze({
+        ID: 'titleAI',
+        ACCEL_RESPONSE: 6,
+        PARALLAX_DEFAULT_SCALE: 1,
+        SPAWN_BOOST_SETTLE_EPSILON: 0.001,
+        BURST_VELOCITY_SETTLE_EPSILON: 0.01,
         MAGNETIC_IMPULSE: 1400,
         MAGNETIC_DAMPING: 6,
         MAX_SPEED_CAP_MULTIPLIER: 1.7,

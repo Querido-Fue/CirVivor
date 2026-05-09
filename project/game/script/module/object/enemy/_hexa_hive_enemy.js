@@ -9,11 +9,16 @@ import {
 } from './_hexa_hive_layout.js';
 
 const getEnemyShapeKey = getData('getEnemyShapeKey');
+const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
+const ENEMY_HEXA_HIVE_RENDER = ENEMY_CONSTANTS.HEXA_HIVE.RENDER;
+const ENEMY_ANGLE_CONSTANTS = ENEMY_CONSTANTS.ANGLE;
 const HEXA_SHAPE_KEY = getEnemyShapeKey('hexa');
-const BACKDROP_FALLBACK_FILL = 'rgb(255, 212, 184)';
-const HEXA_HIVE_CELL_SHAPE = 'hexagon';
-const HEXA_HIVE_FRONT_SCALE = 1;
-const HEXA_HIVE_BACKDROP_SCALE = 1.14;
+const BACKDROP_FALLBACK_FILL = ENEMY_HEXA_HIVE_RENDER.BACKDROP_FALLBACK_FILL;
+const BACKDROP_FILL_BLEND_RATIO = ENEMY_HEXA_HIVE_RENDER.BACKDROP_FILL_BLEND_RATIO;
+const HEXA_HIVE_CELL_SHAPE = ENEMY_HEXA_HIVE_RENDER.CELL_SHAPE;
+const HEXA_HIVE_FRONT_SCALE = ENEMY_HEXA_HIVE_RENDER.FRONT_SCALE;
+const HEXA_HIVE_BACKDROP_SCALE = ENEMY_HEXA_HIVE_RENDER.BACKDROP_SCALE;
+const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
 
 /**
  * 좌표를 회전합니다.
@@ -79,9 +84,9 @@ export class HexaHiveEnemy extends ShapeEnemy {
      * @returns {string}
      */
     _resolveBackdropFill() {
-        const sourceFill = typeof this.fill === 'string' ? this.fill : '#ff6c6c';
+        const sourceFill = typeof this.fill === 'string' ? this.fill : ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
         if (typeof sourceFill === 'string' && sourceFill.length > 0) {
-            return colorUtil().lerpColor(sourceFill, BACKDROP_FALLBACK_FILL, 0.72);
+            return colorUtil().lerpColor(sourceFill, BACKDROP_FALLBACK_FILL, BACKDROP_FILL_BLEND_RATIO);
         }
 
         return BACKDROP_FALLBACK_FILL;
@@ -106,10 +111,10 @@ export class HexaHiveEnemy extends ShapeEnemy {
         const baseHeight = this.getRenderHeightPx();
         const objectOffsetY = getObjectOffsetY();
         const rotation = Number.isFinite(this.rotation) ? this.rotation : 0;
-        const rotationRadians = rotation * (Math.PI / 180);
+        const rotationRadians = rotation * DEGREES_TO_RADIANS;
         const renderX = this.renderPosition.x;
         const renderY = this.renderPosition.y - objectOffsetY;
-        const frontFill = typeof this.fill === 'string' ? this.fill : '#ff6c6c';
+        const frontFill = typeof this.fill === 'string' ? this.fill : ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
         const backdropFill = this._resolveBackdropFill();
         const backdropAlpha = Number.isFinite(this.alpha) ? this.alpha : 1;
         const frontAlpha = Number.isFinite(this.alpha) ? this.alpha : 1;

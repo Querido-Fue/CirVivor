@@ -1,10 +1,17 @@
+import { getData } from 'data/data_handler.js';
+
+const ENEMY_ANGLE_CONSTANTS = getData('ENEMY_CONSTANTS').ANGLE;
+const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
+const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
+const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
+
 /**
  * 각도를 라디안으로 변환합니다.
  * @param {number} degrees - 각도입니다.
  * @returns {number} 라디안 값입니다.
  */
 export function toRadians(degrees) {
-    return (Number.isFinite(degrees) ? degrees : 0) * (Math.PI / 180);
+    return (Number.isFinite(degrees) ? degrees : 0) * DEGREES_TO_RADIANS;
 }
 
 /**
@@ -17,9 +24,9 @@ export function normalizeDegrees(degrees) {
         return 0;
     }
 
-    let normalized = degrees % 360;
-    if (normalized > 180) normalized -= 360;
-    if (normalized < -180) normalized += 360;
+    let normalized = degrees % FULL_TURN_DEG;
+    if (normalized > STRAIGHT_DEG) normalized -= FULL_TURN_DEG;
+    if (normalized < -STRAIGHT_DEG) normalized += FULL_TURN_DEG;
     return normalized;
 }
 

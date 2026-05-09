@@ -17,6 +17,7 @@ import {
     ENEMY_CONSTANTS
 } from 'data/object/enemy/enemy_constants.js';
 import { ENEMY_AI_CONSTANTS } from 'data/object/enemy/enemy_ai_constants.js';
+import { HEXA_HIVE_LAYOUT_DATA } from 'data/object/enemy/hexa_hive_layout_data.js';
 import {
     ENEMY_DRAW_HEIGHT_RATIO,
     ENEMY_SHAPE_TYPES,
@@ -56,6 +57,7 @@ const DATA_REGISTRY = Object.freeze({
     TOOLTIP_CONSTANTS,
     ENEMY_CONSTANTS,
     ENEMY_AI_CONSTANTS,
+    HEXA_HIVE_LAYOUT_DATA,
     ENEMY_DRAW_HEIGHT_RATIO,
     ENEMY_SHAPE_TYPES,
     ENEMY_ASPECT_RATIO,

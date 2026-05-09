@@ -1,8 +1,21 @@
-import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { getData } from 'data/data_handler.js';
+import { getHexaHiveType } from '../_hexa_hive_layout.js';
 
-const HEXA_HIVE_TYPE = 'hexa_hive';
+const ENEMY_AI_CONSTANTS = getData('ENEMY_AI_CONSTANTS');
+const ENEMY_ANGLE_CONSTANTS = getData('ENEMY_CONSTANTS').ANGLE;
+const DEFAULT_AI_PROFILE = ENEMY_AI_CONSTANTS.QUALITY_PROFILES[ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE];
+const FOOTPRINT_CONSTANTS = ENEMY_AI_CONSTANTS.FOOTPRINT;
+const HEXA_HIVE_TYPE = getHexaHiveType();
 const HEXA_HIVE_NAV_CELL_RADIUS_RATIO = ENEMY_AI_CONSTANTS.HEXA_HIVE_NAV_CELL_RADIUS_RATIO;
-const AXIS_EPSILON = 1e-6;
+const AXIS_EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
+const FALLBACK_RENDER_HEIGHT_PX = FOOTPRINT_CONSTANTS.FALLBACK_RENDER_HEIGHT_PX;
+const BASE_RADIUS_MIN_PX = FOOTPRINT_CONSTANTS.BASE_RADIUS_MIN_PX;
+const BASE_RADIUS_RATIO = FOOTPRINT_CONSTANTS.BASE_RADIUS_RATIO;
+const HALF_EXTENT_RATIO = FOOTPRINT_CONSTANTS.HALF_EXTENT_RATIO;
+const MIN_AXIS_ANISOTROPY = FOOTPRINT_CONSTANTS.MIN_AXIS_ANISOTROPY;
+const MAX_AXIS_ANISOTROPY = FOOTPRINT_CONSTANTS.MAX_AXIS_ANISOTROPY;
+const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
+const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 
 /**
  * 적의 렌더 높이를 AI 계산용 픽셀 값으로 정규화합니다.
@@ -26,7 +39,7 @@ export const resolveEnemyAIRenderHeightPx = (enemy, fallbackRenderHeightPx = nul
         return enemy.renderHeightPx;
     }
 
-    return 24;
+    return FALLBACK_RENDER_HEIGHT_PX;
 };
 
 /**
@@ -99,8 +112,8 @@ const resolveHexaHiveNavigationAxis = (localCenters) => {
         return { localDeg: 0, anisotropy: 0 };
     }
 
-    const anisotropy = Math.min(1, Math.hypot(covXX - covYY, 2 * covXY) / spread);
-    const localDeg = 0.5 * Math.atan2(2 * covXY, covXX - covYY) * (180 / Math.PI);
+    const anisotropy = Math.min(MAX_AXIS_ANISOTROPY, Math.hypot(covXX - covYY, 2 * covXY) / spread);
+    const localDeg = HALF_EXTENT_RATIO * Math.atan2(2 * covXY, covXX - covYY) * RADIANS_TO_DEGREES;
     return {
         localDeg: Number.isFinite(localDeg) ? localDeg : 0,
         anisotropy: Number.isFinite(anisotropy) ? anisotropy : 0
@@ -133,7 +146,7 @@ export const resolveEnemyAIFootprintPathClearancePx = (metrics, profile = null) 
     const minHalfExtent = Math.min(halfWidth, halfHeight);
     const multiplier = Number.isFinite(profile?.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER)
         ? Math.max(1, profile.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER)
-        : 1.12;
+        : DEFAULT_AI_PROFILE.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER;
     return Math.max(baseRadius, Math.min(minHalfExtent, baseRadius * multiplier));
 };
 
@@ -148,26 +161,26 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
     const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
     const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
         ? fallbackRadius
-        : Math.max(8, baseHeight * 0.45);
+        : Math.max(BASE_RADIUS_MIN_PX, baseHeight * BASE_RADIUS_RATIO);
     const aspectRatio = Number.isFinite(enemy?.aspectRatio) && enemy.aspectRatio > 0
         ? enemy.aspectRatio
         : 1;
     const heightScale = Number.isFinite(enemy?.heightScale) && enemy.heightScale > 0
         ? enemy.heightScale
         : 1;
-    let halfWidth = Math.max(baseRadius, baseHeight * aspectRatio * 0.5);
-    let halfHeight = Math.max(baseRadius, baseHeight * heightScale * 0.5);
+    let halfWidth = Math.max(baseRadius, baseHeight * aspectRatio * HALF_EXTENT_RATIO);
+    let halfHeight = Math.max(baseRadius, baseHeight * heightScale * HALF_EXTENT_RATIO);
     let radius = Math.max(baseRadius, readPositivePixelValue(enemy?.navigationRadiusPx));
     let axisLocalDeg = Number.isFinite(enemy?.navigationAxisLocalDeg) ? enemy.navigationAxisLocalDeg : 0;
     let axisAnisotropy = Number.isFinite(enemy?.navigationAxisAnisotropy)
-        ? Math.max(0, Math.min(1, enemy.navigationAxisAnisotropy))
+        ? Math.max(MIN_AXIS_ANISOTROPY, Math.min(MAX_AXIS_ANISOTROPY, enemy.navigationAxisAnisotropy))
         : 0;
 
     if (enemy?.type === HEXA_HIVE_TYPE) {
         const localCenters = getHexaHiveNavigationLocalCenters(enemy);
         if (Array.isArray(localCenters) && localCenters.length > 0) {
             const cellRadius = Math.max(baseRadius, baseHeight * HEXA_HIVE_NAV_CELL_RADIUS_RATIO);
-            const rotationRadians = (Number.isFinite(enemy?.rotation) ? enemy.rotation : 0) * (Math.PI / 180);
+            const rotationRadians = (Number.isFinite(enemy?.rotation) ? enemy.rotation : 0) * DEGREES_TO_RADIANS;
             const cos = Math.cos(rotationRadians);
             const sin = Math.sin(rotationRadians);
             const axis = resolveHexaHiveNavigationAxis(localCenters);
@@ -216,7 +229,7 @@ export function resolveEnemyAINavigationRadiusPx(enemy, fallbackRadius = null, f
     const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
     const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
         ? fallbackRadius
-        : Math.max(8, baseHeight * 0.45);
+        : Math.max(BASE_RADIUS_MIN_PX, baseHeight * BASE_RADIUS_RATIO);
     const explicitRadius = readPositivePixelValue(enemy?.navigationRadiusPx);
     if (enemy?.type !== HEXA_HIVE_TYPE) {
         return Math.max(baseRadius, explicitRadius);

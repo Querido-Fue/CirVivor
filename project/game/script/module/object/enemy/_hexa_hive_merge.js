@@ -1,4 +1,5 @@
 import { enemyAI } from './ai/_enemy_ai.js';
+import { getData } from 'data/data_handler.js';
 import {
     collectHexaWorldCellsFromEnemy,
     createHexaHiveLayoutFromWorldCells,
@@ -8,12 +9,19 @@ import {
 } from './_hexa_hive_layout.js';
 import { getSimulationObjectWH } from 'simulation/simulation_runtime.js';
 
-const HEXA_HIVE_MERGE_CONTACT_SECONDS = 0.5;
-const HEXA_HIVE_MOVE_SPEED_DECAY = 0.95;
-const HEXA_HIVE_MOVE_SPEED_FLOOR_RATIO = 0.5;
-const HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL = 0.5;
-const HEXA_HIVE_MERGE_PENDING_WEIGHT = 100000;
-const HEXA_HIVE_EPSILON = 1e-6;
+const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
+const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
+const HEXA_HIVE_MERGE_CONSTANTS = ENEMY_CONSTANTS.HEXA_HIVE.MERGE;
+const ENEMY_ANGLE_CONSTANTS = ENEMY_CONSTANTS.ANGLE;
+const HEXA_HIVE_MERGE_CONTACT_SECONDS = HEXA_HIVE_MERGE_CONSTANTS.CONTACT_SECONDS;
+const HEXA_HIVE_MOVE_SPEED_DECAY = HEXA_HIVE_MERGE_CONSTANTS.MOVE_SPEED_DECAY;
+const HEXA_HIVE_MOVE_SPEED_FLOOR_RATIO = HEXA_HIVE_MERGE_CONSTANTS.MOVE_SPEED_FLOOR_RATIO;
+const HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL = HEXA_HIVE_MERGE_CONSTANTS.WEIGHT_SCALE_PER_EXTRA_CELL;
+const HEXA_HIVE_MERGE_PENDING_WEIGHT = HEXA_HIVE_MERGE_CONSTANTS.PENDING_WEIGHT;
+const HEXA_HIVE_HP_RECOVERY_RATIO = HEXA_HIVE_MERGE_CONSTANTS.HP_RECOVERY_RATIO;
+const HEXA_HIVE_EPSILON = HEXA_HIVE_MERGE_CONSTANTS.EPSILON;
+const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
+const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 const HEXA_HIVE_TYPE = getHexaHiveType();
 
 /**
@@ -219,8 +227,8 @@ export function buildHexaHiveSpawnData(mergeGroup) {
         const size = Number.isFinite(enemy.size) ? enemy.size : 1;
         const baseHeight = typeof enemy.getRenderHeightPx === 'function'
             ? enemy.getRenderHeightPx()
-            : (getSimulationObjectWH() * 0.03 * size);
-        const rotationRadians = (Number.isFinite(enemy.rotation) ? enemy.rotation : 0) * (Math.PI / 180);
+            : (getSimulationObjectWH() * ENEMY_DRAW_HEIGHT_RATIO * size);
+        const rotationRadians = (Number.isFinite(enemy.rotation) ? enemy.rotation : 0) * DEGREES_TO_RADIANS;
 
         for (let j = 0; j < enemyCells.length; j++) {
             worldCells.push(enemyCells[j]);
@@ -262,7 +270,7 @@ export function buildHexaHiveSpawnData(mergeGroup) {
     const centerY = weightedCenterY / totalMass;
     const baseHeight = weightedBaseHeight / totalCells;
     const mergedRotation = snapHexaRotationDegToSymmetry(
-        Math.atan2(weightedRotationSin, weightedRotationCos) * (180 / Math.PI)
+        Math.atan2(weightedRotationSin, weightedRotationCos) * RADIANS_TO_DEGREES
     );
     const mergedBaseMoveSpeed = weightedBaseMoveSpeed / totalCells;
     const mergedCurrentMoveSpeed = weightedCurrentMoveSpeed / totalCells;
@@ -272,7 +280,7 @@ export function buildHexaHiveSpawnData(mergeGroup) {
     );
     const mergedWeight = totalWeight * (1 + ((Math.max(1, totalCells) - 1) * HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL));
     const mergedMaxHp = totalMaxHp;
-    const mergedHp = Math.min(mergedMaxHp, totalHp + (mergedMaxHp * 0.1));
+    const mergedHp = Math.min(mergedMaxHp, totalHp + (mergedMaxHp * HEXA_HIVE_HP_RECOVERY_RATIO));
     const mergedLayout = createHexaHiveLayoutFromWorldCells(worldCells, {
         originX: centerX,
         originY: centerY,
