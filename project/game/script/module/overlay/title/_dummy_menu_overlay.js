@@ -3,6 +3,7 @@ import { getData } from 'data/data_handler.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getLangString } from 'ui/ui_system.js';
 import { TitleOverlay } from './_title_overlay.js';
+import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
@@ -74,11 +75,7 @@ export class DummyMenuOverlay extends TitleOverlay {
             .onClick(this.close.bind(this))
             .align('right');
 
-        if (getLangString('affirmative_icon') === 'check') {
-            handler.icon('check').buttonColor(ColorSchemes.Overlay.Button.Confirm);
-        } else {
-            handler.icon('confirm').buttonColor(ColorSchemes.Overlay.Button.Confirm);
-        }
+        applyOverlayConfirmButtonIcon(handler);
 
         const buildResult = handler.build();
         this.staticItems = buildResult.staticItems;

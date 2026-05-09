@@ -7,6 +7,7 @@ import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getAvailableLanguages } from 'ui/lang/_language_handler.js';
 import { getData } from 'data/data_handler.js';
 import { createFontStringFromPreset } from 'util/font_util.js';
+import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
 import {
     SETTING_LABEL_KEYS,
     createSettingsInitialState,
@@ -49,18 +50,18 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-         * @override
-         * 화면 크기에 비례하여 설정 메뉴 팝업 크기를 계산합니다.
-         */
+     * @override
+     * 화면 크기에 비례하여 설정 메뉴 팝업 크기를 계산합니다.
+     */
     _onResize() {
         this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.WIDTH_UIWW_RATIO;
         this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.HEIGHT_WH_RATIO;
     }
 
     /**
-         * @override
-         * 화면 내 설정 항목들(왼쪽/오른쪽 단)을 배치하여 레이아웃을 빌드합니다.
-         */
+     * @override
+     * 화면 내 설정 항목들(왼쪽/오른쪽 단)을 배치하여 레이아웃을 빌드합니다.
+     */
     _generateLayout() {
         this._releaseElements();
         const { HEADER, LEFT_COLUMN, RIGHT_COLUMN, FOOTER } = SETTINGS_LAYOUT;
@@ -113,11 +114,7 @@ export class SettingsOverlay extends TitleOverlay {
                 this.close();
             });
 
-        if (getLangString("affirmative_icon") === "check") {
-            footHandler.icon("check").buttonColor(ColorSchemes.Overlay.Button.Confirm);
-        } else {
-            footHandler.icon("confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm);
-        }
+        applyOverlayConfirmButtonIcon(footHandler);
 
         footHandler.endGroup();
 
@@ -482,9 +479,9 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-         * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
-         * @returns {Promise<object>} 실제로 변경되어 저장된 설정 키와 값입니다.
-         */
+     * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
+     * @returns {Promise<object>} 실제로 변경되어 저장된 설정 키와 값입니다.
+     */
     async save() {
         await this.#flushPendingPreview();
         const changedSettings = getChangedSettings(this.initialSettings, this.tempSettings);
