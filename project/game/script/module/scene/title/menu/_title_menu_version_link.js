@@ -1,9 +1,13 @@
 import { getData } from 'data/data_handler.js';
 import { consumeMouseState, hasMouseState } from 'input/input_system.js';
 import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
+import { formatRgba } from 'util/color_util.js';
+import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 
 const TITLE_LINK_DATA = getData('TITLE_LINK_DATA');
+/** 업데이트 링크 버튼의 시각 요소를 숨기는 투명 색상입니다. */
+const TRANSPARENT_BUTTON_COLOR = formatRgba(0, 0, 0, 0);
 
 /**
  * 우상단 업데이트 링크 상호작용에 사용할 투명 버튼을 생성합니다.
@@ -21,8 +25,8 @@ export function createTitleMenuVersionHistoryLinkButton(parent) {
         y: 0,
         width: 0,
         height: 0,
-        idleColor: 'rgba(0, 0, 0, 0)',
-        hoverColor: 'rgba(0, 0, 0, 0)',
+        idleColor: TRANSPARENT_BUTTON_COLOR,
+        hoverColor: TRANSPARENT_BUTTON_COLOR,
         center: [],
         alpha: 1,
         margin: 0,
@@ -93,10 +97,14 @@ export function updateTitleMenuVersionHistoryLinkButton({
  */
 export function layoutTitleMenuVersionHistoryLinkButton(button, layout, pointerEnabled) {
     const linkBounds = layout?.linkBounds || null;
-    button.x = linkBounds?.x || 0;
-    button.y = linkBounds?.y || 0;
-    button.width = pointerEnabled && linkBounds ? linkBounds.w : 0;
-    button.height = pointerEnabled && linkBounds ? linkBounds.h : 0;
+    button.x = resolveFiniteNumber(Number(linkBounds?.x), 0);
+    button.y = resolveFiniteNumber(Number(linkBounds?.y), 0);
+    button.width = pointerEnabled && linkBounds
+        ? clampFiniteNumber(Number(linkBounds.w), 0, Infinity, 0)
+        : 0;
+    button.height = pointerEnabled && linkBounds
+        ? clampFiniteNumber(Number(linkBounds.h), 0, Infinity, 0)
+        : 0;
     button.radius = 0;
 }
 
@@ -110,18 +118,18 @@ export function layoutTitleMenuVersionHistoryLinkButton(button, layout, pointerE
  * @returns {void}
  */
 export function drawTitleMenuVersionHistoryLinkArrow(session, layout, strokeColor, shadowBlur, shadowColor) {
-    const iconSize = Number(layout?.linkIconSize) || 0;
+    const iconSize = clampFiniteNumber(Number(layout?.linkIconSize), 0, Infinity, 0);
     if (!session || iconSize <= 0) {
         return;
     }
 
-    const x = Number(layout.linkIconX) || 0;
-    const y = Number(layout.linkIconY) || 0;
+    const x = resolveFiniteNumber(Number(layout.linkIconX), 0);
+    const y = resolveFiniteNumber(Number(layout.linkIconY), 0);
     const centerX = x + (iconSize * 0.5);
     const centerY = y + (iconSize * 0.5);
     const halfSpan = iconSize * 0.308;
     const headLength = halfSpan * 0.88;
-    const lineWidth = Math.max(1, iconSize * 0.1);
+    const lineWidth = clampFiniteNumber(iconSize * 0.1, 1, Infinity, 1);
     const commonOptions = {
         shape: 'line',
         stroke: strokeColor,
