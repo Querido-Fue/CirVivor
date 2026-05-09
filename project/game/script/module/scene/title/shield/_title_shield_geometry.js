@@ -1,3 +1,5 @@
+import { clamp01 } from 'util/number_util.js';
+
 /**
  * 각도를 최단 경로로 보간합니다.
  * @param {number} currentAngle - 현재 각도입니다.
@@ -10,7 +12,7 @@ export function lerpShieldAngle(currentAngle, targetAngle, factor) {
         return targetAngle;
     }
 
-    const safeFactor = Math.max(0, Math.min(1, factor));
+    const safeFactor = clamp01(factor);
     if (safeFactor >= 1) {
         return targetAngle;
     }
@@ -40,10 +42,7 @@ export function getShieldAngularDelta(angleA, angleB) {
  * @returns {number} 0~1 범위의 정규화된 압력 값입니다.
  */
 export function calculateShieldPressure(shieldBoundaryDistance, outerInfluenceRange, enemyRadius) {
-    return Math.max(
-        0,
-        Math.min(1, (outerInfluenceRange - shieldBoundaryDistance) / Math.max(1, outerInfluenceRange + enemyRadius))
-    );
+    return clamp01((outerInfluenceRange - shieldBoundaryDistance) / Math.max(1, outerInfluenceRange + enemyRadius));
 }
 
 /**

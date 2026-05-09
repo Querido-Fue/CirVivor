@@ -1,5 +1,6 @@
 import { renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
+import { clamp01 } from 'util/number_util.js';
 import { TitleShieldConfig } from './_title_shield_config.js';
 import { buildTitleShieldRenderCommand } from './_title_shield_render_command.js';
 import {
@@ -296,7 +297,7 @@ export class TitleShieldEffect {
             + Math.pow((Number.isFinite(enemy.speed?.y) ? enemy.speed.y : 0) * (Number.isFinite(enemy.moveSpeed) ? enemy.moveSpeed : 1), 2)
         );
         const speedReference = this.config.getImpactSpeedReferencePx();
-        const speedFactor = Math.max(0, Math.min(1, impactSpeed / speedReference));
+        const speedFactor = clamp01(impactSpeed / speedReference);
         const intensity = Math.max(
             this.config.getImpactIntensityMin(),
             Math.min(
