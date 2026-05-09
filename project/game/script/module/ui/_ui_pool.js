@@ -10,6 +10,51 @@ import { ProgressBarElement } from 'ui/element/_progress_bar.js';
 import { getData } from 'data/data_handler.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const UI_POOL_WARMUP_KEY_BY_TYPE = Object.freeze({
+    button: 'BUTTON',
+    slider: 'SLIDER',
+    toggle: 'TOGGLE',
+    segment_control: 'SEGMENT_CONTROL',
+    dropdown: 'DROPDOWN',
+    text: 'TEXT',
+    text_element: 'TEXT',
+    line: 'LINE',
+    progress_bar: 'LINE'
+});
+
+/**
+ * 풀 타입 정보를 가진 UI 요소 인스턴스를 생성합니다.
+ * @param {Function} ElementClass - 생성할 UI 요소 클래스입니다.
+ * @param {string} poolType - UI 풀 타입 키입니다.
+ * @returns {object} 생성된 UI 요소입니다.
+ */
+function _createPooledElement(ElementClass, poolType) {
+    const item = new ElementClass({});
+    item.__poolType = poolType;
+    return item;
+}
+
+/**
+ * 렌더 커맨드 형태의 단순 UI 풀 객체를 생성합니다.
+ * @param {string} shape - 렌더 커맨드 shape 값입니다.
+ * @param {string} poolType - UI 풀 타입 키입니다.
+ * @returns {object} 생성된 단순 UI 객체입니다.
+ */
+function _createRawPoolItem(shape, poolType) {
+    return { shape, __poolType: poolType };
+}
+
+/**
+ * 풀에서 재사용할 단순 UI 객체의 동적 속성을 제거합니다.
+ * @param {object} item - 초기화할 단순 UI 객체입니다.
+ */
+function _resetRawPoolItem(item) {
+    for (const key of Object.keys(item)) {
+        if (key !== 'shape' && key !== '__poolType') {
+            delete item[key];
+        }
+    }
+}
 
 /**
  * UI 요소 오브젝트 풀 모음. 각 UI 타입별로 ObjectPool 인스턴스를 관리합니다.
@@ -18,71 +63,63 @@ const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 export const UIPool = {
     /** @type {ObjectPool} 버튼 엘리먼트 풀 */
     button: new ObjectPool(
-        () => { const o = new ButtonElement({}); o.__poolType = 'button'; return o; },
+        () => _createPooledElement(ButtonElement, 'button'),
         (item) => item.reset(),
-        "UI_Button"
+        'UI_Button'
     ),
     /** @type {ObjectPool} 슬라이더 엘리먼트 풀 */
     slider: new ObjectPool(
-        () => { const o = new SliderElement({}); o.__poolType = 'slider'; return o; },
+        () => _createPooledElement(SliderElement, 'slider'),
         (item) => item.reset(),
-        "UI_Slider"
+        'UI_Slider'
     ),
     /** @type {ObjectPool} 토글 엘리먼트 풀 */
     toggle: new ObjectPool(
-        () => { const o = new ToggleElement({}); o.__poolType = 'toggle'; return o; },
+        () => _createPooledElement(ToggleElement, 'toggle'),
         (item) => item.reset(),
-        "UI_Toggle"
+        'UI_Toggle'
     ),
     /** @type {ObjectPool} 세그먼트 컨트롤 풀 */
     segment_control: new ObjectPool(
-        () => { const o = new SegmentControlElement({}); o.__poolType = 'segment_control'; return o; },
+        () => _createPooledElement(SegmentControlElement, 'segment_control'),
         (item) => item.reset(),
-        "UI_SegmentControl"
+        'UI_SegmentControl'
     ),
     /** @type {ObjectPool} 드랍다운 풀 */
     dropdown: new ObjectPool(
-        () => { const o = new DropdownElement({}); o.__poolType = 'dropdown'; return o; },
+        () => _createPooledElement(DropdownElement, 'dropdown'),
         (item) => item.reset(),
-        "UI_Dropdown"
+        'UI_Dropdown'
     ),
     /** @type {ObjectPool} 텍스트 엘리먼트 풀 */
     text_element: new ObjectPool(
-        () => { const o = new TextElement({}); o.__poolType = 'text_element'; return o; },
+        () => _createPooledElement(TextElement, 'text_element'),
         (item) => item.reset(),
-        "UI_TextElement"
+        'UI_TextElement'
     ),
     /** @type {ObjectPool} 라인 엘리먼트 풀 */
     line_element: new ObjectPool(
-        () => { const o = new LineElement({}); o.__poolType = 'line_element'; return o; },
+        () => _createPooledElement(LineElement, 'line_element'),
         (item) => item.reset(),
-        "UI_LineElement"
+        'UI_LineElement'
     ),
     /** @type {ObjectPool} 단순 텍스트 풀 (객체 형태) */
     text: new ObjectPool(
-        () => ({ shape: 'text', __poolType: 'text' }),
-        (item) => {
-            for (let key in item) {
-                if (key !== 'shape' && key !== '__poolType') delete item[key];
-            }
-        },
-        "UI_RawText"
+        () => _createRawPoolItem('text', 'text'),
+        _resetRawPoolItem,
+        'UI_RawText'
     ),
     /** @type {ObjectPool} 단순 라인 풀 (객체 형태) */
     line: new ObjectPool(
-        () => ({ shape: 'line', __poolType: 'line' }),
-        (item) => {
-            for (let key in item) {
-                if (key !== 'shape' && key !== '__poolType') delete item[key];
-            }
-        },
-        "UI_RawLine"
+        () => _createRawPoolItem('line', 'line'),
+        _resetRawPoolItem,
+        'UI_RawLine'
     ),
     /** @type {ObjectPool} 프로그레스 바 엘리먼트 풀 */
     progress_bar: new ObjectPool(
-        () => { const o = new ProgressBarElement({}); o.__poolType = 'progress_bar'; return o; },
+        () => _createPooledElement(ProgressBarElement, 'progress_bar'),
         (item) => item.reset(),
-        "UI_ProgressBar"
+        'UI_ProgressBar'
     )
 };
 
@@ -118,14 +155,7 @@ export const releaseUIItem = (item) => {
  * 설정된 POOL_WARMUP 수치만큼 UI 요소를 사전 생성하여 풀에 채웁니다. (프레임 드랍 방지)
  */
 export const warmupUIPools = () => {
-    UIPool.button.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.BUTTON);
-    UIPool.slider.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.SLIDER);
-    UIPool.toggle.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.TOGGLE);
-    UIPool.segment_control.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.SEGMENT_CONTROL);
-    UIPool.dropdown.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.DROPDOWN);
-    UIPool.text.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.TEXT);
-    UIPool.text_element.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.TEXT);
-    UIPool.line.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.LINE);
-    UIPool.progress_bar.warmUp(GLOBAL_CONSTANTS.POOL_WARMUP.LINE);
+    for (const [poolType, warmupKey] of Object.entries(UI_POOL_WARMUP_KEY_BY_TYPE)) {
+        UIPool[poolType].warmUp(GLOBAL_CONSTANTS.POOL_WARMUP[warmupKey]);
+    }
 };
-
