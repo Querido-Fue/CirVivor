@@ -1,3 +1,5 @@
+import { clampNumber } from 'util/number_util.js';
+
 /**
  * @typedef {object} OverlayEffectPlugin
  * @property {(session: object, options: object) => object} create - effect 상태를 생성합니다.
@@ -150,7 +152,7 @@ registerOverlayEffect('hoverTilt', {
             type: 'hoverTilt',
             options: {
                 maxAngleDeg: Math.max(0, parseEffectNumber(options.maxAngleDeg, 10)),
-                smoothing: Math.max(0, Math.min(0.98, parseEffectNumber(options.smoothing, 0.18))),
+                smoothing: clampNumber(parseEffectNumber(options.smoothing, 0.18), 0, 0.98),
                 perspective: Math.max(100, parseEffectLength(options.perspective, 1000))
             },
             update() {
@@ -170,8 +172,8 @@ registerOverlayEffect('hoverSpotlight', {
             type: 'hoverSpotlight',
             options: {
                 radius: Math.max(32, parseEffectLength(options.radius, 300)),
-                opacity: Math.max(0, Math.min(1, parseEffectNumber(options.opacity, 0.8))),
-                smoothing: Math.max(0, Math.min(0.98, parseEffectNumber(options.smoothing, 0.2)))
+                opacity: clampNumber(parseEffectNumber(options.opacity, 0.8), 0, 1),
+                smoothing: clampNumber(parseEffectNumber(options.smoothing, 0.2), 0, 0.98)
             },
             update() {
             }
@@ -192,11 +194,11 @@ registerOverlayEffect('hoverBorder', {
             options: {
                 radius: Math.max(32, parseEffectLength(options.radius, 260)),
                 color: parseEffectColor(options.color, '#ffffff'),
-                opacity: Math.max(0, Math.min(1, parseEffectNumber(options.opacity, 0.65))),
+                opacity: clampNumber(parseEffectNumber(options.opacity, 0.65), 0, 1),
                 width: baseWidth,
                 hoverWidth: Math.max(baseWidth, parseEffectNumber(options.hoverWidth, baseWidth * 2)),
                 falloff: Math.max(8, parseEffectLength(options.falloff, 72)),
-                smoothing: Math.max(0, Math.min(0.98, parseEffectNumber(options.smoothing, 0.2)))
+                smoothing: clampNumber(parseEffectNumber(options.smoothing, 0.2), 0, 0.98)
             },
             update() {
             }
