@@ -4,6 +4,7 @@ import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getSetting } from 'save/save_system.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
+import { clamp01 } from 'util/number_util.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
 import { TitleMenu } from './_title_menu.js';
@@ -255,7 +256,7 @@ export class TitleLoadingSequence {
         const spawnLeadSeconds = Number.isFinite(TITLE_LOADING.ENEMY_SPAWN_READY_LEAD_SECONDS)
             ? Math.max(0, TITLE_LOADING.ENEMY_SPAWN_READY_LEAD_SECONDS)
             : 0;
-        return Math.max(0, Math.min(1, 1 - (spawnLeadSeconds / transitionDuration)));
+        return clamp01(1 - (spawnLeadSeconds / transitionDuration));
     }
 
     /**

@@ -1,6 +1,7 @@
 import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW, renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
+import { clamp01, clampNumber } from 'util/number_util.js';
 import { buildTitleCenterCircleRenderCommand } from './center_circle/_title_center_circle_render_command.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -48,7 +49,7 @@ export class TitleCenterCircle {
             this.progress = 0;
             return;
         }
-        this.progress = Math.min(TITLE_LOADING.COMPLETE_PROGRESS, Math.max(0, progress));
+        this.progress = clampNumber(progress, 0, TITLE_LOADING.COMPLETE_PROGRESS);
     }
 
     /**
@@ -101,7 +102,7 @@ export class TitleCenterCircle {
             return;
         }
 
-        this.placementProgress = Math.max(0, Math.min(1, progress));
+        this.placementProgress = clamp01(progress);
         this.#syncVisualPlacement();
     }
 

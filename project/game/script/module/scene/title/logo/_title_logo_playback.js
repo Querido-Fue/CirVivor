@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clamp01 } from 'util/number_util.js';
 
 const TITLE_LOGO_DATA = getData('TITLE_LOGO_DATA');
 
@@ -53,7 +54,7 @@ export function calculateTitleLogoPlaybackProgress(elapsed, totalDuration = TITL
     }
 
     const safeElapsed = Number.isFinite(elapsed) ? elapsed : 0;
-    return Math.min(safeElapsed / safeDuration, 1);
+    return clamp01(safeElapsed / safeDuration);
 }
 
 /**
@@ -75,7 +76,7 @@ export function calculateTitleLogoRemainingTimeToProgress(
 
     const safeElapsed = Number.isFinite(elapsed) ? elapsed : 0;
     const safeTargetProgress = Number.isFinite(targetProgress) ? targetProgress : 0;
-    const clampedTargetProgress = Math.max(0, Math.min(1, safeTargetProgress));
+    const clampedTargetProgress = clamp01(safeTargetProgress);
     const targetElapsed = safeDuration * clampedTargetProgress;
     return Math.max(0, targetElapsed - safeElapsed);
 }
