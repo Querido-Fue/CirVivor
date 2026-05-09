@@ -1,4 +1,4 @@
-import { clamp01, clampNumber } from 'util/number_util.js';
+import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 
 /**
  * 초기 버스트 누적 스폰 비율을 easeOutExpo 형태로 반환합니다.
@@ -7,16 +7,12 @@ import { clamp01, clampNumber } from 'util/number_util.js';
  * @returns {number} 누적 스폰 비율입니다.
  */
 export function getTitleInitialBurstSpawnProgress(progress, expoPower = 10) {
-    const clampedProgress = Number.isFinite(progress)
-        ? clamp01(progress)
-        : 0;
+    const clampedProgress = clampFiniteNumber(progress, 0, 1, 0);
     if (clampedProgress >= 1) {
         return 1;
     }
 
-    const normalizedExpoPower = Number.isFinite(expoPower)
-        ? Math.max(1, expoPower)
-        : 10;
+    const normalizedExpoPower = clampFiniteNumber(expoPower, 1, Infinity, 10);
     return 1 - Math.pow(2, -(normalizedExpoPower * clampedProgress));
 }
 

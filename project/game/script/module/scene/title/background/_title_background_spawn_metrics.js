@@ -1,4 +1,4 @@
-import { clamp01, clampNumber } from 'util/number_util.js';
+import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 
 /**
  * 계층별 활성 타이틀 적 수를 반환합니다.
@@ -64,12 +64,7 @@ export function getTitlePerLayerEnemyLimit(titleEnemiesConfig) {
  * @returns {number} 0~1 범위의 목표 점유율 비율입니다.
  */
 export function getTitleTargetLayerOccupancyRatio(titleEnemiesConfig) {
-    const ratio = titleEnemiesConfig.ENEMY_TARGET_OCCUPANCY_RATIO;
-    if (Number.isFinite(ratio)) {
-        return clamp01(ratio);
-    }
-
-    return 1;
+    return clampFiniteNumber(titleEnemiesConfig.ENEMY_TARGET_OCCUPANCY_RATIO, 0, 1, 1);
 }
 
 /**
@@ -78,12 +73,7 @@ export function getTitleTargetLayerOccupancyRatio(titleEnemiesConfig) {
  * @returns {number} 0~1 범위의 초기 버스트 점유율 비율입니다.
  */
 export function getTitleInitialBurstFillRatio(titleEnemiesConfig) {
-    const ratio = titleEnemiesConfig.INITIAL_BURST_FILL_RATIO;
-    if (Number.isFinite(ratio)) {
-        return clamp01(ratio);
-    }
-
-    return 0;
+    return clampFiniteNumber(titleEnemiesConfig.INITIAL_BURST_FILL_RATIO, 0, 1, 0);
 }
 
 /**
@@ -174,7 +164,7 @@ export function getTitleLayerAverageAxisSpeedPx(layerProfile, uiww, titleEnemies
     const averageRatio = (minRatio + maxRatio) * 0.5;
     const speedScale = Number.isFinite(layerProfile.SpeedScale) ? layerProfile.SpeedScale : 1;
     const averageSpeedPx = uiww * averageRatio * speedScale * leftMultiplier;
-    return Number.isFinite(averageSpeedPx) ? Math.max(0, averageSpeedPx) : 0;
+    return clampFiniteNumber(averageSpeedPx, 0, Infinity, 0);
 }
 
 /**
