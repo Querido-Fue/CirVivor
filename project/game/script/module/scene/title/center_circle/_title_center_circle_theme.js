@@ -3,6 +3,8 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 
+export { toLoadingRgba } from '../loading/_title_loading_theme.js';
+
 const TITLE_LOADING = getData('TITLE_CONSTANTS').TITLE_LOADING;
 const DEFAULT_LOADING_GLOW = TITLE_LOADING.GLOW_DEFAULTS;
 const DEFAULT_LOADING_GLOW_STOPS = DEFAULT_LOADING_GLOW.HALO_STOPS;
@@ -101,27 +103,6 @@ export function getLoadingCircleShaderColors() {
             DEFAULT_LOADING_CIRCLE_SHADER_COLORS.surface
         )
     };
-}
-
-/**
- * css 색상 문자열과 알파값으로 rgba 문자열을 생성합니다.
- * @param {string|null|undefined} color - 색상 문자열
- * @param {number} alpha - 알파값
- * @returns {string} rgba 문자열
- */
-export function toLoadingRgba(color, alpha) {
-    const fallbackColor = getLoadingAccentColor();
-    const parsedColor = colorUtil().cssToRgb(color);
-    const safeAlpha = Number.isFinite(alpha) ? alpha : 0;
-    if (!parsedColor) {
-        const fallback = colorUtil().cssToRgb(fallbackColor);
-        if (!fallback) {
-            return 'transparent';
-        }
-        return `rgba(${fallback.r}, ${fallback.g}, ${fallback.b}, ${safeAlpha})`;
-    }
-
-    return `rgba(${parsedColor.r}, ${parsedColor.g}, ${parsedColor.b}, ${safeAlpha})`;
 }
 
 /**

@@ -44,26 +44,30 @@ export function getLoadingSkipButtonStyle() {
     const skipButton = ColorSchemes?.Title?.Loading?.SkipButton;
     return {
         text: skipButton?.Text || getLoadingTextColor(),
-        idleColor: skipButton?.Idle || toAccentRgba(accent, 0.12),
-        hoverColor: skipButton?.Hover || toAccentRgba(accent, 0.22)
+        idleColor: skipButton?.Idle || toLoadingRgba(accent, 0.12, getLoadingTextColor()),
+        hoverColor: skipButton?.Hover || toLoadingRgba(accent, 0.22, getLoadingTextColor())
     };
 }
 
 /**
- * rgba 형식 문자열에서 rgb 값으로 변환 후 알파를 붙여 반환합니다.
- * @param {string} color - css 색상 문자열
+ * CSS 색상 문자열과 알파값으로 로딩 UI rgba 문자열을 생성합니다.
+ * @param {string|null|undefined} color - css 색상 문자열
  * @param {number} alpha - 알파 값
+ * @param {string|null|undefined} [fallbackColor=getLoadingAccentColor()] - 변환 실패 시 사용할 색상 문자열
  * @returns {string} rgba 문자열
  */
-function toAccentRgba(color, alpha) {
-    const safeAlpha = Number.isFinite(alpha) ? alpha : 1;
+export function toLoadingRgba(color, alpha, fallbackColor = getLoadingAccentColor()) {
+    const safeAlpha = Number.isFinite(alpha) ? alpha : 0;
     const parsed = colorUtil().cssToRgb(color);
     if (!parsed) {
-        const fallback = colorUtil().cssToRgb(getLoadingTextColor());
+        const fallback = colorUtil().cssToRgb(fallbackColor)
+            || colorUtil().cssToRgb(getLoadingAccentColor())
+            || colorUtil().cssToRgb(getLoadingTextColor());
         if (!fallback) {
             return 'transparent';
         }
         return `rgba(${fallback.r}, ${fallback.g}, ${fallback.b}, ${safeAlpha})`;
     }
+
     return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${safeAlpha})`;
 }
