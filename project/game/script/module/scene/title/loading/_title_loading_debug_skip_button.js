@@ -1,4 +1,5 @@
 import { UIPool } from 'ui/_ui_pool.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 import { getLoadingSkipButtonStyle } from './_title_loading_theme.js';
 
 const DEBUG_SKIP_LOADING_LABEL = '로딩 스킵';
@@ -58,12 +59,10 @@ export function layoutTitleLoadingDebugSkipButton(button, layout) {
         return;
     }
 
-    const wh = Number.isFinite(layout?.wh) ? layout.wh : 0;
-    const uiww = Number.isFinite(layout?.uiww) ? layout.uiww : 0;
-    const loadingTextX = Number.isFinite(layout?.loadingTextX) ? layout.loadingTextX : 0;
-    const loadingTextBlockBottomY = Number.isFinite(layout?.loadingTextBlockBottomY)
-        ? layout.loadingTextBlockBottomY
-        : 0;
+    const wh = resolveFiniteNumber(layout?.wh, 0);
+    const uiww = resolveFiniteNumber(layout?.uiww, 0);
+    const loadingTextX = resolveFiniteNumber(layout?.loadingTextX, 0);
+    const loadingTextBlockBottomY = resolveFiniteNumber(layout?.loadingTextBlockBottomY, 0);
     const buttonWidth = Math.max(120, uiww * 0.12);
     const buttonHeight = Math.max(34, wh * 0.048);
     button.width = buttonWidth;
