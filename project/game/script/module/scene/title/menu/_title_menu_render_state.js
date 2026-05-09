@@ -186,6 +186,116 @@ export function getTitleMenuUtilityPaneRevealEase({
 }
 
 /**
+ * 카드 등장 시작 지연을 제외한 실제 메뉴 등장 경과 시간을 반환합니다.
+ * @param {number} cardRevealElapsed - 카드 등장 누적 시간입니다.
+ * @param {object} titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @returns {number} 시작 지연이 제외된 경과 시간입니다.
+ */
+export function getTitleMenuRevealClockElapsed(cardRevealElapsed, titleCardMenu) {
+    return Math.max(0, cardRevealElapsed - titleCardMenu.APPEAR_START_DELAY_SECONDS);
+}
+
+/**
+ * 카드 등장 전체 소요 시간을 반환합니다.
+ * @param {object} titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @returns {number} 카드 등장 전체 소요 시간입니다.
+ */
+export function getTitleMenuCardRevealTotalDuration(titleCardMenu) {
+    const revealConfigs = Object.values(titleCardMenu.REVEAL_CONFIGS || {});
+    const revealMaxDuration = revealConfigs.reduce((maxDuration, revealConfig) => {
+        const delaySeconds = Number.isFinite(revealConfig?.delaySeconds) ? revealConfig.delaySeconds : 0;
+        const durationSeconds = Number.isFinite(revealConfig?.durationSeconds) ? revealConfig.durationSeconds : 0;
+        return Math.max(maxDuration, delaySeconds + durationSeconds);
+    }, 0);
+
+    return Math.max(
+        titleCardMenu.APPEAR_DURATION_SECONDS,
+        titleCardMenu.APPEAR_START_DELAY_SECONDS + revealMaxDuration
+    );
+}
+
+/**
+ * 카드와 패널이 공유하는 실제 등장 구간 길이를 반환합니다.
+ * @param {object} titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @returns {number} 등장 애니메이션 핵심 구간 길이입니다.
+ */
+export function getTitleMenuCardRevealCoreDuration(titleCardMenu) {
+    return Math.max(
+        0.001,
+        getTitleMenuCardRevealTotalDuration(titleCardMenu) - titleCardMenu.APPEAR_START_DELAY_SECONDS
+    );
+}
+
+/**
+ * 현재 메뉴 등장 시간축에서 지정 구간의 진행률을 계산합니다.
+ * @param {object} options - 등장 진행률 계산 옵션입니다.
+ * @param {number} options.cardRevealElapsed - 카드 등장 누적 시간입니다.
+ * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @param {number} options.delaySeconds - 시작 지연 시간입니다.
+ * @param {number} options.durationSeconds - 진행 구간 길이입니다.
+ * @returns {number} 0~1 범위 진행률입니다.
+ */
+export function getTitleMenuRevealProgress({
+    cardRevealElapsed,
+    titleCardMenu,
+    delaySeconds,
+    durationSeconds
+}) {
+    const safeDelay = Number.isFinite(delaySeconds) ? delaySeconds : 0;
+    const safeDuration = Math.max(0.001, Number.isFinite(durationSeconds) ? durationSeconds : 0);
+    return clampNumber(
+        (getTitleMenuRevealClockElapsed(cardRevealElapsed, titleCardMenu) - safeDelay) / safeDuration,
+        0,
+        1
+    );
+}
+
+/**
+ * 카드 등장용 독립 시간축을 갱신합니다.
+ * @param {object} options - 등장 시간축 갱신 옵션입니다.
+ * @param {boolean} options.cardRevealStarted - 기존 등장 시작 여부입니다.
+ * @param {number} options.cardRevealElapsed - 기존 등장 누적 시간입니다.
+ * @param {number} options.transitionProgress - 타이틀 전환 진행률입니다.
+ * @param {number} options.delta - 프레임 델타 시간입니다.
+ * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @returns {{cardRevealStarted:boolean, cardRevealElapsed:number, revealFinished:boolean}} 갱신된 등장 시간축입니다.
+ */
+export function advanceTitleMenuCardRevealClock({
+    cardRevealStarted,
+    cardRevealElapsed,
+    transitionProgress,
+    delta,
+    titleCardMenu
+}) {
+    const nextStarted = cardRevealStarted || transitionProgress > 0;
+    if (!nextStarted) {
+        return {
+            cardRevealStarted: false,
+            cardRevealElapsed,
+            revealFinished: false
+        };
+    }
+
+    const totalDuration = getTitleMenuCardRevealTotalDuration(titleCardMenu);
+    const nextElapsed = Math.min(totalDuration, cardRevealElapsed + Math.max(0, delta));
+    return {
+        cardRevealStarted: true,
+        cardRevealElapsed: nextElapsed,
+        revealFinished: nextElapsed >= totalDuration - 0.0001
+    };
+}
+
+/**
+ * 카드 식별자에 맞는 등장 설정을 반환합니다.
+ * @param {object} titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @param {string} cardId - 카드 식별자입니다.
+ * @returns {{delaySeconds:number, durationSeconds:number, offsetXRatio:number, offsetYRatio:number, scaleOffset:number}} 카드 등장 설정입니다.
+ */
+export function getTitleMenuCardRevealConfig(titleCardMenu, cardId) {
+    return titleCardMenu.REVEAL_CONFIGS[cardId] || titleCardMenu.REVEAL_CONFIGS.start;
+}
+
+/**
  * 최종 패널 rect를 현재 등장 진행률에 맞는 렌더 rect로 변환합니다.
  * @param {{x:number, y:number, w:number, h:number, radius:number}} layoutRect - 최종 패널 rect입니다.
  * @param {number} revealEase - 패널 등장 이징 결과입니다.

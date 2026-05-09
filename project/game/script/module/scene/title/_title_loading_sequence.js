@@ -1,9 +1,8 @@
 import { animate, remove } from 'animation/animation_system.js';
 import { getData } from 'data/data_handler.js';
-import { getUIOffsetX, getUIWW, getWH, render } from 'display/display_system.js';
+import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getSetting } from 'save/save_system.js';
-import { getLangString } from 'ui/ui_system.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
@@ -15,10 +14,11 @@ import {
     shouldShowTitleLoadingDebugSkipButton
 } from './loading/_title_loading_debug_skip_button.js';
 import { buildTitleLoadingSchedule } from './loading/_title_loading_schedule.js';
+import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
 import { buildTitleLoadingTextLayout } from './loading/_title_loading_text_layout.js';
+import { drawTitleLoadingText } from './loading/_title_loading_text_render.js';
 import {
-    getLoadingLogoColor,
-    getLoadingTextColor
+    getLoadingLogoColor
 } from './loading/_title_loading_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -540,32 +540,14 @@ export class TitleLoadingSequence {
             return;
         }
 
-        const circleLayout = this.centerCircle.getCircleLayout();
-        const horizontalGap = Math.max(18, this.WH * 0.025);
-        const leftPadding = Math.max(18, this.UIWW * 0.02);
-        const availableWidth = Math.max(
-            64,
-            (circleLayout.centerX - circleLayout.radius) - (this.UIOffsetX + leftPadding + horizontalGap)
-        );
-        const preferredWidth = Math.min(this.UIWW * 0.28, circleLayout.radius * 3.15) * 0.8;
-        const logoWidth = Math.min(preferredWidth, availableWidth);
-        const logoX = Math.max(
-            this.UIOffsetX + leftPadding,
-            (circleLayout.centerX - circleLayout.radius) - horizontalGap - logoWidth
-        );
-        const finalLogoWidth = this.UIWW * TITLE_LOADING.LOGO_FINAL_WIDTH_UIWW_RATIO * 0.8;
-        const finalLogoX = this.UIWW * TITLE_LOADING.LOGO_FINAL_LEFT_UIWW_RATIO;
-        const finalLogoCenterY = this.WH * (TITLE_LOADING.LOGO_FINAL_CENTER_Y_RATIO || 0.5);
-        const transition = this.sceneTransitionProgress;
-        const blendedWidth = logoWidth + ((finalLogoWidth - logoWidth) * transition);
-        const blendedX = logoX + ((finalLogoX - logoX) * transition);
-        const blendedCenterY = circleLayout.centerY + ((finalLogoCenterY - circleLayout.centerY) * transition);
-
-        this.titleLogo.setPlacement({
-            x: blendedX,
-            width: blendedWidth,
-            centerY: blendedCenterY
-        });
+        this.titleLogo.setPlacement(buildTitleLoadingLogoPlacement({
+            circleLayout: this.centerCircle.getCircleLayout(),
+            wh: this.WH,
+            uiww: this.UIWW,
+            uiOffsetX: this.UIOffsetX,
+            sceneTransitionProgress: this.sceneTransitionProgress,
+            titleLoading: TITLE_LOADING
+        }));
     }
 
     /**
@@ -642,42 +624,19 @@ export class TitleLoadingSequence {
      * @private
      */
     #drawLoadingText() {
-        if (this.loadingTextAlpha <= 0 && this.loadingNoticeAlpha <= 0) {
-            return;
-        }
-
-        const translateY = this.loadingTextExitDistance * this.loadingTextExitProgress;
-        if (this.loadingTextAlpha > 0) {
-            render('ui', {
-                shape: 'text',
-                text: getLangString('title_loading'),
-                x: this.loadingTextX,
-                y: this.loadingTextY - translateY,
-                font: this.loadingTextFont,
-                fill: getLoadingTextColor(),
-                align: 'center',
-                baseline: 'middle',
-                alpha: this.loadingTextAlpha
-            });
-        }
-
-        if (this.loadingNoticeAlpha <= 0) {
-            return;
-        }
-
-        for (let i = 0; i < this.loadingNoticeLines.length; i++) {
-            render('ui', {
-                shape: 'text',
-                text: this.loadingNoticeLines[i],
-                x: this.loadingTextX,
-                y: this.loadingNoticeStartY + (this.loadingNoticeLineHeight * i),
-                font: this.loadingNoticeFont,
-                fill: getLoadingTextColor(),
-                align: 'center',
-                baseline: 'middle',
-                alpha: this.loadingNoticeAlpha
-            });
-        }
+        drawTitleLoadingText({
+            loadingTextAlpha: this.loadingTextAlpha,
+            loadingNoticeAlpha: this.loadingNoticeAlpha,
+            loadingTextExitDistance: this.loadingTextExitDistance,
+            loadingTextExitProgress: this.loadingTextExitProgress,
+            loadingTextX: this.loadingTextX,
+            loadingTextY: this.loadingTextY,
+            loadingTextFont: this.loadingTextFont,
+            loadingNoticeLines: this.loadingNoticeLines,
+            loadingNoticeStartY: this.loadingNoticeStartY,
+            loadingNoticeLineHeight: this.loadingNoticeLineHeight,
+            loadingNoticeFont: this.loadingNoticeFont
+        });
     }
 
     /**

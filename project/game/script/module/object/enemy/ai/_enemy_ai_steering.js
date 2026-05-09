@@ -3,7 +3,8 @@ import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simu
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 import {
     projectEnemyAIFootprintRadiusForDirection,
-    readPositivePixelValue
+    readPositivePixelValue,
+    resolveEnemyAIFootprintPathClearancePx
 } from './_enemy_ai_footprint.js';
 import {
     findNearestWalkableCellInto,
@@ -119,10 +120,90 @@ const resolveSteeringDirectPathPad = (
     }
 
     const baseRadius = readPositivePixelValue(footprintMetrics.baseRadius);
+    const pathClearance = resolveEnemyAIFootprintPathClearancePx(footprintMetrics, profile) || basePad;
     const ratio = Number.isFinite(profile.HEXA_HIVE_NAV_DIRECT_CHECK_PAD_RATIO)
         ? Math.max(0, profile.HEXA_HIVE_NAV_DIRECT_CHECK_PAD_RATIO)
         : 1;
-    return Math.max(baseRadius, Math.min(basePad, sideRadius * ratio));
+    return Math.max(baseRadius, Math.min(basePad, pathClearance, sideRadius * ratio));
+};
+
+/**
+ * 합체 육각형이 플레이어와 접촉권에 들어왔을 때 접근 속도를 줄입니다.
+ * @param {object|null|undefined} enemy - 적 객체입니다.
+ * @param {object} state - 적 AI 상태입니다.
+ * @param {object|null|undefined} context - AI 업데이트 문맥입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @param {object|null|undefined} footprintMetrics - AI footprint 메트릭입니다.
+ * @param {number} startX - 현재 X 좌표입니다.
+ * @param {number} startY - 현재 Y 좌표입니다.
+ * @param {number} playerX - 플레이어 X 좌표입니다.
+ * @param {number} playerY - 플레이어 Y 좌표입니다.
+ * @param {{x: number, y: number}} out - 출력 방향 버퍼입니다.
+ * @returns {boolean} 접근 완료로 steering을 종료했는지 여부입니다.
+ */
+const applyHexaHiveArrivalBrake = (
+    enemy,
+    state,
+    context,
+    profile,
+    footprintMetrics,
+    startX,
+    startY,
+    playerX,
+    playerY,
+    out
+) => {
+    state.hexaHiveArrivalBrake = false;
+    if (enemy?.type !== HEXA_HIVE_TYPE || state.flowPolicyKey !== 'hexa_hive_approach' || !footprintMetrics) {
+        return false;
+    }
+
+    const playerDx = playerX - startX;
+    const playerDy = playerY - startY;
+    const playerDistance = length(playerDx, playerDy);
+    if (!Number.isFinite(playerDistance) || playerDistance <= EPSILON) {
+        out.x = 0;
+        out.y = 0;
+        state.desiredSpeed = 0;
+        state.hexaHiveArrivalBrake = true;
+        return true;
+    }
+
+    const dirFromPlayerX = -playerDx / playerDistance;
+    const dirFromPlayerY = -playerDy / playerDistance;
+    const projectedRadius = projectEnemyAIFootprintRadiusForDirection(
+        footprintMetrics,
+        dirFromPlayerX,
+        dirFromPlayerY
+    );
+    const playerRadius = readPositivePixelValue(context?.player?.radius);
+    const stopExtra = Number.isFinite(profile.HEXA_HIVE_FINAL_APPROACH_STOP_EXTRA_PX)
+        ? Math.max(0, profile.HEXA_HIVE_FINAL_APPROACH_STOP_EXTRA_PX)
+        : 4;
+    const contactDistance = playerRadius + projectedRadius + stopExtra;
+    if (playerDistance <= contactDistance) {
+        out.x = 0;
+        out.y = 0;
+        state.desiredSpeed = 0;
+        state.flowData = null;
+        state.flowKey = '';
+        state.hexaHiveArrivalBrake = true;
+        return true;
+    }
+
+    const slowdownBand = Number.isFinite(profile.HEXA_HIVE_FINAL_APPROACH_SLOWDOWN_BAND_PX)
+        ? Math.max(1, profile.HEXA_HIVE_FINAL_APPROACH_SLOWDOWN_BAND_PX)
+        : 96;
+    if (playerDistance <= contactDistance + slowdownBand) {
+        const minSpeedRatio = Number.isFinite(profile.HEXA_HIVE_FINAL_APPROACH_MIN_SPEED_RATIO)
+            ? Math.max(0, Math.min(1, profile.HEXA_HIVE_FINAL_APPROACH_MIN_SPEED_RATIO))
+            : 0.18;
+        const t = Math.max(0, Math.min(1, (playerDistance - contactDistance) / slowdownBand));
+        const speedRatio = minSpeedRatio + ((1 - minSpeedRatio) * t);
+        state.desiredSpeed = Math.min(state.desiredSpeed, state.baseDesiredSpeed * speedRatio);
+    }
+
+    return false;
 };
 
 /**
@@ -211,6 +292,24 @@ export function resolveEnemyAISteeringDirection({
 }) {
     const scratchDir = state.scratchDir;
     const scratchCell = state.scratchCell;
+    if (applyHexaHiveArrivalBrake(
+        enemy,
+        state,
+        context,
+        profile,
+        footprintMetrics,
+        startX,
+        startY,
+        targetX,
+        targetY,
+        scratchDir
+    )) {
+        return scratchDir;
+    }
+
+    const pathClearance = enemy?.type === HEXA_HIVE_TYPE
+        ? (resolveEnemyAIFootprintPathClearancePx(footprintMetrics, profile) || enemyRadius)
+        : enemyRadius;
     const directPad = resolveSteeringDirectPathPad(
         enemy,
         enemyRadius,
@@ -320,7 +419,7 @@ export function resolveEnemyAISteeringDirection({
             getSimulationWW(),
             getSimulationObjectWH(),
             profile,
-            enemyRadius,
+            pathClearance,
             flowTargetX,
             flowTargetY,
             flowPolicyKey
@@ -342,7 +441,7 @@ export function resolveEnemyAISteeringDirection({
         const cellRaw = worldToCellInto(startX, startY, grid, scratchCell);
         const flowClearance = Number.isFinite(state.flowData.clearance)
             ? state.flowData.clearance
-            : enemyRadius;
+            : pathClearance;
         const isCurrentCellBlocked = isBlockedCell(grid, cellRaw.cx, cellRaw.cy);
         const cell = isCurrentCellBlocked
             ? findNearestWalkableCellInto(

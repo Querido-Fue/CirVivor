@@ -23,23 +23,19 @@ import {
     drawTitleMenuCardSpotlight
 } from './menu/_title_menu_effect_render.js';
 import {
-    hasTitleMenuDynamicTextureState,
-    pushTitleMenuRipple,
-    updateTitleMenuBorderState,
-    updateTitleMenuParticleState,
-    updateTitleMenuRippleState,
-    updateTitleMenuSpotlightState,
-    updateTitleMenuTiltState
+    hasTitleMenuDynamicTextureState
 } from './menu/_title_menu_effect_state.js';
 import {
     loadTitleMenuIconSources,
     releaseTitleMenuIconSources
 } from './menu/_title_menu_icon_lifecycle.js';
 import {
-    resolveTitleMenuCardPointerInfo,
-    updateTitleMenuCardProjection,
     updateTitleMenuPaneInteractionState
 } from './menu/_title_menu_interaction.js';
+import {
+    updateTitleMenuCardInteractionStates,
+    updateTitleMenuUtilityTileInteractionStates
+} from './menu/_title_menu_interaction_state.js';
 import { TitleMenuLayout } from './menu/_title_menu_layout.js';
 import { clampNumber } from './menu/_title_menu_motion.js';
 import {
@@ -51,6 +47,10 @@ import {
     buildTitleMenuCardRenderState,
     buildTitleMenuPaneRenderState,
     buildTitleMenuUtilityTileRenderState,
+    advanceTitleMenuCardRevealClock,
+    getTitleMenuCardRevealConfig,
+    getTitleMenuCardRevealCoreDuration,
+    getTitleMenuRevealProgress,
     getTitleMenuUtilityPaneRevealEase
 } from './menu/_title_menu_render_state.js';
 import { createTitleMenuOverlaySession } from './menu/_title_menu_overlay_session.js';
@@ -170,7 +170,7 @@ export class TitleMenu {
         const paneRenderState = buildTitleMenuPaneRenderState({
             paneLayout,
             uiww: this.UIWW,
-            revealCoreDuration: this.#getCardRevealCoreDuration(),
+            revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
             getRevealProgress: this.#getRevealProgress.bind(this)
         });
         const cardPaneTextureCanvas = this.#buildCardPaneTextureCanvas(paneRenderState.cardPane);
@@ -484,7 +484,7 @@ export class TitleMenu {
                     wh: this.WH,
                     uiww: this.UIWW,
                     titleCardMenu: TITLE_CARD_MENU,
-                    getRevealConfig: this.#getCardRevealConfig.bind(this),
+                    getRevealConfig: (cardId) => getTitleMenuCardRevealConfig(TITLE_CARD_MENU, cardId),
                     getRevealProgress: this.#getRevealProgress.bind(this)
                 })
             );
@@ -496,7 +496,7 @@ export class TitleMenu {
                     menuItem,
                     index,
                     uiww: this.UIWW,
-                    revealCoreDuration: this.#getCardRevealCoreDuration(),
+                    revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
                     getRevealProgress: this.#getRevealProgress.bind(this)
                 })
             );
@@ -517,164 +517,53 @@ export class TitleMenu {
         const particleOptions = this.session?.getEffectOptions('hoverParticle') || null;
         const borderOptions = this.session?.getEffectOptions('hoverBorder') || null;
         const clickedThisFrame = this.pointerEnabled && hasMouseState('left', 'clicked');
-        let hoveredCardId = null;
-        let hoveredPointerInfo = null;
-
-        const interactiveCards = this.#getCardsForInteraction();
-        for (const card of interactiveCards) {
-            const runtimeState = this.cardStateMap.get(card.cardDefinition.id);
-            const renderState = this.cardRenderMap.get(card.cardDefinition.id);
-            if (!runtimeState || !renderState || renderState.alpha <= 0.75) {
-                continue;
-            }
-
-            updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
-            const pointerInfo = resolveTitleMenuCardPointerInfo(renderState, runtimeState, mouseX, mouseY);
-            if (pointerInfo?.hovered) {
-                hoveredCardId = card.cardDefinition.id;
-                hoveredPointerInfo = pointerInfo;
-                break;
-            }
-        }
-
-        for (const card of this.cards) {
-            const runtimeState = this.cardStateMap.get(card.cardDefinition.id);
-            const renderState = this.cardRenderMap.get(card.cardDefinition.id);
-            if (!runtimeState || !renderState) {
-                continue;
-            }
-
-            const isHovered = this.pointerEnabled && hoveredCardId === card.cardDefinition.id;
-            runtimeState.hovered = isHovered;
-            if (isHovered && hoveredPointerInfo?.localPoint) {
-                runtimeState.localX = hoveredPointerInfo.localPoint.x;
-                runtimeState.localY = hoveredPointerInfo.localPoint.y;
-                runtimeState.normalizedX = clampNumber(((runtimeState.localX / Math.max(1, renderState.panelRect.w)) * 2) - 1, -1, 1);
-                runtimeState.normalizedY = clampNumber(((runtimeState.localY / Math.max(1, renderState.panelRect.h)) * 2) - 1, -1, 1);
-            }
-
-            card.setHovered(isHovered);
-            if (clickedThisFrame && isHovered) {
-                if (rippleOptions) {
-                    pushTitleMenuRipple(renderState, runtimeState, rippleOptions);
-                }
-                consumeMouseState('left');
-                this.#handleCardClick(card);
-            }
-
-            updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions);
-            updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
-            updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions);
-            updateTitleMenuBorderState(runtimeState, delta, borderOptions);
-            updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions);
-            updateTitleMenuRippleState(runtimeState, delta);
-            runtimeState.wasHovered = runtimeState.hovered;
-            card.update(delta);
-        }
-
-        this.#updateUtilityTileInteractions(
-            delta,
+        const cardInteraction = updateTitleMenuCardInteractionStates({
+            cards: this.cards,
+            interactiveCards: this.#getCardsForInteraction(),
+            cardStateMap: this.cardStateMap,
+            cardRenderMap: this.cardRenderMap,
+            pointerEnabled: this.pointerEnabled,
             mouseX,
             mouseY,
+            delta,
             clickedThisFrame,
-            !hoveredCardId && this.pointerEnabled,
             hoverTiltOptions,
             spotlightOptions,
             borderOptions,
             rippleOptions,
             particleOptions
-        );
-    }
+        });
 
-    /**
-     * 하단 보조 메뉴 타일 상호작용 상태를 갱신합니다.
-     * @param {number} delta - 프레임 델타 시간입니다.
-     * @param {number} mouseX - 현재 마우스 X 좌표입니다.
-     * @param {number} mouseY - 현재 마우스 Y 좌표입니다.
-     * @param {boolean} clickedThisFrame - 이번 프레임 클릭 여부입니다.
-     * @param {boolean} isInteractive - 상호작용 가능 여부입니다.
-     * @param {object|null} hoverTiltOptions - hover tilt 옵션입니다.
-     * @param {object|null} spotlightOptions - spotlight 옵션입니다.
-     * @param {object|null} borderOptions - border 옵션입니다.
-     * @param {object|null} rippleOptions - ripple 옵션입니다.
-     * @param {object|null} particleOptions - particle 옵션입니다.
-     * @private
-     */
-    #updateUtilityTileInteractions(
-        delta,
-        mouseX,
-        mouseY,
-        clickedThisFrame,
-        isInteractive,
-        hoverTiltOptions,
-        spotlightOptions,
-        borderOptions,
-        rippleOptions,
-        particleOptions
-    ) {
-        let hoveredMenuItemId = null;
-        let hoveredPointerInfo = null;
-
-        if (isInteractive) {
-            const interactiveItems = [...this.secondaryMenuEntries].reverse();
-            for (const menuEntry of interactiveItems) {
-                const runtimeState = this.utilityTileStateMap.get(menuEntry.id);
-                const renderState = this.utilityTileRenderMap.get(menuEntry.id);
-                if (!runtimeState || !renderState || renderState.alpha <= 0.75) {
-                    continue;
-                }
-
-                updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
-                const pointerInfo = resolveTitleMenuCardPointerInfo(renderState, runtimeState, mouseX, mouseY);
-                if (pointerInfo?.hovered) {
-                    hoveredMenuItemId = menuEntry.id;
-                    hoveredPointerInfo = pointerInfo;
-                    break;
-                }
-            }
+        if (cardInteraction.clickedCard) {
+            consumeMouseState('left');
+            this.#handleCardClick(cardInteraction.clickedCard);
         }
 
-        this.hoveredSecondaryMenuId = hoveredMenuItemId;
-        const hoveredMenuEntry = hoveredMenuItemId
-            ? (this.secondaryMenuEntries.find((menuEntry) => menuEntry.id === hoveredMenuItemId) || null)
-            : null;
+        const utilityInteraction = updateTitleMenuUtilityTileInteractionStates({
+            secondaryMenuEntries: this.secondaryMenuEntries,
+            utilityTileStateMap: this.utilityTileStateMap,
+            utilityTileRenderMap: this.utilityTileRenderMap,
+            isInteractive: !cardInteraction.hoveredCardId && this.pointerEnabled,
+            mouseX,
+            mouseY,
+            delta,
+            clickedThisFrame,
+            hoverTiltOptions,
+            spotlightOptions,
+            borderOptions,
+            rippleOptions,
+            particleOptions
+        });
+
+        this.hoveredSecondaryMenuId = utilityInteraction.hoveredMenuItemId;
+        const hoveredMenuEntry = utilityInteraction.hoveredMenuEntry;
         if (hoveredMenuEntry?.textKey) {
             requestTooltip(getLangString(hoveredMenuEntry.textKey));
         }
 
-        for (const menuEntry of this.secondaryMenuEntries) {
-            const runtimeState = this.utilityTileStateMap.get(menuEntry.id);
-            const renderState = this.utilityTileRenderMap.get(menuEntry.id);
-            if (!runtimeState || !renderState) {
-                continue;
-            }
-
-            const isHovered = hoveredMenuItemId === menuEntry.id;
-            runtimeState.hovered = isHovered;
-            if (isHovered && hoveredPointerInfo?.localPoint) {
-                runtimeState.localX = hoveredPointerInfo.localPoint.x;
-                runtimeState.localY = hoveredPointerInfo.localPoint.y;
-                runtimeState.normalizedX = clampNumber(((runtimeState.localX / Math.max(1, renderState.panelRect.w)) * 2) - 1, -1, 1);
-                runtimeState.normalizedY = clampNumber(((runtimeState.localY / Math.max(1, renderState.panelRect.h)) * 2) - 1, -1, 1);
-            }
-
-            updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions);
-            updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions);
-            updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions);
-            updateTitleMenuBorderState(runtimeState, delta, borderOptions);
-            updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions);
-            updateTitleMenuRippleState(runtimeState, delta);
-
-            if (clickedThisFrame && isHovered && rippleOptions) {
-                pushTitleMenuRipple(renderState, runtimeState, rippleOptions);
-            }
-
-            runtimeState.wasHovered = runtimeState.hovered;
-        }
-
-        if (clickedThisFrame && hoveredMenuItemId) {
+        if (utilityInteraction.clickedMenuEntry) {
             consumeMouseState('left');
-            this.#handleSecondaryMenuAction(hoveredMenuEntry);
+            this.#handleSecondaryMenuAction(utilityInteraction.clickedMenuEntry);
         }
     }
 
@@ -776,7 +665,7 @@ export class TitleMenu {
      * @private
      */
     #getUtilityPaneRevealEase() {
-        const revealCoreDuration = this.#getCardRevealCoreDuration();
+        const revealCoreDuration = getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU);
         return getTitleMenuUtilityPaneRevealEase({
             revealCoreDuration,
             getRevealProgress: this.#getRevealProgress.bind(this)
@@ -1344,24 +1233,6 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 등장 시작 지연을 제외한 실제 메뉴 등장 경과 시간을 반환합니다.
-     * @returns {number} 시작 지연이 제외된 경과 시간입니다.
-     * @private
-     */
-    #getRevealClockElapsed() {
-        return Math.max(0, this.cardRevealElapsed - TITLE_CARD_MENU.APPEAR_START_DELAY_SECONDS);
-    }
-
-    /**
-     * 카드와 패널이 공유하는 실제 등장 구간 길이를 반환합니다.
-     * @returns {number} 등장 애니메이션 핵심 구간 길이입니다.
-     * @private
-     */
-    #getCardRevealCoreDuration() {
-        return Math.max(0.001, this.#getCardRevealTotalDuration() - TITLE_CARD_MENU.APPEAR_START_DELAY_SECONDS);
-    }
-
-    /**
      * 현재 메뉴 등장 시간축에서 지정 구간의 진행률을 계산합니다.
      * @param {number} delaySeconds - 시작 지연 시간입니다.
      * @param {number} durationSeconds - 진행 구간 길이입니다.
@@ -1369,9 +1240,12 @@ export class TitleMenu {
      * @private
      */
     #getRevealProgress(delaySeconds, durationSeconds) {
-        const safeDelay = Number.isFinite(delaySeconds) ? delaySeconds : 0;
-        const safeDuration = Math.max(0.001, Number.isFinite(durationSeconds) ? durationSeconds : 0);
-        return clampNumber((this.#getRevealClockElapsed() - safeDelay) / safeDuration, 0, 1);
+        return getTitleMenuRevealProgress({
+            cardRevealElapsed: this.cardRevealElapsed,
+            titleCardMenu: TITLE_CARD_MENU,
+            delaySeconds,
+            durationSeconds
+        });
     }
 
     /**
@@ -1382,46 +1256,16 @@ export class TitleMenu {
      * @private
      */
     #updateCardRevealClock(delta, transitionProgress) {
-        if (!this.cardRevealStarted && transitionProgress > 0) {
-            this.cardRevealStarted = true;
-        }
-
-        if (!this.cardRevealStarted) {
-            return false;
-        }
-
-        const totalDuration = this.#getCardRevealTotalDuration();
-        this.cardRevealElapsed = Math.min(totalDuration, this.cardRevealElapsed + Math.max(0, delta));
-        return this.cardRevealElapsed >= totalDuration - 0.0001;
-    }
-
-    /**
-     * 카드 등장 전체 소요 시간을 반환합니다.
-     * @returns {number} 카드 등장 전체 소요 시간입니다.
-     * @private
-     */
-    #getCardRevealTotalDuration() {
-        const revealConfigs = Object.values(TITLE_CARD_MENU.REVEAL_CONFIGS || {});
-        const revealMaxDuration = revealConfigs.reduce((maxDuration, revealConfig) => {
-            const delaySeconds = Number.isFinite(revealConfig?.delaySeconds) ? revealConfig.delaySeconds : 0;
-            const durationSeconds = Number.isFinite(revealConfig?.durationSeconds) ? revealConfig.durationSeconds : 0;
-            return Math.max(maxDuration, delaySeconds + durationSeconds);
-        }, 0);
-
-        return Math.max(
-            TITLE_CARD_MENU.APPEAR_DURATION_SECONDS,
-            TITLE_CARD_MENU.APPEAR_START_DELAY_SECONDS + revealMaxDuration
-        );
-    }
-
-    /**
-     * 카드 식별자에 맞는 등장 설정을 반환합니다.
-     * @param {string} cardId - 카드 식별자입니다.
-     * @returns {{delaySeconds:number, durationSeconds:number, offsetXRatio:number, offsetYRatio:number, scaleOffset:number}} 카드 등장 설정입니다.
-     * @private
-     */
-    #getCardRevealConfig(cardId) {
-        return TITLE_CARD_MENU.REVEAL_CONFIGS[cardId] || TITLE_CARD_MENU.REVEAL_CONFIGS.start;
+        const revealClock = advanceTitleMenuCardRevealClock({
+            cardRevealStarted: this.cardRevealStarted,
+            cardRevealElapsed: this.cardRevealElapsed,
+            transitionProgress,
+            delta,
+            titleCardMenu: TITLE_CARD_MENU
+        });
+        this.cardRevealStarted = revealClock.cardRevealStarted;
+        this.cardRevealElapsed = revealClock.cardRevealElapsed;
+        return revealClock.revealFinished;
     }
 
 }

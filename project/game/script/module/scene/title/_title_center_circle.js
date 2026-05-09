@@ -2,24 +2,13 @@ import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
 import { getLoadingAccentColor } from './loading/_title_loading_theme.js';
-import { getLoadingGlowSettings, toLoadingRgba } from './center_circle/_title_center_circle_theme.js';
-import {
-    createCenterCircleGlowNoiseCanvas,
-    drawCenterCircleDitheredHaloNoise,
-    drawCenterCircleGlowRing,
-    drawCenterCircleHaloRing,
-    resizeCenterCircleGlowCanvas
-} from './center_circle/_title_center_circle_glow_canvas.js';
+import { TitleCenterCircleGlowCache } from './center_circle/_title_center_circle_glow_cache.js';
+import { drawCenterCircleSurfaceHighlight } from './center_circle/_title_center_circle_surface.js';
 import { buildCenterCircleFillData } from './center_circle/_title_center_circle_wave.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
 const TWO_PI = Math.PI * 2;
-const GLOW_COMPENSATION_MIN_SCALE = 1;
-const GLOW_COMPENSATION_MAX_SCALE = Math.max(
-    GLOW_COMPENSATION_MIN_SCALE,
-    Math.ceil(TITLE_LOADING.GLOW_COMPENSATION_SCALE || GLOW_COMPENSATION_MIN_SCALE)
-);
 
 /**
  * @class TitleCenterCircle
@@ -50,8 +39,7 @@ export class TitleCenterCircle {
         this.visualScale = 1;
         this.placementProgress = 0;
         this.glowCompensationScale = 1;
-        this.glowNoiseCanvas = createCenterCircleGlowNoiseCanvas();
-        this.glowCacheEntries = new Map();
+        this.glowCache = new TitleCenterCircleGlowCache();
         this.#recalculateLayout();
     }
 
@@ -90,7 +78,7 @@ export class TitleCenterCircle {
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
         this.#recalculateLayout();
-        this.#clearGlowCaches();
+        this.glowCache.clear();
     }
 
     /**
@@ -139,7 +127,15 @@ export class TitleCenterCircle {
         const drawOutlineWidth = Math.max(1, this.outlineWidth * this.visualScale);
 
         ctx.save();
-        this.#drawOutlineGlow(ctx, drawRadius);
+        this.glowCache.draw(ctx, {
+            centerX: this.centerX,
+            centerY: this.centerY,
+            radius: this.radius,
+            outlineWidth: this.outlineWidth,
+            drawRadius,
+            glowPhase: this.glowPhase,
+            glowCompensationScale: this.glowCompensationScale
+        });
         if (this.progress > 0) {
             this.#drawFill(ctx, drawRadius);
         }
@@ -174,7 +170,7 @@ export class TitleCenterCircle {
      * 내부 상태를 정리합니다.
      */
     destroy() {
-        this.#clearGlowCaches();
+        this.glowCache.clear();
     }
 
     /**
@@ -205,220 +201,6 @@ export class TitleCenterCircle {
         this.centerX = this.loadingCenterX + ((this.finalCenterX - this.loadingCenterX) * this.placementProgress);
         this.centerY = this.loadingCenterY + ((this.finalCenterY - this.loadingCenterY) * this.placementProgress);
         this.textAnchorY = this.centerY + (this.radius * this.visualScale) + Math.max(18, this.WH * TITLE_LOADING.TEXT_GAP_WH_RATIO);
-    }
-
-    /**
-     * 외곽 글로우가 있는 원형 outline을 먼저 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트
-     * @param {number} drawRadius - 현재 렌더 반경입니다.
-     * @private
-     */
-    #drawOutlineGlow(ctx, drawRadius) {
-        const pulse = 0.9 + (Math.sin(this.glowPhase) * 0.06);
-        const drawScale = drawRadius / Math.max(1, this.radius);
-        const glowBlend = this.#getGlowCacheBlend();
-        if (!glowBlend || drawScale <= 0) {
-            return;
-        }
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        this.#drawGlowCacheEntry(ctx, glowBlend.lowerEntry, pulse * (1 - glowBlend.upperWeight), drawScale);
-        if (glowBlend.upperEntry) {
-            this.#drawGlowCacheEntry(ctx, glowBlend.upperEntry, pulse * glowBlend.upperWeight, drawScale);
-        }
-        ctx.restore();
-    }
-
-    /**
-     * 현재 glow 보정 배율에 맞는 캐시 보간 정보를 반환합니다.
-     * @returns {{lowerEntry: object, upperEntry: object|null, upperWeight: number}|null} glow 캐시 보간 정보입니다.
-     * @private
-     */
-    #getGlowCacheBlend() {
-        const normalizedScale = Math.max(
-            GLOW_COMPENSATION_MIN_SCALE,
-            Math.min(
-                GLOW_COMPENSATION_MAX_SCALE,
-                Number.isFinite(this.glowCompensationScale) ? this.glowCompensationScale : GLOW_COMPENSATION_MIN_SCALE
-            )
-        );
-        const lowerScale = Math.max(GLOW_COMPENSATION_MIN_SCALE, Math.floor(normalizedScale));
-        const upperScale = Math.min(GLOW_COMPENSATION_MAX_SCALE, Math.ceil(normalizedScale));
-        const lowerEntry = this.#getGlowCacheEntry(lowerScale);
-        if (!lowerEntry) {
-            return null;
-        }
-
-        if (lowerScale === upperScale) {
-            return {
-                lowerEntry,
-                upperEntry: null,
-                upperWeight: 0
-            };
-        }
-
-        return {
-            lowerEntry,
-            upperEntry: this.#getGlowCacheEntry(upperScale),
-            upperWeight: (normalizedScale - lowerScale) / Math.max(0.0001, upperScale - lowerScale)
-        };
-    }
-
-    /**
-     * 지정한 glow 보정 배율의 캐시 엔트리를 반환합니다.
-     * @param {number} glowCompensationScale - glow 보정 배율 버킷입니다.
-     * @returns {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|null, offsetX: number, offsetY: number}|null} glow 캐시 엔트리입니다.
-     * @private
-     */
-    #getGlowCacheEntry(glowCompensationScale) {
-        const cacheKey = Math.max(
-            GLOW_COMPENSATION_MIN_SCALE,
-            Math.min(GLOW_COMPENSATION_MAX_SCALE, Math.round(glowCompensationScale))
-        );
-        let entry = this.glowCacheEntries.get(cacheKey);
-        if (entry) {
-            return entry;
-        }
-
-        entry = {
-            canvas: document.createElement('canvas'),
-            context: null,
-            offsetX: 0,
-            offsetY: 0
-        };
-        entry.context = entry.canvas.getContext('2d');
-        this.#rebuildGlowCache(entry, cacheKey);
-        this.glowCacheEntries.set(cacheKey, entry);
-        return entry;
-    }
-
-    /**
-     * glow 캐시 이미지를 현재 스케일에 맞춰 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트입니다.
-     * @param {{canvas: HTMLCanvasElement, offsetX: number, offsetY: number}|null} entry - 사용할 glow 캐시 엔트리입니다.
-     * @param {number} alpha - 적용할 알파 값입니다.
-     * @param {number} drawScale - 현재 화면에 그릴 스케일입니다.
-     * @private
-     */
-    #drawGlowCacheEntry(ctx, entry, alpha, drawScale) {
-        if (!entry || alpha <= 0 || drawScale <= 0 || entry.canvas.width <= 0 || entry.canvas.height <= 0) {
-            return;
-        }
-
-        ctx.globalAlpha = alpha;
-        ctx.drawImage(
-            entry.canvas,
-            this.centerX - (entry.offsetX * drawScale),
-            this.centerY - (entry.offsetY * drawScale),
-            entry.canvas.width * drawScale,
-            entry.canvas.height * drawScale
-        );
-    }
-
-    /**
-     * 현재 글로우 상태를 오프스크린 캔버스로 다시 렌더링합니다.
-     * @param {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|null, offsetX: number, offsetY: number}} entry - glow 캐시 엔트리입니다.
-     * @param {number} glowCompensationScale - 현재 글로우 보정 배율입니다.
-     * @private
-     */
-    #rebuildGlowCache(entry, glowCompensationScale) {
-        const glowSettings = getLoadingGlowSettings();
-        const haloStops = Array.isArray(glowSettings?.haloStops) ? glowSettings.haloStops : [];
-        const ringSettings = glowSettings?.ring || {};
-        const surfaceSettings = glowSettings?.surface || {};
-        const glowContext = entry?.context;
-        if (!glowContext) {
-            return;
-        }
-
-        const drawRadius = Math.max(1, this.radius);
-        const drawOutlineWidth = Math.max(1, this.outlineWidth);
-        const haloInnerRadius = drawRadius * 1.015;
-        const haloOuterRadius = drawRadius * (1.92 + (glowCompensationScale * 0.11));
-        const glowRadius = drawRadius * 1.018;
-        const glowBlur = drawRadius * (0.34 + (glowCompensationScale * 0.12));
-        const glowLineWidth = Math.max(drawOutlineWidth * 1.12, drawRadius * 0.016);
-        const baseBloomStrength = 0.76 + (glowCompensationScale * 0.12);
-        const extent = Math.max(haloOuterRadius, glowRadius + (glowBlur * 2.5)) + 8;
-        const canvasSize = Math.max(1, Math.ceil(extent * 2));
-        const center = canvasSize * 0.5;
-        let haloGradient;
-
-        resizeCenterCircleGlowCanvas(entry.canvas, canvasSize, canvasSize);
-        glowContext.clearRect(0, 0, canvasSize, canvasSize);
-
-        haloGradient = glowContext.createRadialGradient(
-            center,
-            center,
-            haloInnerRadius,
-            center,
-            center,
-            haloOuterRadius
-        );
-
-        for (let i = 0; i < haloStops.length; i++) {
-            const stop = haloStops[i];
-            if (!stop || typeof stop.offset !== 'number' || typeof stop.alphaScale !== 'number' || typeof stop.maxAlpha !== 'number') {
-                continue;
-            }
-            const stopAlpha = Math.min(stop.maxAlpha, stop.alphaScale * baseBloomStrength);
-            haloGradient.addColorStop(Math.max(0, Math.min(1, stop.offset)), toLoadingRgba(stop.color, stopAlpha));
-        }
-        if (haloStops.length === 0) {
-            const fallbackStopColor = toLoadingRgba(getLoadingAccentColor(), 0);
-            haloGradient.addColorStop(0, fallbackStopColor);
-            haloGradient.addColorStop(1, fallbackStopColor);
-        }
-
-        glowContext.save();
-        glowContext.globalCompositeOperation = 'screen';
-        drawCenterCircleHaloRing(glowContext, center, center, haloInnerRadius, haloOuterRadius, haloGradient);
-        drawCenterCircleDitheredHaloNoise(
-            glowContext,
-            this.glowNoiseCanvas,
-            center,
-            center,
-            haloInnerRadius,
-            haloOuterRadius,
-            Math.min(0.04, (Number.isFinite(ringSettings?.AlphaScale) ? ringSettings.AlphaScale : 0) * baseBloomStrength)
-        );
-        const ringColor = ringSettings?.Color || getLoadingAccentColor();
-        const ringShadowColor = ringSettings?.ShadowColor || ringColor;
-        const ringAlpha = Math.min(
-            Number.isFinite(ringSettings?.AlphaMax) ? ringSettings.AlphaMax : 0,
-            (Number.isFinite(ringSettings?.AlphaScale) ? ringSettings.AlphaScale : 0) * baseBloomStrength
-        );
-        const ringShadowAlpha = Math.min(
-            Number.isFinite(ringSettings?.ShadowAlphaMax) ? ringSettings.ShadowAlphaMax : 0,
-            (Number.isFinite(ringSettings?.ShadowAlphaScale) ? ringSettings.ShadowAlphaScale : 0) * baseBloomStrength
-        );
-        drawCenterCircleGlowRing(
-            glowContext,
-            center,
-            center,
-            glowRadius,
-            glowLineWidth,
-            toLoadingRgba(ringColor, ringAlpha),
-            glowBlur,
-            toLoadingRgba(ringShadowColor, ringShadowAlpha)
-        );
-        glowContext.restore();
-
-        entry.offsetX = center;
-        entry.offsetY = center;
-    }
-
-    /**
-     * glow 캐시 엔트리를 모두 정리합니다.
-     * @private
-     */
-    #clearGlowCaches() {
-        for (const entry of this.glowCacheEntries.values()) {
-            entry.canvas.width = 0;
-            entry.canvas.height = 0;
-        }
-        this.glowCacheEntries.clear();
     }
 
     /**
@@ -463,39 +245,7 @@ export class TitleCenterCircle {
         ctx.fillStyle = getLoadingAccentColor();
         ctx.fill(fillData.path);
 
-        this.#drawSurfaceHighlight(ctx, fillData, drawRadius);
-        ctx.restore();
-    }
-
-    /**
-     * fill 상단의 밝은 수면선을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트
-     * @param {{surfacePoints: Array<{x:number, y:number}>}} fillData - fill 표면 포인트
-     * @param {number} drawRadius - 현재 렌더 반경입니다.
-     * @private
-     */
-    #drawSurfaceHighlight(ctx, fillData, drawRadius) {
-        if (this.progress >= 1) {
-            return;
-        }
-
-        const points = fillData.surfacePoints;
-        if (!Array.isArray(points) || points.length === 0) {
-            return;
-        }
-        const surfaceSettings = getLoadingGlowSettings().surface;
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) {
-            ctx.lineTo(points[i].x, points[i].y);
-        }
-        ctx.lineWidth = Math.max(1.5, drawRadius * 0.022);
-        ctx.strokeStyle = toLoadingRgba(surfaceSettings?.Highlight || getLoadingAccentColor(), surfaceSettings?.HighlightAlpha || 0);
-        ctx.shadowBlur = drawRadius * 0.06;
-        ctx.shadowColor = toLoadingRgba(surfaceSettings?.Shadow || getLoadingAccentColor(), surfaceSettings?.ShadowAlpha || 0);
-        ctx.stroke();
+        drawCenterCircleSurfaceHighlight(ctx, fillData, drawRadius, this.progress);
         ctx.restore();
     }
 }

@@ -129,6 +129,11 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
     if (!enemy || enemy.type !== HEXA_HIVE_TYPE) {
         return;
     }
+    if (state?.hexaHiveArrivalBrake === true) {
+        enemy.angularVelocity = 0;
+        enemy.angularDeceleration = 0;
+        return;
+    }
 
     const axisAnisotropy = Number.isFinite(footprintMetrics?.axisAnisotropy)
         ? footprintMetrics.axisAnisotropy
@@ -157,25 +162,27 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
     const targetRotation = targetMoveDeg - axisLocalDeg;
     const deltaDeg = getSymmetricAxisDeltaDeg(targetRotation, currentRotation);
     const absDeltaDeg = Math.abs(deltaDeg);
-    const snapEpsilonDeg = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_SNAP_EPSILON_DEG', 1.5);
-    if (absDeltaDeg <= snapEpsilonDeg) {
-        enemy.rotation = currentRotation + deltaDeg;
+    const deadZoneDeg = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_DEAD_ZONE_DEG', 3.5);
+    if (absDeltaDeg <= deadZoneDeg) {
         enemy.angularVelocity = 0;
         enemy.angularDeceleration = 0;
         return;
     }
 
-    const maxDegPerSec = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_MAX_DEG_PER_SEC', 150);
+    const maxDegPerSec = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_MAX_DEG_PER_SEC', 110);
     const dampStartDeg = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_DAMP_START_DEG', 72);
-    const responseRatio = readUnitProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_RESPONSE_RATIO', 0.72);
-    const decaySeconds = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_DECEL_SECONDS', 0.18);
-    const t = clamp(absDeltaDeg / dampStartDeg, 0, 1);
-    const smoothT = t * t * (3 - (2 * t));
-    const targetAngularVelocity = Math.sign(deltaDeg) * maxDegPerSec * Math.max(0.18, smoothT);
+    const responseRatio = readUnitProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_RESPONSE_RATIO', 0.38);
+    const gainPerSecond = readPositiveProfileNumber(profile, 'HEXA_HIVE_AI_ROTATION_GAIN_PER_SEC', 4.6);
+    const rampedMaxDegPerSec = maxDegPerSec * clamp(absDeltaDeg / dampStartDeg, 0, 1);
+    const targetAngularVelocity = clamp(
+        deltaDeg * gainPerSecond,
+        -rampedMaxDegPerSec,
+        rampedMaxDegPerSec
+    );
     const currentAngularVelocity = Number.isFinite(enemy.angularVelocity) ? enemy.angularVelocity : 0;
     const nextAngularVelocity = (currentAngularVelocity * (1 - responseRatio))
         + (targetAngularVelocity * responseRatio);
 
     enemy.angularVelocity = clamp(nextAngularVelocity, -maxDegPerSec, maxDegPerSec);
-    enemy.angularDeceleration = Math.abs(enemy.angularVelocity) / Math.max(0.016, decaySeconds);
+    enemy.angularDeceleration = 0;
 }

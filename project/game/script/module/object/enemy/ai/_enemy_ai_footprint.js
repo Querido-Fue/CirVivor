@@ -117,6 +117,27 @@ export const readPositivePixelValue = (value) => (
 );
 
 /**
+ * 길쭉한 합체 육각형이 통로 탐색에 사용할 두께 기반 clearance를 계산합니다.
+ * @param {object|null|undefined} metrics - footprint 메트릭입니다.
+ * @param {object|null|undefined} profile - AI 품질 프로필입니다.
+ * @returns {number} 통로 탐색용 clearance입니다.
+ */
+export const resolveEnemyAIFootprintPathClearancePx = (metrics, profile = null) => {
+    const baseRadius = readPositivePixelValue(metrics?.baseRadius);
+    if (baseRadius <= 0) {
+        return 0;
+    }
+
+    const halfWidth = readPositivePixelValue(metrics?.halfWidth) || baseRadius;
+    const halfHeight = readPositivePixelValue(metrics?.halfHeight) || baseRadius;
+    const minHalfExtent = Math.min(halfWidth, halfHeight);
+    const multiplier = Number.isFinite(profile?.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER)
+        ? Math.max(1, profile.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER)
+        : 1.12;
+    return Math.max(baseRadius, Math.min(minHalfExtent, baseRadius * multiplier));
+};
+
+/**
  * 적의 AI용 footprint 크기를 계산합니다.
  * @param {object|null|undefined} enemy - 검사 대상 적입니다.
  * @param {number|null} [fallbackRadius=null] - 외부에서 계산한 반경입니다.

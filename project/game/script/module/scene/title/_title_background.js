@@ -9,7 +9,6 @@ import {
 } from './background/_title_background_theme.js';
 import {
     applyTitleParallaxVisualProfile,
-    getTitleDefaultParallaxLayerProfile,
     getTitleParallaxLayerProfile
 } from './background/_title_background_parallax.js';
 import {
@@ -22,10 +21,10 @@ import {
     getTitleInitialBurstTargetCount,
     getTitleLayerAverageAxisSpeedPx,
     getTitleLayerSpawnRate,
-    getTitlePerLayerEnemyLimit,
     getTitleTargetLayerEnemyCount
 } from './background/_title_background_spawn_metrics.js';
 import { getTitleInitialBurstDesiredSpawnCount } from './background/_title_background_spawn_progress.js';
+import { buildTitleBackgroundSpawnData } from './background/_title_background_spawn_data.js';
 import { buildTitleBackgroundAiContext } from './background/_title_background_ai_context.js';
 import { drawTitleBackgroundScene } from './background/_title_background_render.js';
 import {
@@ -254,11 +253,18 @@ export class TitleBackGround {
             const burstSpawnStartIndex = Number.isFinite(spawnOptions?.burstSpawnStartIndex)
                 ? Math.max(0, Math.floor(spawnOptions.burstSpawnStartIndex))
                 : 0;
-            const spawn = this.#buildSpawnData(
-                resolvedLayerCounts,
+            const spawn = buildTitleBackgroundSpawnData({
+                titleEnemiesConfig: TITLE_CONSTANTS.TITLE_ENEMIES,
+                titleAiConfig: TITLE_CONSTANTS.TITLE_AI,
+                parallaxLayers: TITLE_PARALLAX_LAYERS,
+                ww: this.WW,
+                objectWH: this.objectWH,
+                uiww: this.UIWW,
+                spawnCullGuardPx: TITLE_ENEMY_SPAWN_CULL_GUARD_PX,
+                layerCounts: resolvedLayerCounts,
                 preferredLayerIndex,
                 spawnMode,
-                spawnMode === 'initialBurst'
+                spawnOptions: spawnMode === 'initialBurst'
                     ? {
                         burstSpawnIndex: burstSpawnStartIndex + i,
                         burstTargetCount: Number.isFinite(spawnOptions?.burstTargetCount)
@@ -266,7 +272,7 @@ export class TitleBackGround {
                             : 1
                     }
                     : null
-            );
+            });
             if (!spawn) {
                 break;
             }
@@ -355,169 +361,6 @@ export class TitleBackGround {
     }
 
     /**
-     * 적 생성 데이터 구조(위치, 속도 비율 등)를 반환합니다.
-     * @param {number[]|null} [layerCounts=null] 계층별 현재 적 수 캐시입니다.
-     * @param {number|null} [preferredLayerIndex=null] 우선적으로 생성할 페럴랙스 계층 인덱스입니다.
-     * @param {'standard'|'initialBurst'} [spawnMode='standard'] 생성 방식입니다.
-     * @param {{burstSpawnIndex?: number, burstTargetCount?: number}|null} [spawnOptions=null] 초기 버스트 보조 옵션입니다.
-     * @returns {object|null} 위치 및 속도 데이터입니다.
-     * @private
-     */
-    #buildSpawnData(layerCounts = null, preferredLayerIndex = null, spawnMode = 'standard', spawnOptions = null) {
-        const cullRatio = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_CULL_OUTSIDE_RATIO;
-        const marginY = this.objectWH * cullRatio;
-        const marginX = this.WW * cullRatio;
-        const layerData = this.#pickParallaxLayer(layerCounts, preferredLayerIndex);
-        if (!layerData) {
-            return null;
-        }
-        const isInitialBurst = spawnMode === 'initialBurst';
-        const spawnX = isInitialBurst
-            ? this.#getInitialBurstSpawnX(marginX)
-            : this.#getStandardSpawnX(marginX);
-        const baseAxisSpeed = this.UIWW * mathUtil().random(
-            TITLE_CONSTANTS.TITLE_ENEMIES.AXIS_SPEED_MIN_RATIO,
-            TITLE_CONSTANTS.TITLE_ENEMIES.AXIS_SPEED_MAX_RATIO
-        ) * layerData.profile.SpeedScale * (
-            Number.isFinite(TITLE_CONSTANTS.TITLE_ENEMIES.AXIS_SPEED_LEFT_MULTIPLIER)
-                ? TITLE_CONSTANTS.TITLE_ENEMIES.AXIS_SPEED_LEFT_MULTIPLIER
-                : 1
-        );
-        const baseDriftSpeed = this.UIWW * mathUtil().random(
-            TITLE_CONSTANTS.TITLE_ENEMIES.DRIFT_SPEED_MIN_RATIO,
-            TITLE_CONSTANTS.TITLE_ENEMIES.DRIFT_SPEED_MAX_RATIO
-        ) * layerData.profile.SpeedScale;
-        const initialAxisSpeed = isInitialBurst
-            ? this.#getInitialBurstAxisSpeed(baseAxisSpeed, layerData.profile)
-            : baseAxisSpeed;
-        const initialDriftSpeed = isInitialBurst
-            ? this.#getInitialBurstDriftSpeed(baseDriftSpeed)
-            : baseDriftSpeed;
-        const spawnY = isInitialBurst
-            ? this.#getInitialBurstSpawnY(
-                spawnOptions?.burstSpawnIndex,
-                spawnOptions?.burstTargetCount
-            )
-            : mathUtil().random(-marginY, this.objectWH + marginY);
-
-        return {
-            layerIndex: layerData.index,
-            layerProfile: layerData.profile,
-            position: {
-                x: spawnX,
-                y: spawnY
-            },
-            speed: { x: -initialAxisSpeed, y: initialDriftSpeed },
-            baseSpeed: { x: -baseAxisSpeed, y: baseDriftSpeed },
-            burstVelocity: isInitialBurst
-                ? {
-                    x: -(initialAxisSpeed - baseAxisSpeed),
-                    y: initialDriftSpeed - baseDriftSpeed
-                }
-                : null,
-            burstDecayRate: isInitialBurst
-                ? TITLE_CONSTANTS.TITLE_AI.BURST_VELOCITY_EASEOUT_EXPO_RATE
-                : 0
-        };
-    }
-
-    /**
-     * 일반 유지 스폰의 기본 x 좌표를 반환합니다.
-     * @param {number} marginX - 컬링 마진 x값입니다.
-     * @returns {number} 스폰 x 좌표입니다.
-     * @private
-     */
-    #getStandardSpawnX(marginX) {
-        const spawnXByRatio = this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SPAWN_X_RATIO;
-        return Math.max(
-            this.WW,
-            Math.min(spawnXByRatio, (this.WW + marginX) - TITLE_ENEMY_SPAWN_CULL_GUARD_PX)
-        );
-    }
-
-    /**
-     * 초기 버스트 스폰의 x 좌표를 반환합니다.
-     * @param {number} marginX - 컬링 마진 x값입니다.
-     * @returns {number} 스폰 x 좌표입니다.
-     * @private
-     */
-    #getInitialBurstSpawnX(marginX) {
-        const maxSpawnX = Math.min(
-            this.WW + marginX - TITLE_ENEMY_SPAWN_CULL_GUARD_PX,
-            this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_SPAWN_X_MAX_RATIO
-        );
-        const minSpawnX = Math.max(
-            this.WW,
-            Math.min(
-                maxSpawnX,
-                this.WW * TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_SPAWN_X_MIN_RATIO
-            )
-        );
-        return mathUtil().random(minSpawnX, maxSpawnX);
-    }
-
-    /**
-     * 초기 버스트 스폰의 y 좌표를 반환합니다.
-     * @param {number} [burstSpawnIndex=0] - 현재 초기 버스트 누적 스폰 인덱스입니다.
-     * @param {number} [burstTargetCount=1] - 초기 버스트 전체 목표 수량입니다.
-     * @returns {number} 스폰 y 좌표입니다.
-     * @private
-     */
-    #getInitialBurstSpawnY(burstSpawnIndex = 0, burstTargetCount = 1) {
-        const minY = this.objectWH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MIN_RATIO;
-        const maxY = this.objectWH * TITLE_CONSTANTS.TITLE_ENEMIES.SPAWN_Y_MAX_RATIO;
-        const totalRange = Math.max(1, maxY - minY);
-        const safeTargetCount = Number.isFinite(burstTargetCount)
-            ? Math.max(1, Math.floor(burstTargetCount))
-            : 1;
-        const sequentialIndex = Number.isFinite(burstSpawnIndex)
-            ? Math.max(0, Math.floor(burstSpawnIndex)) % safeTargetCount
-            : 0;
-        const slotIndex = ((sequentialIndex * 37) + 17) % safeTargetCount;
-        const slotHeight = totalRange / safeTargetCount;
-        const slotCenter = minY + ((slotIndex + 0.5) * slotHeight);
-        const jitterRatio = Number.isFinite(TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_Y_JITTER_RATIO)
-            ? Math.max(0, Math.min(1, TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_Y_JITTER_RATIO))
-            : 0.78;
-        const jitterAmplitude = slotHeight * 0.5 * jitterRatio;
-        return Math.max(minY, Math.min(maxY, slotCenter + mathUtil().random(-jitterAmplitude, jitterAmplitude)));
-    }
-
-    /**
-     * 초기 버스트용 수평 속도를 계산합니다.
-     * @param {number} baseAxisSpeed - 정상 상태 기준 수평 속도입니다.
-     * @param {object} layerProfile - 현재 계층 프로필입니다.
-     * @returns {number} 초기 버스트 수평 속도입니다.
-     * @private
-     */
-    #getInitialBurstAxisSpeed(baseAxisSpeed, layerProfile) {
-        const speedScale = Number.isFinite(layerProfile?.SpeedScale) ? layerProfile.SpeedScale : 1;
-        const compensationMin = Number.isFinite(TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_LAYER_COMPENSATION_MIN)
-            ? Math.max(0.01, TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_LAYER_COMPENSATION_MIN)
-            : 0.4;
-        const layerCompensation = 1 / Math.max(compensationMin, Math.sqrt(Math.max(0, speedScale)));
-        const burstMultiplier = mathUtil().random(
-            TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_AXIS_SPEED_MIN_MULTIPLIER,
-            TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_AXIS_SPEED_MAX_MULTIPLIER
-        );
-        return baseAxisSpeed * burstMultiplier * layerCompensation;
-    }
-
-    /**
-     * 초기 버스트용 수직 속도를 계산합니다.
-     * @param {number} baseDriftSpeed - 정상 상태 기준 수직 속도입니다.
-     * @returns {number} 초기 버스트 수직 속도입니다.
-     * @private
-     */
-    #getInitialBurstDriftSpeed(baseDriftSpeed) {
-        const driftMultiplier = mathUtil().random(
-            TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_DRIFT_SPEED_MIN_MULTIPLIER,
-            TITLE_CONSTANTS.TITLE_ENEMIES.INITIAL_BURST_DRIFT_SPEED_MAX_MULTIPLIER
-        );
-        return baseDriftSpeed * driftMultiplier;
-    }
-
-    /**
      * 같은 페럴렉스 계층끼리만 충돌을 해소합니다.
      * @param {number} delta - 고정 틱 델타입니다.
      * @private
@@ -581,55 +424,6 @@ export class TitleBackGround {
     #isCollisionResolvableTitleEnemy(enemy) {
         return Boolean(enemy?.active)
             && !(Number.isFinite(enemy._titleCollisionGraceRemaining) && enemy._titleCollisionGraceRemaining > 0);
-    }
-
-    /**
-     * 사용할 페럴렉스 레이어를 하나 고릅니다.
-     * @param {number[]|null} [layerCounts=null] 계층별 현재 적 수 캐시입니다.
-     * @param {number|null} [preferredLayerIndex=null] 우선적으로 생성할 페럴랙스 계층 인덱스입니다.
-     * @returns {{index:number, profile:object}|null} 레이어 인덱스와 설정값입니다.
-     * @private
-     */
-    #pickParallaxLayer(layerCounts = null, preferredLayerIndex = null) {
-        if (!Array.isArray(TITLE_PARALLAX_LAYERS) || TITLE_PARALLAX_LAYERS.length === 0) {
-            return {
-                index: 0,
-                profile: this.#getDefaultParallaxLayerProfile()
-            };
-        }
-
-        const perLayerLimit = getTitlePerLayerEnemyLimit(TITLE_CONSTANTS.TITLE_ENEMIES);
-        const resolvedPreferredLayerIndex = Number.isInteger(preferredLayerIndex)
-            ? Math.max(0, Math.min(TITLE_PARALLAX_LAYERS.length - 1, preferredLayerIndex))
-            : null;
-        if (resolvedPreferredLayerIndex !== null) {
-            const layerCount = Array.isArray(layerCounts) ? layerCounts[resolvedPreferredLayerIndex] : 0;
-            if (layerCount >= perLayerLimit) {
-                return null;
-            }
-            return {
-                index: resolvedPreferredLayerIndex,
-                profile: TITLE_PARALLAX_LAYERS[resolvedPreferredLayerIndex]
-            };
-        }
-
-        const availableLayerIndexes = [];
-        for (let layerIndex = 0; layerIndex < TITLE_PARALLAX_LAYERS.length; layerIndex++) {
-            const layerCount = Array.isArray(layerCounts) ? layerCounts[layerIndex] : 0;
-            if (layerCount < perLayerLimit) {
-                availableLayerIndexes.push(layerIndex);
-            }
-        }
-        if (availableLayerIndexes.length === 0) {
-            return null;
-        }
-
-        const randomIndex = Math.floor(mathUtil().random(0, availableLayerIndexes.length));
-        const layerIndex = availableLayerIndexes[randomIndex];
-        return {
-            index: layerIndex,
-            profile: TITLE_PARALLAX_LAYERS[layerIndex]
-        };
     }
 
     /**
@@ -875,15 +669,6 @@ export class TitleBackGround {
             layerIndex,
             TITLE_CONSTANTS.TITLE_ENEMIES
         );
-    }
-
-    /**
-     * 페럴렉스 계층이 없을 때 사용할 기본 시각 프로필을 반환합니다.
-     * @returns {object} 기본 페럴렉스 프로필입니다.
-     * @private
-     */
-    #getDefaultParallaxLayerProfile() {
-        return getTitleDefaultParallaxLayerProfile(TITLE_CONSTANTS.TITLE_ENEMIES);
     }
 
 }

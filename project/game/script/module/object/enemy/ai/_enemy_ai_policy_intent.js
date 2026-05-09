@@ -1,6 +1,7 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
 import {
+    resolveEnemyAIFootprintPathClearancePx,
     projectEnemyAIFootprintRadiusForDirection,
     readPositivePixelValue,
     resolveEnemyAIFootprintMetricsPx
@@ -227,6 +228,95 @@ const findHexaMergePartnerGoalInto = (enemy, enemies, startX, startY, profile, o
 };
 
 /**
+ * 합체 육각형이 플레이어 방향으로 전진하는 다른 육각 계열 합류 목표를 찾습니다.
+ * @param {object} enemy - 현재 적 객체입니다.
+ * @param {object[]|null} enemies - 전체 적 목록입니다.
+ * @param {number} startX - 현재 X 좌표입니다.
+ * @param {number} startY - 현재 Y 좌표입니다.
+ * @param {number} playerX - 플레이어 X 좌표입니다.
+ * @param {number} playerY - 플레이어 Y 좌표입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @param {{x: number, y: number, count?: number}} out - 출력 버퍼입니다.
+ * @returns {{x: number, y: number, count?: number}|null} 선택한 합류 목표입니다.
+ */
+const findHexaHiveMergePartnerGoalInto = (
+    enemy,
+    enemies,
+    startX,
+    startY,
+    playerX,
+    playerY,
+    profile,
+    out
+) => {
+    if (!Array.isArray(enemies) || enemies.length === 0) {
+        return null;
+    }
+
+    const currentId = Number.isInteger(enemy?.id) ? enemy.id : null;
+    const searchRadius = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_SEARCH_RADIUS_PX)
+        ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_SEARCH_RADIUS_PX)
+        : 1280;
+    const advanceMinPx = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
+        ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
+        : 48;
+    const hiveScoreMultiplier = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_HIVE_SCORE_MULTIPLIER)
+        ? Math.max(0.1, profile.HEXA_HIVE_MERGE_PARTNER_HIVE_SCORE_MULTIPLIER)
+        : 0.65;
+    const searchRadiusSq = searchRadius * searchRadius;
+    const selfPlayerDistance = length(playerX - startX, playerY - startY);
+    if (!Number.isFinite(selfPlayerDistance)) {
+        return null;
+    }
+    const playerScoreWeight = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_SCORE_WEIGHT)
+        ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_SCORE_WEIGHT)
+        : 0.35;
+    let bestScore = INF;
+    let found = false;
+
+    for (let i = 0; i < enemies.length; i++) {
+        const candidate = enemies[i];
+        if (!candidate || candidate === enemy || candidate.active === false || !candidate.position) {
+            continue;
+        }
+        if (currentId !== null && candidate.id === currentId) {
+            continue;
+        }
+        if (!isHexaMergeTargetEnemy(candidate)) {
+            continue;
+        }
+
+        const candidateX = Number.isFinite(candidate.position.x) ? candidate.position.x : 0;
+        const candidateY = Number.isFinite(candidate.position.y) ? candidate.position.y : 0;
+        const candidatePlayerDistance = length(playerX - candidateX, playerY - candidateY);
+        if (candidatePlayerDistance + advanceMinPx >= selfPlayerDistance) {
+            continue;
+        }
+
+        const dx = candidateX - startX;
+        const dy = candidateY - startY;
+        const distanceSq = (dx * dx) + (dy * dy);
+        if (distanceSq > searchRadiusSq) {
+            continue;
+        }
+
+        const hiveScore = candidate.type === HEXA_HIVE_TYPE ? hiveScoreMultiplier : 1;
+        const score = (distanceSq * hiveScore) + (candidatePlayerDistance * candidatePlayerDistance * playerScoreWeight);
+        if (score >= bestScore) {
+            continue;
+        }
+
+        bestScore = score;
+        found = true;
+        out.x = candidateX;
+        out.y = candidateY;
+        out.count = 1;
+    }
+
+    return found ? out : null;
+};
+
+/**
  * 합체 육각형이 실제 footprint로 닿을 수 있는 플레이어 주변 목표를 고릅니다.
  * @param {object} enemy - 적 객체입니다.
  * @param {object} state - 적 AI 상태입니다.
@@ -261,7 +351,8 @@ const resolveHexaHiveApproachGoalInto = (
     }
 
     const metrics = footprintMetrics ?? resolveEnemyAIFootprintMetricsPx(enemy, navigationRadius);
-    const clearance = Math.max(readPositivePixelValue(navigationRadius), readPositivePixelValue(metrics?.radius));
+    const clearance = resolveEnemyAIFootprintPathClearancePx(metrics, profile)
+        || Math.max(readPositivePixelValue(navigationRadius), readPositivePixelValue(metrics?.radius));
     const walls = Array.isArray(context?.walls) ? context.walls : [];
     const nav = getNavGrid(walls, getSimulationWW(), getSimulationObjectWH(), profile, clearance);
     const grid = nav.grid;
@@ -526,6 +617,23 @@ export const updatePolicyIntent = (
     }
 
     if (policyId === ENEMY_AI_POLICY.CHASE && enemy?.type === HEXA_HIVE_TYPE) {
+        const mergePartnerGoal = findHexaHiveMergePartnerGoalInto(
+            enemy,
+            enemies,
+            startX,
+            startY,
+            playerX,
+            playerY,
+            profile,
+            state.scratchDensityGoal
+        );
+        if (mergePartnerGoal) {
+            state.targetX = mergePartnerGoal.x;
+            state.targetY = mergePartnerGoal.y;
+            state.flowPolicyKey = 'hexa_hive_merge_partner';
+            return;
+        }
+
         resolveHexaHiveApproachGoalInto(
             enemy,
             state,
