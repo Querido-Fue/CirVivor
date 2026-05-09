@@ -2,6 +2,10 @@ import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_const
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 import {
+    projectEnemyAIFootprintRadiusForDirection,
+    readPositivePixelValue
+} from './_enemy_ai_footprint.js';
+import {
     findNearestWalkableCellInto,
     getSharedDirectPathAvailability,
     getSharedFlowFieldForTargetCoords,
@@ -15,6 +19,7 @@ import {
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
+const HEXA_HIVE_TYPE = 'hexa_hive';
 
 /**
  * 두 성분으로 구성된 벡터 길이를 반환합니다.
@@ -69,6 +74,107 @@ const resolveArrivedTargetDirectionInto = (state, startX, startY, playerX, playe
 };
 
 /**
+ * 합체 육각형의 현재 진행 방향에서 직선 경로 패딩을 계산합니다.
+ * @param {object|null|undefined} enemy - 적 객체입니다.
+ * @param {number} enemyRadius - 기본 네비게이션 반경입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @param {object|null|undefined} footprintMetrics - AI footprint 메트릭입니다.
+ * @param {number} startX - 시작 X 좌표입니다.
+ * @param {number} startY - 시작 Y 좌표입니다.
+ * @param {number} endX - 끝 X 좌표입니다.
+ * @param {number} endY - 끝 Y 좌표입니다.
+ * @returns {number} 직선 경로 검사 패딩입니다.
+ */
+const resolveSteeringDirectPathPad = (
+    enemy,
+    enemyRadius,
+    profile,
+    footprintMetrics,
+    startX,
+    startY,
+    endX,
+    endY
+) => {
+    const basePad = resolveDirectPathPad(enemy, enemyRadius, profile);
+    if (enemy?.type !== HEXA_HIVE_TYPE || !footprintMetrics) {
+        return basePad;
+    }
+
+    const dx = endX - startX;
+    const dy = endY - startY;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+        return basePad;
+    }
+
+    const distance = length(dx, dy);
+    if (!Number.isFinite(distance) || distance <= EPSILON) {
+        return basePad;
+    }
+
+    const dirX = dx / distance;
+    const dirY = dy / distance;
+    const sideRadius = projectEnemyAIFootprintRadiusForDirection(footprintMetrics, -dirY, dirX);
+    if (!Number.isFinite(sideRadius) || sideRadius <= EPSILON) {
+        return basePad;
+    }
+
+    const baseRadius = readPositivePixelValue(footprintMetrics.baseRadius);
+    const ratio = Number.isFinite(profile.HEXA_HIVE_NAV_DIRECT_CHECK_PAD_RATIO)
+        ? Math.max(0, profile.HEXA_HIVE_NAV_DIRECT_CHECK_PAD_RATIO)
+        : 1;
+    return Math.max(baseRadius, Math.min(basePad, sideRadius * ratio));
+};
+
+/**
+ * 합체 육각형이 접근 링 목표를 지나 플레이어까지 직접 들어갈 수 있는지 확인합니다.
+ * @param {object} state - 적 AI 상태입니다.
+ * @param {object} context - AI 업데이트 문맥입니다.
+ * @param {number} startX - 현재 X 좌표입니다.
+ * @param {number} startY - 현재 Y 좌표입니다.
+ * @param {number} playerX - 플레이어 X 좌표입니다.
+ * @param {number} playerY - 플레이어 Y 좌표입니다.
+ * @param {object[]|null|undefined} walls - 벽 목록입니다.
+ * @param {number} playerDirectPad - 플레이어 직선 경로 검사 패딩입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @param {number} wallsVersion - 벽 버전입니다.
+ * @returns {boolean} 직접 최종 접근 가능 여부입니다.
+ */
+const canUseHexaHiveFinalApproach = (
+    state,
+    context,
+    startX,
+    startY,
+    playerX,
+    playerY,
+    walls,
+    playerDirectPad,
+    profile,
+    wallsVersion
+) => {
+    if (state.flowPolicyKey !== 'hexa_hive_approach') {
+        return false;
+    }
+
+    const playerDx = playerX - startX;
+    const playerDy = playerY - startY;
+    if (length(playerDx, playerDy) <= EPSILON) {
+        return false;
+    }
+
+    return getSharedDirectPathAvailability(
+        context,
+        startX,
+        startY,
+        playerX,
+        playerY,
+        walls,
+        playerDirectPad,
+        profile,
+        wallsVersion
+    );
+};
+
+/**
  * 적 AI의 현재 target 기준 steering 방향을 계산하고 flow/direct-path 캐시 상태를 갱신합니다.
  * @param {object} options - steering 계산 옵션입니다.
  * @param {object} options.enemy - 적 객체입니다.
@@ -81,6 +187,7 @@ const resolveArrivedTargetDirectionInto = (state, startX, startY, playerX, playe
  * @param {number} options.targetY - 플레이어 Y 좌표입니다.
  * @param {object[]|null|undefined} options.walls - 벽 목록입니다.
  * @param {number} options.enemyRadius - 네비게이션 반경입니다.
+ * @param {object|null|undefined} options.footprintMetrics - AI footprint 메트릭입니다.
  * @param {number} options.wallsVersion - 벽 버전입니다.
  * @param {boolean} options.forcedPolicyRefresh - 정책 강제 갱신 여부입니다.
  * @param {object|null|undefined} options.aiDebugStats - AI 디버그 통계입니다.
@@ -97,14 +204,52 @@ export function resolveEnemyAISteeringDirection({
     targetY,
     walls,
     enemyRadius,
+    footprintMetrics,
     wallsVersion,
     forcedPolicyRefresh,
     aiDebugStats
 }) {
     const scratchDir = state.scratchDir;
     const scratchCell = state.scratchCell;
-    const directPad = resolveDirectPathPad(enemy, enemyRadius, profile);
+    const directPad = resolveSteeringDirectPathPad(
+        enemy,
+        enemyRadius,
+        profile,
+        footprintMetrics,
+        startX,
+        startY,
+        state.targetX,
+        state.targetY
+    );
+    const playerDirectPad = resolveSteeringDirectPathPad(
+        enemy,
+        enemyRadius,
+        profile,
+        footprintMetrics,
+        startX,
+        startY,
+        targetX,
+        targetY
+    );
     let hasDirection = false;
+    if (canUseHexaHiveFinalApproach(
+        state,
+        context,
+        startX,
+        startY,
+        targetX,
+        targetY,
+        walls,
+        playerDirectPad,
+        profile,
+        wallsVersion
+    )) {
+        normalizeInto(targetX - startX, targetY - startY, scratchDir);
+        state.flowData = null;
+        state.flowKey = '';
+        return scratchDir;
+    }
+
     const canReuseDirectPath = hasReusableDirectPathResult(
         state,
         startX,

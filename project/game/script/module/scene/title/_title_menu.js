@@ -3,7 +3,6 @@ import { SVGDrawer } from 'display/_svg_drawer.js';
 import { getDisplaySystem, getUIOffsetX, getWH, getUIWW, getWW } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { consumeMouseState, getMouseInput, hasMouseState } from 'input/input_system.js';
-import { OverlaySession } from 'overlay/_overlay_session.js';
 import { lerpNumber } from 'overlay/_panel_effect_math.js';
 import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
@@ -32,7 +31,10 @@ import {
     updateTitleMenuSpotlightState,
     updateTitleMenuTiltState
 } from './menu/_title_menu_effect_state.js';
-import { getTitleMenuIconSource } from './menu/_title_menu_icon.js';
+import {
+    loadTitleMenuIconSources,
+    releaseTitleMenuIconSources
+} from './menu/_title_menu_icon_lifecycle.js';
 import {
     resolveTitleMenuCardPointerInfo,
     updateTitleMenuCardProjection,
@@ -51,10 +53,15 @@ import {
     buildTitleMenuUtilityTileRenderState,
     getTitleMenuUtilityPaneRevealEase
 } from './menu/_title_menu_render_state.js';
+import { createTitleMenuOverlaySession } from './menu/_title_menu_overlay_session.js';
 import {
     getTitleMenuTextPresetFont,
     getTitleMenuTextPresetFontSize
 } from './menu/_title_menu_text_layout.js';
+import {
+    beginTitleMenuTextureClip,
+    ensureTitleMenuTextureCanvas
+} from './menu/_title_menu_texture_canvas.js';
 import {
     buildTitleMenuCardStaticTextureSignature,
     buildTitleMenuUtilityTileStaticTextureSignature
@@ -74,7 +81,6 @@ import {
     getMenuBackdropPaneStyle,
     getMenuEffectColor,
     getMenuPanelStyle,
-    getThemeAwareMenuBorderColor,
     getUnifiedOuterPaneStrokeColor,
     menuForegroundWithAlpha
 } from './menu/_title_menu_theme.js';
@@ -364,9 +370,7 @@ export class TitleMenu {
             this.versionHistoryLinkButton = null;
         }
 
-        this.titleMenuIconSources.forEach((iconSource) => {
-            this.svgDrawer.releaseSvgFile(iconSource);
-        });
+        releaseTitleMenuIconSources(this.svgDrawer, this.titleMenuIconSources);
         this.titleMenuIconSources = [];
 
         this.cards.length = 0;
@@ -382,52 +386,7 @@ export class TitleMenu {
      * @private
      */
     #createSession() {
-        const displaySystem = getDisplaySystem();
-        if (!displaySystem) {
-            return null;
-        }
-
-        return new OverlaySession({
-            displaySystem,
-            layer: 10,
-            dim: 0,
-            transparent: true,
-            glOverlay: true,
-            blurUpdateMode: 'always',
-            disableTransparency: getSetting('disableTransparency'),
-            orderSequence: 1,
-            effects: {
-                hoverTilt: {
-                    maxAngleDeg: 6,
-                    smoothing: 0.18,
-                    perspective: 1180
-                },
-                hoverSpotlight: {
-                    radius: 280,
-                    opacity: 0.8,
-                    smoothing: 0.2
-                },
-                hoverBorder: {
-                    radius: 280,
-                    color: getThemeAwareMenuBorderColor(),
-                    opacity: 0.75,
-                    width: 1.2,
-                    hoverWidth: 2.4,
-                    falloff: 80,
-                    smoothing: 0.2
-                },
-                clickRipple: {
-                    duration: 0.8
-                },
-                hoverParticle: {
-                    count: 12,
-                    spawnInterval: 0.08,
-                    driftDistance: 84,
-                    minDuration: 1.8,
-                    maxDuration: 3.2
-                }
-            }
-        });
+        return createTitleMenuOverlaySession(getDisplaySystem());
     }
 
     /**
@@ -462,34 +421,18 @@ export class TitleMenu {
      * @private
      */
     #preloadMenuIcons() {
-        const nextSources = [];
-        const iconIds = new Set([
-            ...this.cards.map((card) => card.cardDefinition.id),
-            ...this.secondaryMenuEntries.map((menuEntry) => menuEntry.id)
-        ]);
-
-        for (const iconId of iconIds) {
-            const iconSource = getTitleMenuIconSource(iconId);
-            if (!iconSource) {
-                continue;
-            }
-            nextSources.push(iconSource);
-
-            void this.svgDrawer.loadSvgFile(iconSource)
-                .catch(() => {});
-        }
-
-        this.titleMenuIconSources = nextSources;
+        this.titleMenuIconSources = loadTitleMenuIconSources(
+            this.svgDrawer,
+            this.cards,
+            this.secondaryMenuEntries
+        );
     }
 
     /**
      * 테마 변경 시 메뉴 아이콘 SVG를 새로 로드합니다.
      */
     #refreshMenuIcons() {
-        this.titleMenuIconSources.forEach((iconSource) => {
-            this.svgDrawer.releaseSvgFile(iconSource);
-        });
-        this.titleMenuIconSources = [];
+        releaseTitleMenuIconSources(this.svgDrawer, this.titleMenuIconSources);
         this.#preloadMenuIcons();
     }
 
@@ -875,34 +818,19 @@ export class TitleMenu {
             return null;
         }
 
-        if (!this.cardPaneTextureCanvas || !this.cardPaneTextureContext) {
-            this.cardPaneTextureCanvas = document.createElement('canvas');
-            this.cardPaneTextureContext = this.cardPaneTextureCanvas.getContext('2d');
-        }
-
-        const canvasWidth = Math.max(1, Math.ceil(cardPaneRect.w));
-        const canvasHeight = Math.max(1, Math.ceil(cardPaneRect.h));
-
-        if (this.cardPaneTextureCanvas.width !== canvasWidth) {
-            this.cardPaneTextureCanvas.width = canvasWidth;
-        }
-        if (this.cardPaneTextureCanvas.height !== canvasHeight) {
-            this.cardPaneTextureCanvas.height = canvasHeight;
-        }
-
-        const context = this.cardPaneTextureContext;
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, canvasWidth, canvasHeight);
-        context.save();
-        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
-        context.beginPath();
-        context.roundRect(0, 0, cardPaneRect.w, cardPaneRect.h, cardPaneRect.radius);
-        context.clip();
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            this,
+            'cardPaneTextureCanvas',
+            'cardPaneTextureContext',
+            cardPaneRect.w,
+            cardPaneRect.h
+        );
+        beginTitleMenuTextureClip(context, width, height, cardPaneRect);
 
         this.#drawPaneForegroundEffects(context, this.cardPaneInteractionState, cardPaneRect);
         context.restore();
-        this.#markTextureCanvasUpdated(this.cardPaneTextureCanvas);
-        return this.cardPaneTextureCanvas;
+        this.#markTextureCanvasUpdated(canvas);
+        return canvas;
     }
 
     /**
@@ -927,34 +855,19 @@ export class TitleMenu {
             return null;
         }
 
-        const canvasWidth = Math.max(1, Math.ceil(utilityPane.w));
-        const canvasHeight = Math.max(1, Math.ceil(utilityPane.h));
-
-        if (!this.paneTextureCanvas || !this.paneTextureContext) {
-            this.paneTextureCanvas = document.createElement('canvas');
-            this.paneTextureContext = this.paneTextureCanvas.getContext('2d');
-        }
-
-        if (this.paneTextureCanvas.width !== canvasWidth) {
-            this.paneTextureCanvas.width = canvasWidth;
-        }
-        if (this.paneTextureCanvas.height !== canvasHeight) {
-            this.paneTextureCanvas.height = canvasHeight;
-        }
-
-        const context = this.paneTextureContext;
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, canvasWidth, canvasHeight);
-        context.save();
-        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
-        context.beginPath();
-        context.roundRect(0, 0, utilityPane.w, utilityPane.h, utilityPane.radius);
-        context.clip();
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            this,
+            'paneTextureCanvas',
+            'paneTextureContext',
+            utilityPane.w,
+            utilityPane.h
+        );
+        beginTitleMenuTextureClip(context, width, height, utilityPane);
 
         this.#drawPaneForegroundEffects(context, paneInteractionState, utilityPane);
         context.restore();
-        this.#markTextureCanvasUpdated(this.paneTextureCanvas);
-        return this.paneTextureCanvas;
+        this.#markTextureCanvasUpdated(canvas);
+        return canvas;
     }
 
     /**
@@ -970,29 +883,14 @@ export class TitleMenu {
         }
 
         const panelRect = renderState.panelRect;
-        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
-        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
-
-        if (!runtimeState.textureCanvas || !runtimeState.textureContext) {
-            runtimeState.textureCanvas = document.createElement('canvas');
-            runtimeState.textureContext = runtimeState.textureCanvas.getContext('2d');
-        }
-
-        if (runtimeState.textureCanvas.width !== canvasWidth) {
-            runtimeState.textureCanvas.width = canvasWidth;
-        }
-        if (runtimeState.textureCanvas.height !== canvasHeight) {
-            runtimeState.textureCanvas.height = canvasHeight;
-        }
-
-        const context = runtimeState.textureContext;
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, canvasWidth, canvasHeight);
-        context.save();
-        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
-        context.beginPath();
-        context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
-        context.clip();
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            runtimeState,
+            'textureCanvas',
+            'textureContext',
+            panelRect.w,
+            panelRect.h
+        );
+        beginTitleMenuTextureClip(context, width, height, panelRect);
 
         this.#drawCardBackgroundEffects(context, runtimeState, renderState);
         drawTitleMenuUtilityTileContent({
@@ -1004,8 +902,8 @@ export class TitleMenu {
         });
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
-        this.#markTextureCanvasUpdated(runtimeState.textureCanvas);
-        return runtimeState.textureCanvas;
+        this.#markTextureCanvasUpdated(canvas);
+        return canvas;
     }
 
     /**
@@ -1043,29 +941,14 @@ export class TitleMenu {
         }
 
         const panelRect = renderState.panelRect;
-        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
-        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
-
-        if (!runtimeState.textureCanvas || !runtimeState.textureContext) {
-            runtimeState.textureCanvas = document.createElement('canvas');
-            runtimeState.textureContext = runtimeState.textureCanvas.getContext('2d');
-        }
-
-        if (runtimeState.textureCanvas.width !== canvasWidth) {
-            runtimeState.textureCanvas.width = canvasWidth;
-        }
-        if (runtimeState.textureCanvas.height !== canvasHeight) {
-            runtimeState.textureCanvas.height = canvasHeight;
-        }
-
-        const context = runtimeState.textureContext;
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, canvasWidth, canvasHeight);
-        context.save();
-        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
-        context.beginPath();
-        context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
-        context.clip();
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            runtimeState,
+            'textureCanvas',
+            'textureContext',
+            panelRect.w,
+            panelRect.h
+        );
+        beginTitleMenuTextureClip(context, width, height, panelRect);
 
         this.#drawCardBackgroundEffects(context, runtimeState, renderState);
         drawTitleMenuCardFrontfaceContent({
@@ -1078,8 +961,8 @@ export class TitleMenu {
         });
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
-        this.#markTextureCanvasUpdated(runtimeState.textureCanvas);
-        return runtimeState.textureCanvas;
+        this.#markTextureCanvasUpdated(canvas);
+        return canvas;
     }
 
     /**
@@ -1107,32 +990,23 @@ export class TitleMenu {
             svgDrawer: this.svgDrawer
         });
 
-        if (!runtimeState.staticTextureCanvas || !runtimeState.staticTextureContext) {
-            runtimeState.staticTextureCanvas = document.createElement('canvas');
-            runtimeState.staticTextureContext = runtimeState.staticTextureCanvas.getContext('2d');
-        }
-
-        const canvas = runtimeState.staticTextureCanvas;
-        const sizeChanged = canvas.width !== canvasWidth || canvas.height !== canvasHeight;
+        const currentStaticCanvas = runtimeState.staticTextureCanvas;
+        const sizeChanged = !currentStaticCanvas
+            || currentStaticCanvas.width !== canvasWidth
+            || currentStaticCanvas.height !== canvasHeight;
         if (!sizeChanged && runtimeState.staticTextureSignature === signature) {
-            return canvas;
+            return currentStaticCanvas;
         }
 
-        if (canvas.width !== canvasWidth) {
-            canvas.width = canvasWidth;
-        }
-        if (canvas.height !== canvasHeight) {
-            canvas.height = canvasHeight;
-        }
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            runtimeState,
+            'staticTextureCanvas',
+            'staticTextureContext',
+            canvasWidth,
+            canvasHeight
+        );
 
-        const context = runtimeState.staticTextureContext;
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, canvasWidth, canvasHeight);
-        context.save();
-        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
-        context.beginPath();
-        context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
-        context.clip();
+        beginTitleMenuTextureClip(context, width, height, panelRect);
         drawTitleMenuCardFrontfaceContent({
             context,
             svgDrawer: this.svgDrawer,
@@ -1174,32 +1048,23 @@ export class TitleMenu {
             svgDrawer: this.svgDrawer
         });
 
-        if (!runtimeState.staticTextureCanvas || !runtimeState.staticTextureContext) {
-            runtimeState.staticTextureCanvas = document.createElement('canvas');
-            runtimeState.staticTextureContext = runtimeState.staticTextureCanvas.getContext('2d');
-        }
-
-        const canvas = runtimeState.staticTextureCanvas;
-        const sizeChanged = canvas.width !== canvasWidth || canvas.height !== canvasHeight;
+        const currentStaticCanvas = runtimeState.staticTextureCanvas;
+        const sizeChanged = !currentStaticCanvas
+            || currentStaticCanvas.width !== canvasWidth
+            || currentStaticCanvas.height !== canvasHeight;
         if (!sizeChanged && runtimeState.staticTextureSignature === signature) {
-            return canvas;
+            return currentStaticCanvas;
         }
 
-        if (canvas.width !== canvasWidth) {
-            canvas.width = canvasWidth;
-        }
-        if (canvas.height !== canvasHeight) {
-            canvas.height = canvasHeight;
-        }
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            runtimeState,
+            'staticTextureCanvas',
+            'staticTextureContext',
+            canvasWidth,
+            canvasHeight
+        );
 
-        const context = runtimeState.staticTextureContext;
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, canvasWidth, canvasHeight);
-        context.save();
-        context.setTransform(1, 0, 0, -1, 0, canvasHeight);
-        context.beginPath();
-        context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
-        context.clip();
+        beginTitleMenuTextureClip(context, width, height, panelRect);
         drawTitleMenuUtilityTileContent({
             context,
             svgDrawer: this.svgDrawer,

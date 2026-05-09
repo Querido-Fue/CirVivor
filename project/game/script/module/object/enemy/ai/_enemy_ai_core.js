@@ -274,6 +274,7 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
         targetY: updateFrame.targetY,
         walls: updateFrame.walls,
         enemyRadius: updateFrame.enemyRadius,
+        footprintMetrics: updateFrame.footprintMetrics,
         wallsVersion: updateFrame.wallsVersion,
         forcedPolicyRefresh,
         aiDebugStats

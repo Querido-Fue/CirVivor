@@ -1,4 +1,3 @@
-import { renderGL } from 'display/display_system.js';
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
 import { getData } from 'data/data_handler.js';
@@ -6,12 +5,10 @@ import { getObjectSystem } from 'object/object_system.js';
 import { titleAI } from 'object/enemy/ai/_title_ai.js';
 import { TitleShieldEffect } from './shield/_title_shield_effect.js';
 import {
-    getTitleBackgroundColor,
     getTitleEnemyColor
 } from './background/_title_background_theme.js';
 import {
     applyTitleParallaxVisualProfile,
-    drawTitleParallaxEnemy,
     getTitleDefaultParallaxLayerProfile,
     getTitleParallaxLayerProfile
 } from './background/_title_background_parallax.js';
@@ -29,15 +26,14 @@ import {
     getTitleTargetLayerEnemyCount
 } from './background/_title_background_spawn_metrics.js';
 import { getTitleInitialBurstDesiredSpawnCount } from './background/_title_background_spawn_progress.js';
+import { buildTitleBackgroundAiContext } from './background/_title_background_ai_context.js';
+import { drawTitleBackgroundScene } from './background/_title_background_render.js';
 import {
-    getSimulationMouseFocus,
-    getSimulationMouseInput,
     getSimulationObjectOffsetY,
     getSimulationObjectWH,
     getSimulationUIWW,
     getSimulationWH,
-    getSimulationWW,
-    isSimulationMousePressing
+    getSimulationWW
 } from 'simulation/simulation_runtime.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -166,28 +162,13 @@ export class TitleBackGround {
         const delta = getFixedDelta();
         if (!Number.isFinite(delta) || delta <= 0) return;
 
-        const mousePos = getSimulationMouseInput('pos');
-        const focus = getSimulationMouseFocus();
-        const objectFocused = Array.isArray(focus) && focus.includes('object');
-        const mousePosInObject = mousePos
-            ? { x: mousePos.x, y: mousePos.y + this.objectOffsetY }
-            : null;
-        const shieldMagneticPointInObject = this.shieldLayout
-            ? { x: this.shieldLayout.centerX, y: this.shieldLayout.centerY + this.objectOffsetY }
-            : null;
-
-        const aiContext = {
-            uiww: this.UIWW,
-            logoMagneticPoint: shieldMagneticPointInObject,
-            logoMagneticDistance: this.shieldRadius * (
-                Number.isFinite(TITLE_CONSTANTS.TITLE_AI.LOGO_DISTANCE_MULTIPLIER)
-                    ? Math.max(1, TITLE_CONSTANTS.TITLE_AI.LOGO_DISTANCE_MULTIPLIER)
-                    : 1
-            ),
-            objectFocused,
-            leftPressing: isSimulationMousePressing('left'),
-            mousePos: mousePosInObject
-        };
+        const aiContext = buildTitleBackgroundAiContext({
+            titleConstants: TITLE_CONSTANTS,
+            shieldLayout: this.shieldLayout,
+            shieldRadius: this.shieldRadius,
+            objectOffsetY: this.objectOffsetY,
+            uiww: this.UIWW
+        });
 
         for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
             const enemy = this.titleEnemies[i];
@@ -217,36 +198,14 @@ export class TitleBackGround {
          * 타이틀 백그라운드와 적 요소를 렌더링
          */
     draw() {
-        if (this.drawBackgroundFill) {
-            renderGL('background', {
-                shape: 'rect',
-                x: this.WW / 2,
-                y: this.WH / 2,
-                w: this.WW,
-                h: this.WH,
-                fill: getTitleBackgroundColor()
-            });
-        }
-
-        if (!Array.isArray(TITLE_PARALLAX_LAYERS) || TITLE_PARALLAX_LAYERS.length === 0) {
-            for (let i = 0; i < this.titleEnemies.length; i++) {
-                this.titleEnemies[i].draw();
-            }
-            this.shieldEffect.draw();
-            return;
-        }
-
-        for (let layerIndex = 0; layerIndex < TITLE_PARALLAX_LAYERS.length; layerIndex++) {
-            for (let i = 0; i < this.titleEnemies.length; i++) {
-                const enemy = this.titleEnemies[i];
-                if (!enemy || enemy._titleParallaxLayerIndex !== layerIndex) {
-                    continue;
-                }
-                drawTitleParallaxEnemy(enemy, TITLE_PARALLAX_LAYERS[layerIndex]);
-            }
-        }
-
-        this.shieldEffect.draw();
+        drawTitleBackgroundScene({
+            drawBackgroundFill: this.drawBackgroundFill,
+            ww: this.WW,
+            wh: this.WH,
+            titleEnemies: this.titleEnemies,
+            parallaxLayers: TITLE_PARALLAX_LAYERS,
+            shieldEffect: this.shieldEffect
+        });
     }
 
     /**
