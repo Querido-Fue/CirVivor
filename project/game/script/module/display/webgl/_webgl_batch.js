@@ -13,6 +13,31 @@ const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
 
 /**
+ * 하나의 스프라이트를 구성하는 정점 수입니다.
+ */
+const VERTICES_PER_SPRITE = 4;
+
+/**
+ * 하나의 스프라이트를 구성하는 인덱스 수입니다.
+ */
+const INDICES_PER_SPRITE = 6;
+
+/**
+ * WebGL batch geometry buffer에 저장하는 좌표 컴포넌트 수입니다.
+ */
+const GEOMETRY_BUFFER_COMPONENTS = 8;
+
+/**
+ * WebGL attribute offset 계산에 사용하는 float byte 크기입니다.
+ */
+const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
+
+/**
+ * 아직 로드되지 않은 이미지 텍스처에 사용하는 투명 fallback 픽셀입니다.
+ */
+const TRANSPARENT_TEXTURE_PIXEL = new Uint8Array([0, 0, 0, 0]);
+
+/**
  * @class WebGLBatch
  * @description 동일 텍스처 기준의 스프라이트 배치를 처리합니다.
  */
@@ -24,12 +49,12 @@ export class WebGLBatch {
         this.gl = gl;
         this.maxSprites = GLOBAL_CONSTANTS.WEBGL_MAX_SPRITES;
         this.vertexSize = WEBGL_CONSTANTS.BATCH_VERTEX_SIZE;
-        this.vertices = new Float32Array(this.maxSprites * 4 * this.vertexSize);
+        this.vertices = new Float32Array(this.maxSprites * VERTICES_PER_SPRITE * this.vertexSize);
         this.spriteCount = 0;
         this.currentTexture = null;
         this.textureCache = new Map();
         this.colorCache = new Map();
-        this.geometryBuffer = new Float32Array(8);
+        this.geometryBuffer = new Float32Array(GEOMETRY_BUFFER_COMPONENTS);
         this.shapeCache = new ShapeTextureCache(gl);
         this.frameWidth = 1;
         this.frameHeight = 1;
@@ -63,8 +88,12 @@ export class WebGLBatch {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.currentTexture);
         gl.uniform1i(this.uImage, 0);
-        gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.vertices.subarray(0, this.spriteCount * 4 * this.vertexSize));
-        gl.drawElements(gl.TRIANGLES, this.spriteCount * 6, gl.UNSIGNED_SHORT, 0);
+        gl.bufferSubData(
+            gl.ARRAY_BUFFER,
+            0,
+            this.vertices.subarray(0, this.spriteCount * VERTICES_PER_SPRITE * this.vertexSize)
+        );
+        gl.drawElements(gl.TRIANGLES, this.spriteCount * INDICES_PER_SPRITE, gl.UNSIGNED_SHORT, 0);
 
         this.spriteCount = 0;
     }
@@ -117,7 +146,7 @@ export class WebGLBatch {
         }
 
         const geometry = ShapeGeometryBuilder.buildInto(options, this.geometryBuffer);
-        const index = this.spriteCount * 4 * this.vertexSize;
+        const index = this.spriteCount * VERTICES_PER_SPRITE * this.vertexSize;
         const vertices = this.vertices;
 
         vertices[index] = geometry[0];
@@ -174,15 +203,7 @@ export class WebGLBatch {
         gl.bufferData(gl.ARRAY_BUFFER, this.vertices.byteLength, gl.DYNAMIC_DRAW);
 
         this.indexBuffer = gl.createBuffer();
-        const indices = new Uint16Array(this.maxSprites * 6);
-        for (let spriteIndex = 0, vertexIndex = 0; spriteIndex < this.maxSprites; spriteIndex++, vertexIndex += 4) {
-            indices[spriteIndex * 6] = vertexIndex;
-            indices[spriteIndex * 6 + 1] = vertexIndex + 1;
-            indices[spriteIndex * 6 + 2] = vertexIndex + 2;
-            indices[spriteIndex * 6 + 3] = vertexIndex;
-            indices[spriteIndex * 6 + 4] = vertexIndex + 2;
-            indices[spriteIndex * 6 + 5] = vertexIndex + 3;
-        }
+        const indices = this.#createSpriteIndexBufferData();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
@@ -191,6 +212,31 @@ export class WebGLBatch {
         this.aColor = gl.getAttribLocation(this.program, 'a_color');
         this.uResolution = gl.getUniformLocation(this.program, 'u_resolution');
         this.uImage = gl.getUniformLocation(this.program, 'u_image');
+    }
+
+    /**
+     * @private
+     * 사각형 스프라이트용 인덱스 버퍼 데이터를 생성합니다.
+     * @returns {Uint16Array} WebGL element array buffer에 전달할 인덱스 데이터입니다.
+     */
+    #createSpriteIndexBufferData() {
+        const indices = new Uint16Array(this.maxSprites * INDICES_PER_SPRITE);
+
+        for (
+            let spriteIndex = 0, vertexIndex = 0;
+            spriteIndex < this.maxSprites;
+            spriteIndex++, vertexIndex += VERTICES_PER_SPRITE
+        ) {
+            const indexOffset = spriteIndex * INDICES_PER_SPRITE;
+            indices[indexOffset] = vertexIndex;
+            indices[indexOffset + 1] = vertexIndex + 1;
+            indices[indexOffset + 2] = vertexIndex + 2;
+            indices[indexOffset + 3] = vertexIndex;
+            indices[indexOffset + 4] = vertexIndex + 2;
+            indices[indexOffset + 5] = vertexIndex + 3;
+        }
+
+        return indices;
     }
 
     /**
@@ -208,15 +254,15 @@ export class WebGLBatch {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
 
-        const stride = this.vertexSize * 4;
+        const stride = this.vertexSize * FLOAT_BYTES;
         gl.enableVertexAttribArray(this.aPosition);
         gl.vertexAttribPointer(this.aPosition, 2, gl.FLOAT, false, stride, 0);
 
         gl.enableVertexAttribArray(this.aTexCoord);
-        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, stride, 2 * 4);
+        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, stride, 2 * FLOAT_BYTES);
 
         gl.enableVertexAttribArray(this.aColor);
-        gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, stride, 4 * 4);
+        gl.vertexAttribPointer(this.aColor, 4, gl.FLOAT, false, stride, 4 * FLOAT_BYTES);
     }
 
     /**
@@ -264,7 +310,7 @@ export class WebGLBatch {
         if (image.complete && image.naturalWidth > 0) {
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
         } else {
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, TRANSPARENT_TEXTURE_PIXEL);
         }
 
         this.textureCache.set(image, texture);
