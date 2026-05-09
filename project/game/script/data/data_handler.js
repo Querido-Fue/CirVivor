@@ -44,6 +44,11 @@ import { PHYSICS_CONSTANTS } from 'data/physics/physics_constants.js';
 import { COLLISION_CONSTANTS } from 'data/physics/collision_constants.js';
 import { DEBUG_CONSTANTS } from 'data/debug/debug_constants.js';
 import { SOUND_CONSTANTS } from 'data/sound/sound_constants.js';
+import {
+    DEFAULT_OVERLAY_ANIMATION_PRESET,
+    OVERLAY_ANIMATION_PRESETS,
+    getOverlayAnimationPreset
+} from 'data/overlay/overlay_animation_presets.js';
 import { OVERLAY_LAYOUT_CONSTANTS } from 'data/overlay/overlay_layout_constants.js';
 import { WEBGL_CONSTANTS } from 'data/display/webgl_constants.js';
 import { OVERLAY_RENDER_CONSTANTS } from 'data/display/overlay_render_constants.js';
@@ -92,6 +97,9 @@ const DATA_REGISTRY = Object.freeze({
     COLLISION_CONSTANTS,
     DEBUG_CONSTANTS,
     SOUND_CONSTANTS,
+    DEFAULT_OVERLAY_ANIMATION_PRESET,
+    OVERLAY_ANIMATION_PRESETS,
+    getOverlayAnimationPreset,
     OVERLAY_LAYOUT_CONSTANTS,
     WEBGL_CONSTANTS,
     OVERLAY_RENDER_CONSTANTS,
