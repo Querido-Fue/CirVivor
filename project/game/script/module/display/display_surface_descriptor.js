@@ -1,23 +1,11 @@
-/**
- * WebGL 렌더 별칭을 실제 surface 식별자로 변환합니다.
- */
-const DISPLAY_WEBGL_LAYER_NAME_MAP = Object.freeze({
-    main: 'object',
-    mainGL: 'object',
-    backgroundGL: 'background',
-    effectGL: 'effect'
-});
+import { getData } from 'data/data_handler.js';
 
-const DISPLAY_NATIVE_2D_SURFACE_IDS = new Set(['texteffect', 'ui', 'vignette', 'top']);
-
-const DISPLAY_STATIC_SURFACE_ORDER_MAP = Object.freeze({
-    background: 0,
-    object: 10,
-    effect: 20,
-    texteffect: 30,
-    ui: 40,
-    top: 1000
-});
+const {
+    WEBGL_LAYER_NAME_MAP: DISPLAY_WEBGL_LAYER_NAME_MAP,
+    NATIVE_2D_SURFACE_IDS: DISPLAY_NATIVE_2D_SURFACE_IDS,
+    STATIC_SURFACE_ORDER_MAP: DISPLAY_STATIC_SURFACE_ORDER_MAP
+} = getData('DISPLAY_SURFACE_DATA');
+const DISPLAY_NATIVE_2D_SURFACE_ID_SET = new Set(DISPLAY_NATIVE_2D_SURFACE_IDS);
 
 /**
  * display surface descriptor를 생성합니다.
@@ -73,7 +61,7 @@ export function getDisplayStaticSurfaceOrder(surfaceId) {
  */
 export function usesNativeDisplay2DResolution(descriptor) {
     return descriptor?.type === '2d'
-        && (descriptor.dynamic === true || DISPLAY_NATIVE_2D_SURFACE_IDS.has(descriptor.id));
+        && (descriptor.dynamic === true || DISPLAY_NATIVE_2D_SURFACE_ID_SET.has(descriptor.id));
 }
 
 /**

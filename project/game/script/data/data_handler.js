@@ -42,6 +42,7 @@ import { OVERLAY_LAYOUT_CONSTANTS } from 'data/overlay/overlay_layout_constants.
 import { WEBGL_CONSTANTS } from 'data/display/webgl_constants.js';
 import { OVERLAY_RENDER_CONSTANTS } from 'data/display/overlay_render_constants.js';
 import { VIGNETTE_CONSTANTS } from 'data/display/vignette_constants.js';
+import { DISPLAY_SURFACE_DATA } from 'data/display/display_surface_data.js';
 import { MOUSE_BUTTON_INPUT_DATA } from 'data/input/mouse_button_input_data.js';
 
 const DATA_REGISTRY = Object.freeze({
@@ -83,6 +84,7 @@ const DATA_REGISTRY = Object.freeze({
     WEBGL_CONSTANTS,
     OVERLAY_RENDER_CONSTANTS,
     VIGNETTE_CONSTANTS,
+    DISPLAY_SURFACE_DATA,
     MOUSE_BUTTON_INPUT_DATA
 });
 
