@@ -13,12 +13,13 @@ import { getHexaHiveType } from './_hexa_hive_layout.js';
 
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
 const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
+const HEXA_HIVE_TYPE = getHexaHiveType();
 const ENEMY_CLASS_BY_TYPE = Object.freeze({
     square: SquareEnemy,
     triangle: TriangleEnemy,
     arrow: ArrowEnemy,
     hexa: HexaEnemy,
-    hexa_hive: HexaHiveEnemy,
+    [HEXA_HIVE_TYPE]: HexaHiveEnemy,
     penta: PentaEnemy,
     rhom: RhomEnemy,
     octa: OctaEnemy,
@@ -26,8 +27,22 @@ const ENEMY_CLASS_BY_TYPE = Object.freeze({
 });
 const ENEMY_POOL_TYPES = Object.freeze([
     ...ENEMY_SHAPE_TYPES,
-    getHexaHiveType()
+    HEXA_HIVE_TYPE
 ]);
+
+/**
+ * 타입에 대응하는 적 클래스를 반환합니다.
+ * @param {string} type - 적 타입 문자열입니다.
+ * @returns {Function} 적 인스턴스 생성자입니다.
+ * @throws {Error} 등록되지 않은 적 타입이면 예외를 던집니다.
+ */
+function resolveEnemyClass(type) {
+    const EnemyClass = ENEMY_CLASS_BY_TYPE[type];
+    if (typeof EnemyClass !== 'function') {
+        throw new Error(`[EnemyPoolFactory] 알 수 없는 적 타입입니다: ${type}`);
+    }
+    return EnemyClass;
+}
 
 /**
  * 적 타입별 오브젝트 풀을 생성하고 워밍업합니다.
@@ -36,7 +51,7 @@ const ENEMY_POOL_TYPES = Object.freeze([
 export function createEnemyPools() {
     const pools = {};
     for (const type of ENEMY_POOL_TYPES) {
-        const EnemyClass = ENEMY_CLASS_BY_TYPE[type];
+        const EnemyClass = resolveEnemyClass(type);
         pools[type] = new ObjectPool(
             () => {
                 const enemy = new EnemyClass();
