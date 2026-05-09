@@ -3,6 +3,9 @@
  */
 export const ENEMY_DRAW_HEIGHT_RATIO = 0.03;
 
+/** 적 WebGL 스프라이트 키를 만들 때 사용하는 접두사입니다. */
+const ENEMY_SHAPE_KEY_PREFIX = 'enemy_';
+
 /**
  * 게임 내 적의 형태 종류 목록
  */
@@ -122,7 +125,7 @@ export const ENEMY_COLLISION_RADIUS_DATA = Object.freeze({
  */
 export const ENEMY_SHAPE_KEYS = Object.freeze(
     Object.fromEntries(
-        ENEMY_SHAPE_TYPES.map((type) => [type, `enemy_${type}`])
+        ENEMY_SHAPE_TYPES.map((type) => [type, `${ENEMY_SHAPE_KEY_PREFIX}${type}`])
     )
 );
 
@@ -132,7 +135,7 @@ export const ENEMY_SHAPE_KEYS = Object.freeze(
  * @returns {string} 스프라이트 식별용 키
  */
 export const getEnemyShapeKey = (type) => {
-    return ENEMY_SHAPE_KEYS[type] ?? `enemy_${type}`;
+    return ENEMY_SHAPE_KEYS[type] ?? `${ENEMY_SHAPE_KEY_PREFIX}${type}`;
 };
 
 /**
