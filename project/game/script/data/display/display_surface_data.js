@@ -2,6 +2,11 @@
  * display surface descriptor 생성과 정렬에 사용하는 정적 레이어 데이터입니다.
  */
 export const DISPLAY_SURFACE_DATA = Object.freeze({
+    WEBGL_RENDER_MODES: Object.freeze({
+        BATCH: 'batch',
+        OVERLAY_EFFECT: 'overlay-effect',
+        EFFECT: 'effect'
+    }),
     WEBGL_LAYER_NAME_MAP: Object.freeze({
         main: 'object',
         mainGL: 'object',

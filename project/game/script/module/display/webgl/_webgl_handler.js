@@ -10,6 +10,8 @@ import {
 } from './_webgl_layer_renderer.js';
 
 const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
+const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
+const WEBGL_BACKGROUND_LAYER_ID = 'background';
 
 /**
  * @class WebGLHandler
@@ -28,7 +30,7 @@ export class WebGLHandler {
         this.backgroundColor = [...WEBGL_CONSTANTS.DEFAULT_BACKGROUND_COLOR];
 
         for (const [layerName, context] of Object.entries(glContexts)) {
-            this.registerLayer(layerName, context, { mode: 'batch' });
+            this.registerLayer(layerName, context, { mode: DISPLAY_WEBGL_RENDER_MODES.BATCH });
         }
     }
 
@@ -43,7 +45,7 @@ export class WebGLHandler {
             return;
         }
 
-        const mode = options.mode || 'batch';
+        const mode = options.mode || DISPLAY_WEBGL_RENDER_MODES.BATCH;
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
@@ -90,7 +92,7 @@ export class WebGLHandler {
             const mode = this.layerModes.get(layerName);
             const renderer = this.layerRenderers.get(layerName);
 
-            if (layerName === 'background') {
+            if (layerName === WEBGL_BACKGROUND_LAYER_ID) {
                 gl.clearColor(this.backgroundColor[0], this.backgroundColor[1], this.backgroundColor[2], this.backgroundColor[3]);
             } else {
                 gl.clearColor(0, 0, 0, 0);

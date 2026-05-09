@@ -1,6 +1,7 @@
 import { getData } from 'data/data_handler.js';
 
 const {
+    WEBGL_RENDER_MODES: DISPLAY_WEBGL_RENDER_MODES,
     WEBGL_LAYER_NAME_MAP: DISPLAY_WEBGL_LAYER_NAME_MAP,
     NATIVE_2D_SURFACE_IDS: DISPLAY_NATIVE_2D_SURFACE_IDS,
     STATIC_SURFACE_ORDER_MAP: DISPLAY_STATIC_SURFACE_ORDER_MAP
@@ -17,7 +18,7 @@ export function createDisplaySurfaceDescriptor(options) {
     const descriptor = {
         id: options.id,
         type,
-        mode: options.mode || options.defaultMode || 'batch',
+        mode: options.mode || options.defaultMode || DISPLAY_WEBGL_RENDER_MODES.BATCH,
         canvas: options.canvas,
         context: options.context,
         order: Number.isFinite(options.order) ? options.order : getDisplayStaticSurfaceOrder(options.id),

@@ -1,6 +1,9 @@
 import { EffectRenderer } from './_effect_renderer.js';
 import { OverlayEffectRenderer } from './_overlay_effect_renderer.js';
 import { WebGLBatch } from './_webgl_batch.js';
+import { getData } from 'data/data_handler.js';
+
+const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
 
 /**
  * renderer가 별도 resize 계약을 가진 WebGL 레이어 renderer인지 확인합니다.
@@ -18,10 +21,10 @@ function _isResizableWebGLLayerRenderer(renderer) {
  * @returns {object} 생성된 레이어 renderer입니다.
  */
 export function createWebGLLayerRenderer(mode, gl) {
-    if (mode === 'overlay-effect') {
+    if (mode === DISPLAY_WEBGL_RENDER_MODES.OVERLAY_EFFECT) {
         return new OverlayEffectRenderer(gl);
     }
-    if (mode === 'effect') {
+    if (mode === DISPLAY_WEBGL_RENDER_MODES.EFFECT) {
         return new EffectRenderer(gl);
     }
     return new WebGLBatch(gl);
@@ -49,7 +52,10 @@ export function beginWebGLLayerFrame(renderer, mode, width, height) {
         return;
     }
 
-    if (mode === 'overlay-effect' || mode === 'effect') {
+    if (
+        mode === DISPLAY_WEBGL_RENDER_MODES.OVERLAY_EFFECT
+        || mode === DISPLAY_WEBGL_RENDER_MODES.EFFECT
+    ) {
         renderer.beginFrame(width, height);
         return;
     }

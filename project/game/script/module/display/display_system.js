@@ -5,6 +5,7 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { ThemeHandler, setTheme } from 'display/_theme_handler.js';
 import { getSetting } from 'save/save_system.js';
+import { getData } from 'data/data_handler.js';
 import { CanvasSurfacePool } from './_surface_pool.js';
 import { VignetteRenderer } from './_vignette_renderer.js';
 import {
@@ -15,6 +16,7 @@ import {
 } from './display_surface_descriptor.js';
 
 let displaySystemInstance = null;
+const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
 
 /**
  * @typedef {object} DisplaySurfaceDescriptor
@@ -60,9 +62,18 @@ export class DisplaySystem {
 
         this.overlayLayerHost = document.getElementById('overlaylayerhost');
 
-        this.#registerStaticSurface('background', 'background', 'webgl', { alpha: false, mode: 'batch' });
-        this.#registerStaticSurface('object', 'object', 'webgl', { alpha: true, mode: 'batch' });
-        this.#registerStaticSurface('effect', 'effect', 'webgl', { alpha: true, mode: 'effect' });
+        this.#registerStaticSurface('background', 'background', 'webgl', {
+            alpha: false,
+            mode: DISPLAY_WEBGL_RENDER_MODES.BATCH
+        });
+        this.#registerStaticSurface('object', 'object', 'webgl', {
+            alpha: true,
+            mode: DISPLAY_WEBGL_RENDER_MODES.BATCH
+        });
+        this.#registerStaticSurface('effect', 'effect', 'webgl', {
+            alpha: true,
+            mode: DISPLAY_WEBGL_RENDER_MODES.EFFECT
+        });
         this.#registerStaticSurface('texteffect', 'texteffect', '2d');
         this.#registerStaticSurface('ui', 'ui', '2d');
         this.#registerStaticSurface('vignette', 'vignette', '2d', {
@@ -93,7 +104,9 @@ export class DisplaySystem {
      */
     createDynamicSurface(options) {
         const type = options.type === 'webgl' ? 'webgl' : '2d';
-        const mode = options.mode || (type === 'webgl' ? 'overlay-effect' : 'batch');
+        const mode = options.mode || (type === 'webgl'
+            ? DISPLAY_WEBGL_RENDER_MODES.OVERLAY_EFFECT
+            : DISPLAY_WEBGL_RENDER_MODES.BATCH);
         const pool = type === 'webgl' ? this.dynamicWebGLPool : this.dynamic2DPool;
         const entry = pool.acquire();
         const surfaceId = `dynamic:${type}:${++this.dynamicSequence}`;
@@ -321,7 +334,7 @@ export class DisplaySystem {
         const descriptor = createDisplaySurfaceDescriptor({
             id: surfaceId,
             type,
-            mode: options.mode || (type === 'webgl' ? 'batch' : 'batch'),
+            mode: options.mode || DISPLAY_WEBGL_RENDER_MODES.BATCH,
             canvas,
             context,
             order: options.order,
