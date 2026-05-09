@@ -1,3 +1,5 @@
+import { clamp01, clampNumber } from 'util/number_util.js';
+
 /**
  * 계층별 활성 타이틀 적 수를 반환합니다.
  * @param {object[]} titleEnemies - 타이틀 적 목록입니다.
@@ -16,7 +18,7 @@ export function countTitleParallaxLayerEnemies(titleEnemies, parallaxLayers) {
             continue;
         }
         const layerIndex = Number.isInteger(enemy._titleParallaxLayerIndex)
-            ? Math.max(0, Math.min(parallaxLayers.length - 1, enemy._titleParallaxLayerIndex))
+            ? clampNumber(enemy._titleParallaxLayerIndex, 0, parallaxLayers.length - 1)
             : 0;
         counts[layerIndex] += 1;
     }
@@ -64,7 +66,7 @@ export function getTitlePerLayerEnemyLimit(titleEnemiesConfig) {
 export function getTitleTargetLayerOccupancyRatio(titleEnemiesConfig) {
     const ratio = titleEnemiesConfig.ENEMY_TARGET_OCCUPANCY_RATIO;
     if (Number.isFinite(ratio)) {
-        return Math.max(0, Math.min(1, ratio));
+        return clamp01(ratio);
     }
 
     return 1;
@@ -78,7 +80,7 @@ export function getTitleTargetLayerOccupancyRatio(titleEnemiesConfig) {
 export function getTitleInitialBurstFillRatio(titleEnemiesConfig) {
     const ratio = titleEnemiesConfig.INITIAL_BURST_FILL_RATIO;
     if (Number.isFinite(ratio)) {
-        return Math.max(0, Math.min(1, ratio));
+        return clamp01(ratio);
     }
 
     return 0;
@@ -96,7 +98,7 @@ export function getTitleTargetLayerEnemyCount(titleEnemiesConfig) {
     }
 
     const targetCount = Math.round(perLayerLimit * getTitleTargetLayerOccupancyRatio(titleEnemiesConfig));
-    return Math.max(0, Math.min(perLayerLimit, targetCount));
+    return clampNumber(targetCount, 0, perLayerLimit);
 }
 
 /**
@@ -111,7 +113,7 @@ export function getTitleInitialBurstTargetCount(titleEnemiesConfig) {
     }
 
     const burstCount = Math.round(perLayerLimit * getTitleInitialBurstFillRatio(titleEnemiesConfig));
-    return Math.max(0, Math.min(perLayerLimit, burstCount));
+    return clampNumber(burstCount, 0, perLayerLimit);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clamp01 } from 'util/number_util.js';
 
 /**
  * 로고/배경에서 사용할 기본 적 색상을 반환합니다.
@@ -28,7 +29,7 @@ export function getTitleBackgroundColor() {
  * @returns {string} 혼합된 RGBA 문자열입니다.
  */
 export function mixTitleEnemyColorWithBackground(mixRatio) {
-    const ratio = Number.isFinite(mixRatio) ? Math.max(0, Math.min(1, mixRatio)) : 0;
+    const ratio = Number.isFinite(mixRatio) ? clamp01(mixRatio) : 0;
     const util = colorUtil();
     const enemyColor = util.cssToRgb(getTitleEnemyColor());
     const backgroundColor = util.cssToRgb(getTitleBackgroundColor());

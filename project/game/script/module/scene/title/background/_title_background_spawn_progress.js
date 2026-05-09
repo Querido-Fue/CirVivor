@@ -1,3 +1,5 @@
+import { clamp01, clampNumber } from 'util/number_util.js';
+
 /**
  * 초기 버스트 누적 스폰 비율을 easeOutExpo 형태로 반환합니다.
  * @param {number} progress - 0~1 범위의 진행률입니다.
@@ -6,7 +8,7 @@
  */
 export function getTitleInitialBurstSpawnProgress(progress, expoPower = 10) {
     const clampedProgress = Number.isFinite(progress)
-        ? Math.max(0, Math.min(1, progress))
+        ? clamp01(progress)
         : 0;
     if (clampedProgress >= 1) {
         return 1;
@@ -41,8 +43,5 @@ export function getTitleInitialBurstDesiredSpawnCount(
 
     const progress = elapsedSeconds / burstDuration;
     const easedProgress = getTitleInitialBurstSpawnProgress(progress, expoPower);
-    return Math.min(
-        burstTargetCount,
-        Math.max(0, Math.round(burstTargetCount * easedProgress))
-    );
+    return clampNumber(Math.round(burstTargetCount * easedProgress), 0, burstTargetCount);
 }
