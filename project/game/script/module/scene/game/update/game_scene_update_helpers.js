@@ -1,25 +1,11 @@
+import { getData } from 'data/data_handler.js';
 import {
     getSimulationMouseInput,
     hasSimulationMouseState
 } from 'simulation/simulation_runtime.js';
+import { isPointInRect } from 'util/geometry_util.js';
 
-const PROJECTILE_CULL_MARGIN_RATIO = 0.2;
-
-/**
- * 좌표가 사각형 내부에 있는지 반환합니다.
- * @param {number} x - 검사할 x 좌표입니다.
- * @param {number} y - 검사할 y 좌표입니다.
- * @param {object|null|undefined} rect - 검사 대상 사각형입니다.
- * @returns {boolean}
- */
-function pointInRect(x, y, rect) {
-    return (
-        x >= rect.x &&
-        x <= rect.x + rect.w &&
-        y >= rect.y &&
-        y <= rect.y + rect.h
-    );
-}
+const PROJECTILE_CULL_MARGIN_RATIO = getData('GAME_SCENE_CONSTANTS').PROJECTILE.CULL_MARGIN_RATIO;
 
 /**
  * 현재 마우스 입력으로 벤치마크 버튼 클릭을 처리합니다.
@@ -35,7 +21,7 @@ export function updateGameSceneButtonInput(buttons) {
 
     for (let i = 0; i < buttons.length; i++) {
         const button = buttons[i];
-        if (button && pointInRect(mousePos.x, mousePos.y, button)) {
+        if (button && isPointInRect(mousePos.x, mousePos.y, button)) {
             button.onClick();
             return true;
         }

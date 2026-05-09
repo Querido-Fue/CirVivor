@@ -5,6 +5,7 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { getMouseFocus, setMouseFocus } from 'input/input_system.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
 import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
+import { getData } from 'data/data_handler.js';
 import { getSetting } from 'save/save_system.js';
 import {
     DEFAULT_OVERLAY_PANEL_ID,
@@ -17,9 +18,10 @@ import { syncOverlayPanelInteractionStates } from './overlay_panel_interaction_s
 import { buildOverlayPanelEffectCanvas } from './overlay_panel_effect_canvas.js';
 import { updateOverlayPanelInteractions } from './overlay_panel_interaction_update.js';
 
-const OVERLAY_PRESENTATION_OPEN_START_SCALE = 1.1;
-const OVERLAY_PRESENTATION_DURATION_SECONDS = 0.4;
-const OVERLAY_PRESENTATION_CLOSE_END_SCALE = 0.85;
+const OVERLAY_PRESENTATION_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS').PRESENTATION;
+const OVERLAY_PRESENTATION_OPEN_START_SCALE = OVERLAY_PRESENTATION_CONSTANTS.OPEN_START_SCALE;
+const OVERLAY_PRESENTATION_DURATION_SECONDS = OVERLAY_PRESENTATION_CONSTANTS.DURATION_SECONDS;
+const OVERLAY_PRESENTATION_CLOSE_END_SCALE = OVERLAY_PRESENTATION_CONSTANTS.CLOSE_END_SCALE;
 
 /**
  * @typedef {object} OverlayPanelMetric

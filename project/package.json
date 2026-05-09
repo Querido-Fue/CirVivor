@@ -3,7 +3,7 @@
     "version": "0.4",
     "main": "game/index.html",
     "js-flags": "",
-    "chromium-args": "--auto-open-devtools-for-tabs1",
+    "chromium-args": "--auto-open-devtools-for-tabs",
     "window": {
         "title": "Lonely Tower",
         "toolbar": false,

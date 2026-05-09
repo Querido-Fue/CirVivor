@@ -1,48 +1,16 @@
+import { getData } from 'data/data_handler.js';
 import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_protocol.js';
+import { isRectCircleOverlapping } from 'util/geometry_util.js';
+import { randomIntInclusive, randomRange } from 'util/random_util.js';
 import { getBenchmarkEnemyFill } from '../render/game_scene_benchmark_palette.js';
 
-const BENCHMARK_WALL_HEIGHT_RATIO = 0.5;
-const BENCHMARK_WALL_THICKNESS_RATIO = 0.008;
-const BENCHMARK_BOX_SIZE_RATIO = 0.05;
-const BENCHMARK_PROJECTILE_SIZE_RATIO = 0.03;
-const BENCHMARK_PROJECTILE_TRAVEL_SECONDS = 2;
-const BENCHMARK_ENEMY_SPEED_MULTIPLIER = 2.5;
-
-/**
- * 지정 범위의 실수 난수를 반환합니다.
- * @param {number} min - 최솟값입니다.
- * @param {number} max - 최댓값입니다.
- * @returns {number}
- */
-function randomBenchmarkValue(min, max) {
-    return (Math.random() * (max - min)) + min;
-}
-
-/**
- * 지정 범위의 정수 난수를 반환합니다.
- * @param {number} min - 최솟값입니다.
- * @param {number} max - 최댓값입니다.
- * @returns {number}
- */
-function randomBenchmarkInt(min, max) {
-    return Math.floor(randomBenchmarkValue(min, max + 1));
-}
-
-/**
- * 사각형과 원의 겹침 여부를 반환합니다.
- * @param {{minX:number, maxX:number, minY:number, maxY:number}} rect - 사각 범위입니다.
- * @param {number} x - 원 중심 x 좌표입니다.
- * @param {number} y - 원 중심 y 좌표입니다.
- * @param {number} radius - 원 반지름입니다.
- * @returns {boolean}
- */
-function rectCircleOverlap(rect, x, y, radius) {
-    const closestX = Math.max(rect.minX, Math.min(x, rect.maxX));
-    const closestY = Math.max(rect.minY, Math.min(y, rect.maxY));
-    const dx = x - closestX;
-    const dy = y - closestY;
-    return ((dx * dx) + (dy * dy)) <= (radius * radius);
-}
+const BENCHMARK_CONSTANTS = getData('GAME_SCENE_CONSTANTS').BENCHMARK;
+const BENCHMARK_WALL_HEIGHT_RATIO = BENCHMARK_CONSTANTS.WALL_HEIGHT_RATIO;
+const BENCHMARK_WALL_THICKNESS_RATIO = BENCHMARK_CONSTANTS.WALL_THICKNESS_RATIO;
+const BENCHMARK_BOX_SIZE_RATIO = BENCHMARK_CONSTANTS.BOX_SIZE_RATIO;
+const BENCHMARK_PROJECTILE_SIZE_RATIO = BENCHMARK_CONSTANTS.PROJECTILE_SIZE_RATIO;
+const BENCHMARK_PROJECTILE_TRAVEL_SECONDS = BENCHMARK_CONSTANTS.PROJECTILE_TRAVEL_SECONDS;
+const BENCHMARK_ENEMY_SPEED_MULTIPLIER = BENCHMARK_CONSTANTS.ENEMY_SPEED_MULTIPLIER;
 
 /**
  * 벤치마크 벽 데이터를 생성하고 씬의 벽 ID 카운터를 전진시킵니다.
@@ -88,7 +56,7 @@ function isBenchmarkPointBlockedByWall(scene, x, y, radius, walls = null) {
             minY: wall.y - halfH,
             maxY: wall.y + halfH
         };
-        if (rectCircleOverlap(rect, x, y, radius)) return true;
+        if (isRectCircleOverlapping(rect, x, y, radius)) return true;
     }
     return false;
 }
@@ -102,16 +70,19 @@ function isBenchmarkPointBlockedByWall(scene, x, y, radius, walls = null) {
  */
 function buildRandomBenchmarkBoxWallData(scene, existingWalls = [], playerLike = null) {
     const size = scene.objectWH * BENCHMARK_BOX_SIZE_RATIO;
-    const radius = (size * Math.SQRT2) * 0.5;
-    const margin = Math.max(size * 0.55, scene.objectWH * 0.03);
+    const radius = size * BENCHMARK_CONSTANTS.BOX_RADIUS_SCALE;
+    const margin = Math.max(
+        size * BENCHMARK_CONSTANTS.BOX_MARGIN_SIZE_RATIO,
+        scene.objectWH * BENCHMARK_CONSTANTS.BOX_MARGIN_WORLD_RATIO
+    );
     const minX = margin;
     const maxX = Math.max(minX, scene.WW - margin);
     const minY = margin;
     const maxY = Math.max(minY, scene.objectWH - margin);
 
-    for (let tries = 0; tries < 36; tries++) {
-        const x = randomBenchmarkValue(minX, maxX);
-        const y = randomBenchmarkValue(minY, maxY);
+    for (let tries = 0; tries < BENCHMARK_CONSTANTS.BOX_PLACEMENT_TRIES; tries++) {
+        const x = randomRange(minX, maxX);
+        const y = randomRange(minY, maxY);
         if (isBenchmarkPointBlockedByWall(scene, x, y, radius, existingWalls)) {
             continue;
         }
@@ -119,7 +90,10 @@ function buildRandomBenchmarkBoxWallData(scene, existingWalls = [], playerLike =
         if (playerLike && playerLike.position) {
             const dx = x - playerLike.position.x;
             const dy = y - playerLike.position.y;
-            const keepout = Math.max((playerLike.radius || 0) + radius + (scene.objectWH * 0.04), 8);
+            const keepout = Math.max(
+                (playerLike.radius || 0) + radius + (scene.objectWH * BENCHMARK_CONSTANTS.PLAYER_KEEP_OUT_WORLD_RATIO),
+                BENCHMARK_CONSTANTS.PLAYER_KEEP_OUT_MIN_PX
+            );
             if (((dx * dx) + (dy * dy)) < (keepout * keepout)) {
                 continue;
             }
@@ -137,19 +111,19 @@ function buildRandomBenchmarkBoxWallData(scene, existingWalls = [], playerLike =
  * @returns {{x:number, y:number}}
  */
 function randomBenchmarkEnemySpawnPosition(scene) {
-    const margin = scene.objectWH * 0.07;
-    const side = randomBenchmarkInt(0, 3);
+    const margin = scene.objectWH * BENCHMARK_CONSTANTS.ENEMY_SPAWN_MARGIN_RATIO;
+    const side = randomIntInclusive(0, 3);
 
     if (side === 0) {
-        return { x: randomBenchmarkValue(margin, scene.WW - margin), y: margin };
+        return { x: randomRange(margin, scene.WW - margin), y: margin };
     }
     if (side === 1) {
-        return { x: randomBenchmarkValue(margin, scene.WW - margin), y: scene.objectWH - margin };
+        return { x: randomRange(margin, scene.WW - margin), y: scene.objectWH - margin };
     }
     if (side === 2) {
-        return { x: margin, y: randomBenchmarkValue(margin, scene.objectWH - margin) };
+        return { x: margin, y: randomRange(margin, scene.objectWH - margin) };
     }
-    return { x: scene.WW - margin, y: randomBenchmarkValue(margin, scene.objectWH - margin) };
+    return { x: scene.WW - margin, y: randomRange(margin, scene.objectWH - margin) };
 }
 
 /**
@@ -159,26 +133,25 @@ function randomBenchmarkEnemySpawnPosition(scene) {
  */
 export function buildGameSceneResetWorldCommands(scene) {
     const playerData = {
-        id: 1,
-        radius: scene.objectWH * 0.02,
+        id: BENCHMARK_CONSTANTS.PLAYER_ID,
+        radius: scene.objectWH * BENCHMARK_CONSTANTS.PLAYER_RADIUS_RATIO,
         position: {
-            x: scene.WW * 0.5,
-            y: scene.objectWH * 0.5
+            x: scene.WW * BENCHMARK_CONSTANTS.WORLD_CENTER_RATIO,
+            y: scene.objectWH * BENCHMARK_CONSTANTS.WORLD_CENTER_RATIO
         },
         speed: { x: 0, y: 0 },
-        weight: 999999
+        weight: BENCHMARK_CONSTANTS.PLAYER_WEIGHT
     };
 
-    const wallThickness = Math.max(8, scene.WW * BENCHMARK_WALL_THICKNESS_RATIO);
+    const wallThickness = Math.max(BENCHMARK_CONSTANTS.WALL_MIN_THICKNESS, scene.WW * BENCHMARK_WALL_THICKNESS_RATIO);
     const wallHeight = scene.objectWH * BENCHMARK_WALL_HEIGHT_RATIO;
-    const wallY = scene.objectWH * 0.5;
-    const staticWalls = [
-        createBenchmarkWallData(scene, scene.WW * 0.25, wallY, wallThickness, wallHeight),
-        createBenchmarkWallData(scene, scene.WW * 0.75, wallY, wallThickness, wallHeight)
-    ];
+    const wallY = scene.objectWH * BENCHMARK_CONSTANTS.WORLD_CENTER_RATIO;
+    const staticWalls = BENCHMARK_CONSTANTS.STATIC_WALL_X_RATIOS.map((ratio) => {
+        return createBenchmarkWallData(scene, scene.WW * ratio, wallY, wallThickness, wallHeight);
+    });
     const boxWalls = [];
 
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < BENCHMARK_CONSTANTS.RESET_BOX_COUNT; i++) {
         const wallData = buildRandomBenchmarkBoxWallData(scene, [...staticWalls, ...boxWalls], playerData);
         if (wallData) {
             boxWalls.push(wallData);
@@ -202,7 +175,7 @@ export function buildGameSceneResetWorldCommands(scene) {
  * @param {number} [count=100] - 생성할 적 수입니다.
  * @returns {object}
  */
-export function buildGameSceneSpawnEnemiesCommand(scene, count = 100) {
+export function buildGameSceneSpawnEnemiesCommand(scene, count = BENCHMARK_CONSTANTS.DEFAULT_ENEMY_COUNT) {
     const fill = getBenchmarkEnemyFill();
     const enemies = [];
     const reservedEnemyIds = scene.objectSystem && typeof scene.objectSystem.reserveEnemyIds === 'function'
@@ -210,21 +183,27 @@ export function buildGameSceneSpawnEnemiesCommand(scene, count = 100) {
         : [];
 
     for (let i = 0; i < count; i++) {
-        const type = scene.enemyTypes[randomBenchmarkInt(0, scene.enemyTypes.length - 1)];
+        const type = scene.enemyTypes[randomIntInclusive(0, scene.enemyTypes.length - 1)];
         const spawnPos = randomBenchmarkEnemySpawnPosition(scene);
-        const angle = randomBenchmarkValue(0, Math.PI * 2);
-        const speedMag = randomBenchmarkValue(20, 64);
+        const angle = randomRange(
+            BENCHMARK_CONSTANTS.ENEMY_RANDOM_ANGLE_MIN,
+            BENCHMARK_CONSTANTS.ENEMY_RANDOM_ANGLE_MAX
+        );
+        const speedMag = randomRange(BENCHMARK_CONSTANTS.ENEMY_SPEED_MIN, BENCHMARK_CONSTANTS.ENEMY_SPEED_MAX);
 
         enemies.push({
             id: Number.isInteger(reservedEnemyIds[i]) ? reservedEnemyIds[i] : null,
             type,
-            hp: 1,
-            maxHp: 1,
-            atk: 1,
-            moveSpeed: randomBenchmarkValue(0.85, 1.2) * BENCHMARK_ENEMY_SPEED_MULTIPLIER,
-            accSpeed: 0,
-            size: 1.5,
-            projectileHitsToKill: 3,
+            hp: BENCHMARK_CONSTANTS.ENEMY_HP,
+            maxHp: BENCHMARK_CONSTANTS.ENEMY_HP,
+            atk: BENCHMARK_CONSTANTS.ENEMY_ATK,
+            moveSpeed: randomRange(
+                BENCHMARK_CONSTANTS.ENEMY_MOVE_SPEED_MIN,
+                BENCHMARK_CONSTANTS.ENEMY_MOVE_SPEED_MAX
+            ) * BENCHMARK_ENEMY_SPEED_MULTIPLIER,
+            accSpeed: BENCHMARK_CONSTANTS.ENEMY_ACC_SPEED,
+            size: BENCHMARK_CONSTANTS.ENEMY_SIZE,
+            projectileHitsToKill: BENCHMARK_CONSTANTS.ENEMY_PROJECTILE_HITS_TO_KILL,
             position: spawnPos,
             speed: {
                 x: Math.cos(angle) * speedMag,
@@ -234,7 +213,7 @@ export function buildGameSceneSpawnEnemiesCommand(scene, count = 100) {
             aiId: 'enemyAI',
             fill,
             alpha: 1,
-            rotation: randomBenchmarkValue(0, 360)
+            rotation: randomRange(BENCHMARK_CONSTANTS.ENEMY_ROTATION_MIN, BENCHMARK_CONSTANTS.ENEMY_ROTATION_MAX)
         });
     }
 
@@ -276,19 +255,22 @@ export function buildGameSceneSpawnRandomBoxCommand(scene) {
  */
 export function buildGameSceneSpawnProjectileBurstCommand(scene) {
     const diameter = scene.objectWH * BENCHMARK_PROJECTILE_SIZE_RATIO;
-    const radius = diameter * 0.5;
-    const startX = -scene.WW * 0.1;
-    const endX = scene.WW * 1.1;
-    const speedX = (endX - startX) / Math.max(0.016, BENCHMARK_PROJECTILE_TRAVEL_SECONDS);
+    const radius = diameter * BENCHMARK_CONSTANTS.WORLD_CENTER_RATIO;
+    const startX = scene.WW * BENCHMARK_CONSTANTS.PROJECTILE_START_X_RATIO;
+    const endX = scene.WW * BENCHMARK_CONSTANTS.PROJECTILE_END_X_RATIO;
+    const speedX = (endX - startX) / Math.max(
+        BENCHMARK_CONSTANTS.PROJECTILE_MIN_TRAVEL_SECONDS,
+        BENCHMARK_PROJECTILE_TRAVEL_SECONDS
+    );
     const projectiles = [];
 
-    for (let i = 0; i < 10; i++) {
-        const y = randomBenchmarkValue(radius, Math.max(radius, scene.objectWH - radius));
+    for (let i = 0; i < BENCHMARK_CONSTANTS.PROJECTILE_BURST_COUNT; i++) {
+        const y = randomRange(radius, Math.max(radius, scene.objectWH - radius));
         projectiles.push({
             id: scene.projIdCounter++,
             radius,
-            weight: 0.07,
-            impactForce: 1,
+            weight: BENCHMARK_CONSTANTS.PROJECTILE_WEIGHT,
+            impactForce: BENCHMARK_CONSTANTS.PROJECTILE_IMPACT_FORCE,
             piercing: true,
             position: { x: startX, y },
             speed: { x: speedX, y: 0 }

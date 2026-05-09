@@ -1,8 +1,11 @@
+import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
 import { getSimulationMouseInput } from 'simulation/simulation_runtime.js';
+import { isPointInRect } from 'util/geometry_util.js';
 import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 
-const BUTTON_RADIUS = 10;
+const GAME_SCENE_BUTTON_CONSTANTS = getData('GAME_SCENE_CONSTANTS').BUTTON;
+const BUTTON_RADIUS = GAME_SCENE_BUTTON_CONSTANTS.RADIUS;
 
 /**
  * 값을 0에서 1 사이로 제한합니다.
@@ -14,22 +17,6 @@ function clamp01(value) {
 }
 
 /**
- * 포인터가 사각형 내부에 있는지 확인합니다.
- * @param {number} x - 포인터 x 좌표입니다.
- * @param {number} y - 포인터 y 좌표입니다.
- * @param {{x: number, y: number, w: number, h: number}} rect - 검사할 사각형입니다.
- * @returns {boolean}
- */
-function isPointInRect(x, y, rect) {
-    return (
-        x >= rect.x &&
-        x <= rect.x + rect.w &&
-        y >= rect.y &&
-        y <= rect.y + rect.h
-    );
-}
-
-/**
  * 벤치마크 씬 버튼 목록을 렌더합니다.
  * @param {object[]} [buttons=[]] - 렌더할 버튼 목록입니다.
  * @param {{ww?: number}} [options={}] - 렌더 옵션입니다.
@@ -37,7 +24,10 @@ function isPointInRect(x, y, rect) {
 export function drawGameSceneButtons(buttons = [], options = {}) {
     const buttonList = Array.isArray(buttons) ? buttons : [];
     const mousePos = getSimulationMouseInput('pos');
-    const fontSize = Math.max(11, (Number.isFinite(options?.ww) ? options.ww : 0) * 0.0092);
+    const fontSize = Math.max(
+        GAME_SCENE_BUTTON_CONSTANTS.FONT_MIN_SIZE,
+        (Number.isFinite(options?.ww) ? options.ww : 0) * GAME_SCENE_BUTTON_CONSTANTS.FONT_WW_RATIO
+    );
 
     for (let i = 0; i < buttonList.length; i++) {
         const button = buttonList[i];
@@ -63,13 +53,13 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
             radius: BUTTON_RADIUS,
             fill: false,
             stroke: getBenchmarkColor('ButtonStroke'),
-            lineWidth: 1
+            lineWidth: GAME_SCENE_BUTTON_CONSTANTS.BORDER_LINE_WIDTH
         });
         render('ui', {
             shape: 'text',
             text: button.label,
-            x: button.x + (button.w * 0.5),
-            y: button.y + (button.h * 0.54),
+            x: button.x + (button.w * GAME_SCENE_BUTTON_CONSTANTS.TEXT_X_RATIO),
+            y: button.y + (button.h * GAME_SCENE_BUTTON_CONSTANTS.TEXT_Y_RATIO),
             font: `500 ${fontSize}px "Pretendard Variable"`,
             fill: getBenchmarkColor('ButtonText'),
             align: 'center',

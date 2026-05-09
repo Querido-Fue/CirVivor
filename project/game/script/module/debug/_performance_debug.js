@@ -1,8 +1,10 @@
+import { getData } from 'data/data_handler.js';
 import { getWH, getWW, render } from "display/display_system.js";
 
-const PERFORMANCE_WINDOW_MS = 1000;
-const MAX_VISIBLE_SECTIONS = 42;
-const MIN_VISIBLE_AVERAGE_MS = 0.01;
+const PERFORMANCE_DEBUG_CONSTANTS = getData('DEBUG_CONSTANTS').PERFORMANCE;
+const PERFORMANCE_WINDOW_MS = PERFORMANCE_DEBUG_CONSTANTS.WINDOW_MS;
+const MAX_VISIBLE_SECTIONS = PERFORMANCE_DEBUG_CONSTANTS.MAX_VISIBLE_SECTIONS;
+const MIN_VISIBLE_AVERAGE_MS = PERFORMANCE_DEBUG_CONSTANTS.MIN_VISIBLE_AVERAGE_MS;
 
 /**
  * @class PerformanceDebugger
@@ -121,16 +123,29 @@ export class PerformanceDebugger {
 
         const ch = getWH();
         const ww = getWW();
-        const fontSize = Math.max(12, Math.floor(ch * 0.014));
-        const font = `600 ${fontSize}px "Pretendard Variable", arial`;
-        const lineHeight = fontSize + Math.max(4, Math.floor(ch * 0.004));
-        const panelPadding = Math.max(6, Math.floor(ch * 0.005));
-        const startX = Math.max(10, Math.floor(ch * 0.01));
+        const fontSize = Math.max(
+            PERFORMANCE_DEBUG_CONSTANTS.FONT_MIN_SIZE,
+            Math.floor(ch * PERFORMANCE_DEBUG_CONSTANTS.FONT_WH_RATIO)
+        );
+        const font = `${PERFORMANCE_DEBUG_CONSTANTS.FONT_WEIGHT} ${fontSize}px "Pretendard Variable", arial`;
+        const lineHeight = fontSize + Math.max(
+            PERFORMANCE_DEBUG_CONSTANTS.LINE_GAP_MIN,
+            Math.floor(ch * PERFORMANCE_DEBUG_CONSTANTS.LINE_GAP_WH_RATIO)
+        );
+        const panelPadding = Math.max(
+            PERFORMANCE_DEBUG_CONSTANTS.PANEL_PADDING_MIN,
+            Math.floor(ch * PERFORMANCE_DEBUG_CONSTANTS.PANEL_PADDING_WH_RATIO)
+        );
+        const startX = Math.max(
+            PERFORMANCE_DEBUG_CONSTANTS.START_OFFSET_MIN,
+            Math.floor(ch * PERFORMANCE_DEBUG_CONSTANTS.START_OFFSET_WH_RATIO)
+        );
         const startY = startX;
         const longestLineLength = lines.reduce((maxLength, line) => Math.max(maxLength, line.length), 0);
         const panelWidth = Math.min(
             ww - (startX * 2),
-            Math.ceil((fontSize * 0.58) * longestLineLength) + (panelPadding * 2)
+            Math.ceil((fontSize * PERFORMANCE_DEBUG_CONSTANTS.CHAR_WIDTH_RATIO) * longestLineLength)
+                + (panelPadding * 2)
         );
         const panelHeight = (lines.length * lineHeight) + (panelPadding * 2);
 
@@ -141,7 +156,7 @@ export class PerformanceDebugger {
             w: panelWidth,
             h: panelHeight,
             radius: panelPadding,
-            fill: 'rgba(0, 0, 0, 0.78)'
+            fill: PERFORMANCE_DEBUG_CONSTANTS.PANEL_FILL
         });
 
         lines.forEach((line, index) => {
@@ -151,7 +166,7 @@ export class PerformanceDebugger {
                 x: startX,
                 y: startY + (index * lineHeight),
                 font,
-                fill: '#FFFFFF',
+                fill: PERFORMANCE_DEBUG_CONSTANTS.TEXT_FILL,
                 align: 'left',
                 baseline: 'top'
             });
@@ -288,7 +303,8 @@ export class PerformanceDebugger {
      * @returns {string} 완성된 출력 문자열입니다.
      */
     #formatSectionLine(snapshot) {
-        const sectionLabel = this.#truncateSectionName(snapshot.name, 30).padEnd(30, ' ');
+        const maxLength = PERFORMANCE_DEBUG_CONSTANTS.SECTION_LABEL_MAX_LENGTH;
+        const sectionLabel = this.#truncateSectionName(snapshot.name, maxLength).padEnd(maxLength, ' ');
         return `${sectionLabel} avg ${snapshot.averageMs.toFixed(2).padStart(6, ' ')} | last ${snapshot.lastMs.toFixed(2).padStart(6, ' ')} | max ${snapshot.maxMs.toFixed(2).padStart(6, ' ')}`;
     }
 
@@ -304,8 +320,10 @@ export class PerformanceDebugger {
             return sectionName;
         }
 
-        const preservedLength = Math.max(4, Math.floor((maxLength - 3) * 0.5));
-        const suffixLength = Math.max(4, maxLength - 3 - preservedLength);
+        const markerLength = PERFORMANCE_DEBUG_CONSTANTS.TRUNCATE_MARK_LENGTH;
+        const edgeMinLength = PERFORMANCE_DEBUG_CONSTANTS.TRUNCATE_EDGE_MIN_LENGTH;
+        const preservedLength = Math.max(edgeMinLength, Math.floor((maxLength - markerLength) * 0.5));
+        const suffixLength = Math.max(edgeMinLength, maxLength - markerLength - preservedLength);
         return `${sectionName.slice(0, preservedLength)}...${sectionName.slice(-suffixLength)}`;
     }
 }

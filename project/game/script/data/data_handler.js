@@ -31,10 +31,12 @@ import {
 import { ENEMY_SVG_SHAPES } from 'data/object/enemy/enemy_svg_shape_data.js';
 import { TITLE_CONSTANTS } from 'data/scene/title/title_constants.js';
 import { TITLE_LINK_DATA } from 'data/scene/title/title_link_data.js';
+import { GAME_SCENE_CONSTANTS } from 'data/scene/game/game_scene_constants.js';
 import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
 import { TITLE_MENU_ICON_DATA } from 'data/scene/title/title_menu_icon_data.js';
 import { PHYSICS_CONSTANTS } from 'data/physics/physics_constants.js';
 import { COLLISION_CONSTANTS } from 'data/physics/collision_constants.js';
+import { DEBUG_CONSTANTS } from 'data/debug/debug_constants.js';
 import { SOUND_CONSTANTS } from 'data/sound/sound_constants.js';
 import { OVERLAY_LAYOUT_CONSTANTS } from 'data/overlay/overlay_layout_constants.js';
 import { WEBGL_CONSTANTS } from 'data/display/webgl_constants.js';
@@ -69,10 +71,12 @@ const DATA_REGISTRY = Object.freeze({
     ENEMY_SVG_SHAPES,
     TITLE_CONSTANTS,
     TITLE_LINK_DATA,
+    GAME_SCENE_CONSTANTS,
     TITLE_MENU_DATA,
     TITLE_MENU_ICON_DATA,
     PHYSICS_CONSTANTS,
     COLLISION_CONSTANTS,
+    DEBUG_CONSTANTS,
     SOUND_CONSTANTS,
     OVERLAY_LAYOUT_CONSTANTS,
     WEBGL_CONSTANTS,
