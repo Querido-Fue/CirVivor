@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clampNumber } from 'util/number_util.js';
 
 const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
 const COLLISION_MANIFOLD = COLLISION_CONSTANTS.MANIFOLD;
@@ -151,8 +152,8 @@ export function writeCollisionCircleRectOverlapManifold(circleX, circleY, radius
     const maxX = Number.isFinite(rectBody?.maxX) ? rectBody.maxX : 0;
     const minY = Number.isFinite(rectBody?.minY) ? rectBody.minY : 0;
     const maxY = Number.isFinite(rectBody?.maxY) ? rectBody.maxY : 0;
-    const closestX = Math.max(minX, Math.min(circleX, maxX));
-    const closestY = Math.max(minY, Math.min(circleY, maxY));
+    const closestX = clampNumber(circleX, minX, maxX);
+    const closestY = clampNumber(circleY, minY, maxY);
     const dx = closestX - circleX;
     const dy = closestY - circleY;
     const distSq = (dx * dx) + (dy * dy);
