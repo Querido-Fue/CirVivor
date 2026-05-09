@@ -2,6 +2,53 @@
  * 타이틀 카드 메뉴의 정적 구성 데이터입니다.
  */
 export const TITLE_MENU_DATA = Object.freeze({
+    CARD_DEFINITIONS: Object.freeze([
+        Object.freeze({
+            id: 'start',
+            layoutSlot: 'start',
+            titleKey: 'title_card_start_title',
+            descriptionKey: null,
+            actionType: 'scene',
+            actionKey: 'gameStart',
+            placeholder: false
+        }),
+        Object.freeze({
+            id: 'quick_start',
+            layoutSlot: 'quick_start',
+            titleKey: 'title_card_quick_start_title',
+            descriptionKey: 'title_card_quick_start_desc',
+            actionType: 'overlay',
+            actionKey: 'quickStart',
+            placeholder: true
+        }),
+        Object.freeze({
+            id: 'records',
+            layoutSlot: 'records',
+            titleKey: 'title_card_records_title',
+            descriptionKey: null,
+            actionType: 'overlay',
+            actionKey: 'records',
+            placeholder: true
+        }),
+        Object.freeze({
+            id: 'deck',
+            layoutSlot: 'deck',
+            titleKey: 'title_card_deck_title',
+            descriptionKey: 'title_card_deck_desc',
+            actionType: 'overlay',
+            actionKey: 'deck',
+            placeholder: false
+        }),
+        Object.freeze({
+            id: 'research',
+            layoutSlot: 'research',
+            titleKey: 'title_card_research_title',
+            descriptionKey: 'title_card_research_desc',
+            actionType: 'overlay',
+            actionKey: 'research',
+            placeholder: true
+        })
+    ]),
     CARD_REVEAL_ORDER: Object.freeze([
         'start',
         'quick_start',

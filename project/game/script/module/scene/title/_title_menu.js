@@ -78,7 +78,7 @@ export class TitleMenu {
         this.svgDrawer = new SVGDrawer();
         this.titleMenuIconSources = [];
         this.layout = new TitleMenuLayout(this.uiScale);
-        this.cardRegistry = new TitleMenuCardRegistry(titleScene);
+        this.cardRegistry = new TitleMenuCardRegistry();
         this.cards = [];
         this.cardStateMap = new Map();
         this.cardRenderMap = new Map();

@@ -1,7 +1,10 @@
+import { getData } from 'data/data_handler.js';
 import { DeckOverlay } from 'overlay/title/_deck.js';
 import { QuickStartOverlay } from 'overlay/title/_quick_start.js';
 import { RecordsOverlay } from 'overlay/title/_records.js';
 import { ResearchOverlay } from 'overlay/title/_research.js';
+
+const TITLE_MENU_CARD_DEFINITIONS = getData('TITLE_MENU_DATA').CARD_DEFINITIONS;
 
 /**
  * @typedef {object} TitleMenuCardDefinition
@@ -21,10 +24,9 @@ import { ResearchOverlay } from 'overlay/title/_research.js';
  */
 export class TitleMenuCardRegistry {
     /**
-     * @param {TitleScene} titleScene - 타이틀 씬 인스턴스입니다.
+     * 카드 정의 레지스트리를 초기화합니다.
      */
-    constructor(titleScene) {
-        this.titleScene = titleScene;
+    constructor() {
         this.cardDefinitions = this._createDefinitions();
     }
 
@@ -51,58 +53,12 @@ export class TitleMenuCardRegistry {
      * @private
      */
     _createDefinitions() {
-        return Object.freeze([
-            this._createCardDefinition({
-                id: 'start',
-                layoutSlot: 'start',
-                titleKey: 'title_card_start_title',
-                descriptionKey: null,
-                actionType: 'scene',
-                actionKey: 'gameStart',
-                overlayClass: null,
-                placeholder: false
-            }),
-            this._createCardDefinition({
-                id: 'quick_start',
-                layoutSlot: 'quick_start',
-                titleKey: 'title_card_quick_start_title',
-                descriptionKey: 'title_card_quick_start_desc',
-                actionType: 'overlay',
-                actionKey: 'quickStart',
-                overlayClass: QuickStartOverlay,
-                placeholder: true
-            }),
-            this._createCardDefinition({
-                id: 'records',
-                layoutSlot: 'records',
-                titleKey: 'title_card_records_title',
-                descriptionKey: null,
-                actionType: 'overlay',
-                actionKey: 'records',
-                overlayClass: RecordsOverlay,
-                placeholder: true
-            }),
-            this._createCardDefinition({
-                id: 'deck',
-                layoutSlot: 'deck',
-                titleKey: 'title_card_deck_title',
-                descriptionKey: 'title_card_deck_desc',
-                actionType: 'overlay',
-                actionKey: 'deck',
-                overlayClass: DeckOverlay,
-                placeholder: false
-            }),
-            this._createCardDefinition({
-                id: 'research',
-                layoutSlot: 'research',
-                titleKey: 'title_card_research_title',
-                descriptionKey: 'title_card_research_desc',
-                actionType: 'overlay',
-                actionKey: 'research',
-                overlayClass: ResearchOverlay,
-                placeholder: true
-            })
-        ]);
+        return Object.freeze(TITLE_MENU_CARD_DEFINITIONS.map((cardDefinition) => {
+            return this._createCardDefinition({
+                ...cardDefinition,
+                overlayClass: this._getOverlayClass(cardDefinition.actionKey)
+            });
+        }));
     }
 
     /**
@@ -122,5 +78,26 @@ export class TitleMenuCardRegistry {
             overlayClass: cardDefinition.overlayClass || null,
             placeholder: cardDefinition.placeholder === true
         });
+    }
+
+    /**
+     * 카드 액션 키에 연결된 overlay 클래스를 반환합니다.
+     * @param {string} actionKey - 카드 액션 키입니다.
+     * @returns {Function|null} 연결된 overlay 클래스입니다.
+     * @private
+     */
+    _getOverlayClass(actionKey) {
+        switch (actionKey) {
+            case 'quickStart':
+                return QuickStartOverlay;
+            case 'records':
+                return RecordsOverlay;
+            case 'deck':
+                return DeckOverlay;
+            case 'research':
+                return ResearchOverlay;
+            default:
+                return null;
+        }
     }
 }

@@ -32,13 +32,6 @@ function getMenuIconColors() {
 }
 
 /**
- * 템플릿 문자열에 실제 색상을 주입해 SVG 소스를 만듭니다.
- * @param {string} template - 색상 토큰이 포함된 SVG 템플릿
- * @param {string} fill - 아이콘 메인 채움 색상
- * @param {string} shadow - 아이콘 그림자 색상
- * @returns {string} 색상 치환이 완료된 SVG 문자열
- */
-/**
  * 색상 치환된 메뉴 아이콘 소스를 반환합니다.
  * @param {string} iconId - 메뉴 식별자입니다.
  * @returns {string|null} SVG 문자열 또는 null입니다.
