@@ -1,5 +1,4 @@
-import { lerpNumber } from 'overlay/_panel_effect_math.js';
-import { clampNumber } from './_title_menu_motion.js';
+import { clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.js';
 import {
     getTitleMenuTextPresetFont,
     getTitleMenuTextPresetFontSize
@@ -202,7 +201,8 @@ export class TitleMenuVersionLabelRenderer {
      * @private
      */
     #normalizeUiScale(uiScale) {
-        return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
+        const safeUiScale = resolveFiniteNumber(uiScale, 1);
+        return safeUiScale > 0 ? safeUiScale : 1;
     }
 
     /**

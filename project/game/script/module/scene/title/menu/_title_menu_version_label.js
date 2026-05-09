@@ -1,4 +1,5 @@
 import { getLangString } from 'ui/ui_system.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 /**
  * 전역 상수에 정의된 게임 버전 문자열을 표시 형식으로 반환합니다.
@@ -188,5 +189,6 @@ export function resolveTitleMenuVersionLabelSafeArea({
  * @returns {number} 정규화된 UI 스케일 배율입니다.
  */
 function _normalizeTitleMenuUiScale(uiScale) {
-    return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
+    const safeUiScale = resolveFiniteNumber(uiScale, 1);
+    return safeUiScale > 0 ? safeUiScale : 1;
 }
