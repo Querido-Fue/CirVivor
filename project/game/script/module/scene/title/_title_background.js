@@ -1,5 +1,6 @@
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
+import { clampNumber } from 'util/number_util.js';
 import { getData } from 'data/data_handler.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { titleAI } from 'object/enemy/ai/_title_ai.js';
@@ -217,7 +218,7 @@ export class TitleBackGround {
             }
             const layerIndex = Array.isArray(TITLE_PARALLAX_LAYERS) && TITLE_PARALLAX_LAYERS.length > 0
                 && Number.isInteger(enemy._titleParallaxLayerIndex)
-                ? Math.max(0, Math.min(TITLE_PARALLAX_LAYERS.length - 1, enemy._titleParallaxLayerIndex))
+                ? clampNumber(enemy._titleParallaxLayerIndex, 0, TITLE_PARALLAX_LAYERS.length - 1)
                 : 0;
             applyTitleParallaxVisualProfile(
                 enemy,

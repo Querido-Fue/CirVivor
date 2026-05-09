@@ -1,3 +1,5 @@
+import { clampNumber } from 'util/number_util.js';
+
 import { mixTitleEnemyColorWithBackground } from './_title_background_theme.js';
 
 /**
@@ -77,7 +79,7 @@ export function getTitleParallaxLayerProfile(parallaxLayers, layerIndex, titleEn
     }
 
     const resolvedIndex = Number.isInteger(layerIndex)
-        ? Math.max(0, Math.min(parallaxLayers.length - 1, layerIndex))
+        ? clampNumber(layerIndex, 0, parallaxLayers.length - 1)
         : 0;
     return parallaxLayers[resolvedIndex];
 }
