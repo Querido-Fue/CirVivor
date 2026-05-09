@@ -30,26 +30,26 @@ export function getBentoCardPalette() {
 
     if (isDarkTheme) {
         return {
-            topFill: 'rgba(8, 11, 18, 0.84)',
-            bottomFill: 'rgba(12, 16, 24, 0.78)',
-            overlayTop: 'rgba(255, 255, 255, 0.03)',
-            overlayBottom: 'rgba(255, 255, 255, 0.01)',
-            border: 'rgba(255, 255, 255, 0.78)',
+            topFill: formatRgba(8, 11, 18, 0.84),
+            bottomFill: formatRgba(12, 16, 24, 0.78),
+            overlayTop: formatRgba(255, 255, 255, 0.03),
+            overlayBottom: formatRgba(255, 255, 255, 0.01),
+            border: formatRgba(255, 255, 255, 0.78),
             text: '#f7f9fc',
-            description: 'rgba(247, 249, 252, 0.78)',
-            shadow: 'rgba(0, 0, 0, 0.32)'
+            description: formatRgba(247, 249, 252, 0.78),
+            shadow: formatRgba(0, 0, 0, 0.32)
         };
     }
 
     return {
-        topFill: 'rgba(255, 255, 255, 0.8)',
-        bottomFill: 'rgba(244, 248, 255, 0.76)',
-        overlayTop: 'rgba(255, 255, 255, 0.12)',
-        overlayBottom: 'rgba(22, 32, 46, 0.03)',
-        border: 'rgba(32, 32, 32, 0.48)',
+        topFill: formatRgba(255, 255, 255, 0.8),
+        bottomFill: formatRgba(244, 248, 255, 0.76),
+        overlayTop: formatRgba(255, 255, 255, 0.12),
+        overlayBottom: formatRgba(22, 32, 46, 0.03),
+        border: formatRgba(32, 32, 32, 0.48),
         text: '#141821',
-        description: 'rgba(20, 24, 33, 0.78)',
-        shadow: 'rgba(16, 22, 32, 0.15)'
+        description: formatRgba(20, 24, 33, 0.78),
+        shadow: formatRgba(16, 22, 32, 0.15)
     };
 }
 
