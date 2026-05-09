@@ -19,7 +19,6 @@ import {
     HEXA_HIVE_CELL_COLLISION_RADIUS,
     HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE,
     HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
-    isCollisionEnemyPairAnchorBody,
     isCollisionPairResolveMovable,
     MERGE_PENDING_RESOLVE_WEIGHT,
     tuneCollisionResolutionMoves
@@ -29,6 +28,20 @@ import {
     hasCollisionProjectileHit,
     markCollisionProjectileHit
 } from './_collision_projectile_effect.js';
+import {
+    areCollisionBodyAabbsOverlapping,
+    areCollisionBodyBroadCirclesOverlapping,
+    shouldUseCollisionBroadCircleFilter
+} from './collision_broad_phase_filter.js';
+import {
+    getCollisionEnemyPairProcessBudget,
+    markCollisionEnemyPairProcessAttempt,
+    resetCollisionPassPairProcessCounts,
+    shouldSkipCollisionEnemyPairByBudget
+} from './collision_enemy_pair_budget.js';
+import { updateCollisionEnemySleepState } from './collision_enemy_sleep_state.js';
+import { estimateCollisionGridCellSize } from './collision_grid_cell_size.js';
+import { writeCollisionPlayerBody } from './collision_player_body_builder.js';
 import {
     createCollisionFrameStats,
     createCollisionFrameStatsSnapshot,
@@ -62,8 +75,6 @@ import { getSimulationObjectWH, getSimulationSetting } from '../simulation/simul
 const EPSILON = 1e-6;
 const CELL_KEY_OFFSET = 4096;
 const CELL_KEY_STRIDE = 8192;
-const MIN_CELL_SIZE = 20;
-const MAX_CELL_SIZE = 280;
 const DEFAULT_PHYSICS_ITERATION_COUNT = 3;
 const GRID_BUCKET_INITIAL_CAPACITY = 8;
 const PROJECTILE_SWEEP_RADIUS_STEP = 0.45;
@@ -74,9 +85,6 @@ const COLLISION_AXIS_RESISTANCE_MIN = 0.25;
 const COLLISION_AXIS_RESISTANCE_GAIN = 0.85;
 const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = 0.35;
 const COLLISION_GRID_RADIUS_SCALE = 1.03;
-const ENEMY_PAIR_PROCESS_BUDGET_POSITION = 14;
-const ENEMY_PAIR_PROCESS_BUDGET_STABILIZE = 10;
-const ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION = 8;
 const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
 const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
 const PARALLEL_NARROWPHASE_MIN_PAIR_COUNT = 512;
@@ -513,13 +521,13 @@ export class CollisionHandler {
                         const enemyId = enemyBody.id;
                         if (hasCollisionProjectileHit(projectile, enemyId)) continue;
                         this.#frameStats.collisionCheckCount++;
-                        if (!this.#bodyAabbOverlap(circleBody, enemyBody)) {
+                        if (!areCollisionBodyAabbsOverlapping(circleBody, enemyBody)) {
                             this.#frameStats.aabbRejectCount++;
                             continue;
                         }
                         this.#frameStats.aabbPassCount++;
-                        if (this.#shouldUseBroadCircleFilter(circleBody, enemyBody)) {
-                            if (!this.#bodyBroadCircleOverlap(circleBody, enemyBody)) {
+                        if (shouldUseCollisionBroadCircleFilter(circleBody, enemyBody)) {
+                            if (!areCollisionBodyBroadCirclesOverlapping(circleBody, enemyBody, EPSILON)) {
                                 this.#frameStats.circleRejectCount++;
                                 continue;
                             }
@@ -613,11 +621,14 @@ export class CollisionHandler {
                             continue;
                         }
 
-                        if (!this.#bodyAabbOverlap(bodyA, bodyB)) {
+                        if (!areCollisionBodyAabbsOverlapping(bodyA, bodyB)) {
                             continue;
                         }
 
-                        if (this.#shouldUseBroadCircleFilter(bodyA, bodyB) && !this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
+                        if (
+                            shouldUseCollisionBroadCircleFilter(bodyA, bodyB) &&
+                            !areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON)
+                        ) {
                             continue;
                         }
 
@@ -1410,33 +1421,6 @@ export class CollisionHandler {
     }
 
     /**
-     * grid 용도에 맞는 평균 broad radius로 셀 크기를 추정합니다.
-     * @private
-     * @param {object[]} bodies
-     * @param {'default'|'enemyPair'|'projectile'} [gridMode='default']
-     * @returns {number}
-     */
-    #estimateCellSize(bodies, gridMode = 'default') {
-        let radiusSum = 0;
-        let count = 0;
-        for (let i = 0; i < bodies.length; i++) {
-            const body = bodies[i];
-            let radius = body?.boundRadius;
-            if (gridMode === 'enemyPair' && body?.kind === 'enemy') {
-                radius = body.enemyPairBroadRadius;
-            } else if (gridMode === 'projectile' && body?.kind === 'enemy') {
-                radius = body.projectileBroadRadius;
-            }
-            if (!Number.isFinite(radius) || radius <= 0) continue;
-            radiusSum += radius;
-            count++;
-        }
-        const avgRadius = count > 0 ? (radiusSum / count) : Math.max(getSimulationObjectWH() * 0.015, 12);
-        const cell = Math.floor(avgRadius * 2.4);
-        return Math.max(MIN_CELL_SIZE, Math.min(MAX_CELL_SIZE, cell));
-    }
-
-    /**
      * @private
      */
     #resetBodyPool() {
@@ -1648,77 +1632,6 @@ export class CollisionHandler {
                 }
             }
         }
-    }
-
-    /**
-     * 현재 패스에서 적-적 narrowphase 처리에 적용할 상한을 반환합니다.
-     * @private
-     * @param {boolean} resolvePositions
-     * @param {boolean} applyNonPosition
-     * @param {number} resolveBoost
-     * @returns {number}
-     */
-    #getEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost) {
-        if (applyNonPosition) {
-            return ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION;
-        }
-        if (!resolvePositions) {
-            return Number.POSITIVE_INFINITY;
-        }
-        return resolveBoost > 1
-            ? ENEMY_PAIR_PROCESS_BUDGET_STABILIZE
-            : ENEMY_PAIR_PROCESS_BUDGET_POSITION;
-    }
-
-    /**
-     * 패스 단위 적-적 처리 카운터를 초기화합니다.
-     * @private
-     * @param {object[]} bodies
-     */
-    #resetPassPairProcessCounts(bodies) {
-        for (let i = 0; i < bodies.length; i++) {
-            if (bodies[i]) {
-                bodies[i]._passPairProcessCount = 0;
-            }
-        }
-    }
-
-    /**
-     * 과밀 적-적 후보가 현재 패스 처리 예산을 초과했는지 반환합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @param {number} budget
-     * @returns {boolean}
-     */
-    #shouldSkipEnemyPairByBudget(bodyA, bodyB, budget) {
-        if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
-            return false;
-        }
-        if (isCollisionEnemyPairAnchorBody(bodyA, bodyB) || isCollisionEnemyPairAnchorBody(bodyB, bodyA)) {
-            return false;
-        }
-        if (!Number.isFinite(budget) || budget <= 0) {
-            return false;
-        }
-
-        const passCountA = Number.isFinite(bodyA._passPairProcessCount) ? bodyA._passPairProcessCount : 0;
-        const passCountB = Number.isFinite(bodyB._passPairProcessCount) ? bodyB._passPairProcessCount : 0;
-        return passCountA >= budget || passCountB >= budget;
-    }
-
-    /**
-     * 현재 패스에서 적-적 narrowphase 시도 횟수를 누적합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     */
-    #markEnemyPairProcessAttempt(bodyA, bodyB) {
-        if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
-            return;
-        }
-        bodyA._passPairProcessCount = (bodyA._passPairProcessCount || 0) + 1;
-        bodyB._passPairProcessCount = (bodyB._passPairProcessCount || 0) + 1;
     }
 
     /**
@@ -2024,7 +1937,7 @@ export class CollisionHandler {
      */
     #processCandidatePairs(bodies, resolvePositions, applyNonPosition, resolveBoost) {
         let resolvedCount = 0;
-        const pairBudget = this.#getEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost);
+        const pairBudget = getCollisionEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost);
         const relationData = this.#relationBroadData;
         const kindCodes = this.#bodyKindCodes;
         const shapeCodes = this.#bodyShapeCodes;
@@ -2035,7 +1948,7 @@ export class CollisionHandler {
             resolvePositions,
             applyNonPosition
         );
-        this.#resetPassPairProcessCounts(bodies);
+        resetCollisionPassPairProcessCounts(bodies);
         for (let pairIndex = 0; pairIndex < this.#candidatePairCount; pairIndex++) {
             const low = lowIndices[pairIndex];
             const high = highIndices[pairIndex];
@@ -2047,7 +1960,7 @@ export class CollisionHandler {
                 const idB = Number.isInteger(bodyB.id) ? bodyB.id : -1;
                 if (idA >= 0 && idA === idB) continue;
 
-                if (this.#shouldSkipEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
+                if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
                     this.#recordProfileCount('solveBudgetSkipCount');
                     continue;
                 }
@@ -2089,8 +2002,7 @@ export class CollisionHandler {
                     this.#recordProfileCount('solveCirclePassCount');
                 }
 
-                bodyA._passPairProcessCount = (bodyA._passPairProcessCount || 0) + 1;
-                bodyB._passPairProcessCount = (bodyB._passPairProcessCount || 0) + 1;
+                markCollisionEnemyPairProcessAttempt(bodyA, bodyB);
 
                 const narrowphaseStart = this.#startProfileTimer();
                 let pairResolved = 0;
@@ -2141,20 +2053,20 @@ export class CollisionHandler {
             const rule = this.#getPassRule(bodyA, bodyB, applyNonPosition);
             if (!rule) continue;
 
-            if (this.#shouldSkipEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
+            if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
                 this.#recordProfileCount('solveBudgetSkipCount');
                 continue;
             }
 
             this.#frameStats.collisionCheckCount++;
-            if (!this.#bodyAabbOverlap(bodyA, bodyB)) {
+            if (!areCollisionBodyAabbsOverlapping(bodyA, bodyB)) {
                 this.#frameStats.aabbRejectCount++;
                 continue;
             }
             this.#frameStats.aabbPassCount++;
             this.#recordProfileCount('solveAabbPassCount');
-            if (this.#shouldUseBroadCircleFilter(bodyA, bodyB)) {
-                if (!this.#bodyBroadCircleOverlap(bodyA, bodyB)) {
+            if (shouldUseCollisionBroadCircleFilter(bodyA, bodyB)) {
+                if (!areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON)) {
                     this.#frameStats.circleRejectCount++;
                     continue;
                 }
@@ -2162,7 +2074,7 @@ export class CollisionHandler {
                 this.#recordProfileCount('solveCirclePassCount');
             }
 
-            this.#markEnemyPairProcessAttempt(bodyA, bodyB);
+            markCollisionEnemyPairProcessAttempt(bodyA, bodyB);
 
             const narrowphaseStart = this.#startProfileTimer();
             const pairResolved = this.#processPair(
@@ -2285,7 +2197,7 @@ export class CollisionHandler {
             this.#writeBroadData(i, bodies[i], gridMode);
         }
 
-        const cellSize = this.#estimateCellSize(bodies, gridMode);
+        const cellSize = estimateCollisionGridCellSize(bodies, gridMode);
         this.#clearGrid();
         for (let i = 0; i < bodies.length; i++) {
             this.#insertBodyToGridSoA(i, cellSize);
@@ -2434,124 +2346,6 @@ export class CollisionHandler {
     }
 
     /**
-     * 관계별 원형 충돌 반경에 맞춘 AABB 중첩 여부를 반환합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {boolean}
-     */
-    #bodyAabbOverlap(bodyA, bodyB) {
-        if (!bodyA || !bodyB) return false;
-
-        let minAX = bodyA.minX;
-        let maxAX = bodyA.maxX;
-        let minAY = bodyA.minY;
-        let maxAY = bodyA.maxY;
-        let minBX = bodyB.minX;
-        let maxBX = bodyB.maxX;
-        let minBY = bodyB.minY;
-        let maxBY = bodyB.maxY;
-
-        if (bodyA.kind === 'enemy' && bodyB.kind === 'enemy') {
-            minAX = Number.isFinite(bodyA.enemyPairMinX) ? bodyA.enemyPairMinX : minAX;
-            maxAX = Number.isFinite(bodyA.enemyPairMaxX) ? bodyA.enemyPairMaxX : maxAX;
-            minAY = Number.isFinite(bodyA.enemyPairMinY) ? bodyA.enemyPairMinY : minAY;
-            maxAY = Number.isFinite(bodyA.enemyPairMaxY) ? bodyA.enemyPairMaxY : maxAY;
-            minBX = Number.isFinite(bodyB.enemyPairMinX) ? bodyB.enemyPairMinX : minBX;
-            maxBX = Number.isFinite(bodyB.enemyPairMaxX) ? bodyB.enemyPairMaxX : maxBX;
-            minBY = Number.isFinite(bodyB.enemyPairMinY) ? bodyB.enemyPairMinY : minBY;
-            maxBY = Number.isFinite(bodyB.enemyPairMaxY) ? bodyB.enemyPairMaxY : maxBY;
-        } else if (bodyA.kind === 'enemy' && bodyB.kind === 'projectile') {
-            minAX = Number.isFinite(bodyA.projectileMinX) ? bodyA.projectileMinX : minAX;
-            maxAX = Number.isFinite(bodyA.projectileMaxX) ? bodyA.projectileMaxX : maxAX;
-            minAY = Number.isFinite(bodyA.projectileMinY) ? bodyA.projectileMinY : minAY;
-            maxAY = Number.isFinite(bodyA.projectileMaxY) ? bodyA.projectileMaxY : maxAY;
-        } else if (bodyA.kind === 'projectile' && bodyB.kind === 'enemy') {
-            minBX = Number.isFinite(bodyB.projectileMinX) ? bodyB.projectileMinX : minBX;
-            maxBX = Number.isFinite(bodyB.projectileMaxX) ? bodyB.projectileMaxX : maxBX;
-            minBY = Number.isFinite(bodyB.projectileMinY) ? bodyB.projectileMinY : minBY;
-            maxBY = Number.isFinite(bodyB.projectileMaxY) ? bodyB.projectileMaxY : maxBY;
-        }
-
-        return (
-            minAX <= maxBX &&
-            maxAX >= minBX &&
-            minAY <= maxBY &&
-            maxAY >= minBY
-        );
-    }
-
-    /**
-     * broad circle 필터가 narrowphase와 다른 의미를 갖는 쌍인지 반환합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {boolean}
-     */
-    #shouldUseBroadCircleFilter(bodyA, bodyB) {
-        return bodyA?.shape !== 'circle' || bodyB?.shape !== 'circle';
-    }
-
-    /**
-     * 관계별 union circle의 중첩 여부를 반환합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {boolean}
-     */
-    #bodyBroadCircleOverlap(bodyA, bodyB) {
-        const ax = Number.isFinite(bodyA?.centerX) ? bodyA.centerX : bodyA?.x;
-        const ay = Number.isFinite(bodyA?.centerY) ? bodyA.centerY : bodyA?.y;
-        const bx = Number.isFinite(bodyB?.centerX) ? bodyB.centerX : bodyB?.x;
-        const by = Number.isFinite(bodyB?.centerY) ? bodyB.centerY : bodyB?.y;
-        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) {
-            return true;
-        }
-
-        const ra = this.#getBodyRelationBroadRadius(bodyA, bodyB);
-        const rb = this.#getBodyRelationBroadRadius(bodyB, bodyA);
-        if (!Number.isFinite(ra) || !Number.isFinite(rb) || ra <= 0 || rb <= 0) {
-            return true;
-        }
-
-        const radiusSum = ra + rb + EPSILON;
-        const dx = bx - ax;
-        const dy = by - ay;
-        return ((dx * dx) + (dy * dy)) <= (radiusSum * radiusSum);
-    }
-
-    /**
-     * 관계별 broad-phase 반경을 반환합니다.
-     * @private
-     * @param {object} body
-     * @param {object} otherBody
-     * @returns {number}
-     */
-    #getBodyRelationBroadRadius(body, otherBody) {
-        if (!body) return 0;
-        if (body.kind === 'enemy' && otherBody?.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius)) {
-            return body.enemyPairBroadRadius;
-        }
-        if (body.kind === 'enemy' && otherBody?.kind === 'projectile' && Number.isFinite(body.projectileBroadRadius)) {
-            return body.projectileBroadRadius;
-        }
-        if (body.shape === 'circle') {
-            return Number.isFinite(body.radius) ? body.radius : 0;
-        }
-        if (Number.isFinite(body.broadRadius)) {
-            return body.broadRadius;
-        }
-        if (Number.isFinite(body.boundRadius)) {
-            return body.boundRadius;
-        }
-        const minX = Number.isFinite(body.minX) ? body.minX : 0;
-        const maxX = Number.isFinite(body.maxX) ? body.maxX : 0;
-        const minY = Number.isFinite(body.minY) ? body.minY : 0;
-        const maxY = Number.isFinite(body.maxY) ? body.maxY : 0;
-        return Math.hypot((maxX - minX) * 0.5, (maxY - minY) * 0.5);
-    }
-
-    /**
      * body 이동량을 현재 broad-phase SoA 버퍼에 반영합니다.
      * @private
      * @param {object} body
@@ -2680,16 +2474,10 @@ export class CollisionHandler {
             const enemy = enemies[i];
             if (!enemy || enemy.active === false) continue;
 
-            const prevX = Number.isFinite(enemy.__collisionPrevX) ? enemy.__collisionPrevX : enemy.position.x;
-            const prevY = Number.isFinite(enemy.__collisionPrevY) ? enemy.__collisionPrevY : enemy.position.y;
-            const speedX = (enemy.position.x - prevX) / Math.max(EPSILON, delta);
-            const speedY = (enemy.position.y - prevY) / Math.max(EPSILON, delta);
-            const speedSq = (speedX * speedX) + (speedY * speedY);
-            const sleepTicks = Number.isFinite(enemy.__collisionSleepTicks) ? enemy.__collisionSleepTicks : 0;
-            const sleeping = sleepTicks > 0 && speedSq <= COLLISION_SLEEP_SPEED_SQ;
-            if (sleeping) {
-                enemy.__collisionSleepTicks = sleepTicks - 1;
-            }
+            const sleeping = updateCollisionEnemySleepState(enemy, delta, {
+                epsilon: EPSILON,
+                sleepSpeedSq: COLLISION_SLEEP_SPEED_SQ
+            });
 
             const body = this.#buildEnemyBody(enemy, delta, sleeping);
             if (body) bodies.push(body);
@@ -2709,67 +2497,14 @@ export class CollisionHandler {
             const radius = Number.isFinite(player.radius) ? player.radius : 0;
             if (radius <= 0) continue;
 
-            const x = Number.isFinite(player.position?.x) ? player.position.x : 0;
-            const y = Number.isFinite(player.position?.y) ? player.position.y : 0;
-            const prevX = Number.isFinite(player.prevPosition?.x)
-                ? player.prevPosition.x
-                : (x - ((Number.isFinite(player.speed?.x) ? player.speed.x : 0) * delta));
-            const prevY = Number.isFinite(player.prevPosition?.y)
-                ? player.prevPosition.y
-                : (y - ((Number.isFinite(player.speed?.y) ? player.speed.y : 0) * delta));
-            const invDelta = 1 / Math.max(EPSILON, delta);
-            const velX = (x - prevX) * invDelta;
-            const velY = (y - prevY) * invDelta;
-            const frameResolvePad = Math.max(
-                COLLISION_RESOLVE_FRAME_MIN_MAX,
-                radius * COLLISION_RESOLVE_FRAME_MAX_RATIO
-            );
-            const sweepPadX = (Math.abs(velX) * delta) + frameResolvePad;
-            const sweepPadY = (Math.abs(velY) * delta) + frameResolvePad;
-
             const body = this.#acquireBody();
-            body.id = Number.isInteger(player.id) ? player.id : -1;
-            body.kind = 'player';
-            body.shape = 'circle';
-            body.x = x;
-            body.y = y;
-            body.centerX = x;
-            body.centerY = y;
-            body.radius = radius;
-            body.ref = player;
-            body.weight = Math.max(EPSILON, Number.isFinite(player.weight) ? player.weight : 1);
-            body.movable = true;
-            body.circleParts = null;
-            body.circlePartCount = 0;
-            body.mergeLock = false;
-            body.minX = x - radius;
-            body.maxX = x + radius;
-            body.minY = y - radius;
-            body.maxY = y + radius;
-            body.enemyPairMinX = body.minX;
-            body.enemyPairMaxX = body.maxX;
-            body.enemyPairMinY = body.minY;
-            body.enemyPairMaxY = body.maxY;
-            body.projectileMinX = body.minX;
-            body.projectileMaxX = body.maxX;
-            body.projectileMinY = body.minY;
-            body.projectileMaxY = body.maxY;
-            body.sweepMinX = x - radius - sweepPadX;
-            body.sweepMaxX = x + radius + sweepPadX;
-            body.sweepMinY = y - radius - sweepPadY;
-            body.sweepMaxY = y + radius + sweepPadY;
-            body.boundRadius = radius;
-            body.broadRadius = radius;
-            body.enemyPairBroadRadius = radius;
-            body.projectileBroadRadius = radius;
-            body.velocityX = velX;
-            body.velocityY = velY;
-            body._candidatePairCount = 0;
-            body._resolvedPairCount = 0;
-            body._passPairProcessCount = 0;
-            body._frameResolveMoved = 0;
-            body._frameResolveMax = frameResolvePad;
-            bodies.push(body);
+            if (writeCollisionPlayerBody(body, player, delta, {
+                epsilon: EPSILON,
+                frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,
+                frameResolveMaxRatio: COLLISION_RESOLVE_FRAME_MAX_RATIO
+            })) {
+                bodies.push(body);
+            }
         }
         return bodies;
     }

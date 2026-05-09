@@ -145,6 +145,11 @@ function normalizeEnemySummary(enemy) {
         navigationRadiusPx: normalizeNumber(enemy.navigationRadiusPx, 0),
         navigationHalfWidthPx: normalizeNumber(enemy.navigationHalfWidthPx, 0),
         navigationHalfHeightPx: normalizeNumber(enemy.navigationHalfHeightPx, 0),
+        rotation: normalizeNumber(enemy.rotation, 0),
+        angularVelocity: normalizeNumber(enemy.angularVelocity, 0),
+        angularDeceleration: normalizeNumber(enemy.angularDeceleration, 0),
+        navigationAxisLocalDeg: normalizeNumber(enemy.navigationAxisLocalDeg, 0),
+        navigationAxisAnisotropy: normalizeNumber(enemy.navigationAxisAnisotropy, 0),
         shouldUpdateDecision: enemy.shouldUpdateDecision === true,
         enemyAIState: cloneEnemyAIStateForTransfer(enemy.enemyAIState)
     };
@@ -167,6 +172,11 @@ function createEnemyAIActor(summary) {
         navigationRadiusPx: normalizeNumber(summary.navigationRadiusPx, 0),
         navigationHalfWidthPx: normalizeNumber(summary.navigationHalfWidthPx, 0),
         navigationHalfHeightPx: normalizeNumber(summary.navigationHalfHeightPx, 0),
+        rotation: normalizeNumber(summary.rotation, 0),
+        angularVelocity: normalizeNumber(summary.angularVelocity, 0),
+        angularDeceleration: normalizeNumber(summary.angularDeceleration, 0),
+        navigationAxisLocalDeg: normalizeNumber(summary.navigationAxisLocalDeg, 0),
+        navigationAxisAnisotropy: normalizeNumber(summary.navigationAxisAnisotropy, 0),
         _enemyAIState: cloneEnemyAIStateForTransfer(summary.enemyAIState),
         setAcc(x, y) {
             this.acc.x = normalizeNumber(x, 0);
@@ -360,6 +370,9 @@ function computeEnemyAIBatch(message) {
             id: actor.id,
             acc: clonePoint(actor.acc),
             accSpeed: normalizeNumber(actor.accSpeed, 0),
+            rotation: normalizeNumber(actor.rotation, 0),
+            angularVelocity: normalizeNumber(actor.angularVelocity, 0),
+            angularDeceleration: normalizeNumber(actor.angularDeceleration, 0),
             enemyAIState: cloneEnemyAIStateForTransfer(actor._enemyAIState)
         };
         if (sharedWriteState) {

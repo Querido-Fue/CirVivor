@@ -62,10 +62,13 @@ const ENEMY_AI_SHARED_RESULT_INDEX = Object.freeze({
     CHARGE_DURATION_REMAINING: 22,
     CHARGE_RECOVER_REMAINING: 23,
     CHARGE_TARGET_X: 24,
-    CHARGE_TARGET_Y: 25
+    CHARGE_TARGET_Y: 25,
+    ROTATION_DEG: 26,
+    ANGULAR_VELOCITY: 27,
+    ANGULAR_DECELERATION: 28
 });
 
-const ENEMY_AI_SHARED_RESULT_STRIDE = 26;
+const ENEMY_AI_SHARED_RESULT_STRIDE = 29;
 
 /**
  * 적 AI SharedArrayBuffer transport 사용 가능 여부를 반환합니다.
@@ -403,6 +406,11 @@ export function writeEnemyAISharedResult(writeState, result) {
     );
     data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.CHARGE_TARGET_X] = normalizeEnemyAISharedNumber(state?.chargeTargetX, 0);
     data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.CHARGE_TARGET_Y] = normalizeEnemyAISharedNumber(state?.chargeTargetY, 0);
+    data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.ROTATION_DEG] = normalizeEnemyAISharedNumber(result.rotation, 0);
+    data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.ANGULAR_VELOCITY] =
+        normalizeEnemyAISharedNumber(result.angularVelocity, 0);
+    data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.ANGULAR_DECELERATION] =
+        normalizeEnemyAISharedNumber(result.angularDeceleration, 0);
 
     writeState.count++;
     return true;
@@ -571,7 +579,7 @@ export function readEnemyAISharedResultState(transport, outState = null) {
  * @param {object|null|undefined} sharedState
  * @param {number} index
  * @param {object|null|undefined} [outResult=null]
- * @returns {{id: number, acc: {x: number, y: number}, accSpeed: number, enemyAIState: object}|null}
+ * @returns {{id: number, acc: {x: number, y: number}, accSpeed: number, rotation: number, angularVelocity: number, angularDeceleration: number, enemyAIState: object}|null}
  */
 export function readEnemyAISharedResultAt(sharedState, index, outResult = null) {
     if (!sharedState?.resultData || !Number.isInteger(index) || index < 0 || index >= sharedState.resultCount) {
@@ -674,6 +682,18 @@ export function readEnemyAISharedResultAt(sharedState, index, outResult = null) 
     );
     state.chargeTargetY = normalizeEnemyAISharedNumber(
         data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.CHARGE_TARGET_Y],
+        0
+    );
+    result.rotation = normalizeEnemyAISharedNumber(
+        data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.ROTATION_DEG],
+        0
+    );
+    result.angularVelocity = normalizeEnemyAISharedNumber(
+        data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.ANGULAR_VELOCITY],
+        0
+    );
+    result.angularDeceleration = normalizeEnemyAISharedNumber(
+        data[rowOffset + ENEMY_AI_SHARED_RESULT_INDEX.ANGULAR_DECELERATION],
         0
     );
 

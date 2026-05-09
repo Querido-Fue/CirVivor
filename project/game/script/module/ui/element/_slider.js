@@ -29,6 +29,7 @@ export class SliderElement extends BaseUIElement {
         super.init(properties);
         if (!properties) return;
         this.width = properties.width || 100;
+        this.height = properties.height || 0;
         this.trackHeight = properties.trackHeight || 4;
         this.knobRadius = properties.knobRadius || 2;
         this.min = properties.min !== undefined ? properties.min : 0;

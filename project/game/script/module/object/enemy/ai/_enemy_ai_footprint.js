@@ -2,6 +2,7 @@ import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_const
 
 const HEXA_HIVE_TYPE = 'hexa_hive';
 const HEXA_HIVE_NAV_CELL_RADIUS_RATIO = ENEMY_AI_CONSTANTS.HEXA_HIVE_NAV_CELL_RADIUS_RATIO;
+const AXIS_EPSILON = 1e-6;
 
 /**
  * 적의 렌더 높이를 AI 계산용 픽셀 값으로 정규화합니다.
@@ -45,6 +46,68 @@ const getHexaHiveNavigationLocalCenters = (enemy) => {
 };
 
 /**
+ * 합체 육각형 로컬 중심 분포에서 가장 긴 주축을 계산합니다.
+ * @param {object[]|null|undefined} localCenters - 합체 육각형 로컬 중심 목록입니다.
+ * @returns {{localDeg: number, anisotropy: number}} 주축 각도와 길쭉함 비율입니다.
+ */
+const resolveHexaHiveNavigationAxis = (localCenters) => {
+    if (!Array.isArray(localCenters) || localCenters.length < 2) {
+        return { localDeg: 0, anisotropy: 0 };
+    }
+
+    let meanX = 0;
+    let meanY = 0;
+    let count = 0;
+    for (let i = 0; i < localCenters.length; i++) {
+        const localCenter = localCenters[i];
+        const x = Number.isFinite(localCenter?.x) ? localCenter.x : Number.NaN;
+        const y = Number.isFinite(localCenter?.y) ? localCenter.y : Number.NaN;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            continue;
+        }
+
+        meanX += x;
+        meanY += y;
+        count++;
+    }
+    if (count < 2) {
+        return { localDeg: 0, anisotropy: 0 };
+    }
+    meanX /= count;
+    meanY /= count;
+
+    let covXX = 0;
+    let covYY = 0;
+    let covXY = 0;
+    for (let i = 0; i < localCenters.length; i++) {
+        const localCenter = localCenters[i];
+        const x = Number.isFinite(localCenter?.x) ? localCenter.x : Number.NaN;
+        const y = Number.isFinite(localCenter?.y) ? localCenter.y : Number.NaN;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            continue;
+        }
+
+        const dx = x - meanX;
+        const dy = y - meanY;
+        covXX += dx * dx;
+        covYY += dy * dy;
+        covXY += dx * dy;
+    }
+
+    const spread = covXX + covYY;
+    if (spread <= AXIS_EPSILON) {
+        return { localDeg: 0, anisotropy: 0 };
+    }
+
+    const anisotropy = Math.min(1, Math.hypot(covXX - covYY, 2 * covXY) / spread);
+    const localDeg = 0.5 * Math.atan2(2 * covXY, covXX - covYY) * (180 / Math.PI);
+    return {
+        localDeg: Number.isFinite(localDeg) ? localDeg : 0,
+        anisotropy: Number.isFinite(anisotropy) ? anisotropy : 0
+    };
+};
+
+/**
  * 양수 픽셀 값을 안전하게 읽습니다.
  * @param {number|null|undefined} value - 검사할 값입니다.
  * @returns {number} 양수 픽셀 값입니다.
@@ -58,7 +121,7 @@ export const readPositivePixelValue = (value) => (
  * @param {object|null|undefined} enemy - 검사 대상 적입니다.
  * @param {number|null} [fallbackRadius=null] - 외부에서 계산한 반경입니다.
  * @param {number|null} [fallbackRenderHeightPx=null] - 외부에서 계산한 렌더 높이입니다.
- * @returns {{baseHeight: number, baseRadius: number, halfWidth: number, halfHeight: number, radius: number}} footprint 크기입니다.
+ * @returns {{baseHeight: number, baseRadius: number, halfWidth: number, halfHeight: number, radius: number, axisLocalDeg: number, axisAnisotropy: number}} footprint 크기입니다.
  */
 export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, fallbackRenderHeightPx = null) {
     const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
@@ -74,6 +137,10 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
     let halfWidth = Math.max(baseRadius, baseHeight * aspectRatio * 0.5);
     let halfHeight = Math.max(baseRadius, baseHeight * heightScale * 0.5);
     let radius = Math.max(baseRadius, readPositivePixelValue(enemy?.navigationRadiusPx));
+    let axisLocalDeg = Number.isFinite(enemy?.navigationAxisLocalDeg) ? enemy.navigationAxisLocalDeg : 0;
+    let axisAnisotropy = Number.isFinite(enemy?.navigationAxisAnisotropy)
+        ? Math.max(0, Math.min(1, enemy.navigationAxisAnisotropy))
+        : 0;
 
     if (enemy?.type === HEXA_HIVE_TYPE) {
         const localCenters = getHexaHiveNavigationLocalCenters(enemy);
@@ -82,6 +149,9 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
             const rotationRadians = (Number.isFinite(enemy?.rotation) ? enemy.rotation : 0) * (Math.PI / 180);
             const cos = Math.cos(rotationRadians);
             const sin = Math.sin(rotationRadians);
+            const axis = resolveHexaHiveNavigationAxis(localCenters);
+            axisLocalDeg = axis.localDeg;
+            axisAnisotropy = axis.anisotropy;
 
             halfWidth = Math.max(halfWidth, cellRadius);
             halfHeight = Math.max(halfHeight, cellRadius);
@@ -108,7 +178,9 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
         baseRadius,
         halfWidth,
         halfHeight,
-        radius
+        radius,
+        axisLocalDeg,
+        axisAnisotropy
     };
 }
 

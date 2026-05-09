@@ -806,6 +806,9 @@ export class EnemyAIWorkerCoordinator {
                         y: Number.isFinite(result.acc?.y) ? result.acc.y : 0
                     },
                     accSpeed: Number.isFinite(result.accSpeed) ? result.accSpeed : 0,
+                    rotation: Number.isFinite(result.rotation) ? result.rotation : 0,
+                    angularVelocity: Number.isFinite(result.angularVelocity) ? result.angularVelocity : 0,
+                    angularDeceleration: Number.isFinite(result.angularDeceleration) ? result.angularDeceleration : 0,
                     enemyAIState: result.enemyAIState && typeof result.enemyAIState === 'object'
                         ? { ...result.enemyAIState }
                         : null
@@ -854,6 +857,9 @@ export class EnemyAIWorkerCoordinator {
                         y: Number.isFinite(result.acc?.y) ? result.acc.y : 0
                     },
                     accSpeed: Number.isFinite(result.accSpeed) ? result.accSpeed : 0,
+                    rotation: Number.isFinite(result.rotation) ? result.rotation : 0,
+                    angularVelocity: Number.isFinite(result.angularVelocity) ? result.angularVelocity : 0,
+                    angularDeceleration: Number.isFinite(result.angularDeceleration) ? result.angularDeceleration : 0,
                     enemyAIState: result.enemyAIState && typeof result.enemyAIState === 'object'
                         ? { ...result.enemyAIState }
                         : null
@@ -877,6 +883,9 @@ export class EnemyAIWorkerCoordinator {
                         }
                         : { x: 0, y: 0 },
                     accSpeed: Number.isFinite(result.accSpeed) ? result.accSpeed : 0,
+                    rotation: Number.isFinite(result.rotation) ? result.rotation : 0,
+                    angularVelocity: Number.isFinite(result.angularVelocity) ? result.angularVelocity : 0,
+                    angularDeceleration: Number.isFinite(result.angularDeceleration) ? result.angularDeceleration : 0,
                     enemyAIState: result.enemyAIState && typeof result.enemyAIState === 'object'
                         ? { ...result.enemyAIState }
                         : null

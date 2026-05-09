@@ -2,11 +2,11 @@ const ENEMY_AI_SHARED_INPUT_DEFAULT_ENEMY_CAPACITY = 16384;
 const ENEMY_AI_SHARED_INPUT_DEFAULT_WALL_CAPACITY = 2048;
 const ENEMY_AI_SHARED_INPUT_HEADER_LENGTH = 8;
 const ENEMY_AI_SHARED_INPUT_ENEMY_INT_STRIDE = 4;
-const ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_STRIDE = 9;
+const ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_STRIDE = 14;
 const ENEMY_AI_SHARED_INPUT_WALL_INT_STRIDE = 2;
 const ENEMY_AI_SHARED_INPUT_WALL_FLOAT_STRIDE = 4;
 const ENEMY_AI_SHARED_INPUT_PLAYER_FLOAT_STRIDE = 2;
-const ENEMY_AI_SHARED_INPUT_LAYOUT_VERSION = 3;
+const ENEMY_AI_SHARED_INPUT_LAYOUT_VERSION = 4;
 
 const ENEMY_AI_SHARED_INPUT_HEADER_INDEX = Object.freeze({
     LAYOUT_VERSION: 0,
@@ -35,7 +35,12 @@ const ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX = Object.freeze({
     RENDER_HEIGHT_PX: 5,
     NAVIGATION_RADIUS_PX: 6,
     NAVIGATION_HALF_WIDTH_PX: 7,
-    NAVIGATION_HALF_HEIGHT_PX: 8
+    NAVIGATION_HALF_HEIGHT_PX: 8,
+    ROTATION_DEG: 9,
+    ANGULAR_VELOCITY: 10,
+    ANGULAR_DECELERATION: 11,
+    NAVIGATION_AXIS_LOCAL_DEG: 12,
+    NAVIGATION_AXIS_ANISOTROPY: 13
 });
 
 const ENEMY_AI_SHARED_INPUT_WALL_INT_INDEX = Object.freeze({
@@ -357,6 +362,16 @@ export function writeEnemyAISharedInputSnapshot(transport, payload) {
             normalizeEnemyAISharedInputNumber(enemy?.navigationHalfWidthPx, 0);
         transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_HALF_HEIGHT_PX] =
             normalizeEnemyAISharedInputNumber(enemy?.navigationHalfHeightPx, 0);
+        transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.ROTATION_DEG] =
+            normalizeEnemyAISharedInputNumber(enemy?.rotation, 0);
+        transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.ANGULAR_VELOCITY] =
+            normalizeEnemyAISharedInputNumber(enemy?.angularVelocity, 0);
+        transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.ANGULAR_DECELERATION] =
+            normalizeEnemyAISharedInputNumber(enemy?.angularDeceleration, 0);
+        transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_AXIS_LOCAL_DEG] =
+            normalizeEnemyAISharedInputNumber(enemy?.navigationAxisLocalDeg, 0);
+        transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_AXIS_ANISOTROPY] =
+            normalizeEnemyAISharedInputNumber(enemy?.navigationAxisAnisotropy, 0);
     }
 
     for (let i = 0; i < wallCount; i++) {
@@ -559,6 +574,26 @@ function readEnemyAISharedInputEnemies(transport, enemyCount, typeTable) {
             ),
             navigationHalfHeightPx: normalizeEnemyAISharedInputNumber(
                 transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_HALF_HEIGHT_PX],
+                0
+            ),
+            rotation: normalizeEnemyAISharedInputNumber(
+                transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.ROTATION_DEG],
+                0
+            ),
+            angularVelocity: normalizeEnemyAISharedInputNumber(
+                transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.ANGULAR_VELOCITY],
+                0
+            ),
+            angularDeceleration: normalizeEnemyAISharedInputNumber(
+                transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.ANGULAR_DECELERATION],
+                0
+            ),
+            navigationAxisLocalDeg: normalizeEnemyAISharedInputNumber(
+                transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_AXIS_LOCAL_DEG],
+                0
+            ),
+            navigationAxisAnisotropy: normalizeEnemyAISharedInputNumber(
+                transport.enemyFloatData[floatOffset + ENEMY_AI_SHARED_INPUT_ENEMY_FLOAT_INDEX.NAVIGATION_AXIS_ANISOTROPY],
                 0
             ),
             shouldUpdateDecision:

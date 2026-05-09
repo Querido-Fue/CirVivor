@@ -54,15 +54,13 @@ export class UICursor {
     }
 
     /**
-         * 해상도 변경 시 커서 내부 원 크기 등의 배율을 새 WH 기준으로 재계산합니다.
-         */
+     * 해상도 변경 시 커서 내부 원 크기 등의 배율을 새 WH 기준으로 재계산합니다.
+     */
     resize() {
-        const prevWH = this.WH || 1;
         this.WW = getWW();
         this.WH = getWH();
-        const ratio = this.WH / Math.max(1, prevWH);
         this.#defaultSubCircleRadius = this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_RADIUS_WH_RATIO;
-        this._subCircleRadius = Math.max(0, this._subCircleRadius * ratio);
+        this.#syncNormalCursorSizeForResolution();
     }
 
     /**
@@ -226,6 +224,35 @@ export class UICursor {
         if (!nextVisible) {
             this.#clearCursorLayer();
         }
+    }
+
+    /**
+     * 해상도 변경 직후 남아 있는 커서 애니메이션 값을 새 기준 크기에 맞춥니다.
+     * @private
+     */
+    #syncNormalCursorSizeForResolution() {
+        remove(this.#normalRadiusAnimId);
+        remove(this.#normalAlphaAnimId);
+        this.#normalRadiusAnimId = -1;
+        this.#normalAlphaAnimId = -1;
+
+        if (this.#type !== 'normal') {
+            return;
+        }
+
+        const isClicking = this.#clicking === true || isMousePressing('left');
+        this._subCircleRadius = this.#defaultSubCircleRadius * (
+            isClicking
+                ? NORMAL_CURSOR_CONSTANTS.CLICK_RADIUS_MULTIPLIER
+                : 1
+        );
+        this._subCircleAlpha = this.#defaultSubCircleAlpha * (
+            isClicking
+                ? NORMAL_CURSOR_CONSTANTS.CLICK_ALPHA_MULTIPLIER
+                : 1
+        );
+        this.#normalAnimTime = isClicking ? this.#normalAnimDuration : 0;
+        this.#clicking = isClicking;
     }
 
     /**

@@ -458,6 +458,13 @@ function createShadowEnemyAIWorkerEnemySummary(enemy, shouldUpdateDecision) {
         navigationRadiusPx: footprintMetrics.radius,
         navigationHalfWidthPx: footprintMetrics.halfWidth,
         navigationHalfHeightPx: footprintMetrics.halfHeight,
+        navigationAxisLocalDeg: Number.isFinite(footprintMetrics.axisLocalDeg) ? footprintMetrics.axisLocalDeg : 0,
+        navigationAxisAnisotropy: Number.isFinite(footprintMetrics.axisAnisotropy)
+            ? footprintMetrics.axisAnisotropy
+            : 0,
+        rotation: Number.isFinite(enemy.rotation) ? enemy.rotation : 0,
+        angularVelocity: Number.isFinite(enemy.angularVelocity) ? enemy.angularVelocity : 0,
+        angularDeceleration: Number.isFinite(enemy.angularDeceleration) ? enemy.angularDeceleration : 0,
         shouldUpdateDecision: shouldUpdateDecision === true,
         enemyAIState: cloneEnemyAIStateForWorkerTransfer(metadata.enemyAIState)
     };
@@ -480,6 +487,15 @@ function applyRemoteEnemyAIResult(enemy, simulationActor, result) {
     enemy.acc.x = accX;
     enemy.acc.y = accY;
     enemy.accSpeed = Number.isFinite(result.accSpeed) ? result.accSpeed : enemy.accSpeed;
+    if (Number.isFinite(result.rotation)) {
+        enemy.rotation = result.rotation;
+    }
+    if (Number.isFinite(result.angularVelocity)) {
+        enemy.angularVelocity = result.angularVelocity;
+    }
+    if (Number.isFinite(result.angularDeceleration)) {
+        enemy.angularDeceleration = result.angularDeceleration;
+    }
     if (actor && result.enemyAIState && typeof result.enemyAIState === 'object') {
         actor._enemyAIState = cloneEnemyAIStateForWorkerTransfer(result.enemyAIState);
     }

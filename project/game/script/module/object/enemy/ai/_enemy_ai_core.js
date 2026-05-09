@@ -7,6 +7,7 @@ import {
     updatePolicyIntent
 } from './_enemy_ai_policy_intent.js';
 import { resolveEnemyAISteeringDirection } from './_enemy_ai_steering.js';
+import { applyEnemyAIRotationIntent } from './_enemy_ai_rotation.js';
 import {
     applyEnemyAISteeringResult,
     ensureEnemyAIUpdateFrame,
@@ -279,6 +280,7 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     });
 
     applyEnemyAISteeringResult(enemy, state, scratchDir);
+    applyEnemyAIRotationIntent(enemy, state, scratchDir, updateFrame.footprintMetrics, profile);
 
     if (profileStartTime >= 0) {
         const durationMs = performance.now() - profileStartTime;
