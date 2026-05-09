@@ -1,3 +1,5 @@
+import { clampNumber } from './_title_menu_motion.js';
+
 /**
  * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 계산합니다.
  * @param {object} options - pane 레이아웃 계산 옵션입니다.
@@ -213,7 +215,7 @@ function _resolveTitleMenuPaneGroupVerticalShift({
         return ((wh - (groupBottom - groupTop)) * 0.5) - groupTop;
     }
 
-    return Math.max(minShiftY, Math.min(maxShiftY, preferredShiftY));
+    return clampNumber(preferredShiftY, minShiftY, maxShiftY);
 }
 
 /**
