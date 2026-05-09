@@ -89,6 +89,26 @@ function collectObjectSystemHexaHiveReleaseIndices(enemies, releaseIds) {
 }
 
 /**
+ * 합체 적 스폰 데이터를 순서대로 생성하고 성공한 수를 반환합니다.
+ * @param {object[]} spawnDataList - 합체 적 스폰 데이터 목록입니다.
+ * @param {(type: string, data: object) => object|null} spawnEnemy - 적 생성 콜백입니다.
+ * @returns {number} 생성에 성공한 합체 적 수입니다.
+ */
+function spawnObjectSystemHexaHives(spawnDataList, spawnEnemy) {
+    let mergedCount = 0;
+    for (let i = 0; i < spawnDataList.length; i++) {
+        const hexaHive = spawnEnemy(HEXA_HIVE_TYPE, spawnDataList[i]);
+        if (!hexaHive) {
+            continue;
+        }
+
+        mergedCount++;
+    }
+
+    return mergedCount;
+}
+
+/**
  * 누적 접촉 시간을 기준으로 육각형 그룹 합체를 수행합니다.
  * @param {object} options - 합체 처리 옵션입니다.
  * @param {object[]} options.enemies - 현재 적 목록입니다.
@@ -129,15 +149,5 @@ export function resolveObjectSystemHexaHiveMerges(options) {
         releaseEnemyAt(releaseIndices[i]);
     }
 
-    let mergedCount = 0;
-    for (let i = 0; i < mergePlan.spawnDataList.length; i++) {
-        const hexaHive = spawnEnemy(HEXA_HIVE_TYPE, mergePlan.spawnDataList[i]);
-        if (!hexaHive) {
-            continue;
-        }
-
-        mergedCount++;
-    }
-
-    return mergedCount;
+    return spawnObjectSystemHexaHives(mergePlan.spawnDataList, spawnEnemy);
 }
