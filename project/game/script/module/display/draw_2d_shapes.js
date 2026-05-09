@@ -1,3 +1,5 @@
+import { clampNumber } from 'util/number_util.js';
+
 /**
  * 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
@@ -134,7 +136,8 @@ export function normalizeDrawRadius(radius, width, height) {
         return 0;
     }
 
-    return Math.max(0, Math.min(resolvedRadius, Math.max(0, Math.min(width, height) * 0.5)));
+    const maxRadius = clampNumber(Math.min(width, height) * 0.5, 0, Number.POSITIVE_INFINITY);
+    return clampNumber(resolvedRadius, 0, maxRadius);
 }
 
 /**
