@@ -1,4 +1,8 @@
-export const korean = {
+/**
+ * 한국어 UI 문자열 리소스입니다.
+ * @type {Readonly<Record<string, string|boolean>>}
+ */
+export const korean = Object.freeze({
     // 일반
     "language_name": "한국어",
     "hidden": false,
@@ -80,4 +84,4 @@ export const korean = {
     "title_deck_encyclopedia": "도감",
     "title_deck_progress": "진행률",
     "title_deck_close": "닫기"
-};
+});

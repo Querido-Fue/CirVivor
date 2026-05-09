@@ -1,4 +1,8 @@
-export const userLanguage = {
+/**
+ * 사용자 번역용 UI 문자열 리소스입니다.
+ * @type {Readonly<Record<string, string|boolean>>}
+ */
+export const userLanguage = Object.freeze({
     // 공통
     "language_name": "User Language",
     "hidden": true, // 번역 완료 후 false로 변경
@@ -66,4 +70,4 @@ export const userLanguage = {
     "title_deck_encyclopedia": "",
     "title_deck_progress": "",
     "title_deck_close": ""
-};
+});

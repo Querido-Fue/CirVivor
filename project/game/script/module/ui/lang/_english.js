@@ -1,4 +1,8 @@
-export const english = {
+/**
+ * 영어 UI 문자열 리소스입니다.
+ * @type {Readonly<Record<string, string|boolean>>}
+ */
+export const english = Object.freeze({
     // 공통
     "language_name": "English",
     "hidden": false,
@@ -80,4 +84,4 @@ export const english = {
     "title_deck_encyclopedia": "Encyclopedia",
     "title_deck_progress": "Progress",
     "title_deck_close": "Close"
-};
+});
