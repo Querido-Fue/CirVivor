@@ -1,16 +1,8 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { clampNumber } from 'util/number_util.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 
 const INF = ENEMY_AI_CONSTANTS.INF;
-
-/**
- * 값을 지정 범위로 제한합니다.
- * @param {number} value - 원본 값입니다.
- * @param {number} min - 최솟값입니다.
- * @param {number} max - 최댓값입니다.
- * @returns {number} 제한된 값입니다.
- */
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 /**
  * 적 목록에서 공유 밀도 필드를 생성합니다.
@@ -41,8 +33,8 @@ const buildDensityField = (enemies, width, height, filterType, profile) => {
             continue;
         }
 
-        const cx = clamp(Math.floor(enemy.position.x / densityCellSize), 0, cols - 1);
-        const cy = clamp(Math.floor(enemy.position.y / densityCellSize), 0, rows - 1);
+        const cx = clampNumber(Math.floor(enemy.position.x / densityCellSize), 0, cols - 1);
+        const cy = clampNumber(Math.floor(enemy.position.y / densityCellSize), 0, rows - 1);
         const index = (cy * cols) + cx;
         counts[index] = Math.min(65535, counts[index] + 1);
     }
@@ -95,8 +87,8 @@ const findDensityGoalInto = (densityField, startX, startY, searchRadiusCells, mi
         return null;
     }
 
-    const originCx = clamp(Math.floor(startX / densityField.cellSize), 0, densityField.cols - 1);
-    const originCy = clamp(Math.floor(startY / densityField.cellSize), 0, densityField.rows - 1);
+    const originCx = clampNumber(Math.floor(startX / densityField.cellSize), 0, densityField.cols - 1);
+    const originCy = clampNumber(Math.floor(startY / densityField.cellSize), 0, densityField.rows - 1);
     const radius = Math.max(1, Math.floor(searchRadiusCells));
 
     let bestScore = -INF;
@@ -139,8 +131,8 @@ export const getDensityCountAtPosition = (densityField, x, y) => {
         return 0;
     }
 
-    const cx = clamp(Math.floor(x / densityField.cellSize), 0, densityField.cols - 1);
-    const cy = clamp(Math.floor(y / densityField.cellSize), 0, densityField.rows - 1);
+    const cx = clampNumber(Math.floor(x / densityField.cellSize), 0, densityField.cols - 1);
+    const cy = clampNumber(Math.floor(y / densityField.cellSize), 0, densityField.rows - 1);
     const index = (cy * densityField.cols) + cx;
     return Number.isFinite(densityField.counts[index]) ? densityField.counts[index] : 0;
 };

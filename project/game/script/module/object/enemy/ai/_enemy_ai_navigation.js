@@ -1,4 +1,5 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { clampNumber } from 'util/number_util.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
@@ -22,15 +23,6 @@ let navGridCacheKey = '';
 const flowFieldCache = new Map();
 const flowFieldScratchGoalCellRaw = { cx: 0, cy: 0 };
 const flowFieldScratchGoalCell = { cx: 0, cy: 0 };
-
-/**
- * 값을 지정 범위로 제한합니다.
- * @param {number} value - 원본 값입니다.
- * @param {number} min - 최솟값입니다.
- * @param {number} max - 최댓값입니다.
- * @returns {number} 제한된 값입니다.
- */
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 /**
  * 직선 추적 판정에 사용할 벽 확장 반경을 반환합니다.
@@ -236,10 +228,10 @@ const buildNavGrid = (walls, width, height, cellSize, clearance) => {
             const rect = getRectBounds(walls[i]);
             if (!rect) continue;
             const expanded = expandRect(rect, clearance);
-            const minCx = clamp(Math.floor(expanded.minX / cellSize), 0, cols - 1);
-            const maxCx = clamp(Math.floor(expanded.maxX / cellSize), 0, cols - 1);
-            const minCy = clamp(Math.floor(expanded.minY / cellSize), 0, rows - 1);
-            const maxCy = clamp(Math.floor(expanded.maxY / cellSize), 0, rows - 1);
+            const minCx = clampNumber(Math.floor(expanded.minX / cellSize), 0, cols - 1);
+            const maxCx = clampNumber(Math.floor(expanded.maxX / cellSize), 0, cols - 1);
+            const minCy = clampNumber(Math.floor(expanded.minY / cellSize), 0, rows - 1);
+            const maxCy = clampNumber(Math.floor(expanded.maxY / cellSize), 0, rows - 1);
 
             for (let cy = minCy; cy <= maxCy; cy++) {
                 const rowOffset = cy * cols;
@@ -284,8 +276,8 @@ export const getNavGrid = (walls, width, height, profile, clearanceRaw) => {
  * @returns {{cx: number, cy: number}} 출력 버퍼입니다.
  */
 export const worldToCellInto = (x, y, grid, out) => {
-    out.cx = clamp(Math.floor(x / grid.cellSize), 0, grid.cols - 1);
-    out.cy = clamp(Math.floor(y / grid.cellSize), 0, grid.rows - 1);
+    out.cx = clampNumber(Math.floor(x / grid.cellSize), 0, grid.cols - 1);
+    out.cy = clampNumber(Math.floor(y / grid.cellSize), 0, grid.rows - 1);
     return out;
 };
 

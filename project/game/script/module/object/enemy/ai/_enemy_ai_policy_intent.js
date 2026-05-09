@@ -1,5 +1,6 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
+import { clampNumber } from 'util/number_util.js';
 import {
     resolveEnemyAIFootprintPathClearancePx,
     projectEnemyAIFootprintRadiusForDirection,
@@ -33,15 +34,6 @@ const HEXA_HIVE_TYPE = 'hexa_hive';
  * @returns {number} 벡터 길이입니다.
  */
 const length = (x, y) => Math.hypot(x, y);
-
-/**
- * 값을 지정 범위로 제한합니다.
- * @param {number} value - 원본 값입니다.
- * @param {number} min - 최솟값입니다.
- * @param {number} max - 최댓값입니다.
- * @returns {number} 제한된 값입니다.
- */
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 /**
  * 적 타입에 대응하는 네비게이션 정책을 반환합니다.
@@ -381,7 +373,7 @@ const resolveHexaHiveApproachGoalInto = (
             ? profile.HEXA_HIVE_APPROACH_GOAL_SAMPLE_COUNT
             : 16
     );
-    const innerRingRatio = clamp(
+    const innerRingRatio = clampNumber(
         Number.isFinite(profile.HEXA_HIVE_APPROACH_GOAL_INNER_RING_RATIO)
             ? profile.HEXA_HIVE_APPROACH_GOAL_INNER_RING_RATIO
             : 0.82,
@@ -469,7 +461,7 @@ const resolveHexaHiveApproachGoalInto = (
             const distanceError = Math.abs(snappedPlayerDistance - desiredDistance);
             const snappedDirX = snappedPlayerDistance > EPSILON ? playerDeltaX / snappedPlayerDistance : dirX;
             const snappedDirY = snappedPlayerDistance > EPSILON ? playerDeltaY / snappedPlayerDistance : dirY;
-            const alignmentPenalty = 1 - clamp((snappedDirX * baseDirX) + (snappedDirY * baseDirY), -1, 1);
+            const alignmentPenalty = 1 - clampNumber((snappedDirX * baseDirX) + (snappedDirY * baseDirY), -1, 1);
             const isDirectBlocked = isSegmentBlockedByCoords(startX, startY, snappedX, snappedY, walls, directPad);
             const directPenalty = isDirectBlocked
                 ? desiredDistance * desiredDistance * directPenaltyRatio

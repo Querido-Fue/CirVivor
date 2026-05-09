@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 
 const ENEMY_AI_CONSTANTS = getData('ENEMY_AI_CONSTANTS');
@@ -9,15 +10,6 @@ const ROTATION_EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
 const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
 const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
-
-/**
- * 값을 지정 범위로 제한합니다.
- * @param {number} value - 제한할 값입니다.
- * @param {number} min - 최소값입니다.
- * @param {number} max - 최대값입니다.
- * @returns {number} 제한된 값입니다.
- */
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 /**
  * 회전 각도를 -180도에서 180도 범위로 정규화합니다.
@@ -86,7 +78,7 @@ const readPositiveProfileNumber = (profile, key, fallback) => {
  */
 const readUnitProfileNumber = (profile, key, fallback) => {
     const value = profile?.[key];
-    return Number.isFinite(value) ? clamp(value, 0, 1) : fallback;
+    return Number.isFinite(value) ? clampNumber(value, 0, 1) : fallback;
 };
 
 /**
@@ -212,8 +204,8 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
         'HEXA_HIVE_AI_ROTATION_GAIN_PER_SEC',
         readDefaultProfileNumber('HEXA_HIVE_AI_ROTATION_GAIN_PER_SEC')
     );
-    const rampedMaxDegPerSec = maxDegPerSec * clamp(absDeltaDeg / dampStartDeg, 0, 1);
-    const targetAngularVelocity = clamp(
+    const rampedMaxDegPerSec = maxDegPerSec * clampNumber(absDeltaDeg / dampStartDeg, 0, 1);
+    const targetAngularVelocity = clampNumber(
         deltaDeg * gainPerSecond,
         -rampedMaxDegPerSec,
         rampedMaxDegPerSec
@@ -222,6 +214,6 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
     const nextAngularVelocity = (currentAngularVelocity * (1 - responseRatio))
         + (targetAngularVelocity * responseRatio);
 
-    enemy.angularVelocity = clamp(nextAngularVelocity, -maxDegPerSec, maxDegPerSec);
+    enemy.angularVelocity = clampNumber(nextAngularVelocity, -maxDegPerSec, maxDegPerSec);
     enemy.angularDeceleration = 0;
 }
