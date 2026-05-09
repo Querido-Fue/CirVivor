@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getUIWW, getWH, getWW } from 'display/display_system.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_MENU_DATA = getData('TITLE_MENU_DATA');
@@ -126,7 +127,8 @@ export class TitleMenuLayout {
      * @private
      */
     _normalizeUiScale(uiScale) {
-        return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
+        const safeUiScale = resolveFiniteNumber(uiScale, 1);
+        return safeUiScale > 0 ? safeUiScale : 1;
     }
 
     /**
