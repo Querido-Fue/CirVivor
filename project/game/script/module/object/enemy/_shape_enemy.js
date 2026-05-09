@@ -2,6 +2,7 @@ import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { BaseEnemy } from './_base_enemy.js';
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clamp01 } from 'util/number_util.js';
 import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
 
 const ENEMY_ASPECT_RATIO = getData('ENEMY_ASPECT_RATIO');
@@ -227,7 +228,7 @@ export class ShapeEnemy extends BaseEnemy {
         }
 
         // 목표 각도에 가까워질수록 회전 속도를 감쇠합니다.
-        const dampRatio = Math.max(0, Math.min(1, absDelta / HEADING_TURN_DAMP_START_DEG));
+        const dampRatio = clamp01(absDelta / HEADING_TURN_DAMP_START_DEG);
         const speedScale = dampRatio * dampRatio * (3 - (2 * dampRatio)); // smoothstep(0~1)
         const turnSpeed = HEADING_TURN_MAX_DEG_PER_SEC * speedScale;
         const maxStep = turnSpeed * delta;
