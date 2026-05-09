@@ -21,6 +21,38 @@ export class SettingsPreviewQueue {
     }
 
     /**
+     * 대기 중인 설정이 있는지 확인합니다.
+     * @returns {boolean} 반영할 설정이 있으면 true입니다.
+     */
+    #hasPendingSettings() {
+        return Object.keys(this.#pendingSettings).length > 0;
+    }
+
+    /**
+     * 현재 대기 중인 설정을 꺼내고 큐를 비웁니다.
+     * @returns {object} 이번 flush에서 반영할 설정 묶음입니다.
+     */
+    #drainPendingSettings() {
+        const pending = this.#pendingSettings;
+        this.#pendingSettings = {};
+        return pending;
+    }
+
+    /**
+     * 대기 중인 설정 묶음을 실제 미리보기와 런타임에 반영합니다.
+     * @param {object} pending - 이번 flush에서 반영할 설정 묶음입니다.
+     * @returns {Promise<void>}
+     */
+    async #applyPendingSettings(pending) {
+        if (Object.keys(pending).length === 0) {
+            return;
+        }
+
+        previewSettingBatch(pending);
+        await this.#applyRuntimeSettings(pending);
+    }
+
+    /**
      * 미리보기 설정을 다음 마이크로태스크에 합쳐 반영합니다.
      * @param {object} changedSettings - 반영할 설정 키와 값입니다.
      * @returns {Promise<void>}
@@ -30,17 +62,14 @@ export class SettingsPreviewQueue {
 
         if (!this.#flushPromise) {
             this.#flushPromise = Promise.resolve().then(async () => {
-                const pending = this.#pendingSettings;
-                this.#pendingSettings = {};
-
-                if (Object.keys(pending).length > 0) {
-                    previewSettingBatch(pending);
-                    await this.#applyRuntimeSettings(pending);
+                try {
+                    await this.#applyPendingSettings(this.#drainPendingSettings());
+                } finally {
+                    this.#flushPromise = null;
                 }
 
-                this.#flushPromise = null;
-                if (Object.keys(this.#pendingSettings).length > 0) {
-                    return this.queue({});
+                if (this.#hasPendingSettings()) {
+                    await this.queue({});
                 }
             });
         }
@@ -57,7 +86,7 @@ export class SettingsPreviewQueue {
             await this.#flushPromise;
         }
 
-        if (Object.keys(this.#pendingSettings).length > 0) {
+        if (this.#hasPendingSettings()) {
             await this.queue({});
         }
     }
