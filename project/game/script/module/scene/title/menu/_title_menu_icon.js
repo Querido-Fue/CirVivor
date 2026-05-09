@@ -1,9 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
-import {
-    applyTitleMenuIconColorTemplate,
-    getTitleMenuIconTemplateKeys
-} from 'util/title_menu_icon_util.js';
+import { applyTitleMenuIconColorTemplate } from 'util/title_menu_icon_util.js';
 
 const TITLE_MENU_ICON_TEMPLATES = getData('TITLE_MENU_ICON_DATA').TEMPLATES;
 
@@ -45,23 +42,3 @@ export function getTitleMenuIconSource(iconId) {
     const menuIconColors = getMenuIconColors();
     return applyTitleMenuIconColorTemplate(template, menuIconColors.fill, menuIconColors.shadow);
 }
-
-/**
- * 현재 테마 기준 모든 메뉴 아이콘 소스를 반환합니다.
- * @returns {string[]} 메뉴 아이콘 SVG 소스 목록
- */
-export function getAllTitleMenuIconSources() {
-    const menuIconColors = getMenuIconColors();
-    return Object.keys(TITLE_MENU_ICON_TEMPLATES)
-        .map((iconId) => applyTitleMenuIconColorTemplate(
-            TITLE_MENU_ICON_TEMPLATES[iconId],
-            menuIconColors.fill,
-            menuIconColors.shadow
-        ));
-}
-
-/**
- * 메뉴 식별자에 대응하는 타이틀 메뉴 아이콘 SVG 문자열의 템플릿 키를 반환합니다.
- * @returns {string[]} 아이콘 템플릿 키 목록
- */
-export const TITLE_MENU_ICON_SOURCES = Object.freeze(getTitleMenuIconTemplateKeys());

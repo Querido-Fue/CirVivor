@@ -26,11 +26,3 @@ export function applyTitleMenuIconColorTemplate(template, fill, shadow) {
         .replaceAll(colorTokens.FILL, fill)
         .replaceAll(colorTokens.SHADOW, shadow);
 }
-
-/**
- * 등록된 타이틀 메뉴 아이콘 템플릿 키 목록을 반환합니다.
- * @returns {string[]} 아이콘 템플릿 키 목록입니다.
- */
-export function getTitleMenuIconTemplateKeys() {
-    return Object.keys(TITLE_MENU_ICON_DATA.TEMPLATES);
-}
