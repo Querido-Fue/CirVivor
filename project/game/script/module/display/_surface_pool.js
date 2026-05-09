@@ -1,3 +1,10 @@
+import { clampFiniteNumber } from 'util/number_util.js';
+
+/**
+ * 동적 surface 캔버스에 기본 적용할 CSS 클래스입니다.
+ */
+const DEFAULT_DYNAMIC_CANVAS_CLASS = 'canvas dynamic-canvas';
+
 /**
  * @class CanvasSurfacePool
  * @description 동적 캔버스 surface를 재사용하기 위한 풀입니다.
@@ -7,7 +14,7 @@ export class CanvasSurfacePool {
      * @param {'2d'|'webgl'} type - surface 타입입니다.
      * @param {string} className - 생성할 캔버스에 적용할 CSS 클래스입니다.
      */
-    constructor(type, className = 'canvas dynamic-canvas') {
+    constructor(type, className = DEFAULT_DYNAMIC_CANVAS_CLASS) {
         this.type = type;
         this.className = className;
         this.freeList = [];
@@ -44,7 +51,7 @@ export class CanvasSurfacePool {
      * @param {number} count - 사전 생성할 엔트리 수입니다.
      */
     warmUp(count) {
-        const targetCount = Math.max(0, Math.floor(count));
+        const targetCount = Math.floor(clampFiniteNumber(Number(count), 0, Infinity, 0));
         while (this.freeList.length < targetCount) {
             this.freeList.push(this.#createEntry());
             this.createdCount += 1;
