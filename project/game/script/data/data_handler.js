@@ -36,6 +36,7 @@ import { TITLE_LINK_DATA } from 'data/scene/title/title_link_data.js';
 import { GAME_SCENE_CONSTANTS } from 'data/scene/game/game_scene_constants.js';
 import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
 import { TITLE_MENU_ICON_DATA } from 'data/scene/title/title_menu_icon_data.js';
+import { TITLE_MAGIC_BENTO_DATA } from 'data/scene/title/title_magic_bento_data.js';
 import { GAME_SCENE_COMMAND_TYPES } from 'data/simulation/game_scene_command_types.js';
 import { SIMULATION_RUNTIME_DEFAULTS } from 'data/simulation/simulation_runtime_defaults.js';
 import { PHYSICS_CONSTANTS } from 'data/physics/physics_constants.js';
@@ -82,6 +83,7 @@ const DATA_REGISTRY = Object.freeze({
     GAME_SCENE_CONSTANTS,
     TITLE_MENU_DATA,
     TITLE_MENU_ICON_DATA,
+    TITLE_MAGIC_BENTO_DATA,
     GAME_SCENE_COMMAND_TYPES,
     SIMULATION_RUNTIME_DEFAULTS,
     PHYSICS_CONSTANTS,

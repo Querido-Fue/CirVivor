@@ -2,7 +2,6 @@ import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_
 import { getData } from 'data/data_handler.js';
 import { getMouseInput, hasMouseState } from 'input/input_system.js';
 import { getDelta } from 'game/time_handler.js';
-import { TITLE_BENTO_CARD_DEFINITIONS } from './magic_bento/_title_magic_bento_data.js';
 import {
     drawBentoCardBody,
     drawBentoCardBorder,
@@ -30,6 +29,7 @@ import {
 } from './magic_bento/_title_magic_bento_state.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const TITLE_MAGIC_BENTO_DATA = getData('TITLE_MAGIC_BENTO_DATA');
 const TITLE_MAGIC_BENTO = TITLE_CONSTANTS.TITLE_MAGIC_BENTO;
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
 
@@ -58,7 +58,7 @@ export class TitleMagicBento {
         this.spotlightX = this.UIOffsetX + (this.UIWW * 0.5);
         this.spotlightY = this.WH * 0.5;
         this.spotlightOpacity = 0;
-        this.cards = TITLE_BENTO_CARD_DEFINITIONS.map((definition) => this.#createCardRuntime(definition));
+        this.cards = TITLE_MAGIC_BENTO_DATA.CARD_DEFINITIONS.map((definition) => this.#createCardRuntime(definition));
 
         this.#recalculateLayout();
         this.#refreshCardTransforms();
