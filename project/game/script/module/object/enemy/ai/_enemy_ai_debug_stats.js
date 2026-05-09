@@ -2,28 +2,49 @@ import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_const
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 
+const DEFAULT_POLICY_DEBUG_KEY = 'chase';
+const ENEMY_AI_POLICY_DEBUG_KEY_BY_ID = Object.freeze({
+    [ENEMY_AI_POLICY.CHASE]: DEFAULT_POLICY_DEBUG_KEY,
+    [ENEMY_AI_POLICY.CHARGE_CHASE]: 'chargeChase',
+    [ENEMY_AI_POLICY.KEEP_RANGE]: 'keepRange',
+    [ENEMY_AI_POLICY.CLUSTER_JOIN]: 'clusterJoin',
+    [ENEMY_AI_POLICY.ALLY_DENSITY_SEEK]: 'allyDensitySeek',
+    [ENEMY_AI_POLICY.FORMATION_FOLLOW]: 'formationFollow'
+});
+
+/**
+ * 유효하지 않은 누적값을 0으로 보정해 반환합니다.
+ * @param {object|null|undefined} target
+ * @param {string} fieldName
+ * @returns {number}
+ */
+const getFiniteEnemyAIDebugValue = (target, fieldName) => {
+    const value = target?.[fieldName];
+    return Number.isFinite(value) ? value : 0;
+};
+
+/**
+ * 정책별 디버그 누적 버킷을 보장합니다.
+ * @param {object} stats
+ * @param {string} bucketName
+ * @returns {object}
+ */
+const ensureEnemyAIDebugBucket = (stats, bucketName) => {
+    const bucket = stats[bucketName];
+    if (bucket && typeof bucket === 'object') {
+        return bucket;
+    }
+
+    stats[bucketName] = {};
+    return stats[bucketName];
+};
+
 /**
  * 정책 ID를 디버그 카운터 키로 변환합니다.
  * @param {string} policyId
  * @returns {string}
  */
-export const getEnemyAIDebugPolicyKey = (policyId) => {
-    switch (policyId) {
-        case ENEMY_AI_POLICY.CHARGE_CHASE:
-            return 'chargeChase';
-        case ENEMY_AI_POLICY.KEEP_RANGE:
-            return 'keepRange';
-        case ENEMY_AI_POLICY.CLUSTER_JOIN:
-            return 'clusterJoin';
-        case ENEMY_AI_POLICY.ALLY_DENSITY_SEEK:
-            return 'allyDensitySeek';
-        case ENEMY_AI_POLICY.FORMATION_FOLLOW:
-            return 'formationFollow';
-        case ENEMY_AI_POLICY.CHASE:
-        default:
-            return 'chase';
-    }
-};
+export const getEnemyAIDebugPolicyKey = (policyId) => ENEMY_AI_POLICY_DEBUG_KEY_BY_ID[policyId] ?? DEFAULT_POLICY_DEBUG_KEY;
 
 /**
  * AI 디버그 통계 카운터를 증가시킵니다.
@@ -37,7 +58,7 @@ export const incrementEnemyAIDebugCounter = (stats, fieldName, amount = 1) => {
     }
 
     const safeAmount = Number.isFinite(amount) ? amount : 1;
-    stats[fieldName] = (Number.isFinite(stats[fieldName]) ? stats[fieldName] : 0) + safeAmount;
+    stats[fieldName] = getFiniteEnemyAIDebugValue(stats, fieldName) + safeAmount;
 };
 
 /**
@@ -52,13 +73,9 @@ export const recordEnemyAIDebugPolicySample = (stats, policyId, durationMs) => {
     }
 
     const policyKey = getEnemyAIDebugPolicyKey(policyId);
-    if (!stats.policyCounts || typeof stats.policyCounts !== 'object') {
-        stats.policyCounts = {};
-    }
-    if (!stats.policyMs || typeof stats.policyMs !== 'object') {
-        stats.policyMs = {};
-    }
+    const policyCounts = ensureEnemyAIDebugBucket(stats, 'policyCounts');
+    const policyMs = ensureEnemyAIDebugBucket(stats, 'policyMs');
 
-    stats.policyCounts[policyKey] = (Number.isFinite(stats.policyCounts[policyKey]) ? stats.policyCounts[policyKey] : 0) + 1;
-    stats.policyMs[policyKey] = (Number.isFinite(stats.policyMs[policyKey]) ? stats.policyMs[policyKey] : 0) + durationMs;
+    policyCounts[policyKey] = getFiniteEnemyAIDebugValue(policyCounts, policyKey) + 1;
+    policyMs[policyKey] = getFiniteEnemyAIDebugValue(policyMs, policyKey) + durationMs;
 };
