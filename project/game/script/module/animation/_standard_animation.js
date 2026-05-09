@@ -2,6 +2,7 @@ import { AnimationBase } from './_animation_base.js';
 import { Easing } from './_easing.js';
 import { ANIMATION_STATE } from './_constants.js';
 import { ObjectPool } from 'object/_object_pool.js';
+import { clampFiniteNumber, lerpNumber } from 'util/number_util.js';
 
 /**
  * @class StandardAnimation
@@ -71,8 +72,8 @@ export class StandardAnimation extends AnimationBase {
 
         if (this.currentTime < this.duration) {
             this.currentTime += delta;
-            const progress = Math.min(this.currentTime / this.duration, 1);
-            this.owner[this.variable] = this.startValue + (this.endValue - this.startValue) * this.easingFn(progress);
+            const progress = clampFiniteNumber(this.currentTime / this.duration, 0, 1, 1);
+            this.owner[this.variable] = lerpNumber(this.startValue, this.endValue, this.easingFn(progress));
         } else {
             this.owner[this.variable] = this.endValue;
             this.complete();

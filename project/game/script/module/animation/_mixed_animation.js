@@ -1,6 +1,7 @@
 import { AnimationBase } from './_animation_base.js';
 import { Easing } from './_easing.js';
 import { ANIMATION_STATE } from './_constants.js';
+import { clampFiniteNumber, lerpNumber } from 'util/number_util.js';
 
 /**
  * @class MixedAnimation
@@ -63,8 +64,8 @@ export class MixedAnimation extends AnimationBase {
         let allAnimationsFinished = true;
 
         this.animationDefs.forEach(def => {
-            const duration = def.duration || 0;
-            const delay = def.delay || 0;
+            const duration = clampFiniteNumber(Number(def.duration), 0, Infinity, 0);
+            const delay = clampFiniteNumber(Number(def.delay), 0, Infinity, 0);
 
             if (def.currentTime >= delay + duration) {
                 totalContribution += (def.endValue - def.startValue);
@@ -75,9 +76,11 @@ export class MixedAnimation extends AnimationBase {
             def.currentTime += delta;
 
             if (def.currentTime >= delay) {
-                const progress = Math.min((def.currentTime - delay) / duration, 1);
+                const progress = duration > 0
+                    ? clampFiniteNumber((def.currentTime - delay) / duration, 0, 1, 1)
+                    : 1;
                 const easedProgress = def.easingFn(progress);
-                const currentValue = def.startValue + (def.endValue - def.startValue) * easedProgress;
+                const currentValue = lerpNumber(def.startValue, def.endValue, easedProgress);
                 totalContribution += (currentValue - def.startValue);
             }
         });
