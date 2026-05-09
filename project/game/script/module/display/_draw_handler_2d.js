@@ -1,3 +1,18 @@
+import {
+    createDrawArrowPath,
+    renderDrawArrow,
+    renderDrawRect,
+    renderDrawRoundRect,
+    shouldDrawStroke
+} from './draw_2d_shapes.js';
+import {
+    applyDraw2DStyles,
+    applyDrawLayerTransform,
+    createDrawShadowState,
+    normalizeDrawLayerTransform,
+    resetDrawContextState
+} from './draw_2d_layer_state.js';
+
 /**
  * @class DrawHandler2D
  * @description 2D 캔버스 레이어를 동적으로 등록하고 그리기 상태를 관리합니다.
@@ -45,11 +60,11 @@ export class DrawHandler2D {
 
         this.#contexts.set(layerName, context);
         this.#stateCaches.set(layerName, {});
-        this.#shadowState.set(layerName, { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' });
+        this.#shadowState.set(layerName, createDrawShadowState());
         this.#layerOptions.set(layerName, {
             persistent: options.persistent === true
         });
-        this.#layerTransforms.set(layerName, this.#normalizeLayerTransform(options));
+        this.#layerTransforms.set(layerName, normalizeDrawLayerTransform(options));
         this.#applyLayerTransform(layerName, context);
     }
 
@@ -76,7 +91,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#layerTransforms.set(layerName, this.#normalizeLayerTransform({
+        this.#layerTransforms.set(layerName, normalizeDrawLayerTransform({
             transformScaleX: scaleX,
             transformScaleY: scaleY
         }));
@@ -106,7 +121,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#shadowState.set(layerName, { shadowBlur: blur, shadowColor: color });
+        this.#shadowState.set(layerName, createDrawShadowState(blur, color));
     }
 
     /**
@@ -118,7 +133,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#shadowState.set(layerName, { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' });
+        this.#shadowState.set(layerName, createDrawShadowState());
     }
 
     /**
@@ -133,21 +148,26 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#applyStyles(context, cache, options, layerName);
+        applyDraw2DStyles(
+            context,
+            cache,
+            options,
+            this.#shadowState.get(layerName) || createDrawShadowState()
+        );
 
         switch (options.shape) {
             case 'rect':
-                this.#renderRect(context, options);
+                renderDrawRect(context, options);
                 break;
             case 'roundRect':
-                this.#renderRoundRect(context, options);
+                renderDrawRoundRect(context, options);
                 break;
             case 'circle':
                 context.beginPath();
                 context.arc(options.x, options.y, options.radius, 0, Math.PI * 2);
                 if (options.fill !== false) {
                     context.fill();
-                    if (this.#shouldStroke(options)) {
+                    if (shouldDrawStroke(options)) {
                         context.stroke();
                     }
                 } else {
@@ -175,7 +195,7 @@ export class DrawHandler2D {
                 }
                 break;
             case 'arrow':
-                this.#renderArrow(context, options);
+                renderDrawArrow(context, options, this.#pathCache.get('arrow'));
                 break;
             default:
                 break;
@@ -222,45 +242,11 @@ export class DrawHandler2D {
      * @param {{applyTransform?: boolean}} [options={}] - 초기화 후 레이어 transform을 복원할지 여부입니다.
      */
     #resetLayerState(layerName, context, options = {}) {
-        if (typeof context.resetTransform === 'function') {
-            context.resetTransform();
-        } else if (typeof context.setTransform === 'function') {
-            context.setTransform(1, 0, 0, 1, 0, 0);
-        }
-
-        context.globalAlpha = 1;
-        context.globalCompositeOperation = 'source-over';
-        context.shadowBlur = 0;
-        context.shadowColor = 'rgba(0,0,0,0)';
-        context.lineWidth = 1;
-        context.lineCap = 'butt';
-        context.lineJoin = 'miter';
-        context.filter = 'none';
-        context.textAlign = 'start';
-        context.textBaseline = 'alphabetic';
-        context.font = '10px sans-serif';
-
+        resetDrawContextState(context);
         this.#stateCaches.set(layerName, {});
         if (options.applyTransform !== false) {
             this.#applyLayerTransform(layerName, context);
         }
-    }
-
-    /**
-     * 레이어 transform 옵션을 유효한 배율로 정규화합니다.
-     * @param {{transformScaleX?: number, transformScaleY?: number}} [options={}] - transform 옵션입니다.
-     * @returns {{scaleX:number, scaleY:number}} 정규화된 transform입니다.
-     * @private
-     */
-    #normalizeLayerTransform(options = {}) {
-        const scaleX = Number.isFinite(options.transformScaleX) && options.transformScaleX > 0
-            ? options.transformScaleX
-            : 1;
-        const scaleY = Number.isFinite(options.transformScaleY) && options.transformScaleY > 0
-            ? options.transformScaleY
-            : 1;
-
-        return { scaleX, scaleY };
     }
 
     /**
@@ -270,243 +256,8 @@ export class DrawHandler2D {
      * @private
      */
     #applyLayerTransform(layerName, context) {
-        if (!context || typeof context.setTransform !== 'function') {
-            return;
-        }
-
         const transform = this.#layerTransforms.get(layerName) || { scaleX: 1, scaleY: 1 };
-        context.setTransform(transform.scaleX, 0, 0, transform.scaleY, 0, 0);
-    }
-
-    /**
-     * @private
-     * 스타일 캐시를 적용합니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} cache - 레이어별 스타일 캐시입니다.
-     * @param {object} styles - 적용할 스타일입니다.
-     * @param {string} layerName - 레이어 식별자입니다.
-     */
-    #applyStyles(context, cache, styles, layerName) {
-        const persistentShadow = this.#shadowState.get(layerName) || { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' };
-
-        let fill = styles.fill || null;
-        if (fill && typeof fill === 'object' && fill.type === 'linear') {
-            const gradient = context.createLinearGradient(fill.x1, fill.y1, fill.x2, fill.y2);
-            if (Array.isArray(fill.stops)) {
-                fill.stops.forEach((stop) => gradient.addColorStop(stop.offset, stop.color));
-            }
-            fill = gradient;
-        }
-
-        if (cache.fillStyle !== fill) {
-            context.fillStyle = fill;
-            cache.fillStyle = fill;
-        }
-
-        const stroke = styles.stroke || null;
-        if (cache.strokeStyle !== stroke) {
-            context.strokeStyle = stroke;
-            cache.strokeStyle = stroke;
-        }
-
-        const alpha = styles.alpha === undefined ? 1 : styles.alpha;
-        if (cache.globalAlpha !== alpha) {
-            context.globalAlpha = alpha;
-            cache.globalAlpha = alpha;
-        }
-
-        const lineWidth = styles.lineWidth || 1;
-        if (cache.lineWidth !== lineWidth) {
-            context.lineWidth = lineWidth;
-            cache.lineWidth = lineWidth;
-        }
-
-        const lineCap = styles.lineCap || 'butt';
-        if (cache.lineCap !== lineCap) {
-            context.lineCap = lineCap;
-            cache.lineCap = lineCap;
-        }
-
-        const lineJoin = styles.lineJoin || 'miter';
-        if (cache.lineJoin !== lineJoin) {
-            context.lineJoin = lineJoin;
-            cache.lineJoin = lineJoin;
-        }
-
-        const shadowBlur = styles.shadowBlur !== undefined ? styles.shadowBlur : persistentShadow.shadowBlur;
-        const shadowColor = styles.shadowColor !== undefined ? styles.shadowColor : persistentShadow.shadowColor;
-        if (cache.shadowBlur !== shadowBlur) {
-            context.shadowBlur = shadowBlur;
-            cache.shadowBlur = shadowBlur;
-        }
-        if (cache.shadowColor !== shadowColor) {
-            context.shadowColor = shadowColor;
-            cache.shadowColor = shadowColor;
-        }
-
-        if (styles.shape === 'text') {
-            const font = styles.font || '10px sans-serif';
-            const align = styles.align || 'start';
-            const baseline = styles.baseline || 'alphabetic';
-
-            if (cache.font !== font) {
-                context.font = font;
-                cache.font = font;
-            }
-            if (cache.textAlign !== align) {
-                context.textAlign = align;
-                cache.textAlign = align;
-            }
-            if (cache.textBaseline !== baseline) {
-                context.textBaseline = baseline;
-                cache.textBaseline = baseline;
-            }
-        }
-    }
-
-    /**
-     * @private
-     * 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} options - 렌더링 옵션입니다.
-     */
-    #renderRect(context, options) {
-        if (options.fill !== false) {
-            context.fillRect(options.x, options.y, options.w, options.h);
-        }
-
-        if (!this.#shouldStroke(options)) {
-            return;
-        }
-
-        const lineWidth = this.#getLineWidth(options);
-        if (lineWidth <= 0) {
-            return;
-        }
-
-        const inset = lineWidth * 0.5;
-        const width = Math.max(0, options.w - lineWidth);
-        const height = Math.max(0, options.h - lineWidth);
-        if (width <= 0 || height <= 0) {
-            return;
-        }
-
-        context.strokeRect(options.x + inset, options.y + inset, width, height);
-    }
-
-    /**
-     * @private
-     * 둥근 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} options - 렌더링 옵션입니다.
-     */
-    #renderRoundRect(context, options) {
-        if (options.fill !== false) {
-            context.beginPath();
-            context.roundRect(
-                options.x,
-                options.y,
-                options.w,
-                options.h,
-                this.#normalizeRadius(options.radius, options.w, options.h)
-            );
-            context.fill();
-        }
-
-        if (!this.#shouldStroke(options)) {
-            return;
-        }
-
-        const lineWidth = this.#getLineWidth(options);
-        if (lineWidth <= 0) {
-            return;
-        }
-
-        const inset = lineWidth * 0.5;
-        const width = Math.max(0, options.w - lineWidth);
-        const height = Math.max(0, options.h - lineWidth);
-        if (width <= 0 || height <= 0) {
-            return;
-        }
-
-        context.beginPath();
-        context.roundRect(
-            options.x + inset,
-            options.y + inset,
-            width,
-            height,
-            this.#normalizeRadius((options.radius || 0) - inset, width, height)
-        );
-        context.stroke();
-    }
-
-    /**
-     * @private
-     * 렌더 옵션이 스트로크를 요청하는지 반환합니다.
-     * @param {object} options - 렌더링 옵션입니다.
-     * @returns {boolean} 스트로크 렌더링 여부입니다.
-     */
-    #shouldStroke(options) {
-        if (options.stroke === false) {
-            return false;
-        }
-
-        return options.fill === false || options.stroke !== undefined;
-    }
-
-    /**
-     * @private
-     * 유효한 스트로크 두께를 반환합니다.
-     * @param {object} options - 렌더링 옵션입니다.
-     * @returns {number} 스트로크 두께입니다.
-     */
-    #getLineWidth(options) {
-        const lineWidth = Number(options.lineWidth);
-        return Number.isFinite(lineWidth) ? Math.max(0, lineWidth) : 1;
-    }
-
-    /**
-     * @private
-     * 둥근 사각형 반지름을 현재 사각형 크기에 맞게 보정합니다.
-     * @param {number} radius - 요청된 반지름입니다.
-     * @param {number} width - 사각형 너비입니다.
-     * @param {number} height - 사각형 높이입니다.
-     * @returns {number} 보정된 반지름입니다.
-     */
-    #normalizeRadius(radius, width, height) {
-        const resolvedRadius = Number(radius);
-        if (!Number.isFinite(resolvedRadius)) {
-            return 0;
-        }
-
-        return Math.max(0, Math.min(resolvedRadius, Math.max(0, Math.min(width, height) * 0.5)));
-    }
-
-    /**
-     * @private
-     * 화살표 도형을 렌더링합니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} options - 렌더링 옵션입니다.
-     */
-    #renderArrow(context, options) {
-        const path = this.#pathCache.get('arrow');
-        if (!path) {
-            return;
-        }
-
-        context.save();
-        context.translate(options.x, options.y);
-        if (options.rotation) {
-            context.rotate((options.rotation * Math.PI) / 180);
-        }
-        context.scale(options.w, options.h);
-
-        if (options.fill !== false) {
-            context.fill(path);
-        } else {
-            context.stroke(path);
-        }
-        context.restore();
+        applyDrawLayerTransform(context, transform);
     }
 
     /**
@@ -514,12 +265,6 @@ export class DrawHandler2D {
      * 캐시 가능한 도형 경로를 생성합니다.
      */
     #generatePaths() {
-        const arrowPath = new Path2D();
-        arrowPath.moveTo(0, -0.5);
-        arrowPath.lineTo(0.5, 0.5);
-        arrowPath.lineTo(0, 0.3);
-        arrowPath.lineTo(-0.5, 0.5);
-        arrowPath.closePath();
-        this.#pathCache.set('arrow', arrowPath);
+        this.#pathCache.set('arrow', createDrawArrowPath());
     }
 }

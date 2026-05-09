@@ -7,20 +7,14 @@ import { ThemeHandler, setTheme } from 'display/_theme_handler.js';
 import { getSetting } from 'save/save_system.js';
 import { CanvasSurfacePool } from './_surface_pool.js';
 import { VignetteRenderer } from './_vignette_renderer.js';
+import {
+    compareDisplaySurfaceDescriptors,
+    createDisplaySurfaceDescriptor,
+    resolveDisplayWebGLLayerName,
+    usesNativeDisplay2DResolution
+} from './display_surface_descriptor.js';
 
 let displaySystemInstance = null;
-
-/**
- * WebGL 렌더 별칭을 실제 surface 식별자로 변환합니다.
- */
-const WEBGL_LAYER_NAME_MAP = Object.freeze({
-    main: 'object',
-    mainGL: 'object',
-    backgroundGL: 'background',
-    effectGL: 'effect'
-});
-
-const NATIVE_2D_SURFACE_IDS = new Set(['texteffect', 'ui', 'vignette', 'top']);
 
 /**
  * @typedef {object} DisplaySurfaceDescriptor
@@ -106,7 +100,7 @@ export class DisplaySystem {
 
         entry.canvas.dataset.surfaceId = surfaceId;
 
-        const descriptor = {
+        const descriptor = createDisplaySurfaceDescriptor({
             id: surfaceId,
             type,
             mode,
@@ -117,10 +111,8 @@ export class DisplaySystem {
             dynamic: true,
             persistent: false,
             includeInComposite: options.includeInComposite !== false,
-            compositeOpacityFactor: Number.isFinite(options.compositeOpacityFactor)
-                ? Math.max(0, options.compositeOpacityFactor)
-                : 1
-        };
+            compositeOpacityFactor: options.compositeOpacityFactor
+        });
 
         this.surfaceMap.set(surfaceId, descriptor);
         this.dynamicSurfaceIds.push(surfaceId);
@@ -326,29 +318,18 @@ export class DisplaySystem {
             ? canvas.getContext('webgl', { alpha: options.alpha !== false, preserveDrawingBuffer: false })
             : canvas.getContext('2d');
 
-        const orderMap = {
-            background: 0,
-            object: 10,
-            effect: 20,
-            texteffect: 30,
-            ui: 40,
-            top: 1000
-        };
-
-        const descriptor = {
+        const descriptor = createDisplaySurfaceDescriptor({
             id: surfaceId,
             type,
             mode: options.mode || (type === 'webgl' ? 'batch' : 'batch'),
             canvas,
             context,
-            order: Number.isFinite(options.order) ? options.order : (orderMap[surfaceId] || 0),
+            order: options.order,
             dynamic: false,
             persistent: options.persistent === true,
             includeInComposite: options.includeInComposite !== false,
-            compositeOpacityFactor: Number.isFinite(options.compositeOpacityFactor)
-                ? Math.max(0, options.compositeOpacityFactor)
-                : 1
-        };
+            compositeOpacityFactor: options.compositeOpacityFactor
+        });
 
         this.surfaceMap.set(surfaceId, descriptor);
         this.staticSurfaceIds.push(surfaceId);
@@ -373,17 +354,6 @@ export class DisplaySystem {
 
     /**
      * @private
-     * 렌더 스케일과 독립적으로 네이티브 해상도를 유지할 2D surface인지 반환합니다.
-     * @param {DisplaySurfaceDescriptor} descriptor - 검사할 surface descriptor입니다.
-     * @returns {boolean} 네이티브 2D surface 여부입니다.
-     */
-    #usesNative2DResolution(descriptor) {
-        return descriptor?.type === '2d'
-            && (descriptor.dynamic === true || NATIVE_2D_SURFACE_IDS.has(descriptor.id));
-    }
-
-    /**
-     * @private
      * surface의 backing store 크기를 현재 렌더/표시 해상도에 맞춥니다.
      * @param {DisplaySurfaceDescriptor} descriptor - 동기화할 surface descriptor입니다.
      */
@@ -392,10 +362,10 @@ export class DisplaySystem {
             return;
         }
 
-        const width = this.#usesNative2DResolution(descriptor)
+        const width = usesNativeDisplay2DResolution(descriptor)
             ? this.screenHandler.baseWidth
             : this.screenHandler.width;
-        const height = this.#usesNative2DResolution(descriptor)
+        const height = usesNativeDisplay2DResolution(descriptor)
             ? this.screenHandler.baseHeight
             : this.screenHandler.height;
         descriptor.canvas.width = Math.max(1, width);
@@ -413,10 +383,10 @@ export class DisplaySystem {
             return;
         }
 
-        const scaleX = this.#usesNative2DResolution(descriptor)
+        const scaleX = usesNativeDisplay2DResolution(descriptor)
             ? this.screenHandler.baseWidth / Math.max(1, this.screenHandler.width)
             : 1;
-        const scaleY = this.#usesNative2DResolution(descriptor)
+        const scaleY = usesNativeDisplay2DResolution(descriptor)
             ? this.screenHandler.baseHeight / Math.max(1, this.screenHandler.height)
             : 1;
         this.drawHandler.setLayerTransform(descriptor.id, scaleX, scaleY);
@@ -467,12 +437,7 @@ export class DisplaySystem {
         const dynamicDescriptors = this.dynamicSurfaceIds
             .map((id) => this.surfaceMap.get(id))
             .filter(Boolean)
-            .sort((left, right) => {
-                if (left.order !== right.order) {
-                    return left.order - right.order;
-                }
-                return (left.sequence || 0) - (right.sequence || 0);
-            });
+            .sort(compareDisplaySurfaceDescriptors);
 
         for (const descriptor of dynamicDescriptors) {
             descriptor.canvas.style.zIndex = `${descriptor.order}`;
@@ -486,35 +451,7 @@ export class DisplaySystem {
      * @returns {DisplaySurfaceDescriptor[]} 정렬된 descriptor 목록입니다.
      */
     #getSortedSurfaceDescriptors() {
-        return Array.from(this.surfaceMap.values()).sort((left, right) => {
-            const leftGroup = this.#getSurfaceSortGroup(left);
-            const rightGroup = this.#getSurfaceSortGroup(right);
-            if (leftGroup !== rightGroup) {
-                return leftGroup - rightGroup;
-            }
-
-            if (left.order !== right.order) {
-                return left.order - right.order;
-            }
-
-            return (left.sequence || 0) - (right.sequence || 0);
-        });
-    }
-
-    /**
-     * @private
-     * surface의 정렬 그룹을 반환합니다.
-     * @param {DisplaySurfaceDescriptor} descriptor - 평가할 descriptor입니다.
-     * @returns {number} 정렬 그룹 값입니다.
-     */
-    #getSurfaceSortGroup(descriptor) {
-        if (descriptor.id === 'top') {
-            return 2;
-        }
-        if (descriptor.dynamic) {
-            return 1;
-        }
-        return 0;
+        return Array.from(this.surfaceMap.values()).sort(compareDisplaySurfaceDescriptors);
     }
 }
 
@@ -600,7 +537,7 @@ export const render = (layerName, options) => displaySystemInstance.drawHandler.
  * @param {object} options - 렌더링 옵션입니다.
  */
 export const renderGL = (layerName, options) => {
-    const targetLayer = WEBGL_LAYER_NAME_MAP[layerName] || layerName;
+    const targetLayer = resolveDisplayWebGLLayerName(layerName);
     displaySystemInstance.webGLHandler.render(targetLayer, options);
 };
 
