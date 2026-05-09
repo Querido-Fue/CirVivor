@@ -152,18 +152,19 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
         );
         float innerRim = exp(-pow(max(radius - distanceFromCenter, 0.0) / max(1.0, u_outlineWidth * 4.0), 2.0))
             * circleMask
-            * 0.18;
+            * 0.08;
         float angle = atan(normalized.y, normalized.x);
         float rimLight = pow(saturate(cos(angle + 2.18) * 0.5 + 0.5), 3.0);
-        vec3 rimColor = mix(u_rimColor, u_highlightColor, rimLight * 0.48);
-        float outlineAlpha = outlineCore * 0.98;
+        vec3 rimBaseColor = mix(u_deepColor, u_baseColor, 0.58);
+        vec3 rimColor = mix(rimBaseColor, u_highlightColor, rimLight * 0.16);
+        float outlineAlpha = outlineCore * 0.36;
 
         float glowPulse = 0.94 + (sin(u_time) * 0.06);
         float glowAlpha = exp(-pow(outsideDistance / max(1.0, radius * 0.42), 2.0))
             * (1.0 - circleMask)
             * u_glowStrength
             * glowPulse;
-        vec3 glowColor = mix(u_deepColor, u_rimColor, 0.76);
+        vec3 glowColor = mix(u_deepColor, u_baseColor, 0.48);
 
         float fillAlpha = fillMask;
         vec3 premultipliedColor = (fillColor * fillAlpha)

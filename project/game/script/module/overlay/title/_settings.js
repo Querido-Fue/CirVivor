@@ -2,29 +2,27 @@ import { TitleOverlay } from './_title_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getBaseWW, getBaseWH } from 'display/display_system.js';
-import { getSetting, previewSettingBatch, setSettingBatch, getSettingSchema } from 'save/save_system.js';
+import { previewSettingBatch, setSettingBatch, getSettingSchema } from 'save/save_system.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getAvailableLanguages } from 'ui/lang/_language_handler.js';
 import { getData } from 'data/data_handler.js';
+import {
+    SETTING_LABEL_KEYS,
+    createSettingsInitialState,
+    expandCompositeSettings,
+    formatTooltipDelayValue,
+    getChangedSettings,
+    getRevertedSettings,
+    getSettingLabelId,
+    getSettingLabelText,
+    hasSettingsChanges
+} from './settings/_settings_state.js';
+import { SettingsPreviewQueue } from './settings/_settings_preview_queue.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-const MULTICORE_SETTING_KEY = 'simulationWorkerAuthorityMode';
-const SETTING_LABEL_KEYS = {
-    windowMode: 'title_settings_window_mode',
-    widescreenSupport: 'title_settings_widescreen_support',
-    renderScale: 'title_settings_render_scale',
-    uiScale: 'title_settings_ui_scale',
-    disableTransparency: 'title_settings_disable_transparency',
-    tooltipDelaySeconds: 'title_settings_tooltip_delay',
-    multicoreSupport: 'title_settings_multicore_support',
-    language: 'title_settings_language',
-    theme: 'title_settings_theme',
-    bgmVolume: 'title_settings_bgm',
-    sfxVolume: 'title_settings_sfx'
-};
 
 /**
  * @class SettingsOverlay
@@ -39,34 +37,15 @@ export class SettingsOverlay extends TitleOverlay {
         this.settingsChanged = false;
         this.settingComponents = {};
         this.rollbackOnClose = true;
-        this.pendingPreviewSettings = {};
-        this.previewFlushPromise = null;
-        const savedWindowMode = getSetting('windowMode');
-        const normalizedWindowMode = savedWindowMode === 'windowed' ? 'windowed' : 'fullscreen';
+        this.previewQueue = new SettingsPreviewQueue({
+            applyRuntimeSettings: (changedSettings) => this.#applyRuntimeSettings(changedSettings)
+        });
         const availableLanguages = getAvailableLanguages();
         this.availableLanguages = availableLanguages;
-        const savedLanguage = getSetting('language');
-        const fallbackLanguage = availableLanguages.length > 0 ? availableLanguages[0].key : 'korean';
-        const normalizedLanguage = availableLanguages.some((lang) => lang.key === savedLanguage)
-            ? savedLanguage
-            : fallbackLanguage;
-
-        this.tempSettings = {
-            windowMode: normalizedWindowMode,
-            widescreenSupport: getSetting('widescreenSupport') !== false,
-            renderScale: getSetting('renderScale') || 100,
-            uiScale: getSetting('uiScale') || 100,
-            disableTransparency: getSetting('disableTransparency') || false,
-            tooltipDelaySeconds: this.#normalizeTooltipDelaySeconds(
-                getSetting('tooltipDelaySeconds') !== undefined ? getSetting('tooltipDelaySeconds') : 0.7
-            ),
-            multicoreSupport: this.#isMulticoreEnabled(),
-            language: normalizedLanguage,
-            theme: getSetting('theme') || DEFAULT_THEME_KEY,
-            bgmVolume: getSetting('bgmVolume') !== undefined ? getSetting('bgmVolume') : 100,
-            sfxVolume: getSetting('sfxVolume') !== undefined ? getSetting('sfxVolume') : 100,
-        };
-
+        this.tempSettings = createSettingsInitialState({
+            availableLanguages,
+            defaultThemeKey: DEFAULT_THEME_KEY
+        });
         this.initialSettings = { ...this.tempSettings };
     }
 
@@ -175,23 +154,15 @@ export class SettingsOverlay extends TitleOverlay {
      * 설정값 변경 여부에 맞춰 항목 라벨과 저장 가능 상태를 갱신합니다.
      */
     #refreshChangedLabels() {
-        this.settingsChanged = this.#hasSettingsChanges();
+        this.settingsChanged = hasSettingsChanges(this.initialSettings, this.tempSettings);
 
         for (const [settingKey, labelKey] of Object.entries(SETTING_LABEL_KEYS)) {
-            const labelComponent = this.settingComponents[this.#getSettingLabelId(settingKey)];
+            const labelComponent = this.settingComponents[getSettingLabelId(settingKey)];
             if (!labelComponent) {
                 continue;
             }
-            labelComponent.text = this.#getSettingLabelText(settingKey, labelKey);
+            labelComponent.text = getSettingLabelText(this.initialSettings, this.tempSettings, settingKey, labelKey);
         }
-    }
-
-    /**
-     * 현재 임시 설정과 초기 설정의 차이를 판정합니다.
-     * @returns {boolean} 하나라도 변경된 설정이 있으면 true를 반환합니다.
-     */
-    #hasSettingsChanges() {
-        return Object.keys(this.initialSettings).some((settingKey) => this.tempSettings[settingKey] !== this.initialSettings[settingKey]);
     }
 
     /**
@@ -218,68 +189,6 @@ export class SettingsOverlay extends TitleOverlay {
         this.#queuePreviewSettings({ [settingKey]: value });
     }
 
-    /**
-     * 설정 항목 라벨의 UI 요소 id를 반환합니다.
-     * @param {keyof typeof SETTING_LABEL_KEYS} settingKey - 설정 키입니다.
-     * @returns {string} 라벨 UI 요소 id입니다.
-     */
-    #getSettingLabelId(settingKey) {
-        return `setting_label_${settingKey}`;
-    }
-
-    /**
-     * 설정 항목 라벨 텍스트를 변경 상태에 맞춰 반환합니다.
-     * @param {keyof typeof SETTING_LABEL_KEYS} settingKey - 설정 키입니다.
-     * @param {string} labelKey - 다국어 라벨 키입니다.
-     * @returns {string} 표시할 라벨 텍스트입니다.
-     */
-    #getSettingLabelText(settingKey, labelKey) {
-        const label = getLangString(labelKey);
-        return this.tempSettings[settingKey] !== this.initialSettings[settingKey] ? `${label}*` : label;
-    }
-
-    /**
-     * 초기 스냅샷 대비 실제로 변경된 설정만 추려 반환합니다.
-     * @returns {object} 변경된 설정 키와 값입니다.
-     */
-    #getChangedSettings() {
-        const changedSettings = {};
-
-        for (const settingKey of Object.keys(this.initialSettings)) {
-            if (this.tempSettings[settingKey] === this.initialSettings[settingKey]) {
-                continue;
-            }
-            changedSettings[settingKey] = this.tempSettings[settingKey];
-        }
-
-        return changedSettings;
-    }
-
-    /**
-     * 현재 저장된 워커 설정 기준으로 멀티코어 활성 여부를 반환합니다.
-     * @returns {boolean}
-     */
-    #isMulticoreEnabled() {
-        return getSetting(MULTICORE_SETTING_KEY) === true;
-    }
-
-    /**
-     * 가상 설정 키를 실제 저장 키 묶음으로 확장합니다.
-     * @param {object} changedSettings - UI에서 변경된 설정 객체입니다.
-     * @returns {object} 저장/미리보기에 사용할 실제 설정 객체입니다.
-     */
-    #expandCompositeSettings(changedSettings = {}) {
-        const expandedSettings = { ...changedSettings };
-        if (expandedSettings.multicoreSupport === undefined) {
-            return expandedSettings;
-        }
-
-        const enableMulticore = expandedSettings.multicoreSupport === true;
-        delete expandedSettings.multicoreSupport;
-        expandedSettings[MULTICORE_SETTING_KEY] = enableMulticore;
-
-        return expandedSettings;
-    }
 
     /**
      * 저장 완료 후 변경된 설정을 런타임에 즉시 반영합니다.
@@ -301,26 +210,7 @@ export class SettingsOverlay extends TitleOverlay {
      * @returns {Promise<void>}
      */
     #queuePreviewSettings(changedSettings) {
-        Object.assign(this.pendingPreviewSettings, this.#expandCompositeSettings(changedSettings));
-
-        if (!this.previewFlushPromise) {
-            this.previewFlushPromise = Promise.resolve().then(async () => {
-                const pending = this.pendingPreviewSettings;
-                this.pendingPreviewSettings = {};
-
-                if (Object.keys(pending).length > 0) {
-                    previewSettingBatch(pending);
-                    await this.#applyRuntimeSettings(pending);
-                }
-
-                this.previewFlushPromise = null;
-                if (Object.keys(this.pendingPreviewSettings).length > 0) {
-                    return this.#queuePreviewSettings({});
-                }
-            });
-        }
-
-        return this.previewFlushPromise;
+        return this.previewQueue.queue(changedSettings);
     }
 
     /**
@@ -328,13 +218,7 @@ export class SettingsOverlay extends TitleOverlay {
      * @returns {Promise<void>}
      */
     async #flushPendingPreview() {
-        while (this.previewFlushPromise) {
-            await this.previewFlushPromise;
-        }
-
-        if (Object.keys(this.pendingPreviewSettings).length > 0) {
-            await this.#queuePreviewSettings({});
-        }
+        await this.previewQueue.flush();
     }
 
     /**
@@ -343,7 +227,7 @@ export class SettingsOverlay extends TitleOverlay {
      */
     async #cancelChanges() {
         await this.#flushPendingPreview();
-        const revertedSettings = this.#expandCompositeSettings(this.#getRevertedSettings());
+        const revertedSettings = expandCompositeSettings(getRevertedSettings(this.initialSettings, this.tempSettings));
         if (Object.keys(revertedSettings).length > 0) {
             previewSettingBatch(revertedSettings);
             await this.#applyRuntimeSettings(revertedSettings);
@@ -353,23 +237,6 @@ export class SettingsOverlay extends TitleOverlay {
 
         this.rollbackOnClose = false;
         this.close();
-    }
-
-    /**
-     * 현재 변경분을 초기 스냅샷 값으로 되돌리는 설정 객체를 반환합니다.
-     * @returns {object} 복원할 설정 키와 값입니다.
-     */
-    #getRevertedSettings() {
-        const revertedSettings = {};
-
-        for (const settingKey of Object.keys(this.initialSettings)) {
-            if (this.tempSettings[settingKey] === this.initialSettings[settingKey]) {
-                continue;
-            }
-            revertedSettings[settingKey] = this.initialSettings[settingKey];
-        }
-
-        return revertedSettings;
     }
 
     _buildLeftColumn(handler) {
@@ -498,7 +365,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
-            .prop("valueFormatter", (v) => this.#formatTooltipDelayValue(v))
+            .prop("valueFormatter", (v) => formatTooltipDelayValue(v, this.tempSettings.language))
             .onChange((val) => { this.#handleSettingInput('tooltipDelaySeconds', val, { preview: false }); })
             .onCommit((val) => { this.#handleSettingInput('tooltipDelaySeconds', val); });
         this._addItemFooter(handler, 'title_settings_desc_tooltip_delay', spacingScale);
@@ -567,8 +434,10 @@ export class SettingsOverlay extends TitleOverlay {
      * @param {keyof typeof SETTING_LABEL_KEYS|null} [settingKey=null] - 변경 상태를 추적할 설정 키입니다.
      */
     _addItemHeader(handler, labelKey, settingKey = null) {
-        const labelId = settingKey ? this.#getSettingLabelId(settingKey) : null;
-        const labelText = settingKey ? this.#getSettingLabelText(settingKey, labelKey) : getLangString(labelKey);
+        const labelId = settingKey ? getSettingLabelId(settingKey) : null;
+        const labelText = settingKey
+            ? getSettingLabelText(this.initialSettings, this.tempSettings, settingKey, labelKey)
+            : getLangString(labelKey);
 
         // 라벨 길이(언어별 차이)에 영향을 받지 않도록 라벨 영역을 고정 폭으로 분리
         handler.group().justifyContent("left", "WW", 0).width("parent", 94).align("center")
@@ -609,45 +478,18 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * @private
-     * 현재 언어 설정에 맞춰 툴팁 지연 시간을 포맷합니다.
-     * @param {number} value - 표시할 지연 시간입니다.
-     * @returns {string} 포맷된 표시 문자열입니다.
-     */
-    #formatTooltipDelayValue(value) {
-        const normalizedValue = this.#normalizeTooltipDelaySeconds(value);
-        const suffix = this.tempSettings.language === 'korean' ? '초' : 's';
-        return `${normalizedValue.toFixed(1)}${suffix}`;
-    }
-
-    /**
-     * @private
-     * 툴팁 지연 시간을 0.1초 단위 값으로 정규화합니다.
-     * @param {number} value - 정규화할 값입니다.
-     * @returns {number} 0.1초 단위로 보정된 값입니다.
-     */
-    #normalizeTooltipDelaySeconds(value) {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) {
-            return 0.7;
-        }
-
-        return Number(Math.max(0, Math.min(2, numericValue)).toFixed(1));
-    }
-
-    /**
          * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
          * @returns {Promise<object>} 실제로 변경되어 저장된 설정 키와 값입니다.
          */
     async save() {
         await this.#flushPendingPreview();
-        const changedSettings = this.#getChangedSettings();
+        const changedSettings = getChangedSettings(this.initialSettings, this.tempSettings);
         if (Object.keys(changedSettings).length === 0) {
             this.settingsChanged = false;
             return changedSettings;
         }
 
-        const persistedSettings = this.#expandCompositeSettings(changedSettings);
+        const persistedSettings = expandCompositeSettings(changedSettings);
         await setSettingBatch({
             ...persistedSettings,
             screenModeChanged: false
@@ -679,7 +521,7 @@ export class SettingsOverlay extends TitleOverlay {
 
         void (async () => {
             await this.#flushPendingPreview();
-            const revertedSettings = this.#expandCompositeSettings(this.#getRevertedSettings());
+            const revertedSettings = expandCompositeSettings(getRevertedSettings(this.initialSettings, this.tempSettings));
             if (Object.keys(revertedSettings).length === 0) {
                 return;
             }

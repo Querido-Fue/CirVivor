@@ -153,9 +153,9 @@ export const TITLE_CONSTANTS = Object.freeze({
         MINI_CIRCLE_SCALE: 1,
         GLOW_COMPENSATION_SCALE: 4,
         CIRCLE_SHADER: Object.freeze({
-            ALPHA: 1,
-            GLOW_STRENGTH: 0.24,
-            GLASS_STRENGTH: 0.72,
+            ALPHA: 0.92,
+            GLOW_STRENGTH: 0.12,
+            GLASS_STRENGTH: 0.62,
             GLOW_COMPENSATION_STRENGTH_SCALE: 0.08,
             SCISSOR_PADDING_RADIUS_RATIO: 0.86,
             SCISSOR_PADDING_MIN_PX: 28
