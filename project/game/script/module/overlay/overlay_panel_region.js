@@ -1,6 +1,37 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
+import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 export const DEFAULT_OVERLAY_PANEL_ID = 'root';
+const DEFAULT_OVERLAY_PANEL_RADIUS_KEY = 'UI_CONSTANTS.OVERLAY_PANEL_RADIUS';
+const PRESENTATION_SCALE_EPSILON = 0.0001;
+const DEFAULT_PANEL_BLUR = 0.1;
+const DEFAULT_PANEL_LINE_WIDTH = 1;
+const DEFAULT_PANEL_SHADOW_BLUR = 24;
+
+/**
+ * overlay 축 기준 프레젠테이션 중앙 좌표를 계산합니다.
+ * @param {number} position - overlay 축 시작 좌표입니다.
+ * @param {number} size - overlay 축 크기입니다.
+ * @param {number} fallbackSize - overlay 좌표가 유효하지 않을 때 사용할 화면 축 크기입니다.
+ * @returns {number} 축 기준 중앙 좌표입니다.
+ */
+const resolveOverlayPresentationAxis = (position, size, fallbackSize) => {
+    if (Number.isFinite(position) && Number.isFinite(size)) {
+        return position + (size * 0.5);
+    }
+
+    return fallbackSize * 0.5;
+};
+
+/**
+ * 기본 overlay 패널 반경을 반환합니다.
+ * @param {object} positioningHandler - 단위 파서를 제공하는 positioning handler입니다.
+ * @param {number} uiScale - 현재 UI scale입니다.
+ * @returns {number} 기본 패널 반경입니다.
+ */
+const getDefaultOverlayPanelRadius = (positioningHandler, uiScale) => (
+    positioningHandler.parseUIData(DEFAULT_OVERLAY_PANEL_RADIUS_KEY, uiScale)
+);
 
 /**
  * overlay 프레젠테이션 기준 좌표를 계산합니다.
@@ -9,12 +40,8 @@ export const DEFAULT_OVERLAY_PANEL_ID = 'root';
  */
 export function getOverlayPresentationOrigin(overlay) {
     return {
-        x: Number.isFinite(overlay.scaledX) && Number.isFinite(overlay.scaledW)
-            ? overlay.scaledX + (overlay.scaledW * 0.5)
-            : overlay.WW * 0.5,
-        y: Number.isFinite(overlay.scaledY) && Number.isFinite(overlay.scaledH)
-            ? overlay.scaledY + (overlay.scaledH * 0.5)
-            : overlay.WH * 0.5
+        x: resolveOverlayPresentationAxis(overlay.scaledX, overlay.scaledW, overlay.WW),
+        y: resolveOverlayPresentationAxis(overlay.scaledY, overlay.scaledH, overlay.WH)
     };
 }
 
@@ -29,8 +56,8 @@ export function getOverlayPresentedPanelRegion(panel, overlay) {
         return panel;
     }
 
-    const scale = Number.isFinite(overlay.contentScale) ? overlay.contentScale : 1;
-    if (Math.abs(scale - 1) <= 0.0001) {
+    const scale = resolveFiniteNumber(overlay.contentScale, 1);
+    if (Math.abs(scale - 1) <= PRESENTATION_SCALE_EPSILON) {
         return panel;
     }
 
@@ -61,13 +88,13 @@ export function resolveOverlayPanelMetric(metric, fallbackValue, referenceSize, 
         return fallbackValue;
     }
     if (typeof metric === 'number') {
-        return metric;
+        return resolveFiniteNumber(metric, fallbackValue);
     }
     if (typeof metric === 'string') {
-        return positioningHandler.parseUIData(metric, uiScale);
+        return resolveFiniteNumber(positioningHandler.parseUIData(metric, uiScale), fallbackValue);
     }
     if (typeof metric === 'object' && metric.unit && metric.value !== undefined) {
-        return positioningHandler.parseUnit(metric.unit, metric.value, referenceSize);
+        return resolveFiniteNumber(positioningHandler.parseUnit(metric.unit, metric.value, referenceSize), fallbackValue);
     }
 
     return fallbackValue;
@@ -82,20 +109,27 @@ export function resolveOverlayPanelMetric(metric, fallbackValue, referenceSize, 
  * @returns {number} 계산된 반경입니다.
  */
 export function resolveOverlayPanelRadius(radius, panelWidth, positioningHandler, uiScale) {
+    const defaultRadius = getDefaultOverlayPanelRadius(positioningHandler, uiScale);
     if (radius === null || radius === undefined) {
-        return positioningHandler.parseUIData('UI_CONSTANTS.OVERLAY_PANEL_RADIUS', uiScale);
+        return defaultRadius;
     }
     if (typeof radius === 'number') {
-        return radius;
+        return resolveFiniteNumber(radius, defaultRadius);
     }
     if (typeof radius === 'string') {
-        return positioningHandler.parseUIData(radius, uiScale);
+        return resolveFiniteNumber(
+            positioningHandler.parseUIData(radius, uiScale),
+            defaultRadius
+        );
     }
     if (typeof radius === 'object' && radius.unit && radius.value !== undefined) {
-        return positioningHandler.parseUnit(radius.unit, radius.value, panelWidth);
+        return resolveFiniteNumber(
+            positioningHandler.parseUnit(radius.unit, radius.value, panelWidth),
+            defaultRadius
+        );
     }
 
-    return positioningHandler.parseUIData('UI_CONSTANTS.OVERLAY_PANEL_RADIUS', uiScale);
+    return defaultRadius;
 }
 
 /**
@@ -108,8 +142,18 @@ export function resolveOverlayPanelRadius(radius, panelWidth, positioningHandler
 export function resolveOverlayPanelRegion(definition = {}, index = 0, overlay) {
     const x = resolveOverlayPanelMetric(definition.x, overlay.scaledX, overlay.scaledW, overlay.positioningHandler, overlay.uiScale);
     const y = resolveOverlayPanelMetric(definition.y, overlay.scaledY, overlay.scaledH, overlay.positioningHandler, overlay.uiScale);
-    const w = Math.max(0, resolveOverlayPanelMetric(definition.w, overlay.scaledW, overlay.scaledW, overlay.positioningHandler, overlay.uiScale));
-    const h = Math.max(0, resolveOverlayPanelMetric(definition.h, overlay.scaledH, overlay.scaledH, overlay.positioningHandler, overlay.uiScale));
+    const w = clampFiniteNumber(
+        resolveOverlayPanelMetric(definition.w, overlay.scaledW, overlay.scaledW, overlay.positioningHandler, overlay.uiScale),
+        0,
+        Infinity,
+        0
+    );
+    const h = clampFiniteNumber(
+        resolveOverlayPanelMetric(definition.h, overlay.scaledH, overlay.scaledH, overlay.positioningHandler, overlay.uiScale),
+        0,
+        Infinity,
+        0
+    );
 
     return {
         id: definition.id || `${DEFAULT_OVERLAY_PANEL_ID}_${index}`,
@@ -118,11 +162,11 @@ export function resolveOverlayPanelRegion(definition = {}, index = 0, overlay) {
         w,
         h,
         radius: resolveOverlayPanelRadius(definition.radius, w, overlay.positioningHandler, overlay.uiScale),
-        blur: definition.blur ?? 0.1,
+        blur: definition.blur ?? DEFAULT_PANEL_BLUR,
         fill: definition.fill,
         stroke: definition.stroke,
-        lineWidth: definition.lineWidth ?? 1,
-        shadowBlur: definition.shadowBlur ?? 24,
+        lineWidth: definition.lineWidth ?? DEFAULT_PANEL_LINE_WIDTH,
+        shadowBlur: definition.shadowBlur ?? DEFAULT_PANEL_SHADOW_BLUR,
         shadowColor: definition.shadowColor ?? ColorSchemes.Overlay.Panel.Shadow,
         tintColor: definition.tintColor,
         edgeColor: definition.edgeColor,
