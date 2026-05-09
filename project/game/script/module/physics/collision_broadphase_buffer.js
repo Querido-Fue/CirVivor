@@ -1,3 +1,4 @@
+import { getData } from 'data/data_handler.js';
 import {
     COLLISION_BROAD_STRIDE as BROAD_STRIDE,
     COLLISION_RELATION_INDEX as RELATION_INDEX,
@@ -6,16 +7,18 @@ import {
     getCollisionBodyShapeCode
 } from './collision_soa_layout.js';
 
-const COLLISION_GRID_RADIUS_SCALE = 1.03;
+const COLLISION_GRID_CONSTANTS = getData('COLLISION_CONSTANTS').GRID;
+const COLLISION_GRID_RADIUS_SCALE = COLLISION_GRID_CONSTANTS.RADIUS_SCALE;
+const BROADPHASE_INITIAL_CAPACITY = COLLISION_GRID_CONSTANTS.BROADPHASE_INITIAL_CAPACITY;
 
 /**
  * broad-phase와 enemy relation narrowphase에 필요한 SoA 배열을 관리합니다.
  */
 export class CollisionBroadphaseBuffer {
     /**
-     * @param {number} [initialCapacity=512] - 초기 body 용량입니다.
+     * @param {number} [initialCapacity=BROADPHASE_INITIAL_CAPACITY] - 초기 body 용량입니다.
      */
-    constructor(initialCapacity = 512) {
+    constructor(initialCapacity = BROADPHASE_INITIAL_CAPACITY) {
         this.broadData = new Float32Array(initialCapacity * BROAD_STRIDE);
         this.relationData = new Float64Array(initialCapacity * RELATION_BROAD_STRIDE);
         this.bodyKindCodes = new Uint8Array(initialCapacity);

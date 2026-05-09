@@ -39,14 +39,6 @@ const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
     'solveResolvedPairCount',
     'solveSoACirclePairCount',
     'solveObjectNarrowphasePairCount',
-    'solveParallelNarrowphasePairCount',
-    'solveParallelNarrowphaseContactCount',
-    'solveParallelNarrowphasePoolSize',
-    'solveParallelNarrowphaseChunkCount',
-    'solveParallelNarrowphaseWaitMs',
-    'solveParallelNarrowphaseFallbackCount',
-    'solveParallelNarrowphaseFallbackPairCount',
-    'solveParallelNarrowphaseOverflowCount',
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
 ]);

@@ -1,3 +1,4 @@
+import { getData } from 'data/data_handler.js';
 import { getSimulationObjectWH } from '../simulation/simulation_runtime.js';
 import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
 import {
@@ -10,6 +11,14 @@ import {
     MERGE_PENDING_RESOLVE_WEIGHT
 } from './_collision_resolve_tuning.js';
 
+const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
+const COLLISION_BODY_BUILDER = COLLISION_CONSTANTS.BODY_BUILDER;
+const DEFAULT_EPSILON = COLLISION_CONSTANTS.EPSILON;
+const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
+const CIRCLE_PART_STRIDE = COLLISION_BODY_BUILDER.CIRCLE_PART_STRIDE;
+const BOUND_RADIUS_HALF_SCALE = COLLISION_BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
+const DEGREES_TO_RADIANS = COLLISION_BODY_BUILDER.DEGREES_TO_RADIANS;
+
 /**
  * 적 충돌 body 필드를 현재 프레임 상태로 채웁니다.
  * @param {object} body - 값을 채울 충돌 body입니다.
@@ -20,12 +29,12 @@ import {
  * @returns {boolean} 유효한 적 body를 구성했는지 여부입니다.
  */
 export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, options = {}) {
-    const epsilon = Number.isFinite(options?.epsilon) ? options.epsilon : 1e-6;
+    const epsilon = Number.isFinite(options?.epsilon) ? options.epsilon : DEFAULT_EPSILON;
     const frameResolveMinMax = Number.isFinite(options?.frameResolveMinMax) ? options.frameResolveMinMax : 0;
     const frameResolveMaxRatio = Number.isFinite(options?.frameResolveMaxRatio) ? options.frameResolveMaxRatio : 0;
     const baseHeight = typeof enemy.getRenderHeightPx === 'function'
         ? enemy.getRenderHeightPx()
-        : (getSimulationObjectWH() * 0.03 * (enemy.size || 1));
+        : (getSimulationObjectWH() * ENEMY_DRAW_HEIGHT_RATIO * (enemy.size || 1));
     const width = baseHeight * (enemy.aspectRatio ?? 1);
     const height = baseHeight * (enemy.heightScale ?? 1);
     const hexaHiveCenters = Array.isArray(enemy?.hexaHiveLayout?.filledLocalCenters) && enemy.hexaHiveLayout.filledLocalCenters.length > 0
@@ -41,7 +50,7 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
     let sin = 0;
     if (useHiveCells) {
         const rotationDeg = Number.isFinite(enemy.rotation) ? enemy.rotation : 0;
-        const rad = rotationDeg * (Math.PI / 180);
+        const rad = rotationDeg * DEGREES_TO_RADIANS;
         cos = Math.cos(rad);
         sin = Math.sin(rad);
     }
@@ -182,7 +191,7 @@ function _buildCollisionEnemyShapeMetrics({
         : getEnemyCircleCollisionRadius(enemy.type, width, height);
 
     if (useHiveCells) {
-        const circleBufferLength = partCount * 3;
+        const circleBufferLength = partCount * CIRCLE_PART_STRIDE;
         if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
             enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
         }
@@ -196,7 +205,7 @@ function _buildCollisionEnemyShapeMetrics({
             const radius = singleCircleRadius;
             const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
             const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
-            const offset = p * 3;
+            const offset = p * CIRCLE_PART_STRIDE;
             enemy.__collisionWorldCircles[offset] = wx;
             enemy.__collisionWorldCircles[offset + 1] = wy;
             enemy.__collisionWorldCircles[offset + 2] = radius;
@@ -257,6 +266,9 @@ function _buildCollisionEnemyShapeMetrics({
         broadRadius,
         enemyPairBroadRadius,
         projectileBroadRadius,
-        boundRadius: Math.max((maxX - minX) * 0.5, (maxY - minY) * 0.5)
+        boundRadius: Math.max(
+            (maxX - minX) * BOUND_RADIUS_HALF_SCALE,
+            (maxY - minY) * BOUND_RADIUS_HALF_SCALE
+        )
     };
 }

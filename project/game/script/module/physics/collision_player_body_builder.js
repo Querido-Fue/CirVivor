@@ -1,3 +1,7 @@
+import { getData } from 'data/data_handler.js';
+
+const DEFAULT_EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
+
 /**
  * 플레이어 충돌 body 필드를 현재 프레임 상태로 채웁니다.
  * @param {object} body - 값을 채울 충돌 body입니다.
@@ -12,7 +16,7 @@ export function writeCollisionPlayerBody(body, player, delta, options) {
         return false;
     }
 
-    const epsilon = Number.isFinite(options?.epsilon) ? options.epsilon : 1e-6;
+    const epsilon = Number.isFinite(options?.epsilon) ? options.epsilon : DEFAULT_EPSILON;
     const frameResolveMinMax = Number.isFinite(options?.frameResolveMinMax) ? options.frameResolveMinMax : 0;
     const frameResolveMaxRatio = Number.isFinite(options?.frameResolveMaxRatio) ? options.frameResolveMaxRatio : 0;
     const x = Number.isFinite(player.position?.x) ? player.position.x : 0;

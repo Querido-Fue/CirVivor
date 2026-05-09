@@ -1,14 +1,18 @@
-const CELL_KEY_OFFSET = 4096;
-const CELL_KEY_STRIDE = 8192;
+import { getData } from 'data/data_handler.js';
+
+const COLLISION_GRID_CONSTANTS = getData('COLLISION_CONSTANTS').GRID;
+const CELL_KEY_OFFSET = COLLISION_GRID_CONSTANTS.CELL_KEY_OFFSET;
+const CELL_KEY_STRIDE = COLLISION_GRID_CONSTANTS.CELL_KEY_STRIDE;
+const GRID_QUERY_INITIAL_CAPACITY = COLLISION_GRID_CONSTANTS.QUERY_INITIAL_CAPACITY;
 
 /**
  * grid query에서 방문 body를 중복 수집하지 않도록 stamp 버퍼를 관리합니다.
  */
 export class CollisionGridQueryBuffer {
     /**
-     * @param {number} [initialCapacity=512] - 초기 방문 마크 용량입니다.
+     * @param {number} [initialCapacity=GRID_QUERY_INITIAL_CAPACITY] - 초기 방문 마크 용량입니다.
      */
-    constructor(initialCapacity = 512) {
+    constructor(initialCapacity = GRID_QUERY_INITIAL_CAPACITY) {
         this.marks = new Int32Array(initialCapacity);
         this.markStamp = 0;
         this.candidateIndices = [];

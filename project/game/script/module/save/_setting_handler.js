@@ -50,7 +50,6 @@ export class SettingHandler {
             sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             debugMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-            simulationWorkerAuthorityMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
         };
 
         this.#mathUtil = new MathUtil();
@@ -180,15 +179,10 @@ export class SettingHandler {
             fileData.theme = fileData.darkMode ? 'dark' : 'light';
             needsSave = true;
         }
-        if (fileData.simulationWorkerShadowMode !== undefined
+        if (fileData.simulationWorkerAuthorityMode !== undefined
+            || fileData.simulationWorkerShadowMode !== undefined
             || fileData.simulationWorkerPresentationMode !== undefined) {
-            const hasAuthorityMode = fileData.simulationWorkerAuthorityMode !== undefined;
-            fileData.simulationWorkerAuthorityMode = hasAuthorityMode
-                ? fileData.simulationWorkerAuthorityMode === true
-                    && fileData.simulationWorkerShadowMode !== false
-                    && fileData.simulationWorkerPresentationMode !== false
-                : fileData.simulationWorkerShadowMode === true
-                    && fileData.simulationWorkerPresentationMode === true;
+            delete fileData.simulationWorkerAuthorityMode;
             delete fileData.simulationWorkerShadowMode;
             delete fileData.simulationWorkerPresentationMode;
             needsSave = true;

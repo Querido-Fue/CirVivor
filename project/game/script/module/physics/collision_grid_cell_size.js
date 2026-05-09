@@ -1,7 +1,12 @@
+import { getData } from 'data/data_handler.js';
 import { getSimulationObjectWH } from '../simulation/simulation_runtime.js';
 
-const MIN_CELL_SIZE = 20;
-const MAX_CELL_SIZE = 280;
+const COLLISION_GRID_CONSTANTS = getData('COLLISION_CONSTANTS').GRID;
+const MIN_CELL_SIZE = COLLISION_GRID_CONSTANTS.MIN_CELL_SIZE;
+const MAX_CELL_SIZE = COLLISION_GRID_CONSTANTS.MAX_CELL_SIZE;
+const CELL_SIZE_RADIUS_SCALE = COLLISION_GRID_CONSTANTS.CELL_SIZE_RADIUS_SCALE;
+const DEFAULT_RADIUS_WORLD_RATIO = COLLISION_GRID_CONSTANTS.DEFAULT_RADIUS_WORLD_RATIO;
+const DEFAULT_RADIUS_MIN = COLLISION_GRID_CONSTANTS.DEFAULT_RADIUS_MIN;
 
 /**
  * grid 용도에 맞는 평균 broad radius로 셀 크기를 추정합니다.
@@ -24,7 +29,9 @@ export function estimateCollisionGridCellSize(bodies, gridMode = 'default') {
         radiusSum += radius;
         count++;
     }
-    const avgRadius = count > 0 ? (radiusSum / count) : Math.max(getSimulationObjectWH() * 0.015, 12);
-    const cell = Math.floor(avgRadius * 2.4);
+    const avgRadius = count > 0
+        ? (radiusSum / count)
+        : Math.max(getSimulationObjectWH() * DEFAULT_RADIUS_WORLD_RATIO, DEFAULT_RADIUS_MIN);
+    const cell = Math.floor(avgRadius * CELL_SIZE_RADIUS_SCALE);
     return Math.max(MIN_CELL_SIZE, Math.min(MAX_CELL_SIZE, cell));
 }

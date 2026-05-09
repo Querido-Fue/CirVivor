@@ -96,7 +96,6 @@ function collectObjectSystemHexaHiveReleaseIndices(enemies, releaseIds) {
  * @param {Map<number, object>|null} [options.activeMergeCandidatesById=null] - 활성 합체 후보 맵입니다.
  * @param {(index: number) => void} options.releaseEnemyAt - 적 반납 콜백입니다.
  * @param {(type: string, data: object) => object|null} options.spawnEnemy - 적 생성 콜백입니다.
- * @param {(enemy: object|null|undefined) => void} options.queueEnemySpawn - 생성 명령 큐잉 콜백입니다.
  * @returns {number}
  */
 export function resolveObjectSystemHexaHiveMerges(options) {
@@ -108,16 +107,13 @@ export function resolveObjectSystemHexaHiveMerges(options) {
     const spawnEnemy = typeof options?.spawnEnemy === 'function'
         ? options.spawnEnemy
         : null;
-    const queueEnemySpawn = typeof options?.queueEnemySpawn === 'function'
-        ? options.queueEnemySpawn
-        : null;
     const mergeGroups = collectHexaHiveMergeGroups(
         contactSecondsByPair,
         options?.activeMergeCandidatesById instanceof Map
             ? options.activeMergeCandidatesById
             : buildActiveHexaMergeCandidatesById(enemies)
     );
-    if (mergeGroups.length === 0 || !releaseEnemyAt || !spawnEnemy || !queueEnemySpawn) {
+    if (mergeGroups.length === 0 || !releaseEnemyAt || !spawnEnemy) {
         return 0;
     }
 
@@ -140,7 +136,6 @@ export function resolveObjectSystemHexaHiveMerges(options) {
             continue;
         }
 
-        queueEnemySpawn(hexaHive);
         mergedCount++;
     }
 

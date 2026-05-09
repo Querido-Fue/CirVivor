@@ -1,5 +1,4 @@
 import { renderGL } from 'display/display_system.js';
-import { GAME_SCENE_SHARED_PRESENTATION_STRIDE } from 'simulation/game_scene_shared_presentation.js';
 import { measurePerformanceSection } from 'debug/debug_system.js';
 import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
 import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
@@ -108,96 +107,6 @@ export function drawGameSceneWorldObjects(options = {}) {
     measurePerformanceSection('scene.game.world.projectiles', () => {
         for (let i = 0; i < projectiles.length; i++) {
             renderProjectile(projectiles[i], offsetY);
-        }
-    });
-}
-
-/**
- * 공유 프레젠테이션 기반 씬 오브젝트를 렌더합니다.
- * @param {object|null|undefined} sharedState - 공유 프레젠테이션 읽기 상태입니다.
- * @param {{objectOffsetY?: number}} [options={}] - 렌더 옵션입니다.
- */
-export function drawGameSceneSharedWorldObjects(sharedState, options = {}) {
-    if (!sharedState) {
-        return;
-    }
-
-    const offsetY = normalizeSnapshotNumber(options?.objectOffsetY, 0);
-    const wallStride = GAME_SCENE_SHARED_PRESENTATION_STRIDE.WALL;
-    const projectileStride = GAME_SCENE_SHARED_PRESENTATION_STRIDE.PROJECTILE;
-    const projectileStaticStride = GAME_SCENE_SHARED_PRESENTATION_STRIDE.PROJECTILE_STATIC;
-    const staticWallData = sharedState.staticWallData;
-    const boxWallData = sharedState.boxWallData;
-    const playerData = sharedState.playerData;
-    const projectileData = sharedState.projectileData;
-    const projectileStaticData = sharedState.projectileStaticData;
-    const staticWallBase = sharedState.staticWallBase;
-    const boxWallBase = sharedState.boxWallBase;
-    const playerBase = sharedState.playerBase;
-    const projectileBase = sharedState.projectileBase;
-    const projectileStaticBase = sharedState.projectileStaticBase;
-
-    measurePerformanceSection('scene.game.shared.world.staticWalls', () => {
-        for (let i = 0; i < sharedState.staticWallCount; i++) {
-            const offset = staticWallBase + (i * wallStride);
-            renderGL('object', {
-                shape: 'rect',
-                x: staticWallData[offset + 0],
-                y: staticWallData[offset + 1] - offsetY,
-                w: staticWallData[offset + 2],
-                h: staticWallData[offset + 3],
-                fill: getBenchmarkColor('StaticWall')
-            });
-        }
-    });
-
-    measurePerformanceSection('scene.game.shared.world.boxWalls', () => {
-        for (let i = 0; i < sharedState.boxWallCount; i++) {
-            const offset = boxWallBase + (i * wallStride);
-            renderGL('object', {
-                shape: 'rect',
-                x: boxWallData[offset + 0],
-                y: boxWallData[offset + 1] - offsetY,
-                w: boxWallData[offset + 2],
-                h: boxWallData[offset + 3],
-                fill: getBenchmarkColor('BoxWall')
-            });
-        }
-    });
-
-    measurePerformanceSection('scene.game.shared.world.player', () => {
-        if (sharedState.playerActive === true) {
-            const px = playerData[playerBase + 0];
-            const py = playerData[playerBase + 1];
-            const pr = playerData[playerBase + 2];
-            const diameter = pr * 2;
-            renderGL('object', {
-                shape: 'circle',
-                x: px,
-                y: py - offsetY,
-                w: diameter,
-                h: diameter,
-                fill: getBenchmarkColor('Player'),
-                alpha: 0.95
-            });
-        }
-    });
-
-    measurePerformanceSection('scene.game.shared.world.projectiles', () => {
-        for (let i = 0; i < sharedState.projectileCount; i++) {
-            const offset = projectileBase + (i * projectileStride);
-            const staticOffset = projectileStaticBase + (i * projectileStaticStride);
-            const radius = projectileStaticData[staticOffset + 0];
-            const diameter = radius * 2;
-            renderGL('object', {
-                shape: 'circle',
-                x: projectileData[offset + 0],
-                y: projectileData[offset + 1] - offsetY,
-                w: diameter,
-                h: diameter,
-                fill: getBenchmarkColor('Projectile'),
-                alpha: 0.95
-            });
         }
     });
 }

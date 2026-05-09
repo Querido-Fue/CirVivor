@@ -1,8 +1,7 @@
+import { getData } from 'data/data_handler.js';
 import { isCollisionEnemyPairAnchorBody } from './_collision_resolve_tuning.js';
 
-const ENEMY_PAIR_PROCESS_BUDGET_POSITION = 14;
-const ENEMY_PAIR_PROCESS_BUDGET_STABILIZE = 10;
-const ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION = 8;
+const COLLISION_ENEMY_PAIR_PROCESS_BUDGET = getData('COLLISION_CONSTANTS').ENEMY_PAIR_PROCESS_BUDGET;
 
 /**
  * 현재 패스에서 적-적 narrowphase 처리에 적용할 상한을 반환합니다.
@@ -13,14 +12,14 @@ const ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION = 8;
  */
 export function getCollisionEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost) {
     if (applyNonPosition) {
-        return ENEMY_PAIR_PROCESS_BUDGET_NON_POSITION;
+        return COLLISION_ENEMY_PAIR_PROCESS_BUDGET.NON_POSITION;
     }
     if (!resolvePositions) {
         return Number.POSITIVE_INFINITY;
     }
     return resolveBoost > 1
-        ? ENEMY_PAIR_PROCESS_BUDGET_STABILIZE
-        : ENEMY_PAIR_PROCESS_BUDGET_POSITION;
+        ? COLLISION_ENEMY_PAIR_PROCESS_BUDGET.STABILIZE
+        : COLLISION_ENEMY_PAIR_PROCESS_BUDGET.POSITION;
 }
 
 /**

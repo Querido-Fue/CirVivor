@@ -31,18 +31,6 @@ export class BaseScene {
     }
 
     /**
-     * 읽기 전용 시뮬레이션 스냅샷으로 현재 씬을 그립니다. (오버라이드 선택)
-     * @param {object|null} [sceneSnapshot=null]
-     * @param {object} [options={}]
-     * @returns {boolean}
-     */
-    drawSimulationSnapshot(sceneSnapshot = null, options = {}) {
-        void sceneSnapshot;
-        void options;
-        return false;
-    }
-
-    /**
          * 창 크기 변경 시 씬 구성요소의 크기를 재산정합니다. (오버라이드 필요)
          */
     resize() {
@@ -64,27 +52,4 @@ export class BaseScene {
         void commands;
     }
 
-    /**
-     * 현재 씬의 읽기 전용 시뮬레이션 스냅샷을 생성합니다. (오버라이드 선택)
-     * @returns {object|null}
-     */
-    createSimulationSnapshot() {
-        return null;
-    }
-
-    /**
-     * 현재 프레임의 동적 시뮬레이션 상태만 모은 스냅샷을 생성합니다. (오버라이드 선택)
-     * @returns {object|null}
-     */
-    createSimulationFrameSnapshot() {
-        return null;
-    }
-
-    /**
-     * 현재 씬이 내부적으로 생성한 시뮬레이션 명령을 반환하고 큐를 비웁니다. (오버라이드 선택)
-     * @returns {object[]}
-     */
-    consumeSimulationCommands() {
-        return [];
-    }
 }

@@ -1,9 +1,15 @@
+import { getData } from 'data/data_handler.js';
 import { getCollisionDenseFrameScale } from './_collision_resolve_tuning.js';
 
-const EPSILON = 1e-6;
-const COLLISION_AXIS_RESISTANCE_MIN = 0.25;
-const COLLISION_AXIS_RESISTANCE_GAIN = 0.85;
-const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = 0.35;
+const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
+const COLLISION_BODY_TRANSLATION = COLLISION_CONSTANTS.BODY_TRANSLATION;
+const COLLISION_BODY_BUILDER = COLLISION_CONSTANTS.BODY_BUILDER;
+const EPSILON = COLLISION_CONSTANTS.EPSILON;
+const COLLISION_AXIS_RESISTANCE_MIN = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_MIN;
+const COLLISION_AXIS_RESISTANCE_GAIN = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_GAIN;
+const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_RADIUS_RATIO;
+const COLLISION_AXIS_RESISTANCE_RADIUS_MIN = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_RADIUS_MIN;
+const CIRCLE_PART_STRIDE = COLLISION_BODY_BUILDER.CIRCLE_PART_STRIDE;
 
 /**
  * resolve 이동량을 body와 원본 객체, broad-phase 버퍼에 반영합니다.
@@ -102,8 +108,8 @@ function writeCollisionBodyTranslation(body, dx, dy) {
     body.y = body.centerY;
 
     if (body.circleParts instanceof Float32Array) {
-        const limit = Math.max(0, Math.floor(body.circlePartCount || 0)) * 3;
-        for (let i = 0; i < limit; i += 3) {
+        const limit = Math.max(0, Math.floor(body.circlePartCount || 0)) * CIRCLE_PART_STRIDE;
+        for (let i = 0; i < limit; i += CIRCLE_PART_STRIDE) {
             body.circleParts[i] += dx;
             body.circleParts[i + 1] += dy;
         }
@@ -145,8 +151,14 @@ function applyCollisionAxisResistance(body, dx, dy) {
 
     let resistX = 1;
     let resistY = 1;
-    const radius = Math.max(1, Number.isFinite(body.boundRadius) ? body.boundRadius : 1);
-    const axisRange = Math.max(1, radius * COLLISION_AXIS_RESISTANCE_RADIUS_RATIO);
+    const radius = Math.max(
+        COLLISION_AXIS_RESISTANCE_RADIUS_MIN,
+        Number.isFinite(body.boundRadius) ? body.boundRadius : COLLISION_AXIS_RESISTANCE_RADIUS_MIN
+    );
+    const axisRange = Math.max(
+        COLLISION_AXIS_RESISTANCE_RADIUS_MIN,
+        radius * COLLISION_AXIS_RESISTANCE_RADIUS_RATIO
+    );
     const velX = Number.isFinite(body.velocityX) ? body.velocityX : 0;
     const velY = Number.isFinite(body.velocityY) ? body.velocityY : 0;
     if ((dx * velX) < -EPSILON) {

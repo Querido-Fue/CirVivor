@@ -1,8 +1,6 @@
 import { getLangString } from 'ui/ui_system.js';
 import { getSetting } from 'save/save_system.js';
 
-export const MULTICORE_SETTING_KEY = 'simulationWorkerAuthorityMode';
-
 export const SETTING_LABEL_KEYS = Object.freeze({
     windowMode: 'title_settings_window_mode',
     widescreenSupport: 'title_settings_widescreen_support',
@@ -10,7 +8,6 @@ export const SETTING_LABEL_KEYS = Object.freeze({
     uiScale: 'title_settings_ui_scale',
     disableTransparency: 'title_settings_disable_transparency',
     tooltipDelaySeconds: 'title_settings_tooltip_delay',
-    multicoreSupport: 'title_settings_multicore_support',
     language: 'title_settings_language',
     theme: 'title_settings_theme',
     bgmVolume: 'title_settings_bgm',
@@ -39,7 +36,6 @@ export function createSettingsInitialState(options) {
         tooltipDelaySeconds: normalizeTooltipDelaySeconds(
             getSetting('tooltipDelaySeconds') !== undefined ? getSetting('tooltipDelaySeconds') : 0.7
         ),
-        multicoreSupport: isMulticoreSettingEnabled(),
         language: normalizedLanguage,
         theme: getSetting('theme') || options?.defaultThemeKey,
         bgmVolume: getSetting('bgmVolume') !== undefined ? getSetting('bgmVolume') : 100,
@@ -54,14 +50,6 @@ export function createSettingsInitialState(options) {
  */
 export function getNormalizedWindowMode(windowMode) {
     return windowMode === 'windowed' ? 'windowed' : 'fullscreen';
-}
-
-/**
- * 저장된 멀티코어 설정 활성 여부를 반환합니다.
- * @returns {boolean}
- */
-export function isMulticoreSettingEnabled() {
-    return getSetting(MULTICORE_SETTING_KEY) === true;
 }
 
 /**
@@ -110,24 +98,6 @@ export function getRevertedSettings(initialSettings, tempSettings) {
     }
 
     return revertedSettings;
-}
-
-/**
- * 가상 설정 키를 실제 저장 키 묶음으로 확장합니다.
- * @param {object} changedSettings - UI에서 변경된 설정 객체입니다.
- * @returns {object} 저장/미리보기에 사용할 실제 설정 객체입니다.
- */
-export function expandCompositeSettings(changedSettings = {}) {
-    const expandedSettings = { ...changedSettings };
-    if (expandedSettings.multicoreSupport === undefined) {
-        return expandedSettings;
-    }
-
-    const enableMulticore = expandedSettings.multicoreSupport === true;
-    delete expandedSettings.multicoreSupport;
-    expandedSettings[MULTICORE_SETTING_KEY] = enableMulticore;
-
-    return expandedSettings;
 }
 
 /**

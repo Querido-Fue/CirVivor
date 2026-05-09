@@ -4,7 +4,6 @@ import { BaseProj } from 'object/proj/_base_proj.js';
 import { BaseWall } from 'object/wall/_base_wall.js';
 import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_protocol.js';
 import { applyGameSceneSimulationCommands } from './game_scene_command_dispatcher.js';
-import { clearGameScenePendingCommandState } from './game_scene_pending_commands.js';
 
 const GAME_SCENE_AI_BY_ID = Object.freeze({
     enemyAI,
@@ -72,7 +71,6 @@ function syncGameSceneObjectSystemWalls(scene) {
 function applyReplaceWorldCommand(scene, command) {
     scene.objectSystem.showcaseEnabled = false;
     scene.objectSystem.clearEnemies();
-    clearGameScenePendingCommandState(scene.pendingSimulationCommandState);
 
     scene.player = command.player ? createGameScenePlayerEntity(command.player) : null;
     scene.projectiles = Array.isArray(command.projectiles)
@@ -142,31 +140,10 @@ function applyAppendProjectilesCommand(scene, command) {
 }
 
 /**
- * 투사체 제거 명령을 로컬 씬 상태에 적용합니다.
- * @param {object} scene - 게임 씬 인스턴스입니다.
- * @param {object} command - 투사체 제거 명령입니다.
- */
-function applyDespawnProjectilesCommand(scene, command) {
-    scene.projIdCounter = Number.isInteger(command.nextProjIdCounter) ? command.nextProjIdCounter : scene.projIdCounter;
-    const projectileIds = new Set(
-        Array.isArray(command.projectileIds)
-            ? command.projectileIds.filter((projectileId) => Number.isInteger(projectileId))
-            : []
-    );
-    if (projectileIds.size <= 0) {
-        return;
-    }
-
-    scene.projectiles = scene.projectiles.filter((projectile) => !projectileIds.has(projectile?.id));
-    scene.objectSystem.setProjectiles(scene.projectiles);
-}
-
-/**
  * 월드 파괴 명령을 로컬 씬 상태에 적용합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
  */
 function applyDestroyWorldCommand(scene) {
-    clearGameScenePendingCommandState(scene.pendingSimulationCommandState);
     scene.objectSystem.setPlayers([]);
     scene.objectSystem.setProjectiles([]);
     scene.objectSystem.setItems([]);
@@ -193,7 +170,6 @@ export function applyGameSceneCommandsToLocalState(scene, commands = []) {
         [GAME_SCENE_COMMAND_TYPES.SPAWN_ENEMY_BATCH]: (command) => applySpawnEnemyBatchCommand(scene, command),
         [GAME_SCENE_COMMAND_TYPES.APPEND_BOX_WALLS]: (command) => applyAppendBoxWallsCommand(scene, command),
         [GAME_SCENE_COMMAND_TYPES.APPEND_PROJECTILES]: (command) => applyAppendProjectilesCommand(scene, command),
-        [GAME_SCENE_COMMAND_TYPES.DESPAWN_PROJECTILE_BATCH]: (command) => applyDespawnProjectilesCommand(scene, command),
         [GAME_SCENE_COMMAND_TYPES.DESTROY_WORLD]: () => applyDestroyWorldCommand(scene)
     });
 }

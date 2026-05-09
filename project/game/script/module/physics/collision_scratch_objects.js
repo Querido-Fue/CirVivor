@@ -1,3 +1,7 @@
+import { getData } from 'data/data_handler.js';
+
+const BOUND_RADIUS_HALF_SCALE = getData('COLLISION_CONSTANTS').BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
+
 /**
  * 투사체 충돌 검사에 재사용할 scratch body를 생성합니다.
  * @returns {object}
@@ -52,10 +56,10 @@ export function createCollisionWallBody(rect, wall) {
     const w = Number.isFinite(rect.w) ? rect.w : 0;
     const h = Number.isFinite(rect.h) ? rect.h : 0;
     const isCenter = rect.origin === 'center' || rect.isCenter === true;
-    const cx = isCenter ? rect.x : (rect.x + (w * 0.5));
-    const cy = isCenter ? rect.y : (rect.y + (h * 0.5));
-    const hw = w * 0.5;
-    const hh = h * 0.5;
+    const cx = isCenter ? rect.x : (rect.x + (w * BOUND_RADIUS_HALF_SCALE));
+    const cy = isCenter ? rect.y : (rect.y + (h * BOUND_RADIUS_HALF_SCALE));
+    const hw = w * BOUND_RADIUS_HALF_SCALE;
+    const hh = h * BOUND_RADIUS_HALF_SCALE;
 
     return {
         id: Number.isInteger(rect.id) ? rect.id : -1,

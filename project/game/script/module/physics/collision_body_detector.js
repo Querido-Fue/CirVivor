@@ -1,3 +1,4 @@
+import { getData } from 'data/data_handler.js';
 import { getCollisionBodyCollisionRadiusScale } from './_collision_resolve_tuning.js';
 import {
     copyCollisionManifold,
@@ -8,7 +9,9 @@ import {
     writeCollisionCircleRectOverlapManifold
 } from './collision_manifold_writer.js';
 
-const EPSILON = 1e-6;
+const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
+const EPSILON = COLLISION_CONSTANTS.EPSILON;
+const CIRCLE_PART_STRIDE = COLLISION_CONSTANTS.BODY_BUILDER.CIRCLE_PART_STRIDE;
 
 /**
  * @typedef {object} CollisionBodyDetectorContext
@@ -121,7 +124,7 @@ function detectCirclePartsVsCircleParts(bodyA, bodyB, context) {
     const fallbackNormalY = bodyB.centerY - bodyA.centerY;
 
     for (let i = 0; i < countA; i++) {
-        const offsetA = i * 3;
+        const offsetA = i * CIRCLE_PART_STRIDE;
         const ax = partsA[offsetA];
         const ay = partsA[offsetA + 1];
         const ar = partsA[offsetA + 2] * scaleA;
@@ -129,7 +132,7 @@ function detectCirclePartsVsCircleParts(bodyA, bodyB, context) {
             continue;
         }
         for (let j = 0; j < countB; j++) {
-            const offsetB = j * 3;
+            const offsetB = j * CIRCLE_PART_STRIDE;
             recordCollisionPartCheck(context.profileRecorder);
             const bx = partsB[offsetB];
             const by = partsB[offsetB + 1];
@@ -221,7 +224,7 @@ function detectCirclePartsVsCircle(partBody, circleBody, context) {
     const fallbackNormalY = circleY - partBody.centerY;
 
     for (let i = 0; i < count; i++) {
-        const offset = i * 3;
+        const offset = i * CIRCLE_PART_STRIDE;
         recordCollisionPartCheck(context.profileRecorder);
         const ax = parts[offset];
         const ay = parts[offset + 1];
@@ -326,7 +329,7 @@ function detectCirclePartsVsRect(partBody, rectBody, context) {
     const rectMaxY = Number.isFinite(rectBody?.maxY) ? rectBody.maxY : 0;
 
     for (let i = 0; i < count; i++) {
-        const offset = i * 3;
+        const offset = i * CIRCLE_PART_STRIDE;
         recordCollisionPartCheck(context.profileRecorder);
         const circleX = parts[offset];
         const circleY = parts[offset + 1];

@@ -1,3 +1,10 @@
+import { getData } from 'data/data_handler.js';
+
+const ENEMY_COLLISION_RADIUS_DATA = getData('ENEMY_COLLISION_RADIUS_DATA');
+const ENEMY_COLLISION_RADIUS_TYPES = ENEMY_COLLISION_RADIUS_DATA.TYPES;
+const ENEMY_COLLISION_RADIUS_MIN_DIMENSION = ENEMY_COLLISION_RADIUS_DATA.MIN_DIMENSION;
+const ENEMY_COLLISION_RADIUS_DEFAULT_TYPE = ENEMY_COLLISION_RADIUS_DATA.DEFAULT_TYPE;
+
 /**
  * 합체 적 충돌 형상 기준 셀 수를 반환합니다.
  * @param {object|null|undefined} enemy - 조회할 적 객체입니다.
@@ -29,8 +36,12 @@ export function getHexaHiveCollisionCellCount(enemy) {
  * @returns {number} 충돌 보정 반경입니다.
  */
 export function getEnemyResolveRadius(enemy, boundRadius, baseHeight, tuning) {
-    const minRadius = Number.isFinite(tuning?.minRadius) ? tuning.minRadius : 1;
-    const hexaHiveRadiusScale = Number.isFinite(tuning?.hexaHiveRadiusScale) ? tuning.hexaHiveRadiusScale : 1;
+    const minRadius = Number.isFinite(tuning?.minRadius)
+        ? tuning.minRadius
+        : ENEMY_COLLISION_RADIUS_MIN_DIMENSION;
+    const hexaHiveRadiusScale = Number.isFinite(tuning?.hexaHiveRadiusScale)
+        ? tuning.hexaHiveRadiusScale
+        : ENEMY_COLLISION_RADIUS_MIN_DIMENSION;
     const hexaHiveRootScale = Number.isFinite(tuning?.hexaHiveRootScale) ? tuning.hexaHiveRootScale : 0;
     const safeBoundRadius = Number.isFinite(boundRadius) ? Math.max(minRadius, boundRadius) : minRadius;
     if (enemy?.type !== 'hexa_hive') {
@@ -39,10 +50,13 @@ export function getEnemyResolveRadius(enemy, boundRadius, baseHeight, tuning) {
 
     const safeBaseHeight = Number.isFinite(baseHeight) ? Math.max(minRadius, baseHeight) : safeBoundRadius;
     const cellCount = getHexaHiveCollisionCellCount(enemy);
-    const rootedCellCount = Math.max(1, Math.sqrt(cellCount));
+    const rootedCellCount = Math.max(ENEMY_COLLISION_RADIUS_MIN_DIMENSION, Math.sqrt(cellCount));
     const cellDrivenRadius = safeBaseHeight * (
         hexaHiveRadiusScale
-        + (Math.max(0, rootedCellCount - 1) * hexaHiveRootScale)
+        + (
+            Math.max(0, rootedCellCount - ENEMY_COLLISION_RADIUS_MIN_DIMENSION)
+            * hexaHiveRootScale
+        )
     );
     const hybridRadius = Math.sqrt(safeBoundRadius * safeBaseHeight);
     return Math.max(
@@ -66,53 +80,80 @@ export function getEnemyResolveRadius(enemy, boundRadius, baseHeight, tuning) {
  * @returns {number} 충돌 반지름입니다.
  */
 export function getEnemyCircleCollisionRadius(enemyType, width, height) {
-    const safeWidth = Number.isFinite(width) ? Math.max(1, width) : 1;
-    const safeHeight = Number.isFinite(height) ? Math.max(1, height) : safeWidth;
-    let radius = 0;
+    const safeWidth = Number.isFinite(width)
+        ? Math.max(ENEMY_COLLISION_RADIUS_MIN_DIMENSION, width)
+        : ENEMY_COLLISION_RADIUS_MIN_DIMENSION;
+    const safeHeight = Number.isFinite(height)
+        ? Math.max(ENEMY_COLLISION_RADIUS_MIN_DIMENSION, height)
+        : safeWidth;
+    const rule = ENEMY_COLLISION_RADIUS_TYPES[enemyType]
+        ?? ENEMY_COLLISION_RADIUS_TYPES[ENEMY_COLLISION_RADIUS_DEFAULT_TYPE];
+    const radius = calculateEnemyCollisionRadiusFromRule(rule, safeWidth, safeHeight);
+    return Math.max(ENEMY_COLLISION_RADIUS_MIN_DIMENSION, radius);
+}
 
-    switch (enemyType) {
-        case 'triangle':
-            radius = Math.max(
-                safeHeight * 0.5333,
-                Math.hypot(safeWidth * 0.462, safeHeight * 0.2667)
-            );
-            break;
-        case 'arrow':
-            radius = Math.max(
-                safeHeight * 0.5767,
-                Math.hypot(safeWidth * 0.46, safeHeight * 0.3733)
-            );
-            break;
-        case 'hexa':
-            radius = 0.47 * Math.max(
-                safeHeight,
-                Math.hypot(safeWidth * 0.8660254037844386, safeHeight * 0.5)
-            );
-            break;
-        case 'penta':
-            radius = 0.48 * Math.max(
-                safeHeight,
-                Math.hypot(safeWidth * 0.9510565162951535, safeHeight * 0.3090169943749474),
-                Math.hypot(safeWidth * 0.5877852522924731, safeHeight * 0.8090169943749475)
-            );
-            break;
-        case 'rhom':
-            radius = Math.max(safeWidth * 0.34, safeHeight * 0.5);
-            break;
-        case 'octa':
-            radius = 0.47 * Math.max(
-                Math.hypot(safeWidth * 0.9238795325112867, safeHeight * 0.3826834323650898),
-                Math.hypot(safeWidth * 0.3826834323650898, safeHeight * 0.9238795325112867)
-            );
-            break;
-        case 'gen':
-            radius = Math.hypot(safeWidth * 0.44, safeHeight * 0.44);
-            break;
-        case 'square':
-        default:
-            radius = Math.hypot(safeWidth * 0.42, safeHeight * 0.42);
-            break;
+/**
+ * 적 충돌 반경 데이터 규칙을 실제 반경 값으로 계산합니다.
+ * @param {object|null|undefined} rule - 적 형태별 반경 계산 규칙입니다.
+ * @param {number} safeWidth - 보정된 너비입니다.
+ * @param {number} safeHeight - 보정된 높이입니다.
+ * @returns {number} 규칙 기반 충돌 반경입니다.
+ */
+function calculateEnemyCollisionRadiusFromRule(rule, safeWidth, safeHeight) {
+    if (!rule) {
+        return ENEMY_COLLISION_RADIUS_MIN_DIMENSION;
     }
 
-    return Math.max(1, radius);
+    let radius = 0;
+    radius = Math.max(radius, calculateScaledAxisMax(rule.widthScales, safeWidth));
+    radius = Math.max(radius, calculateScaledAxisMax(rule.heightScales, safeHeight));
+    radius = Math.max(radius, calculateVectorRadiusMax(rule.vectors, safeWidth, safeHeight));
+
+    const scale = Number.isFinite(rule.scale)
+        ? rule.scale
+        : ENEMY_COLLISION_RADIUS_MIN_DIMENSION;
+    return radius * scale;
+}
+
+/**
+ * 축 비율 목록에서 가장 큰 반경 후보를 계산합니다.
+ * @param {number[]|undefined} scales - 축 비율 목록입니다.
+ * @param {number} axisSize - 축 길이입니다.
+ * @returns {number} 가장 큰 축 기반 반경 후보입니다.
+ */
+function calculateScaledAxisMax(scales, axisSize) {
+    if (!Array.isArray(scales)) {
+        return 0;
+    }
+
+    let radius = 0;
+    for (let i = 0; i < scales.length; i++) {
+        const scale = scales[i];
+        if (Number.isFinite(scale)) {
+            radius = Math.max(radius, axisSize * scale);
+        }
+    }
+    return radius;
+}
+
+/**
+ * 벡터 비율 목록에서 가장 큰 반경 후보를 계산합니다.
+ * @param {{x:number, y:number}[]|undefined} vectors - x/y 축 비율 벡터 목록입니다.
+ * @param {number} safeWidth - 보정된 너비입니다.
+ * @param {number} safeHeight - 보정된 높이입니다.
+ * @returns {number} 가장 큰 벡터 기반 반경 후보입니다.
+ */
+function calculateVectorRadiusMax(vectors, safeWidth, safeHeight) {
+    if (!Array.isArray(vectors)) {
+        return 0;
+    }
+
+    let radius = 0;
+    for (let i = 0; i < vectors.length; i++) {
+        const vector = vectors[i];
+        const scaleX = Number.isFinite(vector?.x) ? vector.x : 0;
+        const scaleY = Number.isFinite(vector?.y) ? vector.y : 0;
+        radius = Math.max(radius, Math.hypot(safeWidth * scaleX, safeHeight * scaleY));
+    }
+    return radius;
 }

@@ -1,6 +1,12 @@
-const EPSILON = 1e-6;
-const ROTATION_IMPULSE_SCALE = 0.12;
-const ROTATION_RESPONSE_MULTIPLIER = 1.3;
+import { getData } from 'data/data_handler.js';
+
+const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
+const PROJECTILE_IMPACT = COLLISION_CONSTANTS.PROJECTILE_IMPACT;
+const EPSILON = COLLISION_CONSTANTS.EPSILON;
+const ROTATION_IMPULSE_SCALE = PROJECTILE_IMPACT.ROTATION_IMPULSE_SCALE;
+const ROTATION_RESPONSE_MULTIPLIER = PROJECTILE_IMPACT.ROTATION_RESPONSE_MULTIPLIER;
+const PROJECTILE_WEIGHT_MIN = PROJECTILE_IMPACT.PROJECTILE_WEIGHT_MIN;
+const ENEMY_WEIGHT_MIN = PROJECTILE_IMPACT.ENEMY_WEIGHT_MIN;
 
 /**
  * 투사체가 대상 적을 이미 타격했는지 반환합니다.
@@ -62,12 +68,15 @@ export function applyCollisionProjectileImpact(projectile, enemy, manifold) {
 
     const relX = impactX - enemy.position.x;
     const relY = impactY - enemy.position.y;
-    const projectileWeight = Math.max(0.01, Number.isFinite(projectile.weight) ? projectile.weight : 1);
+    const projectileWeight = Math.max(
+        PROJECTILE_WEIGHT_MIN,
+        Number.isFinite(projectile.weight) ? projectile.weight : 1
+    );
     const forceScale = (Number.isFinite(projectile.impactForce) ? projectile.impactForce : 1) * projectileWeight;
     const impulseX = (vx / speed) * speed * forceScale;
     const impulseY = (vy / speed) * speed * forceScale;
     const torque = (relX * impulseY) - (relY * impulseX);
-    const weight = Math.max(0.1, Number.isFinite(enemy.weight) ? enemy.weight : 1);
+    const weight = Math.max(ENEMY_WEIGHT_MIN, Number.isFinite(enemy.weight) ? enemy.weight : 1);
     const angularImpulse = (torque / weight) * ROTATION_IMPULSE_SCALE * ROTATION_RESPONSE_MULTIPLIER;
 
     enemy.lastImpactPoint = { x: impactX, y: impactY };

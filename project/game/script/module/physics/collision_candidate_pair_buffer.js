@@ -1,12 +1,21 @@
+import { getData } from 'data/data_handler.js';
+
+const CANDIDATE_PAIR_BUFFER_CONSTANTS = getData('COLLISION_CONSTANTS').CANDIDATE_PAIR_BUFFER;
+const INITIAL_PAIR_CAPACITY = CANDIDATE_PAIR_BUFFER_CONSTANTS.INITIAL_PAIR_CAPACITY;
+const INITIAL_BITMAP_WORD_CAPACITY = CANDIDATE_PAIR_BUFFER_CONSTANTS.INITIAL_BITMAP_WORD_CAPACITY;
+const BIT_WORD_SIZE = CANDIDATE_PAIR_BUFFER_CONSTANTS.BIT_WORD_SIZE;
+const BIT_WORD_SHIFT = CANDIDATE_PAIR_BUFFER_CONSTANTS.BIT_WORD_SHIFT;
+const BIT_WORD_MASK = CANDIDATE_PAIR_BUFFER_CONSTANTS.BIT_WORD_MASK;
+
 /**
  * 충돌 후보 pair 인덱스와 중복 검사 bitset을 재사용 버퍼로 관리합니다.
  */
 export class CollisionCandidatePairBuffer {
     /**
-     * @param {number} [initialPairCapacity=1024] - 초기 pair 버퍼 용량입니다.
-     * @param {number} [initialBitmapWordCapacity=512] - 초기 bitset word 용량입니다.
+     * @param {number} [initialPairCapacity=INITIAL_PAIR_CAPACITY] - 초기 pair 버퍼 용량입니다.
+     * @param {number} [initialBitmapWordCapacity=INITIAL_BITMAP_WORD_CAPACITY] - 초기 bitset word 용량입니다.
      */
-    constructor(initialPairCapacity = 1024, initialBitmapWordCapacity = 512) {
+    constructor(initialPairCapacity = INITIAL_PAIR_CAPACITY, initialBitmapWordCapacity = INITIAL_BITMAP_WORD_CAPACITY) {
         this.lowIndices = new Int32Array(initialPairCapacity);
         this.highIndices = new Int32Array(initialPairCapacity);
         this.pairBitmap = new Uint32Array(initialBitmapWordCapacity);
@@ -45,7 +54,7 @@ export class CollisionCandidatePairBuffer {
      */
     hasPair(low, high) {
         const bitIndex = low * this.bodyCount + high;
-        return (this.pairBitmap[bitIndex >>> 5] & (1 << (bitIndex & 31))) !== 0;
+        return (this.pairBitmap[bitIndex >>> BIT_WORD_SHIFT] & (1 << (bitIndex & BIT_WORD_MASK))) !== 0;
     }
 
     /**
@@ -55,7 +64,7 @@ export class CollisionCandidatePairBuffer {
      */
     markPair(low, high) {
         const bitIndex = low * this.bodyCount + high;
-        this.pairBitmap[bitIndex >>> 5] |= (1 << (bitIndex & 31));
+        this.pairBitmap[bitIndex >>> BIT_WORD_SHIFT] |= (1 << (bitIndex & BIT_WORD_MASK));
     }
 
     /**
@@ -64,7 +73,7 @@ export class CollisionCandidatePairBuffer {
      * @private
      */
     #ensurePairBitmap(bodyCount) {
-        const neededWords = Math.ceil((bodyCount * bodyCount) / 32);
+        const neededWords = Math.ceil((bodyCount * bodyCount) / BIT_WORD_SIZE);
         if (this.pairBitmap.length < neededWords) {
             this.pairBitmap = new Uint32Array(Math.max(neededWords, this.pairBitmap.length * 2));
         }

@@ -75,19 +75,6 @@ export class HexaHiveEnemy extends ShapeEnemy {
     }
 
     /**
-     * 현재 적 상태를 읽기 전용 시뮬레이션 스냅샷으로 복제합니다.
-     * @returns {object}
-     */
-    createSimulationSnapshot() {
-        const snapshot = super.createSimulationSnapshot();
-        snapshot.mergeBaseMoveSpeed = Number.isFinite(this.mergeBaseMoveSpeed)
-            ? this.mergeBaseMoveSpeed
-            : snapshot.moveSpeed;
-        snapshot.hexaHiveLayout = cloneHexaHiveLayout(this.hexaHiveLayout);
-        return snapshot;
-    }
-
-    /**
      * @private
      * @returns {string}
      */

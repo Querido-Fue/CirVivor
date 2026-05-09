@@ -2,10 +2,6 @@ import { getData } from 'data/data_handler.js';
 import { BaseScene } from 'scene/_base_scene.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_protocol.js';
-import {
-    GAME_SCENE_SHARED_PRESENTATION_STORAGE_TYPE,
-    readGameSceneSharedPresentationState
-} from 'simulation/game_scene_shared_presentation.js';
 import { enqueueSimulationCommand } from 'simulation/simulation_command_queue.js';
 import { createDefaultCollisionStats } from './game_scene_snapshot_utils.js';
 import {
@@ -16,41 +12,17 @@ import {
 } from './commands/game_scene_benchmark_command_builder.js';
 import { applyGameSceneCommandsToLocalState } from './commands/game_scene_command_apply_handlers.js';
 import {
-    consumeGameScenePendingCommands,
-    createGameScenePendingCommandState,
-    queueGameSceneProjectileDespawn
-} from './commands/game_scene_pending_commands.js';
-import {
-    createGameSceneSimulationFrameSnapshot,
-    createGameSceneSimulationSnapshot
-} from './snapshot/game_scene_snapshot_builder.js';
-import {
     getBenchmarkEnemyFill,
     normalizeOpaqueBenchmarkEnemyFill
 } from './render/game_scene_benchmark_palette.js';
 import { drawGameSceneButtons } from './render/game_scene_button_renderer.js';
-import {
-    drawGameSceneEnemySnapshots,
-    drawGameSceneSharedEnemySnapshots
-} from './render/game_scene_enemy_renderer.js';
-import {
-    drawGameSceneHud,
-    drawGameSceneSharedHud
-} from './render/game_scene_hud_renderer.js';
-import {
-    drawGameSceneSharedWorldObjects,
-    drawGameSceneWorldObjects
-} from './render/game_scene_world_renderer.js';
+import { drawGameSceneHud } from './render/game_scene_hud_renderer.js';
+import { drawGameSceneWorldObjects } from './render/game_scene_world_renderer.js';
 import {
     cullLocalGameSceneProjectiles,
     syncGameSceneCollisionStats,
     updateGameSceneButtonInput
 } from './update/game_scene_update_helpers.js';
-import {
-    getGameSceneSystemHandler,
-    syncGameSceneBenchmarkButtons,
-    toggleGameSceneBenchmarkMulticore
-} from './settings/game_scene_multicore_toggle.js';
 import {
     getSimulationObjectOffsetY,
     getSimulationObjectWH,
@@ -82,9 +54,6 @@ export class GameScene extends BaseScene {
         this.staticWalls = [];
         this.boxWalls = [];
         this.buttons = [];
-        this.pendingSimulationCommandState = createGameScenePendingCommandState();
-        this.isSimulationWorkerTogglePending = false;
-        this.sharedPresentationReadState = null;
         this.collisionStats = createDefaultCollisionStats();
 
         this.wallIdCounter = 1;
@@ -152,20 +121,8 @@ export class GameScene extends BaseScene {
                 w: btnW,
                 h: btnH,
                 onClick: () => this.queueSpawnProjectileBurst()
-            },
-            {
-                id: 'toggleMulticore',
-                label: '',
-                x,
-                y: y + ((btnH + gap) * 3),
-                w: btnW,
-                h: btnH,
-                onClick: () => {
-                    void toggleGameSceneBenchmarkMulticore(this, () => this.#resetBenchmarkWorld());
-                }
             }
         ];
-        syncGameSceneBenchmarkButtons(this);
     }
 
     /**
@@ -201,15 +158,9 @@ export class GameScene extends BaseScene {
     /**
      * @override
      */
-    update(options = {}) {
-        syncGameSceneBenchmarkButtons(this);
+    update() {
         updateGameSceneButtonInput(this.buttons);
-
-        if (options?.simulationWorkerAuthority === true) {
-            return;
-        }
-
-        cullLocalGameSceneProjectiles(this, (projectileId) => this.#queueProjectileDespawn(projectileId));
+        cullLocalGameSceneProjectiles(this);
         syncGameSceneCollisionStats(this);
     }
 
@@ -248,68 +199,6 @@ export class GameScene extends BaseScene {
 
     /**
      * @override
-     * @returns {object}
-     */
-    createSimulationSnapshot() {
-        const objectSystemSnapshot = this.objectSystem && typeof this.objectSystem.createSimulationSnapshot === 'function'
-            ? this.objectSystem.createSimulationSnapshot()
-            : null;
-
-        return createGameSceneSimulationSnapshot({
-            objectSystemSnapshot,
-            viewport: {
-                ww: this.WW,
-                wh: this.WH,
-                objectWH: this.objectWH,
-                objectOffsetY: this.objectOffsetY
-            },
-            wallIdCounter: this.wallIdCounter,
-            projIdCounter: this.projIdCounter,
-            player: this.player,
-            staticWalls: this.staticWalls,
-            boxWalls: this.boxWalls,
-            projectiles: this.projectiles,
-            collisionStats: this.collisionStats,
-            buttons: this.buttons
-        });
-    }
-
-    /**
-     * @override
-     * @returns {object}
-     */
-    createSimulationFrameSnapshot() {
-        const objectSystemFrameSnapshot = this.objectSystem && typeof this.objectSystem.createSimulationFrameSnapshot === 'function'
-            ? this.objectSystem.createSimulationFrameSnapshot()
-            : null;
-
-        return createGameSceneSimulationFrameSnapshot({
-            objectSystemFrameSnapshot,
-            viewport: {
-                ww: this.WW,
-                wh: this.WH,
-                objectWH: this.objectWH,
-                objectOffsetY: this.objectOffsetY
-            },
-            wallIdCounter: this.wallIdCounter,
-            projIdCounter: this.projIdCounter,
-            player: this.player,
-            collisionStats: this.collisionStats
-        });
-    }
-
-    /**
-     * @override
-     * @returns {object[]}
-     */
-    consumeSimulationCommands() {
-        return consumeGameScenePendingCommands(this.pendingSimulationCommandState, {
-            projIdCounter: this.projIdCounter
-        });
-    }
-
-    /**
-     * @override
      * @param {object[]} [commands=[]]
      */
     applySimulationCommands(commands = []) {
@@ -336,14 +225,6 @@ export class GameScene extends BaseScene {
 
     /**
      * @private
-     * @param {number|null|undefined} projectileId
-     */
-    #queueProjectileDespawn(projectileId) {
-        queueGameSceneProjectileDespawn(this.pendingSimulationCommandState, projectileId);
-    }
-
-    /**
-     * @private
      */
     #drawWorldObjects(sceneSnapshot = null) {
         drawGameSceneWorldObjects({
@@ -353,37 +234,6 @@ export class GameScene extends BaseScene {
             player: this.player,
             projectiles: this.projectiles,
             objectOffsetY: this.objectOffsetY
-        });
-    }
-
-    /**
-     * @private
-     * @param {object|null|undefined} sharedState
-     */
-    #drawSharedWorldObjects(sharedState) {
-        drawGameSceneSharedWorldObjects(sharedState, {
-            objectOffsetY: this.objectOffsetY
-        });
-    }
-
-    /**
-     * @private
-     */
-    #drawEnemySnapshots(enemies = []) {
-        drawGameSceneEnemySnapshots(enemies, {
-            objectOffsetY: this.objectOffsetY,
-            objectWH: this.objectWH
-        });
-    }
-
-    /**
-     * @private
-     * @param {object|null|undefined} sharedState
-     */
-    #drawSharedEnemySnapshots(sharedState) {
-        drawGameSceneSharedEnemySnapshots(sharedState, {
-            objectOffsetY: this.objectOffsetY,
-            objectWH: this.objectWH
         });
     }
 
@@ -404,20 +254,6 @@ export class GameScene extends BaseScene {
             sceneSnapshot,
             collisionStats: this.collisionStats,
             objectSystem: this.objectSystem,
-            systemHandler: getGameSceneSystemHandler(this),
-            ww: this.WW,
-            wh: this.WH
-        });
-    }
-
-    /**
-     * @private
-     * @param {object|null|undefined} sharedState
-     */
-    #drawSharedHud(sharedState) {
-        drawGameSceneSharedHud(sharedState, {
-            collisionStats: this.collisionStats,
-            systemHandler: getGameSceneSystemHandler(this),
             ww: this.WW,
             wh: this.WH
         });
@@ -438,68 +274,4 @@ export class GameScene extends BaseScene {
         });
     }
 
-    /**
-     * @override
-     * @param {object|null} [sceneSnapshot=null]
-     * @param {{renderEnemyObjects?: boolean, renderSceneObjects?: boolean}} [options={}]
-     * @returns {boolean}
-     */
-    drawSimulationSnapshot(sceneSnapshot = null, options = {}) {
-        if (!sceneSnapshot || sceneSnapshot.sceneType !== 'game') {
-            return false;
-        }
-
-        if (sceneSnapshot.storageType === GAME_SCENE_SHARED_PRESENTATION_STORAGE_TYPE) {
-            this.sharedPresentationReadState = measurePerformanceSection(
-                'scene.game.shared.readState',
-                () => readGameSceneSharedPresentationState(
-                    sceneSnapshot.sharedPresentation,
-                    this.sharedPresentationReadState
-                )
-            );
-            const sharedState = this.sharedPresentationReadState;
-            if (!sharedState) {
-                return false;
-            }
-
-            if (options.renderEnemyObjects === true) {
-                measurePerformanceSection('scene.game.shared.drawEnemies', () => {
-                    this.#drawSharedEnemySnapshots(sharedState);
-                });
-            }
-            if (options.renderSceneObjects !== false) {
-                measurePerformanceSection('scene.game.shared.drawWorld', () => {
-                    this.#drawSharedWorldObjects(sharedState);
-                });
-                measurePerformanceSection('scene.game.shared.drawButtons', () => {
-                    this.#drawButtons();
-                });
-                measurePerformanceSection('scene.game.shared.drawHud', () => {
-                    this.#drawSharedHud(sharedState);
-                });
-            }
-            return true;
-        }
-
-        const renderEnemyObjects = options.renderEnemyObjects === true;
-        const renderSceneObjects = options.renderSceneObjects !== false;
-
-        if (renderEnemyObjects && Array.isArray(sceneSnapshot.enemies)) {
-            measurePerformanceSection('scene.game.snapshot.drawEnemies', () => {
-                this.#drawEnemySnapshots(sceneSnapshot.enemies);
-            });
-        }
-        if (renderSceneObjects) {
-            measurePerformanceSection('scene.game.snapshot.drawWorld', () => {
-                this.#drawWorldObjects(sceneSnapshot);
-            });
-            measurePerformanceSection('scene.game.snapshot.drawButtons', () => {
-                this.#drawButtons(Array.isArray(sceneSnapshot.buttons) ? sceneSnapshot.buttons : null);
-            });
-            measurePerformanceSection('scene.game.snapshot.drawHud', () => {
-                this.#drawHud(sceneSnapshot);
-            });
-        }
-        return true;
-    }
 }

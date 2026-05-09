@@ -9,7 +9,6 @@ import { getData } from 'data/data_handler.js';
 import {
     SETTING_LABEL_KEYS,
     createSettingsInitialState,
-    expandCompositeSettings,
     formatTooltipDelayValue,
     getChangedSettings,
     getRevertedSettings,
@@ -227,7 +226,7 @@ export class SettingsOverlay extends TitleOverlay {
      */
     async #cancelChanges() {
         await this.#flushPendingPreview();
-        const revertedSettings = expandCompositeSettings(getRevertedSettings(this.initialSettings, this.tempSettings));
+        const revertedSettings = getRevertedSettings(this.initialSettings, this.tempSettings);
         if (Object.keys(revertedSettings).length > 0) {
             previewSettingBatch(revertedSettings);
             await this.#applyRuntimeSettings(revertedSettings);
@@ -311,16 +310,6 @@ export class SettingsOverlay extends TitleOverlay {
             .onChange((val) => { this.#handleSettingInput('disableTransparency', val); });
         handler.endGroup();
         this._addItemFooter(handler, 'title_settings_desc_transparency', spacingScale);
-
-        // 멀티코어 지원
-        this._addItemHeader(handler, 'title_settings_multicore_support', 'multicoreSupport');
-        handler.width("parent", controlWrapWidth)
-            .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .item("toggle", "control_multicoreSupport").width("WW", 2.55).height("WH", 2)
-            .setValue(this.tempSettings.multicoreSupport)
-            .onChange((val) => { this.#handleSettingInput('multicoreSupport', val); });
-        handler.endGroup();
-        this._addItemFooter(handler, 'title_settings_desc_multicore_support', spacingScale);
 
         handler.space("OH", 4 * spacingScale);
     }
@@ -489,15 +478,14 @@ export class SettingsOverlay extends TitleOverlay {
             return changedSettings;
         }
 
-        const persistedSettings = expandCompositeSettings(changedSettings);
         await setSettingBatch({
-            ...persistedSettings,
+            ...changedSettings,
             screenModeChanged: false
         });
 
         this.initialSettings = { ...this.tempSettings };
         this.#refreshChangedLabels();
-        return persistedSettings;
+        return changedSettings;
     }
 
     /**
@@ -521,7 +509,7 @@ export class SettingsOverlay extends TitleOverlay {
 
         void (async () => {
             await this.#flushPendingPreview();
-            const revertedSettings = expandCompositeSettings(getRevertedSettings(this.initialSettings, this.tempSettings));
+            const revertedSettings = getRevertedSettings(this.initialSettings, this.tempSettings);
             if (Object.keys(revertedSettings).length === 0) {
                 return;
             }

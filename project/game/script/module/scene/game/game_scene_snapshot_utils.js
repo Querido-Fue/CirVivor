@@ -36,14 +36,6 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
     'solveResolvedPairCount',
     'solveSoACirclePairCount',
     'solveObjectNarrowphasePairCount',
-    'solveParallelNarrowphasePairCount',
-    'solveParallelNarrowphaseContactCount',
-    'solveParallelNarrowphasePoolSize',
-    'solveParallelNarrowphaseChunkCount',
-    'solveParallelNarrowphaseWaitMs',
-    'solveParallelNarrowphaseFallbackCount',
-    'solveParallelNarrowphaseFallbackPairCount',
-    'solveParallelNarrowphaseOverflowCount',
     'solveBudgetSkipCount',
     'solveLargePopulationMode'
 ]);
@@ -83,7 +75,7 @@ export function createDefaultCollisionStats() {
 }
 
 /**
- * 충돌 통계를 렌더/워커 전송용 숫자 스냅샷으로 복제합니다.
+ * 충돌 통계를 렌더용 숫자 스냅샷으로 복제합니다.
  * @param {object|null|undefined} sourceStats - 원본 충돌 통계입니다.
  * @returns {object} 복제된 충돌 통계입니다.
  */

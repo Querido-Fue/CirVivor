@@ -1,4 +1,6 @@
-const EPSILON = 1e-6;
+import { getData } from 'data/data_handler.js';
+
+const EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
 
 /**
  * @class CollisionDetector

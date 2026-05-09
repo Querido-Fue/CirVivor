@@ -47,9 +47,8 @@ export function updateGameSceneButtonInput(buttons) {
 /**
  * 화면 밖으로 나가거나 비활성화된 로컬 투사체를 제거합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
- * @param {(projectileId: number|null|undefined) => void} queueProjectileDespawn - 제거 명령 큐잉 콜백입니다.
  */
-export function cullLocalGameSceneProjectiles(scene, queueProjectileDespawn) {
+export function cullLocalGameSceneProjectiles(scene) {
     if (!scene || !Array.isArray(scene.projectiles)) {
         return;
     }
@@ -61,7 +60,6 @@ export function cullLocalGameSceneProjectiles(scene, queueProjectileDespawn) {
     for (let i = scene.projectiles.length - 1; i >= 0; i--) {
         const projectile = scene.projectiles[i];
         if (!projectile || projectile.active === false) {
-            queueProjectileDespawn(projectile?.id);
             scene.projectiles.splice(i, 1);
             continue;
         }
@@ -69,7 +67,6 @@ export function cullLocalGameSceneProjectiles(scene, queueProjectileDespawn) {
         const x = projectile.position.x;
         const y = projectile.position.y;
         if (x < cullMinX || x > cullMaxX || y < cullMinY || y > cullMaxY) {
-            queueProjectileDespawn(projectile.id);
             scene.projectiles.splice(i, 1);
         }
     }

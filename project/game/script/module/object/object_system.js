@@ -8,20 +8,10 @@ import {
     syncHexaHiveMergeState
 } from './enemy/_hexa_hive_merge.js';
 import {
-    consumeObjectSystemSimulationCommands,
-    createObjectSystemSimulationCommandState,
-    queueObjectSystemEnemyDespawn,
-    queueObjectSystemEnemySpawn
-} from './object_system_simulation_commands.js';
-import {
     acquireObjectSystemEnemy,
     releaseObjectSystemEnemyToPool,
     reserveObjectSystemEnemyIds
 } from './object_system_enemy_lifecycle.js';
-import {
-    createObjectSystemSimulationFrameSnapshot,
-    createObjectSystemSimulationSnapshot
-} from './object_system_snapshot_builder.js';
 import {
     clearObjectSystemAISharedCaches,
     createObjectSystemAIContext,
@@ -80,7 +70,6 @@ export class ObjectSystem {
         this.aiWallsVersion = 0;
         this.enemyCullOutsideRatio = DEFAULT_OUTSIDE_CULL_RATIO;
         this.hexaHiveContactSecondsByPair = new Map();
-        this.pendingSimulationCommandState = createObjectSystemSimulationCommandState();
     }
 
     /**
@@ -252,7 +241,7 @@ export class ObjectSystem {
 
     /**
      * 앞으로 사용할 적 ID를 미리 예약합니다.
-     * 워커/명령 큐와 ID를 맞출 때 사용합니다.
+     * 일괄 생성 명령과 ID를 맞출 때 사용합니다.
      * @param {number} [count=1]
      * @returns {number[]}
      */
@@ -268,34 +257,6 @@ export class ObjectSystem {
      */
     getEnemyIdCounter() {
         return this.enemyIdCounter;
-    }
-
-    /**
-     * 현재 오브젝트 시스템의 프레임 동기화용 동적 시뮬레이션 스냅샷을 생성합니다.
-     * @returns {{enemyIdCounter: number, enemies: object[]}}
-     */
-    createSimulationFrameSnapshot() {
-        return createObjectSystemSimulationFrameSnapshot({
-            enemyIdCounter: this.enemyIdCounter,
-            enemies: this.enemies
-        });
-    }
-
-    /**
-     * 현재 오브젝트 시스템의 읽기 전용 시뮬레이션 스냅샷을 생성합니다.
-     * 현재는 워커 분리 우선순위가 높은 적 상태 위주로 직렬화합니다.
-     * @returns {{showcaseEnabled: boolean, enemyIdCounter: number, aiDecisionGroupCursor: number, aiDecisionGroupCount: number, aiDecisionIntervalSeconds: number, enemyCullOutsideRatio: number, enemies: object[]}}
-     */
-    createSimulationSnapshot() {
-        return createObjectSystemSimulationSnapshot({
-            showcaseEnabled: this.showcaseEnabled,
-            enemyIdCounter: this.enemyIdCounter,
-            aiDecisionGroupCursor: this.aiDecisionGroupCursor,
-            aiDecisionGroupCount: this.aiDecisionGroupCount,
-            aiDecisionIntervalSeconds: this.aiDecisionIntervalSeconds,
-            enemyCullOutsideRatio: this.enemyCullOutsideRatio,
-            enemies: this.enemies
-        });
     }
 
     /**
@@ -322,8 +283,7 @@ export class ObjectSystem {
             contactSecondsByPair: this.hexaHiveContactSecondsByPair,
             activeMergeCandidatesById,
             releaseEnemyAt: (index) => this.#releaseEnemyAt(index),
-            spawnEnemy: (type, data) => this.spawnEnemy(type, data),
-            queueEnemySpawn: (enemy) => this.#queueEnemySpawn(enemy)
+            spawnEnemy: (type, data) => this.spawnEnemy(type, data)
         });
     }
 
@@ -493,7 +453,6 @@ export class ObjectSystem {
     #releaseEnemyAt(index) {
         const enemy = this.enemies[index];
         if (!enemy) return;
-        this.#queueEnemyDespawn(enemy.id);
         if (Number.isInteger(enemy.id)) {
             clearHexaHiveContactPairsForEnemyIds(this.hexaHiveContactSecondsByPair, new Set([enemy.id]));
         }
@@ -505,30 +464,6 @@ export class ObjectSystem {
             this.enemies[index] = this.enemies[lastIndex];
         }
         this.enemies.pop();
-    }
-
-    /**
-     * 워커 미러 동기화에 사용할 구조 변경 명령을 반환하고 큐를 비웁니다.
-     * @returns {object[]}
-     */
-    consumeSimulationCommands() {
-        return consumeObjectSystemSimulationCommands(this.pendingSimulationCommandState, this.enemyIdCounter);
-    }
-
-    /**
-     * @private
-     * @param {number|null|undefined} enemyId
-     */
-    #queueEnemyDespawn(enemyId) {
-        queueObjectSystemEnemyDespawn(this.pendingSimulationCommandState, enemyId);
-    }
-
-    /**
-     * @private
-     * @param {object|null|undefined} enemy
-     */
-    #queueEnemySpawn(enemy) {
-        queueObjectSystemEnemySpawn(this.pendingSimulationCommandState, enemy);
     }
 }
 

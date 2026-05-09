@@ -60,6 +60,64 @@ export const ENEMY_DEFAULT_WEIGHT = Object.freeze({
 });
 
 /**
+ * 적 형태별 단일 원 충돌 반경 계산 데이터입니다.
+ */
+export const ENEMY_COLLISION_RADIUS_DATA = Object.freeze({
+    MIN_DIMENSION: 1,
+    DEFAULT_TYPE: 'square',
+    TYPES: Object.freeze({
+        square: Object.freeze({
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.42, y: 0.42 })
+            ])
+        }),
+        triangle: Object.freeze({
+            heightScales: Object.freeze([0.5333]),
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.462, y: 0.2667 })
+            ])
+        }),
+        arrow: Object.freeze({
+            heightScales: Object.freeze([0.5767]),
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.46, y: 0.3733 })
+            ])
+        }),
+        hexa: Object.freeze({
+            scale: 0.47,
+            heightScales: Object.freeze([1]),
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.8660254037844386, y: 0.5 })
+            ])
+        }),
+        penta: Object.freeze({
+            scale: 0.48,
+            heightScales: Object.freeze([1]),
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.9510565162951535, y: 0.3090169943749474 }),
+                Object.freeze({ x: 0.5877852522924731, y: 0.8090169943749475 })
+            ])
+        }),
+        rhom: Object.freeze({
+            widthScales: Object.freeze([0.34]),
+            heightScales: Object.freeze([0.5])
+        }),
+        octa: Object.freeze({
+            scale: 0.47,
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.9238795325112867, y: 0.3826834323650898 }),
+                Object.freeze({ x: 0.3826834323650898, y: 0.9238795325112867 })
+            ])
+        }),
+        gen: Object.freeze({
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.44, y: 0.44 })
+            ])
+        })
+    })
+});
+
+/**
  * 적 타입별 WebGL 스프라이트 키 캐시
  */
 export const ENEMY_SHAPE_KEYS = Object.freeze(

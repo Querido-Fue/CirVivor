@@ -1,6 +1,11 @@
-const EPSILON = 1e-6;
-const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
-const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
+import { getData } from 'data/data_handler.js';
+
+const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
+const COLLISION_MANIFOLD = COLLISION_CONSTANTS.MANIFOLD;
+const EPSILON = COLLISION_CONSTANTS.EPSILON;
+const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = COLLISION_MANIFOLD.MULTI_CONTACT_NORMAL_DIVERSITY_SCALE;
+const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = COLLISION_MANIFOLD.MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX;
+const MULTI_CONTACT_DIVERSITY_SAMPLE_CAP = COLLISION_MANIFOLD.MULTI_CONTACT_DIVERSITY_SAMPLE_CAP;
 
 /**
  * manifold 출력 객체를 채웁니다.
@@ -246,7 +251,11 @@ export function finalizeCollisionAggregatePartManifold(best, aggregate) {
     const diversity = Math.max(0, 1 - alignment);
     const multiplier = Math.min(
         MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX,
-        1 + (diversity * Math.min(aggregate.contactCount - 1, 3) * MULTI_CONTACT_NORMAL_DIVERSITY_SCALE)
+        1 + (
+            diversity
+            * Math.min(aggregate.contactCount - 1, MULTI_CONTACT_DIVERSITY_SAMPLE_CAP)
+            * MULTI_CONTACT_NORMAL_DIVERSITY_SCALE
+        )
     );
     const pointWeight = Math.max(EPSILON, aggregate.penetrationSum);
 

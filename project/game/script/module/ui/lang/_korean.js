@@ -59,8 +59,6 @@ export const korean = {
     "title_settings_desc_ui_scale": "UI 크기를 조절합니다. 125%보다 큰 값에선 일부 UI가 보이지 않을 수 있습니다.",
     "title_settings_disable_transparency": "UI 글래스 효과 제거",
     "title_settings_desc_transparency": "UI 배경을 불투명하게 만들어 그래픽 부하를 줄입니다.",
-    "title_settings_multicore_support": "멀티코어 지원",
-    "title_settings_desc_multicore_support": "성능이 크게 향상됩니다. 문제가 발생하는 경우에만 이 옵션을 끄세요.",
     "title_settings_section_ui": "인터페이스",
     "title_settings_language": "언어 (Language)",
     "title_settings_theme": "테마",
