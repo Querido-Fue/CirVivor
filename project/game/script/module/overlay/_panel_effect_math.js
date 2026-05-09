@@ -1,3 +1,7 @@
+import { clampNumber } from 'util/number_util.js';
+
+export { lerpNumber } from 'util/number_util.js';
+
 /**
  * 4x4 행렬 곱셈을 수행합니다.
  * @param {number[]} left - 왼쪽 행렬입니다.
@@ -65,24 +69,13 @@ export function createTiltMatrix(rotateX, rotateY) {
 }
 
 /**
- * 현재 값에서 목표 값으로 선형 보간합니다.
- * @param {number} current - 현재 값입니다.
- * @param {number} target - 목표 값입니다.
- * @param {number} factor - 보간 계수입니다.
- * @returns {number} 보간 결과입니다.
- */
-export function lerpNumber(current, target, factor) {
-    return current + ((target - current) * factor);
-}
-
-/**
  * 델타 시간 기준의 지수형 보간 계수를 계산합니다.
  * @param {number} smoothing - 0~1 범위의 기본 스무딩 값입니다.
  * @param {number} deltaSeconds - 현재 프레임 델타(초)입니다.
  * @returns {number} 보간 계수입니다.
  */
 export function getDeltaLerpFactor(smoothing, deltaSeconds) {
-    const clampedSmoothing = Math.max(0, Math.min(0.999, smoothing));
+    const clampedSmoothing = clampNumber(smoothing, 0, 0.999);
     const safeDelta = Math.max(0, deltaSeconds || 0);
     const frames = safeDelta * 60;
     return 1 - Math.pow(1 - clampedSmoothing, frames);
@@ -183,7 +176,7 @@ export function isPointInsideRoundedRect(x, y, width, height, radius) {
         return false;
     }
 
-    const clampedRadius = Math.max(0, Math.min(radius, Math.min(width, height) * 0.5));
+    const clampedRadius = clampNumber(radius, 0, Math.min(width, height) * 0.5);
     if (clampedRadius <= 0) {
         return true;
     }
