@@ -5,6 +5,7 @@ import {
     getSimulationMouseInput,
     isSimulationMousePressing
 } from 'simulation/simulation_runtime.js';
+import { clamp01 } from 'util/number_util.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_AI_CONSTANTS = TITLE_CONSTANTS.TITLE_AI;
@@ -93,7 +94,7 @@ const getTitleEnemySpeedCap = (enemy) => {
         Number.isFinite(enemy?._titleBurstVel?.x) ? enemy._titleBurstVel.x : 0,
         Number.isFinite(enemy?._titleBurstVel?.y) ? enemy._titleBurstVel.y : 0
     );
-    const burstInfluence = Math.max(0, Math.min(1, burstSpeedMagnitude / Math.max(1, baseSpeedMagnitude)));
+    const burstInfluence = clamp01(burstSpeedMagnitude / Math.max(1, baseSpeedMagnitude));
     const burstCapMultiplier = Math.max(capMultiplier, TITLE_BURST_MAX_SPEED_CAP_MULTIPLIER);
     const resolvedCapMultiplier = capMultiplier + ((burstCapMultiplier - capMultiplier) * burstInfluence);
     return baseSpeedMagnitude * resolvedCapMultiplier;
@@ -121,7 +122,7 @@ const getTitleBurstAccelResponse = (enemy) => {
     }
 
     const baseSpeedMagnitude = Math.max(1, getTitleEnemyBaseSpeedMagnitude(enemy));
-    const burstInfluence = Math.max(0, Math.min(1, burstSpeedMagnitude / baseSpeedMagnitude));
+    const burstInfluence = clamp01(burstSpeedMagnitude / baseSpeedMagnitude);
     return baseAccelResponse * (1 + ((TITLE_BURST_ACCEL_RESPONSE_MULTIPLIER - 1) * burstInfluence));
 };
 
