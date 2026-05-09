@@ -1,3 +1,5 @@
+import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
+
 /**
  * magneticShield effect renderer에 전달할 렌더 명령을 생성합니다.
  * @param {object} state - 실드 렌더 상태입니다.
@@ -46,12 +48,16 @@ export function buildTitleShieldRenderCommand({
  * @returns {Array<object>} 렌더러용 impact 목록입니다.
  */
 export function buildTitleShieldImpactRenderData(impacts) {
-    return impacts.map((impact) => ({
-        angle: impact.angle,
-        intensity: impact.intensity,
-        width: impact.width,
-        progress: impact.age / Math.max(0.0001, impact.duration)
-    }));
+    return impacts.map((impact) => {
+        const age = resolveFiniteNumber(Number(impact.age), 0);
+        const duration = clampFiniteNumber(Number(impact.duration), 0.0001, Infinity, 0.0001);
+        return {
+            angle: impact.angle,
+            intensity: impact.intensity,
+            width: impact.width,
+            progress: age / duration
+        };
+    });
 }
 
 /**
