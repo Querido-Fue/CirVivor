@@ -1,5 +1,6 @@
 import { GLOBAL_CONSTANTS } from 'data/global/global_constants.js';
 import { APP_PAUSE_DATA } from 'data/global/app_pause_data.js';
+import { SYSTEM_RUNTIME_POLICY_DATA } from 'data/global/system_runtime_policy_data.js';
 import {
     LightTheme,
     DarkTheme,
@@ -50,6 +51,7 @@ import { MOUSE_BUTTON_INPUT_DATA } from 'data/input/mouse_button_input_data.js';
 const DATA_REGISTRY = Object.freeze({
     GLOBAL_CONSTANTS,
     APP_PAUSE_DATA,
+    SYSTEM_RUNTIME_POLICY_DATA,
     LightTheme,
     DarkTheme,
     THEMES,

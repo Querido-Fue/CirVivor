@@ -15,55 +15,11 @@ import { drainSimulationCommands } from 'simulation/simulation_command_queue.js'
 import { syncSimulationRuntime } from 'simulation/simulation_runtime.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const DISPLAY_REFRESH_SETTING_KEYS = new Set(['windowMode', 'widescreenSupport', 'renderScale']);
-const SIMULATION_RUNTIME_SETTING_KEYS = Object.freeze([
-    'debugMode'
-]);
-const DEFAULT_FRAME_EXECUTION_POLICY = Object.freeze({
-    keepLoopRunning: true,
-    runFrameTimeUpdate: true,
-    runFixedStep: true,
-    runSoundUpdate: true,
-    runAnimationUpdate: true,
-    runInputUpdate: true,
-    runUiUpdate: true,
-    runOverlayUpdate: true,
-    runObjectUpdate: true,
-    runSceneUpdate: true,
-    runDebugUpdate: true,
-    renderFrame: true,
-    renderInput: true,
-    renderObject: true,
-    renderScene: true,
-    renderUi: true,
-    renderOverlay: true,
-    renderDebug: true,
-    renderSound: true,
-    pauseBgm: false,
-    resetInputOnEnter: false,
-    setMouseInactiveOnEnter: false
-});
-const FRAME_EXECUTION_DISABLE_KEYS = Object.freeze([
-    'keepLoopRunning',
-    'runFrameTimeUpdate',
-    'runFixedStep',
-    'runSoundUpdate',
-    'runAnimationUpdate',
-    'runInputUpdate',
-    'runUiUpdate',
-    'runOverlayUpdate',
-    'runObjectUpdate',
-    'runSceneUpdate',
-    'runDebugUpdate',
-    'renderFrame',
-    'renderInput',
-    'renderObject',
-    'renderScene',
-    'renderUi',
-    'renderOverlay',
-    'renderDebug',
-    'renderSound'
-]);
+const SYSTEM_RUNTIME_POLICY_DATA = getData('SYSTEM_RUNTIME_POLICY_DATA');
+const DISPLAY_REFRESH_SETTING_KEYS = new Set(SYSTEM_RUNTIME_POLICY_DATA.DISPLAY_REFRESH_SETTING_KEYS);
+const SIMULATION_RUNTIME_SETTING_KEYS = SYSTEM_RUNTIME_POLICY_DATA.SIMULATION_RUNTIME_SETTING_KEYS;
+const DEFAULT_FRAME_EXECUTION_POLICY = SYSTEM_RUNTIME_POLICY_DATA.DEFAULT_FRAME_EXECUTION_POLICY;
+const FRAME_EXECUTION_DISABLE_KEYS = SYSTEM_RUNTIME_POLICY_DATA.FRAME_EXECUTION_DISABLE_KEYS;
 
 /**
  * @class SystemHandler
