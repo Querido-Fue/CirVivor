@@ -4,10 +4,16 @@ import { animate, remove } from 'animation/animation_system.js';
 import { getMouseInput, isMousePressing } from 'input/input_system.js';
 import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
+import { toRadians } from 'util/math_util.js';
+import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 const CURSOR_CONSTANTS = getData('CURSOR_CONSTANTS');
 const NORMAL_CURSOR_CONSTANTS = CURSOR_CONSTANTS.NORMAL;
 const ATTACK_CURSOR_CONSTANTS = CURSOR_CONSTANTS.ATTACK;
+const CURSOR_LAYER = 'top';
+const NORMAL_CURSOR_TYPE = 'normal';
+const ATTACK_CURSOR_TYPE = 'attack';
+const NORMAL_CURSOR_ANIMATION_TYPE = 'easeOutExpo';
 
 /**
  * @class UICursor
@@ -22,14 +28,15 @@ export class UICursor {
     #lineShort;
     #type;
     #normalAnimTime;
-    #attackAnimTime;
     #normalAnimDuration;
-    #attackAnimDuration;
     #normalRadiusAnimId;
     #normalAlphaAnimId;
     #clicking;
     #visible;
 
+    /**
+     * UI 커서 상태를 생성합니다.
+     */
     constructor() {
         this.#x = 0;
         this.#y = 0;
@@ -42,11 +49,9 @@ export class UICursor {
         this._subCircleAlpha = this.#defaultSubCircleAlpha;
         this.#lineLong = ATTACK_CURSOR_CONSTANTS.LINE_LONG_PX;
         this.#lineShort = ATTACK_CURSOR_CONSTANTS.LINE_SHORT_PX;
-        this.#type = 'normal';
+        this.#type = NORMAL_CURSOR_TYPE;
         this.#normalAnimTime = 0;
-        this.#attackAnimTime = 0;
         this.#normalAnimDuration = NORMAL_CURSOR_CONSTANTS.ANIM_DURATION;
-        this.#attackAnimDuration = ATTACK_CURSOR_CONSTANTS.ANIM_DURATION;
         this.#normalRadiusAnimId = -1;
         this.#normalAlphaAnimId = -1;
         this.#clicking = false;
@@ -72,16 +77,25 @@ export class UICursor {
             return;
         }
 
-        this.#x = getMouseInput("x");
-        this.#y = getMouseInput("y");
+        this.#x = resolveFiniteNumber(Number(getMouseInput('x')), 0);
+        this.#y = resolveFiniteNumber(Number(getMouseInput('y')), 0);
 
         if (isMousePressing('left')) {
-            if (this.#type === 'normal') {
+            if (this.#type === NORMAL_CURSOR_TYPE) {
                 if (!this.#clicking) {
                     remove(this.#normalRadiusAnimId);
                     remove(this.#normalAlphaAnimId);
-                    this.#normalRadiusAnimId = animate(this, { variable: '_subCircleRadius', startValue: 'current', endValue: this.#defaultSubCircleRadius * NORMAL_CURSOR_CONSTANTS.CLICK_RADIUS_MULTIPLIER, type: "easeOutExpo", duration: this.#normalAnimDuration - this.#normalAnimTime }).id;
-                    this.#normalAlphaAnimId = animate(this, { variable: '_subCircleAlpha', startValue: 'current', endValue: this.#defaultSubCircleAlpha * NORMAL_CURSOR_CONSTANTS.CLICK_ALPHA_MULTIPLIER, type: "easeOutExpo", duration: this.#normalAnimDuration - this.#normalAnimTime }).id;
+                    const duration = this.#normalAnimDuration - this.#normalAnimTime;
+                    this.#normalRadiusAnimId = this._startNormalCursorAnimation(
+                        '_subCircleRadius',
+                        this.#defaultSubCircleRadius * NORMAL_CURSOR_CONSTANTS.CLICK_RADIUS_MULTIPLIER,
+                        duration
+                    );
+                    this.#normalAlphaAnimId = this._startNormalCursorAnimation(
+                        '_subCircleAlpha',
+                        this.#defaultSubCircleAlpha * NORMAL_CURSOR_CONSTANTS.CLICK_ALPHA_MULTIPLIER,
+                        duration
+                    );
                 }
                 this.#normalAnimTime += getDelta();
                 if (this.#normalAnimTime >= this.#normalAnimDuration) {
@@ -89,23 +103,27 @@ export class UICursor {
                 }
                 this.#clicking = true;
             }
-            else if (this.#type === 'attack') {
-            }
         } else {
-            if (this.#type === 'normal') {
+            if (this.#type === NORMAL_CURSOR_TYPE) {
                 if (this.#clicking) {
                     remove(this.#normalRadiusAnimId);
                     remove(this.#normalAlphaAnimId);
-                    this.#normalRadiusAnimId = animate(this, { variable: '_subCircleRadius', startValue: 'current', endValue: this.#defaultSubCircleRadius, type: "easeOutExpo", duration: this.#normalAnimTime }).id;
-                    this.#normalAlphaAnimId = animate(this, { variable: '_subCircleAlpha', startValue: 'current', endValue: this.#defaultSubCircleAlpha, type: "easeOutExpo", duration: this.#normalAnimTime }).id;
+                    this.#normalRadiusAnimId = this._startNormalCursorAnimation(
+                        '_subCircleRadius',
+                        this.#defaultSubCircleRadius,
+                        this.#normalAnimTime
+                    );
+                    this.#normalAlphaAnimId = this._startNormalCursorAnimation(
+                        '_subCircleAlpha',
+                        this.#defaultSubCircleAlpha,
+                        this.#normalAnimTime
+                    );
                 }
                 this.#normalAnimTime -= getDelta();
                 if (this.#normalAnimTime <= 0) {
                     this.#normalAnimTime = 0;
                 }
                 this.#clicking = false;
-            }
-            else if (this.#type === 'attack') {
             }
         }
     }
@@ -118,89 +136,10 @@ export class UICursor {
             return;
         }
 
-        if (this.#type === 'normal') {
-            const angle = NORMAL_CURSOR_CONSTANTS.ARROW_ROTATION_DEG;
-            const angleRad = angle * Math.PI / 180;
-            const sizeBig = this.WH * NORMAL_CURSOR_CONSTANTS.LARGE_ARROW_SIZE_WH_RATIO;
-            const offsetX1 = (sizeBig / 2) * Math.sin(angleRad);
-            const offsetY1 = (-sizeBig / 2) * Math.cos(angleRad);
-            render('top', {
-                shape: 'arrow',
-                x: this.#x - offsetX1,
-                y: this.#y - offsetY1,
-                w: sizeBig,
-                h: sizeBig,
-                rotation: angle,
-                fill: ColorSchemes.Cursor.Fill
-            });
-
-
-            const sizeSmall = this.WH * NORMAL_CURSOR_CONSTANTS.SMALL_ARROW_SIZE_WH_RATIO;
-            const offsetX2 = (sizeSmall / 2) * Math.sin(angleRad);
-            const offsetY2 = (-sizeSmall / 2) * Math.cos(angleRad);
-            render('top', {
-                shape: 'arrow',
-                x: this.#x - offsetX2,
-                y: this.#y - offsetY2,
-                w: sizeSmall,
-                h: sizeSmall,
-                rotation: angle,
-                fill: ColorSchemes.Cursor.Active,
-            });
-            render('top', {
-                shape: 'circle',
-                x: this.#x + this._subCircleRadius / 2 + this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_OFFSET_X_WH_RATIO,
-                y: this.#y + this._subCircleRadius / 2 + this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_OFFSET_Y_WH_RATIO,
-                radius: this._subCircleRadius,
-                fill: ColorSchemes.Cursor.Active,
-                alpha: this._subCircleAlpha
-            });
-        } else if (this.#type === 'attack') {
-            shadowOn('top', ATTACK_CURSOR_CONSTANTS.SHADOW_BLUR_PX, ColorSchemes.Cursor.White);
-            render('top', {
-                shape: 'circle',
-                x: this.#x,
-                y: this.#y,
-                radius: ATTACK_CURSOR_CONSTANTS.CENTER_DOT_RADIUS_PX,
-                fill: ColorSchemes.Cursor.Active
-            });
-            render('top', {
-                shape: 'line',
-                x1: this.#x - this.#lineLong,
-                y1: this.#y,
-                x2: this.#x - this.#lineShort,
-                y2: this.#y,
-                stroke: ColorSchemes.Cursor.Active,
-                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
-            });
-            render('top', {
-                shape: 'line',
-                x1: this.#x + this.#lineShort,
-                y1: this.#y,
-                x2: this.#x + this.#lineLong,
-                y2: this.#y,
-                stroke: ColorSchemes.Cursor.Active,
-                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
-            });
-            render('top', {
-                shape: 'line',
-                x1: this.#x,
-                y1: this.#y - this.#lineLong,
-                x2: this.#x,
-                y2: this.#y - this.#lineShort,
-                stroke: ColorSchemes.Cursor.Active,
-                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
-            });
-            render('top', {
-                shape: 'line',
-                x1: this.#x,
-                y1: this.#y + this.#lineShort,
-                x2: this.#x,
-                y2: this.#y + this.#lineLong,
-                stroke: ColorSchemes.Cursor.Active,
-                lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
-            });
-            shadowOff('top');
+        if (this.#type === NORMAL_CURSOR_TYPE) {
+            this._drawNormalCursor();
+        } else if (this.#type === ATTACK_CURSOR_TYPE) {
+            this._drawAttackCursor();
         }
     }
 
@@ -227,6 +166,117 @@ export class UICursor {
     }
 
     /**
+     * normal 커서 애니메이션을 시작합니다.
+     * @param {string} variable - 애니메이션 대상 속성 이름입니다.
+     * @param {number} endValue - 애니메이션 종료 값입니다.
+     * @param {number} duration - 애니메이션 지속 시간입니다.
+     * @returns {number} 생성된 애니메이션 ID입니다.
+     */
+    _startNormalCursorAnimation(variable, endValue, duration) {
+        return animate(this, {
+            variable,
+            startValue: 'current',
+            endValue,
+            type: NORMAL_CURSOR_ANIMATION_TYPE,
+            duration: clampFiniteNumber(Number(duration), 0, Infinity, 0)
+        }).id;
+    }
+
+    /**
+     * normal 커서를 렌더링합니다.
+     */
+    _drawNormalCursor() {
+        const angle = NORMAL_CURSOR_CONSTANTS.ARROW_ROTATION_DEG;
+        const angleRad = toRadians(angle);
+        this._drawNormalCursorArrow(
+            NORMAL_CURSOR_CONSTANTS.LARGE_ARROW_SIZE_WH_RATIO,
+            angle,
+            angleRad,
+            ColorSchemes.Cursor.Fill
+        );
+        this._drawNormalCursorArrow(
+            NORMAL_CURSOR_CONSTANTS.SMALL_ARROW_SIZE_WH_RATIO,
+            angle,
+            angleRad,
+            ColorSchemes.Cursor.Active
+        );
+        const subCircleX = this.#x
+            + (this._subCircleRadius / 2)
+            + (this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_OFFSET_X_WH_RATIO);
+        const subCircleY = this.#y
+            + (this._subCircleRadius / 2)
+            + (this.WH * NORMAL_CURSOR_CONSTANTS.SUB_CIRCLE_OFFSET_Y_WH_RATIO);
+        render(CURSOR_LAYER, {
+            shape: 'circle',
+            x: subCircleX,
+            y: subCircleY,
+            radius: this._subCircleRadius,
+            fill: ColorSchemes.Cursor.Active,
+            alpha: this._subCircleAlpha
+        });
+    }
+
+    /**
+     * normal 커서의 화살표 한 겹을 렌더링합니다.
+     * @param {number} sizeRatio - WH 기준 크기 비율입니다.
+     * @param {number} angle - 회전 각도입니다.
+     * @param {number} angleRad - 회전 라디안입니다.
+     * @param {string} fill - 채움 색상입니다.
+     */
+    _drawNormalCursorArrow(sizeRatio, angle, angleRad, fill) {
+        const size = this.WH * sizeRatio;
+        const offsetX = (size / 2) * Math.sin(angleRad);
+        const offsetY = (-size / 2) * Math.cos(angleRad);
+        render(CURSOR_LAYER, {
+            shape: 'arrow',
+            x: this.#x - offsetX,
+            y: this.#y - offsetY,
+            w: size,
+            h: size,
+            rotation: angle,
+            fill
+        });
+    }
+
+    /**
+     * attack 커서를 렌더링합니다.
+     */
+    _drawAttackCursor() {
+        shadowOn(CURSOR_LAYER, ATTACK_CURSOR_CONSTANTS.SHADOW_BLUR_PX, ColorSchemes.Cursor.White);
+        render(CURSOR_LAYER, {
+            shape: 'circle',
+            x: this.#x,
+            y: this.#y,
+            radius: ATTACK_CURSOR_CONSTANTS.CENTER_DOT_RADIUS_PX,
+            fill: ColorSchemes.Cursor.Active
+        });
+        this._drawAttackCursorLine(-this.#lineLong, 0, -this.#lineShort, 0);
+        this._drawAttackCursorLine(this.#lineShort, 0, this.#lineLong, 0);
+        this._drawAttackCursorLine(0, -this.#lineLong, 0, -this.#lineShort);
+        this._drawAttackCursorLine(0, this.#lineShort, 0, this.#lineLong);
+        shadowOff(CURSOR_LAYER);
+    }
+
+    /**
+     * attack 커서의 십자선 한 조각을 렌더링합니다.
+     * @param {number} startOffsetX - 시작점 X 오프셋입니다.
+     * @param {number} startOffsetY - 시작점 Y 오프셋입니다.
+     * @param {number} endOffsetX - 끝점 X 오프셋입니다.
+     * @param {number} endOffsetY - 끝점 Y 오프셋입니다.
+     */
+    _drawAttackCursorLine(startOffsetX, startOffsetY, endOffsetX, endOffsetY) {
+        render(CURSOR_LAYER, {
+            shape: 'line',
+            x1: this.#x + startOffsetX,
+            y1: this.#y + startOffsetY,
+            x2: this.#x + endOffsetX,
+            y2: this.#y + endOffsetY,
+            stroke: ColorSchemes.Cursor.Active,
+            lineWidth: ATTACK_CURSOR_CONSTANTS.LINE_WIDTH_PX
+        });
+    }
+
+    /**
      * 해상도 변경 직후 남아 있는 커서 애니메이션 값을 새 기준 크기에 맞춥니다.
      * @private
      */
@@ -236,7 +286,7 @@ export class UICursor {
         this.#normalRadiusAnimId = -1;
         this.#normalAlphaAnimId = -1;
 
-        if (this.#type !== 'normal') {
+        if (this.#type !== NORMAL_CURSOR_TYPE) {
             return;
         }
 
