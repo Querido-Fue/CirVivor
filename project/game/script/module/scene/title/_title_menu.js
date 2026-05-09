@@ -11,19 +11,7 @@ import {
     TITLE_MENU_CARD_REVEAL_ORDER,
     TITLE_MENU_SECONDARY_ENTRIES
 } from './menu/_title_menu_config.js';
-import {
-    drawTitleMenuCardFrontfaceContent,
-    drawTitleMenuUtilityTileContent
-} from './menu/_title_menu_content_render.js';
-import {
-    drawTitleMenuCardBorder,
-    drawTitleMenuCardParticles,
-    drawTitleMenuCardRipples,
-    drawTitleMenuCardSpotlight
-} from './menu/_title_menu_effect_render.js';
-import {
-    hasTitleMenuDynamicTextureState
-} from './menu/_title_menu_effect_state.js';
+import { renderTitleMenuGlassPanel } from './menu/_title_menu_glass_panel_render.js';
 import {
     loadTitleMenuIconSources,
     releaseTitleMenuIconSources
@@ -53,14 +41,7 @@ import {
     getTitleMenuUtilityPaneRevealEase
 } from './menu/_title_menu_render_state.js';
 import { createTitleMenuOverlaySession } from './menu/_title_menu_overlay_session.js';
-import {
-    beginTitleMenuTextureClip,
-    ensureTitleMenuTextureCanvas
-} from './menu/_title_menu_texture_canvas.js';
-import {
-    buildTitleMenuCardStaticTextureSignature,
-    buildTitleMenuUtilityTileStaticTextureSignature
-} from './menu/_title_menu_texture_signature.js';
+import { TitleMenuTextureRenderer } from './menu/_title_menu_texture_renderer.js';
 import { TitleMenuVersionLabelRenderer } from './menu/_title_menu_version_label_renderer.js';
 import {
     createTitleMenuVersionHistoryLinkButton,
@@ -103,21 +84,26 @@ export class TitleMenu {
         this.cardRenderMap = new Map();
         this.utilityTileStateMap = new Map();
         this.utilityTileRenderMap = new Map();
-        this.textureRevisionCounter = 0;
         this.pointerEnabled = false;
         this.cardRevealElapsed = 0;
         this.cardRevealStarted = false;
         this.currentPaneLayout = null;
         this.hoveredSecondaryMenuId = null;
         this.versionHistoryLinkButton = null;
-        this.paneTextureCanvas = null;
-        this.paneTextureContext = null;
-        this.cardPaneTextureCanvas = null;
-        this.cardPaneTextureContext = null;
         this.cardPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.utilityPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.secondaryMenuEntries = TITLE_MENU_SECONDARY_ENTRIES;
         this.session = this.#createSession();
+        this.textureRenderer = new TitleMenuTextureRenderer({
+            svgDrawer: this.svgDrawer,
+            textConstants: TEXT_CONSTANTS,
+            titleCardMenu: TITLE_CARD_MENU,
+            getSession: () => this.session,
+            getEffectColor: this.#getEffectColor.bind(this),
+            getUIWW: () => this.UIWW,
+            getWH: () => this.WH,
+            getUiScale: () => this.uiScale
+        });
         this.versionLabelRenderer = new TitleMenuVersionLabelRenderer({
             globalConstants: GLOBAL_CONSTANTS,
             textConstants: TEXT_CONSTANTS
@@ -166,53 +152,31 @@ export class TitleMenu {
             revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
             getRevealProgress: this.#getRevealProgress.bind(this)
         });
-        const cardPaneTextureCanvas = this.#buildCardPaneTextureCanvas(paneRenderState.cardPane);
-        const utilityPaneTextureCanvas = this.#buildRightPaneTextureCanvas(
+        const cardPaneTextureCanvas = this.textureRenderer.buildCardPaneTextureCanvas(
+            paneRenderState.cardPane,
+            this.cardPaneInteractionState
+        );
+        const utilityPaneTextureCanvas = this.textureRenderer.buildRightPaneTextureCanvas(
             paneRenderState.utilityPane,
             this.utilityPaneInteractionState
         );
         const backdropPanelStyle = this.#getBackdropPaneStyle();
 
-        this.session.renderGlassPanel({
-            x: paneRenderState.cardPane.x,
-            y: paneRenderState.cardPane.y,
-            w: paneRenderState.cardPane.w,
-            h: paneRenderState.cardPane.h,
-            radius: paneRenderState.cardPane.radius,
-            sampleBackdrop: backdropPanelStyle.sampleBackdrop,
-            blur: backdropPanelStyle.blur,
-            fill: backdropPanelStyle.fill,
-            stroke: backdropPanelStyle.stroke,
-            lineWidth: backdropPanelStyle.lineWidth,
-            tintColor: backdropPanelStyle.tintColor,
-            edgeColor: backdropPanelStyle.edgeColor,
-            tintStrength: backdropPanelStyle.tintStrength,
-            edgeStrength: backdropPanelStyle.edgeStrength,
-            refractionStrength: backdropPanelStyle.refractionStrength,
+        renderTitleMenuGlassPanel(this.session, {
+            panelRect: paneRenderState.cardPane,
+            panelStyle: backdropPanelStyle,
             alpha: paneRenderState.cardPane.alpha,
             effectTextureCanvas: cardPaneTextureCanvas
         });
 
-        this.session.renderGlassPanel({
-            x: paneRenderState.utilityPane.x,
-            y: paneRenderState.utilityPane.y,
-            w: paneRenderState.utilityPane.w,
-            h: paneRenderState.utilityPane.h,
-            radius: paneRenderState.utilityPane.radius,
-            sampleBackdrop: backdropPanelStyle.sampleBackdrop,
-            blur: backdropPanelStyle.blur,
-            fill: backdropPanelStyle.fill,
-            stroke: backdropPanelStyle.stroke,
-            lineWidth: backdropPanelStyle.lineWidth,
-            tintColor: backdropPanelStyle.tintColor,
-            edgeColor: backdropPanelStyle.edgeColor,
-            tintStrength: backdropPanelStyle.tintStrength,
-            edgeStrength: backdropPanelStyle.edgeStrength,
-            refractionStrength: backdropPanelStyle.refractionStrength,
+        renderTitleMenuGlassPanel(this.session, {
+            panelRect: paneRenderState.utilityPane,
+            panelStyle: backdropPanelStyle,
             alpha: paneRenderState.utilityPane.alpha,
             effectTextureCanvas: utilityPaneTextureCanvas
         });
 
+        const panelStyle = this.#getPanelStyle();
         for (const menuEntry of this.secondaryMenuEntries) {
             const renderState = this.utilityTileRenderMap.get(menuEntry.id);
             const runtimeState = this.utilityTileStateMap.get(menuEntry.id);
@@ -220,26 +184,13 @@ export class TitleMenu {
                 continue;
             }
 
-            const panelStyle = this.#getPanelStyle();
-            const effectTextureCanvas = this.#buildUtilityTileTextureCanvas(renderState, runtimeState);
-            const panelRect = renderState.panelRect;
-
-            this.session.renderGlassPanel({
-                x: panelRect.x,
-                y: panelRect.y,
-                w: panelRect.w,
-                h: panelRect.h,
-                radius: panelRect.radius,
-                sampleBackdrop: panelStyle.sampleBackdrop,
-                blur: panelStyle.blur,
-                fill: panelStyle.fill,
-                stroke: panelStyle.stroke,
-                lineWidth: panelStyle.lineWidth,
-                tintColor: panelStyle.tintColor,
-                edgeColor: panelStyle.edgeColor,
-                tintStrength: panelStyle.tintStrength,
-                edgeStrength: panelStyle.edgeStrength,
-                refractionStrength: panelStyle.refractionStrength,
+            const effectTextureCanvas = this.textureRenderer.buildUtilityTileTextureCanvas(
+                renderState,
+                runtimeState
+            );
+            renderTitleMenuGlassPanel(this.session, {
+                panelRect: renderState.panelRect,
+                panelStyle,
                 alpha: renderState.alpha,
                 transformMatrix: runtimeState.transformMatrix,
                 perspective: runtimeState.perspective,
@@ -256,26 +207,14 @@ export class TitleMenu {
                 continue;
             }
 
-            const panelStyle = this.#getPanelStyle();
-            const effectTextureCanvas = this.#buildCardTextureCanvas(card, runtimeState, renderState);
-            const panelRect = renderState.panelRect;
-
-            this.session.renderGlassPanel({
-                x: panelRect.x,
-                y: panelRect.y,
-                w: panelRect.w,
-                h: panelRect.h,
-                radius: panelRect.radius,
-                sampleBackdrop: panelStyle.sampleBackdrop,
-                blur: panelStyle.blur,
-                fill: panelStyle.fill,
-                stroke: panelStyle.stroke,
-                lineWidth: panelStyle.lineWidth,
-                tintColor: panelStyle.tintColor,
-                edgeColor: panelStyle.edgeColor,
-                tintStrength: panelStyle.tintStrength,
-                edgeStrength: panelStyle.edgeStrength,
-                refractionStrength: panelStyle.refractionStrength,
+            const effectTextureCanvas = this.textureRenderer.buildCardTextureCanvas(
+                card,
+                runtimeState,
+                renderState
+            );
+            renderTitleMenuGlassPanel(this.session, {
+                panelRect: renderState.panelRect,
+                panelStyle,
                 alpha: renderState.alpha,
                 transformMatrix: runtimeState.transformMatrix,
                 perspective: runtimeState.perspective,
@@ -336,35 +275,11 @@ export class TitleMenu {
             this.session = null;
         }
 
-        for (const runtimeState of this.cardStateMap.values()) {
-            if (runtimeState.textureCanvas) {
-                runtimeState.textureCanvas.width = 0;
-                runtimeState.textureCanvas.height = 0;
-            }
-            if (runtimeState.staticTextureCanvas) {
-                runtimeState.staticTextureCanvas.width = 0;
-                runtimeState.staticTextureCanvas.height = 0;
-            }
-        }
-        for (const runtimeState of this.utilityTileStateMap.values()) {
-            if (runtimeState.textureCanvas) {
-                runtimeState.textureCanvas.width = 0;
-                runtimeState.textureCanvas.height = 0;
-            }
-            if (runtimeState.staticTextureCanvas) {
-                runtimeState.staticTextureCanvas.width = 0;
-                runtimeState.staticTextureCanvas.height = 0;
-            }
-        }
-        if (this.paneTextureCanvas) {
-            this.paneTextureCanvas.width = 0;
-            this.paneTextureCanvas.height = 0;
-            this.paneTextureContext = null;
-        }
-        if (this.cardPaneTextureCanvas) {
-            this.cardPaneTextureCanvas.width = 0;
-            this.cardPaneTextureCanvas.height = 0;
-            this.cardPaneTextureContext = null;
+        if (this.textureRenderer) {
+            this.textureRenderer.releaseRuntimeStateTextures(this.cardStateMap.values());
+            this.textureRenderer.releaseRuntimeStateTextures(this.utilityTileStateMap.values());
+            this.textureRenderer.destroy();
+            this.textureRenderer = null;
         }
         if (this.versionLabelRenderer) {
             this.versionLabelRenderer.destroy();
@@ -714,345 +629,6 @@ export class TitleMenu {
 
         if (menuItem.actionType === 'exit') {
             this.TitleScene?.sceneSystem?.systemHandler?.overlayManager?.openExitOverlay?.();
-        }
-    }
-
-    /**
-     * 카드 외곽 pane용 텍스처 캔버스를 구성합니다.
-     * @param {object} cardPaneRect - 카드 pane 영역입니다.
-     * @returns {HTMLCanvasElement|null} 생성된 패널 텍스처 캔버스입니다.
-     * @private
-     */
-    #buildCardPaneTextureCanvas(cardPaneRect) {
-        if (
-            !cardPaneRect
-            || this.cardPaneInteractionState.spotlightAlpha <= 0.005
-            && this.cardPaneInteractionState.borderAlpha <= 0.005
-        ) {
-            return null;
-        }
-
-        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
-            this,
-            'cardPaneTextureCanvas',
-            'cardPaneTextureContext',
-            cardPaneRect.w,
-            cardPaneRect.h
-        );
-        beginTitleMenuTextureClip(context, width, height, cardPaneRect);
-
-        this.#drawPaneForegroundEffects(context, this.cardPaneInteractionState, cardPaneRect);
-        context.restore();
-        this.#markTextureCanvasUpdated(canvas);
-        return canvas;
-    }
-
-    /**
-     * 오른쪽 utility glass 패널용 텍스처 캔버스를 구성합니다.
-     * @param {object} utilityPane - 유틸리티 판넬 영역입니다.
-     * @param {object} paneInteractionState - 유틸리티 판넬 상호작용 상태입니다.
-     * @returns {HTMLCanvasElement|null} 생성된 패널 텍스처 캔버스입니다.
-     * @private
-     */
-    #buildRightPaneTextureCanvas(
-        utilityPane,
-        paneInteractionState = this.utilityPaneInteractionState
-    ) {
-        if (
-            !utilityPane
-            || !paneInteractionState
-            || (
-                paneInteractionState.spotlightAlpha <= 0.005
-                && paneInteractionState.borderAlpha <= 0.005
-            )
-        ) {
-            return null;
-        }
-
-        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
-            this,
-            'paneTextureCanvas',
-            'paneTextureContext',
-            utilityPane.w,
-            utilityPane.h
-        );
-        beginTitleMenuTextureClip(context, width, height, utilityPane);
-
-        this.#drawPaneForegroundEffects(context, paneInteractionState, utilityPane);
-        context.restore();
-        this.#markTextureCanvasUpdated(canvas);
-        return canvas;
-    }
-
-    /**
-     * 하단 보조 메뉴 타일용 텍스처 캔버스를 구성합니다.
-     * @param {object} renderState - 타일 렌더 상태입니다.
-     * @param {object} runtimeState - 타일 런타임 상태입니다.
-     * @returns {HTMLCanvasElement|null} 생성된 타일 텍스처 캔버스입니다.
-     * @private
-     */
-    #buildUtilityTileTextureCanvas(renderState, runtimeState) {
-        if (!hasTitleMenuDynamicTextureState(runtimeState)) {
-            return this.#getStaticUtilityTileTextureCanvas(renderState, runtimeState);
-        }
-
-        const panelRect = renderState.panelRect;
-        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
-            runtimeState,
-            'textureCanvas',
-            'textureContext',
-            panelRect.w,
-            panelRect.h
-        );
-        beginTitleMenuTextureClip(context, width, height, panelRect);
-
-        this.#drawCardBackgroundEffects(context, runtimeState, renderState);
-        drawTitleMenuUtilityTileContent({
-            context,
-            svgDrawer: this.svgDrawer,
-            renderState,
-            hovered: runtimeState.hovered,
-            titleCardMenu: TITLE_CARD_MENU,
-            uiScale: this.uiScale
-        });
-        this.#drawCardForegroundEffects(context, runtimeState, renderState);
-        context.restore();
-        this.#markTextureCanvasUpdated(canvas);
-        return canvas;
-    }
-
-    /**
-     * 패널 앞면 상호작용 효과를 렌더합니다.
-     * @param {CanvasRenderingContext2D} context - 렌더 대상 컨텍스트입니다.
-     * @param {object} paneState - 판넬 상호작용 상태입니다.
-     * @param {object} panelRect - 판넬 rect입니다.
-     * @private
-     */
-    #drawPaneForegroundEffects(context, paneState, panelRect) {
-        const spotlightOptions = this.session?.getEffectOptions('hoverSpotlight');
-        const borderOptions = this.session?.getEffectOptions('hoverBorder');
-        const effectColor = this.#getEffectColor();
-
-        if (spotlightOptions && paneState.spotlightAlpha > 0.005) {
-            drawTitleMenuCardSpotlight(context, paneState, spotlightOptions, effectColor);
-        }
-
-        if (borderOptions && paneState.borderAlpha > 0.005) {
-            drawTitleMenuCardBorder(context, paneState, { panelRect }, borderOptions, effectColor);
-        }
-    }
-
-    /**
-     * 카드 콘텐츠와 인터랙션 효과를 담은 텍스처 캔버스를 구성합니다.
-     * @param {TitleMenuCard} card - 대상 카드입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @returns {HTMLCanvasElement|null} 생성된 텍스처 캔버스입니다.
-     * @private
-     */
-    #buildCardTextureCanvas(card, runtimeState, renderState) {
-        if (!hasTitleMenuDynamicTextureState(runtimeState, renderState)) {
-            return this.#getStaticCardTextureCanvas(card, runtimeState, renderState);
-        }
-
-        const panelRect = renderState.panelRect;
-        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
-            runtimeState,
-            'textureCanvas',
-            'textureContext',
-            panelRect.w,
-            panelRect.h
-        );
-        beginTitleMenuTextureClip(context, width, height, panelRect);
-
-        this.#drawCardBackgroundEffects(context, runtimeState, renderState);
-        drawTitleMenuCardFrontfaceContent({
-            context,
-            svgDrawer: this.svgDrawer,
-            card,
-            renderState,
-            textConstants: TEXT_CONSTANTS,
-            uiww: this.UIWW,
-            uiScale: this.uiScale
-        });
-        this.#drawCardForegroundEffects(context, runtimeState, renderState);
-        context.restore();
-        this.#markTextureCanvasUpdated(canvas);
-        return canvas;
-    }
-
-    /**
-     * 카드의 정적 앞면 텍스처를 반환합니다.
-     * @param {TitleMenuCard} card - 대상 카드입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @returns {HTMLCanvasElement|null} 정적 카드 텍스처입니다.
-     * @private
-     */
-    #getStaticCardTextureCanvas(card, runtimeState, renderState) {
-        const panelRect = renderState?.panelRect;
-        if (!runtimeState || !panelRect) {
-            return null;
-        }
-
-        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
-        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
-        const signature = buildTitleMenuCardStaticTextureSignature({
-            card,
-            renderState,
-            uiww: this.UIWW,
-            wh: this.WH,
-            uiScale: this.uiScale,
-            textConstants: TEXT_CONSTANTS,
-            svgDrawer: this.svgDrawer
-        });
-
-        const currentStaticCanvas = runtimeState.staticTextureCanvas;
-        const sizeChanged = !currentStaticCanvas
-            || currentStaticCanvas.width !== canvasWidth
-            || currentStaticCanvas.height !== canvasHeight;
-        if (!sizeChanged && runtimeState.staticTextureSignature === signature) {
-            return currentStaticCanvas;
-        }
-
-        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
-            runtimeState,
-            'staticTextureCanvas',
-            'staticTextureContext',
-            canvasWidth,
-            canvasHeight
-        );
-
-        beginTitleMenuTextureClip(context, width, height, panelRect);
-        drawTitleMenuCardFrontfaceContent({
-            context,
-            svgDrawer: this.svgDrawer,
-            card,
-            renderState: {
-                ...renderState,
-                hoverProgress: 0
-            },
-            textConstants: TEXT_CONSTANTS,
-            uiww: this.UIWW,
-            uiScale: this.uiScale
-        });
-        context.restore();
-
-        runtimeState.staticTextureSignature = signature;
-        this.#markTextureCanvasUpdated(canvas);
-        return canvas;
-    }
-
-    /**
-     * 유틸리티 타일의 정적 텍스처를 반환합니다.
-     * @param {object} renderState - 타일 렌더 상태입니다.
-     * @param {object} runtimeState - 타일 런타임 상태입니다.
-     * @returns {HTMLCanvasElement|null} 정적 타일 텍스처입니다.
-     * @private
-     */
-    #getStaticUtilityTileTextureCanvas(renderState, runtimeState) {
-        const panelRect = renderState?.panelRect;
-        if (!runtimeState || !panelRect) {
-            return null;
-        }
-
-        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
-        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
-        const signature = buildTitleMenuUtilityTileStaticTextureSignature({
-            renderState,
-            runtimeState,
-            uiww: this.UIWW,
-            wh: this.WH,
-            uiScale: this.uiScale,
-            svgDrawer: this.svgDrawer
-        });
-
-        const currentStaticCanvas = runtimeState.staticTextureCanvas;
-        const sizeChanged = !currentStaticCanvas
-            || currentStaticCanvas.width !== canvasWidth
-            || currentStaticCanvas.height !== canvasHeight;
-        if (!sizeChanged && runtimeState.staticTextureSignature === signature) {
-            return currentStaticCanvas;
-        }
-
-        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
-            runtimeState,
-            'staticTextureCanvas',
-            'staticTextureContext',
-            canvasWidth,
-            canvasHeight
-        );
-
-        beginTitleMenuTextureClip(context, width, height, panelRect);
-        drawTitleMenuUtilityTileContent({
-            context,
-            svgDrawer: this.svgDrawer,
-            renderState,
-            hovered: runtimeState.hovered,
-            titleCardMenu: TITLE_CARD_MENU,
-            uiScale: this.uiScale
-        });
-        context.restore();
-
-        runtimeState.staticTextureSignature = signature;
-        this.#markTextureCanvasUpdated(canvas);
-        return canvas;
-    }
-
-    /**
-     * 캔버스 텍스처 revision을 증가시켜 WebGL 업로드 캐시에 변경을 알립니다.
-     * @param {HTMLCanvasElement|null} canvas - 갱신된 텍스처 캔버스입니다.
-     * @private
-     */
-    #markTextureCanvasUpdated(canvas) {
-        if (!canvas) {
-            return;
-        }
-
-        this.textureRevisionCounter += 1;
-        if (this.textureRevisionCounter >= Number.MAX_SAFE_INTEGER) {
-            this.textureRevisionCounter = 1;
-        }
-        canvas.__overlayTextureRevision = this.textureRevisionCounter;
-    }
-
-    /**
-     * 카드 콘텐츠 아래에 깔리는 인터랙션 효과를 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @private
-     */
-    #drawCardBackgroundEffects(context, runtimeState, renderState) {
-        if (runtimeState.particles.length <= 0 || runtimeState.particleAlpha <= 0.005) {
-            return;
-        }
-
-        drawTitleMenuCardParticles(context, renderState, runtimeState, this.#getEffectColor());
-    }
-
-    /**
-     * 카드 전용 인터랙션 효과를 그립니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} runtimeState - 카드 런타임 상태입니다.
-     * @param {object} renderState - 카드 렌더 상태입니다.
-     * @private
-     */
-    #drawCardForegroundEffects(context, runtimeState, renderState) {
-        const effectColor = this.#getEffectColor();
-        const spotlightOptions = this.session?.getEffectOptions('hoverSpotlight');
-        const borderOptions = this.session?.getEffectOptions('hoverBorder');
-
-        if (spotlightOptions && runtimeState.spotlightAlpha > 0.005) {
-            drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptions, effectColor);
-        }
-
-        if (borderOptions && runtimeState.borderAlpha > 0.005) {
-            drawTitleMenuCardBorder(context, runtimeState, renderState, borderOptions, effectColor);
-        }
-
-        if (runtimeState.ripples.length > 0) {
-            drawTitleMenuCardRipples(context, runtimeState, effectColor);
         }
     }
 

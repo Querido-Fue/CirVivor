@@ -1,4 +1,4 @@
-import { getTitleMenuIconDrawScale } from './_title_menu_config.js';
+import { getTitleMenuIconDrawScale } from 'util/title_menu_icon_util.js';
 import { getTitleMenuIconSource } from './_title_menu_icon.js';
 import {
     getMenuOpacity,

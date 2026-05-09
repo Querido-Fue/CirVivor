@@ -2,8 +2,9 @@ import { getData } from 'data/data_handler.js';
 import { getUIWW, getWH, getWW } from 'display/display_system.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const TITLE_MENU_DATA = getData('TITLE_MENU_DATA');
 const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
-const TITLE_CARD_MENU_SCALE = 0.848;
+const TITLE_CARD_MENU_SCALE = TITLE_MENU_DATA.LAYOUT.CARD_MENU_SCALE;
 
 /**
  * @typedef {object} TitleMenuCardRect
