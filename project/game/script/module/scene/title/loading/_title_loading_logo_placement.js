@@ -1,3 +1,5 @@
+import { lerpNumber } from 'util/number_util.js';
+
 /**
  * 로딩 원형 UI와 씬 전환 진행률에 맞춘 타이틀 로고 배치를 계산합니다.
  * @param {object} options - 로고 배치 계산 옵션입니다.
@@ -35,8 +37,8 @@ export function buildTitleLoadingLogoPlacement({
     const transition = sceneTransitionProgress;
 
     return {
-        x: logoX + ((finalLogoX - logoX) * transition),
-        width: logoWidth + ((finalLogoWidth - logoWidth) * transition),
-        centerY: circleLayout.centerY + ((finalLogoCenterY - circleLayout.centerY) * transition)
+        x: lerpNumber(logoX, finalLogoX, transition),
+        width: lerpNumber(logoWidth, finalLogoWidth, transition),
+        centerY: lerpNumber(circleLayout.centerY, finalLogoCenterY, transition)
     };
 }
