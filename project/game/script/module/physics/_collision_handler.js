@@ -7,13 +7,7 @@ import {
     DENSE_REBUILD_DENSITY_THRESHOLD,
     DENSE_REBUILD_MIN_RESOLVED,
     DENSE_STABILIZE_MIN_RESOLVED,
-    getCollisionBodyCollisionRadiusScale,
-    getCollisionDenseFrameScale,
-    getCollisionPairEscapeBoost,
-    getCollisionPairResolveWeights,
-    getDenseSolveTuning,
-    isCollisionPairResolveMovable,
-    tuneCollisionResolutionMoves
+    getDenseSolveTuning
 } from './_collision_resolve_tuning.js';
 import {
     applyCollisionProjectileImpact,
@@ -25,8 +19,12 @@ import {
     areCollisionBodyBroadCirclesOverlapping,
     shouldUseCollisionBroadCircleFilter
 } from './collision_broad_phase_filter.js';
+import { detectCollisionBodies } from './collision_body_detector.js';
+import { CollisionBroadphaseBuffer } from './collision_broadphase_buffer.js';
+import { CollisionBodyPool } from './collision_body_pool.js';
 import { CollisionCandidatePairBuffer } from './collision_candidate_pair_buffer.js';
 import { getCollisionPeakCandidatePairs } from './collision_candidate_density.js';
+import { CollisionEnemyBodyCache } from './collision_enemy_body_cache.js';
 import {
     getCollisionEnemyPairProcessBudget,
     markCollisionEnemyPairProcessAttempt,
@@ -38,10 +36,18 @@ import {
     updateCollisionEnemySleepState
 } from './collision_enemy_sleep_state.js';
 import { writeCollisionEnemyBody } from './collision_enemy_body_builder.js';
+import { CollisionGridBucketPool } from './collision_grid_bucket_pool.js';
 import { estimateCollisionGridCellSize } from './collision_grid_cell_size.js';
+import { CollisionGridQueryBuffer } from './collision_grid_query_buffer.js';
 import { writeCollisionPlayerBody } from './collision_player_body_builder.js';
-import { findCollisionParallelNarrowphaseContactRow } from './collision_parallel_narrowphase_result.js';
+import { writeCollisionManifold } from './collision_manifold_writer.js';
+import { applyCollisionPairResolution } from './collision_pair_resolver.js';
+import {
+    findCollisionParallelNarrowphaseContactRow,
+    writeCollisionParallelNarrowphaseContactManifold
+} from './collision_parallel_narrowphase_result.js';
 import { writeCollisionProjectileSweepBody } from './collision_projectile_sweep_body.js';
+import { writeCollisionWallBodies } from './collision_wall_body_builder.js';
 import {
     createCollisionFrameStats,
     createCollisionFrameStatsSnapshot,
@@ -49,23 +55,16 @@ import {
 } from './collision_frame_stats.js';
 import { CollisionProfileRecorder } from './collision_profile_recorder.js';
 import {
-    createCollisionBody,
-    createCollisionGridBucket,
     createCollisionManifold,
-    createCollisionScratchProjectileBody,
-    createCollisionWallBody
+    createCollisionScratchProjectileBody
 } from './collision_scratch_objects.js';
 import { COLLISION_RULE_DYNAMIC_RESOLVE, getCollisionRule } from './_collision_rules.js';
 import {
     COLLISION_BODY_KIND_ENEMY as BODY_KIND_ENEMY,
     COLLISION_BODY_SHAPE_CIRCLE as BODY_SHAPE_CIRCLE,
     COLLISION_BROAD_STRIDE as BROAD_STRIDE,
-    COLLISION_CONTACT_RESULT_INDEX as CONTACT_RESULT_INDEX,
-    COLLISION_CONTACT_RESULT_STRIDE as CONTACT_RESULT_STRIDE,
     COLLISION_RELATION_INDEX as RELATION_INDEX,
-    COLLISION_RELATION_BROAD_STRIDE as RELATION_BROAD_STRIDE,
-    getCollisionBodyKindCode,
-    getCollisionBodyShapeCode
+    COLLISION_RELATION_BROAD_STRIDE as RELATION_BROAD_STRIDE
 } from './collision_soa_layout.js';
 import {
     CollisionNarrowphaseWorkerPool,
@@ -77,17 +76,10 @@ const EPSILON = 1e-6;
 const CELL_KEY_OFFSET = 4096;
 const CELL_KEY_STRIDE = 8192;
 const DEFAULT_PHYSICS_ITERATION_COUNT = 3;
-const GRID_BUCKET_INITIAL_CAPACITY = 8;
 const PROJECTILE_SWEEP_RADIUS_STEP = 0.45;
 const COLLISION_IDLE_TICKS_TO_SLEEP = 45;
 const COLLISION_SLEEP_TICKS = 2;
 const COLLISION_SLEEP_SPEED_SQ = 9; // 3px/s 이하
-const COLLISION_AXIS_RESISTANCE_MIN = 0.25;
-const COLLISION_AXIS_RESISTANCE_GAIN = 0.85;
-const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = 0.35;
-const COLLISION_GRID_RADIUS_SCALE = 1.03;
-const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
-const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
 const PARALLEL_NARROWPHASE_MIN_PAIR_COUNT = 512;
 const PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS = 4;
 
@@ -102,12 +94,6 @@ const PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS = 4;
  */
 
 /**
- * @typedef {object} GridBucket
- * @property {Int32Array} indices 셀에 포함된 body 인덱스 버퍼
- * @property {number} count 현재 사용 중인 인덱스 개수
- */
-
-/**
  * @class CollisionHandler
  * @description broad-phase + narrow-phase + resolve를 담당하는 충돌 핸들러
  */
@@ -118,26 +104,18 @@ export class CollisionHandler {
     #wallBodiesDirty;
     #frameStats;
     #bodyPool;
-    #bodyPoolCursor;
     #enemyBodiesBuffer;
     #playerBodiesBuffer;
     #scratchProjectileBody;
     #scratchManifold;
     #scratchCandidateManifold;
     #scratchBestManifold;
-    #broadData;
-    #relationBroadData;
-    #bodyKindCodes;
-    #bodyShapeCodes;
-    #broadBodyCount;
-    #bucketPool;
-    #bucketPoolCursor;
+    #bodyDetectorContext;
+    #broadphaseBuffer;
+    #gridBucketPool;
     #activeGridBuckets;
-    #queryMarks;
-    #queryMarkStamp;
-    #queryCandidateIndices;
+    #gridQueryBuffer;
     #candidatePairs;
-    #enemyBodyFrameToken;
     #enemyBodyCache;
     #narrowphaseWorkerPool;
     #profileRecorder;
@@ -150,36 +128,27 @@ export class CollisionHandler {
         this.#wallBodiesCache = [];
         this.#wallBodiesDirty = true;
         this.#frameStats = createCollisionFrameStats();
-        this.#bodyPool = [];
-        this.#bodyPoolCursor = 0;
+        this.#bodyPool = new CollisionBodyPool();
         this.#enemyBodiesBuffer = [];
         this.#playerBodiesBuffer = [];
         this.#scratchProjectileBody = createCollisionScratchProjectileBody();
         this.#scratchManifold = createCollisionManifold();
         this.#scratchCandidateManifold = createCollisionManifold();
         this.#scratchBestManifold = createCollisionManifold();
-        this.#broadData = new Float32Array(512 * BROAD_STRIDE);
-        this.#relationBroadData = new Float64Array(512 * RELATION_BROAD_STRIDE);
-        this.#bodyKindCodes = new Uint8Array(512);
-        this.#bodyShapeCodes = new Uint8Array(512);
-        this.#broadBodyCount = 0;
-        this.#bucketPool = [];
-        this.#bucketPoolCursor = 0;
+        this.#broadphaseBuffer = new CollisionBroadphaseBuffer();
+        this.#gridBucketPool = new CollisionGridBucketPool();
         this.#activeGridBuckets = [];
-        this.#queryMarks = new Int32Array(512);
-        this.#queryMarkStamp = 0;
-        this.#queryCandidateIndices = [];
+        this.#gridQueryBuffer = new CollisionGridQueryBuffer();
         this.#candidatePairs = new CollisionCandidatePairBuffer();
-        this.#enemyBodyFrameToken = 0;
-        this.#enemyBodyCache = {
-            frameToken: -1,
-            enemies: null,
-            delta: 0,
-            sourceLength: 0,
-            bodies: this.#enemyBodiesBuffer
-        };
+        this.#enemyBodyCache = new CollisionEnemyBodyCache(this.#enemyBodiesBuffer);
         this.#narrowphaseWorkerPool = null;
         this.#profileRecorder = new CollisionProfileRecorder(this.#frameStats);
+        this.#bodyDetectorContext = {
+            manifold: this.#scratchManifold,
+            candidateManifold: this.#scratchCandidateManifold,
+            bestManifold: this.#scratchBestManifold,
+            profileRecorder: this.#profileRecorder
+        };
     }
 
     /**
@@ -202,8 +171,7 @@ export class CollisionHandler {
      */
     resetFrameStats() {
         this.#profileRecorder.setEnabled(this.#isProfilingEnabled());
-        this.#enemyBodyFrameToken++;
-        this.#invalidateEnemyBodyCache();
+        this.#enemyBodyCache.advanceFrame();
         resetCollisionFrameStats(this.#frameStats);
     }
 
@@ -371,7 +339,7 @@ export class CollisionHandler {
 
             const safeDelta = Math.max(delta, EPSILON);
             const enemyBodyBuildStart = this.#profileRecorder.startTimer();
-            const enemyBodies = this.#getReusableEnemyBodies(enemies, safeDelta)
+            const enemyBodies = this.#enemyBodyCache.getReusable(enemies, safeDelta, EPSILON)
                 ?? this.#buildFreshEnemyBodies(enemies, safeDelta, false);
             this.#profileRecorder.recordDuration('projectileEnemyBodyBuildMs', enemyBodyBuildStart);
             if (enemyBodies.length === 0) return 0;
@@ -416,7 +384,8 @@ export class CollisionHandler {
                     );
 
                     const candidateQueryStart = this.#profileRecorder.startTimer();
-                    const candidateIndices = this.#collectGridCandidateIndices(
+                    const candidateIndices = this.#gridQueryBuffer.collectCandidateIndices(
+                        this.#grid,
                         circleBody,
                         enemyGridCellSize,
                         enemyBodies.length
@@ -443,7 +412,7 @@ export class CollisionHandler {
                             this.#frameStats.circlePassCount++;
                         }
 
-                        const manifold = this.#detectBodies(circleBody, enemyBody);
+                        const manifold = detectCollisionBodies(circleBody, enemyBody, this.#bodyDetectorContext);
                         if (!manifold) continue;
 
                         markCollisionProjectileHit(projectile, enemyId);
@@ -460,7 +429,7 @@ export class CollisionHandler {
 
             return hitCount;
         } finally {
-            this.#invalidateEnemyBodyCache();
+            this.#enemyBodyCache.invalidate();
             this.#profileRecorder.recordDuration('projectileTotalMs', totalStart);
         }
     }
@@ -541,7 +510,7 @@ export class CollisionHandler {
                             continue;
                         }
 
-                        if (!this.#detectBodies(bodyA, bodyB)) {
+                        if (!detectCollisionBodies(bodyA, bodyB, this.#bodyDetectorContext)) {
                             continue;
                         }
 
@@ -599,9 +568,9 @@ export class CollisionHandler {
         if (rebuildGrid) {
             this.#rebuildGridFromBodies(bodies);
         } else {
-            this.#ensureBroadData(bodyCount);
+            this.#broadphaseBuffer.ensure(bodyCount);
             for (let i = 0; i < bodyCount; i++) {
-                this.#writeBroadData(i, bodies[i]);
+                this.#broadphaseBuffer.write(i, bodies[i]);
             }
         }
         this.#profileRecorder.recordDuration('solveGridMs', gridStart);
@@ -651,7 +620,7 @@ export class CollisionHandler {
             if (bodyB.kind === 'projectile' && hasCollisionProjectileHit(bodyB.ref, bodyA.id)) return 0;
         }
 
-        const manifold = this.#detectBodies(bodyA, bodyB);
+        const manifold = detectCollisionBodies(bodyA, bodyB, this.#bodyDetectorContext);
         if (!manifold) return 0;
 
         if (resolvePositions) {
@@ -678,656 +647,22 @@ export class CollisionHandler {
             return 0;
         }
 
-        const pairWeights = getCollisionPairResolveWeights(bodyA, bodyB);
-        const pairResolveBoost = resolveBoost * getCollisionPairEscapeBoost(bodyA, bodyB);
-        const resolveBodyA = {
-            weight: pairWeights.weightA,
-            movable: isCollisionPairResolveMovable(bodyA, bodyB, rule.movableA)
-        };
-        const resolveBodyB = {
-            weight: pairWeights.weightB,
-            movable: isCollisionPairResolveMovable(bodyB, bodyA, rule.movableB)
-        };
-
-        const resolved = this.detector.addResolution(manifold, resolveBodyA, resolveBodyB);
-        const tunedResolve = tuneCollisionResolutionMoves(resolved, manifold, bodyA, bodyB, pairResolveBoost);
-        if (tunedResolve.moveAX || tunedResolve.moveAY) {
-            this.#applyBodyTranslation(bodyA, tunedResolve.moveAX, tunedResolve.moveAY, pairResolveBoost);
-        }
-        if (tunedResolve.moveBX || tunedResolve.moveBY) {
-            this.#applyBodyTranslation(bodyB, tunedResolve.moveBX, tunedResolve.moveBY, pairResolveBoost);
-        }
+        applyCollisionPairResolution(this.detector, manifold, bodyA, bodyB, {
+            movableA: rule.movableA,
+            movableB: rule.movableB,
+            resolveBoost,
+            broadphaseBuffer: this.#broadphaseBuffer
+        });
 
         return 1;
     }
 
     /**
      * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {object|null}
-     */
-    #detectBodies(bodyA, bodyB) {
-        if (bodyA.shape === 'circle' && bodyB.shape === 'circle') {
-            return this.#detectCircleVsCircleBody(bodyA, bodyB);
-        }
-
-        if (bodyA.shape === 'circleParts' && bodyB.shape === 'circleParts') {
-            return this.#detectCirclePartsVsCircleParts(bodyA, bodyB);
-        }
-
-        if (bodyA.shape === 'circleParts' && bodyB.shape === 'circle') {
-            return this.#detectCirclePartsVsCircle(bodyA, bodyB);
-        }
-
-        if (bodyA.shape === 'circle' && bodyB.shape === 'circleParts') {
-            const manifold = this.#detectCirclePartsVsCircle(bodyB, bodyA);
-            if (!manifold) return null;
-            return this.#invertManifoldNormal(manifold);
-        }
-
-        if (bodyA.shape === 'circle' && bodyB.shape === 'rect') {
-            return this.#detectCircleVsRect(bodyA, bodyB);
-        }
-
-        if (bodyA.shape === 'rect' && bodyB.shape === 'circle') {
-            const manifold = this.#detectCircleVsRect(bodyB, bodyA);
-            if (!manifold) return null;
-            return this.#invertManifoldNormal(manifold);
-        }
-
-        if (bodyA.shape === 'circleParts' && bodyB.shape === 'rect') {
-            return this.#detectCirclePartsVsRect(bodyA, bodyB);
-        }
-
-        if (bodyA.shape === 'rect' && bodyB.shape === 'circleParts') {
-            const manifold = this.#detectCirclePartsVsRect(bodyB, bodyA);
-            if (!manifold) return null;
-            return this.#invertManifoldNormal(manifold);
-        }
-
-        return null;
-    }
-
-    /**
-     * 원형 body 두 개의 충돌을 판정합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {object|null}
-     */
-    #detectCircleVsCircleBody(bodyA, bodyB) {
-        return this.#writeCircleOverlapManifold(
-            bodyA.centerX,
-            bodyA.centerY,
-            bodyA.radius * getCollisionBodyCollisionRadiusScale(bodyA, bodyB),
-            bodyB.centerX,
-            bodyB.centerY,
-            bodyB.radius * getCollisionBodyCollisionRadiusScale(bodyB, bodyA),
-            this.#scratchManifold,
-            bodyB.centerX - bodyA.centerX,
-            bodyB.centerY - bodyA.centerY
-        );
-    }
-
-    /**
-     * 원형 part body 두 개의 충돌을 판정합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @returns {object|null}
-     */
-    #detectCirclePartsVsCircleParts(bodyA, bodyB) {
-        const partsA = bodyA?.circleParts;
-        const partsB = bodyB?.circleParts;
-        if (!(partsA instanceof Float32Array) || !(partsB instanceof Float32Array)) {
-            return null;
-        }
-
-        const best = this.#scratchBestManifold;
-        let hasBest = false;
-        let contactCount = 0;
-        let normalSumX = 0;
-        let normalSumY = 0;
-        let pointSumX = 0;
-        let pointSumY = 0;
-        let penetrationSum = 0;
-        let maxPenetration = 0;
-        const scaleA = getCollisionBodyCollisionRadiusScale(bodyA, bodyB);
-        const scaleB = getCollisionBodyCollisionRadiusScale(bodyB, bodyA);
-        const countA = Math.max(0, Math.floor(bodyA.circlePartCount || 0));
-        const countB = Math.max(0, Math.floor(bodyB.circlePartCount || 0));
-        const fallbackNormalX = bodyB.centerX - bodyA.centerX;
-        const fallbackNormalY = bodyB.centerY - bodyA.centerY;
-
-        for (let i = 0; i < countA; i++) {
-            const offsetA = i * 3;
-            const ax = partsA[offsetA];
-            const ay = partsA[offsetA + 1];
-            const ar = partsA[offsetA + 2] * scaleA;
-            if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(ar) || ar <= 0) {
-                continue;
-            }
-            for (let j = 0; j < countB; j++) {
-                const offsetB = j * 3;
-                this.#profileRecorder.recordPartCheck();
-                const bx = partsB[offsetB];
-                const by = partsB[offsetB + 1];
-                const br = partsB[offsetB + 2] * scaleB;
-                if (!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(br) || br <= 0) {
-                    continue;
-                }
-                const dx = bx - ax;
-                const dy = by - ay;
-                const radiusSum = ar + br;
-                const distSq = (dx * dx) + (dy * dy);
-                if (distSq >= (radiusSum * radiusSum)) {
-                    continue;
-                }
-                const manifold = this.#writeCircleOverlapManifoldFromDelta(
-                    ax,
-                    ay,
-                    ar,
-                    br,
-                    dx,
-                    dy,
-                    distSq,
-                    this.#scratchCandidateManifold,
-                    fallbackNormalX,
-                    fallbackNormalY
-                );
-                if (!manifold) continue;
-                const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-                if (penetration <= EPSILON) continue;
-                contactCount++;
-                normalSumX += manifold.normalX * penetration;
-                normalSumY += manifold.normalY * penetration;
-                pointSumX += manifold.pointX * penetration;
-                pointSumY += manifold.pointY * penetration;
-                penetrationSum += penetration;
-                if (penetration > maxPenetration) {
-                    maxPenetration = penetration;
-                }
-                if (!hasBest || manifold.penetration > best.penetration) {
-                    this.#copyManifold(manifold, best);
-                    hasBest = true;
-                }
-            }
-        }
-        return hasBest
-            ? this.#finalizeAggregatePartManifold(best, {
-                contactCount,
-                normalSumX,
-                normalSumY,
-                pointSumX,
-                pointSumY,
-                penetrationSum,
-                maxPenetration
-            })
-            : null;
-    }
-
-    /**
-     * 원형 part body와 원형 body의 충돌을 판정합니다.
-     * @private
-     * @param {object} partBody
-     * @param {object} circleBody
-     * @returns {object|null}
-     */
-    #detectCirclePartsVsCircle(partBody, circleBody) {
-        const parts = partBody?.circleParts;
-        if (!(parts instanceof Float32Array)) {
-            return null;
-        }
-
-        const best = this.#scratchBestManifold;
-        let hasBest = false;
-        let contactCount = 0;
-        let normalSumX = 0;
-        let normalSumY = 0;
-        let pointSumX = 0;
-        let pointSumY = 0;
-        let penetrationSum = 0;
-        let maxPenetration = 0;
-        const partScale = getCollisionBodyCollisionRadiusScale(partBody, circleBody);
-        const circleX = circleBody.centerX;
-        const circleY = circleBody.centerY;
-        const circleRadius = circleBody.radius * getCollisionBodyCollisionRadiusScale(circleBody, partBody);
-        if (!Number.isFinite(circleX) || !Number.isFinite(circleY) || !Number.isFinite(circleRadius) || circleRadius <= 0) {
-            return null;
-        }
-        const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
-        const fallbackNormalX = circleX - partBody.centerX;
-        const fallbackNormalY = circleY - partBody.centerY;
-
-        for (let i = 0; i < count; i++) {
-            const offset = i * 3;
-            this.#profileRecorder.recordPartCheck();
-            const ax = parts[offset];
-            const ay = parts[offset + 1];
-            const ar = parts[offset + 2] * partScale;
-            if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(ar) || ar <= 0) {
-                continue;
-            }
-            const dx = circleX - ax;
-            const dy = circleY - ay;
-            const radiusSum = ar + circleRadius;
-            const distSq = (dx * dx) + (dy * dy);
-            if (distSq >= (radiusSum * radiusSum)) {
-                continue;
-            }
-            const manifold = this.#writeCircleOverlapManifoldFromDelta(
-                ax,
-                ay,
-                ar,
-                circleRadius,
-                dx,
-                dy,
-                distSq,
-                this.#scratchCandidateManifold,
-                fallbackNormalX,
-                fallbackNormalY
-            );
-            if (!manifold) continue;
-            const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-            if (penetration <= EPSILON) continue;
-            contactCount++;
-            normalSumX += manifold.normalX * penetration;
-            normalSumY += manifold.normalY * penetration;
-            pointSumX += manifold.pointX * penetration;
-            pointSumY += manifold.pointY * penetration;
-            penetrationSum += penetration;
-            if (penetration > maxPenetration) {
-                maxPenetration = penetration;
-            }
-            if (!hasBest || manifold.penetration > best.penetration) {
-                this.#copyManifold(manifold, best);
-                hasBest = true;
-            }
-        }
-
-        return hasBest
-            ? this.#finalizeAggregatePartManifold(best, {
-                contactCount,
-                normalSumX,
-                normalSumY,
-                pointSumX,
-                pointSumY,
-                penetrationSum,
-                maxPenetration
-            })
-            : null;
-    }
-
-    /**
-     * 원형 body와 축 정렬 사각형 body의 충돌을 판정합니다.
-     * @private
-     * @param {object} circleBody
-     * @param {object} rectBody
-     * @returns {object|null}
-     */
-    #detectCircleVsRect(circleBody, rectBody) {
-        return this.#writeCircleRectOverlapManifold(
-            circleBody.centerX,
-            circleBody.centerY,
-            circleBody.radius * getCollisionBodyCollisionRadiusScale(circleBody, rectBody),
-            rectBody,
-            this.#scratchManifold
-        );
-    }
-
-    /**
-     * 원형 part body와 축 정렬 사각형 body의 충돌을 판정합니다.
-     * @private
-     * @param {object} partBody
-     * @param {object} rectBody
-     * @returns {object|null}
-     */
-    #detectCirclePartsVsRect(partBody, rectBody) {
-        const parts = partBody?.circleParts;
-        if (!(parts instanceof Float32Array)) {
-            return null;
-        }
-
-        const best = this.#scratchBestManifold;
-        let hasBest = false;
-        let contactCount = 0;
-        let normalSumX = 0;
-        let normalSumY = 0;
-        let pointSumX = 0;
-        let pointSumY = 0;
-        let penetrationSum = 0;
-        let maxPenetration = 0;
-        const partScale = getCollisionBodyCollisionRadiusScale(partBody, rectBody);
-        const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
-        const rectMinX = Number.isFinite(rectBody?.minX) ? rectBody.minX : 0;
-        const rectMaxX = Number.isFinite(rectBody?.maxX) ? rectBody.maxX : 0;
-        const rectMinY = Number.isFinite(rectBody?.minY) ? rectBody.minY : 0;
-        const rectMaxY = Number.isFinite(rectBody?.maxY) ? rectBody.maxY : 0;
-
-        for (let i = 0; i < count; i++) {
-            const offset = i * 3;
-            this.#profileRecorder.recordPartCheck();
-            const circleX = parts[offset];
-            const circleY = parts[offset + 1];
-            const radius = parts[offset + 2] * partScale;
-            if (!Number.isFinite(circleX) || !Number.isFinite(circleY) || !Number.isFinite(radius) || radius <= 0) {
-                continue;
-            }
-            if (
-                circleX + radius <= rectMinX ||
-                circleX - radius >= rectMaxX ||
-                circleY + radius <= rectMinY ||
-                circleY - radius >= rectMaxY
-            ) {
-                continue;
-            }
-            const manifold = this.#writeCircleRectOverlapManifold(
-                circleX,
-                circleY,
-                radius,
-                rectBody,
-                this.#scratchCandidateManifold
-            );
-            if (!manifold) continue;
-            const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-            if (penetration <= EPSILON) continue;
-            contactCount++;
-            normalSumX += manifold.normalX * penetration;
-            normalSumY += manifold.normalY * penetration;
-            pointSumX += manifold.pointX * penetration;
-            pointSumY += manifold.pointY * penetration;
-            penetrationSum += penetration;
-            if (penetration > maxPenetration) {
-                maxPenetration = penetration;
-            }
-            if (!hasBest || manifold.penetration > best.penetration) {
-                this.#copyManifold(manifold, best);
-                hasBest = true;
-            }
-        }
-
-        return hasBest
-            ? this.#finalizeAggregatePartManifold(best, {
-                contactCount,
-                normalSumX,
-                normalSumY,
-                pointSumX,
-                pointSumY,
-                penetrationSum,
-                maxPenetration
-            })
-            : null;
-    }
-
-    /**
-     * 원-원 충돌 manifold를 씁니다.
-     * @private
-     * @param {number} ax
-     * @param {number} ay
-     * @param {number} ar
-     * @param {number} bx
-     * @param {number} by
-     * @param {number} br
-     * @param {object} out
-     * @param {number} fallbackNormalX
-     * @param {number} fallbackNormalY
-     * @returns {object|null}
-     */
-    #writeCircleOverlapManifold(ax, ay, ar, bx, by, br, out, fallbackNormalX = 1, fallbackNormalY = 0) {
-        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(ar) || ar <= 0
-            || !Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(br) || br <= 0) {
-            return null;
-        }
-
-        const dx = bx - ax;
-        const dy = by - ay;
-        const distSq = (dx * dx) + (dy * dy);
-        return this.#writeCircleOverlapManifoldFromDelta(
-            ax,
-            ay,
-            ar,
-            br,
-            dx,
-            dy,
-            distSq,
-            out,
-            fallbackNormalX,
-            fallbackNormalY
-        );
-    }
-
-    /**
-     * 이미 계산된 중심 차이로 원-원 충돌 manifold를 씁니다.
-     * @private
-     * @param {number} ax
-     * @param {number} ay
-     * @param {number} ar
-     * @param {number} br
-     * @param {number} dx
-     * @param {number} dy
-     * @param {number} distSq
-     * @param {object} out
-     * @param {number} fallbackNormalX
-     * @param {number} fallbackNormalY
-     * @returns {object|null}
-     */
-    #writeCircleOverlapManifoldFromDelta(ax, ay, ar, br, dx, dy, distSq, out, fallbackNormalX = 1, fallbackNormalY = 0) {
-        const radiusSum = ar + br;
-        if (distSq >= (radiusSum * radiusSum)) {
-            return null;
-        }
-
-        let distance = Math.sqrt(distSq);
-        let normalX = 1;
-        let normalY = 0;
-        if (distance > EPSILON) {
-            normalX = dx / distance;
-            normalY = dy / distance;
-        } else {
-            const fallbackLength = Math.hypot(fallbackNormalX, fallbackNormalY);
-            if (fallbackLength > EPSILON) {
-                normalX = fallbackNormalX / fallbackLength;
-                normalY = fallbackNormalY / fallbackLength;
-            }
-            distance = 0;
-        }
-
-        return this.#writeManifold(
-            out,
-            normalX,
-            normalY,
-            radiusSum - distance,
-            ax + (normalX * ar),
-            ay + (normalY * ar)
-        );
-    }
-
-    /**
-     * 원-사각형 충돌 manifold를 씁니다.
-     * @private
-     * @param {number} circleX
-     * @param {number} circleY
-     * @param {number} radius
-     * @param {object} rectBody
-     * @param {object} out
-     * @returns {object|null}
-     */
-    #writeCircleRectOverlapManifold(circleX, circleY, radius, rectBody, out) {
-        if (!Number.isFinite(circleX) || !Number.isFinite(circleY) || !Number.isFinite(radius) || radius <= 0) {
-            return null;
-        }
-
-        const minX = Number.isFinite(rectBody?.minX) ? rectBody.minX : 0;
-        const maxX = Number.isFinite(rectBody?.maxX) ? rectBody.maxX : 0;
-        const minY = Number.isFinite(rectBody?.minY) ? rectBody.minY : 0;
-        const maxY = Number.isFinite(rectBody?.maxY) ? rectBody.maxY : 0;
-        const closestX = Math.max(minX, Math.min(circleX, maxX));
-        const closestY = Math.max(minY, Math.min(circleY, maxY));
-        const dx = closestX - circleX;
-        const dy = closestY - circleY;
-        const distSq = (dx * dx) + (dy * dy);
-        if (distSq >= (radius * radius)) {
-            return null;
-        }
-
-        if (distSq > EPSILON) {
-            const distance = Math.sqrt(distSq);
-            const normalX = dx / distance;
-            const normalY = dy / distance;
-            return this.#writeManifold(
-                out,
-                normalX,
-                normalY,
-                radius - distance,
-                closestX,
-                closestY
-            );
-        }
-
-        const leftDistance = Math.max(0, circleX - minX);
-        const rightDistance = Math.max(0, maxX - circleX);
-        const topDistance = Math.max(0, circleY - minY);
-        const bottomDistance = Math.max(0, maxY - circleY);
-        const minDistance = Math.min(leftDistance, rightDistance, topDistance, bottomDistance);
-        let normalX = 1;
-        let normalY = 0;
-        let pointX = minX;
-        let pointY = circleY;
-
-        if (minDistance === rightDistance) {
-            normalX = -1;
-            pointX = maxX;
-        } else if (minDistance === topDistance) {
-            normalX = 0;
-            normalY = 1;
-            pointX = circleX;
-            pointY = minY;
-        } else if (minDistance === bottomDistance) {
-            normalX = 0;
-            normalY = -1;
-            pointX = circleX;
-            pointY = maxY;
-        }
-
-        return this.#writeManifold(
-            out,
-            normalX,
-            normalY,
-            radius + minDistance,
-            pointX,
-            pointY
-        );
-    }
-
-    /**
-     * manifold 법선을 A->B 관점으로 뒤집습니다.
-     * @private
-     * @param {object} manifold
-     * @returns {object}
-     */
-    #invertManifoldNormal(manifold) {
-        manifold.normalX = -manifold.normalX;
-        manifold.normalY = -manifold.normalY;
-        return manifold;
-    }
-
-    /**
-     * manifold 출력 객체를 채웁니다.
-     * @private
-     * @param {object} out
-     * @param {number} normalX
-     * @param {number} normalY
-     * @param {number} penetration
-     * @param {number} pointX
-     * @param {number} pointY
-     * @returns {object}
-     */
-    #writeManifold(out, normalX, normalY, penetration, pointX, pointY) {
-        out.collided = true;
-        out.normalX = normalX;
-        out.normalY = normalY;
-        out.penetration = penetration;
-        out.pointX = pointX;
-        out.pointY = pointY;
-        out.moveAX = 0;
-        out.moveAY = 0;
-        out.moveBX = 0;
-        out.moveBY = 0;
-        return out;
-    }
-
-    /**
-     * manifold 값을 대상 스크래치 객체에 복사합니다.
-     * @private
-     * @param {object} source
-     * @param {object} target
-     * @returns {object}
-     */
-    #copyManifold(source, target) {
-        target.collided = source.collided;
-        target.normalX = source.normalX;
-        target.normalY = source.normalY;
-        target.penetration = source.penetration;
-        target.pointX = source.pointX;
-        target.pointY = source.pointY;
-        target.moveAX = source.moveAX || 0;
-        target.moveAY = source.moveAY || 0;
-        target.moveBX = source.moveBX || 0;
-        target.moveBY = source.moveBY || 0;
-        return target;
-    }
-
-    /**
-     * 다중 part 접촉을 단일 대표 manifold로 누적합니다.
-     * @private
-     * @param {object} best
-     * @param {{contactCount:number, normalSumX:number, normalSumY:number, pointSumX:number, pointSumY:number, penetrationSum:number, maxPenetration:number}} aggregate
-     * @returns {object}
-     */
-    #finalizeAggregatePartManifold(best, aggregate) {
-        if (!best || !aggregate || aggregate.contactCount <= 1) {
-            return best;
-        }
-
-        const normalLen = Math.hypot(aggregate.normalSumX, aggregate.normalSumY);
-        if (normalLen <= EPSILON || aggregate.penetrationSum <= EPSILON) {
-            return best;
-        }
-
-        const alignment = Math.min(1, normalLen / aggregate.penetrationSum);
-        const diversity = Math.max(0, 1 - alignment);
-        const multiplier = Math.min(
-            MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX,
-            1 + (diversity * Math.min(aggregate.contactCount - 1, 3) * MULTI_CONTACT_NORMAL_DIVERSITY_SCALE)
-        );
-        const pointWeight = Math.max(EPSILON, aggregate.penetrationSum);
-
-        best.normalX = aggregate.normalSumX / normalLen;
-        best.normalY = aggregate.normalSumY / normalLen;
-        best.penetration = Math.max(best.penetration, aggregate.maxPenetration * multiplier);
-        best.pointX = aggregate.pointSumX / pointWeight;
-        best.pointY = aggregate.pointSumY / pointWeight;
-        return best;
-    }
-
-    /**
-     * @private
      */
     #resetBodyPool() {
-        this.#bodyPoolCursor = 0;
-        this.#invalidateEnemyBodyCache();
-    }
-
-    /**
-     * enemy body 재사용 캐시를 무효화합니다.
-     * @private
-     */
-    #invalidateEnemyBodyCache() {
-        this.#enemyBodyCache.frameToken = -1;
-        this.#enemyBodyCache.enemies = null;
-        this.#enemyBodyCache.delta = 0;
-        this.#enemyBodyCache.sourceLength = 0;
+        this.#bodyPool.reset();
+        this.#enemyBodyCache.invalidate();
     }
 
     /**
@@ -1342,58 +677,9 @@ export class CollisionHandler {
         this.#resetBodyPool();
         const bodies = this.#buildEnemyBodies(enemies, delta);
         if (cacheForReuse) {
-            this.#storeEnemyBodyCache(enemies, delta, bodies);
+            this.#enemyBodyCache.store(enemies, delta, bodies);
         }
         return bodies;
-    }
-
-    /**
-     * 현재 fixed frame에서 같은 enemy 배열로 만든 body를 캐시에 기록합니다.
-     * @private
-     * @param {object[]} enemies
-     * @param {number} delta
-     * @param {object[]} bodies
-     */
-    #storeEnemyBodyCache(enemies, delta, bodies) {
-        this.#enemyBodyCache.frameToken = this.#enemyBodyFrameToken;
-        this.#enemyBodyCache.enemies = enemies;
-        this.#enemyBodyCache.delta = delta;
-        this.#enemyBodyCache.sourceLength = Array.isArray(enemies) ? enemies.length : 0;
-        this.#enemyBodyCache.bodies = bodies;
-    }
-
-    /**
-     * 같은 fixed frame에서 같은 enemy 배열과 delta로 만든 body를 반환합니다.
-     * @private
-     * @param {object[]} enemies
-     * @param {number} delta
-     * @returns {object[]|null}
-     */
-    #getReusableEnemyBodies(enemies, delta) {
-        const cache = this.#enemyBodyCache;
-        if (cache.frameToken !== this.#enemyBodyFrameToken) {
-            return null;
-        }
-        if (cache.enemies !== enemies || cache.sourceLength !== enemies.length) {
-            return null;
-        }
-        if (Math.abs(cache.delta - delta) > EPSILON) {
-            return null;
-        }
-        return Array.isArray(cache.bodies) ? cache.bodies : null;
-    }
-
-    /**
-     * @private
-     */
-    #acquireBody() {
-        if (this.#bodyPoolCursor < this.#bodyPool.length) {
-            return this.#bodyPool[this.#bodyPoolCursor++];
-        }
-        const body = createCollisionBody();
-        this.#bodyPool.push(body);
-        this.#bodyPoolCursor++;
-        return body;
     }
 
     /**
@@ -1518,18 +804,14 @@ export class CollisionHandler {
             distance = 0;
         }
 
-        const penetration = radiusSum - distance;
-        const manifold = this.#scratchManifold;
-        manifold.collided = true;
-        manifold.normalX = normalX;
-        manifold.normalY = normalY;
-        manifold.penetration = penetration;
-        manifold.pointX = ax + (normalX * radiusA);
-        manifold.pointY = ay + (normalY * radiusA);
-        manifold.moveAX = 0;
-        manifold.moveAY = 0;
-        manifold.moveBX = 0;
-        manifold.moveBY = 0;
+        const manifold = writeCollisionManifold(
+            this.#scratchManifold,
+            normalX,
+            normalY,
+            radiusSum - distance,
+            ax + (normalX * radiusA),
+            ay + (normalY * radiusA)
+        );
 
         if (resolvePositions) {
             bodyA._resolvedPairCount = (bodyA._resolvedPairCount || 0) + 1;
@@ -1542,26 +824,12 @@ export class CollisionHandler {
             return 0;
         }
 
-        const pairWeights = getCollisionPairResolveWeights(bodyA, bodyB);
-        const pairResolveBoost = resolveBoost * getCollisionPairEscapeBoost(bodyA, bodyB);
-        const resolved = this.detector.addResolution(
-            manifold,
-            {
-                weight: pairWeights.weightA,
-                movable: isCollisionPairResolveMovable(bodyA, bodyB, null)
-            },
-            {
-                weight: pairWeights.weightB,
-                movable: isCollisionPairResolveMovable(bodyB, bodyA, null)
-            }
-        );
-        const tunedResolve = tuneCollisionResolutionMoves(resolved, manifold, bodyA, bodyB, pairResolveBoost);
-        if (tunedResolve.moveAX || tunedResolve.moveAY) {
-            this.#applyBodyTranslation(bodyA, tunedResolve.moveAX, tunedResolve.moveAY, pairResolveBoost);
-        }
-        if (tunedResolve.moveBX || tunedResolve.moveBY) {
-            this.#applyBodyTranslation(bodyB, tunedResolve.moveBX, tunedResolve.moveBY, pairResolveBoost);
-        }
+        applyCollisionPairResolution(this.detector, manifold, bodyA, bodyB, {
+            movableA: null,
+            movableB: null,
+            resolveBoost,
+            broadphaseBuffer: this.#broadphaseBuffer
+        });
 
         return 1;
     }
@@ -1617,9 +885,9 @@ export class CollisionHandler {
         const workerPool = this.#getNarrowphaseWorkerPool();
         const result = workerPool.computeEnemyCircleContactsSync(
             {
-                relationData: this.#relationBroadData,
-                bodyKindCodes: this.#bodyKindCodes,
-                bodyShapeCodes: this.#bodyShapeCodes,
+                relationData: this.#broadphaseBuffer.relationData,
+                bodyKindCodes: this.#broadphaseBuffer.bodyKindCodes,
+                bodyShapeCodes: this.#broadphaseBuffer.bodyShapeCodes,
                 pairLowIndices: this.#candidatePairs.lowIndices,
                 pairHighIndices: this.#candidatePairs.highIndices,
                 bodyCount: Array.isArray(bodies) ? bodies.length : 0,
@@ -1657,64 +925,6 @@ export class CollisionHandler {
     }
 
     /**
-     * worker가 미리 계산한 enemy circle contact를 판정합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @param {number} low
-     * @param {number} high
-     * @param {Float64Array} resultData
-     * @param {number} contactRowIndex
-     * @param {boolean} resolvePositions
-     * @returns {number}
-     */
-    #processEnemyCircleContactResultSoA(
-        bodyA,
-        bodyB,
-        low,
-        high,
-        resultData,
-        contactRowIndex,
-        resolvePositions
-    ) {
-        if (resolvePositions || !Number.isInteger(contactRowIndex) || contactRowIndex < 0) {
-            return 0;
-        }
-
-        const offset = contactRowIndex * CONTACT_RESULT_STRIDE;
-        const resultLow = Math.trunc(resultData[offset + CONTACT_RESULT_INDEX.BODY_A_INDEX]);
-        const resultHigh = Math.trunc(resultData[offset + CONTACT_RESULT_INDEX.BODY_B_INDEX]);
-        if (resultLow !== low || resultHigh !== high) {
-            return 0;
-        }
-
-        const normalX = resultData[offset + CONTACT_RESULT_INDEX.NORMAL_X];
-        const normalY = resultData[offset + CONTACT_RESULT_INDEX.NORMAL_Y];
-        const penetration = resultData[offset + CONTACT_RESULT_INDEX.PENETRATION];
-        const pointX = resultData[offset + CONTACT_RESULT_INDEX.POINT_X];
-        const pointY = resultData[offset + CONTACT_RESULT_INDEX.POINT_Y];
-        if (!Number.isFinite(normalX) || !Number.isFinite(normalY)
-            || !Number.isFinite(penetration) || penetration <= 0
-            || !Number.isFinite(pointX) || !Number.isFinite(pointY)) {
-            return 0;
-        }
-
-        const manifold = this.#scratchManifold;
-        manifold.collided = true;
-        manifold.normalX = normalX;
-        manifold.normalY = normalY;
-        manifold.penetration = penetration;
-        manifold.pointX = pointX;
-        manifold.pointY = pointY;
-        manifold.moveAX = 0;
-        manifold.moveAY = 0;
-        manifold.moveBX = 0;
-        manifold.moveBY = 0;
-
-        return 1;
-    }
-
-    /**
      * 후보 pair 목록을 현재 broad-phase 데이터 기준으로 판정합니다.
      * @private
      * @param {object[]} bodies
@@ -1726,9 +936,9 @@ export class CollisionHandler {
     #processCandidatePairs(bodies, resolvePositions, applyNonPosition, resolveBoost) {
         let resolvedCount = 0;
         const pairBudget = getCollisionEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost);
-        const relationData = this.#relationBroadData;
-        const kindCodes = this.#bodyKindCodes;
-        const shapeCodes = this.#bodyShapeCodes;
+        const relationData = this.#broadphaseBuffer.relationData;
+        const kindCodes = this.#broadphaseBuffer.bodyKindCodes;
+        const shapeCodes = this.#broadphaseBuffer.bodyShapeCodes;
         const lowIndices = this.#candidatePairs.lowIndices;
         const highIndices = this.#candidatePairs.highIndices;
         const parallelContactState = this.#prepareParallelNarrowphaseContacts(
@@ -1800,15 +1010,13 @@ export class CollisionHandler {
                         pairIndex
                     );
                     pairResolved = contactRowIndex >= 0
-                        ? this.#processEnemyCircleContactResultSoA(
-                            bodyA,
-                            bodyB,
+                        ? (writeCollisionParallelNarrowphaseContactManifold(
+                            this.#scratchManifold,
+                            parallelContactState.resultData,
                             low,
                             high,
-                            parallelContactState.resultData,
-                            contactRowIndex,
-                            resolvePositions
-                        )
+                            contactRowIndex
+                        ) ? 1 : 0)
                         : 0;
                 } else if (isCirclePair) {
                     pairResolved = this.#processEnemyCirclePairSoA(
@@ -1892,7 +1100,7 @@ export class CollisionHandler {
      */
     #insertBodyToGridSoA(index, cellSize) {
         const o = index * BROAD_STRIDE;
-        const bd = this.#broadData;
+        const bd = this.#broadphaseBuffer.broadData;
         const minCellX = Math.floor(bd[o + 0] / cellSize);
         const maxCellX = Math.floor(bd[o + 1] / cellSize);
         const minCellY = Math.floor(bd[o + 2] / cellSize);
@@ -1903,11 +1111,11 @@ export class CollisionHandler {
                 const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
                 let bucket = this.#grid.get(key);
                 if (!bucket) {
-                    bucket = this.#acquireBucket();
+                    bucket = this.#gridBucketPool.acquire();
                     this.#grid.set(key, bucket);
                     this.#activeGridBuckets.push(bucket);
                 }
-                this.#pushBucketIndex(bucket, index);
+                this.#gridBucketPool.pushIndex(bucket, index);
             }
         }
     }
@@ -1916,63 +1124,8 @@ export class CollisionHandler {
      * @private
      */
     #clearGrid() {
-        for (let i = 0; i < this.#activeGridBuckets.length; i++) {
-            this.#activeGridBuckets[i].count = 0;
-        }
-        this.#activeGridBuckets.length = 0;
+        this.#gridBucketPool.resetActiveBuckets(this.#activeGridBuckets);
         this.#grid.clear();
-        this.#bucketPoolCursor = 0;
-    }
-
-    /**
-     * @private
-     * @returns {GridBucket}
-     */
-    #acquireBucket() {
-        if (this.#bucketPoolCursor < this.#bucketPool.length) {
-            const bucket = this.#bucketPool[this.#bucketPoolCursor++];
-            bucket.count = 0;
-            return bucket;
-        }
-        const b = createCollisionGridBucket(GRID_BUCKET_INITIAL_CAPACITY);
-        this.#bucketPool.push(b);
-        this.#bucketPoolCursor++;
-        return b;
-    }
-
-    /**
-     * @private
-     * @param {GridBucket} bucket
-     * @param {number} bodyIndex
-     */
-    #pushBucketIndex(bucket, bodyIndex) {
-        if (bucket.count >= bucket.indices.length) {
-            const next = new Int32Array(bucket.indices.length * 2);
-            next.set(bucket.indices);
-            bucket.indices = next;
-        }
-        bucket.indices[bucket.count++] = bodyIndex;
-    }
-
-    /**
-     * @private
-     */
-    #ensureBroadData(bodyCount) {
-        const needed = bodyCount * BROAD_STRIDE;
-        if (this.#broadData.length < needed) {
-            this.#broadData = new Float32Array(Math.max(needed, this.#broadData.length * 2));
-        }
-        const relationNeeded = bodyCount * RELATION_BROAD_STRIDE;
-        if (this.#relationBroadData.length < relationNeeded) {
-            this.#relationBroadData = new Float64Array(Math.max(relationNeeded, this.#relationBroadData.length * 2));
-        }
-        if (this.#bodyKindCodes.length < bodyCount) {
-            this.#bodyKindCodes = new Uint8Array(Math.max(bodyCount, this.#bodyKindCodes.length * 2));
-        }
-        if (this.#bodyShapeCodes.length < bodyCount) {
-            this.#bodyShapeCodes = new Uint8Array(Math.max(bodyCount, this.#bodyShapeCodes.length * 2));
-        }
-        this.#broadBodyCount = bodyCount;
     }
 
     /**
@@ -1983,9 +1136,9 @@ export class CollisionHandler {
      * @returns {number} 재구성에 사용한 grid cell size
      */
     #rebuildGridFromBodies(bodies, gridMode = 'default') {
-        this.#ensureBroadData(bodies.length);
+        this.#broadphaseBuffer.ensure(bodies.length);
         for (let i = 0; i < bodies.length; i++) {
-            this.#writeBroadData(i, bodies[i], gridMode);
+            this.#broadphaseBuffer.write(i, bodies[i], gridMode);
         }
 
         const cellSize = estimateCollisionGridCellSize(bodies, gridMode);
@@ -1995,264 +1148,6 @@ export class CollisionHandler {
         }
 
         return cellSize;
-    }
-
-    /**
-     * projectile broad-phase query에서 사용할 방문 마크 버퍼 크기를 확보합니다.
-     * @private
-     * @param {number} bodyCount
-     */
-    #ensureQueryMarks(bodyCount) {
-        if (this.#queryMarks.length >= bodyCount) {
-            return;
-        }
-
-        this.#queryMarks = new Int32Array(Math.max(bodyCount, this.#queryMarks.length * 2));
-    }
-
-    /**
-     * projectile broad-phase query용 방문 stamp를 갱신합니다.
-     * overflow 시 버퍼를 초기화하고 1부터 다시 사용합니다.
-     * @private
-     * @returns {number}
-     */
-    #advanceQueryStamp() {
-        this.#queryMarkStamp++;
-        if (this.#queryMarkStamp < 0x7fffffff) {
-            return this.#queryMarkStamp;
-        }
-
-        this.#queryMarks.fill(0);
-        this.#queryMarkStamp = 1;
-        return this.#queryMarkStamp;
-    }
-
-    /**
-     * 원형 query body가 현재 grid에서 겹치는 enemy 후보 인덱스를 수집합니다.
-     * @private
-     * @param {object} body
-     * @param {number} cellSize
-     * @param {number} bodyCount
-     * @returns {number[]}
-     */
-    #collectGridCandidateIndices(body, cellSize, bodyCount) {
-        const candidates = this.#queryCandidateIndices;
-        candidates.length = 0;
-        if (!body || cellSize <= 0 || bodyCount <= 0) {
-            return candidates;
-        }
-
-        this.#ensureQueryMarks(bodyCount);
-        const stamp = this.#advanceQueryStamp();
-        const minCellX = Math.floor(body.minX / cellSize);
-        const maxCellX = Math.floor(body.maxX / cellSize);
-        const minCellY = Math.floor(body.minY / cellSize);
-        const maxCellY = Math.floor(body.maxY / cellSize);
-
-        for (let cx = minCellX; cx <= maxCellX; cx++) {
-            for (let cy = minCellY; cy <= maxCellY; cy++) {
-                const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
-                const bucket = this.#grid.get(key);
-                if (!bucket || bucket.count <= 0) {
-                    continue;
-                }
-
-                const indices = bucket.indices;
-                for (let i = 0; i < bucket.count; i++) {
-                    const bodyIndex = indices[i];
-                    if (bodyIndex < 0 || bodyIndex >= bodyCount) {
-                        continue;
-                    }
-                    if (this.#queryMarks[bodyIndex] === stamp) {
-                        continue;
-                    }
-
-                    this.#queryMarks[bodyIndex] = stamp;
-                    candidates.push(bodyIndex);
-                }
-            }
-        }
-
-        return candidates;
-    }
-
-    /**
-     * grid 삽입용 broad-phase SoA 데이터를 씁니다.
-     * @private
-     * @param {number} index
-     * @param {object} body
-     * @param {'default'|'enemyPair'|'projectile'} [gridMode='default']
-     */
-    #writeBroadData(index, body, gridMode = 'default') {
-        const o = index * BROAD_STRIDE;
-        const bd = this.#broadData;
-        let minX = body.minX;
-        let maxX = body.maxX;
-        let minY = body.minY;
-        let maxY = body.maxY;
-        let broadRadius = body.broadRadius;
-        if (body.kind === 'enemy' && gridMode === 'enemyPair') {
-            minX = Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : minX;
-            maxX = Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : maxX;
-            minY = Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : minY;
-            maxY = Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : maxY;
-            broadRadius = Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
-        } else if (body.kind === 'enemy' && gridMode === 'projectile') {
-            minX = Number.isFinite(body.projectileMinX) ? body.projectileMinX : minX;
-            maxX = Number.isFinite(body.projectileMaxX) ? body.projectileMaxX : maxX;
-            minY = Number.isFinite(body.projectileMinY) ? body.projectileMinY : minY;
-            maxY = Number.isFinite(body.projectileMaxY) ? body.projectileMaxY : maxY;
-            broadRadius = Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
-        }
-
-        body._broadDataIndex = index;
-        this.#bodyKindCodes[index] = getCollisionBodyKindCode(body.kind);
-        this.#bodyShapeCodes[index] = getCollisionBodyShapeCode(body.shape);
-
-        bd[o + 0] = minX;
-        bd[o + 1] = maxX;
-        bd[o + 2] = minY;
-        bd[o + 3] = maxY;
-        bd[o + 4] = minX;
-        bd[o + 5] = maxX;
-        bd[o + 6] = minY;
-        bd[o + 7] = maxY;
-        bd[o + 8] = body.centerX;
-        bd[o + 9] = body.centerY;
-        bd[o + 10] = body.boundRadius;
-        bd[o + 11] = broadRadius;
-        bd[o + 12] = broadRadius * COLLISION_GRID_RADIUS_SCALE;
-        bd[o + 13] = body.shape === 'circle' ? body.radius : broadRadius;
-
-        const relationOffset = index * RELATION_BROAD_STRIDE;
-        const relationData = this.#relationBroadData;
-        relationData[relationOffset + RELATION_INDEX.MIN_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
-        relationData[relationOffset + RELATION_INDEX.MAX_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
-        relationData[relationOffset + RELATION_INDEX.MIN_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
-        relationData[relationOffset + RELATION_INDEX.MAX_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
-        relationData[relationOffset + RELATION_INDEX.CENTER_X] = Number.isFinite(body.centerX) ? body.centerX : body.x;
-        relationData[relationOffset + RELATION_INDEX.CENTER_Y] = Number.isFinite(body.centerY) ? body.centerY : body.y;
-        relationData[relationOffset + RELATION_INDEX.ENEMY_PAIR_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
-        relationData[relationOffset + RELATION_INDEX.PROJECTILE_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
-    }
-
-    /**
-     * body 이동량을 현재 broad-phase SoA 버퍼에 반영합니다.
-     * @private
-     * @param {object} body
-     * @param {number} dx
-     * @param {number} dy
-     */
-    #translateBodyBroadData(body, dx, dy) {
-        const bodyIndex = Number.isInteger(body?._broadDataIndex) ? body._broadDataIndex : -1;
-        if (bodyIndex < 0 || bodyIndex >= this.#broadBodyCount) {
-            return;
-        }
-
-        const broadOffset = bodyIndex * BROAD_STRIDE;
-        const broadData = this.#broadData;
-        broadData[broadOffset + 0] += dx;
-        broadData[broadOffset + 1] += dx;
-        broadData[broadOffset + 2] += dy;
-        broadData[broadOffset + 3] += dy;
-        broadData[broadOffset + 4] += dx;
-        broadData[broadOffset + 5] += dx;
-        broadData[broadOffset + 6] += dy;
-        broadData[broadOffset + 7] += dy;
-        broadData[broadOffset + 8] += dx;
-        broadData[broadOffset + 9] += dy;
-
-        const relationOffset = bodyIndex * RELATION_BROAD_STRIDE;
-        const relationData = this.#relationBroadData;
-        relationData[relationOffset + RELATION_INDEX.MIN_X] += dx;
-        relationData[relationOffset + RELATION_INDEX.MAX_X] += dx;
-        relationData[relationOffset + RELATION_INDEX.MIN_Y] += dy;
-        relationData[relationOffset + RELATION_INDEX.MAX_Y] += dy;
-        relationData[relationOffset + RELATION_INDEX.CENTER_X] += dx;
-        relationData[relationOffset + RELATION_INDEX.CENTER_Y] += dy;
-    }
-
-    /**
-     * @private
-     */
-    #applyBodyTranslation(body, dx, dy, resolveBoost = 1) {
-        if (!body || body.movable === false) return;
-        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-        if (dx === 0 && dy === 0) return;
-
-        const moveMag = Math.hypot(dx, dy);
-        if (moveMag <= EPSILON) return;
-        const baseFrameMax = Number.isFinite(body._frameResolveMax) ? body._frameResolveMax : Number.POSITIVE_INFINITY;
-        const frameMax = baseFrameMax * getCollisionDenseFrameScale(body) * resolveBoost;
-        const frameMoved = Number.isFinite(body._frameResolveMoved) ? body._frameResolveMoved : 0;
-        if (frameMoved >= frameMax) return;
-        const remain = frameMax - frameMoved;
-        if (remain < moveMag) {
-            const scale = remain / moveMag;
-            dx *= scale;
-            dy *= scale;
-        }
-        const appliedMag = Math.hypot(dx, dy);
-        if (appliedMag <= EPSILON) return;
-        body._frameResolveMoved = frameMoved + appliedMag;
-
-        body.centerX += dx;
-        body.centerY += dy;
-        body.minX += dx;
-        body.maxX += dx;
-        body.minY += dy;
-        body.maxY += dy;
-        if (Number.isFinite(body.enemyPairMinX)) body.enemyPairMinX += dx;
-        if (Number.isFinite(body.enemyPairMaxX)) body.enemyPairMaxX += dx;
-        if (Number.isFinite(body.enemyPairMinY)) body.enemyPairMinY += dy;
-        if (Number.isFinite(body.enemyPairMaxY)) body.enemyPairMaxY += dy;
-        if (Number.isFinite(body.projectileMinX)) body.projectileMinX += dx;
-        if (Number.isFinite(body.projectileMaxX)) body.projectileMaxX += dx;
-        if (Number.isFinite(body.projectileMinY)) body.projectileMinY += dy;
-        if (Number.isFinite(body.projectileMaxY)) body.projectileMaxY += dy;
-        body.x = body.centerX;
-        body.y = body.centerY;
-        this.#translateBodyBroadData(body, dx, dy);
-
-        if (body.circleParts instanceof Float32Array) {
-            const limit = Math.max(0, Math.floor(body.circlePartCount || 0)) * 3;
-            for (let i = 0; i < limit; i += 3) {
-                body.circleParts[i] += dx;
-                body.circleParts[i + 1] += dy;
-            }
-        }
-
-        if (body.ref?.position) {
-            body.ref.position.x += dx;
-            body.ref.position.y += dy;
-            // 고정틱 말미 충돌 보정으로 위치가 이동하면, 보간 시작점도 함께 이동시켜
-            // 렌더 프레임에서 과거 위치로 순간 되돌아가는 시각적 점프를 줄입니다.
-            if (body.ref.prevPosition) {
-                body.ref.prevPosition.x += dx;
-                body.ref.prevPosition.y += dy;
-            }
-            if (body.kind === 'enemy' && typeof body.ref.applyAxisResistance === 'function') {
-                let resistX = 1;
-                let resistY = 1;
-                const radius = Math.max(1, Number.isFinite(body.boundRadius) ? body.boundRadius : 1);
-                const axisRange = Math.max(1, radius * COLLISION_AXIS_RESISTANCE_RADIUS_RATIO);
-
-                const velX = Number.isFinite(body.velocityX) ? body.velocityX : 0;
-                const velY = Number.isFinite(body.velocityY) ? body.velocityY : 0;
-                if ((dx * velX) < -EPSILON) {
-                    const ratioX = Math.min(1, Math.abs(dx) / axisRange);
-                    resistX = Math.max(COLLISION_AXIS_RESISTANCE_MIN, 1 - (ratioX * COLLISION_AXIS_RESISTANCE_GAIN));
-                }
-                if ((dy * velY) < -EPSILON) {
-                    const ratioY = Math.min(1, Math.abs(dy) / axisRange);
-                    resistY = Math.max(COLLISION_AXIS_RESISTANCE_MIN, 1 - (ratioY * COLLISION_AXIS_RESISTANCE_GAIN));
-                }
-
-                if (resistX < 1 || resistY < 1) {
-                    body.ref.applyAxisResistance(resistX, resistY);
-                }
-            }
-        }
     }
 
     /**
@@ -2288,7 +1183,7 @@ export class CollisionHandler {
             const radius = Number.isFinite(player.radius) ? player.radius : 0;
             if (radius <= 0) continue;
 
-            const body = this.#acquireBody();
+            const body = this.#bodyPool.acquire();
             if (writeCollisionPlayerBody(body, player, delta, {
                 epsilon: EPSILON,
                 frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,
@@ -2304,7 +1199,7 @@ export class CollisionHandler {
      * @private
      */
     #buildEnemyBody(enemy, delta, sleeping = false) {
-        const body = this.#acquireBody();
+        const body = this.#bodyPool.acquire();
         return writeCollisionEnemyBody(body, enemy, delta, sleeping, {
             epsilon: EPSILON,
             frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,
@@ -2319,28 +1214,11 @@ export class CollisionHandler {
      */
     #buildWallBodies() {
         const out = this.#wallBodiesCache;
-        if (!Array.isArray(this.walls) || this.walls.length === 0) {
-            out.length = 0;
-            this.#wallBodiesDirty = false;
-            return out;
-        }
         if (!this.#wallBodiesDirty) {
             return out;
         }
 
-        out.length = 0;
-        for (let i = 0; i < this.walls.length; i++) {
-            const wall = this.walls[i];
-            if (!wall) continue;
-            const rect = typeof wall.getCollisionRect === 'function' ? wall.getCollisionRect() : wall;
-            if (!rect) continue;
-
-            const w = Number.isFinite(rect.w) ? rect.w : 0;
-            const h = Number.isFinite(rect.h) ? rect.h : 0;
-            if (w <= 0 || h <= 0) continue;
-
-            out.push(createCollisionWallBody(rect, wall));
-        }
+        writeCollisionWallBodies(out, this.walls);
         this.#wallBodiesDirty = false;
         return out;
     }

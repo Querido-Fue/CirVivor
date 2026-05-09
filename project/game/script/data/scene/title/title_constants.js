@@ -152,6 +152,14 @@ export const TITLE_CONSTANTS = Object.freeze({
         SCENE_TRANSITION_DURATION: 1,
         MINI_CIRCLE_SCALE: 1,
         GLOW_COMPENSATION_SCALE: 4,
+        CIRCLE_SHADER: Object.freeze({
+            ALPHA: 1,
+            GLOW_STRENGTH: 0.24,
+            GLASS_STRENGTH: 0.72,
+            GLOW_COMPENSATION_STRENGTH_SCALE: 0.08,
+            SCISSOR_PADDING_RADIUS_RATIO: 0.86,
+            SCISSOR_PADDING_MIN_PX: 28
+        }),
         LOGO_FINAL_LEFT_UIWW_RATIO: 0.11,
         LOGO_FINAL_CENTER_Y_RATIO: 0.5,
         LOGO_FINAL_WIDTH_UIWW_RATIO: 0.19

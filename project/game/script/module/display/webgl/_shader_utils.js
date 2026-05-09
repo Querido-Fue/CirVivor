@@ -55,6 +55,135 @@ export const FULLSCREEN_VERTEX_SHADER = `
 `;
 
 /**
+ * 타이틀 로딩 원형 UI의 fill, wave, glow, glass highlight를 렌더링하는 프래그먼트 셰이더입니다.
+ */
+export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
+    precision highp float;
+
+    varying vec2 v_uv;
+
+    uniform vec2 u_resolution;
+    uniform vec2 u_center;
+    uniform float u_radius;
+    uniform float u_progress;
+    uniform float u_outlineWidth;
+    uniform float u_wavePhase;
+    uniform float u_secondaryWavePhase;
+    uniform float u_time;
+    uniform float u_alpha;
+    uniform float u_glowStrength;
+    uniform float u_glassStrength;
+    uniform vec3 u_baseColor;
+    uniform vec3 u_deepColor;
+    uniform vec3 u_rimColor;
+    uniform vec3 u_highlightColor;
+    uniform vec3 u_surfaceColor;
+
+    const float PI = 3.141592653589793;
+
+    float saturate(float value) {
+        return clamp(value, 0.0, 1.0);
+    }
+
+    float ellipseMask(vec2 position, vec2 center, vec2 radius, float rotation) {
+        float sine = sin(rotation);
+        float cosine = cos(rotation);
+        vec2 offset = position - center;
+        vec2 rotated = vec2(
+            (offset.x * cosine) - (offset.y * sine),
+            (offset.x * sine) + (offset.y * cosine)
+        ) / max(radius, vec2(0.0001));
+        return exp(-dot(rotated, rotated) * 2.25);
+    }
+
+    void main() {
+        vec2 fragCoord = vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
+        float radius = max(1.0, u_radius);
+        vec2 local = fragCoord - u_center;
+        vec2 normalized = local / radius;
+        float distanceFromCenter = length(local);
+        float edgeSoftness = 1.35;
+        float circleMask = 1.0 - smoothstep(radius - edgeSoftness, radius + edgeSoftness, distanceFromCenter);
+        float outsideDistance = max(distanceFromCenter - radius, 0.0);
+        float progress = saturate(u_progress);
+
+        float fillHeight = radius * 2.0 * progress;
+        float waveAmplitude = progress >= 0.999
+            ? 0.0
+            : min(radius * 0.052, max(1.25, fillHeight * 0.14));
+        float xProgress = saturate((local.x + radius) / (radius * 2.0));
+        float wave = (sin((xProgress * PI * 2.2) + u_wavePhase) * waveAmplitude)
+            + (sin((xProgress * PI * 5.2) - u_secondaryWavePhase) * waveAmplitude * 0.26);
+        float surfaceY = radius - fillHeight + wave;
+        float fillMask = progress >= 0.999
+            ? circleMask
+            : circleMask * smoothstep(surfaceY - edgeSoftness, surfaceY + edgeSoftness, local.y);
+        fillMask *= smoothstep(0.0, 0.025, progress);
+
+        vec3 normal = vec3(normalized, sqrt(max(0.0, 1.0 - dot(normalized, normalized))));
+        vec3 lightDirection = normalize(vec3(-0.45, -0.68, 0.58));
+        float light = saturate(dot(normal, lightDirection));
+        float upperLight = saturate(-normalized.y);
+        float lowerDepth = saturate((normalized.y + 0.15) * 0.82);
+        float sphericalDepth = smoothstep(0.18, 1.0, distanceFromCenter / radius);
+        vec3 bodyColor = u_baseColor * (0.76 + (normal.z * 0.22) + (light * 0.16));
+        bodyColor = mix(bodyColor, u_deepColor, (lowerDepth * 0.26) + (sphericalDepth * 0.08));
+
+        float broadTopSheen = pow(upperLight, 3.0) * 0.09 * u_glassStrength;
+        float compactHighlight = ellipseMask(normalized, vec2(-0.25, -0.56), vec2(0.42, 0.095), -0.34)
+            * 0.19
+            * u_glassStrength;
+        float edgeGlint = pow(saturate(1.0 - abs(distanceFromCenter - (radius * 0.86)) / max(1.0, radius * 0.16)), 2.4)
+            * pow(upperLight, 4.5)
+            * 0.12
+            * u_glassStrength;
+        vec3 fillColor = bodyColor + (u_highlightColor * (broadTopSheen + compactHighlight + edgeGlint));
+
+        float surfaceLine = progress > 0.025 && progress < 0.995
+            ? exp(-pow((local.y - surfaceY) / max(1.0, radius * 0.011), 2.0)) * circleMask
+            : 0.0;
+        float surfaceAlpha = surfaceLine * 0.34;
+
+        float outlineDistance = abs(distanceFromCenter - radius);
+        float outlineCore = 1.0 - smoothstep(
+            max(0.5, u_outlineWidth * 0.42),
+            max(1.0, u_outlineWidth * 0.42) + edgeSoftness,
+            outlineDistance
+        );
+        float innerRim = exp(-pow(max(radius - distanceFromCenter, 0.0) / max(1.0, u_outlineWidth * 4.0), 2.0))
+            * circleMask
+            * 0.18;
+        float angle = atan(normalized.y, normalized.x);
+        float rimLight = pow(saturate(cos(angle + 2.18) * 0.5 + 0.5), 3.0);
+        vec3 rimColor = mix(u_rimColor, u_highlightColor, rimLight * 0.48);
+        float outlineAlpha = outlineCore * 0.98;
+
+        float glowPulse = 0.94 + (sin(u_time) * 0.06);
+        float glowAlpha = exp(-pow(outsideDistance / max(1.0, radius * 0.42), 2.0))
+            * (1.0 - circleMask)
+            * u_glowStrength
+            * glowPulse;
+        vec3 glowColor = mix(u_deepColor, u_rimColor, 0.76);
+
+        float fillAlpha = fillMask;
+        vec3 premultipliedColor = (fillColor * fillAlpha)
+            + (u_surfaceColor * surfaceAlpha)
+            + (rimColor * (outlineAlpha + innerRim))
+            + (glowColor * glowAlpha);
+        float alpha = saturate(fillAlpha + surfaceAlpha + outlineAlpha + innerRim + glowAlpha);
+        alpha = saturate(alpha * u_alpha);
+        premultipliedColor *= u_alpha;
+
+        if (alpha <= 0.001) {
+            discard;
+        }
+
+        premultipliedColor = min(premultipliedColor, vec3(alpha));
+        gl_FragColor = vec4(premultipliedColor, alpha);
+    }
+`;
+
+/**
  * premultiplied alpha 기준 캔버스 텍스처를 opacity와 함께 합성하는 프래그먼트 셰이더입니다.
  */
 export const COMPOSITE_TEXTURE_FRAGMENT_SHADER = `

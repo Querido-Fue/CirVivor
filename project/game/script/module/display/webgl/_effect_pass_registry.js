@@ -1,4 +1,5 @@
 import { MagneticShieldEffectPass } from './_magnetic_shield_effect_pass.js';
+import { TitleLoadingCircleEffectPass } from './_title_loading_circle_effect_pass.js';
 
 /**
  * effect 레이어에서 사용할 pass 목록을 생성합니다.
@@ -7,6 +8,7 @@ import { MagneticShieldEffectPass } from './_magnetic_shield_effect_pass.js';
  */
 export function createEffectPassRegistry(gl) {
     return new Map([
-        ['magneticShield', new MagneticShieldEffectPass(gl)]
+        ['magneticShield', new MagneticShieldEffectPass(gl)],
+        ['titleLoadingCircle', new TitleLoadingCircleEffectPass(gl)]
     ]);
 }

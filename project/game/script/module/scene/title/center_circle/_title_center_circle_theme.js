@@ -26,6 +26,13 @@ const DEFAULT_LOADING_GLOW_SURFACE = Object.freeze({
     Shadow: null,
     ShadowAlpha: 0.45
 });
+const DEFAULT_LOADING_CIRCLE_SHADER_COLORS = Object.freeze({
+    base: Object.freeze([0.086, 0.435, 0.984]),
+    deep: Object.freeze([0.016, 0.176, 0.62]),
+    rim: Object.freeze([0.4, 0.737, 1]),
+    highlight: Object.freeze([0.94, 0.99, 1]),
+    surface: Object.freeze([0.84, 0.973, 1])
+});
 
 /**
  * 중앙 원형 로딩 glow에 사용할 색상 설정을 반환합니다.
@@ -87,6 +94,40 @@ export function getLoadingGlowSettings() {
 }
 
 /**
+ * 중앙 원형 로딩 WebGL 셰이더에 전달할 색상 벡터를 반환합니다.
+ * @returns {{base:number[], deep:number[], rim:number[], highlight:number[], surface:number[]}} 0~1 범위 색상 벡터입니다.
+ */
+export function getLoadingCircleShaderColors() {
+    const loading = ColorSchemes?.Title?.Loading;
+    const loadingCircle = loading?.Circle;
+    const loadingGlow = loading?.Glow;
+    const accent = getLoadingAccentColor();
+    const highlightFallback = ColorSchemes?.Cursor?.White
+        || loadingGlow?.Surface?.Highlight
+        || accent;
+
+    return {
+        base: _loadingColorToVec3(loadingCircle?.Base || accent, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.base),
+        deep: _loadingColorToVec3(
+            loadingCircle?.Deep || loadingGlow?.Ring?.ShadowColor || accent,
+            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.deep
+        ),
+        rim: _loadingColorToVec3(
+            loadingCircle?.Rim || loadingGlow?.Ring?.Color || accent,
+            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.rim
+        ),
+        highlight: _loadingColorToVec3(
+            loadingCircle?.Highlight || highlightFallback,
+            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.highlight
+        ),
+        surface: _loadingColorToVec3(
+            loadingCircle?.Surface || loadingGlow?.Surface?.Highlight || highlightFallback,
+            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.surface
+        )
+    };
+}
+
+/**
  * css 색상 문자열과 알파값으로 rgba 문자열을 생성합니다.
  * @param {string|null|undefined} color - 색상 문자열
  * @param {number} alpha - 알파값
@@ -105,4 +146,28 @@ export function toLoadingRgba(color, alpha) {
     }
 
     return `rgba(${parsedColor.r}, ${parsedColor.g}, ${parsedColor.b}, ${safeAlpha})`;
+}
+
+/**
+ * CSS 색상 문자열을 WebGL 셰이더용 vec3 배열로 변환합니다.
+ * @param {string|null|undefined} color - CSS 색상 문자열입니다.
+ * @param {number[]} fallback - 변환 실패 시 사용할 색상 벡터입니다.
+ * @returns {number[]} 0~1 범위의 RGB 배열입니다.
+ */
+function _loadingColorToVec3(color, fallback) {
+    const colorString = typeof color === 'string' ? color.trim() : '';
+    if (!colorString) {
+        return fallback;
+    }
+
+    const parsedColor = colorUtil().cssToRgb(colorString);
+    if (!parsedColor) {
+        return fallback;
+    }
+
+    return Object.freeze([
+        Math.max(0, Math.min(1, parsedColor.r / 255)),
+        Math.max(0, Math.min(1, parsedColor.g / 255)),
+        Math.max(0, Math.min(1, parsedColor.b / 255))
+    ]);
 }

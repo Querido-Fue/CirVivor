@@ -1,10 +1,7 @@
-import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
+import { getUIOffsetX, getUIWW, getWH, getWW, renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
-import { getLoadingAccentColor } from './loading/_title_loading_theme.js';
-import { TitleCenterCircleGlowCache } from './center_circle/_title_center_circle_glow_cache.js';
-import { drawCenterCircleSurfaceHighlight } from './center_circle/_title_center_circle_surface.js';
-import { buildCenterCircleFillData } from './center_circle/_title_center_circle_wave.js';
+import { buildTitleCenterCircleRenderCommand } from './center_circle/_title_center_circle_render_command.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
@@ -39,7 +36,6 @@ export class TitleCenterCircle {
         this.visualScale = 1;
         this.placementProgress = 0;
         this.glowCompensationScale = 1;
-        this.glowCache = new TitleCenterCircleGlowCache();
         this.#recalculateLayout();
     }
 
@@ -78,7 +74,6 @@ export class TitleCenterCircle {
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
         this.#recalculateLayout();
-        this.glowCache.clear();
     }
 
     /**
@@ -114,33 +109,20 @@ export class TitleCenterCircle {
      * 원형 로딩 애니메이션을 그립니다.
      */
     draw() {
-        const canvas = getCanvas('ui');
-        if (!canvas) {
-            return;
-        }
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-            return;
-        }
-
         const drawRadius = this.radius * this.visualScale;
         const drawOutlineWidth = Math.max(1, this.outlineWidth * this.visualScale);
 
-        ctx.save();
-        this.glowCache.draw(ctx, {
+        renderGL('effect', buildTitleCenterCircleRenderCommand({
             centerX: this.centerX,
             centerY: this.centerY,
-            radius: this.radius,
-            outlineWidth: this.outlineWidth,
-            drawRadius,
+            radius: drawRadius,
+            outlineWidth: drawOutlineWidth,
+            progress: this.progress,
+            wavePhase: this.wavePhase,
+            secondaryWavePhase: this.secondaryWavePhase,
             glowPhase: this.glowPhase,
             glowCompensationScale: this.glowCompensationScale
-        });
-        if (this.progress > 0) {
-            this.#drawFill(ctx, drawRadius);
-        }
-        this.#drawOutline(ctx, drawRadius, drawOutlineWidth);
-        ctx.restore();
+        }));
     }
 
     /**
@@ -170,7 +152,10 @@ export class TitleCenterCircle {
      * 내부 상태를 정리합니다.
      */
     destroy() {
-        this.glowCache.clear();
+        this.progress = 0;
+        this.wavePhase = 0;
+        this.secondaryWavePhase = Math.PI * 0.35;
+        this.glowPhase = 0;
     }
 
     /**
@@ -203,49 +188,4 @@ export class TitleCenterCircle {
         this.textAnchorY = this.centerY + (this.radius * this.visualScale) + Math.max(18, this.WH * TITLE_LOADING.TEXT_GAP_WH_RATIO);
     }
 
-    /**
-     * 선명한 원형 outline을 그립니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트
-     * @param {number} drawRadius - 현재 렌더 반경입니다.
-     * @param {number} drawOutlineWidth - 현재 렌더 외곽선 두께입니다.
-     * @private
-     */
-    #drawOutline(ctx, drawRadius, drawOutlineWidth) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(this.centerX, this.centerY, drawRadius, 0, TWO_PI);
-        ctx.lineWidth = drawOutlineWidth;
-        ctx.strokeStyle = getLoadingAccentColor();
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    /**
-     * 진행률에 따라 원 내부를 채우고 파도 애니메이션을 적용합니다.
-     * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트
-     * @param {number} drawRadius - 현재 렌더 반경입니다.
-     * @private
-     */
-    #drawFill(ctx, drawRadius) {
-        const innerRadius = Math.max(1, drawRadius);
-        const fillData = buildCenterCircleFillData({
-            centerX: this.centerX,
-            centerY: this.centerY,
-            innerRadius,
-            progress: this.progress,
-            wavePhase: this.wavePhase,
-            secondaryWavePhase: this.secondaryWavePhase
-        });
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(this.centerX, this.centerY, innerRadius, 0, TWO_PI);
-        ctx.clip();
-
-        ctx.fillStyle = getLoadingAccentColor();
-        ctx.fill(fillData.path);
-
-        drawCenterCircleSurfaceHighlight(ctx, fillData, drawRadius, this.progress);
-        ctx.restore();
-    }
 }
