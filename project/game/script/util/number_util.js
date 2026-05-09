@@ -10,6 +10,16 @@ export function clampNumber(value, min, max) {
 }
 
 /**
+ * 유효한 숫자이면 원본 값을, 아니면 fallback 값을 반환합니다.
+ * @param {number} value - 확인할 값입니다.
+ * @param {number} fallback - 값이 유효하지 않을 때 사용할 값입니다.
+ * @returns {number} 유효한 숫자 또는 fallback 값입니다.
+ */
+export function resolveFiniteNumber(value, fallback) {
+    return Number.isFinite(value) ? value : fallback;
+}
+
+/**
  * 유효하지 않은 숫자를 fallback으로 바꾼 뒤 주어진 범위로 제한합니다.
  * @param {number} value - 제한할 값입니다.
  * @param {number} min - 최소값입니다.

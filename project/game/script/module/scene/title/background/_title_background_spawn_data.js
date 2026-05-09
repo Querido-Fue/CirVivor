@@ -1,5 +1,5 @@
 import { mathUtil } from 'util/math_util.js';
-import { clamp01, clampNumber } from 'util/number_util.js';
+import { clampFiniteNumber, clampNumber, resolveFiniteNumber } from 'util/number_util.js';
 import { getTitleDefaultParallaxLayerProfile } from './_title_background_parallax.js';
 import { getTitlePerLayerEnemyLimit } from './_title_background_spawn_metrics.js';
 
@@ -52,10 +52,9 @@ export function buildTitleBackgroundSpawnData({
     const baseAxisSpeed = uiww * mathUtil().random(
         titleEnemiesConfig.AXIS_SPEED_MIN_RATIO,
         titleEnemiesConfig.AXIS_SPEED_MAX_RATIO
-    ) * layerData.profile.SpeedScale * (
-        Number.isFinite(titleEnemiesConfig.AXIS_SPEED_LEFT_MULTIPLIER)
-            ? titleEnemiesConfig.AXIS_SPEED_LEFT_MULTIPLIER
-            : 1
+    ) * layerData.profile.SpeedScale * resolveFiniteNumber(
+        titleEnemiesConfig.AXIS_SPEED_LEFT_MULTIPLIER,
+        1
     );
     const baseDriftSpeed = uiww * mathUtil().random(
         titleEnemiesConfig.DRIFT_SPEED_MIN_RATIO,
@@ -204,18 +203,12 @@ function _getInitialBurstSpawnY(titleEnemiesConfig, objectWH, burstSpawnIndex = 
     const minY = objectWH * titleEnemiesConfig.SPAWN_Y_MIN_RATIO;
     const maxY = objectWH * titleEnemiesConfig.SPAWN_Y_MAX_RATIO;
     const totalRange = Math.max(1, maxY - minY);
-    const safeTargetCount = Number.isFinite(burstTargetCount)
-        ? Math.max(1, Math.floor(burstTargetCount))
-        : 1;
-    const sequentialIndex = Number.isFinite(burstSpawnIndex)
-        ? Math.max(0, Math.floor(burstSpawnIndex)) % safeTargetCount
-        : 0;
+    const safeTargetCount = Math.floor(clampFiniteNumber(burstTargetCount, 1, Infinity, 1));
+    const sequentialIndex = Math.floor(clampFiniteNumber(burstSpawnIndex, 0, Infinity, 0)) % safeTargetCount;
     const slotIndex = ((sequentialIndex * 37) + 17) % safeTargetCount;
     const slotHeight = totalRange / safeTargetCount;
     const slotCenter = minY + ((slotIndex + 0.5) * slotHeight);
-    const jitterRatio = Number.isFinite(titleEnemiesConfig.INITIAL_BURST_Y_JITTER_RATIO)
-        ? clamp01(titleEnemiesConfig.INITIAL_BURST_Y_JITTER_RATIO)
-        : 0.78;
+    const jitterRatio = clampFiniteNumber(titleEnemiesConfig.INITIAL_BURST_Y_JITTER_RATIO, 0, 1, 0.78);
     const jitterAmplitude = slotHeight * 0.5 * jitterRatio;
     return clampNumber(slotCenter + mathUtil().random(-jitterAmplitude, jitterAmplitude), minY, maxY);
 }
@@ -228,10 +221,13 @@ function _getInitialBurstSpawnY(titleEnemiesConfig, objectWH, burstSpawnIndex = 
  * @returns {number} 초기 버스트 수평 속도입니다.
  */
 function _getInitialBurstAxisSpeed(titleEnemiesConfig, baseAxisSpeed, layerProfile) {
-    const speedScale = Number.isFinite(layerProfile?.SpeedScale) ? layerProfile.SpeedScale : 1;
-    const compensationMin = Number.isFinite(titleEnemiesConfig.INITIAL_BURST_LAYER_COMPENSATION_MIN)
-        ? Math.max(0.01, titleEnemiesConfig.INITIAL_BURST_LAYER_COMPENSATION_MIN)
-        : 0.4;
+    const speedScale = resolveFiniteNumber(layerProfile?.SpeedScale, 1);
+    const compensationMin = clampFiniteNumber(
+        titleEnemiesConfig.INITIAL_BURST_LAYER_COMPENSATION_MIN,
+        0.01,
+        Infinity,
+        0.4
+    );
     const layerCompensation = 1 / Math.max(compensationMin, Math.sqrt(Math.max(0, speedScale)));
     const burstMultiplier = mathUtil().random(
         titleEnemiesConfig.INITIAL_BURST_AXIS_SPEED_MIN_MULTIPLIER,

@@ -1,4 +1,4 @@
-import { clampNumber } from 'util/number_util.js';
+import { clampNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 import { mixTitleEnemyColorWithBackground } from './_title_background_theme.js';
 
@@ -26,12 +26,10 @@ export function applyTitleParallaxVisualProfile(enemy, layerProfile, layerIndex 
     }
 
     enemy._titleParallaxLayerIndex = layerIndex;
-    enemy._titleParallaxMotionScale = Number.isFinite(layerProfile.MagneticScale)
-        ? layerProfile.MagneticScale
-        : 1;
+    enemy._titleParallaxMotionScale = resolveFiniteNumber(layerProfile.MagneticScale, 1);
     enemy._titleParallaxFill = mixTitleEnemyColorWithBackground(layerProfile.ColorMix);
     enemy.fill = enemy._titleParallaxFill;
-    enemy.alpha = Number.isFinite(layerProfile.Alpha) ? layerProfile.Alpha : 1;
+    enemy.alpha = resolveFiniteNumber(layerProfile.Alpha, 1);
 }
 
 /**
@@ -44,9 +42,9 @@ export function drawTitleParallaxEnemy(enemy, layerProfile) {
         return;
     }
 
-    const softnessAlpha = Number.isFinite(layerProfile.SoftnessAlpha) ? layerProfile.SoftnessAlpha : 0;
-    const softnessScale = Number.isFinite(layerProfile.SoftnessScale) ? layerProfile.SoftnessScale : 1;
-    const softnessOffsetPx = Number.isFinite(layerProfile.SoftnessOffsetPx) ? layerProfile.SoftnessOffsetPx : 0;
+    const softnessAlpha = resolveFiniteNumber(layerProfile.SoftnessAlpha, 0);
+    const softnessScale = resolveFiniteNumber(layerProfile.SoftnessScale, 1);
+    const softnessOffsetPx = resolveFiniteNumber(layerProfile.SoftnessOffsetPx, 0);
 
     if (softnessAlpha > 0.001 && softnessScale > 1) {
         const blurFill = mixTitleEnemyColorWithBackground(Math.min(1, (layerProfile.ColorMix || 0) + 0.12));
