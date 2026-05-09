@@ -19,11 +19,11 @@ export const OVERLAY_BUTTON_COMMON = Object.freeze({
  */
 export const LIGHT_TITLE_BUTTON_HOVER = Object.freeze({
     type: 'linear',
-    stops: [
+    stops: Object.freeze([
         Object.freeze({ offset: 0, color: 'rgba(0, 0, 0, 0.1)' }),
         Object.freeze({ offset: 0.8, color: 'rgba(0, 0, 0, 0.1)' }),
         Object.freeze({ offset: 1, color: 'rgba(0, 0, 0, 0)' })
-    ]
+    ])
 });
 
 /**
@@ -31,9 +31,9 @@ export const LIGHT_TITLE_BUTTON_HOVER = Object.freeze({
  */
 export const DARK_TITLE_BUTTON_HOVER = Object.freeze({
     type: 'linear',
-    stops: [
+    stops: Object.freeze([
         Object.freeze({ offset: 0, color: 'rgba(255, 255, 255, 0.2)' }),
         Object.freeze({ offset: 0.8, color: 'rgba(255, 255, 255, 0.2)' }),
         Object.freeze({ offset: 1, color: 'rgba(255, 255, 255, 0)' })
-    ]
+    ])
 });
