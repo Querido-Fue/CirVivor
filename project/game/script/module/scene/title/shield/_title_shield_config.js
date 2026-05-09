@@ -1,6 +1,7 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clamp01, clampNumber } from 'util/number_util.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const DEFAULT_TITLE_SHIELD_CONFIG = TITLE_CONSTANTS.TITLE_SHIELD || Object.freeze({});
@@ -291,7 +292,7 @@ export class TitleShieldConfig {
      */
     getImpactImmediateBoostRatio() {
         return Number.isFinite(this.config.IMPACT_IMMEDIATE_BOOST_RATIO)
-            ? Math.max(0, Math.min(1, this.config.IMPACT_IMMEDIATE_BOOST_RATIO))
+            ? clamp01(this.config.IMPACT_IMMEDIATE_BOOST_RATIO)
             : 0.55;
     }
 
@@ -319,7 +320,7 @@ export class TitleShieldConfig {
         const padding = Number.isFinite(this.config.ANGULAR_WIDTH_PADDING_PX) ? this.config.ANGULAR_WIDTH_PADDING_PX : 12;
         const widthScale = Number.isFinite(this.config.ANGULAR_WIDTH_SCALE) ? this.config.ANGULAR_WIDTH_SCALE : 1.15;
         const projectedWidth = Math.max(4, enemyRadius + padding);
-        const ratio = Math.max(0.02, Math.min(0.98, projectedWidth / Math.max(1, shieldRadius)));
+        const ratio = clampNumber(projectedWidth / Math.max(1, shieldRadius), 0.02, 0.98);
         return Math.asin(ratio) * widthScale;
     }
 
@@ -361,9 +362,9 @@ export class TitleShieldConfig {
         }
 
         return Object.freeze([
-            Math.max(0, Math.min(1, parsed.r / 255)),
-            Math.max(0, Math.min(1, parsed.g / 255)),
-            Math.max(0, Math.min(1, parsed.b / 255))
+            clamp01(parsed.r / 255),
+            clamp01(parsed.g / 255),
+            clamp01(parsed.b / 255)
         ]);
     }
 }

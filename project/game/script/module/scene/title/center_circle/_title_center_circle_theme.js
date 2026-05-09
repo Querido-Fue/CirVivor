@@ -1,6 +1,7 @@
 import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clamp01 } from 'util/number_util.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 
 export { toLoadingRgba } from '../loading/_title_loading_theme.js';
@@ -123,8 +124,8 @@ function _loadingColorToVec3(color, fallback) {
     }
 
     return Object.freeze([
-        Math.max(0, Math.min(1, parsedColor.r / 255)),
-        Math.max(0, Math.min(1, parsedColor.g / 255)),
-        Math.max(0, Math.min(1, parsedColor.b / 255))
+        clamp01(parsedColor.r / 255),
+        clamp01(parsedColor.g / 255),
+        clamp01(parsedColor.b / 255)
     ]);
 }
