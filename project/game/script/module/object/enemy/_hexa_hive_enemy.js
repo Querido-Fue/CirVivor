@@ -1,13 +1,13 @@
 import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { colorUtil } from 'util/color_util.js';
 import { getData } from 'data/data_handler.js';
+import { rotatePoint } from 'util/math_util.js';
 import { ShapeEnemy } from './_shape_enemy.js';
 import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
 import {
     cloneHexaHiveLayout,
     getHexaHiveType
 } from './_hexa_hive_layout.js';
-import { rotatePoint } from './_hexa_hive_layout_math.js';
 
 const getEnemyShapeKey = getData('getEnemyShapeKey');
 const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');

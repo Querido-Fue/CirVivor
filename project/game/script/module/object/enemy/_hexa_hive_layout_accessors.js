@@ -3,7 +3,7 @@ import {
     HEXA_HIVE_LAYOUT_SCHEMA_VERSION,
     HEXA_HIVE_TYPE
 } from './_hexa_hive_layout_constants.js';
-import { rotatePoint, toRadians } from './_hexa_hive_layout_math.js';
+import { rotatePoint, toRadians } from 'util/math_util.js';
 
 /**
  * 합체 적 레이아웃을 깊은 복제로 정규화합니다.

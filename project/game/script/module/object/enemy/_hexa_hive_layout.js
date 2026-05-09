@@ -11,7 +11,7 @@ import {
     HEXA_NORMALIZED_RADIUS,
     VERTEX_KEY_SCALE
 } from './_hexa_hive_layout_constants.js';
-import { normalizeDegrees, rotatePoint, toRadians } from './_hexa_hive_layout_math.js';
+import { normalizeDegrees, rotatePoint, toRadians } from 'util/math_util.js';
 
 export {
     cloneHexaHiveLayout,

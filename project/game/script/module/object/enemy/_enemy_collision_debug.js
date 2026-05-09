@@ -7,10 +7,10 @@ import {
 } from 'physics/_collision_resolve_tuning.js';
 import { getEnemyCircleCollisionRadius } from 'physics/_collision_enemy_geometry.js';
 import { getSetting } from 'save/save_system.js';
+import { rotatePoint } from 'util/math_util.js';
 import {
     getHexaHiveType
 } from './_hexa_hive_layout.js';
-import { rotatePoint } from './_hexa_hive_layout_math.js';
 
 const ENEMY_COLLISION_DEBUG_CONSTANTS = getData('ENEMY_CONSTANTS').COLLISION_DEBUG;
 const ENEMY_COLLISION_RADIUS_DATA = getData('ENEMY_COLLISION_RADIUS_DATA');
