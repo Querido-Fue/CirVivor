@@ -1,6 +1,7 @@
 import { renderGL } from 'display/display_system.js';
 import { drawTitleParallaxEnemy } from './_title_background_parallax.js';
 import { getTitleBackgroundColor } from './_title_background_theme.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 
 /**
  * 타이틀 배경 채움과 배경 적, 실드 효과를 렌더링합니다.
@@ -20,32 +21,41 @@ export function drawTitleBackgroundScene({
     parallaxLayers,
     shieldEffect
 }) {
-    if (drawBackgroundFill) {
+    const safeWidth = clampFiniteNumber(Number(ww), 0, Infinity, 0);
+    const safeHeight = clampFiniteNumber(Number(wh), 0, Infinity, 0);
+    const enemies = Array.isArray(titleEnemies) ? titleEnemies : [];
+    const layers = Array.isArray(parallaxLayers) ? parallaxLayers : [];
+
+    if (drawBackgroundFill && safeWidth > 0 && safeHeight > 0) {
         renderGL('background', {
             shape: 'rect',
-            x: ww / 2,
-            y: wh / 2,
-            w: ww,
-            h: wh,
+            x: safeWidth / 2,
+            y: safeHeight / 2,
+            w: safeWidth,
+            h: safeHeight,
             fill: getTitleBackgroundColor()
         });
     }
 
-    if (!Array.isArray(parallaxLayers) || parallaxLayers.length === 0) {
-        for (let i = 0; i < titleEnemies.length; i++) {
-            titleEnemies[i].draw();
+    if (layers.length === 0) {
+        for (let i = 0; i < enemies.length; i++) {
+            const enemy = enemies[i];
+            if (!enemy || typeof enemy.draw !== 'function') {
+                continue;
+            }
+            enemy.draw();
         }
         shieldEffect?.draw();
         return;
     }
 
-    for (let layerIndex = 0; layerIndex < parallaxLayers.length; layerIndex++) {
-        for (let i = 0; i < titleEnemies.length; i++) {
-            const enemy = titleEnemies[i];
+    for (let layerIndex = 0; layerIndex < layers.length; layerIndex++) {
+        for (let i = 0; i < enemies.length; i++) {
+            const enemy = enemies[i];
             if (!enemy || enemy._titleParallaxLayerIndex !== layerIndex) {
                 continue;
             }
-            drawTitleParallaxEnemy(enemy, parallaxLayers[layerIndex]);
+            drawTitleParallaxEnemy(enemy, layers[layerIndex]);
         }
     }
 
