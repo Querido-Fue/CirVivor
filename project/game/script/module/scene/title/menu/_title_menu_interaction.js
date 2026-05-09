@@ -11,6 +11,7 @@ import {
     projectPanelQuad
 } from 'overlay/_panel_effect_math.js';
 import { lerpNumber } from 'util/number_util.js';
+import { TITLE_MENU_DEFAULT_PERSPECTIVE } from './_title_menu_runtime_state.js';
 
 /**
  * pane 상호작용 상태를 현재 포인터 위치와 효과 옵션에 맞게 갱신합니다.
@@ -155,7 +156,7 @@ export function resolveTitleMenuPanePointerInfo(paneRect, mouseX, mouseY) {
  * @returns {void}
  */
 export function updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions = null) {
-    const perspectiveBase = hoverTiltOptions?.perspective || 1180;
+    const perspectiveBase = hoverTiltOptions?.perspective || TITLE_MENU_DEFAULT_PERSPECTIVE;
     runtimeState.perspective = perspectiveBase;
 
     runtimeState.transformMatrix = multiplyMat4(
