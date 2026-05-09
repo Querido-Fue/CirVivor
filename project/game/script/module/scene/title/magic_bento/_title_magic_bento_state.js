@@ -1,10 +1,11 @@
 import { spawnBentoCardRipple } from './_title_magic_bento_effect_state.js';
 import {
-    clamp,
-    damp,
+    clampFiniteNumber,
+    dampNumber,
     easeOutExpo,
-    lerp
-} from './_title_magic_bento_motion.js';
+    lerpNumber,
+    resolveFiniteNumber
+} from 'util/number_util.js';
 
 /**
  * 카드의 현재 위치, 크기, 알파값을 갱신합니다.
@@ -14,23 +15,30 @@ import {
  */
 export function refreshBentoCardTransforms(cards, appearanceElapsed, titleMagicBento) {
     const hoverScaleDelta = titleMagicBento.HOVER_SCALE_DELTA;
-    const elapsedSinceStart = Math.max(0, appearanceElapsed - titleMagicBento.APPEAR_START_DELAY_SECONDS);
+    const elapsedSinceStart = clampFiniteNumber(
+        appearanceElapsed - titleMagicBento.APPEAR_START_DELAY_SECONDS,
+        0,
+        Infinity,
+        0
+    );
 
     for (const card of cards) {
-        const rawProgress = clamp(
-            (elapsedSinceStart - card.entranceDelaySeconds) / Math.max(0.001, card.entranceDurationSeconds),
+        const entranceDuration = clampFiniteNumber(Number(card.entranceDurationSeconds), 0.001, Infinity, 0.001);
+        const rawProgress = clampFiniteNumber(
+            (elapsedSinceStart - card.entranceDelaySeconds) / entranceDuration,
             0,
-            1
+            1,
+            0
         );
         const easedProgress = easeOutExpo(rawProgress);
-        const baseScale = lerp(
+        const baseScale = lerpNumber(
             titleMagicBento.ENTRANCE_START_SCALE + card.entranceScaleOffset,
             1,
             easedProgress
         );
         const currentScale = baseScale * (1 + (card.hoverProgress * hoverScaleDelta));
-        const centerX = lerp(card.startCenterX, card.finalCenterX, easedProgress);
-        const centerY = lerp(card.startCenterY, card.finalCenterY, easedProgress);
+        const centerX = lerpNumber(card.startCenterX, card.finalCenterX, easedProgress);
+        const centerY = lerpNumber(card.startCenterY, card.finalCenterY, easedProgress);
         const width = card.baseWidth * currentScale;
         const height = card.baseHeight * currentScale;
 
@@ -44,7 +52,7 @@ export function refreshBentoCardTransforms(cards, appearanceElapsed, titleMagicB
             w: width,
             h: height
         };
-        card.currentAlpha = clamp((rawProgress - 0.08) / 0.42, 0, 1);
+        card.currentAlpha = clampFiniteNumber((rawProgress - 0.08) / 0.42, 0, 1, 0);
     }
 }
 
@@ -147,12 +155,12 @@ export function updateBentoSpotlight({
     spotlightOpacity
 }) {
     const targetOpacity = active && appearanceProgress > 0.12 ? 1 : 0;
-    const followSpeed = clamp(delta * 18, 0, 1);
+    const followSpeed = clampFiniteNumber(delta * 18, 0, 1, 0);
 
     return {
-        spotlightX: active ? damp(spotlightX, mouseX, followSpeed) : spotlightX,
-        spotlightY: active ? damp(spotlightY, mouseY, followSpeed) : spotlightY,
-        spotlightOpacity: damp(spotlightOpacity, targetOpacity, clamp(delta * 10, 0, 1))
+        spotlightX: active ? dampNumber(spotlightX, mouseX, followSpeed) : spotlightX,
+        spotlightY: active ? dampNumber(spotlightY, mouseY, followSpeed) : spotlightY,
+        spotlightOpacity: dampNumber(spotlightOpacity, targetOpacity, clampFiniteNumber(delta * 10, 0, 1, 0))
     };
 }
 
@@ -185,15 +193,17 @@ export function updateBentoCardInteractionState(card, {
 }) {
     const cardCenterX = card.currentRect.x + (card.currentRect.w * 0.5);
     const cardCenterY = card.currentRect.y + (card.currentRect.h * 0.5);
-    const hoverSpeed = clamp(delta * 10, 0, 1);
-    const motionSpeed = clamp(delta * 12, 0, 1);
+    const hoverSpeed = clampFiniteNumber(delta * 10, 0, 1, 0);
+    const motionSpeed = clampFiniteNumber(delta * 12, 0, 1, 0);
     const targetHover = isHovered ? 1 : 0;
-    const spotlightRadius = Math.max(
+    const spotlightRadius = clampFiniteNumber(
+        uiww * titleMagicBento.SPOTLIGHT_RADIUS_UIWW_RATIO,
         titleMagicBento.SPOTLIGHT_RADIUS_MIN,
-        uiww * titleMagicBento.SPOTLIGHT_RADIUS_UIWW_RATIO
+        Infinity,
+        titleMagicBento.SPOTLIGHT_RADIUS_MIN
     );
 
-    card.hoverProgress = damp(card.hoverProgress, targetHover, hoverSpeed);
+    card.hoverProgress = dampNumber(card.hoverProgress, targetHover, hoverSpeed);
 
     let targetTiltX = 0;
     let targetTiltY = 0;
@@ -201,8 +211,18 @@ export function updateBentoCardInteractionState(card, {
     let localMouseY = card.baseHeight * 0.5;
 
     if (isHovered) {
-        const normalizedX = clamp((mouseX - card.currentRect.x) / Math.max(1, card.currentRect.w), 0, 1);
-        const normalizedY = clamp((mouseY - card.currentRect.y) / Math.max(1, card.currentRect.h), 0, 1);
+        const normalizedX = clampFiniteNumber(
+            (mouseX - card.currentRect.x) / clampFiniteNumber(card.currentRect.w, 1, Infinity, 1),
+            0,
+            1,
+            0
+        );
+        const normalizedY = clampFiniteNumber(
+            (mouseY - card.currentRect.y) / clampFiniteNumber(card.currentRect.h, 1, Infinity, 1),
+            0,
+            1,
+            0
+        );
         const centeredX = (normalizedX * 2) - 1;
         const centeredY = (normalizedY * 2) - 1;
         const tiltIntensity = titleMagicBento.TILT_INTENSITY;
@@ -217,9 +237,20 @@ export function updateBentoCardInteractionState(card, {
         }
     }
 
-    const distanceToSpotlight = Math.max(
+    const cardMaxDimension = clampFiniteNumber(
+        Math.max(
+            resolveFiniteNumber(Number(card.currentRect.w), 0),
+            resolveFiniteNumber(Number(card.currentRect.h), 0)
+        ),
         0,
-        Math.hypot(spotlightX - cardCenterX, spotlightY - cardCenterY) - (Math.max(card.currentRect.w, card.currentRect.h) * 0.35)
+        Infinity,
+        0
+    );
+    const distanceToSpotlight = clampFiniteNumber(
+        Math.hypot(spotlightX - cardCenterX, spotlightY - cardCenterY) - (cardMaxDimension * 0.35),
+        0,
+        Infinity,
+        0
     );
     let glowTarget = 0;
     if (spotlightOpacity > 0.01) {
@@ -230,12 +261,16 @@ export function updateBentoCardInteractionState(card, {
         }
     }
     if (isHovered) {
-        glowTarget = Math.max(glowTarget, 1);
+        glowTarget = clampFiniteNumber(glowTarget, 1, Infinity, 1);
     }
 
     card.localMouseX = localMouseX;
     card.localMouseY = localMouseY;
-    card.tiltX = damp(card.tiltX, targetTiltX, motionSpeed);
-    card.tiltY = damp(card.tiltY, targetTiltY, motionSpeed);
-    card.glowIntensity = damp(card.glowIntensity, glowTarget * spotlightOpacity, clamp(delta * 14, 0, 1));
+    card.tiltX = dampNumber(card.tiltX, targetTiltX, motionSpeed);
+    card.tiltY = dampNumber(card.tiltY, targetTiltY, motionSpeed);
+    card.glowIntensity = dampNumber(
+        card.glowIntensity,
+        glowTarget * spotlightOpacity,
+        clampFiniteNumber(delta * 14, 0, 1, 0)
+    );
 }
