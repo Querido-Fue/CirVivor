@@ -3,7 +3,7 @@ import { animate, remove } from "animation/animation_system.js";
 import { render, shadowOn, shadowOff, measureText } from "display/display_system.js";
 import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
-import { colorUtil } from "util/color_util.js";
+import { colorUtil, formatRgba } from "util/color_util.js";
 import { getSetting } from "save/save_system.js";
 
 /**
@@ -407,7 +407,7 @@ export class DropdownElement extends BaseUIElement {
         const disableTransparency = getSetting("disableTransparency");
         const transparentPanelFill = (() => {
             const rgb = colorUtil().cssToRgb(this.panelColor);
-            return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.97)`;
+            return formatRgba(rgb.r, rgb.g, rgb.b, 0.97);
         })();
         const panelFill = disableTransparency
             ? (ColorSchemes.Overlay.Panel.Background || this.panelColor)

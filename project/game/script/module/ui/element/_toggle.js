@@ -3,7 +3,7 @@ import { render, shadowOn, shadowOff } from "display/display_system.js";
 import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
-import { colorUtil } from "util/color_util.js";
+import { colorUtil, formatRgba } from "util/color_util.js";
 import { DropdownElement } from "./_dropdown.js";
 
 /**
@@ -113,7 +113,7 @@ export class ToggleElement extends BaseUIElement {
         const a2 = c2.a !== undefined ? c2.a : 1;
         const a = a1 + (a2 - a1) * t;
 
-        const trackColor = `rgba(${r}, ${g}, ${b}, ${a})`;
+        const trackColor = formatRgba(r, g, b, a);
 
         const cx = this.x + this.width / 2;
         const cy = this.y + this.height / 2;
