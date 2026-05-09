@@ -1,6 +1,7 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { render, getWW } from 'display/display_system.js';
 import { getMouseInput, getMouseFocus } from 'input/input_system.js';
+import { createFontString } from 'util/font_util.js';
 
 
 /**
@@ -38,6 +39,11 @@ export class MouseDebugger {
         const WW = getWW();
 
         const fontSize = WW * 0.008;
+        const font = createFontString({
+            weight: 300,
+            sizePx: fontSize,
+            family: 'Pretendard Variable'
+        });
 
         lines.forEach((text, i) => {
             render('top', {
@@ -45,7 +51,7 @@ export class MouseDebugger {
                 text: text,
                 x: startX,
                 y: startY + (i * lineHeight),
-                font: `300 ${fontSize}px 'Pretendard Variable'`,
+                font,
                 fill: ColorSchemes.Debug.Fill,
                 align: 'left',
                 baseline: 'middle'

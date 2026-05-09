@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getWH, getWW, render } from "display/display_system.js";
+import { createFontString } from "util/font_util.js";
 
 const PERFORMANCE_DEBUG_CONSTANTS = getData('DEBUG_CONSTANTS').PERFORMANCE;
 const PERFORMANCE_WINDOW_MS = PERFORMANCE_DEBUG_CONSTANTS.WINDOW_MS;
@@ -127,7 +128,11 @@ export class PerformanceDebugger {
             PERFORMANCE_DEBUG_CONSTANTS.FONT_MIN_SIZE,
             Math.floor(ch * PERFORMANCE_DEBUG_CONSTANTS.FONT_WH_RATIO)
         );
-        const font = `${PERFORMANCE_DEBUG_CONSTANTS.FONT_WEIGHT} ${fontSize}px "Pretendard Variable", arial`;
+        const font = createFontString({
+            weight: PERFORMANCE_DEBUG_CONSTANTS.FONT_WEIGHT,
+            sizePx: fontSize,
+            family: "Pretendard Variable, arial"
+        });
         const lineHeight = fontSize + Math.max(
             PERFORMANCE_DEBUG_CONSTANTS.LINE_GAP_MIN,
             Math.floor(ch * PERFORMANCE_DEBUG_CONSTANTS.LINE_GAP_WH_RATIO)
