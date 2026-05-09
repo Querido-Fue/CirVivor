@@ -1,6 +1,20 @@
 import { createEffectPassRegistry } from './_effect_pass_registry.js';
 
 /**
+ * WebGL render target 크기의 최소값입니다.
+ */
+const MIN_RENDER_TARGET_SIZE = 1;
+
+/**
+ * WebGL render target 크기 입력을 정수 픽셀 크기로 정규화합니다.
+ * @param {number} size - 정규화할 크기 값입니다.
+ * @returns {number} 최소 render target 크기 이상으로 보정된 정수 크기입니다.
+ */
+function normalizeRenderTargetSize(size) {
+    return Math.max(MIN_RENDER_TARGET_SIZE, Math.floor(size));
+}
+
+/**
  * @class EffectRenderer
  * @description effect 레이어의 커스텀 WebGL 이펙트 명령을 큐잉/플러시합니다.
  */
@@ -22,8 +36,8 @@ export class EffectRenderer {
      * @param {number} height - 새 높이입니다.
      */
     resize(width, height) {
-        this.width = Math.max(1, Math.floor(width));
-        this.height = Math.max(1, Math.floor(height));
+        this.width = normalizeRenderTargetSize(width);
+        this.height = normalizeRenderTargetSize(height);
     }
 
     /**
@@ -33,8 +47,8 @@ export class EffectRenderer {
      */
     beginFrame(width, height) {
         this.resize(width, height);
-        this.width = Math.max(1, this.gl.drawingBufferWidth || this.width);
-        this.height = Math.max(1, this.gl.drawingBufferHeight || this.height);
+        this.width = normalizeRenderTargetSize(this.gl.drawingBufferWidth || this.width);
+        this.height = normalizeRenderTargetSize(this.gl.drawingBufferHeight || this.height);
         this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
         this.gl.viewport(0, 0, this.width, this.height);
         this.commands.length = 0;
