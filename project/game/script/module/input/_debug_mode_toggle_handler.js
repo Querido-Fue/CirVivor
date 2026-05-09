@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getSetting, setSetting } from 'save/save_system.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 const DEBUG_MODE_TOGGLE = GLOBAL_CONSTANTS.DEBUG_MODE_TOGGLE;
@@ -45,7 +46,7 @@ export class DebugModeToggleHandler {
      * @returns {number} 정규화된 시각(ms)입니다.
      */
     #normalizeEventTimestamp(eventTimestamp) {
-        return Number.isFinite(eventTimestamp) ? eventTimestamp : performance.now();
+        return resolveFiniteNumber(Number(eventTimestamp), performance.now());
     }
 
     /**
