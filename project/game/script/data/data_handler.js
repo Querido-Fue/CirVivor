@@ -51,6 +51,7 @@ import {
 } from 'data/overlay/overlay_animation_presets.js';
 import { OVERLAY_LAYOUT_CONSTANTS } from 'data/overlay/overlay_layout_constants.js';
 import { WEBGL_CONSTANTS } from 'data/display/webgl_constants.js';
+import { EFFECT_RENDER_CONSTANTS } from 'data/display/effect_render_constants.js';
 import { OVERLAY_RENDER_CONSTANTS } from 'data/display/overlay_render_constants.js';
 import { VIGNETTE_CONSTANTS } from 'data/display/vignette_constants.js';
 import { DISPLAY_SURFACE_DATA } from 'data/display/display_surface_data.js';
@@ -102,6 +103,7 @@ const DATA_REGISTRY = Object.freeze({
     getOverlayAnimationPreset,
     OVERLAY_LAYOUT_CONSTANTS,
     WEBGL_CONSTANTS,
+    EFFECT_RENDER_CONSTANTS,
     OVERLAY_RENDER_CONSTANTS,
     VIGNETTE_CONSTANTS,
     DISPLAY_SURFACE_DATA,

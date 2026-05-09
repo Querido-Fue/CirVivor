@@ -1,4 +1,7 @@
+import { getData } from 'data/data_handler.js';
 import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
+
+const EFFECT_TYPES = getData('EFFECT_RENDER_CONSTANTS').TYPES;
 
 /**
  * magneticShield effect renderer에 전달할 렌더 명령을 생성합니다.
@@ -24,7 +27,7 @@ export function buildTitleShieldRenderCommand({
     const shieldColors = config.getColors();
 
     return {
-        effectType: 'magneticShield',
+        effectType: EFFECT_TYPES.MAGNETIC_SHIELD,
         x: centerX,
         y: centerY,
         radius,

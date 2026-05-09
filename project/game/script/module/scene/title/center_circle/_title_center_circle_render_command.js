@@ -4,6 +4,7 @@ import { getLoadingCircleShaderColors } from './_title_center_circle_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
+const EFFECT_TYPES = getData('EFFECT_RENDER_CONSTANTS').TYPES;
 
 /**
  * titleLoadingCircle effect renderer에 전달할 렌더 명령을 생성합니다.
@@ -38,7 +39,7 @@ export function buildTitleCenterCircleRenderCommand({
         * (1 + ((safeGlowCompensationScale - 1) * resolveFiniteNumber(shaderConfig.GLOW_COMPENSATION_STRENGTH_SCALE, 0.08)));
 
     return {
-        effectType: 'titleLoadingCircle',
+        effectType: EFFECT_TYPES.TITLE_LOADING_CIRCLE,
         x: centerX,
         y: centerY,
         radius,
