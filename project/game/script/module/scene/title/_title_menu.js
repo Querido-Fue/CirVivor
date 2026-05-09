@@ -93,9 +93,10 @@ export class TitleMenu {
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
+        this.uiScale = this.#getCurrentUiScale();
         this.svgDrawer = new SVGDrawer();
         this.titleMenuIconSources = [];
-        this.layout = new TitleMenuLayout();
+        this.layout = new TitleMenuLayout(this.uiScale);
         this.cardRegistry = new TitleMenuCardRegistry(titleScene);
         this.cards = [];
         this.cardStateMap = new Map();
@@ -161,6 +162,7 @@ export class TitleMenu {
         const paneRenderState = buildTitleMenuPaneRenderState({
             paneLayout,
             uiww: this.UIWW,
+            uiScale: this.uiScale,
             revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
             getRevealProgress: this.#getRevealProgress.bind(this)
         });
@@ -287,6 +289,7 @@ export class TitleMenu {
             uiww: this.UIWW,
             wh: this.WH,
             uiOffsetX: this.UIOffsetX,
+            uiScale: this.uiScale,
             utilityPaneRevealEase: this.#getUtilityPaneRevealEase(),
             linkButton: this.versionHistoryLinkButton
         });
@@ -300,7 +303,8 @@ export class TitleMenu {
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
-        this.layout.resize();
+        this.uiScale = this.#getCurrentUiScale();
+        this.layout.resize(this.uiScale);
         this.#syncLayout();
         this.#updateRenderStates(this.#getSceneTransitionProgress());
     }
@@ -316,6 +320,10 @@ export class TitleMenu {
 
         if (changedSettings.disableTransparency !== undefined && this.session) {
             this.session.setDisableTransparency(getSetting('disableTransparency'));
+        }
+
+        if (changedSettings.uiScale !== undefined) {
+            this.resize();
         }
     }
 
@@ -384,6 +392,16 @@ export class TitleMenu {
      */
     #createSession() {
         return createTitleMenuOverlaySession(getDisplaySystem());
+    }
+
+    /**
+     * 저장 설정에서 현재 UI 스케일 배율을 읽어옵니다.
+     * @returns {number} 현재 UI 스케일 배율입니다.
+     * @private
+     */
+    #getCurrentUiScale() {
+        const uiScale = getSetting('uiScale') / 100;
+        return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
     }
 
     /**
@@ -480,6 +498,7 @@ export class TitleMenu {
                     ww: this.WW,
                     wh: this.WH,
                     uiww: this.UIWW,
+                    uiScale: this.uiScale,
                     titleCardMenu: TITLE_CARD_MENU,
                     getRevealConfig: (cardId) => getTitleMenuCardRevealConfig(TITLE_CARD_MENU, cardId),
                     getRevealProgress: this.#getRevealProgress.bind(this)
@@ -493,6 +512,7 @@ export class TitleMenu {
                     menuItem,
                     index,
                     uiww: this.UIWW,
+                    uiScale: this.uiScale,
                     revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
                     getRevealProgress: this.#getRevealProgress.bind(this)
                 })
@@ -614,6 +634,7 @@ export class TitleMenu {
             uiww: this.UIWW,
             wh: this.WH,
             uiOffsetX: this.UIOffsetX,
+            uiScale: this.uiScale,
             utilityPaneRevealEase: this.#getUtilityPaneRevealEase()
         }) || null;
         updateTitleMenuVersionHistoryLinkButton({
@@ -658,6 +679,7 @@ export class TitleMenu {
             wh: this.WH,
             uiww: this.UIWW,
             uiOffsetX: this.UIOffsetX,
+            uiScale: this.uiScale,
             titleCardMenu: TITLE_CARD_MENU
         });
     }
@@ -790,7 +812,8 @@ export class TitleMenu {
             svgDrawer: this.svgDrawer,
             renderState,
             hovered: runtimeState.hovered,
-            titleCardMenu: TITLE_CARD_MENU
+            titleCardMenu: TITLE_CARD_MENU,
+            uiScale: this.uiScale
         });
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
@@ -849,7 +872,8 @@ export class TitleMenu {
             card,
             renderState,
             textConstants: TEXT_CONSTANTS,
-            uiww: this.UIWW
+            uiww: this.UIWW,
+            uiScale: this.uiScale
         });
         this.#drawCardForegroundEffects(context, runtimeState, renderState);
         context.restore();
@@ -878,6 +902,7 @@ export class TitleMenu {
             renderState,
             uiww: this.UIWW,
             wh: this.WH,
+            uiScale: this.uiScale,
             textConstants: TEXT_CONSTANTS,
             svgDrawer: this.svgDrawer
         });
@@ -908,7 +933,8 @@ export class TitleMenu {
                 hoverProgress: 0
             },
             textConstants: TEXT_CONSTANTS,
-            uiww: this.UIWW
+            uiww: this.UIWW,
+            uiScale: this.uiScale
         });
         context.restore();
 
@@ -937,6 +963,7 @@ export class TitleMenu {
             runtimeState,
             uiww: this.UIWW,
             wh: this.WH,
+            uiScale: this.uiScale,
             svgDrawer: this.svgDrawer
         });
 
@@ -962,7 +989,8 @@ export class TitleMenu {
             svgDrawer: this.svgDrawer,
             renderState,
             hovered: runtimeState.hovered,
-            titleCardMenu: TITLE_CARD_MENU
+            titleCardMenu: TITLE_CARD_MENU,
+            uiScale: this.uiScale
         });
         context.restore();
 

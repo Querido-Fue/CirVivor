@@ -47,6 +47,7 @@ export class TitleMenuVersionLabelRenderer {
      * @param {number} options.uiww - UI 기준 너비입니다.
      * @param {number} options.wh - 화면 높이입니다.
      * @param {number} options.uiOffsetX - UI 기준 X 오프셋입니다.
+     * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
      * @param {number} options.utilityPaneRevealEase - 하단 서브 메뉴 등장 이징 값입니다.
      * @returns {object|null} 버전 정보 블록 렌더 레이아웃입니다.
      */
@@ -55,6 +56,7 @@ export class TitleMenuVersionLabelRenderer {
         uiww,
         wh,
         uiOffsetX,
+        uiScale = 1,
         utilityPaneRevealEase
     }) {
         const versionText = getTitleMenuGameVersionText(this.globalConstants);
@@ -62,18 +64,20 @@ export class TitleMenuVersionLabelRenderer {
             return null;
         }
 
-        const versionFontSize = getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H5');
-        const linkFontSize = getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H5_BOLD');
-        const versionFont = getTitleMenuTextPresetFont(this.textConstants, uiww, 'H5');
-        const linkFont = getTitleMenuTextPresetFont(this.textConstants, uiww, 'H5_BOLD');
+        const resolvedUiScale = this.#normalizeUiScale(uiScale);
+        const versionFontSize = getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H5', resolvedUiScale);
+        const linkFontSize = getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H5_BOLD', resolvedUiScale);
+        const versionFont = getTitleMenuTextPresetFont(this.textConstants, uiww, 'H5', null, resolvedUiScale);
+        const linkFont = getTitleMenuTextPresetFont(this.textConstants, uiww, 'H5_BOLD', null, resolvedUiScale);
         const linkText = getTitleMenuVersionHistoryLinkText();
-        const linkTextWidth = linkText ? this.#measureTextWidth(linkText, linkFont, uiww) : 0;
+        const linkTextWidth = linkText ? this.#measureTextWidth(linkText, linkFont, uiww, resolvedUiScale) : 0;
 
         return buildTitleMenuVersionLabelLayout({
             paneLayout,
             uiww,
             wh,
             uiOffsetX,
+            uiScale: resolvedUiScale,
             utilityPaneRevealEase,
             versionText,
             versionFont,
@@ -93,6 +97,7 @@ export class TitleMenuVersionLabelRenderer {
      * @param {number} options.uiww - UI 기준 너비입니다.
      * @param {number} options.wh - 화면 높이입니다.
      * @param {number} options.uiOffsetX - UI 기준 X 오프셋입니다.
+     * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
      * @param {number} options.utilityPaneRevealEase - 하단 서브 메뉴 등장 이징 값입니다.
      * @param {object|null} [options.linkButton=null] - 업데이트 링크 버튼입니다.
      */
@@ -102,6 +107,7 @@ export class TitleMenuVersionLabelRenderer {
         uiww,
         wh,
         uiOffsetX,
+        uiScale = 1,
         utilityPaneRevealEase,
         linkButton = null
     }) {
@@ -114,6 +120,7 @@ export class TitleMenuVersionLabelRenderer {
             uiww,
             wh,
             uiOffsetX,
+            uiScale,
             utilityPaneRevealEase
         });
         if (!layout || layout.alpha <= 0.005) {
@@ -122,7 +129,8 @@ export class TitleMenuVersionLabelRenderer {
 
         const linkHoverValue = clampNumber(linkButton?.hoverValue || 0, 0, 1);
         const linkColor = menuForegroundWithAlpha(lerpNumber(0.42, 1, linkHoverValue));
-        const textShadowBlur = Math.max(4, wh * 0.008);
+        const resolvedUiScale = this.#normalizeUiScale(uiScale);
+        const textShadowBlur = Math.max(4 * resolvedUiScale, wh * 0.008 * resolvedUiScale);
         const textShadowColor = menuForegroundWithAlpha(0.08);
 
         session.renderPanel({
@@ -165,15 +173,18 @@ export class TitleMenuVersionLabelRenderer {
      * @param {string} text - 측정할 텍스트입니다.
      * @param {string} font - 캔버스 폰트 문자열입니다.
      * @param {number} uiww - UI 기준 너비입니다.
+     * @param {number} [uiScale=1] - 현재 UI 스케일 배율입니다.
      * @returns {number} 측정된 텍스트 폭입니다.
      * @private
      */
-    #measureTextWidth(text, font, uiww) {
+    #measureTextWidth(text, font, uiww, uiScale = 1) {
         const context = this.#getMeasureContext();
         if (!context) {
             return Math.max(
                 1,
-                String(text || '').length * getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H6') * 0.6
+                String(text || '').length
+                    * getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H6', uiScale)
+                    * 0.6
             );
         }
 
@@ -182,6 +193,16 @@ export class TitleMenuVersionLabelRenderer {
         const measuredWidth = context.measureText(String(text || '')).width;
         context.restore();
         return measuredWidth;
+    }
+
+    /**
+     * UI 스케일 입력값을 안전한 양수 배율로 정규화합니다.
+     * @param {number} uiScale - 원본 UI 스케일 배율입니다.
+     * @returns {number} 정규화된 UI 스케일 배율입니다.
+     * @private
+     */
+    #normalizeUiScale(uiScale) {
+        return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
     }
 
     /**

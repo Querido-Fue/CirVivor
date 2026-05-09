@@ -40,8 +40,8 @@ import { CollisionGridBucketPool } from './collision_grid_bucket_pool.js';
 import { estimateCollisionGridCellSize } from './collision_grid_cell_size.js';
 import { CollisionGridQueryBuffer } from './collision_grid_query_buffer.js';
 import { writeCollisionPlayerBody } from './collision_player_body_builder.js';
-import { writeCollisionManifold } from './collision_manifold_writer.js';
 import { applyCollisionPairResolution } from './collision_pair_resolver.js';
+import { processCollisionEnemyCirclePairSoA } from './collision_enemy_circle_pair_soa.js';
 import {
     findCollisionParallelNarrowphaseContactRow,
     writeCollisionParallelNarrowphaseContactManifold
@@ -750,91 +750,6 @@ export class CollisionHandler {
     }
 
     /**
-     * enemy 원형 쌍을 SoA 중심/반경으로 직접 판정하고 해소합니다.
-     * @private
-     * @param {object} bodyA
-     * @param {object} bodyB
-     * @param {Float64Array} relationData
-     * @param {number} relationOffsetA
-     * @param {number} relationOffsetB
-     * @param {boolean} resolvePositions
-     * @param {number} resolveBoost
-     * @returns {number}
-     */
-    #processEnemyCirclePairSoA(
-        bodyA,
-        bodyB,
-        relationData,
-        relationOffsetA,
-        relationOffsetB,
-        resolvePositions,
-        resolveBoost
-    ) {
-        if (resolvePositions) {
-            bodyA._candidatePairCount = (bodyA._candidatePairCount || 0) + 1;
-            bodyB._candidatePairCount = (bodyB._candidatePairCount || 0) + 1;
-        }
-
-        const ax = relationData[relationOffsetA + RELATION_INDEX.CENTER_X];
-        const ay = relationData[relationOffsetA + RELATION_INDEX.CENTER_Y];
-        const bx = relationData[relationOffsetB + RELATION_INDEX.CENTER_X];
-        const by = relationData[relationOffsetB + RELATION_INDEX.CENTER_Y];
-        const radiusA = relationData[relationOffsetA + RELATION_INDEX.ENEMY_PAIR_RADIUS];
-        const radiusB = relationData[relationOffsetB + RELATION_INDEX.ENEMY_PAIR_RADIUS];
-        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(radiusA) || radiusA <= 0
-            || !Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(radiusB) || radiusB <= 0) {
-            return 0;
-        }
-
-        const dx = bx - ax;
-        const dy = by - ay;
-        const radiusSum = radiusA + radiusB;
-        const distSq = (dx * dx) + (dy * dy);
-        if (distSq >= (radiusSum * radiusSum)) {
-            return 0;
-        }
-
-        let distance = Math.sqrt(distSq);
-        let normalX = 1;
-        let normalY = 0;
-        if (distance > EPSILON) {
-            normalX = dx / distance;
-            normalY = dy / distance;
-        } else {
-            distance = 0;
-        }
-
-        const manifold = writeCollisionManifold(
-            this.#scratchManifold,
-            normalX,
-            normalY,
-            radiusSum - distance,
-            ax + (normalX * radiusA),
-            ay + (normalY * radiusA)
-        );
-
-        if (resolvePositions) {
-            bodyA._resolvedPairCount = (bodyA._resolvedPairCount || 0) + 1;
-            bodyB._resolvedPairCount = (bodyB._resolvedPairCount || 0) + 1;
-        }
-
-        if (!resolvePositions) return 1;
-
-        if (areCollisionEnemyPairAnchors(bodyA, bodyB)) {
-            return 0;
-        }
-
-        applyCollisionPairResolution(this.detector, manifold, bodyA, bodyB, {
-            movableA: null,
-            movableB: null,
-            resolveBoost,
-            broadphaseBuffer: this.#broadphaseBuffer
-        });
-
-        return 1;
-    }
-
-    /**
      * 충돌 narrowphase worker pool 인스턴스를 지연 생성합니다.
      * @private
      * @returns {CollisionNarrowphaseWorkerPool}
@@ -1019,15 +934,18 @@ export class CollisionHandler {
                         ) ? 1 : 0)
                         : 0;
                 } else if (isCirclePair) {
-                    pairResolved = this.#processEnemyCirclePairSoA(
+                    pairResolved = processCollisionEnemyCirclePairSoA({
                         bodyA,
                         bodyB,
                         relationData,
                         relationOffsetA,
                         relationOffsetB,
                         resolvePositions,
-                        resolveBoost
-                    );
+                        resolveBoost,
+                        detector: this.detector,
+                        scratchManifold: this.#scratchManifold,
+                        broadphaseBuffer: this.#broadphaseBuffer
+                    });
                 } else {
                     pairResolved = this.#processPair(
                         bodyA,

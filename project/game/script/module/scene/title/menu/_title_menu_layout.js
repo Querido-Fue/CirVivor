@@ -19,22 +19,28 @@ const TITLE_CARD_MENU_SCALE = 0.848;
  * @description 타이틀 카드 메뉴의 기준 레이아웃을 계산하는 클래스입니다.
  */
 export class TitleMenuLayout {
-    constructor() {
+    /**
+     * @param {number} [uiScale=1] - 현재 UI 스케일 배율입니다.
+     */
+    constructor(uiScale = 1) {
         this.WW = 0;
         this.WH = 0;
         this.UIWW = 0;
+        this.uiScale = this._normalizeUiScale(uiScale);
         this.metrics = {};
         this.resize();
     }
 
     /**
      * 현재 화면 기준 메트릭을 다시 계산합니다.
+     * @param {number} [uiScale=this.uiScale] - 현재 UI 스케일 배율입니다.
      * @returns {object} 계산된 메트릭입니다.
      */
-    resize() {
+    resize(uiScale = this.uiScale) {
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
+        this.uiScale = this._normalizeUiScale(uiScale);
         this.metrics = this._buildMetrics();
         return this.metrics;
     }
@@ -44,9 +50,11 @@ export class TitleMenuLayout {
      * @returns {{x:number, y:number}} 로고 정렬 기준점입니다.
      */
     getLogoAnchor() {
+        const scaledUIWW = this.UIWW * this.uiScale;
+        const scaledWH = this.WH * this.uiScale;
         return {
-            x: this.UIWW * TITLE_CARD_MENU.LOGO_LEFT_MARGIN_UIWW_RATIO,
-            y: this.WH * TITLE_CARD_MENU.LOGO_TOP_MARGIN_WH_RATIO
+            x: scaledUIWW * TITLE_CARD_MENU.LOGO_LEFT_MARGIN_UIWW_RATIO,
+            y: scaledWH * TITLE_CARD_MENU.LOGO_TOP_MARGIN_WH_RATIO
         };
     }
 
@@ -82,18 +90,20 @@ export class TitleMenuLayout {
      * @private
      */
     _buildMetrics() {
-        const gap = this.UIWW * TITLE_CARD_MENU.GRID_GAP_UIWW_RATIO * TITLE_CARD_MENU_SCALE;
-        const columnWidth = this.UIWW * TITLE_CARD_MENU.COLUMN_WIDTH_UIWW_RATIO * TITLE_CARD_MENU_SCALE;
+        const scaledUIWW = this.UIWW * this.uiScale;
+        const scaledWH = this.WH * this.uiScale;
+        const gap = scaledUIWW * TITLE_CARD_MENU.GRID_GAP_UIWW_RATIO * TITLE_CARD_MENU_SCALE;
+        const columnWidth = scaledUIWW * TITLE_CARD_MENU.COLUMN_WIDTH_UIWW_RATIO * TITLE_CARD_MENU_SCALE;
         const largeCardHeight = columnWidth * TITLE_CARD_MENU.LARGE_CARD_HEIGHT_TO_WIDTH_RATIO;
         const stackedAreaHeight = Math.max(1, largeCardHeight - gap);
         const quickRatio = TITLE_CARD_MENU.QUICK_START_TO_RECORD_RATIO;
         const quickStartHeight = stackedAreaHeight * (quickRatio / (quickRatio + 1));
         const recordsHeight = stackedAreaHeight - quickStartHeight;
-        const radius = Math.max(12, this.WH * TITLE_CARD_MENU.CARD_RADIUS_WH_RATIO);
-        const rightColumnX = this.WW - (this.UIWW * TITLE_CARD_MENU.GRID_RIGHT_MARGIN_UIWW_RATIO) - columnWidth;
+        const radius = Math.max(12 * this.uiScale, scaledWH * TITLE_CARD_MENU.CARD_RADIUS_WH_RATIO);
+        const rightColumnX = this.WW - (scaledUIWW * TITLE_CARD_MENU.GRID_RIGHT_MARGIN_UIWW_RATIO) - columnWidth;
         const leftColumnX = rightColumnX - gap - columnWidth;
         const groupHeight = largeCardHeight + gap + quickStartHeight;
-        const topY = this.WH - (this.WH * TITLE_CARD_MENU.GRID_BOTTOM_MARGIN_WH_RATIO) - groupHeight;
+        const topY = this.WH - (scaledWH * TITLE_CARD_MENU.GRID_BOTTOM_MARGIN_WH_RATIO) - groupHeight;
 
         return {
             gap,
@@ -106,6 +116,16 @@ export class TitleMenuLayout {
             rightColumnX,
             topY
         };
+    }
+
+    /**
+     * UI 스케일 입력값을 안전한 양수 배율로 정규화합니다.
+     * @param {number} uiScale - 원본 UI 스케일 배율입니다.
+     * @returns {number} 정규화된 UI 스케일 배율입니다.
+     * @private
+     */
+    _normalizeUiScale(uiScale) {
+        return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
     }
 
     /**

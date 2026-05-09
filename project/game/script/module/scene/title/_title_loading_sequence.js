@@ -195,7 +195,8 @@ export class TitleLoadingSequence {
 
         if ((changedSettings.theme !== undefined
             || changedSettings.language !== undefined
-            || changedSettings.disableTransparency !== undefined)
+            || changedSettings.disableTransparency !== undefined
+            || changedSettings.uiScale !== undefined)
             && this.titleMenu
             && typeof this.titleMenu.applyRuntimeSettings === 'function') {
             this.titleMenu.applyRuntimeSettings(changedSettings);

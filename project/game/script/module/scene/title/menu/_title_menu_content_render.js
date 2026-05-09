@@ -23,6 +23,7 @@ import {
  * @param {object} options.renderState - 타일 렌더 상태입니다.
  * @param {boolean} options.hovered - hover 여부입니다.
  * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @returns {void}
  */
 export function drawTitleMenuUtilityTileContent({
@@ -30,15 +31,23 @@ export function drawTitleMenuUtilityTileContent({
     svgDrawer,
     renderState,
     hovered,
-    titleCardMenu
+    titleCardMenu,
+    uiScale = 1
 }) {
     const panelRect = renderState.panelRect;
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
     const placeholderSize = Number.isFinite(renderState.placeholderSize)
         ? renderState.placeholderSize
-        : Math.max(12, Math.min(panelRect.w, panelRect.h) * titleCardMenu.UTILITY_TILE_PLACEHOLDER_SCALE);
+        : Math.max(
+            12 * resolvedUiScale,
+            Math.min(panelRect.w, panelRect.h) * titleCardMenu.UTILITY_TILE_PLACEHOLDER_SCALE
+        );
     const iconMetrics = getTitleMenuUtilityTileIconMetrics(panelRect, placeholderSize);
     const placeholderAlpha = hovered ? 1 : getMenuOpacity('Placeholder', 0.92);
-    const placeholderRadius = Math.max(4, placeholderSize * titleCardMenu.UTILITY_TILE_PLACEHOLDER_RADIUS_RATIO);
+    const placeholderRadius = Math.max(
+        4 * resolvedUiScale,
+        placeholderSize * titleCardMenu.UTILITY_TILE_PLACEHOLDER_RADIUS_RATIO
+    );
 
     _drawTitleMenuInnerEdges(context, panelRect, hovered ? 0.16 : 0);
     if (drawTitleMenuIcon(context, svgDrawer, renderState.id, iconMetrics, placeholderAlpha)) {
@@ -57,6 +66,7 @@ export function drawTitleMenuUtilityTileContent({
  * @param {object} options.renderState - 카드 렌더 상태입니다.
  * @param {object} options.textConstants - 텍스트 상수입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @returns {void}
  */
 export function drawTitleMenuCardFrontfaceContent({
@@ -65,20 +75,22 @@ export function drawTitleMenuCardFrontfaceContent({
     card,
     renderState,
     textConstants,
-    uiww
+    uiww,
+    uiScale = 1
 }) {
     const panelRect = renderState.panelRect;
-    const inset = Math.max(16, panelRect.w * 0.08);
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
+    const inset = Math.max(16 * resolvedUiScale, panelRect.w * 0.08);
     const title = getLangString(card.cardDefinition.titleKey);
     const description = card.cardDefinition.descriptionKey ? getLangString(card.cardDefinition.descriptionKey) : '';
     const isCompactHorizontalCard = card.cardDefinition.id === 'records';
     const iconMetrics = getTitleMenuCardIconMetrics(card.cardDefinition.id, panelRect, inset);
     const titleFontSize = Math.max(
-        16,
+        16 * resolvedUiScale,
         panelRect.w * (panelRect.h > panelRect.w * 0.7 ? 0.095 : 0.08),
         isCompactHorizontalCard ? panelRect.h * 0.28 : 0
     );
-    const descriptionFontSize = getTitleMenuTextPresetFontSize(textConstants, uiww, 'H6');
+    const descriptionFontSize = getTitleMenuTextPresetFontSize(textConstants, uiww, 'H6', resolvedUiScale);
     const descriptionLineHeight = descriptionFontSize * 1.32;
     const titleLineHeight = titleFontSize * 1.06;
     const bottomPadding = inset * 0.8;
@@ -91,7 +103,7 @@ export function drawTitleMenuCardFrontfaceContent({
     _drawTitleMenuInnerEdges(context, panelRect, renderState.hoverProgress || 0);
 
     if (isCompactHorizontalCard) {
-        const titleX = iconMetrics.x + iconMetrics.w + Math.max(14, panelRect.w * 0.06);
+        const titleX = iconMetrics.x + iconMetrics.w + Math.max(14 * resolvedUiScale, panelRect.w * 0.06);
         drawTitleMenuWrappedText(context, {
             text: title,
             x: titleX,
@@ -128,6 +140,15 @@ export function drawTitleMenuCardFrontfaceContent({
             align: 'left'
         });
     }
+}
+
+/**
+ * UI 스케일 입력값을 안전한 양수 배율로 정규화합니다.
+ * @param {number} uiScale - 원본 UI 스케일 배율입니다.
+ * @returns {number} 정규화된 UI 스케일 배율입니다.
+ */
+function _normalizeTitleMenuUiScale(uiScale) {
+    return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
 }
 
 /**

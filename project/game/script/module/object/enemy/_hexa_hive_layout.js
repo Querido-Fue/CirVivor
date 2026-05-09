@@ -1,47 +1,23 @@
-const HEXA_HIVE_LAYOUT_SCHEMA_VERSION = 1;
-const HEXA_HIVE_TYPE = 'hexa_hive';
-const HEXA_NORMALIZED_RADIUS = 0.47;
-const HEXA_HIVE_FRONT_RENDER_SCALE = 0.9;
-const HEXA_HIVE_BACKDROP_RENDER_SCALE = 1.14;
-const HEXA_HIVE_OUTLINE_THICKNESS_RATIO = 0.12;
-const EPSILON = 1e-6;
-const VERTEX_KEY_SCALE = 10000;
-const HEXA_AXIAL_DIRECTIONS = Object.freeze([
-    Object.freeze({ q: 1, r: 0 }),
-    Object.freeze({ q: 1, r: -1 }),
-    Object.freeze({ q: 0, r: -1 }),
-    Object.freeze({ q: -1, r: 0 }),
-    Object.freeze({ q: -1, r: 1 }),
-    Object.freeze({ q: 0, r: 1 })
-]);
-const HEXA_EXPOSED_EDGE_DIRECTIONS = Object.freeze([
-    Object.freeze({ q: 1, r: -1 }),
-    Object.freeze({ q: 1, r: 0 }),
-    Object.freeze({ q: 0, r: 1 }),
-    Object.freeze({ q: -1, r: 1 }),
-    Object.freeze({ q: -1, r: 0 }),
-    Object.freeze({ q: 0, r: -1 })
-]);
-const HEXA_LOCAL_VERTICES = Object.freeze([
-    Object.freeze({ x: 0, y: -HEXA_NORMALIZED_RADIUS }),
-    Object.freeze({
-        x: Math.cos(-Math.PI / 6) * HEXA_NORMALIZED_RADIUS,
-        y: Math.sin(-Math.PI / 6) * HEXA_NORMALIZED_RADIUS
-    }),
-    Object.freeze({
-        x: Math.cos(Math.PI / 6) * HEXA_NORMALIZED_RADIUS,
-        y: Math.sin(Math.PI / 6) * HEXA_NORMALIZED_RADIUS
-    }),
-    Object.freeze({ x: 0, y: HEXA_NORMALIZED_RADIUS }),
-    Object.freeze({
-        x: Math.cos((5 * Math.PI) / 6) * HEXA_NORMALIZED_RADIUS,
-        y: Math.sin((5 * Math.PI) / 6) * HEXA_NORMALIZED_RADIUS
-    }),
-    Object.freeze({
-        x: Math.cos((7 * Math.PI) / 6) * HEXA_NORMALIZED_RADIUS,
-        y: Math.sin((7 * Math.PI) / 6) * HEXA_NORMALIZED_RADIUS
-    })
-]);
+import {
+    EPSILON,
+    HEXA_AXIAL_DIRECTIONS,
+    HEXA_EXPOSED_EDGE_DIRECTIONS,
+    HEXA_HIVE_BACKDROP_RENDER_SCALE,
+    HEXA_HIVE_FRONT_RENDER_SCALE,
+    HEXA_HIVE_LAYOUT_SCHEMA_VERSION,
+    HEXA_HIVE_OUTLINE_THICKNESS_RATIO,
+    HEXA_HIVE_TYPE,
+    HEXA_LOCAL_VERTICES,
+    HEXA_NORMALIZED_RADIUS,
+    VERTEX_KEY_SCALE
+} from './_hexa_hive_layout_constants.js';
+import { normalizeDegrees, rotatePoint, toRadians } from './_hexa_hive_layout_math.js';
+
+export {
+    cloneHexaHiveLayout,
+    collectHexaWorldCellsFromEnemy,
+    forEachHexaHiveOutlineSegment
+} from './_hexa_hive_layout_accessors.js';
 /**
  * 육각형 합체 적 타입 문자열입니다.
  * @returns {string}
@@ -127,47 +103,6 @@ function buildHexaCellKey(q, r) {
  */
 function buildVertexKey(x, y) {
     return `${Math.round(x * VERTEX_KEY_SCALE)},${Math.round(y * VERTEX_KEY_SCALE)}`;
-}
-
-/**
- * 각도를 라디안으로 변환합니다.
- * @param {number} degrees
- * @returns {number}
- */
-function toRadians(degrees) {
-    return (Number.isFinite(degrees) ? degrees : 0) * (Math.PI / 180);
-}
-
-/**
- * 각도를 -180~180 범위로 정규화합니다.
- * @param {number} degrees
- * @returns {number}
- */
-function normalizeDegrees(degrees) {
-    if (!Number.isFinite(degrees)) {
-        return 0;
-    }
-
-    let normalized = degrees % 360;
-    if (normalized > 180) normalized -= 360;
-    if (normalized < -180) normalized += 360;
-    return normalized;
-}
-
-/**
- * 벡터를 회전합니다.
- * @param {number} x
- * @param {number} y
- * @param {number} radians
- * @returns {{x: number, y: number}}
- */
-function rotatePoint(x, y, radians) {
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    return {
-        x: (x * cos) - (y * sin),
-        y: (x * sin) + (y * cos)
-    };
 }
 
 /**
@@ -923,116 +858,4 @@ export function createHexaHiveLayoutFromWorldCells(worldCells, options) {
         filledLocalCenters,
         outlineVertices
     };
-}
-
-/**
- * 합체 적 레이아웃을 깊은 복제로 정규화합니다.
- * @param {object|null|undefined} layout
- * @returns {object|null}
- */
-export function cloneHexaHiveLayout(layout) {
-    if (!layout || typeof layout !== 'object') {
-        return null;
-    }
-
-    return {
-        schemaVersion: Number.isInteger(layout.schemaVersion)
-            ? layout.schemaVersion
-            : HEXA_HIVE_LAYOUT_SCHEMA_VERSION,
-        visibleCells: Array.isArray(layout.visibleCells)
-            ? layout.visibleCells.map((cell) => ({
-                q: Number.isInteger(cell?.q) ? cell.q : 0,
-                r: Number.isInteger(cell?.r) ? cell.r : 0
-            }))
-            : [],
-        filledCells: Array.isArray(layout.filledCells)
-            ? layout.filledCells.map((cell) => ({
-                q: Number.isInteger(cell?.q) ? cell.q : 0,
-                r: Number.isInteger(cell?.r) ? cell.r : 0
-            }))
-            : [],
-        visibleLocalCenters: Array.isArray(layout.visibleLocalCenters)
-            ? layout.visibleLocalCenters.map((point) => ({
-                x: Number.isFinite(point?.x) ? point.x : 0,
-                y: Number.isFinite(point?.y) ? point.y : 0
-            }))
-            : [],
-        filledLocalCenters: Array.isArray(layout.filledLocalCenters)
-            ? layout.filledLocalCenters.map((point) => ({
-                x: Number.isFinite(point?.x) ? point.x : 0,
-                y: Number.isFinite(point?.y) ? point.y : 0
-            }))
-            : [],
-        outlineVertices: Array.isArray(layout.outlineVertices)
-            ? layout.outlineVertices.map((point) => ({
-                x: Number.isFinite(point?.x) ? point.x : 0,
-                y: Number.isFinite(point?.y) ? point.y : 0
-            }))
-            : []
-    };
-}
-
-/**
- * 합체 적 외곽 루프를 이루는 선분을 순회합니다.
- * @param {object|null|undefined} layout
- * @param {(segment: {start: {x: number, y: number}, end: {x: number, y: number}}) => void} iteratee
- */
-export function forEachHexaHiveOutlineSegment(layout, iteratee) {
-    if (!layout || !Array.isArray(layout.outlineVertices) || layout.outlineVertices.length < 2 || typeof iteratee !== 'function') {
-        return;
-    }
-
-    const vertices = layout.outlineVertices;
-    for (let i = 0; i < vertices.length; i++) {
-        const start = vertices[i];
-        const end = vertices[(i + 1) % vertices.length];
-        if (!start || !end) {
-            continue;
-        }
-
-        iteratee({
-            start: {
-                x: Number.isFinite(start.x) ? start.x : 0,
-                y: Number.isFinite(start.y) ? start.y : 0
-            },
-            end: {
-                x: Number.isFinite(end.x) ? end.x : 0,
-                y: Number.isFinite(end.y) ? end.y : 0
-            }
-        });
-    }
-}
-
-/**
- * 적 인스턴스에서 현재 보이는 육각 조각의 월드 중심 목록을 추출합니다.
- * @param {object|null|undefined} enemy
- * @returns {{x: number, y: number}[]}
- */
-export function collectHexaWorldCellsFromEnemy(enemy) {
-    if (!enemy || typeof enemy !== 'object' || !isHexaMergeEnemyType(enemy.type) || enemy.active === false) {
-        return [];
-    }
-
-    const baseHeight = typeof enemy.getRenderHeightPx === 'function'
-        ? enemy.getRenderHeightPx()
-        : (Number.isFinite(enemy.renderHeightPx) ? enemy.renderHeightPx : 0);
-    const positionX = Number.isFinite(enemy.position?.x) ? enemy.position.x : 0;
-    const positionY = Number.isFinite(enemy.position?.y) ? enemy.position.y : 0;
-    const rotationRadians = toRadians(enemy.rotation ?? 0);
-    const worldCells = [];
-
-    if (enemy.type === HEXA_HIVE_TYPE && enemy.hexaHiveLayout?.visibleLocalCenters?.length > 0 && baseHeight > EPSILON) {
-        for (let i = 0; i < enemy.hexaHiveLayout.visibleLocalCenters.length; i++) {
-            const localCenter = enemy.hexaHiveLayout.visibleLocalCenters[i];
-            const rotated = rotatePoint(localCenter.x * baseHeight, localCenter.y * baseHeight, rotationRadians);
-            worldCells.push({
-                x: positionX + rotated.x,
-                y: positionY + rotated.y
-            });
-        }
-        return worldCells;
-    }
-
-    worldCells.push({ x: positionX, y: positionY });
-    return worldCells;
 }

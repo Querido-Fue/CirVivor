@@ -10,6 +10,7 @@ import { clampNumber, easeOutCubic, easeOutExpo, lerpValue } from './_title_menu
  * @param {number} options.ww - 화면 너비입니다.
  * @param {number} options.wh - 화면 높이입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
  * @param {Function} options.getRevealConfig - 카드 등장 설정 조회 함수입니다.
  * @param {Function} options.getRevealProgress - 등장 진행률 계산 함수입니다.
@@ -23,10 +24,12 @@ export function buildTitleMenuCardRenderState({
     ww,
     wh,
     uiww,
+    uiScale = 1,
     titleCardMenu,
     getRevealConfig,
     getRevealProgress
 }) {
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
     const layoutRect = card.layoutRect;
     const animationState = card.animator.getState();
     if (!layoutRect) {
@@ -59,12 +62,13 @@ export function buildTitleMenuCardRenderState({
     const height = layoutRect.h * worldScale * entryScale;
     const baseCenterX = screenCenterX + ((finalCenterX - screenCenterX) * worldScale);
     const baseCenterY = screenCenterY + ((finalCenterY - screenCenterY) * worldScale);
-    const startOffsetX = uiww * (titleCardMenu.ENTRANCE_OFFSET_X_UIWW_RATIO + revealConfig.offsetXRatio);
+    const scaledUIWW = uiww * resolvedUiScale;
+    const startOffsetX = scaledUIWW * (titleCardMenu.ENTRANCE_OFFSET_X_UIWW_RATIO + revealConfig.offsetXRatio);
     const offscreenStartX = Math.max(ww + (layoutRect.w * 0.12), finalCenterX + startOffsetX);
     const offscreenStartY = baseCenterY;
     const centerX = lerpValue(offscreenStartX, baseCenterX, motionEase);
     const centerY = lerpValue(offscreenStartY, baseCenterY, motionEase);
-    const radius = Math.max(12, Math.min(width, height) * 0.08);
+    const radius = Math.max(12 * resolvedUiScale, Math.min(width, height) * 0.08);
 
     return {
         revealProgress,
@@ -87,6 +91,7 @@ export function buildTitleMenuCardRenderState({
  * @param {object} options.menuItem - 대상 보조 메뉴 항목입니다.
  * @param {number} options.index - 항목 순서입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @param {number} options.revealCoreDuration - 카드 등장 핵심 구간 길이입니다.
  * @param {Function} options.getRevealProgress - 등장 진행률 계산 함수입니다.
  * @returns {object} 계산된 타일 렌더 상태입니다.
@@ -95,9 +100,11 @@ export function buildTitleMenuUtilityTileRenderState({
     menuItem,
     index,
     uiww,
+    uiScale = 1,
     revealCoreDuration,
     getRevealProgress
 }) {
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
     const utilityPaneEase = getTitleMenuUtilityPaneRevealEase({
         revealCoreDuration,
         getRevealProgress
@@ -110,8 +117,9 @@ export function buildTitleMenuUtilityTileRenderState({
         secondaryDuration
     );
     const itemEase = easeOutCubic(itemProgress);
-    const paneTranslateX = (1 - utilityPaneEase) * (uiww * 0.026);
-    const translateX = paneTranslateX + ((1 - itemEase) * Math.min(uiww * 0.014, menuItem.w * 0.28));
+    const scaledUIWW = uiww * resolvedUiScale;
+    const paneTranslateX = (1 - utilityPaneEase) * (scaledUIWW * 0.026);
+    const translateX = paneTranslateX + ((1 - itemEase) * Math.min(scaledUIWW * 0.014, menuItem.w * 0.28));
 
     return {
         ...menuItem,
@@ -133,6 +141,7 @@ export function buildTitleMenuUtilityTileRenderState({
  * @param {object} options - pane 렌더 상태 계산 옵션입니다.
  * @param {object} options.paneLayout - 최종 패널 배치 정보입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @param {number} options.revealCoreDuration - 카드 등장 핵심 구간 길이입니다.
  * @param {Function} options.getRevealProgress - 등장 진행률 계산 함수입니다.
  * @returns {{cardPane:object, utilityPane:object}} 렌더용 패널 상태입니다.
@@ -140,9 +149,11 @@ export function buildTitleMenuUtilityTileRenderState({
 export function buildTitleMenuPaneRenderState({
     paneLayout,
     uiww,
+    uiScale = 1,
     revealCoreDuration,
     getRevealProgress
 }) {
+    const scaledUIWW = uiww * _normalizeTitleMenuUiScale(uiScale);
     const cardPaneProgress = getRevealProgress(0, Math.max(0.28, revealCoreDuration * 0.54));
     const cardPaneEase = easeOutCubic(cardPaneProgress);
     const utilityPaneEase = getTitleMenuUtilityPaneRevealEase({
@@ -154,13 +165,13 @@ export function buildTitleMenuPaneRenderState({
         cardPane: _createTitleMenuPaneRenderRect(
             paneLayout.cardPane,
             cardPaneEase,
-            uiww * 0.032,
+            scaledUIWW * 0.032,
             0
         ),
         utilityPane: _createTitleMenuPaneRenderRect(
             paneLayout.utilityPane,
             utilityPaneEase,
-            uiww * 0.026,
+            scaledUIWW * 0.026,
             0
         )
     };
@@ -313,4 +324,13 @@ function _createTitleMenuPaneRenderRect(layoutRect, revealEase, offsetX, offsetY
         radius: layoutRect.radius,
         alpha: clampedEase
     };
+}
+
+/**
+ * UI 스케일 입력값을 안전한 양수 배율로 정규화합니다.
+ * @param {number} uiScale - 원본 UI 스케일 배율입니다.
+ * @returns {number} 정규화된 UI 스케일 배율입니다.
+ */
+function _normalizeTitleMenuUiScale(uiScale) {
+    return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
 }

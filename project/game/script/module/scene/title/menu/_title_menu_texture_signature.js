@@ -10,6 +10,7 @@ import { buildMenuStaticTextureThemeSignature } from './_title_menu_theme.js';
  * @param {object} options.renderState - 카드 렌더 상태입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} options.wh - 화면 높이입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @param {object} options.textConstants - 텍스트 상수입니다.
  * @param {import('display/_svg_drawer.js').SVGDrawer} options.svgDrawer - SVG 캐시 드로어입니다.
  * @returns {string} 캐시 식별자입니다.
@@ -19,6 +20,7 @@ export function buildTitleMenuCardStaticTextureSignature({
     renderState,
     uiww,
     wh,
+    uiScale = 1,
     textConstants,
     svgDrawer
 }) {
@@ -36,7 +38,8 @@ export function buildTitleMenuCardStaticTextureSignature({
         description,
         Math.round(uiww),
         Math.round(wh),
-        getTitleMenuTextPresetFontSize(textConstants, uiww, 'H6'),
+        _normalizeTitleMenuUiScale(uiScale).toFixed(3),
+        getTitleMenuTextPresetFontSize(textConstants, uiww, 'H6', uiScale),
         buildMenuStaticTextureThemeSignature(),
         getTitleMenuIconTextureSignature(svgDrawer, card.cardDefinition.id)
     ].join('|');
@@ -49,6 +52,7 @@ export function buildTitleMenuCardStaticTextureSignature({
  * @param {object} options.runtimeState - 타일 런타임 상태입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} options.wh - 화면 높이입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @param {import('display/_svg_drawer.js').SVGDrawer} options.svgDrawer - SVG 캐시 드로어입니다.
  * @returns {string} 캐시 식별자입니다.
  */
@@ -57,6 +61,7 @@ export function buildTitleMenuUtilityTileStaticTextureSignature({
     runtimeState,
     uiww,
     wh,
+    uiScale = 1,
     svgDrawer
 }) {
     const panelRect = renderState.panelRect;
@@ -70,6 +75,7 @@ export function buildTitleMenuUtilityTileStaticTextureSignature({
         Math.ceil(renderState.placeholderSize || 0),
         Math.round(uiww),
         Math.round(wh),
+        _normalizeTitleMenuUiScale(uiScale).toFixed(3),
         buildMenuStaticTextureThemeSignature(),
         getTitleMenuIconTextureSignature(svgDrawer, renderState.id)
     ].join('|');
@@ -89,4 +95,13 @@ export function getTitleMenuIconTextureSignature(svgDrawer, iconId) {
         Number(Boolean(iconRecord?.image)),
         Number.isFinite(iconRecord?.aspectRatio) ? iconRecord.aspectRatio : 0
     ].join(':');
+}
+
+/**
+ * UI 스케일 입력값을 안전한 양수 배율로 정규화합니다.
+ * @param {number} uiScale - 원본 UI 스케일 배율입니다.
+ * @returns {number} 정규화된 UI 스케일 배율입니다.
+ */
+function _normalizeTitleMenuUiScale(uiScale) {
+    return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
 }

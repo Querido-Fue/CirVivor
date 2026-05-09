@@ -29,6 +29,7 @@ export function getTitleMenuVersionHistoryLinkText() {
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} options.wh - 화면 높이입니다.
  * @param {number} options.uiOffsetX - UI 기준 X 오프셋입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @param {number} options.utilityPaneRevealEase - 하단 서브 메뉴 등장 이징 값입니다.
  * @param {string} options.versionText - 버전 텍스트입니다.
  * @param {string} options.versionFont - 버전 텍스트 폰트입니다.
@@ -44,6 +45,7 @@ export function buildTitleMenuVersionLabelLayout({
     uiww,
     wh,
     uiOffsetX,
+    uiScale = 1,
     utilityPaneRevealEase,
     versionText,
     versionFont,
@@ -57,7 +59,8 @@ export function buildTitleMenuVersionLabelLayout({
         return null;
     }
 
-    const lineGap = Math.max(4, wh * 0.005);
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
+    const lineGap = Math.max(4 * resolvedUiScale, wh * 0.005 * resolvedUiScale);
     const blockHeight = versionFontSize + (linkText ? linkFontSize + lineGap : 0);
     const renderState = buildTitleMenuVersionLabelRenderState({
         paneLayout,
@@ -65,17 +68,18 @@ export function buildTitleMenuVersionLabelLayout({
         utilityPaneRevealEase,
         uiww,
         wh,
-        uiOffsetX
+        uiOffsetX,
+        uiScale: resolvedUiScale
     });
     const linkY = renderState.y + versionFontSize + lineGap;
-    const linkIconSize = linkText ? Math.max(10, linkFontSize * 0.9504) : 0;
-    const linkIconGap = linkText ? Math.max(4, uiww * 0.0034) : 0;
+    const linkIconSize = linkText ? Math.max(10 * resolvedUiScale, linkFontSize * 0.9504) : 0;
+    const linkIconGap = linkText ? Math.max(4 * resolvedUiScale, uiww * 0.0034 * resolvedUiScale) : 0;
     const linkBlockWidth = linkText ? linkIconSize + linkIconGap + linkTextWidth : 0;
     const linkTextX = renderState.x;
     const linkIconX = linkTextX - linkTextWidth - linkIconGap - linkIconSize;
     const linkIconY = linkY + ((linkFontSize - linkIconSize) * 0.5);
-    const hitPaddingX = Math.max(6, uiww * 0.004);
-    const hitPaddingY = Math.max(4, wh * 0.004);
+    const hitPaddingX = Math.max(6 * resolvedUiScale, uiww * 0.004 * resolvedUiScale);
+    const hitPaddingY = Math.max(4 * resolvedUiScale, wh * 0.004 * resolvedUiScale);
 
     return {
         alpha: renderState.alpha,
@@ -110,6 +114,7 @@ export function buildTitleMenuVersionLabelLayout({
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} options.wh - 화면 높이입니다.
  * @param {number} options.uiOffsetX - UI 기준 X 오프셋입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @returns {{x:number, y:number, alpha:number}} 렌더링에 사용할 버전 라벨 상태입니다.
  */
 export function buildTitleMenuVersionLabelRenderState({
@@ -118,18 +123,21 @@ export function buildTitleMenuVersionLabelRenderState({
     utilityPaneRevealEase,
     uiww,
     wh,
-    uiOffsetX
+    uiOffsetX,
+    uiScale = 1
 }) {
     const safeAreaAnchor = resolveTitleMenuVersionLabelSafeArea({
         paneLayout,
         blockHeight,
         uiww,
         wh,
-        uiOffsetX
+        uiOffsetX,
+        uiScale
     });
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
 
     return {
-        x: safeAreaAnchor.x + ((1 - utilityPaneRevealEase) * (uiww * 0.026)),
+        x: safeAreaAnchor.x + ((1 - utilityPaneRevealEase) * (uiww * 0.026 * resolvedUiScale)),
         y: safeAreaAnchor.y,
         alpha: utilityPaneRevealEase
     };
@@ -143,6 +151,7 @@ export function buildTitleMenuVersionLabelRenderState({
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} options.wh - 화면 높이입니다.
  * @param {number} options.uiOffsetX - UI 기준 X 오프셋입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @returns {{x:number, y:number}} 버전 라벨 우상단 기준점입니다.
  */
 export function resolveTitleMenuVersionLabelSafeArea({
@@ -150,16 +159,18 @@ export function resolveTitleMenuVersionLabelSafeArea({
     blockHeight = 0,
     uiww,
     wh,
-    uiOffsetX
+    uiOffsetX,
+    uiScale = 1
 }) {
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
     const utilityPane = paneLayout?.utilityPane || null;
     const cardPane = paneLayout?.cardPane || null;
     const resolvedBlockHeight = Math.max(0, blockHeight);
     if (!utilityPane || !cardPane) {
-        const verticalOffset = wh * (100 / 1440);
+        const verticalOffset = wh * (100 / 1440) * resolvedUiScale;
         return {
-            x: uiOffsetX + uiww - Math.max(18, uiww * 0.024),
-            y: Math.max(14, wh * 0.022) + verticalOffset
+            x: uiOffsetX + uiww - Math.max(18 * resolvedUiScale, uiww * 0.024 * resolvedUiScale),
+            y: Math.max(14 * resolvedUiScale, wh * 0.022 * resolvedUiScale) + verticalOffset
         };
     }
 
@@ -169,4 +180,13 @@ export function resolveTitleMenuVersionLabelSafeArea({
         x: utilityPane.x + utilityPane.w,
         y: blockBottomY - resolvedBlockHeight
     };
+}
+
+/**
+ * UI 스케일 입력값을 안전한 양수 배율로 정규화합니다.
+ * @param {number} uiScale - 원본 UI 스케일 배율입니다.
+ * @returns {number} 정규화된 UI 스케일 배율입니다.
+ */
+function _normalizeTitleMenuUiScale(uiScale) {
+    return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
 }
