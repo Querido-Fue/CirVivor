@@ -6,13 +6,27 @@ import { createFontString, createFontStringFromPreset } from 'util/font_util.js'
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
+const NO_ICON_TYPE = 'none';
+const DEFAULT_BUTTON_FONT_FAMILY = 'arial';
+const DEFAULT_BUTTON_FONT_WEIGHT = '';
+const DEFAULT_BUTTON_FONT_SIZE = 12;
+const DEFAULT_BUTTON_ALIGN = 'center';
+const DEFAULT_TEXT_ALIGN = 'left';
+const DEFAULT_TEXT_FILL = '#FFFFFF';
+const DEFAULT_LINE_STROKE = '#FFFFFF';
+const DEFAULT_LINE_WIDTH = 1;
+const ICON_BUTTON_TEXT_ALIGN = 'right';
 
 /**
  * @class UIElementFactory
  * @description 레이아웃 메타데이터를 실제 UI 요소(버튼, 텍스트, 슬라이더 등)로 변환해 생성합니다.
  */
 export class UIElementFactory {
-    static _handlers = {
+    /**
+     * 레이아웃 타입별 생성 함수 매핑입니다.
+     * @type {Readonly<Record<string, Function>>}
+     */
+    static _handlers = Object.freeze({
         button: UIElementFactory._createButton,
         text: UIElementFactory._createText,
         slider: UIElementFactory._createSlider,
@@ -21,7 +35,7 @@ export class UIElementFactory {
         dropdown: UIElementFactory._createDropdown,
         line: UIElementFactory._createLine,
         progress_bar: UIElementFactory._createProgressBar
-    };
+    });
 
     /**
      * 레이아웃 항목 데이터를 기반으로 실제 요소/객체를 생성합니다.
@@ -40,6 +54,17 @@ export class UIElementFactory {
         return handler.call(this, item, x, y, parentW, parentH, forcedW, layoutHandler);
     }
 
+    /**
+     * 버튼 UI 요소를 생성합니다.
+     * @param {object} item - 버튼 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 버튼 요소입니다.
+     */
     static _createButton(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         const presetData = this._getPresetData(item.preset, BUTTON_CONSTANTS);
         const defaultHeight = layoutHandler.parseUnit(presetData.HEIGHT?.BASE || 'WH', presetData.HEIGHT?.VALUE || 5, parentH);
@@ -61,13 +86,13 @@ export class UIElementFactory {
             ...item.props
         };
 
-        const fontFam = props.font || presetData.FONT?.FAMILY || 'arial';
-        const fontWeig = props.fontWeight || presetData.FONT?.WEIGHT || '';
+        const fontFam = props.font || presetData.FONT?.FAMILY || DEFAULT_BUTTON_FONT_FAMILY;
+        const fontWeig = props.fontWeight || presetData.FONT?.WEIGHT || DEFAULT_BUTTON_FONT_WEIGHT;
         const fontSiz = props.size || (presetData.FONT
             ? layoutHandler.parseUnit(presetData.FONT.SIZE?.BASE || 'WW', presetData.FONT.SIZE?.VALUE || 1, parentW)
-            : 12);
+            : DEFAULT_BUTTON_FONT_SIZE);
 
-        const align = props.align || presetData.ALIGN || 'center';
+        const align = props.align || presetData.ALIGN || DEFAULT_BUTTON_ALIGN;
 
         if (presetData.MARGIN) {
             props.margin = layoutHandler.parseUnit(presetData.MARGIN.BASE || 'WW', presetData.MARGIN.VALUE || 0, parentW);
@@ -77,7 +102,7 @@ export class UIElementFactory {
         }
 
         this._initializeButtonContentArrays(props);
-        const hasIcon = props.iconType && props.iconType !== 'none';
+        const hasIcon = props.iconType && props.iconType !== NO_ICON_TYPE;
         const hasText = !!props.text;
 
         if (hasIcon) {
@@ -95,7 +120,7 @@ export class UIElementFactory {
                 fontWeight: fontWeig,
                 size: fontSiz,
                 color: props.color,
-                align: hasIcon ? 'right' : align
+                align: hasIcon ? ICON_BUTTON_TEXT_ALIGN : align
             });
 
             if (hasIcon) {
@@ -126,6 +151,17 @@ export class UIElementFactory {
         return btn;
     }
 
+    /**
+     * 텍스트 렌더 커맨드 객체를 생성합니다.
+     * @param {object} item - 텍스트 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} _forcedW - 텍스트에서 사용하지 않는 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 텍스트 렌더 커맨드 객체입니다.
+     */
     static _createText(item, x, y, parentW, parentH, _forcedW, layoutHandler) {
         const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
 
@@ -158,13 +194,13 @@ export class UIElementFactory {
             fillValue: parentH
         });
 
-        const alignVal = item.props.align || 'left';
+        const alignVal = item.props.align || DEFAULT_TEXT_ALIGN;
         const textObj = UIPool.text.get();
         Object.assign(textObj, {
             shape: 'text',
             text: item.props.text || '',
             font: fontString,
-            fill: item.props.color || item.props.fill || '#FFFFFF',
+            fill: item.props.color || item.props.fill || DEFAULT_TEXT_FILL,
             align: alignVal,
             baseline: 'top',
             width: textWidth,
@@ -179,6 +215,17 @@ export class UIElementFactory {
         return textObj;
     }
 
+    /**
+     * 슬라이더 UI 요소를 생성합니다.
+     * @param {object} item - 슬라이더 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 슬라이더 요소입니다.
+     */
     static _createSlider(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         const props = this._createCommonProps(item, x, y, layoutHandler);
         const slider = UIPool.slider.get();
@@ -202,6 +249,17 @@ export class UIElementFactory {
         return slider;
     }
 
+    /**
+     * 토글 UI 요소를 생성합니다.
+     * @param {object} item - 토글 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 토글 요소입니다.
+     */
     static _createToggle(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         const props = this._createCommonProps(item, x, y, layoutHandler);
         const toggle = UIPool.toggle.get();
@@ -225,6 +283,17 @@ export class UIElementFactory {
         return toggle;
     }
 
+    /**
+     * 세그먼트 컨트롤 UI 요소를 생성합니다.
+     * @param {object} item - 세그먼트 컨트롤 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 세그먼트 컨트롤 요소입니다.
+     */
     static _createSegmentControl(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         if (item.preset && !item.props.font) {
             const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
@@ -253,6 +322,17 @@ export class UIElementFactory {
         return segment;
     }
 
+    /**
+     * 드롭다운 UI 요소를 생성합니다.
+     * @param {object} item - 드롭다운 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 드롭다운 요소입니다.
+     */
     static _createDropdown(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         if (item.preset && !item.props.font) {
             const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
@@ -284,6 +364,17 @@ export class UIElementFactory {
         return dropdown;
     }
 
+    /**
+     * 라인 렌더 커맨드 객체를 생성합니다.
+     * @param {object} item - 라인 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} _parentH - 라인에서 사용하지 않는 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 라인 렌더 커맨드 객체입니다.
+     */
     static _createLine(item, x, y, parentW, _parentH, forcedW, layoutHandler) {
         const width = forcedW !== undefined
             ? forcedW
@@ -298,10 +389,10 @@ export class UIElementFactory {
         const lineObj = UIPool.line.get();
         Object.assign(lineObj, {
             shape: 'line',
-            stroke: item.props.color || item.props.stroke || item.props.fill || '#FFFFFF',
-            lineWidth: item.props.lineWidth || 1,
+            stroke: item.props.color || item.props.stroke || item.props.fill || DEFAULT_LINE_STROKE,
+            lineWidth: item.props.lineWidth || DEFAULT_LINE_WIDTH,
             width,
-            height: item.props.lineWidth || 1,
+            height: item.props.lineWidth || DEFAULT_LINE_WIDTH,
             ...item.props
         });
 
@@ -339,6 +430,17 @@ export class UIElementFactory {
         return lineObj;
     }
 
+    /**
+     * 프로그레스 바 UI 요소를 생성합니다.
+     * @param {object} item - 프로그레스 바 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 프로그레스 바 요소입니다.
+     */
     static _createProgressBar(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         const width = forcedW !== undefined
             ? forcedW
@@ -372,6 +474,14 @@ export class UIElementFactory {
         return progressBar;
     }
 
+    /**
+     * UI 요소 생성에 공통으로 전달할 속성을 구성합니다.
+     * @param {object} item - 레이아웃 항목입니다.
+     * @param {number} x - x 좌표입니다.
+     * @param {number} y - y 좌표입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {object} 공통 속성 객체입니다.
+     */
     static _createCommonProps(item, x, y, layoutHandler) {
         return {
             parent: layoutHandler.parent,
@@ -474,18 +584,32 @@ export class UIElementFactory {
         return 0;
     }
 
+    /**
+     * 버튼 슬롯 배열을 초기화합니다.
+     * @param {object} props - 버튼 속성 객체입니다.
+     */
     static _initializeButtonContentArrays(props) {
         if (!props.left) props.left = [];
         if (!props.center) props.center = [];
         if (!props.right) props.right = [];
     }
 
+    /**
+     * 버튼 텍스트 요소를 정렬 기준 슬롯에 넣습니다.
+     * @param {object} props - 버튼 속성 객체입니다.
+     * @param {object} textElem - 텍스트 요소입니다.
+     * @param {string} align - 정렬 기준입니다.
+     */
     static _pushButtonTextByAlign(props, textElem, align) {
         if (align === 'left') props.left.push(textElem);
         else if (align === 'right') props.right.push(textElem);
         else props.center.push(textElem);
     }
 
+    /**
+     * 버튼 init에 직접 넘기지 않을 레거시 속성을 제거합니다.
+     * @param {object} props - 버튼 속성 객체입니다.
+     */
     static _cleanupButtonLegacyProps(props) {
         delete props.text;
         delete props.iconType;
@@ -495,6 +619,11 @@ export class UIElementFactory {
         delete props.size;
     }
 
+    /**
+     * 텍스트 객체의 align 기준 x 접근자를 정의합니다.
+     * @param {object} textObj - 텍스트 렌더 커맨드 객체입니다.
+     * @param {number} x - 기준 x 좌표입니다.
+     */
     static _defineTextXAccessor(textObj, x) {
         let currentX = x;
         Object.defineProperty(textObj, 'x', {
@@ -509,11 +638,25 @@ export class UIElementFactory {
         });
     }
 
+    /**
+     * 프리셋 이름에 해당하는 상수 데이터를 조회합니다.
+     * @param {string|undefined} preset - 프리셋 이름입니다.
+     * @param {object} constantsObj - 프리셋 상수 객체입니다.
+     * @returns {object} 프리셋 데이터입니다.
+     */
     static _getPresetData(preset, constantsObj) {
         if (!preset) return {};
         return constantsObj[preset.toUpperCase()] || {};
     }
 
+    /**
+     * 프리셋 폰트 데이터를 Canvas font 문자열로 변환합니다.
+     * @param {object} presetData - 프리셋 데이터입니다.
+     * @param {number|string} defaultWeight - 기본 font-weight입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
+     * @returns {string} Canvas font 문자열입니다.
+     */
     static _buildPresetFontString(presetData, defaultWeight, parentW, layoutHandler) {
         return createFontStringFromPreset(presetData, {
             defaultWeight,
