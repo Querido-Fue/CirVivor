@@ -52,6 +52,16 @@ function resolveGameSceneEnemyAI(aiId) {
 }
 
 /**
+ * 명령에서 전달된 다음 카운터 값을 안전하게 적용합니다.
+ * @param {number} nextValue - 명령에 포함된 다음 카운터 값입니다.
+ * @param {number} fallbackValue - 값이 유효하지 않을 때 유지할 기존 값입니다.
+ * @returns {number} 적용할 카운터 값입니다.
+ */
+function resolveGameSceneNextCounter(nextValue, fallbackValue) {
+    return Number.isInteger(nextValue) ? nextValue : fallbackValue;
+}
+
+/**
  * 씬의 벽 목록을 ObjectSystem에 동기화합니다.
  * @param {object|null|undefined} scene - 게임 씬 인스턴스입니다.
  */
@@ -82,8 +92,8 @@ function applyReplaceWorldCommand(scene, command) {
     scene.boxWalls = Array.isArray(command.boxWalls)
         ? command.boxWalls.map((wallData) => createGameSceneWallEntity(wallData))
         : [];
-    scene.wallIdCounter = Number.isInteger(command.nextWallIdCounter) ? command.nextWallIdCounter : scene.wallIdCounter;
-    scene.projIdCounter = Number.isInteger(command.nextProjIdCounter) ? command.nextProjIdCounter : scene.projIdCounter;
+    scene.wallIdCounter = resolveGameSceneNextCounter(command.nextWallIdCounter, scene.wallIdCounter);
+    scene.projIdCounter = resolveGameSceneNextCounter(command.nextProjIdCounter, scene.projIdCounter);
 
     scene.objectSystem.setPlayers(scene.player ? [scene.player] : []);
     scene.objectSystem.setProjectiles(scene.projectiles);
@@ -121,7 +131,7 @@ function applyAppendBoxWallsCommand(scene, command) {
     for (let i = 0; i < walls.length; i++) {
         scene.boxWalls.push(createGameSceneWallEntity(walls[i]));
     }
-    scene.wallIdCounter = Number.isInteger(command.nextWallIdCounter) ? command.nextWallIdCounter : scene.wallIdCounter;
+    scene.wallIdCounter = resolveGameSceneNextCounter(command.nextWallIdCounter, scene.wallIdCounter);
     syncGameSceneObjectSystemWalls(scene);
 }
 
@@ -135,7 +145,7 @@ function applyAppendProjectilesCommand(scene, command) {
     for (let i = 0; i < projectiles.length; i++) {
         scene.projectiles.push(createGameSceneProjectileEntity(projectiles[i]));
     }
-    scene.projIdCounter = Number.isInteger(command.nextProjIdCounter) ? command.nextProjIdCounter : scene.projIdCounter;
+    scene.projIdCounter = resolveGameSceneNextCounter(command.nextProjIdCounter, scene.projIdCounter);
     scene.objectSystem.setProjectiles(scene.projectiles);
 }
 
@@ -156,6 +166,21 @@ function applyDestroyWorldCommand(scene) {
 }
 
 /**
+ * 게임 씬 명령 타입별 적용 handler 맵을 생성합니다.
+ * @param {object} scene - 게임 씬 인스턴스입니다.
+ * @returns {Record<string, Function>} 명령 타입별 handler 맵입니다.
+ */
+function createGameSceneCommandHandlers(scene) {
+    return {
+        [GAME_SCENE_COMMAND_TYPES.REPLACE_WORLD]: (command) => applyReplaceWorldCommand(scene, command),
+        [GAME_SCENE_COMMAND_TYPES.SPAWN_ENEMY_BATCH]: (command) => applySpawnEnemyBatchCommand(scene, command),
+        [GAME_SCENE_COMMAND_TYPES.APPEND_BOX_WALLS]: (command) => applyAppendBoxWallsCommand(scene, command),
+        [GAME_SCENE_COMMAND_TYPES.APPEND_PROJECTILES]: (command) => applyAppendProjectilesCommand(scene, command),
+        [GAME_SCENE_COMMAND_TYPES.DESTROY_WORLD]: () => applyDestroyWorldCommand(scene)
+    };
+}
+
+/**
  * 게임 씬 명령 목록을 로컬 씬 상태와 ObjectSystem에 적용합니다.
  * @param {object|null|undefined} scene - 게임 씬 인스턴스입니다.
  * @param {object[]} [commands=[]] - 적용할 명령 목록입니다.
@@ -165,11 +190,5 @@ export function applyGameSceneCommandsToLocalState(scene, commands = []) {
         return;
     }
 
-    applyGameSceneSimulationCommands(commands, {
-        [GAME_SCENE_COMMAND_TYPES.REPLACE_WORLD]: (command) => applyReplaceWorldCommand(scene, command),
-        [GAME_SCENE_COMMAND_TYPES.SPAWN_ENEMY_BATCH]: (command) => applySpawnEnemyBatchCommand(scene, command),
-        [GAME_SCENE_COMMAND_TYPES.APPEND_BOX_WALLS]: (command) => applyAppendBoxWallsCommand(scene, command),
-        [GAME_SCENE_COMMAND_TYPES.APPEND_PROJECTILES]: (command) => applyAppendProjectilesCommand(scene, command),
-        [GAME_SCENE_COMMAND_TYPES.DESTROY_WORLD]: () => applyDestroyWorldCommand(scene)
-    });
+    applyGameSceneSimulationCommands(commands, createGameSceneCommandHandlers(scene));
 }
