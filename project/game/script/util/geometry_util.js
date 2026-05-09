@@ -1,3 +1,5 @@
+import { clampNumber } from 'util/number_util.js';
+
 /**
  * 좌표가 사각형 내부에 있는지 반환합니다.
  * @param {number} x - 검사할 X 좌표입니다.
@@ -39,8 +41,8 @@ export function isRectCircleOverlapping(rect, x, y, radius) {
     const maxX = Number.isFinite(rect.maxX) ? rect.maxX : minX;
     const minY = Number.isFinite(rect.minY) ? rect.minY : 0;
     const maxY = Number.isFinite(rect.maxY) ? rect.maxY : minY;
-    const closestX = Math.max(minX, Math.min(x, maxX));
-    const closestY = Math.max(minY, Math.min(y, maxY));
+    const closestX = clampNumber(x, minX, maxX);
+    const closestY = clampNumber(y, minY, maxY);
     const dx = x - closestX;
     const dy = y - closestY;
     return ((dx * dx) + (dy * dy)) <= (radius * radius);
