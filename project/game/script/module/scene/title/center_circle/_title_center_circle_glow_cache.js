@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clamp01 } from 'util/number_util.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_theme.js';
 import {
@@ -214,7 +215,7 @@ export class TitleCenterCircleGlowCache {
                 continue;
             }
             const stopAlpha = Math.min(stop.maxAlpha, stop.alphaScale * baseBloomStrength);
-            haloGradient.addColorStop(Math.max(0, Math.min(1, stop.offset)), toLoadingRgba(stop.color, stopAlpha));
+            haloGradient.addColorStop(clamp01(stop.offset), toLoadingRgba(stop.color, stopAlpha));
         }
         if (haloStops.length === 0) {
             const fallbackStopColor = toLoadingRgba(getLoadingAccentColor(), 0);

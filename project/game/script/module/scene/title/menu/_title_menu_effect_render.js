@@ -69,8 +69,8 @@ export function drawTitleMenuCardBorder(context, runtimeState, renderState, bord
         spotlightRadius
     );
     gradient.addColorStop(0, formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha));
-    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart * 0.62)), formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha * 0.82));
-    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart)), formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha * 0.55));
+    gradient.addColorStop(clampNumber(fadeStart * 0.62, 0, 1), formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha * 0.82));
+    gradient.addColorStop(clampNumber(fadeStart, 0, 1), formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha * 0.55));
     gradient.addColorStop(1, formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, 0));
 
     context.beginPath();

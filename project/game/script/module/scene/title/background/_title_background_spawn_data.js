@@ -1,4 +1,5 @@
 import { mathUtil } from 'util/math_util.js';
+import { clamp01, clampNumber } from 'util/number_util.js';
 import { getTitleDefaultParallaxLayerProfile } from './_title_background_parallax.js';
 import { getTitlePerLayerEnemyLimit } from './_title_background_spawn_metrics.js';
 
@@ -120,7 +121,7 @@ function _pickTitleParallaxLayer({
 
     const perLayerLimit = getTitlePerLayerEnemyLimit(titleEnemiesConfig);
     const resolvedPreferredLayerIndex = Number.isInteger(preferredLayerIndex)
-        ? Math.max(0, Math.min(parallaxLayers.length - 1, preferredLayerIndex))
+        ? clampNumber(preferredLayerIndex, 0, parallaxLayers.length - 1)
         : null;
     if (resolvedPreferredLayerIndex !== null) {
         const layerCount = Array.isArray(layerCounts) ? layerCounts[resolvedPreferredLayerIndex] : 0;
@@ -213,10 +214,10 @@ function _getInitialBurstSpawnY(titleEnemiesConfig, objectWH, burstSpawnIndex = 
     const slotHeight = totalRange / safeTargetCount;
     const slotCenter = minY + ((slotIndex + 0.5) * slotHeight);
     const jitterRatio = Number.isFinite(titleEnemiesConfig.INITIAL_BURST_Y_JITTER_RATIO)
-        ? Math.max(0, Math.min(1, titleEnemiesConfig.INITIAL_BURST_Y_JITTER_RATIO))
+        ? clamp01(titleEnemiesConfig.INITIAL_BURST_Y_JITTER_RATIO)
         : 0.78;
     const jitterAmplitude = slotHeight * 0.5 * jitterRatio;
-    return Math.max(minY, Math.min(maxY, slotCenter + mathUtil().random(-jitterAmplitude, jitterAmplitude)));
+    return clampNumber(slotCenter + mathUtil().random(-jitterAmplitude, jitterAmplitude), minY, maxY);
 }
 
 /**
