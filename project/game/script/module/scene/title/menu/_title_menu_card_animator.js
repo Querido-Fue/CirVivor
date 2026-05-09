@@ -1,3 +1,5 @@
+import { clampFiniteNumber, clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.js';
+
 /**
  * @class TitleMenuCardAnimator
  * @description 타이틀 카드의 등장과 호버 상태를 관리하는 스캐폴드 클래스입니다.
@@ -19,7 +21,7 @@ export class TitleMenuCardAnimator {
      * @param {number} revealOrder - 좌상단부터의 등장 순서입니다.
      */
     setRevealOrder(revealOrder) {
-        this.revealOrder = Number.isFinite(revealOrder) ? revealOrder : 0;
+        this.revealOrder = resolveFiniteNumber(revealOrder, 0);
     }
 
     /**
@@ -42,8 +44,8 @@ export class TitleMenuCardAnimator {
      * @param {number} deltaSeconds - 프레임 델타 초입니다.
      */
     update(deltaSeconds) {
-        const delta = Number.isFinite(deltaSeconds) ? Math.max(0, deltaSeconds) : 0;
-        const blend = Math.min(1, delta * 10);
+        const delta = clampFiniteNumber(deltaSeconds, 0, Infinity, 0);
+        const blend = clampNumber(delta * 10, 0, 1);
 
         this.revealProgress = this._approach(this.revealProgress, this.revealTarget, blend);
         this.hoverProgress = this._approach(this.hoverProgress, this.hoverTarget, blend);
@@ -70,6 +72,6 @@ export class TitleMenuCardAnimator {
      * @private
      */
     _approach(currentValue, targetValue, blend) {
-        return currentValue + ((targetValue - currentValue) * blend);
+        return lerpNumber(currentValue, targetValue, blend);
     }
 }
