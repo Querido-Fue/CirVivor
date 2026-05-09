@@ -1,43 +1,9 @@
+import { getData } from 'data/data_handler.js';
+
+const COLLISION_FRAME_STATS = getData('COLLISION_CONSTANTS').FRAME_STATS;
 const COLLISION_STAT_FIELD_NAMES = Object.freeze([
-    'collisionCheckCount',
-    'aabbPassCount',
-    'aabbRejectCount',
-    'circlePassCount',
-    'circleRejectCount',
-    'partChecks',
-    'enemyTotalMs',
-    'enemyBodyBuildMs',
-    'playerBodyBuildMs',
-    'wallBodyBuildMs',
-    'enemyPositionSolveMs',
-    'enemyStabilizeMs',
-    'enemyNonPositionMs',
-    'solveGridMs',
-    'solvePairScanMs',
-    'solveCandidateBuildMs',
-    'solvePairProcessMs',
-    'solveNarrowphaseMs',
-    'projectileTotalMs',
-    'projectileEnemyBodyBuildMs',
-    'projectileGridBuildMs',
-    'projectileScanMs',
-    'projectileCandidateQueryMs',
-    'projectileNarrowphaseMs',
-    'contactTotalMs',
-    'contactBodyBuildMs',
-    'contactGridBuildMs',
-    'contactPairScanMs',
-    'solveBucketPairCount',
-    'solveCandidatePairCount',
-    'solveDuplicatePairSkipCount',
-    'solveRuleRejectCount',
-    'solveAabbPassCount',
-    'solveCirclePassCount',
-    'solveResolvedPairCount',
-    'solveSoACirclePairCount',
-    'solveObjectNarrowphasePairCount',
-    'solveBudgetSkipCount',
-    'solveLargePopulationMode'
+    ...COLLISION_FRAME_STATS.BASE_FIELDS,
+    ...COLLISION_FRAME_STATS.PROFILE_FIELDS
 ]);
 
 /**
