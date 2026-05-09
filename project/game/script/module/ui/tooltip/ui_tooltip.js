@@ -11,6 +11,7 @@ import { getDelta } from 'game/time_handler.js';
 import { getMouseInput } from 'input/input_system.js';
 import { getSetting } from 'save/save_system.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
+import { clampNumber } from 'util/number_util.js';
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TOOLTIP_CONSTANTS = getData('TOOLTIP_CONSTANTS');
@@ -108,9 +109,17 @@ export class UITooltipSystem {
                 this.displayContent = this.requestContent;
                 this.displayContentKey = this.requestContentKey;
             }
-            this.displayAlpha = Math.min(1, this.displayAlpha + (getDelta() / TOOLTIP_FADE_DURATION_SECONDS));
+            this.displayAlpha = clampNumber(
+                this.displayAlpha + (getDelta() / TOOLTIP_FADE_DURATION_SECONDS),
+                0,
+                1
+            );
         } else {
-            this.displayAlpha = Math.max(0, this.displayAlpha - (getDelta() / TOOLTIP_FADE_DURATION_SECONDS));
+            this.displayAlpha = clampNumber(
+                this.displayAlpha - (getDelta() / TOOLTIP_FADE_DURATION_SECONDS),
+                0,
+                1
+            );
             if (this.displayAlpha <= 0) {
                 this.displayContent = null;
                 this.displayContentKey = '';
@@ -391,13 +400,15 @@ export class UITooltipSystem {
         const mouseY = getMouseInput('y');
         const screenW = getWW();
         const screenH = getWH();
-        const x = Math.max(
+        const x = clampNumber(
+            (mouseX || 0) + offsetX,
             screenMargin,
-            Math.min((mouseX || 0) + offsetX, screenW - panelWidth - screenMargin)
+            screenW - panelWidth - screenMargin
         );
-        const y = Math.max(
+        const y = clampNumber(
+            (mouseY || 0) - panelHeight,
             screenMargin,
-            Math.min((mouseY || 0) - panelHeight, screenH - panelHeight - screenMargin)
+            screenH - panelHeight - screenMargin
         );
 
         const titleLines = [];
