@@ -4,8 +4,10 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { getData } from 'data/data_handler.js';
+import { applyOverlayConfirmButtonIcon } from './_overlay_confirm_icon.js';
 
 const OVERLAY_LAYOUT_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS');
+const EXIT_LAYOUT_CONSTANTS = OVERLAY_LAYOUT_CONSTANTS.EXIT;
 const EXTERNAL_LINK_WARNING_CONSTANTS = OVERLAY_LAYOUT_CONSTANTS.EXTERNAL_LINK_WARNING;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const EXTERNAL_LINK_DISPLAY_MAX_LENGTH = EXTERNAL_LINK_WARNING_CONSTANTS.DISPLAY_MAX_LENGTH;
@@ -36,8 +38,8 @@ export class ExternalLinkWarningOverlay extends BaseOverlay {
      * 경고 팝업 크기를 화면 비율에 맞추어 조정합니다.
      */
     _onResize() {
-        this.width = this.UIWW * OVERLAY_LAYOUT_CONSTANTS.EXIT.WIDTH_UIWW_RATIO;
-        this.height = this.WH * OVERLAY_LAYOUT_CONSTANTS.EXIT.HEIGHT_WH_RATIO * EXTERNAL_LINK_WARNING_HEIGHT_MULTIPLIER;
+        this.width = this.UIWW * EXIT_LAYOUT_CONSTANTS.WIDTH_UIWW_RATIO;
+        this.height = this.WH * EXIT_LAYOUT_CONSTANTS.HEIGHT_WH_RATIO * EXTERNAL_LINK_WARNING_HEIGHT_MULTIPLIER;
     }
 
     /**
@@ -121,11 +123,7 @@ export class ExternalLinkWarningOverlay extends BaseOverlay {
             .icon("deny").buttonColor(ColorSchemes.Overlay.Button.Cancel)
             .item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_yes")).onClick(this._handleConfirm.bind(this));
 
-        if (getLangString("affirmative_icon") === "check") {
-            handler.icon("check").buttonColor(ColorSchemes.Overlay.Button.Confirm);
-        } else {
-            handler.icon("confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm);
-        }
+        applyOverlayConfirmButtonIcon(handler);
 
         handler.endGroup();
         const buildRes = handler.build();
