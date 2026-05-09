@@ -31,8 +31,8 @@ export class BaseScene {
     }
 
     /**
-         * 창 크기 변경 시 씬 구성요소의 크기를 재산정합니다. (오버라이드 필요)
-         */
+     * 창 크기 변경 시 씬 구성요소의 크기를 재산정합니다. (오버라이드 필요)
+     */
     resize() {
     }
 
@@ -50,6 +50,12 @@ export class BaseScene {
      */
     applySimulationCommands(commands = []) {
         void commands;
+    }
+
+    /**
+     * 씬이 보유한 리소스를 정리합니다. (오버라이드 선택)
+     */
+    destroy() {
     }
 
 }
