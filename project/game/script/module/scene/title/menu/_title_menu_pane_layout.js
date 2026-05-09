@@ -89,6 +89,7 @@ export function buildTitleMenuRightPaneLayout({
     });
     const cardPaneTop = verticalLayout.cardPaneTop + paneShiftY;
     const cardPaneBottom = cardPaneTop + cardPaneHeight;
+    const resolvedCardPaneHeight = Math.max(1, cardPaneBottom - cardPaneTop);
     const cardOffsetX = (paneLeft + sidePadding) - groupMinX;
     const cardOffsetY = (cardPaneTop + verticalPadding) - groupMinY;
     const utilityPaneLayout = _translateTitleMenuUtilityPaneLayout(
@@ -101,10 +102,11 @@ export function buildTitleMenuRightPaneLayout({
             x: paneLeft,
             y: cardPaneTop,
             w: paneWidth,
-            h: Math.max(1, cardPaneBottom - cardPaneTop),
-            radius: Math.max(
+            h: resolvedCardPaneHeight,
+            radius: clampNumber(
+                Math.min(paneWidth, resolvedCardPaneHeight) * 0.06,
                 18 * resolvedUiScale,
-                Math.min(paneWidth, Math.max(1, cardPaneBottom - cardPaneTop)) * 0.06
+                Infinity
             )
         },
         utilityPane: utilityPaneLayout.utilityPane,
@@ -173,7 +175,11 @@ function _buildFallbackTitleMenuRightPaneLayout({
             y: fallbackCardPaneTop,
             w: fallbackWidth,
             h: fallbackCardHeight,
-            radius: Math.max(18 * resolvedUiScale, Math.min(fallbackWidth, fallbackCardHeight) * 0.06)
+            radius: clampNumber(
+                Math.min(fallbackWidth, fallbackCardHeight) * 0.06,
+                18 * resolvedUiScale,
+                Infinity
+            )
         },
         utilityPane: fallbackUtilityLayout.utilityPane,
         cardOffsetX: 0,
@@ -290,12 +296,10 @@ function _buildTitleMenuUtilityPaneLayout({
         1,
         uiww * titleCardMenu.UTILITY_TILE_TARGET_SIZE_UIWW_RATIO * resolvedUiScale
     );
-    const baseTileSize = Math.max(
+    const baseTileSize = clampNumber(
+        (baseContentWidth - (tileGap * Math.max(0, entryCount - 1))) / entryCount,
         1,
-        Math.min(
-            targetTileSize,
-            (baseContentWidth - (tileGap * Math.max(0, entryCount - 1))) / entryCount
-        )
+        targetTileSize
     );
     const maxPaneWidth = Math.max(1, paneRight - uiOffsetX);
     const maxTileSize = Math.max(
@@ -307,7 +311,7 @@ function _buildTitleMenuUtilityPaneLayout({
         ) / entryCount
     );
     const preferredTileSize = Math.max(1, baseTileSize * titleCardMenu.UTILITY_TILE_SCALE);
-    const tileSize = Math.min(preferredTileSize, maxTileSize);
+    const tileSize = clampNumber(preferredTileSize, 1, maxTileSize);
     const utilityPaneWidth = (tileSize * entryCount)
         + (tileGap * Math.max(0, entryCount - 1))
         + (sidePadding * 2);
@@ -319,7 +323,11 @@ function _buildTitleMenuUtilityPaneLayout({
         y: paneTop,
         w: utilityPaneWidth,
         h: utilityPaneHeight,
-        radius: Math.max(18 * resolvedUiScale, Math.min(utilityPaneWidth, utilityPaneHeight) * 0.08)
+        radius: clampNumber(
+            Math.min(utilityPaneWidth, utilityPaneHeight) * 0.08,
+            18 * resolvedUiScale,
+            Infinity
+        )
     };
     const tileRowWidth = (tileSize * entryCount) + (tileGap * Math.max(0, entryCount - 1));
     const startX = utilityPaneX + sidePadding + Math.max(0, (contentWidth - tileRowWidth) * 0.5);
