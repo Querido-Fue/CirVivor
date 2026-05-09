@@ -36,12 +36,10 @@ export class UISystem {
     }
 
     /**
-         * 화면 크기 변경 시 커서 등 하위 시스템의 리사이즈를 호출합니다.
-         */
+     * 화면 크기 변경 시 커서 등 하위 시스템의 리사이즈를 호출합니다.
+     */
     resize() {
-        if (this.cursor && typeof this.cursor.resize === 'function') {
-            this.cursor.resize();
-        }
+        this.cursor?.resize?.();
     }
 
     /**
@@ -49,9 +47,7 @@ export class UISystem {
      * @param {string} languageKey - 적용할 언어 키입니다.
      */
     setLanguage(languageKey) {
-        if (this.languageHandler && typeof this.languageHandler.setLanguage === 'function') {
-            this.languageHandler.setLanguage(languageKey);
-        }
+        this.languageHandler?.setLanguage?.(languageKey);
     }
 
     /**
@@ -68,9 +64,7 @@ export class UISystem {
      * @param {boolean} isVisible - 커서 표시 여부입니다.
      */
     setCursorVisible(isVisible) {
-        if (this.cursor && typeof this.cursor.setVisible === 'function') {
-            this.cursor.setVisible(isVisible);
-        }
+        this.cursor?.setVisible?.(isVisible);
     }
 }
 
@@ -81,7 +75,7 @@ export class UISystem {
  */
 export const getLangString = (key) => {
     return uiSystemInstance.languageHandler.getString(key);
-}
+};
 
 /**
  * 현재 프레임에 툴팁 표시를 요청합니다.
@@ -89,14 +83,14 @@ export const getLangString = (key) => {
  */
 export const requestTooltip = (content) => {
     uiSystemInstance?.tooltip?.request(content);
-}
+};
 
 /**
  * 현재 툴팁 요청을 초기화합니다.
  */
 export const clearTooltip = () => {
     uiSystemInstance?.tooltip?.clear();
-}
+};
 
 /**
  * 문자열 기반 UI 상수 데이터를 실제 값으로 변환합니다.
@@ -106,4 +100,4 @@ export const clearTooltip = () => {
  */
 export const parseUIData = (data, uiScale = 1) => {
     return parseUIDataWithPositioning(data, uiScale);
-}
+};
