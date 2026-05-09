@@ -7,10 +7,6 @@ import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
 import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
-import {
-    TITLE_MENU_CARD_REVEAL_ORDER,
-    TITLE_MENU_SECONDARY_ENTRIES
-} from './menu/_title_menu_config.js';
 import { renderTitleMenuGlassPanel } from './menu/_title_menu_glass_panel_render.js';
 import {
     loadTitleMenuIconSources,
@@ -57,7 +53,10 @@ import {
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const TITLE_MENU_DATA = getData('TITLE_MENU_DATA');
 const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
+const TITLE_MENU_CARD_REVEAL_ORDER = TITLE_MENU_DATA.CARD_REVEAL_ORDER;
+const TITLE_MENU_SECONDARY_ENTRIES = TITLE_MENU_DATA.SECONDARY_ENTRIES;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 
 /**
