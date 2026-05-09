@@ -1,5 +1,9 @@
-import { BaseUIElement } from "./_base_element.js";
-import { render, shadowOn, shadowOff } from "display/display_system.js";
+import { BaseUIElement } from './_base_element.js';
+import { render, shadowOn, shadowOff } from 'display/display_system.js';
+import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
+
+const DEFAULT_LINE_WIDTH = 1;
+const DEFAULT_LINE_COLOR = '#FFFFFF';
 
 /**
  * @class LineElement
@@ -24,35 +28,46 @@ export class LineElement extends BaseUIElement {
     }
 
     /**
-         * @override
-         */
+     * 라인 요소 상태를 초기화합니다.
+     * @param {object} properties - 라인 속성입니다.
+     * @override
+     */
     init(properties) {
         super.init(properties);
         if (!properties) return;
-        this.x1 = properties.x1 || 0;
-        this.y1 = properties.y1 || 0;
-        this.x2 = properties.x2 || 0;
-        this.y2 = properties.y2 || 0;
-        this.width = properties.width || 1;
-        this.color = properties.color;
+        this.x1 = resolveFiniteNumber(Number(properties.x1), 0);
+        this.y1 = resolveFiniteNumber(Number(properties.y1), 0);
+        this.x2 = resolveFiniteNumber(Number(properties.x2), 0);
+        this.y2 = resolveFiniteNumber(Number(properties.y2), 0);
+        this.width = clampFiniteNumber(Number(properties.width), 0, Infinity, DEFAULT_LINE_WIDTH);
+        this.color = properties.color || DEFAULT_LINE_COLOR;
     }
 
     /**
-         * @override
-         */
+     * 라인 요소를 기본 상태로 되돌립니다.
+     * @override
+     */
     reset() {
         super.reset();
+        this.x1 = 0;
+        this.y1 = 0;
+        this.x2 = 0;
+        this.y2 = 0;
+        this.width = DEFAULT_LINE_WIDTH;
+        this.color = DEFAULT_LINE_COLOR;
     }
 
     /**
-         * @override
-         */
+     * 라인 요소 상태를 갱신합니다.
+     * @override
+     */
     update() {
     }
 
     /**
-         * @override
-         */
+     * 라인 요소를 렌더링합니다.
+     * @override
+     */
     draw() {
         if (!this.visible) return;
 
