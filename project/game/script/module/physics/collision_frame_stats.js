@@ -1,47 +1,8 @@
-const COLLISION_BASE_STAT_FIELDS = Object.freeze([
-    'collisionCheckCount',
-    'aabbPassCount',
-    'aabbRejectCount',
-    'circlePassCount',
-    'circleRejectCount',
-    'partChecks'
-]);
+import { getData } from 'data/data_handler.js';
 
-const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
-    'enemyTotalMs',
-    'enemyBodyBuildMs',
-    'playerBodyBuildMs',
-    'wallBodyBuildMs',
-    'enemyPositionSolveMs',
-    'enemyStabilizeMs',
-    'enemyNonPositionMs',
-    'solveGridMs',
-    'solvePairScanMs',
-    'solveCandidateBuildMs',
-    'solvePairProcessMs',
-    'solveNarrowphaseMs',
-    'projectileTotalMs',
-    'projectileEnemyBodyBuildMs',
-    'projectileGridBuildMs',
-    'projectileScanMs',
-    'projectileCandidateQueryMs',
-    'projectileNarrowphaseMs',
-    'contactTotalMs',
-    'contactBodyBuildMs',
-    'contactGridBuildMs',
-    'contactPairScanMs',
-    'solveBucketPairCount',
-    'solveCandidatePairCount',
-    'solveDuplicatePairSkipCount',
-    'solveRuleRejectCount',
-    'solveAabbPassCount',
-    'solveCirclePassCount',
-    'solveResolvedPairCount',
-    'solveSoACirclePairCount',
-    'solveObjectNarrowphasePairCount',
-    'solveBudgetSkipCount',
-    'solveLargePopulationMode'
-]);
+const COLLISION_FRAME_STATS = getData('COLLISION_CONSTANTS').FRAME_STATS;
+const COLLISION_BASE_STAT_FIELDS = COLLISION_FRAME_STATS.BASE_FIELDS;
+const COLLISION_PROFILE_STAT_FIELDS = COLLISION_FRAME_STATS.PROFILE_FIELDS;
 
 /**
  * 충돌 프레임 통계 기본 객체를 생성합니다.

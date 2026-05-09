@@ -3,6 +3,149 @@
  */
 export const COLLISION_CONSTANTS = Object.freeze({
     EPSILON: 1e-6,
+    RULES: Object.freeze({
+        NONE: Object.freeze({
+            check: false,
+            resolve: false,
+            movableA: null,
+            movableB: null,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        DYNAMIC_RESOLVE: Object.freeze({
+            check: true,
+            resolve: true,
+            movableA: null,
+            movableB: null,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        ENEMY_PLAYER: Object.freeze({
+            check: true,
+            resolve: true,
+            movableA: true,
+            movableB: false,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        PLAYER_ENEMY: Object.freeze({
+            check: true,
+            resolve: true,
+            movableA: false,
+            movableB: true,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        PROJECTILE_ENEMY: Object.freeze({
+            check: true,
+            resolve: false,
+            movableA: null,
+            movableB: null,
+            oneShotByProjectile: true,
+            applyImpactRotation: true
+        }),
+        PLAYER_PROJECTILE: Object.freeze({
+            check: true,
+            resolve: false,
+            movableA: null,
+            movableB: null,
+            oneShotByProjectile: true,
+            applyImpactRotation: false
+        }),
+        PLAYER_ITEM: Object.freeze({
+            check: true,
+            resolve: false,
+            movableA: null,
+            movableB: null,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        PROJECTILE_PROJECTILE: Object.freeze({
+            check: true,
+            resolve: false,
+            movableA: null,
+            movableB: null,
+            oneShotByProjectile: true,
+            applyImpactRotation: false
+        }),
+        WALL_PROJECTILE: Object.freeze({
+            check: true,
+            resolve: false,
+            movableA: false,
+            movableB: true,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        PROJECTILE_WALL: Object.freeze({
+            check: true,
+            resolve: false,
+            movableA: true,
+            movableB: false,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        WALL_OTHER: Object.freeze({
+            check: true,
+            resolve: true,
+            movableA: false,
+            movableB: true,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        }),
+        OTHER_WALL: Object.freeze({
+            check: true,
+            resolve: true,
+            movableA: true,
+            movableB: false,
+            oneShotByProjectile: false,
+            applyImpactRotation: false
+        })
+    }),
+    FRAME_STATS: Object.freeze({
+        BASE_FIELDS: Object.freeze([
+            'collisionCheckCount',
+            'aabbPassCount',
+            'aabbRejectCount',
+            'circlePassCount',
+            'circleRejectCount',
+            'partChecks'
+        ]),
+        PROFILE_FIELDS: Object.freeze([
+            'enemyTotalMs',
+            'enemyBodyBuildMs',
+            'playerBodyBuildMs',
+            'wallBodyBuildMs',
+            'enemyPositionSolveMs',
+            'enemyStabilizeMs',
+            'enemyNonPositionMs',
+            'solveGridMs',
+            'solvePairScanMs',
+            'solveCandidateBuildMs',
+            'solvePairProcessMs',
+            'solveNarrowphaseMs',
+            'projectileTotalMs',
+            'projectileEnemyBodyBuildMs',
+            'projectileGridBuildMs',
+            'projectileScanMs',
+            'projectileCandidateQueryMs',
+            'projectileNarrowphaseMs',
+            'contactTotalMs',
+            'contactBodyBuildMs',
+            'contactGridBuildMs',
+            'contactPairScanMs',
+            'solveBucketPairCount',
+            'solveCandidatePairCount',
+            'solveDuplicatePairSkipCount',
+            'solveRuleRejectCount',
+            'solveAabbPassCount',
+            'solveCirclePassCount',
+            'solveResolvedPairCount',
+            'solveSoACirclePairCount',
+            'solveObjectNarrowphasePairCount',
+            'solveBudgetSkipCount',
+            'solveLargePopulationMode'
+        ])
+    }),
     GRID: Object.freeze({
         CELL_KEY_OFFSET: 4096,
         CELL_KEY_STRIDE: 8192,

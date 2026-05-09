@@ -1,3 +1,5 @@
+import { getData } from 'data/data_handler.js';
+
 /**
  * @typedef {object} CollisionRule
  * @property {boolean} check - 충돌 판정 수행 여부입니다.
@@ -8,102 +10,19 @@
  * @property {boolean} applyImpactRotation - 회전 충격 적용 여부입니다.
  */
 
-const COLLISION_RULE_NONE = Object.freeze({
-    check: false,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-export const COLLISION_RULE_DYNAMIC_RESOLVE = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_ENEMY_PLAYER = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: true,
-    movableB: false,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PLAYER_ENEMY = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: false,
-    movableB: true,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PROJECTILE_ENEMY = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: true,
-    applyImpactRotation: true
-});
-const COLLISION_RULE_PLAYER_PROJECTILE = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: true,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PLAYER_ITEM = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PROJECTILE_PROJECTILE = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: null,
-    movableB: null,
-    oneShotByProjectile: true,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_WALL_PROJECTILE = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: false,
-    movableB: true,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_PROJECTILE_WALL = Object.freeze({
-    check: true,
-    resolve: false,
-    movableA: true,
-    movableB: false,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_WALL_OTHER = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: false,
-    movableB: true,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
-const COLLISION_RULE_OTHER_WALL = Object.freeze({
-    check: true,
-    resolve: true,
-    movableA: true,
-    movableB: false,
-    oneShotByProjectile: false,
-    applyImpactRotation: false
-});
+const COLLISION_RULES = getData('COLLISION_CONSTANTS').RULES;
+const COLLISION_RULE_NONE = COLLISION_RULES.NONE;
+export const COLLISION_RULE_DYNAMIC_RESOLVE = COLLISION_RULES.DYNAMIC_RESOLVE;
+const COLLISION_RULE_ENEMY_PLAYER = COLLISION_RULES.ENEMY_PLAYER;
+const COLLISION_RULE_PLAYER_ENEMY = COLLISION_RULES.PLAYER_ENEMY;
+const COLLISION_RULE_PROJECTILE_ENEMY = COLLISION_RULES.PROJECTILE_ENEMY;
+const COLLISION_RULE_PLAYER_PROJECTILE = COLLISION_RULES.PLAYER_PROJECTILE;
+const COLLISION_RULE_PLAYER_ITEM = COLLISION_RULES.PLAYER_ITEM;
+const COLLISION_RULE_PROJECTILE_PROJECTILE = COLLISION_RULES.PROJECTILE_PROJECTILE;
+const COLLISION_RULE_WALL_PROJECTILE = COLLISION_RULES.WALL_PROJECTILE;
+const COLLISION_RULE_PROJECTILE_WALL = COLLISION_RULES.PROJECTILE_WALL;
+const COLLISION_RULE_WALL_OTHER = COLLISION_RULES.WALL_OTHER;
+const COLLISION_RULE_OTHER_WALL = COLLISION_RULES.OTHER_WALL;
 
 /**
  * 충돌 body kind 조합에 맞는 처리 규칙을 반환합니다.
