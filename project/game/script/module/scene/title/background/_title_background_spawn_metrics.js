@@ -1,4 +1,4 @@
-import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
+import { clampFiniteNumber, clampNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 /**
  * 계층별 활성 타이틀 적 수를 반환합니다.
@@ -112,12 +112,7 @@ export function getTitleInitialBurstTargetCount(titleEnemiesConfig) {
  * @returns {number} 초기 버스트 지속 시간(초)입니다.
  */
 export function getTitleInitialBurstDurationSeconds(titleEnemiesConfig) {
-    const burstDuration = titleEnemiesConfig.INITIAL_BURST_DURATION_SECONDS;
-    if (Number.isFinite(burstDuration) && burstDuration > 0) {
-        return burstDuration;
-    }
-
-    return 0;
+    return clampFiniteNumber(titleEnemiesConfig.INITIAL_BURST_DURATION_SECONDS, 0, Infinity, 0);
 }
 
 /**
@@ -126,12 +121,7 @@ export function getTitleInitialBurstDurationSeconds(titleEnemiesConfig) {
  * @returns {number} 충돌 유예 시간(초)입니다.
  */
 export function getTitleInitialBurstCollisionGraceSeconds(titleEnemiesConfig) {
-    const collisionGraceSeconds = titleEnemiesConfig.INITIAL_BURST_COLLISION_GRACE_SECONDS;
-    if (Number.isFinite(collisionGraceSeconds) && collisionGraceSeconds > 0) {
-        return collisionGraceSeconds;
-    }
-
-    return 0;
+    return clampFiniteNumber(titleEnemiesConfig.INITIAL_BURST_COLLISION_GRACE_SECONDS, 0, Infinity, 0);
 }
 
 /**
@@ -140,8 +130,13 @@ export function getTitleInitialBurstCollisionGraceSeconds(titleEnemiesConfig) {
  * @returns {number} 한 틱당 최대 스폰 수입니다.
  */
 export function getTitleInitialBurstMaxSpawnPerStep(titleEnemiesConfig) {
-    const maxSpawnPerStep = titleEnemiesConfig.INITIAL_BURST_MAX_SPAWN_PER_STEP;
-    if (Number.isFinite(maxSpawnPerStep) && maxSpawnPerStep > 0) {
+    const maxSpawnPerStep = clampFiniteNumber(
+        titleEnemiesConfig.INITIAL_BURST_MAX_SPAWN_PER_STEP,
+        0,
+        Infinity,
+        0
+    );
+    if (maxSpawnPerStep > 0) {
         return Math.max(1, Math.floor(maxSpawnPerStep));
     }
 
@@ -158,11 +153,9 @@ export function getTitleInitialBurstMaxSpawnPerStep(titleEnemiesConfig) {
 export function getTitleLayerAverageAxisSpeedPx(layerProfile, uiww, titleEnemiesConfig) {
     const minRatio = titleEnemiesConfig.AXIS_SPEED_MIN_RATIO;
     const maxRatio = titleEnemiesConfig.AXIS_SPEED_MAX_RATIO;
-    const leftMultiplier = Number.isFinite(titleEnemiesConfig.AXIS_SPEED_LEFT_MULTIPLIER)
-        ? titleEnemiesConfig.AXIS_SPEED_LEFT_MULTIPLIER
-        : 1;
+    const leftMultiplier = resolveFiniteNumber(titleEnemiesConfig.AXIS_SPEED_LEFT_MULTIPLIER, 1);
     const averageRatio = (minRatio + maxRatio) * 0.5;
-    const speedScale = Number.isFinite(layerProfile.SpeedScale) ? layerProfile.SpeedScale : 1;
+    const speedScale = resolveFiniteNumber(layerProfile.SpeedScale, 1);
     const averageSpeedPx = uiww * averageRatio * speedScale * leftMultiplier;
     return clampFiniteNumber(averageSpeedPx, 0, Infinity, 0);
 }
