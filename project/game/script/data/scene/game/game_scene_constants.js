@@ -42,7 +42,19 @@ export const GAME_SCENE_CONSTANTS = Object.freeze({
         PROJECTILE_MIN_TRAVEL_SECONDS: 0.016,
         PROJECTILE_BURST_COUNT: 10,
         PROJECTILE_WEIGHT: 0.07,
-        PROJECTILE_IMPACT_FORCE: 1
+        PROJECTILE_IMPACT_FORCE: 1,
+        COLOR_FALLBACKS: Object.freeze({
+            StaticWall: 'rgba(120, 136, 156, 0.9)',
+            BoxWall: 'rgba(182, 201, 214, 0.9)',
+            Player: '#4fa3ff',
+            Projectile: '#ffc857',
+            EnemyFill: '#ff6c6c',
+            HexaBackdropFallback: 'rgb(255, 212, 184)',
+            ButtonIdle: 'rgba(26, 32, 40, 0.74)',
+            ButtonHover: 'rgba(26, 32, 40, 0.86)',
+            ButtonStroke: 'rgba(255, 255, 255, 0.55)',
+            ButtonText: '#f5f8ff'
+        })
     }),
     PROJECTILE: Object.freeze({
         CULL_MARGIN_RATIO: 0.2

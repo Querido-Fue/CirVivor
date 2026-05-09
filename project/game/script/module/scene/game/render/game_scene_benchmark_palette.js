@@ -1,18 +1,8 @@
+import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 
-const BENCHMARK_COLOR_FALLBACKS = Object.freeze({
-    StaticWall: 'rgba(120, 136, 156, 0.9)',
-    BoxWall: 'rgba(182, 201, 214, 0.9)',
-    Player: '#4fa3ff',
-    Projectile: '#ffc857',
-    EnemyFill: '#ff6c6c',
-    HexaBackdropFallback: 'rgb(255, 212, 184)',
-    ButtonIdle: 'rgba(26, 32, 40, 0.74)',
-    ButtonHover: 'rgba(26, 32, 40, 0.86)',
-    ButtonStroke: 'rgba(255, 255, 255, 0.55)',
-    ButtonText: '#f5f8ff'
-});
+const BENCHMARK_COLOR_FALLBACKS = getData('GAME_SCENE_CONSTANTS').BENCHMARK.COLOR_FALLBACKS;
 
 /**
  * 벤치마크 씬 전용 테마 색상을 반환합니다.
