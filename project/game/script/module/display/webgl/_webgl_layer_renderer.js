@@ -3,6 +3,15 @@ import { OverlayEffectRenderer } from './_overlay_effect_renderer.js';
 import { WebGLBatch } from './_webgl_batch.js';
 
 /**
+ * renderer가 별도 resize 계약을 가진 WebGL 레이어 renderer인지 확인합니다.
+ * @param {object|null|undefined} renderer - 확인할 renderer입니다.
+ * @returns {boolean} resize 계약을 가진 renderer 여부입니다.
+ */
+function _isResizableWebGLLayerRenderer(renderer) {
+    return renderer instanceof OverlayEffectRenderer || renderer instanceof EffectRenderer;
+}
+
+/**
  * WebGL 레이어 모드에 맞는 renderer를 생성합니다.
  * @param {'batch'|'overlay-effect'|'effect'} mode - 레이어 렌더링 모드입니다.
  * @param {WebGLRenderingContext} gl - 대상 WebGL 컨텍스트입니다.
@@ -55,7 +64,7 @@ export function beginWebGLLayerFrame(renderer, mode, width, height) {
  * @param {number} height - 새 높이입니다.
  */
 export function resizeWebGLLayerRenderer(renderer, width, height) {
-    if (renderer instanceof OverlayEffectRenderer || renderer instanceof EffectRenderer) {
+    if (_isResizableWebGLLayerRenderer(renderer)) {
         renderer.resize(width, height);
     }
 }
@@ -71,7 +80,7 @@ export function initializeWebGLLayerRendererSize(renderer, width, height) {
         return;
     }
 
-    if (renderer instanceof OverlayEffectRenderer || renderer instanceof EffectRenderer) {
+    if (_isResizableWebGLLayerRenderer(renderer)) {
         renderer.resize(width, height);
         return;
     }
