@@ -1,5 +1,6 @@
 import { getSetting } from 'save/save_system.js';
 import { getData } from 'data/data_handler.js';
+import { clampNumber } from 'util/number_util.js';
 
 const SOUND_CONSTANTS = getData('SOUND_CONSTANTS');
 
@@ -142,7 +143,7 @@ export class SoundSystem {
         if (!Number.isFinite(parsed)) {
             return SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
         }
-        return Math.max(0, Math.min(SOUND_CONSTANTS.BGM.DEFAULT_VOLUME, parsed));
+        return clampNumber(parsed, 0, SOUND_CONSTANTS.BGM.DEFAULT_VOLUME);
     }
 
     /**

@@ -1,3 +1,4 @@
+import { clamp01, clampNumber } from 'util/number_util.js';
 import { AnimationBase } from './_animation_base.js';
 import { Easing } from './_easing.js';
 import { ANIMATION_STATE, OVERFLOW_TYPES } from './_constants.js';
@@ -94,7 +95,7 @@ export class PersistentAnimation extends AnimationBase {
 
         const wasAtEnd = this.progress >= 1;
         if (totalProgressDelta !== 0) this.progress += totalProgressDelta;
-        this.progress = Math.max(0, Math.min(1, this.progress));
+        this.progress = clamp01(this.progress);
 
         let totalValue = 0;
         this.easings.forEach(type => {
@@ -108,7 +109,7 @@ export class PersistentAnimation extends AnimationBase {
         if (!hasOverflow) {
             const min = Math.min(this.startValue, this.endValue);
             const max = Math.max(this.startValue, this.endValue);
-            finalValue = Math.max(min, Math.min(max, finalValue));
+            finalValue = clampNumber(finalValue, min, max);
         }
 
         this.owner[this.variable] = finalValue;
