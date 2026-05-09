@@ -1,5 +1,5 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { colorUtil } from 'util/color_util.js';
+import { colorUtil, formatRgba } from 'util/color_util.js';
 
 /**
  * 타이틀 카드 연출에서 사용할 포인트 블루 색상입니다.
@@ -17,7 +17,7 @@ const TITLE_BENTO_ACCENT_RGB = Object.freeze({
  * @returns {string} rgba 색상 문자열
  */
 export function getBentoAccentColor(alpha) {
-    return `rgba(${TITLE_BENTO_ACCENT_RGB.r}, ${TITLE_BENTO_ACCENT_RGB.g}, ${TITLE_BENTO_ACCENT_RGB.b}, ${alpha})`;
+    return formatRgba(TITLE_BENTO_ACCENT_RGB.r, TITLE_BENTO_ACCENT_RGB.g, TITLE_BENTO_ACCENT_RGB.b, alpha);
 }
 
 /**

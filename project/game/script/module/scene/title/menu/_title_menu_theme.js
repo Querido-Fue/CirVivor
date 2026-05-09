@@ -1,5 +1,5 @@
 import { ColorSchemes, getCurrentThemeKey } from 'display/_theme_handler.js';
-import { colorUtil } from 'util/color_util.js';
+import { colorUtil, formatRgba } from 'util/color_util.js';
 
 /**
  * 메뉴 기본 전경색을 반환합니다.
@@ -94,10 +94,10 @@ export function toMenuRgba(color, alpha) {
         if (!fallback) {
             return 'transparent';
         }
-        return `rgba(${fallback.r}, ${fallback.g}, ${fallback.b}, ${safeAlpha})`;
+        return formatRgba(fallback.r, fallback.g, fallback.b, safeAlpha);
     }
 
-    return `rgba(${parsedColor.r}, ${parsedColor.g}, ${parsedColor.b}, ${safeAlpha})`;
+    return formatRgba(parsedColor.r, parsedColor.g, parsedColor.b, safeAlpha);
 }
 
 /**

@@ -1,5 +1,5 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { colorUtil } from 'util/color_util.js';
+import { colorUtil, formatRgba } from 'util/color_util.js';
 
 /**
  * 로딩 화면 텍스트에 사용할 기본 색상을 반환합니다.
@@ -66,8 +66,8 @@ export function toLoadingRgba(color, alpha, fallbackColor = getLoadingAccentColo
         if (!fallback) {
             return 'transparent';
         }
-        return `rgba(${fallback.r}, ${fallback.g}, ${fallback.b}, ${safeAlpha})`;
+        return formatRgba(fallback.r, fallback.g, fallback.b, safeAlpha);
     }
 
-    return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${safeAlpha})`;
+    return formatRgba(parsed.r, parsed.g, parsed.b, safeAlpha);
 }
