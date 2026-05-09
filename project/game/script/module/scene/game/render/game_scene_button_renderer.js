@@ -2,19 +2,11 @@ import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
 import { getSimulationMouseInput } from 'simulation/simulation_runtime.js';
 import { isPointInRect } from 'util/geometry_util.js';
+import { clamp01 } from 'util/number_util.js';
 import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 
 const GAME_SCENE_BUTTON_CONSTANTS = getData('GAME_SCENE_CONSTANTS').BUTTON;
 const BUTTON_RADIUS = GAME_SCENE_BUTTON_CONSTANTS.RADIUS;
-
-/**
- * 값을 0에서 1 사이로 제한합니다.
- * @param {number} value - 제한할 값입니다.
- * @returns {number} 제한된 값입니다.
- */
-function clamp01(value) {
-    return Math.max(0, Math.min(1, value));
-}
 
 /**
  * 벤치마크 씬 버튼 목록을 렌더합니다.
