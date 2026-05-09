@@ -1,6 +1,13 @@
 import { getScaleRatio, getCanvasOffset } from 'display/display_system.js';
 import { DebugModeToggleHandler } from './_debug_mode_toggle_handler.js';
 import { MouseButtonStateMachine } from './_mouse_button_state_machine.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
+
+/**
+ * 마우스 입력의 기본 포커스 레이어 목록입니다.
+ * @type {ReadonlyArray<string>}
+ */
+const DEFAULT_MOUSE_FOCUS_LIST = Object.freeze(['ui', 'object']);
 
 /**
  * @class MouseInputHandler
@@ -13,31 +20,31 @@ export class MouseInputHandler {
         this.buttonStateMachine = new MouseButtonStateMachine(new DebugModeToggleHandler());
         this.mouseButtons = this.buttonStateMachine.mouseButtons;
 
-        this.focusList = ["ui", "object"]; // 기본 포커스
+        this.focusList = [...DEFAULT_MOUSE_FOCUS_LIST];
 
-        window.addEventListener("mousemove", (e) => {
+        window.addEventListener('mousemove', (e) => {
             this.#updateMousePosition(e);
         });
-        document.addEventListener("mousemove", (e) => {
+        document.addEventListener('mousemove', (e) => {
             this.#updateMousePosition(e);
         });
-        window.addEventListener("mousedown", (e) => {
+        window.addEventListener('mousedown', (e) => {
             this.#updateMousePosition(e);
             this.buttonStateMachine.queueButtonStateChange(e.button, 'press', e.timeStamp);
         });
-        window.addEventListener("mouseup", (e) => {
+        window.addEventListener('mouseup', (e) => {
             this.#updateMousePosition(e);
             this.buttonStateMachine.queueButtonStateChange(e.button, 'release', e.timeStamp);
         });
-        window.addEventListener("blur", () => {
+        window.addEventListener('blur', () => {
             this.buttonStateMachine.setAllButtonsInactive();
         });
-        document.addEventListener("visibilitychange", () => {
+        document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 this.buttonStateMachine.setAllButtonsInactive();
             }
         });
-        document.addEventListener("mouseleave", () => {
+        document.addEventListener('mouseleave', () => {
             if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
                 return;
             }
@@ -51,12 +58,15 @@ export class MouseInputHandler {
      * @param {MouseEvent} event - 원본 마우스 이벤트
      */
     #updateMousePosition(event) {
-        const scale = getScaleRatio();
+        const scale = resolveFiniteNumber(Number(getScaleRatio()), 1);
         const offset = getCanvasOffset();
-        this.mousePos.x = (event.clientX - offset.x) * scale;
-        this.mousePos.y = (event.clientY - offset.y) * scale;
+        const offsetX = resolveFiniteNumber(Number(offset?.x), 0);
+        const offsetY = resolveFiniteNumber(Number(offset?.y), 0);
+        const clientX = resolveFiniteNumber(Number(event?.clientX), offsetX);
+        const clientY = resolveFiniteNumber(Number(event?.clientY), offsetY);
+        this.mousePos.x = (clientX - offsetX) * scale;
+        this.mousePos.y = (clientY - offsetY) * scale;
     }
-
 
     /**
      * 입력 상태를 업데이트합니다. (주로 마우스 클릭 상태 처리)
@@ -86,17 +96,17 @@ export class MouseInputHandler {
      */
     getMouseInput(key) {
         switch (key) {
-            case "pos":
+            case 'pos':
                 return this.mousePos;
-            case "y":
+            case 'y':
                 return this.mousePos.y;
-            case "x":
+            case 'x':
                 return this.mousePos.x;
-            case "left":
+            case 'left':
                 return this.buttonStateMachine.getButtonState('left');
-            case "right":
+            case 'right':
                 return this.buttonStateMachine.getButtonState('right');
-            case "middle":
+            case 'middle':
                 return this.buttonStateMachine.getButtonState('middle');
         }
         return null;
@@ -130,7 +140,7 @@ export class MouseInputHandler {
      * @param {string} focus - 포커스 레이어
      */
     setFocus(focus) {
-        this.focusList = Array.isArray(focus) ? focus : [focus];
+        this.focusList = Array.isArray(focus) ? [...focus] : [focus];
     }
 
     /**
@@ -161,7 +171,7 @@ export class MouseInputHandler {
      * @returns {string} 포커스 레이어 이름
      */
     get focus() {
-        if (this.focusList.length === 0) return "none";
+        if (this.focusList.length === 0) return 'none';
         return this.focusList[this.focusList.length - 1];
     }
 }
