@@ -4,12 +4,7 @@ import { colorUtil } from 'util/color_util.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const DEFAULT_TITLE_SHIELD_CONFIG = TITLE_CONSTANTS.TITLE_SHIELD || Object.freeze({});
-const DEFAULT_MAGNETIC_SHIELD_COLORS = Object.freeze({
-    shadow: Object.freeze([0.07, 0.04, 0.25]),
-    low: Object.freeze([0.60, 0.36, 0.98]),
-    high: Object.freeze([0.70, 0.93, 1.0]),
-    highlight: Object.freeze([0.96, 0.995, 1.0])
-});
+const DEFAULT_MAGNETIC_SHIELD_COLORS = DEFAULT_TITLE_SHIELD_CONFIG.MAGNETIC_SHIELD_COLORS;
 const THEME_SHIELD_PATHS = Object.freeze({
     shadow: Object.freeze(['Title', 'Shield', 'Shadow']),
     low: Object.freeze(['Title', 'Shield', 'Low']),

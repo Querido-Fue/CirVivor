@@ -207,7 +207,13 @@ export const TITLE_CONSTANTS = Object.freeze({
         ANGULAR_WIDTH_SCALE: 1.15,
         IMPACT_INTENSITY_MIN: 0.2,
         IMPACT_INTENSITY_MAX: 0.52,
-        IMPACT_SPEED_REFERENCE_PX: 120
+        IMPACT_SPEED_REFERENCE_PX: 120,
+        MAGNETIC_SHIELD_COLORS: Object.freeze({
+            shadow: Object.freeze([0.07, 0.04, 0.25]),
+            low: Object.freeze([0.60, 0.36, 0.98]),
+            high: Object.freeze([0.70, 0.93, 1.0]),
+            highlight: Object.freeze([0.96, 0.995, 1.0])
+        })
     }),
     TITLE_TRANSITION: Object.freeze({
         ENEMY_FADE_DURATION: 0.8,
