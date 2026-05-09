@@ -73,6 +73,7 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
     uniform float u_alpha;
     uniform float u_glowStrength;
     uniform float u_glassStrength;
+    uniform float u_brightnessBoost;
     uniform sampler2D u_backdropBlurTexture;
     uniform float u_hasBackdropBlurTexture;
     uniform float u_bodyRadiusExpandOutlineRatio;
@@ -144,6 +145,10 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
             * 0.12
             * u_glassStrength;
         vec3 fillColor = bodyColor + (u_highlightColor * (broadTopSheen + compactHighlight + edgeGlint));
+        fillColor = min(
+            vec3(1.0),
+            (fillColor * (1.0 + saturate(u_brightnessBoost))) + (u_highlightColor * saturate(u_brightnessBoost) * 0.18)
+        );
         vec2 screenUv = gl_FragCoord.xy / max(u_resolution, vec2(1.0));
         vec2 refractionOffset = normalized * (vec2(u_backdropRefractionStrength) / max(u_resolution, vec2(1.0)));
         vec3 backdropBlurColor = texture2D(u_backdropBlurTexture, screenUv + refractionOffset).rgb;

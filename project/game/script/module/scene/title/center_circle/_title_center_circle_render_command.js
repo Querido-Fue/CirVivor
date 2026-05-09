@@ -51,6 +51,7 @@ export function buildTitleCenterCircleRenderCommand({
         alpha: _resolveShaderNumber(shaderConfig.ALPHA, 1),
         glowStrength,
         glassStrength: _resolveShaderNumber(shaderConfig.GLASS_STRENGTH, 0.72),
+        brightnessBoost: _resolveShaderNumber(shaderConfig.BRIGHTNESS_BOOST, 0.08),
         bodyRadiusExpandOutlineRatio: _resolveShaderNumber(shaderConfig.BODY_RADIUS_EXPAND_OUTLINE_RATIO, 0.38),
         backdropBlur: _resolveShaderNumber(shaderConfig.BACKDROP_BLUR, 0.1),
         backdropBlurStrength: _resolveShaderNumber(shaderConfig.BACKDROP_BLUR_STRENGTH, 0.16),

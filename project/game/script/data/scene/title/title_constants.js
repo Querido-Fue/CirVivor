@@ -156,6 +156,7 @@ export const TITLE_CONSTANTS = Object.freeze({
             ALPHA: 0.92,
             GLOW_STRENGTH: 0.12,
             GLASS_STRENGTH: 0.62,
+            BRIGHTNESS_BOOST: 0.08,
             GLOW_COMPENSATION_STRENGTH_SCALE: 0.08,
             BODY_RADIUS_EXPAND_OUTLINE_RATIO: 0.58,
             BACKDROP_BLUR: 6.5,

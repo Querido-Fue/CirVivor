@@ -122,6 +122,10 @@ export class TitleLoadingCircleEffectPass {
             this.programInfo.uniforms.u_glassStrength,
             Number.isFinite(command.glassStrength) ? Math.max(0, command.glassStrength) : 0.72
         );
+        gl.uniform1f(
+            this.programInfo.uniforms.u_brightnessBoost,
+            Number.isFinite(command.brightnessBoost) ? Math.max(0, command.brightnessBoost) : 0.08
+        );
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, blurTexture || this.#getEmptyTexture());
         gl.uniform1i(this.programInfo.uniforms.u_backdropBlurTexture, 0);
@@ -234,6 +238,7 @@ export class TitleLoadingCircleEffectPass {
                 u_alpha: gl.getUniformLocation(program, 'u_alpha'),
                 u_glowStrength: gl.getUniformLocation(program, 'u_glowStrength'),
                 u_glassStrength: gl.getUniformLocation(program, 'u_glassStrength'),
+                u_brightnessBoost: gl.getUniformLocation(program, 'u_brightnessBoost'),
                 u_backdropBlurTexture: gl.getUniformLocation(program, 'u_backdropBlurTexture'),
                 u_hasBackdropBlurTexture: gl.getUniformLocation(program, 'u_hasBackdropBlurTexture'),
                 u_bodyRadiusExpandOutlineRatio: gl.getUniformLocation(program, 'u_bodyRadiusExpandOutlineRatio'),

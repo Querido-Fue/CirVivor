@@ -1,4 +1,3 @@
-import { enemyAI } from '../object/enemy/ai/_enemy_ai.js';
 import { PhysicsSystem } from '../physics/physics_system.js';
 import { getSimulationSetting } from './simulation_runtime.js';
 import { GAME_SCENE_COMMAND_TYPES } from './game_scene_simulation_protocol.js';
@@ -46,11 +45,6 @@ import {
     mergeShadowProjectileStates
 } from './game_scene_shadow_state_merge.js';
 import {
-    cloneShadowEnemyAIStateForWorkerTransfer,
-    createShadowEnemyAIPlayerSummary,
-    createShadowEnemyAIWorkerEnemySummary
-} from './game_scene_shadow_enemy_ai_worker_payload.js';
-import {
     cullAuthorityShadowEnemies,
     cullAuthorityShadowProjectiles,
     updateAuthorityPresentationState
@@ -71,147 +65,21 @@ import {
 import {
     createShadowEnemySimulationActor,
     createShadowProjectileSimulationActor,
-    getShadowEnemyMetadata,
-    getShadowEnemyRenderHeight,
     markShadowEnemyTopologyDirty,
     markShadowPhysicsWallsDirty,
     reconcileGameSceneShadowMetadata,
     shadowGameSceneMetadata,
     syncShadowActiveEnemyIds
 } from './game_scene_shadow_metadata.js';
+import {
+    applyRemoteEnemyAIResult,
+    isSimulationWorkerAuthorityModeEnabled,
+    requestAuthorityShadowEnemyAIBatch,
+    resolveGameSceneAI,
+    warmupAuthorityEnemyAIWorkers
+} from './game_scene_shadow_authority_ai.js';
 
-const SIMULATION_WORKER_AUTHORITY_SETTING_KEY = 'simulationWorkerAuthorityMode';
-const GAME_SCENE_AI_BY_ID = Object.freeze({
-    enemyAI,
-    tempAI: enemyAI
-});
 const shadowPhysicsSystem = new PhysicsSystem();
-
-/**
- * 워커 권한 시뮬레이션 사용 여부를 반환합니다.
- * @returns {boolean}
- */
-function isSimulationWorkerAuthorityModeEnabled() {
-    return getSimulationSetting(SIMULATION_WORKER_AUTHORITY_SETTING_KEY, false) === true;
-}
-
-/**
- * 권한 모드 게임 씬 진입 시 적 AI 워커 풀을 미리 시작합니다.
- * @returns {boolean} 워커 시작 요청 성공 여부입니다.
- */
-function warmupAuthorityEnemyAIWorkers() {
-    if (!isSimulationWorkerAuthorityModeEnabled()) {
-        return false;
-    }
-
-    const coordinator = shadowGameSceneMetadata.enemyAIWorkerCoordinator;
-    if (!coordinator || typeof coordinator.ensureStarted !== 'function') {
-        return false;
-    }
-
-    return coordinator.ensureStarted();
-}
-
-/**
- * 현재 타입에 대응하는 AI 구현을 반환합니다.
- * @param {string|null|undefined} aiId
- * @returns {object|null}
- */
-function resolveGameSceneAI(aiId) {
-    if (typeof aiId !== 'string' || aiId.length === 0) {
-        return null;
-    }
-
-    return GAME_SCENE_AI_BY_ID[aiId] || null;
-}
-
-/**
- * 적 AI 워커 결과를 현재 적 상태에 반영합니다.
- * @param {object|null|undefined} enemy
- * @param {object|null|undefined} simulationActor
- * @param {object|null|undefined} result
- */
-function applyRemoteEnemyAIResult(enemy, simulationActor, result) {
-    if (!enemy || typeof enemy !== 'object' || !result || typeof result !== 'object') {
-        return;
-    }
-
-    const actor = simulationActor ?? createShadowEnemySimulationActor(enemy);
-    const accX = Number.isFinite(result.acc?.x) ? result.acc.x : 0;
-    const accY = Number.isFinite(result.acc?.y) ? result.acc.y : 0;
-    enemy.acc.x = accX;
-    enemy.acc.y = accY;
-    enemy.accSpeed = Number.isFinite(result.accSpeed) ? result.accSpeed : enemy.accSpeed;
-    if (Number.isFinite(result.rotation)) {
-        enemy.rotation = result.rotation;
-    }
-    if (Number.isFinite(result.angularVelocity)) {
-        enemy.angularVelocity = result.angularVelocity;
-    }
-    if (Number.isFinite(result.angularDeceleration)) {
-        enemy.angularDeceleration = result.angularDeceleration;
-    }
-    if (actor && result.enemyAIState && typeof result.enemyAIState === 'object') {
-        actor._enemyAIState = cloneShadowEnemyAIStateForWorkerTransfer(result.enemyAIState);
-    }
-}
-
-/**
- * 현재 authority fixed step 기준 적 AI 원격 계산 배치를 요청합니다.
- * @param {object} nextState
- * @param {object} aiContext
- * @param {number} decisionGroupCount
- * @param {number} stepDelta
- */
-function requestAuthorityShadowEnemyAIBatch(nextState, aiContext, decisionGroupCount, stepDelta) {
-    const coordinator = shadowGameSceneMetadata.enemyAIWorkerCoordinator;
-    if (!coordinator || typeof coordinator.requestBatch !== 'function') {
-        return;
-    }
-
-    const enemySummaries = [];
-    for (let i = 0; i < nextState.enemies.length; i++) {
-        const enemy = nextState.enemies[i];
-        if (!enemy || enemy.active === false) {
-            continue;
-        }
-
-        const ai = resolveGameSceneAI(enemy.aiId);
-        if (!ai || ai.id !== 'enemyAI') {
-            continue;
-        }
-
-        const shouldUpdateDecision = getShadowEnemyDecisionGroup(enemy, i, decisionGroupCount) === aiContext.decisionGroup;
-        const metadata = getShadowEnemyMetadata(enemy.id);
-        const summary = createShadowEnemyAIWorkerEnemySummary({
-            enemy,
-            shouldUpdateDecision,
-            enemyAIState: metadata.enemyAIState,
-            renderHeightPx: getShadowEnemyRenderHeight(enemy)
-        });
-        if (summary) {
-            enemySummaries.push(summary);
-        }
-    }
-
-    if (enemySummaries.length === 0) {
-        return;
-    }
-
-    coordinator.requestBatch({
-        stepDelta,
-        decisionInterval: aiContext.decisionInterval,
-        decisionGroup: aiContext.decisionGroup,
-        wallsVersion: aiContext.wallsVersion,
-        enemyTopologyVersion: aiContext.enemyTopologyVersion,
-        enemyAIQualityProfile: aiContext.enemyAIQualityProfile,
-        player: createShadowEnemyAIPlayerSummary(aiContext.player),
-        walls: Array.isArray(aiContext.walls)
-            ? aiContext.walls.map((wall) => createShadowWallFromData(wall)).filter(Boolean)
-            : [],
-        enemies: enemySummaries
-    });
-}
 
 /**
  * 현재 씬 상태로부터 물리 벽 배열을 캐시해 반환합니다.
