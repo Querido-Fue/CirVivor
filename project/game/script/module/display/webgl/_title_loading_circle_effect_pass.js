@@ -10,11 +10,8 @@ import {
 } from './_shader_utils.js';
 
 const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
-const DEFAULT_BASE_COLOR = Object.freeze([0.086, 0.435, 0.984]);
-const DEFAULT_DEEP_COLOR = Object.freeze([0.016, 0.176, 0.62]);
-const DEFAULT_RIM_COLOR = Object.freeze([0.4, 0.737, 1]);
-const DEFAULT_HIGHLIGHT_COLOR = Object.freeze([0.94, 0.99, 1]);
-const DEFAULT_SURFACE_COLOR = Object.freeze([0.84, 0.973, 1]);
+const TITLE_LOADING = getData('TITLE_CONSTANTS').TITLE_LOADING;
+const DEFAULT_CIRCLE_SHADER_COLORS = TITLE_LOADING.CIRCLE_SHADER.COLORS;
 
 /**
  * @class TitleLoadingCircleEffectPass
@@ -669,11 +666,11 @@ export class TitleLoadingCircleEffectPass {
      */
     #uploadColors(colors) {
         const gl = this.gl;
-        gl.uniform3fv(this.programInfo.uniforms.u_baseColor, colors?.base || DEFAULT_BASE_COLOR);
-        gl.uniform3fv(this.programInfo.uniforms.u_deepColor, colors?.deep || DEFAULT_DEEP_COLOR);
-        gl.uniform3fv(this.programInfo.uniforms.u_rimColor, colors?.rim || DEFAULT_RIM_COLOR);
-        gl.uniform3fv(this.programInfo.uniforms.u_highlightColor, colors?.highlight || DEFAULT_HIGHLIGHT_COLOR);
-        gl.uniform3fv(this.programInfo.uniforms.u_surfaceColor, colors?.surface || DEFAULT_SURFACE_COLOR);
+        gl.uniform3fv(this.programInfo.uniforms.u_baseColor, colors?.base || DEFAULT_CIRCLE_SHADER_COLORS.base);
+        gl.uniform3fv(this.programInfo.uniforms.u_deepColor, colors?.deep || DEFAULT_CIRCLE_SHADER_COLORS.deep);
+        gl.uniform3fv(this.programInfo.uniforms.u_rimColor, colors?.rim || DEFAULT_CIRCLE_SHADER_COLORS.rim);
+        gl.uniform3fv(this.programInfo.uniforms.u_highlightColor, colors?.highlight || DEFAULT_CIRCLE_SHADER_COLORS.highlight);
+        gl.uniform3fv(this.programInfo.uniforms.u_surfaceColor, colors?.surface || DEFAULT_CIRCLE_SHADER_COLORS.surface);
     }
 
     /**

@@ -157,7 +157,40 @@ export const TITLE_CONSTANTS = Object.freeze({
         SCENE_TRANSITION_DURATION: 1,
         MINI_CIRCLE_SCALE: 1,
         GLOW_COMPENSATION_SCALE: 4,
+        GLOW_DEFAULTS: Object.freeze({
+            HALO_STOPS: Object.freeze([
+                Object.freeze({ offset: 0, color: null, alphaScale: 0, maxAlpha: 0 }),
+                Object.freeze({ offset: 0.06, color: null, alphaScale: 0.022, maxAlpha: 0.038 }),
+                Object.freeze({ offset: 0.14, color: null, alphaScale: 0.03, maxAlpha: 0.05 }),
+                Object.freeze({ offset: 0.3, color: null, alphaScale: 0.032, maxAlpha: 0.054 }),
+                Object.freeze({ offset: 0.5, color: null, alphaScale: 0.024, maxAlpha: 0.04 }),
+                Object.freeze({ offset: 0.72, color: null, alphaScale: 0.013, maxAlpha: 0.022 }),
+                Object.freeze({ offset: 0.9, color: null, alphaScale: 0.004, maxAlpha: 0.008 }),
+                Object.freeze({ offset: 1, color: null, alphaScale: 0, maxAlpha: 0 })
+            ]),
+            RING: Object.freeze({
+                Color: null,
+                ShadowColor: null,
+                AlphaScale: 0.052,
+                AlphaMax: 0.09,
+                ShadowAlphaScale: 0.07,
+                ShadowAlphaMax: 0.12
+            }),
+            SURFACE: Object.freeze({
+                Highlight: null,
+                HighlightAlpha: 0.95,
+                Shadow: null,
+                ShadowAlpha: 0.45
+            })
+        }),
         CIRCLE_SHADER: Object.freeze({
+            COLORS: Object.freeze({
+                base: Object.freeze([0.086, 0.435, 0.984]),
+                deep: Object.freeze([0.016, 0.176, 0.62]),
+                rim: Object.freeze([0.4, 0.737, 1]),
+                highlight: Object.freeze([0.94, 0.99, 1]),
+                surface: Object.freeze([0.84, 0.973, 1])
+            }),
             ALPHA: 0.92,
             GLOW_STRENGTH: 0.12,
             GLASS_STRENGTH: 0.62,

@@ -1,38 +1,14 @@
+import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 
-const DEFAULT_LOADING_GLOW_STOPS = Object.freeze([
-    Object.freeze({ offset: 0, color: null, alphaScale: 0, maxAlpha: 0 }),
-    Object.freeze({ offset: 0.06, color: null, alphaScale: 0.022, maxAlpha: 0.038 }),
-    Object.freeze({ offset: 0.14, color: null, alphaScale: 0.03, maxAlpha: 0.05 }),
-    Object.freeze({ offset: 0.3, color: null, alphaScale: 0.032, maxAlpha: 0.054 }),
-    Object.freeze({ offset: 0.5, color: null, alphaScale: 0.024, maxAlpha: 0.04 }),
-    Object.freeze({ offset: 0.72, color: null, alphaScale: 0.013, maxAlpha: 0.022 }),
-    Object.freeze({ offset: 0.9, color: null, alphaScale: 0.004, maxAlpha: 0.008 }),
-    Object.freeze({ offset: 1, color: null, alphaScale: 0, maxAlpha: 0 })
-]);
-const DEFAULT_LOADING_GLOW_RING = Object.freeze({
-    Color: null,
-    ShadowColor: null,
-    AlphaScale: 0.052,
-    AlphaMax: 0.09,
-    ShadowAlphaScale: 0.07,
-    ShadowAlphaMax: 0.12
-});
-const DEFAULT_LOADING_GLOW_SURFACE = Object.freeze({
-    Highlight: null,
-    HighlightAlpha: 0.95,
-    Shadow: null,
-    ShadowAlpha: 0.45
-});
-const DEFAULT_LOADING_CIRCLE_SHADER_COLORS = Object.freeze({
-    base: Object.freeze([0.086, 0.435, 0.984]),
-    deep: Object.freeze([0.016, 0.176, 0.62]),
-    rim: Object.freeze([0.4, 0.737, 1]),
-    highlight: Object.freeze([0.94, 0.99, 1]),
-    surface: Object.freeze([0.84, 0.973, 1])
-});
+const TITLE_LOADING = getData('TITLE_CONSTANTS').TITLE_LOADING;
+const DEFAULT_LOADING_GLOW = TITLE_LOADING.GLOW_DEFAULTS;
+const DEFAULT_LOADING_GLOW_STOPS = DEFAULT_LOADING_GLOW.HALO_STOPS;
+const DEFAULT_LOADING_GLOW_RING = DEFAULT_LOADING_GLOW.RING;
+const DEFAULT_LOADING_GLOW_SURFACE = DEFAULT_LOADING_GLOW.SURFACE;
+const DEFAULT_LOADING_CIRCLE_SHADER_COLORS = TITLE_LOADING.CIRCLE_SHADER.COLORS;
 
 /**
  * 중앙 원형 로딩 glow에 사용할 색상 설정을 반환합니다.
