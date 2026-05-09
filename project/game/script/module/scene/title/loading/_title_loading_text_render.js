@@ -1,6 +1,7 @@
 import { render } from 'display/display_system.js';
 import { getLangString } from 'ui/ui_system.js';
 import { getLoadingTextColor } from './_title_loading_theme.js';
+import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 /**
  * 현재 로딩 상태에 맞춰 메인 로딩 텍스트와 안내 문구를 렌더링합니다.
@@ -30,41 +31,49 @@ export function drawTitleLoadingText({
     loadingNoticeLineHeight,
     loadingNoticeFont
 }) {
-    if (loadingTextAlpha <= 0 && loadingNoticeAlpha <= 0) {
+    const textAlpha = clampFiniteNumber(Number(loadingTextAlpha), 0, 1, 0);
+    const noticeAlpha = clampFiniteNumber(Number(loadingNoticeAlpha), 0, 1, 0);
+    if (textAlpha <= 0 && noticeAlpha <= 0) {
         return;
     }
 
     const fill = getLoadingTextColor();
-    const translateY = loadingTextExitDistance * loadingTextExitProgress;
-    if (loadingTextAlpha > 0) {
+    const textX = resolveFiniteNumber(Number(loadingTextX), 0);
+    const textY = resolveFiniteNumber(Number(loadingTextY), 0);
+    const noticeStartY = resolveFiniteNumber(Number(loadingNoticeStartY), textY);
+    const translateY = clampFiniteNumber(Number(loadingTextExitDistance), 0, Infinity, 0)
+        * clampFiniteNumber(Number(loadingTextExitProgress), 0, 1, 0);
+    if (textAlpha > 0) {
         render('ui', {
             shape: 'text',
             text: getLangString('title_loading'),
-            x: loadingTextX,
-            y: loadingTextY - translateY,
+            x: textX,
+            y: textY - translateY,
             font: loadingTextFont,
             fill,
             align: 'center',
             baseline: 'middle',
-            alpha: loadingTextAlpha
+            alpha: textAlpha
         });
     }
 
-    if (loadingNoticeAlpha <= 0) {
+    if (noticeAlpha <= 0) {
         return;
     }
 
-    for (let i = 0; i < loadingNoticeLines.length; i++) {
+    const noticeLines = Array.isArray(loadingNoticeLines) ? loadingNoticeLines : [];
+    const lineHeight = clampFiniteNumber(Number(loadingNoticeLineHeight), 0, Infinity, 0);
+    for (let i = 0; i < noticeLines.length; i++) {
         render('ui', {
             shape: 'text',
-            text: loadingNoticeLines[i],
-            x: loadingTextX,
-            y: loadingNoticeStartY + (loadingNoticeLineHeight * i),
+            text: noticeLines[i],
+            x: textX,
+            y: noticeStartY + (lineHeight * i),
             font: loadingNoticeFont,
             fill,
             align: 'center',
             baseline: 'middle',
-            alpha: loadingNoticeAlpha
+            alpha: noticeAlpha
         });
     }
 }
