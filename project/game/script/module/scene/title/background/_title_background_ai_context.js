@@ -3,6 +3,7 @@ import {
     getSimulationMouseInput,
     isSimulationMousePressing
 } from 'simulation/simulation_runtime.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 
 /**
  * 타이틀 배경 적 AI가 사용할 입력 컨텍스트를 구성합니다.
@@ -30,9 +31,12 @@ export function buildTitleBackgroundAiContext({
     const shieldMagneticPointInObject = shieldLayout
         ? { x: shieldLayout.centerX, y: shieldLayout.centerY + objectOffsetY }
         : null;
-    const logoDistanceMultiplier = Number.isFinite(titleConstants.TITLE_AI.LOGO_DISTANCE_MULTIPLIER)
-        ? Math.max(1, titleConstants.TITLE_AI.LOGO_DISTANCE_MULTIPLIER)
-        : 1;
+    const logoDistanceMultiplier = clampFiniteNumber(
+        titleConstants.TITLE_AI.LOGO_DISTANCE_MULTIPLIER,
+        1,
+        Infinity,
+        1
+    );
 
     return {
         uiww,
