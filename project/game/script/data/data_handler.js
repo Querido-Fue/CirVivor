@@ -34,6 +34,7 @@ import { TITLE_LINK_DATA } from 'data/scene/title/title_link_data.js';
 import { GAME_SCENE_CONSTANTS } from 'data/scene/game/game_scene_constants.js';
 import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
 import { TITLE_MENU_ICON_DATA } from 'data/scene/title/title_menu_icon_data.js';
+import { GAME_SCENE_COMMAND_TYPES } from 'data/simulation/game_scene_command_types.js';
 import { PHYSICS_CONSTANTS } from 'data/physics/physics_constants.js';
 import { COLLISION_CONSTANTS } from 'data/physics/collision_constants.js';
 import { DEBUG_CONSTANTS } from 'data/debug/debug_constants.js';
@@ -76,6 +77,7 @@ const DATA_REGISTRY = Object.freeze({
     GAME_SCENE_CONSTANTS,
     TITLE_MENU_DATA,
     TITLE_MENU_ICON_DATA,
+    GAME_SCENE_COMMAND_TYPES,
     PHYSICS_CONSTANTS,
     COLLISION_CONSTANTS,
     DEBUG_CONSTANTS,
