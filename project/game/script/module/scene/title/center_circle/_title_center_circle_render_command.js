@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 import { getLoadingCircleShaderColors } from './_title_center_circle_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -32,11 +33,9 @@ export function buildTitleCenterCircleRenderCommand({
     blurSourceCanvases
 }) {
     const shaderConfig = TITLE_LOADING.CIRCLE_SHADER || {};
-    const safeGlowCompensationScale = Number.isFinite(glowCompensationScale)
-        ? Math.max(1, glowCompensationScale)
-        : 1;
-    const glowStrength = _resolveShaderNumber(shaderConfig.GLOW_STRENGTH, 0.24)
-        * (1 + ((safeGlowCompensationScale - 1) * _resolveShaderNumber(shaderConfig.GLOW_COMPENSATION_STRENGTH_SCALE, 0.08)));
+    const safeGlowCompensationScale = clampFiniteNumber(glowCompensationScale, 1, Infinity, 1);
+    const glowStrength = resolveFiniteNumber(shaderConfig.GLOW_STRENGTH, 0.24)
+        * (1 + ((safeGlowCompensationScale - 1) * resolveFiniteNumber(shaderConfig.GLOW_COMPENSATION_STRENGTH_SCALE, 0.08)));
 
     return {
         effectType: 'titleLoadingCircle',
@@ -48,27 +47,17 @@ export function buildTitleCenterCircleRenderCommand({
         wavePhase,
         secondaryWavePhase,
         time: glowPhase,
-        alpha: _resolveShaderNumber(shaderConfig.ALPHA, 1),
+        alpha: resolveFiniteNumber(shaderConfig.ALPHA, 1),
         glowStrength,
-        glassStrength: _resolveShaderNumber(shaderConfig.GLASS_STRENGTH, 0.72),
-        brightnessBoost: _resolveShaderNumber(shaderConfig.BRIGHTNESS_BOOST, 0.08),
-        bodyRadiusExpandOutlineRatio: _resolveShaderNumber(shaderConfig.BODY_RADIUS_EXPAND_OUTLINE_RATIO, 0.38),
-        backdropBlur: _resolveShaderNumber(shaderConfig.BACKDROP_BLUR, 0.1),
-        backdropBlurStrength: _resolveShaderNumber(shaderConfig.BACKDROP_BLUR_STRENGTH, 0.16),
-        backdropRefractionStrength: _resolveShaderNumber(shaderConfig.BACKDROP_REFRACTION_STRENGTH, 4.5),
-        scissorPaddingRatio: _resolveShaderNumber(shaderConfig.SCISSOR_PADDING_RADIUS_RATIO, 0.86),
-        scissorPaddingMin: _resolveShaderNumber(shaderConfig.SCISSOR_PADDING_MIN_PX, 28),
+        glassStrength: resolveFiniteNumber(shaderConfig.GLASS_STRENGTH, 0.72),
+        brightnessBoost: resolveFiniteNumber(shaderConfig.BRIGHTNESS_BOOST, 0.08),
+        bodyRadiusExpandOutlineRatio: resolveFiniteNumber(shaderConfig.BODY_RADIUS_EXPAND_OUTLINE_RATIO, 0.38),
+        backdropBlur: resolveFiniteNumber(shaderConfig.BACKDROP_BLUR, 0.1),
+        backdropBlurStrength: resolveFiniteNumber(shaderConfig.BACKDROP_BLUR_STRENGTH, 0.16),
+        backdropRefractionStrength: resolveFiniteNumber(shaderConfig.BACKDROP_REFRACTION_STRENGTH, 4.5),
+        scissorPaddingRatio: resolveFiniteNumber(shaderConfig.SCISSOR_PADDING_RADIUS_RATIO, 0.86),
+        scissorPaddingMin: resolveFiniteNumber(shaderConfig.SCISSOR_PADDING_MIN_PX, 28),
         blurSourceCanvases: Array.isArray(blurSourceCanvases) ? blurSourceCanvases : [],
         colors: getLoadingCircleShaderColors()
     };
-}
-
-/**
- * 셰이더 설정 숫자를 안전하게 해석합니다.
- * @param {number|null|undefined} value - 설정값입니다.
- * @param {number} fallback - 대체값입니다.
- * @returns {number} 사용할 숫자입니다.
- */
-function _resolveShaderNumber(value, fallback) {
-    return Number.isFinite(value) ? value : fallback;
 }
