@@ -1,5 +1,14 @@
-import { animate, remove } from "animation/animation_system.js";
-import { requestTooltip } from "ui/ui_system.js";
+import { animate, remove } from 'animation/animation_system.js';
+import { requestTooltip } from 'ui/ui_system.js';
+
+const NO_ANIMATION_ID = -1;
+const DEFAULT_SCALE = 1;
+const DEFAULT_HOVER_VALUE = 0;
+const DEFAULT_PRESS_SCALE_MULTIPLIER = 0.95;
+const DEFAULT_HOVER_SCALE_MULTIPLIER = 1;
+const SCALE_ANIMATION_DURATION = 0.2;
+const HOVER_ANIMATION_DURATION = 0.5;
+const INTERACTION_ANIMATION_TYPE = 'easeOutExpo';
 
 /**
  * @class BaseUIElement
@@ -11,14 +20,21 @@ export class BaseUIElement {
     #hoverTooltipContent;
     #isHovering;
 
+    /**
+     * 공통 UI 요소의 애니메이션 ID 기본값을 설정합니다.
+     * @param {object} properties - 하위 클래스 생성자가 전달하는 속성 객체입니다.
+     */
     constructor(properties) {
         // 서브클래스의 private 필드 초기화를 위해 생성자에서 init()이 호출되지 않습니다.
+        this.scaleAnimId = NO_ANIMATION_ID;
+        this.hoverAnimId = NO_ANIMATION_ID;
     }
 
     /**
-         * @override
-         * 전달된 속성을 바탕으로 요소의 초기 상태를 설정합니다.
-         */
+     * 전달된 속성을 바탕으로 요소의 초기 상태를 설정합니다.
+     * @param {object} properties - 초기화 속성입니다.
+     * @override
+     */
     init(properties) {
         if (!properties) return;
         this.id = this.id || crypto.randomUUID();
@@ -36,23 +52,23 @@ export class BaseUIElement {
         this.#isHovering = false;
 
         // 공통 애니메이션 상태
-        this.scale = 1;
-        this.#targetScale = 1;
+        this.scale = DEFAULT_SCALE;
+        this.#targetScale = DEFAULT_SCALE;
         this.isPressed = false;
-        this.hoverValue = 0;
-        this.#targetHoverValue = 0;
+        this.hoverValue = DEFAULT_HOVER_VALUE;
+        this.#targetHoverValue = DEFAULT_HOVER_VALUE;
 
-        if (this.scaleAnimId) { remove(this.scaleAnimId); this.scaleAnimId = null; }
-        if (this.hoverAnimId !== -1) { remove(this.hoverAnimId); this.hoverAnimId = -1; }
+        this._stopScaleAnimation();
+        this._stopHoverAnimation();
     }
 
     /**
-         * @override
-         * 요소를 초기 기본 상태로 되돌리고 애니메이션 훅을 파괴합니다.
-         */
+     * 요소를 초기 기본 상태로 되돌리고 애니메이션 훅을 파괴합니다.
+     * @override
+     */
     reset() {
-        if (this.scaleAnimId) { remove(this.scaleAnimId); this.scaleAnimId = null; }
-        if (this.hoverAnimId !== -1) { remove(this.hoverAnimId); this.hoverAnimId = -1; }
+        this._stopScaleAnimation();
+        this._stopHoverAnimation();
         this.tooltip = null;
         this.#hoverTooltipContent = null;
         this.#isHovering = false;
@@ -70,47 +86,98 @@ export class BaseUIElement {
 
         if (!this.clickAble) return;
 
-        const targetValue = isHovered ? 1.0 : 0.0;
+        const targetValue = isHovered ? 1 : 0;
         const shouldBePressed = isHovered && isLeftClicking;
+        const targetScale = this._resolveTargetScale(isHovered, shouldBePressed);
 
-        let targetScale = 1.0;
-        if (shouldBePressed) {
-            targetScale = this.pressScaleMultiplier !== undefined ? this.pressScaleMultiplier : 0.95;
-        } else if (isHovered) {
-            targetScale = this.hoverScaleMultiplier !== undefined ? this.hoverScaleMultiplier : 1.0;
-        }
-
-        // 스케일 애니메이션
         if (this.#targetScale !== targetScale) {
             this.#targetScale = targetScale;
             this.isPressed = shouldBePressed;
-
-            if (this.scaleAnimId) {
-                remove(this.scaleAnimId);
-                this.scaleAnimId = null;
-            }
-
-            this.scaleAnimId = animate(this, { variable: 'scale', startValue: this.scale, endValue: targetScale, type: "easeOutExpo", duration: 0.2 }).id;
+            this.scaleAnimId = this._startInteractionAnimation('scale', this.scale, targetScale, SCALE_ANIMATION_DURATION);
         }
 
-        // 호버 애니메이션
         if (targetValue !== this.#targetHoverValue) {
             this.#targetHoverValue = targetValue;
-
-            if (this.hoverAnimId !== -1) {
-                remove(this.hoverAnimId);
-                this.hoverAnimId = -1;
-            }
-
-            const animObj = animate(this, {
-                variable: 'hoverValue',
-                startValue: this.hoverValue,
-                endValue: this.#targetHoverValue,
-                type: 'easeOutExpo',
-                duration: 0.5
-            });
-            this.hoverAnimId = animObj.id;
+            this.hoverAnimId = this._startInteractionAnimation(
+                'hoverValue',
+                this.hoverValue,
+                this.#targetHoverValue,
+                HOVER_ANIMATION_DURATION
+            );
         }
+    }
+
+    /**
+     * 현재 hover/pressed 상태에 맞는 scale 목표값을 계산합니다.
+     * @param {boolean} isHovered - 현재 hover 여부입니다.
+     * @param {boolean} shouldBePressed - 눌림 상태로 표시할지 여부입니다.
+     * @returns {number} 목표 scale 값입니다.
+     */
+    _resolveTargetScale(isHovered, shouldBePressed) {
+        if (shouldBePressed) {
+            return this.pressScaleMultiplier !== undefined
+                ? this.pressScaleMultiplier
+                : DEFAULT_PRESS_SCALE_MULTIPLIER;
+        }
+        if (isHovered) {
+            return this.hoverScaleMultiplier !== undefined
+                ? this.hoverScaleMultiplier
+                : DEFAULT_HOVER_SCALE_MULTIPLIER;
+        }
+        return DEFAULT_SCALE;
+    }
+
+    /**
+     * 상호작용 애니메이션을 시작합니다.
+     * @param {string} variable - 애니메이션 대상 속성 이름입니다.
+     * @param {number} startValue - 시작 값입니다.
+     * @param {number} endValue - 종료 값입니다.
+     * @param {number} duration - 지속 시간입니다.
+     * @returns {number} 생성된 애니메이션 ID입니다.
+     */
+    _startInteractionAnimation(variable, startValue, endValue, duration) {
+        if (variable === 'scale') {
+            this._stopScaleAnimation();
+        } else if (variable === 'hoverValue') {
+            this._stopHoverAnimation();
+        }
+
+        return animate(this, {
+            variable,
+            startValue,
+            endValue,
+            type: INTERACTION_ANIMATION_TYPE,
+            duration
+        }).id;
+    }
+
+    /**
+     * scale 애니메이션을 제거합니다.
+     */
+    _stopScaleAnimation() {
+        if (this._isActiveAnimationId(this.scaleAnimId)) {
+            remove(this.scaleAnimId);
+        }
+        this.scaleAnimId = NO_ANIMATION_ID;
+    }
+
+    /**
+     * hover 애니메이션을 제거합니다.
+     */
+    _stopHoverAnimation() {
+        if (this._isActiveAnimationId(this.hoverAnimId)) {
+            remove(this.hoverAnimId);
+        }
+        this.hoverAnimId = NO_ANIMATION_ID;
+    }
+
+    /**
+     * 애니메이션 시스템에서 제거 가능한 ID인지 확인합니다.
+     * @param {number} animationId - 검사할 애니메이션 ID입니다.
+     * @returns {boolean} 제거 가능한 애니메이션 ID 여부입니다.
+     */
+    _isActiveAnimationId(animationId) {
+        return Number.isInteger(animationId) && animationId >= 0;
     }
 
     /**
@@ -163,15 +230,15 @@ export class BaseUIElement {
     }
 
     /**
-         * 매 프레임마다 요소의 상태 변화나 상호작용 피드백을 계산합니다.
-         */
+     * 매 프레임마다 요소의 상태 변화나 상호작용 피드백을 계산합니다.
+     */
     update() {
         // 하위 클래스에서 구현
     }
 
     /**
-         * 설정된 레이어 캔버스에 이 요소를 그래픽으로 그립니다.
-         */
+     * 설정된 레이어 캔버스에 이 요소를 그래픽으로 그립니다.
+     */
     draw() {
         // 하위 클래스에서 구현
     }
