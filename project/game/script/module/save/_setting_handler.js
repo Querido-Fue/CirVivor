@@ -3,6 +3,7 @@ import { setTheme } from 'display/_theme_handler.js';
 import { MathUtil } from 'util/math_util.js';
 import { getData } from 'data/data_handler.js';
 import { LANGUAGE_REGISTRY } from 'ui/lang/_language_registry.js';
+import { ensureSaveDirectory, pathExists } from './_save_file_helper.js';
 
 const THEME_KEYS = getData('THEME_KEYS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
@@ -78,12 +79,12 @@ export class SettingHandler {
     }
 
     /**
-         * @private
-         * 스키마(min, max, type)에 기반하여 입력값이 범위를 벗어나지 않도록 보정(Cap)합니다.
-         * @param {string} key 보정할 설정 키
-         * @param {*} value 외부로부터 받은 원시 값
-         * @returns {*} 보정된 안전한 값
-         */
+     * @private
+     * 스키마(min, max, type)에 기반하여 입력값이 범위를 벗어나지 않도록 보정(Cap)합니다.
+     * @param {string} key 보정할 설정 키
+     * @param {*} value 외부로부터 받은 원시 값
+     * @returns {*} 보정된 안전한 값
+     */
     #capValue(key, value) {
         const entry = this.schema[key];
         if (!entry) return value;
@@ -140,13 +141,7 @@ export class SettingHandler {
      */
     async #load() {
         let fileData = {};
-        let fileExists = false;
-        try {
-            await fsPromises.access(this.filePath);
-            fileExists = true;
-        } catch {
-            fileExists = false;
-        }
+        let fileExists = await pathExists(this.filePath);
 
         if (fileExists) {
             try {
@@ -214,16 +209,7 @@ export class SettingHandler {
      * @returns {Promise}
      */
     async save() {
-        try {
-            await fsPromises.access(this.dataDir);
-        } catch (e) {
-            try {
-                await fsPromises.mkdir(this.dataDir, { recursive: true });
-            } catch (mkdirError) {
-                console.error("설정 디렉토리 생성 실패:", mkdirError);
-                throw mkdirError;
-            }
-        }
+        await ensureSaveDirectory(this.dataDir, '설정');
 
         const out = {};
         for (const key in this.schema) {
