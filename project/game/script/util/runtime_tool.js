@@ -1,4 +1,5 @@
 import { nw } from './nw_bridge.js';
+import { clampFiniteNumber, resolveFiniteNumber } from './number_util.js';
 
 let runtimeToolInstance = null;
 
@@ -62,10 +63,11 @@ export class RuntimeTool {
      * @param {boolean} isFullScreen - 전체 화면 여부
      */
     setFullScreen(isFullScreen) {
+        const appWindow = this._getWindow();
         if (isFullScreen) {
-            nw.Window.get().enterFullscreen();
+            appWindow.enterFullscreen();
         } else {
-            nw.Window.get().leaveFullscreen();
+            appWindow.leaveFullscreen();
         }
     }
 
@@ -75,7 +77,10 @@ export class RuntimeTool {
      * @param {number} height - 높이
      */
     setWindowSize(width, height) {
-        nw.Window.get().resizeTo(width, height);
+        const appWindow = this._getWindow();
+        const nextWidth = Math.round(clampFiniteNumber(Number(width), 1, Infinity, appWindow.width || 1));
+        const nextHeight = Math.round(clampFiniteNumber(Number(height), 1, Infinity, appWindow.height || 1));
+        appWindow.resizeTo(nextWidth, nextHeight);
     }
 
     /**
@@ -84,25 +89,31 @@ export class RuntimeTool {
      * @param {number} y - y 좌표
      */
     setWindowPosition(x, y) {
-        nw.Window.get().moveTo(x, y);
+        const appWindow = this._getWindow();
+        const nextX = Math.round(resolveFiniteNumber(Number(x), appWindow.x || 0));
+        const nextY = Math.round(resolveFiniteNumber(Number(y), appWindow.y || 0));
+        appWindow.moveTo(nextX, nextY);
     }
 
     /**
      * 창을 화면 중앙으로 이동합니다.
      */
     setWindowPositionCenter() {
-        const width = nw.Window.get().width;
-        const height = nw.Window.get().height;
-        const x = Math.round((window.screen.width - width) / 2);
-        const y = Math.round((window.screen.height - height) / 2);
-        nw.Window.get().moveTo(x, y);
+        const appWindow = this._getWindow();
+        const width = clampFiniteNumber(Number(appWindow.width), 1, Infinity, 1);
+        const height = clampFiniteNumber(Number(appWindow.height), 1, Infinity, 1);
+        const screenWidth = clampFiniteNumber(Number(window.screen?.width), 1, Infinity, width);
+        const screenHeight = clampFiniteNumber(Number(window.screen?.height), 1, Infinity, height);
+        const x = Math.round((screenWidth - width) / 2);
+        const y = Math.round((screenHeight - height) / 2);
+        appWindow.moveTo(x, y);
     }
 
     /**
      * 창을 닫습니다.
      */
     closeWindow() {
-        nw.Window.get().close(true);
+        this._getWindow().close(true);
     }
 
     /**
@@ -110,14 +121,24 @@ export class RuntimeTool {
      * @param {number} zoomLevel - 줌 레벨
      */
     setZoomLevel(zoomLevel) {
-        nw.Window.get().zoomLevel = zoomLevel;
+        const appWindow = this._getWindow();
+        appWindow.zoomLevel = resolveFiniteNumber(Number(zoomLevel), appWindow.zoomLevel || 0);
     }
 
     /**
      * 디버그 창을 엽니다.
      */
     openDebugWindow() {
-        nw.Window.get().showDevTools();
+        this._getWindow().showDevTools();
+    }
+
+    /**
+     * 현재 NW.js 앱 창 객체를 반환합니다.
+     * @returns {NWJS_Helpers.win} NW.js 창 객체입니다.
+     * @private
+     */
+    _getWindow() {
+        return nw.Window.get();
     }
 }
 
