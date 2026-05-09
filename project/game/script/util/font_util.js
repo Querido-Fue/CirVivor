@@ -35,7 +35,12 @@ export function normalizeFontFamily(fontFamily = DEFAULT_FONT_FAMILY) {
     let familyStr = String(fontFamily || DEFAULT_FONT_FAMILY);
     if (!familyStr.includes('"') && !familyStr.includes("'")) {
         const parts = familyStr.split(',');
-        familyStr = `"${parts[0].trim()}"${parts[1] ? ',' + parts[1] : ''}`;
+        const primaryFamily = parts[0].trim();
+        const fallbackFamilies = parts.slice(1).map((part) => part.trim()).filter(Boolean);
+        const normalizedPrimaryFamily = /\s/.test(primaryFamily)
+            ? `"${primaryFamily}"`
+            : primaryFamily;
+        familyStr = [normalizedPrimaryFamily, ...fallbackFamilies].join(', ');
     }
     return familyStr;
 }

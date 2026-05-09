@@ -1,3 +1,8 @@
+import { createFontString } from 'util/font_util.js';
+
+/** 2D 레이어 텍스트 렌더링의 기본 Canvas font 문자열입니다. */
+const DEFAULT_DRAW_TEXT_FONT = createFontString({ sizePx: 10, family: 'sans-serif' });
+
 /**
  * 기본 지속 그림자 상태를 생성합니다.
  * @param {number} [shadowBlur=0] - 그림자 블러입니다.
@@ -59,7 +64,7 @@ export function resetDrawContextState(context) {
     context.filter = 'none';
     context.textAlign = 'start';
     context.textBaseline = 'alphabetic';
-    context.font = '10px sans-serif';
+    context.font = DEFAULT_DRAW_TEXT_FONT;
 }
 
 /**
@@ -138,7 +143,7 @@ export function applyDraw2DStyles(context, cache, styles, persistentShadow) {
  * @param {object} styles - 적용할 스타일입니다.
  */
 function applyDrawTextStyles(context, cache, styles) {
-    const font = styles.font || '10px sans-serif';
+    const font = styles.font || DEFAULT_DRAW_TEXT_FONT;
     const align = styles.align || 'start';
     const baseline = styles.baseline || 'alphabetic';
 
