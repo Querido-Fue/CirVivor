@@ -41,6 +41,25 @@ function createDefaultEnemyPosition() {
 }
 
 /**
+ * 적 생성에 사용할 기본 2D 벡터를 생성합니다.
+ * @returns {{x: number, y: number}}
+ */
+function createDefaultEnemyVector() {
+    return { x: 0, y: 0 };
+}
+
+/**
+ * 적 생성 데이터와 타입 기본값을 기준으로 무게를 계산합니다.
+ * @param {object} data - 적 생성 데이터입니다.
+ * @param {string} type - 적 타입입니다.
+ * @param {object} enemyDefaultWeight - 적 타입별 기본 무게입니다.
+ * @returns {number}
+ */
+function resolveObjectSystemEnemyWeight(data, type, enemyDefaultWeight) {
+    return data.weight ?? enemyDefaultWeight?.[type] ?? 1;
+}
+
+/**
  * 풀에서 획득한 적 인스턴스에 생성 데이터를 주입합니다.
  * @param {object} enemy - 풀에서 획득한 적 인스턴스입니다.
  * @param {string} type - 적 타입입니다.
@@ -59,12 +78,12 @@ function initObjectSystemEnemy(enemy, type, data, enemyId, enemyDefaultWeight) {
         moveSpeed: data.moveSpeed ?? 0,
         accSpeed: data.accSpeed ?? 0,
         size: data.size ?? 1,
-        weight: data.weight ?? enemyDefaultWeight?.[type] ?? 1,
+        weight: resolveObjectSystemEnemyWeight(data, type, enemyDefaultWeight),
         rotationResistance: data.rotationResistance,
         projectileHitsToKill: data.projectileHitsToKill ?? 0,
         position: data.position ?? createDefaultEnemyPosition(),
-        speed: data.speed ?? { x: 0, y: 0 },
-        acc: data.acc ?? { x: 0, y: 0 },
+        speed: data.speed ?? createDefaultEnemyVector(),
+        acc: data.acc ?? createDefaultEnemyVector(),
         status: data.status,
         ai: data.ai ?? null,
         fill: data.fill,
