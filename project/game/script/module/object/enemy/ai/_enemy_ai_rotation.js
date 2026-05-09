@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { normalizeDegrees } from 'util/math_util.js';
 import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 
@@ -7,25 +8,8 @@ const ENEMY_ANGLE_CONSTANTS = getData('ENEMY_CONSTANTS').ANGLE;
 const DEFAULT_AI_PROFILE = ENEMY_AI_CONSTANTS.QUALITY_PROFILES[ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE];
 const HEXA_HIVE_TYPE = getHexaHiveType();
 const ROTATION_EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
-const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
 const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
 const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
-
-/**
- * 회전 각도를 -180도에서 180도 범위로 정규화합니다.
- * @param {number} degrees - 정규화할 각도입니다.
- * @returns {number} 정규화된 각도입니다.
- */
-const normalizeDegrees = (degrees) => {
-    if (!Number.isFinite(degrees)) {
-        return 0;
-    }
-
-    let normalized = degrees % FULL_TURN_DEG;
-    if (normalized <= -STRAIGHT_DEG) normalized += FULL_TURN_DEG;
-    if (normalized > STRAIGHT_DEG) normalized -= FULL_TURN_DEG;
-    return normalized;
-};
 
 /**
  * 현재 각도에서 목표 각도까지의 최단 회전 차이를 반환합니다.
@@ -33,7 +17,7 @@ const normalizeDegrees = (degrees) => {
  * @param {number} currentDeg - 현재 각도입니다.
  * @returns {number} 최단 회전 차이입니다.
  */
-const getShortestAngleDeltaDeg = (targetDeg, currentDeg) => normalizeDegrees(targetDeg - currentDeg);
+const getShortestAngleDeltaDeg = (targetDeg, currentDeg) => normalizeDegrees(targetDeg - currentDeg, true);
 
 /**
  * 180도 대칭인 주축 기준으로 가장 짧은 회전 차이를 반환합니다.
