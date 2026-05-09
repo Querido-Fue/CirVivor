@@ -73,6 +73,11 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
     uniform float u_alpha;
     uniform float u_glowStrength;
     uniform float u_glassStrength;
+    uniform sampler2D u_backdropBlurTexture;
+    uniform float u_hasBackdropBlurTexture;
+    uniform float u_bodyRadiusExpandOutlineRatio;
+    uniform float u_backdropBlurStrength;
+    uniform float u_backdropRefractionStrength;
     uniform vec3 u_baseColor;
     uniform vec3 u_deepColor;
     uniform vec3 u_rimColor;
@@ -99,22 +104,23 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
     void main() {
         vec2 fragCoord = vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
         float radius = max(1.0, u_radius);
+        float bodyRadius = radius + (max(0.0, u_bodyRadiusExpandOutlineRatio) * max(1.0, u_outlineWidth));
         vec2 local = fragCoord - u_center;
-        vec2 normalized = local / radius;
+        vec2 normalized = local / bodyRadius;
         float distanceFromCenter = length(local);
         float edgeSoftness = 1.35;
-        float circleMask = 1.0 - smoothstep(radius - edgeSoftness, radius + edgeSoftness, distanceFromCenter);
+        float circleMask = 1.0 - smoothstep(bodyRadius - edgeSoftness, bodyRadius + edgeSoftness, distanceFromCenter);
         float outsideDistance = max(distanceFromCenter - radius, 0.0);
         float progress = saturate(u_progress);
 
-        float fillHeight = radius * 2.0 * progress;
+        float fillHeight = bodyRadius * 2.0 * progress;
         float waveAmplitude = progress >= 0.999
             ? 0.0
-            : min(radius * 0.052, max(1.25, fillHeight * 0.14));
-        float xProgress = saturate((local.x + radius) / (radius * 2.0));
+            : min(bodyRadius * 0.052, max(1.25, fillHeight * 0.14));
+        float xProgress = saturate((local.x + bodyRadius) / (bodyRadius * 2.0));
         float wave = (sin((xProgress * PI * 2.2) + u_wavePhase) * waveAmplitude)
             + (sin((xProgress * PI * 5.2) - u_secondaryWavePhase) * waveAmplitude * 0.26);
-        float surfaceY = radius - fillHeight + wave;
+        float surfaceY = bodyRadius - fillHeight + wave;
         float fillMask = progress >= 0.999
             ? circleMask
             : circleMask * smoothstep(surfaceY - edgeSoftness, surfaceY + edgeSoftness, local.y);
@@ -125,7 +131,7 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
         float light = saturate(dot(normal, lightDirection));
         float upperLight = saturate(-normalized.y);
         float lowerDepth = saturate((normalized.y + 0.15) * 0.82);
-        float sphericalDepth = smoothstep(0.18, 1.0, distanceFromCenter / radius);
+        float sphericalDepth = smoothstep(0.18, 1.0, distanceFromCenter / bodyRadius);
         vec3 bodyColor = u_baseColor * (0.76 + (normal.z * 0.22) + (light * 0.16));
         bodyColor = mix(bodyColor, u_deepColor, (lowerDepth * 0.26) + (sphericalDepth * 0.08));
 
@@ -138,21 +144,30 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
             * 0.12
             * u_glassStrength;
         vec3 fillColor = bodyColor + (u_highlightColor * (broadTopSheen + compactHighlight + edgeGlint));
+        vec2 screenUv = gl_FragCoord.xy / max(u_resolution, vec2(1.0));
+        vec2 refractionOffset = normalized * (vec2(u_backdropRefractionStrength) / max(u_resolution, vec2(1.0)));
+        vec3 backdropBlurColor = texture2D(u_backdropBlurTexture, screenUv + refractionOffset).rgb;
+        float backdropBlend = u_hasBackdropBlurTexture
+            * saturate(u_backdropBlurStrength)
+            * fillMask
+            * (0.72 + (upperLight * 0.18));
+        fillColor = mix(fillColor, backdropBlurColor, backdropBlend);
 
         float surfaceLine = progress > 0.025 && progress < 0.995
-            ? exp(-pow((local.y - surfaceY) / max(1.0, radius * 0.011), 2.0)) * circleMask
+            ? exp(-pow((local.y - surfaceY) / max(1.0, bodyRadius * 0.011), 2.0)) * circleMask
             : 0.0;
         float surfaceAlpha = surfaceLine * 0.34;
 
         float outlineDistance = abs(distanceFromCenter - radius);
+        float outlineSoftness = max(0.42, edgeSoftness * 0.38);
         float outlineCore = 1.0 - smoothstep(
-            max(0.5, u_outlineWidth * 0.42),
-            max(1.0, u_outlineWidth * 0.42) + edgeSoftness,
+            max(0.24, u_outlineWidth * 0.22),
+            max(0.42, u_outlineWidth * 0.22) + outlineSoftness,
             outlineDistance
         );
         float innerRim = exp(-pow(max(radius - distanceFromCenter, 0.0) / max(1.0, u_outlineWidth * 4.0), 2.0))
             * circleMask
-            * 0.08;
+            * 0.04;
         float angle = atan(normalized.y, normalized.x);
         float rimLight = pow(saturate(cos(angle + 2.18) * 0.5 + 0.5), 3.0);
         vec3 rimBaseColor = mix(u_deepColor, u_baseColor, 0.58);

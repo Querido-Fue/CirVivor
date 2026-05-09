@@ -1,10 +1,15 @@
+import { getData } from 'data/data_handler.js';
 import {
+    COMPOSITE_TEXTURE_FRAGMENT_SHADER,
     compileShader,
     createProgram,
     FULLSCREEN_VERTEX_SHADER,
+    KAWASE_DOWNSAMPLE_FRAGMENT_SHADER,
+    KAWASE_UPSAMPLE_FRAGMENT_SHADER,
     TITLE_LOADING_CIRCLE_FRAGMENT_SHADER
 } from './_shader_utils.js';
 
+const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
 const DEFAULT_BASE_COLOR = Object.freeze([0.086, 0.435, 0.984]);
 const DEFAULT_DEEP_COLOR = Object.freeze([0.016, 0.176, 0.62]);
 const DEFAULT_RIM_COLOR = Object.freeze([0.4, 0.737, 1]);
@@ -23,6 +28,29 @@ export class TitleLoadingCircleEffectPass {
         this.gl = gl;
         this.programInfo = this.#createProgramInfo();
         this.fullscreenBuffer = this.#createFullscreenBuffer();
+        this.width = 0;
+        this.height = 0;
+        this.sceneTarget = null;
+        this.sceneTexture = null;
+        this.sourceTexture = null;
+        this.finalBlurTexture = null;
+        this.emptyTexture = null;
+        this.downTargets = [];
+        this.upTargets = [];
+        this.compositeProgram = this.#createAuxiliaryProgramInfo(COMPOSITE_TEXTURE_FRAGMENT_SHADER, [
+            'u_texture',
+            'u_opacity'
+        ]);
+        this.downsampleProgram = this.#createAuxiliaryProgramInfo(KAWASE_DOWNSAMPLE_FRAGMENT_SHADER, [
+            'u_texture',
+            'u_texelSize',
+            'u_offset'
+        ]);
+        this.upsampleProgram = this.#createAuxiliaryProgramInfo(KAWASE_UPSAMPLE_FRAGMENT_SHADER, [
+            'u_texture',
+            'u_texelSize',
+            'u_offset'
+        ]);
     }
 
     /**
@@ -61,6 +89,10 @@ export class TitleLoadingCircleEffectPass {
             return;
         }
 
+        const blurTexture = this.#prepareBackdropBlur(command, renderWidth, renderHeight);
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, renderWidth, renderHeight);
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.disable(gl.DEPTH_TEST);
@@ -90,6 +122,24 @@ export class TitleLoadingCircleEffectPass {
             this.programInfo.uniforms.u_glassStrength,
             Number.isFinite(command.glassStrength) ? Math.max(0, command.glassStrength) : 0.72
         );
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, blurTexture || this.#getEmptyTexture());
+        gl.uniform1i(this.programInfo.uniforms.u_backdropBlurTexture, 0);
+        gl.uniform1f(this.programInfo.uniforms.u_hasBackdropBlurTexture, blurTexture ? 1 : 0);
+        gl.uniform1f(
+            this.programInfo.uniforms.u_bodyRadiusExpandOutlineRatio,
+            Number.isFinite(command.bodyRadiusExpandOutlineRatio)
+                ? Math.max(0, command.bodyRadiusExpandOutlineRatio)
+                : 0.38
+        );
+        gl.uniform1f(
+            this.programInfo.uniforms.u_backdropBlurStrength,
+            Number.isFinite(command.backdropBlurStrength) ? Math.max(0, command.backdropBlurStrength) : 0.16
+        );
+        gl.uniform1f(
+            this.programInfo.uniforms.u_backdropRefractionStrength,
+            Number.isFinite(command.backdropRefractionStrength) ? Math.max(0, command.backdropRefractionStrength) : 4.5
+        );
         this.#uploadColors(command.colors);
 
         this.#applyScissorRect(scissorRect, renderHeight);
@@ -106,10 +156,38 @@ export class TitleLoadingCircleEffectPass {
             this.fullscreenBuffer = null;
         }
 
+        this.#destroyTargets(this.downTargets);
+        this.#destroyTargets(this.upTargets);
+        this.downTargets = [];
+        this.upTargets = [];
+
+        if (this.sceneTarget) {
+            this.#destroyTargets([this.sceneTarget]);
+            this.sceneTarget = null;
+            this.sceneTexture = null;
+        }
+
+        if (this.sourceTexture) {
+            this.gl.deleteTexture(this.sourceTexture);
+            this.sourceTexture = null;
+        }
+
+        if (this.emptyTexture) {
+            this.gl.deleteTexture(this.emptyTexture);
+            this.emptyTexture = null;
+        }
+
         if (this.programInfo?.program) {
             this.gl.deleteProgram(this.programInfo.program);
             this.programInfo = null;
         }
+
+        this.#deleteProgramInfo(this.compositeProgram);
+        this.#deleteProgramInfo(this.downsampleProgram);
+        this.#deleteProgramInfo(this.upsampleProgram);
+        this.compositeProgram = null;
+        this.downsampleProgram = null;
+        this.upsampleProgram = null;
     }
 
     /**
@@ -156,6 +234,11 @@ export class TitleLoadingCircleEffectPass {
                 u_alpha: gl.getUniformLocation(program, 'u_alpha'),
                 u_glowStrength: gl.getUniformLocation(program, 'u_glowStrength'),
                 u_glassStrength: gl.getUniformLocation(program, 'u_glassStrength'),
+                u_backdropBlurTexture: gl.getUniformLocation(program, 'u_backdropBlurTexture'),
+                u_hasBackdropBlurTexture: gl.getUniformLocation(program, 'u_hasBackdropBlurTexture'),
+                u_bodyRadiusExpandOutlineRatio: gl.getUniformLocation(program, 'u_bodyRadiusExpandOutlineRatio'),
+                u_backdropBlurStrength: gl.getUniformLocation(program, 'u_backdropBlurStrength'),
+                u_backdropRefractionStrength: gl.getUniformLocation(program, 'u_backdropRefractionStrength'),
                 u_baseColor: gl.getUniformLocation(program, 'u_baseColor'),
                 u_deepColor: gl.getUniformLocation(program, 'u_deepColor'),
                 u_rimColor: gl.getUniformLocation(program, 'u_rimColor'),
@@ -183,6 +266,395 @@ export class TitleLoadingCircleEffectPass {
             1, 1
         ]), gl.STATIC_DRAW);
         return buffer;
+    }
+
+    /**
+     * 보조 fullscreen pass 프로그램 정보를 생성합니다.
+     * @param {string} fragmentSource - 프래그먼트 셰이더 소스입니다.
+     * @param {string[]} uniformNames - 조회할 uniform 이름 목록입니다.
+     * @returns {{program: WebGLProgram, uniforms: Object.<string, WebGLUniformLocation>, attributes: Object.<string, number>}|null} 프로그램 정보입니다.
+     * @private
+     */
+    #createAuxiliaryProgramInfo(fragmentSource, uniformNames) {
+        const gl = this.gl;
+        const vertexShader = compileShader(gl, FULLSCREEN_VERTEX_SHADER, gl.VERTEX_SHADER);
+        const fragmentShader = compileShader(gl, fragmentSource, gl.FRAGMENT_SHADER);
+        if (!vertexShader || !fragmentShader) {
+            if (vertexShader) {
+                gl.deleteShader(vertexShader);
+            }
+            if (fragmentShader) {
+                gl.deleteShader(fragmentShader);
+            }
+            return null;
+        }
+
+        const program = createProgram(gl, vertexShader, fragmentShader);
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        if (!program) {
+            return null;
+        }
+
+        const uniforms = {};
+        for (const uniformName of uniformNames) {
+            uniforms[uniformName] = gl.getUniformLocation(program, uniformName);
+        }
+
+        return {
+            program,
+            uniforms,
+            attributes: {
+                a_position: gl.getAttribLocation(program, 'a_position')
+            }
+        };
+    }
+
+    /**
+     * 프로그램 리소스를 해제합니다.
+     * @param {{program: WebGLProgram}|null|undefined} programInfo - 해제할 프로그램 정보입니다.
+     * @private
+     */
+    #deleteProgramInfo(programInfo) {
+        if (programInfo?.program) {
+            this.gl.deleteProgram(programInfo.program);
+        }
+    }
+
+    /**
+     * 메뉴 glass 패널과 동일한 Kawase blur 텍스처를 준비합니다.
+     * @param {object} command - 렌더링 명령입니다.
+     * @param {number} width - 렌더 타깃 너비입니다.
+     * @param {number} height - 렌더 타깃 높이입니다.
+     * @returns {WebGLTexture|null} blur 결과 텍스처입니다.
+     * @private
+     */
+    #prepareBackdropBlur(command, width, height) {
+        if (
+            !this.compositeProgram?.program
+            || !this.downsampleProgram?.program
+            || !this.upsampleProgram?.program
+            || !(Number.isFinite(command.backdropBlurStrength) ? command.backdropBlurStrength > 0 : true)
+        ) {
+            return null;
+        }
+
+        const sources = Array.isArray(command.blurSourceCanvases)
+            ? command.blurSourceCanvases
+            : [];
+        if (sources.length === 0) {
+            return null;
+        }
+
+        this.#resizeBlurTargets(width, height);
+        if (!this.sceneTarget || !this.sceneTexture) {
+            return null;
+        }
+
+        if (!this.#captureBlurSources(sources)) {
+            return null;
+        }
+
+        this.#runKawaseBlur(Number.isFinite(command.backdropBlur) ? Math.max(0, command.backdropBlur) : 0.1);
+        return this.finalBlurTexture || this.sceneTexture;
+    }
+
+    /**
+     * 하위 WebGL 캔버스들을 blur scene target에 합성합니다.
+     * @param {HTMLCanvasElement[]} sources - 합성할 캔버스 목록입니다.
+     * @returns {boolean} 하나 이상의 캔버스를 합성했는지 여부입니다.
+     * @private
+     */
+    #captureBlurSources(sources) {
+        const gl = this.gl;
+        let captured = false;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
+        gl.viewport(0, 0, this.width, this.height);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+        for (const canvas of sources) {
+            if (!canvas || canvas.width <= 0 || canvas.height <= 0) {
+                continue;
+            }
+
+            if (!this.#uploadSourceCanvas(canvas)) {
+                continue;
+            }
+
+            this.#drawCompositeTexturePass(1);
+            captured = true;
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        return captured;
+    }
+
+    /**
+     * 현재 source canvas를 재사용 텍스처에 업로드합니다.
+     * @param {HTMLCanvasElement} canvas - 업로드할 캔버스입니다.
+     * @returns {boolean} 업로드 성공 여부입니다.
+     * @private
+     */
+    #uploadSourceCanvas(canvas) {
+        const gl = this.gl;
+        if (!this.sourceTexture) {
+            this.sourceTexture = this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height));
+        }
+
+        this.#flushSourceCanvas(canvas);
+        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+        try {
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            return true;
+        } catch {
+            return false;
+        } finally {
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        }
+    }
+
+    /**
+     * 다른 WebGL 레이어 캔버스를 텍스처로 읽기 전에 대기 중인 렌더 명령을 제출합니다.
+     * @param {HTMLCanvasElement} canvas - 읽어올 소스 캔버스입니다.
+     * @private
+     */
+    #flushSourceCanvas(canvas) {
+        if (typeof canvas?.getContext !== 'function') {
+            return;
+        }
+
+        const sourceContext = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (sourceContext && typeof sourceContext.flush === 'function') {
+            sourceContext.flush();
+        }
+    }
+
+    /**
+     * 업로드된 source texture를 scene target에 합성합니다.
+     * @param {number} opacity - 적용할 투명도입니다.
+     * @private
+     */
+    #drawCompositeTexturePass(opacity) {
+        const gl = this.gl;
+        gl.useProgram(this.compositeProgram.program);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenBuffer);
+        gl.enableVertexAttribArray(this.compositeProgram.attributes.a_position);
+        gl.vertexAttribPointer(this.compositeProgram.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+        gl.uniform1i(this.compositeProgram.uniforms.u_texture, 0);
+        gl.uniform1f(this.compositeProgram.uniforms.u_opacity, opacity);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    /**
+     * downsample/upsample 다중 패스로 blur 텍스처를 생성합니다.
+     * @param {number} blur - blur 강도입니다.
+     * @private
+     */
+    #runKawaseBlur(blur) {
+        const gl = this.gl;
+        if (this.downTargets.length === 0 || blur <= 0) {
+            this.finalBlurTexture = this.sceneTexture;
+            return;
+        }
+
+        let readTexture = this.sceneTexture;
+        let readWidth = this.width;
+        let readHeight = this.height;
+        const blurScale = Math.max(0.5, blur / 8);
+
+        for (let index = 0; index < this.downTargets.length; index++) {
+            const target = this.downTargets[index];
+            this.#drawFullscreenPass({
+                programInfo: this.downsampleProgram,
+                sourceTexture: readTexture,
+                sourceWidth: readWidth,
+                sourceHeight: readHeight,
+                target,
+                offset: (index + 1) * blurScale
+            });
+            readTexture = target.texture;
+            readWidth = target.width;
+            readHeight = target.height;
+        }
+
+        let currentTexture = readTexture;
+        let currentWidth = readWidth;
+        let currentHeight = readHeight;
+
+        for (let index = this.upTargets.length - 1; index >= 0; index--) {
+            const target = this.upTargets[index];
+            this.#drawFullscreenPass({
+                programInfo: this.upsampleProgram,
+                sourceTexture: currentTexture,
+                sourceWidth: currentWidth,
+                sourceHeight: currentHeight,
+                target,
+                offset: (index + 1) * blurScale
+            });
+            currentTexture = target.texture;
+            currentWidth = target.width;
+            currentHeight = target.height;
+        }
+
+        this.finalBlurTexture = currentTexture;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    /**
+     * fullscreen blur pass 하나를 실행합니다.
+     * @param {object} options - pass 옵션입니다.
+     * @private
+     */
+    #drawFullscreenPass({ programInfo, sourceTexture, sourceWidth, sourceHeight, target, offset }) {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.viewport(0, 0, target.width, target.height);
+        gl.useProgram(programInfo.program);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenBuffer);
+        gl.enableVertexAttribArray(programInfo.attributes.a_position);
+        gl.vertexAttribPointer(programInfo.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sourceTexture);
+        gl.uniform1i(programInfo.uniforms.u_texture, 0);
+        gl.uniform2f(programInfo.uniforms.u_texelSize, 1 / Math.max(1, sourceWidth), 1 / Math.max(1, sourceHeight));
+        gl.uniform1f(programInfo.uniforms.u_offset, offset);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    /**
+     * blur용 렌더 타깃 크기를 현재 화면에 맞춥니다.
+     * @param {number} width - 렌더 타깃 너비입니다.
+     * @param {number} height - 렌더 타깃 높이입니다.
+     * @private
+     */
+    #resizeBlurTargets(width, height) {
+        const nextWidth = Math.max(1, Math.floor(width));
+        const nextHeight = Math.max(1, Math.floor(height));
+        if (this.width === nextWidth && this.height === nextHeight && this.sceneTarget) {
+            return;
+        }
+
+        this.width = nextWidth;
+        this.height = nextHeight;
+        this.#destroyTargets(this.downTargets);
+        this.#destroyTargets(this.upTargets);
+        this.downTargets = [];
+        this.upTargets = [];
+
+        if (this.sceneTarget) {
+            this.#destroyTargets([this.sceneTarget]);
+        }
+
+        this.sceneTarget = this.#createRenderTarget(this.width, this.height);
+        this.sceneTexture = this.sceneTarget.texture;
+        this.finalBlurTexture = null;
+
+        let levelWidth = this.width;
+        let levelHeight = this.height;
+        const maxPasses = Math.min(
+            OVERLAY_RENDER_CONSTANTS.KAWASE_DEFAULT_DOWN_PASSES,
+            OVERLAY_RENDER_CONSTANTS.KAWASE_DEFAULT_UP_PASSES
+        );
+
+        for (let passIndex = 0; passIndex < maxPasses; passIndex++) {
+            levelWidth = Math.max(OVERLAY_RENDER_CONSTANTS.KAWASE_MIN_SIZE, Math.floor(levelWidth * 0.5));
+            levelHeight = Math.max(OVERLAY_RENDER_CONSTANTS.KAWASE_MIN_SIZE, Math.floor(levelHeight * 0.5));
+            this.downTargets.push(this.#createRenderTarget(levelWidth, levelHeight));
+        }
+
+        for (let passIndex = this.downTargets.length - 2; passIndex >= 0; passIndex--) {
+            this.upTargets.push(this.#createRenderTarget(this.downTargets[passIndex].width, this.downTargets[passIndex].height));
+        }
+
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+    }
+
+    /**
+     * 렌더 타깃 배열을 정리합니다.
+     * @param {Array<{texture: WebGLTexture, framebuffer: WebGLFramebuffer}>} targets - 정리할 타깃 목록입니다.
+     * @private
+     */
+    #destroyTargets(targets) {
+        const gl = this.gl;
+        for (const target of targets) {
+            if (target?.texture) {
+                gl.deleteTexture(target.texture);
+            }
+            if (target?.framebuffer) {
+                gl.deleteFramebuffer(target.framebuffer);
+            }
+        }
+    }
+
+    /**
+     * 텍스처 하나를 생성합니다.
+     * @param {number} width - 텍스처 너비입니다.
+     * @param {number} height - 텍스처 높이입니다.
+     * @returns {WebGLTexture} 생성된 텍스처입니다.
+     * @private
+     */
+    #createTexture(width, height) {
+        const gl = this.gl;
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, Math.max(1, width), Math.max(1, height), 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        return texture;
+    }
+
+    /**
+     * 렌더 타깃 하나를 생성합니다.
+     * @param {number} width - 너비입니다.
+     * @param {number} height - 높이입니다.
+     * @returns {{texture: WebGLTexture, framebuffer: WebGLFramebuffer, width: number, height: number}} 렌더 타깃입니다.
+     * @private
+     */
+    #createRenderTarget(width, height) {
+        const gl = this.gl;
+        const texture = this.#createTexture(width, height);
+        const framebuffer = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        return { texture, framebuffer, width, height };
+    }
+
+    /**
+     * blur 샘플링 비활성 시 사용할 투명 텍스처를 반환합니다.
+     * @returns {WebGLTexture} 1x1 투명 텍스처입니다.
+     * @private
+     */
+    #getEmptyTexture() {
+        if (this.emptyTexture) {
+            return this.emptyTexture;
+        }
+
+        const gl = this.gl;
+        this.emptyTexture = this.#createTexture(1, 1);
+        gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture);
+        gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            1,
+            1,
+            0,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            new Uint8Array([0, 0, 0, 0])
+        );
+        return this.emptyTexture;
     }
 
     /**

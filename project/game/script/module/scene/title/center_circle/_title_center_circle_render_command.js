@@ -16,6 +16,7 @@ const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
  * @param {number} state.secondaryWavePhase - 보조 파도 위상입니다.
  * @param {number} state.glowPhase - glow 펄스 위상입니다.
  * @param {number} state.glowCompensationScale - glow 보정 배율입니다.
+ * @param {HTMLCanvasElement[]} state.blurSourceCanvases - blur 샘플링에 사용할 하위 레이어 캔버스 목록입니다.
  * @returns {object} effect 레이어 렌더 명령입니다.
  */
 export function buildTitleCenterCircleRenderCommand({
@@ -27,7 +28,8 @@ export function buildTitleCenterCircleRenderCommand({
     wavePhase,
     secondaryWavePhase,
     glowPhase,
-    glowCompensationScale
+    glowCompensationScale,
+    blurSourceCanvases
 }) {
     const shaderConfig = TITLE_LOADING.CIRCLE_SHADER || {};
     const safeGlowCompensationScale = Number.isFinite(glowCompensationScale)
@@ -49,8 +51,13 @@ export function buildTitleCenterCircleRenderCommand({
         alpha: _resolveShaderNumber(shaderConfig.ALPHA, 1),
         glowStrength,
         glassStrength: _resolveShaderNumber(shaderConfig.GLASS_STRENGTH, 0.72),
+        bodyRadiusExpandOutlineRatio: _resolveShaderNumber(shaderConfig.BODY_RADIUS_EXPAND_OUTLINE_RATIO, 0.38),
+        backdropBlur: _resolveShaderNumber(shaderConfig.BACKDROP_BLUR, 0.1),
+        backdropBlurStrength: _resolveShaderNumber(shaderConfig.BACKDROP_BLUR_STRENGTH, 0.16),
+        backdropRefractionStrength: _resolveShaderNumber(shaderConfig.BACKDROP_REFRACTION_STRENGTH, 4.5),
         scissorPaddingRatio: _resolveShaderNumber(shaderConfig.SCISSOR_PADDING_RADIUS_RATIO, 0.86),
         scissorPaddingMin: _resolveShaderNumber(shaderConfig.SCISSOR_PADDING_MIN_PX, 28),
+        blurSourceCanvases: Array.isArray(blurSourceCanvases) ? blurSourceCanvases : [],
         colors: getLoadingCircleShaderColors()
     };
 }

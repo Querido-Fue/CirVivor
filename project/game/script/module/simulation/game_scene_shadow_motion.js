@@ -1,6 +1,5 @@
 import { clonePointSnapshot } from './game_scene_shadow_snapshot_entities.js';
-
-export const DEFAULT_SHADOW_AXIS_RESISTANCE_RECOVERY_SECONDS = 1;
+import { DEFAULT_SHADOW_AXIS_RESISTANCE_RECOVERY_SECONDS } from './game_scene_shadow_enemy_defaults.js';
 
 const AXIS_RESISTANCE_EPSILON = 1e-4;
 const MAX_SHADOW_ANGULAR_VELOCITY = 720;

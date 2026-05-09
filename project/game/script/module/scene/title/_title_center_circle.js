@@ -1,4 +1,4 @@
-import { getUIOffsetX, getUIWW, getWH, getWW, renderGL } from 'display/display_system.js';
+import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW, renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
 import { buildTitleCenterCircleRenderCommand } from './center_circle/_title_center_circle_render_command.js';
@@ -121,7 +121,11 @@ export class TitleCenterCircle {
             wavePhase: this.wavePhase,
             secondaryWavePhase: this.secondaryWavePhase,
             glowPhase: this.glowPhase,
-            glowCompensationScale: this.glowCompensationScale
+            glowCompensationScale: this.glowCompensationScale,
+            blurSourceCanvases: [
+                getCanvas('background'),
+                getCanvas('object')
+            ]
         }));
     }
 
@@ -174,7 +178,7 @@ export class TitleCenterCircle {
                 this.UIWW * TITLE_LOADING.CIRCLE_RADIUS_UIWW_RATIO
             )
         );
-        this.outlineWidth = Math.max(2, this.WH * TITLE_LOADING.OUTLINE_WIDTH_WH_RATIO);
+        this.outlineWidth = Math.max(1, this.WH * TITLE_LOADING.OUTLINE_WIDTH_WH_RATIO);
         this.#syncVisualPlacement();
     }
 
