@@ -28,9 +28,10 @@ import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_ru
 
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
 const ENEMY_DEFAULT_WEIGHT = getData('ENEMY_DEFAULT_WEIGHT');
+const ENEMY_AI_CONSTANTS = getData('ENEMY_AI_CONSTANTS');
 const AI_DECISION_GROUP_COUNT = 60;
 const AI_DECISION_INTERVAL_SECONDS = 1.0;
-const INLINE_ENEMY_AI_QUALITY_PROFILE = 'inline_safe';
+const DEFAULT_ENEMY_AI_QUALITY_PROFILE = ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE;
 const DEFAULT_OUTSIDE_CULL_RATIO = 0.1;
 
 let objectSystemInstance = null;
@@ -119,7 +120,7 @@ export class ObjectSystem {
             enemies: this.enemies,
             decisionInterval: this.aiDecisionIntervalSeconds,
             decisionGroup,
-            enemyAIQualityProfile: INLINE_ENEMY_AI_QUALITY_PROFILE,
+            enemyAIQualityProfile: DEFAULT_ENEMY_AI_QUALITY_PROFILE,
             sharedFlowFieldByKey: this.aiSharedFlowFieldByKey,
             sharedDirectPathByKey: this.aiSharedDirectPathByKey,
             sharedDensityFieldByKey: this.aiSharedDensityFieldByKey,
