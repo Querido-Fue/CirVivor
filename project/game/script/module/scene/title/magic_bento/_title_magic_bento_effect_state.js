@@ -1,4 +1,7 @@
-import { lerp } from './_title_magic_bento_motion.js';
+import { clampFiniteNumber } from 'util/number_util.js';
+import { randomRange } from 'util/random_util.js';
+
+const TWO_PI = Math.PI * 2;
 
 /**
  * 카드에 떠다니는 입자들을 업데이트합니다.
@@ -59,19 +62,27 @@ export function updateBentoCardRipples(card, delta) {
  * @returns {object} 입자 상태 객체
  */
 export function createBentoCardParticle(card, titleMagicBento, uiww) {
-    const padding = Math.max(12, card.baseWidth * 0.08);
+    const padding = clampFiniteNumber(card.baseWidth * 0.08, 12, Infinity, 12);
+    const maxLocalX = clampFiniteNumber(card.baseWidth - padding, padding, Infinity, padding);
+    const maxLocalY = clampFiniteNumber(card.baseHeight - padding, padding, Infinity, padding);
+    const baseParticleSize = clampFiniteNumber(
+        uiww * titleMagicBento.PARTICLE_SIZE_UIWW_RATIO,
+        titleMagicBento.PARTICLE_SIZE_MIN,
+        Infinity,
+        titleMagicBento.PARTICLE_SIZE_MIN
+    );
     return {
-        localX: lerp(padding, Math.max(padding, card.baseWidth - padding), Math.random()),
-        localY: lerp(padding, Math.max(padding, card.baseHeight - padding), Math.random()),
-        driftX: (Math.random() - 0.5) * 42,
-        driftY: (Math.random() - 0.5) * 42,
-        orbitRadius: 6 + (Math.random() * 18),
-        orbitSpeed: 1.4 + (Math.random() * 1.8),
-        phase: Math.random() * Math.PI * 2,
-        size: Math.max(titleMagicBento.PARTICLE_SIZE_MIN, uiww * titleMagicBento.PARTICLE_SIZE_UIWW_RATIO) * (0.55 + (Math.random() * 0.55)),
-        duration: lerp(titleMagicBento.PARTICLE_DURATION_MIN, titleMagicBento.PARTICLE_DURATION_MAX, Math.random()),
-        age: Math.random() * titleMagicBento.PARTICLE_DURATION_MAX,
-        alphaScale: 0.45 + (Math.random() * 0.55)
+        localX: randomRange(padding, maxLocalX),
+        localY: randomRange(padding, maxLocalY),
+        driftX: randomRange(-21, 21),
+        driftY: randomRange(-21, 21),
+        orbitRadius: randomRange(6, 24),
+        orbitSpeed: randomRange(1.4, 3.2),
+        phase: randomRange(0, TWO_PI),
+        size: baseParticleSize * randomRange(0.55, 1.1),
+        duration: randomRange(titleMagicBento.PARTICLE_DURATION_MIN, titleMagicBento.PARTICLE_DURATION_MAX),
+        age: randomRange(0, titleMagicBento.PARTICLE_DURATION_MAX),
+        alphaScale: randomRange(0.45, 1)
     };
 }
 
@@ -83,11 +94,13 @@ export function createBentoCardParticle(card, titleMagicBento, uiww) {
  * @param {object} titleMagicBento - 타이틀 bento 설정입니다.
  */
 export function spawnBentoCardRipple(card, localX, localY, titleMagicBento) {
+    const baseWidth = clampFiniteNumber(Number(card.baseWidth), 0, Infinity, 0);
+    const baseHeight = clampFiniteNumber(Number(card.baseHeight), 0, Infinity, 0);
     card.ripples.push({
         localX,
         localY,
         age: 0,
         duration: titleMagicBento.RIPPLE_DURATION,
-        radius: Math.max(card.baseWidth, card.baseHeight) * 0.9
+        radius: Math.max(baseWidth, baseHeight) * 0.9
     });
 }
