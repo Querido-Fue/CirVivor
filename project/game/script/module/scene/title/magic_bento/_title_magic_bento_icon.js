@@ -1,3 +1,5 @@
+import { formatRgba } from 'util/color_util.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 import { EQUILATERAL_TRIANGLE_WIDTH_RATIO } from './_title_magic_bento_motion.js';
 
 /**
@@ -52,7 +54,7 @@ function drawPlayIcon(ctx, x, y, size, color, doubled) {
         ctx.save();
         ctx.globalAlpha = 0.34;
         ctx.shadowBlur = sideLength * 0.18;
-        ctx.shadowColor = 'rgba(255, 255, 255, 0.2)';
+        ctx.shadowColor = formatRgba(255, 255, 255, 0.2);
         fillTriangle(ctx, startX + (sideLength * 0.1), startY + (sideLength * 0.08), sideLength);
         fillTriangle(ctx, startX + triangleWidth - overlap + (sideLength * 0.1), startY + (sideLength * 0.08), sideLength);
         ctx.restore();
@@ -74,7 +76,7 @@ function drawPlayIcon(ctx, x, y, size, color, doubled) {
  * @param {string} color - 아이콘 색상
  */
 function drawListIcon(ctx, x, y, size, color) {
-    const lineWidth = Math.max(1.5, size * 0.08);
+    const lineWidth = clampFiniteNumber(size * 0.08, 1.5, Infinity, 1.5);
     const shortLine = size * 0.18;
     const longLine = size * 0.52;
     const spacing = size * 0.2;
@@ -151,7 +153,7 @@ function drawFlaskIcon(ctx, x, y, size, color) {
 
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1.5, size * 0.07);
+    ctx.lineWidth = clampFiniteNumber(size * 0.07, 1.5, Infinity, 1.5);
     ctx.lineJoin = 'round';
 
     ctx.beginPath();
