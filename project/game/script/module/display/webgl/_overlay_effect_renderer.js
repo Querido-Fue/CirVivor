@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clamp01 } from 'util/number_util.js';
 import {
     COMPOSITE_TEXTURE_FRAGMENT_SHADER,
     compileShader,
@@ -327,7 +328,7 @@ export class OverlayEffectRenderer {
             }
 
             if (source.kind === 'dim') {
-                const opacity = Math.max(0, Math.min(1, source.opacity || 0));
+                const opacity = clamp01(source.opacity || 0);
                 if (opacity > 0) {
                     this.#drawSolidColorPass(new Float32Array([0, 0, 0, opacity]));
                 }
@@ -339,7 +340,7 @@ export class OverlayEffectRenderer {
             }
 
             this.#uploadSourceCanvas(source.canvas);
-            this.#drawCompositeTexturePass(Math.max(0, Math.min(1, source.opacity === undefined ? 1 : source.opacity)));
+            this.#drawCompositeTexturePass(clamp01(source.opacity === undefined ? 1 : source.opacity));
         }
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
