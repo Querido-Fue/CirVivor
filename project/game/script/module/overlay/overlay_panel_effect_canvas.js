@@ -1,5 +1,5 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { colorUtil } from 'util/color_util.js';
+import { colorUtil, formatRgba } from 'util/color_util.js';
 import { clampFiniteNumber } from 'util/number_util.js';
 import { lerpNumber } from './_panel_effect_math.js';
 
@@ -32,11 +32,11 @@ function drawOverlayPanelSpotlight(context, interactionState, spotlightOptions, 
         interactionState.localY,
         spotlightOptions.radius
     );
-    gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.15 * interactionState.spotlightAlpha})`);
-    gradient.addColorStop(0.15, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.08 * interactionState.spotlightAlpha})`);
-    gradient.addColorStop(0.25, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.04 * interactionState.spotlightAlpha})`);
-    gradient.addColorStop(0.4, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.02 * interactionState.spotlightAlpha})`);
-    gradient.addColorStop(0.65, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.01 * interactionState.spotlightAlpha})`);
+    gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.15 * interactionState.spotlightAlpha));
+    gradient.addColorStop(0.15, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.08 * interactionState.spotlightAlpha));
+    gradient.addColorStop(0.25, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.04 * interactionState.spotlightAlpha));
+    gradient.addColorStop(0.4, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.02 * interactionState.spotlightAlpha));
+    gradient.addColorStop(0.65, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.01 * interactionState.spotlightAlpha));
     gradient.addColorStop(0.7, 'rgba(0, 0, 0, 0)');
     context.fillStyle = gradient;
     context.beginPath();
@@ -78,7 +78,7 @@ function drawOverlayPanelBorder(context, panel, interactionState, borderOptions,
     context.lineWidth = borderWidth;
     context.lineJoin = 'round';
     context.lineCap = 'round';
-    context.strokeStyle = `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, ${edgeAlpha})`;
+    context.strokeStyle = formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha);
     context.stroke();
 
     context.globalCompositeOperation = 'destination-in';
@@ -120,11 +120,11 @@ function drawOverlayPanelParticles(context, panel, interactionState, effectColor
         context.scale(particle.scale, particle.scale);
         context.beginPath();
         context.arc(0, 0, 2, 0, Math.PI * 2);
-        context.fillStyle = `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${particle.opacity})`;
+        context.fillStyle = formatRgba(effectColor.r, effectColor.g, effectColor.b, particle.opacity);
         context.fill();
         context.beginPath();
         context.arc(0, 0, 4, 0, Math.PI * 2);
-        context.fillStyle = `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${particle.opacity * 0.2})`;
+        context.fillStyle = formatRgba(effectColor.r, effectColor.g, effectColor.b, particle.opacity * 0.2);
         context.fill();
         context.restore();
     }
@@ -146,8 +146,8 @@ function drawOverlayPanelRipples(context, interactionState, effectColor) {
         }
 
         const gradient = context.createRadialGradient(ripple.x, ripple.y, 0, ripple.x, ripple.y, radius);
-        gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.4 * opacity})`);
-        gradient.addColorStop(0.3, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.2 * opacity})`);
+        gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.4 * opacity));
+        gradient.addColorStop(0.3, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.2 * opacity));
         gradient.addColorStop(0.7, 'rgba(0, 0, 0, 0)');
         context.fillStyle = gradient;
         context.beginPath();

@@ -1,4 +1,5 @@
 import { lerpNumber } from 'overlay/_panel_effect_math.js';
+import { formatRgba } from 'util/color_util.js';
 import { clampNumber } from './_title_menu_motion.js';
 import {
     getMenuForegroundColor,
@@ -22,9 +23,9 @@ export function drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptio
         runtimeState.localY,
         spotlightOptions.radius
     );
-    gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.16 * runtimeState.spotlightAlpha})`);
-    gradient.addColorStop(0.2, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.07 * runtimeState.spotlightAlpha})`);
-    gradient.addColorStop(0.5, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.015 * runtimeState.spotlightAlpha})`);
+    gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.16 * runtimeState.spotlightAlpha));
+    gradient.addColorStop(0.2, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.07 * runtimeState.spotlightAlpha));
+    gradient.addColorStop(0.5, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.015 * runtimeState.spotlightAlpha));
     gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
     context.fillStyle = gradient;
     context.beginPath();
@@ -67,10 +68,10 @@ export function drawTitleMenuCardBorder(context, runtimeState, renderState, bord
         runtimeState.localY,
         spotlightRadius
     );
-    gradient.addColorStop(0, `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, ${edgeAlpha})`);
-    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart * 0.62)), `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, ${edgeAlpha * 0.82})`);
-    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart)), `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, ${edgeAlpha * 0.55})`);
-    gradient.addColorStop(1, `rgba(${resolvedColor.r}, ${resolvedColor.g}, ${resolvedColor.b}, 0)`);
+    gradient.addColorStop(0, formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha));
+    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart * 0.62)), formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha * 0.82));
+    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart)), formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, edgeAlpha * 0.55));
+    gradient.addColorStop(1, formatRgba(resolvedColor.r, resolvedColor.g, resolvedColor.b, 0));
 
     context.beginPath();
     context.roundRect(0, 0, panelRect.w, panelRect.h, panelRect.radius);
@@ -106,11 +107,11 @@ export function drawTitleMenuCardParticles(context, renderState, runtimeState, e
         context.scale(particle.scale, particle.scale);
         context.beginPath();
         context.arc(0, 0, innerRadius, 0, Math.PI * 2);
-        context.fillStyle = `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${particle.opacity})`;
+        context.fillStyle = formatRgba(effectColor.r, effectColor.g, effectColor.b, particle.opacity);
         context.fill();
         context.beginPath();
         context.arc(0, 0, outerRadius, 0, Math.PI * 2);
-        context.fillStyle = `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${particle.opacity * 0.18})`;
+        context.fillStyle = formatRgba(effectColor.r, effectColor.g, effectColor.b, particle.opacity * 0.18);
         context.fill();
         context.restore();
     }
@@ -132,8 +133,8 @@ export function drawTitleMenuCardRipples(context, runtimeState, effectColor) {
         }
 
         const gradient = context.createRadialGradient(ripple.x, ripple.y, 0, ripple.x, ripple.y, radius);
-        gradient.addColorStop(0, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.38 * opacity})`);
-        gradient.addColorStop(0.35, `rgba(${effectColor.r}, ${effectColor.g}, ${effectColor.b}, ${0.18 * opacity})`);
+        gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.38 * opacity));
+        gradient.addColorStop(0.35, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.18 * opacity));
         gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
         context.fillStyle = gradient;
         context.beginPath();
