@@ -289,7 +289,70 @@ export const TITLE_CONSTANTS = Object.freeze({
         }),
         SETTINGS: Object.freeze({
             WIDTH_UIWW_RATIO: 0.65,
-            HEIGHT_WH_RATIO: 0.7
+            HEIGHT_WH_RATIO: 0.7,
+            LAYOUT: Object.freeze({
+                HEADER: Object.freeze({
+                    START_X_OX: 0,
+                    START_Y_OY: 0,
+                    WIDTH_OW: 100,
+                    HEIGHT_OH: 19,
+                    PADDING_X_WW: 1.8,
+                    TITLE_TOP_SPACE_WH: 2.5,
+                    DIVIDER_TOP_SPACE_WH: 1.5
+                }),
+                LEFT_COLUMN: Object.freeze({
+                    START_X_OX: 3,
+                    START_Y_OY: 15,
+                    WIDTH_OW: 44,
+                    HEIGHT_OH: 100
+                }),
+                RIGHT_COLUMN: Object.freeze({
+                    START_X_OX: 53,
+                    START_Y_OY: 15,
+                    WIDTH_OW: 44,
+                    HEIGHT_OH: 100
+                }),
+                FOOTER: Object.freeze({
+                    START_X_OX: 0,
+                    START_Y_OY: 0,
+                    WIDTH_OW: 100,
+                    HEIGHT_OH: 100,
+                    PADDING_X_WW: 1.8,
+                    BOTTOM_SPACE_WH: 3,
+                    BUTTON_GAP_WW: 1
+                }),
+                COLUMN: Object.freeze({
+                    SPACING_SCALE: 0.9,
+                    CONTROL_WRAP_WIDTH_PARENT: 65,
+                    CONTROL_MAX_WIDTH_PARENT: 66.66,
+                    SECTION_HEADER_BOTTOM_SPACE_OH: 3.5,
+                    SECTION_GROUP_GAP_OH: 1,
+                    COLUMN_END_SPACE_OH: 4
+                }),
+                CONTROL: Object.freeze({
+                    DROPDOWN_HEIGHT_WH: 3,
+                    TOGGLE_WIDTH_WW: 2.55,
+                    TOGGLE_HEIGHT_WH: 2
+                }),
+                SLIDER: Object.freeze({
+                    TRACK_HEIGHT_WH_RATIO: 0.008,
+                    KNOB_RADIUS_WH_RATIO: 0.009,
+                    VALUE_OFFSET_X_UIWW_RATIO: 0.015,
+                    VALUE_OFFSET_Y_WH_RATIO: 0.009
+                }),
+                ITEM_HEADER: Object.freeze({
+                    ROW_WIDTH_PARENT: 94,
+                    LABEL_WIDTH_PARENT: 35,
+                    CONTROL_GAP_WW: 1
+                }),
+                ITEM_FOOTER: Object.freeze({
+                    DESCRIPTION_TOP_SPACE_OH: 2.25,
+                    DESCRIPTION_WIDTH_PARENT: 94,
+                    DESCRIPTION_ALPHA: 0.8,
+                    DESCRIPTION_BOTTOM_SPACE_MULTIPLIER: 4.5,
+                    EMPTY_BOTTOM_SPACE_MULTIPLIER: 5
+                })
+            })
         }),
         DECK: Object.freeze({
             WIDTH_UIWW_RATIO: 0.65,

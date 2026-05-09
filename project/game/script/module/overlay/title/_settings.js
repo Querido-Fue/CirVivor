@@ -6,6 +6,7 @@ import { previewSettingBatch, setSettingBatch, getSettingSchema } from 'save/sav
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getAvailableLanguages } from 'ui/lang/_language_handler.js';
 import { getData } from 'data/data_handler.js';
+import { createFontStringFromPreset } from 'util/font_util.js';
 import {
     SETTING_LABEL_KEYS,
     createSettingsInitialState,
@@ -22,14 +23,13 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const SETTINGS_LAYOUT = TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.LAYOUT;
 
 /**
  * @class SettingsOverlay
  * @description 타이틀 화면의 설정 오버레이를 구성하고 변경된 옵션을 저장합니다.
  */
 export class SettingsOverlay extends TitleOverlay {
-    #openKeybindings;
-
     constructor(TitleScene) {
         super(TitleScene, { glOverlay: true, titleIconId: 'setting' });
 
@@ -63,36 +63,37 @@ export class SettingsOverlay extends TitleOverlay {
          */
     _generateLayout() {
         this._releaseElements();
+        const { HEADER, LEFT_COLUMN, RIGHT_COLUMN, FOOTER } = SETTINGS_LAYOUT;
         const headerHandler = new LayoutHandler(this, this.positioningHandler)
-            .layoutStartPos("OX", 0, "OY", 0)
-            .layoutSize("OW", 100, "OH", 19)
-            .paddingX("WW", 1.8)
-            .space("WH", 2.5)
+            .layoutStartPos("OX", HEADER.START_X_OX, "OY", HEADER.START_Y_OY)
+            .layoutSize("OW", HEADER.WIDTH_OW, "OH", HEADER.HEIGHT_OH)
+            .paddingX("WW", HEADER.PADDING_X_WW)
+            .space("WH", HEADER.TITLE_TOP_SPACE_WH)
             .item("text", "title_text").stylePreset("h1").text(getLangString('title_settings_title')).fill(ColorSchemes.Title.TextDark)
-            .space("WH", 1.5)
+            .space("WH", HEADER.DIVIDER_TOP_SPACE_WH)
             .item("line", "divider_line").width("fill").stroke(ColorSchemes.Overlay.Panel.Divider).lineWidth(1).align("center");
 
         const leftHandler = new LayoutHandler(this, this.positioningHandler)
-            .layoutStartPos("OX", 3, "OY", 15)
-            .layoutSize("OW", 44, "OH", 100)
+            .layoutStartPos("OX", LEFT_COLUMN.START_X_OX, "OY", LEFT_COLUMN.START_Y_OY)
+            .layoutSize("OW", LEFT_COLUMN.WIDTH_OW, "OH", LEFT_COLUMN.HEIGHT_OH)
             .paddingX("absolute", 0);
 
         this._buildLeftColumn(leftHandler);
 
         const rightHandler = new LayoutHandler(this, this.positioningHandler)
-            .layoutStartPos("OX", 53, "OY", 15)
-            .layoutSize("OW", 44, "OH", 100)
+            .layoutStartPos("OX", RIGHT_COLUMN.START_X_OX, "OY", RIGHT_COLUMN.START_Y_OY)
+            .layoutSize("OW", RIGHT_COLUMN.WIDTH_OW, "OH", RIGHT_COLUMN.HEIGHT_OH)
             .paddingX("absolute", 0);
 
         this._buildRightColumn(rightHandler);
 
         const footHandler = new LayoutHandler(this, this.positioningHandler)
-            .layoutStartPos("OX", 0, "OY", 0)
-            .layoutSize("OW", 100, "OH", 100)
-            .paddingX("WW", 1.8);
+            .layoutStartPos("OX", FOOTER.START_X_OX, "OY", FOOTER.START_Y_OY)
+            .layoutSize("OW", FOOTER.WIDTH_OW, "OH", FOOTER.HEIGHT_OH)
+            .paddingX("WW", FOOTER.PADDING_X_WW);
 
-        footHandler.bottomSpace("WH", 3)
-            .bottomGroup().justifyContent("right", "WW", 1).align("right")
+        footHandler.bottomSpace("WH", FOOTER.BOTTOM_SPACE_WH)
+            .bottomGroup().justifyContent("right", "WW", FOOTER.BUTTON_GAP_WW).align("right")
             .item("button", "cancel_btn").stylePreset("overlay_interact_button")
             .buttonText(getLangString('title_settings_cancel')).onClick(async () => {
                 await this.#cancelChanges();
@@ -238,166 +239,168 @@ export class SettingsOverlay extends TitleOverlay {
         this.close();
     }
 
+    /**
+     * 키 설정 overlay를 여는 진입점입니다.
+     */
+    #openKeybindings() {
+    }
+
+    /**
+     * 왼쪽 설정 열의 디스플레이 항목을 구성합니다.
+     * @param {LayoutHandler} handler - 왼쪽 열 레이아웃 핸들러입니다.
+     */
     _buildLeftColumn(handler) {
-        const spacingScale = 0.9;
-        const controlWrapWidth = 65;
-        const controlMaxWidth = 66.66;
+        const { COLUMN, CONTROL, SLIDER } = SETTINGS_LAYOUT;
+        const spacingScale = COLUMN.SPACING_SCALE;
+        const controlWrapWidth = COLUMN.CONTROL_WRAP_WIDTH_PARENT;
+        const controlMaxWidth = COLUMN.CONTROL_MAX_WIDTH_PARENT;
         const sliderValueFont = this._getTextPresetFont('SETTINGS_SLIDER_VALUE');
 
-        // --- 디스플레이 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_display');
-        handler.space("OH", 3.5 * spacingScale);
+        handler.space("OH", COLUMN.SECTION_HEADER_BOTTOM_SPACE_OH * spacingScale);
 
-        // 창 모드
         this._addItemHeader(handler, 'title_settings_window_mode', 'windowMode');
         const windowModeItems = [
             { label: getLangString('title_settings_window_mode_windowed'), value: 'windowed' },
             { label: getLangString('title_settings_window_mode_fullscreen'), value: 'fullscreen' }
         ];
-        handler.width("parent", controlWrapWidth).item("dropdown", "control_windowMode").width("parent", controlMaxWidth).height("WH", 3)
+        handler.width("parent", controlWrapWidth).item("dropdown", "control_windowMode").width("parent", controlMaxWidth).height("WH", CONTROL.DROPDOWN_HEIGHT_WH)
             .items(windowModeItems)
             .setValue(this.tempSettings.windowMode).stylePreset("h6_bold")
             .prop("openDirection", "down")
             .onChange((val) => { this.#handleSettingInput('windowMode', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        // 와이드스크린 지원
         this._addItemHeader(handler, 'title_settings_widescreen_support', 'widescreenSupport');
         handler.width("parent", controlWrapWidth)
             .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .item("toggle", "control_widescreenSupport").width("WW", 2.55).height("WH", 2)
+            .item("toggle", "control_widescreenSupport").width("WW", CONTROL.TOGGLE_WIDTH_WW).height("WH", CONTROL.TOGGLE_HEIGHT_WH)
             .setValue(this.tempSettings.widescreenSupport)
             .onChange((val) => { this.#handleSettingInput('widescreenSupport', val); });
         handler.endGroup();
         this._addItemFooter(handler, 'title_settings_desc_widescreen_support', spacingScale);
 
-        // 렌더 스케일
         this._addItemHeader(handler, 'title_settings_render_scale', 'renderScale');
         const rsSchema = getSettingSchema('renderScale');
         handler.width("parent", controlWrapWidth).item("slider", "control_renderScale").width("parent", controlMaxWidth)
-            .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
+            .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", rsSchema.min).prop("max", rsSchema.max).setValue(this.tempSettings.renderScale)
             .prop("valueSuffix", '%')
-            .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
+            .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
             .prop("valueFont", sliderValueFont)
-            .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
+            .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => `${v}% (${Math.round(getBaseWW() * v / 100)}×${Math.round(getBaseWH() * v / 100)})`)
             .onChange((val) => { this.#handleSettingInput('renderScale', val, { preview: false }); })
             .onCommit((val) => { this.#handleSettingInput('renderScale', val); });
         this._addItemFooter(handler, 'title_settings_desc_render_scale', spacingScale);
 
-        // 인터페이스 스케일
         this._addItemHeader(handler, 'title_settings_ui_scale', 'uiScale');
         const usSchema = getSettingSchema('uiScale');
         handler.width("parent", controlWrapWidth).item("slider", "control_uiScale").width("parent", controlMaxWidth)
-            .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
+            .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", usSchema.min).prop("max", usSchema.max).setValue(this.tempSettings.uiScale)
             .prop("valueSuffix", '%')
-            .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
+            .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
             .prop("valueFont", sliderValueFont)
-            .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
+            .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => `${v}%`)
             .onChange((val) => { this.#handleSettingInput('uiScale', val, { preview: false }); })
             .onCommit((val) => { this.#handleSettingInput('uiScale', val); });
         this._addItemFooter(handler, 'title_settings_desc_ui_scale', spacingScale);
 
-        // 투명도 비활성화
         this._addItemHeader(handler, 'title_settings_disable_transparency', 'disableTransparency');
         handler.width("parent", controlWrapWidth)
             .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .item("toggle", "control_disableTransparency").width("WW", 2.55).height("WH", 2)
+            .item("toggle", "control_disableTransparency").width("WW", CONTROL.TOGGLE_WIDTH_WW).height("WH", CONTROL.TOGGLE_HEIGHT_WH)
             .setValue(this.tempSettings.disableTransparency)
             .onChange((val) => { this.#handleSettingInput('disableTransparency', val); });
         handler.endGroup();
         this._addItemFooter(handler, 'title_settings_desc_transparency', spacingScale);
 
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", COLUMN.COLUMN_END_SPACE_OH * spacingScale);
     }
+
+    /**
+     * 오른쪽 설정 열의 UI/사운드/조작 항목을 구성합니다.
+     * @param {LayoutHandler} handler - 오른쪽 열 레이아웃 핸들러입니다.
+     */
     _buildRightColumn(handler) {
-        const spacingScale = 0.9;
-        const controlWrapWidth = 65;
-        const controlMaxWidth = 66.66;
+        const { COLUMN, CONTROL, SLIDER } = SETTINGS_LAYOUT;
+        const spacingScale = COLUMN.SPACING_SCALE;
+        const controlWrapWidth = COLUMN.CONTROL_WRAP_WIDTH_PARENT;
+        const controlMaxWidth = COLUMN.CONTROL_MAX_WIDTH_PARENT;
         const sliderValueFont = this._getTextPresetFont('SETTINGS_SLIDER_VALUE');
 
-        // --- UI 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_ui');
-        handler.space("OH", 3.5 * spacingScale);
+        handler.space("OH", COLUMN.SECTION_HEADER_BOTTOM_SPACE_OH * spacingScale);
 
-        // 언어
         this._addItemHeader(handler, 'title_settings_language', 'language');
-        handler.width("parent", controlWrapWidth).item("dropdown", "control_language").width("parent", controlMaxWidth).height("WH", 3)
+        handler.width("parent", controlWrapWidth).item("dropdown", "control_language").width("parent", controlMaxWidth).height("WH", CONTROL.DROPDOWN_HEIGHT_WH)
             .items(this.availableLanguages.map((lang) => ({ label: lang.languageName, value: lang.key })))
             .setValue(this.tempSettings.language).stylePreset("h6_bold")
             .prop("openDirection", "down")
             .onChange((val) => { this.#handleSettingInput('language', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        // 테마
         this._addItemHeader(handler, 'title_settings_theme', 'theme');
         const themeItems = THEME_OPTIONS.map((option) => ({
             label: getLangString(option.labelKey) || option.key,
             value: option.key
         }));
-        handler.width("parent", controlWrapWidth).item("dropdown", "control_theme").width("parent", controlMaxWidth).height("WH", 3)
+        handler.width("parent", controlWrapWidth).item("dropdown", "control_theme").width("parent", controlMaxWidth).height("WH", CONTROL.DROPDOWN_HEIGHT_WH)
             .items(themeItems)
             .setValue(this.tempSettings.theme).stylePreset("h6_bold")
             .prop("openDirection", "down")
             .onChange((val) => { this.#handleSettingInput('theme', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        // 툴팁 표시 시간
         this._addItemHeader(handler, 'title_settings_tooltip_delay', 'tooltipDelaySeconds');
         const tooltipDelaySchema = getSettingSchema('tooltipDelaySeconds');
         handler.width("parent", controlWrapWidth).item("slider", "control_tooltipDelaySeconds").width("parent", controlMaxWidth)
-            .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
+            .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", tooltipDelaySchema.min).prop("max", tooltipDelaySchema.max).prop("step", 0.1).setValue(this.tempSettings.tooltipDelaySeconds)
-            .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
+            .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
             .prop("valueFont", sliderValueFont)
-            .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
+            .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => formatTooltipDelayValue(v, this.tempSettings.language))
             .onChange((val) => { this.#handleSettingInput('tooltipDelaySeconds', val, { preview: false }); })
             .onCommit((val) => { this.#handleSettingInput('tooltipDelaySeconds', val); });
         this._addItemFooter(handler, 'title_settings_desc_tooltip_delay', spacingScale);
 
-        handler.space("OH", spacingScale);
+        handler.space("OH", COLUMN.SECTION_GROUP_GAP_OH * spacingScale);
 
-        // --- 사운드 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_sound');
-        handler.space("OH", 3.5 * spacingScale);
+        handler.space("OH", COLUMN.SECTION_HEADER_BOTTOM_SPACE_OH * spacingScale);
 
-        // 배경음
         this._addItemHeader(handler, 'title_settings_bgm', 'bgmVolume');
         const bgmSchema = getSettingSchema('bgmVolume');
         handler.width("parent", controlWrapWidth).item("slider", "control_bgmVolume").width("parent", controlMaxWidth)
-            .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
+            .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", bgmSchema.min).prop("max", bgmSchema.max).setValue(this.tempSettings.bgmVolume)
-            .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
+            .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
             .prop("valueFont", sliderValueFont)
-            .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
+            .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .onChange((val) => { this.#handleSettingInput('bgmVolume', val, { preview: false }); })
             .onCommit((val) => { this.#handleSettingInput('bgmVolume', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        // 효과음
         this._addItemHeader(handler, 'title_settings_sfx', 'sfxVolume');
         const sfxSchema = getSettingSchema('sfxVolume');
         handler.width("parent", controlWrapWidth).item("slider", "control_sfxVolume").width("parent", controlMaxWidth)
-            .prop("trackHeight", this.WH * 0.008 * this.uiScale).prop("knobRadius", this.WH * 0.009 * this.uiScale)
+            .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", sfxSchema.min).prop("max", sfxSchema.max).setValue(this.tempSettings.sfxVolume)
-            .prop("valueOffsetX", this.UIWW * 0.015 * this.uiScale)
+            .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
             .prop("valueFont", sliderValueFont)
-            .prop("valueOffsetY", this.WH * 0.009 * this.uiScale)
+            .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .onChange((val) => { this.#handleSettingInput('sfxVolume', val, { preview: false }); })
             .onCommit((val) => { this.#handleSettingInput('sfxVolume', val); });
         this._addItemFooter(handler, null, spacingScale);
 
-        handler.space("OH", spacingScale);
+        handler.space("OH", COLUMN.SECTION_GROUP_GAP_OH * spacingScale);
 
-        // --- 조작 섹션 ---
         this._addSectionHeader(handler, 'title_settings_section_controls');
-        handler.space("OH", 3.5 * spacingScale);
+        handler.space("OH", COLUMN.SECTION_HEADER_BOTTOM_SPACE_OH * spacingScale);
 
-        // 키 설정
         this._addItemHeader(handler, 'title_settings_keybindings');
         handler.width("parent", controlWrapWidth)
             .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
@@ -408,10 +411,17 @@ export class SettingsOverlay extends TitleOverlay {
         handler.endGroup();
         this._addItemFooter(handler, null, spacingScale);
 
-        handler.space("OH", 4 * spacingScale);
+        handler.space("OH", COLUMN.COLUMN_END_SPACE_OH * spacingScale);
     }
+
+    /**
+     * 설정 섹션 헤더를 추가합니다.
+     * @param {LayoutHandler} handler - 레이아웃 핸들러입니다.
+     * @param {string} labelKey - 다국어 라벨 키입니다.
+     */
     _addSectionHeader(handler, labelKey) {
-        handler.group().justifyContent("space-between", "WW", 1).width("parent", 100).align("center")
+        const { ITEM_HEADER } = SETTINGS_LAYOUT;
+        handler.group().justifyContent("space-between", "WW", ITEM_HEADER.CONTROL_GAP_WW).width("parent", 100).align("center")
             .item("text").text(getLangString(labelKey)).stylePreset("h3").fill(ColorSchemes.Overlay.Text.Section).vAlign("center")
             .item("line").width("fill").stroke(ColorSchemes.Overlay.Panel.Divider).lineWidth(1).vAlign("center")
             .endGroup();
@@ -423,47 +433,52 @@ export class SettingsOverlay extends TitleOverlay {
      * @param {keyof typeof SETTING_LABEL_KEYS|null} [settingKey=null] - 변경 상태를 추적할 설정 키입니다.
      */
     _addItemHeader(handler, labelKey, settingKey = null) {
+        const { ITEM_HEADER } = SETTINGS_LAYOUT;
         const labelId = settingKey ? getSettingLabelId(settingKey) : null;
         const labelText = settingKey
             ? getSettingLabelText(this.initialSettings, this.tempSettings, settingKey, labelKey)
             : getLangString(labelKey);
 
         // 라벨 길이(언어별 차이)에 영향을 받지 않도록 라벨 영역을 고정 폭으로 분리
-        handler.group().justifyContent("left", "WW", 0).width("parent", 94).align("center")
-            .group().justifyContent("left", "WW", 0).width("parent", 35).vAlign("center")
+        handler.group().justifyContent("left", "WW", 0).width("parent", ITEM_HEADER.ROW_WIDTH_PARENT).align("center")
+            .group().justifyContent("left", "WW", 0).width("parent", ITEM_HEADER.LABEL_WIDTH_PARENT).vAlign("center")
             .item("text", labelId).text(labelText).stylePreset("h5_bold").fill(ColorSchemes.Overlay.Text.Item).vAlign("center")
             .endGroup()
             .spacer()
-            .group().justifyContent("right", "WW", 1).vAlign("center");
+            .group().justifyContent("right", "WW", ITEM_HEADER.CONTROL_GAP_WW).vAlign("center");
     }
+
+    /**
+     * 설정 항목 설명과 하단 간격을 추가합니다.
+     * @param {LayoutHandler} handler - 레이아웃 핸들러입니다.
+     * @param {string|null} descriptionKey - 설명 다국어 키입니다.
+     * @param {number} spacingScale - 열 간격 배율입니다.
+     */
     _addItemFooter(handler, descriptionKey, spacingScale) {
+        const { ITEM_FOOTER } = SETTINGS_LAYOUT;
         handler.endGroup().endGroup();
         if (descriptionKey) {
-            handler.space("OH", 2.25);
-            handler.group().justifyContent("left", "WW", 0).width("parent", 94).align("center")
-                .item("text").text(getLangString(descriptionKey)).stylePreset("settings_desc").fill(ColorSchemes.Overlay.Text.Item).prop("alpha", 0.8)
+            handler.space("OH", ITEM_FOOTER.DESCRIPTION_TOP_SPACE_OH);
+            handler.group().justifyContent("left", "WW", 0).width("parent", ITEM_FOOTER.DESCRIPTION_WIDTH_PARENT).align("center")
+                .item("text").text(getLangString(descriptionKey)).stylePreset("settings_desc").fill(ColorSchemes.Overlay.Text.Item).prop("alpha", ITEM_FOOTER.DESCRIPTION_ALPHA)
                 .endGroup()
-                .space("OH", 4.5 * spacingScale);
+                .space("OH", ITEM_FOOTER.DESCRIPTION_BOTTOM_SPACE_MULTIPLIER * spacingScale);
         } else {
-            handler.space("OH", 5 * spacingScale);
+            handler.space("OH", ITEM_FOOTER.EMPTY_BOTTOM_SPACE_MULTIPLIER * spacingScale);
         }
     }
+
+    /**
+     * 텍스트 프리셋을 현재 UI 스케일에 맞는 Canvas font 문자열로 변환합니다.
+     * @param {keyof typeof TEXT_CONSTANTS} presetKey - 텍스트 프리셋 키입니다.
+     * @returns {string} Canvas font 속성 문자열입니다.
+     */
     _getTextPresetFont(presetKey) {
-        const fallback = TEXT_CONSTANTS.H6;
-        const preset = TEXT_CONSTANTS[presetKey] || fallback;
-        const fontData = preset.FONT || fallback.FONT;
-        const sizePx = this.positioningHandler.parseUIData(fontData.SIZE, this.uiScale);
-        const weight = fontData.WEIGHT || 400;
-        const family = this._normalizeFontFamily(fontData.FAMILY || 'Pretendard Variable, arial');
-        return `${weight} ${sizePx}px ${family}`;
-    }
-    _normalizeFontFamily(fontFamily) {
-        let familyStr = fontFamily;
-        if (!familyStr.includes('"') && !familyStr.includes("'")) {
-            const parts = familyStr.split(',');
-            familyStr = `"${parts[0].trim()}"${parts[1] ? ',' + parts[1] : ''}`;
-        }
-        return familyStr;
+        return createFontStringFromPreset(TEXT_CONSTANTS[presetKey], {
+            fallbackData: TEXT_CONSTANTS.H6,
+            defaultWeight: 400,
+            resolveSizePx: (sizeData) => this.positioningHandler.parseUIData(sizeData, this.uiScale)
+        });
     }
 
     /**

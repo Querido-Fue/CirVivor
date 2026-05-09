@@ -101,6 +101,16 @@ export function getRevertedSettings(initialSettings, tempSettings) {
 }
 
 /**
+ * 가상 설정 키를 실제 저장 키 묶음으로 확장합니다.
+ * 현재 설정 UI는 모두 실제 저장 키와 1:1로 매핑되므로 복사본만 반환합니다.
+ * @param {object} [changedSettings={}] - UI에서 변경된 설정 객체입니다.
+ * @returns {object} 저장/미리보기에 사용할 실제 설정 객체입니다.
+ */
+export function expandCompositeSettings(changedSettings = {}) {
+    return { ...changedSettings };
+}
+
+/**
  * 설정 항목 라벨의 UI 요소 id를 반환합니다.
  * @param {keyof typeof SETTING_LABEL_KEYS} settingKey - 설정 키입니다.
  * @returns {string} 라벨 UI 요소 id입니다.

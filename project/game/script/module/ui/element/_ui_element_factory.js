@@ -2,6 +2,7 @@ import { measureText } from 'display/display_system.js';
 import { getData } from 'data/data_handler.js';
 import { Icon } from 'ui/element/_icon.js';
 import { UIPool } from 'ui/_ui_pool.js';
+import { createFontString, createFontStringFromPreset } from 'util/font_util.js';
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
@@ -128,14 +129,19 @@ export class UIElementFactory {
     static _createText(item, x, y, parentW, parentH, _forcedW, layoutHandler) {
         const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
 
+        const fontString = createFontStringFromPreset(presetData, {
+            defaultWeight: 400,
+            resolveSizePx: (sizeData) => layoutHandler.parseUnit(
+                sizeData.BASE || 'WW',
+                sizeData.VALUE || 1,
+                parentW
+            )
+        });
         const fontSizePx = layoutHandler.parseUnit(
             presetData.FONT?.SIZE?.BASE || 'WW',
             presetData.FONT?.SIZE?.VALUE || 1,
             parentW
         );
-        const fontWeight = presetData.FONT?.WEIGHT || 400;
-        const fontFamily = presetData.FONT?.FAMILY || 'Pretendard Variable, arial';
-        const fontString = `${fontWeight} ${fontSizePx}px ${this._normalizeFontFamily(fontFamily)}`;
 
         const textWidth = measureText(item.props.text || '', fontString);
 
@@ -453,7 +459,11 @@ export class UIElementFactory {
         }
 
         if (item.text !== undefined && item.font && typeof item.size === 'number') {
-            const fontString = `${item.fontWeight || ''}${item.size}px ${this._normalizeFontFamily(item.font)}`;
+            const fontString = createFontString({
+                weight: item.fontWeight || '',
+                sizePx: item.size,
+                family: item.font
+            });
             return measureText(item.text, fontString);
         }
 
@@ -505,22 +515,13 @@ export class UIElementFactory {
     }
 
     static _buildPresetFontString(presetData, defaultWeight, parentW, layoutHandler) {
-        const fontSizePx = layoutHandler.parseUnit(
-            presetData.FONT?.SIZE?.BASE || 'WW',
-            presetData.FONT?.SIZE?.VALUE || 1,
-            parentW
-        );
-        const fontWeight = presetData.FONT?.WEIGHT || defaultWeight;
-        const fontFamily = presetData.FONT?.FAMILY || 'Pretendard Variable, arial';
-        return `${fontWeight} ${fontSizePx}px ${this._normalizeFontFamily(fontFamily)}`;
-    }
-
-    static _normalizeFontFamily(fontFamily) {
-        let familyStr = fontFamily;
-        if (!familyStr.includes('"') && !familyStr.includes("'")) {
-            const parts = familyStr.split(',');
-            familyStr = `"${parts[0].trim()}"${parts[1] ? ',' + parts[1] : ''}`;
-        }
-        return familyStr;
+        return createFontStringFromPreset(presetData, {
+            defaultWeight,
+            resolveSizePx: (sizeData) => layoutHandler.parseUnit(
+                sizeData.BASE || 'WW',
+                sizeData.VALUE || 1,
+                parentW
+            )
+        });
     }
 }
