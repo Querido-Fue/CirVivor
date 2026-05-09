@@ -2,6 +2,25 @@ import { TitleScene } from './title/_title_scene.js';
 import { GameScene } from './game/_game_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
 
+const SCENE_STATES = Object.freeze({
+    TITLE: 'title',
+    IN_GAME: 'inGame'
+});
+
+/**
+ * 씬에 지정한 메서드가 있으면 호출합니다.
+ * @param {object|null|undefined} scene - 대상 씬 인스턴스입니다.
+ * @param {string} methodName - 호출할 메서드 이름입니다.
+ * @param {Array} [args=[]] - 메서드 인자 목록입니다.
+ * @returns {*} 씬 메서드 반환값입니다.
+ */
+function callSceneMethod(scene, methodName, args = []) {
+    if (scene && typeof scene[methodName] === 'function') {
+        return scene[methodName](...args);
+    }
+    return undefined;
+}
+
 /**
  * @class SceneSystem
  * @description 현재 활성 씬을 보관하고 씬 전환을 관리합니다.
@@ -12,7 +31,8 @@ export class SceneSystem {
      */
     constructor(systemHandler) {
         this.systemHandler = systemHandler;
-        this.sceneState = "title";
+        this.scene = null;
+        this.sceneState = SCENE_STATES.TITLE;
     }
 
     /**
@@ -20,7 +40,7 @@ export class SceneSystem {
      * 글로벌 배경과 타이틀 씬을 로드합니다.
      */
     async init() {
-        this.scene = new TitleScene(this);
+        this.#setScene(new TitleScene(this), SCENE_STATES.TITLE);
     }
 
     /**
@@ -28,32 +48,28 @@ export class SceneSystem {
      * @param {object} [options={}] - 현재 프레임의 실행 보조 옵션입니다.
      */
     update(options = {}) {
-        this.scene.update(options);
+        this.#callActiveScene('update', [options]);
     }
 
     /**
      * 현재 씬의 고정 틱 업데이트를 호출합니다.
      */
     fixedUpdate() {
-        if (this.scene && typeof this.scene.fixedUpdate === 'function') {
-            this.scene.fixedUpdate();
-        }
+        this.#callActiveScene('fixedUpdate');
     }
 
     /**
      * 현재 씬을 그립니다.
      */
     draw() {
-        this.scene.draw();
+        this.#callActiveScene('draw');
     }
 
     /**
-         * 창 크기 변경 이벤트를 현재 활성화된 씬에 전달합니다.
-         */
+     * 창 크기 변경 이벤트를 현재 활성화된 씬에 전달합니다.
+     */
     resize() {
-        if (this.scene && typeof this.scene.resize === 'function') {
-            this.scene.resize();
-        }
+        this.#callActiveScene('resize');
     }
 
     /**
@@ -61,23 +77,19 @@ export class SceneSystem {
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
-        if (this.scene && typeof this.scene.applyRuntimeSettings === 'function') {
-            this.scene.applyRuntimeSettings(changedSettings);
-        }
+        this.#callActiveScene('applyRuntimeSettings', [changedSettings]);
     }
 
     /**
      * 현재 활성 씬에 시뮬레이션 명령 목록을 전달합니다.
-     * @param {object[]} [commands=[]]
+     * @param {object[]} [commands=[]] - 전달할 시뮬레이션 명령 목록입니다.
      */
     applySimulationCommands(commands = []) {
         if (!Array.isArray(commands) || commands.length === 0) {
             return;
         }
 
-        if (this.scene && typeof this.scene.applySimulationCommands === 'function') {
-            this.scene.applySimulationCommands(commands);
-        }
+        this.#callActiveScene('applySimulationCommands', [commands]);
     }
 
     /**
@@ -86,10 +98,39 @@ export class SceneSystem {
      */
     gameStart() {
         clearSimulationCommands();
-        if (this.scene && this.scene.destroy) {
-            this.scene.destroy();
-        }
-        this.scene = new GameScene(this);
-        this.sceneState = "inGame";
+        this.#destroyActiveScene();
+        this.#setScene(new GameScene(this), SCENE_STATES.IN_GAME);
+    }
+
+    /**
+     * 현재 활성 씬의 메서드를 안전하게 호출합니다.
+     * @param {string} methodName - 호출할 메서드 이름입니다.
+     * @param {Array} [args=[]] - 메서드 인자 목록입니다.
+     * @returns {*} 씬 메서드 반환값입니다.
+     * @private
+     */
+    #callActiveScene(methodName, args = []) {
+        return callSceneMethod(this.scene, methodName, args);
+    }
+
+    /**
+     * 현재 활성 씬을 정리합니다.
+     * @returns {void}
+     * @private
+     */
+    #destroyActiveScene() {
+        this.#callActiveScene('destroy');
+    }
+
+    /**
+     * 활성 씬과 씬 상태 값을 갱신합니다.
+     * @param {object} scene - 새 활성 씬입니다.
+     * @param {string} sceneState - 새 씬 상태입니다.
+     * @returns {void}
+     * @private
+     */
+    #setScene(scene, sceneState) {
+        this.scene = scene;
+        this.sceneState = sceneState;
     }
 }
