@@ -25,6 +25,66 @@ const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 const HEXA_HIVE_TYPE = getHexaHiveType();
 
 /**
+ * hexa hive 접촉 시간이 합체 기준에 도달했는지 확인합니다.
+ * @param {number} contactSeconds - 누적 접촉 시간입니다.
+ * @returns {boolean} 합체 가능한 접촉 시간 여부입니다.
+ */
+function _isHexaHiveContactReady(contactSeconds) {
+    return Number.isFinite(contactSeconds) && contactSeconds >= HEXA_HIVE_MERGE_CONTACT_SECONDS;
+}
+
+/**
+ * 합체 후보 adjacency 맵에 양방향 연결을 추가합니다.
+ * @param {Map<number, Set<number>>} adjacency - 후보 ID별 인접 ID 맵입니다.
+ * @param {number} enemyIdA - 첫 번째 적 ID입니다.
+ * @param {number} enemyIdB - 두 번째 적 ID입니다.
+ * @returns {void}
+ */
+function _addHexaHiveAdjacencyLink(adjacency, enemyIdA, enemyIdB) {
+    if (!adjacency.has(enemyIdA)) adjacency.set(enemyIdA, new Set());
+    if (!adjacency.has(enemyIdB)) adjacency.set(enemyIdB, new Set());
+    adjacency.get(enemyIdA).add(enemyIdB);
+    adjacency.get(enemyIdB).add(enemyIdA);
+}
+
+/**
+ * adjacency 맵에서 시작 ID와 연결된 합체 후보 그룹을 수집합니다.
+ * @param {number} startEnemyId - 시작 적 ID입니다.
+ * @param {Map<number, Set<number>>} adjacency - 후보 ID별 인접 ID 맵입니다.
+ * @param {Map<number, object>} activeMergeCandidatesById - 활성 합체 후보 맵입니다.
+ * @param {Set<number>} visited - 이미 방문한 후보 ID 집합입니다.
+ * @returns {object[]} 연결된 합체 후보 그룹입니다.
+ */
+function _collectHexaHiveConnectedGroup(startEnemyId, adjacency, activeMergeCandidatesById, visited) {
+    const queue = [startEnemyId];
+    const mergeGroup = [];
+    visited.add(startEnemyId);
+
+    for (let queueIndex = 0; queueIndex < queue.length; queueIndex++) {
+        const currentId = queue[queueIndex];
+        const currentEnemy = activeMergeCandidatesById.get(currentId);
+        if (currentEnemy) {
+            mergeGroup.push(currentEnemy);
+        }
+
+        const neighbors = adjacency.get(currentId);
+        if (!neighbors) {
+            continue;
+        }
+
+        for (const neighborId of neighbors) {
+            if (visited.has(neighborId)) {
+                continue;
+            }
+            visited.add(neighborId);
+            queue.push(neighborId);
+        }
+    }
+
+    return mergeGroup;
+}
+
+/**
  * 현재 적 목록에서 육각형 합체 후보만 수집합니다.
  * @param {object[]} enemies - 검사 대상 적 목록입니다.
  * @returns {object[]} 육각형 합체 후보 목록입니다.
@@ -124,7 +184,7 @@ export function collectHexaHiveMergeGroups(contactSecondsByPair, activeMergeCand
 
     const adjacency = new Map();
     for (const [pairKey, contactSeconds] of contactSecondsByPair.entries()) {
-        if (!Number.isFinite(contactSeconds) || contactSeconds < HEXA_HIVE_MERGE_CONTACT_SECONDS) {
+        if (!_isHexaHiveContactReady(contactSeconds)) {
             continue;
         }
 
@@ -133,10 +193,7 @@ export function collectHexaHiveMergeGroups(contactSecondsByPair, activeMergeCand
             continue;
         }
 
-        if (!adjacency.has(enemyIdA)) adjacency.set(enemyIdA, new Set());
-        if (!adjacency.has(enemyIdB)) adjacency.set(enemyIdB, new Set());
-        adjacency.get(enemyIdA).add(enemyIdB);
-        adjacency.get(enemyIdB).add(enemyIdA);
+        _addHexaHiveAdjacencyLink(adjacency, enemyIdA, enemyIdB);
     }
 
     const visited = new Set();
@@ -146,29 +203,12 @@ export function collectHexaHiveMergeGroups(contactSecondsByPair, activeMergeCand
             continue;
         }
 
-        const queue = [enemyId];
-        const mergeGroup = [];
-        visited.add(enemyId);
-        while (queue.length > 0) {
-            const currentId = queue.shift();
-            const currentEnemy = activeMergeCandidatesById.get(currentId);
-            if (currentEnemy) {
-                mergeGroup.push(currentEnemy);
-            }
-
-            const neighbors = adjacency.get(currentId);
-            if (!neighbors) {
-                continue;
-            }
-
-            for (const neighborId of neighbors) {
-                if (visited.has(neighborId)) {
-                    continue;
-                }
-                visited.add(neighborId);
-                queue.push(neighborId);
-            }
-        }
+        const mergeGroup = _collectHexaHiveConnectedGroup(
+            enemyId,
+            adjacency,
+            activeMergeCandidatesById,
+            visited
+        );
 
         if (mergeGroup.length >= 2) {
             mergeGroups.push(mergeGroup);
@@ -281,6 +321,7 @@ export function buildHexaHiveSpawnData(mergeGroup) {
     const mergedWeight = totalWeight * (1 + ((Math.max(1, totalCells) - 1) * HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL));
     const mergedMaxHp = totalMaxHp;
     const mergedHp = Math.min(mergedMaxHp, totalHp + (mergedMaxHp * HEXA_HIVE_HP_RECOVERY_RATIO));
+    const safeTotalWeight = Math.max(HEXA_HIVE_EPSILON, totalWeight);
     const mergedLayout = createHexaHiveLayoutFromWorldCells(worldCells, {
         originX: centerX,
         originY: centerY,
@@ -302,16 +343,16 @@ export function buildHexaHiveSpawnData(mergeGroup) {
         projectileHitsToKill: Math.max(0, Math.round(totalProjectileHitsToKill)),
         position: { x: centerX, y: centerY },
         speed: {
-            x: weightedSpeedX / Math.max(HEXA_HIVE_EPSILON, totalWeight),
-            y: weightedSpeedY / Math.max(HEXA_HIVE_EPSILON, totalWeight)
+            x: weightedSpeedX / safeTotalWeight,
+            y: weightedSpeedY / safeTotalWeight
         },
         acc: { x: 0, y: 0 },
         ai: enemyAI,
         fill: preferredFill,
         alpha: alphaWeight > 0 ? (weightedAlpha / alphaWeight) : 1,
         rotation: mergedRotation,
-        angularVelocity: weightedAngularVelocity / Math.max(HEXA_HIVE_EPSILON, totalWeight),
-        angularDeceleration: Math.abs(weightedAngularVelocity / Math.max(HEXA_HIVE_EPSILON, totalWeight)),
+        angularVelocity: weightedAngularVelocity / safeTotalWeight,
+        angularDeceleration: Math.abs(weightedAngularVelocity / safeTotalWeight),
         hexaHiveLayout: mergedLayout
     };
 }
