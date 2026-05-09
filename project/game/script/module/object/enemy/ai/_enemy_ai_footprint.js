@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 
 const ENEMY_AI_CONSTANTS = getData('ENEMY_AI_CONSTANTS');
@@ -147,7 +148,7 @@ export const resolveEnemyAIFootprintPathClearancePx = (metrics, profile = null) 
     const multiplier = Number.isFinite(profile?.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER)
         ? Math.max(1, profile.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER)
         : DEFAULT_AI_PROFILE.HEXA_HIVE_PATH_CLEARANCE_BASE_RADIUS_MULTIPLIER;
-    return Math.max(baseRadius, Math.min(minHalfExtent, baseRadius * multiplier));
+    return clampNumber(baseRadius * multiplier, baseRadius, minHalfExtent);
 };
 
 /**
@@ -173,7 +174,7 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
     let radius = Math.max(baseRadius, readPositivePixelValue(enemy?.navigationRadiusPx));
     let axisLocalDeg = Number.isFinite(enemy?.navigationAxisLocalDeg) ? enemy.navigationAxisLocalDeg : 0;
     let axisAnisotropy = Number.isFinite(enemy?.navigationAxisAnisotropy)
-        ? Math.max(MIN_AXIS_ANISOTROPY, Math.min(MAX_AXIS_ANISOTROPY, enemy.navigationAxisAnisotropy))
+        ? clampNumber(enemy.navigationAxisAnisotropy, MIN_AXIS_ANISOTROPY, MAX_AXIS_ANISOTROPY)
         : 0;
 
     if (enemy?.type === HEXA_HIVE_TYPE) {
@@ -251,5 +252,5 @@ export const projectEnemyAIFootprintRadiusForDirection = (metrics, dirX, dirY) =
     const baseRadius = readPositivePixelValue(metrics?.baseRadius);
     const maxRadius = readPositivePixelValue(metrics?.radius);
     const projectedRadius = (Math.abs(dirX) * halfWidth) + (Math.abs(dirY) * halfHeight);
-    return Math.max(baseRadius, Math.min(maxRadius || projectedRadius, projectedRadius));
+    return clampNumber(projectedRadius, baseRadius, maxRadius || projectedRadius);
 };

@@ -1,5 +1,6 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
+import { clamp01, clampNumber } from 'util/number_util.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 import {
     projectEnemyAIFootprintRadiusForDirection,
@@ -124,7 +125,8 @@ const resolveSteeringDirectPathPad = (
     const ratio = Number.isFinite(profile.HEXA_HIVE_NAV_DIRECT_CHECK_PAD_RATIO)
         ? Math.max(0, profile.HEXA_HIVE_NAV_DIRECT_CHECK_PAD_RATIO)
         : 1;
-    return Math.max(baseRadius, Math.min(basePad, pathClearance, sideRadius * ratio));
+    const maxPad = Math.min(basePad, pathClearance, sideRadius * ratio);
+    return clampNumber(maxPad, baseRadius, Infinity);
 };
 
 /**
@@ -196,9 +198,9 @@ const applyHexaHiveArrivalBrake = (
         : 96;
     if (playerDistance <= contactDistance + slowdownBand) {
         const minSpeedRatio = Number.isFinite(profile.HEXA_HIVE_FINAL_APPROACH_MIN_SPEED_RATIO)
-            ? Math.max(0, Math.min(1, profile.HEXA_HIVE_FINAL_APPROACH_MIN_SPEED_RATIO))
+            ? clamp01(profile.HEXA_HIVE_FINAL_APPROACH_MIN_SPEED_RATIO)
             : 0.18;
-        const t = Math.max(0, Math.min(1, (playerDistance - contactDistance) / slowdownBand));
+        const t = clamp01((playerDistance - contactDistance) / slowdownBand);
         const speedRatio = minSpeedRatio + ((1 - minSpeedRatio) * t);
         state.desiredSpeed = Math.min(state.desiredSpeed, state.baseDesiredSpeed * speedRatio);
     }
