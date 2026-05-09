@@ -13,6 +13,22 @@ import { RecordsOverlay } from './title/_records.js';
 import { ResearchOverlay } from './title/_research.js';
 import { AchievementsOverlay } from './title/_achievements.js';
 
+const OVERLAY_MANAGER_KEYS = Object.freeze({
+    EXIT_CONFIRM: 'exitConfirm',
+    EXTERNAL_LINK_WARNING: 'externalLinkWarning',
+    TITLE_MENU: 'titleMenu'
+});
+
+const TITLE_OVERLAY_FACTORY_BY_MENU = Object.freeze({
+    deck: (titleScene) => new DeckOverlay(titleScene),
+    setting: (titleScene) => new SettingsOverlay(titleScene),
+    credits: (titleScene) => new CreditsOverlay(titleScene),
+    quickStart: (titleScene) => new QuickStartOverlay(titleScene),
+    records: (titleScene) => new RecordsOverlay(titleScene),
+    research: (titleScene) => new ResearchOverlay(titleScene),
+    achievements: (titleScene) => new AchievementsOverlay(titleScene)
+});
+
 /**
  * @class OverlayManager
  * @description 동적 surface 기반 overlay session을 생성하고 수명주기를 관리합니다.
@@ -127,11 +143,11 @@ export class OverlayManager {
      * @returns {string|null} 생성된 overlay id입니다.
      */
     openExitOverlay() {
-        if (this.keyToIdMap.has('exitConfirm')) {
-            return this.keyToIdMap.get('exitConfirm');
+        if (this.keyToIdMap.has(OVERLAY_MANAGER_KEYS.EXIT_CONFIRM)) {
+            return this.keyToIdMap.get(OVERLAY_MANAGER_KEYS.EXIT_CONFIRM);
         }
 
-        return this.openOverlay(new ExitOverlay(), { key: 'exitConfirm' });
+        return this.openOverlay(new ExitOverlay(), { key: OVERLAY_MANAGER_KEYS.EXIT_CONFIRM });
     }
 
     /**
@@ -145,11 +161,13 @@ export class OverlayManager {
             return null;
         }
 
-        if (this.keyToIdMap.has('externalLinkWarning')) {
-            return this.keyToIdMap.get('externalLinkWarning');
+        if (this.keyToIdMap.has(OVERLAY_MANAGER_KEYS.EXTERNAL_LINK_WARNING)) {
+            return this.keyToIdMap.get(OVERLAY_MANAGER_KEYS.EXTERNAL_LINK_WARNING);
         }
 
-        return this.openOverlay(new ExternalLinkWarningOverlay(normalizedURL), { key: 'externalLinkWarning' });
+        return this.openOverlay(new ExternalLinkWarningOverlay(normalizedURL), {
+            key: OVERLAY_MANAGER_KEYS.EXTERNAL_LINK_WARNING
+        });
     }
 
     /**
@@ -159,8 +177,8 @@ export class OverlayManager {
      * @returns {string|null} 생성된 overlay id입니다.
      */
     openTitleOverlay(menu, titleScene) {
-        if (this.keyToIdMap.has('titleMenu')) {
-            return this.keyToIdMap.get('titleMenu');
+        if (this.keyToIdMap.has(OVERLAY_MANAGER_KEYS.TITLE_MENU)) {
+            return this.keyToIdMap.get(OVERLAY_MANAGER_KEYS.TITLE_MENU);
         }
 
         const controller = this.#createTitleOverlay(menu, titleScene);
@@ -168,14 +186,14 @@ export class OverlayManager {
             return null;
         }
 
-        return this.openOverlay(controller, { key: 'titleMenu' });
+        return this.openOverlay(controller, { key: OVERLAY_MANAGER_KEYS.TITLE_MENU });
     }
 
     /**
      * 타이틀 메뉴 overlay를 닫습니다.
      */
     closeTitleOverlay() {
-        this.closeByKey('titleMenu');
+        this.closeByKey(OVERLAY_MANAGER_KEYS.TITLE_MENU);
     }
 
     /**
@@ -258,24 +276,8 @@ export class OverlayManager {
      * @returns {object|null} 생성된 overlay 컨트롤러입니다.
      */
     #createTitleOverlay(menu, titleScene) {
-        switch (menu) {
-            case 'deck':
-                return new DeckOverlay(titleScene);
-            case 'setting':
-                return new SettingsOverlay(titleScene);
-            case 'credits':
-                return new CreditsOverlay(titleScene);
-            case 'quickStart':
-                return new QuickStartOverlay(titleScene);
-            case 'records':
-                return new RecordsOverlay(titleScene);
-            case 'research':
-                return new ResearchOverlay(titleScene);
-            case 'achievements':
-                return new AchievementsOverlay(titleScene);
-            default:
-                return null;
-        }
+        const createOverlay = TITLE_OVERLAY_FACTORY_BY_MENU[menu];
+        return typeof createOverlay === 'function' ? createOverlay(titleScene) : null;
     }
 
     /**
