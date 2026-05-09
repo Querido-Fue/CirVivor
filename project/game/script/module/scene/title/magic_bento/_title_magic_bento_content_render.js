@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getLangString } from 'ui/ui_system.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 import { drawBentoCardIcon } from './_title_magic_bento_icon.js';
 import { drawBentoWrappedText, getBentoTypography } from './_title_magic_bento_text.js';
 
@@ -15,7 +16,7 @@ const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
  * @param {number} uiww - UI 기준 너비입니다.
  */
 export function drawBentoCardContent(ctx, card, palette, uiww) {
-    const padding = Math.max(16, uiww * TITLE_MAGIC_BENTO.CONTENT_PADDING_UIWW_RATIO);
+    const padding = clampFiniteNumber(uiww * TITLE_MAGIC_BENTO.CONTENT_PADDING_UIWW_RATIO, 16, Infinity, 16);
     const iconSize = Math.min(card.baseWidth, card.baseHeight) * (card.variant === 'compact' ? 0.19 : 0.21);
     const titleText = getLangString(card.titleKey) || '';
     const descriptionText = card.descriptionKey ? (getLangString(card.descriptionKey) || '') : '';
@@ -83,12 +84,14 @@ function drawBentoHeroCardText(ctx, card, palette, {
     if (descriptionText) {
         ctx.fillStyle = palette.description;
         ctx.font = descriptionFont.font;
+        const descriptionGap = clampFiniteNumber(descriptionFont.size * 0.28, 8, Infinity, 8);
+        const maxWidth = clampFiniteNumber(card.baseWidth - (padding * 2), 0, Infinity, 0);
         drawBentoWrappedText(
             ctx,
             descriptionText,
             padding,
-            titleY + titleFont.size + Math.max(8, descriptionFont.size * 0.28),
-            card.baseWidth - (padding * 2),
+            titleY + titleFont.size + descriptionGap,
+            maxWidth,
             descriptionFont.size * 1.35,
             2
         );
@@ -111,7 +114,7 @@ function drawBentoCompactCardText(ctx, card, {
 }) {
     const compactFont = getBentoTypography(TEXT_CONSTANTS, 'H5_BOLD', 1.04);
     const titleSize = compactFont.size;
-    const compactX = padding + iconSize + Math.max(14, padding * 0.7);
+    const compactX = padding + iconSize + clampFiniteNumber(padding * 0.7, 14, Infinity, 14);
 
     ctx.font = compactFont.font;
     ctx.fillText(titleText, compactX, (card.baseHeight - titleSize) * 0.5);
@@ -138,7 +141,7 @@ function drawBentoDefaultCardText(ctx, card, palette, {
     const descriptionSize = descriptionFont.size;
     const contentX = padding;
     const titleY = card.baseHeight - padding - (descriptionText ? (descriptionSize * 2.3) : titleSize);
-    const maxWidth = card.baseWidth - (padding * 2);
+    const maxWidth = clampFiniteNumber(card.baseWidth - (padding * 2), 0, Infinity, 0);
 
     ctx.font = titleFont.font;
     ctx.fillText(titleText, contentX, titleY);
@@ -146,6 +149,15 @@ function drawBentoDefaultCardText(ctx, card, palette, {
     if (descriptionText) {
         ctx.fillStyle = palette.description;
         ctx.font = descriptionFont.font;
-        drawBentoWrappedText(ctx, descriptionText, contentX, titleY + titleSize + Math.max(8, descriptionSize * 0.35), maxWidth, descriptionSize * 1.35, 2);
+        const descriptionGap = clampFiniteNumber(descriptionSize * 0.35, 8, Infinity, 8);
+        drawBentoWrappedText(
+            ctx,
+            descriptionText,
+            contentX,
+            titleY + titleSize + descriptionGap,
+            maxWidth,
+            descriptionSize * 1.35,
+            2
+        );
     }
 }
