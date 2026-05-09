@@ -67,6 +67,22 @@ export function getObjectSystemEnemyDecisionGroup(enemy, fallbackIndex, decision
 }
 
 /**
+ * 적 상태 지속 시간을 고정 스텝 기준으로 갱신합니다.
+ * @param {object} enemy - 대상 적입니다.
+ * @param {number} delta - 고정 스텝 시간입니다.
+ */
+function updateObjectSystemEnemyStatusTimer(enemy, delta) {
+    if (!enemy?.status || enemy.status.remainingTime <= 0) {
+        return;
+    }
+
+    enemy.status.remainingTime = Math.max(0, enemy.status.remainingTime - delta);
+    if (enemy.status.remainingTime === 0) {
+        enemy.clearStatus();
+    }
+}
+
+/**
  * ObjectSystem의 적 목록을 fixed step 기준으로 갱신합니다.
  * @param {object} options - 적 fixedUpdate 옵션입니다.
  * @param {object[]} options.enemies - 적 목록입니다.
@@ -102,13 +118,7 @@ export function fixedUpdateObjectSystemEnemies(options) {
         }
 
         enemy.beginFixedStep();
-
-        if (enemy.status && enemy.status.remainingTime > 0) {
-            enemy.status.remainingTime = Math.max(0, enemy.status.remainingTime - delta);
-            if (enemy.status.remainingTime === 0) {
-                enemy.clearStatus();
-            }
-        }
+        updateObjectSystemEnemyStatusTimer(enemy, delta);
 
         aiContext.shouldUpdateDecision = getObjectSystemEnemyDecisionGroup(enemy, i, decisionGroupCount) === decisionGroup;
         enemy.fixedUpdate(delta, aiContext);
