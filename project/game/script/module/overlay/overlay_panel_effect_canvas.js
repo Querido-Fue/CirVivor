@@ -1,20 +1,7 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 import { lerpNumber } from './_panel_effect_math.js';
-
-/**
- * 숫자를 지정 범위 안으로 제한합니다.
- * @param {number} value - 제한할 값입니다.
- * @param {number} min - 최소값입니다.
- * @param {number} max - 최대값입니다.
- * @returns {number} 제한된 값입니다.
- */
-function clampNumber(value, min, max) {
-    if (!Number.isFinite(value)) {
-        return min;
-    }
-    return Math.max(min, Math.min(max, value));
-}
 
 /**
  * 현재 테마에서 panel effect에 사용할 RGB 색상을 반환합니다.
@@ -77,8 +64,8 @@ function drawOverlayPanelBorder(context, panel, interactionState, borderOptions,
     const resolvedColor = Number.isFinite(optionColor?.r) && Number.isFinite(optionColor?.g) && Number.isFinite(optionColor?.b)
         ? optionColor
         : effectColor;
-    const edgeAlpha = clampNumber(interactionState.borderAlpha, 0, 1);
-    const fadeStart = clampNumber(
+    const edgeAlpha = clampFiniteNumber(interactionState.borderAlpha, 0, 1);
+    const fadeStart = clampFiniteNumber(
         (borderOptions.radius - borderOptions.falloff) / Math.max(1, borderOptions.radius),
         0,
         1
@@ -104,8 +91,8 @@ function drawOverlayPanelBorder(context, panel, interactionState, borderOptions,
         spotlightRadius
     );
     gradient.addColorStop(0, `rgba(255, 255, 255, ${edgeAlpha})`);
-    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart * 0.62)), `rgba(255, 255, 255, ${edgeAlpha * 0.82})`);
-    gradient.addColorStop(Math.max(0, Math.min(1, fadeStart)), `rgba(255, 255, 255, ${edgeAlpha * 0.55})`);
+    gradient.addColorStop(clampFiniteNumber(fadeStart * 0.62, 0, 1), `rgba(255, 255, 255, ${edgeAlpha * 0.82})`);
+    gradient.addColorStop(clampFiniteNumber(fadeStart, 0, 1), `rgba(255, 255, 255, ${edgeAlpha * 0.55})`);
     gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
     context.fillStyle = gradient;
     context.fillRect(0, 0, panel.w, panel.h);
@@ -151,7 +138,7 @@ function drawOverlayPanelParticles(context, panel, interactionState, effectColor
  */
 function drawOverlayPanelRipples(context, interactionState, effectColor) {
     for (const ripple of interactionState.ripples) {
-        const progress = Math.max(0, Math.min(1, ripple.elapsed / ripple.duration));
+        const progress = clampFiniteNumber(ripple.elapsed / ripple.duration, 0, 1);
         const opacity = 1 - progress;
         const radius = ripple.maxDistance * progress;
         if (radius <= 0) {
