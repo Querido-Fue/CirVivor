@@ -30,7 +30,8 @@ import {
 import {
     clearObjectSystemAISharedCaches,
     createObjectSystemAIContext,
-    fixedUpdateActiveObjectList
+    fixedUpdateActiveObjectList,
+    fixedUpdateObjectSystemEnemies
 } from './object_system_fixed_update_helpers.js';
 import { PhysicsSystem } from 'physics/physics_system.js';
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
@@ -144,25 +145,14 @@ export class ObjectSystem {
             wallsVersion: this.aiWallsVersion
         });
 
-        for (let i = this.enemies.length - 1; i >= 0; i--) {
-            const enemy = this.enemies[i];
-            if (!enemy || !enemy.active) {
-                this.#releaseEnemyAt(i);
-                continue;
-            }
-
-            enemy.beginFixedStep();
-
-            if (enemy.status && enemy.status.remainingTime > 0) {
-                enemy.status.remainingTime = Math.max(0, enemy.status.remainingTime - delta);
-                if (enemy.status.remainingTime === 0) {
-                    enemy.clearStatus();
-                }
-            }
-
-            aiContext.shouldUpdateDecision = this.#getEnemyDecisionGroup(enemy, i) === decisionGroup;
-            enemy.fixedUpdate(delta, aiContext);
-        }
+        fixedUpdateObjectSystemEnemies({
+            enemies: this.enemies,
+            delta,
+            aiContext,
+            decisionGroup,
+            decisionGroupCount: this.aiDecisionGroupCount,
+            releaseEnemyAt: (index) => this.#releaseEnemyAt(index)
+        });
 
         const hexaContactPairs = this.collectHexaHiveContactPairs(delta);
         const hexaMergeCandidatesById = syncHexaHiveMergeState({
@@ -586,18 +576,6 @@ export class ObjectSystem {
      */
     consumeSimulationCommands() {
         return consumeObjectSystemSimulationCommands(this.pendingSimulationCommandState, this.enemyIdCounter);
-    }
-
-    /**
-     * @private
-     * @param {object} enemy
-     * @param {number} fallbackIndex
-     * @returns {number}
-     */
-    #getEnemyDecisionGroup(enemy, fallbackIndex) {
-        const sourceId = Number.isInteger(enemy?.id) ? enemy.id : fallbackIndex;
-        const mod = sourceId % this.aiDecisionGroupCount;
-        return mod < 0 ? mod + this.aiDecisionGroupCount : mod;
     }
 
     /**
