@@ -6,7 +6,7 @@ import { OverlaySession } from './_overlay_session.js';
 import { ExitOverlay } from './_exit_overlay.js';
 import { ExternalLinkWarningOverlay } from './_external_link_warning_overlay.js';
 import { DeckOverlay } from './title/_deck.js';
-import { SettingsOverlay } from './title/_settings.js';
+import { SettingsOverlay } from './title/_settings_overlay.js';
 import { CreditsOverlay } from './title/_credits.js';
 import { QuickStartOverlay } from './title/_quick_start.js';
 import { RecordsOverlay } from './title/_records.js';
