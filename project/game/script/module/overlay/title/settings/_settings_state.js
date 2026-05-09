@@ -1,5 +1,6 @@
 import { getLangString } from 'ui/ui_system.js';
 import { getSetting } from 'save/save_system.js';
+import { clampNumber } from 'util/number_util.js';
 
 export const SETTING_LABEL_KEYS = Object.freeze({
     windowMode: 'title_settings_window_mode',
@@ -155,5 +156,5 @@ export function normalizeTooltipDelaySeconds(value) {
         return 0.7;
     }
 
-    return Number(Math.max(0, Math.min(2, numericValue)).toFixed(1));
+    return Number(clampNumber(numericValue, 0, 2).toFixed(1));
 }

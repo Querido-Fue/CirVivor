@@ -5,6 +5,7 @@ import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
 import { mathUtil } from "util/math_util.js";
+import { clamp01 } from "util/number_util.js";
 import { getData } from "data/data_handler.js";
 import { DropdownElement } from "./_dropdown.js";
 
@@ -162,7 +163,7 @@ export class SliderElement extends BaseUIElement {
             this.lastMouseX = mx;
 
             const relativeX = mx - hitX;
-            const ratio = Math.max(0, Math.min(1, relativeX / currentWidth));
+            const ratio = clamp01(relativeX / currentWidth);
             const newValue = this.#quantizeValue(this.min + ratio * (this.max - this.min));
 
             if (newValue !== this.value) {

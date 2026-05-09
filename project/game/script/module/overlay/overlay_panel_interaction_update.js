@@ -1,5 +1,6 @@
 import { getDelta } from 'game/time_handler.js';
 import { getMouseFocus, getMouseInput, hasMouseState } from 'input/input_system.js';
+import { clampNumber } from 'util/number_util.js';
 import {
     createRectToQuadHomography,
     createTiltMatrix,
@@ -354,8 +355,8 @@ export function updateOverlayPanelInteractions({
         if (interactionState.hovered && pointerInfo?.localPoint) {
             interactionState.localX = pointerInfo.localPoint.x;
             interactionState.localY = pointerInfo.localPoint.y;
-            interactionState.normalizedX = Math.max(-1, Math.min(1, ((interactionState.localX / Math.max(1, presentedPanel.w)) * 2) - 1));
-            interactionState.normalizedY = Math.max(-1, Math.min(1, ((interactionState.localY / Math.max(1, presentedPanel.h)) * 2) - 1));
+            interactionState.normalizedX = clampNumber(((interactionState.localX / Math.max(1, presentedPanel.w)) * 2) - 1, -1, 1);
+            interactionState.normalizedY = clampNumber(((interactionState.localY / Math.max(1, presentedPanel.h)) * 2) - 1, -1, 1);
         }
 
         if (leftClicked && interactionState.hovered) {
