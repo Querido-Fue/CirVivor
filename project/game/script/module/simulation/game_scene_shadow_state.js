@@ -5,14 +5,10 @@ import {
 } from '../../data/object/enemy/enemy_shape_data.js';
 import { cloneHexaHiveLayout } from '../object/enemy/_hexa_hive_layout.js';
 import { enemyAI } from '../object/enemy/ai/_enemy_ai.js';
-import { resolveEnemyAIFootprintMetricsPx } from '../object/enemy/ai/_enemy_ai_core.js';
 import { PhysicsSystem } from '../physics/physics_system.js';
 import {
-    getSimulationObjectOffsetY,
     getSimulationObjectWH,
     getSimulationSetting,
-    getSimulationWH,
-    getSimulationWW
 } from './simulation_runtime.js';
 import { GAME_SCENE_COMMAND_TYPES } from './game_scene_simulation_protocol.js';
 import { EnemyAIWorkerCoordinator } from './enemy_ai_worker_coordinator.js';
@@ -39,13 +35,32 @@ import {
     getShadowEnemyDecisionGroup
 } from './game_scene_shadow_enemy_system.js';
 import {
-    assignPointSnapshot,
     assignShadowPlayerFromData,
     clonePointSnapshot,
     createShadowPlayerFromData,
     createShadowProjectileFromData,
     createShadowWallFromData
 } from './game_scene_shadow_snapshot_entities.js';
+import {
+    appendShadowItemsInPlace,
+    compactShadowItemsByIdSet,
+    fillReusableIntegerIdSet,
+    replaceShadowItemsInPlace
+} from './game_scene_shadow_collection_utils.js';
+import {
+    assignShadowCounters,
+    assignShadowViewport,
+    syncShadowStateViewportFromRuntime
+} from './game_scene_shadow_viewport_state.js';
+import {
+    mergeShadowEnemyStates,
+    mergeShadowProjectileStates
+} from './game_scene_shadow_state_merge.js';
+import {
+    cloneShadowEnemyAIStateForWorkerTransfer,
+    createShadowEnemyAIPlayerSummary,
+    createShadowEnemyAIWorkerEnemySummary
+} from './game_scene_shadow_enemy_ai_worker_payload.js';
 import {
     cullAuthorityShadowEnemies,
     cullAuthorityShadowProjectiles,
@@ -373,104 +388,6 @@ function getShadowEnemyRenderHeight(enemy) {
 }
 
 /**
- * 적 AI 상태를 워커 전송용 최소 필드만 남겨 복제합니다.
- * @param {object|null|undefined} state
- * @returns {object|null}
- */
-function cloneEnemyAIStateForWorkerTransfer(state) {
-    if (!state || typeof state !== 'object') {
-        return null;
-    }
-
-    return {
-        __initialized: state.__initialized === true,
-        __schemaVersion: Number.isInteger(state.__schemaVersion) ? state.__schemaVersion : 0,
-        policyId: typeof state.policyId === 'string' ? state.policyId : '',
-        dirX: Number.isFinite(state.dirX) ? state.dirX : 1,
-        dirY: Number.isFinite(state.dirY) ? state.dirY : 0,
-        baseDesiredSpeed: Number.isFinite(state.baseDesiredSpeed) ? state.baseDesiredSpeed : 40,
-        desiredSpeed: Number.isFinite(state.desiredSpeed) ? state.desiredSpeed : 40,
-        baseAccelResponse: Number.isFinite(state.baseAccelResponse) ? state.baseAccelResponse : 0,
-        accelResponse: Number.isFinite(state.accelResponse) ? state.accelResponse : 0,
-        targetX: Number.isFinite(state.targetX) ? state.targetX : Number.NaN,
-        targetY: Number.isFinite(state.targetY) ? state.targetY : Number.NaN,
-        flowPolicyKey: typeof state.flowPolicyKey === 'string' ? state.flowPolicyKey : '',
-        flowKey: typeof state.flowKey === 'string' ? state.flowKey : '',
-        lastTargetCellX: Number.isInteger(state.lastTargetCellX) ? state.lastTargetCellX : 0,
-        lastTargetCellY: Number.isInteger(state.lastTargetCellY) ? state.lastTargetCellY : 0,
-        lastDecisionGroup: Number.isInteger(state.lastDecisionGroup) ? state.lastDecisionGroup : -1,
-        hasDirectPathResult: state.hasDirectPathResult === true,
-        lastDirectPath: state.lastDirectPath === true,
-        lastDirectPathWallsVersion: Number.isInteger(state.lastDirectPathWallsVersion) ? state.lastDirectPathWallsVersion : -1,
-        lastDirectPathPadBucket: Number.isInteger(state.lastDirectPathPadBucket) ? state.lastDirectPathPadBucket : -1,
-        lastDirectPathStartCx: Number.isInteger(state.lastDirectPathStartCx) ? state.lastDirectPathStartCx : 0,
-        lastDirectPathStartCy: Number.isInteger(state.lastDirectPathStartCy) ? state.lastDirectPathStartCy : 0,
-        lastDirectPathTargetCx: Number.isInteger(state.lastDirectPathTargetCx) ? state.lastDirectPathTargetCx : 0,
-        lastDirectPathTargetCy: Number.isInteger(state.lastDirectPathTargetCy) ? state.lastDirectPathTargetCy : 0,
-        orbitDirection: state.orbitDirection === -1 ? -1 : 1,
-        chargeState: typeof state.chargeState === 'string' ? state.chargeState : 'idle',
-        chargeCooldownRemaining: Number.isFinite(state.chargeCooldownRemaining) ? state.chargeCooldownRemaining : 0,
-        chargeDurationRemaining: Number.isFinite(state.chargeDurationRemaining) ? state.chargeDurationRemaining : 0,
-        chargeRecoverRemaining: Number.isFinite(state.chargeRecoverRemaining) ? state.chargeRecoverRemaining : 0,
-        chargeTargetX: Number.isFinite(state.chargeTargetX) ? state.chargeTargetX : 0,
-        chargeTargetY: Number.isFinite(state.chargeTargetY) ? state.chargeTargetY : 0
-    };
-}
-
-/**
- * 적 AI 워커용 플레이어 요약 정보를 생성합니다.
- * @param {object|null|undefined} player
- * @returns {object|null}
- */
-function createShadowEnemyAIPlayerSummary(player) {
-    if (!player || typeof player !== 'object') {
-        return null;
-    }
-
-    return {
-        active: player.active !== false,
-        position: clonePointSnapshot(player.position)
-    };
-}
-
-/**
- * 적 AI 워커용 적 요약 정보를 생성합니다.
- * @param {object|null|undefined} enemy
- * @param {boolean} shouldUpdateDecision
- * @returns {object|null}
- */
-function createShadowEnemyAIWorkerEnemySummary(enemy, shouldUpdateDecision) {
-    if (!enemy || typeof enemy !== 'object' || enemy.active === false || !Number.isInteger(enemy.id)) {
-        return null;
-    }
-
-    const metadata = getShadowEnemyMetadata(enemy.id);
-    const renderHeightPx = getShadowEnemyRenderHeight(enemy);
-    const footprintMetrics = resolveEnemyAIFootprintMetricsPx(enemy, null, renderHeightPx);
-    return {
-        id: enemy.id,
-        active: enemy.active !== false,
-        type: typeof enemy.type === 'string' ? enemy.type : 'square',
-        position: clonePointSnapshot(enemy.position),
-        speed: clonePointSnapshot(enemy.speed),
-        accSpeed: Number.isFinite(enemy.accSpeed) ? enemy.accSpeed : 0,
-        renderHeightPx,
-        navigationRadiusPx: footprintMetrics.radius,
-        navigationHalfWidthPx: footprintMetrics.halfWidth,
-        navigationHalfHeightPx: footprintMetrics.halfHeight,
-        navigationAxisLocalDeg: Number.isFinite(footprintMetrics.axisLocalDeg) ? footprintMetrics.axisLocalDeg : 0,
-        navigationAxisAnisotropy: Number.isFinite(footprintMetrics.axisAnisotropy)
-            ? footprintMetrics.axisAnisotropy
-            : 0,
-        rotation: Number.isFinite(enemy.rotation) ? enemy.rotation : 0,
-        angularVelocity: Number.isFinite(enemy.angularVelocity) ? enemy.angularVelocity : 0,
-        angularDeceleration: Number.isFinite(enemy.angularDeceleration) ? enemy.angularDeceleration : 0,
-        shouldUpdateDecision: shouldUpdateDecision === true,
-        enemyAIState: cloneEnemyAIStateForWorkerTransfer(metadata.enemyAIState)
-    };
-}
-
-/**
  * 적 AI 워커 결과를 현재 적 상태에 반영합니다.
  * @param {object|null|undefined} enemy
  * @param {object|null|undefined} simulationActor
@@ -497,7 +414,7 @@ function applyRemoteEnemyAIResult(enemy, simulationActor, result) {
         enemy.angularDeceleration = result.angularDeceleration;
     }
     if (actor && result.enemyAIState && typeof result.enemyAIState === 'object') {
-        actor._enemyAIState = cloneEnemyAIStateForWorkerTransfer(result.enemyAIState);
+        actor._enemyAIState = cloneShadowEnemyAIStateForWorkerTransfer(result.enemyAIState);
     }
 }
 
@@ -527,7 +444,13 @@ function requestAuthorityShadowEnemyAIBatch(nextState, aiContext, decisionGroupC
         }
 
         const shouldUpdateDecision = getShadowEnemyDecisionGroup(enemy, i, decisionGroupCount) === aiContext.decisionGroup;
-        const summary = createShadowEnemyAIWorkerEnemySummary(enemy, shouldUpdateDecision);
+        const metadata = getShadowEnemyMetadata(enemy.id);
+        const summary = createShadowEnemyAIWorkerEnemySummary({
+            enemy,
+            shouldUpdateDecision,
+            enemyAIState: metadata.enemyAIState,
+            renderHeightPx: getShadowEnemyRenderHeight(enemy)
+        });
         if (summary) {
             enemySummaries.push(summary);
         }
@@ -632,165 +555,6 @@ function createShadowEnemyFromSpawnData(enemyData) {
         axisResistanceRecoverStartX: Number.isFinite(enemyData.axisResistanceRecoverStartX) ? enemyData.axisResistanceRecoverStartX : 1,
         axisResistanceRecoverStartY: Number.isFinite(enemyData.axisResistanceRecoverStartY) ? enemyData.axisResistanceRecoverStartY : 1
     };
-}
-
-/**
- * 적 상태 패치를 현재 미러 적에 병합합니다.
- * @param {object} currentEnemy
- * @param {object} enemyState
- * @returns {object}
- */
-function mergeShadowEnemyState(currentEnemy, enemyState) {
-    Object.assign(currentEnemy, enemyState);
-    if (enemyState.hexaHiveLayout !== undefined) {
-        currentEnemy.hexaHiveLayout = cloneHexaHiveLayout(enemyState.hexaHiveLayout);
-    }
-    if (enemyState.position) {
-        currentEnemy.position = assignPointSnapshot(currentEnemy.position, enemyState.position);
-    }
-    if (enemyState.prevPosition) {
-        currentEnemy.prevPosition = assignPointSnapshot(currentEnemy.prevPosition, enemyState.prevPosition);
-    }
-    if (enemyState.renderPosition) {
-        currentEnemy.renderPosition = assignPointSnapshot(currentEnemy.renderPosition, enemyState.renderPosition);
-    }
-    if (enemyState.speed) {
-        currentEnemy.speed = assignPointSnapshot(currentEnemy.speed, enemyState.speed);
-    }
-    if (enemyState.acc) {
-        currentEnemy.acc = assignPointSnapshot(currentEnemy.acc, enemyState.acc);
-    }
-    if (enemyState.status) {
-        currentEnemy.status = {
-            id: enemyState.status.id ?? null,
-            type: typeof enemyState.status.type === 'string' ? enemyState.status.type : 'none',
-            time: Number.isFinite(enemyState.status.time) ? enemyState.status.time : 0,
-            remainingTime: Number.isFinite(enemyState.status.remainingTime) ? enemyState.status.remainingTime : 0,
-            factor: enemyState.status.factor && typeof enemyState.status.factor === 'object'
-                ? { ...enemyState.status.factor }
-                : {}
-        };
-    }
-    currentEnemy.rotationResistance = Number.isFinite(enemyState.rotationResistance)
-        ? enemyState.rotationResistance
-        : (Number.isFinite(currentEnemy.rotationResistance) ? currentEnemy.rotationResistance : 1);
-    return currentEnemy;
-}
-
-/**
- * 적 상태 패치 목록을 ID 기준으로 현재 미러 적 배열에 병합합니다.
- * @param {object[]} [currentEnemies=[]]
- * @param {object[]} [enemyStates=[]]
- * @returns {object[]}
- */
-function mergeShadowEnemyStates(currentEnemies = [], enemyStates = []) {
-    if (!Array.isArray(enemyStates) || enemyStates.length === 0) {
-        return Array.isArray(currentEnemies) ? currentEnemies : [];
-    }
-
-    const nextEnemies = Array.isArray(currentEnemies) ? currentEnemies : [];
-    const enemyIndexMap = shadowGameSceneMetadata.enemyIndexMap;
-    enemyIndexMap.clear();
-    for (let i = 0; i < nextEnemies.length; i++) {
-        const enemy = nextEnemies[i];
-        if (!enemy || !Number.isInteger(enemy.id)) continue;
-        enemyIndexMap.set(enemy.id, i);
-    }
-
-    for (let i = 0; i < enemyStates.length; i++) {
-        const enemyState = enemyStates[i];
-        if (!enemyState || !Number.isInteger(enemyState.id)) {
-            continue;
-        }
-
-        const enemyIndex = enemyIndexMap.get(enemyState.id);
-        const currentEnemy = Number.isInteger(enemyIndex)
-            ? nextEnemies[enemyIndex]
-            : createShadowEnemyFromSpawnData(enemyState);
-        if (!currentEnemy) {
-            continue;
-        }
-
-        const mergedEnemy = mergeShadowEnemyState(currentEnemy, enemyState);
-        if (Number.isInteger(enemyIndex)) {
-            nextEnemies[enemyIndex] = mergedEnemy;
-            continue;
-        }
-
-        enemyIndexMap.set(enemyState.id, nextEnemies.length);
-        nextEnemies.push(mergedEnemy);
-    }
-
-    return nextEnemies;
-}
-
-/**
- * 투사체 상태 패치를 현재 미러 투사체에 병합합니다.
- * @param {object} currentProjectile
- * @param {object} projectileState
- * @returns {object}
- */
-function mergeShadowProjectileState(currentProjectile, projectileState) {
-    Object.assign(currentProjectile, projectileState);
-    if (projectileState.position) {
-        currentProjectile.position = assignPointSnapshot(currentProjectile.position, projectileState.position);
-    }
-    if (projectileState.prevPosition) {
-        currentProjectile.prevPosition = assignPointSnapshot(currentProjectile.prevPosition, projectileState.prevPosition);
-    }
-    if (projectileState.speed) {
-        currentProjectile.speed = assignPointSnapshot(currentProjectile.speed, projectileState.speed);
-    }
-    return currentProjectile;
-}
-
-/**
- * 투사체 상태 패치 목록을 ID 기준으로 현재 미러 투사체 배열에 병합합니다.
- * @param {object[]} [currentProjectiles=[]]
- * @param {object[]} [projectileStates=[]]
- * @returns {object[]}
- */
-function mergeShadowProjectileStates(currentProjectiles = [], projectileStates = []) {
-    if (!Array.isArray(projectileStates) || projectileStates.length === 0) {
-        return Array.isArray(currentProjectiles) ? currentProjectiles : [];
-    }
-
-    const nextProjectiles = Array.isArray(currentProjectiles) ? currentProjectiles : [];
-    const projectileIndexMap = shadowGameSceneMetadata.projectileIndexMap;
-    projectileIndexMap.clear();
-    for (let i = 0; i < nextProjectiles.length; i++) {
-        const projectile = nextProjectiles[i];
-        if (!projectile || !Number.isInteger(projectile.id)) continue;
-        projectileIndexMap.set(projectile.id, i);
-    }
-
-    for (let i = 0; i < projectileStates.length; i++) {
-        const projectileState = projectileStates[i];
-        if (!projectileState || !Number.isInteger(projectileState.id)) {
-            continue;
-        }
-
-        const projectileIndex = projectileIndexMap.get(projectileState.id);
-        const currentProjectile = Number.isInteger(projectileIndex)
-            ? nextProjectiles[projectileIndex]
-            : {
-            id: projectileState.id,
-            active: projectileState.active === true,
-            position: clonePointSnapshot(projectileState.position),
-            prevPosition: clonePointSnapshot(projectileState.prevPosition),
-            speed: clonePointSnapshot(projectileState.speed)
-        };
-        const mergedProjectile = mergeShadowProjectileState(currentProjectile, projectileState);
-        if (Number.isInteger(projectileIndex)) {
-            nextProjectiles[projectileIndex] = mergedProjectile;
-            continue;
-        }
-
-        projectileIndexMap.set(projectileState.id, nextProjectiles.length);
-        nextProjectiles.push(mergedProjectile);
-    }
-
-    return nextProjectiles;
 }
 
 /**
@@ -947,56 +711,6 @@ function getShadowPhysicsPlayers(nextState) {
 }
 
 /**
- * 정수 ID 배열을 재사용 가능한 Set에 채웁니다.
- * @param {Set<number>} targetSet
- * @param {number[]|null|undefined} ids
- * @returns {number}
- */
-function fillReusableIntegerIdSet(targetSet, ids) {
-    targetSet.clear();
-    if (!Array.isArray(ids) || ids.length === 0) {
-        return 0;
-    }
-
-    let count = 0;
-    for (let i = 0; i < ids.length; i++) {
-        const id = ids[i];
-        if (!Number.isInteger(id)) {
-            continue;
-        }
-
-        targetSet.add(id);
-        count++;
-    }
-
-    return count;
-}
-
-/**
- * ID Set에 포함된 적을 제외하도록 배열을 in-place compaction합니다.
- * @param {object[]} enemies
- * @param {Set<number>} despawnIds
- */
-function compactShadowEnemiesByIdSet(enemies, despawnIds) {
-    if (!Array.isArray(enemies) || enemies.length === 0 || !(despawnIds instanceof Set) || despawnIds.size === 0) {
-        return;
-    }
-
-    let nextCount = 0;
-    for (let i = 0; i < enemies.length; i++) {
-        const enemy = enemies[i];
-        if (!enemy || despawnIds.has(enemy.id)) {
-            continue;
-        }
-
-        enemies[nextCount] = enemy;
-        nextCount++;
-    }
-
-    enemies.length = nextCount;
-}
-
-/**
  * 권한 fixed step 중 비활성화된 적을 즉시 제거합니다.
  * @param {object|null|undefined} nextState
  * @returns {boolean} 제거된 적이 있었는지 여부입니다.
@@ -1038,129 +752,6 @@ function compactAuthorityShadowInactiveEnemies(nextState) {
     syncShadowActiveEnemyIds(nextState);
     removedEnemyIds.clear();
     return true;
-}
-
-/**
- * ID Set에 포함된 투사체를 제외하도록 배열을 in-place compaction합니다.
- * @param {object[]} projectiles
- * @param {Set<number>} despawnIds
- */
-function compactShadowProjectilesByIdSet(projectiles, despawnIds) {
-    if (!Array.isArray(projectiles) || projectiles.length === 0 || !(despawnIds instanceof Set) || despawnIds.size === 0) {
-        return;
-    }
-
-    let nextCount = 0;
-    for (let i = 0; i < projectiles.length; i++) {
-        const projectile = projectiles[i];
-        if (!projectile || despawnIds.has(projectile.id)) {
-            continue;
-        }
-
-        projectiles[nextCount] = projectile;
-        nextCount++;
-    }
-
-    projectiles.length = nextCount;
-}
-
-/**
- * 현재 런타임 뷰포트를 씬 스냅샷에 반영합니다.
- * @param {object|null|undefined} state
- */
-function syncShadowStateViewportFromRuntime(state) {
-    if (!state || typeof state !== 'object') {
-        return;
-    }
-
-    state.viewport = state.viewport && typeof state.viewport === 'object'
-        ? state.viewport
-        : {
-            ww: 0,
-            wh: 0,
-            objectWH: 0,
-            objectOffsetY: 0
-        };
-    state.viewport.ww = getSimulationWW();
-    state.viewport.wh = getSimulationWH();
-    state.viewport.objectWH = getSimulationObjectWH();
-    state.viewport.objectOffsetY = getSimulationObjectOffsetY();
-}
-
-/**
- * 뷰포트 스냅샷을 기존 객체에 in-place로 반영합니다.
- * @param {object} targetViewport
- * @param {object|null|undefined} sourceViewport
- */
-function assignShadowViewport(targetViewport, sourceViewport) {
-    if (!targetViewport || !sourceViewport || typeof sourceViewport !== 'object') {
-        return;
-    }
-
-    if (Number.isFinite(sourceViewport.ww)) targetViewport.ww = sourceViewport.ww;
-    if (Number.isFinite(sourceViewport.wh)) targetViewport.wh = sourceViewport.wh;
-    if (Number.isFinite(sourceViewport.objectWH)) targetViewport.objectWH = sourceViewport.objectWH;
-    if (Number.isFinite(sourceViewport.objectOffsetY)) targetViewport.objectOffsetY = sourceViewport.objectOffsetY;
-}
-
-/**
- * 카운터 스냅샷을 기존 객체에 in-place로 반영합니다.
- * @param {object} targetCounters
- * @param {object|null|undefined} sourceCounters
- */
-function assignShadowCounters(targetCounters, sourceCounters) {
-    if (!targetCounters || !sourceCounters || typeof sourceCounters !== 'object') {
-        return;
-    }
-
-    if (Number.isInteger(sourceCounters.enemyIdCounter)) targetCounters.enemyIdCounter = sourceCounters.enemyIdCounter;
-    if (Number.isInteger(sourceCounters.wallIdCounter)) targetCounters.wallIdCounter = sourceCounters.wallIdCounter;
-    if (Number.isInteger(sourceCounters.projIdCounter)) targetCounters.projIdCounter = sourceCounters.projIdCounter;
-}
-
-/**
- * 생성 함수를 이용해 대상 배열을 in-place로 교체합니다.
- * @param {object[]} targetArray
- * @param {object[]|null|undefined} sourceArray
- * @param {(value: object) => object|null} createItem
- * @returns {object[]}
- */
-function replaceShadowItemsInPlace(targetArray, sourceArray, createItem) {
-    targetArray.length = 0;
-    if (!Array.isArray(sourceArray) || sourceArray.length === 0) {
-        return targetArray;
-    }
-
-    for (let i = 0; i < sourceArray.length; i++) {
-        const nextItem = createItem(sourceArray[i]);
-        if (nextItem) {
-            targetArray.push(nextItem);
-        }
-    }
-
-    return targetArray;
-}
-
-/**
- * 생성 함수를 이용해 대상 배열에 항목을 이어붙입니다.
- * @param {object[]} targetArray
- * @param {object[]|null|undefined} sourceArray
- * @param {(value: object) => object|null} createItem
- * @returns {object[]}
- */
-function appendShadowItemsInPlace(targetArray, sourceArray, createItem) {
-    if (!Array.isArray(sourceArray) || sourceArray.length === 0) {
-        return targetArray;
-    }
-
-    for (let i = 0; i < sourceArray.length; i++) {
-        const nextItem = createItem(sourceArray[i]);
-        if (nextItem) {
-            targetArray.push(nextItem);
-        }
-    }
-
-    return targetArray;
 }
 
 /**
@@ -1223,7 +814,7 @@ function resolveAuthorityShadowHexaHiveMerges(nextState, activeMergeCandidatesBy
         shadowGameSceneMetadata.hexaHiveContactSecondsByPair,
         releaseIds
     );
-    compactShadowEnemiesByIdSet(nextState.enemies, releaseIds);
+    compactShadowItemsByIdSet(nextState.enemies, releaseIds);
     for (let i = 0; i < mergedEnemies.length; i++) {
         nextState.enemies.push(mergedEnemies[i]);
     }
@@ -1632,10 +1223,21 @@ export function applyGameSceneFrameSnapshot(currentState, frameSnapshot) {
         replaceShadowItemsInPlace(nextState.projectiles, frameSnapshot.projectiles, createShadowProjectileFromData);
     }
     if (Array.isArray(frameSnapshot.projectileStates)) {
-        mergeShadowProjectileStates(nextState.projectiles, frameSnapshot.projectileStates);
+        mergeShadowProjectileStates(
+            nextState.projectiles,
+            frameSnapshot.projectileStates,
+            { projectileIndexMap: shadowGameSceneMetadata.projectileIndexMap }
+        );
     }
     if (Array.isArray(frameSnapshot.enemyStates)) {
-        mergeShadowEnemyStates(nextState.enemies, frameSnapshot.enemyStates);
+        mergeShadowEnemyStates(
+            nextState.enemies,
+            frameSnapshot.enemyStates,
+            {
+                enemyIndexMap: shadowGameSceneMetadata.enemyIndexMap,
+                createEnemy: createShadowEnemyFromSpawnData
+            }
+        );
     } else if (Array.isArray(frameSnapshot.enemies)) {
         markShadowEnemyTopologyDirty();
         replaceShadowItemsInPlace(nextState.enemies, frameSnapshot.enemies, createShadowEnemyFromSpawnData);
@@ -1707,7 +1309,7 @@ export function applyGameSceneCommands(currentState, commands = []) {
                 if (Array.isArray(command.projectileIds) && command.projectileIds.length > 0) {
                     const despawnProjectileIds = shadowGameSceneMetadata.despawnProjectileIds;
                     if (fillReusableIntegerIdSet(despawnProjectileIds, command.projectileIds) > 0) {
-                        compactShadowProjectilesByIdSet(nextState.projectiles, despawnProjectileIds);
+                        compactShadowItemsByIdSet(nextState.projectiles, despawnProjectileIds);
                     }
                 }
                 if (Number.isInteger(command.nextProjIdCounter)) {
@@ -1736,7 +1338,7 @@ export function applyGameSceneCommands(currentState, commands = []) {
                             shadowGameSceneMetadata.hexaHiveContactSecondsByPair,
                             despawnIds
                         );
-                        compactShadowEnemiesByIdSet(nextState.enemies, despawnIds);
+                        compactShadowItemsByIdSet(nextState.enemies, despawnIds);
                     }
                 }
                 if (Number.isInteger(command.nextEnemyIdCounter)) {

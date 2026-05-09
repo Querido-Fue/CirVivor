@@ -1,26 +1,18 @@
 import { CollisionDetector } from './_collision_detector.js';
-import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
 import {
     areCollisionEnemyPairAnchors,
     COLLISION_RESOLVE_FRAME_MAX_RATIO,
     COLLISION_RESOLVE_FRAME_MIN_MAX,
-    COLLISION_RESOLVE_MIN_MAX,
     DENSE_LOCAL_CANDIDATE_THRESHOLD,
     DENSE_REBUILD_DENSITY_THRESHOLD,
     DENSE_REBUILD_MIN_RESOLVED,
     DENSE_STABILIZE_MIN_RESOLVED,
-    ENEMY_PAIR_COLLISION_RADIUS_SCALE,
-    ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE,
     getCollisionBodyCollisionRadiusScale,
     getCollisionDenseFrameScale,
     getCollisionPairEscapeBoost,
     getCollisionPairResolveWeights,
     getDenseSolveTuning,
-    HEXA_HIVE_CELL_COLLISION_RADIUS,
-    HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE,
-    HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
     isCollisionPairResolveMovable,
-    MERGE_PENDING_RESOLVE_WEIGHT,
     tuneCollisionResolutionMoves
 } from './_collision_resolve_tuning.js';
 import {
@@ -33,20 +25,29 @@ import {
     areCollisionBodyBroadCirclesOverlapping,
     shouldUseCollisionBroadCircleFilter
 } from './collision_broad_phase_filter.js';
+import { CollisionCandidatePairBuffer } from './collision_candidate_pair_buffer.js';
+import { getCollisionPeakCandidatePairs } from './collision_candidate_density.js';
 import {
     getCollisionEnemyPairProcessBudget,
     markCollisionEnemyPairProcessAttempt,
     resetCollisionPassPairProcessCounts,
     shouldSkipCollisionEnemyPairByBudget
 } from './collision_enemy_pair_budget.js';
-import { updateCollisionEnemySleepState } from './collision_enemy_sleep_state.js';
+import {
+    updateCollisionEnemyPostSolveSleepState,
+    updateCollisionEnemySleepState
+} from './collision_enemy_sleep_state.js';
+import { writeCollisionEnemyBody } from './collision_enemy_body_builder.js';
 import { estimateCollisionGridCellSize } from './collision_grid_cell_size.js';
 import { writeCollisionPlayerBody } from './collision_player_body_builder.js';
+import { findCollisionParallelNarrowphaseContactRow } from './collision_parallel_narrowphase_result.js';
+import { writeCollisionProjectileSweepBody } from './collision_projectile_sweep_body.js';
 import {
     createCollisionFrameStats,
     createCollisionFrameStatsSnapshot,
     resetCollisionFrameStats
 } from './collision_frame_stats.js';
+import { CollisionProfileRecorder } from './collision_profile_recorder.js';
 import {
     createCollisionBody,
     createCollisionGridBucket,
@@ -70,7 +71,7 @@ import {
     CollisionNarrowphaseWorkerPool,
     isCollisionNarrowphaseSyncWaitSupported
 } from '../simulation/collision_narrowphase_worker_pool.js';
-import { getSimulationObjectWH, getSimulationSetting } from '../simulation/simulation_runtime.js';
+import { getSimulationSetting } from '../simulation/simulation_runtime.js';
 
 const EPSILON = 1e-6;
 const CELL_KEY_OFFSET = 4096;
@@ -120,8 +121,6 @@ export class CollisionHandler {
     #bodyPoolCursor;
     #enemyBodiesBuffer;
     #playerBodiesBuffer;
-    #pairBitmap;
-    #pairBitmapBodyCount;
     #scratchProjectileBody;
     #scratchManifold;
     #scratchCandidateManifold;
@@ -137,14 +136,11 @@ export class CollisionHandler {
     #queryMarks;
     #queryMarkStamp;
     #queryCandidateIndices;
-    #candidatePairLowIndices;
-    #candidatePairHighIndices;
-    #candidatePairCount;
-    #candidatePairBodyCount;
+    #candidatePairs;
     #enemyBodyFrameToken;
     #enemyBodyCache;
     #narrowphaseWorkerPool;
-    #profileEnabled;
+    #profileRecorder;
 
     constructor() {
         this.detector = new CollisionDetector();
@@ -158,8 +154,6 @@ export class CollisionHandler {
         this.#bodyPoolCursor = 0;
         this.#enemyBodiesBuffer = [];
         this.#playerBodiesBuffer = [];
-        this.#pairBitmap = new Uint32Array(512);
-        this.#pairBitmapBodyCount = 0;
         this.#scratchProjectileBody = createCollisionScratchProjectileBody();
         this.#scratchManifold = createCollisionManifold();
         this.#scratchCandidateManifold = createCollisionManifold();
@@ -175,10 +169,7 @@ export class CollisionHandler {
         this.#queryMarks = new Int32Array(512);
         this.#queryMarkStamp = 0;
         this.#queryCandidateIndices = [];
-        this.#candidatePairLowIndices = new Int32Array(1024);
-        this.#candidatePairHighIndices = new Int32Array(1024);
-        this.#candidatePairCount = 0;
-        this.#candidatePairBodyCount = 0;
+        this.#candidatePairs = new CollisionCandidatePairBuffer();
         this.#enemyBodyFrameToken = 0;
         this.#enemyBodyCache = {
             frameToken: -1,
@@ -188,7 +179,7 @@ export class CollisionHandler {
             bodies: this.#enemyBodiesBuffer
         };
         this.#narrowphaseWorkerPool = null;
-        this.#profileEnabled = false;
+        this.#profileRecorder = new CollisionProfileRecorder(this.#frameStats);
     }
 
     /**
@@ -210,7 +201,7 @@ export class CollisionHandler {
      * 고정 틱 시작 시 충돌 체크 카운터를 초기화합니다.
      */
     resetFrameStats() {
-        this.#profileEnabled = this.#isProfilingEnabled();
+        this.#profileRecorder.setEnabled(this.#isProfilingEnabled());
         this.#enemyBodyFrameToken++;
         this.#invalidateEnemyBodyCache();
         resetCollisionFrameStats(this.#frameStats);
@@ -234,67 +225,6 @@ export class CollisionHandler {
     }
 
     /**
-     * @private
-     * 충돌 계측 시작 시각을 반환합니다.
-     * @returns {number|null}
-     */
-    #startProfileTimer() {
-        return this.#profileEnabled ? performance.now() : null;
-    }
-
-    /**
-     * @private
-     * 충돌 계측 시간을 누적합니다.
-     * @param {string} fieldName
-     * @param {number|null} startTime
-     */
-    #recordProfileDuration(fieldName, startTime) {
-        if (!Number.isFinite(startTime)) {
-            return;
-        }
-
-        const durationMs = performance.now() - startTime;
-        this.#frameStats[fieldName] = (Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0) + durationMs;
-    }
-
-    /**
-     * @private
-     * 충돌 계측 카운터를 누적합니다.
-     * @param {string} fieldName
-     * @param {number} [amount=1]
-     */
-    #recordProfileCount(fieldName, amount = 1) {
-        if (!this.#profileEnabled) {
-            return;
-        }
-
-        const safeAmount = Number.isFinite(amount) ? amount : 1;
-        this.#frameStats[fieldName] = (Number.isFinite(this.#frameStats[fieldName]) ? this.#frameStats[fieldName] : 0) + safeAmount;
-    }
-
-    /**
-     * @private
-     * 충돌 계측 값을 현재 프레임 값으로 기록합니다.
-     * @param {string} fieldName
-     * @param {number} value
-     */
-    #recordProfileValue(fieldName, value) {
-        if (!this.#profileEnabled || !Number.isFinite(value)) {
-            return;
-        }
-
-        this.#frameStats[fieldName] = value;
-    }
-
-    /**
-     * @private
-     * 원형 part 상세 검사 횟수를 누적합니다.
-     */
-    #recordPartCheck() {
-        this.#frameStats.partChecks++;
-    }
-
-    /**
      * 적 목록 충돌을 처리합니다.
      * @param {object[]} enemies
      * @param {object} [options]
@@ -303,7 +233,7 @@ export class CollisionHandler {
      * @returns {number} 처리된 충돌 건수
      */
     resolveEnemyCollisions(enemies, options = {}) {
-        const totalStart = this.#startProfileTimer();
+        const totalStart = this.#profileRecorder.startTimer();
         try {
             if (!Array.isArray(enemies) || enemies.length === 0) return 0;
 
@@ -311,17 +241,17 @@ export class CollisionHandler {
             const maxIterations = this.#resolveIterationCount();
             const players = Array.isArray(options.players) ? options.players : [];
 
-            const enemyBodyBuildStart = this.#startProfileTimer();
+            const enemyBodyBuildStart = this.#profileRecorder.startTimer();
             const dynamicBodies = this.#buildFreshEnemyBodies(enemies, delta, true);
-            this.#recordProfileDuration('enemyBodyBuildMs', enemyBodyBuildStart);
+            this.#profileRecorder.recordDuration('enemyBodyBuildMs', enemyBodyBuildStart);
 
-            const playerBodyBuildStart = this.#startProfileTimer();
+            const playerBodyBuildStart = this.#profileRecorder.startTimer();
             const playerBodies = this.#buildPlayerBodies(players, delta);
-            this.#recordProfileDuration('playerBodyBuildMs', playerBodyBuildStart);
+            this.#profileRecorder.recordDuration('playerBodyBuildMs', playerBodyBuildStart);
 
-            const wallBodyBuildStart = this.#startProfileTimer();
+            const wallBodyBuildStart = this.#profileRecorder.startTimer();
             const staticBodies = this.#buildWallBodies();
-            this.#recordProfileDuration('wallBodyBuildMs', wallBodyBuildStart);
+            this.#profileRecorder.recordDuration('wallBodyBuildMs', wallBodyBuildStart);
             if (dynamicBodies.length === 0 && playerBodies.length === 0) return 0;
 
             for (let i = 0; i < dynamicBodies.length; i++) {
@@ -356,9 +286,9 @@ export class CollisionHandler {
             let peakCandidatePairs = 0;
             const denseSolveTuning = getDenseSolveTuning(dynamicBodies.length);
             if (denseSolveTuning.largePopulation) {
-                this.#recordProfileCount('solveLargePopulationMode');
+                this.#profileRecorder.recordCount('solveLargePopulationMode');
             }
-            const positionSolveStart = this.#startProfileTimer();
+            const positionSolveStart = this.#profileRecorder.startTimer();
             for (let i = 0; i < adaptiveMax; i++) {
                 const shouldDenseRebuild = (
                     i > 0 &&
@@ -376,7 +306,7 @@ export class CollisionHandler {
                 totalResolved += resolved;
                 if (i === 0 && maxIterations > 2) {
                     const density = resolved / Math.max(1, bodies.length);
-                    peakCandidatePairs = this.#getPeakCandidatePairs(dynamicBodies);
+                    peakCandidatePairs = getCollisionPeakCandidatePairs(dynamicBodies);
                     const localDense = peakCandidatePairs >= DENSE_LOCAL_CANDIDATE_THRESHOLD;
                     if (density < 0.5 && !localDense) {
                         adaptiveMax = Math.max(2, Math.ceil(maxIterations * Math.min(1, density * 2)));
@@ -390,10 +320,10 @@ export class CollisionHandler {
                 lastResolved = resolved;
                 if (resolved === 0 && (i + 1) >= minIterations) break;
             }
-            this.#recordProfileDuration('enemyPositionSolveMs', positionSolveStart);
+            this.#profileRecorder.recordDuration('enemyPositionSolveMs', positionSolveStart);
 
             if (denseMode && lastResolved >= DENSE_STABILIZE_MIN_RESOLVED) {
-                const stabilizeStart = this.#startProfileTimer();
+                const stabilizeStart = this.#profileRecorder.startTimer();
                 const stabilizeMaxPasses = peakCandidatePairs >= (DENSE_LOCAL_CANDIDATE_THRESHOLD * 2)
                     ? denseSolveTuning.denseStabilizeMaxPasses
                     : denseSolveTuning.denseStabilizeLightMaxPasses;
@@ -408,28 +338,20 @@ export class CollisionHandler {
                     lastResolved = stabilized;
                     if (stabilized === 0) break;
                 }
-                this.#recordProfileDuration('enemyStabilizeMs', stabilizeStart);
+                this.#profileRecorder.recordDuration('enemyStabilizeMs', stabilizeStart);
             }
 
             for (let i = 0; i < dynamicBodies.length; i++) {
                 const enemy = dynamicBodies[i].ref;
-                enemy.__collisionPrevX = enemy.position.x;
-                enemy.__collisionPrevY = enemy.position.y;
-                if (dynamicBodies[i]._candidatePairCount > 0 || dynamicBodies[i]._resolvedPairCount > 0) {
-                    enemy.__collisionIdleTicks = 0;
-                    enemy.__collisionSleepTicks = 0;
-                } else {
-                    const idleTicks = (enemy.__collisionIdleTicks || 0) + 1;
-                    enemy.__collisionIdleTicks = idleTicks;
-                    if (idleTicks >= COLLISION_IDLE_TICKS_TO_SLEEP) {
-                        enemy.__collisionSleepTicks = COLLISION_SLEEP_TICKS;
-                    }
-                }
+                updateCollisionEnemyPostSolveSleepState(enemy, dynamicBodies[i], {
+                    idleTicksToSleep: COLLISION_IDLE_TICKS_TO_SLEEP,
+                    sleepTicks: COLLISION_SLEEP_TICKS
+                });
             }
 
             return totalResolved;
         } finally {
-            this.#recordProfileDuration('enemyTotalMs', totalStart);
+            this.#profileRecorder.recordDuration('enemyTotalMs', totalStart);
         }
     }
 
@@ -442,25 +364,25 @@ export class CollisionHandler {
      * @returns {number}
      */
     resolveProjectileVsEnemies(projectiles, enemies, delta = 1 / 60) {
-        const totalStart = this.#startProfileTimer();
+        const totalStart = this.#profileRecorder.startTimer();
         try {
             if (!Array.isArray(projectiles) || !Array.isArray(enemies)) return 0;
             if (projectiles.length === 0 || enemies.length === 0) return 0;
 
             const safeDelta = Math.max(delta, EPSILON);
-            const enemyBodyBuildStart = this.#startProfileTimer();
+            const enemyBodyBuildStart = this.#profileRecorder.startTimer();
             const enemyBodies = this.#getReusableEnemyBodies(enemies, safeDelta)
                 ?? this.#buildFreshEnemyBodies(enemies, safeDelta, false);
-            this.#recordProfileDuration('projectileEnemyBodyBuildMs', enemyBodyBuildStart);
+            this.#profileRecorder.recordDuration('projectileEnemyBodyBuildMs', enemyBodyBuildStart);
             if (enemyBodies.length === 0) return 0;
 
-            const gridBuildStart = this.#startProfileTimer();
+            const gridBuildStart = this.#profileRecorder.startTimer();
             const enemyGridCellSize = this.#rebuildGridFromBodies(enemyBodies, 'projectile');
-            this.#recordProfileDuration('projectileGridBuildMs', gridBuildStart);
+            this.#profileRecorder.recordDuration('projectileGridBuildMs', gridBuildStart);
 
             const baseSteps = this.#resolveIterationCount();
             let hitCount = 0;
-            const projectileScanStart = this.#startProfileTimer();
+            const projectileScanStart = this.#profileRecorder.startTimer();
 
             for (let i = 0; i < projectiles.length; i++) {
                 const projectile = projectiles[i];
@@ -485,36 +407,23 @@ export class CollisionHandler {
                     const cx = startX + (travelX * t);
                     const cy = startY + (travelY * t);
 
-                    const circleBody = this.#scratchProjectileBody;
-                    circleBody.x = cx;
-                    circleBody.y = cy;
-                    circleBody.centerX = cx;
-                    circleBody.centerY = cy;
-                    circleBody.radius = projectile.radius;
-                    circleBody.boundRadius = projectile.radius;
-                    circleBody.broadRadius = projectile.radius;
-                    circleBody.circleParts = null;
-                    circleBody.circlePartCount = 0;
-                    circleBody.weight = Math.max(EPSILON, Number.isFinite(projectile.weight) ? projectile.weight : 1);
-                    circleBody.ref = projectile;
-                    circleBody.minX = cx - projectile.radius;
-                    circleBody.maxX = cx + projectile.radius;
-                    circleBody.minY = cy - projectile.radius;
-                    circleBody.maxY = cy + projectile.radius;
-                    circleBody.sweepMinX = cx - projectile.radius;
-                    circleBody.sweepMaxX = cx + projectile.radius;
-                    circleBody.sweepMinY = cy - projectile.radius;
-                    circleBody.sweepMaxY = cy + projectile.radius;
+                    const circleBody = writeCollisionProjectileSweepBody(
+                        this.#scratchProjectileBody,
+                        projectile,
+                        cx,
+                        cy,
+                        EPSILON
+                    );
 
-                    const candidateQueryStart = this.#startProfileTimer();
+                    const candidateQueryStart = this.#profileRecorder.startTimer();
                     const candidateIndices = this.#collectGridCandidateIndices(
                         circleBody,
                         enemyGridCellSize,
                         enemyBodies.length
                     );
-                    this.#recordProfileDuration('projectileCandidateQueryMs', candidateQueryStart);
+                    this.#profileRecorder.recordDuration('projectileCandidateQueryMs', candidateQueryStart);
 
-                    const narrowphaseStart = this.#startProfileTimer();
+                    const narrowphaseStart = this.#profileRecorder.startTimer();
                     for (let j = 0; j < candidateIndices.length; j++) {
                         const enemyBody = enemyBodies[candidateIndices[j]];
                         if (!enemyBody || enemyBody.ref?.active === false) continue;
@@ -543,16 +452,16 @@ export class CollisionHandler {
                         hitThisProjectile = true;
                         if (!projectile.piercing) break;
                     }
-                    this.#recordProfileDuration('projectileNarrowphaseMs', narrowphaseStart);
+                    this.#profileRecorder.recordDuration('projectileNarrowphaseMs', narrowphaseStart);
                     if (hitThisProjectile && !projectile.piercing) break;
                 }
             }
-            this.#recordProfileDuration('projectileScanMs', projectileScanStart);
+            this.#profileRecorder.recordDuration('projectileScanMs', projectileScanStart);
 
             return hitCount;
         } finally {
             this.#invalidateEnemyBodyCache();
-            this.#recordProfileDuration('projectileTotalMs', totalStart);
+            this.#profileRecorder.recordDuration('projectileTotalMs', totalStart);
         }
     }
 
@@ -564,7 +473,7 @@ export class CollisionHandler {
      * @returns {{enemyA: object, enemyB: object}[]}
      */
     collectEnemyContactPairs(enemies, options = {}) {
-        const totalStart = this.#startProfileTimer();
+        const totalStart = this.#profileRecorder.startTimer();
         try {
             if (!Array.isArray(enemies) || enemies.length < 2) {
                 return [];
@@ -572,9 +481,9 @@ export class CollisionHandler {
 
             this.#resetBodyPool();
             const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
-            const bodyBuildStart = this.#startProfileTimer();
+            const bodyBuildStart = this.#profileRecorder.startTimer();
             const bodies = this.#buildEnemyBodies(enemies, delta);
-            this.#recordProfileDuration('contactBodyBuildMs', bodyBuildStart);
+            this.#profileRecorder.recordDuration('contactBodyBuildMs', bodyBuildStart);
             if (bodies.length < 2) {
                 return [];
             }
@@ -588,14 +497,14 @@ export class CollisionHandler {
                 partChecks: this.#frameStats.partChecks
             };
 
-            const gridBuildStart = this.#startProfileTimer();
+            const gridBuildStart = this.#profileRecorder.startTimer();
             this.#rebuildGridFromBodies(bodies, 'enemyPair');
-            this.#recordProfileDuration('contactGridBuildMs', gridBuildStart);
-            this.#ensurePairBitmap(bodies.length);
+            this.#profileRecorder.recordDuration('contactGridBuildMs', gridBuildStart);
+            this.#candidatePairs.reset(bodies.length);
             const contactPairs = [];
             const gridBuckets = this.#activeGridBuckets;
 
-            const pairScanStart = this.#startProfileTimer();
+            const pairScanStart = this.#profileRecorder.startTimer();
             for (let bucketIndex = 0; bucketIndex < gridBuckets.length; bucketIndex++) {
                 const bucket = gridBuckets[bucketIndex];
                 const count = bucket.count;
@@ -610,10 +519,10 @@ export class CollisionHandler {
                         const bodyIndexB = indices[right];
                         const low = bodyIndexA < bodyIndexB ? bodyIndexA : bodyIndexB;
                         const high = bodyIndexA < bodyIndexB ? bodyIndexB : bodyIndexA;
-                        if (this.#hasPair(low, high)) {
+                        if (this.#candidatePairs.hasPair(low, high)) {
                             continue;
                         }
-                        this.#markPair(low, high);
+                        this.#candidatePairs.markPair(low, high);
 
                         const bodyA = bodies[low];
                         const bodyB = bodies[high];
@@ -643,7 +552,7 @@ export class CollisionHandler {
                     }
                 }
             }
-            this.#recordProfileDuration('contactPairScanMs', pairScanStart);
+            this.#profileRecorder.recordDuration('contactPairScanMs', pairScanStart);
 
             this.#frameStats.collisionCheckCount = savedStats.collisionCheckCount;
             this.#frameStats.aabbPassCount = savedStats.aabbPassCount;
@@ -653,7 +562,7 @@ export class CollisionHandler {
             this.#frameStats.partChecks = savedStats.partChecks;
             return contactPairs;
         } finally {
-            this.#recordProfileDuration('contactTotalMs', totalStart);
+            this.#profileRecorder.recordDuration('contactTotalMs', totalStart);
         }
     }
 
@@ -686,7 +595,7 @@ export class CollisionHandler {
         const rebuildGrid = requestRebuildGrid || this.#activeGridBuckets.length === 0;
         const bodyCount = bodies.length;
 
-        const gridStart = this.#startProfileTimer();
+        const gridStart = this.#profileRecorder.startTimer();
         if (rebuildGrid) {
             this.#rebuildGridFromBodies(bodies);
         } else {
@@ -695,24 +604,24 @@ export class CollisionHandler {
                 this.#writeBroadData(i, bodies[i]);
             }
         }
-        this.#recordProfileDuration('solveGridMs', gridStart);
+        this.#profileRecorder.recordDuration('solveGridMs', gridStart);
 
-        const pairScanStart = this.#startProfileTimer();
-        const shouldRebuildCandidatePairs = rebuildGrid || this.#candidatePairBodyCount !== bodyCount;
+        const pairScanStart = this.#profileRecorder.startTimer();
+        const shouldRebuildCandidatePairs = rebuildGrid || this.#candidatePairs.bodyCount !== bodyCount;
         if (shouldRebuildCandidatePairs) {
-            const candidateBuildStart = this.#startProfileTimer();
+            const candidateBuildStart = this.#profileRecorder.startTimer();
             this.#buildCandidatePairsFromGrid(bodies);
-            this.#recordProfileDuration('solveCandidateBuildMs', candidateBuildStart);
+            this.#profileRecorder.recordDuration('solveCandidateBuildMs', candidateBuildStart);
         }
-        const pairProcessStart = this.#startProfileTimer();
+        const pairProcessStart = this.#profileRecorder.startTimer();
         const resolvedCount = this.#processCandidatePairs(
             bodies,
             resolvePositions,
             applyNonPosition,
             resolveBoost
         );
-        this.#recordProfileDuration('solvePairProcessMs', pairProcessStart);
-        this.#recordProfileDuration('solvePairScanMs', pairScanStart);
+        this.#profileRecorder.recordDuration('solvePairProcessMs', pairProcessStart);
+        this.#profileRecorder.recordDuration('solvePairScanMs', pairScanStart);
 
         return resolvedCount;
     }
@@ -901,7 +810,7 @@ export class CollisionHandler {
             }
             for (let j = 0; j < countB; j++) {
                 const offsetB = j * 3;
-                this.#recordPartCheck();
+                this.#profileRecorder.recordPartCheck();
                 const bx = partsB[offsetB];
                 const by = partsB[offsetB + 1];
                 const br = partsB[offsetB + 2] * scaleB;
@@ -993,7 +902,7 @@ export class CollisionHandler {
 
         for (let i = 0; i < count; i++) {
             const offset = i * 3;
-            this.#recordPartCheck();
+            this.#profileRecorder.recordPartCheck();
             const ax = parts[offset];
             const ay = parts[offset + 1];
             const ar = parts[offset + 2] * partScale;
@@ -1098,7 +1007,7 @@ export class CollisionHandler {
 
         for (let i = 0; i < count; i++) {
             const offset = i * 3;
-            this.#recordPartCheck();
+            this.#profileRecorder.recordPartCheck();
             const circleX = parts[offset];
             const circleY = parts[offset + 1];
             const radius = parts[offset + 2] * partScale;
@@ -1403,24 +1312,6 @@ export class CollisionHandler {
     }
 
     /**
-     * 국소 과밀도를 판단하기 위해 body별 후보 충돌 수 최대값을 반환합니다.
-     * @private
-     * @param {object[]} bodies
-     * @returns {number}
-     */
-    #getPeakCandidatePairs(bodies) {
-        if (!Array.isArray(bodies) || bodies.length === 0) return 0;
-        let peak = 0;
-        for (let i = 0; i < bodies.length; i++) {
-            const candidateCount = Number.isFinite(bodies[i]?._candidatePairCount) ? bodies[i]._candidatePairCount : 0;
-            const resolvedCount = Number.isFinite(bodies[i]?._resolvedPairCount) ? bodies[i]._resolvedPairCount : 0;
-            const count = Math.max(candidateCount, resolvedCount);
-            if (count > peak) peak = count;
-        }
-        return peak;
-    }
-
-    /**
      * @private
      */
     #resetBodyPool() {
@@ -1506,66 +1397,6 @@ export class CollisionHandler {
     }
 
     /**
-     * @private
-     */
-    #ensurePairBitmap(bodyCount) {
-        const neededWords = Math.ceil((bodyCount * bodyCount) / 32);
-        if (this.#pairBitmap.length < neededWords) {
-            this.#pairBitmap = new Uint32Array(Math.max(neededWords, this.#pairBitmap.length * 2));
-        }
-        this.#pairBitmapBodyCount = bodyCount;
-        this.#pairBitmap.fill(0, 0, neededWords);
-    }
-
-    /**
-     * 후보 pair 버퍼 용량을 확보합니다.
-     * @private
-     * @param {number} pairCount
-     */
-    #ensureCandidatePairCapacity(pairCount) {
-        if (this.#candidatePairLowIndices.length >= pairCount) {
-            return;
-        }
-
-        const nextCapacity = Math.max(pairCount, this.#candidatePairLowIndices.length * 2);
-        const nextLowIndices = new Int32Array(nextCapacity);
-        const nextHighIndices = new Int32Array(nextCapacity);
-        nextLowIndices.set(this.#candidatePairLowIndices);
-        nextHighIndices.set(this.#candidatePairHighIndices);
-        this.#candidatePairLowIndices = nextLowIndices;
-        this.#candidatePairHighIndices = nextHighIndices;
-    }
-
-    /**
-     * 후보 pair를 재사용 버퍼에 추가합니다.
-     * @private
-     * @param {number} low
-     * @param {number} high
-     */
-    #appendCandidatePair(low, high) {
-        this.#ensureCandidatePairCapacity(this.#candidatePairCount + 1);
-        this.#candidatePairLowIndices[this.#candidatePairCount] = low;
-        this.#candidatePairHighIndices[this.#candidatePairCount] = high;
-        this.#candidatePairCount++;
-    }
-
-    /**
-     * @private
-     */
-    #hasPair(low, high) {
-        const bitIndex = low * this.#pairBitmapBodyCount + high;
-        return (this.#pairBitmap[bitIndex >>> 5] & (1 << (bitIndex & 31))) !== 0;
-    }
-
-    /**
-     * @private
-     */
-    #markPair(low, high) {
-        const bitIndex = low * this.#pairBitmapBodyCount + high;
-        this.#pairBitmap[bitIndex >>> 5] |= (1 << (bitIndex & 31));
-    }
-
-    /**
      * 현재 패스에서 처리 가능한 충돌 규칙을 반환합니다.
      * @private
      * @param {object|null|undefined} bodyA
@@ -1595,12 +1426,10 @@ export class CollisionHandler {
      */
     #buildCandidatePairsFromGrid(bodies) {
         const bodyCount = Array.isArray(bodies) ? bodies.length : 0;
-        this.#candidatePairCount = 0;
-        this.#candidatePairBodyCount = bodyCount;
+        this.#candidatePairs.reset(bodyCount);
         if (bodyCount < 2) {
             return;
         }
-        this.#ensurePairBitmap(bodyCount);
         const gridBuckets = this.#activeGridBuckets;
         for (let b = 0; b < gridBuckets.length; b++) {
             const bucket = gridBuckets[b];
@@ -1614,21 +1443,21 @@ export class CollisionHandler {
                     const c = indices[j];
                     const low = a < c ? a : c;
                     const high = a < c ? c : a;
-                    this.#recordProfileCount('solveBucketPairCount');
+                    this.#profileRecorder.recordCount('solveBucketPairCount');
 
                     const rule = this.#getPassRule(bodies[low], bodies[high], true);
                     if (!rule) {
-                        this.#recordProfileCount('solveRuleRejectCount');
+                        this.#profileRecorder.recordCount('solveRuleRejectCount');
                         continue;
                     }
-                    if (this.#hasPair(low, high)) {
-                        this.#recordProfileCount('solveDuplicatePairSkipCount');
+                    if (this.#candidatePairs.hasPair(low, high)) {
+                        this.#profileRecorder.recordCount('solveDuplicatePairSkipCount');
                         continue;
                     }
 
-                    this.#markPair(low, high);
-                    this.#appendCandidatePair(low, high);
-                    this.#recordProfileCount('solveCandidatePairCount');
+                    this.#candidatePairs.markPair(low, high);
+                    this.#candidatePairs.append(low, high);
+                    this.#profileRecorder.recordCount('solveCandidatePairCount');
                 }
             }
         }
@@ -1761,7 +1590,7 @@ export class CollisionHandler {
         if (resolvePositions || !applyNonPosition) {
             return false;
         }
-        if (this.#candidatePairCount < PARALLEL_NARROWPHASE_MIN_PAIR_COUNT) {
+        if (this.#candidatePairs.count < PARALLEL_NARROWPHASE_MIN_PAIR_COUNT) {
             return false;
         }
         if (getSimulationSetting('simulationWorkerAuthorityMode', false) !== true) {
@@ -1784,88 +1613,47 @@ export class CollisionHandler {
             return null;
         }
 
-        const waitStart = this.#startProfileTimer();
+        const waitStart = this.#profileRecorder.startTimer();
         const workerPool = this.#getNarrowphaseWorkerPool();
         const result = workerPool.computeEnemyCircleContactsSync(
             {
                 relationData: this.#relationBroadData,
                 bodyKindCodes: this.#bodyKindCodes,
                 bodyShapeCodes: this.#bodyShapeCodes,
-                pairLowIndices: this.#candidatePairLowIndices,
-                pairHighIndices: this.#candidatePairHighIndices,
+                pairLowIndices: this.#candidatePairs.lowIndices,
+                pairHighIndices: this.#candidatePairs.highIndices,
                 bodyCount: Array.isArray(bodies) ? bodies.length : 0,
-                pairCount: this.#candidatePairCount
+                pairCount: this.#candidatePairs.count
             },
             {
                 waitTimeoutMs: PARALLEL_NARROWPHASE_WAIT_TIMEOUT_MS
             }
         );
         const poolStats = workerPool.getStatsSnapshot();
-        this.#recordProfileValue('solveParallelNarrowphasePoolSize', poolStats.poolSize);
-        this.#recordProfileDuration('solveParallelNarrowphaseWaitMs', waitStart);
+        this.#profileRecorder.recordValue('solveParallelNarrowphasePoolSize', poolStats.poolSize);
+        this.#profileRecorder.recordDuration('solveParallelNarrowphaseWaitMs', waitStart);
         if (!result || !(result.resultData instanceof Float64Array)) {
-            this.#recordProfileCount('solveParallelNarrowphaseFallbackCount');
-            this.#recordProfileCount('solveParallelNarrowphaseFallbackPairCount', this.#candidatePairCount);
+            this.#profileRecorder.recordCount('solveParallelNarrowphaseFallbackCount');
+            this.#profileRecorder.recordCount('solveParallelNarrowphaseFallbackPairCount', this.#candidatePairs.count);
             return null;
         }
         if (result.overflow === true) {
-            this.#recordProfileCount('solveParallelNarrowphaseOverflowCount');
-            this.#recordProfileCount('solveParallelNarrowphaseFallbackCount');
-            this.#recordProfileCount('solveParallelNarrowphaseFallbackPairCount', this.#candidatePairCount);
+            this.#profileRecorder.recordCount('solveParallelNarrowphaseOverflowCount');
+            this.#profileRecorder.recordCount('solveParallelNarrowphaseFallbackCount');
+            this.#profileRecorder.recordCount('solveParallelNarrowphaseFallbackPairCount', this.#candidatePairs.count);
             return null;
         }
 
         const resultRanges = Array.isArray(result.resultRanges) ? result.resultRanges : [];
-        this.#recordProfileCount('solveParallelNarrowphasePairCount', result.pairCount);
-        this.#recordProfileCount('solveParallelNarrowphaseContactCount', result.resultCount);
-        this.#recordProfileCount('solveParallelNarrowphaseChunkCount', resultRanges.length);
+        this.#profileRecorder.recordCount('solveParallelNarrowphasePairCount', result.pairCount);
+        this.#profileRecorder.recordCount('solveParallelNarrowphaseContactCount', result.resultCount);
+        this.#profileRecorder.recordCount('solveParallelNarrowphaseChunkCount', resultRanges.length);
         return {
             resultData: result.resultData,
             resultRanges,
             rangeIndex: 0,
             rowIndex: Number.isInteger(resultRanges[0]?.resultOffset) ? resultRanges[0].resultOffset : 0
         };
-    }
-
-    /**
-     * pair index에 대응하는 parallel contact result row를 찾습니다.
-     * @private
-     * @param {{resultData: Float64Array, resultRanges: object[], rangeIndex: number, rowIndex: number}|null} state
-     * @param {number} pairIndex
-     * @returns {number}
-     */
-    #findParallelNarrowphaseContactRow(state, pairIndex) {
-        if (!state || !(state.resultData instanceof Float64Array) || !Number.isInteger(pairIndex)) {
-            return -1;
-        }
-
-        const ranges = state.resultRanges;
-        const resultData = state.resultData;
-        while (state.rangeIndex < ranges.length) {
-            const range = ranges[state.rangeIndex];
-            const resultOffset = Number.isInteger(range?.resultOffset) ? range.resultOffset : 0;
-            const resultCount = Number.isInteger(range?.resultCount) ? Math.max(0, range.resultCount) : 0;
-            const rowEnd = resultOffset + resultCount;
-            if (state.rowIndex < resultOffset) {
-                state.rowIndex = resultOffset;
-            }
-
-            while (state.rowIndex < rowEnd) {
-                const offset = state.rowIndex * CONTACT_RESULT_STRIDE;
-                const resultPairIndex = Math.trunc(resultData[offset + CONTACT_RESULT_INDEX.PAIR_INDEX]);
-                if (resultPairIndex < pairIndex) {
-                    state.rowIndex++;
-                    continue;
-                }
-                if (resultPairIndex === pairIndex) {
-                    return state.rowIndex;
-                }
-                return -1;
-            }
-            state.rangeIndex++;
-        }
-
-        return -1;
     }
 
     /**
@@ -1941,15 +1729,15 @@ export class CollisionHandler {
         const relationData = this.#relationBroadData;
         const kindCodes = this.#bodyKindCodes;
         const shapeCodes = this.#bodyShapeCodes;
-        const lowIndices = this.#candidatePairLowIndices;
-        const highIndices = this.#candidatePairHighIndices;
+        const lowIndices = this.#candidatePairs.lowIndices;
+        const highIndices = this.#candidatePairs.highIndices;
         const parallelContactState = this.#prepareParallelNarrowphaseContacts(
             bodies,
             resolvePositions,
             applyNonPosition
         );
         resetCollisionPassPairProcessCounts(bodies);
-        for (let pairIndex = 0; pairIndex < this.#candidatePairCount; pairIndex++) {
+        for (let pairIndex = 0; pairIndex < this.#candidatePairs.count; pairIndex++) {
             const low = lowIndices[pairIndex];
             const high = highIndices[pairIndex];
             const bodyA = bodies[low];
@@ -1961,7 +1749,7 @@ export class CollisionHandler {
                 if (idA >= 0 && idA === idB) continue;
 
                 if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
-                    this.#recordProfileCount('solveBudgetSkipCount');
+                    this.#profileRecorder.recordCount('solveBudgetSkipCount');
                     continue;
                 }
 
@@ -1979,7 +1767,7 @@ export class CollisionHandler {
                 }
 
                 this.#frameStats.aabbPassCount++;
-                this.#recordProfileCount('solveAabbPassCount');
+                this.#profileRecorder.recordCount('solveAabbPassCount');
                 const isCirclePair = shapeCodes[low] === BODY_SHAPE_CIRCLE && shapeCodes[high] === BODY_SHAPE_CIRCLE;
                 if (!isCirclePair) {
                     const ax = relationData[relationOffsetA + RELATION_INDEX.CENTER_X];
@@ -1999,15 +1787,18 @@ export class CollisionHandler {
                         }
                     }
                     this.#frameStats.circlePassCount++;
-                    this.#recordProfileCount('solveCirclePassCount');
+                    this.#profileRecorder.recordCount('solveCirclePassCount');
                 }
 
                 markCollisionEnemyPairProcessAttempt(bodyA, bodyB);
 
-                const narrowphaseStart = this.#startProfileTimer();
+                const narrowphaseStart = this.#profileRecorder.startTimer();
                 let pairResolved = 0;
                 if (isCirclePair && parallelContactState) {
-                    const contactRowIndex = this.#findParallelNarrowphaseContactRow(parallelContactState, pairIndex);
+                    const contactRowIndex = findCollisionParallelNarrowphaseContactRow(
+                        parallelContactState,
+                        pairIndex
+                    );
                     pairResolved = contactRowIndex >= 0
                         ? this.#processEnemyCircleContactResultSoA(
                             bodyA,
@@ -2039,12 +1830,12 @@ export class CollisionHandler {
                         COLLISION_RULE_DYNAMIC_RESOLVE
                     );
                 }
-                this.#recordProfileCount(
+                this.#profileRecorder.recordCount(
                     isCirclePair ? 'solveSoACirclePairCount' : 'solveObjectNarrowphasePairCount'
                 );
-                this.#recordProfileDuration('solveNarrowphaseMs', narrowphaseStart);
+                this.#profileRecorder.recordDuration('solveNarrowphaseMs', narrowphaseStart);
                 if (pairResolved > 0) {
-                    this.#recordProfileCount('solveResolvedPairCount', pairResolved);
+                    this.#profileRecorder.recordCount('solveResolvedPairCount', pairResolved);
                 }
                 resolvedCount += pairResolved;
                 continue;
@@ -2054,7 +1845,7 @@ export class CollisionHandler {
             if (!rule) continue;
 
             if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
-                this.#recordProfileCount('solveBudgetSkipCount');
+                this.#profileRecorder.recordCount('solveBudgetSkipCount');
                 continue;
             }
 
@@ -2064,19 +1855,19 @@ export class CollisionHandler {
                 continue;
             }
             this.#frameStats.aabbPassCount++;
-            this.#recordProfileCount('solveAabbPassCount');
+            this.#profileRecorder.recordCount('solveAabbPassCount');
             if (shouldUseCollisionBroadCircleFilter(bodyA, bodyB)) {
                 if (!areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON)) {
                     this.#frameStats.circleRejectCount++;
                     continue;
                 }
                 this.#frameStats.circlePassCount++;
-                this.#recordProfileCount('solveCirclePassCount');
+                this.#profileRecorder.recordCount('solveCirclePassCount');
             }
 
             markCollisionEnemyPairProcessAttempt(bodyA, bodyB);
 
-            const narrowphaseStart = this.#startProfileTimer();
+            const narrowphaseStart = this.#profileRecorder.startTimer();
             const pairResolved = this.#processPair(
                 bodyA,
                 bodyB,
@@ -2085,10 +1876,10 @@ export class CollisionHandler {
                 resolveBoost,
                 rule
             );
-            this.#recordProfileCount('solveObjectNarrowphasePairCount');
-            this.#recordProfileDuration('solveNarrowphaseMs', narrowphaseStart);
+            this.#profileRecorder.recordCount('solveObjectNarrowphasePairCount');
+            this.#profileRecorder.recordDuration('solveNarrowphaseMs', narrowphaseStart);
             if (pairResolved > 0) {
-                this.#recordProfileCount('solveResolvedPairCount', pairResolved);
+                this.#profileRecorder.recordCount('solveResolvedPairCount', pairResolved);
             }
             resolvedCount += pairResolved;
         }
@@ -2513,182 +2304,14 @@ export class CollisionHandler {
      * @private
      */
     #buildEnemyBody(enemy, delta, sleeping = false) {
-        const baseHeight = typeof enemy.getRenderHeightPx === 'function'
-            ? enemy.getRenderHeightPx()
-            : (getSimulationObjectWH() * 0.03 * (enemy.size || 1));
-        const width = baseHeight * (enemy.aspectRatio ?? 1);
-        const height = baseHeight * (enemy.heightScale ?? 1);
-        const hexaHiveCenters = Array.isArray(enemy?.hexaHiveLayout?.filledLocalCenters) && enemy.hexaHiveLayout.filledLocalCenters.length > 0
-            ? enemy.hexaHiveLayout.filledLocalCenters
-            : (Array.isArray(enemy?.hexaHiveLayout?.visibleLocalCenters) ? enemy.hexaHiveLayout.visibleLocalCenters : null);
-        const useHiveCells = enemy?.type === 'hexa_hive' && Array.isArray(hexaHiveCenters) && hexaHiveCenters.length > 0;
-        const partCount = useHiveCells ? hexaHiveCenters.length : 1;
-        if (partCount <= 0) return null;
-
-        let cos = 1;
-        let sin = 0;
-        if (useHiveCells) {
-            const rotationDeg = Number.isFinite(enemy.rotation) ? enemy.rotation : 0;
-            const rad = rotationDeg * (Math.PI / 180);
-            cos = Math.cos(rad);
-            sin = Math.sin(rad);
-        }
-        const centerX = enemy.position.x;
-        const centerY = enemy.position.y;
-
-        let minX = Number.POSITIVE_INFINITY;
-        let maxX = Number.NEGATIVE_INFINITY;
-        let minY = Number.POSITIVE_INFINITY;
-        let maxY = Number.NEGATIVE_INFINITY;
-        let enemyPairMinX = Number.POSITIVE_INFINITY;
-        let enemyPairMaxX = Number.NEGATIVE_INFINITY;
-        let enemyPairMinY = Number.POSITIVE_INFINITY;
-        let enemyPairMaxY = Number.NEGATIVE_INFINITY;
-        let projectileMinX = Number.POSITIVE_INFINITY;
-        let projectileMaxX = Number.NEGATIVE_INFINITY;
-        let projectileMinY = Number.POSITIVE_INFINITY;
-        let projectileMaxY = Number.NEGATIVE_INFINITY;
-        let broadRadius = 0;
-        let enemyPairBroadRadius = 0;
-        let projectileBroadRadius = 0;
-        const singleCircleRadius = useHiveCells
-            ? HEXA_HIVE_CELL_COLLISION_RADIUS * Math.max(width, height)
-            : getEnemyCircleCollisionRadius(enemy.type, width, height);
-
-        if (useHiveCells) {
-            const circleBufferLength = partCount * 3;
-            if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
-                enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
-            }
-
-            for (let p = 0; p < partCount; p++) {
-                const localCenter = hexaHiveCenters[p];
-                const lx = (Number.isFinite(localCenter?.x) ? localCenter.x : 0) * width;
-                const ly = (Number.isFinite(localCenter?.y) ? localCenter.y : 0) * height;
-                const wx = centerX + (lx * cos) - (ly * sin);
-                const wy = centerY + (lx * sin) + (ly * cos);
-                const radius = singleCircleRadius;
-                const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
-                const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
-                const offset = p * 3;
-                enemy.__collisionWorldCircles[offset] = wx;
-                enemy.__collisionWorldCircles[offset + 1] = wy;
-                enemy.__collisionWorldCircles[offset + 2] = radius;
-
-                minX = Math.min(minX, wx - radius);
-                maxX = Math.max(maxX, wx + radius);
-                minY = Math.min(minY, wy - radius);
-                maxY = Math.max(maxY, wy + radius);
-                enemyPairMinX = Math.min(enemyPairMinX, wx - enemyPairRadius);
-                enemyPairMaxX = Math.max(enemyPairMaxX, wx + enemyPairRadius);
-                enemyPairMinY = Math.min(enemyPairMinY, wy - enemyPairRadius);
-                enemyPairMaxY = Math.max(enemyPairMaxY, wy + enemyPairRadius);
-                projectileMinX = Math.min(projectileMinX, wx - projectileRadius);
-                projectileMaxX = Math.max(projectileMaxX, wx + projectileRadius);
-                projectileMinY = Math.min(projectileMinY, wy - projectileRadius);
-                projectileMaxY = Math.max(projectileMaxY, wy + projectileRadius);
-
-                const centerDistance = Math.hypot(wx - centerX, wy - centerY);
-                broadRadius = Math.max(broadRadius, centerDistance + radius);
-                enemyPairBroadRadius = Math.max(enemyPairBroadRadius, centerDistance + enemyPairRadius);
-                projectileBroadRadius = Math.max(projectileBroadRadius, centerDistance + projectileRadius);
-            }
-        } else {
-            const radius = singleCircleRadius;
-            const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
-            const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
-            minX = centerX - radius;
-            maxX = centerX + radius;
-            minY = centerY - radius;
-            maxY = centerY + radius;
-            enemyPairMinX = centerX - enemyPairRadius;
-            enemyPairMaxX = centerX + enemyPairRadius;
-            enemyPairMinY = centerY - enemyPairRadius;
-            enemyPairMaxY = centerY + enemyPairRadius;
-            projectileMinX = centerX - projectileRadius;
-            projectileMaxX = centerX + projectileRadius;
-            projectileMinY = centerY - projectileRadius;
-            projectileMaxY = centerY + projectileRadius;
-            broadRadius = radius;
-            enemyPairBroadRadius = enemyPairRadius;
-            projectileBroadRadius = projectileRadius;
-        }
-
-        const prevX = sleeping
-            ? centerX
-            : (Number.isFinite(enemy.__collisionPrevX)
-                ? enemy.__collisionPrevX
-                : (Number.isFinite(enemy.prevPosition?.x) ? enemy.prevPosition.x : centerX));
-        const prevY = sleeping
-            ? centerY
-            : (Number.isFinite(enemy.__collisionPrevY)
-                ? enemy.__collisionPrevY
-                : (Number.isFinite(enemy.prevPosition?.y) ? enemy.prevPosition.y : centerY));
-        const invDelta = 1 / Math.max(EPSILON, delta);
-        const velX = (centerX - prevX) * invDelta;
-        const velY = (centerY - prevY) * invDelta;
-
-        const boundRadius = Math.max((maxX - minX) * 0.5, (maxY - minY) * 0.5);
-        const resolveRadius = getEnemyResolveRadius(enemy, boundRadius, baseHeight, {
-            minRadius: COLLISION_RESOLVE_MIN_MAX,
-            hexaHiveRadiusScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
-            hexaHiveRootScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE
-        });
-        const frameResolvePad = Math.max(
-            COLLISION_RESOLVE_FRAME_MIN_MAX,
-            resolveRadius * COLLISION_RESOLVE_FRAME_MAX_RATIO
-        );
-        const velocitySweepPadX = sleeping ? 0 : (Math.abs(velX) * delta);
-        const velocitySweepPadY = sleeping ? 0 : (Math.abs(velY) * delta);
-        const sweepPadX = velocitySweepPadX + frameResolvePad;
-        const sweepPadY = velocitySweepPadY + frameResolvePad;
-
         const body = this.#acquireBody();
-        body.id = Number.isInteger(enemy.id) ? enemy.id : -1;
-        body.kind = 'enemy';
-        body.shape = useHiveCells ? 'circleParts' : 'circle';
-        body.circleParts = useHiveCells ? enemy.__collisionWorldCircles : null;
-        body.circlePartCount = useHiveCells ? partCount : 0;
-        body.ref = enemy;
-        body.mergeLock = enemy?.hexaHiveMergePending === true;
-        body.weight = body.mergeLock
-            ? Math.max(MERGE_PENDING_RESOLVE_WEIGHT, Number.isFinite(enemy.hexaHiveMergePendingWeight) ? enemy.hexaHiveMergePendingWeight : MERGE_PENDING_RESOLVE_WEIGHT)
-            : Math.max(EPSILON, Number.isFinite(enemy.weight) ? enemy.weight : 1);
-        body.movable = true;
-        body.centerX = centerX;
-        body.centerY = centerY;
-        body.x = centerX;
-        body.y = centerY;
-        body.radius = singleCircleRadius;
-        body.minX = minX;
-        body.maxX = maxX;
-        body.minY = minY;
-        body.maxY = maxY;
-        body.enemyPairMinX = enemyPairMinX;
-        body.enemyPairMaxX = enemyPairMaxX;
-        body.enemyPairMinY = enemyPairMinY;
-        body.enemyPairMaxY = enemyPairMaxY;
-        body.projectileMinX = projectileMinX;
-        body.projectileMaxX = projectileMaxX;
-        body.projectileMinY = projectileMinY;
-        body.projectileMaxY = projectileMaxY;
-        body.sweepMinX = minX - sweepPadX;
-        body.sweepMaxX = maxX + sweepPadX;
-        body.sweepMinY = minY - sweepPadY;
-        body.sweepMaxY = maxY + sweepPadY;
-        body.boundRadius = boundRadius;
-        body.broadRadius = broadRadius;
-        body.enemyPairBroadRadius = enemyPairBroadRadius;
-        body.projectileBroadRadius = projectileBroadRadius;
-        body.resolveRadius = resolveRadius;
-        body.velocityX = velX;
-        body.velocityY = velY;
-        body._candidatePairCount = 0;
-        body._resolvedPairCount = 0;
-        body._passPairProcessCount = 0;
-        body._frameResolveMoved = 0;
-        body._frameResolveMax = frameResolvePad;
-        return body;
+        return writeCollisionEnemyBody(body, enemy, delta, sleeping, {
+            epsilon: EPSILON,
+            frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,
+            frameResolveMaxRatio: COLLISION_RESOLVE_FRAME_MAX_RATIO
+        })
+            ? body
+            : null;
     }
 
     /**

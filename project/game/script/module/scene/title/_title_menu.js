@@ -3,7 +3,6 @@ import { SVGDrawer } from 'display/_svg_drawer.js';
 import { getDisplaySystem, getUIOffsetX, getWH, getUIWW, getWW } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { consumeMouseState, getMouseInput, hasMouseState } from 'input/input_system.js';
-import { lerpNumber } from 'overlay/_panel_effect_math.js';
 import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
@@ -55,10 +54,6 @@ import {
 } from './menu/_title_menu_render_state.js';
 import { createTitleMenuOverlaySession } from './menu/_title_menu_overlay_session.js';
 import {
-    getTitleMenuTextPresetFont,
-    getTitleMenuTextPresetFontSize
-} from './menu/_title_menu_text_layout.js';
-import {
     beginTitleMenuTextureClip,
     ensureTitleMenuTextureCanvas
 } from './menu/_title_menu_texture_canvas.js';
@@ -66,14 +61,9 @@ import {
     buildTitleMenuCardStaticTextureSignature,
     buildTitleMenuUtilityTileStaticTextureSignature
 } from './menu/_title_menu_texture_signature.js';
-import {
-    buildTitleMenuVersionLabelLayout,
-    getTitleMenuGameVersionText,
-    getTitleMenuVersionHistoryLinkText
-} from './menu/_title_menu_version_label.js';
+import { TitleMenuVersionLabelRenderer } from './menu/_title_menu_version_label_renderer.js';
 import {
     createTitleMenuVersionHistoryLinkButton,
-    drawTitleMenuVersionHistoryLinkArrow,
     releaseTitleMenuVersionHistoryLinkButton,
     updateTitleMenuVersionHistoryLinkButton
 } from './menu/_title_menu_version_link.js';
@@ -81,8 +71,7 @@ import {
     getMenuBackdropPaneStyle,
     getMenuEffectColor,
     getMenuPanelStyle,
-    getUnifiedOuterPaneStrokeColor,
-    menuForegroundWithAlpha
+    getUnifiedOuterPaneStrokeColor
 } from './menu/_title_menu_theme.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
@@ -124,12 +113,14 @@ export class TitleMenu {
         this.paneTextureContext = null;
         this.cardPaneTextureCanvas = null;
         this.cardPaneTextureContext = null;
-        this.versionLabelMeasureCanvas = null;
-        this.versionLabelMeasureContext = null;
         this.cardPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.utilityPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.secondaryMenuEntries = TITLE_MENU_SECONDARY_ENTRIES;
         this.session = this.#createSession();
+        this.versionLabelRenderer = new TitleMenuVersionLabelRenderer({
+            globalConstants: GLOBAL_CONSTANTS,
+            textConstants: TEXT_CONSTANTS
+        });
         this.versionHistoryLinkButton = createTitleMenuVersionHistoryLinkButton(this.TitleScene);
 
         this.#createCards();
@@ -290,7 +281,15 @@ export class TitleMenu {
             });
         }
 
-        this.#drawGameVersionLabel(paneLayout);
+        this.versionLabelRenderer?.draw({
+            session: this.session,
+            paneLayout,
+            uiww: this.UIWW,
+            wh: this.WH,
+            uiOffsetX: this.UIOffsetX,
+            utilityPaneRevealEase: this.#getUtilityPaneRevealEase(),
+            linkButton: this.versionHistoryLinkButton
+        });
     }
 
     /**
@@ -359,11 +358,9 @@ export class TitleMenu {
             this.cardPaneTextureCanvas.height = 0;
             this.cardPaneTextureContext = null;
         }
-        if (this.versionLabelMeasureCanvas) {
-            this.versionLabelMeasureCanvas.width = 0;
-            this.versionLabelMeasureCanvas.height = 0;
-            this.versionLabelMeasureCanvas = null;
-            this.versionLabelMeasureContext = null;
+        if (this.versionLabelRenderer) {
+            this.versionLabelRenderer.destroy();
+            this.versionLabelRenderer = null;
         }
         if (this.versionHistoryLinkButton) {
             releaseTitleMenuVersionHistoryLinkButton(this.versionHistoryLinkButton);
@@ -612,7 +609,13 @@ export class TitleMenu {
             return;
         }
 
-        const layout = this.#buildVersionLabelLayout(paneLayout);
+        const layout = this.versionLabelRenderer?.buildLayout({
+            paneLayout,
+            uiww: this.UIWW,
+            wh: this.WH,
+            uiOffsetX: this.UIOffsetX,
+            utilityPaneRevealEase: this.#getUtilityPaneRevealEase()
+        }) || null;
         updateTitleMenuVersionHistoryLinkButton({
             button: this.versionHistoryLinkButton,
             layout,
@@ -1026,95 +1029,6 @@ export class TitleMenu {
     }
 
     /**
-     * 우상단에 현재 게임 버전 라벨을 렌더링합니다.
-     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
-     * @private
-     */
-    #drawGameVersionLabel(paneLayout = null) {
-        if (!this.session) {
-            return;
-        }
-
-        const layout = this.#buildVersionLabelLayout(paneLayout);
-        if (!layout || layout.alpha <= 0.005) {
-            return;
-        }
-        const linkHoverValue = clampNumber(this.versionHistoryLinkButton?.hoverValue || 0, 0, 1);
-        const linkColor = menuForegroundWithAlpha(lerpNumber(0.42, 1, linkHoverValue));
-        const textShadowBlur = Math.max(4, this.WH * 0.008);
-        const textShadowColor = menuForegroundWithAlpha(0.08);
-
-        this.session.renderPanel({
-            shape: 'text',
-            text: layout.versionText,
-            x: layout.versionX,
-            y: layout.versionY,
-            font: layout.versionFont,
-            fill: menuForegroundWithAlpha(0.42),
-            align: 'right',
-            baseline: 'top',
-            alpha: layout.alpha,
-            shadowBlur: textShadowBlur,
-            shadowColor: textShadowColor
-        });
-
-        if (!layout.linkText) {
-            return;
-        }
-
-        drawTitleMenuVersionHistoryLinkArrow(this.session, layout, linkColor, textShadowBlur, textShadowColor);
-
-        this.session.renderPanel({
-            shape: 'text',
-            text: layout.linkText,
-            x: layout.linkTextX,
-            y: layout.linkY,
-            font: layout.linkFont,
-            fill: linkColor,
-            align: 'right',
-            baseline: 'top',
-            alpha: layout.alpha,
-            shadowBlur: textShadowBlur,
-            shadowColor: textShadowColor
-        });
-    }
-
-    /**
-     * 버전 정보 블록의 텍스트, 폰트, hitbox를 계산합니다.
-     * @param {object} [paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
-     * @returns {object|null} 버전 정보 블록 렌더 레이아웃입니다.
-     * @private
-     */
-    #buildVersionLabelLayout(paneLayout = null) {
-        const versionText = getTitleMenuGameVersionText(GLOBAL_CONSTANTS);
-        if (!versionText) {
-            return null;
-        }
-
-        const versionFontSize = getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H5');
-        const linkFontSize = getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H5_BOLD');
-        const versionFont = getTitleMenuTextPresetFont(TEXT_CONSTANTS, this.UIWW, 'H5');
-        const linkFont = getTitleMenuTextPresetFont(TEXT_CONSTANTS, this.UIWW, 'H5_BOLD');
-        const linkText = getTitleMenuVersionHistoryLinkText();
-        const linkTextWidth = linkText ? this.#measureTextWidth(linkText, linkFont) : 0;
-
-        return buildTitleMenuVersionLabelLayout({
-            paneLayout,
-            uiww: this.UIWW,
-            wh: this.WH,
-            uiOffsetX: this.UIOffsetX,
-            utilityPaneRevealEase: this.#getUtilityPaneRevealEase(),
-            versionText,
-            versionFont,
-            versionFontSize,
-            linkText,
-            linkFont,
-            linkFontSize,
-            linkTextWidth
-        });
-    }
-
-    /**
      * 외곽 패널을 내부 카드선과 동일한 계열로 보이게 할 스트로크 색상을 반환합니다.
      * @returns {string} 내부 카드선 기준 스트로크 색상입니다.
      * @private
@@ -1151,45 +1065,6 @@ export class TitleMenu {
      */
     #getEffectColor() {
         return getMenuEffectColor();
-    }
-
-    /**
-     * 지정한 폰트 기준 텍스트 폭을 측정합니다.
-     * @param {string} text - 측정할 텍스트입니다.
-     * @param {string} font - 캔버스 폰트 문자열입니다.
-     * @returns {number} 측정된 텍스트 폭입니다.
-     * @private
-     */
-    #measureTextWidth(text, font) {
-        const context = this.#getVersionLabelMeasureContext();
-        if (!context) {
-            return Math.max(1, String(text || '').length * getTitleMenuTextPresetFontSize(TEXT_CONSTANTS, this.UIWW, 'H6') * 0.6);
-        }
-
-        context.save();
-        context.font = font;
-        const measuredWidth = context.measureText(String(text || '')).width;
-        context.restore();
-        return measuredWidth;
-    }
-
-    /**
-     * 버전 라벨 텍스트 측정에 사용할 2D 컨텍스트를 반환합니다.
-     * @returns {CanvasRenderingContext2D|null} 텍스트 측정용 컨텍스트입니다.
-     * @private
-     */
-    #getVersionLabelMeasureContext() {
-        if (this.versionLabelMeasureContext) {
-            return this.versionLabelMeasureContext;
-        }
-
-        if (typeof document === 'undefined') {
-            return null;
-        }
-
-        this.versionLabelMeasureCanvas = document.createElement('canvas');
-        this.versionLabelMeasureContext = this.versionLabelMeasureCanvas.getContext('2d');
-        return this.versionLabelMeasureContext;
     }
 
     /**
