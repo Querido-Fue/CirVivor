@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { clampNumber } from 'util/number_util.js';
 
 const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
 const COLLISION_RESOLVE_TUNING = COLLISION_CONSTANTS.RESOLVE_TUNING;
@@ -305,7 +306,7 @@ function getCollisionResolveWeight(body) {
     const maxWeight = body?.ref?.type === 'hexa_hive'
         ? PRESSURE_HEXA_HIVE_WEIGHT_MAX
         : PRESSURE_WEIGHT_MAX;
-    const clamped = Math.max(PRESSURE_WEIGHT_MIN, Math.min(maxWeight, rawWeight));
+    const clamped = clampNumber(rawWeight, PRESSURE_WEIGHT_MIN, maxWeight);
     return Math.pow(clamped, PRESSURE_WEIGHT_EXPONENT);
 }
 
