@@ -1,3 +1,5 @@
+import { clampNumber } from 'util/number_util.js';
+
 const WAVE_SEGMENT_COUNT = 30;
 
 /**
@@ -23,9 +25,10 @@ export function buildCenterCircleFillData({
     const fillHeight = (innerRadius * 2) * progress;
     const fillTopBaseY = fillBottomY - fillHeight;
     const amplitudeLimit = innerRadius * 0.06;
+    const minimumAmplitude = Math.min(1.5, amplitudeLimit);
     const amplitude = progress >= 1
         ? 0
-        : Math.min(amplitudeLimit, Math.max(1.5, fillHeight * 0.2));
+        : clampNumber(fillHeight * 0.2, minimumAmplitude, amplitudeLimit);
     const leftX = centerX - innerRadius - (amplitude * 2);
     const rightX = centerX + innerRadius + (amplitude * 2);
     const path = new Path2D();
