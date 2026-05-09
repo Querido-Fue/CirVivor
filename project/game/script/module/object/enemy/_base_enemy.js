@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getSimulationObjectWH } from 'simulation/simulation_runtime.js';
+import { clamp01 } from 'util/number_util.js';
 
 const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
 const ENEMY_DEFAULT_WEIGHT = getData('ENEMY_DEFAULT_WEIGHT');
@@ -174,7 +175,7 @@ export class BaseEnemy {
      * @param {number} alpha
      */
     interpolatePosition(alpha) {
-        const t = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+        const t = Number.isFinite(alpha) ? clamp01(alpha) : 1;
         this.renderPosition.x = this.prevPosition.x + ((this.position.x - this.prevPosition.x) * t);
         this.renderPosition.y = this.prevPosition.y + ((this.position.y - this.prevPosition.y) * t);
     }
@@ -213,8 +214,8 @@ export class BaseEnemy {
      * @param {number} [factorY=1]
      */
     applyAxisResistance(factorX = 1, factorY = 1) {
-        const fx = Number.isFinite(factorX) ? Math.max(0, Math.min(1, factorX)) : 1;
-        const fy = Number.isFinite(factorY) ? Math.max(0, Math.min(1, factorY)) : 1;
+        const fx = Number.isFinite(factorX) ? clamp01(factorX) : 1;
+        const fy = Number.isFinite(factorY) ? clamp01(factorY) : 1;
         const nextX = Math.min(this.axisResistanceX, fx);
         const nextY = Math.min(this.axisResistanceY, fy);
         const recoverSeconds = Number.isFinite(this.axisResistanceRecoverySeconds) && this.axisResistanceRecoverySeconds > 0
