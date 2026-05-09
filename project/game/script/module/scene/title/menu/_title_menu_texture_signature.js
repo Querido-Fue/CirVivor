@@ -1,4 +1,5 @@
 import { getLangString } from 'ui/ui_system.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 import { getTitleMenuIconSource } from './_title_menu_icon.js';
 import { getTitleMenuTextPresetFontSize } from './_title_menu_text_layout.js';
 import { buildMenuStaticTextureThemeSignature } from './_title_menu_theme.js';
@@ -93,7 +94,7 @@ export function getTitleMenuIconTextureSignature(svgDrawer, iconId) {
     return [
         iconSource,
         Number(Boolean(iconRecord?.image)),
-        Number.isFinite(iconRecord?.aspectRatio) ? iconRecord.aspectRatio : 0
+        resolveFiniteNumber(iconRecord?.aspectRatio, 0)
     ].join(':');
 }
 
@@ -103,5 +104,6 @@ export function getTitleMenuIconTextureSignature(svgDrawer, iconId) {
  * @returns {number} 정규화된 UI 스케일 배율입니다.
  */
 function _normalizeTitleMenuUiScale(uiScale) {
-    return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
+    const safeUiScale = resolveFiniteNumber(uiScale, 1);
+    return safeUiScale > 0 ? safeUiScale : 1;
 }

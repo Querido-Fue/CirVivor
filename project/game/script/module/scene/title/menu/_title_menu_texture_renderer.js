@@ -1,3 +1,4 @@
+import { resolveFiniteNumber } from 'util/number_util.js';
 import {
     drawTitleMenuCardFrontfaceContent,
     drawTitleMenuUtilityTileContent
@@ -488,6 +489,7 @@ export class TitleMenuTextureRenderer {
      */
     _getUiScale() {
         const uiScale = typeof this.getUiScale === 'function' ? this.getUiScale() : 1;
-        return Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1;
+        const safeUiScale = resolveFiniteNumber(uiScale, 1);
+        return safeUiScale > 0 ? safeUiScale : 1;
     }
 }
