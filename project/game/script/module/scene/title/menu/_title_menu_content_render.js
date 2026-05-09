@@ -6,6 +6,7 @@ import {
     getTitleMenuCardIconMetrics,
     getTitleMenuUtilityTileIconMetrics
 } from './_title_menu_icon_render.js';
+import { clampNumber } from './_title_menu_motion.js';
 import { getTitleMenuTextPresetFontSize } from './_title_menu_text_layout.js';
 import { drawTitleMenuWrappedText } from './_title_menu_text_render.js';
 import {
@@ -38,9 +39,10 @@ export function drawTitleMenuUtilityTileContent({
     const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
     const placeholderSize = Number.isFinite(renderState.placeholderSize)
         ? renderState.placeholderSize
-        : Math.max(
+        : clampNumber(
+            Math.min(panelRect.w, panelRect.h) * titleCardMenu.UTILITY_TILE_PLACEHOLDER_SCALE,
             12 * resolvedUiScale,
-            Math.min(panelRect.w, panelRect.h) * titleCardMenu.UTILITY_TILE_PLACEHOLDER_SCALE
+            Infinity
         );
     const iconMetrics = getTitleMenuUtilityTileIconMetrics(panelRect, placeholderSize);
     const placeholderAlpha = hovered ? 1 : getMenuOpacity('Placeholder', 0.92);
