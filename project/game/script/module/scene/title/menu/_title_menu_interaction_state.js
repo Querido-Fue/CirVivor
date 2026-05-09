@@ -1,8 +1,8 @@
+import { clampNumber } from 'util/number_util.js';
 import {
     resolveTitleMenuCardPointerInfo,
     updateTitleMenuCardProjection
 } from './_title_menu_interaction.js';
-import { clampNumber } from './_title_menu_motion.js';
 import {
     pushTitleMenuRipple,
     updateTitleMenuBorderState,

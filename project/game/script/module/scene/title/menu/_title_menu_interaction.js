@@ -6,11 +6,11 @@ import {
     invertMat3,
     isPointInsideQuad,
     isPointInsideRoundedRect,
-    lerpNumber,
     mapScreenPointToPanelLocal,
     multiplyMat4,
     projectPanelQuad
 } from 'overlay/_panel_effect_math.js';
+import { lerpNumber } from 'util/number_util.js';
 
 /**
  * pane 상호작용 상태를 현재 포인터 위치와 효과 옵션에 맞게 갱신합니다.

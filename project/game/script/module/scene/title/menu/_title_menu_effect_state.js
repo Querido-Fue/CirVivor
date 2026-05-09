@@ -1,8 +1,7 @@
 import {
-    getDeltaLerpFactor,
-    lerpNumber
+    getDeltaLerpFactor
 } from 'overlay/_panel_effect_math.js';
-import { clampNumber } from './_title_menu_motion.js';
+import { clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 /**
  * 카드 hover tilt 상태를 갱신합니다.
@@ -172,9 +171,7 @@ export function hasTitleMenuDynamicTextureState(runtimeState, renderState = null
         return false;
     }
 
-    const hoverProgress = Number.isFinite(renderState?.hoverProgress)
-        ? renderState.hoverProgress
-        : 0;
+    const hoverProgress = resolveFiniteNumber(renderState?.hoverProgress, 0);
     return hoverProgress > 0.005
         || runtimeState.spotlightAlpha > 0.005
         || runtimeState.borderAlpha > 0.005
