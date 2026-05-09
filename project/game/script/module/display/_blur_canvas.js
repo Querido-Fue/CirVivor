@@ -1,6 +1,8 @@
 let blurCanvas = null;
 let blurCtx = null;
-let blurScale = 0.2;
+
+/** 블러 전용 오프스크린 캔버스의 기준 해상도 배율입니다. */
+const BLUR_CANVAS_SCALE = 0.2;
 
 /**
  * 블러 전용 오프스크린 캔버스를 초기화/리사이즈합니다.
@@ -12,8 +14,8 @@ export function initBlurCanvas(width, height) {
         blurCanvas = document.createElement('canvas');
         blurCtx = blurCanvas.getContext('2d');
     }
-    blurCanvas.width = Math.floor(width * blurScale);
-    blurCanvas.height = Math.floor(height * blurScale);
+    blurCanvas.width = Math.floor(width * BLUR_CANVAS_SCALE);
+    blurCanvas.height = Math.floor(height * BLUR_CANVAS_SCALE);
 }
 
 /**
@@ -37,5 +39,5 @@ export function getBlurCtx() {
  * @returns {number} 블러 스케일
  */
 export function getBlurScale() {
-    return blurScale;
+    return BLUR_CANVAS_SCALE;
 }
