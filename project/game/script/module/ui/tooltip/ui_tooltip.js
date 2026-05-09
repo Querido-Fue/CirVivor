@@ -11,6 +11,7 @@ import { getDelta } from 'game/time_handler.js';
 import { getMouseInput } from 'input/input_system.js';
 import { getSetting } from 'save/save_system.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
+import { wrapTextByCharacters } from 'util/font_util.js';
 import { clampNumber } from 'util/number_util.js';
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
@@ -521,36 +522,10 @@ export class UITooltipSystem {
      * @returns {string[]} 줄바꿈된 문자열 배열입니다.
      */
     #wrapText(text, font, maxWidth) {
-        const normalizedText = `${text ?? ''}`.replace(/\r/g, '');
-        if (!normalizedText) {
-            return [];
-        }
-
-        const wrappedLines = [];
-        const sourceLines = normalizedText.split('\n');
-        for (const sourceLine of sourceLines) {
-            if (!sourceLine) {
-                continue;
-            }
-
-            let currentLine = '';
-            const characters = Array.from(sourceLine);
-            for (const character of characters) {
-                const candidate = currentLine + character;
-                if (currentLine && measureText(candidate, font) > maxWidth) {
-                    wrappedLines.push(currentLine.trimEnd());
-                    currentLine = character.trimStart ? character.trimStart() : character;
-                    continue;
-                }
-                currentLine = candidate;
-            }
-
-            if (currentLine.trim().length > 0) {
-                wrappedLines.push(currentLine.trimEnd());
-            }
-        }
-
-        return wrappedLines;
+        return wrapTextByCharacters(text, {
+            maxWidth,
+            measureWidth: (line) => measureText(line, font)
+        });
     }
 
     /**

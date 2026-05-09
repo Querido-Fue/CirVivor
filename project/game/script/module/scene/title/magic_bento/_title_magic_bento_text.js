@@ -1,4 +1,5 @@
 import { parseUIData } from 'ui/ui_system.js';
+import { createFontString, wrapTextByWords } from 'util/font_util.js';
 
 /**
  * 설명 문구를 여러 줄로 그립니다.
@@ -11,27 +12,11 @@ import { parseUIData } from 'ui/ui_system.js';
  * @param {number} maxLines - 최대 줄 수
  */
 export function drawBentoWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
-    const words = String(text || '').split(' ');
-    const lines = [];
-    let currentLine = '';
-
-    for (const word of words) {
-        const nextLine = currentLine ? `${currentLine} ${word}` : word;
-        if (ctx.measureText(nextLine).width <= maxWidth || currentLine.length === 0) {
-            currentLine = nextLine;
-            continue;
-        }
-
-        lines.push(currentLine);
-        currentLine = word;
-        if (lines.length >= maxLines) {
-            break;
-        }
-    }
-
-    if (currentLine && lines.length < maxLines) {
-        lines.push(currentLine);
-    }
+    const lines = wrapTextByWords(text, {
+        maxWidth,
+        maxLines,
+        measureWidth: (line) => ctx.measureText(line).width
+    });
 
     for (let index = 0; index < lines.length; index++) {
         ctx.fillText(lines[index], x, y + (lineHeight * index));
@@ -48,10 +33,13 @@ export function drawBentoWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxL
 export function getBentoTypography(textConstants, presetKey, sizeMultiplier = 1) {
     const preset = textConstants[presetKey] || textConstants.H5;
     const size = parseUIData(preset.FONT.SIZE) * sizeMultiplier;
-    const family = preset.FONT.FAMILY.split(',')[0].trim();
 
     return {
         size,
-        font: `${preset.FONT.WEIGHT} ${size}px "${family}"`
+        font: createFontString({
+            sizePx: size,
+            weight: preset.FONT.WEIGHT,
+            family: preset.FONT.FAMILY
+        })
     };
 }
