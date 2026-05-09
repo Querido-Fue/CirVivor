@@ -1,5 +1,6 @@
 import { getTitleMenuIconDrawScale } from 'util/title_menu_icon_util.js';
 import { getTitleMenuIconSource } from './_title_menu_icon.js';
+import { clampNumber } from './_title_menu_motion.js';
 import {
     getMenuOpacity,
     menuForegroundWithAlpha
@@ -108,10 +109,8 @@ export function getTitleMenuCardIconMetrics(cardId, panelRect, inset) {
  * @returns {{x:number, y:number, w:number, h:number}} 아이콘 레이아웃 정보입니다.
  */
 export function getTitleMenuUtilityTileIconMetrics(panelRect, iconSize) {
-    const resolvedSize = Math.min(
-        Math.max(12, iconSize),
-        Math.max(1, Math.min(panelRect.w, panelRect.h))
-    );
+    const maxSize = clampNumber(Math.min(panelRect.w, panelRect.h), 1, Infinity);
+    const resolvedSize = clampNumber(iconSize, Math.min(12, maxSize), maxSize);
 
     return {
         x: (panelRect.w - resolvedSize) * 0.5,
