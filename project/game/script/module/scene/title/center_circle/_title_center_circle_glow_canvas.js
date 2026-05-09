@@ -1,3 +1,5 @@
+import { clampFiniteNumber } from 'util/number_util.js';
+
 const TWO_PI = Math.PI * 2;
 
 /**
@@ -38,8 +40,8 @@ export function createCenterCircleGlowNoiseCanvas() {
  * @param {number} height - 목표 높이입니다.
  */
 export function resizeCenterCircleGlowCanvas(canvas, width, height) {
-    const nextWidth = Math.max(1, Math.ceil(width));
-    const nextHeight = Math.max(1, Math.ceil(height));
+    const nextWidth = Math.ceil(clampFiniteNumber(Number(width), 1, Infinity, 1));
+    const nextHeight = Math.ceil(clampFiniteNumber(Number(height), 1, Infinity, 1));
     if (!canvas) {
         return;
     }

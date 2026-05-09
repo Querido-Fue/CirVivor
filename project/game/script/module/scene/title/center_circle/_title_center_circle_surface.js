@@ -1,3 +1,4 @@
+import { clampFiniteNumber } from 'util/number_util.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_theme.js';
 
@@ -25,9 +26,9 @@ export function drawCenterCircleSurfaceHighlight(ctx, fillData, drawRadius, prog
     for (let i = 1; i < points.length; i++) {
         ctx.lineTo(points[i].x, points[i].y);
     }
-    ctx.lineWidth = Math.max(1.5, drawRadius * 0.022);
+    ctx.lineWidth = clampFiniteNumber(drawRadius * 0.022, 1.5, Infinity, 1.5);
     ctx.strokeStyle = toLoadingRgba(surfaceSettings?.Highlight || getLoadingAccentColor(), surfaceSettings?.HighlightAlpha || 0);
-    ctx.shadowBlur = drawRadius * 0.06;
+    ctx.shadowBlur = clampFiniteNumber(drawRadius * 0.06, 0, Infinity, 0);
     ctx.shadowColor = toLoadingRgba(surfaceSettings?.Shadow || getLoadingAccentColor(), surfaceSettings?.ShadowAlpha || 0);
     ctx.stroke();
     ctx.restore();
