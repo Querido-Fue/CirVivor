@@ -1,5 +1,6 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { render } from 'display/display_system.js';
+import { createFontString } from 'util/font_util.js';
 import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
 
 /**
@@ -20,7 +21,7 @@ function resolveHudEnemyCount(sceneSnapshot, objectSystem) {
 
 /**
  * HUD 제목을 렌더합니다.
- * @param {{ww: number, wh: number, titleFont: number}} metrics - HUD 배치 값입니다.
+ * @param {{ww: number, wh: number, titleFont: number, titleFontString: string}} metrics - HUD 배치 값입니다.
  */
 function renderHudTitle(metrics) {
     render('ui', {
@@ -28,7 +29,7 @@ function renderHudTitle(metrics) {
         text: 'Benchmark Scene',
         x: metrics.ww * 0.03,
         y: metrics.wh * 0.04,
-        font: `500 ${metrics.titleFont}px "Pretendard Variable"`,
+        font: metrics.titleFontString,
         fill: ColorSchemes.Game.Font,
         align: 'left',
         baseline: 'middle'
@@ -37,7 +38,7 @@ function renderHudTitle(metrics) {
 
 /**
  * 적 수 텍스트를 렌더합니다.
- * @param {{statsX: number, statsY: number, statsFont: number}} metrics - HUD 배치 값입니다.
+ * @param {{statsX: number, statsY: number, statsFont: number, statsFontString: string}} metrics - HUD 배치 값입니다.
  * @param {number} enemyCount - 표시할 적 수입니다.
  */
 function renderHudEnemyCount(metrics, enemyCount) {
@@ -46,7 +47,7 @@ function renderHudEnemyCount(metrics, enemyCount) {
         text: `enemy count: ${enemyCount}`,
         x: metrics.statsX,
         y: metrics.statsY,
-        font: `400 ${metrics.statsFont}px "Pretendard Variable"`,
+        font: metrics.statsFontString,
         fill: ColorSchemes.Game.Font,
         align: 'right',
         baseline: 'bottom',
@@ -56,7 +57,7 @@ function renderHudEnemyCount(metrics, enemyCount) {
 
 /**
  * 충돌 통계 텍스트를 렌더합니다.
- * @param {{statsX: number, statsY: number, statsFont: number}} metrics - HUD 배치 값입니다.
+ * @param {{statsX: number, statsY: number, statsFont: number, statsFontString: string}} metrics - HUD 배치 값입니다.
  * @param {object|null|undefined} collisionStats - 충돌 통계입니다.
  */
 function renderHudCollisionStats(metrics, collisionStats) {
@@ -65,7 +66,7 @@ function renderHudCollisionStats(metrics, collisionStats) {
         text: `Collision check count: ${normalizeSnapshotNumber(collisionStats?.collisionCheckCount, 0)}`,
         x: metrics.statsX,
         y: metrics.statsY - (metrics.statsFont * 5.12),
-        font: `400 ${metrics.statsFont}px "Pretendard Variable"`,
+        font: metrics.statsFontString,
         fill: ColorSchemes.Game.Font,
         align: 'right',
         baseline: 'bottom',
@@ -76,7 +77,7 @@ function renderHudCollisionStats(metrics, collisionStats) {
         text: `AABB pass: ${normalizeSnapshotNumber(collisionStats?.aabbPassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.aabbRejectCount, 0)}`,
         x: metrics.statsX,
         y: metrics.statsY - (metrics.statsFont * 3.84),
-        font: `400 ${metrics.statsFont}px "Pretendard Variable"`,
+        font: metrics.statsFontString,
         fill: ColorSchemes.Game.Font,
         align: 'right',
         baseline: 'bottom',
@@ -87,7 +88,7 @@ function renderHudCollisionStats(metrics, collisionStats) {
         text: `Circle pass: ${normalizeSnapshotNumber(collisionStats?.circlePassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.circleRejectCount, 0)}`,
         x: metrics.statsX,
         y: metrics.statsY - (metrics.statsFont * 2.56),
-        font: `400 ${metrics.statsFont}px "Pretendard Variable"`,
+        font: metrics.statsFontString,
         fill: ColorSchemes.Game.Font,
         align: 'right',
         baseline: 'bottom',
@@ -98,7 +99,7 @@ function renderHudCollisionStats(metrics, collisionStats) {
         text: `Part check: ${normalizeSnapshotNumber(collisionStats?.partChecks, 0)}`,
         x: metrics.statsX,
         y: metrics.statsY - (metrics.statsFont * 1.28),
-        font: `400 ${metrics.statsFont}px "Pretendard Variable"`,
+        font: metrics.statsFontString,
         fill: ColorSchemes.Game.Font,
         align: 'right',
         baseline: 'bottom',
@@ -110,14 +111,27 @@ function renderHudCollisionStats(metrics, collisionStats) {
  * HUD 배치 값을 계산합니다.
  * @param {number} ww - 화면 너비입니다.
  * @param {number} wh - 화면 높이입니다.
- * @returns {{ww: number, wh: number, titleFont: number, statsFont: number, statsX: number, statsY: number}}
+ * @returns {{ww: number, wh: number, titleFont: number, statsFont: number, titleFontString: string, statsFontString: string, statsX: number, statsY: number}}
  */
 function createHudMetrics(ww, wh) {
+    const titleFont = Math.max(14, ww * 0.0105);
+    const statsFont = Math.max(10, ww * 0.0075);
+
     return {
         ww,
         wh,
-        titleFont: Math.max(14, ww * 0.0105),
-        statsFont: Math.max(10, ww * 0.0075),
+        titleFont,
+        statsFont,
+        titleFontString: createFontString({
+            weight: 500,
+            sizePx: titleFont,
+            family: 'Pretendard Variable'
+        }),
+        statsFontString: createFontString({
+            weight: 400,
+            sizePx: statsFont,
+            family: 'Pretendard Variable'
+        }),
         statsX: ww * 0.985,
         statsY: wh * 0.96
     };

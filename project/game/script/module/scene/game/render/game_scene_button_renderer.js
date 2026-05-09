@@ -2,6 +2,7 @@ import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
 import { getSimulationMouseInput } from 'simulation/simulation_runtime.js';
 import { isPointInRect } from 'util/geometry_util.js';
+import { createFontString } from 'util/font_util.js';
 import { clamp01 } from 'util/number_util.js';
 import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 
@@ -20,6 +21,11 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
         GAME_SCENE_BUTTON_CONSTANTS.FONT_MIN_SIZE,
         (Number.isFinite(options?.ww) ? options.ww : 0) * GAME_SCENE_BUTTON_CONSTANTS.FONT_WW_RATIO
     );
+    const font = createFontString({
+        weight: 500,
+        sizePx: fontSize,
+        family: 'Pretendard Variable'
+    });
 
     for (let i = 0; i < buttonList.length; i++) {
         const button = buttonList[i];
@@ -52,7 +58,7 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
             text: button.label,
             x: button.x + (button.w * GAME_SCENE_BUTTON_CONSTANTS.TEXT_X_RATIO),
             y: button.y + (button.h * GAME_SCENE_BUTTON_CONSTANTS.TEXT_Y_RATIO),
-            font: `500 ${fontSize}px "Pretendard Variable"`,
+            font,
             fill: getBenchmarkColor('ButtonText'),
             align: 'center',
             baseline: 'middle'
