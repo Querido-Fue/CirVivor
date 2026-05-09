@@ -5,6 +5,7 @@ import { colorUtil } from "util/color_util.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { shadowOn, shadowOff, measureText } from "display/display_system.js";
 import { DropdownElement } from "./_dropdown.js";
+import { createFontString } from "util/font_util.js";
 
 /**
  * @class ButtonElement
@@ -214,12 +215,11 @@ export class ButtonElement extends BaseUIElement {
         // 텍스트 요소
         if (item.text !== undefined && item.font && typeof item.size === 'number') {
             const scaledSize = item.size * this.scale;
-            let familyName = item.font;
-            if (!familyName.includes('"') && !familyName.includes("'")) {
-                const parts = familyName.split(',');
-                familyName = `"${parts[0].trim()}"${parts[1] ? ',' + parts[1] : ''}`;
-            }
-            const fontString = `${item.fontWeight || ''}${scaledSize}px ${familyName}`;
+            const fontString = createFontString({
+                weight: item.fontWeight || '',
+                sizePx: scaledSize,
+                family: item.font
+            });
 
             // 드로우 핸들러의 measureText를 사용해 텍스트 너비 측정
             return measureText(item.text, fontString);
@@ -246,11 +246,11 @@ export class ButtonElement extends BaseUIElement {
         // 텍스트 요소
         else if (item.text !== undefined && item.font && typeof item.size === 'number') {
             const scaledSize = item.size * this.scale;
-            let familyName = item.font;
-            if (!familyName.includes('"') && !familyName.includes("'")) {
-                const parts = familyName.split(',');
-                familyName = `"${parts[0].trim()}"${parts[1] ? ',' + parts[1] : ''}`;
-            }
+            const fontString = createFontString({
+                weight: item.fontWeight || '',
+                sizePx: scaledSize,
+                family: item.font
+            });
 
             const align = item.align || slotName || 'left';
             let renderX = x;
@@ -262,7 +262,7 @@ export class ButtonElement extends BaseUIElement {
                 text: item.text,
                 x: renderX,
                 y: y + h / 2, // 중간 기준선
-                font: `${item.fontWeight || ''}${scaledSize}px ${familyName}`,
+                font: fontString,
                 fill: item.color || this.color,
                 alpha: (item.alpha !== undefined ? item.alpha : 1) * this.alpha,
                 align: align,
@@ -281,4 +281,3 @@ export class ButtonElement extends BaseUIElement {
         }
     }
 }
-

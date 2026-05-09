@@ -47,8 +47,11 @@ export function normalizeFontFamily(fontFamily = DEFAULT_FONT_FAMILY) {
  */
 export function createFontString(options = {}) {
     const sizePx = Number.isFinite(options.sizePx) ? options.sizePx : DEFAULT_FONT_SIZE_PX;
-    const weightPrefix = options.weight !== undefined && options.weight !== null && options.weight !== ''
-        ? `${options.weight} `
+    const weight = options.weight !== undefined && options.weight !== null
+        ? `${options.weight}`.trim()
+        : '';
+    const weightPrefix = weight
+        ? `${weight} `
         : '';
     return `${weightPrefix}${sizePx}px ${normalizeFontFamily(options.family || DEFAULT_FONT_FAMILY)}`;
 }
@@ -199,4 +202,41 @@ export function wrapTextByCharacters(text, options) {
     }
 
     return wrappedLines;
+}
+
+/**
+ * 텍스트를 최대 폭 안에 들어가도록 말줄임표로 줄입니다.
+ * @param {string} text - 원본 문자열입니다.
+ * @param {object} options - 말줄임 옵션입니다.
+ * @param {number} options.maxWidth - 허용 최대 폭입니다.
+ * @param {(text: string) => number} options.measureWidth - 텍스트 폭 측정 콜백입니다.
+ * @param {string} [options.ellipsis='...'] - 말줄임표 문자열입니다.
+ * @returns {string} 폭 제한에 맞춘 문자열입니다.
+ */
+export function truncateTextToWidth(text, options) {
+    const raw = `${text ?? ''}`;
+    const maxWidth = Number.isFinite(options?.maxWidth) ? options.maxWidth : Infinity;
+    const measureWidth = typeof options?.measureWidth === 'function'
+        ? options.measureWidth
+        : () => 0;
+    const ellipsis = options?.ellipsis ?? '...';
+
+    if (maxWidth <= 0 || raw.length === 0) {
+        return '';
+    }
+
+    if (getMeasuredWidth(measureWidth, raw) <= maxWidth) {
+        return raw;
+    }
+
+    let end = raw.length;
+    while (end > 0) {
+        const trimmed = `${raw.slice(0, end)}${ellipsis}`;
+        if (getMeasuredWidth(measureWidth, trimmed) <= maxWidth) {
+            return trimmed;
+        }
+        end -= 1;
+    }
+
+    return ellipsis;
 }

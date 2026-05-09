@@ -4,6 +4,7 @@ import { render, shadowOn, shadowOff, measureText } from "display/display_system
 import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { colorUtil, formatRgba } from "util/color_util.js";
+import { truncateTextToWidth } from "util/font_util.js";
 import { getSetting } from "save/save_system.js";
 
 /**
@@ -224,18 +225,17 @@ export class DropdownElement extends BaseUIElement {
         return idx;
     }
 
+    /**
+     * 표시 가능한 폭에 맞춰 라벨을 말줄임 처리합니다.
+     * @param {string} text - 원본 라벨입니다.
+     * @param {number} maxWidth - 표시 가능한 최대 폭입니다.
+     * @returns {string} 말줄임 처리된 라벨입니다.
+     */
     #fitText(text, maxWidth) {
-        const raw = `${text ?? ""}`;
-        if (maxWidth <= 0 || raw.length === 0) return "";
-        if (measureText(raw, this.font) <= maxWidth) return raw;
-
-        let end = raw.length;
-        while (end > 0) {
-            const trimmed = `${raw.slice(0, end)}...`;
-            if (measureText(trimmed, this.font) <= maxWidth) return trimmed;
-            end--;
-        }
-        return "...";
+        return truncateTextToWidth(text, {
+            maxWidth,
+            measureWidth: (label) => measureText(label, this.font)
+        });
     }
 
     /**
