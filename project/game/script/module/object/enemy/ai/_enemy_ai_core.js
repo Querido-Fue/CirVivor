@@ -22,15 +22,77 @@ export {
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const ENEMY_AI_QUALITY_PROFILES = ENEMY_AI_CONSTANTS.QUALITY_PROFILES;
+const ENEMY_AI_STATE_DEFAULTS = ENEMY_AI_CONSTANTS.STATE_DEFAULTS;
 const DEFAULT_ENEMY_AI_QUALITY_PROFILE = ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE;
 const ENEMY_AI_STATE_SCHEMA_VERSION = ENEMY_AI_CONSTANTS.STATE_SCHEMA_VERSION;
+const DEFAULT_ENEMY_AI_BASE_DESIRED_SPEED = ENEMY_AI_STATE_DEFAULTS.BASE_DESIRED_SPEED_PX;
+const DEFAULT_ENEMY_AI_CHARGE_COOLDOWN_BASE_SECONDS = ENEMY_AI_STATE_DEFAULTS.CHARGE_COOLDOWN_BASE_SECONDS;
+const DEFAULT_ENEMY_AI_CHARGE_COOLDOWN_ID_BUCKETS = ENEMY_AI_STATE_DEFAULTS.CHARGE_COOLDOWN_ID_BUCKETS;
+const DEFAULT_ENEMY_AI_CHARGE_COOLDOWN_BUCKET_SECONDS = ENEMY_AI_STATE_DEFAULTS.CHARGE_COOLDOWN_BUCKET_SECONDS;
 
-const length = (x, y) => Math.hypot(x, y);
+/**
+ * 2D 벡터 길이를 계산합니다.
+ * @param {number} x - x 성분입니다.
+ * @param {number} y - y 성분입니다.
+ * @returns {number} 벡터 길이입니다.
+ */
+const measureEnemyAIVectorLength = (x, y) => Math.hypot(x, y);
+
+/**
+ * 음수 ID도 양수 bucket 범위로 정규화합니다.
+ * @param {number} value - 원본 값입니다.
+ * @param {number} bucketCount - bucket 개수입니다.
+ * @returns {number} 정규화된 bucket 인덱스입니다.
+ */
+function normalizeEnemyAIIdBucket(value, bucketCount) {
+    return (((value % bucketCount) + bucketCount) % bucketCount);
+}
+
+/**
+ * 적 ID 기반 기본 orbit 방향을 계산합니다.
+ * @param {number} enemyId - 적 ID입니다.
+ * @returns {-1|1} orbit 방향입니다.
+ */
+function resolveEnemyAIOrbitDirection(enemyId) {
+    return normalizeEnemyAIIdBucket(enemyId, 2) === 0 ? 1 : -1;
+}
+
+/**
+ * 적 ID 기반 초기 돌진 쿨다운을 계산합니다.
+ * @param {number} enemyId - 적 ID입니다.
+ * @returns {number} 초기 쿨다운 초입니다.
+ */
+function resolveEnemyAIChargeCooldown(enemyId) {
+    const bucket = normalizeEnemyAIIdBucket(enemyId, DEFAULT_ENEMY_AI_CHARGE_COOLDOWN_ID_BUCKETS);
+    return DEFAULT_ENEMY_AI_CHARGE_COOLDOWN_BASE_SECONDS
+        + (bucket * DEFAULT_ENEMY_AI_CHARGE_COOLDOWN_BUCKET_SECONDS);
+}
+
+/**
+ * AI 상태 초기화에 사용할 안전한 적 ID를 반환합니다.
+ * @param {object|null|undefined} enemy - 적 인스턴스입니다.
+ * @returns {number} 정규화 전 적 ID입니다.
+ */
+function resolveEnemyAIStateSeedId(enemy) {
+    return Number.isInteger(enemy?.id) ? enemy.id : 0;
+}
+
+/**
+ * 기본 희망 이동 속도를 계산합니다.
+ * @param {number} currentSpeed - 현재 속도 크기입니다.
+ * @returns {number} 기본 희망 이동 속도입니다.
+ */
+function resolveEnemyAIBaseDesiredSpeed(currentSpeed) {
+    return Math.max(
+        DEFAULT_ENEMY_AI_BASE_DESIRED_SPEED,
+        currentSpeed || DEFAULT_ENEMY_AI_BASE_DESIRED_SPEED
+    );
+}
 
 /**
  * 현재 업데이트 문맥에 맞는 AI 품질 프로필을 반환합니다.
- * @param {object|null|undefined} context
- * @returns {object}
+ * @param {object|null|undefined} context - AI fixedUpdate 문맥입니다.
+ * @returns {object} AI 품질 프로필입니다.
  */
 function getEnemyAIProfile(context) {
     const requestedProfileKey = typeof context?.enemyAIQualityProfile === 'string'
@@ -60,7 +122,7 @@ const shouldRefreshHexaClusterTarget = (state, updateFrame, profile) => {
         : 32;
     const dx = state.targetX - updateFrame.startX;
     const dy = state.targetY - updateFrame.startY;
-    return length(dx, dy) <= refreshDistance;
+    return measureEnemyAIVectorLength(dx, dy) <= refreshDistance;
 };
 
 /**
@@ -131,7 +193,8 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
         return ensureEnemyAIStateScratchObjects(enemy._enemyAIState);
     }
 
-    const currentSpeed = length(enemy.speed?.x ?? 0, enemy.speed?.y ?? 0);
+    const currentSpeed = measureEnemyAIVectorLength(enemy.speed?.x ?? 0, enemy.speed?.y ?? 0);
+    const seedId = resolveEnemyAIStateSeedId(enemy);
     const nextState = enemy._enemyAIState && typeof enemy._enemyAIState === 'object'
         ? enemy._enemyAIState
         : {};
@@ -145,7 +208,7 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
     nextState.dirY = Number.isFinite(nextState.dirY) ? nextState.dirY : 0;
     nextState.baseDesiredSpeed = Number.isFinite(nextState.baseDesiredSpeed) && nextState.baseDesiredSpeed > 0
         ? nextState.baseDesiredSpeed
-        : Math.max(40, currentSpeed || 40);
+        : resolveEnemyAIBaseDesiredSpeed(currentSpeed);
     nextState.desiredSpeed = Number.isFinite(nextState.desiredSpeed) && nextState.desiredSpeed > 0
         ? nextState.desiredSpeed
         : nextState.baseDesiredSpeed;
@@ -187,11 +250,11 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
         : 0;
     nextState.orbitDirection = nextState.orbitDirection === -1 || nextState.orbitDirection === 1
         ? nextState.orbitDirection
-        : ((((Number.isInteger(enemy?.id) ? enemy.id : 0) % 2) + 2) % 2 === 0 ? 1 : -1);
+        : resolveEnemyAIOrbitDirection(seedId);
     nextState.chargeState = typeof nextState.chargeState === 'string' ? nextState.chargeState : 'idle';
     nextState.chargeCooldownRemaining = Number.isFinite(nextState.chargeCooldownRemaining)
         ? Math.max(0, nextState.chargeCooldownRemaining)
-        : (0.4 + ((((Number.isInteger(enemy?.id) ? enemy.id : 0) % 7) + 7) % 7) * 0.18);
+        : resolveEnemyAIChargeCooldown(seedId);
     nextState.chargeDurationRemaining = Number.isFinite(nextState.chargeDurationRemaining)
         ? Math.max(0, nextState.chargeDurationRemaining)
         : 0;
@@ -207,7 +270,7 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
 
 /**
  * 적 AI 상태를 초기화 상태로 되돌립니다.
- * @param {object|null|undefined} enemy
+ * @param {object|null|undefined} enemy - 적 인스턴스입니다.
  */
 export function resetEnemyAIState(enemy) {
     if (!enemy) return;
@@ -216,9 +279,9 @@ export function resetEnemyAIState(enemy) {
 
 /**
  * 전투 적 AI의 고정 스텝 갱신을 수행합니다.
- * @param {object} enemy
- * @param {number} stepDelta
- * @param {object} [context={}]
+ * @param {object} enemy - 적 인스턴스입니다.
+ * @param {number} stepDelta - fixedUpdate 델타입니다.
+ * @param {object} [context={}] - AI fixedUpdate 문맥입니다.
  */
 export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     const profile = getEnemyAIProfile(context);
