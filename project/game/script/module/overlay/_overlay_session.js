@@ -1,4 +1,5 @@
 import { render, renderGL } from 'display/display_system.js';
+import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 import { createOverlayEffectState } from './_overlay_effect_registry.js';
 
 /**
@@ -20,8 +21,8 @@ export class OverlaySession {
     constructor(options) {
         this.displaySystem = options.displaySystem;
         this.layer = Math.max(0, options.layer || 0);
-        this.dim = Math.max(0, Math.min(1, options.dim || 0));
-        this.effectiveDim = Math.max(0, Math.min(1, this.dim * 2.2));
+        this.dim = clampFiniteNumber(options.dim, 0, 1, 0);
+        this.effectiveDim = clampNumber(this.dim * 2.2, 0, 1);
         this.transparent = options.transparent === true;
         this.glOverlay = options.glOverlay === true;
         this.blurUpdateMode = options.blurUpdateMode;
@@ -78,7 +79,7 @@ export class OverlaySession {
      * @param {number} alpha - 적용할 alpha입니다.
      */
     setAlpha(alpha) {
-        this.alpha = Math.max(0, Math.min(1, alpha));
+        this.alpha = clampNumber(alpha, 0, 1);
         this.#syncSurfaceOpacity();
     }
 
@@ -87,7 +88,7 @@ export class OverlaySession {
      * @param {number} alpha - 적용할 dim 알파입니다.
      */
     setDimAlpha(alpha) {
-        this.dimAlpha = Math.max(0, Math.min(1, alpha));
+        this.dimAlpha = clampNumber(alpha, 0, 1);
         this.#syncSurfaceOpacity();
     }
 
@@ -96,7 +97,7 @@ export class OverlaySession {
      * @param {number} scale - 적용할 콘텐츠 배율입니다.
      */
     setContentScale(scale) {
-        this.contentScale = Math.max(0.01, Math.min(4, Number.isFinite(scale) ? scale : 1));
+        this.contentScale = clampFiniteNumber(scale, 0.01, 4, 1);
         this.#syncContentScale();
     }
 
@@ -106,8 +107,8 @@ export class OverlaySession {
      * @param {number} originYRatio - 화면 높이 대비 Y 비율입니다.
      */
     setContentScaleOrigin(originXRatio, originYRatio) {
-        this.contentScaleOriginXRatio = Math.max(0, Math.min(1, Number.isFinite(originXRatio) ? originXRatio : 0.5));
-        this.contentScaleOriginYRatio = Math.max(0, Math.min(1, Number.isFinite(originYRatio) ? originYRatio : 0.5));
+        this.contentScaleOriginXRatio = clampFiniteNumber(originXRatio, 0, 1, 0.5);
+        this.contentScaleOriginYRatio = clampFiniteNumber(originYRatio, 0, 1, 0.5);
         this.#syncContentScale();
     }
 
