@@ -5,6 +5,20 @@ const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
 const ENEMY_WEBGL_SHAPES = getData('ENEMY_WEBGL_SHAPES');
 
 /**
+ * 적 전용 도형 앞에 배치되는 기본 WebGL 도형 아틀라스 순서입니다.
+ */
+const BASE_SHAPE_ATLAS_ORDER = Object.freeze([
+    'rect',
+    'square',
+    'circle',
+    'triangle',
+    'pentagon',
+    'hexagon',
+    'octagon',
+    'arrow'
+]);
+
+/**
  * @class ShapeTextureCache
  * @description 도형 아틀라스 텍스처를 캐시합니다.
  */
@@ -16,14 +30,7 @@ export class ShapeTextureCache {
         this.gl = gl;
         this.textureSize = WEBGL_CONSTANTS.SHAPE_TEXTURE_SIZE;
         this.shapeOrder = [
-            'rect',
-            'square',
-            'circle',
-            'triangle',
-            'pentagon',
-            'hexagon',
-            'octagon',
-            'arrow',
+            ...BASE_SHAPE_ATLAS_ORDER,
             ...ENEMY_WEBGL_SHAPES
         ];
         this.shapeDrawer = new ShapeDrawer();
