@@ -139,6 +139,50 @@ function writeCollisionBodyReferenceTranslation(body, dx, dy) {
 }
 
 /**
+ * 축 저항 계산에 사용할 body 반경 기준 범위를 반환합니다.
+ * @param {object} body - 이동한 충돌 body입니다.
+ * @returns {number} 축 저항 기준 거리입니다.
+ */
+function getCollisionAxisResistanceRange(body) {
+    const radius = Math.max(
+        COLLISION_AXIS_RESISTANCE_RADIUS_MIN,
+        Number.isFinite(body.boundRadius) ? body.boundRadius : COLLISION_AXIS_RESISTANCE_RADIUS_MIN
+    );
+    return Math.max(
+        COLLISION_AXIS_RESISTANCE_RADIUS_MIN,
+        radius * COLLISION_AXIS_RESISTANCE_RADIUS_RATIO
+    );
+}
+
+/**
+ * body 속도 축 값을 유한 숫자로 조회합니다.
+ * @param {object} body - 이동한 충돌 body입니다.
+ * @param {'x'|'y'} axis - 조회할 축입니다.
+ * @returns {number} 유효하지 않으면 0으로 보정한 속도입니다.
+ */
+function getCollisionBodyVelocityAxis(body, axis) {
+    const fieldName = axis === 'x' ? 'velocityX' : 'velocityY';
+    const value = body[fieldName];
+    return Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * 이동량과 속도가 반대 방향일 때 적용할 축 저항 배율을 반환합니다.
+ * @param {number} move - 축 이동량입니다.
+ * @param {number} velocity - 축 속도입니다.
+ * @param {number} axisRange - 축 저항 기준 거리입니다.
+ * @returns {number} 적용할 축 저항 배율입니다.
+ */
+function getCollisionAxisResistanceScale(move, velocity, axisRange) {
+    if ((move * velocity) >= -EPSILON) {
+        return 1;
+    }
+
+    const ratio = Math.min(1, Math.abs(move) / axisRange);
+    return Math.max(COLLISION_AXIS_RESISTANCE_MIN, 1 - (ratio * COLLISION_AXIS_RESISTANCE_GAIN));
+}
+
+/**
  * 이동 보정이 현재 속도 반대 방향이면 축별 저항을 적용합니다.
  * @param {object} body - 이동한 충돌 body입니다.
  * @param {number} dx - X 이동량입니다.
@@ -149,26 +193,9 @@ function applyCollisionAxisResistance(body, dx, dy) {
         return;
     }
 
-    let resistX = 1;
-    let resistY = 1;
-    const radius = Math.max(
-        COLLISION_AXIS_RESISTANCE_RADIUS_MIN,
-        Number.isFinite(body.boundRadius) ? body.boundRadius : COLLISION_AXIS_RESISTANCE_RADIUS_MIN
-    );
-    const axisRange = Math.max(
-        COLLISION_AXIS_RESISTANCE_RADIUS_MIN,
-        radius * COLLISION_AXIS_RESISTANCE_RADIUS_RATIO
-    );
-    const velX = Number.isFinite(body.velocityX) ? body.velocityX : 0;
-    const velY = Number.isFinite(body.velocityY) ? body.velocityY : 0;
-    if ((dx * velX) < -EPSILON) {
-        const ratioX = Math.min(1, Math.abs(dx) / axisRange);
-        resistX = Math.max(COLLISION_AXIS_RESISTANCE_MIN, 1 - (ratioX * COLLISION_AXIS_RESISTANCE_GAIN));
-    }
-    if ((dy * velY) < -EPSILON) {
-        const ratioY = Math.min(1, Math.abs(dy) / axisRange);
-        resistY = Math.max(COLLISION_AXIS_RESISTANCE_MIN, 1 - (ratioY * COLLISION_AXIS_RESISTANCE_GAIN));
-    }
+    const axisRange = getCollisionAxisResistanceRange(body);
+    const resistX = getCollisionAxisResistanceScale(dx, getCollisionBodyVelocityAxis(body, 'x'), axisRange);
+    const resistY = getCollisionAxisResistanceScale(dy, getCollisionBodyVelocityAxis(body, 'y'), axisRange);
 
     if (resistX < 1 || resistY < 1) {
         body.ref.applyAxisResistance(resistX, resistY);
