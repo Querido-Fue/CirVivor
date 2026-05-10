@@ -9,6 +9,32 @@ const PROJECTILE_WEIGHT_MIN = PROJECTILE_IMPACT.PROJECTILE_WEIGHT_MIN;
 const ENEMY_WEIGHT_MIN = PROJECTILE_IMPACT.ENEMY_WEIGHT_MIN;
 
 /**
+ * 투사체 속도 축 값을 velocity, speed fallback 순서로 조회합니다.
+ * @param {object} projectile - 검사할 투사체입니다.
+ * @param {'x'|'y'} axis - 조회할 축입니다.
+ * @returns {number} 유효하지 않으면 0으로 보정한 속도 축 값입니다.
+ */
+function getCollisionProjectileVelocityAxis(projectile, axis) {
+    const velocityValue = projectile.velocity?.[axis];
+    if (Number.isFinite(velocityValue)) {
+        return velocityValue;
+    }
+
+    const speedValue = projectile.speed?.[axis];
+    return Number.isFinite(speedValue) ? speedValue : 0;
+}
+
+/**
+ * 충돌 충격 계산에 사용할 weight를 최소값 이상으로 보정합니다.
+ * @param {object} target - weight를 가진 대상입니다.
+ * @param {number} minWeight - 최소 weight입니다.
+ * @returns {number} 보정된 weight입니다.
+ */
+function getCollisionImpactWeight(target, minWeight) {
+    return Math.max(minWeight, Number.isFinite(target?.weight) ? target.weight : 1);
+}
+
+/**
  * 투사체가 대상 적을 이미 타격했는지 반환합니다.
  * @param {object} projectile - 검사할 투사체입니다.
  * @param {number} targetId - 대상 적 ID입니다.
@@ -54,12 +80,8 @@ export function applyCollisionProjectileImpact(projectile, enemy, manifold) {
     if (!projectile || !enemy || !manifold) return;
     if (typeof enemy.addAngularImpulse !== 'function') return;
 
-    const vx = Number.isFinite(projectile.velocity?.x)
-        ? projectile.velocity.x
-        : (Number.isFinite(projectile.speed?.x) ? projectile.speed.x : 0);
-    const vy = Number.isFinite(projectile.velocity?.y)
-        ? projectile.velocity.y
-        : (Number.isFinite(projectile.speed?.y) ? projectile.speed.y : 0);
+    const vx = getCollisionProjectileVelocityAxis(projectile, 'x');
+    const vy = getCollisionProjectileVelocityAxis(projectile, 'y');
     const speed = Math.hypot(vx, vy);
     if (speed <= EPSILON) return;
 
@@ -68,15 +90,12 @@ export function applyCollisionProjectileImpact(projectile, enemy, manifold) {
 
     const relX = impactX - enemy.position.x;
     const relY = impactY - enemy.position.y;
-    const projectileWeight = Math.max(
-        PROJECTILE_WEIGHT_MIN,
-        Number.isFinite(projectile.weight) ? projectile.weight : 1
-    );
+    const projectileWeight = getCollisionImpactWeight(projectile, PROJECTILE_WEIGHT_MIN);
     const forceScale = (Number.isFinite(projectile.impactForce) ? projectile.impactForce : 1) * projectileWeight;
     const impulseX = (vx / speed) * speed * forceScale;
     const impulseY = (vy / speed) * speed * forceScale;
     const torque = (relX * impulseY) - (relY * impulseX);
-    const weight = Math.max(ENEMY_WEIGHT_MIN, Number.isFinite(enemy.weight) ? enemy.weight : 1);
+    const weight = getCollisionImpactWeight(enemy, ENEMY_WEIGHT_MIN);
     const angularImpulse = (torque / weight) * ROTATION_IMPULSE_SCALE * ROTATION_RESPONSE_MULTIPLIER;
 
     enemy.lastImpactPoint = { x: impactX, y: impactY };
