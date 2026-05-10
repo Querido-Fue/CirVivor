@@ -12,6 +12,25 @@ const COLLISION_GRID_RADIUS_SCALE = COLLISION_GRID_CONSTANTS.RADIUS_SCALE;
 const BROADPHASE_INITIAL_CAPACITY = COLLISION_GRID_CONSTANTS.BROADPHASE_INITIAL_CAPACITY;
 
 /**
+ * broad-phase buffer에서 사용할 body 개수를 정규화합니다.
+ * @param {number} bodyCount - 입력 body 개수입니다.
+ * @returns {number} 음수와 비정수를 0으로 보정한 body 개수입니다.
+ */
+function normalizeCollisionBroadphaseBodyCount(bodyCount) {
+    return Number.isInteger(bodyCount) && bodyCount > 0 ? bodyCount : 0;
+}
+
+/**
+ * 기존 용량의 두 배와 필요 용량 중 큰 값을 반환합니다.
+ * @param {number} currentLength - 현재 typed array 길이입니다.
+ * @param {number} neededLength - 필요한 typed array 길이입니다.
+ * @returns {number} 새로 할당할 typed array 길이입니다.
+ */
+function getCollisionBroadphaseExpandedLength(currentLength, neededLength) {
+    return Math.max(neededLength, currentLength * 2);
+}
+
+/**
  * broad-phase와 enemy relation narrowphase에 필요한 SoA 배열을 관리합니다.
  */
 export class CollisionBroadphaseBuffer {
@@ -31,21 +50,21 @@ export class CollisionBroadphaseBuffer {
      * @param {number} bodyCount - 필요한 body 개수입니다.
      */
     ensure(bodyCount) {
-        const safeBodyCount = Number.isInteger(bodyCount) && bodyCount > 0 ? bodyCount : 0;
+        const safeBodyCount = normalizeCollisionBroadphaseBodyCount(bodyCount);
         const needed = safeBodyCount * BROAD_STRIDE;
         if (this.broadData.length < needed) {
-            this.broadData = new Float32Array(Math.max(needed, this.broadData.length * 2));
+            this.broadData = new Float32Array(getCollisionBroadphaseExpandedLength(this.broadData.length, needed));
         }
 
         const relationNeeded = safeBodyCount * RELATION_BROAD_STRIDE;
         if (this.relationData.length < relationNeeded) {
-            this.relationData = new Float64Array(Math.max(relationNeeded, this.relationData.length * 2));
+            this.relationData = new Float64Array(getCollisionBroadphaseExpandedLength(this.relationData.length, relationNeeded));
         }
         if (this.bodyKindCodes.length < safeBodyCount) {
-            this.bodyKindCodes = new Uint8Array(Math.max(safeBodyCount, this.bodyKindCodes.length * 2));
+            this.bodyKindCodes = new Uint8Array(getCollisionBroadphaseExpandedLength(this.bodyKindCodes.length, safeBodyCount));
         }
         if (this.bodyShapeCodes.length < safeBodyCount) {
-            this.bodyShapeCodes = new Uint8Array(Math.max(safeBodyCount, this.bodyShapeCodes.length * 2));
+            this.bodyShapeCodes = new Uint8Array(getCollisionBroadphaseExpandedLength(this.bodyShapeCodes.length, safeBodyCount));
         }
         this.bodyCount = safeBodyCount;
     }
