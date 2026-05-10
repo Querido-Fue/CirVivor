@@ -5,6 +5,30 @@ const DEFAULT_MOTION_SCALE = MAGNETIC_EFFECT_CONSTANTS.DEFAULT_MOTION_SCALE;
 const DEFAULT_IMPULSE_SCALE = MAGNETIC_EFFECT_CONSTANTS.DEFAULT_IMPULSE_SCALE;
 
 /**
+ * 자기력 motion scale을 옵션, 대상 fallback 순서로 조회합니다.
+ * @param {object} target - 자기력 영향을 받을 대상입니다.
+ * @param {object} options - 추가 제어 옵션입니다.
+ * @returns {number} 유한 숫자로 보정한 motion scale입니다.
+ */
+function resolveMagneticMotionScale(target, options) {
+    if (Number.isFinite(options.motionScale)) {
+        return options.motionScale;
+    }
+    return Number.isFinite(target._titleParallaxMotionScale)
+        ? target._titleParallaxMotionScale
+        : DEFAULT_MOTION_SCALE;
+}
+
+/**
+ * 자기력 impulse scale을 옵션 fallback으로 조회합니다.
+ * @param {object} options - 추가 제어 옵션입니다.
+ * @returns {number} 유한 숫자로 보정한 impulse scale입니다.
+ */
+function resolveMagneticImpulseScale(options) {
+    return Number.isFinite(options.impulseScale) ? options.impulseScale : DEFAULT_IMPULSE_SCALE;
+}
+
+/**
  * 자기력 점 효과를 대상의 속도 버퍼에 누적합니다.
  * @param {object} target - 자기력 영향을 받을 대상입니다.
  * @param {{x:number, y:number}|null} pointPos - 자기장 중심점입니다.
@@ -36,10 +60,8 @@ export const applyMagneticPoint = (target, pointPos, strength, distanceLimit, st
     let strengthFactor = (distanceLimit - distance) / distanceLimit;
     strengthFactor = strengthFactor * strengthFactor * strengthFactor;
 
-    const motionScale = Number.isFinite(options.motionScale)
-        ? options.motionScale
-        : (Number.isFinite(target._titleParallaxMotionScale) ? target._titleParallaxMotionScale : DEFAULT_MOTION_SCALE);
-    const impulseScale = Number.isFinite(options.impulseScale) ? options.impulseScale : DEFAULT_IMPULSE_SCALE;
+    const motionScale = resolveMagneticMotionScale(target, options);
+    const impulseScale = resolveMagneticImpulseScale(options);
     const effectiveStrength = strength * strengthFactor * motionScale;
     const invLength = 1 / distance;
     const impulse = effectiveStrength * stepDelta * impulseScale;
