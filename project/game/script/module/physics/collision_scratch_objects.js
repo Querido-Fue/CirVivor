@@ -3,6 +3,22 @@ import { getData } from 'data/data_handler.js';
 const BOUND_RADIUS_HALF_SCALE = getData('COLLISION_CONSTANTS').BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
 
 /**
+ * 벽 rect에서 중심과 반치수 metric을 계산합니다.
+ * @param {object} rect - 벽 충돌 rect입니다.
+ * @returns {{cx:number, cy:number, hw:number, hh:number}} 벽 body 생성 metric입니다.
+ */
+function createCollisionWallRectMetrics(rect) {
+    const w = Number.isFinite(rect.w) ? rect.w : 0;
+    const h = Number.isFinite(rect.h) ? rect.h : 0;
+    const isCenter = rect.origin === 'center' || rect.isCenter === true;
+    const hw = w * BOUND_RADIUS_HALF_SCALE;
+    const hh = h * BOUND_RADIUS_HALF_SCALE;
+    const cx = isCenter ? rect.x : (rect.x + hw);
+    const cy = isCenter ? rect.y : (rect.y + hh);
+    return { cx, cy, hw, hh };
+}
+
+/**
  * 투사체 충돌 검사에 재사용할 scratch body를 생성합니다.
  * @returns {object}
  */
@@ -53,13 +69,7 @@ export function createCollisionBody() {
  * @returns {object}
  */
 export function createCollisionWallBody(rect, wall) {
-    const w = Number.isFinite(rect.w) ? rect.w : 0;
-    const h = Number.isFinite(rect.h) ? rect.h : 0;
-    const isCenter = rect.origin === 'center' || rect.isCenter === true;
-    const cx = isCenter ? rect.x : (rect.x + (w * BOUND_RADIUS_HALF_SCALE));
-    const cy = isCenter ? rect.y : (rect.y + (h * BOUND_RADIUS_HALF_SCALE));
-    const hw = w * BOUND_RADIUS_HALF_SCALE;
-    const hh = h * BOUND_RADIUS_HALF_SCALE;
+    const { cx, cy, hw, hh } = createCollisionWallRectMetrics(rect);
 
     return {
         id: Number.isInteger(rect.id) ? rect.id : -1,
