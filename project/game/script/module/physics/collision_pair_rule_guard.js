@@ -14,9 +14,8 @@ export function areCollisionBodiesSameEntity(bodyA, bodyB) {
         return true;
     }
     if (bodyA.kind === 'enemy' && bodyB.kind === 'enemy') {
-        const idA = Number.isInteger(bodyA.id) ? bodyA.id : -1;
-        const idB = Number.isInteger(bodyB.id) ? bodyB.id : -1;
-        return idA >= 0 && idA === idB;
+        const idA = bodyA.id;
+        return Number.isInteger(idA) && idA >= 0 && idA === bodyB.id;
     }
     return false;
 }
@@ -34,7 +33,5 @@ export function getCollisionPassRule(bodyA, bodyB, applyNonPosition) {
     }
 
     const rule = getCollisionRule(bodyA.kind, bodyB.kind);
-    if (!rule.check) return null;
-    if (!rule.resolve && !applyNonPosition) return null;
-    return rule;
+    return rule.check && (rule.resolve || applyNonPosition) ? rule : null;
 }
