@@ -4,6 +4,7 @@ import {
     collectHexaWorldCellsFromEnemy,
     createHexaHiveLayoutFromWorldCells,
     getHexaHiveType,
+    getHexaMergeMemberCount,
     isHexaMergeEnemyType,
     snapHexaRotationDegToSymmetry
 } from './_hexa_hive_layout.js';
@@ -14,6 +15,9 @@ const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
 const HEXA_HIVE_MERGE_CONSTANTS = ENEMY_CONSTANTS.HEXA_HIVE.MERGE;
 const ENEMY_ANGLE_CONSTANTS = ENEMY_CONSTANTS.ANGLE;
 const HEXA_HIVE_MERGE_CONTACT_SECONDS = HEXA_HIVE_MERGE_CONSTANTS.CONTACT_SECONDS;
+const HEXA_HIVE_MAX_MEMBER_COUNT = Number.isInteger(HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
+    ? Math.max(2, HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
+    : Number.POSITIVE_INFINITY;
 const HEXA_HIVE_MOVE_SPEED_DECAY = HEXA_HIVE_MERGE_CONSTANTS.MOVE_SPEED_DECAY;
 const HEXA_HIVE_MOVE_SPEED_FLOOR_RATIO = HEXA_HIVE_MERGE_CONSTANTS.MOVE_SPEED_FLOOR_RATIO;
 const HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL = HEXA_HIVE_MERGE_CONSTANTS.WEIGHT_SCALE_PER_EXTRA_CELL;
@@ -48,6 +52,65 @@ function _addHexaHiveAdjacencyLink(adjacency, enemyIdA, enemyIdB) {
 }
 
 /**
+ * 육각형 계열 적이 추가 합체를 받을 수 있는지 확인합니다.
+ * @param {object|null|undefined} enemy - 검사 대상 적입니다.
+ * @returns {boolean} 추가 합체 가능 여부입니다.
+ */
+function _canHexaHiveEnemyAcceptMerge(enemy) {
+    const memberCount = getHexaMergeMemberCount(enemy);
+    return memberCount > 0 && memberCount < HEXA_HIVE_MAX_MEMBER_COUNT;
+}
+
+/**
+ * 합체 후보 쌍이 최대 구성원 수 안에 들어오는지 확인합니다.
+ * @param {object|null|undefined} enemyA - 첫 번째 적입니다.
+ * @param {object|null|undefined} enemyB - 두 번째 적입니다.
+ * @returns {boolean} 합체 가능 여부입니다.
+ */
+function _canHexaHiveMergePairFitLimit(enemyA, enemyB) {
+    const memberCountA = getHexaMergeMemberCount(enemyA);
+    const memberCountB = getHexaMergeMemberCount(enemyB);
+    return memberCountA > 0
+        && memberCountB > 0
+        && memberCountA + memberCountB <= HEXA_HIVE_MAX_MEMBER_COUNT;
+}
+
+/**
+ * 합체 그룹의 총 구성원 수를 반환합니다.
+ * @param {object[]} mergeGroup - 합체 후보 그룹입니다.
+ * @returns {number} 총 구성원 수입니다.
+ */
+function _getHexaHiveMergeGroupMemberCount(mergeGroup) {
+    if (!Array.isArray(mergeGroup)) {
+        return 0;
+    }
+
+    let memberCount = 0;
+    for (let i = 0; i < mergeGroup.length; i++) {
+        memberCount += getHexaMergeMemberCount(mergeGroup[i]);
+    }
+    return memberCount;
+}
+
+/**
+ * 인접 후보 ID를 작은 구성원 수 우선으로 정렬해 반환합니다.
+ * @param {Set<number>|null|undefined} neighbors - 인접 후보 ID 집합입니다.
+ * @param {Map<number, object>} activeMergeCandidatesById - 활성 합체 후보 맵입니다.
+ * @returns {number[]} 정렬된 후보 ID 목록입니다.
+ */
+function _getSortedHexaHiveNeighborIds(neighbors, activeMergeCandidatesById) {
+    if (!(neighbors instanceof Set) || neighbors.size === 0) {
+        return [];
+    }
+
+    return [...neighbors].sort((leftId, rightId) => {
+        const leftCount = getHexaMergeMemberCount(activeMergeCandidatesById.get(leftId));
+        const rightCount = getHexaMergeMemberCount(activeMergeCandidatesById.get(rightId));
+        return (leftCount - rightCount) || (leftId - rightId);
+    });
+}
+
+/**
  * adjacency 맵에서 시작 ID와 연결된 합체 후보 그룹을 수집합니다.
  * @param {number} startEnemyId - 시작 적 ID입니다.
  * @param {Map<number, Set<number>>} adjacency - 후보 ID별 인접 ID 맵입니다.
@@ -56,28 +119,45 @@ function _addHexaHiveAdjacencyLink(adjacency, enemyIdA, enemyIdB) {
  * @returns {object[]} 연결된 합체 후보 그룹입니다.
  */
 function _collectHexaHiveConnectedGroup(startEnemyId, adjacency, activeMergeCandidatesById, visited) {
+    const startEnemy = activeMergeCandidatesById.get(startEnemyId);
+    const startMemberCount = getHexaMergeMemberCount(startEnemy);
+    if (!startEnemy || startMemberCount <= 0 || startMemberCount > HEXA_HIVE_MAX_MEMBER_COUNT) {
+        visited.add(startEnemyId);
+        return [];
+    }
+
     const queue = [startEnemyId];
-    const mergeGroup = [];
+    const mergeGroup = [startEnemy];
+    let memberCount = startMemberCount;
     visited.add(startEnemyId);
 
     for (let queueIndex = 0; queueIndex < queue.length; queueIndex++) {
         const currentId = queue[queueIndex];
-        const currentEnemy = activeMergeCandidatesById.get(currentId);
-        if (currentEnemy) {
-            mergeGroup.push(currentEnemy);
-        }
-
-        const neighbors = adjacency.get(currentId);
-        if (!neighbors) {
+        const neighborIds = _getSortedHexaHiveNeighborIds(
+            adjacency.get(currentId),
+            activeMergeCandidatesById
+        );
+        if (neighborIds.length === 0) {
             continue;
         }
 
-        for (const neighborId of neighbors) {
+        for (let i = 0; i < neighborIds.length; i++) {
+            const neighborId = neighborIds[i];
             if (visited.has(neighborId)) {
                 continue;
             }
+            const neighborEnemy = activeMergeCandidatesById.get(neighborId);
+            const neighborMemberCount = getHexaMergeMemberCount(neighborEnemy);
+            if (!neighborEnemy
+                || neighborMemberCount <= 0
+                || memberCount + neighborMemberCount > HEXA_HIVE_MAX_MEMBER_COUNT) {
+                continue;
+            }
+
             visited.add(neighborId);
             queue.push(neighborId);
+            mergeGroup.push(neighborEnemy);
+            memberCount += neighborMemberCount;
         }
     }
 
@@ -98,6 +178,9 @@ export function collectHexaMergeCandidates(enemies) {
     for (let i = 0; i < enemies.length; i++) {
         const enemy = enemies[i];
         if (!enemy || enemy.active === false || !isHexaMergeEnemyType(enemy.type)) {
+            continue;
+        }
+        if (!_canHexaHiveEnemyAcceptMerge(enemy)) {
             continue;
         }
 
@@ -159,7 +242,11 @@ export function buildActiveHexaMergeCandidatesById(enemies) {
 
     for (let i = 0; i < enemies.length; i++) {
         const enemy = enemies[i];
-        if (!enemy || enemy.active === false || !isHexaMergeEnemyType(enemy.type) || !Number.isInteger(enemy.id)) {
+        if (!enemy
+            || enemy.active === false
+            || !isHexaMergeEnemyType(enemy.type)
+            || !Number.isInteger(enemy.id)
+            || !_canHexaHiveEnemyAcceptMerge(enemy)) {
             continue;
         }
 
@@ -189,7 +276,9 @@ export function collectHexaHiveMergeGroups(contactSecondsByPair, activeMergeCand
         }
 
         const [enemyIdA, enemyIdB] = _parseHexaHivePairKey(pairKey);
-        if (!activeMergeCandidatesById.has(enemyIdA) || !activeMergeCandidatesById.has(enemyIdB)) {
+        const enemyA = activeMergeCandidatesById.get(enemyIdA);
+        const enemyB = activeMergeCandidatesById.get(enemyIdB);
+        if (!enemyA || !enemyB || !_canHexaHiveMergePairFitLimit(enemyA, enemyB)) {
             continue;
         }
 
@@ -210,7 +299,8 @@ export function collectHexaHiveMergeGroups(contactSecondsByPair, activeMergeCand
             visited
         );
 
-        if (mergeGroup.length >= 2) {
+        if (mergeGroup.length >= 2
+            && _getHexaHiveMergeGroupMemberCount(mergeGroup) <= HEXA_HIVE_MAX_MEMBER_COUNT) {
             mergeGroups.push(mergeGroup);
         }
     }
@@ -224,7 +314,9 @@ export function collectHexaHiveMergeGroups(contactSecondsByPair, activeMergeCand
  * @returns {object|null} hexa hive 스폰 데이터입니다.
  */
 export function buildHexaHiveSpawnData(mergeGroup) {
-    if (!Array.isArray(mergeGroup) || mergeGroup.length < 2) {
+    if (!Array.isArray(mergeGroup)
+        || mergeGroup.length < 2
+        || _getHexaHiveMergeGroupMemberCount(mergeGroup) > HEXA_HIVE_MAX_MEMBER_COUNT) {
         return null;
     }
 
@@ -425,6 +517,9 @@ function _updateHexaHiveContactTimers(activeMergeCandidatesById, contactSecondsB
             if (!activeMergeCandidatesById.has(enemyA.id) || !activeMergeCandidatesById.has(enemyB.id)) {
                 continue;
             }
+            if (!_canHexaHiveMergePairFitLimit(enemyA, enemyB)) {
+                continue;
+            }
 
             const pairKey = _buildHexaHivePairKey(enemyA.id, enemyB.id);
             activePairKeys.add(pairKey);
@@ -456,7 +551,9 @@ function _applyHexaHiveMergePendingState(activeMergeCandidatesById, contactSecon
         }
 
         const [enemyIdA, enemyIdB] = _parseHexaHivePairKey(pairKey);
-        if (!activeMergeCandidatesById.has(enemyIdA) || !activeMergeCandidatesById.has(enemyIdB)) {
+        const enemyA = activeMergeCandidatesById.get(enemyIdA);
+        const enemyB = activeMergeCandidatesById.get(enemyIdB);
+        if (!enemyA || !enemyB || !_canHexaHiveMergePairFitLimit(enemyA, enemyB)) {
             continue;
         }
 

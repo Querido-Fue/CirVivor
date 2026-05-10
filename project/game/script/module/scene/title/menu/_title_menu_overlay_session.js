@@ -29,7 +29,7 @@ export function createTitleMenuOverlaySession(displaySystem) {
 }
 
 /**
- * 타이틀 메뉴 overlay effect 옵션을 현재 테마에 맞춰 생성합니다.
+ * 타이틀 메뉴 overlay effect 옵션을 생성합니다.
  * @returns {object} OverlaySession에 전달할 effect 옵션 맵입니다.
  */
 function _createTitleMenuOverlayEffects() {

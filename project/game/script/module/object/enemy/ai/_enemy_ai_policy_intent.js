@@ -1,7 +1,8 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { ENEMY_CONSTANTS } from '../../../../data/object/enemy/enemy_constants.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
 import { clampNumber } from 'util/number_util.js';
-import { getHexaHiveType } from '../_hexa_hive_layout.js';
+import { getHexaHiveType, getHexaMergeMemberCount } from '../_hexa_hive_layout.js';
 import {
     resolveEnemyAIFootprintPathClearancePx,
     projectEnemyAIFootprintRadiusForDirection,
@@ -27,6 +28,10 @@ const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
 const HEXA_TYPE = 'hexa';
 const HEXA_HIVE_TYPE = getHexaHiveType();
+const HEXA_HIVE_MERGE_CONSTANTS = ENEMY_CONSTANTS.HEXA_HIVE.MERGE;
+const HEXA_HIVE_MAX_MEMBER_COUNT = Number.isInteger(HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
+    ? Math.max(2, HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
+    : Number.POSITIVE_INFINITY;
 
 /**
  * 두 성분으로 구성된 벡터 길이를 반환합니다.
@@ -157,6 +162,20 @@ const isHexaMergeTargetEnemy = (enemy) => (
 );
 
 /**
+ * 현재 적과 후보가 최대 합체 구성원 수 안에서 합류할 수 있는지 반환합니다.
+ * @param {object|null|undefined} enemy - 현재 적 객체입니다.
+ * @param {object|null|undefined} candidate - 합류 후보 적 객체입니다.
+ * @returns {boolean} 합류 가능 여부입니다.
+ */
+const canJoinHexaMergeTarget = (enemy, candidate) => {
+    const enemyMemberCount = getHexaMergeMemberCount(enemy);
+    const candidateMemberCount = getHexaMergeMemberCount(candidate);
+    return enemyMemberCount > 0
+        && candidateMemberCount > 0
+        && enemyMemberCount + candidateMemberCount <= HEXA_HIVE_MAX_MEMBER_COUNT;
+};
+
+/**
  * 현재 육각형 적이 따라갈 실제 합체 후보 목표를 찾습니다.
  * @param {object} enemy - 현재 적 객체입니다.
  * @param {object[]|null} enemies - 전체 적 목록입니다.
@@ -191,6 +210,9 @@ const findHexaMergePartnerGoalInto = (enemy, enemies, startX, startY, profile, o
             continue;
         }
         if (!isHexaMergeTargetEnemy(candidate)) {
+            continue;
+        }
+        if (!canJoinHexaMergeTarget(enemy, candidate)) {
             continue;
         }
 
@@ -276,6 +298,9 @@ const findHexaHiveMergePartnerGoalInto = (
             continue;
         }
         if (!isHexaMergeTargetEnemy(candidate)) {
+            continue;
+        }
+        if (!canJoinHexaMergeTarget(enemy, candidate)) {
             continue;
         }
 

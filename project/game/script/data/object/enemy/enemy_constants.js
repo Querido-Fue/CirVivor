@@ -42,6 +42,7 @@ export const ENEMY_CONSTANTS = Object.freeze({
             BACKDROP_FILL_BLEND_RATIO: 0.72
         }),
         MERGE: Object.freeze({
+            MAX_MEMBER_COUNT: 8,
             CONTACT_SECONDS: 0.5,
             MOVE_SPEED_DECAY: 0.95,
             MOVE_SPEED_FLOOR_RATIO: 0.5,

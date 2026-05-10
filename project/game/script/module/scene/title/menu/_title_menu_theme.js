@@ -40,14 +40,11 @@ export function getMenuCardDescriptionColor() {
 }
 
 /**
- * 테마를 고려해 메뉴 액센트/보더 색상을 반환합니다.
- * @returns {string} 테마 반응형 테두리 색상입니다.
+ * 메뉴 액센트 기반 보더 색상을 반환합니다.
+ * @returns {string} 액센트 테두리 색상입니다.
  */
 export function getThemeAwareMenuBorderColor() {
-    const isDark = getCurrentThemeKey() === 'dark';
-    return isDark
-        ? (ColorSchemes?.Title?.Menu?.Accent || ColorSchemes?.Title?.TextDark || '#166ffb')
-        : (ColorSchemes?.Title?.Menu?.Foreground || ColorSchemes?.Title?.TextDark || '#202020');
+    return getMenuAccentColor() || '#166ffb';
 }
 
 /**

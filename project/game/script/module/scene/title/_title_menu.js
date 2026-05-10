@@ -48,6 +48,7 @@ import {
     getMenuBackdropPaneStyle,
     getMenuEffectColor,
     getMenuPanelStyle,
+    getThemeAwareMenuBorderColor,
     getUnifiedOuterPaneStrokeColor
 } from './menu/_title_menu_theme.js';
 
@@ -254,6 +255,7 @@ export class TitleMenu {
     applyRuntimeSettings(changedSettings = {}) {
         if (changedSettings.theme !== undefined) {
             this.#refreshMenuIcons();
+            this.#syncThemeEffectOptions();
         }
 
         if (changedSettings.disableTransparency !== undefined && this.session) {
@@ -363,6 +365,17 @@ export class TitleMenu {
     #refreshMenuIcons() {
         releaseTitleMenuIconSources(this.svgDrawer, this.titleMenuIconSources);
         this.#preloadMenuIcons();
+    }
+
+    /**
+     * 테마 변경 후 세션에 캐시된 인터랙션 효과 색상을 현재 테마와 동기화합니다.
+     * @private
+     */
+    #syncThemeEffectOptions() {
+        const borderOptions = this.session?.getEffectOptions('hoverBorder');
+        if (borderOptions) {
+            borderOptions.color = getThemeAwareMenuBorderColor();
+        }
     }
 
     /**

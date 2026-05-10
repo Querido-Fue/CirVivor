@@ -84,6 +84,33 @@ export function forEachHexaHiveOutlineSegment(layout, iteratee) {
 }
 
 /**
+ * 육각형 계열 적이 합체에 기여하는 구성원 수를 반환합니다.
+ * @param {object|null|undefined} enemy - 검사 대상 적입니다.
+ * @returns {number} 합체 구성원 수입니다.
+ */
+export function getHexaMergeMemberCount(enemy) {
+    if (!enemy || typeof enemy !== 'object' || (enemy.type !== 'hexa' && enemy.type !== HEXA_HIVE_TYPE) || enemy.active === false) {
+        return 0;
+    }
+
+    if (enemy.type !== HEXA_HIVE_TYPE) {
+        return 1;
+    }
+
+    const visibleLocalCenters = enemy.hexaHiveLayout?.visibleLocalCenters;
+    if (Array.isArray(visibleLocalCenters) && visibleLocalCenters.length > 0) {
+        return visibleLocalCenters.length;
+    }
+
+    const visibleCells = enemy.hexaHiveLayout?.visibleCells;
+    if (Array.isArray(visibleCells) && visibleCells.length > 0) {
+        return visibleCells.length;
+    }
+
+    return 1;
+}
+
+/**
  * 적 인스턴스에서 현재 보이는 육각 조각의 월드 중심 목록을 추출합니다.
  * @param {object|null|undefined} enemy - 대상 적입니다.
  * @returns {{x: number, y: number}[]} 월드 셀 중심 목록입니다.

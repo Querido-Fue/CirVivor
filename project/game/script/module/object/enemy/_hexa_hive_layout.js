@@ -16,7 +16,8 @@ import { normalizeDegrees, rotatePoint, toRadians } from 'util/math_util.js';
 export {
     cloneHexaHiveLayout,
     collectHexaWorldCellsFromEnemy,
-    forEachHexaHiveOutlineSegment
+    forEachHexaHiveOutlineSegment,
+    getHexaMergeMemberCount
 } from './_hexa_hive_layout_accessors.js';
 /**
  * 육각형 합체 적 타입 문자열입니다.
