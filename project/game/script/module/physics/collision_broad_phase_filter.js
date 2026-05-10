@@ -3,6 +3,31 @@ import { getData } from 'data/data_handler.js';
 const BOUND_RADIUS_HALF_SCALE = getData('COLLISION_CONSTANTS').BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
 
 /**
+ * broad circle 판정에 사용할 중심 좌표 축 값을 조회합니다.
+ * @param {object|null|undefined} body - 충돌 body입니다.
+ * @param {'centerX'|'centerY'} centerField - 중심 좌표 필드명입니다.
+ * @param {'x'|'y'} fallbackField - 중심 좌표가 없을 때 사용할 fallback 필드명입니다.
+ * @returns {number|undefined} 중심 좌표 축 값입니다.
+ */
+function getCollisionBodyCenterCoordinate(body, centerField, fallbackField) {
+    const centerValue = body?.[centerField];
+    return Number.isFinite(centerValue) ? centerValue : body?.[fallbackField];
+}
+
+/**
+ * body AABB에서 fallback broad radius를 계산합니다.
+ * @param {object} body - 충돌 body입니다.
+ * @returns {number} AABB 기반 fallback radius입니다.
+ */
+function getCollisionBodyAabbFallbackRadius(body) {
+    const minX = Number.isFinite(body.minX) ? body.minX : 0;
+    const maxX = Number.isFinite(body.maxX) ? body.maxX : 0;
+    const minY = Number.isFinite(body.minY) ? body.minY : 0;
+    const maxY = Number.isFinite(body.maxY) ? body.maxY : 0;
+    return Math.hypot((maxX - minX) * BOUND_RADIUS_HALF_SCALE, (maxY - minY) * BOUND_RADIUS_HALF_SCALE);
+}
+
+/**
  * 관계별 원형 충돌 반경에 맞춘 AABB 중첩 여부를 반환합니다.
  * @param {object} bodyA - 첫 번째 충돌 body입니다.
  * @param {object} bodyB - 두 번째 충돌 body입니다.
@@ -67,10 +92,10 @@ export function shouldUseCollisionBroadCircleFilter(bodyA, bodyB) {
  * @returns {boolean} broad circle이 겹치면 true입니다.
  */
 export function areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, epsilon) {
-    const ax = Number.isFinite(bodyA?.centerX) ? bodyA.centerX : bodyA?.x;
-    const ay = Number.isFinite(bodyA?.centerY) ? bodyA.centerY : bodyA?.y;
-    const bx = Number.isFinite(bodyB?.centerX) ? bodyB.centerX : bodyB?.x;
-    const by = Number.isFinite(bodyB?.centerY) ? bodyB.centerY : bodyB?.y;
+    const ax = getCollisionBodyCenterCoordinate(bodyA, 'centerX', 'x');
+    const ay = getCollisionBodyCenterCoordinate(bodyA, 'centerY', 'y');
+    const bx = getCollisionBodyCenterCoordinate(bodyB, 'centerX', 'x');
+    const by = getCollisionBodyCenterCoordinate(bodyB, 'centerY', 'y');
     if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) {
         return true;
     }
@@ -110,9 +135,5 @@ function getCollisionBodyRelationBroadRadius(body, otherBody) {
     if (Number.isFinite(body.boundRadius)) {
         return body.boundRadius;
     }
-    const minX = Number.isFinite(body.minX) ? body.minX : 0;
-    const maxX = Number.isFinite(body.maxX) ? body.maxX : 0;
-    const minY = Number.isFinite(body.minY) ? body.minY : 0;
-    const maxY = Number.isFinite(body.maxY) ? body.maxY : 0;
-    return Math.hypot((maxX - minX) * BOUND_RADIUS_HALF_SCALE, (maxY - minY) * BOUND_RADIUS_HALF_SCALE);
+    return getCollisionBodyAabbFallbackRadius(body);
 }
