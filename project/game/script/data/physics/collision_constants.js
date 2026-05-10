@@ -1,3 +1,37 @@
+/** 충돌 body kind의 SoA 코드 값입니다. */
+const COLLISION_BODY_KIND_CODES = Object.freeze({
+    NONE: 0,
+    ENEMY: 1,
+    PLAYER: 2,
+    WALL: 3,
+    PROJECTILE: 4,
+    ITEM: 5
+});
+
+/** 충돌 body kind 문자열을 SoA 코드로 변환하는 정적 매핑입니다. */
+const COLLISION_BODY_KIND_CODE_BY_NAME = Object.freeze({
+    enemy: COLLISION_BODY_KIND_CODES.ENEMY,
+    player: COLLISION_BODY_KIND_CODES.PLAYER,
+    wall: COLLISION_BODY_KIND_CODES.WALL,
+    projectile: COLLISION_BODY_KIND_CODES.PROJECTILE,
+    item: COLLISION_BODY_KIND_CODES.ITEM
+});
+
+/** 충돌 body shape의 SoA 코드 값입니다. */
+const COLLISION_BODY_SHAPE_CODES = Object.freeze({
+    NONE: 0,
+    CIRCLE: 1,
+    CIRCLE_PARTS: 2,
+    RECT: 3
+});
+
+/** 충돌 body shape 문자열을 SoA 코드로 변환하는 정적 매핑입니다. */
+const COLLISION_BODY_SHAPE_CODE_BY_NAME = Object.freeze({
+    circle: COLLISION_BODY_SHAPE_CODES.CIRCLE,
+    circleParts: COLLISION_BODY_SHAPE_CODES.CIRCLE_PARTS,
+    rect: COLLISION_BODY_SHAPE_CODES.RECT
+});
+
 /**
  * 충돌 시스템의 정적 튜닝 상수입니다.
  */
@@ -260,20 +294,10 @@ export const COLLISION_CONSTANTS = Object.freeze({
         BROAD_STRIDE: 14,
         RELATION_BROAD_STRIDE: 8,
         CONTACT_RESULT_STRIDE: 8,
-        BODY_KIND: Object.freeze({
-            NONE: 0,
-            ENEMY: 1,
-            PLAYER: 2,
-            WALL: 3,
-            PROJECTILE: 4,
-            ITEM: 5
-        }),
-        BODY_SHAPE: Object.freeze({
-            NONE: 0,
-            CIRCLE: 1,
-            CIRCLE_PARTS: 2,
-            RECT: 3
-        }),
+        BODY_KIND: COLLISION_BODY_KIND_CODES,
+        BODY_KIND_CODE_BY_NAME: COLLISION_BODY_KIND_CODE_BY_NAME,
+        BODY_SHAPE: COLLISION_BODY_SHAPE_CODES,
+        BODY_SHAPE_CODE_BY_NAME: COLLISION_BODY_SHAPE_CODE_BY_NAME,
         RELATION_INDEX: Object.freeze({
             MIN_X: 0,
             MAX_X: 1,
