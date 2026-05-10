@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { ColorSchemes, getCurrentThemeKey } from 'display/_theme_handler.js';
+import { clampNumber } from 'util/number_util.js';
 
 const VIGNETTE_CONSTANTS = getData('VIGNETTE_CONSTANTS');
 const ORDERED_DITHER_MATRIX_4X4 = Object.freeze([
@@ -150,7 +151,7 @@ export class VignetteRenderer {
         const maskCanvas = document.createElement('canvas');
         const maskContext = maskCanvas.getContext('2d');
         const blurCanvas = document.createElement('canvas');
-        const blurContext = blurCanvas.getContext('2d');
+        const blurContext = blurCanvas.getContext('2d', { willReadFrequently: true });
 
         return {
             canvas,
@@ -233,12 +234,13 @@ export class VignetteRenderer {
      * @returns {number} 픽셀 기준 비네팅 범위입니다.
      */
     _calculateEdgeWidth(descriptor) {
-        const minDimension = Math.max(1, Math.min(this.width, this.height));
+        const minDimension = clampNumber(Math.min(this.width, this.height), 1, Number.POSITIVE_INFINITY);
         const baseRatio = VIGNETTE_CONSTANTS.BASE_EDGE_WIDTH_PX / VIGNETTE_CONSTANTS.BASE_REFERENCE_HEIGHT_PX;
         const rawRatio = baseRatio * descriptor.edgeWidthMultiplier;
-        const clampedRatio = Math.max(
+        const clampedRatio = clampNumber(
+            rawRatio,
             VIGNETTE_CONSTANTS.MIN_EDGE_WIDTH_RATIO,
-            Math.min(VIGNETTE_CONSTANTS.MAX_EDGE_WIDTH_RATIO, rawRatio)
+            VIGNETTE_CONSTANTS.MAX_EDGE_WIDTH_RATIO
         );
         return Math.max(1, Math.round(minDimension * clampedRatio));
     }
@@ -269,7 +271,7 @@ export class VignetteRenderer {
     _calculateEdgeAlpha(themeLayer) {
         const alphaMultiplier = Number(themeLayer?.AlphaMultiplier);
         const rawAlpha = VIGNETTE_CONSTANTS.BASE_EDGE_ALPHA * (Number.isFinite(alphaMultiplier) ? alphaMultiplier : 1);
-        return Math.max(0, Math.min(0.98, rawAlpha));
+        return clampNumber(rawAlpha, 0, 0.98);
     }
 
     /**
@@ -278,7 +280,7 @@ export class VignetteRenderer {
      * @returns {number} 사용할 모서리 반경입니다.
      */
     _calculateCornerRadius(maskInset) {
-        const minDimension = Math.max(1, Math.min(this.width, this.height));
+        const minDimension = clampNumber(Math.min(this.width, this.height), 1, Number.POSITIVE_INFINITY);
         const rawRadius = (VIGNETTE_CONSTANTS.BASE_CORNER_RADIUS_PX / VIGNETTE_CONSTANTS.BASE_REFERENCE_HEIGHT_PX) * minDimension;
         const innerWidth = Math.max(0, this.width - (maskInset * 2));
         const innerHeight = Math.max(0, this.height - (maskInset * 2));
@@ -451,7 +453,7 @@ export class VignetteRenderer {
         const ditherStrength = Number(VIGNETTE_CONSTANTS.DITHER_STRENGTH) || 0;
         const matrixValue = ORDERED_DITHER_MATRIX_4X4[y & 3][x & 3] / 16;
         const ditherOffset = (matrixValue - 0.46875) * ditherStrength;
-        return Math.max(0, Math.min(255, Math.round(alphaValue + ditherOffset)));
+        return clampNumber(Math.round(alphaValue + ditherOffset), 0, 255);
     }
 
     /**
@@ -462,8 +464,8 @@ export class VignetteRenderer {
      * @returns {number} 정규화된 반경입니다.
      */
     _normalizeCornerRadius(radius, width, height) {
-        const maxRadius = Math.max(0, Math.min(width / 2, height / 2));
-        return Math.max(0, Math.min(radius, maxRadius));
+        const maxRadius = clampNumber(Math.min(width, height) * 0.5, 0, Number.POSITIVE_INFINITY);
+        return clampNumber(radius, 0, maxRadius);
     }
 
     /**

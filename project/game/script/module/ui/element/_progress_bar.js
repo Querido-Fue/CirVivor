@@ -1,5 +1,11 @@
-import { BaseUIElement } from "./_base_element.js";
-import { render } from "display/display_system.js";
+import { BaseUIElement } from './_base_element.js';
+import { render } from 'display/display_system.js';
+import { clampFiniteNumber } from 'util/number_util.js';
+
+const DEFAULT_PROGRESS_BAR_WIDTH = 100;
+const DEFAULT_PROGRESS_BAR_HEIGHT = 10;
+const DEFAULT_PROGRESS_BAR_BASE_COLOR = '#444444';
+const DEFAULT_PROGRESS_BAR_FILL_COLOR = '#FFFFFF';
 
 /**
  * @class ProgressBarElement
@@ -16,48 +22,59 @@ import { render } from "display/display_system.js";
  * @param {string} [properties.fillColor='#FFFFFF'] - 채워진 부분 색상
  */
 export class ProgressBarElement extends BaseUIElement {
+    /**
+     * 진행 바 요소를 생성합니다.
+     * @param {object} properties - 진행 바 속성입니다.
+     */
     constructor(properties) {
         super(properties);
         this.init(properties);
     }
 
     /**
-         * @override
-         */
+     * 진행 바 요소 상태를 초기화합니다.
+     * @param {object} properties - 진행 바 속성입니다.
+     * @override
+     */
     init(properties) {
         super.init(properties);
         if (!properties) return;
-        this.width = properties.width || 100;
-        this.height = properties.height || 10;
-        this.percent = properties.percent !== undefined ? properties.percent : 0;
-        this.baseColor = properties.baseColor || '#444444';
-        this.fillColor = properties.fillColor || '#FFFFFF';
+        this.width = clampFiniteNumber(Number(properties.width), 0, Infinity, DEFAULT_PROGRESS_BAR_WIDTH);
+        this.height = clampFiniteNumber(Number(properties.height), 0, Infinity, DEFAULT_PROGRESS_BAR_HEIGHT);
+        this.percent = clampFiniteNumber(Number(properties.percent), 0, 100, 0);
+        this.baseColor = properties.baseColor || DEFAULT_PROGRESS_BAR_BASE_COLOR;
+        this.fillColor = properties.fillColor || DEFAULT_PROGRESS_BAR_FILL_COLOR;
     }
 
     /**
-         * @override
-         */
+     * 진행 바 요소를 기본 상태로 되돌립니다.
+     * @override
+     */
     reset() {
         super.reset();
+        this.width = DEFAULT_PROGRESS_BAR_WIDTH;
+        this.height = DEFAULT_PROGRESS_BAR_HEIGHT;
         this.percent = 0;
-        this.baseColor = '#444444';
-        this.fillColor = '#FFFFFF';
+        this.baseColor = DEFAULT_PROGRESS_BAR_BASE_COLOR;
+        this.fillColor = DEFAULT_PROGRESS_BAR_FILL_COLOR;
     }
 
     /**
-         * @override
-         */
+     * 진행 바 요소 상태를 갱신합니다.
+     * @override
+     */
     update() {
     }
 
     /**
-         * @override
-         */
+     * 진행 바 요소를 렌더링합니다.
+     * @override
+     */
     draw() {
         if (!this.visible) return;
 
         const radius = this.height / 2;
-        const fillW = this.width * (this.percent / 100);
+        const fillW = this.width * (clampFiniteNumber(Number(this.percent), 0, 100, 0) / 100);
 
         render(this.layer, {
             shape: 'roundRect',

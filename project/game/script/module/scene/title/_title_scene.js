@@ -14,10 +14,11 @@ export class TitleScene extends BaseScene {
      */
     constructor(sceneSystem) {
         super(sceneSystem);
-        this.WW = getWW();
-        this.WH = getWH();
-        this.UIWW = getUIWW();
-        this.UIOffsetX = getUIOffsetX();
+        this.WW = 0;
+        this.WH = 0;
+        this.UIWW = 0;
+        this.UIOffsetX = 0;
+        this._syncViewportMetrics();
         this.titleGradientBackground = new TitleGradientBackground();
         this.titleBackground = new TitleBackGround(this, { drawBackgroundFill: false });
         this.loadingSequence = new TitleLoadingSequence(this);
@@ -63,10 +64,7 @@ export class TitleScene extends BaseScene {
      * 화면 크기 변경 시 배경과 로딩 시퀀스 배치를 다시 계산합니다.
      */
     resize() {
-        this.WW = getWW();
-        this.WH = getWH();
-        this.UIWW = getUIWW();
-        this.UIOffsetX = getUIOffsetX();
+        this._syncViewportMetrics();
         if (this.titleGradientBackground) {
             this.titleGradientBackground.resize();
         }
@@ -150,5 +148,16 @@ export class TitleScene extends BaseScene {
         if (this.loadingSequence && typeof this.loadingSequence.applyRuntimeSettings === 'function') {
             this.loadingSequence.applyRuntimeSettings(changedSettings);
         }
+    }
+
+    /**
+     * 현재 표시 viewport metric을 씬 상태에 동기화합니다.
+     * @private
+     */
+    _syncViewportMetrics() {
+        this.WW = getWW();
+        this.WH = getWH();
+        this.UIWW = getUIWW();
+        this.UIOffsetX = getUIOffsetX();
     }
 }

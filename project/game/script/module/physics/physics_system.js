@@ -7,6 +7,9 @@ let physicsSystemInstance = null;
  * @description 고정 틱 물리 연산(충돌 판정/해소)을 담당합니다.
  */
 export class PhysicsSystem {
+    /**
+     * 충돌 핸들러를 생성하고 physics system singleton을 등록합니다.
+     */
     constructor() {
         physicsSystemInstance = this;
         this.collisionHandler = new CollisionHandler();
@@ -37,7 +40,7 @@ export class PhysicsSystem {
 
     /**
      * 마지막 고정 틱 충돌 체크 통계를 반환합니다.
-     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, polygonChecks:number}}
+     * @returns {object}
      */
     getCollisionStats() {
         return this.collisionHandler.getFrameStats();
@@ -75,4 +78,8 @@ export class PhysicsSystem {
     }
 }
 
+/**
+ * 현재 생성된 physics system singleton을 반환합니다.
+ * @returns {PhysicsSystem|null} physics system 인스턴스입니다.
+ */
 export const getPhysicsSystem = () => physicsSystemInstance;

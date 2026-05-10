@@ -1,4 +1,8 @@
-export const userLanguage = {
+/**
+ * 사용자 번역용 UI 문자열 리소스입니다.
+ * @type {Readonly<Record<string, string|boolean>>}
+ */
+export const userLanguage = Object.freeze({
     // 공통
     "language_name": "User Language",
     "hidden": true, // 번역 완료 후 false로 변경
@@ -45,10 +49,6 @@ export const userLanguage = {
     "title_settings_desc_ui_scale": "",
     "title_settings_disable_transparency": "",
     "title_settings_desc_transparency": "",
-    "title_settings_physics_accuracy": "",
-    "title_settings_physics_accuracy_slider_front": "",
-    "title_settings_physics_accuracy_slider_back": "",
-    "title_settings_desc_physics_accuracy": "",
     "title_settings_section_ui": "",
     "title_settings_language": "",
     "title_settings_theme": "",
@@ -70,4 +70,4 @@ export const userLanguage = {
     "title_deck_encyclopedia": "",
     "title_deck_progress": "",
     "title_deck_close": ""
-};
+});

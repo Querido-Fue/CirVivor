@@ -1,7 +1,8 @@
-import { fsPromises, path } from 'util/nw_bridge.js';
+import { path } from 'util/nw_bridge.js';
 import { ProgressHandler } from './_progress_handler.js';
 import { IngameHandler } from './_ingame_handler.js';
 import { SettingHandler } from './_setting_handler.js';
+import { ensureSaveDirectory } from './_save_file_helper.js';
 
 let saveSystemInstance;
 
@@ -23,7 +24,7 @@ export class SaveSystem {
      * 저장 시스템을 초기화하고 데이터를 로드합니다.
      */
     async init() {
-        await fsPromises.mkdir(this.dataDir, { recursive: true });
+        await ensureSaveDirectory(this.dataDir, '저장 데이터');
         await this.settingHandler.init();
         await this.progressHandler.init();
         await this.ingameHandler.init();
@@ -33,6 +34,7 @@ export class SaveSystem {
      * 특정 설정 값을 변경하고 저장합니다.
      * @param {string} key - 설정 키
      * @param {any} value - 설정 값
+     * @returns {Promise} 저장 완료 Promise
      */
     setSetting(key, value) {
         return this.settingHandler.set(key, value);
@@ -82,7 +84,7 @@ export class SaveSystem {
  */
 export const getSetting = (key) => {
     return saveSystemInstance.getSetting(key);
-}
+};
 
 /**
  * 특정 설정 값을 변경하고 저장합니다.
@@ -92,7 +94,7 @@ export const getSetting = (key) => {
  */
 export const setSetting = (key, value) => {
     return saveSystemInstance.setSetting(key, value);
-}
+};
 
 /**
  * 여러 설정 값을 한 번에 변경하고 저장합니다.
@@ -101,7 +103,7 @@ export const setSetting = (key, value) => {
  */
 export const setSettingBatch = (settings) => {
     return saveSystemInstance.setSettingBatch(settings);
-}
+};
 
 /**
  * 여러 설정 값을 메모리에만 임시 반영합니다.
@@ -109,7 +111,7 @@ export const setSettingBatch = (settings) => {
  */
 export const previewSettingBatch = (settings) => {
     saveSystemInstance.previewSettingBatch(settings);
-}
+};
 
 /**
  * 특정 설정 키의 스키마(value, min, max, hidden)를 반환합니다.
@@ -118,7 +120,7 @@ export const previewSettingBatch = (settings) => {
  */
 export const getSettingSchema = (key) => {
     return saveSystemInstance.settingHandler.getSchema(key);
-}
+};
 
 /**
  * SaveSystem의 싱글톤 인스턴스를 반환합니다.
@@ -126,4 +128,4 @@ export const getSettingSchema = (key) => {
  */
 export const getSaveSystemInstance = () => {
     return saveSystemInstance;
-}
+};

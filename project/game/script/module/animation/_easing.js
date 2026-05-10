@@ -1,3 +1,5 @@
+import { easeOutCubic, easeOutExpo } from 'util/number_util.js';
+
 /**
  * 다양한 수학적 보간 함수들을 제공하는 이징(Easing) 유틸리티 객체
  */
@@ -16,7 +18,7 @@ export const Easing = {
 
     // 삼차(Cubic)
     easeInCubic: p => p * p * p,
-    easeOutCubic: p => (--p) * p * p + 1,
+    easeOutCubic,
     easeInOutCubic: p => p < 0.5 ? 4 * p * p * p : (p - 1) * (2 * p - 2) * (2 * p - 2) + 1,
 
     // 사차(Quart)
@@ -31,7 +33,7 @@ export const Easing = {
 
     // 지수(Expo)
     easeInExpo: p => p === 0 ? 0 : Math.pow(2, 10 * p - 10),
-    easeOutExpo: p => p === 1 ? 1 : 1 - Math.pow(2, -10 * p),
+    easeOutExpo,
     easeInOutExpo: p => p === 0 ? 0 : p === 1 ? 1 : p < 0.5 ? Math.pow(2, 20 * p - 10) / 2 : (2 - Math.pow(2, -20 * p + 10)) / 2,
 
     // 원형(Circ)

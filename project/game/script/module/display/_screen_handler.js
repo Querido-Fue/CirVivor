@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getSetting, setSetting } from 'save/save_system.js';
+import { clampNumber } from 'util/number_util.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { nw } from 'util/nw_bridge.js';
 
@@ -180,7 +181,7 @@ export class ScreenHandler {
         const nextObjectOffsetY = isWidescreen
             ? (nextObjectHeight - nextHeight) / 2
             : 0;
-        const nextUiWidth = Math.max(1, Math.floor(Math.min(nextWidth, nextHeight * gameRatio)));
+        const nextUiWidth = Math.floor(clampNumber(nextWidth, 1, nextHeight * gameRatio));
         const nextUiOffsetX = (nextWidth - nextUiWidth) / 2;
 
         const changed = this.baseWidth !== nextBaseWidth

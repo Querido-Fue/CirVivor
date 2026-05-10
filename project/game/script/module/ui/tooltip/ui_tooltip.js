@@ -11,6 +11,8 @@ import { getDelta } from 'game/time_handler.js';
 import { getMouseInput } from 'input/input_system.js';
 import { getSetting } from 'save/save_system.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
+import { createFontString, wrapTextByCharacters } from 'util/font_util.js';
+import { clampNumber } from 'util/number_util.js';
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TOOLTIP_CONSTANTS = getData('TOOLTIP_CONSTANTS');
@@ -108,9 +110,17 @@ export class UITooltipSystem {
                 this.displayContent = this.requestContent;
                 this.displayContentKey = this.requestContentKey;
             }
-            this.displayAlpha = Math.min(1, this.displayAlpha + (getDelta() / TOOLTIP_FADE_DURATION_SECONDS));
+            this.displayAlpha = clampNumber(
+                this.displayAlpha + (getDelta() / TOOLTIP_FADE_DURATION_SECONDS),
+                0,
+                1
+            );
         } else {
-            this.displayAlpha = Math.max(0, this.displayAlpha - (getDelta() / TOOLTIP_FADE_DURATION_SECONDS));
+            this.displayAlpha = clampNumber(
+                this.displayAlpha - (getDelta() / TOOLTIP_FADE_DURATION_SECONDS),
+                0,
+                1
+            );
             if (this.displayAlpha <= 0) {
                 this.displayContent = null;
                 this.displayContentKey = '';
@@ -391,13 +401,15 @@ export class UITooltipSystem {
         const mouseY = getMouseInput('y');
         const screenW = getWW();
         const screenH = getWH();
-        const x = Math.max(
+        const x = clampNumber(
+            (mouseX || 0) + offsetX,
             screenMargin,
-            Math.min((mouseX || 0) + offsetX, screenW - panelWidth - screenMargin)
+            screenW - panelWidth - screenMargin
         );
-        const y = Math.max(
+        const y = clampNumber(
+            (mouseY || 0) - panelHeight,
             screenMargin,
-            Math.min((mouseY || 0) - panelHeight, screenH - panelHeight - screenMargin)
+            screenH - panelHeight - screenMargin
         );
 
         const titleLines = [];
@@ -459,7 +471,11 @@ export class UITooltipSystem {
      */
     #buildFontString(fontPreset, uiScale) {
         const fontSize = parseUIData(fontPreset.SIZE, uiScale);
-        return `${fontPreset.WEIGHT} ${fontSize}px ${fontPreset.FAMILY}`;
+        return createFontString({
+            weight: fontPreset.WEIGHT,
+            sizePx: fontSize,
+            family: fontPreset.FAMILY
+        });
     }
 
     /**
@@ -510,36 +526,10 @@ export class UITooltipSystem {
      * @returns {string[]} 줄바꿈된 문자열 배열입니다.
      */
     #wrapText(text, font, maxWidth) {
-        const normalizedText = `${text ?? ''}`.replace(/\r/g, '');
-        if (!normalizedText) {
-            return [];
-        }
-
-        const wrappedLines = [];
-        const sourceLines = normalizedText.split('\n');
-        for (const sourceLine of sourceLines) {
-            if (!sourceLine) {
-                continue;
-            }
-
-            let currentLine = '';
-            const characters = Array.from(sourceLine);
-            for (const character of characters) {
-                const candidate = currentLine + character;
-                if (currentLine && measureText(candidate, font) > maxWidth) {
-                    wrappedLines.push(currentLine.trimEnd());
-                    currentLine = character.trimStart ? character.trimStart() : character;
-                    continue;
-                }
-                currentLine = candidate;
-            }
-
-            if (currentLine.trim().length > 0) {
-                wrappedLines.push(currentLine.trimEnd());
-            }
-        }
-
-        return wrappedLines;
+        return wrapTextByCharacters(text, {
+            maxWidth,
+            measureWidth: (line) => measureText(line, font)
+        });
     }
 
     /**

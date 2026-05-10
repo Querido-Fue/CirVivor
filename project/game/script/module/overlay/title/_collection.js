@@ -3,6 +3,7 @@ import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getData } from 'data/data_handler.js';
+import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
@@ -24,18 +25,18 @@ export class CollectionOverlay extends TitleOverlay {
     }
 
     /**
-         * @override
-         * 화면 크기 비율에 맞춰 오버레이 너비/높이를 재지정합니다.
-         */
+     * @override
+     * 화면 크기 비율에 맞춰 오버레이 너비/높이를 재지정합니다.
+     */
     _onResize() {
         this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.COLLECTION.WIDTH_UIWW_RATIO;
         this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.COLLECTION.HEIGHT_WH_RATIO;
     }
 
     /**
-         * @override
-         * 컬렉션 오버레이 내의 달성도 프로그레스 바 및 텍스트 레이아웃을 생성합니다.
-         */
+     * @override
+     * 컬렉션 오버레이 내의 달성도 프로그레스 바 및 텍스트 레이아웃을 생성합니다.
+     */
     _generateLayout() {
         this._releaseElements();
         const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.8)
@@ -74,11 +75,7 @@ export class CollectionOverlay extends TitleOverlay {
             .bottomItem("button", "close_btn").stylePreset("overlay_interact_button").buttonText(getLangString('title_collection_close'))
             .onClick(this.close.bind(this)).align("right");
 
-        if (getLangString("affirmative_icon") === "check") {
-            handler.icon("check").buttonColor(ColorSchemes.Overlay.Button.Confirm)
-        } else {
-            handler.icon("confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm)
-        }
+        applyOverlayConfirmButtonIcon(handler);
 
         const buildRes = handler.build();
 

@@ -1,3 +1,5 @@
+import { clamp01 } from 'util/number_util.js';
+
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 
 /**
@@ -150,7 +152,7 @@ export class SVGDrawer {
      */
     #clampProgress(value) {
         if (!Number.isFinite(value)) return 0;
-        return Math.max(0, Math.min(1, value));
+        return clamp01(value);
     }
 
     /**
@@ -264,7 +266,7 @@ export class SVGDrawer {
         if (!Number.isFinite(value)) {
             return 1;
         }
-        return Math.max(0, Math.min(1, value));
+        return clamp01(value);
     }
 
     /**

@@ -3,6 +3,7 @@ import { setTheme } from 'display/_theme_handler.js';
 import { MathUtil } from 'util/math_util.js';
 import { getData } from 'data/data_handler.js';
 import { LANGUAGE_REGISTRY } from 'ui/lang/_language_registry.js';
+import { ensureSaveDirectory, pathExists } from './_save_file_helper.js';
 
 const THEME_KEYS = getData('THEME_KEYS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
@@ -46,14 +47,10 @@ export class SettingHandler {
             renderScale: { type: 'int', value: 100, min: 75, max: 100, hidden: false },
             uiScale: { type: 'int', value: 100, min: 75, max: 150, hidden: false },
             tooltipDelaySeconds: { type: 'float', value: 0.7, min: 0, max: 2, hidden: false },
-            physicsAccuracy: { type: 'int', value: 3, min: 2, max: 4, hidden: false },
             bgmVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             debugMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-            simulationWorkerShadowMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-            simulationWorkerPresentationMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-            simulationWorkerAuthorityMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
         };
 
         this.#mathUtil = new MathUtil();
@@ -82,12 +79,12 @@ export class SettingHandler {
     }
 
     /**
-         * @private
-         * 스키마(min, max, type)에 기반하여 입력값이 범위를 벗어나지 않도록 보정(Cap)합니다.
-         * @param {string} key 보정할 설정 키
-         * @param {*} value 외부로부터 받은 원시 값
-         * @returns {*} 보정된 안전한 값
-         */
+     * @private
+     * 스키마(min, max, type)에 기반하여 입력값이 범위를 벗어나지 않도록 보정(Cap)합니다.
+     * @param {string} key 보정할 설정 키
+     * @param {*} value 외부로부터 받은 원시 값
+     * @returns {*} 보정된 안전한 값
+     */
     #capValue(key, value) {
         const entry = this.schema[key];
         if (!entry) return value;
@@ -144,13 +141,7 @@ export class SettingHandler {
      */
     async #load() {
         let fileData = {};
-        let fileExists = false;
-        try {
-            await fsPromises.access(this.filePath);
-            fileExists = true;
-        } catch {
-            fileExists = false;
-        }
+        let fileExists = await pathExists(this.filePath);
 
         if (fileExists) {
             try {
@@ -163,9 +154,9 @@ export class SettingHandler {
 
         let needsSave = false;
 
-        // 구버전 키 마이그레이션: physicsFps -> physicsAccuracy
-        if (fileData.physicsAccuracy === undefined && fileData.physicsFps !== undefined) {
-            fileData.physicsAccuracy = fileData.physicsFps;
+        if (fileData.physicsAccuracy !== undefined || fileData.physicsFps !== undefined) {
+            delete fileData.physicsAccuracy;
+            delete fileData.physicsFps;
             needsSave = true;
         }
         // 구버전 키 마이그레이션: borderless -> fullscreen (키오스크 모드 제거)
@@ -181,6 +172,14 @@ export class SettingHandler {
         // 구버전 키 마이그레이션: darkMode(bool) -> theme(string)
         if (fileData.theme === undefined && typeof fileData.darkMode === 'boolean') {
             fileData.theme = fileData.darkMode ? 'dark' : 'light';
+            needsSave = true;
+        }
+        if (fileData.simulationWorkerAuthorityMode !== undefined
+            || fileData.simulationWorkerShadowMode !== undefined
+            || fileData.simulationWorkerPresentationMode !== undefined) {
+            delete fileData.simulationWorkerAuthorityMode;
+            delete fileData.simulationWorkerShadowMode;
+            delete fileData.simulationWorkerPresentationMode;
             needsSave = true;
         }
 
@@ -210,16 +209,7 @@ export class SettingHandler {
      * @returns {Promise}
      */
     async save() {
-        try {
-            await fsPromises.access(this.dataDir);
-        } catch (e) {
-            try {
-                await fsPromises.mkdir(this.dataDir, { recursive: true });
-            } catch (mkdirError) {
-                console.error("설정 디렉토리 생성 실패:", mkdirError);
-                throw mkdirError;
-            }
-        }
+        await ensureSaveDirectory(this.dataDir, '설정');
 
         const out = {};
         for (const key in this.schema) {

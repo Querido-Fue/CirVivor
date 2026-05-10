@@ -77,6 +77,11 @@ export const TITLE_CONSTANTS = Object.freeze({
         SPAWN_Y_MAX_RATIO: 0.97
     }),
     TITLE_AI: Object.freeze({
+        ID: 'titleAI',
+        ACCEL_RESPONSE: 6,
+        PARALLAX_DEFAULT_SCALE: 1,
+        SPAWN_BOOST_SETTLE_EPSILON: 0.001,
+        BURST_VELOCITY_SETTLE_EPSILON: 0.01,
         MAGNETIC_IMPULSE: 1400,
         MAGNETIC_DAMPING: 6,
         MAX_SPEED_CAP_MULTIPLIER: 1.7,
@@ -145,13 +150,59 @@ export const TITLE_CONSTANTS = Object.freeze({
         CIRCLE_CENTER_Y_RATIO: 0.5,
         CIRCLE_RADIUS_WH_RATIO: 0.115,
         CIRCLE_RADIUS_UIWW_RATIO: 0.22,
-        OUTLINE_WIDTH_WH_RATIO: 0.0024,
+        OUTLINE_WIDTH_WH_RATIO: 0.00085,
         TEXT_GAP_WH_RATIO: 0.076,
         TEXT_FONT_SIZE_WH_RATIO: 0.016,
         SCENE_TRANSITION_TRIGGER_PROGRESS: 0.9,
         SCENE_TRANSITION_DURATION: 1,
         MINI_CIRCLE_SCALE: 1,
         GLOW_COMPENSATION_SCALE: 4,
+        GLOW_DEFAULTS: Object.freeze({
+            HALO_STOPS: Object.freeze([
+                Object.freeze({ offset: 0, color: null, alphaScale: 0, maxAlpha: 0 }),
+                Object.freeze({ offset: 0.06, color: null, alphaScale: 0.022, maxAlpha: 0.038 }),
+                Object.freeze({ offset: 0.14, color: null, alphaScale: 0.03, maxAlpha: 0.05 }),
+                Object.freeze({ offset: 0.3, color: null, alphaScale: 0.032, maxAlpha: 0.054 }),
+                Object.freeze({ offset: 0.5, color: null, alphaScale: 0.024, maxAlpha: 0.04 }),
+                Object.freeze({ offset: 0.72, color: null, alphaScale: 0.013, maxAlpha: 0.022 }),
+                Object.freeze({ offset: 0.9, color: null, alphaScale: 0.004, maxAlpha: 0.008 }),
+                Object.freeze({ offset: 1, color: null, alphaScale: 0, maxAlpha: 0 })
+            ]),
+            RING: Object.freeze({
+                Color: null,
+                ShadowColor: null,
+                AlphaScale: 0.052,
+                AlphaMax: 0.09,
+                ShadowAlphaScale: 0.07,
+                ShadowAlphaMax: 0.12
+            }),
+            SURFACE: Object.freeze({
+                Highlight: null,
+                HighlightAlpha: 0.95,
+                Shadow: null,
+                ShadowAlpha: 0.45
+            })
+        }),
+        CIRCLE_SHADER: Object.freeze({
+            COLORS: Object.freeze({
+                base: Object.freeze([0.086, 0.435, 0.984]),
+                deep: Object.freeze([0.016, 0.176, 0.62]),
+                rim: Object.freeze([0.4, 0.737, 1]),
+                highlight: Object.freeze([0.94, 0.99, 1]),
+                surface: Object.freeze([0.84, 0.973, 1])
+            }),
+            ALPHA: 0.92,
+            GLOW_STRENGTH: 0.12,
+            GLASS_STRENGTH: 0.62,
+            BRIGHTNESS_BOOST: 0.08,
+            GLOW_COMPENSATION_STRENGTH_SCALE: 0.08,
+            BODY_RADIUS_EXPAND_OUTLINE_RATIO: 0.58,
+            BACKDROP_BLUR: 6.5,
+            BACKDROP_BLUR_STRENGTH: 0.36,
+            BACKDROP_REFRACTION_STRENGTH: 5.2,
+            SCISSOR_PADDING_RADIUS_RATIO: 0.86,
+            SCISSOR_PADDING_MIN_PX: 28
+        }),
         LOGO_FINAL_LEFT_UIWW_RATIO: 0.11,
         LOGO_FINAL_CENTER_Y_RATIO: 0.5,
         LOGO_FINAL_WIDTH_UIWW_RATIO: 0.19
@@ -189,7 +240,13 @@ export const TITLE_CONSTANTS = Object.freeze({
         ANGULAR_WIDTH_SCALE: 1.15,
         IMPACT_INTENSITY_MIN: 0.2,
         IMPACT_INTENSITY_MAX: 0.52,
-        IMPACT_SPEED_REFERENCE_PX: 120
+        IMPACT_SPEED_REFERENCE_PX: 120,
+        MAGNETIC_SHIELD_COLORS: Object.freeze({
+            shadow: Object.freeze([0.07, 0.04, 0.25]),
+            low: Object.freeze([0.60, 0.36, 0.98]),
+            high: Object.freeze([0.70, 0.93, 1.0]),
+            highlight: Object.freeze([0.96, 0.995, 1.0])
+        })
     }),
     TITLE_TRANSITION: Object.freeze({
         ENEMY_FADE_DURATION: 0.8,
@@ -271,7 +328,70 @@ export const TITLE_CONSTANTS = Object.freeze({
         }),
         SETTINGS: Object.freeze({
             WIDTH_UIWW_RATIO: 0.65,
-            HEIGHT_WH_RATIO: 0.7
+            HEIGHT_WH_RATIO: 0.7,
+            LAYOUT: Object.freeze({
+                HEADER: Object.freeze({
+                    START_X_OX: 0,
+                    START_Y_OY: 0,
+                    WIDTH_OW: 100,
+                    HEIGHT_OH: 19,
+                    PADDING_X_WW: 1.8,
+                    TITLE_TOP_SPACE_WH: 2.5,
+                    DIVIDER_TOP_SPACE_WH: 1.5
+                }),
+                LEFT_COLUMN: Object.freeze({
+                    START_X_OX: 3,
+                    START_Y_OY: 15,
+                    WIDTH_OW: 44,
+                    HEIGHT_OH: 100
+                }),
+                RIGHT_COLUMN: Object.freeze({
+                    START_X_OX: 53,
+                    START_Y_OY: 15,
+                    WIDTH_OW: 44,
+                    HEIGHT_OH: 100
+                }),
+                FOOTER: Object.freeze({
+                    START_X_OX: 0,
+                    START_Y_OY: 0,
+                    WIDTH_OW: 100,
+                    HEIGHT_OH: 100,
+                    PADDING_X_WW: 1.8,
+                    BOTTOM_SPACE_WH: 3,
+                    BUTTON_GAP_WW: 1
+                }),
+                COLUMN: Object.freeze({
+                    SPACING_SCALE: 0.9,
+                    CONTROL_WRAP_WIDTH_PARENT: 65,
+                    CONTROL_MAX_WIDTH_PARENT: 66.66,
+                    SECTION_HEADER_BOTTOM_SPACE_OH: 3.5,
+                    SECTION_GROUP_GAP_OH: 1,
+                    COLUMN_END_SPACE_OH: 4
+                }),
+                CONTROL: Object.freeze({
+                    DROPDOWN_HEIGHT_WH: 3,
+                    TOGGLE_WIDTH_WW: 2.55,
+                    TOGGLE_HEIGHT_WH: 2
+                }),
+                SLIDER: Object.freeze({
+                    TRACK_HEIGHT_WH_RATIO: 0.008,
+                    KNOB_RADIUS_WH_RATIO: 0.009,
+                    VALUE_OFFSET_X_UIWW_RATIO: 0.015,
+                    VALUE_OFFSET_Y_WH_RATIO: 0.009
+                }),
+                ITEM_HEADER: Object.freeze({
+                    ROW_WIDTH_PARENT: 94,
+                    LABEL_WIDTH_PARENT: 35,
+                    CONTROL_GAP_WW: 1
+                }),
+                ITEM_FOOTER: Object.freeze({
+                    DESCRIPTION_TOP_SPACE_OH: 2.25,
+                    DESCRIPTION_WIDTH_PARENT: 94,
+                    DESCRIPTION_ALPHA: 0.8,
+                    DESCRIPTION_BOTTOM_SPACE_MULTIPLIER: 4.5,
+                    EMPTY_BOTTOM_SPACE_MULTIPLIER: 5
+                })
+            })
         }),
         DECK: Object.freeze({
             WIDTH_UIWW_RATIO: 0.65,

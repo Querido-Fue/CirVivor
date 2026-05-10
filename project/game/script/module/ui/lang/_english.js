@@ -1,4 +1,8 @@
-export const english = {
+/**
+ * 영어 UI 문자열 리소스입니다.
+ * @type {Readonly<Record<string, string|boolean>>}
+ */
+export const english = Object.freeze({
     // 공통
     "language_name": "English",
     "hidden": false,
@@ -51,28 +55,21 @@ export const english = {
     "title_settings_window_mode_windowed": "Windowed",
     "title_settings_window_mode_fullscreen": "FullScreen",
     "title_settings_widescreen_support": "Ultrawide Support",
-    "title_settings_desc_widescreen_support": "You'll get limited FOV at aspect ratios above 16:9.",
+    "title_settings_desc_widescreen_support": "FOV will be limited where aspect ratios are above 16:9.",
     "title_settings_resolution": "Resolution",
     "title_settings_render_scale": "Render Scale",
     "title_settings_desc_render_scale": "Lower values improve performance at the cost of visual clarity.",
     "title_settings_ui_scale": "UI Scale",
     "title_settings_desc_ui_scale": "Adjusts UI size. Some UI elements may not be visible above 125%.",
     "title_settings_disable_transparency": "Opacue UI Backgrounds",
-    "title_settings_desc_transparency": "Makes UI backgrounds opaque to reduce graphics load.",
-    "title_settings_physics_accuracy": "Physics Accuracy",
-    "title_settings_desc_physics_accuracy": "Higher options reduce enemies overlapping at the cost of performance.",
-    "title_settings_multicore_support": "Multicore Support",
-    "title_settings_desc_multicore_support": "Performance improves significantly. Turn this off only if problems occur.",
-    "title_settings_physics_accuracy_low": "Low",
-    "title_settings_physics_accuracy_mid": "Medium",
-    "title_settings_physics_accuracy_high": "High",
+    "title_settings_desc_transparency": "Makes UI backgrounds opaque, Reduces graphics load.",
     "title_settings_section_ui": "UI",
     "title_settings_language": "Language",
     "title_settings_theme": "Theme",
     "title_settings_theme_light": "Light",
     "title_settings_theme_dark": "Dark",
     "title_settings_tooltip_delay": "Tooltip Delay",
-    "title_settings_desc_tooltip_delay": "How long to hover a button before its tooltip appears.",
+    "title_settings_desc_tooltip_delay": "How long to hover a button before the tooltip appears.",
     "title_settings_section_sound": "Sound",
     "title_settings_bgm": "Music",
     "title_settings_sfx": "Effects",
@@ -87,4 +84,4 @@ export const english = {
     "title_deck_encyclopedia": "Encyclopedia",
     "title_deck_progress": "Progress",
     "title_deck_close": "Close"
-};
+});

@@ -73,6 +73,7 @@ const DARK_VIGNETTE_THEME = Object.freeze({
  * 게임 전체에 적용되는 다크 테마 설정 모음
  */
 export const DarkTheme = Object.freeze({
+    Background: '#05030a',
     Cursor: Object.freeze({
         Fill: '#404040',
         Active: '#4fa3ff',
@@ -181,7 +182,19 @@ export const DarkTheme = Object.freeze({
     Overlay: DARK_OVERLAY_THEME,
     Vignette: DARK_VIGNETTE_THEME,
     Game: Object.freeze({
-        Font: '#e0e0e0'
+        Font: '#e0e0e0',
+        Benchmark: Object.freeze({
+            StaticWall: 'rgba(70, 86, 108, 0.9)',
+            BoxWall: 'rgba(92, 112, 134, 0.9)',
+            Player: '#4fa3ff',
+            Projectile: '#ffc857',
+            EnemyFill: 'rgba(240, 230, 255, 0.92)',
+            HexaBackdropFallback: 'rgb(84, 64, 104)',
+            ButtonIdle: 'rgba(18, 24, 34, 0.82)',
+            ButtonHover: 'rgba(30, 38, 52, 0.92)',
+            ButtonStroke: 'rgba(255, 255, 255, 0.24)',
+            ButtonText: '#e8eef7'
+        })
     }),
     Debug: Object.freeze({
         Background: '#f0f0f0',

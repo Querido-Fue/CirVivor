@@ -1,13 +1,22 @@
 let simulationCommandQueueInstance = null;
 
 /**
+ * 큐에 적재 가능한 시뮬레이션 명령인지 확인합니다.
+ * @param {unknown} command
+ * @returns {boolean}
+ */
+function isSimulationCommand(command) {
+    return Boolean(command && typeof command.type === 'string' && command.type.length > 0);
+}
+
+/**
  * @class SimulationCommandQueue
  * @description 씬과 UI가 발행한 시뮬레이션 명령을 프레임 경계에서 수집/배달하는 큐입니다.
  */
 export class SimulationCommandQueue {
     constructor() {
-        simulationCommandQueueInstance = this;
         this.commands = [];
+        simulationCommandQueueInstance = this;
     }
 
     /**
@@ -16,7 +25,7 @@ export class SimulationCommandQueue {
      * @returns {boolean}
      */
     enqueue(command) {
-        if (!command || typeof command.type !== 'string' || command.type.length === 0) {
+        if (!isSimulationCommand(command)) {
             return false;
         }
 
@@ -52,7 +61,7 @@ export class SimulationCommandQueue {
  */
 export function ensureSimulationCommandQueue() {
     if (!simulationCommandQueueInstance) {
-        new SimulationCommandQueue();
+        simulationCommandQueueInstance = new SimulationCommandQueue();
     }
     return simulationCommandQueueInstance;
 }
@@ -77,8 +86,9 @@ export function enqueueSimulationCommands(commands = []) {
     }
 
     let enqueuedCount = 0;
+    const queue = ensureSimulationCommandQueue();
     for (let i = 0; i < commands.length; i++) {
-        if (enqueueSimulationCommand(commands[i])) {
+        if (queue.enqueue(commands[i])) {
             enqueuedCount++;
         }
     }

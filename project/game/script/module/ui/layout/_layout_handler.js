@@ -7,6 +7,72 @@ const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 const UI_CONSTANTS = getData('UI_CONSTANTS');
 
+const DEFAULT_LAYOUT_ALIGN = 'left';
+const DEFAULT_LAYOUT_VERTICAL_ALIGN = 'top';
+const DEFAULT_SPACER_UNIT = 'fill';
+const DYNAMIC_UI_ITEM_TYPES = Object.freeze([
+    'button',
+    'slider',
+    'toggle',
+    'segment_control',
+    'dropdown',
+    'progress_bar'
+]);
+const LAYOUT_METRIC_KEYWORD_ALIASES = Object.freeze({
+    fit: 'content',
+    content: 'content',
+    expand: 'fill',
+    fill: 'fill'
+});
+const LAYOUT_JUSTIFY_CONTENT_TYPES = Object.freeze([
+    DEFAULT_LAYOUT_ALIGN,
+    'center',
+    'right',
+    'space-between',
+    'space-around',
+    'space-evenly'
+]);
+
+/**
+ * 동적 갱신이 필요한 UI 타입인지 확인합니다.
+ * @param {string} type - UI 아이템 타입입니다.
+ * @returns {boolean} 동적 아이템 여부입니다.
+ */
+function isDynamicUIItemType(type) {
+    return DYNAMIC_UI_ITEM_TYPES.includes(type);
+}
+
+/**
+ * 레이아웃 빌더 내부에서 사용하는 기본 아이템 상태를 생성합니다.
+ * @param {string} type - UI 아이템 타입입니다.
+ * @param {string|null} id - 고유 식별자입니다.
+ * @param {object} [overrides={}] - 기본 상태에 병합할 추가 필드입니다.
+ * @returns {object} 레이아웃 아이템 상태입니다.
+ */
+function createLayoutItemState(type, id, overrides = {}) {
+    return {
+        id: id || crypto.randomUUID(),
+        type,
+        props: {},
+        align: DEFAULT_LAYOUT_ALIGN,
+        vAlign: DEFAULT_LAYOUT_VERTICAL_ALIGN,
+        dynamic: isDynamicUIItemType(type),
+        ...overrides
+    };
+}
+
+/**
+ * 크기 규격 키워드를 내부 표준 단위로 변환합니다.
+ * @param {string} unit - 입력 단위 또는 키워드입니다.
+ * @returns {string|null} 변환된 단위, 또는 키워드가 아니면 null입니다.
+ */
+function resolveMetricKeyword(unit) {
+    if (!Object.prototype.hasOwnProperty.call(LAYOUT_METRIC_KEYWORD_ALIASES, unit)) {
+        return null;
+    }
+    return LAYOUT_METRIC_KEYWORD_ALIASES[unit];
+}
+
 /**
  * @class LayoutHandler
  * @description 게임 UI 컴포넌트의 위치(x, y)를 단위(WW, WH 등) 기반으로 자동 계산해 주는 빌더 패턴 클래스입니다.
@@ -43,9 +109,9 @@ export class LayoutHandler {
     }
 
     /**
-         * 부모 요소 또는 화면 크기 변경 시 스케일을 다시 계산합니다.
-         * @returns {LayoutHandler}
-         */
+     * 부모 요소 또는 화면 크기 변경 시 스케일을 다시 계산합니다.
+     * @returns {LayoutHandler}
+     */
     resize() {
         this.uiScale = this.parent.uiScale || 1;
         this.positioningHandler.resize(this.parent, this.uiScale);
@@ -53,12 +119,12 @@ export class LayoutHandler {
     }
 
     /**
-         * 현재 편집 중인 아이템 등록을 완료하고 렌더 목록/그룹으로 푸시합니다.
-         * @private
-         */
+     * 현재 편집 중인 아이템 등록을 완료하고 렌더 목록/그룹으로 푸시합니다.
+     * @private
+     */
     #commitCurrentItem() {
         if (this.#parentItem) {
-            const currentGroup = this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null;
+            const currentGroup = this.#getCurrentGroup();
             if (currentGroup) {
                 currentGroup.items.push(this.#parentItem);
             } else {
@@ -67,6 +133,24 @@ export class LayoutHandler {
         }
         this.#currentItem = null;
         this.#parentItem = null;
+    }
+
+    /**
+     * 현재 열려 있는 마지막 그룹을 반환합니다.
+     * @returns {object|null} 현재 그룹 상태입니다.
+     * @private
+     */
+    #getCurrentGroup() {
+        return this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null;
+    }
+
+    /**
+     * modifier가 적용될 현재 아이템 또는 그룹을 반환합니다.
+     * @returns {object|null} 현재 modifier 대상입니다.
+     * @private
+     */
+    #getActiveLayoutTarget() {
+        return this.#currentItem || this.#getCurrentGroup();
     }
 
     // --- 레이아웃 기본 설정 영역 ---
@@ -129,14 +213,7 @@ export class LayoutHandler {
      */
     #createItem(type, id) {
         this.#commitCurrentItem();
-        this.#currentItem = {
-            id: id || crypto.randomUUID(),
-            type,
-            props: {},
-            align: 'left',
-            vAlign: 'top',
-            dynamic: ['button', 'slider', 'toggle', 'segment_control', 'dropdown', 'progress_bar'].includes(type)
-        };
+        this.#currentItem = createLayoutItemState(type, id);
         this.#parentItem = this.#currentItem;
         return this;
     }
@@ -166,14 +243,7 @@ export class LayoutHandler {
         }
 
         if (!this.#parentItem.children) this.#parentItem.children = [];
-        const child = {
-            id: id || crypto.randomUUID(),
-            type,
-            props: {},
-            align: 'left',
-            vAlign: 'top',
-            dynamic: ['button', 'slider', 'toggle', 'segment_control', 'dropdown', 'progress_bar'].includes(type)
-        };
+        const child = createLayoutItemState(type, id);
         this.#parentItem.children.push(child);
 
         this.#currentItem = child;
@@ -220,15 +290,17 @@ export class LayoutHandler {
      * @param {string} [id=null] - 고유 식별자 ID
      * @returns {LayoutHandler}
      */
-    spacer(unit = 'fill', value, id = null) {
+    spacer(unit = DEFAULT_SPACER_UNIT, value, id = null) {
         return this.item('spacer', id).value(unit, value);
     }
 
     /**
      * 상위/수평 정렬을 설정합니다 ('left', 'center', 'right').
+     * @param {string} type - 수평 정렬 방식입니다.
+     * @returns {LayoutHandler}
      */
     align(type) {
-        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
+        const target = this.#getActiveLayoutTarget();
         if (target) {
             target.align = type;
             if (target.type === 'text' && target.props.align === undefined) {
@@ -241,6 +313,8 @@ export class LayoutHandler {
     /**
      * 수직 정렬을 설정합니다 ('top', 'center', 'bottom').
      * 그룹 내부 아이템 또는 하단 누적 아이템에서 유효합니다.
+     * @param {string} type - 수직 정렬 방식입니다.
+     * @returns {LayoutHandler}
      */
     vAlign(type) {
         const inGroup = this.#groupStack.length > 0;
@@ -300,6 +374,13 @@ export class LayoutHandler {
         return this;
     }
 
+    /**
+     * 버튼의 idle/hover/text 색상을 지정합니다.
+     * @param {object|string} idleOrScheme - 색상 스킴 객체 또는 idle 색상입니다.
+     * @param {string|object} [hover] - hover 색상입니다.
+     * @param {string|object} [text] - 텍스트 색상입니다.
+     * @returns {LayoutHandler}
+     */
     buttonColor(idleOrScheme, hover, text) {
         let _idle, _hover, _text;
         if (typeof idleOrScheme === 'object' && idleOrScheme !== null) {
@@ -320,6 +401,12 @@ export class LayoutHandler {
         return this;
     }
 
+    /**
+     * 값 기반 컨트롤의 최솟값과 최댓값을 지정합니다.
+     * @param {number} min - 최소값입니다.
+     * @param {number} max - 최대값입니다.
+     * @returns {LayoutHandler}
+     */
     valueRange(min, max) {
         if (this.#currentItem) {
             this.#currentItem.props.min = min;
@@ -328,6 +415,11 @@ export class LayoutHandler {
         return this;
     }
 
+    /**
+     * 클릭 콜백을 지정합니다.
+     * @param {Function} callback - 클릭 콜백입니다.
+     * @returns {LayoutHandler}
+     */
     onClick(callback) {
         if (this.#currentItem) this.#currentItem.props.onClick = callback;
         return this;
@@ -402,6 +494,12 @@ export class LayoutHandler {
         return this;
     }
 
+    /**
+     * 현재 아이템의 모서리 반경을 지정합니다.
+     * @param {string} unitOrPreset - 단위 또는 preset 키워드입니다.
+     * @param {number|string} valueOrKey - 단위 값 또는 preset 키입니다.
+     * @returns {LayoutHandler}
+     */
     radius(unitOrPreset, valueOrKey) {
         if (this.#currentItem) {
             this.#currentItem.radiusObj = { unit: unitOrPreset, value: valueOrKey };
@@ -417,7 +515,7 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     width(unit, value) {
-        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
+        const target = this.#getActiveLayoutTarget();
         if (target) {
             target.widthObj = this.#normalizeMetricSpec(unit, value);
         }
@@ -432,19 +530,30 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     height(unit, value) {
-        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
+        const target = this.#getActiveLayoutTarget();
         if (target) {
             target.heightObj = this.#normalizeMetricSpec(unit, value);
         }
         return this;
     }
 
+    /**
+     * 렌더 순서를 명시적으로 지정합니다.
+     * @param {number} orderInt - 렌더 순서 정수입니다.
+     * @returns {LayoutHandler}
+     */
     customRenderOrder(orderInt) {
-        const target = this.#currentItem || (this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null);
+        const target = this.#getActiveLayoutTarget();
         if (target) target.customRenderOrder = orderInt;
         return this;
     }
 
+    /**
+     * 현재 아이템의 임의 props 값을 지정합니다.
+     * @param {string} key - props 키입니다.
+     * @param {*} value - props 값입니다.
+     * @returns {LayoutHandler}
+     */
     prop(key, value) {
         if (this.#currentItem) this.#currentItem.props[key] = value;
         return this;
@@ -520,9 +629,15 @@ export class LayoutHandler {
         return this.#createGroup(id);
     }
 
+    /**
+     * 수평 그룹 상태를 생성하고 현재 컨텍스트에 추가합니다.
+     * @param {string|null} id - 그룹 식별자입니다.
+     * @returns {LayoutHandler}
+     * @private
+     */
     #createGroup(id) {
         this.#commitCurrentItem();
-        const group = { id: id || crypto.randomUUID(), type: 'hbox', items: [], props: {}, align: 'left', vAlign: 'top' };
+        const group = createLayoutItemState('hbox', id, { items: [] });
 
         if (this.#groupStack.length > 0) {
             this.#groupStack[this.#groupStack.length - 1].items.push(group);
@@ -544,8 +659,15 @@ export class LayoutHandler {
         return this;
     }
 
+    /**
+     * 현재 그룹의 수평 배치 방식과 gap을 지정합니다.
+     * @param {string} type - 배치 방식입니다.
+     * @param {string} [gapUnit] - gap 단위입니다.
+     * @param {number} [gapValue] - gap 값입니다.
+     * @returns {LayoutHandler}
+     */
     justifyContent(type, gapUnit, gapValue) {
-        const targetGroup = this.#groupStack.length > 0 ? this.#groupStack[this.#groupStack.length - 1] : null;
+        const targetGroup = this.#getCurrentGroup();
         if (targetGroup) {
             targetGroup.justifyContent = type;
             if (gapUnit && gapValue !== undefined) {
@@ -569,6 +691,13 @@ export class LayoutHandler {
 
     // --- 파싱 및 렌더 트리 빌드 영역 ---
 
+    /**
+     * 레이아웃 단위와 값을 픽셀 값으로 변환합니다.
+     * @param {string} unit - 레이아웃 단위입니다.
+     * @param {number} value - 단위 값입니다.
+     * @param {number} refSize - parent 단위 계산 기준 크기입니다.
+     * @returns {number} 변환된 픽셀 값입니다.
+     */
     parseUnit(unit, value, refSize) {
         return this.positioningHandler.parseUnit(unit, value, refSize);
     }
@@ -580,10 +709,8 @@ export class LayoutHandler {
      * @returns {{unit:string, value:number|undefined}}
      */
     #normalizeMetricSpec(unit, value) {
-        if (unit === 'fit') return { unit: 'content', value: undefined };
-        if (unit === 'content') return { unit: 'content', value: undefined };
-        if (unit === 'expand') return { unit: 'fill', value: undefined };
-        if (unit === 'fill') return { unit: 'fill', value: undefined };
+        const normalizedUnit = resolveMetricKeyword(unit);
+        if (normalizedUnit) return { unit: normalizedUnit, value: undefined };
         return { unit, value };
     }
 
@@ -669,6 +796,15 @@ export class LayoutHandler {
         return { dynamicItems: dynamicRet, staticItems: staticRet, components: componentsMap };
     }
 
+    /**
+     * 아이템 타입에 맞는 레이아웃 resolver를 생성합니다.
+     * @param {object} item - 레이아웃 아이템 상태입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {boolean} isHboxChild - hbox 내부 자식 여부입니다.
+     * @returns {object} 크기와 finalize 함수를 가진 resolver입니다.
+     * @private
+     */
     #resolveLayout(item, parentW, parentH, isHboxChild) {
         if (item.type === 'spacing' || item.type === 'margin') {
             return this.#resolveSpacingLayout(item, parentH);
@@ -689,6 +825,13 @@ export class LayoutHandler {
         return this.#resolveElementLayout(item, parentW, parentH, isHboxChild, widthMode, actualW);
     }
 
+    /**
+     * 세로 spacing/margin 아이템의 resolver를 생성합니다.
+     * @param {object} item - spacing 아이템 상태입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @returns {object} spacing resolver입니다.
+     * @private
+     */
     #resolveSpacingLayout(item, parentH) {
         const val = this.parseUnit(item.unit, item.value, parentH);
         return {
@@ -699,6 +842,14 @@ export class LayoutHandler {
         };
     }
 
+    /**
+     * hbox 내부 spacer 아이템의 resolver를 생성합니다.
+     * @param {object} item - spacer 아이템 상태입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {boolean} isHboxChild - hbox 내부 자식 여부입니다.
+     * @returns {object} spacer resolver입니다.
+     * @private
+     */
     #resolveSpacerLayout(item, parentW, isHboxChild) {
         if (!isHboxChild) {
             console.warn("LayoutHandler: spacer()는 그룹 내부에서만 사용할 수 있습니다.");
@@ -711,6 +862,13 @@ export class LayoutHandler {
         return { _vAlign: 'top', isFlexibleW: false, w: val, h: 0, finalize: () => ({ h: 0 }) };
     }
 
+    /**
+     * 아이템의 radius 지정값을 실제 픽셀 props로 반영합니다.
+     * @param {object} item - 레이아웃 아이템 상태입니다.
+     * @param {number} parentW - radius 계산 기준 너비입니다.
+     * @returns {void}
+     * @private
+     */
     #applyRadius(item, parentW) {
         if (!item.radiusObj) return;
 
@@ -729,6 +887,15 @@ export class LayoutHandler {
         item.props.radius = this.parseUnit(item.radiusObj.unit, item.radiusObj.value, parentW);
     }
 
+    /**
+     * 아이템의 최종 너비를 타입, preset, width 규칙에 따라 계산합니다.
+     * @param {object} item - 레이아웃 아이템 상태입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {string|null} widthMode - width 규칙입니다.
+     * @returns {number} 계산된 아이템 너비입니다.
+     * @private
+     */
     #resolveActualWidth(item, parentW, parentH, widthMode) {
         if (widthMode && widthMode !== 'fill' && widthMode !== 'content') {
             return this.parseUnit(item.widthObj.unit, item.widthObj.value, parentW);
@@ -773,6 +940,16 @@ export class LayoutHandler {
         return 0;
     }
 
+    /**
+     * hbox 그룹의 크기와 자식 배치 finalize 함수를 계산합니다.
+     * @param {object} item - hbox 아이템 상태입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {boolean} isHboxChild - 상위 hbox 내부 자식 여부입니다.
+     * @param {string|null} widthMode - width 규칙입니다.
+     * @returns {object} hbox resolver입니다.
+     * @private
+     */
     #resolveHBoxLayout(item, parentW, parentH, isHboxChild, widthMode) {
         const isFillW = widthMode === 'fill';
         const isContentW = widthMode === 'content';
@@ -825,6 +1002,15 @@ export class LayoutHandler {
         };
     }
 
+    /**
+     * hbox 자식 resolver 목록의 폭/높이/gap 메트릭을 계산합니다.
+     * @param {object[]} childResolvers - 자식 resolver 목록입니다.
+     * @param {object} item - hbox 아이템 상태입니다.
+     * @param {number} evalW - 메트릭 계산 기준 너비입니다.
+     * @param {string} justifyContent - 정규화된 수평 배치 방식입니다.
+     * @returns {object} hbox 메트릭입니다.
+     * @private
+     */
     #measureHBox(childResolvers, item, evalW, justifyContent) {
         let usedW = 0;
         let numFlexible = 0;
@@ -854,6 +1040,15 @@ export class LayoutHandler {
         return { flexibleW, numFlexible, gapPx, usedW, totalGaps, maxH, numItems };
     }
 
+    /**
+     * hbox의 시작 X와 아이템 간 spacing을 계산합니다.
+     * @param {string} justifyContent - 정규화된 수평 배치 방식입니다.
+     * @param {number} startX - hbox 시작 X입니다.
+     * @param {number} finalW - hbox 최종 너비입니다.
+     * @param {object} metrics - hbox 메트릭입니다.
+     * @returns {{spacing:number, iterX:number}} 배치 흐름 정보입니다.
+     * @private
+     */
     #resolveHBoxFlow(justifyContent, startX, finalW, metrics) {
         let spacing = metrics.gapPx;
         let iterX = startX;
@@ -886,10 +1081,29 @@ export class LayoutHandler {
         return { spacing, iterX };
     }
 
+    /**
+     * hbox 수평 배치 방식을 지원 값으로 정규화합니다.
+     * @param {string|undefined} justifyContent - 입력 배치 방식입니다.
+     * @returns {string} 정규화된 배치 방식입니다.
+     * @private
+     */
     #normalizeJustifyContent(justifyContent) {
-        return justifyContent;
+        return LAYOUT_JUSTIFY_CONTENT_TYPES.includes(justifyContent)
+            ? justifyContent
+            : DEFAULT_LAYOUT_ALIGN;
     }
 
+    /**
+     * 일반 UI 요소의 크기와 자식 배치 finalize 함수를 계산합니다.
+     * @param {object} item - 레이아웃 아이템 상태입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {boolean} isHboxChild - hbox 내부 자식 여부입니다.
+     * @param {string|null} widthMode - width 규칙입니다.
+     * @param {number} actualW - 기본 계산 너비입니다.
+     * @returns {object} 요소 resolver입니다.
+     * @private
+     */
     #resolveElementLayout(item, parentW, parentH, isHboxChild, widthMode, actualW) {
         const isFillW = widthMode === 'fill';
         const evalWForDummy = isFillW && isHboxChild ? parentW : actualW;
@@ -949,6 +1163,17 @@ export class LayoutHandler {
         };
     }
 
+    /**
+     * UI 요소 팩토리로 실제 요소 인스턴스를 생성합니다.
+     * @param {object} item - 레이아웃 아이템 상태입니다.
+     * @param {number} x - 생성 X 좌표입니다.
+     * @param {number} y - 생성 Y 좌표입니다.
+     * @param {number} parentW - 부모 너비입니다.
+     * @param {number} parentH - 부모 높이입니다.
+     * @param {number|undefined} forcedW - 강제 너비입니다.
+     * @returns {object|null} 생성된 UI 요소입니다.
+     * @private
+     */
     #instantiateElement(item, x, y, parentW, parentH, forcedW) {
         return UIElementFactory.create(item, x, y, parentW, parentH, forcedW, this);
     }

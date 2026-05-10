@@ -40,31 +40,45 @@ const pointsToPath = (points) => {
 const rectPath = (x, y, w, h) => `M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z`;
 
 /**
+ * SVG 경로 항목 배열을 불변 데이터로 고정합니다.
+ * @param {Array<string|{d: string, fillRule?: string}>} paths SVG 경로 문자열 또는 경로 옵션 객체 배열
+ * @returns {ReadonlyArray<string|Readonly<{d: string, fillRule?: string}>>} 고정된 SVG 경로 항목 배열
+ */
+const freezeShapePaths = (paths) => Object.freeze(
+    paths.map((path) => {
+        if (path && typeof path === 'object') {
+            return Object.freeze({ ...path });
+        }
+        return path;
+    })
+);
+
+/**
  * 각 적 형태별 SVG 그리기 데이터 목록
  */
 export const ENEMY_SVG_SHAPES = Object.freeze({
-    enemy_square: [rectPath(-0.42, -0.42, 0.84, 0.84)],
-    enemy_triangle: [pointsToPath([
+    enemy_square: freezeShapePaths([rectPath(-0.42, -0.42, 0.84, 0.84)]),
+    enemy_triangle: freezeShapePaths([pointsToPath([
         { x: 0.0, y: -0.5333 },
         { x: 0.462, y: 0.2667 },
         { x: -0.462, y: 0.2667 }
-    ])],
-    enemy_arrow: [pointsToPath([
+    ])]),
+    enemy_arrow: freezeShapePaths([pointsToPath([
         { x: 0.0, y: -0.5767 },
         { x: 0.46, y: 0.3733 },
         { x: 0.0, y: 0.2033 },
         { x: -0.46, y: 0.3733 }
-    ])],
-    enemy_hexa: [pointsToPath(polygonPoints(6, 0.47, -Math.PI / 2))],
-    enemy_penta: [pointsToPath(polygonPoints(5, 0.48, -Math.PI / 2))],
-    enemy_rhom: [pointsToPath([
+    ])]),
+    enemy_hexa: freezeShapePaths([pointsToPath(polygonPoints(6, 0.47, -Math.PI / 2))]),
+    enemy_penta: freezeShapePaths([pointsToPath(polygonPoints(5, 0.48, -Math.PI / 2))]),
+    enemy_rhom: freezeShapePaths([pointsToPath([
         { x: 0.0, y: -0.50 },
         { x: 0.34, y: 0.0 },
         { x: 0.0, y: 0.50 },
         { x: -0.34, y: 0.0 }
-    ])],
-    enemy_octa: [pointsToPath(polygonPoints(8, 0.47, Math.PI / 8))],
-    enemy_gen: [
+    ])]),
+    enemy_octa: freezeShapePaths([pointsToPath(polygonPoints(8, 0.47, Math.PI / 8))]),
+    enemy_gen: freezeShapePaths([
         {
             d: `${rectPath(-0.30, -0.30, 0.60, 0.60)} ${rectPath(-0.22, -0.22, 0.44, 0.44)}`,
             fillRule: 'evenodd'
@@ -73,5 +87,5 @@ export const ENEMY_SVG_SHAPES = Object.freeze({
         rectPath(0.34, -0.44, 0.10, 0.10),
         rectPath(0.34, 0.34, 0.10, 0.10),
         rectPath(-0.44, 0.34, 0.10, 0.10)
-    ]
+    ])
 });

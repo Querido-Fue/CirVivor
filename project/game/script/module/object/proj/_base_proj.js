@@ -1,14 +1,20 @@
+import { resolveFiniteNumber } from 'util/number_util.js';
+
 /**
  * @class BaseProj
  * @description 원형 투사체 충돌체의 기본 골격입니다.
  * 동일 적 중복 타격 방지를 위해 hitEnemyIds를 유지합니다.
  */
 export class BaseProj {
+    /**
+     * 기본 투사체 상태를 생성합니다.
+     */
     constructor() {
         this.reset();
     }
 
     /**
+     * 투사체 데이터를 활성 인스턴스에 반영합니다.
      * @param {object} [data={}]
      * @returns {BaseProj}
      */
@@ -16,19 +22,22 @@ export class BaseProj {
         this.active = true;
         this.id = Number.isInteger(data.id) ? data.id : this.id;
         this.kind = 'projectile';
-        this.radius = Number.isFinite(data.radius) ? data.radius : this.radius;
-        this.weight = Number.isFinite(data.weight) ? data.weight : this.weight;
-        this.impactForce = Number.isFinite(data.impactForce) ? data.impactForce : this.impactForce;
+        this.radius = resolveFiniteNumber(data.radius, this.radius);
+        this.weight = resolveFiniteNumber(data.weight, this.weight);
+        this.impactForce = resolveFiniteNumber(data.impactForce, this.impactForce);
         this.piercing = data.piercing === true;
-        this.position.x = Number.isFinite(data.position?.x) ? data.position.x : this.position.x;
-        this.position.y = Number.isFinite(data.position?.y) ? data.position.y : this.position.y;
-        this.speed.x = Number.isFinite(data.speed?.x) ? data.speed.x : this.speed.x;
-        this.speed.y = Number.isFinite(data.speed?.y) ? data.speed.y : this.speed.y;
+        this.position.x = resolveFiniteNumber(data.position?.x, this.position.x);
+        this.position.y = resolveFiniteNumber(data.position?.y, this.position.y);
+        this.speed.x = resolveFiniteNumber(data.speed?.x, this.speed.x);
+        this.speed.y = resolveFiniteNumber(data.speed?.y, this.speed.y);
         this.prevPosition.x = this.position.x;
         this.prevPosition.y = this.position.y;
         return this;
     }
 
+    /**
+     * 풀 재사용을 위해 기본 비활성 상태로 되돌립니다.
+     */
     reset() {
         this.active = false;
         this.id = -1;
@@ -52,6 +61,7 @@ export class BaseProj {
     }
 
     /**
+     * 고정 스텝 기준 위치를 갱신합니다.
      * @param {number} delta
      */
     fixedUpdate(delta) {
@@ -72,37 +82,16 @@ export class BaseProj {
      * @param {number} enemyId
      */
     markEnemyHit(enemyId) {
-        if (!Number.isInteger(enemyId)) return;
+        if (!Number.isInteger(enemyId)) {
+            return;
+        }
         this.hitEnemyIds.add(enemyId);
     }
 
     /**
-     * 재사용 시 중복 타격 기록 초기화
+     * 재사용 시 중복 타격 기록을 초기화합니다.
      */
     clearHitHistory() {
         this.hitEnemyIds.clear();
-    }
-
-    /**
-     * 현재 투사체의 프레임 동기화용 동적 상태만 복제합니다.
-     * @returns {{id: number, active: boolean, position: {x: number, y: number}, prevPosition: {x: number, y: number}, speed: {x: number, y: number}}}
-     */
-    createSimulationFrameSnapshot() {
-        return {
-            id: Number.isInteger(this.id) ? this.id : -1,
-            active: this.active === true,
-            position: {
-                x: Number.isFinite(this.position?.x) ? this.position.x : 0,
-                y: Number.isFinite(this.position?.y) ? this.position.y : 0
-            },
-            prevPosition: {
-                x: Number.isFinite(this.prevPosition?.x) ? this.prevPosition.x : 0,
-                y: Number.isFinite(this.prevPosition?.y) ? this.prevPosition.y : 0
-            },
-            speed: {
-                x: Number.isFinite(this.speed?.x) ? this.speed.x : 0,
-                y: Number.isFinite(this.speed?.y) ? this.speed.y : 0
-            }
-        };
     }
 }

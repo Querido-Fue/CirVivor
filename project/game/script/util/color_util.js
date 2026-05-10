@@ -1,6 +1,18 @@
 let colorUtilInstance = null;
 
 /**
+ * RGB(A) 값을 CSS rgba 문자열로 포맷합니다.
+ * @param {number} r - Red
+ * @param {number} g - Green
+ * @param {number} b - Blue
+ * @param {number} [a=1] - Alpha (0-1)
+ * @returns {string} CSS rgba 문자열
+ */
+export function formatRgba(r, g, b, a = 1) {
+    return "rgba(" + Math.round(r) + "," + Math.round(g) + "," + Math.round(b) + "," + a + ")";
+}
+
+/**
  * @class ColorUtil
  * @description 색상 변환 및 처리를 위한 유틸리티 클래스입니다.
  * Hex 코드와 RGB 값 간의 변환 등의 기능을 제공합니다.
@@ -114,7 +126,7 @@ export class ColorUtil {
      * @returns {string} "rgba(r,g,b,a)" 형태의 문자열
      */
     rgbToString(r, g, b, a = 1) {
-        return "rgba(" + Math.round(r) + "," + Math.round(g) + "," + Math.round(b) + "," + a + ")";
+        return formatRgba(r, g, b, a);
     }
 }
 

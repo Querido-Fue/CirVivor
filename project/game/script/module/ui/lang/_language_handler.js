@@ -9,10 +9,27 @@ import {
 let languageHandlerInstance = null;
 
 /**
+ * 언어팩에 비어 있지 않은 문자열 리소스가 등록되어 있는지 확인합니다.
+ * @param {object|null|undefined} languagePack
+ * @param {string} key
+ * @returns {boolean}
+ */
+function hasLanguageValue(languagePack, key) {
+    return Boolean(
+        languagePack
+        && Object.prototype.hasOwnProperty.call(languagePack, key)
+        && languagePack[key] !== ''
+    );
+}
+
+/**
  * @class LanguageHandler
  * @description 현재 언어 설정을 기준으로 문자열 리소스를 조회합니다.
  */
 export class LanguageHandler {
+    /**
+     * @param {object} uiSystem - 상위 UI 시스템입니다.
+     */
     constructor(uiSystem) {
         if (languageHandlerInstance) {
             return languageHandlerInstance;
@@ -32,10 +49,10 @@ export class LanguageHandler {
      * @returns {string} 번역된 문자열 (키를 찾지 못하면 키 자체 반환)
      */
     getString(key) {
-        if (this.currentLanguage && Object.prototype.hasOwnProperty.call(this.currentLanguage, key) && this.currentLanguage[key] !== '') {
+        if (hasLanguageValue(this.currentLanguage, key)) {
             return this.currentLanguage[key];
         }
-        if (this.defaultLanguage && Object.prototype.hasOwnProperty.call(this.defaultLanguage, key) && this.defaultLanguage[key] !== '') {
+        if (hasLanguageValue(this.defaultLanguage, key)) {
             return this.defaultLanguage[key];
         }
         console.warn(`언어 키 '${key}'를 찾을 수 없습니다.`);

@@ -1,9 +1,9 @@
-import { MouseDebugger } from "./_mouse_debugger.js";
-import { ErrorHandler } from "./_error_handler.js";
-import { PoolDebugger } from "./_pool_debug.js";
-import { PerformanceDebugger } from "./_performance_debug.js";
-import { getSetting } from "save/save_system.js";
-import { runtimeTool } from "util/runtime_tool.js";
+import { MouseDebugger } from './_mouse_debugger.js';
+import { ErrorHandler } from './_error_handler.js';
+import { PoolDebugger } from './_pool_debug.js';
+import { PerformanceDebugger } from './_performance_debug.js';
+import { getSetting } from 'save/save_system.js';
+import { runtimeTool } from 'util/runtime_tool.js';
 
 let debugSystemInstance = null;
 
@@ -25,9 +25,9 @@ export class DebugSystem {
         this.performanceDebugger = new PerformanceDebugger();
         this.mouseDebugger = new MouseDebugger();
         this.poolDebugger = new PoolDebugger();
-        this.performanceDebugger.setEnabled(getSetting('debugMode') === true);
+        this.performanceDebugger.setEnabled(this._isDebugModeEnabled());
 
-        if (getSetting('debugMode')) {
+        if (this._isDebugModeEnabled()) {
             runtimeTool().openDebugWindow();
         }
     }
@@ -37,7 +37,7 @@ export class DebugSystem {
      * 디버그 모드가 켜져 있을 때만 동작합니다.
      */
     update() {
-        if (getSetting('debugMode')) {
+        if (this._isDebugModeEnabled()) {
             this.performanceDebugger.update();
             this.mouseDebugger.update();
             this.poolDebugger.update();
@@ -49,7 +49,7 @@ export class DebugSystem {
      * 디버그 모드가 켜져 있을 때만 동작합니다.
      */
     draw() {
-        if (getSetting('debugMode')) {
+        if (this._isDebugModeEnabled()) {
             this.performanceDebugger.draw();
             this.mouseDebugger.draw();
             this.poolDebugger.draw();
@@ -97,6 +97,15 @@ export class DebugSystem {
         if (tool && typeof tool.openDebugWindow === 'function') {
             tool.openDebugWindow();
         }
+    }
+
+    /**
+     * 현재 디버그 모드 활성 여부를 반환합니다.
+     * @returns {boolean} 디버그 모드 활성 여부입니다.
+     * @private
+     */
+    _isDebugModeEnabled() {
+        return getSetting('debugMode') === true;
     }
 }
 

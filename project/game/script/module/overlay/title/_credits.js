@@ -4,6 +4,7 @@ import { runtimeTool } from 'util/runtime_tool.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getData } from 'data/data_handler.js';
+import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
@@ -17,18 +18,18 @@ export class CreditsOverlay extends TitleOverlay {
     }
 
     /**
-         * @override
-         * 크레딧 팝업 지정 비율에 따라 크기를 갱신합니다.
-         */
+     * @override
+     * 크레딧 팝업 지정 비율에 따라 크기를 갱신합니다.
+     */
     _onResize() {
         this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.CREDITS.WIDTH_UIWW_RATIO;
         this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.CREDITS.HEIGHT_WH_RATIO;
     }
 
     /**
-         * @override
-         * 만든 이, 제작 에셋 등 텍스트 노드가 포함된 레이아웃을 구성합니다.
-         */
+     * @override
+     * 만든 이, 제작 에셋 등 텍스트 노드가 포함된 레이아웃을 구성합니다.
+     */
     _generateLayout() {
         this._releaseElements();
         const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.8)
@@ -98,11 +99,7 @@ export class CreditsOverlay extends TitleOverlay {
             .bottomItem("button", "close_btn").stylePreset("overlay_interact_button").buttonText(getLangString('title_deck_close'))
             .onClick(this.close.bind(this)).align("right");
 
-        if (getLangString("affirmative_icon") === "check") {
-            handler.icon("check").buttonColor(ColorSchemes.Overlay.Button.Confirm)
-        } else {
-            handler.icon("confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm)
-        }
+        applyOverlayConfirmButtonIcon(handler);
 
         const buildRes = handler.build();
 

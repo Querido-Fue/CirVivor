@@ -2,11 +2,50 @@ import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
 import { SVGDrawer } from 'display/_svg_drawer.js';
 import { BaseOverlay } from 'overlay/_base_overlay.js';
-import { getTitleMenuIconSource } from 'scene/title/_title_menu_icon.js';
+import { getTitleMenuIconSource } from 'scene/title/menu/_title_menu_icon.js';
 
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_ICON_LAYOUT = TITLE_CONSTANTS.TITLE_OVERLAY.TITLE_ICON;
+const DEFAULT_TITLE_ICON_ASPECT_RATIO = 1;
+const TITLE_ICON_ANCHOR_ITEM_IDS = Object.freeze([
+    'title_text',
+    'dummy_overlay_title'
+]);
+
+/**
+ * SVG 숫자 속성을 파싱합니다.
+ * @param {string} svgSource - SVG 원문입니다.
+ * @param {string} attributeName - 조회할 속성 이름입니다.
+ * @returns {number} 파싱된 숫자입니다.
+ */
+const parseSvgNumericAttribute = (svgSource, attributeName) => {
+    const match = svgSource.match(new RegExp(`${attributeName}="([\\d.]+)"`, 'i'));
+    return Number.parseFloat(match?.[1]);
+};
+
+/**
+ * 너비/높이 값에서 양수 종횡비를 계산합니다.
+ * @param {number} width - 원본 너비입니다.
+ * @param {number} height - 원본 높이입니다.
+ * @returns {number|null} 계산된 종횡비입니다.
+ */
+const getPositiveAspectRatio = (width, height) => {
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+        return width / height;
+    }
+
+    return null;
+};
+
+/**
+ * 제목 아이콘의 기준이 되는 텍스트 항목을 찾습니다.
+ * @param {Array<{id:string, item:object}>} staticItems - overlay 정적 항목 목록입니다.
+ * @returns {{id:string, item:object}|undefined} 제목 기준 항목입니다.
+ */
+const findTitleIconAnchorEntry = (staticItems) => (
+    staticItems.find((entry) => TITLE_ICON_ANCHOR_ITEM_IDS.includes(entry.id))
+);
 
 /**
  * @class TitleOverlay
@@ -83,6 +122,7 @@ export class TitleOverlay extends BaseOverlay {
 
     /**
      * 제목 왼쪽에 배치할 아이콘 렌더 영역을 계산합니다.
+     * @param {object} titleItem - 제목 텍스트 UI 항목입니다.
      * @param {number} aspectRatio - 아이콘의 종횡비입니다.
      * @returns {{x:number, y:number, w:number, h:number}|null} 렌더 영역입니다.
      */
@@ -90,7 +130,9 @@ export class TitleOverlay extends BaseOverlay {
         if (!titleItem) {
             return null;
         }
-        const safeAspectRatio = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 1;
+        const safeAspectRatio = Number.isFinite(aspectRatio) && aspectRatio > 0
+            ? aspectRatio
+            : DEFAULT_TITLE_ICON_ASPECT_RATIO;
         const iconGap = this.positioningHandler.parseUIData(TITLE_ICON_LAYOUT.GAP, this.uiScale);
         const titleFontSize = Number.isFinite(titleItem.height) && titleItem.height > 0
             ? titleItem.height
@@ -122,27 +164,23 @@ export class TitleOverlay extends BaseOverlay {
      */
     _getTitleIconAspectRatio() {
         if (typeof this._titleIconSource !== 'string' || this._titleIconSource.length === 0) {
-            return 1;
+            return DEFAULT_TITLE_ICON_ASPECT_RATIO;
         }
 
         const viewBoxMatch = this._titleIconSource.match(/viewBox="[^"]*\s([\d.]+)\s([\d.]+)"/i);
         if (viewBoxMatch) {
             const viewBoxWidth = Number.parseFloat(viewBoxMatch[1]);
             const viewBoxHeight = Number.parseFloat(viewBoxMatch[2]);
-            if (Number.isFinite(viewBoxWidth) && Number.isFinite(viewBoxHeight) && viewBoxHeight > 0) {
-                return viewBoxWidth / viewBoxHeight;
+            const viewBoxAspectRatio = getPositiveAspectRatio(viewBoxWidth, viewBoxHeight);
+            if (viewBoxAspectRatio !== null) {
+                return viewBoxAspectRatio;
             }
         }
 
-        const widthMatch = this._titleIconSource.match(/width="([\d.]+)"/i);
-        const heightMatch = this._titleIconSource.match(/height="([\d.]+)"/i);
-        const width = Number.parseFloat(widthMatch?.[1]);
-        const height = Number.parseFloat(heightMatch?.[1]);
-        if (Number.isFinite(width) && Number.isFinite(height) && height > 0) {
-            return width / height;
-        }
-
-        return 1;
+        return getPositiveAspectRatio(
+            parseSvgNumericAttribute(this._titleIconSource, 'width'),
+            parseSvgNumericAttribute(this._titleIconSource, 'height')
+        ) ?? DEFAULT_TITLE_ICON_ASPECT_RATIO;
     }
 
     /**
@@ -155,10 +193,7 @@ export class TitleOverlay extends BaseOverlay {
             return;
         }
 
-        const titleEntry = this.staticItems.find((entry) => (
-            entry.id === 'title_text'
-            || entry.id === 'dummy_overlay_title'
-        ));
+        const titleEntry = findTitleIconAnchorEntry(this.staticItems);
         if (!titleEntry?.item) {
             return;
         }

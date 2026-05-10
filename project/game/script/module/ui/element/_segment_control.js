@@ -4,6 +4,7 @@ import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "in
 import { animate } from "animation/animation_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { DropdownElement } from "./_dropdown.js";
+import { createFontString } from "util/font_util.js";
 /**
  * @class SegmentControlElement
  * @description 여러 옵션 중 하나를 선택하는 세그먼트 컨트롤 UI입니다.
@@ -40,7 +41,11 @@ export class SegmentControlElement extends BaseUIElement {
         this.textColorActive = properties.textColorActive || ColorSchemes.Overlay.Segment.TextActive;
         this.textColorInactive = properties.textColorInactive || ColorSchemes.Overlay.Segment.TextInactive;
 
-        this.font = properties.font || `600 ${this.height * 0.55}px "Pretendard Variable", arial`;
+        this.font = properties.font || createFontString({
+            weight: 600,
+            sizePx: this.height * 0.55,
+            family: "Pretendard Variable, arial"
+        });
 
 
         this.#value = null;
@@ -203,7 +208,11 @@ export class SegmentControlElement extends BaseUIElement {
             const isSelected = i === this.selectedIndex;
             const color = isSelected ? this.textColorActive : this.textColorInactive;
 
-            const fontToUse = this.font || `600 ${this.height * 0.55}px "Pretendard Variable", arial`;
+            const fontToUse = this.font || createFontString({
+                weight: 600,
+                sizePx: this.height * 0.55,
+                family: "Pretendard Variable, arial"
+            });
 
             render(this.layer, {
                 shape: 'text',

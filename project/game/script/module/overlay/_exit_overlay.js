@@ -4,8 +4,10 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { getSetting } from 'save/save_system.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getData } from 'data/data_handler.js';
+import { applyOverlayConfirmButtonIcon } from './_overlay_confirm_icon.js';
 
 const OVERLAY_LAYOUT_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS');
+const EXIT_LAYOUT_CONSTANTS = OVERLAY_LAYOUT_CONSTANTS.EXIT;
 
 /**
  * @class ExitOverlay
@@ -22,18 +24,18 @@ export class ExitOverlay extends BaseOverlay {
     }
 
     /**
-         * @override
-         * 종료 확인 팝업 크기를 화면 비율에 맞추어 조정합니다.
-         */
+     * @override
+     * 종료 확인 팝업 크기를 화면 비율에 맞추어 조정합니다.
+     */
     _onResize() {
-        this.width = this.UIWW * OVERLAY_LAYOUT_CONSTANTS.EXIT.WIDTH_UIWW_RATIO;
-        this.height = this.WH * OVERLAY_LAYOUT_CONSTANTS.EXIT.HEIGHT_WH_RATIO;
+        this.width = this.UIWW * EXIT_LAYOUT_CONSTANTS.WIDTH_UIWW_RATIO;
+        this.height = this.WH * EXIT_LAYOUT_CONSTANTS.HEIGHT_WH_RATIO;
     }
 
     /**
-         * @override
-         * 종료 의사를 묻는 텍스트와 예/아니오 버튼 레이아웃을 빌드합니다.
-         */
+     * @override
+     * 종료 의사를 묻는 텍스트와 예/아니오 버튼 레이아웃을 빌드합니다.
+     */
     _generateLayout() {
         this._releaseElements();
         const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.5)
@@ -54,11 +56,7 @@ export class ExitOverlay extends BaseOverlay {
 
             .item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_yes")).onClick(() => { Game.close(); });
 
-        if (getLangString("affirmative_icon") === "check") {
-            handler.icon("check").buttonColor(ColorSchemes.Overlay.Button.Confirm)
-        } else {
-            handler.icon("confirm").buttonColor(ColorSchemes.Overlay.Button.Confirm)
-        }
+        applyOverlayConfirmButtonIcon(handler);
 
         handler.endGroup();
         const buildRes = handler.build();

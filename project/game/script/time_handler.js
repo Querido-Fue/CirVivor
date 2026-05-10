@@ -1,3 +1,5 @@
+import { clampFiniteNumber } from 'util/number_util.js';
+
 /**
  * @class TimeHandler
  * @description 게임의 시간 델타(delta time)를 관리하는 클래스입니다.
@@ -24,8 +26,9 @@ export class TimeHandler {
      * @param {number} [deltaSeconds] - 프레임 루프에서 계산한 초 단위 델타(선택)
      */
     update(deltaSeconds) {
-        if (Number.isFinite(deltaSeconds) && deltaSeconds > 0) {
-            this.lastFrameTimeDelta = this._normalizeDeltaMs(deltaSeconds * 1000);
+        const injectedDeltaSeconds = clampFiniteNumber(Number(deltaSeconds), 0, Infinity, 0);
+        if (injectedDeltaSeconds > 0) {
+            this.lastFrameTimeDelta = this._normalizeDeltaMs(injectedDeltaSeconds * 1000);
             return;
         }
 
@@ -41,11 +44,12 @@ export class TimeHandler {
      * @param {number} [fixedStepSeconds] - 고정 스텝(초)
      */
     updateFixed(fixedStepSeconds = this.fixedStepSeconds) {
-        if (!Number.isFinite(fixedStepSeconds) || fixedStepSeconds <= 0) {
+        const safeFixedStepSeconds = clampFiniteNumber(Number(fixedStepSeconds), 0, Infinity, this.fixedStepSeconds);
+        if (safeFixedStepSeconds <= 0) {
             this.lastFixedTimeDelta = this.fixedStepSeconds;
             return;
         }
-        this.lastFixedTimeDelta = fixedStepSeconds;
+        this.lastFixedTimeDelta = safeFixedStepSeconds;
     }
 
     /**
@@ -53,19 +57,7 @@ export class TimeHandler {
      * @param {number} alpha - 0~1 범위의 보간 계수
      */
     setFixedInterpolationAlpha(alpha) {
-        if (!Number.isFinite(alpha)) {
-            this.fixedInterpolationAlpha = 0;
-            return;
-        }
-        if (alpha <= 0) {
-            this.fixedInterpolationAlpha = 0;
-            return;
-        }
-        if (alpha >= 1) {
-            this.fixedInterpolationAlpha = 1;
-            return;
-        }
-        this.fixedInterpolationAlpha = alpha;
+        this.fixedInterpolationAlpha = clampFiniteNumber(Number(alpha), 0, 1, 0);
     }
 
     /**
@@ -75,15 +67,7 @@ export class TimeHandler {
      * @private
      */
     _normalizeDeltaMs(deltaMs) {
-        let safeDelta = deltaMs;
-
-        // 델타 값이 너무 튀는 것을 방지 (최대 0.1초)
-        if (safeDelta > 100) safeDelta = 100;
-
-        // 너무 짧은 프레임 델타 방지 (0으로 수렴하여 물리/애니가 멈추거나 튀는 현상 방지)
-        // 렌더 루프 지연 후 연속 호출 시 delta가 1~2ms로 튀는 현상 방어
-        // 최소 2ms (약 500fps 한계) 보장
-        if (safeDelta < 2) safeDelta = 2;
+        const safeDelta = clampFiniteNumber(Number(deltaMs), 2, 100, 2);
 
         return safeDelta / 1000;
     }

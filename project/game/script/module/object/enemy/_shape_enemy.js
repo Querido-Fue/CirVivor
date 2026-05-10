@@ -2,18 +2,27 @@ import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { BaseEnemy } from './_base_enemy.js';
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { clamp01 } from 'util/number_util.js';
+import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
 
 const ENEMY_ASPECT_RATIO = getData('ENEMY_ASPECT_RATIO');
 const ENEMY_HEIGHT_SCALE = getData('ENEMY_HEIGHT_SCALE');
 const getEnemyShapeKey = getData('getEnemyShapeKey');
 const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
-const HEADING_TRACK_TYPES = new Set(['triangle', 'arrow', 'rhom']);
-const HEADING_TURN_MAX_DEG_PER_SEC = 90;
-const HEADING_TURN_DAMP_START_DEG = 45;
-const HEADING_TURN_SNAP_EPSILON_DEG = 0.15;
-const HEADING_FORWARD_OFFSET_DEG = 90;
-const HEADING_MIN_SPEED_SQ = 36; // 6px/s 미만은 정지로 간주
-const TITLE_AI_ID = 'titleAI';
+const ENEMY_ANGLE_CONSTANTS = ENEMY_CONSTANTS.ANGLE;
+const ENEMY_HEADING_CONSTANTS = ENEMY_CONSTANTS.SHAPE_HEADING;
+const HEADING_TRACK_TYPES = new Set(ENEMY_HEADING_CONSTANTS.TRACK_TYPES);
+const HEADING_TURN_MAX_DEG_PER_SEC = ENEMY_HEADING_CONSTANTS.TURN_MAX_DEG_PER_SEC;
+const HEADING_TURN_DAMP_START_DEG = ENEMY_HEADING_CONSTANTS.TURN_DAMP_START_DEG;
+const HEADING_TURN_SNAP_EPSILON_DEG = ENEMY_HEADING_CONSTANTS.TURN_SNAP_EPSILON_DEG;
+const HEADING_FORWARD_OFFSET_DEG = ENEMY_HEADING_CONSTANTS.FORWARD_OFFSET_DEG;
+const HEADING_MIN_SPEED_SQ = ENEMY_HEADING_CONSTANTS.MIN_SPEED_SQ;
+const HEADING_SYMMETRY_STEP_BY_TYPE = ENEMY_HEADING_CONSTANTS.SYMMETRY_STEP_BY_TYPE;
+const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
+const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
+const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
+const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
+const TITLE_AI_ID = getData('TITLE_CONSTANTS').TITLE_AI.ID;
 
 /**
  * 타이틀 씬 적인지 판별합니다.
@@ -135,7 +144,7 @@ export class ShapeEnemy extends BaseEnemy {
             this.#rotationCos = 1;
             this.#rotationSin = 0;
         } else {
-            const rad = rotation * (Math.PI / 180);
+            const rad = rotation * DEGREES_TO_RADIANS;
             this.#rotationCos = Math.cos(rad);
             this.#rotationSin = Math.sin(rad);
         }
@@ -151,9 +160,9 @@ export class ShapeEnemy extends BaseEnemy {
      */
     #normalizeAngle(angle) {
         if (!Number.isFinite(angle)) return 0;
-        let out = angle % 360;
-        if (out > 180) out -= 360;
-        if (out < -180) out += 360;
+        let out = angle % FULL_TURN_DEG;
+        if (out > STRAIGHT_DEG) out -= FULL_TURN_DEG;
+        if (out < -STRAIGHT_DEG) out += FULL_TURN_DEG;
         return out;
     }
 
@@ -177,15 +186,13 @@ export class ShapeEnemy extends BaseEnemy {
      */
     #headingDeltaWithSymmetry(currentDeg, targetDeg) {
         const type = this.type ?? this.shapeType;
-        let symmetryStep = 360;
-        if (type === 'triangle') symmetryStep = 120;
-        if (type === 'rhom') symmetryStep = 180;
+        const symmetryStep = HEADING_SYMMETRY_STEP_BY_TYPE[type] ?? FULL_TURN_DEG;
 
-        if (symmetryStep >= 360) {
+        if (symmetryStep >= FULL_TURN_DEG) {
             return this.#shortestAngleDelta(currentDeg, targetDeg);
         }
 
-        const turns = Math.floor(360 / symmetryStep);
+        const turns = Math.floor(FULL_TURN_DEG / symmetryStep);
         let bestDelta = this.#shortestAngleDelta(currentDeg, targetDeg);
         for (let i = 1; i < turns; i++) {
             const candidate = targetDeg + (symmetryStep * i);
@@ -211,7 +218,7 @@ export class ShapeEnemy extends BaseEnemy {
         const speedSq = (velX * velX) + (velY * velY);
         if (speedSq < HEADING_MIN_SPEED_SQ) return;
 
-        const targetDeg = (Math.atan2(velY, velX) * (180 / Math.PI)) + HEADING_FORWARD_OFFSET_DEG;
+        const targetDeg = (Math.atan2(velY, velX) * RADIANS_TO_DEGREES) + HEADING_FORWARD_OFFSET_DEG;
         const currentDeg = Number.isFinite(this.rotation) ? this.rotation : 0;
         const deltaDeg = this.#headingDeltaWithSymmetry(currentDeg, targetDeg);
         const absDelta = Math.abs(deltaDeg);
@@ -221,7 +228,7 @@ export class ShapeEnemy extends BaseEnemy {
         }
 
         // 목표 각도에 가까워질수록 회전 속도를 감쇠합니다.
-        const dampRatio = Math.max(0, Math.min(1, absDelta / HEADING_TURN_DAMP_START_DEG));
+        const dampRatio = clamp01(absDelta / HEADING_TURN_DAMP_START_DEG);
         const speedScale = dampRatio * dampRatio * (3 - (2 * dampRatio)); // smoothstep(0~1)
         const turnSpeed = HEADING_TURN_MAX_DEG_PER_SEC * speedScale;
         const maxStep = turnSpeed * delta;
@@ -261,16 +268,28 @@ export class ShapeEnemy extends BaseEnemy {
         const sizeScale = Number.isFinite(overrideOptions.sizeScale) ? overrideOptions.sizeScale : 1;
         const offsetX = Number.isFinite(overrideOptions.offsetX) ? overrideOptions.offsetX : 0;
         const offsetY = Number.isFinite(overrideOptions.offsetY) ? overrideOptions.offsetY : 0;
+        const mergeOffsetX = (Number.isFinite(this.mergePullOffset?.x) ? this.mergePullOffset.x : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.x) ? this.mergeSettleOffset.x : 0);
+        const mergeOffsetY = (Number.isFinite(this.mergePullOffset?.y) ? this.mergePullOffset.y : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.y) ? this.mergeSettleOffset.y : 0);
         const baseH = this.getRenderHeightPx() * sizeScale;
         const h = baseH * this.heightScale;
         const w = baseH * this.aspectRatio;
         const options = this.#renderOptions;
-        options.x = this.renderPosition.x + offsetX;
-        options.y = (this.renderPosition.y - getObjectOffsetY()) + offsetY;
+        options.x = this.renderPosition.x + offsetX + mergeOffsetX;
+        options.y = (this.renderPosition.y - getObjectOffsetY()) + offsetY + mergeOffsetY;
         options.w = w;
         options.h = h;
         options.fill = overrideOptions.fill ?? this.fill;
         options.alpha = overrideOptions.alpha ?? this.alpha;
         renderGL(overrideOptions.layer || 'object', options);
+        drawEnemyCollisionDebugCircles({
+            enemyType: this.type ?? this.shapeType,
+            width: w,
+            height: h,
+            rotationRadians: (Number.isFinite(options.rotation) ? options.rotation : 0) * DEGREES_TO_RADIANS,
+            renderX: options.x,
+            renderY: options.y
+        });
     }
 }

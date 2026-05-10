@@ -1,6 +1,7 @@
 import { getWW, getWH, getUIWW, render } from 'display/display_system.js';
 import { animate } from 'animation/animation_system.js';
 import { getData } from 'data/data_handler.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 
@@ -42,29 +43,32 @@ export class TitleImage {
     }
 
     /**
-         * 프레임별 타이틀 이미지 갱신 로직 (현재는 애니메이션 처리에 일임하여 사용하지 않음)
-         */
+     * 프레임별 타이틀 이미지 갱신 로직입니다.
+     */
     update() {
     }
 
     /**
-         * 화면 크기 변경 시 타이틀 스케일 및 X좌표 보정
-         */
+     * 화면 크기 변경 시 타이틀 스케일 및 X좌표를 보정합니다.
+     */
     resize() {
         const prevUIWW = this.UIWW || 1;
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
-        const ratio = this.UIWW / Math.max(1, prevUIWW);
+        const ratio = this.UIWW / clampFiniteNumber(Number(prevUIWW), 1, Infinity, 1);
         this.imageX *= ratio;
     }
 
     /**
-         * 타이틀 이미지를 캔버스 UI 레이어에 렌더링
-         */
+     * 타이틀 이미지를 캔버스 UI 레이어에 렌더링합니다.
+     */
     draw() {
         const imageW = this.#getImageWidth();
-        const imageH = imageW * this.image.height / this.image.width;
+        const imageAspectRatio = this.image.width > 0
+            ? this.image.height / this.image.width
+            : 0;
+        const imageH = imageW * imageAspectRatio;
         render('ui', {
             shape: 'image',
             image: this.image,
@@ -87,6 +91,10 @@ export class TitleImage {
         return this.#magneticPoint;
     }
 
+    /**
+     * 현재 UI 폭 기준 타이틀 이미지 너비를 반환합니다.
+     * @returns {number} 타이틀 이미지 렌더 너비입니다.
+     */
     #getImageWidth() {
         return this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.WIDTH_RATIO;
     }

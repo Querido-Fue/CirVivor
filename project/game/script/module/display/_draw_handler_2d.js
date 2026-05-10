@@ -1,3 +1,21 @@
+import {
+    createDrawArrowPath,
+    renderDrawArrow,
+    renderDrawCircle,
+    renderDrawImage,
+    renderDrawLine,
+    renderDrawRect,
+    renderDrawRoundRect,
+    renderDrawText
+} from './draw_2d_shapes.js';
+import {
+    applyDraw2DStyles,
+    applyDrawLayerTransform,
+    createDrawShadowState,
+    normalizeDrawLayerTransform,
+    resetDrawContextState
+} from './draw_2d_layer_state.js';
+
 /**
  * @class DrawHandler2D
  * @description 2D 캔버스 레이어를 동적으로 등록하고 그리기 상태를 관리합니다.
@@ -9,6 +27,7 @@ export class DrawHandler2D {
     #pathCache;
     #measureCtx;
     #layerOptions;
+    #layerTransforms;
 
     /**
      * @param {Object.<string, CanvasRenderingContext2D>} contexts - 초기 레이어 컨텍스트 맵입니다.
@@ -19,6 +38,7 @@ export class DrawHandler2D {
         this.#shadowState = new Map();
         this.#pathCache = new Map();
         this.#layerOptions = new Map();
+        this.#layerTransforms = new Map();
 
         this.#generatePaths();
 
@@ -34,7 +54,7 @@ export class DrawHandler2D {
      * 레이어를 등록합니다.
      * @param {string} layerName - 레이어 식별자입니다.
      * @param {CanvasRenderingContext2D} context - 연결할 2D 컨텍스트입니다.
-     * @param {{persistent?: boolean}} [options={}] - 레이어 동작 옵션입니다.
+     * @param {{persistent?: boolean, transformScaleX?: number, transformScaleY?: number}} [options={}] - 레이어 동작 옵션입니다.
      */
     registerLayer(layerName, context, options = {}) {
         if (!layerName || !context) {
@@ -43,10 +63,12 @@ export class DrawHandler2D {
 
         this.#contexts.set(layerName, context);
         this.#stateCaches.set(layerName, {});
-        this.#shadowState.set(layerName, { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' });
+        this.#shadowState.set(layerName, createDrawShadowState());
         this.#layerOptions.set(layerName, {
             persistent: options.persistent === true
         });
+        this.#layerTransforms.set(layerName, normalizeDrawLayerTransform(options));
+        this.#applyLayerTransform(layerName, context);
     }
 
     /**
@@ -58,6 +80,26 @@ export class DrawHandler2D {
         this.#stateCaches.delete(layerName);
         this.#shadowState.delete(layerName);
         this.#layerOptions.delete(layerName);
+        this.#layerTransforms.delete(layerName);
+    }
+
+    /**
+     * 레이어별 좌표계 transform을 설정합니다.
+     * @param {string} layerName - 레이어 식별자입니다.
+     * @param {number} scaleX - X축 배율입니다.
+     * @param {number} scaleY - Y축 배율입니다.
+     */
+    setLayerTransform(layerName, scaleX = 1, scaleY = 1) {
+        if (!this.#contexts.has(layerName)) {
+            return;
+        }
+
+        this.#layerTransforms.set(layerName, normalizeDrawLayerTransform({
+            transformScaleX: scaleX,
+            transformScaleY: scaleY
+        }));
+        this.#stateCaches.set(layerName, {});
+        this.#applyLayerTransform(layerName, this.#contexts.get(layerName));
     }
 
     /**
@@ -82,7 +124,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#shadowState.set(layerName, { shadowBlur: blur, shadowColor: color });
+        this.#shadowState.set(layerName, createDrawShadowState(blur, color));
     }
 
     /**
@@ -94,7 +136,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#shadowState.set(layerName, { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' });
+        this.#shadowState.set(layerName, createDrawShadowState());
     }
 
     /**
@@ -109,53 +151,34 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#applyStyles(context, cache, options, layerName);
+        applyDraw2DStyles(
+            context,
+            cache,
+            options,
+            this.#shadowState.get(layerName) || createDrawShadowState()
+        );
 
         switch (options.shape) {
             case 'rect':
-                if (options.fill !== false) context.fillRect(options.x, options.y, options.w, options.h);
-                else context.strokeRect(options.x, options.y, options.w, options.h);
+                renderDrawRect(context, options);
                 break;
             case 'roundRect':
-                context.beginPath();
-                context.roundRect(options.x, options.y, options.w, options.h, options.radius);
-                if (options.fill !== false) context.fill();
-                else context.stroke();
+                renderDrawRoundRect(context, options);
                 break;
             case 'circle':
-                context.beginPath();
-                context.arc(options.x, options.y, options.radius, 0, Math.PI * 2);
-                if (options.fill !== false) context.fill();
-                else context.stroke();
+                renderDrawCircle(context, options);
                 break;
             case 'line':
-                context.beginPath();
-                if (options.lineCap) {
-                    context.lineCap = options.lineCap;
-                }
-                context.moveTo(options.x1, options.y1);
-                context.lineTo(options.x2, options.y2);
-                context.stroke();
-                if (options.lineCap) {
-                    context.lineCap = 'butt';
-                }
+                renderDrawLine(context, options);
                 break;
             case 'image':
-                context.drawImage(options.image, options.x, options.y, options.w, options.h);
+                renderDrawImage(context, options);
                 break;
             case 'text':
-                if (options.rotation) {
-                    context.save();
-                    context.translate(options.x, options.y);
-                    context.rotate((options.rotation * Math.PI) / 180);
-                    context.fillText(options.text, 0, 0);
-                    context.restore();
-                } else {
-                    context.fillText(options.text, options.x, options.y);
-                }
+                renderDrawText(context, options);
                 break;
             case 'arrow':
-                this.#renderArrow(context, options);
+                renderDrawArrow(context, options, this.#pathCache.get('arrow'));
                 break;
             default:
                 break;
@@ -172,8 +195,9 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#resetLayerState(layerName, context);
+        this.#resetLayerState(layerName, context, { applyTransform: false });
         context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+        this.#applyLayerTransform(layerName, context);
     }
 
     /**
@@ -185,8 +209,9 @@ export class DrawHandler2D {
             if (layerOptions?.persistent === true) {
                 continue;
             }
-            this.#resetLayerState(layerName, context);
+            this.#resetLayerState(layerName, context, { applyTransform: false });
             context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+            this.#applyLayerTransform(layerName, context);
         }
     }
 
@@ -197,126 +222,25 @@ export class DrawHandler2D {
      * 항상 동일한 시작 상태에서 렌더링되도록 보장합니다.
      * @param {string} layerName - 초기화할 레이어 식별자입니다.
      * @param {CanvasRenderingContext2D} context - 초기화할 컨텍스트입니다.
+     * @param {{applyTransform?: boolean}} [options={}] - 초기화 후 레이어 transform을 복원할지 여부입니다.
      */
-    #resetLayerState(layerName, context) {
-        if (typeof context.resetTransform === 'function') {
-            context.resetTransform();
-        } else if (typeof context.setTransform === 'function') {
-            context.setTransform(1, 0, 0, 1, 0, 0);
-        }
-
-        context.globalAlpha = 1;
-        context.globalCompositeOperation = 'source-over';
-        context.shadowBlur = 0;
-        context.shadowColor = 'rgba(0,0,0,0)';
-        context.lineWidth = 1;
-        context.filter = 'none';
-        context.textAlign = 'start';
-        context.textBaseline = 'alphabetic';
-        context.font = '10px sans-serif';
-
+    #resetLayerState(layerName, context, options = {}) {
+        resetDrawContextState(context);
         this.#stateCaches.set(layerName, {});
+        if (options.applyTransform !== false) {
+            this.#applyLayerTransform(layerName, context);
+        }
     }
 
     /**
-     * @private
-     * 스타일 캐시를 적용합니다.
-     * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} cache - 레이어별 스타일 캐시입니다.
-     * @param {object} styles - 적용할 스타일입니다.
+     * 등록된 레이어 transform을 컨텍스트에 적용합니다.
      * @param {string} layerName - 레이어 식별자입니다.
-     */
-    #applyStyles(context, cache, styles, layerName) {
-        const persistentShadow = this.#shadowState.get(layerName) || { shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)' };
-
-        let fill = styles.fill || null;
-        if (fill && typeof fill === 'object' && fill.type === 'linear') {
-            const gradient = context.createLinearGradient(fill.x1, fill.y1, fill.x2, fill.y2);
-            if (Array.isArray(fill.stops)) {
-                fill.stops.forEach((stop) => gradient.addColorStop(stop.offset, stop.color));
-            }
-            fill = gradient;
-        }
-
-        if (cache.fillStyle !== fill) {
-            context.fillStyle = fill;
-            cache.fillStyle = fill;
-        }
-
-        const stroke = styles.stroke || null;
-        if (cache.strokeStyle !== stroke) {
-            context.strokeStyle = stroke;
-            cache.strokeStyle = stroke;
-        }
-
-        const alpha = styles.alpha === undefined ? 1 : styles.alpha;
-        if (cache.globalAlpha !== alpha) {
-            context.globalAlpha = alpha;
-            cache.globalAlpha = alpha;
-        }
-
-        const lineWidth = styles.lineWidth || 1;
-        if (cache.lineWidth !== lineWidth) {
-            context.lineWidth = lineWidth;
-            cache.lineWidth = lineWidth;
-        }
-
-        const shadowBlur = styles.shadowBlur !== undefined ? styles.shadowBlur : persistentShadow.shadowBlur;
-        const shadowColor = styles.shadowColor !== undefined ? styles.shadowColor : persistentShadow.shadowColor;
-        if (cache.shadowBlur !== shadowBlur) {
-            context.shadowBlur = shadowBlur;
-            cache.shadowBlur = shadowBlur;
-        }
-        if (cache.shadowColor !== shadowColor) {
-            context.shadowColor = shadowColor;
-            cache.shadowColor = shadowColor;
-        }
-
-        if (styles.shape === 'text') {
-            const font = styles.font || '10px sans-serif';
-            const align = styles.align || 'start';
-            const baseline = styles.baseline || 'alphabetic';
-
-            if (cache.font !== font) {
-                context.font = font;
-                cache.font = font;
-            }
-            if (cache.textAlign !== align) {
-                context.textAlign = align;
-                cache.textAlign = align;
-            }
-            if (cache.textBaseline !== baseline) {
-                context.textBaseline = baseline;
-                cache.textBaseline = baseline;
-            }
-        }
-    }
-
-    /**
-     * @private
-     * 화살표 도형을 렌더링합니다.
      * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
-     * @param {object} options - 렌더링 옵션입니다.
+     * @private
      */
-    #renderArrow(context, options) {
-        const path = this.#pathCache.get('arrow');
-        if (!path) {
-            return;
-        }
-
-        context.save();
-        context.translate(options.x, options.y);
-        if (options.rotation) {
-            context.rotate((options.rotation * Math.PI) / 180);
-        }
-        context.scale(options.w, options.h);
-
-        if (options.fill !== false) {
-            context.fill(path);
-        } else {
-            context.stroke(path);
-        }
-        context.restore();
+    #applyLayerTransform(layerName, context) {
+        const transform = this.#layerTransforms.get(layerName) || { scaleX: 1, scaleY: 1 };
+        applyDrawLayerTransform(context, transform);
     }
 
     /**
@@ -324,12 +248,6 @@ export class DrawHandler2D {
      * 캐시 가능한 도형 경로를 생성합니다.
      */
     #generatePaths() {
-        const arrowPath = new Path2D();
-        arrowPath.moveTo(0, -0.5);
-        arrowPath.lineTo(0.5, 0.5);
-        arrowPath.lineTo(0, 0.3);
-        arrowPath.lineTo(-0.5, 0.5);
-        arrowPath.closePath();
-        this.#pathCache.set('arrow', arrowPath);
+        this.#pathCache.set('arrow', createDrawArrowPath());
     }
 }

@@ -5,6 +5,7 @@ import { ANIMATION_STATE } from './_constants.js';
 import { getData } from 'data/data_handler.js';
 import { getDelta, getFixedDelta } from 'game/time_handler.js';
 import { errThrow } from 'debug/debug_system.js';
+import { clampFiniteNumber } from 'util/number_util.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 
@@ -34,10 +35,7 @@ export class AnimationSystem {
      */
     update(options = {}) {
         const useFixedTick = options.useFixedTick === true;
-        const delta = Number.isFinite(options.delta) && options.delta > 0
-            ? options.delta
-            : (useFixedTick ? getFixedDelta() : getDelta());
-        const hasValidDelta = Number.isFinite(delta) && delta > 0;
+        const delta = this.#resolveUpdateDelta(options.delta, useFixedTick);
 
         // 안전한 제거를 위해 역순으로 순회
         for (let i = this.activeAnimations.length - 1; i >= 0; i--) {
@@ -52,7 +50,7 @@ export class AnimationSystem {
                 continue;
             }
 
-            if (!hasValidDelta) {
+            if (delta <= 0) {
                 continue;
             }
 
@@ -254,6 +252,23 @@ export class AnimationSystem {
         }
         return true;
     }
+
+    /**
+     * 주입된 델타 또는 현재 프레임 델타를 애니메이션 갱신에 사용할 값으로 정규화합니다.
+     * @param {number|undefined} injectedDelta - 외부에서 주입한 델타입니다.
+     * @param {boolean} useFixedTick - 고정 틱 델타 사용 여부입니다.
+     * @returns {number} 0 이상의 유한 델타입니다.
+     * @private
+     */
+    #resolveUpdateDelta(injectedDelta, useFixedTick) {
+        const safeInjectedDelta = clampFiniteNumber(injectedDelta, 0, Infinity, 0);
+        if (safeInjectedDelta > 0) {
+            return safeInjectedDelta;
+        }
+
+        const frameDelta = useFixedTick ? getFixedDelta() : getDelta();
+        return clampFiniteNumber(frameDelta, 0, Infinity, 0);
+    }
 }
 
 /**
@@ -304,4 +319,3 @@ export const forward = (id, duration, speed = 1, cancelOldProgress = false) => a
  * @param {boolean} [cancelOldProgress=false] - 기존 진행 취소 여부
  */
 export const backward = (id, duration, speed = 1, cancelOldProgress = false) => animationSystemInstance.backward(id, duration, speed, cancelOldProgress);
-

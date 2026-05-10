@@ -55,6 +55,156 @@ export const FULLSCREEN_VERTEX_SHADER = `
 `;
 
 /**
+ * 타이틀 로딩 원형 UI의 fill, wave, glow, glass highlight를 렌더링하는 프래그먼트 셰이더입니다.
+ */
+export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
+    precision highp float;
+
+    varying vec2 v_uv;
+
+    uniform vec2 u_resolution;
+    uniform vec2 u_center;
+    uniform float u_radius;
+    uniform float u_progress;
+    uniform float u_outlineWidth;
+    uniform float u_wavePhase;
+    uniform float u_secondaryWavePhase;
+    uniform float u_time;
+    uniform float u_alpha;
+    uniform float u_glowStrength;
+    uniform float u_glassStrength;
+    uniform float u_brightnessBoost;
+    uniform sampler2D u_backdropBlurTexture;
+    uniform float u_hasBackdropBlurTexture;
+    uniform float u_bodyRadiusExpandOutlineRatio;
+    uniform float u_backdropBlurStrength;
+    uniform float u_backdropRefractionStrength;
+    uniform vec3 u_baseColor;
+    uniform vec3 u_deepColor;
+    uniform vec3 u_rimColor;
+    uniform vec3 u_highlightColor;
+    uniform vec3 u_surfaceColor;
+
+    const float PI = 3.141592653589793;
+
+    float saturate(float value) {
+        return clamp(value, 0.0, 1.0);
+    }
+
+    float ellipseMask(vec2 position, vec2 center, vec2 radius, float rotation) {
+        float sine = sin(rotation);
+        float cosine = cos(rotation);
+        vec2 offset = position - center;
+        vec2 rotated = vec2(
+            (offset.x * cosine) - (offset.y * sine),
+            (offset.x * sine) + (offset.y * cosine)
+        ) / max(radius, vec2(0.0001));
+        return exp(-dot(rotated, rotated) * 2.25);
+    }
+
+    void main() {
+        vec2 fragCoord = vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
+        float radius = max(1.0, u_radius);
+        float bodyRadius = radius + (max(0.0, u_bodyRadiusExpandOutlineRatio) * max(1.0, u_outlineWidth));
+        vec2 local = fragCoord - u_center;
+        vec2 normalized = local / bodyRadius;
+        float distanceFromCenter = length(local);
+        float edgeSoftness = 1.35;
+        float circleMask = 1.0 - smoothstep(bodyRadius - edgeSoftness, bodyRadius + edgeSoftness, distanceFromCenter);
+        float outsideDistance = max(distanceFromCenter - radius, 0.0);
+        float progress = saturate(u_progress);
+
+        float fillHeight = bodyRadius * 2.0 * progress;
+        float waveAmplitude = progress >= 0.999
+            ? 0.0
+            : min(bodyRadius * 0.052, max(1.25, fillHeight * 0.14));
+        float xProgress = saturate((local.x + bodyRadius) / (bodyRadius * 2.0));
+        float wave = (sin((xProgress * PI * 2.2) + u_wavePhase) * waveAmplitude)
+            + (sin((xProgress * PI * 5.2) - u_secondaryWavePhase) * waveAmplitude * 0.26);
+        float surfaceY = bodyRadius - fillHeight + wave;
+        float fillMask = progress >= 0.999
+            ? circleMask
+            : circleMask * smoothstep(surfaceY - edgeSoftness, surfaceY + edgeSoftness, local.y);
+        fillMask *= smoothstep(0.0, 0.025, progress);
+
+        vec3 normal = vec3(normalized, sqrt(max(0.0, 1.0 - dot(normalized, normalized))));
+        vec3 lightDirection = normalize(vec3(-0.45, -0.68, 0.58));
+        float light = saturate(dot(normal, lightDirection));
+        float upperLight = saturate(-normalized.y);
+        float lowerDepth = saturate((normalized.y + 0.15) * 0.82);
+        float sphericalDepth = smoothstep(0.18, 1.0, distanceFromCenter / bodyRadius);
+        vec3 bodyColor = u_baseColor * (0.76 + (normal.z * 0.22) + (light * 0.16));
+        bodyColor = mix(bodyColor, u_deepColor, (lowerDepth * 0.26) + (sphericalDepth * 0.08));
+
+        float broadTopSheen = pow(upperLight, 3.0) * 0.09 * u_glassStrength;
+        float compactHighlight = ellipseMask(normalized, vec2(-0.25, -0.56), vec2(0.42, 0.095), -0.34)
+            * 0.19
+            * u_glassStrength;
+        float edgeGlint = pow(saturate(1.0 - abs(distanceFromCenter - (radius * 0.86)) / max(1.0, radius * 0.16)), 2.4)
+            * pow(upperLight, 4.5)
+            * 0.12
+            * u_glassStrength;
+        vec3 fillColor = bodyColor + (u_highlightColor * (broadTopSheen + compactHighlight + edgeGlint));
+        fillColor = min(
+            vec3(1.0),
+            (fillColor * (1.0 + saturate(u_brightnessBoost))) + (u_highlightColor * saturate(u_brightnessBoost) * 0.18)
+        );
+        vec2 screenUv = gl_FragCoord.xy / max(u_resolution, vec2(1.0));
+        vec2 refractionOffset = normalized * (vec2(u_backdropRefractionStrength) / max(u_resolution, vec2(1.0)));
+        vec3 backdropBlurColor = texture2D(u_backdropBlurTexture, screenUv + refractionOffset).rgb;
+        float backdropBlend = u_hasBackdropBlurTexture
+            * saturate(u_backdropBlurStrength)
+            * fillMask
+            * (0.72 + (upperLight * 0.18));
+        fillColor = mix(fillColor, backdropBlurColor, backdropBlend);
+
+        float surfaceLine = progress > 0.025 && progress < 0.995
+            ? exp(-pow((local.y - surfaceY) / max(1.0, bodyRadius * 0.011), 2.0)) * circleMask
+            : 0.0;
+        float surfaceAlpha = surfaceLine * 0.34;
+
+        float outlineDistance = abs(distanceFromCenter - radius);
+        float outlineSoftness = max(0.42, edgeSoftness * 0.38);
+        float outlineCore = 1.0 - smoothstep(
+            max(0.24, u_outlineWidth * 0.22),
+            max(0.42, u_outlineWidth * 0.22) + outlineSoftness,
+            outlineDistance
+        );
+        float innerRim = exp(-pow(max(radius - distanceFromCenter, 0.0) / max(1.0, u_outlineWidth * 4.0), 2.0))
+            * circleMask
+            * 0.04;
+        float angle = atan(normalized.y, normalized.x);
+        float rimLight = pow(saturate(cos(angle + 2.18) * 0.5 + 0.5), 3.0);
+        vec3 rimBaseColor = mix(u_deepColor, u_baseColor, 0.58);
+        vec3 rimColor = mix(rimBaseColor, u_highlightColor, rimLight * 0.16);
+        float outlineAlpha = outlineCore * 0.36;
+
+        float glowPulse = 0.94 + (sin(u_time) * 0.06);
+        float glowAlpha = exp(-pow(outsideDistance / max(1.0, radius * 0.42), 2.0))
+            * (1.0 - circleMask)
+            * u_glowStrength
+            * glowPulse;
+        vec3 glowColor = mix(u_deepColor, u_baseColor, 0.48);
+
+        float fillAlpha = fillMask;
+        vec3 premultipliedColor = (fillColor * fillAlpha)
+            + (u_surfaceColor * surfaceAlpha)
+            + (rimColor * (outlineAlpha + innerRim))
+            + (glowColor * glowAlpha);
+        float alpha = saturate(fillAlpha + surfaceAlpha + outlineAlpha + innerRim + glowAlpha);
+        alpha = saturate(alpha * u_alpha);
+        premultipliedColor *= u_alpha;
+
+        if (alpha <= 0.001) {
+            discard;
+        }
+
+        premultipliedColor = min(premultipliedColor, vec3(alpha));
+        gl_FragColor = vec4(premultipliedColor, alpha);
+    }
+`;
+
+/**
  * premultiplied alpha 기준 캔버스 텍스처를 opacity와 함께 합성하는 프래그먼트 셰이더입니다.
  */
 export const COMPOSITE_TEXTURE_FRAGMENT_SHADER = `
@@ -112,8 +262,8 @@ export const GLASS_PANEL_VERTEX_SHADER = `
 
         vec2 zeroToOne = projectedPosition / u_resolution;
         vec2 clipSpace = (zeroToOne * 2.0) - 1.0;
-    float clipW = max(0.0001, 1.0 / perspectiveScale);
-    gl_Position = vec4(clipSpace * vec2(1.0, -1.0) * clipW, 0.0, clipW);
+        float clipW = max(0.0001, 1.0 / perspectiveScale);
+        gl_Position = vec4(clipSpace * vec2(1.0, -1.0) * clipW, 0.0, clipW);
 
         v_panelLocal = drawPosition - u_panelRect.xy;
         v_panelSize = u_panelRect.zw;
@@ -249,19 +399,22 @@ export const GLASS_PANEL_FRAGMENT_SHADER = `
 
         vec4 blurColor = texture2D(u_blurTexture, screenUv + refractOffset);
         vec3 glassColor = blurColor.rgb;
-        float fillBlend = min(u_fillColor.a, 0.24);
+        float fillBlend = mix(min(u_fillColor.a, 0.24), 1.0, step(0.999, u_fillColor.a));
         float tintBlend = clamp(u_tintStrength * u_tintColor.a, 0.0, 1.0);
         glassColor = mix(glassColor, u_fillColor.rgb, fillBlend);
         glassColor = mix(glassColor, u_tintColor.rgb, tintBlend);
 
-        float edgeFactor = 1.0 - smoothstep(0.0, max(1.0, u_lineWidth * 2.0), abs(sdf));
+        float insideDistance = max(0.0, -sdf);
+        float innerMask = 1.0 - smoothstep(0.0, 1.5, sdf);
+        float edgeFactor = innerMask * (1.0 - smoothstep(0.0, max(1.0, u_lineWidth * 1.5), insideDistance));
+        float strokeFactor = innerMask * (1.0 - smoothstep(u_lineWidth, u_lineWidth + 1.0, insideDistance));
         float highlight = pow(1.0 - abs(centeredUv.y), 3.0) * 0.35;
 
         vec3 edgeLighting = u_edgeColor.rgb * edgeFactor * u_edgeStrength;
         vec3 topHighlight = u_edgeColor.rgb * highlight * u_edgeStrength * 0.4;
         vec4 fillColor = vec4(glassColor + edgeLighting + topHighlight, max(blurColor.a, u_fillColor.a));
 
-        vec4 strokeColor = u_strokeColor * edgeFactor;
+        vec4 strokeColor = u_strokeColor * strokeFactor;
         vec4 finalColor = mix(fillColor, strokeColor, strokeColor.a);
         finalColor.a = max(max(blurColor.a, u_fillColor.a), strokeColor.a) * baseMask * u_alpha;
 
@@ -471,7 +624,68 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
         fieldAlpha *= max(approachActivity, impactActivity * 0.55);
         vec3 color = (fieldColor * fieldAlpha) + (ringColor * baseAlpha) + impactColor;
         float alpha = saturate(fieldAlpha + baseAlpha + (impactAlpha * 0.85)) * u_alpha;
+        vec3 premultipliedColor = min(color * u_alpha, vec3(alpha));
 
-        gl_FragColor = vec4(color * alpha, alpha);
+        gl_FragColor = vec4(premultipliedColor, alpha);
+    }
+`;
+
+/**
+ * 육각형 적 합체 경계면의 빛 번짐을 렌더링하는 프래그먼트 셰이더입니다.
+ */
+export const HEXA_MERGE_BOUNDARY_FRAGMENT_SHADER = `
+    precision highp float;
+
+    varying vec2 v_uv;
+
+    uniform vec2 u_resolution;
+    uniform vec2 u_start;
+    uniform vec2 u_end;
+    uniform float u_lineWidth;
+    uniform float u_glowWidth;
+    uniform float u_progress;
+    uniform float u_time;
+    uniform float u_alpha;
+    uniform vec3 u_coreColor;
+    uniform vec3 u_glowColor;
+    uniform vec3 u_highlightColor;
+
+    float saturate(float value) {
+        return clamp(value, 0.0, 1.0);
+    }
+
+    void main() {
+        vec2 fragCoord = vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
+        vec2 segment = u_end - u_start;
+        float segmentLengthSq = max(dot(segment, segment), 0.0001);
+        float along = saturate(dot(fragCoord - u_start, segment) / segmentLengthSq);
+        vec2 closest = u_start + (segment * along);
+        float distanceToLine = length(fragCoord - closest);
+        float progress = saturate(u_progress);
+        float coreWidth = max(1.6, u_lineWidth);
+        float glowWidth = max(coreWidth + 1.5, u_glowWidth);
+        float core = exp(-pow(distanceToLine / coreWidth, 2.0));
+        float glow = exp(-pow(distanceToLine / glowWidth, 2.35));
+        float edgeFade = smoothstep(0.0, 0.08, along) * (1.0 - smoothstep(0.92, 1.0, along));
+        float pulse = 0.90 + (0.10 * sin((along * 17.0) - (u_time * 7.2) + (progress * 4.2)));
+        float spark = pow(max(0.0, sin((along * 29.0) + (u_time * 11.0))), 16.0) * progress;
+        float progressFade = 0.35 + (0.65 * smoothstep(0.0, 0.12, progress));
+
+        vec3 color = (u_glowColor * glow * 0.14)
+            + (u_coreColor * core * 2.0)
+            + (u_highlightColor * (core * 0.36 + spark * 0.2));
+        float alpha = ((glow * 0.28) + (core * 1.12) + (spark * 0.18))
+            * edgeFade
+            * progressFade
+            * pulse
+            * u_alpha;
+        alpha = saturate(alpha);
+
+        if (alpha <= 0.001) {
+            discard;
+        }
+
+        vec3 premultipliedColor = min(color * u_alpha * edgeFade * progressFade, vec3(alpha));
+        gl_FragColor = vec4(premultipliedColor, alpha);
     }
 `;

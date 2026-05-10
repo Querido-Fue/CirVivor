@@ -1,14 +1,16 @@
+import { toRadians } from 'util/math_util.js';
+
 /**
  * @class ShapeGeometryBuilder
  * @description 렌더 옵션(크기/회전/반지름)으로부터 사각형 정점 좌표를 계산합니다.
  */
 export class ShapeGeometryBuilder {
     /**
-         * 주어진 렌더 옵션을 바탕으로 계산된 4개의 정점(상하좌우) 좌표를 out 객체에 기록합니다.
-         * @param {object} options 위치(x, y), 크기(w, h), 회전, 반지름 등이 포함된 옵션
-         * @param {Float32Array|Array|object} out 계산된 x1~y4 좌표가 담길 객체 또는 배열
-         * @returns {Float32Array|Array|object} 결과값이 채워진 객체
-         */
+     * 주어진 렌더 옵션을 바탕으로 계산된 4개의 정점 좌표를 out 객체에 기록합니다.
+     * @param {object} options - 위치, 크기, 회전, 반지름 등이 포함된 렌더 옵션입니다.
+     * @param {Float32Array|Array|object} out - 계산된 x1~y4 좌표가 담길 객체 또는 배열입니다.
+     * @returns {Float32Array|Array|object} 결과값이 채워진 객체입니다.
+     */
     static buildInto(options, out) {
         let x1, y1, x2, y2, x3, y3, x4, y4;
 
@@ -40,12 +42,13 @@ export class ShapeGeometryBuilder {
                 x3 = x + hw; y3 = y + hh;
                 x4 = x - hw; y4 = y + hh;
             } else {
+                const rotationRadians = toRadians(rotationDeg);
                 const cos = hasPrecomputedTrig
                     ? options.rotationCos
-                    : Math.cos(rotationDeg * Math.PI / 180);
+                    : Math.cos(rotationRadians);
                 const sin = hasPrecomputedTrig
                     ? options.rotationSin
-                    : Math.sin(rotationDeg * Math.PI / 180);
+                    : Math.sin(rotationRadians);
 
                 // 로컬 좌표
                 const rx1 = -hw * cos - (-hh) * sin;
@@ -89,10 +92,10 @@ export class ShapeGeometryBuilder {
     }
 
     /**
-         * 주어진 렌더 옵션으로 정점 좌표를 계산한 뒤 새 객체로 반환합니다.
-         * @param {object} options 렌더 옵션 데이터
-         * @returns {object} {x1, y1, x2, y2, x3, y3, x4, y4} 형태의 좌표 객체
-         */
+     * 주어진 렌더 옵션으로 정점 좌표를 계산한 뒤 새 객체로 반환합니다.
+     * @param {object} options - 렌더 옵션 데이터입니다.
+     * @returns {object} {x1, y1, x2, y2, x3, y3, x4, y4} 형태의 좌표 객체입니다.
+     */
     static build(options) {
         return ShapeGeometryBuilder.buildInto(options, {});
     }

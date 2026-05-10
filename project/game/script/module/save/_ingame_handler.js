@@ -1,4 +1,5 @@
 import { fsPromises, path } from 'util/nw_bridge.js';
+import { cloneJsonData, ensureSaveDirectory, pathExists } from './_save_file_helper.js';
 
 /**
  * @class IngameHandler
@@ -28,13 +29,7 @@ export class IngameHandler {
      * 인게임 데이터 파일을 로드합니다.
      */
     async #load() {
-        let fileExists = false;
-        try {
-            await fsPromises.access(this.filePath);
-            fileExists = true;
-        } catch {
-            fileExists = false;
-        }
+        const fileExists = await pathExists(this.filePath);
 
         if (fileExists) {
             try {
@@ -55,10 +50,10 @@ export class IngameHandler {
 
             } catch (e) {
                 console.error('인게임 데이터 로드 실패:', e);
-                this.data = JSON.parse(JSON.stringify(this.defaultData));
+                this.data = cloneJsonData(this.defaultData);
             }
         } else {
-            this.data = JSON.parse(JSON.stringify(this.defaultData));
+            this.data = cloneJsonData(this.defaultData);
             await this.save();
         }
     }
@@ -68,16 +63,7 @@ export class IngameHandler {
      * @returns {Promise} 저장 완료 Promise
      */
     async save() {
-        try {
-            await fsPromises.access(this.dataDir);
-        } catch (e) {
-            try {
-                await fsPromises.mkdir(this.dataDir, { recursive: true });
-            } catch (mkdirError) {
-                console.error('인게임 데이터 디렉토리 생성 실패:', mkdirError);
-                throw mkdirError;
-            }
-        }
+        await ensureSaveDirectory(this.dataDir, '인게임 데이터');
 
         const dataStr = JSON.stringify(this.data, null, 4);
 
@@ -90,27 +76,27 @@ export class IngameHandler {
     }
 
     /**
-         * 전체 인게임 데이터를 반환합니다.
-         * @returns {object} 인게임 데이터 객체
-         */
+     * 전체 인게임 데이터를 반환합니다.
+     * @returns {object} 인게임 데이터 객체
+     */
     getData() {
         return this.data;
     }
 
     /**
-         * 특정 키에 인게임 상태값을 설정합니다. (단일 키 업데이트용)
-         * @param {string} key 저장할 키
-         * @param {*} value 저장할 값
-         */
+     * 특정 키에 인게임 상태값을 설정합니다. (단일 키 업데이트용)
+     * @param {string} key 저장할 키
+     * @param {*} value 저장할 값
+     */
     setData(key, value) {
         this.data[key] = value;
     }
 
     /**
-         * 특정 키의 인게임 상태값을 가져옵니다.
-         * @param {string} key 조회할 키
-         * @returns {*} 해당하는 인게임 값
-         */
+     * 특정 키의 인게임 상태값을 가져옵니다.
+     * @param {string} key 조회할 키
+     * @returns {*} 해당하는 인게임 값
+     */
     getValue(key) {
         return this.data[key];
     }

@@ -1,7 +1,8 @@
 /**
  * 지원하는 이징(Easing) 함수 타입 이름 목록
+ * @type {ReadonlyArray<string>}
  */
-export const EASING_TYPES = [
+export const EASING_TYPES = Object.freeze([
     'linear',
     'easeIn',
     'easeOut',
@@ -33,26 +34,28 @@ export const EASING_TYPES = [
     'easeInBounce',
     'easeOutBounce',
     'easeInOutBounce'
-];
+]);
 
 /**
  * 목표값을 초과하여(오버플로우) 움직이는 특성을 가진 이징 타입 목록
+ * @type {ReadonlyArray<string>}
  */
-export const OVERFLOW_TYPES = [
+export const OVERFLOW_TYPES = Object.freeze([
     'easeInBack',
     'easeOutBack',
     'easeInOutBack',
     'easeInElastic',
     'easeOutElastic',
     'easeInOutElastic'
-];
+]);
 
 /**
  * 애니메이션의 현재 실행 상태를 나타내는 열거형 상수
+ * @type {Readonly<{IDLE:number, RUNNING:number, PAUSED:number, FINISHED:number}>}
  */
-export const ANIMATION_STATE = {
+export const ANIMATION_STATE = Object.freeze({
     IDLE: 0,
     RUNNING: 1,
     PAUSED: 2,
     FINISHED: 3
-};
+});

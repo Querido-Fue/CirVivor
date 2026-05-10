@@ -1,5 +1,10 @@
-const DEFAULT_MOUSE_BUTTON_STATE = Object.freeze(['idle']);
-const DEFAULT_FOCUS_LIST = Object.freeze(['ui', 'object']);
+import { getData } from 'data/data_handler.js';
+
+const SIMULATION_RUNTIME_DEFAULTS = getData('SIMULATION_RUNTIME_DEFAULTS');
+const DEFAULT_MOUSE_BUTTON_STATE = SIMULATION_RUNTIME_DEFAULTS.MOUSE_BUTTON_STATE;
+const DEFAULT_FOCUS_LIST = SIMULATION_RUNTIME_DEFAULTS.FOCUS_LIST;
+const DEFAULT_MOUSE_POSITION = SIMULATION_RUNTIME_DEFAULTS.MOUSE_POSITION;
+const DEFAULT_VIEWPORT = SIMULATION_RUNTIME_DEFAULTS.VIEWPORT;
 
 let simulationRuntimeInstance = null;
 
@@ -20,8 +25,8 @@ function normalizeNumber(value, fallback = 0) {
  */
 function clonePoint(point) {
     return {
-        x: normalizeNumber(point?.x, 0),
-        y: normalizeNumber(point?.y, 0)
+        x: normalizeNumber(point?.x, DEFAULT_MOUSE_POSITION.x),
+        y: normalizeNumber(point?.y, DEFAULT_MOUSE_POSITION.y)
     };
 }
 
@@ -66,12 +71,12 @@ function cloneInputSnapshot(input = {}) {
  */
 function cloneViewportSnapshot(viewport = {}) {
     return {
-        ww: normalizeNumber(viewport.ww, 0),
-        wh: normalizeNumber(viewport.wh, 0),
-        objectWH: normalizeNumber(viewport.objectWH, 0),
-        objectOffsetY: normalizeNumber(viewport.objectOffsetY, 0),
-        uiww: normalizeNumber(viewport.uiww, 0),
-        uiOffsetX: normalizeNumber(viewport.uiOffsetX, 0)
+        ww: normalizeNumber(viewport.ww, DEFAULT_VIEWPORT.ww),
+        wh: normalizeNumber(viewport.wh, DEFAULT_VIEWPORT.wh),
+        objectWH: normalizeNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH),
+        objectOffsetY: normalizeNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY),
+        uiww: normalizeNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww),
+        uiOffsetX: normalizeNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX)
     };
 }
 
@@ -237,10 +242,10 @@ export function getSimulationMouseInput(key) {
     const input = simulationRuntimeInstance?.input;
     if (!input) {
         if (key === 'pos') {
-            return { x: 0, y: 0 };
+            return clonePoint(DEFAULT_MOUSE_POSITION);
         }
         if (key === 'x' || key === 'y') {
-            return 0;
+            return DEFAULT_MOUSE_POSITION[key];
         }
         return [...DEFAULT_MOUSE_BUTTON_STATE];
     }

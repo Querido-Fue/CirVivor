@@ -1,5 +1,53 @@
 let mathUtilInstance = null;
 
+const FULL_TURN_DEG = 360;
+const STRAIGHT_DEG = 180;
+const DEGREES_TO_RADIANS = Math.PI / 180;
+
+/**
+ * 도 단위 각도를 라디안으로 변환합니다.
+ * @param {number} degrees - 변환할 각도입니다.
+ * @returns {number} 라디안 값입니다.
+ */
+export function toRadians(degrees) {
+    return (Number.isFinite(degrees) ? degrees : 0) * DEGREES_TO_RADIANS;
+}
+
+/**
+ * 도 단위 각도를 -180~180 범위로 정규화합니다.
+ * @param {number} degrees - 정규화할 각도입니다.
+ * @param {boolean} [preferPositiveStraight=false] - -180도를 180도로 보정할지 여부입니다.
+ * @returns {number} 정규화된 각도입니다.
+ */
+export function normalizeDegrees(degrees, preferPositiveStraight = false) {
+    if (!Number.isFinite(degrees)) {
+        return 0;
+    }
+
+    let normalized = degrees % FULL_TURN_DEG;
+    if (normalized > STRAIGHT_DEG) normalized -= FULL_TURN_DEG;
+    if (normalized < -STRAIGHT_DEG || (preferPositiveStraight && normalized <= -STRAIGHT_DEG)) {
+        normalized += FULL_TURN_DEG;
+    }
+    return normalized;
+}
+
+/**
+ * 2D 좌표를 라디안 각도만큼 회전합니다.
+ * @param {number} x - X 좌표입니다.
+ * @param {number} y - Y 좌표입니다.
+ * @param {number} radians - 회전 라디안입니다.
+ * @returns {{x: number, y: number}} 회전된 좌표입니다.
+ */
+export function rotatePoint(x, y, radians) {
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    return {
+        x: (x * cos) - (y * sin),
+        y: (x * sin) + (y * cos)
+    };
+}
+
 /**
  * @class MathUtil
  * @description 게임에서 사용되는 수학 관련 유틸리티 함수들을 제공하는 클래스입니다.

@@ -5,11 +5,11 @@ const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
 const UI_CONSTANTS = getData('UI_CONSTANTS');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 
-const UI_DATA_NAMESPACES = {
+const UI_DATA_NAMESPACES = Object.freeze({
     UI_CONSTANTS,
     BUTTON_CONSTANTS,
     TEXT_CONSTANTS,
-};
+});
 
 /**
  * @private
@@ -42,6 +42,10 @@ const resolveUIDataByPath = (path) => {
  * @description UI 단위(WW/WH/OW/OH/OX/OY/absolute/parent) 기반 좌표 계산을 담당합니다.
  */
 export class PositioningHandler {
+    /**
+     * @param {object} parent - UI 단위 계산의 기준이 되는 부모 영역입니다.
+     * @param {number} [uiScale=1] - UI 스케일 배율입니다.
+     */
     constructor(parent, uiScale = 1) {
         this.resize(parent, uiScale);
     }
@@ -108,27 +112,19 @@ export class PositioningHandler {
                 maxVal = getWH();
                 break;
             case 'OW':
-                maxVal = this.parent.scaledW !== undefined
-                    ? this.parent.scaledW
-                    : (this.parent.width || getWW());
+                maxVal = this._getParentWidth();
                 break;
             case 'OH':
-                maxVal = this.parent.scaledH !== undefined
-                    ? this.parent.scaledH
-                    : (this.parent.height || getWH());
+                maxVal = this._getParentHeight();
                 break;
             case 'OX': {
-                const base = this.parent.scaledX !== undefined ? this.parent.scaledX : (this.parent.x || 0);
-                const w = this.parent.scaledW !== undefined
-                    ? this.parent.scaledW
-                    : (this.parent.width || getWW());
+                const base = this._getParentX();
+                const w = this._getParentWidth();
                 return base + (value / 100) * w;
             }
             case 'OY': {
-                const base = this.parent.scaledY !== undefined ? this.parent.scaledY : (this.parent.y || 0);
-                const h = this.parent.scaledH !== undefined
-                    ? this.parent.scaledH
-                    : (this.parent.height || getWH());
+                const base = this._getParentY();
+                const h = this._getParentHeight();
                 return base + (value / 100) * h;
             }
             case 'absolute':
@@ -142,6 +138,38 @@ export class PositioningHandler {
         }
 
         return (value / 100) * maxVal;
+    }
+
+    /**
+     * 부모 영역의 기준 X 좌표를 반환합니다.
+     * @returns {number}
+     */
+    _getParentX() {
+        return this.parent?.scaledX !== undefined ? this.parent.scaledX : (this.parent?.x || 0);
+    }
+
+    /**
+     * 부모 영역의 기준 Y 좌표를 반환합니다.
+     * @returns {number}
+     */
+    _getParentY() {
+        return this.parent?.scaledY !== undefined ? this.parent.scaledY : (this.parent?.y || 0);
+    }
+
+    /**
+     * 부모 영역의 기준 너비를 반환합니다.
+     * @returns {number}
+     */
+    _getParentWidth() {
+        return this.parent?.scaledW !== undefined ? this.parent.scaledW : (this.parent?.width || getWW());
+    }
+
+    /**
+     * 부모 영역의 기준 높이를 반환합니다.
+     * @returns {number}
+     */
+    _getParentHeight() {
+        return this.parent?.scaledH !== undefined ? this.parent.scaledH : (this.parent?.height || getWH());
     }
 
     /**

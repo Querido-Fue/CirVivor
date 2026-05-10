@@ -1,5 +1,6 @@
-import { MouseInputHandler } from "./_mouse_input_handler.js";
-import { KeyboardInputHandler } from "./_keyboard_input_handler.js";
+import { MouseInputHandler } from './_mouse_input_handler.js';
+import { KeyboardInputHandler } from './_keyboard_input_handler.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 let inputSystemInstance = null;
 
@@ -49,8 +50,8 @@ export class InputSystem {
 
         return {
             mousePos: {
-                x: Number.isFinite(this.mouseInputHandler?.mousePos?.x) ? this.mouseInputHandler.mousePos.x : 0,
-                y: Number.isFinite(this.mouseInputHandler?.mousePos?.y) ? this.mouseInputHandler.mousePos.y : 0
+                x: resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.x), 0),
+                y: resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.y), 0)
             },
             mouseButtons: {
                 left: Array.isArray(mouseButtons.left?.state) ? [...mouseButtons.left.state] : ['idle'],

@@ -5,10 +5,18 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { ThemeHandler, setTheme } from 'display/_theme_handler.js';
 import { getSetting } from 'save/save_system.js';
+import { getData } from 'data/data_handler.js';
 import { CanvasSurfacePool } from './_surface_pool.js';
 import { VignetteRenderer } from './_vignette_renderer.js';
+import {
+    compareDisplaySurfaceDescriptors,
+    createDisplaySurfaceDescriptor,
+    resolveDisplayWebGLLayerName,
+    usesNativeDisplay2DResolution
+} from './display_surface_descriptor.js';
 
 let displaySystemInstance = null;
+const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
 
 /**
  * @typedef {object} DisplaySurfaceDescriptor
@@ -54,9 +62,18 @@ export class DisplaySystem {
 
         this.overlayLayerHost = document.getElementById('overlaylayerhost');
 
-        this.#registerStaticSurface('background', 'background', 'webgl', { alpha: false, mode: 'batch' });
-        this.#registerStaticSurface('object', 'object', 'webgl', { alpha: true, mode: 'batch' });
-        this.#registerStaticSurface('effect', 'effect', 'webgl', { alpha: true, mode: 'effect' });
+        this.#registerStaticSurface('background', 'background', 'webgl', {
+            alpha: false,
+            mode: DISPLAY_WEBGL_RENDER_MODES.BATCH
+        });
+        this.#registerStaticSurface('object', 'object', 'webgl', {
+            alpha: true,
+            mode: DISPLAY_WEBGL_RENDER_MODES.BATCH
+        });
+        this.#registerStaticSurface('effect', 'effect', 'webgl', {
+            alpha: true,
+            mode: DISPLAY_WEBGL_RENDER_MODES.EFFECT
+        });
         this.#registerStaticSurface('texteffect', 'texteffect', '2d');
         this.#registerStaticSurface('ui', 'ui', '2d');
         this.#registerStaticSurface('vignette', 'vignette', '2d', {
@@ -74,8 +91,7 @@ export class DisplaySystem {
         await this.screenHandler.init();
 
         for (const descriptor of this.surfaceMap.values()) {
-            descriptor.canvas.width = this.screenHandler.width;
-            descriptor.canvas.height = this.screenHandler.height;
+            this.#syncSurfaceBackingStore(descriptor);
         }
 
         this.resize();
@@ -88,16 +104,16 @@ export class DisplaySystem {
      */
     createDynamicSurface(options) {
         const type = options.type === 'webgl' ? 'webgl' : '2d';
-        const mode = options.mode || (type === 'webgl' ? 'overlay-effect' : 'batch');
+        const mode = options.mode || (type === 'webgl'
+            ? DISPLAY_WEBGL_RENDER_MODES.OVERLAY_EFFECT
+            : DISPLAY_WEBGL_RENDER_MODES.BATCH);
         const pool = type === 'webgl' ? this.dynamicWebGLPool : this.dynamic2DPool;
         const entry = pool.acquire();
         const surfaceId = `dynamic:${type}:${++this.dynamicSequence}`;
 
-        entry.canvas.width = this.screenHandler.width;
-        entry.canvas.height = this.screenHandler.height;
         entry.canvas.dataset.surfaceId = surfaceId;
 
-        const descriptor = {
+        const descriptor = createDisplaySurfaceDescriptor({
             id: surfaceId,
             type,
             mode,
@@ -108,14 +124,14 @@ export class DisplaySystem {
             dynamic: true,
             persistent: false,
             includeInComposite: options.includeInComposite !== false,
-            compositeOpacityFactor: Number.isFinite(options.compositeOpacityFactor)
-                ? Math.max(0, options.compositeOpacityFactor)
-                : 1
-        };
+            compositeOpacityFactor: options.compositeOpacityFactor
+        });
 
         this.surfaceMap.set(surfaceId, descriptor);
         this.dynamicSurfaceIds.push(surfaceId);
+        this.#syncSurfaceBackingStore(descriptor);
         this.#registerDescriptor(descriptor);
+        this.#syncSurfaceCoordinateTransform(descriptor);
         this.#applyCanvasStyle(descriptor);
         this.#syncDynamicHostOrder();
         return descriptor;
@@ -222,23 +238,8 @@ export class DisplaySystem {
 
         const sources = [];
         for (const descriptor of this.#getSortedSurfaceDescriptors()) {
-            if (!descriptor.includeInComposite || descriptor.id === target.id) {
-                continue;
-            }
-            if (!descriptor.dynamic || descriptor.order < target.order) {
-                if (!descriptor.dynamic && descriptor.id === 'top') {
-                    continue;
-                }
-                if (descriptor.dynamic && descriptor.order >= target.order) {
-                    continue;
-                }
-                sources.push({
-                    kind: 'canvas',
-                    canvas: descriptor.canvas,
-                    opacity: (descriptor.dynamic
-                        ? Number.parseFloat(descriptor.canvas.style.opacity || '1')
-                        : 1) * descriptor.compositeOpacityFactor
-                });
+            if (shouldIncludeDisplayCompositeSource(descriptor, target)) {
+                sources.push(createDisplayCompositeCanvasSource(descriptor));
             }
         }
 
@@ -261,8 +262,7 @@ export class DisplaySystem {
 
         if (renderTargetChanged) {
             for (const descriptor of this.surfaceMap.values()) {
-                descriptor.canvas.width = this.screenHandler.width;
-                descriptor.canvas.height = this.screenHandler.height;
+                this.#syncSurfaceBackingStore(descriptor);
             }
         }
 
@@ -316,29 +316,18 @@ export class DisplaySystem {
             ? canvas.getContext('webgl', { alpha: options.alpha !== false, preserveDrawingBuffer: false })
             : canvas.getContext('2d');
 
-        const orderMap = {
-            background: 0,
-            object: 10,
-            effect: 20,
-            texteffect: 30,
-            ui: 40,
-            top: 1000
-        };
-
-        const descriptor = {
+        const descriptor = createDisplaySurfaceDescriptor({
             id: surfaceId,
             type,
-            mode: options.mode || (type === 'webgl' ? 'batch' : 'batch'),
+            mode: options.mode || DISPLAY_WEBGL_RENDER_MODES.BATCH,
             canvas,
             context,
-            order: Number.isFinite(options.order) ? options.order : (orderMap[surfaceId] || 0),
+            order: options.order,
             dynamic: false,
             persistent: options.persistent === true,
             includeInComposite: options.includeInComposite !== false,
-            compositeOpacityFactor: Number.isFinite(options.compositeOpacityFactor)
-                ? Math.max(0, options.compositeOpacityFactor)
-                : 1
-        };
+            compositeOpacityFactor: options.compositeOpacityFactor
+        });
 
         this.surfaceMap.set(surfaceId, descriptor);
         this.staticSurfaceIds.push(surfaceId);
@@ -359,6 +348,46 @@ export class DisplaySystem {
         }
 
         this.webGLHandler.registerLayer(descriptor.id, descriptor.context, { mode: descriptor.mode });
+    }
+
+    /**
+     * @private
+     * surface의 backing store 크기를 현재 렌더/표시 해상도에 맞춥니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 동기화할 surface descriptor입니다.
+     */
+    #syncSurfaceBackingStore(descriptor) {
+        if (!descriptor?.canvas) {
+            return;
+        }
+
+        const width = usesNativeDisplay2DResolution(descriptor)
+            ? this.screenHandler.baseWidth
+            : this.screenHandler.width;
+        const height = usesNativeDisplay2DResolution(descriptor)
+            ? this.screenHandler.baseHeight
+            : this.screenHandler.height;
+        descriptor.canvas.width = Math.max(1, width);
+        descriptor.canvas.height = Math.max(1, height);
+        this.#syncSurfaceCoordinateTransform(descriptor);
+    }
+
+    /**
+     * @private
+     * 네이티브 2D surface가 기존 렌더 좌표계를 그대로 쓰도록 컨텍스트 transform을 맞춥니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 동기화할 surface descriptor입니다.
+     */
+    #syncSurfaceCoordinateTransform(descriptor) {
+        if (descriptor?.type !== '2d' || !this.drawHandler) {
+            return;
+        }
+
+        const scaleX = usesNativeDisplay2DResolution(descriptor)
+            ? this.screenHandler.baseWidth / Math.max(1, this.screenHandler.width)
+            : 1;
+        const scaleY = usesNativeDisplay2DResolution(descriptor)
+            ? this.screenHandler.baseHeight / Math.max(1, this.screenHandler.height)
+            : 1;
+        this.drawHandler.setLayerTransform(descriptor.id, scaleX, scaleY);
     }
 
     /**
@@ -406,12 +435,7 @@ export class DisplaySystem {
         const dynamicDescriptors = this.dynamicSurfaceIds
             .map((id) => this.surfaceMap.get(id))
             .filter(Boolean)
-            .sort((left, right) => {
-                if (left.order !== right.order) {
-                    return left.order - right.order;
-                }
-                return (left.sequence || 0) - (right.sequence || 0);
-            });
+            .sort(compareDisplaySurfaceDescriptors);
 
         for (const descriptor of dynamicDescriptors) {
             descriptor.canvas.style.zIndex = `${descriptor.order}`;
@@ -425,35 +449,7 @@ export class DisplaySystem {
      * @returns {DisplaySurfaceDescriptor[]} 정렬된 descriptor 목록입니다.
      */
     #getSortedSurfaceDescriptors() {
-        return Array.from(this.surfaceMap.values()).sort((left, right) => {
-            const leftGroup = this.#getSurfaceSortGroup(left);
-            const rightGroup = this.#getSurfaceSortGroup(right);
-            if (leftGroup !== rightGroup) {
-                return leftGroup - rightGroup;
-            }
-
-            if (left.order !== right.order) {
-                return left.order - right.order;
-            }
-
-            return (left.sequence || 0) - (right.sequence || 0);
-        });
-    }
-
-    /**
-     * @private
-     * surface의 정렬 그룹을 반환합니다.
-     * @param {DisplaySurfaceDescriptor} descriptor - 평가할 descriptor입니다.
-     * @returns {number} 정렬 그룹 값입니다.
-     */
-    #getSurfaceSortGroup(descriptor) {
-        if (descriptor.id === 'top') {
-            return 2;
-        }
-        if (descriptor.dynamic) {
-            return 1;
-        }
-        return 0;
+        return Array.from(this.surfaceMap.values()).sort(compareDisplaySurfaceDescriptors);
     }
 }
 
@@ -539,13 +535,7 @@ export const render = (layerName, options) => displaySystemInstance.drawHandler.
  * @param {object} options - 렌더링 옵션입니다.
  */
 export const renderGL = (layerName, options) => {
-    const glMapping = {
-        main: 'object',
-        mainGL: 'object',
-        backgroundGL: 'background',
-        effectGL: 'effect'
-    };
-    const targetLayer = glMapping[layerName] || layerName;
+    const targetLayer = resolveDisplayWebGLLayerName(layerName);
     displaySystemInstance.webGLHandler.render(targetLayer, options);
 };
 
@@ -596,3 +586,48 @@ export const getCanvasPoolStats = () => displaySystemInstance
         twoD: { activeCount: 0, createdCount: 0, availableCount: 0 },
         webgl: { activeCount: 0, createdCount: 0, availableCount: 0 }
     };
+
+/**
+ * 합성 캡처 소스에 포함할 surface인지 판정합니다.
+ * @param {DisplaySurfaceDescriptor} descriptor - 후보 surface descriptor입니다.
+ * @param {DisplaySurfaceDescriptor} target - 기준 surface descriptor입니다.
+ * @returns {boolean} 합성 소스로 포함하면 true입니다.
+ */
+function shouldIncludeDisplayCompositeSource(descriptor, target) {
+    if (!descriptor.includeInComposite || descriptor.id === target.id) {
+        return false;
+    }
+    if (!descriptor.dynamic && descriptor.id === 'top') {
+        return false;
+    }
+    if (descriptor.dynamic && descriptor.order >= target.order) {
+        return false;
+    }
+
+    return !descriptor.dynamic || descriptor.order < target.order;
+}
+
+/**
+ * 합성 캡처용 canvas source 객체를 생성합니다.
+ * @param {DisplaySurfaceDescriptor} descriptor - 합성할 surface descriptor입니다.
+ * @returns {{kind: string, canvas: HTMLCanvasElement, opacity: number}} 합성 소스입니다.
+ */
+function createDisplayCompositeCanvasSource(descriptor) {
+    return {
+        kind: 'canvas',
+        canvas: descriptor.canvas,
+        opacity: getDisplayCompositeSourceOpacity(descriptor)
+    };
+}
+
+/**
+ * 합성 캡처에 적용할 source opacity를 계산합니다.
+ * @param {DisplaySurfaceDescriptor} descriptor - 합성할 surface descriptor입니다.
+ * @returns {number} 합성 opacity입니다.
+ */
+function getDisplayCompositeSourceOpacity(descriptor) {
+    const surfaceOpacity = descriptor.dynamic
+        ? Number.parseFloat(descriptor.canvas.style.opacity || '1')
+        : 1;
+    return surfaceOpacity * descriptor.compositeOpacityFactor;
+}

@@ -1,49 +1,15 @@
 import { getData } from 'data/data_handler.js';
 import { getSimulationObjectWH } from 'simulation/simulation_runtime.js';
+import { clamp01 } from 'util/number_util.js';
 
 const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
 const ENEMY_DEFAULT_WEIGHT = getData('ENEMY_DEFAULT_WEIGHT');
-const MAX_ANGULAR_VELOCITY = 720;
-const AXIS_RESISTANCE_RECOVERY_SECONDS = 1;
-const AXIS_RESISTANCE_RECOVER_DELAY_SECONDS = 0.08;
-const AXIS_RESISTANCE_EPSILON = 1e-4;
-
-/**
- * 벡터 데이터를 스냅샷용 평면 객체로 복제합니다.
- * @param {{x?: number, y?: number}|null|undefined} vector
- * @returns {{x: number, y: number}}
- */
-function cloneEnemyVector(vector) {
-    return {
-        x: Number.isFinite(vector?.x) ? vector.x : 0,
-        y: Number.isFinite(vector?.y) ? vector.y : 0
-    };
-}
-
-/**
- * 상태 이상 정보를 스냅샷용 객체로 복제합니다.
- * @param {EnemyStatus|Object|null|undefined} status
- * @returns {{id: string|number|null, type: string, time: number, remainingTime: number, factor: Object.<string, number>}}
- */
-function cloneEnemyStatusSnapshot(status) {
-    const snapshot = {
-        id: status?.id ?? null,
-        type: typeof status?.type === 'string' ? status.type : 'none',
-        time: Number.isFinite(status?.time) ? status.time : 0,
-        remainingTime: Number.isFinite(status?.remainingTime) ? status.remainingTime : 0,
-        factor: {}
-    };
-
-    if (status?.factor && typeof status.factor === 'object') {
-        for (const [key, value] of Object.entries(status.factor)) {
-            if (Number.isFinite(value)) {
-                snapshot.factor[key] = value;
-            }
-        }
-    }
-
-    return snapshot;
-}
+const ENEMY_MOTION_CONSTANTS = getData('ENEMY_CONSTANTS').MOTION;
+const MAX_ANGULAR_VELOCITY = ENEMY_MOTION_CONSTANTS.MAX_ANGULAR_VELOCITY;
+const AXIS_RESISTANCE_RECOVERY_SECONDS = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_RECOVERY_SECONDS;
+const AXIS_RESISTANCE_RECOVER_DELAY_SECONDS = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_RECOVER_DELAY_SECONDS;
+const AXIS_RESISTANCE_EPSILON = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_EPSILON;
+const ANGULAR_DECAY_MIN_SECONDS = ENEMY_MOTION_CONSTANTS.ANGULAR_DECAY_MIN_SECONDS;
 
 /**
  * @typedef {Object} EnemyVector2
@@ -76,6 +42,12 @@ export class BaseEnemy {
         this.prevPosition = { x: 0, y: 0 };
         /** @type {EnemyVector2} 렌더 보간 좌표 */
         this.renderPosition = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 합체 예열 중 표시 좌표에만 적용할 끌림 오프셋 */
+        this.mergePullOffset = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 합체 직후 표시 좌표가 부드럽게 정착할 오프셋 */
+        this.mergeSettleOffset = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 합체 직후 정착 오프셋의 시작값 */
+        this.mergeSettleStartOffset = { x: 0, y: 0 };
         /** @type {EnemyVector2} */
         this.speed = { x: 0, y: 0 };
         /** @type {EnemyVector2} */
@@ -124,6 +96,11 @@ export class BaseEnemy {
         this.prevPosition.y = this.position.y;
         this.renderPosition.x = this.position.x;
         this.renderPosition.y = this.position.y;
+        this.startMergeSettleOffset(
+            data.mergeSettleOffset?.x ?? 0,
+            data.mergeSettleOffset?.y ?? 0,
+            data.mergeSettleDurationSeconds ?? 0
+        );
         this.setSpeed(data.speed?.x ?? 0, data.speed?.y ?? 0);
         this.setAcc(data.acc?.x ?? 0, data.acc?.y ?? 0);
         this.angularVelocity = Number.isFinite(data.angularVelocity) ? data.angularVelocity : 0;
@@ -161,6 +138,14 @@ export class BaseEnemy {
         this.prevPosition.y = 0;
         this.renderPosition.x = 0;
         this.renderPosition.y = 0;
+        this.mergePullOffset.x = 0;
+        this.mergePullOffset.y = 0;
+        this.mergeSettleOffset.x = 0;
+        this.mergeSettleOffset.y = 0;
+        this.mergeSettleStartOffset.x = 0;
+        this.mergeSettleStartOffset.y = 0;
+        this.mergeSettleElapsedSeconds = 0;
+        this.mergeSettleDurationSeconds = 0;
         this.speed.x = 0;
         this.speed.y = 0;
         this.acc.x = 0;
@@ -209,7 +194,7 @@ export class BaseEnemy {
      * @param {number} alpha
      */
     interpolatePosition(alpha) {
-        const t = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+        const t = Number.isFinite(alpha) ? clamp01(alpha) : 1;
         this.renderPosition.x = this.prevPosition.x + ((this.position.x - this.prevPosition.x) * t);
         this.renderPosition.y = this.prevPosition.y + ((this.position.y - this.prevPosition.y) * t);
     }
@@ -223,79 +208,80 @@ export class BaseEnemy {
     }
 
     /**
-     * 현재 적 상태를 읽기 전용 시뮬레이션 스냅샷으로 복제합니다.
-     * @returns {{id: string|number|null, active: boolean, type: string, aiId: string|null, hp: number, maxHp: number, atk: number, moveSpeed: number, accSpeed: number, size: number, weight: number, rotationResistance: number, projectileHitsToKill: number, projectileHitCount: number, position: {x: number, y: number}, prevPosition: {x: number, y: number}, renderPosition: {x: number, y: number}, speed: {x: number, y: number}, acc: {x: number, y: number}, status: {id: string|number|null, type: string, time: number, remainingTime: number, factor: Object.<string, number>}, fill: string|null, alpha: number|null, rotation: number|null, angularVelocity: number, angularDeceleration: number, axisResistanceX: number, axisResistanceY: number, axisResistanceRecoverySeconds: number, axisResistanceRecoverDelaySeconds: number, axisResistanceRecoverHoldX: number, axisResistanceRecoverHoldY: number, axisResistanceRecoverElapsedX: number, axisResistanceRecoverElapsedY: number, axisResistanceRecoverStartX: number, axisResistanceRecoverStartY: number}}
+     * 합체 예열 중 표시 좌표에만 적용할 끌림 오프셋을 설정합니다.
+     * @param {number} x - X축 오프셋입니다.
+     * @param {number} y - Y축 오프셋입니다.
      */
-    createSimulationSnapshot() {
-        return {
-            id: this.id ?? null,
-            active: this.active === true,
-            type: this.type ?? 'none',
-            aiId: typeof this.ai?.id === 'string' ? this.ai.id : null,
-            hp: Number.isFinite(this.hp) ? this.hp : 0,
-            maxHp: Number.isFinite(this.maxHp) ? this.maxHp : 0,
-            atk: Number.isFinite(this.atk) ? this.atk : 0,
-            moveSpeed: Number.isFinite(this.moveSpeed) ? this.moveSpeed : 0,
-            accSpeed: Number.isFinite(this.accSpeed) ? this.accSpeed : 0,
-            size: Number.isFinite(this.size) ? this.size : 1,
-            weight: Number.isFinite(this.weight) ? this.weight : 0,
-            rotationResistance: Number.isFinite(this.rotationResistance) ? this.rotationResistance : 1,
-            projectileHitsToKill: Number.isFinite(this.projectileHitsToKill) ? this.projectileHitsToKill : 0,
-            projectileHitCount: Number.isFinite(this.projectileHitCount) ? this.projectileHitCount : 0,
-            position: cloneEnemyVector(this.position),
-            prevPosition: cloneEnemyVector(this.prevPosition),
-            renderPosition: cloneEnemyVector(this.renderPosition),
-            speed: cloneEnemyVector(this.speed),
-            acc: cloneEnemyVector(this.acc),
-            status: cloneEnemyStatusSnapshot(this.status),
-            fill: typeof this.fill === 'string' ? this.fill : null,
-            alpha: Number.isFinite(this.alpha) ? this.alpha : null,
-            rotation: Number.isFinite(this.rotation) ? this.rotation : null,
-            angularVelocity: Number.isFinite(this.angularVelocity) ? this.angularVelocity : 0,
-            angularDeceleration: Number.isFinite(this.angularDeceleration) ? this.angularDeceleration : 0,
-            rotationResistance: Number.isFinite(this.rotationResistance) ? this.rotationResistance : 1,
-            axisResistanceX: Number.isFinite(this.axisResistanceX) ? this.axisResistanceX : 1,
-            axisResistanceY: Number.isFinite(this.axisResistanceY) ? this.axisResistanceY : 1,
-            axisResistanceRecoverySeconds: Number.isFinite(this.axisResistanceRecoverySeconds) ? this.axisResistanceRecoverySeconds : AXIS_RESISTANCE_RECOVERY_SECONDS,
-            axisResistanceRecoverDelaySeconds: Number.isFinite(this.axisResistanceRecoverDelaySeconds) ? this.axisResistanceRecoverDelaySeconds : AXIS_RESISTANCE_RECOVER_DELAY_SECONDS,
-            axisResistanceRecoverHoldX: Number.isFinite(this.axisResistanceRecoverHoldX) ? this.axisResistanceRecoverHoldX : 0,
-            axisResistanceRecoverHoldY: Number.isFinite(this.axisResistanceRecoverHoldY) ? this.axisResistanceRecoverHoldY : 0,
-            axisResistanceRecoverElapsedX: Number.isFinite(this.axisResistanceRecoverElapsedX) ? this.axisResistanceRecoverElapsedX : AXIS_RESISTANCE_RECOVERY_SECONDS,
-            axisResistanceRecoverElapsedY: Number.isFinite(this.axisResistanceRecoverElapsedY) ? this.axisResistanceRecoverElapsedY : AXIS_RESISTANCE_RECOVERY_SECONDS,
-            axisResistanceRecoverStartX: Number.isFinite(this.axisResistanceRecoverStartX) ? this.axisResistanceRecoverStartX : 1,
-            axisResistanceRecoverStartY: Number.isFinite(this.axisResistanceRecoverStartY) ? this.axisResistanceRecoverStartY : 1
-        };
+    setMergePullOffset(x, y) {
+        this.mergePullOffset.x = Number.isFinite(x) ? x : 0;
+        this.mergePullOffset.y = Number.isFinite(y) ? y : 0;
     }
 
     /**
-     * 현재 적의 프레임 동기화용 동적 상태만 복제합니다.
-     * @returns {{id: string|number|null, active: boolean, hp: number, projectileHitCount: number, position: {x: number, y: number}, prevPosition: {x: number, y: number}, renderPosition: {x: number, y: number}, speed: {x: number, y: number}, acc: {x: number, y: number}, status: {id: string|number|null, type: string, time: number, remainingTime: number, factor: Object.<string, number>}, alpha: number|null, rotation: number|null, angularVelocity: number, angularDeceleration: number, rotationResistance: number, axisResistanceX: number, axisResistanceY: number, axisResistanceRecoverHoldX: number, axisResistanceRecoverHoldY: number, axisResistanceRecoverElapsedX: number, axisResistanceRecoverElapsedY: number, axisResistanceRecoverStartX: number, axisResistanceRecoverStartY: number}}
+     * 합체 예열 끌림 오프셋을 제거합니다.
      */
-    createSimulationFrameSnapshot() {
-        return {
-            id: this.id ?? null,
-            active: this.active === true,
-            hp: Number.isFinite(this.hp) ? this.hp : 0,
-            projectileHitCount: Number.isFinite(this.projectileHitCount) ? this.projectileHitCount : 0,
-            position: cloneEnemyVector(this.position),
-            prevPosition: cloneEnemyVector(this.prevPosition),
-            renderPosition: cloneEnemyVector(this.renderPosition),
-            speed: cloneEnemyVector(this.speed),
-            acc: cloneEnemyVector(this.acc),
-            status: cloneEnemyStatusSnapshot(this.status),
-            alpha: Number.isFinite(this.alpha) ? this.alpha : null,
-            rotation: Number.isFinite(this.rotation) ? this.rotation : null,
-            angularVelocity: Number.isFinite(this.angularVelocity) ? this.angularVelocity : 0,
-            angularDeceleration: Number.isFinite(this.angularDeceleration) ? this.angularDeceleration : 0,
-            axisResistanceX: Number.isFinite(this.axisResistanceX) ? this.axisResistanceX : 1,
-            axisResistanceY: Number.isFinite(this.axisResistanceY) ? this.axisResistanceY : 1,
-            axisResistanceRecoverHoldX: Number.isFinite(this.axisResistanceRecoverHoldX) ? this.axisResistanceRecoverHoldX : 0,
-            axisResistanceRecoverHoldY: Number.isFinite(this.axisResistanceRecoverHoldY) ? this.axisResistanceRecoverHoldY : 0,
-            axisResistanceRecoverElapsedX: Number.isFinite(this.axisResistanceRecoverElapsedX) ? this.axisResistanceRecoverElapsedX : AXIS_RESISTANCE_RECOVERY_SECONDS,
-            axisResistanceRecoverElapsedY: Number.isFinite(this.axisResistanceRecoverElapsedY) ? this.axisResistanceRecoverElapsedY : AXIS_RESISTANCE_RECOVERY_SECONDS,
-            axisResistanceRecoverStartX: Number.isFinite(this.axisResistanceRecoverStartX) ? this.axisResistanceRecoverStartX : 1,
-            axisResistanceRecoverStartY: Number.isFinite(this.axisResistanceRecoverStartY) ? this.axisResistanceRecoverStartY : 1
-        };
+    clearMergePullOffset() {
+        this.mergePullOffset.x = 0;
+        this.mergePullOffset.y = 0;
+    }
+
+    /**
+     * 합체 직후 표시 좌표가 기존 시각 중심에서 물리 중심으로 정착하도록 시작 오프셋을 설정합니다.
+     * @param {number} x - X축 시작 오프셋입니다.
+     * @param {number} y - Y축 시작 오프셋입니다.
+     * @param {number} durationSeconds - 정착 시간입니다.
+     */
+    startMergeSettleOffset(x, y, durationSeconds) {
+        const duration = Number.isFinite(durationSeconds) ? Math.max(0, durationSeconds) : 0;
+        const offsetX = Number.isFinite(x) ? x : 0;
+        const offsetY = Number.isFinite(y) ? y : 0;
+        if (duration <= 0 || (offsetX === 0 && offsetY === 0)) {
+            this.mergeSettleOffset.x = 0;
+            this.mergeSettleOffset.y = 0;
+            this.mergeSettleStartOffset.x = 0;
+            this.mergeSettleStartOffset.y = 0;
+            this.mergeSettleElapsedSeconds = 0;
+            this.mergeSettleDurationSeconds = 0;
+            return;
+        }
+
+        this.mergeSettleOffset.x = offsetX;
+        this.mergeSettleOffset.y = offsetY;
+        this.mergeSettleStartOffset.x = offsetX;
+        this.mergeSettleStartOffset.y = offsetY;
+        this.mergeSettleElapsedSeconds = 0;
+        this.mergeSettleDurationSeconds = duration;
+    }
+
+    /**
+     * 합체 직후 정착 오프셋을 가변 프레임 기준으로 갱신합니다.
+     * @param {number} delta - 가변 프레임 델타입니다.
+     */
+    updateMergeSettleOffset(delta) {
+        if (!Number.isFinite(delta) || delta <= 0 || this.mergeSettleDurationSeconds <= 0) {
+            return;
+        }
+
+        this.mergeSettleElapsedSeconds = Math.min(
+            this.mergeSettleDurationSeconds,
+            this.mergeSettleElapsedSeconds + delta
+        );
+        const t = this.mergeSettleDurationSeconds <= 0
+            ? 1
+            : this.mergeSettleElapsedSeconds / this.mergeSettleDurationSeconds;
+        const easeOut = 1 - Math.pow(1 - t, 3);
+        const remain = 1 - easeOut;
+        this.mergeSettleOffset.x = this.mergeSettleStartOffset.x * remain;
+        this.mergeSettleOffset.y = this.mergeSettleStartOffset.y * remain;
+
+        if (t >= 1) {
+            this.mergeSettleOffset.x = 0;
+            this.mergeSettleOffset.y = 0;
+            this.mergeSettleStartOffset.x = 0;
+            this.mergeSettleStartOffset.y = 0;
+            this.mergeSettleElapsedSeconds = 0;
+            this.mergeSettleDurationSeconds = 0;
+        }
     }
 
     /**
@@ -324,8 +310,8 @@ export class BaseEnemy {
      * @param {number} [factorY=1]
      */
     applyAxisResistance(factorX = 1, factorY = 1) {
-        const fx = Number.isFinite(factorX) ? Math.max(0, Math.min(1, factorX)) : 1;
-        const fy = Number.isFinite(factorY) ? Math.max(0, Math.min(1, factorY)) : 1;
+        const fx = Number.isFinite(factorX) ? clamp01(factorX) : 1;
+        const fy = Number.isFinite(factorY) ? clamp01(factorY) : 1;
         const nextX = Math.min(this.axisResistanceX, fx);
         const nextY = Math.min(this.axisResistanceY, fy);
         const recoverSeconds = Number.isFinite(this.axisResistanceRecoverySeconds) && this.axisResistanceRecoverySeconds > 0
@@ -510,7 +496,7 @@ export class BaseEnemy {
         this.angularVelocity += impulse / rotationResistance;
         if (this.angularVelocity > MAX_ANGULAR_VELOCITY) this.angularVelocity = MAX_ANGULAR_VELOCITY;
         if (this.angularVelocity < -MAX_ANGULAR_VELOCITY) this.angularVelocity = -MAX_ANGULAR_VELOCITY;
-        const safeDecay = Math.max(0.016, Number.isFinite(decaySeconds) ? decaySeconds : 1);
+        const safeDecay = Math.max(ANGULAR_DECAY_MIN_SECONDS, Number.isFinite(decaySeconds) ? decaySeconds : 1);
         this.angularDeceleration = Math.abs(this.angularVelocity) / safeDecay;
     }
 

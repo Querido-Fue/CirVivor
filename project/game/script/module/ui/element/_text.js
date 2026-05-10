@@ -1,5 +1,6 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render } from "display/display_system.js";
+import { createFontString } from "util/font_util.js";
 
 /**
  * @class TextElement
@@ -35,7 +36,7 @@ export class TextElement extends BaseUIElement {
         this.text = properties.text || '';
         this.align = properties.align || 'center';
         this.font = properties.font || 'arial';
-        this.fontWeight = properties.fontWeight ? properties.fontWeight + " " : "";
+        this.fontWeight = properties.fontWeight || "";
         this.size = properties.size || 12;
         this.color = properties.color;
         this.rotation = properties.rotation || 0;
@@ -66,7 +67,11 @@ export class TextElement extends BaseUIElement {
             text: this.text,
             x: this.x,
             y: this.y,
-            font: `${this.fontWeight}${this.size}px ${this.font}`,
+            font: createFontString({
+                weight: this.fontWeight,
+                sizePx: this.size,
+                family: this.font
+            }),
             fill: this.color,
             alpha: this.alpha,
             rotation: this.rotation,

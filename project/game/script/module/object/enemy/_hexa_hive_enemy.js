@@ -1,84 +1,25 @@
-import { getObjectOffsetY, render, renderGL } from 'display/display_system.js';
+import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { colorUtil } from 'util/color_util.js';
 import { getData } from 'data/data_handler.js';
-import { getSetting } from 'save/save_system.js';
+import { rotatePoint } from 'util/math_util.js';
 import { ShapeEnemy } from './_shape_enemy.js';
+import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
 import {
     cloneHexaHiveLayout,
     getHexaHiveType
 } from './_hexa_hive_layout.js';
 
 const getEnemyShapeKey = getData('getEnemyShapeKey');
+const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
+const ENEMY_HEXA_HIVE_RENDER = ENEMY_CONSTANTS.HEXA_HIVE.RENDER;
+const ENEMY_ANGLE_CONSTANTS = ENEMY_CONSTANTS.ANGLE;
 const HEXA_SHAPE_KEY = getEnemyShapeKey('hexa');
-const BACKDROP_FALLBACK_FILL = 'rgb(255, 212, 184)';
-const HEXA_HIVE_CELL_SHAPE = 'hexagon';
-const HEXA_HIVE_FRONT_SCALE = 1;
-const HEXA_HIVE_BACKDROP_SCALE = 1.14;
-const HEXA_HIVE_DEBUG_STROKE = 'rgba(64, 240, 255, 1)';
-const HEXA_HIVE_DEBUG_LINE_WIDTH = 2.25;
-
-/**
- * 좌표를 회전합니다.
- * @param {number} x
- * @param {number} y
- * @param {number} radians
- * @returns {{x: number, y: number}}
- */
-function rotateHivePoint(x, y, radians) {
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    return {
-        x: (x * cos) - (y * sin),
-        y: (x * sin) + (y * cos)
-    };
-}
-
-/**
- * 디버그 모드에서 실제 충돌 part 외곽을 그립니다.
- * @param {number[][]|null|undefined} collisionLocalParts
- * @param {number} baseHeight
- * @param {number} rotationRadians
- * @param {number} renderX
- * @param {number} renderY
- * @param {number} rotation
- */
-function drawHexaHiveCollisionDebugParts(collisionLocalParts, baseHeight, rotationRadians, renderX, renderY, rotation) {
-    if (getSetting('debugMode') !== true || !Array.isArray(collisionLocalParts)) {
-        return;
-    }
-
-    for (let partIndex = 0; partIndex < collisionLocalParts.length; partIndex++) {
-        const part = collisionLocalParts[partIndex];
-        if (!Array.isArray(part) || part.length < 6) {
-            continue;
-        }
-
-        for (let i = 0; i < part.length; i += 2) {
-            const nextIndex = (i + 2) % part.length;
-            const start = rotateHivePoint(
-                (Number.isFinite(part[i]) ? part[i] : 0) * baseHeight,
-                (Number.isFinite(part[i + 1]) ? part[i + 1] : 0) * baseHeight,
-                rotationRadians
-            );
-            const end = rotateHivePoint(
-                (Number.isFinite(part[nextIndex]) ? part[nextIndex] : 0) * baseHeight,
-                (Number.isFinite(part[nextIndex + 1]) ? part[nextIndex + 1] : 0) * baseHeight,
-                rotationRadians
-            );
-
-            render('top', {
-                shape: 'line',
-                x1: renderX + start.x,
-                y1: renderY + start.y,
-                x2: renderX + end.x,
-                y2: renderY + end.y,
-                stroke: HEXA_HIVE_DEBUG_STROKE,
-                lineWidth: HEXA_HIVE_DEBUG_LINE_WIDTH,
-                alpha: 1
-            });
-        }
-    }
-}
+const BACKDROP_FALLBACK_FILL = ENEMY_HEXA_HIVE_RENDER.BACKDROP_FALLBACK_FILL;
+const BACKDROP_FILL_BLEND_RATIO = ENEMY_HEXA_HIVE_RENDER.BACKDROP_FILL_BLEND_RATIO;
+const HEXA_HIVE_CELL_SHAPE = ENEMY_HEXA_HIVE_RENDER.CELL_SHAPE;
+const HEXA_HIVE_FRONT_SCALE = ENEMY_HEXA_HIVE_RENDER.FRONT_SCALE;
+const HEXA_HIVE_BACKDROP_SCALE = ENEMY_HEXA_HIVE_RENDER.BACKDROP_SCALE;
+const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
 
 /**
  * @class HexaHiveEnemy
@@ -89,7 +30,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
         super('hexa');
         this.hexaHiveLayout = null;
         this.mergeBaseMoveSpeed = 0;
-        this.collisionLocalParts = null;
+        this.collisionLocalCenters = null;
     }
 
     /**
@@ -107,7 +48,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
             ? data.mergeBaseMoveSpeed
             : this.moveSpeed;
         this.hexaHiveLayout = cloneHexaHiveLayout(data.hexaHiveLayout);
-        this.collisionLocalParts = this.hexaHiveLayout?.collisionLocalParts ?? null;
+        this.collisionLocalCenters = this.hexaHiveLayout?.filledLocalCenters ?? null;
         return this;
     }
 
@@ -120,20 +61,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
         this.shapeKey = HEXA_SHAPE_KEY;
         this.hexaHiveLayout = null;
         this.mergeBaseMoveSpeed = 0;
-        this.collisionLocalParts = null;
-    }
-
-    /**
-     * 현재 적 상태를 읽기 전용 시뮬레이션 스냅샷으로 복제합니다.
-     * @returns {object}
-     */
-    createSimulationSnapshot() {
-        const snapshot = super.createSimulationSnapshot();
-        snapshot.mergeBaseMoveSpeed = Number.isFinite(this.mergeBaseMoveSpeed)
-            ? this.mergeBaseMoveSpeed
-            : snapshot.moveSpeed;
-        snapshot.hexaHiveLayout = cloneHexaHiveLayout(this.hexaHiveLayout);
-        return snapshot;
+        this.collisionLocalCenters = null;
     }
 
     /**
@@ -141,9 +69,9 @@ export class HexaHiveEnemy extends ShapeEnemy {
      * @returns {string}
      */
     _resolveBackdropFill() {
-        const sourceFill = typeof this.fill === 'string' ? this.fill : '#ff6c6c';
+        const sourceFill = typeof this.fill === 'string' ? this.fill : ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
         if (typeof sourceFill === 'string' && sourceFill.length > 0) {
-            return colorUtil().lerpColor(sourceFill, BACKDROP_FALLBACK_FILL, 0.72);
+            return colorUtil().lerpColor(sourceFill, BACKDROP_FALLBACK_FILL, BACKDROP_FILL_BLEND_RATIO);
         }
 
         return BACKDROP_FALLBACK_FILL;
@@ -168,20 +96,27 @@ export class HexaHiveEnemy extends ShapeEnemy {
         const baseHeight = this.getRenderHeightPx();
         const objectOffsetY = getObjectOffsetY();
         const rotation = Number.isFinite(this.rotation) ? this.rotation : 0;
-        const rotationRadians = rotation * (Math.PI / 180);
-        const renderX = this.renderPosition.x;
-        const renderY = this.renderPosition.y - objectOffsetY;
-        const frontFill = typeof this.fill === 'string' ? this.fill : '#ff6c6c';
+        const rotationRadians = rotation * DEGREES_TO_RADIANS;
+        const mergeOffsetX = (Number.isFinite(this.mergePullOffset?.x) ? this.mergePullOffset.x : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.x) ? this.mergeSettleOffset.x : 0);
+        const mergeOffsetY = (Number.isFinite(this.mergePullOffset?.y) ? this.mergePullOffset.y : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.y) ? this.mergeSettleOffset.y : 0);
+        const renderX = this.renderPosition.x + mergeOffsetX;
+        const renderY = this.renderPosition.y - objectOffsetY + mergeOffsetY;
+        const frontFill = typeof this.fill === 'string' ? this.fill : ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
         const backdropFill = this._resolveBackdropFill();
         const backdropAlpha = Number.isFinite(this.alpha) ? this.alpha : 1;
         const frontAlpha = Number.isFinite(this.alpha) ? this.alpha : 1;
-        const collisionLocalParts = Array.isArray(this.collisionLocalParts)
-            ? this.collisionLocalParts
-            : layout.collisionLocalParts;
+        const backdropCenters = Array.isArray(layout.filledLocalCenters) && layout.filledLocalCenters.length > 0
+            ? layout.filledLocalCenters
+            : layout.visibleLocalCenters;
+        const collisionLocalCenters = Array.isArray(this.collisionLocalCenters) && this.collisionLocalCenters.length > 0
+            ? this.collisionLocalCenters
+            : backdropCenters;
 
-        for (let i = 0; i < layout.visibleLocalCenters.length; i++) {
-            const localCenter = layout.visibleLocalCenters[i];
-            const rotated = rotateHivePoint(
+        for (let i = 0; i < backdropCenters.length; i++) {
+            const localCenter = backdropCenters[i];
+            const rotated = rotatePoint(
                 localCenter.x * baseHeight,
                 localCenter.y * baseHeight,
                 rotationRadians
@@ -196,6 +131,15 @@ export class HexaHiveEnemy extends ShapeEnemy {
                 alpha: backdropAlpha,
                 rotation
             });
+        }
+
+        for (let i = 0; i < layout.visibleLocalCenters.length; i++) {
+            const localCenter = layout.visibleLocalCenters[i];
+            const rotated = rotatePoint(
+                localCenter.x * baseHeight,
+                localCenter.y * baseHeight,
+                rotationRadians
+            );
             renderGL(layer, {
                 shape: HEXA_HIVE_CELL_SHAPE,
                 x: renderX + rotated.x,
@@ -208,13 +152,14 @@ export class HexaHiveEnemy extends ShapeEnemy {
             });
         }
 
-        drawHexaHiveCollisionDebugParts(
-            collisionLocalParts,
-            baseHeight,
+        drawEnemyCollisionDebugCircles({
+            enemyType: this.type,
+            localCenters: collisionLocalCenters,
+            width: baseHeight,
+            height: baseHeight,
             rotationRadians,
             renderX,
-            renderY,
-            rotation
-        );
+            renderY
+        });
     }
 }
