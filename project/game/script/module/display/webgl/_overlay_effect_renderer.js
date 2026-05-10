@@ -159,27 +159,13 @@ export class OverlayEffectRenderer {
             this.unitQuadBuffer = null;
         }
 
-        if (this.downsampleProgram?.program) {
-            gl.deleteProgram(this.downsampleProgram.program);
-        }
-        if (this.upsampleProgram?.program) {
-            gl.deleteProgram(this.upsampleProgram.program);
-        }
-        if (this.compositeProgram?.program) {
-            gl.deleteProgram(this.compositeProgram.program);
-        }
-        if (this.solidColorProgram?.program) {
-            gl.deleteProgram(this.solidColorProgram.program);
-        }
-        if (this.shadowProgram?.program) {
-            gl.deleteProgram(this.shadowProgram.program);
-        }
-        if (this.panelTextureProgram?.program) {
-            gl.deleteProgram(this.panelTextureProgram.program);
-        }
-        if (this.glassProgram?.program) {
-            gl.deleteProgram(this.glassProgram.program);
-        }
+        this.#deleteProgramInfo(this.downsampleProgram);
+        this.#deleteProgramInfo(this.upsampleProgram);
+        this.#deleteProgramInfo(this.compositeProgram);
+        this.#deleteProgramInfo(this.solidColorProgram);
+        this.#deleteProgramInfo(this.shadowProgram);
+        this.#deleteProgramInfo(this.panelTextureProgram);
+        this.#deleteProgramInfo(this.glassProgram);
     }
 
     /**
@@ -543,6 +529,8 @@ export class OverlayEffectRenderer {
     #drawGlassPanel(command) {
         const gl = this.gl;
         const panelRect = this.#buildPanelRect(command);
+        const alpha = command.alpha === undefined ? 1 : command.alpha;
+        const radius = Math.max(0, command.radius || 0);
         const shadowRadius = Math.max(0, command.shadowRadius || 0);
         const perspective = Number.isFinite(command.perspective) ? Math.max(1, command.perspective) : 1000;
         const shadowOffset = {
@@ -565,11 +553,11 @@ export class OverlayEffectRenderer {
 
         if (shadowRadius > 0 && shadowColor[3] > 0) {
             this.#drawPanelShadow({
-                alpha: command.alpha === undefined ? 1 : command.alpha,
+                alpha,
                 panelRect,
                 transformMatrix,
                 perspective,
-                radius: Math.max(0, command.radius || 0),
+                radius,
                 shadowRadius,
                 shadowColor,
                 shadowOffset
@@ -583,8 +571,8 @@ export class OverlayEffectRenderer {
         gl.vertexAttribPointer(this.glassProgram.attributes.a_unit, 2, gl.FLOAT, false, 0, 0);
 
         this.#setPanelUniforms(this.glassProgram, panelRect, panelRect, transformMatrix, perspective);
-        gl.uniform1f(this.glassProgram.uniforms.u_radius, Math.max(0, command.radius || 0));
-        gl.uniform1f(this.glassProgram.uniforms.u_alpha, command.alpha === undefined ? 1 : command.alpha);
+        gl.uniform1f(this.glassProgram.uniforms.u_radius, radius);
+        gl.uniform1f(this.glassProgram.uniforms.u_alpha, alpha);
         gl.uniform1f(this.glassProgram.uniforms.u_lineWidth, Math.max(1, command.lineWidth || 1));
         gl.uniform4fv(this.glassProgram.uniforms.u_fillColor, fillColor);
         gl.uniform4fv(this.glassProgram.uniforms.u_strokeColor, strokeColor);
@@ -613,11 +601,11 @@ export class OverlayEffectRenderer {
 
         if (command.effectTextureCanvas) {
             this.#drawPanelTexture({
-                alpha: command.alpha === undefined ? 1 : command.alpha,
+                alpha,
                 canvas: command.effectTextureCanvas,
                 panelRect,
                 perspective,
-                radius: Math.max(0, command.radius || 0),
+                radius,
                 transformMatrix
             });
         }
@@ -835,6 +823,17 @@ export class OverlayEffectRenderer {
             if (target.framebuffer) {
                 gl.deleteFramebuffer(target.framebuffer);
             }
+        }
+    }
+
+    /**
+     * @private
+     * WebGL 프로그램 정보를 정리합니다.
+     * @param {{program?: WebGLProgram}|null|undefined} programInfo - 삭제할 프로그램 정보입니다.
+     */
+    #deleteProgramInfo(programInfo) {
+        if (programInfo?.program) {
+            this.gl.deleteProgram(programInfo.program);
         }
     }
 

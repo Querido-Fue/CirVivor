@@ -238,23 +238,8 @@ export class DisplaySystem {
 
         const sources = [];
         for (const descriptor of this.#getSortedSurfaceDescriptors()) {
-            if (!descriptor.includeInComposite || descriptor.id === target.id) {
-                continue;
-            }
-            if (!descriptor.dynamic || descriptor.order < target.order) {
-                if (!descriptor.dynamic && descriptor.id === 'top') {
-                    continue;
-                }
-                if (descriptor.dynamic && descriptor.order >= target.order) {
-                    continue;
-                }
-                sources.push({
-                    kind: 'canvas',
-                    canvas: descriptor.canvas,
-                    opacity: (descriptor.dynamic
-                        ? Number.parseFloat(descriptor.canvas.style.opacity || '1')
-                        : 1) * descriptor.compositeOpacityFactor
-                });
+            if (shouldIncludeDisplayCompositeSource(descriptor, target)) {
+                sources.push(createDisplayCompositeCanvasSource(descriptor));
             }
         }
 
@@ -601,3 +586,48 @@ export const getCanvasPoolStats = () => displaySystemInstance
         twoD: { activeCount: 0, createdCount: 0, availableCount: 0 },
         webgl: { activeCount: 0, createdCount: 0, availableCount: 0 }
     };
+
+/**
+ * 합성 캡처 소스에 포함할 surface인지 판정합니다.
+ * @param {DisplaySurfaceDescriptor} descriptor - 후보 surface descriptor입니다.
+ * @param {DisplaySurfaceDescriptor} target - 기준 surface descriptor입니다.
+ * @returns {boolean} 합성 소스로 포함하면 true입니다.
+ */
+function shouldIncludeDisplayCompositeSource(descriptor, target) {
+    if (!descriptor.includeInComposite || descriptor.id === target.id) {
+        return false;
+    }
+    if (!descriptor.dynamic && descriptor.id === 'top') {
+        return false;
+    }
+    if (descriptor.dynamic && descriptor.order >= target.order) {
+        return false;
+    }
+
+    return !descriptor.dynamic || descriptor.order < target.order;
+}
+
+/**
+ * 합성 캡처용 canvas source 객체를 생성합니다.
+ * @param {DisplaySurfaceDescriptor} descriptor - 합성할 surface descriptor입니다.
+ * @returns {{kind: string, canvas: HTMLCanvasElement, opacity: number}} 합성 소스입니다.
+ */
+function createDisplayCompositeCanvasSource(descriptor) {
+    return {
+        kind: 'canvas',
+        canvas: descriptor.canvas,
+        opacity: getDisplayCompositeSourceOpacity(descriptor)
+    };
+}
+
+/**
+ * 합성 캡처에 적용할 source opacity를 계산합니다.
+ * @param {DisplaySurfaceDescriptor} descriptor - 합성할 surface descriptor입니다.
+ * @returns {number} 합성 opacity입니다.
+ */
+function getDisplayCompositeSourceOpacity(descriptor) {
+    const surfaceOpacity = descriptor.dynamic
+        ? Number.parseFloat(descriptor.canvas.style.opacity || '1')
+        : 1;
+    return surfaceOpacity * descriptor.compositeOpacityFactor;
+}
