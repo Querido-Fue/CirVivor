@@ -72,6 +72,7 @@ const PROJECTILE_SWEEP_RADIUS_STEP = COLLISION_CONSTANTS.SOLVER.PROJECTILE_SWEEP
 const COLLISION_IDLE_TICKS_TO_SLEEP = COLLISION_CONSTANTS.SLEEP.IDLE_TICKS_TO_SLEEP;
 const COLLISION_SLEEP_TICKS = COLLISION_CONSTANTS.SLEEP.TICKS;
 const COLLISION_SLEEP_SPEED_SQ = COLLISION_CONSTANTS.SLEEP.SPEED_SQ;
+const COLLISION_BASE_STAT_FIELDS = COLLISION_CONSTANTS.FRAME_STATS.BASE_FIELDS;
 
 /**
  * @typedef {object} CollisionRule
@@ -450,79 +451,69 @@ export class CollisionHandler {
                 return [];
             }
 
-            const savedStats = {
-                collisionCheckCount: this.#frameStats.collisionCheckCount,
-                aabbPassCount: this.#frameStats.aabbPassCount,
-                aabbRejectCount: this.#frameStats.aabbRejectCount,
-                circlePassCount: this.#frameStats.circlePassCount,
-                circleRejectCount: this.#frameStats.circleRejectCount,
-                partChecks: this.#frameStats.partChecks
-            };
+            const savedStats = createCollisionBaseStatsSnapshot(this.#frameStats);
+            try {
+                const gridBuildStart = this.#profileRecorder.startTimer();
+                this.#rebuildGridFromBodies(bodies, 'enemyPair');
+                this.#profileRecorder.recordDuration('contactGridBuildMs', gridBuildStart);
+                this.#candidatePairs.reset(bodies.length);
+                const contactPairs = [];
+                const gridBuckets = this.#activeGridBuckets;
 
-            const gridBuildStart = this.#profileRecorder.startTimer();
-            this.#rebuildGridFromBodies(bodies, 'enemyPair');
-            this.#profileRecorder.recordDuration('contactGridBuildMs', gridBuildStart);
-            this.#candidatePairs.reset(bodies.length);
-            const contactPairs = [];
-            const gridBuckets = this.#activeGridBuckets;
+                const pairScanStart = this.#profileRecorder.startTimer();
+                for (let bucketIndex = 0; bucketIndex < gridBuckets.length; bucketIndex++) {
+                    const bucket = gridBuckets[bucketIndex];
+                    const count = bucket.count;
+                    if (count < 2) {
+                        continue;
+                    }
 
-            const pairScanStart = this.#profileRecorder.startTimer();
-            for (let bucketIndex = 0; bucketIndex < gridBuckets.length; bucketIndex++) {
-                const bucket = gridBuckets[bucketIndex];
-                const count = bucket.count;
-                if (count < 2) {
-                    continue;
-                }
+                    const indices = bucket.indices;
+                    for (let left = 0; left < count - 1; left++) {
+                        const bodyIndexA = indices[left];
+                        for (let right = left + 1; right < count; right++) {
+                            const bodyIndexB = indices[right];
+                            const low = bodyIndexA < bodyIndexB ? bodyIndexA : bodyIndexB;
+                            const high = bodyIndexA < bodyIndexB ? bodyIndexB : bodyIndexA;
+                            if (this.#candidatePairs.hasPair(low, high)) {
+                                continue;
+                            }
+                            this.#candidatePairs.markPair(low, high);
 
-                const indices = bucket.indices;
-                for (let left = 0; left < count - 1; left++) {
-                    const bodyIndexA = indices[left];
-                    for (let right = left + 1; right < count; right++) {
-                        const bodyIndexB = indices[right];
-                        const low = bodyIndexA < bodyIndexB ? bodyIndexA : bodyIndexB;
-                        const high = bodyIndexA < bodyIndexB ? bodyIndexB : bodyIndexA;
-                        if (this.#candidatePairs.hasPair(low, high)) {
-                            continue;
+                            const bodyA = bodies[low];
+                            const bodyB = bodies[high];
+                            if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) {
+                                continue;
+                            }
+
+                            if (!areCollisionBodyAabbsOverlapping(bodyA, bodyB)) {
+                                continue;
+                            }
+
+                            if (
+                                shouldUseCollisionBroadCircleFilter(bodyA, bodyB) &&
+                                !areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON)
+                            ) {
+                                continue;
+                            }
+
+                            if (!detectCollisionBodies(bodyA, bodyB, this.#bodyDetectorContext)) {
+                                continue;
+                            }
+
+                            contactPairs.push({
+                                enemyA: bodyA.ref,
+                                enemyB: bodyB.ref
+                            });
                         }
-                        this.#candidatePairs.markPair(low, high);
-
-                        const bodyA = bodies[low];
-                        const bodyB = bodies[high];
-                        if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) {
-                            continue;
-                        }
-
-                        if (!areCollisionBodyAabbsOverlapping(bodyA, bodyB)) {
-                            continue;
-                        }
-
-                        if (
-                            shouldUseCollisionBroadCircleFilter(bodyA, bodyB) &&
-                            !areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON)
-                        ) {
-                            continue;
-                        }
-
-                        if (!detectCollisionBodies(bodyA, bodyB, this.#bodyDetectorContext)) {
-                            continue;
-                        }
-
-                        contactPairs.push({
-                            enemyA: bodyA.ref,
-                            enemyB: bodyB.ref
-                        });
                     }
                 }
-            }
-            this.#profileRecorder.recordDuration('contactPairScanMs', pairScanStart);
+                this.#profileRecorder.recordDuration('contactPairScanMs', pairScanStart);
 
-            this.#frameStats.collisionCheckCount = savedStats.collisionCheckCount;
-            this.#frameStats.aabbPassCount = savedStats.aabbPassCount;
-            this.#frameStats.aabbRejectCount = savedStats.aabbRejectCount;
-            this.#frameStats.circlePassCount = savedStats.circlePassCount;
-            this.#frameStats.circleRejectCount = savedStats.circleRejectCount;
-            this.#frameStats.partChecks = savedStats.partChecks;
-            return contactPairs;
+                return contactPairs;
+            } finally {
+                restoreCollisionBaseStatsSnapshot(this.#frameStats, savedStats);
+            }
         } finally {
             this.#profileRecorder.recordDuration('contactTotalMs', totalStart);
         }
@@ -870,5 +861,31 @@ export class CollisionHandler {
         writeCollisionWallBodies(out, this.walls);
         this.#wallBodiesDirty = false;
         return out;
+    }
+}
+
+/**
+ * 접촉 pair 조회가 프레임 충돌 기본 통계를 오염시키지 않도록 현재 값을 복사합니다.
+ * @param {object} frameStats - 현재 프레임 통계 객체입니다.
+ * @returns {object} 기본 통계 필드 스냅샷입니다.
+ */
+function createCollisionBaseStatsSnapshot(frameStats) {
+    const snapshot = {};
+    for (let i = 0; i < COLLISION_BASE_STAT_FIELDS.length; i++) {
+        const fieldName = COLLISION_BASE_STAT_FIELDS[i];
+        snapshot[fieldName] = frameStats[fieldName];
+    }
+    return snapshot;
+}
+
+/**
+ * 접촉 pair 조회 전에 저장한 프레임 충돌 기본 통계를 복원합니다.
+ * @param {object} frameStats - 복원 대상 프레임 통계 객체입니다.
+ * @param {object} snapshot - 기본 통계 필드 스냅샷입니다.
+ */
+function restoreCollisionBaseStatsSnapshot(frameStats, snapshot) {
+    for (let i = 0; i < COLLISION_BASE_STAT_FIELDS.length; i++) {
+        const fieldName = COLLISION_BASE_STAT_FIELDS[i];
+        frameStats[fieldName] = snapshot[fieldName];
     }
 }
