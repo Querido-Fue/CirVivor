@@ -4,6 +4,17 @@ import { applyCollisionPairResolution } from './collision_pair_resolver.js';
 import { COLLISION_RELATION_INDEX as RELATION_INDEX } from './collision_soa_layout.js';
 
 /**
+ * 적-적 원형 pair 처리 카운터를 양쪽 body에 누적합니다.
+ * @param {object} bodyA - 첫 번째 body입니다.
+ * @param {object} bodyB - 두 번째 body입니다.
+ * @param {string} fieldName - 누적할 카운터 필드명입니다.
+ */
+function incrementCollisionEnemyCirclePairCounter(bodyA, bodyB, fieldName) {
+    bodyA[fieldName] = (bodyA[fieldName] || 0) + 1;
+    bodyB[fieldName] = (bodyB[fieldName] || 0) + 1;
+}
+
+/**
  * enemy 원형 쌍을 SoA 중심/반경으로 직접 판정하고 해소합니다.
  * @param {object} options - 처리 옵션입니다.
  * @param {object} options.bodyA - 첫 번째 body입니다.
@@ -31,8 +42,7 @@ export function processCollisionEnemyCirclePairSoA({
     broadphaseBuffer
 }) {
     if (resolvePositions) {
-        bodyA._candidatePairCount = (bodyA._candidatePairCount || 0) + 1;
-        bodyB._candidatePairCount = (bodyB._candidatePairCount || 0) + 1;
+        incrementCollisionEnemyCirclePairCounter(bodyA, bodyB, '_candidatePairCount');
     }
 
     const ax = relationData[relationOffsetA + RELATION_INDEX.CENTER_X];
@@ -55,8 +65,7 @@ export function processCollisionEnemyCirclePairSoA({
     }
 
     if (resolvePositions) {
-        bodyA._resolvedPairCount = (bodyA._resolvedPairCount || 0) + 1;
-        bodyB._resolvedPairCount = (bodyB._resolvedPairCount || 0) + 1;
+        incrementCollisionEnemyCirclePairCounter(bodyA, bodyB, '_resolvedPairCount');
     }
 
     if (!resolvePositions) return 1;
