@@ -662,19 +662,19 @@ export const HEXA_MERGE_BOUNDARY_FRAGMENT_SHADER = `
         vec2 closest = u_start + (segment * along);
         float distanceToLine = length(fragCoord - closest);
         float progress = saturate(u_progress);
-        float coreWidth = max(1.15, u_lineWidth);
-        float glowWidth = max(coreWidth + 1.0, u_glowWidth);
+        float coreWidth = max(1.6, u_lineWidth);
+        float glowWidth = max(coreWidth + 1.5, u_glowWidth);
         float core = exp(-pow(distanceToLine / coreWidth, 2.0));
-        float glow = exp(-pow(distanceToLine / glowWidth, 2.2));
-        float edgeFade = smoothstep(0.0, 0.16, along) * (1.0 - smoothstep(0.84, 1.0, along));
+        float glow = exp(-pow(distanceToLine / glowWidth, 2.35));
+        float edgeFade = smoothstep(0.0, 0.08, along) * (1.0 - smoothstep(0.92, 1.0, along));
         float pulse = 0.90 + (0.10 * sin((along * 17.0) - (u_time * 7.2) + (progress * 4.2)));
         float spark = pow(max(0.0, sin((along * 29.0) + (u_time * 11.0))), 16.0) * progress;
-        float progressFade = smoothstep(0.02, 0.24, progress);
+        float progressFade = 0.35 + (0.65 * smoothstep(0.0, 0.12, progress));
 
-        vec3 color = (u_glowColor * glow * 0.12)
-            + (u_coreColor * core * 1.65)
-            + (u_highlightColor * (core * 0.3 + spark * 0.22));
-        float alpha = ((glow * 0.2) + (core * 1.0) + (spark * 0.18))
+        vec3 color = (u_glowColor * glow * 0.14)
+            + (u_coreColor * core * 2.0)
+            + (u_highlightColor * (core * 0.36 + spark * 0.2));
+        float alpha = ((glow * 0.28) + (core * 1.12) + (spark * 0.18))
             * edgeFade
             * progressFade
             * pulse

@@ -108,6 +108,44 @@ function findClosestHexaCellPair(enemyA, enemyB) {
 }
 
 /**
+ * 경계 이펙트 선분의 방향과 중심점을 계산합니다.
+ * @param {object} enemyA - 첫 번째 적입니다.
+ * @param {object} enemyB - 두 번째 적입니다.
+ * @param {{a:{x:number, y:number}, b:{x:number, y:number}}} cellPair - 표시 셀 쌍입니다.
+ * @returns {{dirX:number, dirY:number, seamX:number, seamY:number}|null} 경계 선분 기준 정보입니다.
+ */
+function resolveBoundaryEffectBasis(enemyA, enemyB, cellPair) {
+    let dx = cellPair.b.x - cellPair.a.x;
+    let dy = cellPair.b.y - cellPair.a.y;
+    let distance = Math.hypot(dx, dy);
+    let seamX = (cellPair.a.x + cellPair.b.x) * 0.5;
+    let seamY = (cellPair.a.y + cellPair.b.y) * 0.5;
+
+    if (distance <= EPSILON) {
+        const centerA = getPresentedEnemyCenter(enemyA);
+        const centerB = getPresentedEnemyCenter(enemyB);
+        dx = centerB.x - centerA.x;
+        dy = centerB.y - centerA.y;
+        distance = Math.hypot(dx, dy);
+        seamX = (centerA.x + centerB.x) * 0.5;
+        seamY = (centerA.y + centerB.y) * 0.5;
+    }
+
+    if (distance <= EPSILON) {
+        dx = 0;
+        dy = -1;
+        distance = 1;
+    }
+
+    return {
+        dirX: dx / distance,
+        dirY: dy / distance,
+        seamX,
+        seamY
+    };
+}
+
+/**
  * 적의 렌더 높이를 반환합니다.
  * @param {object|null|undefined} enemy - 대상 적입니다.
  * @returns {number} 렌더 높이입니다.
@@ -143,33 +181,27 @@ export function drawObjectSystemHexaHiveMergeEffects(effectPairs) {
         }
 
         const cellPair = findClosestHexaCellPair(enemyA, enemyB);
-        const dx = cellPair.b.x - cellPair.a.x;
-        const dy = cellPair.b.y - cellPair.a.y;
-        const distance = Math.hypot(dx, dy);
-        if (distance <= EPSILON) {
+        const basis = resolveBoundaryEffectBasis(enemyA, enemyB, cellPair);
+        if (!basis) {
             continue;
         }
 
         const progress = Math.min(1, Math.max(0, Number.isFinite(pair.progress) ? pair.progress : 0));
-        const dirX = dx / distance;
-        const dirY = dy / distance;
-        const seamX = (cellPair.a.x + cellPair.b.x) * 0.5;
-        const seamY = (cellPair.a.y + cellPair.b.y) * 0.5;
-        const perpendicularX = -dirY;
-        const perpendicularY = dirX;
+        const perpendicularX = -basis.dirY;
+        const perpendicularY = basis.dirX;
         const baseHeight = Math.min(getEnemyRenderHeight(enemyA), getEnemyRenderHeight(enemyB));
         const halfLength = baseHeight * EFFECT_LINE_LENGTH_RATIO * (0.84 + (progress * 0.16)) * 0.5;
-        const lineWidth = baseHeight * EFFECT_LINE_WIDTH_RATIO * (0.88 + (progress * 0.18));
-        const glowWidth = baseHeight * EFFECT_GLOW_WIDTH_RATIO * (0.82 + (progress * 0.22));
+        const lineWidth = Math.max(2, baseHeight * EFFECT_LINE_WIDTH_RATIO * (0.88 + (progress * 0.18)));
+        const glowWidth = Math.max(lineWidth + 1.5, baseHeight * EFFECT_GLOW_WIDTH_RATIO * (0.82 + (progress * 0.22)));
 
         renderGL('effectGL', {
             effectType: EFFECT_TYPES.HEXA_MERGE_BOUNDARY,
-            x1: seamX - (perpendicularX * halfLength),
-            y1: seamY - (perpendicularY * halfLength) - objectOffsetY,
-            x2: seamX + (perpendicularX * halfLength),
-            y2: seamY + (perpendicularY * halfLength) - objectOffsetY,
+            x1: basis.seamX - (perpendicularX * halfLength),
+            y1: basis.seamY - (perpendicularY * halfLength) - objectOffsetY,
+            x2: basis.seamX + (perpendicularX * halfLength),
+            y2: basis.seamY + (perpendicularY * halfLength) - objectOffsetY,
             progress,
-            alpha: 0.88,
+            alpha: 1,
             lineWidth,
             glowWidth,
             time,

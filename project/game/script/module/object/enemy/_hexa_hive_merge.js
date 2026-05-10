@@ -168,6 +168,46 @@ function _getHexaHiveEnemyRenderHeight(enemy) {
 }
 
 /**
+ * 두 적의 상대 방향 기준 앞쪽 셀 사이 투영 간격을 반환합니다.
+ * @param {object} enemyA - 첫 번째 적입니다.
+ * @param {object} enemyB - 두 번째 적입니다.
+ * @param {number} dirX - A에서 B로 향하는 정규화 X 방향입니다.
+ * @param {number} dirY - A에서 B로 향하는 정규화 Y 방향입니다.
+ * @param {number} fallbackDistance - 셀 수집 실패 시 사용할 중심 거리입니다.
+ * @returns {number} 상대 방향으로 측정한 앞쪽 셀 간격입니다.
+ */
+function _getHexaHiveProjectedCellGap(enemyA, enemyB, dirX, dirY, fallbackDistance) {
+    const cellsA = collectHexaWorldCellsFromEnemy(enemyA);
+    const cellsB = collectHexaWorldCellsFromEnemy(enemyB);
+    if (cellsA.length === 0 || cellsB.length === 0) {
+        return Number.isFinite(fallbackDistance) ? fallbackDistance : 0;
+    }
+
+    let frontProjectionA = Number.NEGATIVE_INFINITY;
+    let frontProjectionB = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < cellsA.length; i++) {
+        const cell = cellsA[i];
+        const projection = (cell.x * dirX) + (cell.y * dirY);
+        if (projection > frontProjectionA) {
+            frontProjectionA = projection;
+        }
+    }
+    for (let i = 0; i < cellsB.length; i++) {
+        const cell = cellsB[i];
+        const projection = (cell.x * dirX) + (cell.y * dirY);
+        if (projection < frontProjectionB) {
+            frontProjectionB = projection;
+        }
+    }
+
+    if (!Number.isFinite(frontProjectionA) || !Number.isFinite(frontProjectionB)) {
+        return Number.isFinite(fallbackDistance) ? fallbackDistance : 0;
+    }
+
+    return frontProjectionB - frontProjectionA;
+}
+
+/**
  * 적 ID별 합체 예열 오프셋을 누적합니다.
  * @param {Map<number, {x:number, y:number, maxDistance:number}>} pullOffsetById - 오프셋 누적 맵입니다.
  * @param {object} enemy - 대상 적입니다.
@@ -207,7 +247,7 @@ function _applyHexaHivePullOffsets(activeMergeCandidatesById, pullOffsetById) {
         let offsetY = Number.isFinite(pullOffset.y) ? pullOffset.y : 0;
         const distance = Math.hypot(offsetX, offsetY);
         const maxDistance = Number.isFinite(pullOffset.maxDistance) ? Math.max(0, pullOffset.maxDistance) : 0;
-        if (distance > maxDistance && distance > HEXA_HIVE_EPSILON && maxDistance > 0) {
+        if (distance > maxDistance && distance > HEXA_HIVE_EPSILON) {
             const scale = maxDistance / distance;
             offsetX *= scale;
             offsetY *= scale;
@@ -430,7 +470,8 @@ export function syncHexaHiveMergePresentationState({
         );
         const maxPullDistance = baseHeight * HEXA_HIVE_MERGE_MAX_PULL_HEIGHT_RATIO;
         const safeCellDistance = baseHeight * HEXA_HIVE_MERGE_PULL_SAFE_CELL_DISTANCE_RATIO;
-        const noOverlapPairPullDistance = Math.max(0, (distance - safeCellDistance) * 0.5);
+        const projectedCellGap = _getHexaHiveProjectedCellGap(enemyA, enemyB, dirX, dirY, distance);
+        const noOverlapPairPullDistance = Math.max(0, (projectedCellGap - safeCellDistance) * 0.5);
         const pullDistance = Math.min(
             distance * HEXA_HIVE_MERGE_PULL_DISTANCE_RATIO,
             maxPullDistance,
