@@ -8,6 +8,24 @@ const BIT_WORD_SHIFT = CANDIDATE_PAIR_BUFFER_CONSTANTS.BIT_WORD_SHIFT;
 const BIT_WORD_MASK = CANDIDATE_PAIR_BUFFER_CONSTANTS.BIT_WORD_MASK;
 
 /**
+ * pair buffer에서 사용할 body 개수를 정규화합니다.
+ * @param {number} bodyCount - 입력 body 개수입니다.
+ * @returns {number} 음수와 비정수를 0으로 보정한 body 개수입니다.
+ */
+function normalizeCollisionPairBodyCount(bodyCount) {
+    return Number.isInteger(bodyCount) && bodyCount > 0 ? bodyCount : 0;
+}
+
+/**
+ * body 개수에 필요한 pair bitset word 수를 반환합니다.
+ * @param {number} bodyCount - 정규화된 body 개수입니다.
+ * @returns {number} 필요한 Uint32 word 개수입니다.
+ */
+function getCollisionPairBitmapWordCount(bodyCount) {
+    return Math.ceil((bodyCount * bodyCount) / BIT_WORD_SIZE);
+}
+
+/**
  * 충돌 후보 pair 인덱스와 중복 검사 bitset을 재사용 버퍼로 관리합니다.
  */
 export class CollisionCandidatePairBuffer {
@@ -28,7 +46,7 @@ export class CollisionCandidatePairBuffer {
      * @param {number} bodyCount - 현재 body 개수입니다.
      */
     reset(bodyCount) {
-        const safeBodyCount = Number.isInteger(bodyCount) && bodyCount > 0 ? bodyCount : 0;
+        const safeBodyCount = normalizeCollisionPairBodyCount(bodyCount);
         this.count = 0;
         this.bodyCount = safeBodyCount;
         this.#ensurePairBitmap(safeBodyCount);
@@ -73,7 +91,7 @@ export class CollisionCandidatePairBuffer {
      * @private
      */
     #ensurePairBitmap(bodyCount) {
-        const neededWords = Math.ceil((bodyCount * bodyCount) / BIT_WORD_SIZE);
+        const neededWords = getCollisionPairBitmapWordCount(bodyCount);
         if (this.pairBitmap.length < neededWords) {
             this.pairBitmap = new Uint32Array(Math.max(neededWords, this.pairBitmap.length * 2));
         }
