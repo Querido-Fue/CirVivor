@@ -3,6 +3,18 @@ import { getData } from 'data/data_handler.js';
 const DEFAULT_EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
 
 /**
+ * sleep 설정 객체에서 유한 숫자 옵션을 조회합니다.
+ * @param {object|null|undefined} options - sleep 설정 객체입니다.
+ * @param {string} key - 조회할 옵션 키입니다.
+ * @param {number} fallback - 값이 유효하지 않을 때 사용할 기본값입니다.
+ * @returns {number} 유한 숫자로 보정한 옵션 값입니다.
+ */
+function getCollisionEnemySleepOption(options, key, fallback) {
+    const value = options?.[key];
+    return Number.isFinite(value) ? value : fallback;
+}
+
+/**
  * 적 충돌 sleep 상태를 갱신하고 이번 프레임 sleep 여부를 반환합니다.
  * @param {object} enemy - 상태를 확인할 적 객체입니다.
  * @param {number} delta - fixed step delta입니다.
@@ -10,8 +22,8 @@ const DEFAULT_EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
  * @returns {boolean} 이번 프레임 충돌 body를 정지 상태로 다룰지 여부입니다.
  */
 export function updateCollisionEnemySleepState(enemy, delta, options) {
-    const epsilon = Number.isFinite(options?.epsilon) ? options.epsilon : DEFAULT_EPSILON;
-    const sleepSpeedSq = Number.isFinite(options?.sleepSpeedSq) ? options.sleepSpeedSq : 0;
+    const epsilon = getCollisionEnemySleepOption(options, 'epsilon', DEFAULT_EPSILON);
+    const sleepSpeedSq = getCollisionEnemySleepOption(options, 'sleepSpeedSq', 0);
     const prevX = Number.isFinite(enemy.__collisionPrevX) ? enemy.__collisionPrevX : enemy.position.x;
     const prevY = Number.isFinite(enemy.__collisionPrevY) ? enemy.__collisionPrevY : enemy.position.y;
     const speedX = (enemy.position.x - prevX) / Math.max(epsilon, delta);
@@ -45,8 +57,8 @@ export function updateCollisionEnemyPostSolveSleepState(enemy, collisionBody, op
         return;
     }
 
-    const idleTicksToSleep = Number.isFinite(options?.idleTicksToSleep) ? options.idleTicksToSleep : 0;
-    const sleepTicks = Number.isFinite(options?.sleepTicks) ? options.sleepTicks : 0;
+    const idleTicksToSleep = getCollisionEnemySleepOption(options, 'idleTicksToSleep', 0);
+    const sleepTicks = getCollisionEnemySleepOption(options, 'sleepTicks', 0);
     const idleTicks = (enemy.__collisionIdleTicks || 0) + 1;
     enemy.__collisionIdleTicks = idleTicks;
     if (idleTicks >= idleTicksToSleep) {
