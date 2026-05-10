@@ -268,12 +268,16 @@ export class ShapeEnemy extends BaseEnemy {
         const sizeScale = Number.isFinite(overrideOptions.sizeScale) ? overrideOptions.sizeScale : 1;
         const offsetX = Number.isFinite(overrideOptions.offsetX) ? overrideOptions.offsetX : 0;
         const offsetY = Number.isFinite(overrideOptions.offsetY) ? overrideOptions.offsetY : 0;
+        const mergeOffsetX = (Number.isFinite(this.mergePullOffset?.x) ? this.mergePullOffset.x : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.x) ? this.mergeSettleOffset.x : 0);
+        const mergeOffsetY = (Number.isFinite(this.mergePullOffset?.y) ? this.mergePullOffset.y : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.y) ? this.mergeSettleOffset.y : 0);
         const baseH = this.getRenderHeightPx() * sizeScale;
         const h = baseH * this.heightScale;
         const w = baseH * this.aspectRatio;
         const options = this.#renderOptions;
-        options.x = this.renderPosition.x + offsetX;
-        options.y = (this.renderPosition.y - getObjectOffsetY()) + offsetY;
+        options.x = this.renderPosition.x + offsetX + mergeOffsetX;
+        options.y = (this.renderPosition.y - getObjectOffsetY()) + offsetY + mergeOffsetY;
         options.w = w;
         options.h = h;
         options.fill = overrideOptions.fill ?? this.fill;

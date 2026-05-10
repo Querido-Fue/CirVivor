@@ -42,6 +42,12 @@ export class BaseEnemy {
         this.prevPosition = { x: 0, y: 0 };
         /** @type {EnemyVector2} 렌더 보간 좌표 */
         this.renderPosition = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 합체 예열 중 표시 좌표에만 적용할 끌림 오프셋 */
+        this.mergePullOffset = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 합체 직후 표시 좌표가 부드럽게 정착할 오프셋 */
+        this.mergeSettleOffset = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 합체 직후 정착 오프셋의 시작값 */
+        this.mergeSettleStartOffset = { x: 0, y: 0 };
         /** @type {EnemyVector2} */
         this.speed = { x: 0, y: 0 };
         /** @type {EnemyVector2} */
@@ -90,6 +96,11 @@ export class BaseEnemy {
         this.prevPosition.y = this.position.y;
         this.renderPosition.x = this.position.x;
         this.renderPosition.y = this.position.y;
+        this.startMergeSettleOffset(
+            data.mergeSettleOffset?.x ?? 0,
+            data.mergeSettleOffset?.y ?? 0,
+            data.mergeSettleDurationSeconds ?? 0
+        );
         this.setSpeed(data.speed?.x ?? 0, data.speed?.y ?? 0);
         this.setAcc(data.acc?.x ?? 0, data.acc?.y ?? 0);
         this.angularVelocity = Number.isFinite(data.angularVelocity) ? data.angularVelocity : 0;
@@ -127,6 +138,14 @@ export class BaseEnemy {
         this.prevPosition.y = 0;
         this.renderPosition.x = 0;
         this.renderPosition.y = 0;
+        this.mergePullOffset.x = 0;
+        this.mergePullOffset.y = 0;
+        this.mergeSettleOffset.x = 0;
+        this.mergeSettleOffset.y = 0;
+        this.mergeSettleStartOffset.x = 0;
+        this.mergeSettleStartOffset.y = 0;
+        this.mergeSettleElapsedSeconds = 0;
+        this.mergeSettleDurationSeconds = 0;
         this.speed.x = 0;
         this.speed.y = 0;
         this.acc.x = 0;
@@ -186,6 +205,83 @@ export class BaseEnemy {
     snapRenderPosition() {
         this.renderPosition.x = this.position.x;
         this.renderPosition.y = this.position.y;
+    }
+
+    /**
+     * 합체 예열 중 표시 좌표에만 적용할 끌림 오프셋을 설정합니다.
+     * @param {number} x - X축 오프셋입니다.
+     * @param {number} y - Y축 오프셋입니다.
+     */
+    setMergePullOffset(x, y) {
+        this.mergePullOffset.x = Number.isFinite(x) ? x : 0;
+        this.mergePullOffset.y = Number.isFinite(y) ? y : 0;
+    }
+
+    /**
+     * 합체 예열 끌림 오프셋을 제거합니다.
+     */
+    clearMergePullOffset() {
+        this.mergePullOffset.x = 0;
+        this.mergePullOffset.y = 0;
+    }
+
+    /**
+     * 합체 직후 표시 좌표가 기존 시각 중심에서 물리 중심으로 정착하도록 시작 오프셋을 설정합니다.
+     * @param {number} x - X축 시작 오프셋입니다.
+     * @param {number} y - Y축 시작 오프셋입니다.
+     * @param {number} durationSeconds - 정착 시간입니다.
+     */
+    startMergeSettleOffset(x, y, durationSeconds) {
+        const duration = Number.isFinite(durationSeconds) ? Math.max(0, durationSeconds) : 0;
+        const offsetX = Number.isFinite(x) ? x : 0;
+        const offsetY = Number.isFinite(y) ? y : 0;
+        if (duration <= 0 || (offsetX === 0 && offsetY === 0)) {
+            this.mergeSettleOffset.x = 0;
+            this.mergeSettleOffset.y = 0;
+            this.mergeSettleStartOffset.x = 0;
+            this.mergeSettleStartOffset.y = 0;
+            this.mergeSettleElapsedSeconds = 0;
+            this.mergeSettleDurationSeconds = 0;
+            return;
+        }
+
+        this.mergeSettleOffset.x = offsetX;
+        this.mergeSettleOffset.y = offsetY;
+        this.mergeSettleStartOffset.x = offsetX;
+        this.mergeSettleStartOffset.y = offsetY;
+        this.mergeSettleElapsedSeconds = 0;
+        this.mergeSettleDurationSeconds = duration;
+    }
+
+    /**
+     * 합체 직후 정착 오프셋을 가변 프레임 기준으로 갱신합니다.
+     * @param {number} delta - 가변 프레임 델타입니다.
+     */
+    updateMergeSettleOffset(delta) {
+        if (!Number.isFinite(delta) || delta <= 0 || this.mergeSettleDurationSeconds <= 0) {
+            return;
+        }
+
+        this.mergeSettleElapsedSeconds = Math.min(
+            this.mergeSettleDurationSeconds,
+            this.mergeSettleElapsedSeconds + delta
+        );
+        const t = this.mergeSettleDurationSeconds <= 0
+            ? 1
+            : this.mergeSettleElapsedSeconds / this.mergeSettleDurationSeconds;
+        const easeOut = 1 - Math.pow(1 - t, 3);
+        const remain = 1 - easeOut;
+        this.mergeSettleOffset.x = this.mergeSettleStartOffset.x * remain;
+        this.mergeSettleOffset.y = this.mergeSettleStartOffset.y * remain;
+
+        if (t >= 1) {
+            this.mergeSettleOffset.x = 0;
+            this.mergeSettleOffset.y = 0;
+            this.mergeSettleStartOffset.x = 0;
+            this.mergeSettleStartOffset.y = 0;
+            this.mergeSettleElapsedSeconds = 0;
+            this.mergeSettleDurationSeconds = 0;
+        }
     }
 
     /**

@@ -629,3 +629,63 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
         gl_FragColor = vec4(premultipliedColor, alpha);
     }
 `;
+
+/**
+ * 육각형 적 합체 경계면의 빛 번짐을 렌더링하는 프래그먼트 셰이더입니다.
+ */
+export const HEXA_MERGE_BOUNDARY_FRAGMENT_SHADER = `
+    precision highp float;
+
+    varying vec2 v_uv;
+
+    uniform vec2 u_resolution;
+    uniform vec2 u_start;
+    uniform vec2 u_end;
+    uniform float u_lineWidth;
+    uniform float u_glowWidth;
+    uniform float u_progress;
+    uniform float u_time;
+    uniform float u_alpha;
+    uniform vec3 u_coreColor;
+    uniform vec3 u_glowColor;
+    uniform vec3 u_highlightColor;
+
+    float saturate(float value) {
+        return clamp(value, 0.0, 1.0);
+    }
+
+    void main() {
+        vec2 fragCoord = vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
+        vec2 segment = u_end - u_start;
+        float segmentLengthSq = max(dot(segment, segment), 0.0001);
+        float along = saturate(dot(fragCoord - u_start, segment) / segmentLengthSq);
+        vec2 closest = u_start + (segment * along);
+        float distanceToLine = length(fragCoord - closest);
+        float progress = saturate(u_progress);
+        float coreWidth = max(0.5, u_lineWidth);
+        float glowWidth = max(coreWidth + 0.5, u_glowWidth);
+        float core = exp(-pow(distanceToLine / coreWidth, 2.0));
+        float glow = exp(-pow(distanceToLine / glowWidth, 2.0));
+        float edgeFade = smoothstep(0.0, 0.12, along) * (1.0 - smoothstep(0.88, 1.0, along));
+        float pulse = 0.78 + (0.22 * sin((along * 19.0) - (u_time * 8.4) + (progress * 4.2)));
+        float spark = pow(max(0.0, sin((along * 31.0) + (u_time * 12.0))), 12.0) * progress;
+        float progressFade = smoothstep(0.02, 0.24, progress);
+
+        vec3 color = (u_glowColor * glow * 0.34)
+            + (u_coreColor * core * 0.82)
+            + (u_highlightColor * (core * 0.32 + spark * 0.42));
+        float alpha = ((glow * 0.46) + (core * 0.76) + (spark * 0.36))
+            * edgeFade
+            * progressFade
+            * pulse
+            * u_alpha;
+        alpha = saturate(alpha);
+
+        if (alpha <= 0.001) {
+            discard;
+        }
+
+        vec3 premultipliedColor = min(color * u_alpha * edgeFade * progressFade, vec3(alpha));
+        gl_FragColor = vec4(premultipliedColor, alpha);
+    }
+`;

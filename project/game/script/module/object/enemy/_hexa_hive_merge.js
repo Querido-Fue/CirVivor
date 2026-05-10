@@ -18,6 +18,22 @@ const HEXA_HIVE_MERGE_CONTACT_SECONDS = HEXA_HIVE_MERGE_CONSTANTS.CONTACT_SECOND
 const HEXA_HIVE_MAX_MEMBER_COUNT = Number.isInteger(HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
     ? Math.max(2, HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
     : Number.POSITIVE_INFINITY;
+const HEXA_HIVE_MERGE_PRESENTATION = HEXA_HIVE_MERGE_CONSTANTS.PRESENTATION ?? Object.freeze({});
+const HEXA_HIVE_MERGE_PULL_DISTANCE_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.PULL_DISTANCE_RATIO)
+    ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.PULL_DISTANCE_RATIO)
+    : 0.18;
+const HEXA_HIVE_MERGE_MAX_PULL_HEIGHT_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.MAX_PULL_HEIGHT_RATIO)
+    ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.MAX_PULL_HEIGHT_RATIO)
+    : 0.32;
+const HEXA_HIVE_MERGE_MIN_EFFECT_PROGRESS = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.MIN_EFFECT_PROGRESS)
+    ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.MIN_EFFECT_PROGRESS)
+    : 0.04;
+const HEXA_HIVE_MERGE_MAX_EFFECT_COMMANDS = Number.isInteger(HEXA_HIVE_MERGE_PRESENTATION.MAX_EFFECT_COMMANDS)
+    ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.MAX_EFFECT_COMMANDS)
+    : 24;
+const HEXA_HIVE_MERGE_SETTLE_SECONDS = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.SETTLE_SECONDS)
+    ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.SETTLE_SECONDS)
+    : 0.18;
 const HEXA_HIVE_MOVE_SPEED_DECAY = HEXA_HIVE_MERGE_CONSTANTS.MOVE_SPEED_DECAY;
 const HEXA_HIVE_MOVE_SPEED_FLOOR_RATIO = HEXA_HIVE_MERGE_CONSTANTS.MOVE_SPEED_FLOOR_RATIO;
 const HEXA_HIVE_WEIGHT_SCALE_PER_EXTRA_CELL = HEXA_HIVE_MERGE_CONSTANTS.WEIGHT_SCALE_PER_EXTRA_CELL;
@@ -73,6 +89,111 @@ function _canHexaHiveMergePairFitLimit(enemyA, enemyB) {
     return memberCountA > 0
         && memberCountB > 0
         && memberCountA + memberCountB <= HEXA_HIVE_MAX_MEMBER_COUNT;
+}
+
+/**
+ * 합체 예열 진행도를 0~1 범위로 반환합니다.
+ * @param {number} contactSeconds - 누적 접촉 시간입니다.
+ * @returns {number} 정규화된 진행도입니다.
+ */
+function _getHexaHiveMergeProgress(contactSeconds) {
+    if (!Number.isFinite(contactSeconds) || contactSeconds <= 0 || HEXA_HIVE_MERGE_CONTACT_SECONDS <= 0) {
+        return 0;
+    }
+
+    return Math.min(1, contactSeconds / HEXA_HIVE_MERGE_CONTACT_SECONDS);
+}
+
+/**
+ * 합체 예열 진행도를 부드러운 보간값으로 변환합니다.
+ * @param {number} progress - 0~1 범위 진행도입니다.
+ * @returns {number} 보간된 진행도입니다.
+ */
+function _smoothHexaHiveMergeProgress(progress) {
+    const t = Math.min(1, Math.max(0, Number.isFinite(progress) ? progress : 0));
+    return t * t * (3 - (2 * t));
+}
+
+/**
+ * 적의 표시 전용 합체 오프셋 합계를 반환합니다.
+ * @param {object|null|undefined} enemy - 대상 적입니다.
+ * @returns {{x:number, y:number}} 표시 오프셋입니다.
+ */
+function _getHexaHivePresentationOffset(enemy) {
+    return {
+        x: (Number.isFinite(enemy?.mergePullOffset?.x) ? enemy.mergePullOffset.x : 0)
+            + (Number.isFinite(enemy?.mergeSettleOffset?.x) ? enemy.mergeSettleOffset.x : 0),
+        y: (Number.isFinite(enemy?.mergePullOffset?.y) ? enemy.mergePullOffset.y : 0)
+            + (Number.isFinite(enemy?.mergeSettleOffset?.y) ? enemy.mergeSettleOffset.y : 0)
+    };
+}
+
+/**
+ * 적의 현재 렌더 높이를 안전하게 반환합니다.
+ * @param {object|null|undefined} enemy - 대상 적입니다.
+ * @returns {number} 렌더 높이입니다.
+ */
+function _getHexaHiveEnemyRenderHeight(enemy) {
+    if (typeof enemy?.getRenderHeightPx === 'function') {
+        const height = enemy.getRenderHeightPx();
+        if (Number.isFinite(height) && height > HEXA_HIVE_EPSILON) {
+            return height;
+        }
+    }
+
+    return getSimulationObjectWH() * ENEMY_DRAW_HEIGHT_RATIO;
+}
+
+/**
+ * 적 ID별 합체 예열 오프셋을 누적합니다.
+ * @param {Map<number, {x:number, y:number, maxDistance:number}>} pullOffsetById - 오프셋 누적 맵입니다.
+ * @param {object} enemy - 대상 적입니다.
+ * @param {number} offsetX - X축 추가 오프셋입니다.
+ * @param {number} offsetY - Y축 추가 오프셋입니다.
+ * @param {number} maxDistance - 적별 최대 오프셋 거리입니다.
+ */
+function _addHexaHivePullOffset(pullOffsetById, enemy, offsetX, offsetY, maxDistance) {
+    if (!Number.isInteger(enemy?.id)) {
+        return;
+    }
+
+    const current = pullOffsetById.get(enemy.id) || {
+        x: 0,
+        y: 0,
+        maxDistance: 0
+    };
+    current.x += Number.isFinite(offsetX) ? offsetX : 0;
+    current.y += Number.isFinite(offsetY) ? offsetY : 0;
+    current.maxDistance = Math.max(current.maxDistance, Number.isFinite(maxDistance) ? maxDistance : 0);
+    pullOffsetById.set(enemy.id, current);
+}
+
+/**
+ * 누적된 합체 예열 오프셋을 적 인스턴스에 반영합니다.
+ * @param {Map<number, object>} activeMergeCandidatesById - 활성 합체 후보 맵입니다.
+ * @param {Map<number, {x:number, y:number, maxDistance:number}>} pullOffsetById - 오프셋 누적 맵입니다.
+ */
+function _applyHexaHivePullOffsets(activeMergeCandidatesById, pullOffsetById) {
+    for (const [enemyId, pullOffset] of pullOffsetById.entries()) {
+        const enemy = activeMergeCandidatesById.get(enemyId);
+        if (!enemy) {
+            continue;
+        }
+
+        let offsetX = Number.isFinite(pullOffset.x) ? pullOffset.x : 0;
+        let offsetY = Number.isFinite(pullOffset.y) ? pullOffset.y : 0;
+        const distance = Math.hypot(offsetX, offsetY);
+        const maxDistance = Number.isFinite(pullOffset.maxDistance) ? Math.max(0, pullOffset.maxDistance) : 0;
+        if (distance > maxDistance && distance > HEXA_HIVE_EPSILON && maxDistance > 0) {
+            const scale = maxDistance / distance;
+            offsetX *= scale;
+            offsetY *= scale;
+        }
+
+        if (typeof enemy.setMergePullOffset === 'function') {
+            enemy.setMergePullOffset(offsetX, offsetY);
+        }
+    }
 }
 
 /**
@@ -230,6 +351,82 @@ export function syncHexaHiveMergeState({
 }
 
 /**
+ * 합체 예열 중인 후보들의 표시 오프셋과 WebGL 이펙트 페어를 동기화합니다.
+ * @param {object} options - 동기화 옵션입니다.
+ * @param {Map<number, object>} options.activeMergeCandidatesById - 활성 합체 후보 맵입니다.
+ * @param {Map<string, number>} options.contactSecondsByPair - pair key별 접촉 시간 맵입니다.
+ * @returns {{enemyA: object, enemyB: object, progress: number}[]} 합체 경계 이펙트 페어입니다.
+ */
+export function syncHexaHiveMergePresentationState({
+    activeMergeCandidatesById,
+    contactSecondsByPair
+}) {
+    const effectPairs = [];
+    if (!(activeMergeCandidatesById instanceof Map)) {
+        return effectPairs;
+    }
+
+    for (const enemy of activeMergeCandidatesById.values()) {
+        if (typeof enemy?.clearMergePullOffset === 'function') {
+            enemy.clearMergePullOffset();
+        }
+    }
+
+    if (!(contactSecondsByPair instanceof Map) || contactSecondsByPair.size === 0) {
+        return effectPairs;
+    }
+
+    const pullOffsetById = new Map();
+    for (const [pairKey, contactSeconds] of contactSecondsByPair.entries()) {
+        const progress = _getHexaHiveMergeProgress(contactSeconds);
+        if (progress <= 0) {
+            continue;
+        }
+
+        const [enemyIdA, enemyIdB] = _parseHexaHivePairKey(pairKey);
+        const enemyA = activeMergeCandidatesById.get(enemyIdA);
+        const enemyB = activeMergeCandidatesById.get(enemyIdB);
+        if (!enemyA || !enemyB || !_canHexaHiveMergePairFitLimit(enemyA, enemyB)) {
+            continue;
+        }
+
+        const ax = Number.isFinite(enemyA.position?.x) ? enemyA.position.x : 0;
+        const ay = Number.isFinite(enemyA.position?.y) ? enemyA.position.y : 0;
+        const bx = Number.isFinite(enemyB.position?.x) ? enemyB.position.x : 0;
+        const by = Number.isFinite(enemyB.position?.y) ? enemyB.position.y : 0;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const distance = Math.hypot(dx, dy);
+        if (distance <= HEXA_HIVE_EPSILON) {
+            continue;
+        }
+
+        const dirX = dx / distance;
+        const dirY = dy / distance;
+        const baseHeight = Math.min(
+            _getHexaHiveEnemyRenderHeight(enemyA),
+            _getHexaHiveEnemyRenderHeight(enemyB)
+        );
+        const maxPullDistance = baseHeight * HEXA_HIVE_MERGE_MAX_PULL_HEIGHT_RATIO;
+        const pullDistance = Math.min(
+            distance * HEXA_HIVE_MERGE_PULL_DISTANCE_RATIO,
+            maxPullDistance
+        ) * _smoothHexaHiveMergeProgress(progress);
+
+        _addHexaHivePullOffset(pullOffsetById, enemyA, dirX * pullDistance, dirY * pullDistance, maxPullDistance);
+        _addHexaHivePullOffset(pullOffsetById, enemyB, -dirX * pullDistance, -dirY * pullDistance, maxPullDistance);
+
+        if (progress >= HEXA_HIVE_MERGE_MIN_EFFECT_PROGRESS
+            && effectPairs.length < HEXA_HIVE_MERGE_MAX_EFFECT_COMMANDS) {
+            effectPairs.push({ enemyA, enemyB, progress });
+        }
+    }
+
+    _applyHexaHivePullOffsets(activeMergeCandidatesById, pullOffsetById);
+    return effectPairs;
+}
+
+/**
  * 현재 활성 합체 후보를 ID 맵으로 구성합니다.
  * @param {object[]} enemies - 현재 적 목록입니다.
  * @returns {Map<number, object>} 활성 합체 후보 맵입니다.
@@ -324,6 +521,8 @@ export function buildHexaHiveSpawnData(mergeGroup) {
     let totalMass = 0;
     let weightedCenterX = 0;
     let weightedCenterY = 0;
+    let weightedPresentationCenterX = 0;
+    let weightedPresentationCenterY = 0;
     let weightedRotationSin = 0;
     let weightedRotationCos = 0;
     let weightedSpeedX = 0;
@@ -353,6 +552,7 @@ export function buildHexaHiveSpawnData(mergeGroup) {
 
         const enemyWeight = Math.max(HEXA_HIVE_EPSILON, Number.isFinite(enemy.weight) ? enemy.weight : 1);
         const cellMass = enemyWeight / enemyCells.length;
+        const presentationOffset = _getHexaHivePresentationOffset(enemy);
         const baseMoveSpeed = _getHexaHiveBaseMoveSpeed(enemy);
         const currentMoveSpeed = Number.isFinite(enemy.moveSpeed) ? enemy.moveSpeed : baseMoveSpeed;
         const accSpeed = Number.isFinite(enemy.accSpeed) ? enemy.accSpeed : 0;
@@ -367,6 +567,8 @@ export function buildHexaHiveSpawnData(mergeGroup) {
             totalMass += cellMass;
             weightedCenterX += enemyCells[j].x * cellMass;
             weightedCenterY += enemyCells[j].y * cellMass;
+            weightedPresentationCenterX += (enemyCells[j].x + presentationOffset.x) * cellMass;
+            weightedPresentationCenterY += (enemyCells[j].y + presentationOffset.y) * cellMass;
         }
 
         totalCells += enemyCells.length;
@@ -400,6 +602,12 @@ export function buildHexaHiveSpawnData(mergeGroup) {
 
     const centerX = weightedCenterX / totalMass;
     const centerY = weightedCenterY / totalMass;
+    const presentationCenterX = weightedPresentationCenterX / totalMass;
+    const presentationCenterY = weightedPresentationCenterY / totalMass;
+    const mergeSettleOffsetX = presentationCenterX - centerX;
+    const mergeSettleOffsetY = presentationCenterY - centerY;
+    const shouldSettleMergeOffset = HEXA_HIVE_MERGE_SETTLE_SECONDS > 0
+        && Math.hypot(mergeSettleOffsetX, mergeSettleOffsetY) > HEXA_HIVE_EPSILON;
     const baseHeight = weightedBaseHeight / totalCells;
     const mergedRotation = snapHexaRotationDegToSymmetry(
         Math.atan2(weightedRotationSin, weightedRotationCos) * RADIANS_TO_DEGREES
@@ -445,6 +653,10 @@ export function buildHexaHiveSpawnData(mergeGroup) {
         rotation: mergedRotation,
         angularVelocity: weightedAngularVelocity / safeTotalWeight,
         angularDeceleration: Math.abs(weightedAngularVelocity / safeTotalWeight),
+        mergeSettleOffset: shouldSettleMergeOffset
+            ? { x: mergeSettleOffsetX, y: mergeSettleOffsetY }
+            : null,
+        mergeSettleDurationSeconds: shouldSettleMergeOffset ? HEXA_HIVE_MERGE_SETTLE_SECONDS : 0,
         hexaHiveLayout: mergedLayout
     };
 }

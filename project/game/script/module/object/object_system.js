@@ -1,10 +1,11 @@
-import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
+import { getDelta, getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getData } from 'data/data_handler.js';
 import { enemyAI } from './enemy/ai/_enemy_ai.js';
 import { createEnemyPools } from './enemy/_enemy_pool_factory.js';
 import {
     clearHexaHiveContactPairsForEnemyIds,
+    syncHexaHiveMergePresentationState,
     syncHexaHiveMergeState
 } from './enemy/_hexa_hive_merge.js';
 import {
@@ -22,6 +23,7 @@ import {
     collectObjectSystemHexaHiveContactPairs,
     resolveObjectSystemHexaHiveMerges
 } from './object_system_hexa_hive_orchestration.js';
+import { drawObjectSystemHexaHiveMergeEffects } from './object_system_hexa_hive_presentation.js';
 import { updateObjectSystemEnemies } from './object_system_update_helpers.js';
 import { PhysicsSystem } from 'physics/physics_system.js';
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
@@ -71,6 +73,7 @@ export class ObjectSystem {
         this.aiWallsVersion = 0;
         this.enemyCullOutsideRatio = DEFAULT_OUTSIDE_CULL_RATIO;
         this.hexaHiveContactSecondsByPair = new Map();
+        this.hexaHiveMergeEffectPairs = [];
     }
 
     /**
@@ -90,6 +93,7 @@ export class ObjectSystem {
         updateObjectSystemEnemies({
             enemies: this.enemies,
             alpha,
+            delta: getDelta(),
             ww,
             objectWH,
             enemyCullOutsideRatio: this.enemyCullOutsideRatio,
@@ -144,12 +148,18 @@ export class ObjectSystem {
             delta,
             contactPairs: hexaContactPairs
         });
+        this.hexaHiveMergeEffectPairs = syncHexaHiveMergePresentationState({
+            activeMergeCandidatesById: hexaMergeCandidatesById,
+            contactSecondsByPair: this.hexaHiveContactSecondsByPair
+        });
         this.resolveEnemyCollisions(this.enemies, {
             delta,
             players: this.players
         });
         this.resolveProjectileVsEnemies(this.projectiles, this.enemies, delta);
-        this.resolveHexaHiveMerges(hexaMergeCandidatesById);
+        if (this.resolveHexaHiveMerges(hexaMergeCandidatesById) > 0) {
+            this.hexaHiveMergeEffectPairs = [];
+        }
     }
 
     /**
@@ -159,6 +169,7 @@ export class ObjectSystem {
         for (let i = 0; i < this.enemies.length; i++) {
             this.enemies[i].draw();
         }
+        drawObjectSystemHexaHiveMergeEffects(this.hexaHiveMergeEffectPairs);
     }
 
     /**
@@ -227,6 +238,7 @@ export class ObjectSystem {
          * 현재 화면 상에 배치된 모든 활성 적들을 전부 제거 및 반납합니다.
          */
     clearEnemies() {
+        this.hexaHiveMergeEffectPairs = [];
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             this.#releaseEnemyAt(i);
         }
@@ -456,6 +468,11 @@ export class ObjectSystem {
         if (!enemy) return;
         if (Number.isInteger(enemy.id)) {
             clearHexaHiveContactPairsForEnemyIds(this.hexaHiveContactSecondsByPair, new Set([enemy.id]));
+        }
+        if (Array.isArray(this.hexaHiveMergeEffectPairs) && this.hexaHiveMergeEffectPairs.length > 0) {
+            this.hexaHiveMergeEffectPairs = this.hexaHiveMergeEffectPairs.filter((pair) => (
+                pair?.enemyA !== enemy && pair?.enemyB !== enemy
+            ));
         }
 
         this.releaseEnemyToPool(enemy);

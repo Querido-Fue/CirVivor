@@ -97,8 +97,12 @@ export class HexaHiveEnemy extends ShapeEnemy {
         const objectOffsetY = getObjectOffsetY();
         const rotation = Number.isFinite(this.rotation) ? this.rotation : 0;
         const rotationRadians = rotation * DEGREES_TO_RADIANS;
-        const renderX = this.renderPosition.x;
-        const renderY = this.renderPosition.y - objectOffsetY;
+        const mergeOffsetX = (Number.isFinite(this.mergePullOffset?.x) ? this.mergePullOffset.x : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.x) ? this.mergeSettleOffset.x : 0);
+        const mergeOffsetY = (Number.isFinite(this.mergePullOffset?.y) ? this.mergePullOffset.y : 0)
+            + (Number.isFinite(this.mergeSettleOffset?.y) ? this.mergeSettleOffset.y : 0);
+        const renderX = this.renderPosition.x + mergeOffsetX;
+        const renderY = this.renderPosition.y - objectOffsetY + mergeOffsetY;
         const frontFill = typeof this.fill === 'string' ? this.fill : ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
         const backdropFill = this._resolveBackdropFill();
         const backdropAlpha = Number.isFinite(this.alpha) ? this.alpha : 1;

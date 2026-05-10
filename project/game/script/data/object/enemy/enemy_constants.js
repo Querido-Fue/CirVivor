@@ -44,6 +44,16 @@ export const ENEMY_CONSTANTS = Object.freeze({
         MERGE: Object.freeze({
             MAX_MEMBER_COUNT: 8,
             CONTACT_SECONDS: 0.5,
+            PRESENTATION: Object.freeze({
+                PULL_DISTANCE_RATIO: 0.18,
+                MAX_PULL_HEIGHT_RATIO: 0.32,
+                MIN_EFFECT_PROGRESS: 0.04,
+                MAX_EFFECT_COMMANDS: 24,
+                EFFECT_LINE_LENGTH_RATIO: 0.74,
+                EFFECT_LINE_WIDTH_RATIO: 0.08,
+                EFFECT_GLOW_WIDTH_RATIO: 0.34,
+                SETTLE_SECONDS: 0.18
+            }),
             MOVE_SPEED_DECAY: 0.95,
             MOVE_SPEED_FLOOR_RATIO: 0.5,
             WEIGHT_SCALE_PER_EXTRA_CELL: 0.5,

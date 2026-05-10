@@ -4,6 +4,7 @@
 export const EFFECT_RENDER_CONSTANTS = Object.freeze({
     TYPES: Object.freeze({
         MAGNETIC_SHIELD: 'magneticShield',
+        HEXA_MERGE_BOUNDARY: 'hexaMergeBoundary',
         TITLE_LOADING_CIRCLE: 'titleLoadingCircle'
     })
 });
