@@ -6,6 +6,27 @@ const CELL_KEY_STRIDE = COLLISION_GRID_CONSTANTS.CELL_KEY_STRIDE;
 const GRID_QUERY_INITIAL_CAPACITY = COLLISION_GRID_CONSTANTS.QUERY_INITIAL_CAPACITY;
 
 /**
+ * grid query를 실행할 수 있는 입력인지 반환합니다.
+ * @param {object|null|undefined} body - query body입니다.
+ * @param {number} cellSize - grid cell size입니다.
+ * @param {number} bodyCount - 전체 body 개수입니다.
+ * @returns {boolean} 후보 수집을 진행할 수 있으면 true입니다.
+ */
+function canCollectCollisionGridCandidates(body, cellSize, bodyCount) {
+    return Boolean(body) && cellSize > 0 && bodyCount > 0;
+}
+
+/**
+ * mark 버퍼 확장 길이를 계산합니다.
+ * @param {number} currentLength - 현재 mark 버퍼 길이입니다.
+ * @param {number} bodyCount - 필요한 body 개수입니다.
+ * @returns {number} 새 mark 버퍼 길이입니다.
+ */
+function getCollisionGridMarkCapacity(currentLength, bodyCount) {
+    return Math.max(bodyCount, currentLength * 2);
+}
+
+/**
  * grid query에서 방문 body를 중복 수집하지 않도록 stamp 버퍼를 관리합니다.
  */
 export class CollisionGridQueryBuffer {
@@ -29,7 +50,7 @@ export class CollisionGridQueryBuffer {
     collectCandidateIndices(grid, body, cellSize, bodyCount) {
         const candidates = this.candidateIndices;
         candidates.length = 0;
-        if (!body || cellSize <= 0 || bodyCount <= 0) {
+        if (!canCollectCollisionGridCandidates(body, cellSize, bodyCount)) {
             return candidates;
         }
 
@@ -65,7 +86,7 @@ export class CollisionGridQueryBuffer {
             return;
         }
 
-        this.marks = new Int32Array(Math.max(bodyCount, this.marks.length * 2));
+        this.marks = new Int32Array(getCollisionGridMarkCapacity(this.marks.length, bodyCount));
     }
 
     /**
