@@ -7,6 +7,9 @@ const GRID_BUCKET_INITIAL_CAPACITY = getData('COLLISION_CONSTANTS').GRID.BUCKET_
  * broad-phase grid bucket 객체와 인덱스 버퍼 용량을 재사용 관리합니다.
  */
 export class CollisionGridBucketPool {
+    /**
+     * grid bucket 풀을 생성합니다.
+     */
     constructor() {
         this.items = [];
         this.cursor = 0;
@@ -29,15 +32,12 @@ export class CollisionGridBucketPool {
      * @returns {object} 재사용 가능한 grid bucket입니다.
      */
     acquire() {
-        if (this.cursor < this.items.length) {
-            const bucket = this.items[this.cursor++];
-            bucket.count = 0;
-            return bucket;
+        if (this.cursor >= this.items.length) {
+            this.items.push(createCollisionGridBucket(GRID_BUCKET_INITIAL_CAPACITY));
         }
 
-        const bucket = createCollisionGridBucket(GRID_BUCKET_INITIAL_CAPACITY);
-        this.items.push(bucket);
-        this.cursor++;
+        const bucket = this.items[this.cursor++];
+        bucket.count = 0;
         return bucket;
     }
 

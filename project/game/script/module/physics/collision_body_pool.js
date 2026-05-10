@@ -4,6 +4,9 @@ import { createCollisionBody } from './collision_scratch_objects.js';
  * 충돌 body 객체를 프레임 단위로 재사용하는 풀입니다.
  */
 export class CollisionBodyPool {
+    /**
+     * 프레임 재사용 body 풀을 생성합니다.
+     */
     constructor() {
         this.items = [];
         this.cursor = 0;
@@ -21,13 +24,10 @@ export class CollisionBodyPool {
      * @returns {object} 충돌 body 객체입니다.
      */
     acquire() {
-        if (this.cursor < this.items.length) {
-            return this.items[this.cursor++];
+        if (this.cursor >= this.items.length) {
+            this.items.push(createCollisionBody());
         }
 
-        const body = createCollisionBody();
-        this.items.push(body);
-        this.cursor++;
-        return body;
+        return this.items[this.cursor++];
     }
 }
