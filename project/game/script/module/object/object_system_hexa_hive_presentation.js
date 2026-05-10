@@ -158,9 +158,9 @@ export function drawObjectSystemHexaHiveMergeEffects(effectPairs) {
         const perpendicularX = -dirY;
         const perpendicularY = dirX;
         const baseHeight = Math.min(getEnemyRenderHeight(enemyA), getEnemyRenderHeight(enemyB));
-        const halfLength = baseHeight * EFFECT_LINE_LENGTH_RATIO * (0.72 + (progress * 0.28)) * 0.5;
-        const lineWidth = baseHeight * EFFECT_LINE_WIDTH_RATIO * (0.72 + (progress * 0.36));
-        const glowWidth = baseHeight * EFFECT_GLOW_WIDTH_RATIO * (0.78 + (progress * 0.42));
+        const halfLength = baseHeight * EFFECT_LINE_LENGTH_RATIO * (0.84 + (progress * 0.16)) * 0.5;
+        const lineWidth = baseHeight * EFFECT_LINE_WIDTH_RATIO * (0.88 + (progress * 0.18));
+        const glowWidth = baseHeight * EFFECT_GLOW_WIDTH_RATIO * (0.82 + (progress * 0.22));
 
         renderGL('effectGL', {
             effectType: EFFECT_TYPES.HEXA_MERGE_BOUNDARY,
@@ -169,10 +169,13 @@ export function drawObjectSystemHexaHiveMergeEffects(effectPairs) {
             x2: seamX + (perpendicularX * halfLength),
             y2: seamY + (perpendicularY * halfLength) - objectOffsetY,
             progress,
-            alpha: 0.92,
+            alpha: 0.88,
             lineWidth,
             glowWidth,
-            time
+            time,
+            coreColor: [1.0, 1.0, 1.0],
+            glowColor: [0.82, 0.95, 1.0],
+            highlightColor: [1.0, 1.0, 1.0]
         });
     }
 }

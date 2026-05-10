@@ -63,9 +63,9 @@ export class HexaMergeBoundaryEffectPass {
         gl.uniform1f(this.programInfo.uniforms.u_progress, Number.isFinite(command.progress) ? clamp01(command.progress) : 0);
         gl.uniform1f(this.programInfo.uniforms.u_time, Number.isFinite(command.time) ? command.time : 0);
         gl.uniform1f(this.programInfo.uniforms.u_alpha, Number.isFinite(command.alpha) ? clamp01(command.alpha) : 1);
-        gl.uniform3fv(this.programInfo.uniforms.u_coreColor, command.coreColor || [0.58, 0.96, 1.0]);
-        gl.uniform3fv(this.programInfo.uniforms.u_glowColor, command.glowColor || [0.20, 0.66, 1.0]);
-        gl.uniform3fv(this.programInfo.uniforms.u_highlightColor, command.highlightColor || [0.98, 1.0, 0.82]);
+        gl.uniform3fv(this.programInfo.uniforms.u_coreColor, command.coreColor || [1.0, 1.0, 1.0]);
+        gl.uniform3fv(this.programInfo.uniforms.u_glowColor, command.glowColor || [0.82, 0.95, 1.0]);
+        gl.uniform3fv(this.programInfo.uniforms.u_highlightColor, command.highlightColor || [1.0, 1.0, 1.0]);
 
         this.#applyScissorRect(scissorRect, renderHeight);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

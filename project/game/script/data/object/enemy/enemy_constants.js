@@ -47,11 +47,12 @@ export const ENEMY_CONSTANTS = Object.freeze({
             PRESENTATION: Object.freeze({
                 PULL_DISTANCE_RATIO: 0.18,
                 MAX_PULL_HEIGHT_RATIO: 0.32,
+                PULL_SAFE_CELL_DISTANCE_RATIO: 0.82,
                 MIN_EFFECT_PROGRESS: 0.04,
-                MAX_EFFECT_COMMANDS: 24,
-                EFFECT_LINE_LENGTH_RATIO: 0.74,
-                EFFECT_LINE_WIDTH_RATIO: 0.08,
-                EFFECT_GLOW_WIDTH_RATIO: 0.34,
+                MAX_EFFECT_COMMANDS: 8,
+                EFFECT_LINE_LENGTH_RATIO: 0.62,
+                EFFECT_LINE_WIDTH_RATIO: 0.07,
+                EFFECT_GLOW_WIDTH_RATIO: 0.16,
                 SETTLE_SECONDS: 0.18
             }),
             MOVE_SPEED_DECAY: 0.95,

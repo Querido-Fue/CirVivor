@@ -148,15 +148,15 @@ export class ObjectSystem {
             delta,
             contactPairs: hexaContactPairs
         });
-        this.hexaHiveMergeEffectPairs = syncHexaHiveMergePresentationState({
-            activeMergeCandidatesById: hexaMergeCandidatesById,
-            contactSecondsByPair: this.hexaHiveContactSecondsByPair
-        });
         this.resolveEnemyCollisions(this.enemies, {
             delta,
             players: this.players
         });
         this.resolveProjectileVsEnemies(this.projectiles, this.enemies, delta);
+        this.hexaHiveMergeEffectPairs = syncHexaHiveMergePresentationState({
+            activeMergeCandidatesById: hexaMergeCandidatesById,
+            contactSecondsByPair: this.hexaHiveContactSecondsByPair
+        });
         if (this.resolveHexaHiveMerges(hexaMergeCandidatesById) > 0) {
             this.hexaHiveMergeEffectPairs = [];
         }

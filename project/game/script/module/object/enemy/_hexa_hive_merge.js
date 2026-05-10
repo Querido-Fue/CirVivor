@@ -25,6 +25,9 @@ const HEXA_HIVE_MERGE_PULL_DISTANCE_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRES
 const HEXA_HIVE_MERGE_MAX_PULL_HEIGHT_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.MAX_PULL_HEIGHT_RATIO)
     ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.MAX_PULL_HEIGHT_RATIO)
     : 0.32;
+const HEXA_HIVE_MERGE_PULL_SAFE_CELL_DISTANCE_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.PULL_SAFE_CELL_DISTANCE_RATIO)
+    ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.PULL_SAFE_CELL_DISTANCE_RATIO)
+    : 0.82;
 const HEXA_HIVE_MERGE_MIN_EFFECT_PROGRESS = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.MIN_EFFECT_PROGRESS)
     ? Math.max(0, HEXA_HIVE_MERGE_PRESENTATION.MIN_EFFECT_PROGRESS)
     : 0.04;
@@ -129,6 +132,26 @@ function _getHexaHivePresentationOffset(enemy) {
 }
 
 /**
+ * 적의 마지막 렌더 위치까지 포함한 합체 표시 오프셋을 반환합니다.
+ * @param {object|null|undefined} enemy - 대상 적입니다.
+ * @returns {{x:number, y:number}} 렌더 기준 표시 오프셋입니다.
+ */
+function _getHexaHiveRenderPresentationOffset(enemy) {
+    const baseOffset = _getHexaHivePresentationOffset(enemy);
+    const renderPosition = enemy?.renderPosition || enemy?.position || { x: 0, y: 0 };
+    const position = enemy?.position || renderPosition;
+
+    return {
+        x: baseOffset.x
+            + ((Number.isFinite(renderPosition.x) ? renderPosition.x : 0)
+                - (Number.isFinite(position.x) ? position.x : 0)),
+        y: baseOffset.y
+            + ((Number.isFinite(renderPosition.y) ? renderPosition.y : 0)
+                - (Number.isFinite(position.y) ? position.y : 0))
+    };
+}
+
+/**
  * 적의 현재 렌더 높이를 안전하게 반환합니다.
  * @param {object|null|undefined} enemy - 대상 적입니다.
  * @returns {number} 렌더 높이입니다.
@@ -160,11 +183,11 @@ function _addHexaHivePullOffset(pullOffsetById, enemy, offsetX, offsetY, maxDist
     const current = pullOffsetById.get(enemy.id) || {
         x: 0,
         y: 0,
-        maxDistance: 0
+        maxDistance: Number.POSITIVE_INFINITY
     };
     current.x += Number.isFinite(offsetX) ? offsetX : 0;
     current.y += Number.isFinite(offsetY) ? offsetY : 0;
-    current.maxDistance = Math.max(current.maxDistance, Number.isFinite(maxDistance) ? maxDistance : 0);
+    current.maxDistance = Math.min(current.maxDistance, Number.isFinite(maxDistance) ? maxDistance : 0);
     pullOffsetById.set(enemy.id, current);
 }
 
@@ -390,12 +413,10 @@ export function syncHexaHiveMergePresentationState({
             continue;
         }
 
-        const ax = Number.isFinite(enemyA.position?.x) ? enemyA.position.x : 0;
-        const ay = Number.isFinite(enemyA.position?.y) ? enemyA.position.y : 0;
-        const bx = Number.isFinite(enemyB.position?.x) ? enemyB.position.x : 0;
-        const by = Number.isFinite(enemyB.position?.y) ? enemyB.position.y : 0;
-        const dx = bx - ax;
-        const dy = by - ay;
+        const dx = (Number.isFinite(enemyB.position?.x) ? enemyB.position.x : 0)
+            - (Number.isFinite(enemyA.position?.x) ? enemyA.position.x : 0);
+        const dy = (Number.isFinite(enemyB.position?.y) ? enemyB.position.y : 0)
+            - (Number.isFinite(enemyA.position?.y) ? enemyA.position.y : 0);
         const distance = Math.hypot(dx, dy);
         if (distance <= HEXA_HIVE_EPSILON) {
             continue;
@@ -408,13 +429,18 @@ export function syncHexaHiveMergePresentationState({
             _getHexaHiveEnemyRenderHeight(enemyB)
         );
         const maxPullDistance = baseHeight * HEXA_HIVE_MERGE_MAX_PULL_HEIGHT_RATIO;
+        const safeCellDistance = baseHeight * HEXA_HIVE_MERGE_PULL_SAFE_CELL_DISTANCE_RATIO;
+        const noOverlapPairPullDistance = Math.max(0, (distance - safeCellDistance) * 0.5);
         const pullDistance = Math.min(
             distance * HEXA_HIVE_MERGE_PULL_DISTANCE_RATIO,
-            maxPullDistance
+            maxPullDistance,
+            noOverlapPairPullDistance
         ) * _smoothHexaHiveMergeProgress(progress);
 
-        _addHexaHivePullOffset(pullOffsetById, enemyA, dirX * pullDistance, dirY * pullDistance, maxPullDistance);
-        _addHexaHivePullOffset(pullOffsetById, enemyB, -dirX * pullDistance, -dirY * pullDistance, maxPullDistance);
+        const pairMaxPullDistance = Math.min(maxPullDistance, noOverlapPairPullDistance);
+
+        _addHexaHivePullOffset(pullOffsetById, enemyA, dirX * pullDistance, dirY * pullDistance, pairMaxPullDistance);
+        _addHexaHivePullOffset(pullOffsetById, enemyB, -dirX * pullDistance, -dirY * pullDistance, pairMaxPullDistance);
 
         if (progress >= HEXA_HIVE_MERGE_MIN_EFFECT_PROGRESS
             && effectPairs.length < HEXA_HIVE_MERGE_MAX_EFFECT_COMMANDS) {
@@ -552,7 +578,7 @@ export function buildHexaHiveSpawnData(mergeGroup) {
 
         const enemyWeight = Math.max(HEXA_HIVE_EPSILON, Number.isFinite(enemy.weight) ? enemy.weight : 1);
         const cellMass = enemyWeight / enemyCells.length;
-        const presentationOffset = _getHexaHivePresentationOffset(enemy);
+        const presentationOffset = _getHexaHiveRenderPresentationOffset(enemy);
         const baseMoveSpeed = _getHexaHiveBaseMoveSpeed(enemy);
         const currentMoveSpeed = Number.isFinite(enemy.moveSpeed) ? enemy.moveSpeed : baseMoveSpeed;
         const accSpeed = Number.isFinite(enemy.accSpeed) ? enemy.accSpeed : 0;
