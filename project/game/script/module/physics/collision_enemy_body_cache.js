@@ -1,4 +1,35 @@
 /**
+ * 캐시가 현재 fixed frame 토큰에 속하는지 반환합니다.
+ * @param {object} cache - enemy body 캐시입니다.
+ * @param {number} frameToken - 현재 fixed frame 토큰입니다.
+ * @returns {boolean} 같은 프레임이면 true입니다.
+ */
+function isCollisionEnemyBodyCacheFrameReusable(cache, frameToken) {
+    return cache.frameToken === frameToken;
+}
+
+/**
+ * 캐시가 같은 enemy 배열을 기준으로 만들어졌는지 반환합니다.
+ * @param {object} cache - enemy body 캐시입니다.
+ * @param {object[]} enemies - 요청 enemy 배열입니다.
+ * @returns {boolean} 같은 enemy 배열이면 true입니다.
+ */
+function isCollisionEnemyBodyCacheSourceReusable(cache, enemies) {
+    return Array.isArray(enemies) && cache.enemies === enemies && cache.sourceLength === enemies.length;
+}
+
+/**
+ * 캐시 생성 delta와 요청 delta가 허용 오차 안에 있는지 반환합니다.
+ * @param {object} cache - enemy body 캐시입니다.
+ * @param {number} delta - 요청 delta입니다.
+ * @param {number} epsilon - delta 비교 허용 오차입니다.
+ * @returns {boolean} delta 차이가 허용 범위 안이면 true입니다.
+ */
+function isCollisionEnemyBodyCacheDeltaReusable(cache, delta, epsilon) {
+    return !(Math.abs(cache.delta - delta) > epsilon);
+}
+
+/**
  * 같은 fixed frame에서 같은 enemy 배열로 만든 body 목록을 재사용합니다.
  */
 export class CollisionEnemyBodyCache {
@@ -57,13 +88,13 @@ export class CollisionEnemyBodyCache {
      */
     getReusable(enemies, delta, epsilon) {
         const cache = this.cache;
-        if (cache.frameToken !== this.frameToken) {
+        if (!isCollisionEnemyBodyCacheFrameReusable(cache, this.frameToken)) {
             return null;
         }
-        if (!Array.isArray(enemies) || cache.enemies !== enemies || cache.sourceLength !== enemies.length) {
+        if (!isCollisionEnemyBodyCacheSourceReusable(cache, enemies)) {
             return null;
         }
-        if (Math.abs(cache.delta - delta) > epsilon) {
+        if (!isCollisionEnemyBodyCacheDeltaReusable(cache, delta, epsilon)) {
             return null;
         }
         return Array.isArray(cache.bodies) ? cache.bodies : null;
