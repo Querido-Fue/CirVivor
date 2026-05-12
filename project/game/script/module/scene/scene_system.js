@@ -1,5 +1,5 @@
 import { TitleScene } from './title/_title_scene.js';
-import { GameScene } from './game/_game_scene.js';
+import { GAME_SCENE_MODES, GameScene } from './game/_game_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
 
 const SCENE_STATES = Object.freeze({
@@ -99,7 +99,17 @@ export class SceneSystem {
     gameStart() {
         clearSimulationCommands();
         this.#destroyActiveScene();
-        this.#setScene(new GameScene(this), SCENE_STATES.IN_GAME);
+        this.#setScene(new GameScene(this, { mode: GAME_SCENE_MODES.PLAY }), SCENE_STATES.IN_GAME);
+    }
+
+    /**
+     * 벤치마크 씬을 시작합니다.
+     * 설정 화면의 성능 확인 버튼에서 진입합니다.
+     */
+    benchmarkStart() {
+        clearSimulationCommands();
+        this.#destroyActiveScene();
+        this.#setScene(new GameScene(this, { mode: GAME_SCENE_MODES.BENCHMARK }), SCENE_STATES.IN_GAME);
     }
 
     /**

@@ -63,6 +63,8 @@ export const korean = Object.freeze({
     "title_settings_desc_ui_scale": "UI 크기를 조절합니다. 125%보다 큰 값에선 일부 UI가 보이지 않을 수 있습니다.",
     "title_settings_disable_transparency": "UI 글래스 효과 제거",
     "title_settings_desc_transparency": "UI 배경을 불투명하게 만들어 그래픽 부하를 줄입니다.",
+    "title_settings_benchmark": "성능 벤치마크",
+    "title_settings_benchmark_open": "실행",
     "title_settings_section_ui": "인터페이스",
     "title_settings_language": "언어 (Language)",
     "title_settings_theme": "테마",

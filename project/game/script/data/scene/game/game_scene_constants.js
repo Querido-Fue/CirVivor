@@ -2,6 +2,29 @@
  * 게임 씬 로컬 벤치마크와 HUD 렌더링에 사용하는 정적 상수입니다.
  */
 export const GAME_SCENE_CONSTANTS = Object.freeze({
+    PLAY_MAP: Object.freeze({
+        PLAYER_ID: 1,
+        PLAYER_RADIUS_RATIO: 0.023,
+        PLAYER_WEIGHT: 999999,
+        WALL_MIN_THICKNESS: 12,
+        BOX_SIZE_RATIO: 0.06,
+        PLAYER_POSITION: Object.freeze({
+            X_RATIO: 0.5,
+            Y_RATIO: 0.5
+        }),
+        STATIC_WALLS: Object.freeze([
+            Object.freeze({ X_RATIO: 0.28, Y_RATIO: 0.5, WIDTH_WW_RATIO: 0.014, HEIGHT_WH_RATIO: 0.46 }),
+            Object.freeze({ X_RATIO: 0.72, Y_RATIO: 0.5, WIDTH_WW_RATIO: 0.014, HEIGHT_WH_RATIO: 0.46 }),
+            Object.freeze({ X_RATIO: 0.5, Y_RATIO: 0.32, WIDTH_WW_RATIO: 0.26, HEIGHT_WH_RATIO: 0.024 }),
+            Object.freeze({ X_RATIO: 0.5, Y_RATIO: 0.68, WIDTH_WW_RATIO: 0.26, HEIGHT_WH_RATIO: 0.024 })
+        ]),
+        BOX_POSITIONS: Object.freeze([
+            Object.freeze({ X_RATIO: 0.38, Y_RATIO: 0.42 }),
+            Object.freeze({ X_RATIO: 0.62, Y_RATIO: 0.42 }),
+            Object.freeze({ X_RATIO: 0.38, Y_RATIO: 0.58 }),
+            Object.freeze({ X_RATIO: 0.62, Y_RATIO: 0.58 })
+        ])
+    }),
     BENCHMARK: Object.freeze({
         WALL_HEIGHT_RATIO: 0.5,
         WALL_THICKNESS_RATIO: 0.008,

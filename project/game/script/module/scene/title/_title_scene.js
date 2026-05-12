@@ -126,6 +126,13 @@ export class TitleScene extends BaseScene {
     }
 
     /**
+     * 벤치마크 씬 시작을 요청합니다.
+     */
+    benchmarkStart() {
+        this.sceneSystem.benchmarkStart();
+    }
+
+    /**
      * @override
      * 타이틀 적의 고정 틱 갱신을 처리합니다.
      */

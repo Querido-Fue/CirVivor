@@ -5,7 +5,8 @@ import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_proto
 import { enqueueSimulationCommand } from 'simulation/simulation_command_queue.js';
 import { createDefaultCollisionStats } from './game_scene_snapshot_utils.js';
 import {
-    buildGameSceneResetWorldCommands,
+    buildGameSceneResetBenchmarkWorldCommands,
+    buildGameSceneResetPlayWorldCommands,
     buildGameSceneSpawnEnemiesCommand,
     buildGameSceneSpawnProjectileBurstCommand,
     buildGameSceneSpawnRandomBoxCommand
@@ -46,6 +47,21 @@ const GAME_SCENE_DRAW_SECTIONS = Object.freeze({
     BUTTONS: 'scene.game.local.drawButtons',
     HUD: 'scene.game.local.drawHud'
 });
+export const GAME_SCENE_MODES = Object.freeze({
+    PLAY: 'play',
+    BENCHMARK: 'benchmark'
+});
+
+/**
+ * 게임 씬 모드 값을 정규화합니다.
+ * @param {string|undefined} mode - 원본 모드 값입니다.
+ * @returns {string} 정규화된 게임 씬 모드입니다.
+ */
+function normalizeGameSceneMode(mode) {
+    return mode === GAME_SCENE_MODES.BENCHMARK
+        ? GAME_SCENE_MODES.BENCHMARK
+        : GAME_SCENE_MODES.PLAY;
+}
 
 /**
  * 벤치마크 버튼 배치 값을 계산합니다.
@@ -125,16 +141,17 @@ function enqueueGameSceneCommand(command) {
 
 /**
  * @class GameScene
- * @description 충돌/AI 성능 측정을 위한 벤치마크 씬입니다.
+ * @description 기본 플레이 맵과 벤치마크 모드를 함께 제공하는 게임 씬입니다.
  */
 export class GameScene extends BaseScene {
     /**
      * @param {object} sceneHandler
-     * @param {object} app
+     * @param {{mode?: string}} [options={}]
      */
-    constructor(sceneHandler, app) {
-        super(sceneHandler, app);
+    constructor(sceneHandler, options = {}) {
+        super(sceneHandler);
 
+        this.mode = normalizeGameSceneMode(options.mode);
         this.objectSystem = getObjectSystem();
         this.enemyTypes = Array.isArray(ENEMY_SHAPE_TYPES) && ENEMY_SHAPE_TYPES.length > 0
             ? ENEMY_SHAPE_TYPES
@@ -149,7 +166,7 @@ export class GameScene extends BaseScene {
         this.wallIdCounter = 1;
         this.projIdCounter = 1;
         this.#syncViewport();
-        this.#resetBenchmarkWorld();
+        this.#resetWorld();
         this.#buildButtons();
     }
 
@@ -166,22 +183,39 @@ export class GameScene extends BaseScene {
     /**
      * @private
      */
-    #resetBenchmarkWorld() {
+    #resetWorld() {
         if (!this.objectSystem) return;
 
         this.wallIdCounter = 1;
         this.projIdCounter = 1;
-        this.applySimulationCommands(buildGameSceneResetWorldCommands(this));
+        const commands = this.#isBenchmarkMode()
+            ? buildGameSceneResetBenchmarkWorldCommands(this)
+            : buildGameSceneResetPlayWorldCommands(this);
+        this.applySimulationCommands(commands);
     }
 
     /**
      * @private
      */
     #buildButtons() {
+        if (!this.#isBenchmarkMode()) {
+            this.buttons = [];
+            return;
+        }
+
         const metrics = createGameSceneButtonMetrics(this);
         this.buttons = GAME_SCENE_BUTTON_CONSTANTS.ACTIONS.map((action, index) => {
             return createGameSceneButton(this, action, metrics, index);
         });
+    }
+
+    /**
+     * 현재 씬이 벤치마크 모드인지 반환합니다.
+     * @returns {boolean}
+     * @private
+     */
+    #isBenchmarkMode() {
+        return this.mode === GAME_SCENE_MODES.BENCHMARK;
     }
 
     /**
@@ -213,7 +247,9 @@ export class GameScene extends BaseScene {
      * @override
      */
     update() {
-        updateGameSceneButtonInput(this.buttons);
+        if (this.#isBenchmarkMode()) {
+            updateGameSceneButtonInput(this.buttons);
+        }
         cullLocalGameSceneProjectiles(this);
         syncGameSceneCollisionStats(this);
     }
@@ -222,11 +258,11 @@ export class GameScene extends BaseScene {
      * @override
      */
     fixedUpdate() {
-        // 벤치마크 씬의 고정 물리 루프는 ObjectSystem에서 처리됩니다.
+        // 게임 씬의 고정 물리 루프는 ObjectSystem에서 처리됩니다.
     }
 
     /**
-     * 런타임 설정 변경을 벤치마크 씬에 반영합니다.
+     * 런타임 설정 변경을 게임 씬에 반영합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
@@ -240,7 +276,7 @@ export class GameScene extends BaseScene {
      */
     resize() {
         this.#syncViewport();
-        this.#resetBenchmarkWorld();
+        this.#resetWorld();
         this.#buildButtons();
     }
 
@@ -320,6 +356,9 @@ export class GameScene extends BaseScene {
         measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.WORLD, () => {
             this.#drawWorldObjects();
         });
+        if (!this.#isBenchmarkMode()) {
+            return;
+        }
         measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.BUTTONS, () => {
             this.#drawButtons();
         });

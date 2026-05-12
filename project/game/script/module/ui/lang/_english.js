@@ -63,6 +63,8 @@ export const english = Object.freeze({
     "title_settings_desc_ui_scale": "Adjusts UI size. Some UI elements may not be visible above 125%.",
     "title_settings_disable_transparency": "Opacue UI Backgrounds",
     "title_settings_desc_transparency": "Makes UI backgrounds opaque, Reduces graphics load.",
+    "title_settings_benchmark": "Performance Benchmark",
+    "title_settings_benchmark_open": "Run",
     "title_settings_section_ui": "UI",
     "title_settings_language": "Language",
     "title_settings_theme": "Theme",

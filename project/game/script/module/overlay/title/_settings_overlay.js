@@ -243,6 +243,16 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
+     * 현재 표시 설정 상태로 벤치마크 씬을 시작합니다.
+     * @returns {Promise<void>}
+     */
+    async #startBenchmarkScene() {
+        await this.#flushPendingPreview();
+        this.rollbackOnClose = false;
+        this.titleScene?.benchmarkStart?.();
+    }
+
+    /**
      * 왼쪽 설정 열의 디스플레이 항목을 구성합니다.
      * @param {LayoutHandler} handler - 왼쪽 열 레이아웃 핸들러입니다.
      */
@@ -313,6 +323,16 @@ export class SettingsOverlay extends TitleOverlay {
             .onChange((val) => { this.#handleSettingInput('disableTransparency', val); });
         handler.endGroup();
         this._addItemFooter(handler, 'title_settings_desc_transparency', spacingScale);
+
+        this._addItemHeader(handler, 'title_settings_benchmark');
+        handler.width("parent", controlWrapWidth)
+            .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
+            .item("button", "control_benchmark").stylePreset("overlay_link_button")
+            .buttonText(getLangString('title_settings_benchmark_open'))
+            .buttonColor(ColorSchemes.Overlay.Button.Link).icon("arrow")
+            .onClick(async () => { await this.#startBenchmarkScene(); });
+        handler.endGroup();
+        this._addItemFooter(handler, null, spacingScale);
 
         handler.space("OH", COLUMN.COLUMN_END_SPACE_OH * spacingScale);
     }
