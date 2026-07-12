@@ -115,6 +115,11 @@ export const GAME_SCENE_CONSTANTS = Object.freeze({
                 id: 'spawnProjectile10',
                 label: 'Spawn 10 Projectiles',
                 type: 'spawnProjectiles'
+            }),
+            Object.freeze({
+                id: 'toggleReleaseProfiler',
+                label: 'Toggle Profiler',
+                type: 'toggleReleaseProfiler'
             })
         ])
     })

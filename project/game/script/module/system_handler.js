@@ -17,6 +17,11 @@ import { warmupUIPools } from 'ui/_ui_pool.js';
 import { getData } from 'data/data_handler.js';
 import { drainSimulationCommands } from 'simulation/simulation_command_queue.js';
 import { syncSimulationRuntime } from 'simulation/simulation_runtime.js';
+import {
+    isReleaseSimulationProfilerCollecting,
+    recordReleaseSimulationFixedStep
+} from 'simulation/release_simulation_profiler.js';
+import { drawReleaseSimulationProfilerHud } from 'debug/_release_simulation_profiler_hud.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 const SYSTEM_RUNTIME_POLICY_DATA = getData('SYSTEM_RUNTIME_POLICY_DATA');
@@ -258,16 +263,41 @@ export class SystemHandler {
         const fixedAlpha = executionPolicy.runFixedStep && Number.isFinite(frameContext.fixedAlpha)
             ? frameContext.fixedAlpha
             : 0;
+        const shouldMeasureReleaseSimulation = isReleaseSimulationProfilerCollecting();
 
         if (fixedStepCount > 0) {
             const fixedTotalStart = beginPerformanceSection();
             for (let i = 0; i < fixedStepCount; i++) {
-                if (timeHandler && typeof timeHandler.updateFixed === 'function') {
-                    const fixedTimeStart = beginPerformanceSection();
-                    timeHandler.updateFixed(fixedStepSeconds);
-                    endPerformanceSection('fixed.time', fixedTimeStart);
+                if (!shouldMeasureReleaseSimulation) {
+                    if (timeHandler && typeof timeHandler.updateFixed === 'function') {
+                        const fixedTimeStart = beginPerformanceSection();
+                        timeHandler.updateFixed(fixedStepSeconds);
+                        endPerformanceSection('fixed.time', fixedTimeStart);
+                    }
+                    this.#runFixedStep();
+                    continue;
                 }
-                this.#runFixedStep();
+
+                const releaseFixedStart = performance.now();
+                let completedReleaseFixedStep = false;
+                try {
+                    if (timeHandler && typeof timeHandler.updateFixed === 'function') {
+                        const fixedTimeStart = beginPerformanceSection();
+                        timeHandler.updateFixed(fixedStepSeconds);
+                        endPerformanceSection('fixed.time', fixedTimeStart);
+                    }
+                    this.#runFixedStep();
+                    completedReleaseFixedStep = true;
+                } finally {
+                    if (shouldMeasureReleaseSimulation) {
+                        const releaseFixedEnd = performance.now();
+                        recordReleaseSimulationFixedStep(
+                            releaseFixedEnd,
+                            releaseFixedEnd - releaseFixedStart,
+                            completedReleaseFixedStep
+                        );
+                    }
+                }
             }
             endPerformanceSection('frame.fixed.total', fixedTotalStart);
         }
@@ -504,6 +534,7 @@ export class SystemHandler {
             this.overlayManager.draw();
             endPerformanceSection('frame.draw.overlay', startTime);
         }
+        drawReleaseSimulationProfilerHud();
         if (executionPolicy.renderDebug) {
             const startTime = beginPerformanceSection();
             this.debugSystem.draw();

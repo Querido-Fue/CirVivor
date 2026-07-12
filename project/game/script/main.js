@@ -5,7 +5,16 @@ import { MathUtil } from 'util/math_util.js';
 import { ColorUtil } from 'util/color_util.js';
 import { RuntimeTool, runtimeTool } from 'util/runtime_tool.js';
 import { getData } from 'data/data_handler.js';
-import { FixedStepCatchUpPolicy } from 'simulation/fixed_step_catch_up_policy.js';
+import {
+    FixedStepCatchUpPolicy,
+    countWholeFixedSteps
+} from 'simulation/fixed_step_catch_up_policy.js';
+import {
+    isReleaseSimulationProfilerCollecting,
+    recordReleaseSimulationFrame,
+    resumeReleaseSimulationProfiler,
+    suspendReleaseSimulationProfiler
+} from 'simulation/release_simulation_profiler.js';
 
 let systemHandler;
 let Game;
@@ -101,13 +110,18 @@ class App {
         if (!this.running) return;
         this.loopRequestId = requestAnimationFrame(this._boundLoop);
         const shouldMeasurePerformance = this.systemHandler?.debugSystem?.shouldTrackPerformance?.() === true;
+        const shouldMeasureReleaseSimulation = isReleaseSimulationProfilerCollecting();
         const frameMeasureStart = performance.now();
+        let rawFrameDeltaSeconds = 0;
+        let fixedStepCount = 0;
+        let droppedFixedStepCount = 0;
+        let frameDeltaClampLossSeconds = 0;
         try {
             if (!Number.isFinite(this.lastFrameTimestamp) || this.lastFrameTimestamp <= 0) {
                 this.lastFrameTimestamp = now;
             }
 
-            const rawFrameDeltaSeconds = (now - this.lastFrameTimestamp) / 1000;
+            rawFrameDeltaSeconds = (now - this.lastFrameTimestamp) / 1000;
             let frameDeltaSeconds = rawFrameDeltaSeconds;
             this.lastFrameTimestamp = now;
 
@@ -116,9 +130,11 @@ class App {
             } else if (frameDeltaSeconds > this.maxFrameDeltaSeconds) {
                 frameDeltaSeconds = this.maxFrameDeltaSeconds;
             }
+            if (Number.isFinite(rawFrameDeltaSeconds) && rawFrameDeltaSeconds > frameDeltaSeconds) {
+                frameDeltaClampLossSeconds = rawFrameDeltaSeconds - frameDeltaSeconds;
+            }
 
             const shouldAdvanceFixedStep = this.systemHandler.shouldRunFixedStep();
-            let fixedStepCount = 0;
             if (shouldAdvanceFixedStep) {
                 this.accumulatorSeconds += frameDeltaSeconds;
                 const maxFixedStepsThisFrame = this.fixedStepCatchUpPolicy.resolveMaxSteps(
@@ -133,6 +149,10 @@ class App {
                 }
 
                 if (fixedStepCount >= maxFixedStepsThisFrame && this.accumulatorSeconds >= this.fixedStepSeconds) {
+                    droppedFixedStepCount = countWholeFixedSteps(
+                        this.accumulatorSeconds,
+                        this.fixedStepSeconds
+                    );
                     this.accumulatorSeconds = this.accumulatorSeconds % this.fixedStepSeconds;
                 }
             } else {
@@ -152,7 +172,23 @@ class App {
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
         } finally {
-            const frameMeasureEnd = performance.now();
+            const frameWorkEnd = performance.now();
+            const frameWorkCpuMs = Math.max(0, frameWorkEnd - frameMeasureStart);
+            if (shouldMeasureReleaseSimulation) {
+                recordReleaseSimulationFrame(
+                    frameWorkEnd,
+                    frameWorkCpuMs,
+                    rawFrameDeltaSeconds,
+                    fixedStepCount,
+                    droppedFixedStepCount,
+                    frameDeltaClampLossSeconds,
+                    this.fixedStepSeconds,
+                    this.fixedStepCatchUpPolicy.isCpuBound()
+                );
+            }
+            const frameMeasureEnd = shouldMeasureReleaseSimulation
+                ? performance.now()
+                : frameWorkEnd;
             this.lastFrameCpuSeconds = Math.max(0, (frameMeasureEnd - frameMeasureStart) / 1000);
             if (shouldMeasurePerformance) {
                 this.systemHandler?.debugSystem?.recordPerformanceSample(
@@ -170,6 +206,7 @@ class App {
     stop() {
         if (!this.running) return;
         this.running = false;
+        suspendReleaseSimulationProfiler();
         if (this.loopRequestId !== null) {
             cancelAnimationFrame(this.loopRequestId);
             this.loopRequestId = null;
@@ -362,6 +399,7 @@ class App {
         this.lastFrameTimestamp = performance.now();
         this.lastFrameCpuSeconds = 0;
         this.fixedStepCatchUpPolicy.reset();
+        resumeReleaseSimulationProfiler(this.lastFrameTimestamp);
         this.loopRequestId = requestAnimationFrame(this._boundLoop);
     }
 }

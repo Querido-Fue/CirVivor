@@ -2,6 +2,28 @@
  * 디버그 표시와 계측에 사용하는 정적 상수입니다.
  */
 export const DEBUG_CONSTANTS = Object.freeze({
+    RELEASE_SIMULATION_PROFILER: Object.freeze({
+        RATE_WINDOW_MS: 1000,
+        QUANTILE_WINDOW_MS: 10000,
+        SNAPSHOT_INTERVAL_MS: 1000,
+        FRAME_RING_CAPACITY: 4096,
+        FIXED_RING_CAPACITY: 1024,
+        QUANTILE_P50: 0.5,
+        QUANTILE_P95: 0.95,
+        QUANTILE_P99: 0.99,
+        HUD: Object.freeze({
+            FONT_MIN_SIZE: 11,
+            FONT_WW_RATIO: 0.0075,
+            LINE_HEIGHT_RATIO: 1.32,
+            X_WW_RATIO: 0.985,
+            Y_WH_RATIO: 0.04,
+            PANEL_PADDING_RATIO: 0.65,
+            PANEL_CHAR_WIDTH_RATIO: 0.56,
+            PANEL_FILL: 'rgba(0, 0, 0, 0.72)',
+            TEXT_FILL: '#FFFFFF',
+            FONT_WEIGHT: 500
+        })
+    }),
     PERFORMANCE: Object.freeze({
         WINDOW_MS: 1000,
         MAX_VISIBLE_SECTIONS: 42,

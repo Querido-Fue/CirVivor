@@ -31,6 +31,10 @@ import {
     getSimulationWW
 } from 'simulation/simulation_runtime.js';
 import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
+import {
+    isReleaseSimulationProfilerCollecting,
+    setReleaseSimulationProfilerEnabled
+} from 'simulation/release_simulation_profiler.js';
 
 const GAME_SCENE_CONSTANTS = getData('GAME_SCENE_CONSTANTS');
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
@@ -40,7 +44,8 @@ const GAME_SCENE_BUTTON_LAYOUT = GAME_SCENE_BUTTON_CONSTANTS.LAYOUT;
 const GAME_SCENE_BUTTON_ACTION_TYPES = Object.freeze({
     SPAWN_ENEMIES: 'spawnEnemies',
     SPAWN_BOX: 'spawnBox',
-    SPAWN_PROJECTILES: 'spawnProjectiles'
+    SPAWN_PROJECTILES: 'spawnProjectiles',
+    TOGGLE_RELEASE_PROFILER: 'toggleReleaseProfiler'
 });
 const GAME_SCENE_DRAW_SECTIONS = Object.freeze({
     WORLD: 'scene.game.local.drawWorld',
@@ -106,6 +111,9 @@ function createGameSceneButtonClickHandler(scene, action) {
     }
     if (action.type === GAME_SCENE_BUTTON_ACTION_TYPES.SPAWN_PROJECTILES) {
         return () => scene.queueSpawnProjectileBurst();
+    }
+    if (action.type === GAME_SCENE_BUTTON_ACTION_TYPES.TOGGLE_RELEASE_PROFILER) {
+        return () => scene.toggleReleaseProfiler();
     }
     return () => false;
 }
@@ -178,6 +186,7 @@ export class GameScene extends BaseScene {
             ww: 0,
             wh: 0
         };
+        setReleaseSimulationProfilerEnabled(this.#isBenchmarkMode());
 
         this.wallIdCounter = 1;
         this.projIdCounter = 1;
@@ -260,6 +269,17 @@ export class GameScene extends BaseScene {
     }
 
     /**
+     * 벤치마크 세션의 릴리스 계측을 켜거나 끕니다.
+     * @returns {boolean} 최종 계측 활성 상태입니다.
+     */
+    toggleReleaseProfiler() {
+        if (!this.#isBenchmarkMode()) {
+            return false;
+        }
+        return setReleaseSimulationProfilerEnabled(!isReleaseSimulationProfilerCollecting());
+    }
+
+    /**
      * @override
      */
     update() {
@@ -300,6 +320,9 @@ export class GameScene extends BaseScene {
      * 씬 종료 시 객체 참조를 정리합니다.
      */
     destroy() {
+        if (this.#isBenchmarkMode()) {
+            setReleaseSimulationProfilerEnabled(false);
+        }
         this.applySimulationCommands([{ type: GAME_SCENE_COMMAND_TYPES.DESTROY_WORLD }]);
     }
 

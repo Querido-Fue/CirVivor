@@ -61,12 +61,37 @@ export class FixedStepCatchUpPolicy {
     }
 
     /**
+     * 현재 catch-up 정책이 CPU 포화 상태인지 반환합니다.
+     * @returns {boolean} CPU 포화 상태입니다.
+     */
+    isCpuBound() {
+        return this.cpuBound === true;
+    }
+
+    /**
      * 앱 일시정지·재개 시 이전 포화 판정을 제거합니다.
      */
     reset() {
         this.cpuBound = false;
         this.headroomFrameCount = 0;
     }
+}
+
+/**
+ * accumulator에 남은 정수 fixed tick 수를 계산합니다.
+ * @param {number} accumulatorSeconds - 누적된 simulation 시간입니다.
+ * @param {number} fixedStepSeconds - fixed tick 단위 시간입니다.
+ * @returns {number} accumulator에 포함된 정수 tick 수입니다.
+ */
+export function countWholeFixedSteps(accumulatorSeconds, fixedStepSeconds) {
+    const safeFixedStep = normalizePositiveNumber(fixedStepSeconds, 1 / 60);
+    const safeAccumulator = Number.isFinite(accumulatorSeconds)
+        ? Math.max(0, accumulatorSeconds)
+        : 0;
+    if (safeAccumulator < safeFixedStep) {
+        return 0;
+    }
+    return Math.max(1, Math.floor(safeAccumulator / safeFixedStep));
 }
 
 /**
