@@ -4,7 +4,10 @@ import { clamp01 } from 'util/number_util.js';
 
 const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
 const ENEMY_DEFAULT_WEIGHT = getData('ENEMY_DEFAULT_WEIGHT');
-const ENEMY_MOTION_CONSTANTS = getData('ENEMY_CONSTANTS').MOTION;
+const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
+const ENEMY_MOTION_CONSTANTS = ENEMY_CONSTANTS.MOTION;
+const FULL_TURN_DEG = ENEMY_CONSTANTS.ANGLE.FULL_TURN_DEG;
+const STRAIGHT_DEG = ENEMY_CONSTANTS.ANGLE.STRAIGHT_DEG;
 const MAX_ANGULAR_VELOCITY = ENEMY_MOTION_CONSTANTS.MAX_ANGULAR_VELOCITY;
 const AXIS_RESISTANCE_RECOVERY_SECONDS = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_RECOVERY_SECONDS;
 const AXIS_RESISTANCE_RECOVER_DELAY_SECONDS = ENEMY_MOTION_CONSTANTS.AXIS_RESISTANCE_RECOVER_DELAY_SECONDS;
@@ -44,6 +47,10 @@ export class BaseEnemy {
         this.renderPosition = { x: 0, y: 0 };
         /** @type {EnemyVector2} 합체 예열 중 표시 좌표에만 적용할 끌림 오프셋 */
         this.mergePullOffset = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 직전 fixed tick의 합체 끌림 목표 */
+        this.mergePullPreviousOffset = { x: 0, y: 0 };
+        /** @type {EnemyVector2} 현재 fixed tick의 합체 끌림 목표 */
+        this.mergePullTargetOffset = { x: 0, y: 0 };
         /** @type {EnemyVector2} 합체 직후 표시 좌표가 부드럽게 정착할 오프셋 */
         this.mergeSettleOffset = { x: 0, y: 0 };
         /** @type {EnemyVector2} 합체 직후 정착 오프셋의 시작값 */
@@ -60,6 +67,8 @@ export class BaseEnemy {
             remainingTime: 0,
             factor: {}
         };
+        this.prevRotation = 0;
+        this.renderRotation = 0;
 
         this.reset();
     }
@@ -155,14 +164,21 @@ export class BaseEnemy {
         this.prevPosition.y = 0;
         this.renderPosition.x = 0;
         this.renderPosition.y = 0;
+        this.prevRotation = 0;
+        this.renderRotation = 0;
         this.mergePullOffset.x = 0;
         this.mergePullOffset.y = 0;
+        this.mergePullPreviousOffset.x = 0;
+        this.mergePullPreviousOffset.y = 0;
+        this.mergePullTargetOffset.x = 0;
+        this.mergePullTargetOffset.y = 0;
         this.mergeSettleOffset.x = 0;
         this.mergeSettleOffset.y = 0;
         this.mergeSettleStartOffset.x = 0;
         this.mergeSettleStartOffset.y = 0;
         this.mergeSettleElapsedSeconds = 0;
         this.mergeSettleDurationSeconds = 0;
+        this.mergeSettlePendingFirstRender = false;
         this.speed.x = 0;
         this.speed.y = 0;
         this.acc.x = 0;
@@ -205,16 +221,29 @@ export class BaseEnemy {
     beginFixedStep() {
         this.prevPosition.x = this.position.x;
         this.prevPosition.y = this.position.y;
+        this.prevRotation = Number.isFinite(this.rotation) ? this.rotation : 0;
+        this.mergePullPreviousOffset.x = this.mergePullTargetOffset.x;
+        this.mergePullPreviousOffset.y = this.mergePullTargetOffset.y;
     }
 
     /**
-     * 렌더 프레임에서 물리 좌표를 보간합니다.
+     * 렌더 프레임에서 물리 위치·회전과 합체 끌림을 함께 보간합니다.
      * @param {number} alpha
      */
     interpolatePosition(alpha) {
         const t = Number.isFinite(alpha) ? clamp01(alpha) : 1;
         this.renderPosition.x = this.prevPosition.x + ((this.position.x - this.prevPosition.x) * t);
         this.renderPosition.y = this.prevPosition.y + ((this.position.y - this.prevPosition.y) * t);
+        const previousRotation = Number.isFinite(this.prevRotation) ? this.prevRotation : 0;
+        const currentRotation = Number.isFinite(this.rotation) ? this.rotation : previousRotation;
+        let rotationDelta = (currentRotation - previousRotation) % FULL_TURN_DEG;
+        if (rotationDelta > STRAIGHT_DEG) rotationDelta -= FULL_TURN_DEG;
+        if (rotationDelta < -STRAIGHT_DEG) rotationDelta += FULL_TURN_DEG;
+        this.renderRotation = previousRotation + (rotationDelta * t);
+        this.mergePullOffset.x = this.mergePullPreviousOffset.x
+            + ((this.mergePullTargetOffset.x - this.mergePullPreviousOffset.x) * t);
+        this.mergePullOffset.y = this.mergePullPreviousOffset.y
+            + ((this.mergePullTargetOffset.y - this.mergePullPreviousOffset.y) * t);
     }
 
     /**
@@ -226,21 +255,34 @@ export class BaseEnemy {
     }
 
     /**
+     * 렌더 위치·회전 이력을 현재 물리 transform에 즉시 동기화합니다.
+     */
+    snapRenderTransform() {
+        this.prevPosition.x = this.position.x;
+        this.prevPosition.y = this.position.y;
+        this.renderPosition.x = this.position.x;
+        this.renderPosition.y = this.position.y;
+        const rotation = Number.isFinite(this.rotation) ? this.rotation : 0;
+        this.prevRotation = rotation;
+        this.renderRotation = rotation;
+    }
+
+    /**
      * 합체 예열 중 표시 좌표에만 적용할 끌림 오프셋을 설정합니다.
      * @param {number} x - X축 오프셋입니다.
      * @param {number} y - Y축 오프셋입니다.
      */
     setMergePullOffset(x, y) {
-        this.mergePullOffset.x = Number.isFinite(x) ? x : 0;
-        this.mergePullOffset.y = Number.isFinite(y) ? y : 0;
+        this.mergePullTargetOffset.x = Number.isFinite(x) ? x : 0;
+        this.mergePullTargetOffset.y = Number.isFinite(y) ? y : 0;
     }
 
     /**
      * 합체 예열 끌림 오프셋을 제거합니다.
      */
     clearMergePullOffset() {
-        this.mergePullOffset.x = 0;
-        this.mergePullOffset.y = 0;
+        this.mergePullTargetOffset.x = 0;
+        this.mergePullTargetOffset.y = 0;
     }
 
     /**
@@ -260,6 +302,7 @@ export class BaseEnemy {
             this.mergeSettleStartOffset.y = 0;
             this.mergeSettleElapsedSeconds = 0;
             this.mergeSettleDurationSeconds = 0;
+            this.mergeSettlePendingFirstRender = false;
             return;
         }
 
@@ -269,6 +312,7 @@ export class BaseEnemy {
         this.mergeSettleStartOffset.y = offsetY;
         this.mergeSettleElapsedSeconds = 0;
         this.mergeSettleDurationSeconds = duration;
+        this.mergeSettlePendingFirstRender = true;
     }
 
     /**
@@ -277,6 +321,10 @@ export class BaseEnemy {
      */
     updateMergeSettleOffset(delta) {
         if (!Number.isFinite(delta) || delta <= 0 || this.mergeSettleDurationSeconds <= 0) {
+            return;
+        }
+        if (this.mergeSettlePendingFirstRender) {
+            this.mergeSettlePendingFirstRender = false;
             return;
         }
 
@@ -299,6 +347,7 @@ export class BaseEnemy {
             this.mergeSettleStartOffset.y = 0;
             this.mergeSettleElapsedSeconds = 0;
             this.mergeSettleDurationSeconds = 0;
+            this.mergeSettlePendingFirstRender = false;
         }
     }
 

@@ -48,18 +48,18 @@ function getPresentedEnemyCenter(enemy) {
  * @returns {{x:number, y:number}[]} 표시 셀 중심 목록입니다.
  */
 function collectPresentedHexaWorldCells(enemy) {
-    const worldCells = collectHexaWorldCellsFromEnemy(enemy);
+    const worldCells = collectHexaWorldCellsFromEnemy(
+        enemy,
+        enemy?.renderPosition,
+        enemy?.renderRotation
+    );
     if (worldCells.length === 0) {
         return [];
     }
 
     const offset = getHexaHivePresentationOffset(enemy);
-    const renderDeltaX = (Number.isFinite(enemy?.renderPosition?.x) ? enemy.renderPosition.x : 0)
-        - (Number.isFinite(enemy?.position?.x) ? enemy.position.x : 0)
-        + offset.x;
-    const renderDeltaY = (Number.isFinite(enemy?.renderPosition?.y) ? enemy.renderPosition.y : 0)
-        - (Number.isFinite(enemy?.position?.y) ? enemy.position.y : 0)
-        + offset.y;
+    const renderDeltaX = offset.x;
+    const renderDeltaY = offset.y;
 
     return worldCells.map((cell) => ({
         x: cell.x + renderDeltaX,

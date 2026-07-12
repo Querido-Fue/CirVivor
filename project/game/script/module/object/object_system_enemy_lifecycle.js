@@ -92,7 +92,9 @@ function initObjectSystemEnemy(enemy, type, data, enemyId, enemyDefaultWeight) {
         angularVelocity: data.angularVelocity,
         angularDeceleration: data.angularDeceleration,
         mergeBaseMoveSpeed: data.mergeBaseMoveSpeed,
-        hexaHiveLayout: data.hexaHiveLayout
+        hexaHiveLayout: data.hexaHiveLayout,
+        mergeSettleOffset: data.mergeSettleOffset,
+        mergeSettleDurationSeconds: data.mergeSettleDurationSeconds
     });
     return enemy;
 }

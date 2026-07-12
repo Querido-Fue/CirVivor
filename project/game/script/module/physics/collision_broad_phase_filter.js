@@ -85,6 +85,18 @@ export function shouldUseCollisionBroadCircleFilter(bodyA, bodyB) {
 }
 
 /**
+ * 실제 solve 직전에도 broad circle 비용을 지불할 가치가 있는 shape 조합인지 반환합니다.
+ * 단일 aggregate와 원/사각형 조합은 exact 판정이 싸고 reject율이 낮으므로 바로
+ * narrowphase로 보내고, 최대 N×M part 검사를 막는 aggregate 쌍만 유지합니다.
+ * @param {object} bodyA - 첫 번째 충돌 body입니다.
+ * @param {object} bodyB - 두 번째 충돌 body입니다.
+ * @returns {boolean} solve 직전 broad circle 필터를 사용하면 true입니다.
+ */
+export function shouldUseCollisionNarrowphaseBroadCircleFilter(bodyA, bodyB) {
+    return bodyA?.shape === 'circleParts' && bodyB?.shape === 'circleParts';
+}
+
+/**
  * 관계별 union circle의 중첩 여부를 반환합니다.
  * @param {object} bodyA - 첫 번째 충돌 body입니다.
  * @param {object} bodyB - 두 번째 충돌 body입니다.

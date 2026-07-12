@@ -1,7 +1,7 @@
 import {
     areCollisionBodyAabbsOverlapping,
     areCollisionBodyBroadCirclesOverlapping,
-    shouldUseCollisionBroadCircleFilter
+    shouldUseCollisionNarrowphaseBroadCircleFilter
 } from './collision_broad_phase_filter.js';
 import { processCollisionEnemyCirclePairSoA } from './collision_enemy_circle_pair_soa.js';
 import {
@@ -140,7 +140,8 @@ function processCollisionEnemyCandidatePair(
     context.profileRecorder.recordCount('solveAabbPassCount');
     const isCirclePair = shapeCodes[low] === BODY_SHAPE_CIRCLE
         && shapeCodes[high] === BODY_SHAPE_CIRCLE;
-    if (!isCirclePair && isCollisionRelationCircleSeparated(
+    const useNarrowphaseBroadCircle = shouldUseCollisionNarrowphaseBroadCircleFilter(bodyA, bodyB);
+    if (useNarrowphaseBroadCircle && isCollisionRelationCircleSeparated(
         relationData,
         relationOffsetA,
         relationOffsetB,
@@ -149,7 +150,7 @@ function processCollisionEnemyCandidatePair(
         context.frameStats.circleRejectCount++;
         return 0;
     }
-    if (!isCirclePair) {
+    if (useNarrowphaseBroadCircle) {
         context.frameStats.circlePassCount++;
         context.profileRecorder.recordCount('solveCirclePassCount');
     }
@@ -199,7 +200,7 @@ function processCollisionObjectCandidatePair(bodyA, bodyB, context) {
     }
     context.frameStats.aabbPassCount++;
     context.profileRecorder.recordCount('solveAabbPassCount');
-    if (shouldUseCollisionBroadCircleFilter(bodyA, bodyB)) {
+    if (shouldUseCollisionNarrowphaseBroadCircleFilter(bodyA, bodyB)) {
         if (!areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, context.epsilon)) {
             context.frameStats.circleRejectCount++;
             return 0;

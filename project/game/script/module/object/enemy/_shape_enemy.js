@@ -70,6 +70,7 @@ export class ShapeEnemy extends BaseEnemy {
         this.fill = ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
         this.alpha = ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA;
         this.rotation = ENEMY_CONSTANTS.DEFAULT_STYLE.ROTATION;
+        this.snapRenderTransform();
         this.#rotationCacheDeg = Number.NaN;
         this.#rotationCos = 1;
         this.#rotationSin = 0;
@@ -112,6 +113,7 @@ export class ShapeEnemy extends BaseEnemy {
             ? (data.alpha ?? ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA)
             : 1;
         this.rotation = data.rotation ?? ENEMY_CONSTANTS.DEFAULT_STYLE.ROTATION;
+        this.snapRenderTransform();
         this.#renderOptions.shape = this.shapeKey;
         this.#renderOptions.fill = this.fill;
         this.#renderOptions.alpha = this.alpha;
@@ -129,6 +131,7 @@ export class ShapeEnemy extends BaseEnemy {
         this.fill = ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
         this.alpha = ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA;
         this.rotation = ENEMY_CONSTANTS.DEFAULT_STYLE.ROTATION;
+        this.snapRenderTransform();
         if (!(#renderOptions in this) || !this.#renderOptions) return;
         this.#renderOptions.shape = this.shapeKey;
         this.#renderOptions.fill = this.fill;
@@ -144,7 +147,7 @@ export class ShapeEnemy extends BaseEnemy {
     #syncRotationCache(force = false) {
         if (!this.#renderOptions) return;
 
-        const rotation = Number.isFinite(this.rotation) ? this.rotation : 0;
+        const rotation = Number.isFinite(this.renderRotation) ? this.renderRotation : 0;
         if (!force && this.#rotationCacheDeg === rotation) return;
 
         this.#rotationCacheDeg = rotation;
@@ -233,7 +236,7 @@ export class ShapeEnemy extends BaseEnemy {
         const deltaDeg = this.#headingDeltaWithSymmetry(currentDeg, targetDeg);
         const absDelta = Math.abs(deltaDeg);
         if (absDelta <= HEADING_TURN_SNAP_EPSILON_DEG) {
-            this.rotation = targetDeg;
+            this.rotation = currentDeg + deltaDeg;
             return;
         }
 

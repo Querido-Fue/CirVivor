@@ -113,9 +113,15 @@ export function getHexaMergeMemberCount(enemy) {
 /**
  * 적 인스턴스에서 현재 보이는 육각 조각의 월드 중심 목록을 추출합니다.
  * @param {object|null|undefined} enemy - 대상 적입니다.
+ * @param {{x?:number, y?:number}|null} [positionOverride=null] - 표시용 중심 좌표 override입니다.
+ * @param {number} [rotationOverride=Number.NaN] - 표시용 회전 각도 override입니다.
  * @returns {{x: number, y: number}[]} 월드 셀 중심 목록입니다.
  */
-export function collectHexaWorldCellsFromEnemy(enemy) {
+export function collectHexaWorldCellsFromEnemy(
+    enemy,
+    positionOverride = null,
+    rotationOverride = Number.NaN
+) {
     if (!enemy || typeof enemy !== 'object' || (enemy.type !== 'hexa' && enemy.type !== HEXA_HIVE_TYPE) || enemy.active === false) {
         return [];
     }
@@ -123,9 +129,15 @@ export function collectHexaWorldCellsFromEnemy(enemy) {
     const baseHeight = typeof enemy.getRenderHeightPx === 'function'
         ? enemy.getRenderHeightPx()
         : (Number.isFinite(enemy.renderHeightPx) ? enemy.renderHeightPx : 0);
-    const positionX = Number.isFinite(enemy.position?.x) ? enemy.position.x : 0;
-    const positionY = Number.isFinite(enemy.position?.y) ? enemy.position.y : 0;
-    const rotationRadians = toRadians(enemy.rotation ?? 0);
+    const positionX = Number.isFinite(positionOverride?.x)
+        ? positionOverride.x
+        : (Number.isFinite(enemy.position?.x) ? enemy.position.x : 0);
+    const positionY = Number.isFinite(positionOverride?.y)
+        ? positionOverride.y
+        : (Number.isFinite(enemy.position?.y) ? enemy.position.y : 0);
+    const rotationRadians = toRadians(
+        Number.isFinite(rotationOverride) ? rotationOverride : (enemy.rotation ?? 0)
+    );
     const worldCells = [];
 
     if (enemy.type === HEXA_HIVE_TYPE && enemy.hexaHiveLayout?.visibleLocalCenters?.length > 0 && baseHeight > EPSILON) {

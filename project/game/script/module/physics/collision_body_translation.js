@@ -129,12 +129,8 @@ function writeCollisionBodyReferenceTranslation(body, dx, dy) {
 
     body.ref.position.x += dx;
     body.ref.position.y += dy;
-    // 고정틱 말미 충돌 보정으로 위치가 이동하면, 보간 시작점도 함께 이동시켜
-    // 렌더 프레임에서 과거 위치로 순간 되돌아가는 시각적 점프를 줄입니다.
-    if (body.ref.prevPosition) {
-        body.ref.prevPosition.x += dx;
-        body.ref.prevPosition.y += dy;
-    }
+    // prevPosition은 fixed tick 시작의 렌더 이력입니다. 충돌 보정까지 더하면
+    // 보정량이 alpha와 무관하게 즉시 표시되어 과밀 상태에서 60Hz 떨림이 생깁니다.
     applyCollisionAxisResistance(body, dx, dy);
 }
 

@@ -115,7 +115,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
      * @private
      */
     _syncHiveRotationCache(force = false) {
-        const rotation = Number.isFinite(this.rotation) ? this.rotation : 0;
+        const rotation = Number.isFinite(this.renderRotation) ? this.renderRotation : 0;
         if (!force && this._hiveRotationCacheDeg === rotation) {
             return;
         }
@@ -179,7 +179,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
         const layer = overrideOptions.layer || 'object';
         const baseHeight = this.getRenderHeightPx();
         const objectOffsetY = getObjectOffsetY();
-        const rotation = Number.isFinite(this.rotation) ? this.rotation : 0;
+        const rotation = Number.isFinite(this.renderRotation) ? this.renderRotation : 0;
         this._syncHiveRotationCache();
         const rotationRadians = rotation * DEGREES_TO_RADIANS;
         const mergeOffsetX = (Number.isFinite(this.mergePullOffset?.x) ? this.mergePullOffset.x : 0)
