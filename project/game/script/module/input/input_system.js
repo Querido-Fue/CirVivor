@@ -3,6 +3,39 @@ import { KeyboardInputHandler } from './_keyboard_input_handler.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 
 let inputSystemInstance = null;
+const DEFAULT_MOUSE_BUTTON_SNAPSHOT = Object.freeze(['idle']);
+const DEFAULT_FOCUS_SNAPSHOT = Object.freeze(['ui', 'object']);
+
+function copyInputArrayInto(target, source, fallback) {
+    target.length = 0;
+    const values = Array.isArray(source) ? source : fallback;
+    for (let i = 0; i < values.length; i++) {
+        target.push(values[i]);
+    }
+}
+
+function copyInputKeysInto(target, source) {
+    for (const key in target) {
+        if (Object.prototype.hasOwnProperty.call(target, key)
+            && !Object.prototype.hasOwnProperty.call(source, key)) {
+            delete target[key];
+        }
+    }
+    for (const key in source) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+            target[key] = source[key] === true;
+        }
+    }
+}
+
+function createSimulationInputSnapshotBuffer() {
+    return {
+        mousePos: { x: 0, y: 0 },
+        mouseButtons: { left: [], right: [], middle: [] },
+        focusList: [],
+        keys: {}
+    };
+}
 
 /**
  * @class InputSystem
@@ -42,27 +75,31 @@ export class InputSystem {
 
     /**
      * 시뮬레이션 런타임에 전달할 입력 스냅샷을 생성합니다.
+     * @param {object|null} [out=null] - 갱신할 재사용 스냅샷입니다.
      * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}}
      */
-    getSimulationInputSnapshot() {
+    getSimulationInputSnapshot(out = null) {
         const mouseButtons = this.mouseInputHandler?.mouseButtons || {};
         const keyboardKeys = this.keyboardInputHandler?.keys || {};
+        const snapshot = out && typeof out === 'object'
+            ? out
+            : createSimulationInputSnapshotBuffer();
+        snapshot.mousePos ||= { x: 0, y: 0 };
+        snapshot.mouseButtons ||= { left: [], right: [], middle: [] };
+        snapshot.mouseButtons.left ||= [];
+        snapshot.mouseButtons.right ||= [];
+        snapshot.mouseButtons.middle ||= [];
+        snapshot.focusList ||= [];
+        snapshot.keys ||= {};
 
-        return {
-            mousePos: {
-                x: resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.x), 0),
-                y: resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.y), 0)
-            },
-            mouseButtons: {
-                left: Array.isArray(mouseButtons.left?.state) ? [...mouseButtons.left.state] : ['idle'],
-                right: Array.isArray(mouseButtons.right?.state) ? [...mouseButtons.right.state] : ['idle'],
-                middle: Array.isArray(mouseButtons.middle?.state) ? [...mouseButtons.middle.state] : ['idle']
-            },
-            focusList: Array.isArray(this.mouseInputHandler?.focusList)
-                ? [...this.mouseInputHandler.focusList]
-                : ['ui', 'object'],
-            keys: { ...keyboardKeys }
-        };
+        snapshot.mousePos.x = resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.x), 0);
+        snapshot.mousePos.y = resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.y), 0);
+        copyInputArrayInto(snapshot.mouseButtons.left, mouseButtons.left?.state, DEFAULT_MOUSE_BUTTON_SNAPSHOT);
+        copyInputArrayInto(snapshot.mouseButtons.right, mouseButtons.right?.state, DEFAULT_MOUSE_BUTTON_SNAPSHOT);
+        copyInputArrayInto(snapshot.mouseButtons.middle, mouseButtons.middle?.state, DEFAULT_MOUSE_BUTTON_SNAPSHOT);
+        copyInputArrayInto(snapshot.focusList, this.mouseInputHandler?.focusList, DEFAULT_FOCUS_SNAPSHOT);
+        copyInputKeysInto(snapshot.keys, keyboardKeys);
+        return snapshot;
     }
 }
 

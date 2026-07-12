@@ -1,4 +1,4 @@
-import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
+import { getCanvas, getDisplaySystem, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
 import { getData } from 'data/data_handler.js';
 import { getMouseInput, hasMouseState } from 'input/input_system.js';
 import { getDelta } from 'game/time_handler.js';
@@ -45,6 +45,7 @@ export class TitleMagicBento {
      */
     constructor(titleScene) {
         this.titleScene = titleScene;
+        this.displaySystem = getDisplaySystem();
         this.#ctx = null;
         this.WW = getWW();
         this.WH = getWH();
@@ -143,6 +144,7 @@ export class TitleMagicBento {
             this.#drawCard(ctx, card);
         }
         ctx.restore();
+        this.displaySystem?.markSurfaceDirectDraw('ui');
     }
 
     /**
@@ -162,6 +164,7 @@ export class TitleMagicBento {
      */
     destroy() {
         this.#ctx = null;
+        this.displaySystem = null;
         this.appearanceElapsed = 0;
         this.appearanceProgress = 0;
         this.appearanceStarted = false;

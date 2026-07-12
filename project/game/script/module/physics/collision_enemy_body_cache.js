@@ -38,6 +38,7 @@ export class CollisionEnemyBodyCache {
      */
     constructor(fallbackBodies = []) {
         this.frameToken = 0;
+        this.bodyRecordByEnemy = new WeakMap();
         this.cache = {
             frameToken: -1,
             enemies: null,
@@ -59,6 +60,18 @@ export class CollisionEnemyBodyCache {
      * enemy body 재사용 캐시를 무효화합니다.
      */
     invalidate() {
+        const bodies = this.cache.bodies;
+        if (this.cache.frameToken >= 0 && Array.isArray(bodies)) {
+            for (let i = 0; i < bodies.length; i++) {
+                const body = bodies[i];
+                const enemy = body?.ref;
+                const record = enemy ? this.bodyRecordByEnemy.get(enemy) : null;
+                if (record && record.body === body) {
+                    record.frameToken = -1;
+                    record.body = null;
+                }
+            }
+        }
         this.cache.frameToken = -1;
         this.cache.enemies = null;
         this.cache.delta = 0;
@@ -77,6 +90,21 @@ export class CollisionEnemyBodyCache {
         this.cache.delta = delta;
         this.cache.sourceLength = Array.isArray(enemies) ? enemies.length : 0;
         this.cache.bodies = bodies;
+        for (let i = 0; i < bodies.length; i++) {
+            const body = bodies[i];
+            const enemy = body?.ref;
+            if (!enemy || (typeof enemy !== 'object' && typeof enemy !== 'function')) {
+                continue;
+            }
+
+            let record = this.bodyRecordByEnemy.get(enemy);
+            if (!record) {
+                record = { frameToken: -1, body: null };
+                this.bodyRecordByEnemy.set(enemy, record);
+            }
+            record.frameToken = this.frameToken;
+            record.body = body;
+        }
     }
 
     /**
@@ -98,5 +126,36 @@ export class CollisionEnemyBodyCache {
             return null;
         }
         return Array.isArray(cache.bodies) ? cache.bodies : null;
+    }
+
+    /**
+     * 준비된 전체 목록에서 요청한 적들의 body만 순서대로 수집합니다.
+     * @param {object[]} enemies - 조회할 적 목록입니다.
+     * @param {number} delta - 요청 delta입니다.
+     * @param {number} epsilon - delta 비교 허용 오차입니다.
+     * @param {object[]} out - 결과를 기록할 재사용 배열입니다.
+     * @returns {boolean} 모든 적의 준비된 body를 찾았으면 true입니다.
+     */
+    collectReusableBodies(enemies, delta, epsilon, out) {
+        out.length = 0;
+        const cache = this.cache;
+        if (!isCollisionEnemyBodyCacheFrameReusable(cache, this.frameToken)
+            || !isCollisionEnemyBodyCacheDeltaReusable(cache, delta, epsilon)) {
+            return false;
+        }
+
+        for (let i = 0; i < enemies.length; i++) {
+            const enemy = enemies[i];
+            if (!enemy || enemy.active === false) {
+                continue;
+            }
+            const record = this.bodyRecordByEnemy.get(enemy);
+            if (!record || record.frameToken !== this.frameToken || !record.body) {
+                out.length = 0;
+                return false;
+            }
+            out.push(record.body);
+        }
+        return true;
     }
 }

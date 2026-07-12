@@ -1,4 +1,4 @@
-import { getCanvas, getWW, getWH, render, shadowOn, shadowOff } from 'display/display_system.js';
+import { getCanvas, getDisplaySystem, getWW, getWH, render, shadowOn, shadowOff } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { animate, remove } from 'animation/animation_system.js';
 import { getMouseInput, isMousePressing } from 'input/input_system.js';
@@ -317,5 +317,6 @@ export class UICursor {
         }
 
         context.clearRect(0, 0, canvas.width, canvas.height);
+        getDisplaySystem()?.markSurfaceDirectClear(CURSOR_LAYER, false);
     }
 }

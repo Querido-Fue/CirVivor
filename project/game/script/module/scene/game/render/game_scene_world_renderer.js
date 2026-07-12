@@ -1,10 +1,36 @@
 import { renderGL } from 'display/display_system.js';
-import { measurePerformanceSection } from 'debug/debug_system.js';
+import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
 import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 
 const WORLD_OBJECT_LAYER = 'object';
 const WORLD_CIRCLE_ALPHA = 0.95;
+const EMPTY_WORLD_RENDER_OPTIONS = Object.freeze({});
+const EMPTY_WORLD_ENTITY_LIST = Object.freeze([]);
+const WORLD_RENDER_STATE_SCRATCH = {
+    staticWalls: [],
+    boxWalls: [],
+    player: null,
+    projectiles: [],
+    offsetY: 0
+};
+const WORLD_WALL_RENDER_OPTIONS = {
+    shape: 'rect',
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+    fill: null
+};
+const WORLD_CIRCLE_RENDER_OPTIONS = {
+    shape: 'circle',
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+    fill: null,
+    alpha: WORLD_CIRCLE_ALPHA
+};
 const WORLD_RENDER_SECTIONS = Object.freeze({
     STATIC_WALLS: 'scene.game.world.staticWalls',
     BOX_WALLS: 'scene.game.world.boxWalls',
@@ -26,7 +52,7 @@ function resolveWorldSnapshotArray(sceneSnapshot, options, key) {
     if (Array.isArray(options?.[key])) {
         return options[key];
     }
-    return [];
+    return EMPTY_WORLD_ENTITY_LIST;
 }
 
 /**
@@ -48,61 +74,57 @@ function resolveWorldSnapshotField(sceneSnapshot, options, key) {
  * @param {object|null|undefined} options - 렌더 옵션입니다.
  * @returns {{staticWalls: object[], boxWalls: object[], player: object|null|undefined, projectiles: object[], offsetY: number}}
  */
-function resolveWorldRenderState(options) {
-    const source = options || {};
+function resolveWorldRenderState(options, out) {
+    const source = options || EMPTY_WORLD_RENDER_OPTIONS;
     const sceneSnapshot = source?.sceneSnapshot ?? null;
 
-    return {
-        staticWalls: resolveWorldSnapshotArray(sceneSnapshot, source, 'staticWalls'),
-        boxWalls: resolveWorldSnapshotArray(sceneSnapshot, source, 'boxWalls'),
-        player: resolveWorldSnapshotField(sceneSnapshot, source, 'player'),
-        projectiles: resolveWorldSnapshotArray(sceneSnapshot, source, 'projectiles'),
-        offsetY: normalizeSnapshotNumber(source?.objectOffsetY, 0)
-    };
+    out.staticWalls = resolveWorldSnapshotArray(sceneSnapshot, source, 'staticWalls');
+    out.boxWalls = resolveWorldSnapshotArray(sceneSnapshot, source, 'boxWalls');
+    out.player = resolveWorldSnapshotField(sceneSnapshot, source, 'player');
+    out.projectiles = resolveWorldSnapshotArray(sceneSnapshot, source, 'projectiles');
+    out.offsetY = normalizeSnapshotNumber(source?.objectOffsetY, 0);
+    return out;
 }
 
 /**
  * 벽 엔티티를 렌더합니다.
  * @param {object|null|undefined} wall - 벽 엔티티 또는 스냅샷입니다.
- * @param {string} fillKey - 벤치마크 색상 키입니다.
+ * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
  */
-function renderWall(wall, fillKey, offsetY) {
+function renderWall(wall, fill, offsetY) {
     if (!wall || wall.active === false) {
         return;
     }
 
-    renderGL(WORLD_OBJECT_LAYER, {
-        shape: 'rect',
-        x: normalizeSnapshotNumber(wall.x, 0),
-        y: normalizeSnapshotNumber(wall.y, 0) - offsetY,
-        w: normalizeSnapshotNumber(wall.w, 0),
-        h: normalizeSnapshotNumber(wall.h, 0),
-        fill: getBenchmarkColor(fillKey)
-    });
+    const renderOptions = WORLD_WALL_RENDER_OPTIONS;
+    renderOptions.x = normalizeSnapshotNumber(wall.x, 0);
+    renderOptions.y = normalizeSnapshotNumber(wall.y, 0) - offsetY;
+    renderOptions.w = normalizeSnapshotNumber(wall.w, 0);
+    renderOptions.h = normalizeSnapshotNumber(wall.h, 0);
+    renderOptions.fill = fill;
+    renderGL(WORLD_OBJECT_LAYER, renderOptions);
 }
 
 /**
  * 원형 월드 엔티티를 렌더합니다.
  * @param {object|null|undefined} entity - 원형 엔티티 또는 스냅샷입니다.
- * @param {string} fillKey - 벤치마크 색상 키입니다.
+ * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
  */
-function renderCircleEntity(entity, fillKey, offsetY) {
+function renderCircleEntity(entity, fill, offsetY) {
     if (!entity || entity.active === false) {
         return;
     }
 
     const diameter = normalizeSnapshotNumber(entity.radius, 0) * 2;
-    renderGL(WORLD_OBJECT_LAYER, {
-        shape: 'circle',
-        x: normalizeSnapshotNumber(entity.position?.x, 0),
-        y: normalizeSnapshotNumber(entity.position?.y, 0) - offsetY,
-        w: diameter,
-        h: diameter,
-        fill: getBenchmarkColor(fillKey),
-        alpha: WORLD_CIRCLE_ALPHA
-    });
+    const renderOptions = WORLD_CIRCLE_RENDER_OPTIONS;
+    renderOptions.x = normalizeSnapshotNumber(entity.position?.x, 0);
+    renderOptions.y = normalizeSnapshotNumber(entity.position?.y, 0) - offsetY;
+    renderOptions.w = diameter;
+    renderOptions.h = diameter;
+    renderOptions.fill = fill;
+    renderGL(WORLD_OBJECT_LAYER, renderOptions);
 }
 
 /**
@@ -111,50 +133,59 @@ function renderCircleEntity(entity, fillKey, offsetY) {
  * @param {number} offsetY - 렌더 오프셋입니다.
  */
 function renderPlayer(player, offsetY) {
-    renderCircleEntity(player, 'Player', offsetY);
+    renderCircleEntity(player, getBenchmarkColor('Player'), offsetY);
 }
 
 /**
  * 투사체 엔티티를 렌더합니다.
  * @param {object|null|undefined} projectile - 투사체 엔티티 또는 스냅샷입니다.
+ * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
  */
-function renderProjectile(projectile, offsetY) {
-    renderCircleEntity(projectile, 'Projectile', offsetY);
+function renderProjectile(projectile, fill, offsetY) {
+    renderCircleEntity(projectile, fill, offsetY);
 }
 
 /**
  * 일반 씬 오브젝트 목록을 렌더합니다.
  * @param {{sceneSnapshot?: object|null, staticWalls?: object[], boxWalls?: object[], player?: object|null, projectiles?: object[], objectOffsetY?: number}} [options={}] - 렌더 옵션입니다.
  */
-export function drawGameSceneWorldObjects(options = {}) {
+export function drawGameSceneWorldObjects(options = EMPTY_WORLD_RENDER_OPTIONS) {
     const {
         staticWalls,
         boxWalls,
         player,
         projectiles,
         offsetY
-    } = resolveWorldRenderState(options);
+    } = resolveWorldRenderState(options, WORLD_RENDER_STATE_SCRATCH);
 
-    measurePerformanceSection(WORLD_RENDER_SECTIONS.STATIC_WALLS, () => {
-        for (let i = 0; i < staticWalls.length; i++) {
-            renderWall(staticWalls[i], 'StaticWall', offsetY);
-        }
-    });
+    let startTime = beginPerformanceSection();
+    const staticWallFill = getBenchmarkColor('StaticWall');
+    for (let i = 0; i < staticWalls.length; i++) {
+        renderWall(staticWalls[i], staticWallFill, offsetY);
+    }
+    endPerformanceSection(WORLD_RENDER_SECTIONS.STATIC_WALLS, startTime);
 
-    measurePerformanceSection(WORLD_RENDER_SECTIONS.BOX_WALLS, () => {
-        for (let i = 0; i < boxWalls.length; i++) {
-            renderWall(boxWalls[i], 'BoxWall', offsetY);
-        }
-    });
+    startTime = beginPerformanceSection();
+    const boxWallFill = getBenchmarkColor('BoxWall');
+    for (let i = 0; i < boxWalls.length; i++) {
+        renderWall(boxWalls[i], boxWallFill, offsetY);
+    }
+    endPerformanceSection(WORLD_RENDER_SECTIONS.BOX_WALLS, startTime);
 
-    measurePerformanceSection(WORLD_RENDER_SECTIONS.PLAYER, () => {
-        renderPlayer(player, offsetY);
-    });
+    startTime = beginPerformanceSection();
+    renderPlayer(player, offsetY);
+    endPerformanceSection(WORLD_RENDER_SECTIONS.PLAYER, startTime);
 
-    measurePerformanceSection(WORLD_RENDER_SECTIONS.PROJECTILES, () => {
-        for (let i = 0; i < projectiles.length; i++) {
-            renderProjectile(projectiles[i], offsetY);
-        }
-    });
+    startTime = beginPerformanceSection();
+    const projectileFill = getBenchmarkColor('Projectile');
+    for (let i = 0; i < projectiles.length; i++) {
+        renderProjectile(projectiles[i], projectileFill, offsetY);
+    }
+    endPerformanceSection(WORLD_RENDER_SECTIONS.PROJECTILES, startTime);
+
+    WORLD_RENDER_STATE_SCRATCH.staticWalls = EMPTY_WORLD_ENTITY_LIST;
+    WORLD_RENDER_STATE_SCRATCH.boxWalls = EMPTY_WORLD_ENTITY_LIST;
+    WORLD_RENDER_STATE_SCRATCH.player = null;
+    WORLD_RENDER_STATE_SCRATCH.projectiles = EMPTY_WORLD_ENTITY_LIST;
 }

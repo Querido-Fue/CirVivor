@@ -96,10 +96,17 @@ export class HexaMergeBoundaryEffectPass {
         const vertexShader = compileShader(gl, FULLSCREEN_VERTEX_SHADER, gl.VERTEX_SHADER);
         const fragmentShader = compileShader(gl, HEXA_MERGE_BOUNDARY_FRAGMENT_SHADER, gl.FRAGMENT_SHADER);
         if (!vertexShader || !fragmentShader) {
+            if (vertexShader) {
+                gl.deleteShader(vertexShader);
+            }
+            if (fragmentShader) {
+                gl.deleteShader(fragmentShader);
+            }
             return null;
         }
-
         const program = createProgram(gl, vertexShader, fragmentShader);
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
         if (!program) {
             return null;
         }

@@ -46,6 +46,17 @@ const HEXA_HIVE_EPSILON = HEXA_HIVE_MERGE_CONSTANTS.EPSILON;
 const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
 const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 const HEXA_HIVE_TYPE = getHexaHiveType();
+const HEXA_HIVE_ACTIVE_PAIR_KEYS_SCRATCH = new Set();
+const HEXA_HIVE_PENDING_ENEMY_IDS_SCRATCH = new Set();
+const HEXA_HIVE_PAIR_IDS_SCRATCH = { enemyIdA: -1, enemyIdB: -1 };
+const HEXA_HIVE_NEIGHBOR_IDS_SCRATCH = [];
+let hexaHiveNeighborSortCandidatesById = null;
+
+function _compareHexaHiveNeighborIds(leftId, rightId) {
+    const leftCount = getHexaMergeMemberCount(hexaHiveNeighborSortCandidatesById?.get(leftId));
+    const rightCount = getHexaMergeMemberCount(hexaHiveNeighborSortCandidatesById?.get(rightId));
+    return (leftCount - rightCount) || (leftId - rightId);
+}
 
 /**
  * hexa hive 접촉 시간이 합체 기준에 도달했는지 확인합니다.
@@ -283,15 +294,19 @@ function _getHexaHiveMergeGroupMemberCount(mergeGroup) {
  * @returns {number[]} 정렬된 후보 ID 목록입니다.
  */
 function _getSortedHexaHiveNeighborIds(neighbors, activeMergeCandidatesById) {
+    const neighborIds = HEXA_HIVE_NEIGHBOR_IDS_SCRATCH;
+    neighborIds.length = 0;
     if (!(neighbors instanceof Set) || neighbors.size === 0) {
-        return [];
+        return neighborIds;
     }
 
-    return [...neighbors].sort((leftId, rightId) => {
-        const leftCount = getHexaMergeMemberCount(activeMergeCandidatesById.get(leftId));
-        const rightCount = getHexaMergeMemberCount(activeMergeCandidatesById.get(rightId));
-        return (leftCount - rightCount) || (leftId - rightId);
-    });
+    for (const enemyId of neighbors) {
+        neighborIds.push(enemyId);
+    }
+    hexaHiveNeighborSortCandidatesById = activeMergeCandidatesById;
+    neighborIds.sort(_compareHexaHiveNeighborIds);
+    hexaHiveNeighborSortCandidatesById = null;
+    return neighborIds;
 }
 
 /**
@@ -385,7 +400,11 @@ export function clearHexaHiveContactPairsForEnemyIds(contactSecondsByPair, enemy
     }
 
     for (const pairKey of contactSecondsByPair.keys()) {
-        const [enemyIdA, enemyIdB] = _parseHexaHivePairKey(pairKey);
+        if (!_parseHexaHivePairKeyInto(pairKey, HEXA_HIVE_PAIR_IDS_SCRATCH)) {
+            continue;
+        }
+        const enemyIdA = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdA;
+        const enemyIdB = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdB;
         if (enemyIds.has(enemyIdA) || enemyIds.has(enemyIdB)) {
             contactSecondsByPair.delete(pairKey);
         }
@@ -396,6 +415,7 @@ export function clearHexaHiveContactPairsForEnemyIds(contactSecondsByPair, enemy
  * 합체 후보 접촉 타이머와 merge pending 상태를 현재 접촉 쌍 기준으로 동기화합니다.
  * @param {object} options - 동기화 옵션입니다.
  * @param {object[]} options.enemies - 현재 활성 적 목록입니다.
+ * @param {Map<number, object>} [options.activeMergeCandidatesById] - 갱신할 재사용 후보 맵입니다.
  * @param {Map<string, number>} options.contactSecondsByPair - pair key별 접촉 시간 맵입니다.
  * @param {number} options.delta - 고정 틱 델타입니다.
  * @param {{enemyA: object, enemyB: object}[]} options.contactPairs - 현재 접촉 쌍입니다.
@@ -403,14 +423,18 @@ export function clearHexaHiveContactPairsForEnemyIds(contactSecondsByPair, enemy
  */
 export function syncHexaHiveMergeState({
     enemies,
+    activeMergeCandidatesById,
     contactSecondsByPair,
     delta,
     contactPairs
 }) {
-    const activeMergeCandidatesById = buildActiveHexaMergeCandidatesById(enemies);
-    _updateHexaHiveContactTimers(activeMergeCandidatesById, contactSecondsByPair, delta, contactPairs);
-    _applyHexaHiveMergePendingState(activeMergeCandidatesById, contactSecondsByPair);
-    return activeMergeCandidatesById;
+    const activeCandidates = buildActiveHexaMergeCandidatesById(
+        enemies,
+        activeMergeCandidatesById
+    );
+    _updateHexaHiveContactTimers(activeCandidates, contactSecondsByPair, delta, contactPairs);
+    _applyHexaHiveMergePendingState(activeCandidates, contactSecondsByPair);
+    return activeCandidates;
 }
 
 /**
@@ -418,14 +442,25 @@ export function syncHexaHiveMergeState({
  * @param {object} options - 동기화 옵션입니다.
  * @param {Map<number, object>} options.activeMergeCandidatesById - 활성 합체 후보 맵입니다.
  * @param {Map<string, number>} options.contactSecondsByPair - pair key별 접촉 시간 맵입니다.
+ * @param {{enemyA: object, enemyB: object, progress: number}[]} [options.effectPairs] - 재사용할 이펙트 pair 배열입니다.
+ * @param {{enemyA: object, enemyB: object, progress: number}[]} [options.effectPairPool] - 이펙트 pair 레코드 풀입니다.
+ * @param {Map<number, {x:number, y:number, maxDistance:number}>} [options.pullOffsetById] - 재사용할 오프셋 맵입니다.
  * @returns {{enemyA: object, enemyB: object, progress: number}[]} 합체 경계 이펙트 페어입니다.
  */
 export function syncHexaHiveMergePresentationState({
     activeMergeCandidatesById,
-    contactSecondsByPair
+    contactSecondsByPair,
+    effectPairs: reusableEffectPairs,
+    effectPairPool: reusableEffectPairPool,
+    pullOffsetById: reusablePullOffsetById
 }) {
-    const effectPairs = [];
+    const effectPairs = Array.isArray(reusableEffectPairs) ? reusableEffectPairs : [];
+    const effectPairPool = Array.isArray(reusableEffectPairPool)
+        ? reusableEffectPairPool
+        : effectPairs;
+    let effectPairCount = 0;
     if (!(activeMergeCandidatesById instanceof Map)) {
+        effectPairs.length = 0;
         return effectPairs;
     }
 
@@ -436,17 +471,25 @@ export function syncHexaHiveMergePresentationState({
     }
 
     if (!(contactSecondsByPair instanceof Map) || contactSecondsByPair.size === 0) {
+        effectPairs.length = 0;
         return effectPairs;
     }
 
-    const pullOffsetById = new Map();
+    const pullOffsetById = reusablePullOffsetById instanceof Map
+        ? reusablePullOffsetById
+        : new Map();
+    pullOffsetById.clear();
     for (const [pairKey, contactSeconds] of contactSecondsByPair.entries()) {
         const progress = _getHexaHiveMergeProgress(contactSeconds);
         if (progress <= 0) {
             continue;
         }
 
-        const [enemyIdA, enemyIdB] = _parseHexaHivePairKey(pairKey);
+        if (!_parseHexaHivePairKeyInto(pairKey, HEXA_HIVE_PAIR_IDS_SCRATCH)) {
+            continue;
+        }
+        const enemyIdA = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdA;
+        const enemyIdB = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdB;
         const enemyA = activeMergeCandidatesById.get(enemyIdA);
         const enemyB = activeMergeCandidatesById.get(enemyIdB);
         if (!enemyA || !enemyB || !_canHexaHiveMergePairFitLimit(enemyA, enemyB)) {
@@ -484,22 +527,35 @@ export function syncHexaHiveMergePresentationState({
         _addHexaHivePullOffset(pullOffsetById, enemyB, -dirX * pullDistance, -dirY * pullDistance, pairMaxPullDistance);
 
         if (progress >= HEXA_HIVE_MERGE_MIN_EFFECT_PROGRESS
-            && effectPairs.length < HEXA_HIVE_MERGE_MAX_EFFECT_COMMANDS) {
-            effectPairs.push({ enemyA, enemyB, progress });
+            && effectPairCount < HEXA_HIVE_MERGE_MAX_EFFECT_COMMANDS) {
+            let effectPair = effectPairPool[effectPairCount];
+            if (!effectPair) {
+                effectPair = { enemyA: null, enemyB: null, progress: 0 };
+                effectPairPool[effectPairCount] = effectPair;
+            }
+            effectPairs[effectPairCount] = effectPair;
+            effectPair.enemyA = enemyA;
+            effectPair.enemyB = enemyB;
+            effectPair.progress = progress;
+            effectPairCount++;
         }
     }
 
     _applyHexaHivePullOffsets(activeMergeCandidatesById, pullOffsetById);
+    effectPairs.length = effectPairCount;
+    pullOffsetById.clear();
     return effectPairs;
 }
 
 /**
  * 현재 활성 합체 후보를 ID 맵으로 구성합니다.
  * @param {object[]} enemies - 현재 적 목록입니다.
+ * @param {Map<number, object>|null} [out=null] - 갱신할 재사용 맵입니다.
  * @returns {Map<number, object>} 활성 합체 후보 맵입니다.
  */
-export function buildActiveHexaMergeCandidatesById(enemies) {
-    const activeMergeCandidatesById = new Map();
+export function buildActiveHexaMergeCandidatesById(enemies, out = null) {
+    const activeMergeCandidatesById = out instanceof Map ? out : new Map();
+    activeMergeCandidatesById.clear();
     if (!Array.isArray(enemies)) {
         return activeMergeCandidatesById;
     }
@@ -539,7 +595,11 @@ export function collectHexaHiveMergeGroups(contactSecondsByPair, activeMergeCand
             continue;
         }
 
-        const [enemyIdA, enemyIdB] = _parseHexaHivePairKey(pairKey);
+        if (!_parseHexaHivePairKeyInto(pairKey, HEXA_HIVE_PAIR_IDS_SCRATCH)) {
+            continue;
+        }
+        const enemyIdA = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdA;
+        const enemyIdB = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdB;
         const enemyA = activeMergeCandidatesById.get(enemyIdA);
         const enemyB = activeMergeCandidatesById.get(enemyIdB);
         if (!enemyA || !enemyB || !_canHexaHiveMergePairFitLimit(enemyA, enemyB)) {
@@ -755,23 +815,51 @@ function _buildHexaHivePairKey(enemyIdA, enemyIdB) {
     return `${firstId}:${secondId}`;
 }
 
+function _parseHexaHiveIntegerSegment(value, startIndex, endIndex) {
+    let index = startIndex;
+    let sign = 1;
+    if (value.charCodeAt(index) === 45) {
+        sign = -1;
+        index++;
+    }
+    if (index >= endIndex) {
+        return Number.NaN;
+    }
+
+    let result = 0;
+    for (; index < endIndex; index++) {
+        const digit = value.charCodeAt(index) - 48;
+        if (digit < 0 || digit > 9) {
+            return Number.NaN;
+        }
+        result = (result * 10) + digit;
+    }
+    return sign * result;
+}
+
 /**
  * hexa hive 합체 후보 pair key를 적 ID 배열로 분해합니다.
  * @param {string} pairKey - pair key입니다.
- * @returns {number[]} 적 ID 쌍입니다.
+ * @param {{enemyIdA: number, enemyIdB: number}} out - 파싱 결과를 기록할 재사용 객체입니다.
+ * @returns {boolean} 유효한 ID 쌍인지 여부입니다.
  */
-function _parseHexaHivePairKey(pairKey) {
+function _parseHexaHivePairKeyInto(pairKey, out) {
     if (typeof pairKey !== 'string') {
-        return [];
+        return false;
     }
 
-    const [left, right] = pairKey.split(':');
-    const enemyIdA = Number.parseInt(left, 10);
-    const enemyIdB = Number.parseInt(right, 10);
-    if (!Number.isInteger(enemyIdA) || !Number.isInteger(enemyIdB)) {
-        return [];
+    const separatorIndex = pairKey.indexOf(':');
+    if (separatorIndex <= 0 || separatorIndex >= pairKey.length - 1) {
+        return false;
     }
-    return [enemyIdA, enemyIdB];
+    const enemyIdA = _parseHexaHiveIntegerSegment(pairKey, 0, separatorIndex);
+    const enemyIdB = _parseHexaHiveIntegerSegment(pairKey, separatorIndex + 1, pairKey.length);
+    if (!Number.isInteger(enemyIdA) || !Number.isInteger(enemyIdB)) {
+        return false;
+    }
+    out.enemyIdA = enemyIdA;
+    out.enemyIdB = enemyIdB;
+    return true;
 }
 
 /**
@@ -783,7 +871,8 @@ function _parseHexaHivePairKey(pairKey) {
  * @returns {void}
  */
 function _updateHexaHiveContactTimers(activeMergeCandidatesById, contactSecondsByPair, delta, contactPairs) {
-    const activePairKeys = new Set();
+    const activePairKeys = HEXA_HIVE_ACTIVE_PAIR_KEYS_SCRATCH;
+    activePairKeys.clear();
     if (Array.isArray(contactPairs)) {
         for (let i = 0; i < contactPairs.length; i++) {
             const pair = contactPairs[i];
@@ -809,11 +898,12 @@ function _updateHexaHiveContactTimers(activeMergeCandidatesById, contactSecondsB
         }
     }
 
-    for (const pairKey of [...contactSecondsByPair.keys()]) {
+    for (const pairKey of contactSecondsByPair.keys()) {
         if (!activePairKeys.has(pairKey)) {
             contactSecondsByPair.delete(pairKey);
         }
     }
+    activePairKeys.clear();
 }
 
 /**
@@ -823,13 +913,18 @@ function _updateHexaHiveContactTimers(activeMergeCandidatesById, contactSecondsB
  * @returns {void}
  */
 function _applyHexaHiveMergePendingState(activeMergeCandidatesById, contactSecondsByPair) {
-    const pendingEnemyIds = new Set();
+    const pendingEnemyIds = HEXA_HIVE_PENDING_ENEMY_IDS_SCRATCH;
+    pendingEnemyIds.clear();
     for (const [pairKey, contactSeconds] of contactSecondsByPair.entries()) {
         if (!Number.isFinite(contactSeconds) || contactSeconds <= 0) {
             continue;
         }
 
-        const [enemyIdA, enemyIdB] = _parseHexaHivePairKey(pairKey);
+        if (!_parseHexaHivePairKeyInto(pairKey, HEXA_HIVE_PAIR_IDS_SCRATCH)) {
+            continue;
+        }
+        const enemyIdA = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdA;
+        const enemyIdB = HEXA_HIVE_PAIR_IDS_SCRATCH.enemyIdB;
         const enemyA = activeMergeCandidatesById.get(enemyIdA);
         const enemyB = activeMergeCandidatesById.get(enemyIdB);
         if (!enemyA || !enemyB || !_canHexaHiveMergePairFitLimit(enemyA, enemyB)) {
@@ -846,4 +941,5 @@ function _applyHexaHiveMergePendingState(activeMergeCandidatesById, contactSecon
             ? HEXA_HIVE_MERGE_PENDING_WEIGHT
             : null;
     }
+    pendingEnemyIds.clear();
 }

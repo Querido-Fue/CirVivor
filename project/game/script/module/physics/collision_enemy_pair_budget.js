@@ -2,6 +2,7 @@ import { getData } from 'data/data_handler.js';
 import { isCollisionEnemyPairAnchorBody } from './_collision_resolve_tuning.js';
 
 const COLLISION_ENEMY_PAIR_PROCESS_BUDGET = getData('COLLISION_CONSTANTS').ENEMY_PAIR_PROCESS_BUDGET;
+const COLLISION_ENEMY_ANCHOR_PAIR_BUDGET_MULTIPLIER = COLLISION_ENEMY_PAIR_PROCESS_BUDGET.ANCHOR_MULTIPLIER;
 
 /**
  * 두 충돌 body가 적-적 pair인지 반환합니다.
@@ -73,16 +74,18 @@ export function shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, budget) {
     if (!areCollisionEnemyBodies(bodyA, bodyB)) {
         return false;
     }
-    if (isCollisionEnemyPairAnchorBody(bodyA, bodyB) || isCollisionEnemyPairAnchorBody(bodyB, bodyA)) {
-        return false;
-    }
     if (!hasCollisionEnemyPairProcessBudget(budget)) {
         return false;
     }
 
+    const isAnchorPair = isCollisionEnemyPairAnchorBody(bodyA, bodyB)
+        || isCollisionEnemyPairAnchorBody(bodyB, bodyA);
+    const effectiveBudget = isAnchorPair
+        ? Math.max(1, Math.floor(budget * COLLISION_ENEMY_ANCHOR_PAIR_BUDGET_MULTIPLIER))
+        : budget;
     const passCountA = getCollisionBodyPassPairProcessCount(bodyA);
     const passCountB = getCollisionBodyPassPairProcessCount(bodyB);
-    return passCountA >= budget || passCountB >= budget;
+    return passCountA >= effectiveBudget || passCountB >= effectiveBudget;
 }
 
 /**

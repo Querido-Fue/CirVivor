@@ -15,6 +15,9 @@ const DISPLAY_NATIVE_2D_SURFACE_ID_SET = new Set(DISPLAY_NATIVE_2D_SURFACE_IDS);
  */
 export function createDisplaySurfaceDescriptor(options) {
     const type = options?.type === 'webgl' ? 'webgl' : '2d';
+    const compositeKind = options.compositeKind === 'solid' || options.compositeKind === 'skip'
+        ? options.compositeKind
+        : 'canvas';
     const descriptor = {
         id: options.id,
         type,
@@ -27,7 +30,32 @@ export function createDisplaySurfaceDescriptor(options) {
         includeInComposite: options.includeInComposite !== false,
         compositeOpacityFactor: Number.isFinite(options.compositeOpacityFactor)
             ? Math.max(0, options.compositeOpacityFactor)
-            : 1
+            : 1,
+        compositeKind,
+        compositeSolidOpacity: 0,
+        contentRevision: 0,
+        compositeStateRevision: 0,
+        drawCountThisFrame: 0,
+        wasNonEmptyLastFrame: false,
+        isEmpty: true,
+        forceBackingReset: options.dynamic === true
+    };
+
+    descriptor.compositeSource = {
+        kind: compositeKind === 'solid' ? 'dim' : 'canvas',
+        canvas: descriptor.canvas,
+        opacity: 0,
+        revision: 0
+    };
+    descriptor.compositeSnapshot = {
+        snapshotIdentity: `before:${descriptor.id}`,
+        sourceRevision: 0,
+        sources: [],
+        sourceDescriptors: [],
+        sourceContentRevisions: [],
+        sourceCompositeRevisions: [],
+        sourceOpacities: [],
+        sourceKinds: []
     };
 
     if (Number.isFinite(options.sequence)) {

@@ -6,6 +6,7 @@ export const OVERLAY_RENDER_CONSTANTS = Object.freeze({
         DIRTY: 'dirty',
         ALWAYS: 'always'
     }),
+    KAWASE_COMPATIBILITY_QUALITY_PRESET: 'compatibility',
     KAWASE_DEFAULT_DOWN_PASSES: 4,
     KAWASE_DEFAULT_UP_PASSES: 4,
     KAWASE_MIN_SIZE: 8,

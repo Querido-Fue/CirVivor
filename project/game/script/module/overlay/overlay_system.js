@@ -1,5 +1,5 @@
 import { getDisplaySystem } from 'display/display_system.js';
-import { measurePerformanceSection } from 'debug/debug_system.js';
+import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { getSetting } from 'save/save_system.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { OverlaySession } from './_overlay_session.js';
@@ -29,6 +29,13 @@ const TITLE_OVERLAY_FACTORY_BY_MENU = Object.freeze({
     achievements: (titleScene) => new AchievementsOverlay(titleScene)
 });
 
+function compareOverlayEntries(left, right) {
+    if (left.order !== right.order) {
+        return left.order - right.order;
+    }
+    return left.sequence - right.sequence;
+}
+
 /**
  * @class OverlayManager
  * @description 동적 surface 기반 overlay session을 생성하고 수명주기를 관리합니다.
@@ -39,6 +46,8 @@ export class OverlayManager {
         this.entries = new Map();
         this.keyToIdMap = new Map();
         this.sequence = 0;
+        this.sortedEntries = [];
+        this.sortedEntriesDirty = true;
     }
 
     /**
@@ -58,11 +67,11 @@ export class OverlayManager {
             return;
         }
 
-        measurePerformanceSection('overlay.manager.update', () => {
-            for (const entry of sortedEntries) {
-                entry.controller.update();
-            }
-        });
+        const startTime = beginPerformanceSection();
+        for (const entry of sortedEntries) {
+            entry.controller.update();
+        }
+        endPerformanceSection('overlay.manager.update', startTime);
     }
 
     /**
@@ -74,11 +83,11 @@ export class OverlayManager {
             return;
         }
 
-        measurePerformanceSection('overlay.manager.draw', () => {
-            for (const entry of sortedEntries) {
-                entry.controller.draw();
-            }
-        });
+        const startTime = beginPerformanceSection();
+        for (const entry of sortedEntries) {
+            entry.controller.draw();
+        }
+        endPerformanceSection('overlay.manager.draw', startTime);
     }
 
     /**
@@ -110,6 +119,19 @@ export class OverlayManager {
      */
     hasAnyOverlay() {
         return this.entries.size > 0;
+    }
+
+    /**
+     * 현재 프레임에 하위 WebGL 결과를 glass backdrop으로 샘플링할 overlay가 있는지 반환합니다.
+     * @returns {boolean} 중간 WebGL flush가 필요하면 true입니다.
+     */
+    requiresBackdropComposite() {
+        for (const entry of this.entries.values()) {
+            if (entry.session?.requiresBackdropComposite?.()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -237,6 +259,7 @@ export class OverlayManager {
         };
 
         this.entries.set(overlayId, entry);
+        this.sortedEntriesDirty = true;
         if (entry.key) {
             this.keyToIdMap.set(entry.key, overlayId);
         }
@@ -260,6 +283,7 @@ export class OverlayManager {
         entry.controller.destroy();
         entry.session.release();
         this.entries.delete(overlayId);
+        this.sortedEntriesDirty = true;
 
         if (entry.key) {
             this.keyToIdMap.delete(entry.key);
@@ -299,11 +323,16 @@ export class OverlayManager {
      * @returns {Array<{order: number, sequence: number, controller: object}>} 정렬된 entry 목록입니다.
      */
     #getSortedEntries() {
-        return Array.from(this.entries.values()).sort((left, right) => {
-            if (left.order !== right.order) {
-                return left.order - right.order;
-            }
-            return left.sequence - right.sequence;
-        });
+        if (!this.sortedEntriesDirty) {
+            return this.sortedEntries;
+        }
+
+        this.sortedEntries.length = 0;
+        for (const entry of this.entries.values()) {
+            this.sortedEntries.push(entry);
+        }
+        this.sortedEntries.sort(compareOverlayEntries);
+        this.sortedEntriesDirty = false;
+        return this.sortedEntries;
     }
 }

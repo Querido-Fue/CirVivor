@@ -1,4 +1,4 @@
-import { getCanvas, getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
+import { getCanvas, getDisplaySystem, getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
 import {
@@ -24,6 +24,7 @@ export class TitleLogo {
      */
     constructor(titleScene) {
         this.titleScene = titleScene;
+        this.displaySystem = getDisplaySystem();
         this.#ctx = null;
         this.renderCache = new TitleLogoRenderCache();
 
@@ -159,6 +160,7 @@ export class TitleLogo {
         }
 
         this.renderCache.drawTo(ctx, this.logoX, this.logoY);
+        this.displaySystem?.markSurfaceDirectDraw('ui');
     }
 
     /**
@@ -166,6 +168,7 @@ export class TitleLogo {
      */
     destroy() {
         this.#ctx = null;
+        this.displaySystem = null;
         this.isPlaying = false;
         this.renderCache.destroy();
     }

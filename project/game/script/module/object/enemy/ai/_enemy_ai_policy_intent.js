@@ -21,6 +21,7 @@ import {
     resolveDirectPathPad,
     worldToCellInto
 } from './_enemy_ai_navigation.js';
+import { ENEMY_SPATIAL_TYPE_MASK } from './enemy_spatial_index.js';
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const ENEMY_AI_POLICY_BY_TYPE = ENEMY_AI_CONSTANTS.POLICY_BY_TYPE;
@@ -32,6 +33,7 @@ const HEXA_HIVE_MERGE_CONSTANTS = ENEMY_CONSTANTS.HEXA_HIVE.MERGE;
 const HEXA_HIVE_MAX_MEMBER_COUNT = Number.isInteger(HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
     ? Math.max(2, HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
     : Number.POSITIVE_INFINITY;
+const INVALID_ENEMY_ID = -1;
 
 /**
  * 두 성분으로 구성된 벡터 길이를 반환합니다.
@@ -176,163 +178,482 @@ const canJoinHexaMergeTarget = (enemy, candidate) => {
 };
 
 /**
- * 현재 육각형 적이 따라갈 실제 합체 후보 목표를 찾습니다.
+ * 동일 점수 후보를 정수 enemy ID, 원본 배열 순서 순으로 결정적으로 비교합니다.
+ * @param {object} candidate - 비교할 적입니다.
+ * @param {number} sourceIndex - tick 시작 배열 인덱스입니다.
+ * @param {object} query - 파트너 조회 문맥입니다.
+ * @returns {boolean} 기존 최적 후보보다 우선하는지 여부입니다.
+ */
+function isPreferredHexaPartnerTie(candidate, sourceIndex, query) {
+    const candidateId = Number.isInteger(candidate?.id) ? candidate.id : Number.MAX_SAFE_INTEGER;
+    if (candidateId !== query.bestTieId) {
+        return candidateId < query.bestTieId;
+    }
+    return sourceIndex < query.bestSourceIndex;
+}
+
+/**
+ * 일반 육각형 파트너 공간 조회 후보를 평가합니다.
+ * @param {object} candidate - 후보 적입니다.
+ * @param {number} candidateX - tick 시작 후보 X입니다.
+ * @param {number} candidateY - tick 시작 후보 Y입니다.
+ * @param {number} sourceIndex - tick 시작 배열 인덱스입니다.
+ * @param {object} query - 재사용 조회 문맥입니다.
+ * @returns {void}
+ */
+function visitHexaMergePartnerCandidate(candidate, candidateX, candidateY, sourceIndex, query) {
+    if (
+        !candidate
+        || candidate === query.enemy
+        || candidate.active === false
+        || (query.currentId !== null && candidate.id === query.currentId)
+        || !isHexaMergeTargetEnemy(candidate)
+        || !canJoinHexaMergeTarget(query.enemy, candidate)
+    ) {
+        return;
+    }
+
+    const dx = candidateX - query.startX;
+    const dy = candidateY - query.startY;
+    const distanceSq = (dx * dx) + (dy * dy);
+    if (distanceSq > query.searchRadiusSq) {
+        return;
+    }
+
+    const score = candidate.type === HEXA_HIVE_TYPE
+        ? distanceSq * query.hiveScoreMultiplier
+        : distanceSq;
+    if (score > query.bestScore || (score === query.bestScore && !isPreferredHexaPartnerTie(candidate, sourceIndex, query))) {
+        return;
+    }
+
+    query.bestScore = score;
+    query.bestTieId = Number.isInteger(candidate.id) ? candidate.id : Number.MAX_SAFE_INTEGER;
+    query.bestSourceIndex = sourceIndex;
+    query.bestEnemyId = Number.isInteger(candidate.id) ? candidate.id : INVALID_ENEMY_ID;
+    query.bestX = candidateX;
+    query.bestY = candidateY;
+    query.found = true;
+}
+
+/**
+ * 합체 육각형 파트너 공간 조회 후보를 평가합니다.
+ * @param {object} candidate - 후보 적입니다.
+ * @param {number} candidateX - tick 시작 후보 X입니다.
+ * @param {number} candidateY - tick 시작 후보 Y입니다.
+ * @param {number} sourceIndex - tick 시작 배열 인덱스입니다.
+ * @param {object} query - 재사용 조회 문맥입니다.
+ * @returns {void}
+ */
+function visitHexaHiveMergePartnerCandidate(candidate, candidateX, candidateY, sourceIndex, query) {
+    if (
+        !candidate
+        || candidate === query.enemy
+        || candidate.active === false
+        || (query.currentId !== null && candidate.id === query.currentId)
+        || !isHexaMergeTargetEnemy(candidate)
+        || !canJoinHexaMergeTarget(query.enemy, candidate)
+    ) {
+        return;
+    }
+
+    const candidatePlayerDistance = length(query.playerX - candidateX, query.playerY - candidateY);
+    if (candidatePlayerDistance + query.advanceMinPx >= query.selfPlayerDistance) {
+        return;
+    }
+
+    const dx = candidateX - query.startX;
+    const dy = candidateY - query.startY;
+    const distanceSq = (dx * dx) + (dy * dy);
+    if (distanceSq > query.searchRadiusSq) {
+        return;
+    }
+
+    const hiveScore = candidate.type === HEXA_HIVE_TYPE ? query.hiveScoreMultiplier : 1;
+    const score = (distanceSq * hiveScore)
+        + (candidatePlayerDistance * candidatePlayerDistance * query.playerScoreWeight);
+    if (score > query.bestScore || (score === query.bestScore && !isPreferredHexaPartnerTie(candidate, sourceIndex, query))) {
+        return;
+    }
+
+    query.bestScore = score;
+    query.bestTieId = Number.isInteger(candidate.id) ? candidate.id : Number.MAX_SAFE_INTEGER;
+    query.bestSourceIndex = sourceIndex;
+    query.bestEnemyId = Number.isInteger(candidate.id) ? candidate.id : INVALID_ENEMY_ID;
+    query.bestX = candidateX;
+    query.bestY = candidateY;
+    query.found = true;
+}
+
+/**
+ * 공간 인덱스를 우선 사용하고, 독립 호출 환경에서는 기존 배열 순회를 fallback으로 제공합니다.
+ * @param {object} context - AI 문맥입니다.
+ * @param {object[]|null} enemies - fallback 적 목록입니다.
+ * @param {number} startX - 조회 중심 X입니다.
+ * @param {number} startY - 조회 중심 Y입니다.
+ * @param {number} searchRadius - 조회 반경입니다.
+ * @param {Function} visitor - 후보 평가 함수입니다.
+ * @param {object} query - 재사용 조회 문맥입니다.
+ */
+function forEachHexaPartnerCandidate(context, enemies, startX, startY, searchRadius, visitor, query) {
+    const enemySpatialIndex = context?.enemySpatialIndex;
+    if (typeof enemySpatialIndex?.forEachInCircle === 'function') {
+        enemySpatialIndex.forEachInCircle(
+            startX,
+            startY,
+            searchRadius,
+            ENEMY_SPATIAL_TYPE_MASK.HEXA_MERGE,
+            visitor,
+            query
+        );
+        return;
+    }
+
+    if (!Array.isArray(enemies)) {
+        return;
+    }
+    for (let i = 0; i < enemies.length; i++) {
+        const candidate = enemies[i];
+        if (!candidate?.position) continue;
+        visitor(
+            candidate,
+            Number.isFinite(candidate.position.x) ? candidate.position.x : 0,
+            Number.isFinite(candidate.position.y) ? candidate.position.y : 0,
+            i,
+            query
+        );
+    }
+}
+
+/**
+ * 현재 육각형 적이 따라갈 실제 합체 후보 목표를 공간 인덱스에서 찾습니다.
  * @param {object} enemy - 현재 적 객체입니다.
- * @param {object[]|null} enemies - 전체 적 목록입니다.
+ * @param {object} context - AI 문맥입니다.
+ * @param {object[]|null} enemies - fallback 전체 적 목록입니다.
  * @param {number} startX - 현재 X 좌표입니다.
  * @param {number} startY - 현재 Y 좌표입니다.
  * @param {object} profile - AI 품질 프로필입니다.
- * @param {{x: number, y: number, count?: number}} out - 출력 버퍼입니다.
- * @returns {{x: number, y: number, count?: number}|null} 선택한 합체 후보 목표입니다.
+ * @param {{x: number, y: number, count?: number, enemyId?: number}} out - 출력 버퍼입니다.
+ * @param {object} query - 재사용 조회 문맥입니다.
+ * @returns {{x: number, y: number, count?: number, enemyId?: number}|null} 선택한 합체 후보 목표입니다.
  */
-const findHexaMergePartnerGoalInto = (enemy, enemies, startX, startY, profile, out) => {
-    if (!Array.isArray(enemies) || enemies.length === 0) {
-        return null;
-    }
-
-    const currentId = Number.isInteger(enemy?.id) ? enemy.id : null;
+const findHexaMergePartnerGoalInto = (enemy, context, enemies, startX, startY, profile, out, query) => {
     const searchRadius = Number.isFinite(profile.HEXA_CLUSTER_PARTNER_SEARCH_RADIUS_PX)
         ? Math.max(0, profile.HEXA_CLUSTER_PARTNER_SEARCH_RADIUS_PX)
         : 640;
-    const searchRadiusSq = searchRadius * searchRadius;
-    const hiveJoinMultiplier = Number.isFinite(profile.HEXA_CLUSTER_HIVE_JOIN_SCORE_MULTIPLIER)
+    query.enemy = enemy;
+    query.currentId = Number.isInteger(enemy?.id) ? enemy.id : null;
+    query.startX = startX;
+    query.startY = startY;
+    query.searchRadiusSq = searchRadius * searchRadius;
+    query.hiveScoreMultiplier = Number.isFinite(profile.HEXA_CLUSTER_HIVE_JOIN_SCORE_MULTIPLIER)
         ? Math.max(0.1, profile.HEXA_CLUSTER_HIVE_JOIN_SCORE_MULTIPLIER)
         : 0.85;
-    let bestScore = INF;
-    let found = false;
+    query.bestScore = INF;
+    query.bestTieId = Number.MAX_SAFE_INTEGER;
+    query.bestSourceIndex = Number.MAX_SAFE_INTEGER;
+    query.bestEnemyId = INVALID_ENEMY_ID;
+    query.bestX = 0;
+    query.bestY = 0;
+    query.found = false;
 
-    for (let i = 0; i < enemies.length; i++) {
-        const candidate = enemies[i];
-        if (!candidate || candidate === enemy || candidate.active === false || !candidate.position) {
-            continue;
-        }
-        if (currentId !== null && candidate.id === currentId) {
-            continue;
-        }
-        if (!isHexaMergeTargetEnemy(candidate)) {
-            continue;
-        }
-        if (!canJoinHexaMergeTarget(enemy, candidate)) {
-            continue;
-        }
-
-        const candidateX = Number.isFinite(candidate.position.x) ? candidate.position.x : 0;
-        const candidateY = Number.isFinite(candidate.position.y) ? candidate.position.y : 0;
-        const dx = candidateX - startX;
-        const dy = candidateY - startY;
-        const distanceSq = (dx * dx) + (dy * dy);
-        if (distanceSq > searchRadiusSq) {
-            continue;
-        }
-
-        const score = candidate.type === HEXA_HIVE_TYPE
-            ? distanceSq * hiveJoinMultiplier
-            : distanceSq;
-        if (score >= bestScore) {
-            continue;
-        }
-
-        bestScore = score;
-        found = true;
-        out.x = candidateX;
-        out.y = candidateY;
-        out.count = 1;
+    forEachHexaPartnerCandidate(
+        context,
+        enemies,
+        startX,
+        startY,
+        searchRadius,
+        visitHexaMergePartnerCandidate,
+        query
+    );
+    if (!query.found) {
+        return null;
     }
 
-    return found ? out : null;
+    out.x = query.bestX;
+    out.y = query.bestY;
+    out.count = 1;
+    out.enemyId = query.bestEnemyId;
+    return out;
 };
 
 /**
  * 합체 육각형이 플레이어 방향으로 전진하는 다른 육각 계열 합류 목표를 찾습니다.
  * @param {object} enemy - 현재 적 객체입니다.
- * @param {object[]|null} enemies - 전체 적 목록입니다.
+ * @param {object} context - AI 문맥입니다.
+ * @param {object[]|null} enemies - fallback 전체 적 목록입니다.
  * @param {number} startX - 현재 X 좌표입니다.
  * @param {number} startY - 현재 Y 좌표입니다.
  * @param {number} playerX - 플레이어 X 좌표입니다.
  * @param {number} playerY - 플레이어 Y 좌표입니다.
  * @param {object} profile - AI 품질 프로필입니다.
- * @param {{x: number, y: number, count?: number}} out - 출력 버퍼입니다.
- * @returns {{x: number, y: number, count?: number}|null} 선택한 합류 목표입니다.
+ * @param {{x: number, y: number, count?: number, enemyId?: number}} out - 출력 버퍼입니다.
+ * @param {object} query - 재사용 조회 문맥입니다.
+ * @returns {{x: number, y: number, count?: number, enemyId?: number}|null} 선택한 합류 목표입니다.
  */
 const findHexaHiveMergePartnerGoalInto = (
     enemy,
+    context,
     enemies,
     startX,
     startY,
     playerX,
     playerY,
     profile,
-    out
+    out,
+    query
 ) => {
-    if (!Array.isArray(enemies) || enemies.length === 0) {
-        return null;
-    }
-
-    const currentId = Number.isInteger(enemy?.id) ? enemy.id : null;
     const searchRadius = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_SEARCH_RADIUS_PX)
         ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_SEARCH_RADIUS_PX)
         : 1280;
-    const advanceMinPx = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
-        ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
-        : 48;
-    const hiveScoreMultiplier = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_HIVE_SCORE_MULTIPLIER)
-        ? Math.max(0.1, profile.HEXA_HIVE_MERGE_PARTNER_HIVE_SCORE_MULTIPLIER)
-        : 0.65;
-    const searchRadiusSq = searchRadius * searchRadius;
     const selfPlayerDistance = length(playerX - startX, playerY - startY);
     if (!Number.isFinite(selfPlayerDistance)) {
         return null;
     }
-    const playerScoreWeight = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_SCORE_WEIGHT)
+
+    query.enemy = enemy;
+    query.currentId = Number.isInteger(enemy?.id) ? enemy.id : null;
+    query.startX = startX;
+    query.startY = startY;
+    query.playerX = playerX;
+    query.playerY = playerY;
+    query.selfPlayerDistance = selfPlayerDistance;
+    query.advanceMinPx = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
+        ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
+        : 48;
+    query.hiveScoreMultiplier = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_HIVE_SCORE_MULTIPLIER)
+        ? Math.max(0.1, profile.HEXA_HIVE_MERGE_PARTNER_HIVE_SCORE_MULTIPLIER)
+        : 0.65;
+    query.playerScoreWeight = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_SCORE_WEIGHT)
         ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_SCORE_WEIGHT)
         : 0.35;
-    let bestScore = INF;
-    let found = false;
+    query.searchRadiusSq = searchRadius * searchRadius;
+    query.bestScore = INF;
+    query.bestTieId = Number.MAX_SAFE_INTEGER;
+    query.bestSourceIndex = Number.MAX_SAFE_INTEGER;
+    query.bestEnemyId = INVALID_ENEMY_ID;
+    query.bestX = 0;
+    query.bestY = 0;
+    query.found = false;
 
-    for (let i = 0; i < enemies.length; i++) {
-        const candidate = enemies[i];
-        if (!candidate || candidate === enemy || candidate.active === false || !candidate.position) {
-            continue;
-        }
-        if (currentId !== null && candidate.id === currentId) {
-            continue;
-        }
-        if (!isHexaMergeTargetEnemy(candidate)) {
-            continue;
-        }
-        if (!canJoinHexaMergeTarget(enemy, candidate)) {
-            continue;
-        }
-
-        const candidateX = Number.isFinite(candidate.position.x) ? candidate.position.x : 0;
-        const candidateY = Number.isFinite(candidate.position.y) ? candidate.position.y : 0;
-        const candidatePlayerDistance = length(playerX - candidateX, playerY - candidateY);
-        if (candidatePlayerDistance + advanceMinPx >= selfPlayerDistance) {
-            continue;
-        }
-
-        const dx = candidateX - startX;
-        const dy = candidateY - startY;
-        const distanceSq = (dx * dx) + (dy * dy);
-        if (distanceSq > searchRadiusSq) {
-            continue;
-        }
-
-        const hiveScore = candidate.type === HEXA_HIVE_TYPE ? hiveScoreMultiplier : 1;
-        const score = (distanceSq * hiveScore) + (candidatePlayerDistance * candidatePlayerDistance * playerScoreWeight);
-        if (score >= bestScore) {
-            continue;
-        }
-
-        bestScore = score;
-        found = true;
-        out.x = candidateX;
-        out.y = candidateY;
-        out.count = 1;
+    forEachHexaPartnerCandidate(
+        context,
+        enemies,
+        startX,
+        startY,
+        searchRadius,
+        visitHexaHiveMergePartnerCandidate,
+        query
+    );
+    if (!query.found) {
+        return null;
     }
 
-    return found ? out : null;
+    out.x = query.bestX;
+    out.y = query.bestY;
+    out.count = 1;
+    out.enemyId = query.bestEnemyId;
+    return out;
 };
+
+/**
+ * AI 문맥의 O(1) ID 인덱스를 우선 사용해 기존 파트너의 tick 시작 스냅샷을 찾습니다.
+ * @param {object} context - AI 문맥입니다.
+ * @param {number} enemyId - 조회할 적 ID입니다.
+ * @param {{enemy?: object|null, x?: number, y?: number, sourceIndex?: number}} out - 결과 버퍼입니다.
+ * @returns {{enemy: object, x: number, y: number, sourceIndex: number}|null} 적 스냅샷입니다.
+ */
+function findEnemySnapshotByIdFromAIContext(context, enemyId, out) {
+    if (!Number.isInteger(enemyId) || enemyId === INVALID_ENEMY_ID) {
+        return null;
+    }
+
+    const enemySpatialIndex = context?.enemySpatialIndex;
+    if (typeof enemySpatialIndex?.getEnemySnapshotById === 'function') {
+        return enemySpatialIndex.getEnemySnapshotById(enemyId, out);
+    }
+    if (typeof enemySpatialIndex?.getEnemyById === 'function') {
+        const enemy = enemySpatialIndex.getEnemyById(enemyId);
+        if (!enemy?.position) return null;
+        out.enemy = enemy;
+        out.x = Number.isFinite(enemy.position.x) ? enemy.position.x : 0;
+        out.y = Number.isFinite(enemy.position.y) ? enemy.position.y : 0;
+        out.sourceIndex = -1;
+        return out;
+    }
+
+    const enemies = Array.isArray(context?.enemies) ? context.enemies : [];
+    for (let i = 0; i < enemies.length; i++) {
+        if (enemies[i]?.id === enemyId) {
+            const enemy = enemies[i];
+            if (!enemy.position) return null;
+            out.enemy = enemy;
+            out.x = Number.isFinite(enemy.position.x) ? enemy.position.x : 0;
+            out.y = Number.isFinite(enemy.position.y) ? enemy.position.y : 0;
+            out.sourceIndex = i;
+            return out;
+        }
+    }
+    return null;
+}
+
+/**
+ * 파트너 추적 상태를 제거합니다.
+ * @param {object} state - AI 상태입니다.
+ */
+function clearHexaPartnerTargetState(state) {
+    state.targetEnemyId = INVALID_ENEMY_ID;
+    state.targetEnemyTtlSeconds = 0;
+    state.targetEnemyWallsVersion = -1;
+}
+
+/**
+ * 선택한 파트너를 짧은 유효 기간 동안 ID로 보관합니다.
+ * @param {object} enemy - 현재 적입니다.
+ * @param {object} state - AI 상태입니다.
+ * @param {object} context - AI 문맥입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @param {{enemyId?: number}} partnerGoal - 선택한 파트너 목표입니다.
+ */
+function retainHexaPartnerTargetState(enemy, state, context, profile, partnerGoal) {
+    state.targetEnemyId = Number.isInteger(partnerGoal?.enemyId)
+        ? partnerGoal.enemyId
+        : INVALID_ENEMY_ID;
+    const fallbackTtl = enemy?.type === HEXA_HIVE_TYPE ? 0.15 : 1;
+    const configuredTtl = enemy?.type === HEXA_HIVE_TYPE
+        ? profile.HEXA_HIVE_MERGE_PARTNER_TTL_SECONDS
+        : profile.HEXA_CLUSTER_PARTNER_TTL_SECONDS;
+    const decisionInterval = Number.isFinite(context?.decisionInterval)
+        ? Math.max(0, context.decisionInterval)
+        : 0;
+    const ttl = Number.isFinite(configuredTtl) ? Math.max(0, configuredTtl) : fallbackTtl;
+    state.targetEnemyTtlSeconds = enemy?.type === HEXA_HIVE_TYPE
+        ? ttl
+        : Math.max(ttl, decisionInterval);
+    state.targetEnemyWallsVersion = Number.isInteger(context?.wallsVersion)
+        ? context.wallsVersion
+        : 0;
+}
+
+/**
+ * fixed tick마다 파트너 TTL만 경량 갱신합니다.
+ * @param {object} state - AI 상태입니다.
+ * @param {number} stepDelta - fixed step 델타입니다.
+ */
+export function stepEnemyAIPartnerTargetTtl(state, stepDelta) {
+    const ttl = Number.isFinite(state?.targetEnemyTtlSeconds)
+        ? state.targetEnemyTtlSeconds
+        : 0;
+    state.targetEnemyTtlSeconds = Math.max(0, ttl - Math.max(0, stepDelta));
+}
+
+/**
+ * 기존 파트너가 활성·반경·구성원·플레이어 전진 조건을 계속 만족하면 tick 시작 좌표로 갱신합니다.
+ * 점수 기반 새 파트너 선택은 TTL 만료 또는 heavy decision에서만 수행합니다.
+ * @param {object} enemy - 현재 적입니다.
+ * @param {object} state - AI 상태입니다.
+ * @param {object} context - AI 문맥입니다.
+ * @param {object} profile - AI 품질 프로필입니다.
+ * @param {number} startX - 현재 X입니다.
+ * @param {number} startY - 현재 Y입니다.
+ * @param {number} playerX - 플레이어 X입니다.
+ * @param {number} playerY - 플레이어 Y입니다.
+ * @returns {boolean} 기존 파트너를 계속 사용할 수 있는지 여부입니다.
+ */
+export function refreshCachedHexaPartnerIntent(
+    enemy,
+    state,
+    context,
+    profile,
+    startX,
+    startY,
+    playerX,
+    playerY
+) {
+    if (
+        state.targetEnemyTtlSeconds <= 0
+        || !Number.isInteger(state.targetEnemyId)
+        || state.targetEnemyId === INVALID_ENEMY_ID
+        || state.targetEnemyWallsVersion !== (Number.isInteger(context?.wallsVersion) ? context.wallsVersion : 0)
+    ) {
+        return false;
+    }
+
+    const candidateSnapshot = findEnemySnapshotByIdFromAIContext(
+        context,
+        state.targetEnemyId,
+        state.scratchPartnerQuery
+    );
+    const candidate = candidateSnapshot?.enemy;
+    if (
+        !candidate
+        || candidate === enemy
+        || candidate.active === false
+        || !candidate.position
+        || !isHexaMergeTargetEnemy(candidate)
+        || !canJoinHexaMergeTarget(enemy, candidate)
+    ) {
+        clearHexaPartnerTargetState(state);
+        return false;
+    }
+
+    const candidateX = candidateSnapshot.x;
+    const candidateY = candidateSnapshot.y;
+    const dx = candidateX - startX;
+    const dy = candidateY - startY;
+    const searchRadius = enemy?.type === HEXA_HIVE_TYPE
+        ? profile.HEXA_HIVE_MERGE_PARTNER_SEARCH_RADIUS_PX
+        : profile.HEXA_CLUSTER_PARTNER_SEARCH_RADIUS_PX;
+    const safeSearchRadius = Number.isFinite(searchRadius)
+        ? Math.max(0, searchRadius)
+        : (enemy?.type === HEXA_HIVE_TYPE ? 1280 : 640);
+    if ((dx * dx) + (dy * dy) > safeSearchRadius * safeSearchRadius) {
+        clearHexaPartnerTargetState(state);
+        return false;
+    }
+
+    if (enemy?.type === HEXA_HIVE_TYPE) {
+        const selfPlayerDistance = length(playerX - startX, playerY - startY);
+        const candidatePlayerDistance = length(playerX - candidateX, playerY - candidateY);
+        const advanceMinPx = Number.isFinite(profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
+            ? Math.max(0, profile.HEXA_HIVE_MERGE_PARTNER_PLAYER_ADVANCE_MIN_PX)
+            : 48;
+        if (
+            !Number.isFinite(selfPlayerDistance)
+            || !Number.isFinite(candidatePlayerDistance)
+            || candidatePlayerDistance + advanceMinPx >= selfPlayerDistance
+        ) {
+            clearHexaPartnerTargetState(state);
+            return false;
+        }
+    }
+
+    state.targetX = candidateX;
+    state.targetY = candidateY;
+    return true;
+}
+
+/**
+ * 합체 육각형의 고비용 정책 목표를 이번 tick에 다시 계산해야 하는지 반환합니다.
+ * @param {object} enemy - 현재 적입니다.
+ * @param {object} state - AI 상태입니다.
+ * @param {object} context - AI 문맥입니다.
+ * @param {boolean} hasCachedPartner - 유효한 캐시 파트너가 있는지 여부입니다.
+ * @returns {boolean} 정책 목표 재계산 필요 여부입니다.
+ */
+export function shouldRefreshHexaHivePolicyIntent(enemy, state, context, hasCachedPartner) {
+    if (enemy?.type !== HEXA_HIVE_TYPE) {
+        return false;
+    }
+    if (state.flowPolicyKey === 'hexa_hive_merge_partner') {
+        return !hasCachedPartner;
+    }
+    if (!Number.isFinite(state.targetX) || !Number.isFinite(state.targetY)) {
+        return true;
+    }
+    const wallsVersion = Number.isInteger(context?.wallsVersion) ? context.wallsVersion : 0;
+    return state.policyIntentWallsVersion !== wallsVersion;
+}
 
 /**
  * 합체 육각형이 실제 footprint로 닿을 수 있는 플레이어 주변 목표를 고릅니다.
@@ -372,7 +693,14 @@ const resolveHexaHiveApproachGoalInto = (
     const clearance = resolveEnemyAIFootprintPathClearancePx(metrics, profile)
         || Math.max(readPositivePixelValue(navigationRadius), readPositivePixelValue(metrics?.radius));
     const walls = Array.isArray(context?.walls) ? context.walls : [];
-    const nav = getNavGrid(walls, getSimulationWW(), getSimulationObjectWH(), profile, clearance);
+    const nav = getNavGrid(
+        walls,
+        getSimulationWW(),
+        getSimulationObjectWH(),
+        profile,
+        clearance,
+        Number.isInteger(context?.wallsVersion) ? context.wallsVersion : null
+    );
     const grid = nav.grid;
     let baseDirX = startX - playerX;
     let baseDirY = startY - playerY;
@@ -488,7 +816,15 @@ const resolveHexaHiveApproachGoalInto = (
             const snappedDirX = snappedPlayerDistance > EPSILON ? playerDeltaX / snappedPlayerDistance : dirX;
             const snappedDirY = snappedPlayerDistance > EPSILON ? playerDeltaY / snappedPlayerDistance : dirY;
             const alignmentPenalty = 1 - clampNumber((snappedDirX * baseDirX) + (snappedDirY * baseDirY), -1, 1);
-            const isDirectBlocked = isSegmentBlockedByCoords(startX, startY, snappedX, snappedY, walls, directPad);
+            const isDirectBlocked = isSegmentBlockedByCoords(
+                startX,
+                startY,
+                snappedX,
+                snappedY,
+                walls,
+                directPad,
+                Number.isInteger(context?.wallsVersion) ? context.wallsVersion : null
+            );
             const directPenalty = isDirectBlocked
                 ? desiredDistance * desiredDistance * directPenaltyRatio
                 : 0;
@@ -546,6 +882,8 @@ export const updatePolicyIntent = (
     state.desiredSpeed = state.baseDesiredSpeed;
     state.accelResponse = state.baseAccelResponse;
     state.flowPolicyKey = policyId;
+    state.policyIntentWallsVersion = Number.isInteger(context?.wallsVersion) ? context.wallsVersion : 0;
+    clearHexaPartnerTargetState(state);
 
     if (policyId === ENEMY_AI_POLICY.CHARGE_CHASE && state.chargeState === 'charge') {
         state.targetX = state.chargeTargetX;
@@ -578,16 +916,19 @@ export const updatePolicyIntent = (
     if (policyId === ENEMY_AI_POLICY.CLUSTER_JOIN) {
         const partnerGoal = findHexaMergePartnerGoalInto(
             enemy,
+            context,
             enemies,
             startX,
             startY,
             profile,
-            state.scratchDensityGoal
+            state.scratchDensityGoal,
+            state.scratchPartnerQuery
         );
         if (partnerGoal) {
             state.targetX = partnerGoal.x;
             state.targetY = partnerGoal.y;
             state.flowPolicyKey = 'cluster_partner_join';
+            retainHexaPartnerTargetState(enemy, state, context, profile, partnerGoal);
         } else {
             state.targetX = playerX;
             state.targetY = playerY;
@@ -637,18 +978,21 @@ export const updatePolicyIntent = (
     if (policyId === ENEMY_AI_POLICY.CHASE && enemy?.type === HEXA_HIVE_TYPE) {
         const mergePartnerGoal = findHexaHiveMergePartnerGoalInto(
             enemy,
+            context,
             enemies,
             startX,
             startY,
             playerX,
             playerY,
             profile,
-            state.scratchDensityGoal
+            state.scratchDensityGoal,
+            state.scratchPartnerQuery
         );
         if (mergePartnerGoal) {
             state.targetX = mergePartnerGoal.x;
             state.targetY = mergePartnerGoal.y;
             state.flowPolicyKey = 'hexa_hive_merge_partner';
+            retainHexaPartnerTargetState(enemy, state, context, profile, mergePartnerGoal);
             return;
         }
 

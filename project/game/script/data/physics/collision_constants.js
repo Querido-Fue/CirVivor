@@ -205,7 +205,8 @@ export const COLLISION_CONSTANTS = Object.freeze({
     ENEMY_PAIR_PROCESS_BUDGET: Object.freeze({
         POSITION: 14,
         STABILIZE: 10,
-        NON_POSITION: 8
+        NON_POSITION: 8,
+        ANCHOR_MULTIPLIER: 2
     }),
     RESOLVE_TUNING: Object.freeze({
         FRAME_MAX_RATIO: 0.42,
@@ -280,10 +281,7 @@ export const COLLISION_CONSTANTS = Object.freeze({
     }),
     CANDIDATE_PAIR_BUFFER: Object.freeze({
         INITIAL_PAIR_CAPACITY: 1024,
-        INITIAL_BITMAP_WORD_CAPACITY: 512,
-        BIT_WORD_SIZE: 32,
-        BIT_WORD_SHIFT: 5,
-        BIT_WORD_MASK: 31
+        INITIAL_BODY_CAPACITY: 512
     }),
     BODY_BUILDER: Object.freeze({
         CIRCLE_PART_STRIDE: 3,

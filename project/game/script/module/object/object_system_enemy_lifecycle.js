@@ -99,7 +99,7 @@ function initObjectSystemEnemy(enemy, type, data, enemyId, enemyDefaultWeight) {
 
 /**
  * 적 풀에서 인스턴스를 획득하고 초기화합니다.
- * @param {{enemyPools: Record<string, object>, type: string, data?: object, enemyIdCounter: number, enemyDefaultWeight: object}} options - 적 획득 옵션입니다.
+ * @param {{enemyPools: Record<string, object>, type: string, data?: object, enemyIdCounter: number, enemyDefaultWeight: object, result?: object}} options - 적 획득 옵션입니다.
  * @returns {{enemy: object|null, enemyIdCounter: number}}
  */
 export function acquireObjectSystemEnemy(options) {
@@ -107,11 +107,13 @@ export function acquireObjectSystemEnemy(options) {
     const enemyPools = options?.enemyPools;
     const pool = enemyPools?.[type];
     const currentCounter = Number.isInteger(options?.enemyIdCounter) ? options.enemyIdCounter : 0;
+    const result = options?.result && typeof options.result === 'object'
+        ? options.result
+        : {};
     if (!pool) {
-        return {
-            enemy: null,
-            enemyIdCounter: currentCounter
-        };
+        result.enemy = null;
+        result.enemyIdCounter = currentCounter;
+        return result;
     }
 
     const data = options?.data ?? {};
@@ -124,10 +126,9 @@ export function acquireObjectSystemEnemy(options) {
         options?.enemyDefaultWeight ?? {}
     );
 
-    return {
-        enemy,
-        enemyIdCounter: nextEnemyIdCounter
-    };
+    result.enemy = enemy;
+    result.enemyIdCounter = nextEnemyIdCounter;
+    return result;
 }
 
 /**

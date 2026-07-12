@@ -3,48 +3,54 @@ import { getData } from 'data/data_handler.js';
 const DEFAULT_EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
 
 /**
- * sleep 설정 객체에서 유한 숫자 옵션을 조회합니다.
- * @param {object|null|undefined} options - sleep 설정 객체입니다.
- * @param {string} key - 조회할 옵션 키입니다.
- * @param {number} fallback - 값이 유효하지 않을 때 사용할 기본값입니다.
- * @returns {number} 유한 숫자로 보정한 옵션 값입니다.
+ * 적 충돌 sleep 상태를 변경하지 않고 이번 프레임 sleep 여부를 계산합니다.
+ * @param {object} enemy - 상태를 확인할 적 객체입니다.
+ * @param {number} delta - fixed step delta입니다.
+ * @param {number} [epsilon=DEFAULT_EPSILON] - 속도 계산 최소 delta입니다.
+ * @param {number} [sleepSpeedSq=0] - sleep 유지 속도 제곱 상한입니다.
+ * @returns {boolean} 이번 프레임 충돌 body를 정지 상태로 다룰지 여부입니다.
  */
-function getCollisionEnemySleepOption(options, key, fallback) {
-    const value = options?.[key];
-    return Number.isFinite(value) ? value : fallback;
+export function readCollisionEnemySleepState(enemy, delta, epsilon = DEFAULT_EPSILON, sleepSpeedSq = 0) {
+    const safeEpsilon = Number.isFinite(epsilon) ? epsilon : DEFAULT_EPSILON;
+    const safeSleepSpeedSq = Number.isFinite(sleepSpeedSq) ? sleepSpeedSq : 0;
+    const prevX = Number.isFinite(enemy.__collisionPrevX) ? enemy.__collisionPrevX : enemy.position.x;
+    const prevY = Number.isFinite(enemy.__collisionPrevY) ? enemy.__collisionPrevY : enemy.position.y;
+    const speedX = (enemy.position.x - prevX) / Math.max(safeEpsilon, delta);
+    const speedY = (enemy.position.y - prevY) / Math.max(safeEpsilon, delta);
+    const speedSq = (speedX * speedX) + (speedY * speedY);
+    const sleepTicks = Number.isFinite(enemy.__collisionSleepTicks) ? enemy.__collisionSleepTicks : 0;
+    return sleepTicks > 0 && speedSq <= safeSleepSpeedSq;
 }
 
 /**
- * 적 충돌 sleep 상태를 갱신하고 이번 프레임 sleep 여부를 반환합니다.
- * @param {object} enemy - 상태를 확인할 적 객체입니다.
- * @param {number} delta - fixed step delta입니다.
- * @param {{epsilon:number, sleepSpeedSq:number}} options - sleep 판정 상수입니다.
- * @returns {boolean} 이번 프레임 충돌 body를 정지 상태로 다룰지 여부입니다.
+ * 미리 계산한 sleep snapshot을 fixed tick에서 한 번만 전진시킵니다.
+ * @param {object} enemy - 상태를 전진할 적 객체입니다.
+ * @param {boolean} sleeping - read 단계에서 계산한 sleep 여부입니다.
  */
-export function updateCollisionEnemySleepState(enemy, delta, options) {
-    const epsilon = getCollisionEnemySleepOption(options, 'epsilon', DEFAULT_EPSILON);
-    const sleepSpeedSq = getCollisionEnemySleepOption(options, 'sleepSpeedSq', 0);
-    const prevX = Number.isFinite(enemy.__collisionPrevX) ? enemy.__collisionPrevX : enemy.position.x;
-    const prevY = Number.isFinite(enemy.__collisionPrevY) ? enemy.__collisionPrevY : enemy.position.y;
-    const speedX = (enemy.position.x - prevX) / Math.max(epsilon, delta);
-    const speedY = (enemy.position.y - prevY) / Math.max(epsilon, delta);
-    const speedSq = (speedX * speedX) + (speedY * speedY);
-    const sleepTicks = Number.isFinite(enemy.__collisionSleepTicks) ? enemy.__collisionSleepTicks : 0;
-    const sleeping = sleepTicks > 0 && speedSq <= sleepSpeedSq;
-    if (sleeping) {
-        enemy.__collisionSleepTicks = sleepTicks - 1;
+export function advanceCollisionEnemySleepState(enemy, sleeping) {
+    if (!sleeping) {
+        return;
     }
 
-    return sleeping;
+    const sleepTicks = Number.isFinite(enemy.__collisionSleepTicks) ? enemy.__collisionSleepTicks : 0;
+    if (sleepTicks > 0) {
+        enemy.__collisionSleepTicks = sleepTicks - 1;
+    }
 }
 
 /**
  * 충돌 해소 후 적의 sleep/idle 추적 상태를 갱신합니다.
  * @param {object} enemy - 상태를 갱신할 적 객체입니다.
  * @param {object} collisionBody - 이번 프레임에 사용한 충돌 body입니다.
- * @param {{idleTicksToSleep:number, sleepTicks:number}} options - sleep 전환 설정입니다.
+ * @param {number} idleTicksToSleep - sleep 전환 전 idle tick 수입니다.
+ * @param {number} sleepTicks - sleep 상태 유지 tick 수입니다.
  */
-export function updateCollisionEnemyPostSolveSleepState(enemy, collisionBody, options) {
+export function updateCollisionEnemyPostSolveSleepState(
+    enemy,
+    collisionBody,
+    idleTicksToSleep,
+    sleepTicks
+) {
     if (!enemy?.position || !collisionBody) {
         return;
     }
@@ -57,11 +63,11 @@ export function updateCollisionEnemyPostSolveSleepState(enemy, collisionBody, op
         return;
     }
 
-    const idleTicksToSleep = getCollisionEnemySleepOption(options, 'idleTicksToSleep', 0);
-    const sleepTicks = getCollisionEnemySleepOption(options, 'sleepTicks', 0);
+    const safeIdleTicksToSleep = Number.isFinite(idleTicksToSleep) ? idleTicksToSleep : 0;
+    const safeSleepTicks = Number.isFinite(sleepTicks) ? sleepTicks : 0;
     const idleTicks = (enemy.__collisionIdleTicks || 0) + 1;
     enemy.__collisionIdleTicks = idleTicks;
-    if (idleTicks >= idleTicksToSleep) {
-        enemy.__collisionSleepTicks = sleepTicks;
+    if (idleTicks >= safeIdleTicksToSleep) {
+        enemy.__collisionSleepTicks = safeSleepTicks;
     }
 }

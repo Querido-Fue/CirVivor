@@ -136,3 +136,33 @@ export function measurePerformanceSection(sectionName, callback) {
 
     return performanceDebugger.measureSection(sectionName, callback);
 }
+
+/**
+ * 콜백을 만들지 않고 성능 구간 시작 시각을 반환합니다.
+ * @returns {number} 프로파일러 비활성 시 -1, 활성 시 시작 시각입니다.
+ */
+export function beginPerformanceSection() {
+    const performanceDebugger = getPerformanceDebugger();
+    return performanceDebugger?.isEnabled?.() === true
+        ? performance.now()
+        : -1;
+}
+
+/**
+ * beginPerformanceSection으로 시작한 구간을 기록합니다.
+ * @param {string} sectionName - 기록할 섹션 이름입니다.
+ * @param {number} startTime - 구간 시작 시각 또는 -1입니다.
+ */
+export function endPerformanceSection(sectionName, startTime) {
+    if (!Number.isFinite(startTime) || startTime < 0) {
+        return;
+    }
+
+    const performanceDebugger = getPerformanceDebugger();
+    if (!performanceDebugger?.isEnabled?.()) {
+        return;
+    }
+
+    const endTime = performance.now();
+    performanceDebugger.recordSample(sectionName, endTime - startTime, endTime);
+}

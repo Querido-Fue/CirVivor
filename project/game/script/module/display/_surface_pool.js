@@ -95,26 +95,12 @@ export class CanvasSurfacePool {
      * @param {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|WebGLRenderingContext|null}} entry - 초기화할 엔트리입니다.
      */
     #resetEntry(entry) {
-        const { canvas, context } = entry;
-        canvas.width = canvas.width;
-        canvas.height = canvas.height;
+        const { canvas } = entry;
         canvas.style.display = 'none';
         canvas.style.opacity = '1';
         canvas.style.transform = 'none';
+        canvas.style.transformOrigin = '';
         canvas.style.zIndex = '';
         canvas.dataset.surfaceId = '';
-
-        if (!context) {
-            return;
-        }
-
-        if (this.type === '2d') {
-            context.clearRect(0, 0, canvas.width, canvas.height);
-            return;
-        }
-
-        context.viewport(0, 0, canvas.width, canvas.height);
-        context.clearColor(0, 0, 0, 0);
-        context.clear(context.COLOR_BUFFER_BIT);
     }
 }

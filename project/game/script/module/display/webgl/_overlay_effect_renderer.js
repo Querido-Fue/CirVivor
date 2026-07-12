@@ -16,6 +16,7 @@ import {
 } from './_shader_utils.js';
 
 const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
+const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
 
 /**
  * @class OverlayEffectRenderer
@@ -31,12 +32,20 @@ export class OverlayEffectRenderer {
         this.height = 0;
         this.blurDirty = true;
         this.lastBlurRevision = -1;
+        this.lastBlurSourceIdentity = null;
+        this.lastBlurSourceRevision = -1;
+        this.lastBlurRadius = Number.NaN;
+        this.lastBlurOutputScaleSignature = '';
+        this.lastBlurQualityPreset = '';
+        this.lastBlurPassSignature = '';
         this.finalBlurTexture = null;
         this.sceneTexture = null;
         this.sceneTarget = null;
         this.downTargets = [];
         this.upTargets = [];
-        this.sourceTexture = null;
+        this.sourceTextureCache = new WeakMap();
+        this.sourceTextureRecords = new Set();
+        this.activeSourceTexture = null;
         this.panelTexture = null;
         this.panelTextureCache = new WeakMap();
         this.panelTextureRecords = new Set();
@@ -44,6 +53,14 @@ export class OverlayEffectRenderer {
         this.emptyTexture = null;
         this.frameSerial = 0;
         this.lastBlurFrameSerial = -1;
+        this.blurOutputScaleSignature = '';
+        this.blurPassSignature = '';
+        this.panelRectScratch = { x: 0, y: 0, w: 0, h: 0 };
+        this.expandedRectScratch = { x: 0, y: 0, w: 0, h: 0 };
+        this.transformMatrixScratch = new Float32Array(16);
+        this.transparentColor = new Float32Array([0, 0, 0, 0]);
+        this.colorStringCache = new Map();
+        this.colorObjectCache = new WeakMap();
 
         this.#initPrograms();
         this.#initBuffers();
@@ -125,10 +142,14 @@ export class OverlayEffectRenderer {
             this.sceneTexture = null;
         }
 
-        if (this.sourceTexture) {
-            gl.deleteTexture(this.sourceTexture);
-            this.sourceTexture = null;
+        for (const record of this.sourceTextureRecords) {
+            if (record.texture) {
+                gl.deleteTexture(record.texture);
+            }
         }
+        this.sourceTextureRecords.clear();
+        this.sourceTextureCache = new WeakMap();
+        this.activeSourceTexture = null;
 
         for (const record of this.panelTextureRecords) {
             if (record.texture) {
@@ -166,6 +187,8 @@ export class OverlayEffectRenderer {
         this.#deleteProgramInfo(this.shadowProgram);
         this.#deleteProgramInfo(this.panelTextureProgram);
         this.#deleteProgramInfo(this.glassProgram);
+        this.colorStringCache.clear();
+        this.colorObjectCache = new WeakMap();
     }
 
     /**
@@ -266,26 +289,51 @@ export class OverlayEffectRenderer {
     #ensureBlurTexture(command) {
         const blurUpdateMode = command.blurUpdateMode || OVERLAY_RENDER_CONSTANTS.BLUR_UPDATE_MODE.DIRTY;
         const blurRevision = Number.isFinite(command.blurRevision) ? command.blurRevision : 0;
+        const providedSnapshot = typeof command.sourceProvider === 'function'
+            ? command.sourceProvider()
+            : OverlayEffectRenderer.EMPTY_SOURCE_SNAPSHOT;
+        const sources = Array.isArray(providedSnapshot)
+            ? providedSnapshot
+            : (Array.isArray(providedSnapshot?.sources)
+                ? providedSnapshot.sources
+                : OverlayEffectRenderer.EMPTY_SOURCES);
+        const sourceIdentity = providedSnapshot?.snapshotIdentity ?? sources;
+        const sourceRevision = Number.isFinite(providedSnapshot?.sourceRevision)
+            ? providedSnapshot.sourceRevision
+            : blurRevision;
+        const blurRadius = Number.isFinite(command.blur) ? Math.max(0, command.blur) : 0;
+        const qualityPreset = command.blurQualityPreset
+            || OVERLAY_RENDER_CONSTANTS.KAWASE_COMPATIBILITY_QUALITY_PRESET;
+        const passSignature = command.blurPassSignature || this.blurPassSignature;
+        const outputScaleSignature = command.blurOutputScale || this.blurOutputScaleSignature;
         const needsFrameRefresh = blurUpdateMode === OVERLAY_RENDER_CONSTANTS.BLUR_UPDATE_MODE.ALWAYS
             && this.lastBlurFrameSerial !== this.frameSerial;
         const shouldRefresh = command.forceBlurRefresh === true
             || needsFrameRefresh
             || this.blurDirty
             || this.lastBlurRevision !== blurRevision
+            || this.lastBlurSourceIdentity !== sourceIdentity
+            || this.lastBlurSourceRevision !== sourceRevision
+            || this.lastBlurRadius !== blurRadius
+            || this.lastBlurOutputScaleSignature !== outputScaleSignature
+            || this.lastBlurQualityPreset !== qualityPreset
+            || this.lastBlurPassSignature !== passSignature
             || !this.finalBlurTexture;
 
         if (!shouldRefresh) {
             return;
         }
 
-        const sources = typeof command.sourceProvider === 'function'
-            ? command.sourceProvider()
-            : [];
-
         this.#captureSources(sources);
         this.#runKawaseBlur(command);
 
         this.lastBlurRevision = blurRevision;
+        this.lastBlurSourceIdentity = sourceIdentity;
+        this.lastBlurSourceRevision = sourceRevision;
+        this.lastBlurRadius = blurRadius;
+        this.lastBlurOutputScaleSignature = outputScaleSignature;
+        this.lastBlurQualityPreset = qualityPreset;
+        this.lastBlurPassSignature = passSignature;
         this.lastBlurFrameSerial = this.frameSerial;
         this.blurDirty = false;
     }
@@ -316,7 +364,7 @@ export class OverlayEffectRenderer {
             if (source.kind === 'dim') {
                 const opacity = clamp01(source.opacity || 0);
                 if (opacity > 0) {
-                    this.#drawSolidColorPass(new Float32Array([0, 0, 0, opacity]));
+                    this.#drawSolidColorPass(opacity);
                 }
                 continue;
             }
@@ -325,7 +373,9 @@ export class OverlayEffectRenderer {
                 continue;
             }
 
-            this.#uploadSourceCanvas(source.canvas);
+            if (!this.#uploadSourceCanvas(source)) {
+                continue;
+            }
             this.#drawCompositeTexturePass(clamp01(source.opacity === undefined ? 1 : source.opacity));
         }
 
@@ -353,14 +403,14 @@ export class OverlayEffectRenderer {
 
         for (let index = 0; index < this.downTargets.length; index++) {
             const target = this.downTargets[index];
-            this.#drawFullscreenPass({
-                programInfo: this.downsampleProgram,
-                sourceTexture: readTexture,
-                sourceWidth: readWidth,
-                sourceHeight: readHeight,
+            this.#drawFullscreenPass(
+                this.downsampleProgram,
+                readTexture,
+                readWidth,
+                readHeight,
                 target,
-                offset: (index + 1) * blurScale
-            });
+                (index + 1) * blurScale
+            );
 
             readTexture = target.texture;
             readWidth = target.width;
@@ -373,14 +423,14 @@ export class OverlayEffectRenderer {
 
         for (let index = this.upTargets.length - 1; index >= 0; index--) {
             const target = this.upTargets[index];
-            this.#drawFullscreenPass({
-                programInfo: this.upsampleProgram,
-                sourceTexture: currentTexture,
-                sourceWidth: currentWidth,
-                sourceHeight: currentHeight,
+            this.#drawFullscreenPass(
+                this.upsampleProgram,
+                currentTexture,
+                currentWidth,
+                currentHeight,
                 target,
-                offset: (index + 1) * blurScale
-            });
+                (index + 1) * blurScale
+            );
 
             currentTexture = target.texture;
             currentWidth = target.width;
@@ -395,17 +445,14 @@ export class OverlayEffectRenderer {
     /**
      * @private
      * 풀스크린 pass 하나를 실행합니다.
-     * @param {object} options - pass 실행 옵션입니다.
+     * @param {object} programInfo - 사용할 프로그램입니다.
+     * @param {WebGLTexture} sourceTexture - 입력 텍스처입니다.
+     * @param {number} sourceWidth - 입력 너비입니다.
+     * @param {number} sourceHeight - 입력 높이입니다.
+     * @param {object} target - 출력 렌더 타깃입니다.
+     * @param {number} offset - Kawase 샘플 오프셋입니다.
      */
-    #drawFullscreenPass(options) {
-        const {
-            programInfo,
-            sourceTexture,
-            sourceWidth,
-            sourceHeight,
-            target,
-            offset
-        } = options;
+    #drawFullscreenPass(programInfo, sourceTexture, sourceWidth, sourceHeight, target, offset) {
         const gl = this.gl;
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
@@ -437,7 +484,7 @@ export class OverlayEffectRenderer {
         gl.enableVertexAttribArray(this.compositeProgram.attributes.a_position);
         gl.vertexAttribPointer(this.compositeProgram.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+        gl.bindTexture(gl.TEXTURE_2D, this.activeSourceTexture);
         gl.uniform1i(this.compositeProgram.uniforms.u_texture, 0);
         gl.uniform1f(this.compositeProgram.uniforms.u_opacity, opacity);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -446,35 +493,66 @@ export class OverlayEffectRenderer {
     /**
      * @private
      * 단색 dim 레이어를 scene target에 합성합니다.
-     * @param {Float32Array} color - premultiplied alpha를 기대하지 않는 RGBA 색상입니다.
+     * @param {number} opacity - 검은색 dim의 opacity입니다.
      */
-    #drawSolidColorPass(color) {
+    #drawSolidColorPass(opacity) {
         const gl = this.gl;
         gl.useProgram(this.solidColorProgram.program);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenBuffer);
         gl.enableVertexAttribArray(this.solidColorProgram.attributes.a_position);
         gl.vertexAttribPointer(this.solidColorProgram.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
-        gl.uniform4fv(this.solidColorProgram.uniforms.u_color, color);
+        gl.uniform4f(this.solidColorProgram.uniforms.u_color, 0, 0, 0, opacity);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
     /**
      * @private
-     * 현재 source canvas를 재사용 텍스처에 업로드합니다.
-     * @param {HTMLCanvasElement} canvas - 업로드할 캔버스입니다.
+     * 현재 source canvas를 canvas별 재사용 텍스처에 업로드합니다.
+     * @param {{canvas: HTMLCanvasElement, revision?: number}} source - 업로드할 source 레코드입니다.
+     * @returns {boolean} 업로드 또는 기존 텍스처 재사용 성공 여부입니다.
      */
-    #uploadSourceCanvas(canvas) {
+    #uploadSourceCanvas(source) {
         const gl = this.gl;
-        if (!this.sourceTexture) {
-            this.sourceTexture = this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height));
+        const canvas = source.canvas;
+        let record = this.sourceTextureCache.get(canvas);
+        if (!record) {
+            record = {
+                texture: this.#createTextureParameters(),
+                width: 0,
+                height: 0,
+                revision: Number.NaN
+            };
+            this.sourceTextureCache.set(canvas, record);
+            this.sourceTextureRecords.add(record);
         }
 
-        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        const revision = Number.isFinite(source.revision) ? source.revision : Number.NaN;
+        const sizeChanged = record.width !== canvas.width || record.height !== canvas.height;
+        const needsUpload = sizeChanged || !Number.isFinite(revision) || record.revision !== revision;
+        this.activeSourceTexture = record.texture;
+        gl.bindTexture(gl.TEXTURE_2D, record.texture);
+        if (!needsUpload) {
+            return true;
+        }
+
+        try {
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+            if (sizeChanged) {
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            } else {
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            }
+            record.width = canvas.width;
+            record.height = canvas.height;
+            record.revision = revision;
+            return true;
+        } catch {
+            return false;
+        } finally {
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        }
     }
 
     /**
@@ -487,7 +565,7 @@ export class OverlayEffectRenderer {
         let record = this.panelTextureCache.get(canvas);
         if (!record) {
             record = {
-                texture: this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height)),
+                texture: this.#createTextureParameters(),
                 width: 0,
                 height: 0,
                 revision: Number.NaN
@@ -512,9 +590,16 @@ export class OverlayEffectRenderer {
 
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        try {
+            if (record.width !== canvas.width || record.height !== canvas.height) {
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            } else {
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            }
+        } finally {
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        }
         record.width = canvas.width;
         record.height = canvas.height;
         record.revision = revision;
@@ -533,18 +618,14 @@ export class OverlayEffectRenderer {
         const radius = Math.max(0, command.radius || 0);
         const shadowRadius = Math.max(0, command.shadowRadius || 0);
         const perspective = Number.isFinite(command.perspective) ? Math.max(1, command.perspective) : 1000;
-        const shadowOffset = {
-            x: Number.isFinite(command.shadowOffsetX) ? command.shadowOffsetX : 0,
-            y: Number.isFinite(command.shadowOffsetY) ? command.shadowOffsetY : 0
-        };
+        const shadowOffsetX = Number.isFinite(command.shadowOffsetX) ? command.shadowOffsetX : 0;
+        const shadowOffsetY = Number.isFinite(command.shadowOffsetY) ? command.shadowOffsetY : 0;
         const fillColor = this.#normalizeColor(command.fill || 'rgba(255,255,255,0)');
         const strokeColor = this.#normalizeColor(command.stroke || 'rgba(255,255,255,0)');
         const tintColor = this.#normalizeColor(command.tintColor || OVERLAY_RENDER_CONSTANTS.GLASS_TINT_COLOR);
         const edgeColor = this.#normalizeColor(command.edgeColor || OVERLAY_RENDER_CONSTANTS.GLASS_EDGE_COLOR);
         const shadowColor = this.#normalizeColor(command.shadowColor || 'rgba(0,0,0,0)');
-        const transformMatrix = Array.isArray(command.transformMatrix) && command.transformMatrix.length === 16
-            ? new Float32Array(command.transformMatrix)
-            : OverlayEffectRenderer.IDENTITY_MATRIX;
+        const transformMatrix = this.#resolveTransformMatrix(command.transformMatrix);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, this.width, this.height);
@@ -552,7 +633,7 @@ export class OverlayEffectRenderer {
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
         if (shadowRadius > 0 && shadowColor[3] > 0) {
-            this.#drawPanelShadow({
+            this.#drawPanelShadow(
                 alpha,
                 panelRect,
                 transformMatrix,
@@ -560,8 +641,9 @@ export class OverlayEffectRenderer {
                 radius,
                 shadowRadius,
                 shadowColor,
-                shadowOffset
-            });
+                shadowOffsetX,
+                shadowOffsetY
+            );
         }
 
         gl.useProgram(this.glassProgram.program);
@@ -600,46 +682,59 @@ export class OverlayEffectRenderer {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
         if (command.effectTextureCanvas) {
-            this.#drawPanelTexture({
+            this.#drawPanelTexture(
                 alpha,
-                canvas: command.effectTextureCanvas,
+                command.effectTextureCanvas,
                 panelRect,
                 perspective,
                 radius,
                 transformMatrix
-            });
+            );
         }
     }
 
     /**
      * @private
      * 패널 뒤에 soft shadow를 렌더링합니다.
-     * @param {object} options - shadow 렌더링 옵션입니다.
+     * @param {number} alpha - 패널 alpha입니다.
+     * @param {object} panelRect - 패널 영역입니다.
+     * @param {Float32Array} transformMatrix - 패널 변환 행렬입니다.
+     * @param {number} perspective - 원근 거리입니다.
+     * @param {number} radius - 패널 반경입니다.
+     * @param {number} shadowRadius - 그림자 반경입니다.
+     * @param {Float32Array} shadowColor - 그림자 색상입니다.
+     * @param {number} shadowOffsetX - 그림자 X 오프셋입니다.
+     * @param {number} shadowOffsetY - 그림자 Y 오프셋입니다.
      */
-    #drawPanelShadow(options) {
+    #drawPanelShadow(alpha, panelRect, transformMatrix, perspective, radius, shadowRadius, shadowColor, shadowOffsetX, shadowOffsetY) {
         const gl = this.gl;
-        const drawRect = this.#buildExpandedRect(options.panelRect, options.shadowRadius, options.shadowOffset);
+        const drawRect = this.#buildExpandedRect(panelRect, shadowRadius, shadowOffsetX, shadowOffsetY);
         gl.useProgram(this.shadowProgram.program);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.unitQuadBuffer);
         gl.enableVertexAttribArray(this.shadowProgram.attributes.a_unit);
         gl.vertexAttribPointer(this.shadowProgram.attributes.a_unit, 2, gl.FLOAT, false, 0, 0);
-        this.#setPanelUniforms(this.shadowProgram, drawRect, options.panelRect, options.transformMatrix, options.perspective);
-        gl.uniform1f(this.shadowProgram.uniforms.u_radius, options.radius);
-        gl.uniform1f(this.shadowProgram.uniforms.u_alpha, options.alpha);
-        gl.uniform1f(this.shadowProgram.uniforms.u_shadowRadius, options.shadowRadius);
-        gl.uniform2f(this.shadowProgram.uniforms.u_shadowOffset, options.shadowOffset.x, options.shadowOffset.y);
-        gl.uniform4fv(this.shadowProgram.uniforms.u_shadowColor, options.shadowColor);
+        this.#setPanelUniforms(this.shadowProgram, drawRect, panelRect, transformMatrix, perspective);
+        gl.uniform1f(this.shadowProgram.uniforms.u_radius, radius);
+        gl.uniform1f(this.shadowProgram.uniforms.u_alpha, alpha);
+        gl.uniform1f(this.shadowProgram.uniforms.u_shadowRadius, shadowRadius);
+        gl.uniform2f(this.shadowProgram.uniforms.u_shadowOffset, shadowOffsetX, shadowOffsetY);
+        gl.uniform4fv(this.shadowProgram.uniforms.u_shadowColor, shadowColor);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
     /**
      * @private
      * 패널 내부 effect 텍스처를 현재 패널 변형과 함께 합성합니다.
-     * @param {object} options - 텍스처 합성 옵션입니다.
+     * @param {number} alpha - 패널 alpha입니다.
+     * @param {HTMLCanvasElement} canvas - effect 캔버스입니다.
+     * @param {object} panelRect - 패널 영역입니다.
+     * @param {number} perspective - 원근 거리입니다.
+     * @param {number} radius - 패널 반경입니다.
+     * @param {Float32Array} transformMatrix - 패널 변환 행렬입니다.
      */
-    #drawPanelTexture(options) {
+    #drawPanelTexture(alpha, canvas, panelRect, perspective, radius, transformMatrix) {
         const gl = this.gl;
-        this.#uploadPanelTexture(options.canvas);
+        this.#uploadPanelTexture(canvas);
 
         gl.useProgram(this.panelTextureProgram.program);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.unitQuadBuffer);
@@ -647,13 +742,13 @@ export class OverlayEffectRenderer {
         gl.vertexAttribPointer(this.panelTextureProgram.attributes.a_unit, 2, gl.FLOAT, false, 0, 0);
         this.#setPanelUniforms(
             this.panelTextureProgram,
-            options.panelRect,
-            options.panelRect,
-            options.transformMatrix,
-            options.perspective
+            panelRect,
+            panelRect,
+            transformMatrix,
+            perspective
         );
-        gl.uniform1f(this.panelTextureProgram.uniforms.u_radius, options.radius);
-        gl.uniform1f(this.panelTextureProgram.uniforms.u_alpha, options.alpha);
+        gl.uniform1f(this.panelTextureProgram.uniforms.u_radius, radius);
+        gl.uniform1f(this.panelTextureProgram.uniforms.u_alpha, alpha);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.activePanelTexture);
         gl.uniform1i(this.panelTextureProgram.uniforms.u_texture, 0);
@@ -716,12 +811,12 @@ export class OverlayEffectRenderer {
      * @returns {{x:number, y:number, w:number, h:number}} 패널 rect입니다.
      */
     #buildPanelRect(command) {
-        return {
-            x: command.x || 0,
-            y: command.y || 0,
-            w: Math.max(0, command.w || 0),
-            h: Math.max(0, command.h || 0)
-        };
+        const rect = this.panelRectScratch;
+        rect.x = command.x || 0;
+        rect.y = command.y || 0;
+        rect.w = Math.max(0, command.w || 0);
+        rect.h = Math.max(0, command.h || 0);
+        return rect;
     }
 
     /**
@@ -729,17 +824,35 @@ export class OverlayEffectRenderer {
      * shadow를 포함할 수 있도록 rect를 확장합니다.
      * @param {{x:number, y:number, w:number, h:number}} panelRect - 기준 패널 rect입니다.
      * @param {number} shadowRadius - shadow blur 반경입니다.
-     * @param {{x:number, y:number}} shadowOffset - shadow 오프셋입니다.
+     * @param {number} shadowOffsetX - shadow X 오프셋입니다.
+     * @param {number} shadowOffsetY - shadow Y 오프셋입니다.
      * @returns {{x:number, y:number, w:number, h:number}} 확장된 draw rect입니다.
      */
-    #buildExpandedRect(panelRect, shadowRadius, shadowOffset) {
-        const pad = Math.max(0, shadowRadius * 3.0) + Math.max(Math.abs(shadowOffset.x), Math.abs(shadowOffset.y));
-        return {
-            x: panelRect.x - pad,
-            y: panelRect.y - pad,
-            w: panelRect.w + (pad * 2),
-            h: panelRect.h + (pad * 2)
-        };
+    #buildExpandedRect(panelRect, shadowRadius, shadowOffsetX, shadowOffsetY) {
+        const pad = Math.max(0, shadowRadius * 3.0) + Math.max(Math.abs(shadowOffsetX), Math.abs(shadowOffsetY));
+        const rect = this.expandedRectScratch;
+        rect.x = panelRect.x - pad;
+        rect.y = panelRect.y - pad;
+        rect.w = panelRect.w + (pad * 2);
+        rect.h = panelRect.h + (pad * 2);
+        return rect;
+    }
+
+    /**
+     * command 행렬을 uniform 업로드용 재사용 버퍼로 정규화합니다.
+     * @param {number[]|Float32Array|null|undefined} value - 원본 행렬입니다.
+     * @returns {Float32Array} 사용할 행렬입니다.
+     * @private
+     */
+    #resolveTransformMatrix(value) {
+        if (value instanceof Float32Array && value.length === 16) {
+            return value;
+        }
+        if (Array.isArray(value) && value.length === 16) {
+            this.transformMatrixScratch.set(value);
+            return this.transformMatrixScratch;
+        }
+        return OverlayEffectRenderer.IDENTITY_MATRIX;
     }
 
     /**
@@ -755,7 +868,21 @@ export class OverlayEffectRenderer {
         const gl = this.gl;
         const vertexShader = compileShader(gl, vertexSource, gl.VERTEX_SHADER);
         const fragmentShader = compileShader(gl, fragmentSource, gl.FRAGMENT_SHADER);
+        if (!vertexShader || !fragmentShader) {
+            if (vertexShader) {
+                gl.deleteShader(vertexShader);
+            }
+            if (fragmentShader) {
+                gl.deleteShader(fragmentShader);
+            }
+            return null;
+        }
         const program = createProgram(gl, vertexShader, fragmentShader);
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        if (!program) {
+            return null;
+        }
 
         const uniforms = {};
         for (const uniformName of uniformNames) {
@@ -806,6 +933,10 @@ export class OverlayEffectRenderer {
             this.upTargets.push(this.#createRenderTarget(this.downTargets[passIndex].width, this.downTargets[passIndex].height));
         }
 
+        const finalTarget = this.upTargets[0] || this.downTargets[this.downTargets.length - 1] || this.sceneTarget;
+        this.blurOutputScaleSignature = `${finalTarget.width}x${finalTarget.height}/${this.width}x${this.height}`;
+        this.blurPassSignature = `down:${this.downTargets.length}|up:${this.upTargets.length}|order:reverse`;
+
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
@@ -846,13 +977,24 @@ export class OverlayEffectRenderer {
      */
     #createTexture(width, height) {
         const gl = this.gl;
+        const texture = this.#createTextureParameters();
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, Math.max(1, width), Math.max(1, height), 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        return texture;
+    }
+
+    /**
+     * storage를 할당하지 않은 clamp/linear 2D 텍스처를 생성합니다.
+     * @returns {WebGLTexture} 생성된 텍스처입니다.
+     * @private
+     */
+    #createTextureParameters() {
+        const gl = this.gl;
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, Math.max(1, width), Math.max(1, height), 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
         return texture;
     }
 
@@ -881,7 +1023,7 @@ export class OverlayEffectRenderer {
      */
     #normalizeColor(value) {
         if (value === false || value === null || value === undefined) {
-            return new Float32Array([0, 0, 0, 0]);
+            return this.transparentColor;
         }
 
         if (value instanceof Float32Array && value.length === 4) {
@@ -889,7 +1031,38 @@ export class OverlayEffectRenderer {
         }
 
         if (Array.isArray(value) && value.length === 4) {
-            return new Float32Array(value);
+            let cachedArrayColor = this.colorObjectCache.get(value);
+            if (!cachedArrayColor) {
+                cachedArrayColor = new Float32Array(value);
+                this.colorObjectCache.set(value, cachedArrayColor);
+            } else if (cachedArrayColor[0] !== value[0]
+                || cachedArrayColor[1] !== value[1]
+                || cachedArrayColor[2] !== value[2]
+                || cachedArrayColor[3] !== value[3]) {
+                cachedArrayColor.set(value);
+            }
+            return cachedArrayColor;
+        }
+
+        if (typeof value === 'string') {
+            const cachedStringColor = this.colorStringCache.get(value);
+            if (cachedStringColor) {
+                return cachedStringColor;
+            }
+
+            const parsed = colorUtil().cssToRgb(value);
+            const normalized = new Float32Array([
+                parsed.r / 255,
+                parsed.g / 255,
+                parsed.b / 255,
+                parsed.a
+            ]);
+            this.colorStringCache.set(value, normalized);
+            if (this.colorStringCache.size > WEBGL_CONSTANTS.COLOR_CACHE_LIMIT) {
+                this.colorStringCache.clear();
+                this.colorStringCache.set(value, normalized);
+            }
+            return normalized;
         }
 
         const parsed = colorUtil().cssToRgb(value);
@@ -912,3 +1085,10 @@ OverlayEffectRenderer.IDENTITY_MATRIX = new Float32Array([
     0, 0, 1, 0,
     0, 0, 0, 1
 ]);
+
+OverlayEffectRenderer.EMPTY_SOURCES = Object.freeze([]);
+OverlayEffectRenderer.EMPTY_SOURCE_SNAPSHOT = Object.freeze({
+    snapshotIdentity: 'empty',
+    sourceRevision: 0,
+    sources: OverlayEffectRenderer.EMPTY_SOURCES
+});

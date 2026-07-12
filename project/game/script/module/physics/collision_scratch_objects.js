@@ -34,6 +34,7 @@ export function createCollisionScratchProjectileBody() {
         projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
         enemyPairBroadRadius: 0, projectileBroadRadius: 0,
         circleParts: null, circlePartCount: 0, mergeLock: false,
+        _sleeping: false,
         _broadDataIndex: -1,
         _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
         _frameResolveMoved: 0, _frameResolveMax: Infinity
@@ -56,6 +57,7 @@ export function createCollisionBody() {
         projectileMinX: 0, projectileMaxX: 0, projectileMinY: 0, projectileMaxY: 0,
         enemyPairBroadRadius: 0, projectileBroadRadius: 0,
         mergeLock: false,
+        _sleeping: false,
         _broadDataIndex: -1,
         _candidatePairCount: 0, _resolvedPairCount: 0, _passPairProcessCount: 0,
         _frameResolveMoved: 0, _frameResolveMax: Infinity

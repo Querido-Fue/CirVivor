@@ -1,4 +1,4 @@
-import { getCanvas } from 'display/display_system.js';
+import { getCanvas, getDisplaySystem } from 'display/display_system.js';
 import { compileShader, createProgram } from 'display/webgl/_shader_utils.js';
 import { getDelta } from 'game/time_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
@@ -167,6 +167,7 @@ export class TitleGradientBackground {
      * 타이틀 전용 배경 패스를 생성합니다.
      */
     constructor() {
+        this.displaySystem = getDisplaySystem();
         this.canvas = getCanvas('background');
         this.gl = this.canvas ? this.canvas.getContext('webgl') : null;
         this.program = null;
@@ -188,7 +189,12 @@ export class TitleGradientBackground {
         this.bakedWidth = 0;
         this.bakedHeight = 0;
         this.bakeDirty = true;
+        this.contextLost = false;
+        this.destroyed = false;
+        this.onContextLost = (event) => this.#handleContextLost(event);
+        this.onContextRestored = () => this.#handleContextRestored();
 
+        this.#attachContextLifecycle();
         this.#init();
     }
 
@@ -310,6 +316,7 @@ export class TitleGradientBackground {
         gl.bindTexture(gl.TEXTURE_2D, this.bakedTexture);
         gl.uniform1i(this.uTexture, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        this.displaySystem?.markSurfaceDirectDraw('background');
         gl.enable(gl.BLEND);
     }
 
@@ -317,31 +324,15 @@ export class TitleGradientBackground {
      * 생성한 WebGL 리소스를 해제합니다.
      */
     destroy() {
-        if (!this.gl) {
-            return;
-        }
-
-        if (this.positionBuffer) {
-            this.gl.deleteBuffer(this.positionBuffer);
-            this.positionBuffer = null;
-        }
-
-        if (this.program) {
-            this.gl.deleteProgram(this.program);
-            this.program = null;
-        }
-        if (this.blitProgram) {
-            this.gl.deleteProgram(this.blitProgram);
-            this.blitProgram = null;
-        }
-        if (this.bakedTexture) {
-            this.gl.deleteTexture(this.bakedTexture);
-            this.bakedTexture = null;
-        }
-        if (this.bakeFramebuffer) {
-            this.gl.deleteFramebuffer(this.bakeFramebuffer);
-            this.bakeFramebuffer = null;
-        }
+        this.destroyed = true;
+        this.#detachContextLifecycle();
+        const canDeleteResources = this.gl
+            && !this.contextLost
+            && (typeof this.gl.isContextLost !== 'function' || !this.gl.isContextLost());
+        this.#releaseResources(canDeleteResources);
+        this.gl = null;
+        this.canvas = null;
+        this.displaySystem = null;
     }
 
     /**
@@ -349,7 +340,7 @@ export class TitleGradientBackground {
      * @private
      */
     #init() {
-        if (!this.gl) {
+        if (!this.gl || this.contextLost || this.destroyed) {
             return;
         }
 
@@ -391,7 +382,9 @@ export class TitleGradientBackground {
         this.positionBuffer = this.gl.createBuffer();
         if (!this.positionBuffer) {
             this.gl.deleteProgram(this.program);
+            this.gl.deleteProgram(this.blitProgram);
             this.program = null;
+            this.blitProgram = null;
             return;
         }
 
@@ -416,6 +409,99 @@ export class TitleGradientBackground {
 
         this.#syncResolution();
         this.#syncThemeColors();
+    }
+
+    /**
+     * 배경 캔버스의 WebGL context 수명주기 이벤트를 등록합니다.
+     * @private
+     */
+    #attachContextLifecycle() {
+        if (!this.canvas || typeof this.canvas.addEventListener !== 'function') {
+            return;
+        }
+
+        this.canvas.addEventListener('webglcontextlost', this.onContextLost);
+        this.canvas.addEventListener('webglcontextrestored', this.onContextRestored);
+    }
+
+    /**
+     * 등록한 WebGL context 수명주기 이벤트를 해제합니다.
+     * @private
+     */
+    #detachContextLifecycle() {
+        if (!this.canvas || typeof this.canvas.removeEventListener !== 'function') {
+            return;
+        }
+
+        this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+        this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
+    }
+
+    /**
+     * context loss 시 복구 불가능한 GPU handle을 무효화합니다.
+     * @param {Event} event - WebGL context loss 이벤트입니다.
+     * @private
+     */
+    #handleContextLost(event) {
+        event?.preventDefault?.();
+        this.contextLost = true;
+        this.#releaseResources(false);
+    }
+
+    /**
+     * context restore 시 타이틀 배경 전용 GPU 자원을 다시 생성합니다.
+     * @private
+     */
+    #handleContextRestored() {
+        if (this.destroyed || !this.canvas) {
+            return;
+        }
+
+        this.gl = this.canvas.getContext('webgl');
+        this.contextLost = false;
+        this.#init();
+        this.bakeDirty = true;
+    }
+
+    /**
+     * 현재 타이틀 배경 전용 GPU 자원을 삭제하거나 handle만 무효화합니다.
+     * @param {boolean} deleteResources - 유효한 context에서 delete 호출을 수행할지 여부입니다.
+     * @private
+     */
+    #releaseResources(deleteResources) {
+        const gl = this.gl;
+        if (deleteResources && gl) {
+            if (this.positionBuffer) {
+                gl.deleteBuffer(this.positionBuffer);
+            }
+            if (this.program) {
+                gl.deleteProgram(this.program);
+            }
+            if (this.blitProgram) {
+                gl.deleteProgram(this.blitProgram);
+            }
+            if (this.bakedTexture) {
+                gl.deleteTexture(this.bakedTexture);
+            }
+            if (this.bakeFramebuffer) {
+                gl.deleteFramebuffer(this.bakeFramebuffer);
+            }
+        }
+
+        this.program = null;
+        this.blitProgram = null;
+        this.positionBuffer = null;
+        this.aPosition = -1;
+        this.blitAPosition = -1;
+        this.uTime = null;
+        this.uResolution = null;
+        this.uColors = null;
+        this.uTexture = null;
+        this.bakedTexture = null;
+        this.bakeFramebuffer = null;
+        this.bakedWidth = 0;
+        this.bakedHeight = 0;
+        this.bakeDirty = true;
     }
 
     /**
@@ -482,6 +568,9 @@ export class TitleGradientBackground {
         const gl = this.gl;
         if (!this.bakedTexture) {
             this.bakedTexture = gl.createTexture();
+            if (!this.bakedTexture) {
+                return false;
+            }
             gl.bindTexture(gl.TEXTURE_2D, this.bakedTexture);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);

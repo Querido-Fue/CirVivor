@@ -1,8 +1,11 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { incrementEnemyAIDebugCounter, recordEnemyAIDebugPolicySample } from './_enemy_ai_debug_stats.js';
 import {
+    refreshCachedHexaPartnerIntent,
     requiresDensityAnchor,
     resolveEnemyAIPolicy,
+    shouldRefreshHexaHivePolicyIntent,
+    stepEnemyAIPartnerTargetTtl,
     stepArrowChargeState,
     updatePolicyIntent
 } from './_enemy_ai_policy_intent.js';
@@ -163,6 +166,15 @@ const ensureScratchDensityGoal = (goal) => {
 };
 
 /**
+ * 공간 인덱스 파트너 조회에서 재사용할 문맥 객체를 보장합니다.
+ * @param {object|null|undefined} query - 기존 조회 문맥입니다.
+ * @returns {object} 재사용 조회 문맥입니다.
+ */
+const ensureScratchPartnerQuery = (query) => (
+    query && typeof query === 'object' ? query : {}
+);
+
+/**
  * 전송 과정에서 생략될 수 있는 AI 임시 버퍼를 보장합니다.
  * @param {object} state
  * @returns {object}
@@ -174,6 +186,7 @@ const ensureEnemyAIStateScratchObjects = (state) => {
     state.scratchGoalCell = ensureScratchCell(state.scratchGoalCell);
     state.scratchPolicyPoint = ensureScratchPoint(state.scratchPolicyPoint, 0, 0);
     state.scratchDensityGoal = ensureScratchDensityGoal(state.scratchDensityGoal);
+    state.scratchPartnerQuery = ensureScratchPartnerQuery(state.scratchPartnerQuery);
     state.scratchUpdateFrame = ensureEnemyAIUpdateFrame(state.scratchUpdateFrame);
     return state;
 };
@@ -220,6 +233,16 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
         : nextState.baseAccelResponse;
     nextState.targetX = Number.isFinite(nextState.targetX) ? nextState.targetX : Number.NaN;
     nextState.targetY = Number.isFinite(nextState.targetY) ? nextState.targetY : Number.NaN;
+    nextState.targetEnemyId = Number.isInteger(nextState.targetEnemyId) ? nextState.targetEnemyId : -1;
+    nextState.targetEnemyTtlSeconds = Number.isFinite(nextState.targetEnemyTtlSeconds)
+        ? Math.max(0, nextState.targetEnemyTtlSeconds)
+        : 0;
+    nextState.targetEnemyWallsVersion = Number.isInteger(nextState.targetEnemyWallsVersion)
+        ? nextState.targetEnemyWallsVersion
+        : -1;
+    nextState.policyIntentWallsVersion = Number.isInteger(nextState.policyIntentWallsVersion)
+        ? nextState.policyIntentWallsVersion
+        : -1;
     nextState.flowPolicyKey = typeof nextState.flowPolicyKey === 'string'
         ? nextState.flowPolicyKey
         : nextState.policyId;
@@ -233,21 +256,21 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
     nextState.lastDirectPathWallsVersion = Number.isInteger(nextState.lastDirectPathWallsVersion)
         ? nextState.lastDirectPathWallsVersion
         : -1;
-    nextState.lastDirectPathPadBucket = Number.isInteger(nextState.lastDirectPathPadBucket)
-        ? nextState.lastDirectPathPadBucket
-        : -1;
-    nextState.lastDirectPathStartCx = Number.isInteger(nextState.lastDirectPathStartCx)
-        ? nextState.lastDirectPathStartCx
-        : 0;
-    nextState.lastDirectPathStartCy = Number.isInteger(nextState.lastDirectPathStartCy)
-        ? nextState.lastDirectPathStartCy
-        : 0;
-    nextState.lastDirectPathTargetCx = Number.isInteger(nextState.lastDirectPathTargetCx)
-        ? nextState.lastDirectPathTargetCx
-        : 0;
-    nextState.lastDirectPathTargetCy = Number.isInteger(nextState.lastDirectPathTargetCy)
-        ? nextState.lastDirectPathTargetCy
-        : 0;
+    nextState.lastDirectPathPad = Number.isFinite(nextState.lastDirectPathPad)
+        ? nextState.lastDirectPathPad
+        : Number.NaN;
+    nextState.lastDirectPathStartX = Number.isFinite(nextState.lastDirectPathStartX)
+        ? nextState.lastDirectPathStartX
+        : Number.NaN;
+    nextState.lastDirectPathStartY = Number.isFinite(nextState.lastDirectPathStartY)
+        ? nextState.lastDirectPathStartY
+        : Number.NaN;
+    nextState.lastDirectPathTargetX = Number.isFinite(nextState.lastDirectPathTargetX)
+        ? nextState.lastDirectPathTargetX
+        : Number.NaN;
+    nextState.lastDirectPathTargetY = Number.isFinite(nextState.lastDirectPathTargetY)
+        ? nextState.lastDirectPathTargetY
+        : Number.NaN;
     nextState.orbitDirection = nextState.orbitDirection === -1 || nextState.orbitDirection === 1
         ? nextState.orbitDirection
         : resolveEnemyAIOrbitDirection(seedId);
@@ -304,10 +327,38 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
         updateFrame.targetY,
         profile
     );
+    stepEnemyAIPartnerTargetTtl(state, stepDelta);
+    const hasCachedPartner = refreshCachedHexaPartnerIntent(
+        enemy,
+        state,
+        context,
+        profile,
+        updateFrame.startX,
+        updateFrame.startY,
+        updateFrame.targetX,
+        updateFrame.targetY
+    );
     const shouldRefreshDecision = shouldRefreshEnemyAIDecision(state, context, forcedPolicyRefresh);
     const shouldRefreshClusterTarget = shouldRefreshHexaClusterTarget(state, updateFrame, profile);
+    const shouldRefreshMissingClusterPartner = state.policyId === ENEMY_AI_POLICY.CLUSTER_JOIN
+        && state.flowPolicyKey === 'cluster_partner_join'
+        && !hasCachedPartner;
+    const shouldRefreshHiveIntent = shouldRefreshHexaHivePolicyIntent(
+        enemy,
+        state,
+        context,
+        hasCachedPartner
+    );
+    const shouldRefreshEveryTick = !requiresDensityAnchor(state.policyId)
+        && enemy?.type !== 'hexa_hive';
 
-    if (shouldRefreshDecision || shouldRefreshClusterTarget || !requiresDensityAnchor(state.policyId)) {
+    if (
+        shouldRefreshDecision
+        || shouldRefreshClusterTarget
+        || shouldRefreshMissingClusterPartner
+        || shouldRefreshHiveIntent
+        || shouldRefreshEveryTick
+    ) {
         updatePolicyIntent(
             enemy,
             state,

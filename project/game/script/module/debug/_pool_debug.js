@@ -77,8 +77,11 @@ export class PoolDebugger {
             const poolObj = activeObjectPools[name];
             const availableCount = poolObj.pool !== undefined ? poolObj.pool.length : 0;
             const createdCount = poolObj.createdCount !== undefined ? poolObj.createdCount : availableCount;
-            const inUseCount = createdCount - availableCount;
-            return `${name}: ${inUseCount} / ${createdCount}`;
+            const liveCount = poolObj.liveCount !== undefined ? poolObj.liveCount : createdCount;
+            const inUseCount = poolObj.inUseCount !== undefined
+                ? poolObj.inUseCount
+                : liveCount - availableCount;
+            return `${name}: ${inUseCount} / ${liveCount} (생성 ${createdCount}, 대기 ${availableCount})`;
         });
         const canvasPoolStats = getCanvasPoolStats();
 

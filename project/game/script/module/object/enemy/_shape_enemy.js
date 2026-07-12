@@ -23,6 +23,7 @@ const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
 const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
 const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 const TITLE_AI_ID = getData('TITLE_CONSTANTS').TITLE_AI.ID;
+const EMPTY_DRAW_OPTIONS = Object.freeze({});
 
 /**
  * 타이틀 씬 적인지 판별합니다.
@@ -55,6 +56,7 @@ export class ShapeEnemy extends BaseEnemy {
     #rotationCos;
     #rotationSin;
     #renderOptions;
+    #collisionDebugOptions;
 
     /**
      * @param {string} shapeType
@@ -82,6 +84,14 @@ export class ShapeEnemy extends BaseEnemy {
             rotation: this.rotation,
             rotationCos: this.#rotationCos,
             rotationSin: this.#rotationSin
+        };
+        this.#collisionDebugOptions = {
+            enemyType: this.type,
+            width: 0,
+            height: 0,
+            rotationRadians: 0,
+            renderX: 0,
+            renderY: 0
         };
         this.#syncRotationCache(true);
     }
@@ -261,7 +271,7 @@ export class ShapeEnemy extends BaseEnemy {
          * 디스플레이 시스템의 WebGL 레이어를 통해 스프라이트를 렌더링합니다.
          * @param {{layer?: string, fill?: string, alpha?: number, sizeScale?: number, offsetX?: number, offsetY?: number}} [overrideOptions={}] - 임시 렌더 오버라이드 값입니다.
          */
-    draw(overrideOptions = {}) {
+    draw(overrideOptions = EMPTY_DRAW_OPTIONS) {
         if (!this.active) return;
         this.#syncRotationCache();
 
@@ -283,13 +293,13 @@ export class ShapeEnemy extends BaseEnemy {
         options.fill = overrideOptions.fill ?? this.fill;
         options.alpha = overrideOptions.alpha ?? this.alpha;
         renderGL(overrideOptions.layer || 'object', options);
-        drawEnemyCollisionDebugCircles({
-            enemyType: this.type ?? this.shapeType,
-            width: w,
-            height: h,
-            rotationRadians: (Number.isFinite(options.rotation) ? options.rotation : 0) * DEGREES_TO_RADIANS,
-            renderX: options.x,
-            renderY: options.y
-        });
+        const debugOptions = this.#collisionDebugOptions;
+        debugOptions.enemyType = this.type ?? this.shapeType;
+        debugOptions.width = w;
+        debugOptions.height = h;
+        debugOptions.rotationRadians = (Number.isFinite(options.rotation) ? options.rotation : 0) * DEGREES_TO_RADIANS;
+        debugOptions.renderX = options.x;
+        debugOptions.renderY = options.y;
+        drawEnemyCollisionDebugCircles(debugOptions);
     }
 }

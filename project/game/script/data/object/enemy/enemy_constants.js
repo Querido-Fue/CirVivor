@@ -3,6 +3,7 @@
  */
 export const ENEMY_CONSTANTS = Object.freeze({
     POOL_WARMUP_COUNT: 300,
+    POOL_MAX_RETAINED_COUNT: 600,
     DEFAULT_STYLE: Object.freeze({
         FILL: '#ff6c6c',
         ALPHA: 1,

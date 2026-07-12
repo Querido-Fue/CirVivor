@@ -1,5 +1,5 @@
 import { animate, remove } from 'animation/animation_system.js';
-import { measurePerformanceSection } from 'debug/debug_system.js';
+import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { getWH, getUIWW, getWW, render, shadowOff, shadowOn } from 'display/display_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getMouseFocus, setMouseFocus } from 'input/input_system.js';
@@ -100,6 +100,70 @@ export class BaseOverlay {
         this.#dimAnimId = -1;
         this.#scaleAnimId = -1;
         this.#presentationAnimationToken = 0;
+        this._performanceSectionPrefix = `overlay.${this.constructor?.name || 'Overlay'}`;
+        const performanceSectionPrefix = this._performanceSectionPrefix;
+        this._performanceSections = Object.freeze({
+            updateTotal: `${performanceSectionPrefix}.update.total`,
+            updateSession: `${performanceSectionPrefix}.update.session`,
+            updateInteractions: `${performanceSectionPrefix}.update.interactions`,
+            updateDynamicItems: `${performanceSectionPrefix}.update.dynamicItems`,
+            drawTotal: `${performanceSectionPrefix}.draw.total`,
+            drawDim: `${performanceSectionPrefix}.draw.dim`,
+            drawPanels: `${performanceSectionPrefix}.draw.panels`,
+            drawDecorations: `${performanceSectionPrefix}.draw.decorations`,
+            drawStaticItems: `${performanceSectionPrefix}.draw.staticItems`,
+            drawDynamicItems: `${performanceSectionPrefix}.draw.dynamicItems`,
+            drawFloatingItems: `${performanceSectionPrefix}.draw.floatingItems`,
+            drawPanelEffectCanvas: `${performanceSectionPrefix}.draw.panelEffectCanvas`,
+            drawGlassPanel: `${performanceSectionPrefix}.draw.glassPanel`,
+            drawFlatPanel: `${performanceSectionPrefix}.draw.flatPanel`
+        });
+        this._floatingItemsScratch = [];
+        this._presentationOriginScratch = { x: 0, y: 0 };
+        this._panelInteractionUpdateOptions = {
+            overlay: this,
+            session: null,
+            layer: this.layer,
+            alpha: 0,
+            panelRegions: this.panelRegions,
+            panelInteractionMap: this.#panelInteractionMap
+        };
+        this._panelEffectOptions = {
+            spotlightOptions: null,
+            particleOptions: null,
+            rippleOptions: null,
+            borderOptions: null
+        };
+        this._glassPanelRenderOptions = {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            radius: 0,
+            blur: 0,
+            fill: false,
+            stroke: false,
+            lineWidth: 0,
+            tintColor: null,
+            edgeColor: null,
+            tintStrength: 0,
+            edgeStrength: 0,
+            refractionStrength: 0,
+            transformMatrix: null,
+            perspective: null,
+            effectTextureCanvas: null
+        };
+        this._flatPanelRenderOptions = {
+            shape: 'roundRect',
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            radius: 0,
+            fill: false,
+            stroke: false,
+            lineWidth: 0
+        };
 
         this.uiScale = getSetting('uiScale') / 100 || 1;
         this.WW = getWW();
@@ -122,7 +186,7 @@ export class BaseOverlay {
      * @returns {string} overlay 섹션 접두사입니다.
      */
     _getPerformanceSectionPrefix() {
-        return `overlay.${this.constructor?.name || 'Overlay'}`;
+        return this._performanceSectionPrefix;
     }
 
     /**
@@ -198,7 +262,7 @@ export class BaseOverlay {
             return;
         }
 
-        const presentationOrigin = getOverlayPresentationOrigin(this);
+        const presentationOrigin = getOverlayPresentationOrigin(this, this._presentationOriginScratch);
         this.session.setAlpha(this.alpha);
         this.session.setDimAlpha(this.dimAlpha);
         this.session.setContentScale(this.contentScale);
@@ -342,91 +406,90 @@ export class BaseOverlay {
      * overlay 업데이트를 수행합니다.
      */
     update() {
-        const performanceSectionPrefix = this._getPerformanceSectionPrefix();
-        measurePerformanceSection(`${performanceSectionPrefix}.update.total`, () => {
-            if (this.session) {
-                measurePerformanceSection(`${performanceSectionPrefix}.update.session`, () => {
-                    this.session.updateEffects();
-                    this.#syncPresentationToSession();
-                });
-            }
+        const sections = this._performanceSections;
+        const totalStart = beginPerformanceSection();
+        if (this.session) {
+            const sessionStart = beginPerformanceSection();
+            this.session.updateEffects();
+            this.#syncPresentationToSession();
+            endPerformanceSection(sections.updateSession, sessionStart);
+        }
 
-            measurePerformanceSection(`${performanceSectionPrefix}.update.interactions`, () => {
-                this.#updatePanelInteractions();
-            });
+        const interactionStart = beginPerformanceSection();
+        this.#updatePanelInteractions();
+        endPerformanceSection(sections.updateInteractions, interactionStart);
 
-            if (!this.dynamicItems) {
-                return;
-            }
-
-            measurePerformanceSection(`${performanceSectionPrefix}.update.dynamicItems`, () => {
-                for (const entry of this.dynamicItems) {
-                    const item = entry.item;
-                    if (item.update) {
-                        item.update();
-                    }
+        if (this.dynamicItems) {
+            const dynamicStart = beginPerformanceSection();
+            for (const entry of this.dynamicItems) {
+                const item = entry.item;
+                if (item.update) {
+                    item.update();
                 }
-            });
-        });
+            }
+            endPerformanceSection(sections.updateDynamicItems, dynamicStart);
+        }
+        endPerformanceSection(sections.updateTotal, totalStart);
     }
 
     /**
      * overlay를 그립니다.
      */
     draw() {
-        const performanceSectionPrefix = this._getPerformanceSectionPrefix();
-        measurePerformanceSection(`${performanceSectionPrefix}.draw.total`, () => {
-            if (!this.session || (this.alpha <= 0 && this.dimAlpha <= 0)) {
-                return;
+        const sections = this._performanceSections;
+        const totalStart = beginPerformanceSection();
+        if (!this.session || (this.alpha <= 0 && this.dimAlpha <= 0)) {
+            endPerformanceSection(sections.drawTotal, totalStart);
+            return;
+        }
+
+        let startTime = beginPerformanceSection();
+        this.session.renderDim();
+        endPerformanceSection(sections.drawDim, startTime);
+        if (this.alpha <= 0) {
+            endPerformanceSection(sections.drawTotal, totalStart);
+            return;
+        }
+
+        startTime = beginPerformanceSection();
+        this.#drawPanels();
+        endPerformanceSection(sections.drawPanels, startTime);
+        startTime = beginPerformanceSection();
+        this._drawOverlayDecorations();
+        endPerformanceSection(sections.drawDecorations, startTime);
+
+        if (this.staticItems) {
+            startTime = beginPerformanceSection();
+            for (const entry of this.staticItems) {
+                render(this.layer, entry.item);
             }
+            endPerformanceSection(sections.drawStaticItems, startTime);
+        }
 
-            measurePerformanceSection(`${performanceSectionPrefix}.draw.dim`, () => {
-                this.session.renderDim();
-            });
-            if (this.alpha <= 0) {
-                return;
-            }
-
-            measurePerformanceSection(`${performanceSectionPrefix}.draw.panels`, () => {
-                this.#drawPanels(performanceSectionPrefix);
-            });
-            measurePerformanceSection(`${performanceSectionPrefix}.draw.decorations`, () => {
-                this._drawOverlayDecorations();
-            });
-
-            if (this.staticItems) {
-                measurePerformanceSection(`${performanceSectionPrefix}.draw.staticItems`, () => {
-                    for (const entry of this.staticItems) {
-                        render(this.layer, entry.item);
-                    }
-                });
-            }
-
-            if (!this.dynamicItems) {
-                return;
-            }
-
-            const floatingItems = [];
-            measurePerformanceSection(`${performanceSectionPrefix}.draw.dynamicItems`, () => {
-                for (const entry of this.dynamicItems) {
-                    const item = entry.item;
-                    if (item.draw) {
-                        item.draw();
-                    }
-                    if (typeof item.drawFloating === 'function') {
-                        floatingItems.push(item);
-                    }
+        if (this.dynamicItems) {
+            const floatingItems = this._floatingItemsScratch;
+            floatingItems.length = 0;
+            startTime = beginPerformanceSection();
+            for (const entry of this.dynamicItems) {
+                const item = entry.item;
+                if (item.draw) {
+                    item.draw();
                 }
-            });
-
-            if (floatingItems.length > 0) {
-                measurePerformanceSection(`${performanceSectionPrefix}.draw.floatingItems`, () => {
-                    for (const item of floatingItems) {
-                        item.drawFloating();
-                    }
-                });
+                if (typeof item.drawFloating === 'function') {
+                    floatingItems.push(item);
+                }
             }
-        });
+            endPerformanceSection(sections.drawDynamicItems, startTime);
+            if (floatingItems.length > 0) {
+                startTime = beginPerformanceSection();
+                for (const item of floatingItems) {
+                    item.drawFloating();
+                }
+                endPerformanceSection(sections.drawFloatingItems, startTime);
+            }
+            floatingItems.length = 0;
+        }
+        endPerformanceSection(sections.drawTotal, totalStart);
     }
 
     /**
@@ -498,14 +561,12 @@ export class BaseOverlay {
      * 패널별 interaction/effect 상태를 매 프레임 갱신합니다.
      */
     #updatePanelInteractions() {
-        updateOverlayPanelInteractions({
-            overlay: this,
-            session: this.session,
-            layer: this.layer,
-            alpha: this.alpha,
-            panelRegions: this.panelRegions,
-            panelInteractionMap: this.#panelInteractionMap
-        });
+        const options = this._panelInteractionUpdateOptions;
+        options.session = this.session;
+        options.layer = this.layer;
+        options.alpha = this.alpha;
+        options.panelRegions = this.panelRegions;
+        updateOverlayPanelInteractions(options);
     }
 
     /**
@@ -516,12 +577,12 @@ export class BaseOverlay {
      * @returns {HTMLCanvasElement|null} 그려진 effect 캔버스입니다.
      */
     #buildPanelEffectCanvas(panel, interactionState) {
-        return buildOverlayPanelEffectCanvas(panel, interactionState, {
-            spotlightOptions: this.session.getEffectOptions('hoverSpotlight'),
-            particleOptions: this.session.getEffectOptions('hoverParticle'),
-            rippleOptions: this.session.getEffectOptions('clickRipple'),
-            borderOptions: this.session.getEffectOptions('hoverBorder')
-        });
+        const options = this._panelEffectOptions;
+        options.spotlightOptions = this.session.getEffectOptions('hoverSpotlight');
+        options.particleOptions = this.session.getEffectOptions('hoverParticle');
+        options.rippleOptions = this.session.getEffectOptions('clickRipple');
+        options.borderOptions = this.session.getEffectOptions('hoverBorder');
+        return buildOverlayPanelEffectCanvas(panel, interactionState, options);
     }
 
     /**
@@ -599,7 +660,8 @@ export class BaseOverlay {
      * @private
      * 현재 overlay에 정의된 패널을 렌더링합니다.
      */
-    #drawPanels(performanceSectionPrefix = this._getPerformanceSectionPrefix()) {
+    #drawPanels() {
+        const sections = this._performanceSections;
         const disableTransparency = getSetting('disableTransparency');
         const defaultFill = disableTransparency
             ? ColorSchemes.Overlay.Panel.Background
@@ -619,56 +681,56 @@ export class BaseOverlay {
 
             const presentedPanel = getOverlayPresentedPanelRegion(panel, this);
             const interactionState = this.#panelInteractionMap.get(panel.id);
-            const effectTextureCanvas = interactionState
-                ? measurePerformanceSection(`${performanceSectionPrefix}.draw.panelEffectCanvas`, () => {
-                    return this.#buildPanelEffectCanvas(presentedPanel, interactionState);
-                })
-                : null;
+            let effectTextureCanvas = null;
+            if (interactionState) {
+                const effectStart = beginPerformanceSection();
+                effectTextureCanvas = this.#buildPanelEffectCanvas(presentedPanel, interactionState);
+                endPerformanceSection(sections.drawPanelEffectCanvas, effectStart);
+            }
             const usesEffectPipeline = Boolean(this.session.effectLayerId)
                 && (this.session.effectiveTransparent
                     || effectTextureCanvas
                     || (interactionState && (Math.abs(interactionState.rotateX) > 0.0001 || Math.abs(interactionState.rotateY) > 0.0001)));
 
             if (usesEffectPipeline) {
-                measurePerformanceSection(`${performanceSectionPrefix}.draw.glassPanel`, () => {
-                    this.session.renderGlassPanel({
-                        x: presentedPanel.x,
-                        y: presentedPanel.y,
-                        w: presentedPanel.w,
-                        h: presentedPanel.h,
-                        radius: presentedPanel.radius,
-                        blur: panel.blur,
-                        fill: panel.fill === undefined ? defaultFill : panel.fill,
-                        stroke: panel.stroke === undefined ? defaultStroke : panel.stroke,
-                        lineWidth: presentedPanel.lineWidth,
-                        tintColor: panel.tintColor === undefined ? defaultTintColor : panel.tintColor,
-                        edgeColor: panel.edgeColor === undefined ? defaultEdgeColor : panel.edgeColor,
-                        tintStrength: panel.tintStrength === undefined ? defaultTintStrength : panel.tintStrength,
-                        edgeStrength: panel.edgeStrength === undefined ? defaultEdgeStrength : panel.edgeStrength,
-                        refractionStrength: panel.refractionStrength,
-                        transformMatrix: interactionState?.transformMatrix,
-                        perspective: interactionState?.perspective,
-                        effectTextureCanvas
-                    });
-                });
+                const glassOptions = this._glassPanelRenderOptions;
+                glassOptions.x = presentedPanel.x;
+                glassOptions.y = presentedPanel.y;
+                glassOptions.w = presentedPanel.w;
+                glassOptions.h = presentedPanel.h;
+                glassOptions.radius = presentedPanel.radius;
+                glassOptions.blur = panel.blur;
+                glassOptions.fill = panel.fill === undefined ? defaultFill : panel.fill;
+                glassOptions.stroke = panel.stroke === undefined ? defaultStroke : panel.stroke;
+                glassOptions.lineWidth = presentedPanel.lineWidth;
+                glassOptions.tintColor = panel.tintColor === undefined ? defaultTintColor : panel.tintColor;
+                glassOptions.edgeColor = panel.edgeColor === undefined ? defaultEdgeColor : panel.edgeColor;
+                glassOptions.tintStrength = panel.tintStrength === undefined ? defaultTintStrength : panel.tintStrength;
+                glassOptions.edgeStrength = panel.edgeStrength === undefined ? defaultEdgeStrength : panel.edgeStrength;
+                glassOptions.refractionStrength = panel.refractionStrength;
+                glassOptions.transformMatrix = interactionState?.transformMatrix;
+                glassOptions.perspective = interactionState?.perspective;
+                glassOptions.effectTextureCanvas = effectTextureCanvas;
+                const glassStart = beginPerformanceSection();
+                this.session.renderGlassPanel(glassOptions);
+                endPerformanceSection(sections.drawGlassPanel, glassStart);
                 continue;
             }
 
-            measurePerformanceSection(`${performanceSectionPrefix}.draw.flatPanel`, () => {
-                shadowOn(this.layer, presentedPanel.shadowBlur, panel.shadowColor);
-                this.session.renderPanel({
-                    shape: 'roundRect',
-                    x: presentedPanel.x,
-                    y: presentedPanel.y,
-                    w: presentedPanel.w,
-                    h: presentedPanel.h,
-                    radius: presentedPanel.radius,
-                    fill: panel.fill === undefined ? defaultFill : panel.fill,
-                    stroke: panel.stroke === undefined ? defaultStroke : panel.stroke,
-                    lineWidth: presentedPanel.lineWidth
-                });
-                shadowOff(this.layer);
-            });
+            const flatOptions = this._flatPanelRenderOptions;
+            flatOptions.x = presentedPanel.x;
+            flatOptions.y = presentedPanel.y;
+            flatOptions.w = presentedPanel.w;
+            flatOptions.h = presentedPanel.h;
+            flatOptions.radius = presentedPanel.radius;
+            flatOptions.fill = panel.fill === undefined ? defaultFill : panel.fill;
+            flatOptions.stroke = panel.stroke === undefined ? defaultStroke : panel.stroke;
+            flatOptions.lineWidth = presentedPanel.lineWidth;
+            const flatStart = beginPerformanceSection();
+            shadowOn(this.layer, presentedPanel.shadowBlur, panel.shadowColor);
+            this.session.renderPanel(flatOptions);
+            shadowOff(this.layer);
+            endPerformanceSection(sections.drawFlatPanel, flatStart);
         }
     }
 

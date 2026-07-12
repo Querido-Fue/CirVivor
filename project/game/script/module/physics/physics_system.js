@@ -47,6 +47,16 @@ export class PhysicsSystem {
     }
 
     /**
+     * contact와 본 solve가 공유할 enemy collision frame을 준비합니다.
+     * @param {object[]} enemies - 현재 fixed tick의 전체 적 목록입니다.
+     * @param {{delta?:number}} [options] - fixed step 옵션입니다.
+     * @returns {number} 준비한 활성 enemy body 수입니다.
+     */
+    prepareEnemyCollisionFrame(enemies, options = {}) {
+        return this.collisionHandler.prepareEnemyCollisionFrame(enemies, options);
+    }
+
+    /**
      * 적 충돌을 해소합니다.
      * @param {object[]} enemies
      * @param {object} [options]
@@ -71,7 +81,7 @@ export class PhysicsSystem {
      * 적 목록 중 실제 접촉 중인 적 쌍을 exact 판정으로 수집합니다.
      * @param {object[]} enemies
      * @param {{delta?: number}} [options]
-     * @returns {{enemyA: object, enemyB: object}[]}
+     * @returns {{enemyA: object, enemyB: object}[]} 다음 contact 조회 전까지 유효한 재사용 결과 배열입니다.
      */
     collectEnemyContactPairs(enemies, options = {}) {
         return this.collisionHandler.collectEnemyContactPairs(enemies, options);

@@ -5,6 +5,7 @@ const DEFAULT_MOUSE_BUTTON_STATE = SIMULATION_RUNTIME_DEFAULTS.MOUSE_BUTTON_STAT
 const DEFAULT_FOCUS_LIST = SIMULATION_RUNTIME_DEFAULTS.FOCUS_LIST;
 const DEFAULT_MOUSE_POSITION = SIMULATION_RUNTIME_DEFAULTS.MOUSE_POSITION;
 const DEFAULT_VIEWPORT = SIMULATION_RUNTIME_DEFAULTS.VIEWPORT;
+const EMPTY_SIMULATION_RECORD = Object.freeze({});
 
 let simulationRuntimeInstance = null;
 
@@ -93,6 +94,64 @@ function cloneSettingsSnapshot(settings = {}) {
     return { ...settings };
 }
 
+function replaceSimulationArrayContents(target, source, fallback) {
+    target.length = 0;
+    const values = Array.isArray(source) ? source : fallback;
+    for (let i = 0; i < values.length; i++) {
+        target.push(values[i]);
+    }
+}
+
+function syncViewportSnapshotInto(target, viewport = {}) {
+    target.ww = normalizeNumber(viewport.ww, DEFAULT_VIEWPORT.ww);
+    target.wh = normalizeNumber(viewport.wh, DEFAULT_VIEWPORT.wh);
+    target.objectWH = normalizeNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH);
+    target.objectOffsetY = normalizeNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY);
+    target.uiww = normalizeNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww);
+    target.uiOffsetX = normalizeNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX);
+}
+
+function syncInputSnapshotInto(target, input = {}) {
+    target.mousePos.x = normalizeNumber(input.mousePos?.x, DEFAULT_MOUSE_POSITION.x);
+    target.mousePos.y = normalizeNumber(input.mousePos?.y, DEFAULT_MOUSE_POSITION.y);
+    replaceSimulationArrayContents(target.mouseButtons.left, input.mouseButtons?.left, DEFAULT_MOUSE_BUTTON_STATE);
+    replaceSimulationArrayContents(target.mouseButtons.right, input.mouseButtons?.right, DEFAULT_MOUSE_BUTTON_STATE);
+    replaceSimulationArrayContents(target.mouseButtons.middle, input.mouseButtons?.middle, DEFAULT_MOUSE_BUTTON_STATE);
+    replaceSimulationArrayContents(target.focusList, input.focusList, DEFAULT_FOCUS_LIST);
+
+    const sourceKeys = input.keys && typeof input.keys === 'object'
+        ? input.keys
+        : EMPTY_SIMULATION_RECORD;
+    for (const key in target.keys) {
+        if (Object.prototype.hasOwnProperty.call(target.keys, key)
+            && !Object.prototype.hasOwnProperty.call(sourceKeys, key)) {
+            delete target.keys[key];
+        }
+    }
+    for (const key in sourceKeys) {
+        if (Object.prototype.hasOwnProperty.call(sourceKeys, key)) {
+            target.keys[key] = sourceKeys[key] === true;
+        }
+    }
+}
+
+function syncSettingsSnapshotInto(target, settings = {}) {
+    const source = settings && typeof settings === 'object'
+        ? settings
+        : EMPTY_SIMULATION_RECORD;
+    for (const key in target) {
+        if (Object.prototype.hasOwnProperty.call(target, key)
+            && !Object.prototype.hasOwnProperty.call(source, key)) {
+            delete target[key];
+        }
+    }
+    for (const key in source) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+            target[key] = source[key];
+        }
+    }
+}
+
 /**
  * @class SimulationRuntime
  * @description 시뮬레이션 경로가 메인 스레드 전용 싱글톤을 직접 읽지 않도록
@@ -112,13 +171,13 @@ export class SimulationRuntime {
      */
     sync(snapshot = {}) {
         if (snapshot.viewport !== undefined) {
-            this.viewport = cloneViewportSnapshot(snapshot.viewport);
+            syncViewportSnapshotInto(this.viewport, snapshot.viewport);
         }
         if (snapshot.input !== undefined) {
-            this.input = cloneInputSnapshot(snapshot.input);
+            syncInputSnapshotInto(this.input, snapshot.input);
         }
         if (snapshot.settings !== undefined) {
-            this.settings = cloneSettingsSnapshot(snapshot.settings);
+            syncSettingsSnapshotInto(this.settings, snapshot.settings);
         }
     }
 

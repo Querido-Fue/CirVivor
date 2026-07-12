@@ -123,6 +123,12 @@ registerOverlayEffect('shadow', {
             offsetY: parseEffectLength(options.offsetY, 8),
             color: typeof options.color === 'string' ? options.color : 'rgba(0, 0, 0, 0.32)'
         };
+        const renderOptions = {
+            shadowRadius: normalizedOptions.radius,
+            shadowOffsetX: normalizedOptions.offsetX,
+            shadowOffsetY: normalizedOptions.offsetY,
+            shadowColor: normalizedOptions.color
+        };
 
         return {
             type: 'shadow',
@@ -130,12 +136,7 @@ registerOverlayEffect('shadow', {
             update() {
             },
             getRenderOptions() {
-                return {
-                    shadowRadius: normalizedOptions.radius,
-                    shadowOffsetX: normalizedOptions.offsetX,
-                    shadowOffsetY: normalizedOptions.offsetY,
-                    shadowColor: normalizedOptions.color
-                };
+                return renderOptions;
             }
         };
     }

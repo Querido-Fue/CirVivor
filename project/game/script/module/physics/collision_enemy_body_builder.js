@@ -18,6 +18,11 @@ const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
 const CIRCLE_PART_STRIDE = COLLISION_BODY_BUILDER.CIRCLE_PART_STRIDE;
 const BOUND_RADIUS_HALF_SCALE = COLLISION_BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
 const DEGREES_TO_RADIANS = COLLISION_BODY_BUILDER.DEGREES_TO_RADIANS;
+const ENEMY_RESOLVE_RADIUS_TUNING = Object.freeze({
+    minRadius: COLLISION_RESOLVE_MIN_MAX,
+    hexaHiveRadiusScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
+    hexaHiveRootScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE
+});
 
 /**
  * 적 body 생성 옵션에서 유한 숫자 값을 조회합니다.
@@ -91,7 +96,8 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
 
     const centerX = enemy.position.x;
     const centerY = enemy.position.y;
-    const metrics = _buildCollisionEnemyShapeMetrics({
+    if (!_writeCollisionEnemyShapeMetrics(
+        body,
         enemy,
         hexaHiveCenters,
         useHiveCells,
@@ -102,8 +108,7 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
         centerY,
         cos,
         sin
-    });
-    if (!metrics) {
+    )) {
         return false;
     }
 
@@ -112,11 +117,12 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
     const invDelta = 1 / Math.max(epsilon, delta);
     const velX = (centerX - prevX) * invDelta;
     const velY = (centerY - prevY) * invDelta;
-    const resolveRadius = getEnemyResolveRadius(enemy, metrics.boundRadius, baseHeight, {
-        minRadius: COLLISION_RESOLVE_MIN_MAX,
-        hexaHiveRadiusScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
-        hexaHiveRootScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE
-    });
+    const resolveRadius = getEnemyResolveRadius(
+        enemy,
+        body.boundRadius,
+        baseHeight,
+        ENEMY_RESOLVE_RADIUS_TUNING
+    );
     const frameResolvePad = Math.max(frameResolveMinMax, resolveRadius * frameResolveMaxRatio);
     const velocitySweepPadX = sleeping ? 0 : (Math.abs(velX) * delta);
     const velocitySweepPadY = sleeping ? 0 : (Math.abs(velY) * delta);
@@ -129,36 +135,16 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
     body.circleParts = useHiveCells ? enemy.__collisionWorldCircles : null;
     body.circlePartCount = useHiveCells ? partCount : 0;
     body.ref = enemy;
-    body.mergeLock = enemy?.hexaHiveMergePending === true;
-    body.weight = body.mergeLock
-        ? Math.max(MERGE_PENDING_RESOLVE_WEIGHT, Number.isFinite(enemy.hexaHiveMergePendingWeight) ? enemy.hexaHiveMergePendingWeight : MERGE_PENDING_RESOLVE_WEIGHT)
-        : Math.max(epsilon, Number.isFinite(enemy.weight) ? enemy.weight : 1);
+    syncCollisionEnemyBodyResolveState(body, enemy, epsilon);
     body.movable = true;
     body.centerX = centerX;
     body.centerY = centerY;
     body.x = centerX;
     body.y = centerY;
-    body.radius = metrics.singleCircleRadius;
-    body.minX = metrics.minX;
-    body.maxX = metrics.maxX;
-    body.minY = metrics.minY;
-    body.maxY = metrics.maxY;
-    body.enemyPairMinX = metrics.enemyPairMinX;
-    body.enemyPairMaxX = metrics.enemyPairMaxX;
-    body.enemyPairMinY = metrics.enemyPairMinY;
-    body.enemyPairMaxY = metrics.enemyPairMaxY;
-    body.projectileMinX = metrics.projectileMinX;
-    body.projectileMaxX = metrics.projectileMaxX;
-    body.projectileMinY = metrics.projectileMinY;
-    body.projectileMaxY = metrics.projectileMaxY;
-    body.sweepMinX = metrics.minX - sweepPadX;
-    body.sweepMaxX = metrics.maxX + sweepPadX;
-    body.sweepMinY = metrics.minY - sweepPadY;
-    body.sweepMaxY = metrics.maxY + sweepPadY;
-    body.boundRadius = metrics.boundRadius;
-    body.broadRadius = metrics.broadRadius;
-    body.enemyPairBroadRadius = metrics.enemyPairBroadRadius;
-    body.projectileBroadRadius = metrics.projectileBroadRadius;
+    body.sweepMinX = body.minX - sweepPadX;
+    body.sweepMaxX = body.maxX + sweepPadX;
+    body.sweepMinY = body.minY - sweepPadY;
+    body.sweepMaxY = body.maxY + sweepPadY;
     body.resolveRadius = resolveRadius;
     body.velocityX = velX;
     body.velocityY = velY;
@@ -167,25 +153,46 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
     body._passPairProcessCount = 0;
     body._frameResolveMoved = 0;
     body._frameResolveMax = frameResolvePad;
+    body._sleeping = sleeping === true;
     return true;
 }
 
 /**
- * 적 충돌 body의 원형/복합 원형 경계 정보를 계산합니다.
- * @param {object} options - 경계 계산 옵션입니다.
- * @param {object} options.enemy - 원본 적 객체입니다.
- * @param {Array<object>|null} options.hexaHiveCenters - hexa hive 로컬 셀 중심 목록입니다.
- * @param {boolean} options.useHiveCells - hexa hive 셀 충돌 사용 여부입니다.
- * @param {number} options.partCount - 충돌 part 개수입니다.
- * @param {number} options.width - 렌더 기준 너비입니다.
- * @param {number} options.height - 렌더 기준 높이입니다.
- * @param {number} options.centerX - 적 중심 X 좌표입니다.
- * @param {number} options.centerY - 적 중심 Y 좌표입니다.
- * @param {number} options.cos - 회전 cos 값입니다.
- * @param {number} options.sin - 회전 sin 값입니다.
- * @returns {object|null} 계산된 경계 정보입니다.
+ * prepare 이후 바뀔 수 있는 합체 pending/weight 상태를 body에 동기화합니다.
+ * @param {object} body - 갱신할 충돌 body입니다.
+ * @param {object} enemy - 원본 적 객체입니다.
+ * @param {number} [epsilon=DEFAULT_EPSILON] - 최소 weight입니다.
  */
-function _buildCollisionEnemyShapeMetrics({
+export function syncCollisionEnemyBodyResolveState(body, enemy, epsilon = DEFAULT_EPSILON) {
+    const safeEpsilon = Number.isFinite(epsilon) ? epsilon : DEFAULT_EPSILON;
+    body.mergeLock = enemy?.hexaHiveMergePending === true;
+    body.weight = body.mergeLock
+        ? Math.max(
+            MERGE_PENDING_RESOLVE_WEIGHT,
+            Number.isFinite(enemy.hexaHiveMergePendingWeight)
+                ? enemy.hexaHiveMergePendingWeight
+                : MERGE_PENDING_RESOLVE_WEIGHT
+        )
+        : Math.max(safeEpsilon, Number.isFinite(enemy.weight) ? enemy.weight : 1);
+}
+
+/**
+ * 적 충돌 body의 원형/복합 원형 경계 정보를 계산합니다.
+ * @param {object} body - 경계 정보를 기록할 body입니다.
+ * @param {object} enemy - 원본 적 객체입니다.
+ * @param {Array<object>|null} hexaHiveCenters - hexa hive 로컬 셀 중심 목록입니다.
+ * @param {boolean} useHiveCells - hexa hive 셀 충돌 사용 여부입니다.
+ * @param {number} partCount - 충돌 part 개수입니다.
+ * @param {number} width - 렌더 기준 너비입니다.
+ * @param {number} height - 렌더 기준 높이입니다.
+ * @param {number} centerX - 적 중심 X 좌표입니다.
+ * @param {number} centerY - 적 중심 Y 좌표입니다.
+ * @param {number} cos - 회전 cos 값입니다.
+ * @param {number} sin - 회전 sin 값입니다.
+ * @returns {boolean} 경계 정보를 기록했으면 true입니다.
+ */
+function _writeCollisionEnemyShapeMetrics(
+    body,
     enemy,
     hexaHiveCenters,
     useHiveCells,
@@ -196,7 +203,7 @@ function _buildCollisionEnemyShapeMetrics({
     centerY,
     cos,
     sin
-}) {
+) {
     let minX = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
     let minY = Number.POSITIVE_INFINITY;
@@ -212,9 +219,23 @@ function _buildCollisionEnemyShapeMetrics({
     let broadRadius = 0;
     let enemyPairBroadRadius = 0;
     let projectileBroadRadius = 0;
-    const singleCircleRadius = useHiveCells
-        ? HEXA_HIVE_CELL_COLLISION_RADIUS * Math.max(width, height)
-        : getEnemyCircleCollisionRadius(enemy.type, width, height);
+    let singleCircleRadius;
+    if (useHiveCells) {
+        singleCircleRadius = HEXA_HIVE_CELL_COLLISION_RADIUS * Math.max(width, height);
+    } else if (
+        enemy.__collisionRadiusCacheType === enemy.type
+        && enemy.__collisionRadiusCacheWidth === width
+        && enemy.__collisionRadiusCacheHeight === height
+        && Number.isFinite(enemy.__collisionRadiusCacheValue)
+    ) {
+        singleCircleRadius = enemy.__collisionRadiusCacheValue;
+    } else {
+        singleCircleRadius = getEnemyCircleCollisionRadius(enemy.type, width, height);
+        enemy.__collisionRadiusCacheType = enemy.type;
+        enemy.__collisionRadiusCacheWidth = width;
+        enemy.__collisionRadiusCacheHeight = height;
+        enemy.__collisionRadiusCacheValue = singleCircleRadius;
+    }
 
     if (useHiveCells) {
         const circleBufferLength = partCount * CIRCLE_PART_STRIDE;
@@ -275,26 +296,25 @@ function _buildCollisionEnemyShapeMetrics({
         projectileBroadRadius = projectileRadius;
     }
 
-    return {
-        singleCircleRadius,
-        minX,
-        maxX,
-        minY,
-        maxY,
-        enemyPairMinX,
-        enemyPairMaxX,
-        enemyPairMinY,
-        enemyPairMaxY,
-        projectileMinX,
-        projectileMaxX,
-        projectileMinY,
-        projectileMaxY,
-        broadRadius,
-        enemyPairBroadRadius,
-        projectileBroadRadius,
-        boundRadius: Math.max(
-            (maxX - minX) * BOUND_RADIUS_HALF_SCALE,
-            (maxY - minY) * BOUND_RADIUS_HALF_SCALE
-        )
-    };
+    body.radius = singleCircleRadius;
+    body.minX = minX;
+    body.maxX = maxX;
+    body.minY = minY;
+    body.maxY = maxY;
+    body.enemyPairMinX = enemyPairMinX;
+    body.enemyPairMaxX = enemyPairMaxX;
+    body.enemyPairMinY = enemyPairMinY;
+    body.enemyPairMaxY = enemyPairMaxY;
+    body.projectileMinX = projectileMinX;
+    body.projectileMaxX = projectileMaxX;
+    body.projectileMinY = projectileMinY;
+    body.projectileMaxY = projectileMaxY;
+    body.broadRadius = broadRadius;
+    body.enemyPairBroadRadius = enemyPairBroadRadius;
+    body.projectileBroadRadius = projectileBroadRadius;
+    body.boundRadius = Math.max(
+        (maxX - minX) * BOUND_RADIUS_HALF_SCALE,
+        (maxY - minY) * BOUND_RADIUS_HALF_SCALE
+    );
+    return Number.isFinite(body.boundRadius) && body.boundRadius > 0;
 }

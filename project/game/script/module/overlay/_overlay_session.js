@@ -32,12 +32,16 @@ export class OverlaySession {
         this.contentScale = 1;
         this.contentScaleOriginXRatio = 0.5;
         this.contentScaleOriginYRatio = 0.5;
+        this.appliedContentScale = Number.NaN;
+        this.appliedContentScaleOriginXRatio = Number.NaN;
+        this.appliedContentScaleOriginYRatio = Number.NaN;
         this.blurRevision = 1;
         this.closed = false;
+        this.hasRegisteredEffects = Object.keys(this.effects).length > 0;
 
         const disableTransparency = options.disableTransparency === true;
         this.effectiveTransparent = this.transparent && !disableTransparency;
-        this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || Object.keys(this.effects).length > 0;
+        this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || this.hasRegisteredEffects;
 
         this.orderSequence = Math.max(0, options.orderSequence || 0);
         const baseOrder = (this.layer * 1000) + (this.orderSequence * 10);
@@ -47,7 +51,8 @@ export class OverlaySession {
                 type: '2d',
                 order: baseOrder - 1,
                 includeInComposite: true,
-                compositeOpacityFactor: 0.5
+                compositeOpacityFactor: 0.5,
+                compositeKind: 'solid'
             })
             : null;
         this.effectSurface = this.needsEffectSurface
@@ -67,6 +72,24 @@ export class OverlaySession {
         this.dimLayerId = this.dimSurface?.id || null;
         this.uiLayerId = this.uiSurface.id;
         this.effectLayerId = this.effectSurface?.id || null;
+        this.glassRenderCommand = { shape: 'glassPanel' };
+        this.glassRenderCommandKeys = [];
+        this.includeOwnEffectSurface = false;
+        this.includeOwnUISurface = false;
+        this.glassSourceProvider = () => this.#buildGlassSources();
+        this.glassSourceSnapshot = {
+            snapshotIdentity: `overlay-session:${this.orderSequence}:custom:0`,
+            sourceRevision: 0,
+            sources: []
+        };
+        this.glassSnapshotIdentities = [
+            `overlay-session:${this.orderSequence}:custom:0`,
+            `overlay-session:${this.orderSequence}:custom:1`,
+            `overlay-session:${this.orderSequence}:custom:2`,
+            `overlay-session:${this.orderSequence}:custom:3`
+        ];
+        this.ownEffectCompositeSource = { kind: 'canvas', canvas: null, opacity: 1, revision: 0 };
+        this.ownUICompositeSource = { kind: 'canvas', canvas: null, opacity: 1, revision: 0 };
         const effectRegistration = this.#createEffectStates();
         this.effectStates = effectRegistration.list;
         this.effectStateMap = effectRegistration.map;
@@ -118,8 +141,17 @@ export class OverlaySession {
      */
     setDisableTransparency(disableTransparency) {
         this.effectiveTransparent = this.transparent && disableTransparency !== true;
-        this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || Object.keys(this.effects).length > 0;
+        this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || this.hasRegisteredEffects;
+        this.#syncEffectSurfaceAvailability();
         this.invalidateBlur();
+    }
+
+    /**
+     * 현재 프레임의 glass 패널이 하위 WebGL 결과를 샘플링할지 반환합니다.
+     * @returns {boolean} 중간 flush가 필요한 경우 true입니다.
+     */
+    requiresBackdropComposite() {
+        return Boolean(this.effectLayerId) && this.effectiveTransparent && this.alpha > 0;
     }
 
     /**
@@ -129,6 +161,11 @@ export class OverlaySession {
         if (!this.dimLayerId || this.dimAlpha <= 0 || this.effectiveDim <= 0) {
             return;
         }
+
+        this.displaySystem.setSurfaceCompositeSolidOpacity(
+            this.dimLayerId,
+            this.effectiveDim * this.dimAlpha
+        );
 
         render(this.dimLayerId, {
             shape: 'rect',
@@ -191,7 +228,7 @@ export class OverlaySession {
 
     /**
      * 현재 overlay 아래쪽 합성 소스를 반환합니다.
-     * @returns {Array<{kind: string, canvas?: HTMLCanvasElement, opacity?: number}>} 합성 소스 목록입니다.
+     * @returns {{snapshotIdentity: string, sourceRevision: number, sources: Array<{kind: string, canvas?: HTMLCanvasElement, opacity?: number, revision?: number}>}} 합성 snapshot입니다.
      */
     getCompositeSources() {
         const anchorSurfaceId = this.effectLayerId || this.uiLayerId;
@@ -207,27 +244,26 @@ export class OverlaySession {
             return;
         }
 
-        const effectRenderOptions = this.#resolveEffectRenderOptions();
-        const mergedOptions = {
-            ...effectRenderOptions,
-            ...options
-        };
-        const includeOwnSurfaces = mergedOptions.includeOwnSurfaces === true;
-        const includeOwnEffectSurface = mergedOptions.includeOwnEffectSurface === true || includeOwnSurfaces;
-        const includeOwnUISurface = mergedOptions.includeOwnUISurface === true || includeOwnSurfaces;
-        const forceBlurRefresh = mergedOptions.forceBlurRefresh === true || includeOwnEffectSurface || includeOwnUISurface;
-        renderGL(this.effectLayerId, {
-            shape: 'glassPanel',
-            ...mergedOptions,
-            blurUpdateMode: this.blurUpdateMode,
-            blurRevision: this.blurRevision,
-            forceBlurRefresh,
-            sourceProvider: () => this.#buildGlassSources({
-                includeOwnEffectSurface,
-                includeOwnUISurface
-            }),
-            transformMatrix: mergedOptions.transformMatrix || this.#resolveEffectTransformMatrix()
-        });
+        const command = this.glassRenderCommand;
+        this.#resetGlassRenderCommand();
+        this.#resolveEffectRenderOptions(command);
+        this.#copyGlassRenderOptions(command, options);
+
+        const includeOwnSurfaces = command.includeOwnSurfaces === true;
+        this.includeOwnEffectSurface = command.includeOwnEffectSurface === true || includeOwnSurfaces;
+        this.includeOwnUISurface = command.includeOwnUISurface === true || includeOwnSurfaces;
+        command.shape = 'glassPanel';
+        command.blurUpdateMode = this.blurUpdateMode;
+        command.blurRevision = this.blurRevision;
+        command.forceBlurRefresh = command.forceBlurRefresh === true
+            || this.includeOwnEffectSurface
+            || this.includeOwnUISurface;
+        command.sourceProvider = this.glassSourceProvider;
+        command.transformMatrix = command.transformMatrix || this.#resolveEffectTransformMatrix();
+        command.sampleBackdrop = command.sampleBackdrop === undefined
+            ? this.effectiveTransparent
+            : command.sampleBackdrop;
+        renderGL(this.effectLayerId, command);
     }
 
     /**
@@ -235,9 +271,7 @@ export class OverlaySession {
      * @param {object} options - 패널 렌더링 옵션입니다.
      */
     renderPanel(options) {
-        render(this.uiLayerId, {
-            ...options
-        });
+        render(this.uiLayerId, options);
     }
 
     /**
@@ -299,12 +333,32 @@ export class OverlaySession {
      */
     #syncSurfaceOpacity() {
         if (this.dimSurface) {
-            this.dimSurface.canvas.style.opacity = '1';
+            this.#setSurfaceOpacity(this.dimSurface, 1);
         }
-        this.uiSurface.canvas.style.opacity = `${this.alpha}`;
+        this.#setSurfaceOpacity(this.uiSurface, this.alpha);
         if (this.effectSurface) {
-            this.effectSurface.canvas.style.opacity = `${this.alpha}`;
+            this.#setSurfaceOpacity(this.effectSurface, this.alpha);
         }
+    }
+
+    /**
+     * surface CSS opacity를 실제 변경 시에만 반영하고 합성 revision을 갱신합니다.
+     * @param {object} surface - 대상 display surface입니다.
+     * @param {number} opacity - 적용할 opacity입니다.
+     * @private
+     */
+    #setSurfaceOpacity(surface, opacity) {
+        if (!surface?.canvas) {
+            return;
+        }
+
+        if (surface.appliedCompositeOpacity === opacity) {
+            return;
+        }
+        surface.appliedCompositeOpacity = opacity;
+        const nextOpacity = `${opacity}`;
+        surface.canvas.style.opacity = nextOpacity;
+        this.displaySystem.markSurfaceCompositeChanged(surface.id);
     }
 
     /**
@@ -312,6 +366,15 @@ export class OverlaySession {
      * overlay 콘텐츠 surface scale을 동기화합니다.
      */
     #syncContentScale() {
+        if (this.appliedContentScale === this.contentScale
+            && this.appliedContentScaleOriginXRatio === this.contentScaleOriginXRatio
+            && this.appliedContentScaleOriginYRatio === this.contentScaleOriginYRatio) {
+            return;
+        }
+
+        this.appliedContentScale = this.contentScale;
+        this.appliedContentScaleOriginXRatio = this.contentScaleOriginXRatio;
+        this.appliedContentScaleOriginYRatio = this.contentScaleOriginYRatio;
         const transformValue = Math.abs(this.contentScale - 1) <= 0.0001
             ? 'none'
             : `scale(${this.contentScale})`;
@@ -321,6 +384,32 @@ export class OverlaySession {
         if (this.effectSurface) {
             this.effectSurface.canvas.style.transformOrigin = transformOrigin;
             this.effectSurface.canvas.style.transform = 'none';
+        }
+    }
+
+    /**
+     * 런타임 transparency 설정에 맞춰 effect surface를 생성하거나 회수합니다.
+     * @private
+     */
+    #syncEffectSurfaceAvailability() {
+        if (this.needsEffectSurface && !this.effectSurface) {
+            this.effectSurface = this.displaySystem.createDynamicSurface({
+                type: 'webgl',
+                order: this.sortOrderBase,
+                mode: 'overlay-effect',
+                includeInComposite: true
+            });
+            this.effectLayerId = this.effectSurface.id;
+            this.#syncSurfaceOpacity();
+            this.appliedContentScale = Number.NaN;
+            this.#syncContentScale();
+            return;
+        }
+
+        if (!this.needsEffectSurface && this.effectSurface) {
+            this.displaySystem.releaseDynamicSurface(this.effectSurface.id);
+            this.effectSurface = null;
+            this.effectLayerId = null;
         }
     }
 
@@ -345,54 +434,95 @@ export class OverlaySession {
     }
 
     /**
+     * effect들이 제공하는 렌더 옵션을 재사용 명령에 병합합니다.
+     * @param {object} target - 옵션을 기록할 명령입니다.
      * @private
-     * effect들이 제공하는 렌더 옵션을 병합합니다.
-     * @returns {object} 병합된 렌더 옵션입니다.
      */
-    #resolveEffectRenderOptions() {
-        const mergedOptions = {};
+    #resolveEffectRenderOptions(target) {
         for (const effectState of this.effectStates) {
             if (typeof effectState.getRenderOptions !== 'function') {
                 continue;
             }
 
-            Object.assign(mergedOptions, effectState.getRenderOptions());
+            this.#copyGlassRenderOptions(target, effectState.getRenderOptions());
         }
-
-        return mergedOptions;
     }
 
     /**
+     * 이전 glass 명령의 동적 필드를 비웁니다.
      * @private
-     * glass 패널이 참조할 소스 목록을 구성합니다.
-     * @param {{includeOwnEffectSurface?: boolean, includeOwnUISurface?: boolean}} includeOptions - 현재 session surface 포함 옵션입니다.
-     * @returns {Array<{kind: string, canvas?: HTMLCanvasElement, opacity?: number}>} 합성 소스 목록입니다.
      */
-    #buildGlassSources(includeOptions = {}) {
-        const sources = this.getCompositeSources();
-        const includeOwnEffectSurface = includeOptions.includeOwnEffectSurface === true;
-        const includeOwnUISurface = includeOptions.includeOwnUISurface === true;
+    #resetGlassRenderCommand() {
+        const command = this.glassRenderCommand;
+        for (let index = 0; index < this.glassRenderCommandKeys.length; index++) {
+            command[this.glassRenderCommandKeys[index]] = undefined;
+        }
+        this.glassRenderCommandKeys.length = 0;
+        command.forceBlurRefresh = undefined;
+        command.transformMatrix = undefined;
+        command.sampleBackdrop = undefined;
+        command.includeOwnSurfaces = undefined;
+        command.includeOwnEffectSurface = undefined;
+        command.includeOwnUISurface = undefined;
+    }
 
-        if (!includeOwnEffectSurface && !includeOwnUISurface) {
-            return sources;
+    /**
+     * 렌더 옵션을 재사용 glass 명령에 복사합니다.
+     * @param {object} target - 대상 명령입니다.
+     * @param {object|null|undefined} options - 복사할 옵션입니다.
+     * @private
+     */
+    #copyGlassRenderOptions(target, options) {
+        if (!options) {
+            return;
         }
 
-        if (includeOwnEffectSurface && this.effectSurface?.canvas) {
-            sources.push({
-                kind: 'canvas',
-                canvas: this.effectSurface.canvas,
-                opacity: this.alpha
-            });
+        for (const key in options) {
+            if (!Object.prototype.hasOwnProperty.call(options, key)) {
+                continue;
+            }
+            target[key] = options[key];
+            this.glassRenderCommandKeys.push(key);
+        }
+    }
+
+    /**
+     * glass 패널이 참조할 source snapshot을 구성합니다.
+     * @returns {{snapshotIdentity: string, sourceRevision: number, sources: Array<{kind: string, canvas?: HTMLCanvasElement, opacity?: number, revision?: number}>}} 합성 snapshot입니다.
+     * @private
+     */
+    #buildGlassSources() {
+        const baseSnapshot = this.getCompositeSources();
+        if (!this.includeOwnEffectSurface && !this.includeOwnUISurface) {
+            return baseSnapshot;
         }
 
-        if (includeOwnUISurface && this.uiSurface?.canvas) {
-            sources.push({
-                kind: 'canvas',
-                canvas: this.uiSurface.canvas,
-                opacity: this.alpha
-            });
+        const snapshot = this.glassSourceSnapshot;
+        const sources = snapshot.sources;
+        sources.length = 0;
+        for (let index = 0; index < baseSnapshot.sources.length; index++) {
+            sources.push(baseSnapshot.sources[index]);
         }
 
-        return sources;
+        const identityIndex = (this.includeOwnEffectSurface ? 1 : 0)
+            | (this.includeOwnUISurface ? 2 : 0);
+        snapshot.snapshotIdentity = this.glassSnapshotIdentities[identityIndex];
+        snapshot.sourceRevision = baseSnapshot.sourceRevision;
+
+        if (this.includeOwnEffectSurface && this.effectSurface?.canvas && !this.effectSurface.isEmpty) {
+            this.ownEffectCompositeSource.canvas = this.effectSurface.canvas;
+            this.ownEffectCompositeSource.opacity = this.alpha;
+            this.ownEffectCompositeSource.revision = this.effectSurface.contentRevision;
+            sources.push(this.ownEffectCompositeSource);
+        }
+
+        if (this.includeOwnUISurface && this.uiSurface?.canvas && !this.uiSurface.isEmpty) {
+            this.ownUICompositeSource.canvas = this.uiSurface.canvas;
+            this.ownUICompositeSource.opacity = this.alpha;
+            this.ownUICompositeSource.revision = this.uiSurface.contentRevision;
+            sources.push(this.ownUICompositeSource);
+        }
+
+        return snapshot;
     }
 }

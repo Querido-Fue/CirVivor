@@ -155,7 +155,11 @@ function updateBorderState(interactionState, borderOptions, delta) {
  */
 function updateParticleState(panel, interactionState, particleOptions, delta) {
     if (!particleOptions) {
-        interactionState.particles = [];
+        if (Array.isArray(interactionState.particles)) {
+            interactionState.particles.length = 0;
+        } else {
+            interactionState.particles = [];
+        }
         interactionState.particleAlpha = 0;
         return;
     }
@@ -176,7 +180,7 @@ function updateParticleState(panel, interactionState, particleOptions, delta) {
     );
 
     if (!interactionState.hovered && interactionState.particleAlpha <= 0.01) {
-        interactionState.particles = [];
+        interactionState.particles.length = 0;
         return;
     }
 
@@ -207,10 +211,16 @@ function updateParticleState(panel, interactionState, particleOptions, delta) {
  * @param {number} delta - 프레임 델타입니다.
  */
 function updateRippleState(interactionState, delta) {
-    interactionState.ripples = interactionState.ripples.filter((ripple) => {
+    const ripples = interactionState.ripples;
+    let writeIndex = 0;
+    for (let readIndex = 0; readIndex < ripples.length; readIndex++) {
+        const ripple = ripples[readIndex];
         ripple.elapsed += delta;
-        return ripple.elapsed < ripple.duration;
-    });
+        if (ripple.elapsed < ripple.duration) {
+            ripples[writeIndex++] = ripple;
+        }
+    }
+    ripples.length = writeIndex;
 }
 
 /**

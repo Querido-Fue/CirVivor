@@ -30,7 +30,7 @@ import {
     getSimulationWH,
     getSimulationWW
 } from 'simulation/simulation_runtime.js';
-import { measurePerformanceSection } from 'debug/debug_system.js';
+import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 
 const GAME_SCENE_CONSTANTS = getData('GAME_SCENE_CONSTANTS');
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
@@ -162,6 +162,22 @@ export class GameScene extends BaseScene {
         this.boxWalls = [];
         this.buttons = [];
         this.collisionStats = createDefaultCollisionStats();
+        this.worldDrawOptions = {
+            sceneSnapshot: null,
+            staticWalls: this.staticWalls,
+            boxWalls: this.boxWalls,
+            player: null,
+            projectiles: this.projectiles,
+            objectOffsetY: 0
+        };
+        this.buttonDrawOptions = { ww: 0 };
+        this.hudDrawOptions = {
+            sceneSnapshot: null,
+            collisionStats: this.collisionStats,
+            objectSystem: this.objectSystem,
+            ww: 0,
+            wh: 0
+        };
 
         this.wallIdCounter = 1;
         this.projIdCounter = 1;
@@ -317,14 +333,14 @@ export class GameScene extends BaseScene {
      * @private
      */
     #drawWorldObjects(sceneSnapshot = null) {
-        drawGameSceneWorldObjects({
-            sceneSnapshot,
-            staticWalls: this.staticWalls,
-            boxWalls: this.boxWalls,
-            player: this.player,
-            projectiles: this.projectiles,
-            objectOffsetY: this.objectOffsetY
-        });
+        const options = this.worldDrawOptions;
+        options.sceneSnapshot = sceneSnapshot;
+        options.staticWalls = this.staticWalls;
+        options.boxWalls = this.boxWalls;
+        options.player = this.player;
+        options.projectiles = this.projectiles;
+        options.objectOffsetY = this.objectOffsetY;
+        drawGameSceneWorldObjects(options);
     }
 
     /**
@@ -333,38 +349,39 @@ export class GameScene extends BaseScene {
      */
     #drawButtons(buttons = null) {
         const buttonList = Array.isArray(buttons) ? buttons : this.buttons;
-        drawGameSceneButtons(buttonList, { ww: this.WW });
+        this.buttonDrawOptions.ww = this.WW;
+        drawGameSceneButtons(buttonList, this.buttonDrawOptions);
     }
 
     /**
      * @private
      */
     #drawHud(sceneSnapshot = null) {
-        drawGameSceneHud({
-            sceneSnapshot,
-            collisionStats: this.collisionStats,
-            objectSystem: this.objectSystem,
-            ww: this.WW,
-            wh: this.WH
-        });
+        const options = this.hudDrawOptions;
+        options.sceneSnapshot = sceneSnapshot;
+        options.collisionStats = this.collisionStats;
+        options.objectSystem = this.objectSystem;
+        options.ww = this.WW;
+        options.wh = this.WH;
+        drawGameSceneHud(options);
     }
 
     /**
      * @override
      */
     draw() {
-        measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.WORLD, () => {
-            this.#drawWorldObjects();
-        });
+        let startTime = beginPerformanceSection();
+        this.#drawWorldObjects();
+        endPerformanceSection(GAME_SCENE_DRAW_SECTIONS.WORLD, startTime);
         if (!this.#isBenchmarkMode()) {
             return;
         }
-        measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.BUTTONS, () => {
-            this.#drawButtons();
-        });
-        measurePerformanceSection(GAME_SCENE_DRAW_SECTIONS.HUD, () => {
-            this.#drawHud();
-        });
+        startTime = beginPerformanceSection();
+        this.#drawButtons();
+        endPerformanceSection(GAME_SCENE_DRAW_SECTIONS.BUTTONS, startTime);
+        startTime = beginPerformanceSection();
+        this.#drawHud();
+        endPerformanceSection(GAME_SCENE_DRAW_SECTIONS.HUD, startTime);
     }
 
 }

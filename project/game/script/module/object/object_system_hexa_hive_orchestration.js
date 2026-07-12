@@ -21,6 +21,9 @@ export function collectObjectSystemHexaHiveContactPairs(options) {
     const enemies = Array.isArray(options?.enemies) ? options.enemies : [];
     const physicsSystem = options?.physicsSystem ?? null;
     const delta = Number.isFinite(options?.delta) ? options.delta : 0;
+    if (physicsSystem && typeof physicsSystem.prepareEnemyCollisionFrame === 'function') {
+        physicsSystem.prepareEnemyCollisionFrame(enemies, { delta });
+    }
     const mergeCandidates = collectHexaMergeCandidates(enemies);
     if (mergeCandidates.length < 2
         || !physicsSystem

@@ -3,6 +3,7 @@ import { clampNumber } from 'util/number_util.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 
 const INF = ENEMY_AI_CONSTANTS.INF;
+const DENSITY_CACHE_COUNT_BASE = 65536;
 
 /**
  * 적 목록에서 공유 밀도 필드를 생성합니다.
@@ -64,6 +65,26 @@ export const getSharedDensityField = (context, enemies, width, height, filterTyp
         return sharedDensityFieldByKey.get(densityKey);
     }
 
+    const enemySpatialIndex = context?.enemySpatialIndex;
+    const spatialDensityField = filterType === 'all'
+        && typeof enemySpatialIndex?.getDensityField === 'function'
+        ? enemySpatialIndex.getDensityField()
+        : null;
+    const expectedCols = Math.max(2, Math.ceil(width / profile.DENSITY_CELL_SIZE));
+    const expectedRows = Math.max(2, Math.ceil(height / profile.DENSITY_CELL_SIZE));
+    if (
+        spatialDensityField?.counts instanceof Uint16Array
+        && spatialDensityField.cellSize === profile.DENSITY_CELL_SIZE
+        && spatialDensityField.cols === expectedCols
+        && spatialDensityField.rows === expectedRows
+    ) {
+        incrementEnemyAIDebugCounter(aiDebugStats, 'spatialDensityFieldReuseCount');
+        if (sharedDensityFieldByKey) {
+            sharedDensityFieldByKey.set(densityKey, spatialDensityField);
+        }
+        return spatialDensityField;
+    }
+
     const densityField = buildDensityField(enemies, width, height, filterType, profile);
     incrementEnemyAIDebugCounter(aiDebugStats, 'densityFieldBuildCount');
     if (sharedDensityFieldByKey) {
@@ -79,8 +100,8 @@ export const getSharedDensityField = (context, enemies, width, height, filterTyp
  * @param {number} startY - 시작 Y 좌표입니다.
  * @param {number} searchRadiusCells - 탐색 반경 셀 수입니다.
  * @param {number} minCount - 최소 밀도 수입니다.
- * @param {{x: number, y: number, count: number}} out - 출력 버퍼입니다.
- * @returns {{x: number, y: number, count: number}|null} 선택한 목표입니다.
+ * @param {{x: number, y: number, count: number, cellIndex?: number}} out - 출력 버퍼입니다.
+ * @returns {{x: number, y: number, count: number, cellIndex?: number}|null} 선택한 목표입니다.
  */
 const findDensityGoalInto = (densityField, startX, startY, searchRadiusCells, minCount, out) => {
     if (!densityField || !(densityField.counts instanceof Uint16Array)) {
@@ -113,6 +134,7 @@ const findDensityGoalInto = (densityField, startX, startY, searchRadiusCells, mi
             out.x = (cx + 0.5) * densityField.cellSize;
             out.y = (cy + 0.5) * densityField.cellSize;
             out.count = count;
+            out.cellIndex = (cy * densityField.cols) + cx;
         }
     }
 
@@ -150,8 +172,8 @@ export const getDensityCountAtPosition = (densityField, x, y) => {
  * @param {number} startY - 시작 Y 좌표입니다.
  * @param {number} searchRadiusCells - 탐색 반경 셀 수입니다.
  * @param {number} minCount - 최소 밀도 수입니다.
- * @param {{x: number, y: number, count: number}} out - 출력 버퍼입니다.
- * @returns {{x: number, y: number, count: number}|null} 선택한 목표입니다.
+ * @param {{x: number, y: number, count: number, cellIndex?: number}} out - 출력 버퍼입니다.
+ * @returns {{x: number, y: number, count: number, cellIndex?: number}|null} 선택한 목표입니다.
  */
 export const getSharedDensityGoal = (
     context,
@@ -179,23 +201,29 @@ export const getSharedDensityGoal = (
     if (sharedPolicyTargetByKey?.has(decisionKey)) {
         incrementEnemyAIDebugCounter(aiDebugStats, 'sharedPolicyTargetCacheHitCount');
         const cachedGoal = sharedPolicyTargetByKey.get(decisionKey);
-        if (!cachedGoal) {
+        if (!Number.isFinite(cachedGoal) || cachedGoal < 0) {
             return null;
         }
 
-        out.x = cachedGoal.x;
-        out.y = cachedGoal.y;
-        out.count = cachedGoal.count;
+        const cellIndex = Math.floor(cachedGoal / DENSITY_CACHE_COUNT_BASE);
+        const count = cachedGoal - (cellIndex * DENSITY_CACHE_COUNT_BASE);
+        const cols = Math.max(2, Math.ceil(width / densityCellSize));
+        const cx = cellIndex % cols;
+        const cy = Math.floor(cellIndex / cols);
+        out.x = (cx + 0.5) * densityCellSize;
+        out.y = (cy + 0.5) * densityCellSize;
+        out.count = count;
+        out.cellIndex = cellIndex;
         return out;
     }
 
     const densityField = getSharedDensityField(context, enemies, width, height, filterType, profile);
     const goal = findDensityGoalInto(densityField, startX, startY, searchRadiusCells, minCount, out);
     if (sharedPolicyTargetByKey) {
-        sharedPolicyTargetByKey.set(
-            decisionKey,
-            goal ? { x: goal.x, y: goal.y, count: goal.count } : null
-        );
+        const packedGoal = goal
+            ? (goal.cellIndex * DENSITY_CACHE_COUNT_BASE) + goal.count
+            : -1;
+        sharedPolicyTargetByKey.set(decisionKey, packedGoal);
     }
     return goal;
 };

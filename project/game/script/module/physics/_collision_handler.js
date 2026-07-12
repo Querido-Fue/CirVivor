@@ -1,7 +1,7 @@
 import { getData } from 'data/data_handler.js';
 import { CollisionDetector } from './_collision_detector.js';
 import {
-    areCollisionEnemyPairAnchors,
+    COLLISION_CANDIDATE_SWEEP_PAD_SCALE,
     COLLISION_RESOLVE_FRAME_MAX_RATIO,
     COLLISION_RESOLVE_FRAME_MIN_MAX,
     DENSE_ADAPTIVE_DENSITY_SCALE,
@@ -12,7 +12,8 @@ import {
     DENSE_REBUILD_MIN_RESOLVED,
     DENSE_STABILIZE_HEAVY_CANDIDATE_SCALE,
     DENSE_STABILIZE_MIN_RESOLVED,
-    getDenseSolveTuning
+    getDenseSolveTuning,
+    isCollisionEnemyPairAnchorBody
 } from './_collision_resolve_tuning.js';
 import {
     applyCollisionProjectileImpact,
@@ -36,10 +37,14 @@ import {
     resetCollisionPassPairProcessCounts
 } from './collision_enemy_pair_budget.js';
 import {
-    updateCollisionEnemyPostSolveSleepState,
-    updateCollisionEnemySleepState
+    advanceCollisionEnemySleepState,
+    readCollisionEnemySleepState,
+    updateCollisionEnemyPostSolveSleepState
 } from './collision_enemy_sleep_state.js';
-import { writeCollisionEnemyBody } from './collision_enemy_body_builder.js';
+import {
+    syncCollisionEnemyBodyResolveState,
+    writeCollisionEnemyBody
+} from './collision_enemy_body_builder.js';
 import { CollisionGridBucketPool } from './collision_grid_bucket_pool.js';
 import { estimateCollisionGridCellSize } from './collision_grid_cell_size.js';
 import { CollisionGridQueryBuffer } from './collision_grid_query_buffer.js';
@@ -73,6 +78,12 @@ const COLLISION_IDLE_TICKS_TO_SLEEP = COLLISION_CONSTANTS.SLEEP.IDLE_TICKS_TO_SL
 const COLLISION_SLEEP_TICKS = COLLISION_CONSTANTS.SLEEP.TICKS;
 const COLLISION_SLEEP_SPEED_SQ = COLLISION_CONSTANTS.SLEEP.SPEED_SQ;
 const COLLISION_BASE_STAT_FIELDS = COLLISION_CONSTANTS.FRAME_STATS.BASE_FIELDS;
+const COLLISION_ENEMY_BODY_BUILD_OPTIONS = Object.freeze({
+    epsilon: EPSILON,
+    frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,
+    frameResolveMaxRatio: COLLISION_RESOLVE_FRAME_MAX_RATIO
+});
+const COLLISION_PLAYER_BODY_BUILD_OPTIONS = COLLISION_ENEMY_BODY_BUILD_OPTIONS;
 
 /**
  * @typedef {object} CollisionRule
@@ -95,7 +106,9 @@ export class CollisionHandler {
     #wallBodiesDirty;
     #frameStats;
     #bodyPool;
+    #contactBodyPool;
     #enemyBodiesBuffer;
+    #contactBodiesBuffer;
     #playerBodiesBuffer;
     #scratchProjectileBody;
     #scratchManifold;
@@ -109,6 +122,16 @@ export class CollisionHandler {
     #candidatePairs;
     #enemyBodyCache;
     #profileRecorder;
+    #activeGridCellSize;
+    #contactPairs;
+    #contactPairRecords;
+    #contactStatsSnapshot;
+    #pairProcessContext;
+    #processObjectPairCallback;
+    #fixedFrameToken;
+    #pairPassCursor;
+    #sleepAdvanceFrameByEnemy;
+    #sleepPostSolveFrameByEnemy;
 
     constructor() {
         this.detector = new CollisionDetector();
@@ -119,7 +142,9 @@ export class CollisionHandler {
         this.#wallBodiesDirty = true;
         this.#frameStats = createCollisionFrameStats();
         this.#bodyPool = new CollisionBodyPool();
+        this.#contactBodyPool = new CollisionBodyPool();
         this.#enemyBodiesBuffer = [];
+        this.#contactBodiesBuffer = [];
         this.#playerBodiesBuffer = [];
         this.#scratchProjectileBody = createCollisionScratchProjectileBody();
         this.#scratchManifold = createCollisionManifold();
@@ -132,11 +157,36 @@ export class CollisionHandler {
         this.#candidatePairs = new CollisionCandidatePairBuffer();
         this.#enemyBodyCache = new CollisionEnemyBodyCache(this.#enemyBodiesBuffer);
         this.#profileRecorder = new CollisionProfileRecorder(this.#frameStats);
+        this.#activeGridCellSize = 1;
+        this.#contactPairs = [];
+        this.#contactPairRecords = [];
+        this.#contactStatsSnapshot = {};
+        this.#processObjectPairCallback = this.#processPair.bind(this);
+        this.#fixedFrameToken = 0;
+        this.#pairPassCursor = 0;
+        this.#sleepAdvanceFrameByEnemy = new WeakMap();
+        this.#sleepPostSolveFrameByEnemy = new WeakMap();
         this.#bodyDetectorContext = {
             manifold: this.#scratchManifold,
             candidateManifold: this.#scratchCandidateManifold,
             bestManifold: this.#scratchBestManifold,
             profileRecorder: this.#profileRecorder
+        };
+        this.#pairProcessContext = {
+            bodies: null,
+            candidatePairs: this.#candidatePairs,
+            broadphaseBuffer: this.#broadphaseBuffer,
+            frameStats: this.#frameStats,
+            profileRecorder: this.#profileRecorder,
+            pairBudget: Number.POSITIVE_INFINITY,
+            resolvePositions: true,
+            applyNonPosition: false,
+            resolveBoost: 1,
+            detector: this.detector,
+            scratchManifold: this.#scratchManifold,
+            processObjectPair: this.#processObjectPairCallback,
+            epsilon: EPSILON,
+            pairStartToken: 0
         };
     }
 
@@ -161,6 +211,8 @@ export class CollisionHandler {
     resetFrameStats() {
         this.#profileRecorder.setEnabled(this.#isProfilingEnabled());
         this.#enemyBodyCache.advanceFrame();
+        this.#fixedFrameToken++;
+        this.#pairPassCursor = 0;
         resetCollisionFrameStats(this.#frameStats);
     }
 
@@ -182,6 +234,22 @@ export class CollisionHandler {
     }
 
     /**
+     * contact와 본 solve가 공유할 enemy body geometry와 sleep snapshot을 준비합니다.
+     * sleep/idle tick은 이 단계에서 변경하지 않습니다.
+     * @param {object[]} enemies - 현재 fixed tick의 전체 적 목록입니다.
+     * @param {{delta?:number}} [options] - fixed step 옵션입니다.
+     * @returns {number} 준비한 활성 enemy body 수입니다.
+     */
+    prepareEnemyCollisionFrame(enemies, options = {}) {
+        if (!Array.isArray(enemies)) {
+            return 0;
+        }
+
+        const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
+        return this.#buildFreshEnemyBodies(enemies, delta, true).length;
+    }
+
+    /**
      * 적 목록 충돌을 처리합니다.
      * @param {object[]} enemies
      * @param {object} [options]
@@ -199,7 +267,12 @@ export class CollisionHandler {
             const players = Array.isArray(options.players) ? options.players : [];
 
             const enemyBodyBuildStart = this.#profileRecorder.startTimer();
-            const dynamicBodies = this.#buildFreshEnemyBodies(enemies, delta, true);
+            const dynamicBodies = this.#enemyBodyCache.getReusable(enemies, delta, EPSILON)
+                ?? this.#buildFreshEnemyBodies(enemies, delta, true);
+            this.#advanceEnemySleepSnapshots(dynamicBodies);
+            for (let i = 0; i < dynamicBodies.length; i++) {
+                syncCollisionEnemyBodyResolveState(dynamicBodies[i], dynamicBodies[i].ref, EPSILON);
+            }
             this.#profileRecorder.recordDuration('enemyBodyBuildMs', enemyBodyBuildStart);
 
             const playerBodyBuildStart = this.#profileRecorder.startTimer();
@@ -253,12 +326,13 @@ export class CollisionHandler {
                     denseRebuildPasses < denseSolveTuning.denseRebuildMaxExtraPasses &&
                     lastResolved >= DENSE_REBUILD_MIN_RESOLVED
                 );
-                const resolved = this.#solveOnePass(bodies, {
-                    resolvePositions: true,
-                    applyNonPosition: false,
-                    rebuildGrid: i === 0 || shouldDenseRebuild,
-                    resolveBoost: denseMode && i > 0 ? denseSolveTuning.denseIterationResolveBoost : 1
-                });
+                const resolved = this.#solveOnePass(
+                    bodies,
+                    true,
+                    false,
+                    i === 0 || shouldDenseRebuild,
+                    denseMode && i > 0 ? denseSolveTuning.denseIterationResolveBoost : 1
+                );
                 if (shouldDenseRebuild) denseRebuildPasses++;
                 totalResolved += resolved;
                 if (i === 0 && maxIterations > DENSE_ADAPTIVE_MIN_ITERATIONS) {
@@ -290,12 +364,13 @@ export class CollisionHandler {
                     ? denseSolveTuning.denseStabilizeMaxPasses
                     : denseSolveTuning.denseStabilizeLightMaxPasses;
                 for (let pass = 0; pass < stabilizeMaxPasses; pass++) {
-                    const stabilized = this.#solveOnePass(bodies, {
-                        resolvePositions: true,
-                        applyNonPosition: false,
-                        rebuildGrid: true,
-                        resolveBoost: denseSolveTuning.denseResolveBoost
-                    });
+                    const stabilized = this.#solveOnePass(
+                        bodies,
+                        true,
+                        false,
+                        true,
+                        denseSolveTuning.denseResolveBoost
+                    );
                     totalResolved += stabilized;
                     lastResolved = stabilized;
                     if (stabilized === 0) break;
@@ -305,10 +380,16 @@ export class CollisionHandler {
 
             for (let i = 0; i < dynamicBodies.length; i++) {
                 const enemy = dynamicBodies[i].ref;
-                updateCollisionEnemyPostSolveSleepState(enemy, dynamicBodies[i], {
-                    idleTicksToSleep: COLLISION_IDLE_TICKS_TO_SLEEP,
-                    sleepTicks: COLLISION_SLEEP_TICKS
-                });
+                if (this.#sleepPostSolveFrameByEnemy.get(enemy) === this.#fixedFrameToken) {
+                    continue;
+                }
+                updateCollisionEnemyPostSolveSleepState(
+                    enemy,
+                    dynamicBodies[i],
+                    COLLISION_IDLE_TICKS_TO_SLEEP,
+                    COLLISION_SLEEP_TICKS
+                );
+                this.#sleepPostSolveFrameByEnemy.set(enemy, this.#fixedFrameToken);
             }
 
             return totalResolved;
@@ -433,86 +514,48 @@ export class CollisionHandler {
      * 충돌 통계에는 반영하지 않습니다.
      * @param {object[]} enemies
      * @param {{delta?: number}} [options]
-     * @returns {{enemyA: object, enemyB: object}[]}
+     * @returns {{enemyA: object, enemyB: object}[]} 다음 contact 조회 전까지 유효한 재사용 결과 배열입니다.
      */
     collectEnemyContactPairs(enemies, options = {}) {
         const totalStart = this.#profileRecorder.startTimer();
         try {
+            this.#resetContactPairResults();
             if (!Array.isArray(enemies) || enemies.length < 2) {
-                return [];
+                return this.#contactPairs;
             }
 
-            this.#resetBodyPool();
             const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
             const bodyBuildStart = this.#profileRecorder.startTimer();
-            const bodies = this.#buildEnemyBodies(enemies, delta);
+            const bodies = this.#collectContactBodies(enemies, delta);
             this.#profileRecorder.recordDuration('contactBodyBuildMs', bodyBuildStart);
             if (bodies.length < 2) {
-                return [];
+                return this.#contactPairs;
             }
 
-            const savedStats = createCollisionBaseStatsSnapshot(this.#frameStats);
+            createCollisionBaseStatsSnapshot(this.#frameStats, this.#contactStatsSnapshot);
             try {
                 const gridBuildStart = this.#profileRecorder.startTimer();
                 this.#rebuildGridFromBodies(bodies, 'enemyPair');
                 this.#profileRecorder.recordDuration('contactGridBuildMs', gridBuildStart);
-                this.#candidatePairs.reset(bodies.length);
-                const contactPairs = [];
-                const gridBuckets = this.#activeGridBuckets;
+                this.#buildContactCandidatePairsFromGrid(bodies);
 
                 const pairScanStart = this.#profileRecorder.startTimer();
-                for (let bucketIndex = 0; bucketIndex < gridBuckets.length; bucketIndex++) {
-                    const bucket = gridBuckets[bucketIndex];
-                    const count = bucket.count;
-                    if (count < 2) {
+                const lowIndices = this.#candidatePairs.lowIndices;
+                const highIndices = this.#candidatePairs.highIndices;
+                for (let pairIndex = 0; pairIndex < this.#candidatePairs.count; pairIndex++) {
+                    const bodyA = bodies[lowIndices[pairIndex]];
+                    const bodyB = bodies[highIndices[pairIndex]];
+                    if (!detectCollisionBodies(bodyA, bodyB, this.#bodyDetectorContext)) {
                         continue;
                     }
 
-                    const indices = bucket.indices;
-                    for (let left = 0; left < count - 1; left++) {
-                        const bodyIndexA = indices[left];
-                        for (let right = left + 1; right < count; right++) {
-                            const bodyIndexB = indices[right];
-                            const low = bodyIndexA < bodyIndexB ? bodyIndexA : bodyIndexB;
-                            const high = bodyIndexA < bodyIndexB ? bodyIndexB : bodyIndexA;
-                            if (this.#candidatePairs.hasPair(low, high)) {
-                                continue;
-                            }
-                            this.#candidatePairs.markPair(low, high);
-
-                            const bodyA = bodies[low];
-                            const bodyB = bodies[high];
-                            if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) {
-                                continue;
-                            }
-
-                            if (!areCollisionBodyAabbsOverlapping(bodyA, bodyB)) {
-                                continue;
-                            }
-
-                            if (
-                                shouldUseCollisionBroadCircleFilter(bodyA, bodyB) &&
-                                !areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON)
-                            ) {
-                                continue;
-                            }
-
-                            if (!detectCollisionBodies(bodyA, bodyB, this.#bodyDetectorContext)) {
-                                continue;
-                            }
-
-                            contactPairs.push({
-                                enemyA: bodyA.ref,
-                                enemyB: bodyB.ref
-                            });
-                        }
-                    }
+                    this.#appendContactPair(bodyA.ref, bodyB.ref);
                 }
                 this.#profileRecorder.recordDuration('contactPairScanMs', pairScanStart);
 
-                return contactPairs;
+                return this.#contactPairs;
             } finally {
-                restoreCollisionBaseStatsSnapshot(this.#frameStats, savedStats);
+                restoreCollisionBaseStatsSnapshot(this.#frameStats, this.#contactStatsSnapshot);
             }
         } finally {
             this.#profileRecorder.recordDuration('contactTotalMs', totalStart);
@@ -530,22 +573,24 @@ export class CollisionHandler {
     /**
      * @private
      * @param {object[]} bodies
-     * @param {object} [options]
-     * @param {boolean} [options.resolvePositions=true]
-     * @param {boolean} [options.applyNonPosition=false]
-     * @param {boolean} [options.rebuildGrid=true]
-     * @param {number} [options.resolveBoost=1]
+     * @param {boolean} [resolvePositions=true] - 위치 해소 여부입니다.
+     * @param {boolean} [applyNonPosition=false] - 비위치 효과 적용 여부입니다.
+     * @param {boolean} [requestRebuildGrid=true] - grid 재구성 요청 여부입니다.
+     * @param {number} [resolveBoost=1] - 위치 해소 강화 배율입니다.
      * @returns {number}
      */
-    #solveOnePass(bodies, options = {}) {
+    #solveOnePass(
+        bodies,
+        resolvePositions = true,
+        applyNonPosition = false,
+        requestRebuildGrid = true,
+        resolveBoost = 1
+    ) {
         if (!bodies || bodies.length < 2) return 0;
-        const resolvePositions = options.resolvePositions !== false;
-        const applyNonPosition = options.applyNonPosition === true;
-        const requestRebuildGrid = options.rebuildGrid !== false;
-        const resolveBoost = Number.isFinite(options.resolveBoost) && options.resolveBoost > 0
-            ? options.resolveBoost
+        const safeResolveBoost = Number.isFinite(resolveBoost) && resolveBoost > 0
+            ? resolveBoost
             : 1;
-        const rebuildGrid = requestRebuildGrid || this.#activeGridBuckets.length === 0;
+        const rebuildGrid = requestRebuildGrid !== false || this.#activeGridBuckets.length === 0;
         const bodyCount = bodies.length;
 
         const gridStart = this.#profileRecorder.startTimer();
@@ -571,7 +616,7 @@ export class CollisionHandler {
             bodies,
             resolvePositions,
             applyNonPosition,
-            resolveBoost
+            safeResolveBoost
         );
         this.#profileRecorder.recordDuration('solvePairProcessMs', pairProcessStart);
         this.#profileRecorder.recordDuration('solvePairScanMs', pairScanStart);
@@ -623,16 +668,16 @@ export class CollisionHandler {
 
         if (!rule.resolve || !resolvePositions) return 1;
 
-        if (areCollisionEnemyPairAnchors(bodyA, bodyB)) {
-            return 0;
-        }
-
-        applyCollisionPairResolution(this.detector, manifold, bodyA, bodyB, {
-            movableA: rule.movableA,
-            movableB: rule.movableB,
+        applyCollisionPairResolution(
+            this.detector,
+            manifold,
+            bodyA,
+            bodyB,
+            rule.movableA,
+            rule.movableB,
             resolveBoost,
-            broadphaseBuffer: this.#broadphaseBuffer
-        });
+            this.#broadphaseBuffer
+        );
 
         return 1;
     }
@@ -673,34 +718,106 @@ export class CollisionHandler {
         if (bodyCount < 2) {
             return;
         }
-        const gridBuckets = this.#activeGridBuckets;
-        for (let b = 0; b < gridBuckets.length; b++) {
-            const bucket = gridBuckets[b];
-            const len = bucket.count;
-            if (len < 2) continue;
-            const indices = bucket.indices;
 
-            for (let i = 0; i < len - 1; i++) {
-                const a = indices[i];
-                for (let j = i + 1; j < len; j++) {
-                    const c = indices[j];
-                    const low = a < c ? a : c;
-                    const high = a < c ? c : a;
-                    this.#profileRecorder.recordCount('solveBucketPairCount');
+        const cellSize = this.#activeGridCellSize;
+        const broadData = this.#broadphaseBuffer.broadData;
+        for (let low = 0; low < bodyCount - 1; low++) {
+            this.#candidatePairs.beginLowBody();
+            const broadOffset = low * BROAD_STRIDE;
+            const minCellX = Math.floor(broadData[broadOffset] / cellSize);
+            const maxCellX = Math.floor(broadData[broadOffset + 1] / cellSize);
+            const minCellY = Math.floor(broadData[broadOffset + 2] / cellSize);
+            const maxCellY = Math.floor(broadData[broadOffset + 3] / cellSize);
 
-                    const rule = getCollisionPassRule(bodies[low], bodies[high], true);
-                    if (!rule) {
-                        this.#profileRecorder.recordCount('solveRuleRejectCount');
-                        continue;
+            for (let cx = minCellX; cx <= maxCellX; cx++) {
+                for (let cy = minCellY; cy <= maxCellY; cy++) {
+                    const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
+                    const bucket = this.#grid.get(key);
+                    if (!bucket) continue;
+                    for (let bucketIndex = 0; bucketIndex < bucket.count; bucketIndex++) {
+                        const high = bucket.indices[bucketIndex];
+                        if (high <= low) continue;
+                        this.#profileRecorder.recordCount('solveBucketPairCount');
+                        if (this.#candidatePairs.hasSeenHigh(high)) {
+                            this.#profileRecorder.recordCount('solveDuplicatePairSkipCount');
+                            continue;
+                        }
+                        this.#candidatePairs.markSeenHigh(high);
+
+                        const bodyA = bodies[low];
+                        const bodyB = bodies[high];
+                        const rule = getCollisionPassRule(bodyA, bodyB, true);
+                        if (!rule) {
+                            this.#profileRecorder.recordCount('solveRuleRejectCount');
+                            continue;
+                        }
+                        if (!areCollisionCandidateSweepAabbsOverlapping(bodyA, bodyB)) {
+                            continue;
+                        }
+                        const usesBroadCircle = shouldUseCollisionBroadCircleFilter(bodyA, bodyB);
+                        if (usesBroadCircle
+                            && !areCollisionCandidateSweepCirclesOverlapping(bodyA, bodyB, EPSILON)) {
+                            continue;
+                        }
+
+                        const isEnemyPair = bodyA.kind === 'enemy' && bodyB.kind === 'enemy';
+                        const isAnchorPair = isEnemyPair && (
+                            isCollisionEnemyPairAnchorBody(bodyA, bodyB)
+                            || isCollisionEnemyPairAnchorBody(bodyB, bodyA)
+                        );
+                        const isCurrentOverlap = areCollisionBodyAabbsOverlapping(bodyA, bodyB)
+                            && (!usesBroadCircle
+                                || areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON));
+                        this.#candidatePairs.append(
+                            low,
+                            high,
+                            isCurrentOverlap || !isEnemyPair || isAnchorPair
+                        );
+                        this.#profileRecorder.recordCount('solveCandidatePairCount');
                     }
-                    if (this.#candidatePairs.hasPair(low, high)) {
-                        this.#profileRecorder.recordCount('solveDuplicatePairSkipCount');
-                        continue;
-                    }
+                }
+            }
+        }
+    }
 
-                    this.#candidatePairs.markPair(low, high);
-                    this.#candidatePairs.append(low, high);
-                    this.#profileRecorder.recordCount('solveCandidatePairCount');
+    /**
+     * contact 관계 grid에서 exact 판정 전에 필요한 현재 중첩 pair만 수집합니다.
+     * @private
+     * @param {object[]} bodies - contact 대상 enemy body 목록입니다.
+     */
+    #buildContactCandidatePairsFromGrid(bodies) {
+        const bodyCount = bodies.length;
+        this.#candidatePairs.reset(bodyCount);
+        const cellSize = this.#activeGridCellSize;
+        const broadData = this.#broadphaseBuffer.broadData;
+        for (let low = 0; low < bodyCount - 1; low++) {
+            this.#candidatePairs.beginLowBody();
+            const broadOffset = low * BROAD_STRIDE;
+            const minCellX = Math.floor(broadData[broadOffset] / cellSize);
+            const maxCellX = Math.floor(broadData[broadOffset + 1] / cellSize);
+            const minCellY = Math.floor(broadData[broadOffset + 2] / cellSize);
+            const maxCellY = Math.floor(broadData[broadOffset + 3] / cellSize);
+
+            for (let cx = minCellX; cx <= maxCellX; cx++) {
+                for (let cy = minCellY; cy <= maxCellY; cy++) {
+                    const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
+                    const bucket = this.#grid.get(key);
+                    if (!bucket) continue;
+                    for (let bucketIndex = 0; bucketIndex < bucket.count; bucketIndex++) {
+                        const high = bucket.indices[bucketIndex];
+                        if (high <= low || this.#candidatePairs.hasSeenHigh(high)) continue;
+                        this.#candidatePairs.markSeenHigh(high);
+
+                        const bodyA = bodies[low];
+                        const bodyB = bodies[high];
+                        if (!bodyA || !bodyB || bodyA.ref === bodyB.ref) continue;
+                        if (!areCollisionBodyAabbsOverlapping(bodyA, bodyB)) continue;
+                        if (shouldUseCollisionBroadCircleFilter(bodyA, bodyB)
+                            && !areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON)) {
+                            continue;
+                        }
+                        this.#candidatePairs.append(low, high);
+                    }
                 }
             }
         }
@@ -718,21 +835,15 @@ export class CollisionHandler {
     #processCandidatePairs(bodies, resolvePositions, applyNonPosition, resolveBoost) {
         const pairBudget = getCollisionEnemyPairProcessBudget(resolvePositions, applyNonPosition, resolveBoost);
         resetCollisionPassPairProcessCounts(bodies);
-        return processCollisionCandidatePairs({
-            bodies,
-            candidatePairs: this.#candidatePairs,
-            broadphaseBuffer: this.#broadphaseBuffer,
-            frameStats: this.#frameStats,
-            profileRecorder: this.#profileRecorder,
-            pairBudget,
-            resolvePositions,
-            applyNonPosition,
-            resolveBoost,
-            detector: this.detector,
-            scratchManifold: this.#scratchManifold,
-            processObjectPair: this.#processPair.bind(this),
-            epsilon: EPSILON
-        });
+        const context = this.#pairProcessContext;
+        context.bodies = bodies;
+        context.pairBudget = pairBudget;
+        context.resolvePositions = resolvePositions;
+        context.applyNonPosition = applyNonPosition;
+        context.resolveBoost = resolveBoost;
+        context.pairStartToken = this.#fixedFrameToken + this.#pairPassCursor;
+        this.#pairPassCursor++;
+        return processCollisionCandidatePairs(context);
     }
 
     /**
@@ -782,12 +893,82 @@ export class CollisionHandler {
         }
 
         const cellSize = estimateCollisionGridCellSize(bodies, gridMode);
+        this.#activeGridCellSize = cellSize;
         this.#clearGrid();
         for (let i = 0; i < bodies.length; i++) {
             this.#insertBodyToGridSoA(i, cellSize);
         }
 
         return cellSize;
+    }
+
+    /**
+     * 준비된 enemy frame에서 contact 대상 body view를 만들고, 없으면 전용 풀에서 읽기 전용으로 구성합니다.
+     * @private
+     * @param {object[]} enemies - contact 대상 적 목록입니다.
+     * @param {number} delta - fixed step delta입니다.
+     * @returns {object[]} contact body view입니다.
+     */
+    #collectContactBodies(enemies, delta) {
+        const out = this.#contactBodiesBuffer;
+        if (this.#enemyBodyCache.collectReusableBodies(enemies, delta, EPSILON, out)) {
+            return out;
+        }
+
+        this.#contactBodyPool.reset();
+        out.length = 0;
+        for (let i = 0; i < enemies.length; i++) {
+            const enemy = enemies[i];
+            if (!enemy || enemy.active === false) continue;
+            const sleeping = readCollisionEnemySleepState(
+                enemy,
+                delta,
+                EPSILON,
+                COLLISION_SLEEP_SPEED_SQ
+            );
+            const body = this.#contactBodyPool.acquire();
+            if (writeCollisionEnemyBody(
+                body,
+                enemy,
+                delta,
+                sleeping,
+                COLLISION_ENEMY_BODY_BUILD_OPTIONS
+            )) {
+                out.push(body);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 이전 contact 결과 record 참조를 비우고 결과 배열을 재사용 상태로 되돌립니다.
+     * @private
+     */
+    #resetContactPairResults() {
+        for (let i = 0; i < this.#contactPairs.length; i++) {
+            const pair = this.#contactPairs[i];
+            pair.enemyA = null;
+            pair.enemyB = null;
+        }
+        this.#contactPairs.length = 0;
+    }
+
+    /**
+     * contact 결과 record를 재사용해 한 쌍을 추가합니다.
+     * @private
+     * @param {object} enemyA - 첫 번째 접촉 적입니다.
+     * @param {object} enemyB - 두 번째 접촉 적입니다.
+     */
+    #appendContactPair(enemyA, enemyB) {
+        const resultIndex = this.#contactPairs.length;
+        let pair = this.#contactPairRecords[resultIndex];
+        if (!pair) {
+            pair = { enemyA: null, enemyB: null };
+            this.#contactPairRecords.push(pair);
+        }
+        pair.enemyA = enemyA;
+        pair.enemyB = enemyB;
+        this.#contactPairs.push(pair);
     }
 
     /**
@@ -800,15 +981,34 @@ export class CollisionHandler {
             const enemy = enemies[i];
             if (!enemy || enemy.active === false) continue;
 
-            const sleeping = updateCollisionEnemySleepState(enemy, delta, {
-                epsilon: EPSILON,
-                sleepSpeedSq: COLLISION_SLEEP_SPEED_SQ
-            });
+            const sleeping = readCollisionEnemySleepState(
+                enemy,
+                delta,
+                EPSILON,
+                COLLISION_SLEEP_SPEED_SQ
+            );
 
             const body = this.#buildEnemyBody(enemy, delta, sleeping);
             if (body) bodies.push(body);
         }
         return bodies;
+    }
+
+    /**
+     * 준비된 sleep snapshot을 적마다 fixed frame당 한 번만 전진시킵니다.
+     * @private
+     * @param {object[]} bodies - 준비된 enemy body 목록입니다.
+     */
+    #advanceEnemySleepSnapshots(bodies) {
+        for (let i = 0; i < bodies.length; i++) {
+            const body = bodies[i];
+            const enemy = body?.ref;
+            if (!enemy || this.#sleepAdvanceFrameByEnemy.get(enemy) === this.#fixedFrameToken) {
+                continue;
+            }
+            advanceCollisionEnemySleepState(enemy, body._sleeping === true);
+            this.#sleepAdvanceFrameByEnemy.set(enemy, this.#fixedFrameToken);
+        }
     }
 
     /**
@@ -824,11 +1024,7 @@ export class CollisionHandler {
             if (radius <= 0) continue;
 
             const body = this.#bodyPool.acquire();
-            if (writeCollisionPlayerBody(body, player, delta, {
-                epsilon: EPSILON,
-                frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,
-                frameResolveMaxRatio: COLLISION_RESOLVE_FRAME_MAX_RATIO
-            })) {
+            if (writeCollisionPlayerBody(body, player, delta, COLLISION_PLAYER_BODY_BUILD_OPTIONS)) {
                 bodies.push(body);
             }
         }
@@ -840,11 +1036,13 @@ export class CollisionHandler {
      */
     #buildEnemyBody(enemy, delta, sleeping = false) {
         const body = this.#bodyPool.acquire();
-        return writeCollisionEnemyBody(body, enemy, delta, sleeping, {
-            epsilon: EPSILON,
-            frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,
-            frameResolveMaxRatio: COLLISION_RESOLVE_FRAME_MAX_RATIO
-        })
+        return writeCollisionEnemyBody(
+            body,
+            enemy,
+            delta,
+            sleeping,
+            COLLISION_ENEMY_BODY_BUILD_OPTIONS
+        )
             ? body
             : null;
     }
@@ -867,10 +1065,11 @@ export class CollisionHandler {
 /**
  * 접촉 pair 조회가 프레임 충돌 기본 통계를 오염시키지 않도록 현재 값을 복사합니다.
  * @param {object} frameStats - 현재 프레임 통계 객체입니다.
+ * @param {object} out - 값을 기록할 재사용 스냅샷입니다.
  * @returns {object} 기본 통계 필드 스냅샷입니다.
  */
-function createCollisionBaseStatsSnapshot(frameStats) {
-    const snapshot = {};
+function createCollisionBaseStatsSnapshot(frameStats, out) {
+    const snapshot = out;
     for (let i = 0; i < COLLISION_BASE_STAT_FIELDS.length; i++) {
         const fieldName = COLLISION_BASE_STAT_FIELDS[i];
         snapshot[fieldName] = frameStats[fieldName];
@@ -888,4 +1087,122 @@ function restoreCollisionBaseStatsSnapshot(frameStats, snapshot) {
         const fieldName = COLLISION_BASE_STAT_FIELDS[i];
         frameStats[fieldName] = snapshot[fieldName];
     }
+}
+
+/**
+ * 현재 relation AABB와 fixed frame sweep AABB의 합집합이 겹치는지 반환합니다.
+ * 후보 목록을 solve pass에서 재사용해도 frame 내 이동으로 새 pair가 누락되지 않도록 보수적으로 판정합니다.
+ * @param {object} bodyA - 첫 번째 body입니다.
+ * @param {object} bodyB - 두 번째 body입니다.
+ * @returns {boolean} frame 중 겹칠 가능성이 있으면 true입니다.
+ */
+function areCollisionCandidateSweepAabbsOverlapping(bodyA, bodyB) {
+    const isEnemyPair = bodyA?.kind === 'enemy' && bodyB?.kind === 'enemy';
+    const minAX = getCollisionCandidateSweepBound(bodyA, isEnemyPair, 'minX', 'enemyPairMinX', 'sweepMinX', true);
+    const maxAX = getCollisionCandidateSweepBound(bodyA, isEnemyPair, 'maxX', 'enemyPairMaxX', 'sweepMaxX', false);
+    const minAY = getCollisionCandidateSweepBound(bodyA, isEnemyPair, 'minY', 'enemyPairMinY', 'sweepMinY', true);
+    const maxAY = getCollisionCandidateSweepBound(bodyA, isEnemyPair, 'maxY', 'enemyPairMaxY', 'sweepMaxY', false);
+    const minBX = getCollisionCandidateSweepBound(bodyB, isEnemyPair, 'minX', 'enemyPairMinX', 'sweepMinX', true);
+    const maxBX = getCollisionCandidateSweepBound(bodyB, isEnemyPair, 'maxX', 'enemyPairMaxX', 'sweepMaxX', false);
+    const minBY = getCollisionCandidateSweepBound(bodyB, isEnemyPair, 'minY', 'enemyPairMinY', 'sweepMinY', true);
+    const maxBY = getCollisionCandidateSweepBound(bodyB, isEnemyPair, 'maxY', 'enemyPairMaxY', 'sweepMaxY', false);
+    return minAX <= maxBX && maxAX >= minBX && minAY <= maxBY && maxAY >= minBY;
+}
+
+/**
+ * relation 현재 bound와 sweep bound를 합친 한 축 값을 반환합니다.
+ * @param {object} body - 대상 body입니다.
+ * @param {boolean} useEnemyPairBound - enemyPair bound 사용 여부입니다.
+ * @param {string} baseField - 기본 bound 필드입니다.
+ * @param {string} relationField - enemyPair bound 필드입니다.
+ * @param {string} sweepField - sweep bound 필드입니다.
+ * @param {boolean} useMinimum - 최솟값을 선택할지 여부입니다.
+ * @returns {number} 보수적 sweep bound입니다.
+ */
+function getCollisionCandidateSweepBound(
+    body,
+    useEnemyPairBound,
+    baseField,
+    relationField,
+    sweepField,
+    useMinimum
+) {
+    const baseValue = useEnemyPairBound && Number.isFinite(body?.[relationField])
+        ? body[relationField]
+        : body?.[baseField];
+    const sweepValue = Number.isFinite(body?.[sweepField]) ? body[sweepField] : baseValue;
+    const sweepDelta = (sweepValue - baseValue) * COLLISION_CANDIDATE_SWEEP_PAD_SCALE;
+    const expandedSweepValue = baseValue + sweepDelta;
+    return useMinimum
+        ? Math.min(baseValue, expandedSweepValue)
+        : Math.max(baseValue, expandedSweepValue);
+}
+
+/**
+ * relation broad circle을 frame sweep 이동 상한만큼 확장해 겹침 가능성을 반환합니다.
+ * @param {object} bodyA - 첫 번째 body입니다.
+ * @param {object} bodyB - 두 번째 body입니다.
+ * @param {number} epsilon - 반경 보정값입니다.
+ * @returns {boolean} frame 중 broad circle이 겹칠 가능성이 있으면 true입니다.
+ */
+function areCollisionCandidateSweepCirclesOverlapping(bodyA, bodyB, epsilon) {
+    const ax = Number.isFinite(bodyA?.centerX) ? bodyA.centerX : bodyA?.x;
+    const ay = Number.isFinite(bodyA?.centerY) ? bodyA.centerY : bodyA?.y;
+    const bx = Number.isFinite(bodyB?.centerX) ? bodyB.centerX : bodyB?.x;
+    const by = Number.isFinite(bodyB?.centerY) ? bodyB.centerY : bodyB?.y;
+    const radiusA = getCollisionCandidateRelationRadius(bodyA, bodyB);
+    const radiusB = getCollisionCandidateRelationRadius(bodyB, bodyA);
+    if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)
+        || !Number.isFinite(radiusA) || radiusA <= 0 || !Number.isFinite(radiusB) || radiusB <= 0) {
+        return true;
+    }
+
+    const radiusSum = radiusA
+        + radiusB
+        + getCollisionCandidateSweepPad(bodyA)
+        + getCollisionCandidateSweepPad(bodyB)
+        + epsilon;
+    const dx = bx - ax;
+    const dy = by - ay;
+    return ((dx * dx) + (dy * dy)) <= (radiusSum * radiusSum);
+}
+
+/**
+ * pair 관계에 맞는 broad circle 반경을 반환합니다.
+ * @param {object} body - 대상 body입니다.
+ * @param {object} otherBody - 상대 body입니다.
+ * @returns {number} 관계 broad 반경입니다.
+ */
+function getCollisionCandidateRelationRadius(body, otherBody) {
+    if (body?.kind === 'enemy' && otherBody?.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius)) {
+        return body.enemyPairBroadRadius;
+    }
+    if (body?.kind === 'enemy' && otherBody?.kind === 'projectile' && Number.isFinite(body.projectileBroadRadius)) {
+        return body.projectileBroadRadius;
+    }
+    if (body?.shape === 'circle' && Number.isFinite(body.radius)) {
+        return body.radius;
+    }
+    return Number.isFinite(body?.broadRadius) ? body.broadRadius : body?.boundRadius;
+}
+
+/**
+ * 현재 AABB에서 sweep AABB까지의 최대 축 확장량을 반환합니다.
+ * @param {object} body - 대상 body입니다.
+ * @returns {number} 보수적 중심 이동 여유입니다.
+ */
+function getCollisionCandidateSweepPad(body) {
+    const padLeft = Number.isFinite(body?.sweepMinX) && Number.isFinite(body?.minX)
+        ? Math.max(0, body.minX - body.sweepMinX)
+        : 0;
+    const padRight = Number.isFinite(body?.sweepMaxX) && Number.isFinite(body?.maxX)
+        ? Math.max(0, body.sweepMaxX - body.maxX)
+        : 0;
+    const padTop = Number.isFinite(body?.sweepMinY) && Number.isFinite(body?.minY)
+        ? Math.max(0, body.minY - body.sweepMinY)
+        : 0;
+    const padBottom = Number.isFinite(body?.sweepMaxY) && Number.isFinite(body?.maxY)
+        ? Math.max(0, body.sweepMaxY - body.maxY)
+        : 0;
+    return Math.max(padLeft, padRight, padTop, padBottom) * COLLISION_CANDIDATE_SWEEP_PAD_SCALE;
 }

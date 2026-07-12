@@ -19,85 +19,79 @@ import {
 
 /**
  * 후보 pair 목록을 broad-phase 데이터 기준으로 판정하고 해소합니다.
- * @param {object} options - pair 처리 옵션입니다.
- * @param {object[]} options.bodies - 충돌 body 목록입니다.
- * @param {object} options.candidatePairs - 후보 pair 버퍼입니다.
- * @param {object} options.broadphaseBuffer - broad-phase SoA 버퍼입니다.
- * @param {object} options.frameStats - 프레임 통계 객체입니다.
- * @param {object} options.profileRecorder - 충돌 프로파일 레코더입니다.
- * @param {number} options.pairBudget - 적-적 pair 처리 예산입니다.
- * @param {boolean} options.resolvePositions - 위치 해소 여부입니다.
- * @param {boolean} options.applyNonPosition - 비위치 효과 적용 여부입니다.
- * @param {number} options.resolveBoost - 위치 해소 강화 배율입니다.
- * @param {object} options.detector - 충돌 detector입니다.
- * @param {object} options.scratchManifold - 재사용 manifold 객체입니다.
- * @param {Function} options.processObjectPair - object narrowphase 처리 콜백입니다.
- * @param {number} options.epsilon - 원형 broad-phase 보정값입니다.
+ * context는 CollisionHandler가 소유한 재사용 레코드입니다.
+ * @param {object} context - pair 처리 문맥입니다.
  * @returns {number} 해소된 pair 수입니다.
  */
-export function processCollisionCandidatePairs({
-    bodies,
-    candidatePairs,
-    broadphaseBuffer,
-    frameStats,
-    profileRecorder,
-    pairBudget,
-    resolvePositions,
-    applyNonPosition,
-    resolveBoost,
-    detector,
-    scratchManifold,
-    processObjectPair,
-    epsilon
-}) {
+export function processCollisionCandidatePairs(context) {
+    const candidatePairs = context.candidatePairs;
+    let resolvedCount = processCollisionCandidatePairRange(
+        candidatePairs.priorityLowIndices,
+        candidatePairs.priorityHighIndices,
+        candidatePairs.priorityCount,
+        context.pairStartToken,
+        context
+    );
+    resolvedCount += processCollisionCandidatePairRange(
+        candidatePairs.lowIndices,
+        candidatePairs.highIndices,
+        candidatePairs.count,
+        context.pairStartToken + candidatePairs.priorityCount,
+        context
+    );
+    return resolvedCount;
+}
+
+/**
+ * 하나의 연속 pair 구간을 회전 시작점부터 결정적으로 처리합니다.
+ * @param {Int32Array} lowIndices - 낮은 body 인덱스 버퍼입니다.
+ * @param {Int32Array} highIndices - 높은 body 인덱스 버퍼입니다.
+ * @param {number} count - 유효 pair 수입니다.
+ * @param {number} startToken - fixed frame 기반 회전 token입니다.
+ * @param {object} context - pair 처리 문맥입니다.
+ * @returns {number} 처리된 pair 수입니다.
+ */
+function processCollisionCandidatePairRange(
+    lowIndices,
+    highIndices,
+    count,
+    startToken,
+    context
+) {
+    if (count <= 0) {
+        return 0;
+    }
+
     let resolvedCount = 0;
+    const bodies = context.bodies;
+    const broadphaseBuffer = context.broadphaseBuffer;
     const relationData = broadphaseBuffer.relationData;
     const kindCodes = broadphaseBuffer.bodyKindCodes;
     const shapeCodes = broadphaseBuffer.bodyShapeCodes;
-    const lowIndices = candidatePairs.lowIndices;
-    const highIndices = candidatePairs.highIndices;
+    const startIndex = Math.abs(startToken) % count;
+    let pairIndex = startIndex;
 
-    for (let pairIndex = 0; pairIndex < candidatePairs.count; pairIndex++) {
+    for (let offset = 0; offset < count; offset++) {
         const low = lowIndices[pairIndex];
         const high = highIndices[pairIndex];
         const bodyA = bodies[low];
         const bodyB = bodies[high];
 
         if (kindCodes[low] === BODY_KIND_ENEMY && kindCodes[high] === BODY_KIND_ENEMY) {
-            resolvedCount += processCollisionEnemyCandidatePair({
+            resolvedCount += processCollisionEnemyCandidatePair(
                 low,
                 high,
                 bodyA,
                 bodyB,
                 relationData,
                 shapeCodes,
-                frameStats,
-                profileRecorder,
-                pairBudget,
-                resolvePositions,
-                applyNonPosition,
-                resolveBoost,
-                detector,
-                scratchManifold,
-                broadphaseBuffer,
-                processObjectPair,
-                epsilon
-            });
-            continue;
+                context
+            );
+        } else {
+            resolvedCount += processCollisionObjectCandidatePair(bodyA, bodyB, context);
         }
-
-        resolvedCount += processCollisionObjectCandidatePair({
-            bodyA,
-            bodyB,
-            frameStats,
-            profileRecorder,
-            pairBudget,
-            resolvePositions,
-            applyNonPosition,
-            resolveBoost,
-            processObjectPair,
-            epsilon
-        });
+        pairIndex++;
+        if (pairIndex === count) pairIndex = 0;
     }
 
     return resolvedCount;
@@ -105,190 +99,171 @@ export function processCollisionCandidatePairs({
 
 /**
  * 적-적 후보 pair를 처리합니다.
- * @param {object} options - 적-적 후보 pair 처리 옵션입니다.
+ * @param {number} low - 낮은 body 인덱스입니다.
+ * @param {number} high - 높은 body 인덱스입니다.
+ * @param {object} bodyA - 첫 번째 body입니다.
+ * @param {object} bodyB - 두 번째 body입니다.
+ * @param {Float64Array} relationData - enemy relation SoA입니다.
+ * @param {Uint8Array} shapeCodes - body shape 코드 배열입니다.
+ * @param {object} context - pair 처리 문맥입니다.
  * @returns {number} 해소된 pair 수입니다.
  */
-function processCollisionEnemyCandidatePair({
+function processCollisionEnemyCandidatePair(
     low,
     high,
     bodyA,
     bodyB,
     relationData,
     shapeCodes,
-    frameStats,
-    profileRecorder,
-    pairBudget,
-    resolvePositions,
-    applyNonPosition,
-    resolveBoost,
-    detector,
-    scratchManifold,
-    broadphaseBuffer,
-    processObjectPair,
-    epsilon
-}) {
+    context
+) {
     if (!bodyA || !bodyB || areCollisionBodiesSameEntity(bodyA, bodyB)) {
         return 0;
     }
 
-    if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
-        profileRecorder.recordCount('solveBudgetSkipCount');
+    if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, context.pairBudget)) {
+        context.profileRecorder.recordCount('solveBudgetSkipCount');
         return 0;
     }
 
-    frameStats.collisionCheckCount++;
+    context.frameStats.collisionCheckCount++;
     const relationOffsetA = low * RELATION_BROAD_STRIDE;
     const relationOffsetB = high * RELATION_BROAD_STRIDE;
     if (isCollisionRelationAabbSeparated(relationData, relationOffsetA, relationOffsetB)) {
-        frameStats.aabbRejectCount++;
+        context.frameStats.aabbRejectCount++;
         return 0;
     }
 
-    frameStats.aabbPassCount++;
-    profileRecorder.recordCount('solveAabbPassCount');
-    const isCirclePair = shapeCodes[low] === BODY_SHAPE_CIRCLE && shapeCodes[high] === BODY_SHAPE_CIRCLE;
-    if (!isCirclePair && isCollisionRelationCircleSeparated(relationData, relationOffsetA, relationOffsetB, epsilon)) {
-        frameStats.circleRejectCount++;
+    context.frameStats.aabbPassCount++;
+    context.profileRecorder.recordCount('solveAabbPassCount');
+    const isCirclePair = shapeCodes[low] === BODY_SHAPE_CIRCLE
+        && shapeCodes[high] === BODY_SHAPE_CIRCLE;
+    if (!isCirclePair && isCollisionRelationCircleSeparated(
+        relationData,
+        relationOffsetA,
+        relationOffsetB,
+        context.epsilon
+    )) {
+        context.frameStats.circleRejectCount++;
         return 0;
     }
     if (!isCirclePair) {
-        frameStats.circlePassCount++;
-        profileRecorder.recordCount('solveCirclePassCount');
+        context.frameStats.circlePassCount++;
+        context.profileRecorder.recordCount('solveCirclePassCount');
     }
 
     markCollisionEnemyPairProcessAttempt(bodyA, bodyB);
-
-    const narrowphaseStart = profileRecorder.startTimer();
-    const pairResolved = processCollisionEnemyNarrowphase({
-        low,
-        high,
+    const narrowphaseStart = context.profileRecorder.startTimer();
+    const pairResolved = processCollisionEnemyNarrowphase(
         bodyA,
         bodyB,
         relationData,
         relationOffsetA,
         relationOffsetB,
         isCirclePair,
-        resolvePositions,
-        applyNonPosition,
-        resolveBoost,
-        detector,
-        scratchManifold,
-        broadphaseBuffer,
-        processObjectPair
-    });
-    profileRecorder.recordCount(
+        context
+    );
+    context.profileRecorder.recordCount(
         isCirclePair ? 'solveSoACirclePairCount' : 'solveObjectNarrowphasePairCount'
     );
-    profileRecorder.recordDuration('solveNarrowphaseMs', narrowphaseStart);
+    context.profileRecorder.recordDuration('solveNarrowphaseMs', narrowphaseStart);
     if (pairResolved > 0) {
-        profileRecorder.recordCount('solveResolvedPairCount', pairResolved);
+        context.profileRecorder.recordCount('solveResolvedPairCount', pairResolved);
     }
     return pairResolved;
 }
 
 /**
  * 일반 후보 pair를 처리합니다.
- * @param {object} options - 일반 후보 pair 처리 옵션입니다.
+ * @param {object} bodyA - 첫 번째 body입니다.
+ * @param {object} bodyB - 두 번째 body입니다.
+ * @param {object} context - pair 처리 문맥입니다.
  * @returns {number} 해소된 pair 수입니다.
  */
-function processCollisionObjectCandidatePair({
-    bodyA,
-    bodyB,
-    frameStats,
-    profileRecorder,
-    pairBudget,
-    resolvePositions,
-    applyNonPosition,
-    resolveBoost,
-    processObjectPair,
-    epsilon
-}) {
-    const rule = getCollisionPassRule(bodyA, bodyB, applyNonPosition);
+function processCollisionObjectCandidatePair(bodyA, bodyB, context) {
+    const rule = getCollisionPassRule(bodyA, bodyB, context.applyNonPosition);
     if (!rule) return 0;
 
-    if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, pairBudget)) {
-        profileRecorder.recordCount('solveBudgetSkipCount');
+    if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, context.pairBudget)) {
+        context.profileRecorder.recordCount('solveBudgetSkipCount');
         return 0;
     }
 
-    frameStats.collisionCheckCount++;
+    context.frameStats.collisionCheckCount++;
     if (!areCollisionBodyAabbsOverlapping(bodyA, bodyB)) {
-        frameStats.aabbRejectCount++;
+        context.frameStats.aabbRejectCount++;
         return 0;
     }
-    frameStats.aabbPassCount++;
-    profileRecorder.recordCount('solveAabbPassCount');
+    context.frameStats.aabbPassCount++;
+    context.profileRecorder.recordCount('solveAabbPassCount');
     if (shouldUseCollisionBroadCircleFilter(bodyA, bodyB)) {
-        if (!areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, epsilon)) {
-            frameStats.circleRejectCount++;
+        if (!areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, context.epsilon)) {
+            context.frameStats.circleRejectCount++;
             return 0;
         }
-        frameStats.circlePassCount++;
-        profileRecorder.recordCount('solveCirclePassCount');
+        context.frameStats.circlePassCount++;
+        context.profileRecorder.recordCount('solveCirclePassCount');
     }
 
     markCollisionEnemyPairProcessAttempt(bodyA, bodyB);
-
-    const narrowphaseStart = profileRecorder.startTimer();
-    const pairResolved = processObjectPair(
+    const narrowphaseStart = context.profileRecorder.startTimer();
+    const pairResolved = context.processObjectPair(
         bodyA,
         bodyB,
-        resolvePositions,
-        applyNonPosition,
-        resolveBoost,
+        context.resolvePositions,
+        context.applyNonPosition,
+        context.resolveBoost,
         rule
     );
-    profileRecorder.recordCount('solveObjectNarrowphasePairCount');
-    profileRecorder.recordDuration('solveNarrowphaseMs', narrowphaseStart);
+    context.profileRecorder.recordCount('solveObjectNarrowphasePairCount');
+    context.profileRecorder.recordDuration('solveNarrowphaseMs', narrowphaseStart);
     if (pairResolved > 0) {
-        profileRecorder.recordCount('solveResolvedPairCount', pairResolved);
+        context.profileRecorder.recordCount('solveResolvedPairCount', pairResolved);
     }
     return pairResolved;
 }
 
 /**
  * 적-적 narrowphase를 실행합니다.
- * @param {object} options - narrowphase 옵션입니다.
+ * @param {object} bodyA - 첫 번째 body입니다.
+ * @param {object} bodyB - 두 번째 body입니다.
+ * @param {Float64Array} relationData - enemy relation SoA입니다.
+ * @param {number} relationOffsetA - 첫 번째 body relation offset입니다.
+ * @param {number} relationOffsetB - 두 번째 body relation offset입니다.
+ * @param {boolean} isCirclePair - 원형 fast path 여부입니다.
+ * @param {object} context - pair 처리 문맥입니다.
  * @returns {number} 해소된 pair 수입니다.
  */
-function processCollisionEnemyNarrowphase({
-    low,
-    high,
+function processCollisionEnemyNarrowphase(
     bodyA,
     bodyB,
     relationData,
     relationOffsetA,
     relationOffsetB,
     isCirclePair,
-    resolvePositions,
-    applyNonPosition,
-    resolveBoost,
-    detector,
-    scratchManifold,
-    broadphaseBuffer,
-    processObjectPair
-}) {
+    context
+) {
     if (isCirclePair) {
-        return processCollisionEnemyCirclePairSoA({
+        return processCollisionEnemyCirclePairSoA(
             bodyA,
             bodyB,
             relationData,
             relationOffsetA,
             relationOffsetB,
-            resolvePositions,
-            resolveBoost,
-            detector,
-            scratchManifold,
-            broadphaseBuffer
-        });
+            context.resolvePositions,
+            context.resolveBoost,
+            context.detector,
+            context.scratchManifold,
+            context.broadphaseBuffer
+        );
     }
 
-    return processObjectPair(
+    return context.processObjectPair(
         bodyA,
         bodyB,
-        resolvePositions,
-        applyNonPosition,
-        resolveBoost,
+        context.resolvePositions,
+        context.applyNonPosition,
+        context.resolveBoost,
         COLLISION_RULE_DYNAMIC_RESOLVE
     );
 }

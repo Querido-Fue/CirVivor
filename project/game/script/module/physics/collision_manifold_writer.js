@@ -235,35 +235,50 @@ export function copyCollisionManifold(source, target) {
 /**
  * 다중 part 접촉을 단일 대표 manifold로 누적합니다.
  * @param {object} best - 가장 깊은 단일 접촉 manifold입니다.
- * @param {{contactCount:number, normalSumX:number, normalSumY:number, pointSumX:number, pointSumY:number, penetrationSum:number, maxPenetration:number}} aggregate - 누적 접촉 정보입니다.
+ * @param {number} contactCount - 누적 접촉 수입니다.
+ * @param {number} normalSumX - penetration 가중 normal X 합입니다.
+ * @param {number} normalSumY - penetration 가중 normal Y 합입니다.
+ * @param {number} pointSumX - penetration 가중 접점 X 합입니다.
+ * @param {number} pointSumY - penetration 가중 접점 Y 합입니다.
+ * @param {number} penetrationSum - penetration 합입니다.
+ * @param {number} maxPenetration - 최대 단일 penetration입니다.
  * @returns {object} 대표 manifold입니다.
  */
-export function finalizeCollisionAggregatePartManifold(best, aggregate) {
-    if (!best || !aggregate || aggregate.contactCount <= 1) {
+export function finalizeCollisionAggregatePartManifold(
+    best,
+    contactCount,
+    normalSumX,
+    normalSumY,
+    pointSumX,
+    pointSumY,
+    penetrationSum,
+    maxPenetration
+) {
+    if (!best || contactCount <= 1) {
         return best;
     }
 
-    const normalLen = Math.hypot(aggregate.normalSumX, aggregate.normalSumY);
-    if (normalLen <= EPSILON || aggregate.penetrationSum <= EPSILON) {
+    const normalLen = Math.hypot(normalSumX, normalSumY);
+    if (normalLen <= EPSILON || penetrationSum <= EPSILON) {
         return best;
     }
 
-    const alignment = Math.min(1, normalLen / aggregate.penetrationSum);
+    const alignment = Math.min(1, normalLen / penetrationSum);
     const diversity = Math.max(0, 1 - alignment);
     const multiplier = Math.min(
         MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX,
         1 + (
             diversity
-            * Math.min(aggregate.contactCount - 1, MULTI_CONTACT_DIVERSITY_SAMPLE_CAP)
+            * Math.min(contactCount - 1, MULTI_CONTACT_DIVERSITY_SAMPLE_CAP)
             * MULTI_CONTACT_NORMAL_DIVERSITY_SCALE
         )
     );
-    const pointWeight = Math.max(EPSILON, aggregate.penetrationSum);
+    const pointWeight = Math.max(EPSILON, penetrationSum);
 
-    best.normalX = aggregate.normalSumX / normalLen;
-    best.normalY = aggregate.normalSumY / normalLen;
-    best.penetration = Math.max(best.penetration, aggregate.maxPenetration * multiplier);
-    best.pointX = aggregate.pointSumX / pointWeight;
-    best.pointY = aggregate.pointSumY / pointWeight;
+    best.normalX = normalSumX / normalLen;
+    best.normalY = normalSumY / normalLen;
+    best.penetration = Math.max(best.penetration, maxPenetration * multiplier);
+    best.pointX = pointSumX / pointWeight;
+    best.pointY = pointSumY / pointWeight;
     return best;
 }

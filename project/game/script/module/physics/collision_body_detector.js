@@ -178,7 +178,8 @@ function detectCirclePartsVsCircleParts(bodyA, bodyB, context) {
         }
     }
     return hasBest
-        ? finalizeCollisionAggregatePartManifold(best, {
+        ? finalizeCollisionAggregatePartManifold(
+            best,
             contactCount,
             normalSumX,
             normalSumY,
@@ -186,7 +187,7 @@ function detectCirclePartsVsCircleParts(bodyA, bodyB, context) {
             pointSumY,
             penetrationSum,
             maxPenetration
-        })
+        )
         : null;
 }
 
@@ -270,7 +271,8 @@ function detectCirclePartsVsCircle(partBody, circleBody, context) {
     }
 
     return hasBest
-        ? finalizeCollisionAggregatePartManifold(best, {
+        ? finalizeCollisionAggregatePartManifold(
+            best,
             contactCount,
             normalSumX,
             normalSumY,
@@ -278,7 +280,7 @@ function detectCirclePartsVsCircle(partBody, circleBody, context) {
             pointSumY,
             penetrationSum,
             maxPenetration
-        })
+        )
         : null;
 }
 
@@ -371,7 +373,8 @@ function detectCirclePartsVsRect(partBody, rectBody, context) {
     }
 
     return hasBest
-        ? finalizeCollisionAggregatePartManifold(best, {
+        ? finalizeCollisionAggregatePartManifold(
+            best,
             contactCount,
             normalSumX,
             normalSumY,
@@ -379,7 +382,7 @@ function detectCirclePartsVsRect(partBody, rectBody, context) {
             pointSumY,
             penetrationSum,
             maxPenetration
-        })
+        )
         : null;
 }
 

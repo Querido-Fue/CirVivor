@@ -30,7 +30,9 @@ export class TitleLoadingCircleEffectPass {
         this.height = 0;
         this.sceneTarget = null;
         this.sceneTexture = null;
-        this.sourceTexture = null;
+        this.sourceTextureCache = new WeakMap();
+        this.sourceTextureRecords = new Set();
+        this.activeSourceTexture = null;
         this.finalBlurTexture = null;
         this.emptyTexture = null;
         this.downTargets = [];
@@ -169,10 +171,14 @@ export class TitleLoadingCircleEffectPass {
             this.sceneTexture = null;
         }
 
-        if (this.sourceTexture) {
-            this.gl.deleteTexture(this.sourceTexture);
-            this.sourceTexture = null;
+        for (const record of this.sourceTextureRecords) {
+            if (record.texture) {
+                this.gl.deleteTexture(record.texture);
+            }
         }
+        this.sourceTextureRecords.clear();
+        this.sourceTextureCache = new WeakMap();
+        this.activeSourceTexture = null;
 
         if (this.emptyTexture) {
             this.gl.deleteTexture(this.emptyTexture);
@@ -211,13 +217,8 @@ export class TitleLoadingCircleEffectPass {
         }
 
         const program = createProgram(gl, vertexShader, fragmentShader);
-
-        if (vertexShader) {
-            gl.deleteShader(vertexShader);
-        }
-        if (fragmentShader) {
-            gl.deleteShader(fragmentShader);
-        }
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
         if (!program) {
             return null;
         }
@@ -404,16 +405,30 @@ export class TitleLoadingCircleEffectPass {
      */
     #uploadSourceCanvas(canvas) {
         const gl = this.gl;
-        if (!this.sourceTexture) {
-            this.sourceTexture = this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height));
+        let record = this.sourceTextureCache.get(canvas);
+        if (!record) {
+            record = {
+                texture: this.#createTextureParameters(),
+                width: 0,
+                height: 0
+            };
+            this.sourceTextureCache.set(canvas, record);
+            this.sourceTextureRecords.add(record);
         }
 
         this.#flushSourceCanvas(canvas);
-        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+        gl.bindTexture(gl.TEXTURE_2D, record.texture);
+        this.activeSourceTexture = record.texture;
         try {
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            if (record.width !== canvas.width || record.height !== canvas.height) {
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+                record.width = canvas.width;
+                record.height = canvas.height;
+            } else {
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            }
             return true;
         } catch {
             return false;
@@ -451,7 +466,7 @@ export class TitleLoadingCircleEffectPass {
         gl.enableVertexAttribArray(this.compositeProgram.attributes.a_position);
         gl.vertexAttribPointer(this.compositeProgram.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
+        gl.bindTexture(gl.TEXTURE_2D, this.activeSourceTexture);
         gl.uniform1i(this.compositeProgram.uniforms.u_texture, 0);
         gl.uniform1f(this.compositeProgram.uniforms.u_opacity, opacity);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -476,14 +491,14 @@ export class TitleLoadingCircleEffectPass {
 
         for (let index = 0; index < this.downTargets.length; index++) {
             const target = this.downTargets[index];
-            this.#drawFullscreenPass({
-                programInfo: this.downsampleProgram,
-                sourceTexture: readTexture,
-                sourceWidth: readWidth,
-                sourceHeight: readHeight,
+            this.#drawFullscreenPass(
+                this.downsampleProgram,
+                readTexture,
+                readWidth,
+                readHeight,
                 target,
-                offset: (index + 1) * blurScale
-            });
+                (index + 1) * blurScale
+            );
             readTexture = target.texture;
             readWidth = target.width;
             readHeight = target.height;
@@ -495,14 +510,14 @@ export class TitleLoadingCircleEffectPass {
 
         for (let index = this.upTargets.length - 1; index >= 0; index--) {
             const target = this.upTargets[index];
-            this.#drawFullscreenPass({
-                programInfo: this.upsampleProgram,
-                sourceTexture: currentTexture,
-                sourceWidth: currentWidth,
-                sourceHeight: currentHeight,
+            this.#drawFullscreenPass(
+                this.upsampleProgram,
+                currentTexture,
+                currentWidth,
+                currentHeight,
                 target,
-                offset: (index + 1) * blurScale
-            });
+                (index + 1) * blurScale
+            );
             currentTexture = target.texture;
             currentWidth = target.width;
             currentHeight = target.height;
@@ -514,10 +529,15 @@ export class TitleLoadingCircleEffectPass {
 
     /**
      * fullscreen blur pass 하나를 실행합니다.
-     * @param {object} options - pass 옵션입니다.
+     * @param {object} programInfo - 사용할 프로그램입니다.
+     * @param {WebGLTexture} sourceTexture - 입력 텍스처입니다.
+     * @param {number} sourceWidth - 입력 너비입니다.
+     * @param {number} sourceHeight - 입력 높이입니다.
+     * @param {object} target - 출력 렌더 타깃입니다.
+     * @param {number} offset - Kawase 샘플 오프셋입니다.
      * @private
      */
-    #drawFullscreenPass({ programInfo, sourceTexture, sourceWidth, sourceHeight, target, offset }) {
+    #drawFullscreenPass(programInfo, sourceTexture, sourceWidth, sourceHeight, target, offset) {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
         gl.viewport(0, 0, target.width, target.height);
@@ -607,13 +627,24 @@ export class TitleLoadingCircleEffectPass {
      */
     #createTexture(width, height) {
         const gl = this.gl;
+        const texture = this.#createTextureParameters();
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, Math.max(1, width), Math.max(1, height), 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        return texture;
+    }
+
+    /**
+     * storage를 할당하지 않은 clamp/linear 2D 텍스처를 생성합니다.
+     * @returns {WebGLTexture} 생성된 텍스처입니다.
+     * @private
+     */
+    #createTextureParameters() {
+        const gl = this.gl;
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, Math.max(1, width), Math.max(1, height), 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
         return texture;
     }
 

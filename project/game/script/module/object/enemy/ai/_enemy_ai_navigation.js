@@ -19,11 +19,15 @@ const DIRS = Object.freeze([
     Object.freeze({ dx: -1, dy: -1, cost: DIAGONAL_COST })
 ]);
 
-let navGridCache = null;
-let navGridCacheKey = '';
+const navGridCache = new Map();
 const flowFieldCache = new Map();
 const flowFieldScratchGoalCellRaw = { cx: 0, cy: 0 };
 const flowFieldScratchGoalCell = { cx: 0, cy: 0 };
+const flowOpenHeap = [];
+let flowOpenPositions = new Int32Array(0);
+const wallBoundsCacheByWalls = new WeakMap();
+const wallBoundsScratch = new Float64Array(4);
+const WALL_BOUNDS_STRIDE = 4;
 
 /**
  * 직선 추적 판정에 사용할 벽 확장 반경을 반환합니다.
@@ -68,7 +72,13 @@ const getNearestWalkableSearchRadius = (profile, clearance) => {
  */
 const getRectBounds = (wall) => {
     if (!wall) return null;
-    const rect = typeof wall.getCollisionRect === 'function' ? wall.getCollisionRect() : wall;
+    const hasDirectRect = Number.isFinite(wall.x)
+        && Number.isFinite(wall.y)
+        && Number.isFinite(wall.w)
+        && Number.isFinite(wall.h);
+    const rect = hasDirectRect && (wall.kind === 'wall' || typeof wall.getCollisionRect !== 'function')
+        ? wall
+        : (typeof wall.getCollisionRect === 'function' ? wall.getCollisionRect() : wall);
     if (!rect) return null;
     const w = Number.isFinite(rect.w) ? rect.w : 0;
     const h = Number.isFinite(rect.h) ? rect.h : 0;
@@ -85,6 +95,48 @@ const getRectBounds = (wall) => {
         maxY: cy + hh
     };
 };
+
+/**
+ * 벽 경계를 SoA 버퍼의 지정 위치에 기록합니다.
+ * @param {object|null|undefined} wall - 벽 객체입니다.
+ * @param {Float64Array} target - 경계 출력 버퍼입니다.
+ * @param {number} offset - 기록 시작 위치입니다.
+ * @returns {boolean} 유효한 경계를 기록했는지 여부입니다.
+ */
+function writeWallBounds(wall, target, offset) {
+    const bounds = getRectBounds(wall);
+    if (!bounds) return false;
+    target[offset] = bounds.minX;
+    target[offset + 1] = bounds.maxX;
+    target[offset + 2] = bounds.minY;
+    target[offset + 3] = bounds.maxY;
+    return true;
+}
+
+/**
+ * 정적 walls 배열과 버전별로 LOS용 경계를 한 번만 구성합니다.
+ * @param {object[]} walls - 벽 목록입니다.
+ * @param {number|null} wallsVersion - ObjectSystem 벽 버전입니다.
+ * @returns {{version:number, sourceLength:number, count:number, values:Float64Array}|null} 경계 캐시입니다.
+ */
+function getCachedWallBounds(walls, wallsVersion) {
+    if (!Array.isArray(walls) || !Number.isInteger(wallsVersion)) return null;
+    const cached = wallBoundsCacheByWalls.get(walls);
+    if (cached?.version === wallsVersion && cached.sourceLength === walls.length) {
+        return cached;
+    }
+
+    const values = new Float64Array(walls.length * WALL_BOUNDS_STRIDE);
+    let count = 0;
+    for (let i = 0; i < walls.length; i++) {
+        if (writeWallBounds(walls[i], values, count * WALL_BOUNDS_STRIDE)) {
+            count++;
+        }
+    }
+    const next = { version: wallsVersion, sourceLength: walls.length, count, values };
+    wallBoundsCacheByWalls.set(walls, next);
+    return next;
+}
 
 /**
  * 사각형 경계를 지정 패딩만큼 확장합니다.
@@ -108,32 +160,47 @@ const expandRect = (rect, pad) => {
  * @param {number} startY - 시작 Y 좌표입니다.
  * @param {number} endX - 끝 X 좌표입니다.
  * @param {number} endY - 끝 Y 좌표입니다.
- * @param {{minX: number, maxX: number, minY: number, maxY: number}} rect - 검사할 사각형입니다.
+ * @param {number} minX - 사각형 최소 X입니다.
+ * @param {number} maxX - 사각형 최대 X입니다.
+ * @param {number} minY - 사각형 최소 Y입니다.
+ * @param {number} maxY - 사각형 최대 Y입니다.
  * @returns {boolean} 교차 여부입니다.
  */
-const segmentIntersectsRectByCoords = (startX, startY, endX, endY, rect) => {
+const segmentIntersectsRectByCoords = (startX, startY, endX, endY, minX, maxX, minY, maxY) => {
     let tMin = 0;
     let tMax = 1;
     const dx = endX - startX;
     const dy = endY - startY;
 
-    const axisTest = (p, q) => {
-        if (Math.abs(p) <= EPSILON) return q >= 0;
-        const t = q / p;
-        if (p < 0) {
-            if (t > tMax) return false;
-            if (t > tMin) tMin = t;
-        } else {
-            if (t < tMin) return false;
-            if (t < tMax) tMax = t;
+    if (Math.abs(dx) <= EPSILON) {
+        if (startX < minX || startX > maxX) return false;
+    } else {
+        let txMin = (minX - startX) / dx;
+        let txMax = (maxX - startX) / dx;
+        if (txMin > txMax) {
+            const swap = txMin;
+            txMin = txMax;
+            txMax = swap;
         }
-        return true;
-    };
+        tMin = Math.max(tMin, txMin);
+        tMax = Math.min(tMax, txMax);
+        if (tMax < tMin) return false;
+    }
 
-    if (!axisTest(-dx, startX - rect.minX)) return false;
-    if (!axisTest(dx, rect.maxX - startX)) return false;
-    if (!axisTest(-dy, startY - rect.minY)) return false;
-    if (!axisTest(dy, rect.maxY - startY)) return false;
+    if (Math.abs(dy) <= EPSILON) {
+        if (startY < minY || startY > maxY) return false;
+    } else {
+        let tyMin = (minY - startY) / dy;
+        let tyMax = (maxY - startY) / dy;
+        if (tyMin > tyMax) {
+            const swap = tyMin;
+            tyMin = tyMax;
+            tyMax = swap;
+        }
+        tMin = Math.max(tMin, tyMin);
+        tMax = Math.min(tMax, tyMax);
+        if (tMax < tMin) return false;
+    }
     return tMax >= tMin;
 };
 
@@ -145,15 +212,50 @@ const segmentIntersectsRectByCoords = (startX, startY, endX, endY, rect) => {
  * @param {number} endY - 끝 Y 좌표입니다.
  * @param {object[]|null|undefined} walls - 벽 목록입니다.
  * @param {number} [pad=0] - 벽 확장 패딩입니다.
+ * @param {number|null} [wallsVersion=null] - 정적 벽 경계 캐시에 사용할 버전입니다.
  * @returns {boolean} 벽에 막혔는지 여부입니다.
  */
-export const isSegmentBlockedByCoords = (startX, startY, endX, endY, walls, pad = 0) => {
+export const isSegmentBlockedByCoords = (
+    startX,
+    startY,
+    endX,
+    endY,
+    walls,
+    pad = 0,
+    wallsVersion = null
+) => {
     if (!Array.isArray(walls) || walls.length === 0) return false;
+    const safePad = pad > 0 ? pad : 0;
+    const cachedBounds = getCachedWallBounds(walls, wallsVersion);
+    if (cachedBounds) {
+        for (let i = 0; i < cachedBounds.count; i++) {
+            const offset = i * WALL_BOUNDS_STRIDE;
+            if (segmentIntersectsRectByCoords(
+                startX,
+                startY,
+                endX,
+                endY,
+                cachedBounds.values[offset] - safePad,
+                cachedBounds.values[offset + 1] + safePad,
+                cachedBounds.values[offset + 2] - safePad,
+                cachedBounds.values[offset + 3] + safePad
+            )) return true;
+        }
+        return false;
+    }
+
     for (let i = 0; i < walls.length; i++) {
-        const bounds = getRectBounds(walls[i]);
-        if (!bounds) continue;
-        const testRect = pad > 0 ? expandRect(bounds, pad) : bounds;
-        if (segmentIntersectsRectByCoords(startX, startY, endX, endY, testRect)) return true;
+        if (!writeWallBounds(walls[i], wallBoundsScratch, 0)) continue;
+        if (segmentIntersectsRectByCoords(
+            startX,
+            startY,
+            endX,
+            endY,
+            wallBoundsScratch[0] - safePad,
+            wallBoundsScratch[1] + safePad,
+            wallBoundsScratch[2] - safePad,
+            wallBoundsScratch[3] + safePad
+        )) return true;
     }
     return false;
 };
@@ -174,15 +276,21 @@ export const toIndex = (cx, cy, cols) => (cy * cols) + cx;
  * @param {number} height - 월드 높이입니다.
  * @param {number} cellSize - 셀 크기입니다.
  * @param {number} clearance - clearance 값입니다.
+ * @param {number|null} [wallsVersion=null] - ObjectSystem 벽 버전입니다.
  * @returns {string} 캐시 키입니다.
  */
-const buildGridCacheKey = (walls, width, height, cellSize, clearance) => {
+const buildGridCacheKey = (walls, width, height, cellSize, clearance, wallsVersion = null) => {
     const parts = [
         Math.round(width),
         Math.round(height),
         cellSize,
         clearance
     ];
+
+    if (Number.isInteger(wallsVersion)) {
+        parts.push(`v${wallsVersion}`);
+        return parts.join('|');
+    }
 
     if (!Array.isArray(walls)) return parts.join('|');
     for (let i = 0; i < walls.length; i++) {
@@ -253,19 +361,39 @@ const buildNavGrid = (walls, width, height, cellSize, clearance) => {
  * @param {number} height - 월드 높이입니다.
  * @param {object} profile - AI 품질 프로필입니다.
  * @param {number} clearanceRaw - 원본 clearance 값입니다.
+ * @param {number|null} [wallsVersion=null] - ObjectSystem 벽 버전입니다.
  * @returns {{grid: object, gridKey: string, clearance: number}} 그리드 조회 결과입니다.
  */
-export const getNavGrid = (walls, width, height, profile, clearanceRaw) => {
+export const getNavGrid = (walls, width, height, profile, clearanceRaw, wallsVersion = null) => {
     const clearance = getClearanceBucket(clearanceRaw, profile);
-    const key = buildGridCacheKey(walls, width, height, profile.NAV_CELL_SIZE, clearance);
+    const key = buildGridCacheKey(
+        walls,
+        width,
+        height,
+        profile.NAV_CELL_SIZE,
+        clearance,
+        wallsVersion
+    );
+    const cachedGrid = navGridCache.get(key);
 
-    if (navGridCache && navGridCacheKey === key) {
-        return { grid: navGridCache, gridKey: key, clearance };
+    if (cachedGrid) {
+        navGridCache.delete(key);
+        navGridCache.set(key, cachedGrid);
+        return { grid: cachedGrid, gridKey: key, clearance };
     }
 
-    navGridCacheKey = key;
-    navGridCache = buildNavGrid(walls, width, height, profile.NAV_CELL_SIZE, clearance);
-    return { grid: navGridCache, gridKey: key, clearance };
+    const grid = buildNavGrid(walls, width, height, profile.NAV_CELL_SIZE, clearance);
+    navGridCache.set(key, grid);
+    const cacheLimit = Number.isInteger(profile.NAV_GRID_CACHE_LIMIT)
+        ? Math.max(1, profile.NAV_GRID_CACHE_LIMIT)
+        : 12;
+    if (navGridCache.size > cacheLimit) {
+        const oldestKey = navGridCache.keys().next().value;
+        if (oldestKey !== undefined) {
+            navGridCache.delete(oldestKey);
+        }
+    }
+    return { grid, gridKey: key, clearance };
 };
 
 /**
@@ -345,6 +473,127 @@ export const findNearestWalkableCellInto = (grid, cx, cy, out, profile, clearanc
 };
 
 /**
+ * flow field용 indexed min-heap scratch 용량을 보장합니다.
+ * @param {number} size - 필요한 셀 수입니다.
+ * @returns {Int32Array} heap 위치 배열입니다.
+ */
+function prepareFlowOpenHeap(size) {
+    if (flowOpenPositions.length < size) {
+        flowOpenPositions = new Int32Array(size);
+    }
+    flowOpenPositions.fill(-1, 0, size);
+    flowOpenHeap.length = 0;
+    return flowOpenPositions;
+}
+
+/**
+ * integration cost와 셀 인덱스로 heap 우선순위를 결정합니다.
+ * @param {number} leftIndex - 왼쪽 셀 인덱스입니다.
+ * @param {number} rightIndex - 오른쪽 셀 인덱스입니다.
+ * @param {Float32Array} integration - 누적 비용입니다.
+ * @returns {boolean} 왼쪽이 먼저 나와야 하는지 여부입니다.
+ */
+function isFlowHeapNodeBefore(leftIndex, rightIndex, integration) {
+    const leftCost = integration[leftIndex];
+    const rightCost = integration[rightIndex];
+    return leftCost < rightCost || (leftCost === rightCost && leftIndex < rightIndex);
+}
+
+/**
+ * 새 셀을 indexed min-heap에 삽입합니다.
+ * @param {number[]} heap - heap 배열입니다.
+ * @param {Int32Array} positions - 셀별 heap 위치입니다.
+ * @param {Float32Array} integration - 누적 비용입니다.
+ * @param {number} cellIndex - 삽입할 셀 인덱스입니다.
+ */
+function pushFlowHeapNode(heap, positions, integration, cellIndex) {
+    let position = heap.length;
+    heap.push(cellIndex);
+    positions[cellIndex] = position;
+
+    while (position > 0) {
+        const parentPosition = (position - 1) >> 1;
+        const parentIndex = heap[parentPosition];
+        if (!isFlowHeapNodeBefore(cellIndex, parentIndex, integration)) {
+            break;
+        }
+        heap[position] = parentIndex;
+        positions[parentIndex] = position;
+        position = parentPosition;
+    }
+    heap[position] = cellIndex;
+    positions[cellIndex] = position;
+}
+
+/**
+ * 비용이 낮아진 기존 heap 셀을 위로 이동합니다.
+ * @param {number[]} heap - heap 배열입니다.
+ * @param {Int32Array} positions - 셀별 heap 위치입니다.
+ * @param {Float32Array} integration - 누적 비용입니다.
+ * @param {number} cellIndex - 갱신된 셀 인덱스입니다.
+ */
+function decreaseFlowHeapNode(heap, positions, integration, cellIndex) {
+    let position = positions[cellIndex];
+    if (position < 0) return;
+
+    while (position > 0) {
+        const parentPosition = (position - 1) >> 1;
+        const parentIndex = heap[parentPosition];
+        if (!isFlowHeapNodeBefore(cellIndex, parentIndex, integration)) {
+            break;
+        }
+        heap[position] = parentIndex;
+        positions[parentIndex] = position;
+        position = parentPosition;
+    }
+    heap[position] = cellIndex;
+    positions[cellIndex] = position;
+}
+
+/**
+ * indexed min-heap에서 최소 비용 셀을 제거합니다.
+ * @param {number[]} heap - heap 배열입니다.
+ * @param {Int32Array} positions - 셀별 heap 위치입니다.
+ * @param {Float32Array} integration - 누적 비용입니다.
+ * @returns {number} 최소 비용 셀 인덱스입니다.
+ */
+function popFlowHeapNode(heap, positions, integration) {
+    const rootIndex = heap[0];
+    const lastIndex = heap.pop();
+    positions[rootIndex] = -1;
+    if (heap.length === 0) {
+        return rootIndex;
+    }
+
+    let position = 0;
+    heap[0] = lastIndex;
+    positions[lastIndex] = 0;
+    while (true) {
+        const leftPosition = (position * 2) + 1;
+        if (leftPosition >= heap.length) break;
+        const rightPosition = leftPosition + 1;
+        let nextPosition = leftPosition;
+        if (
+            rightPosition < heap.length
+            && isFlowHeapNodeBefore(heap[rightPosition], heap[leftPosition], integration)
+        ) {
+            nextPosition = rightPosition;
+        }
+        if (!isFlowHeapNodeBefore(heap[nextPosition], lastIndex, integration)) {
+            break;
+        }
+
+        const nextIndex = heap[nextPosition];
+        heap[position] = nextIndex;
+        positions[nextIndex] = position;
+        position = nextPosition;
+    }
+    heap[position] = lastIndex;
+    positions[lastIndex] = position;
+    return rootIndex;
+}
+
+/**
  * 목표 셀에서 모든 셀까지의 flow field를 생성합니다.
  * @param {{cols: number, rows: number, size: number, blocked: Uint8Array}} grid - 네비게이션 그리드입니다.
  * @param {{cx: number, cy: number}} goalCell - 목표 셀입니다.
@@ -357,31 +606,14 @@ const buildFlowField = (grid, goalCell) => {
     const dirY = new Float32Array(size);
     integration.fill(INF);
 
-    const openList = [];
-    const openFlags = new Uint8Array(size);
+    const openList = flowOpenHeap;
+    const openPositions = prepareFlowOpenHeap(size);
     const goalIndex = toIndex(goalCell.cx, goalCell.cy, grid.cols);
     integration[goalIndex] = 0;
-    openFlags[goalIndex] = 1;
-    openList.push(goalIndex);
+    pushFlowHeapNode(openList, openPositions, integration, goalIndex);
 
     while (openList.length > 0) {
-        let bestPos = 0;
-        let bestIndex = openList[0];
-        let bestCost = integration[bestIndex];
-        for (let i = 1; i < openList.length; i++) {
-            const idx = openList[i];
-            const c = integration[idx];
-            if (c < bestCost) {
-                bestCost = c;
-                bestPos = i;
-                bestIndex = idx;
-            }
-        }
-
-        const last = openList.length - 1;
-        openList[bestPos] = openList[last];
-        openList.pop();
-        openFlags[bestIndex] = 0;
+        const bestIndex = popFlowHeapNode(openList, openPositions, integration);
         const cellCx = bestIndex % grid.cols;
         const cellCy = Math.floor(bestIndex / grid.cols);
 
@@ -401,9 +633,10 @@ const buildFlowField = (grid, goalCell) => {
             if (candidate + EPSILON >= integration[nIndex]) continue;
             integration[nIndex] = candidate;
 
-            if (!openFlags[nIndex]) {
-                openFlags[nIndex] = 1;
-                openList.push(nIndex);
+            if (openPositions[nIndex] < 0) {
+                pushFlowHeapNode(openList, openPositions, integration, nIndex);
+            } else {
+                decreaseFlowHeapNode(openList, openPositions, integration, nIndex);
             }
         }
     }
@@ -466,10 +699,20 @@ const buildFlowField = (grid, goalCell) => {
  * @param {number} clearance - clearance 값입니다.
  * @param {number} targetX - 목표 X 좌표입니다.
  * @param {number} targetY - 목표 Y 좌표입니다.
+ * @param {number|null} [wallsVersion=null] - ObjectSystem 벽 버전입니다.
  * @returns {{key: string, grid: object, clearance: number, field: object}|null} flow field 조회 결과입니다.
  */
-const getFlowFieldForTargetCoords = (walls, width, height, profile, clearance, targetX, targetY) => {
-    const nav = getNavGrid(walls, width, height, profile, clearance);
+const getFlowFieldForTargetCoords = (
+    walls,
+    width,
+    height,
+    profile,
+    clearance,
+    targetX,
+    targetY,
+    wallsVersion = null
+) => {
+    const nav = getNavGrid(walls, width, height, profile, clearance, wallsVersion);
     const grid = nav.grid;
     const goalCellRaw = worldToCellInto(targetX, targetY, grid, flowFieldScratchGoalCellRaw);
     const goalCell = findNearestWalkableCellInto(
@@ -485,6 +728,8 @@ const getFlowFieldForTargetCoords = (walls, width, height, profile, clearance, t
     const key = `${nav.gridKey}|g:${goalCell.cx},${goalCell.cy}`;
     const cached = flowFieldCache.get(key);
     if (cached) {
+        flowFieldCache.delete(key);
+        flowFieldCache.set(key, cached);
         return {
             key,
             grid,
@@ -495,7 +740,10 @@ const getFlowFieldForTargetCoords = (walls, width, height, profile, clearance, t
 
     const field = buildFlowField(grid, goalCell);
     flowFieldCache.set(key, field);
-    if (flowFieldCache.size > profile.FLOW_CACHE_LIMIT) {
+    const cacheLimit = Number.isInteger(profile.FLOW_CACHE_LIMIT)
+        ? Math.max(1, profile.FLOW_CACHE_LIMIT)
+        : 18;
+    if (flowFieldCache.size > cacheLimit) {
         const firstKey = flowFieldCache.keys().next().value;
         if (firstKey !== undefined) flowFieldCache.delete(firstKey);
     }
@@ -522,29 +770,6 @@ const buildSharedFlowDecisionKey = (clearance, targetX, targetY, profile, policy
 );
 
 /**
- * 월드 좌표를 LOS 캐시용 셀 버킷 좌표로 변환합니다.
- * @param {number} value - 월드 좌표입니다.
- * @param {object} profile - AI 품질 프로필입니다.
- * @returns {number} 셀 버킷 좌표입니다.
- */
-const getLineOfSightBucketCoord = (value, profile) => Math.floor(value / profile.NAV_CELL_SIZE);
-
-/**
- * 현재 decision tick 안에서 공용 direct path 조회 키를 구성합니다.
- * @param {number} startX - 시작 X 좌표입니다.
- * @param {number} startY - 시작 Y 좌표입니다.
- * @param {number} targetX - 목표 X 좌표입니다.
- * @param {number} targetY - 목표 Y 좌표입니다.
- * @param {number} directPad - 직선 경로 검사 패딩입니다.
- * @param {object} profile - AI 품질 프로필입니다.
- * @param {number} wallsVersion - 벽 버전입니다.
- * @returns {string} 공유 direct path 캐시 키입니다.
- */
-const buildSharedDirectPathDecisionKey = (startX, startY, targetX, targetY, directPad, profile, wallsVersion) => (
-    `${profile.KEY}|${wallsVersion}|${getClearanceBucket(directPad, profile)}|${getLineOfSightBucketCoord(startX, profile)}|${getLineOfSightBucketCoord(startY, profile)}|${getLineOfSightBucketCoord(targetX, profile)}|${getLineOfSightBucketCoord(targetY, profile)}`
-);
-
-/**
  * 현재 direct path 캐시가 같은 조건에 대해 유효한지 반환합니다.
  * @param {object} state - 적 AI 상태입니다.
  * @param {number} startX - 시작 X 좌표입니다.
@@ -559,11 +784,11 @@ const buildSharedDirectPathDecisionKey = (startX, startY, targetX, targetY, dire
 export const hasReusableDirectPathResult = (state, startX, startY, targetX, targetY, directPad, profile, wallsVersion) => (
     state.hasDirectPathResult === true
     && state.lastDirectPathWallsVersion === wallsVersion
-    && state.lastDirectPathPadBucket === getClearanceBucket(directPad, profile)
-    && state.lastDirectPathStartCx === getLineOfSightBucketCoord(startX, profile)
-    && state.lastDirectPathStartCy === getLineOfSightBucketCoord(startY, profile)
-    && state.lastDirectPathTargetCx === getLineOfSightBucketCoord(targetX, profile)
-    && state.lastDirectPathTargetCy === getLineOfSightBucketCoord(targetY, profile)
+    && state.lastDirectPathPad === directPad
+    && state.lastDirectPathStartX === startX
+    && state.lastDirectPathStartY === startY
+    && state.lastDirectPathTargetX === targetX
+    && state.lastDirectPathTargetY === targetY
 );
 
 /**
@@ -583,15 +808,16 @@ export const updateDirectPathCache = (state, startX, startY, targetX, targetY, d
     state.hasDirectPathResult = true;
     state.lastDirectPath = hasDirectPath === true;
     state.lastDirectPathWallsVersion = wallsVersion;
-    state.lastDirectPathPadBucket = getClearanceBucket(directPad, profile);
-    state.lastDirectPathStartCx = getLineOfSightBucketCoord(startX, profile);
-    state.lastDirectPathStartCy = getLineOfSightBucketCoord(startY, profile);
-    state.lastDirectPathTargetCx = getLineOfSightBucketCoord(targetX, profile);
-    state.lastDirectPathTargetCy = getLineOfSightBucketCoord(targetY, profile);
+    state.lastDirectPathPad = directPad;
+    state.lastDirectPathStartX = startX;
+    state.lastDirectPathStartY = startY;
+    state.lastDirectPathTargetX = targetX;
+    state.lastDirectPathTargetY = targetY;
 };
 
 /**
- * 현재 decision tick 안에서 direct path 판정 결과를 재사용합니다.
+ * 버전별 공유 wall bounds를 사용해 현재 좌표의 direct path를 정확히 판정합니다.
+ * 움직이는 적별 좌표 결과는 호출자가 숫자 필드 캐시로 관리합니다.
  * @param {object} context - AI 업데이트 문맥입니다.
  * @param {number} startX - 시작 X 좌표입니다.
  * @param {number} startY - 시작 Y 좌표입니다.
@@ -614,30 +840,16 @@ export const getSharedDirectPathAvailability = (
     profile,
     wallsVersion
 ) => {
-    const aiDebugStats = context?.aiDebugStats ?? null;
-    const sharedDirectPathByKey = context?.sharedDirectPathByKey instanceof Map
-        ? context.sharedDirectPathByKey
-        : null;
-    const decisionKey = buildSharedDirectPathDecisionKey(
+    const cacheWallsVersion = Number.isInteger(context?.wallsVersion) ? wallsVersion : null;
+    return !isSegmentBlockedByCoords(
         startX,
         startY,
         targetX,
         targetY,
+        walls,
         directPad,
-        profile,
-        wallsVersion
+        cacheWallsVersion
     );
-
-    if (sharedDirectPathByKey?.has(decisionKey)) {
-        incrementEnemyAIDebugCounter(aiDebugStats, 'sharedDirectPathCacheHitCount');
-        return sharedDirectPathByKey.get(decisionKey) === true;
-    }
-
-    const hasDirectPath = !isSegmentBlockedByCoords(startX, startY, targetX, targetY, walls, directPad);
-    if (sharedDirectPathByKey) {
-        sharedDirectPathByKey.set(decisionKey, hasDirectPath);
-    }
-    return hasDirectPath;
 };
 
 /**
@@ -668,8 +880,18 @@ export const getSharedFlowFieldForTargetCoords = (
     const sharedFlowFieldByKey = context?.sharedFlowFieldByKey instanceof Map
         ? context.sharedFlowFieldByKey
         : null;
+    const wallsVersion = Number.isInteger(context?.wallsVersion) ? context.wallsVersion : null;
     if (!sharedFlowFieldByKey) {
-        return getFlowFieldForTargetCoords(walls, width, height, profile, clearance, targetX, targetY);
+        return getFlowFieldForTargetCoords(
+            walls,
+            width,
+            height,
+            profile,
+            clearance,
+            targetX,
+            targetY,
+            wallsVersion
+        );
     }
 
     const decisionKey = buildSharedFlowDecisionKey(clearance, targetX, targetY, profile, policyKey);
@@ -678,7 +900,16 @@ export const getSharedFlowFieldForTargetCoords = (
         return sharedFlowFieldByKey.get(decisionKey);
     }
 
-    const flow = getFlowFieldForTargetCoords(walls, width, height, profile, clearance, targetX, targetY);
+    const flow = getFlowFieldForTargetCoords(
+        walls,
+        width,
+        height,
+        profile,
+        clearance,
+        targetX,
+        targetY,
+        wallsVersion
+    );
     sharedFlowFieldByKey.set(decisionKey, flow ?? null);
     return flow;
 };

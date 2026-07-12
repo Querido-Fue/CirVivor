@@ -6,6 +6,7 @@ import {
 } from './_shader_utils.js';
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { toRadians } from 'util/math_util.js';
 import { ShapeGeometryBuilder } from './_shape_geometry_builder.js';
 import { ShapeTextureCache } from './_shape_texture_cache.js';
 
@@ -189,6 +190,147 @@ export class WebGLBatch {
     }
 
     /**
+     * 동일 shape/style을 사용하는 여러 local center를 vertex buffer에 직접 기록합니다.
+     * shape texture, 색상, 회전 corner offset은 호출당 한 번만 계산합니다.
+     * @param {object} options - 공통 shape 렌더 옵션입니다.
+     * @param {Array<{x:number, y:number}>} localCenters - 원점 기준 local center 목록입니다.
+     * @param {number} originX - 월드 원점 X 좌표입니다.
+     * @param {number} originY - 월드 원점 Y 좌표입니다.
+     * @param {number} localScale - local center 좌표 배율입니다.
+     * @returns {number} 실제 기록한 sprite 수입니다.
+     */
+    renderShapeInstances(options, localCenters, originX, originY, localScale) {
+        if (!options?.shape || !Array.isArray(localCenters) || localCenters.length === 0) {
+            return 0;
+        }
+
+        const textureInfo = this.shapeCache.getTextureInfo(options.shape);
+        const texture = textureInfo.texture;
+        if (this.currentTexture !== texture) {
+            this.flush();
+            this.currentTexture = texture;
+        }
+
+        let r = 1;
+        let g = 1;
+        let b = 1;
+        let a = 1;
+        if (options.fill) {
+            const color = typeof options.fill === 'string'
+                ? this.#getCachedColor(options.fill)
+                : this.#normalizeColor(options.fill);
+            r = color[0];
+            g = color[1];
+            b = color[2];
+            a = color[3];
+        }
+        if (options.alpha !== undefined) {
+            a *= options.alpha;
+        }
+
+        let width = options.w;
+        let height = options.h;
+        if (width === undefined && options.radius !== undefined) {
+            width = options.radius * 2;
+            height = options.radius * 2;
+        }
+        height = height || width;
+
+        const halfWidth = width * 0.5;
+        const halfHeight = height * 0.5;
+        const hasPrecomputedTrig = Number.isFinite(options.rotationCos)
+            && Number.isFinite(options.rotationSin);
+        const rotationRadians = hasPrecomputedTrig
+            ? 0
+            : toRadians(Number.isFinite(options.rotation) ? options.rotation : 0);
+        const rotationCos = hasPrecomputedTrig ? options.rotationCos : Math.cos(rotationRadians);
+        const rotationSin = hasPrecomputedTrig ? options.rotationSin : Math.sin(rotationRadians);
+
+        const cornerX1 = (-halfWidth * rotationCos) + (halfHeight * rotationSin);
+        const cornerY1 = (-halfWidth * rotationSin) - (halfHeight * rotationCos);
+        const cornerX2 = (halfWidth * rotationCos) + (halfHeight * rotationSin);
+        const cornerY2 = (halfWidth * rotationSin) - (halfHeight * rotationCos);
+        const cornerX3 = (halfWidth * rotationCos) - (halfHeight * rotationSin);
+        const cornerY3 = (halfWidth * rotationSin) + (halfHeight * rotationCos);
+        const cornerX4 = (-halfWidth * rotationCos) - (halfHeight * rotationSin);
+        const cornerY4 = (-halfWidth * rotationSin) + (halfHeight * rotationCos);
+
+        const resolvedOriginX = Number.isFinite(originX) ? originX : 0;
+        const resolvedOriginY = Number.isFinite(originY) ? originY : 0;
+        const resolvedLocalScale = Number.isFinite(localScale) ? localScale : 1;
+        const localScaleCos = resolvedLocalScale * rotationCos;
+        const localScaleSin = resolvedLocalScale * rotationSin;
+        const vertices = this.vertices;
+        const vertexSize = this.vertexSize;
+        const u0 = textureInfo.u0;
+        const v0 = textureInfo.v0;
+        const u1 = textureInfo.u1;
+        const v1 = textureInfo.v1;
+        let writtenCount = 0;
+
+        for (let centerIndex = 0; centerIndex < localCenters.length; centerIndex++) {
+            const localCenter = localCenters[centerIndex];
+            if (!localCenter || !Number.isFinite(localCenter.x) || !Number.isFinite(localCenter.y)) {
+                continue;
+            }
+
+            if (this.spriteCount >= this.maxSprites) {
+                this.flush();
+                this.currentTexture = texture;
+            }
+
+            const centerX = resolvedOriginX
+                + (localCenter.x * localScaleCos)
+                - (localCenter.y * localScaleSin);
+            const centerY = resolvedOriginY
+                + (localCenter.x * localScaleSin)
+                + (localCenter.y * localScaleCos);
+            const index = this.spriteCount * VERTICES_PER_SPRITE * vertexSize;
+
+            vertices[index] = centerX + cornerX1;
+            vertices[index + 1] = centerY + cornerY1;
+            vertices[index + 2] = u0;
+            vertices[index + 3] = v0;
+            vertices[index + 4] = r;
+            vertices[index + 5] = g;
+            vertices[index + 6] = b;
+            vertices[index + 7] = a;
+
+            vertices[index + 8] = centerX + cornerX2;
+            vertices[index + 9] = centerY + cornerY2;
+            vertices[index + 10] = u1;
+            vertices[index + 11] = v0;
+            vertices[index + 12] = r;
+            vertices[index + 13] = g;
+            vertices[index + 14] = b;
+            vertices[index + 15] = a;
+
+            vertices[index + 16] = centerX + cornerX3;
+            vertices[index + 17] = centerY + cornerY3;
+            vertices[index + 18] = u1;
+            vertices[index + 19] = v1;
+            vertices[index + 20] = r;
+            vertices[index + 21] = g;
+            vertices[index + 22] = b;
+            vertices[index + 23] = a;
+
+            vertices[index + 24] = centerX + cornerX4;
+            vertices[index + 25] = centerY + cornerY4;
+            vertices[index + 26] = u0;
+            vertices[index + 27] = v1;
+            vertices[index + 28] = r;
+            vertices[index + 29] = g;
+            vertices[index + 30] = b;
+            vertices[index + 31] = a;
+
+            this.spriteCount += 1;
+            writtenCount += 1;
+        }
+
+        return writtenCount;
+    }
+
+    /**
      * @private
      * 배치 렌더러를 초기화합니다.
      */
@@ -197,7 +339,18 @@ export class WebGLBatch {
         const vertexShader = compileShader(gl, DEFAULT_VERTEX_SHADER, gl.VERTEX_SHADER);
         const fragmentShader = compileShader(gl, DEFAULT_FRAGMENT_SHADER, gl.FRAGMENT_SHADER);
 
-        this.program = createProgram(gl, vertexShader, fragmentShader);
+        this.program = vertexShader && fragmentShader
+            ? createProgram(gl, vertexShader, fragmentShader)
+            : null;
+        if (vertexShader) {
+            gl.deleteShader(vertexShader);
+        }
+        if (fragmentShader) {
+            gl.deleteShader(fragmentShader);
+        }
+        if (!this.program) {
+            throw new Error('WebGL batch 셰이더 프로그램을 생성하지 못했습니다.');
+        }
         this.positionBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, this.vertices.byteLength, gl.DYNAMIC_DRAW);
@@ -295,26 +448,37 @@ export class WebGLBatch {
      * @returns {WebGLTexture} 생성된 텍스처입니다.
      */
     #getTexture(image) {
-        if (this.textureCache.has(image)) {
-            return this.textureCache.get(image);
-        }
-
         const gl = this.gl;
-        const texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-
-        if (image.complete && image.naturalWidth > 0) {
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-        } else {
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, TRANSPARENT_TEXTURE_PIXEL);
+        let record = this.textureCache.get(image);
+        if (!record) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            record = {
+                texture,
+                fallbackUploaded: false,
+                sourceUploaded: false
+            };
+            this.textureCache.set(image, record);
         }
 
-        this.textureCache.set(image, texture);
-        return texture;
+        gl.bindTexture(gl.TEXTURE_2D, record.texture);
+        const sourceReady = image.complete === true && image.naturalWidth > 0;
+        if (sourceReady && !record.sourceUploaded) {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+            record.sourceUploaded = true;
+            return record.texture;
+        }
+
+        if (!record.sourceUploaded && !record.fallbackUploaded) {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, TRANSPARENT_TEXTURE_PIXEL);
+            record.fallbackUploaded = true;
+        }
+
+        return record.texture;
     }
 
     /**

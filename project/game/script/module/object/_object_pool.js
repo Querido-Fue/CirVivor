@@ -18,13 +18,20 @@ export class ObjectPool {
      * @param {Function} createFn - 새 객체를 생성하는 함수입니다.
      * @param {?Function} [resetFn=null] - 객체를 재사용하기 전에 초기화하는 함수입니다.
      * @param {?string} [name=null] - 디버그 목록에 등록할 풀 이름입니다.
+     * @param {number} [maxRetained=Infinity] - 풀에 보관할 최대 유휴 객체 수입니다.
      */
-    constructor(createFn, resetFn = null, name = null) {
+    constructor(createFn, resetFn = null, name = null, maxRetained = Infinity) {
         this.createFn = createFn;
         this.resetFn = resetFn;
         this.pool = [];
         this.createdCount = 0;
+        this.liveCount = 0;
+        this.inUseCount = 0;
+        this.discardedCount = 0;
         this.name = name;
+        this.maxRetained = Number.isFinite(maxRetained)
+            ? Math.max(0, Math.floor(maxRetained))
+            : Infinity;
         if (name) {
             activeObjectPools[name] = this;
         }
@@ -40,18 +47,29 @@ export class ObjectPool {
             if (this.resetFn) {
                 this.resetFn(item);
             }
+            this.inUseCount++;
             return item;
         }
         this.createdCount++;
+        this.liveCount++;
+        this.inUseCount++;
         return this.createFn();
     }
 
     /**
      * 객체를 풀에 반납합니다.
      * @param {T} item - 반납할 객체
+     * @returns {boolean} 풀에 보관했는지 여부입니다.
      */
     release(item) {
+        this.inUseCount = Math.max(0, this.inUseCount - 1);
+        if (this.pool.length >= this.maxRetained) {
+            this.liveCount = Math.max(this.inUseCount, this.liveCount - 1);
+            this.discardedCount++;
+            return false;
+        }
         this.pool.push(item);
+        return true;
     }
 
     /**
@@ -60,9 +78,14 @@ export class ObjectPool {
      */
     warmUp(count) {
         const safeCount = Math.floor(clampFiniteNumber(Number(count), 0, Infinity, 0));
-        for (let i = 0; i < safeCount; i++) {
+        const availableCapacity = Number.isFinite(this.maxRetained)
+            ? Math.max(0, this.maxRetained - this.pool.length)
+            : safeCount;
+        const createCount = Math.min(safeCount, availableCapacity);
+        for (let i = 0; i < createCount; i++) {
             this.pool.push(this.createFn());
             this.createdCount++;
+            this.liveCount++;
         }
     }
 
@@ -70,6 +93,8 @@ export class ObjectPool {
      * 풀을 비웁니다.
      */
     clear() {
-        this.pool = [];
+        this.discardedCount += this.pool.length;
+        this.liveCount = Math.max(this.inUseCount, this.liveCount - this.pool.length);
+        this.pool.length = 0;
     }
 }

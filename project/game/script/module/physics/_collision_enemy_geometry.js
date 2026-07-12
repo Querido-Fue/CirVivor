@@ -11,18 +11,14 @@ const ENEMY_COLLISION_RADIUS_DEFAULT_TYPE = ENEMY_COLLISION_RADIUS_DATA.DEFAULT_
  * @returns {number} 충돌 셀 수입니다.
  */
 export function getHexaHiveCollisionCellCount(enemy) {
-    const candidateCounts = [
-        enemy?.hexaHiveLayout?.filledCells?.length,
-        enemy?.hexaHiveLayout?.filledLocalCenters?.length,
-        enemy?.hexaHiveLayout?.visibleLocalCenters?.length
-    ];
+    const filledCellCount = enemy?.hexaHiveLayout?.filledCells?.length;
+    if (Number.isInteger(filledCellCount) && filledCellCount > 0) return filledCellCount;
 
-    for (let i = 0; i < candidateCounts.length; i++) {
-        const count = candidateCounts[i];
-        if (Number.isInteger(count) && count > 0) {
-            return count;
-        }
-    }
+    const filledCenterCount = enemy?.hexaHiveLayout?.filledLocalCenters?.length;
+    if (Number.isInteger(filledCenterCount) && filledCenterCount > 0) return filledCenterCount;
+
+    const visibleCenterCount = enemy?.hexaHiveLayout?.visibleLocalCenters?.length;
+    if (Number.isInteger(visibleCenterCount) && visibleCenterCount > 0) return visibleCenterCount;
 
     return 1;
 }

@@ -67,13 +67,72 @@ export class ObjectSystem {
         this.aiDecisionGroupCursor = 0;
         this.aiDecisionIntervalSeconds = AI_DECISION_INTERVAL_SECONDS;
         this.aiSharedFlowFieldByKey = new Map();
-        this.aiSharedDirectPathByKey = new Map();
         this.aiSharedDensityFieldByKey = new Map();
         this.aiSharedPolicyTargetByKey = new Map();
         this.aiWallsVersion = 0;
         this.enemyCullOutsideRatio = DEFAULT_OUTSIDE_CULL_RATIO;
         this.hexaHiveContactSecondsByPair = new Map();
         this.hexaHiveMergeEffectPairs = [];
+        this.hexaHiveMergeEffectPairPool = [];
+        this.hexaHiveActiveMergeCandidatesById = new Map();
+        this.hexaHivePullOffsetById = new Map();
+        this.enemyReleaseIdScratch = new Set();
+        this._releaseEnemyAtCallback = (index) => this.#releaseEnemyAt(index);
+        this._spawnEnemyCallback = (type, data) => this.spawnEnemy(type, data);
+        this.enemyAcquireResult = { enemy: null, enemyIdCounter: 0 };
+        this.enemyAcquireOptions = {
+            enemyPools: this.enemyPools,
+            type: null,
+            data: null,
+            enemyIdCounter: 0,
+            enemyDefaultWeight: ENEMY_DEFAULT_WEIGHT,
+            result: this.enemyAcquireResult
+        };
+        this.enemyUpdateOptions = {
+            enemies: this.enemies,
+            alpha: 0,
+            delta: 0,
+            ww: 0,
+            objectWH: 0,
+            enemyCullOutsideRatio: this.enemyCullOutsideRatio,
+            releaseEnemyAt: this._releaseEnemyAtCallback
+        };
+        this.aiContext = createObjectSystemAIContext();
+        this.enemyFixedUpdateOptions = {
+            enemies: this.enemies,
+            delta: 0,
+            aiContext: this.aiContext,
+            decisionGroup: 0,
+            decisionGroupCount: this.aiDecisionGroupCount,
+            releaseEnemyAt: this._releaseEnemyAtCallback
+        };
+        this.hexaContactOptions = {
+            enemies: this.enemies,
+            physicsSystem: this.physicsSystem,
+            delta: 0
+        };
+        this.hexaMergeStateOptions = {
+            enemies: this.enemies,
+            activeMergeCandidatesById: this.hexaHiveActiveMergeCandidatesById,
+            contactSecondsByPair: this.hexaHiveContactSecondsByPair,
+            delta: 0,
+            contactPairs: null
+        };
+        this.enemyCollisionOptions = { delta: 0, players: this.players };
+        this.hexaMergePresentationOptions = {
+            activeMergeCandidatesById: this.hexaHiveActiveMergeCandidatesById,
+            contactSecondsByPair: this.hexaHiveContactSecondsByPair,
+            effectPairs: this.hexaHiveMergeEffectPairs,
+            effectPairPool: this.hexaHiveMergeEffectPairPool,
+            pullOffsetById: this.hexaHivePullOffsetById
+        };
+        this.hexaMergeResolveOptions = {
+            enemies: this.enemies,
+            contactSecondsByPair: this.hexaHiveContactSecondsByPair,
+            activeMergeCandidatesById: this.hexaHiveActiveMergeCandidatesById,
+            releaseEnemyAt: this._releaseEnemyAtCallback,
+            spawnEnemy: this._spawnEnemyCallback
+        };
     }
 
     /**
@@ -87,18 +146,14 @@ export class ObjectSystem {
      * 모든 오브젝트를 업데이트합니다.
      */
     update() {
-        const alpha = getFixedInterpolationAlpha();
-        const ww = getSimulationWW();
-        const objectWH = getSimulationObjectWH();
-        updateObjectSystemEnemies({
-            enemies: this.enemies,
-            alpha,
-            delta: getDelta(),
-            ww,
-            objectWH,
-            enemyCullOutsideRatio: this.enemyCullOutsideRatio,
-            releaseEnemyAt: (index) => this.#releaseEnemyAt(index)
-        });
+        const options = this.enemyUpdateOptions;
+        options.enemies = this.enemies;
+        options.alpha = getFixedInterpolationAlpha();
+        options.delta = getDelta();
+        options.ww = getSimulationWW();
+        options.objectWH = getSimulationObjectWH();
+        options.enemyCullOutsideRatio = this.enemyCullOutsideRatio;
+        updateObjectSystemEnemies(options);
     }
 
     /**
@@ -118,47 +173,45 @@ export class ObjectSystem {
         const decisionGroup = this.aiDecisionGroupCursor;
         this.aiDecisionGroupCursor = (this.aiDecisionGroupCursor + 1) % this.aiDecisionGroupCount;
         clearObjectSystemAISharedCaches(this);
-        const aiContext = createObjectSystemAIContext({
-            player: this.getPrimaryPlayer(),
-            walls: this.walls,
-            enemies: this.enemies,
-            decisionInterval: this.aiDecisionIntervalSeconds,
-            decisionGroup,
-            enemyAIQualityProfile: DEFAULT_ENEMY_AI_QUALITY_PROFILE,
-            sharedFlowFieldByKey: this.aiSharedFlowFieldByKey,
-            sharedDirectPathByKey: this.aiSharedDirectPathByKey,
-            sharedDensityFieldByKey: this.aiSharedDensityFieldByKey,
-            sharedPolicyTargetByKey: this.aiSharedPolicyTargetByKey,
-            wallsVersion: this.aiWallsVersion
-        });
+        const aiContext = this.aiContext;
+        aiContext.player = this.getPrimaryPlayer();
+        aiContext.walls = this.walls;
+        aiContext.enemies = this.enemies;
+        aiContext.decisionInterval = this.aiDecisionIntervalSeconds;
+        aiContext.decisionGroup = decisionGroup;
+        aiContext.enemyAIQualityProfile = DEFAULT_ENEMY_AI_QUALITY_PROFILE;
+        aiContext.sharedFlowFieldByKey = this.aiSharedFlowFieldByKey;
+        aiContext.sharedDensityFieldByKey = this.aiSharedDensityFieldByKey;
+        aiContext.sharedPolicyTargetByKey = this.aiSharedPolicyTargetByKey;
+        aiContext.wallsVersion = this.aiWallsVersion;
 
-        fixedUpdateObjectSystemEnemies({
-            enemies: this.enemies,
-            delta,
-            aiContext,
-            decisionGroup,
-            decisionGroupCount: this.aiDecisionGroupCount,
-            releaseEnemyAt: (index) => this.#releaseEnemyAt(index)
-        });
+        const fixedOptions = this.enemyFixedUpdateOptions;
+        fixedOptions.enemies = this.enemies;
+        fixedOptions.delta = delta;
+        fixedOptions.decisionGroup = decisionGroup;
+        fixedOptions.decisionGroupCount = this.aiDecisionGroupCount;
+        fixedUpdateObjectSystemEnemies(fixedOptions);
 
         const hexaContactPairs = this.collectHexaHiveContactPairs(delta);
-        const hexaMergeCandidatesById = syncHexaHiveMergeState({
-            enemies: this.enemies,
-            contactSecondsByPair: this.hexaHiveContactSecondsByPair,
-            delta,
-            contactPairs: hexaContactPairs
-        });
-        this.resolveEnemyCollisions(this.enemies, {
-            delta,
-            players: this.players
-        });
+        const mergeStateOptions = this.hexaMergeStateOptions;
+        mergeStateOptions.enemies = this.enemies;
+        mergeStateOptions.delta = delta;
+        mergeStateOptions.contactPairs = hexaContactPairs;
+        const hexaMergeCandidatesById = syncHexaHiveMergeState(mergeStateOptions);
+        this.enemyCollisionOptions.delta = delta;
+        this.enemyCollisionOptions.players = this.players;
+        this.resolveEnemyCollisions(this.enemies, this.enemyCollisionOptions);
         this.resolveProjectileVsEnemies(this.projectiles, this.enemies, delta);
-        this.hexaHiveMergeEffectPairs = syncHexaHiveMergePresentationState({
-            activeMergeCandidatesById: hexaMergeCandidatesById,
-            contactSecondsByPair: this.hexaHiveContactSecondsByPair
-        });
+        for (const [enemyId, enemy] of hexaMergeCandidatesById) {
+            if (!enemy || enemy.active === false) {
+                hexaMergeCandidatesById.delete(enemyId);
+            }
+        }
+        const presentationOptions = this.hexaMergePresentationOptions;
+        presentationOptions.activeMergeCandidatesById = hexaMergeCandidatesById;
+        this.hexaHiveMergeEffectPairs = syncHexaHiveMergePresentationState(presentationOptions);
         if (this.resolveHexaHiveMerges(hexaMergeCandidatesById) > 0) {
-            this.hexaHiveMergeEffectPairs = [];
+            this.hexaHiveMergeEffectPairs.length = 0;
         }
     }
 
@@ -188,13 +241,12 @@ export class ObjectSystem {
          * @returns {object|null} 초기화된 적 인스턴스
          */
     acquireEnemy(type, data = {}) {
-        const result = acquireObjectSystemEnemy({
-            enemyPools: this.enemyPools,
-            type,
-            data,
-            enemyIdCounter: this.enemyIdCounter,
-            enemyDefaultWeight: ENEMY_DEFAULT_WEIGHT
-        });
+        const options = this.enemyAcquireOptions;
+        options.enemyPools = this.enemyPools;
+        options.type = type;
+        options.data = data;
+        options.enemyIdCounter = this.enemyIdCounter;
+        const result = acquireObjectSystemEnemy(options);
         this.enemyIdCounter = result.enemyIdCounter;
         return result.enemy;
     }
@@ -238,7 +290,16 @@ export class ObjectSystem {
          * 현재 화면 상에 배치된 모든 활성 적들을 전부 제거 및 반납합니다.
          */
     clearEnemies() {
-        this.hexaHiveMergeEffectPairs = [];
+        this.hexaHiveMergeEffectPairs.length = 0;
+        this.hexaHiveActiveMergeCandidatesById.clear();
+        this.hexaHivePullOffsetById.clear();
+        for (let i = 0; i < this.hexaHiveMergeEffectPairPool.length; i++) {
+            const pair = this.hexaHiveMergeEffectPairPool[i];
+            if (!pair) continue;
+            pair.enemyA = null;
+            pair.enemyB = null;
+            pair.progress = 0;
+        }
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             this.#releaseEnemyAt(i);
         }
@@ -278,11 +339,11 @@ export class ObjectSystem {
      * @returns {{enemyA: object, enemyB: object}[]}
      */
     collectHexaHiveContactPairs(delta) {
-        return collectObjectSystemHexaHiveContactPairs({
-            enemies: this.enemies,
-            physicsSystem: this.physicsSystem,
-            delta
-        });
+        const options = this.hexaContactOptions;
+        options.enemies = this.enemies;
+        options.physicsSystem = this.physicsSystem;
+        options.delta = delta;
+        return collectObjectSystemHexaHiveContactPairs(options);
     }
 
     /**
@@ -291,13 +352,11 @@ export class ObjectSystem {
      * @returns {number}
      */
     resolveHexaHiveMerges(activeMergeCandidatesById = null) {
-        return resolveObjectSystemHexaHiveMerges({
-            enemies: this.enemies,
-            contactSecondsByPair: this.hexaHiveContactSecondsByPair,
-            activeMergeCandidatesById,
-            releaseEnemyAt: (index) => this.#releaseEnemyAt(index),
-            spawnEnemy: (type, data) => this.spawnEnemy(type, data)
-        });
+        const options = this.hexaMergeResolveOptions;
+        options.enemies = this.enemies;
+        options.contactSecondsByPair = this.hexaHiveContactSecondsByPair;
+        options.activeMergeCandidatesById = activeMergeCandidatesById;
+        return resolveObjectSystemHexaHiveMerges(options);
     }
 
     /**
@@ -467,12 +526,22 @@ export class ObjectSystem {
         const enemy = this.enemies[index];
         if (!enemy) return;
         if (Number.isInteger(enemy.id)) {
-            clearHexaHiveContactPairsForEnemyIds(this.hexaHiveContactSecondsByPair, new Set([enemy.id]));
+            const enemyIds = this.enemyReleaseIdScratch;
+            enemyIds.clear();
+            enemyIds.add(enemy.id);
+            clearHexaHiveContactPairsForEnemyIds(this.hexaHiveContactSecondsByPair, enemyIds);
+            enemyIds.clear();
         }
         if (Array.isArray(this.hexaHiveMergeEffectPairs) && this.hexaHiveMergeEffectPairs.length > 0) {
-            this.hexaHiveMergeEffectPairs = this.hexaHiveMergeEffectPairs.filter((pair) => (
-                pair?.enemyA !== enemy && pair?.enemyB !== enemy
-            ));
+            let writeIndex = 0;
+            for (let readIndex = 0; readIndex < this.hexaHiveMergeEffectPairs.length; readIndex++) {
+                const pair = this.hexaHiveMergeEffectPairs[readIndex];
+                if (pair?.enemyA === enemy || pair?.enemyB === enemy) {
+                    continue;
+                }
+                this.hexaHiveMergeEffectPairs[writeIndex++] = pair;
+            }
+            this.hexaHiveMergeEffectPairs.length = writeIndex;
         }
 
         this.releaseEnemyToPool(enemy);

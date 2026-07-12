@@ -28,6 +28,7 @@ export class DrawHandler2D {
     #measureCtx;
     #layerOptions;
     #layerTransforms;
+    #layerCallbacks;
 
     /**
      * @param {Object.<string, CanvasRenderingContext2D>} contexts - 초기 레이어 컨텍스트 맵입니다.
@@ -39,6 +40,7 @@ export class DrawHandler2D {
         this.#pathCache = new Map();
         this.#layerOptions = new Map();
         this.#layerTransforms = new Map();
+        this.#layerCallbacks = new Map();
 
         this.#generatePaths();
 
@@ -54,7 +56,7 @@ export class DrawHandler2D {
      * 레이어를 등록합니다.
      * @param {string} layerName - 레이어 식별자입니다.
      * @param {CanvasRenderingContext2D} context - 연결할 2D 컨텍스트입니다.
-     * @param {{persistent?: boolean, transformScaleX?: number, transformScaleY?: number}} [options={}] - 레이어 동작 옵션입니다.
+     * @param {{persistent?: boolean, transformScaleX?: number, transformScaleY?: number, onDraw?: Function, onFrameClear?: Function}} [options={}] - 레이어 동작 옵션입니다.
      */
     registerLayer(layerName, context, options = {}) {
         if (!layerName || !context) {
@@ -66,6 +68,10 @@ export class DrawHandler2D {
         this.#shadowState.set(layerName, createDrawShadowState());
         this.#layerOptions.set(layerName, {
             persistent: options.persistent === true
+        });
+        this.#layerCallbacks.set(layerName, {
+            onDraw: typeof options.onDraw === 'function' ? options.onDraw : null,
+            onFrameClear: typeof options.onFrameClear === 'function' ? options.onFrameClear : null
         });
         this.#layerTransforms.set(layerName, normalizeDrawLayerTransform(options));
         this.#applyLayerTransform(layerName, context);
@@ -81,6 +87,7 @@ export class DrawHandler2D {
         this.#shadowState.delete(layerName);
         this.#layerOptions.delete(layerName);
         this.#layerTransforms.delete(layerName);
+        this.#layerCallbacks.delete(layerName);
     }
 
     /**
@@ -158,6 +165,7 @@ export class DrawHandler2D {
             this.#shadowState.get(layerName) || createDrawShadowState()
         );
 
+        let didDraw = true;
         switch (options.shape) {
             case 'rect':
                 renderDrawRect(context, options);
@@ -181,7 +189,12 @@ export class DrawHandler2D {
                 renderDrawArrow(context, options, this.#pathCache.get('arrow'));
                 break;
             default:
+                didDraw = false;
                 break;
+        }
+
+        if (didDraw) {
+            this.#layerCallbacks.get(layerName)?.onDraw?.();
         }
     }
 
@@ -198,6 +211,7 @@ export class DrawHandler2D {
         this.#resetLayerState(layerName, context, { applyTransform: false });
         context.clearRect(0, 0, context.canvas.width, context.canvas.height);
         this.#applyLayerTransform(layerName, context);
+        this.#layerCallbacks.get(layerName)?.onFrameClear?.();
     }
 
     /**
@@ -212,6 +226,7 @@ export class DrawHandler2D {
             this.#resetLayerState(layerName, context, { applyTransform: false });
             context.clearRect(0, 0, context.canvas.width, context.canvas.height);
             this.#applyLayerTransform(layerName, context);
+            this.#layerCallbacks.get(layerName)?.onFrameClear?.();
         }
     }
 

@@ -46,6 +46,10 @@ const DENSE_CORRECTION_SCALE_MAX = COLLISION_RESOLVE_TUNING.DENSE_CORRECTION_SCA
 const DENSE_FRAME_CANDIDATE_THRESHOLD = COLLISION_RESOLVE_TUNING.DENSE_FRAME_CANDIDATE_THRESHOLD;
 const DENSE_FRAME_SCALE_PER_NEIGHBOR = COLLISION_RESOLVE_TUNING.DENSE_FRAME_SCALE_PER_NEIGHBOR;
 const DENSE_FRAME_SCALE_MAX = COLLISION_RESOLVE_TUNING.DENSE_FRAME_SCALE_MAX;
+export const COLLISION_CANDIDATE_SWEEP_PAD_SCALE = DENSE_FRAME_SCALE_MAX * Math.max(
+    DENSE_RESOLVE_BOOST,
+    LARGE_POPULATION_DENSE_RESOLVE_BOOST
+);
 const PRESSURE_WEIGHT_MIN = COLLISION_RESOLVE_TUNING.PRESSURE_WEIGHT_MIN;
 const PRESSURE_WEIGHT_MAX = COLLISION_RESOLVE_TUNING.PRESSURE_WEIGHT_MAX;
 const PRESSURE_HEXA_HIVE_WEIGHT_MAX = COLLISION_RESOLVE_TUNING.PRESSURE_HEXA_HIVE_WEIGHT_MAX;
@@ -58,6 +62,24 @@ const PRESSURE_ESCAPE_THRESHOLD = COLLISION_RESOLVE_TUNING.PRESSURE_ESCAPE_THRES
 const PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR = COLLISION_RESOLVE_TUNING.PRESSURE_ESCAPE_SCALE_PER_NEIGHBOR;
 const PRESSURE_ESCAPE_SCALE_MAX = COLLISION_RESOLVE_TUNING.PRESSURE_ESCAPE_SCALE_MAX;
 const HEXA_HIVE_WALL_MIN_PARTS = COLLISION_RESOLVE_TUNING.HEXA_HIVE_WALL_MIN_PARTS;
+const DEFAULT_DENSE_SOLVE_TUNING = Object.freeze({
+    largePopulation: false,
+    denseRebuildMaxExtraPasses: DENSE_REBUILD_MAX_EXTRA_PASSES,
+    denseMinIterationFloor: DENSE_MIN_ITERATION_FLOOR,
+    denseStabilizeMaxPasses: DENSE_STABILIZE_MAX_PASSES,
+    denseStabilizeLightMaxPasses: DENSE_STABILIZE_LIGHT_MAX_PASSES,
+    denseIterationResolveBoost: DENSE_ITERATION_RESOLVE_BOOST,
+    denseResolveBoost: DENSE_RESOLVE_BOOST
+});
+const LARGE_POPULATION_DENSE_SOLVE_TUNING = Object.freeze({
+    largePopulation: true,
+    denseRebuildMaxExtraPasses: LARGE_POPULATION_DENSE_REBUILD_MAX_EXTRA_PASSES,
+    denseMinIterationFloor: LARGE_POPULATION_DENSE_MIN_ITERATION_FLOOR,
+    denseStabilizeMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_MAX_PASSES,
+    denseStabilizeLightMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_LIGHT_MAX_PASSES,
+    denseIterationResolveBoost: LARGE_POPULATION_DENSE_ITERATION_RESOLVE_BOOST,
+    denseResolveBoost: LARGE_POPULATION_DENSE_RESOLVE_BOOST
+});
 
 /**
  * 적 수에 따라 dense 충돌 해소 반복 상한을 반환합니다.
@@ -67,27 +89,9 @@ const HEXA_HIVE_WALL_MIN_PARTS = COLLISION_RESOLVE_TUNING.HEXA_HIVE_WALL_MIN_PAR
 export function getDenseSolveTuning(dynamicBodyCount) {
     const largePopulation = Number.isFinite(dynamicBodyCount)
         && dynamicBodyCount >= LARGE_POPULATION_DENSE_BODY_THRESHOLD;
-    if (!largePopulation) {
-        return {
-            largePopulation: false,
-            denseRebuildMaxExtraPasses: DENSE_REBUILD_MAX_EXTRA_PASSES,
-            denseMinIterationFloor: DENSE_MIN_ITERATION_FLOOR,
-            denseStabilizeMaxPasses: DENSE_STABILIZE_MAX_PASSES,
-            denseStabilizeLightMaxPasses: DENSE_STABILIZE_LIGHT_MAX_PASSES,
-            denseIterationResolveBoost: DENSE_ITERATION_RESOLVE_BOOST,
-            denseResolveBoost: DENSE_RESOLVE_BOOST
-        };
-    }
-
-    return {
-        largePopulation: true,
-        denseRebuildMaxExtraPasses: LARGE_POPULATION_DENSE_REBUILD_MAX_EXTRA_PASSES,
-        denseMinIterationFloor: LARGE_POPULATION_DENSE_MIN_ITERATION_FLOOR,
-        denseStabilizeMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_MAX_PASSES,
-        denseStabilizeLightMaxPasses: LARGE_POPULATION_DENSE_STABILIZE_LIGHT_MAX_PASSES,
-        denseIterationResolveBoost: LARGE_POPULATION_DENSE_ITERATION_RESOLVE_BOOST,
-        denseResolveBoost: LARGE_POPULATION_DENSE_RESOLVE_BOOST
-    };
+    return largePopulation
+        ? LARGE_POPULATION_DENSE_SOLVE_TUNING
+        : DEFAULT_DENSE_SOLVE_TUNING;
 }
 
 /**
@@ -147,17 +151,6 @@ export function isCollisionEnemyPairAnchorBody(body, otherBody) {
 }
 
 /**
- * 양쪽 모두 적-적 보정 앵커인지 반환합니다.
- * @param {object} bodyA - 첫 번째 body입니다.
- * @param {object} bodyB - 두 번째 body입니다.
- * @returns {boolean} 양쪽 모두 앵커인지 여부입니다.
- */
-export function areCollisionEnemyPairAnchors(bodyA, bodyB) {
-    return isCollisionEnemyPairAnchorBody(bodyA, bodyB)
-        && isCollisionEnemyPairAnchorBody(bodyB, bodyA);
-}
-
-/**
  * 현재 pair에서 body가 위치 보정으로 이동 가능한지 반환합니다.
  * @param {object} body - 기준 body입니다.
  * @param {object} otherBody - 상대 body입니다.
@@ -175,23 +168,17 @@ export function isCollisionPairResolveMovable(body, otherBody, ruleMovable) {
 
 /**
  * 과밀한 쪽이 덜 과밀한 쪽에게 밀리지 않도록 해소용 weight를 재계산합니다.
- * @param {object} bodyA - 첫 번째 body입니다.
- * @param {object} bodyB - 두 번째 body입니다.
- * @returns {{weightA:number, weightB:number}} 위치 보정 가중치입니다.
+ * @param {object} body - 가중치를 계산할 body입니다.
+ * @param {object} otherBody - 상대 body입니다.
+ * @returns {number} 위치 보정 가중치입니다.
  */
-export function getCollisionPairResolveWeights(bodyA, bodyB) {
-    const weightA = Number.isFinite(bodyA?.weight) ? bodyA.weight : 1;
-    const weightB = Number.isFinite(bodyB?.weight) ? bodyB.weight : 1;
-    if (bodyA?.kind !== 'enemy' || bodyB?.kind !== 'enemy') {
-        return { weightA, weightB };
+export function getCollisionPairResolveWeight(body, otherBody) {
+    const weight = Number.isFinite(body?.weight) ? body.weight : 1;
+    if (body?.kind !== 'enemy' || otherBody?.kind !== 'enemy') {
+        return weight;
     }
 
-    const pressureA = getCollisionBodyPressure(bodyA);
-    const pressureB = getCollisionBodyPressure(bodyB);
-    return {
-        weightA: getCollisionResolveWeight(bodyA) * getCollisionEntryResistanceScale(pressureA),
-        weightB: getCollisionResolveWeight(bodyB) * getCollisionEntryResistanceScale(pressureB)
-    };
+    return getCollisionResolveWeight(body) * getCollisionEntryResistanceScale(getCollisionBodyPressure(body));
 }
 
 /**
@@ -229,52 +216,48 @@ export function getCollisionBodyPressure(body) {
  * @param {object} bodyA - 첫 번째 body입니다.
  * @param {object} bodyB - 두 번째 body입니다.
  * @param {number} [resolveBoost=1] - 해소 부스트입니다.
- * @returns {{moveAX:number, moveAY:number, moveBX:number, moveBY:number}} 튜닝된 이동량입니다.
+ * @returns {object|null} 이동량을 제자리에서 갱신한 resolved 객체입니다.
  */
 export function tuneCollisionResolutionMoves(resolved, manifold, bodyA, bodyB, resolveBoost = 1) {
     if (!resolved || !manifold) {
-        return {
-            moveAX: 0,
-            moveAY: 0,
-            moveBX: 0,
-            moveBY: 0
-        };
+        return null;
     }
 
     const rawPenetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
     const slopScale = resolveBoost > 1 ? (1 / resolveBoost) : 1;
     const effectivePenetration = Math.max(0, rawPenetration - (COLLISION_RESOLVE_SLOP * slopScale));
     if (effectivePenetration <= 0) {
-        return {
-            moveAX: 0,
-            moveAY: 0,
-            moveBX: 0,
-            moveBY: 0
-        };
+        resolved.moveAX = 0;
+        resolved.moveAY = 0;
+        resolved.moveBX = 0;
+        resolved.moveBY = 0;
+        return resolved;
     }
 
     const penetrationRatio = effectivePenetration / Math.max(EPSILON, rawPenetration);
     const correctionScale = COLLISION_RESOLVE_PERCENT * penetrationRatio * resolveBoost;
 
-    const moveA = clampCollisionCorrectionVector(
-        (resolved.moveAX || 0) * correctionScale,
-        (resolved.moveAY || 0) * correctionScale,
+    const rawMoveAX = (resolved.moveAX || 0) * correctionScale;
+    const rawMoveAY = (resolved.moveAY || 0) * correctionScale;
+    const rawMoveBX = (resolved.moveBX || 0) * correctionScale;
+    const rawMoveBY = (resolved.moveBY || 0) * correctionScale;
+    const clampScaleA = getCollisionCorrectionVectorScale(
+        rawMoveAX,
+        rawMoveAY,
         bodyA,
         resolveBoost
     );
-    const moveB = clampCollisionCorrectionVector(
-        (resolved.moveBX || 0) * correctionScale,
-        (resolved.moveBY || 0) * correctionScale,
+    const clampScaleB = getCollisionCorrectionVectorScale(
+        rawMoveBX,
+        rawMoveBY,
         bodyB,
         resolveBoost
     );
-
-    return {
-        moveAX: moveA.x,
-        moveAY: moveA.y,
-        moveBX: moveB.x,
-        moveBY: moveB.y
-    };
+    resolved.moveAX = rawMoveAX * clampScaleA;
+    resolved.moveAY = rawMoveAY * clampScaleA;
+    resolved.moveBX = rawMoveBX * clampScaleB;
+    resolved.moveBY = rawMoveBY * clampScaleB;
+    return resolved;
 }
 
 /**
@@ -330,12 +313,12 @@ function getCollisionEntryResistanceScale(pressure) {
  * @param {number} dy - Y축 이동량입니다.
  * @param {object} body - 대상 body입니다.
  * @param {number} [resolveBoost=1] - 해소 부스트입니다.
- * @returns {{x:number, y:number}} 제한된 보정 벡터입니다.
+ * @returns {number} 원본 벡터에 곱할 제한 배율입니다.
  */
-function clampCollisionCorrectionVector(dx, dy, body, resolveBoost = 1) {
-    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return { x: 0, y: 0 };
+function getCollisionCorrectionVectorScale(dx, dy, body, resolveBoost = 1) {
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return 0;
     const mag = Math.hypot(dx, dy);
-    if (mag <= EPSILON) return { x: 0, y: 0 };
+    if (mag <= EPSILON) return 0;
 
     const radius = Number.isFinite(body?.resolveRadius)
         ? body.resolveRadius
@@ -343,14 +326,10 @@ function clampCollisionCorrectionVector(dx, dy, body, resolveBoost = 1) {
     const baseMaxCorrection = Math.max(COLLISION_RESOLVE_MIN_MAX, radius * COLLISION_RESOLVE_MAX_RATIO);
     const maxCorrection = baseMaxCorrection * getCollisionDenseCorrectionScale(body) * resolveBoost;
     if (mag <= maxCorrection) {
-        return { x: dx, y: dy };
+        return 1;
     }
 
-    const scale = maxCorrection / mag;
-    return {
-        x: dx * scale,
-        y: dy * scale
-    };
+    return maxCorrection / mag;
 }
 
 /**

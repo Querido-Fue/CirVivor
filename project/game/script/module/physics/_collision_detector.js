@@ -56,18 +56,34 @@ export class CollisionDetector {
 
         const movableA = bodyA?.movable !== false;
         const movableB = bodyB?.movable !== false;
-
         const weightA = Math.max(EPSILON, Number.isFinite(bodyA?.weight) ? bodyA.weight : 1);
         const weightB = Math.max(EPSILON, Number.isFinite(bodyB?.weight) ? bodyB.weight : 1);
+        return this.addResolutionScalars(manifold, weightA, movableA, weightB, movableB);
+    }
+
+    /**
+     * 객체 옵션 생성 없이 scalar weight와 이동 가능성으로 resolve 이동량을 씁니다.
+     * @param {object|null} manifold - 충돌 manifold입니다.
+     * @param {number} weightA - 첫 번째 body weight입니다.
+     * @param {boolean} movableA - 첫 번째 body 이동 가능 여부입니다.
+     * @param {number} weightB - 두 번째 body weight입니다.
+     * @param {boolean} movableB - 두 번째 body 이동 가능 여부입니다.
+     * @returns {object|null} 이동량이 기록된 manifold입니다.
+     */
+    addResolutionScalars(manifold, weightA, movableA, weightB, movableB) {
+        if (!manifold) return null;
+
+        const safeWeightA = Math.max(EPSILON, Number.isFinite(weightA) ? weightA : 1);
+        const safeWeightB = Math.max(EPSILON, Number.isFinite(weightB) ? weightB : 1);
         const penetration = manifold.penetration;
 
         let ratioA = 0;
         let ratioB = 0;
 
         if (movableA && movableB) {
-            const sum = weightA + weightB;
-            ratioA = weightB / sum;
-            ratioB = weightA / sum;
+            const sum = safeWeightA + safeWeightB;
+            ratioA = safeWeightB / sum;
+            ratioB = safeWeightA / sum;
         } else if (movableA) {
             ratioA = 1;
         } else if (movableB) {

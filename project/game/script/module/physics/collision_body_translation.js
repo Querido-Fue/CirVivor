@@ -16,12 +16,17 @@ const CIRCLE_PART_STRIDE = COLLISION_BODY_BUILDER.CIRCLE_PART_STRIDE;
  * @param {object|null|undefined} body - 이동할 충돌 body입니다.
  * @param {number} dx - X 이동량입니다.
  * @param {number} dy - Y 이동량입니다.
- * @param {object} options - 이동 적용 옵션입니다.
- * @param {number} [options.resolveBoost=1] - 과밀 보정 resolve 배율입니다.
- * @param {object|null} [options.broadphaseBuffer=null] - broad-phase SoA 버퍼입니다.
+ * @param {number} [resolveBoost=1] - 과밀 보정 resolve 배율입니다.
+ * @param {object|null} [broadphaseBuffer=null] - broad-phase SoA 버퍼입니다.
  * @returns {boolean} 이동이 적용되었는지 여부입니다.
  */
-export function applyCollisionBodyTranslation(body, dx, dy, { resolveBoost = 1, broadphaseBuffer = null } = {}) {
+export function applyCollisionBodyTranslation(
+    body,
+    dx,
+    dy,
+    resolveBoost = 1,
+    broadphaseBuffer = null
+) {
     if (!body || body.movable === false) {
         return false;
     }
@@ -37,50 +42,45 @@ export function applyCollisionBodyTranslation(body, dx, dy, { resolveBoost = 1, 
         return false;
     }
 
-    const clampedMove = clampCollisionBodyTranslation(body, dx, dy, resolveBoost, moveMag);
-    if (!clampedMove) {
+    const moveScale = getCollisionBodyTranslationScale(body, resolveBoost, moveMag);
+    if (moveScale <= 0) {
         return false;
     }
 
-    writeCollisionBodyTranslation(body, clampedMove.dx, clampedMove.dy);
-    broadphaseBuffer?.translateBody?.(body, clampedMove.dx, clampedMove.dy);
-    writeCollisionBodyReferenceTranslation(body, clampedMove.dx, clampedMove.dy);
+    const appliedDx = dx * moveScale;
+    const appliedDy = dy * moveScale;
+    writeCollisionBodyTranslation(body, appliedDx, appliedDy);
+    broadphaseBuffer?.translateBody?.(body, appliedDx, appliedDy);
+    writeCollisionBodyReferenceTranslation(body, appliedDx, appliedDy);
     return true;
 }
 
 /**
  * 프레임 resolve 한도에 맞춰 이동량을 제한합니다.
  * @param {object} body - 이동할 충돌 body입니다.
- * @param {number} dx - 원본 X 이동량입니다.
- * @param {number} dy - 원본 Y 이동량입니다.
  * @param {number} resolveBoost - resolve 배율입니다.
  * @param {number} moveMag - 원본 이동량 크기입니다.
- * @returns {{dx:number, dy:number}|null} 제한된 이동량입니다.
+ * @returns {number} 원본 이동량에 곱할 제한 배율입니다.
  */
-function clampCollisionBodyTranslation(body, dx, dy, resolveBoost, moveMag) {
+function getCollisionBodyTranslationScale(body, resolveBoost, moveMag) {
     const baseFrameMax = Number.isFinite(body._frameResolveMax)
         ? body._frameResolveMax
         : Number.POSITIVE_INFINITY;
     const frameMax = baseFrameMax * getCollisionDenseFrameScale(body) * resolveBoost;
     const frameMoved = Number.isFinite(body._frameResolveMoved) ? body._frameResolveMoved : 0;
     if (frameMoved >= frameMax) {
-        return null;
+        return 0;
     }
 
     const remain = frameMax - frameMoved;
-    if (remain < moveMag) {
-        const scale = remain / moveMag;
-        dx *= scale;
-        dy *= scale;
-    }
-
-    const appliedMag = Math.hypot(dx, dy);
+    const moveScale = remain < moveMag ? (remain / moveMag) : 1;
+    const appliedMag = moveMag * moveScale;
     if (appliedMag <= EPSILON) {
-        return null;
+        return 0;
     }
 
     body._frameResolveMoved = frameMoved + appliedMag;
-    return { dx, dy };
+    return moveScale;
 }
 
 /**

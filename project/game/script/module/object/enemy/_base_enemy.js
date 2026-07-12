@@ -69,7 +69,10 @@ export class BaseEnemy {
      * @param {Object} [data={}]
      */
     init(data = {}) {
-        this.reset();
+        if (this.__poolResetReady !== true) {
+            this.reset();
+        }
+        this.__poolResetReady = false;
         this.active = true;
 
         this.id = data.id ?? null;
@@ -94,6 +97,10 @@ export class BaseEnemy {
         this.setPosition(data.position?.x ?? 0, data.position?.y ?? 0);
         this.prevPosition.x = this.position.x;
         this.prevPosition.y = this.position.y;
+        this.__collisionPrevX = this.position.x;
+        this.__collisionPrevY = this.position.y;
+        this.hexaHiveMergePending = false;
+        this.hexaHiveMergePendingWeight = null;
         this.renderPosition.x = this.position.x;
         this.renderPosition.y = this.position.y;
         this.startMergeSettleOffset(
@@ -128,6 +135,16 @@ export class BaseEnemy {
         this.rotationResistance = 1;
         this.projectileHitsToKill = 0;
         this.projectileHitCount = 0;
+        this.__collisionSleepTicks = 0;
+        this.__collisionIdleTicks = 0;
+        this.__collisionPrevX = Number.NaN;
+        this.__collisionPrevY = Number.NaN;
+        this.__collisionRadiusCacheType = null;
+        this.__collisionRadiusCacheWidth = Number.NaN;
+        this.__collisionRadiusCacheHeight = Number.NaN;
+        this.__collisionRadiusCacheValue = Number.NaN;
+        this.hexaHiveMergePending = false;
+        this.hexaHiveMergePendingWeight = null;
         this.clearAI();
         this.angularVelocity = 0;
         this.angularDeceleration = 0;
@@ -162,6 +179,7 @@ export class BaseEnemy {
         this.axisResistanceRecoverStartY = 1;
 
         this.clearStatus();
+        this.__poolResetReady = true;
     }
 
     /**

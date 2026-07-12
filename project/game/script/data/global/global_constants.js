@@ -17,7 +17,7 @@ export const GLOBAL_CONSTANTS = Object.freeze({
         LINE: 30,
         TOGGLE: 10,
         CANVAS_2D: 16,
-        CANVAS_WEBGL: 8
+        CANVAS_WEBGL: 0
     }),
     GAME_VERSION: '0.41',
     WEBGL_MAX_SPRITES: 16000,

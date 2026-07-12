@@ -6,7 +6,11 @@ import { ObjectSystem } from 'object/object_system.js';
 import { SceneSystem } from 'scene/scene_system.js';
 import { UISystem } from 'ui/ui_system.js';
 import { OverlayManager } from 'overlay/overlay_system.js';
-import { DebugSystem, measurePerformanceSection } from 'debug/debug_system.js';
+import {
+    DebugSystem,
+    beginPerformanceSection,
+    endPerformanceSection
+} from 'debug/debug_system.js';
 import { SoundSystem } from 'sound/sound_system.js';
 import { getTimeHandler } from 'game/time_handler.js';
 import { warmupUIPools } from 'ui/_ui_pool.js';
@@ -20,6 +24,9 @@ const DISPLAY_REFRESH_SETTING_KEYS = new Set(SYSTEM_RUNTIME_POLICY_DATA.DISPLAY_
 const SIMULATION_RUNTIME_SETTING_KEYS = SYSTEM_RUNTIME_POLICY_DATA.SIMULATION_RUNTIME_SETTING_KEYS;
 const DEFAULT_FRAME_EXECUTION_POLICY = SYSTEM_RUNTIME_POLICY_DATA.DEFAULT_FRAME_EXECUTION_POLICY;
 const FRAME_EXECUTION_DISABLE_KEYS = SYSTEM_RUNTIME_POLICY_DATA.FRAME_EXECUTION_DISABLE_KEYS;
+const FRAME_ANIMATION_UPDATE_OPTIONS = Object.freeze({ useFixedTick: false });
+const FIXED_ANIMATION_UPDATE_OPTIONS = Object.freeze({ useFixedTick: true });
+const EMPTY_FRAME_CONTEXT = Object.freeze({});
 
 /**
  * @class SystemHandler
@@ -29,6 +36,23 @@ export class SystemHandler {
     constructor() {
         this.pauseReasons = new Map();
         this.frameExecutionPolicy = this.createPausePolicy();
+        this.simulationRuntimeSnapshot = {
+            viewport: {
+                ww: 0,
+                wh: 0,
+                objectWH: 0,
+                objectOffsetY: 0,
+                uiww: 0,
+                uiOffsetX: 0
+            },
+            input: {
+                mousePos: { x: 0, y: 0 },
+                mouseButtons: { left: [], right: [], middle: [] },
+                focusList: [],
+                keys: {}
+            },
+            settings: {}
+        };
     }
     /**
      * 모든 시스템을 초기화합니다.
@@ -214,7 +238,7 @@ export class SystemHandler {
      * @param {number} [frameContext.fixedStepCount] 이번 프레임에 처리할 고정 스텝 횟수
      * @param {number} [frameContext.fixedAlpha] 렌더 보간 계수(0~1)
      */
-    tick(frameContext = {}) {
+    tick(frameContext = EMPTY_FRAME_CONTEXT) {
         const executionPolicy = this.frameExecutionPolicy || DEFAULT_FRAME_EXECUTION_POLICY;
         const timeHandler = getTimeHandler();
         this.#syncSimulationRuntime();
@@ -236,16 +260,16 @@ export class SystemHandler {
             : 0;
 
         if (fixedStepCount > 0) {
-            measurePerformanceSection('frame.fixed.total', () => {
-                for (let i = 0; i < fixedStepCount; i++) {
-                    if (timeHandler && typeof timeHandler.updateFixed === 'function') {
-                        measurePerformanceSection('fixed.time', () => {
-                            timeHandler.updateFixed(fixedStepSeconds);
-                        });
-                    }
-                    this.#runFixedStep();
+            const fixedTotalStart = beginPerformanceSection();
+            for (let i = 0; i < fixedStepCount; i++) {
+                if (timeHandler && typeof timeHandler.updateFixed === 'function') {
+                    const fixedTimeStart = beginPerformanceSection();
+                    timeHandler.updateFixed(fixedStepSeconds);
+                    endPerformanceSection('fixed.time', fixedTimeStart);
                 }
-            });
+                this.#runFixedStep();
+            }
+            endPerformanceSection('frame.fixed.total', fixedTotalStart);
         }
 
         if (timeHandler && typeof timeHandler.setFixedInterpolationAlpha === 'function') {
@@ -253,26 +277,26 @@ export class SystemHandler {
         }
 
         if (executionPolicy.renderFrame) {
-            measurePerformanceSection('frame.clear', () => {
-                this.displaySystem.drawHandler.clearAll();
-                if (this.displaySystem.webGLHandler) {
-                    this.displaySystem.webGLHandler.clearAll();
-                }
-            });
+            const clearStart = beginPerformanceSection();
+            this.displaySystem.drawHandler.clearAll();
+            if (this.displaySystem.webGLHandler) {
+                this.displaySystem.webGLHandler.clearAll();
+            }
+            endPerformanceSection('frame.clear', clearStart);
         }
 
-        measurePerformanceSection('frame.update.total', () => {
-            this.update(frameDeltaSeconds, executionPolicy);
-        });
+        const updateStart = beginPerformanceSection();
+        this.update(frameDeltaSeconds, executionPolicy);
+        endPerformanceSection('frame.update.total', updateStart);
 
         if (executionPolicy.renderFrame) {
-            measurePerformanceSection('frame.draw.total', () => {
-                this.draw(executionPolicy);
-            });
+            const drawStart = beginPerformanceSection();
+            this.draw(executionPolicy);
+            endPerformanceSection('frame.draw.total', drawStart);
             if (this.displaySystem.webGLHandler) {
-                measurePerformanceSection('frame.flush.final', () => {
-                    this.displaySystem.webGLHandler.flushAll();
-                });
+                const flushStart = beginPerformanceSection();
+                this.displaySystem.webGLHandler.flushAll();
+                endPerformanceSection('frame.flush.final', flushStart);
             }
         }
     }
@@ -349,57 +373,57 @@ export class SystemHandler {
     update(frameDeltaSeconds, executionPolicy = this.frameExecutionPolicy) {
         const timeHandler = getTimeHandler();
         if (executionPolicy.runFrameTimeUpdate && timeHandler && typeof timeHandler.update === 'function') {
-            measurePerformanceSection('frame.update.time', () => {
-                timeHandler.update(frameDeltaSeconds);
-            });
+            const startTime = beginPerformanceSection();
+            timeHandler.update(frameDeltaSeconds);
+            endPerformanceSection('frame.update.time', startTime);
         }
         if (executionPolicy.runSoundUpdate) {
-            measurePerformanceSection('frame.update.sound', () => {
-                this.soundSystem.update();
-            });
+            const startTime = beginPerformanceSection();
+            this.soundSystem.update();
+            endPerformanceSection('frame.update.sound', startTime);
         }
         if (executionPolicy.runAnimationUpdate) {
-            measurePerformanceSection('frame.update.animation', () => {
-                this.animationSystem.update({ useFixedTick: false });
-            });
+            const startTime = beginPerformanceSection();
+            this.animationSystem.update(FRAME_ANIMATION_UPDATE_OPTIONS);
+            endPerformanceSection('frame.update.animation', startTime);
         }
         if (executionPolicy.runInputUpdate) {
-            measurePerformanceSection('frame.update.input', () => {
-                this.inputSystem.update();
-            });
+            const startTime = beginPerformanceSection();
+            this.inputSystem.update();
+            endPerformanceSection('frame.update.input', startTime);
         }
         if (executionPolicy.runUiUpdate) {
-            measurePerformanceSection('frame.update.ui', () => {
-                this.uiSystem.update();
-            });
+            const startTime = beginPerformanceSection();
+            this.uiSystem.update();
+            endPerformanceSection('frame.update.ui', startTime);
         }
         if (executionPolicy.runOverlayUpdate) {
-            measurePerformanceSection('frame.update.overlay', () => {
-                this.overlayManager.update();
-            });
+            const startTime = beginPerformanceSection();
+            this.overlayManager.update();
+            endPerformanceSection('frame.update.overlay', startTime);
         }
         if (executionPolicy.runObjectUpdate) {
-            measurePerformanceSection('frame.update.object', () => {
-                this.objectSystem.update();
-            });
+            const startTime = beginPerformanceSection();
+            this.objectSystem.update();
+            endPerformanceSection('frame.update.object', startTime);
         }
         if (executionPolicy.runSceneUpdate) {
-            measurePerformanceSection('frame.update.scene', () => {
-                this.sceneSystem.update();
-            });
+            const startTime = beginPerformanceSection();
+            this.sceneSystem.update();
+            endPerformanceSection('frame.update.scene', startTime);
         }
         const drainedSimulationCommands = drainSimulationCommands();
         if (drainedSimulationCommands.length > 0
             && this.sceneSystem
             && typeof this.sceneSystem.applySimulationCommands === 'function') {
-            measurePerformanceSection('frame.update.simulationCommands', () => {
-                this.sceneSystem.applySimulationCommands(drainedSimulationCommands);
-            });
+            const startTime = beginPerformanceSection();
+            this.sceneSystem.applySimulationCommands(drainedSimulationCommands);
+            endPerformanceSection('frame.update.simulationCommands', startTime);
         }
         if (executionPolicy.runDebugUpdate) {
-            measurePerformanceSection('frame.update.debug', () => {
-                this.debugSystem.update();
-            });
+            const startTime = beginPerformanceSection();
+            this.debugSystem.update();
+            endPerformanceSection('frame.update.debug', startTime);
         }
     }
 
@@ -409,33 +433,33 @@ export class SystemHandler {
      * 물리/전투 등 고정 시간 축이 필요한 모듈만 갱신합니다.
      */
     #runFixedStep() {
-        measurePerformanceSection('fixed.step.total', () => {
-            if (this.animationSystem && typeof this.animationSystem.update === 'function') {
-                measurePerformanceSection('fixed.animation', () => {
-                    this.animationSystem.update({ useFixedTick: true });
-                });
-            }
+        const totalStart = beginPerformanceSection();
+        if (this.animationSystem && typeof this.animationSystem.update === 'function') {
+            const startTime = beginPerformanceSection();
+            this.animationSystem.update(FIXED_ANIMATION_UPDATE_OPTIONS);
+            endPerformanceSection('fixed.animation', startTime);
+        }
 
-            if (this.objectSystem
-                && typeof this.objectSystem.fixedUpdate === 'function') {
-                measurePerformanceSection('fixed.object', () => {
-                    this.objectSystem.fixedUpdate();
-                });
-            }
+        if (this.objectSystem
+            && typeof this.objectSystem.fixedUpdate === 'function') {
+            const startTime = beginPerformanceSection();
+            this.objectSystem.fixedUpdate();
+            endPerformanceSection('fixed.object', startTime);
+        }
 
-            if (this.sceneSystem
-                && typeof this.sceneSystem.fixedUpdate === 'function') {
-                measurePerformanceSection('fixed.scene', () => {
-                    this.sceneSystem.fixedUpdate();
-                });
-            }
+        if (this.sceneSystem
+            && typeof this.sceneSystem.fixedUpdate === 'function') {
+            const startTime = beginPerformanceSection();
+            this.sceneSystem.fixedUpdate();
+            endPerformanceSection('fixed.scene', startTime);
+        }
 
-            if (this.gameManager && typeof this.gameManager.fixedUpdate === 'function') {
-                measurePerformanceSection('fixed.gameManager', () => {
-                    this.gameManager.fixedUpdate();
-                });
-            }
-        });
+        if (this.gameManager && typeof this.gameManager.fixedUpdate === 'function') {
+            const startTime = beginPerformanceSection();
+            this.gameManager.fixedUpdate();
+            endPerformanceSection('fixed.gameManager', startTime);
+        }
+        endPerformanceSection('fixed.step.total', totalStart);
     }
 
     /**
@@ -444,50 +468,51 @@ export class SystemHandler {
      */
     draw(executionPolicy = this.frameExecutionPolicy) {
         if (executionPolicy.renderInput) {
-            measurePerformanceSection('frame.draw.input', () => {
-                this.inputSystem.draw();
-            });
+            const startTime = beginPerformanceSection();
+            this.inputSystem.draw();
+            endPerformanceSection('frame.draw.input', startTime);
         }
         if (executionPolicy.renderObject) {
-            measurePerformanceSection('frame.draw.object', () => {
-                this.objectSystem.draw();
-            });
+            const startTime = beginPerformanceSection();
+            this.objectSystem.draw();
+            endPerformanceSection('frame.draw.object', startTime);
         }
         if (executionPolicy.renderScene) {
-            measurePerformanceSection('frame.draw.scene', () => {
-                this.sceneSystem.draw();
-            });
+            const startTime = beginPerformanceSection();
+            this.sceneSystem.draw();
+            endPerformanceSection('frame.draw.scene', startTime);
         }
         // 오버레이(glass blur)가 하위 캔버스를 샘플링할 때만 중간 flush를 수행합니다.
         // 오버레이가 없을 때는 프레임 말미 flush만 사용해 불필요한 동기화를 줄입니다.
-        const needsOverlayComposite = executionPolicy.renderOverlay && this.overlayManager?.hasAnyOverlay();
+        const needsOverlayComposite = executionPolicy.renderOverlay
+            && this.overlayManager?.requiresBackdropComposite?.();
         if (needsOverlayComposite && this.displaySystem.webGLHandler) {
-            measurePerformanceSection('frame.flush.overlayComposite', () => {
-                this.displaySystem.webGLHandler.flushAll();
-            });
+            const startTime = beginPerformanceSection();
+            this.displaySystem.webGLHandler.flushAll();
+            endPerformanceSection('frame.flush.overlayComposite', startTime);
         }
         if (executionPolicy.renderUi) {
-            measurePerformanceSection('frame.draw.ui', () => {
-                this.uiSystem.draw();
-            });
+            const startTime = beginPerformanceSection();
+            this.uiSystem.draw();
+            endPerformanceSection('frame.draw.ui', startTime);
         }
-        measurePerformanceSection('frame.draw.vignette', () => {
-            this.displaySystem.drawVignettes();
-        });
+        const vignetteStart = beginPerformanceSection();
+        this.displaySystem.drawVignettes();
+        endPerformanceSection('frame.draw.vignette', vignetteStart);
         if (executionPolicy.renderOverlay) {
-            measurePerformanceSection('frame.draw.overlay', () => {
-                this.overlayManager.draw();
-            });
+            const startTime = beginPerformanceSection();
+            this.overlayManager.draw();
+            endPerformanceSection('frame.draw.overlay', startTime);
         }
         if (executionPolicy.renderDebug) {
-            measurePerformanceSection('frame.draw.debug', () => {
-                this.debugSystem.draw();
-            });
+            const startTime = beginPerformanceSection();
+            this.debugSystem.draw();
+            endPerformanceSection('frame.draw.debug', startTime);
         }
         if (executionPolicy.renderSound) {
-            measurePerformanceSection('frame.draw.sound', () => {
-                this.soundSystem.draw();
-            });
+            const startTime = beginPerformanceSection();
+            this.soundSystem.draw();
+            endPerformanceSection('frame.draw.sound', startTime);
         }
     }
 
@@ -549,50 +574,49 @@ export class SystemHandler {
             return;
         }
 
-        syncSimulationRuntime({
-            viewport: this.#buildSimulationViewportSnapshot(),
-            input: typeof this.inputSystem.getSimulationInputSnapshot === 'function'
-                ? this.inputSystem.getSimulationInputSnapshot()
-                : {},
-            settings: this.#buildSimulationSettingsSnapshot()
-        });
+        const snapshot = this.simulationRuntimeSnapshot;
+        this.#buildSimulationViewportSnapshot(snapshot.viewport);
+        if (typeof this.inputSystem.getSimulationInputSnapshot === 'function') {
+            this.inputSystem.getSimulationInputSnapshot(snapshot.input);
+        }
+        this.#buildSimulationSettingsSnapshot(snapshot.settings);
+        syncSimulationRuntime(snapshot);
     }
 
     /**
      * @private
      * 시뮬레이션에 필요한 화면 정보를 추출합니다.
+     * @param {object} [out={}] - 갱신할 재사용 스냅샷입니다.
      * @returns {{ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}}
      */
-    #buildSimulationViewportSnapshot() {
+    #buildSimulationViewportSnapshot(out = {}) {
         const screenHandler = this.displaySystem?.screenHandler;
         if (!screenHandler) {
-            return {
-                ww: 0,
-                wh: 0,
-                objectWH: 0,
-                objectOffsetY: 0,
-                uiww: 0,
-                uiOffsetX: 0
-            };
+            out.ww = 0;
+            out.wh = 0;
+            out.objectWH = 0;
+            out.objectOffsetY = 0;
+            out.uiww = 0;
+            out.uiOffsetX = 0;
+            return out;
         }
 
-        return {
-            ww: screenHandler.width,
-            wh: screenHandler.height,
-            objectWH: screenHandler.objectHeight,
-            objectOffsetY: screenHandler.objectOffsetY,
-            uiww: screenHandler.uiWidth,
-            uiOffsetX: screenHandler.uiOffsetX
-        };
+        out.ww = screenHandler.width;
+        out.wh = screenHandler.height;
+        out.objectWH = screenHandler.objectHeight;
+        out.objectOffsetY = screenHandler.objectOffsetY;
+        out.uiww = screenHandler.uiWidth;
+        out.uiOffsetX = screenHandler.uiOffsetX;
+        return out;
     }
 
     /**
      * @private
      * 시뮬레이션 경로에서 참조하는 설정만 선별해 추출합니다.
+     * @param {Record<string, any>} [settings={}] - 갱신할 재사용 설정 객체입니다.
      * @returns {Record<string, any>}
      */
-    #buildSimulationSettingsSnapshot() {
-        const settings = {};
+    #buildSimulationSettingsSnapshot(settings = {}) {
         if (!this.saveSystem || typeof this.saveSystem.getSetting !== 'function') {
             return settings;
         }

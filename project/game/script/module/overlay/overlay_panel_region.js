@@ -36,13 +36,14 @@ const getDefaultOverlayPanelRadius = (positioningHandler, uiScale) => (
 /**
  * overlay 프레젠테이션 기준 좌표를 계산합니다.
  * @param {object} overlay - 기준 overlay 인스턴스입니다.
+ * @param {{x:number, y:number}|null} [out=null] - 갱신할 재사용 좌표입니다.
  * @returns {{x:number, y:number}} 프레젠테이션 기준 좌표입니다.
  */
-export function getOverlayPresentationOrigin(overlay) {
-    return {
-        x: resolveOverlayPresentationAxis(overlay.scaledX, overlay.scaledW, overlay.WW),
-        y: resolveOverlayPresentationAxis(overlay.scaledY, overlay.scaledH, overlay.WH)
-    };
+export function getOverlayPresentationOrigin(overlay, out = null) {
+    const origin = out && typeof out === 'object' ? out : { x: 0, y: 0 };
+    origin.x = resolveOverlayPresentationAxis(overlay.scaledX, overlay.scaledW, overlay.WW);
+    origin.y = resolveOverlayPresentationAxis(overlay.scaledY, overlay.scaledH, overlay.WH);
+    return origin;
 }
 
 /**

@@ -3,6 +3,19 @@ import { colorUtil, formatRgba } from 'util/color_util.js';
 import { clampFiniteNumber } from 'util/number_util.js';
 import { lerpNumber } from './_panel_effect_math.js';
 
+function hasVisibleOverlayPanelParticle(particles) {
+    if (!Array.isArray(particles)) {
+        return false;
+    }
+    for (let i = 0; i < particles.length; i++) {
+        const particle = particles[i];
+        if (particle.visible && particle.opacity > 0.01) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /**
  * 현재 테마에서 panel effect에 사용할 RGB 색상을 반환합니다.
  * @returns {{r:number, g:number, b:number}} 사용할 RGB 값입니다.
@@ -173,7 +186,7 @@ export function buildOverlayPanelEffectCanvas(panel, interactionState, effectOpt
     const rippleOptions = effectOptions.rippleOptions;
     const borderOptions = effectOptions.borderOptions;
     const hasSpotlight = spotlightOptions && interactionState.spotlightAlpha > 0.005;
-    const hasParticles = particleOptions && interactionState.particles.some((particle) => particle.visible && particle.opacity > 0.01);
+    const hasParticles = particleOptions && hasVisibleOverlayPanelParticle(interactionState.particles);
     const hasRipples = rippleOptions && interactionState.ripples.length > 0;
     const hasBorder = borderOptions && interactionState.borderAlpha > 0.005;
 

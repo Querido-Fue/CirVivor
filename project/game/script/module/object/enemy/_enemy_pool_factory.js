@@ -58,8 +58,13 @@ export function createEnemyPools() {
                 enemy.__poolType = type;
                 return enemy;
             },
-            (enemy) => enemy.reset(),
-            `Enemy.${type}`
+            (enemy) => {
+                if (enemy.__poolResetReady !== true) {
+                    enemy.reset();
+                }
+            },
+            `Enemy.${type}`,
+            ENEMY_CONSTANTS.POOL_MAX_RETAINED_COUNT
         );
         pools[type].warmUp(ENEMY_CONSTANTS.POOL_WARMUP_COUNT);
     }

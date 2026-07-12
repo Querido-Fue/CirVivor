@@ -30,6 +30,12 @@ const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_
  * @property {boolean} persistent - 프레임 초기화에서 제외할 정적 surface 여부입니다.
  * @property {boolean} includeInComposite - blur 캡처 포함 여부입니다.
  * @property {number} compositeOpacityFactor - blur 캡처 시 적용할 opacity 배율입니다.
+ * @property {'canvas'|'solid'|'skip'} compositeKind - backdrop 합성 방식입니다.
+ * @property {number} contentRevision - 마지막 내용 변경 revision입니다.
+ * @property {number} compositeStateRevision - opacity 등 합성 상태 변경 revision입니다.
+ * @property {number} drawCountThisFrame - 현재 프레임 draw 호출 수입니다.
+ * @property {boolean} wasNonEmptyLastFrame - 이전 프레임 내용 존재 여부입니다.
+ * @property {boolean} isEmpty - 현재 surface가 투명한지 여부입니다.
  */
 
 /**
@@ -48,6 +54,9 @@ export class DisplaySystem {
         this.staticSurfaceIds = [];
         this.dynamicSurfaceIds = [];
         this.dynamicSequence = 0;
+        this.sortedSurfaceDescriptors = [];
+        this.surfaceOrderDirty = true;
+        this.contentRevisionSerial = 0;
         this.dynamic2DPool = new CanvasSurfacePool('2d');
         this.dynamicWebGLPool = new CanvasSurfacePool('webgl');
         this.vignetteRenderer = new VignetteRenderer();
@@ -99,7 +108,7 @@ export class DisplaySystem {
 
     /**
      * 동적 surface를 생성합니다.
-     * @param {{type: '2d'|'webgl', order: number, mode?: 'batch'|'overlay-effect'|'effect', includeInComposite?: boolean, compositeOpacityFactor?: number}} options - 생성 옵션입니다.
+     * @param {{type: '2d'|'webgl', order: number, mode?: 'batch'|'overlay-effect'|'effect', includeInComposite?: boolean, compositeOpacityFactor?: number, compositeKind?: 'canvas'|'solid'|'skip'}} options - 생성 옵션입니다.
      * @returns {DisplaySurfaceDescriptor} 생성된 surface descriptor입니다.
      */
     createDynamicSurface(options) {
@@ -124,11 +133,14 @@ export class DisplaySystem {
             dynamic: true,
             persistent: false,
             includeInComposite: options.includeInComposite !== false,
-            compositeOpacityFactor: options.compositeOpacityFactor
+            compositeOpacityFactor: options.compositeOpacityFactor,
+            compositeKind: options.compositeKind
         });
 
         this.surfaceMap.set(surfaceId, descriptor);
         this.dynamicSurfaceIds.push(surfaceId);
+        this.surfaceOrderDirty = true;
+        this.#advanceContentRevision(descriptor);
         this.#syncSurfaceBackingStore(descriptor);
         this.#registerDescriptor(descriptor);
         this.#syncSurfaceCoordinateTransform(descriptor);
@@ -149,7 +161,12 @@ export class DisplaySystem {
 
         this.#unregisterDescriptor(descriptor);
         this.surfaceMap.delete(surfaceId);
-        this.dynamicSurfaceIds = this.dynamicSurfaceIds.filter((id) => id !== surfaceId);
+        const dynamicIndex = this.dynamicSurfaceIds.indexOf(surfaceId);
+        if (dynamicIndex >= 0) {
+            this.dynamicSurfaceIds.splice(dynamicIndex, 1);
+        }
+        this.surfaceOrderDirty = true;
+        this.#advanceContentRevision();
 
         if (descriptor.canvas.parentNode === this.overlayLayerHost) {
             this.overlayLayerHost.removeChild(descriptor.canvas);
@@ -228,22 +245,140 @@ export class DisplaySystem {
     /**
      * 특정 surface보다 아래에 있는 합성 소스를 반환합니다.
      * @param {string} surfaceId - 기준 surface 식별자입니다.
-     * @returns {Array<{kind: string, canvas?: HTMLCanvasElement, opacity?: number}>} 합성 소스 목록입니다.
+     * @returns {{snapshotIdentity: string, sourceRevision: number, sources: Array<{kind: string, canvas?: HTMLCanvasElement, opacity?: number, revision?: number}>}} 합성 snapshot입니다.
      */
     getCompositeSourcesBeforeSurface(surfaceId) {
         const target = this.surfaceMap.get(surfaceId);
         if (!target) {
-            return [];
+            return DisplaySystem.EMPTY_COMPOSITE_SNAPSHOT;
         }
 
-        const sources = [];
+        const snapshot = target.compositeSnapshot;
+        const sources = snapshot.sources;
+        sources.length = 0;
+        let sourceCount = 0;
+        let snapshotChanged = false;
         for (const descriptor of this.#getSortedSurfaceDescriptors()) {
-            if (shouldIncludeDisplayCompositeSource(descriptor, target)) {
-                sources.push(createDisplayCompositeCanvasSource(descriptor));
+            if (!shouldIncludeDisplayCompositeSource(descriptor, target) || descriptor.isEmpty) {
+                continue;
+            }
+
+            const source = updateDisplayCompositeSource(descriptor);
+            if (source) {
+                sources.push(source);
+                const sampledContentRevision = descriptor.compositeKind === 'solid'
+                    ? 0
+                    : descriptor.contentRevision;
+                if (snapshot.sourceDescriptors[sourceCount] !== descriptor
+                    || snapshot.sourceContentRevisions[sourceCount] !== sampledContentRevision
+                    || snapshot.sourceCompositeRevisions[sourceCount] !== descriptor.compositeStateRevision
+                    || snapshot.sourceOpacities[sourceCount] !== source.opacity
+                    || snapshot.sourceKinds[sourceCount] !== source.kind) {
+                    snapshotChanged = true;
+                }
+                snapshot.sourceDescriptors[sourceCount] = descriptor;
+                snapshot.sourceContentRevisions[sourceCount] = sampledContentRevision;
+                snapshot.sourceCompositeRevisions[sourceCount] = descriptor.compositeStateRevision;
+                snapshot.sourceOpacities[sourceCount] = source.opacity;
+                snapshot.sourceKinds[sourceCount] = source.kind;
+                sourceCount += 1;
             }
         }
 
-        return sources;
+        if (snapshot.sourceDescriptors.length !== sourceCount) {
+            snapshotChanged = true;
+            snapshot.sourceDescriptors.length = sourceCount;
+            snapshot.sourceContentRevisions.length = sourceCount;
+            snapshot.sourceCompositeRevisions.length = sourceCount;
+            snapshot.sourceOpacities.length = sourceCount;
+            snapshot.sourceKinds.length = sourceCount;
+        }
+        if (snapshotChanged) {
+            snapshot.sourceRevision += 1;
+            if (snapshot.sourceRevision >= Number.MAX_SAFE_INTEGER) {
+                snapshot.sourceRevision = 1;
+            }
+        }
+        return snapshot;
+    }
+
+    /**
+     * 분석적으로 합성할 단색 surface의 현재 opacity를 갱신합니다.
+     * @param {string} surfaceId - 대상 surface 식별자입니다.
+     * @param {number} opacity - surface 자체의 단색 opacity입니다.
+     */
+    setSurfaceCompositeSolidOpacity(surfaceId, opacity) {
+        const descriptor = this.surfaceMap.get(surfaceId);
+        if (!descriptor || descriptor.compositeKind !== 'solid') {
+            return;
+        }
+
+        const nextOpacity = Math.max(0, Math.min(1, Number.isFinite(opacity) ? opacity : 0));
+        if (descriptor.compositeSolidOpacity === nextOpacity) {
+            return;
+        }
+
+        descriptor.compositeSolidOpacity = nextOpacity;
+        descriptor.compositeStateRevision += 1;
+    }
+
+    /**
+     * CSS opacity처럼 canvas draw 외부에서 바뀐 합성 상태를 기록합니다.
+     * @param {string} surfaceId - 변경된 surface 식별자입니다.
+     */
+    markSurfaceCompositeChanged(surfaceId) {
+        const descriptor = this.surfaceMap.get(surfaceId);
+        if (descriptor) {
+            descriptor.compositeStateRevision += 1;
+        }
+    }
+
+    /**
+     * canvas draw 외부에서 실제 픽셀 내용이 바뀐 surface를 기록합니다.
+     * @param {string} surfaceId - 변경된 surface 식별자입니다.
+     */
+    markSurfaceContentChanged(surfaceId) {
+        const descriptor = this.surfaceMap.get(surfaceId);
+        if (descriptor) {
+            this.#advanceContentRevision(descriptor);
+        }
+    }
+
+    /**
+     * render()/renderGL()을 우회한 직접 canvas draw를 기록합니다.
+     * 현재 프레임의 첫 draw에서만 픽셀 revision을 전진시키고 surface를 non-empty로 표시합니다.
+     * @param {string} surfaceId - 직접 그린 surface 식별자입니다.
+     * @returns {boolean} 등록된 surface를 기록했으면 true입니다.
+     */
+    markSurfaceDirectDraw(surfaceId) {
+        const descriptor = this.surfaceMap.get(surfaceId);
+        if (!descriptor) {
+            return false;
+        }
+
+        this.#markSurfaceDrawn(descriptor);
+        return true;
+    }
+
+    /**
+     * 핸들러를 우회한 직접 canvas clear 결과를 기록합니다.
+     * @param {string} surfaceId - 직접 초기화한 surface 식별자입니다.
+     * @param {boolean} [remainsNonEmpty=false] - clear가 불투명 내용을 남기면 true입니다.
+     * @returns {boolean} 등록된 surface를 기록했으면 true입니다.
+     */
+    markSurfaceDirectClear(surfaceId, remainsNonEmpty = false) {
+        const descriptor = this.surfaceMap.get(surfaceId);
+        if (!descriptor) {
+            return false;
+        }
+
+        const wasNonEmpty = descriptor.isEmpty !== true;
+        descriptor.drawCountThisFrame = 0;
+        descriptor.isEmpty = remainsNonEmpty !== true;
+        if (wasNonEmpty || remainsNonEmpty === true) {
+            this.#advanceContentRevision(descriptor);
+        }
+        return true;
     }
 
     /**
@@ -331,6 +466,8 @@ export class DisplaySystem {
 
         this.surfaceMap.set(surfaceId, descriptor);
         this.staticSurfaceIds.push(surfaceId);
+        this.surfaceOrderDirty = true;
+        this.#advanceContentRevision(descriptor);
         this.#registerDescriptor(descriptor);
     }
 
@@ -342,12 +479,20 @@ export class DisplaySystem {
     #registerDescriptor(descriptor) {
         if (descriptor.type === '2d') {
             this.drawHandler.registerLayer(descriptor.id, descriptor.context, {
-                persistent: descriptor.persistent === true
+                persistent: descriptor.persistent === true,
+                onDraw: () => this.#markSurfaceDrawn(descriptor),
+                onFrameClear: () => this.#beginSurfaceFrame(descriptor, false)
             });
             return;
         }
 
-        this.webGLHandler.registerLayer(descriptor.id, descriptor.context, { mode: descriptor.mode });
+        this.webGLHandler.registerLayer(descriptor.id, descriptor.context, {
+            mode: descriptor.mode,
+            onDraw: () => this.#markSurfaceDrawn(descriptor),
+            onFrameClear: (nonEmpty) => this.#beginSurfaceFrame(descriptor, nonEmpty === true),
+            onContextLost: () => this.#handleSurfaceContextLost(descriptor),
+            onContextRestored: () => this.#handleSurfaceContextRestored(descriptor)
+        });
     }
 
     /**
@@ -366,8 +511,21 @@ export class DisplaySystem {
         const height = usesNativeDisplay2DResolution(descriptor)
             ? this.screenHandler.baseHeight
             : this.screenHandler.height;
-        descriptor.canvas.width = Math.max(1, width);
-        descriptor.canvas.height = Math.max(1, height);
+        const nextWidth = Math.max(1, width);
+        const nextHeight = Math.max(1, height);
+        const widthChanged = descriptor.canvas.width !== nextWidth;
+        const heightChanged = descriptor.canvas.height !== nextHeight;
+
+        if (widthChanged) {
+            descriptor.canvas.width = nextWidth;
+        }
+        if (heightChanged) {
+            descriptor.canvas.height = nextHeight;
+        }
+        if (descriptor.forceBackingReset && !widthChanged && !heightChanged) {
+            descriptor.canvas.width = nextWidth;
+        }
+        descriptor.forceBackingReset = false;
         this.#syncSurfaceCoordinateTransform(descriptor);
     }
 
@@ -432,12 +590,10 @@ export class DisplaySystem {
             return;
         }
 
-        const dynamicDescriptors = this.dynamicSurfaceIds
-            .map((id) => this.surfaceMap.get(id))
-            .filter(Boolean)
-            .sort(compareDisplaySurfaceDescriptors);
-
-        for (const descriptor of dynamicDescriptors) {
+        for (const descriptor of this.#getSortedSurfaceDescriptors()) {
+            if (!descriptor.dynamic) {
+                continue;
+            }
             descriptor.canvas.style.zIndex = `${descriptor.order}`;
             this.overlayLayerHost.appendChild(descriptor.canvas);
         }
@@ -449,9 +605,96 @@ export class DisplaySystem {
      * @returns {DisplaySurfaceDescriptor[]} 정렬된 descriptor 목록입니다.
      */
     #getSortedSurfaceDescriptors() {
-        return Array.from(this.surfaceMap.values()).sort(compareDisplaySurfaceDescriptors);
+        if (!this.surfaceOrderDirty) {
+            return this.sortedSurfaceDescriptors;
+        }
+
+        this.sortedSurfaceDescriptors.length = 0;
+        for (const descriptor of this.surfaceMap.values()) {
+            this.sortedSurfaceDescriptors.push(descriptor);
+        }
+        this.sortedSurfaceDescriptors.sort(compareDisplaySurfaceDescriptors);
+        this.surfaceOrderDirty = false;
+        return this.sortedSurfaceDescriptors;
+    }
+
+    /**
+     * 프레임 clear 뒤 surface의 empty 상태를 기록합니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 대상 descriptor입니다.
+     * @param {boolean} remainsNonEmpty - clear 자체가 불투명 내용을 남기는지 여부입니다.
+     * @private
+     */
+    #beginSurfaceFrame(descriptor, remainsNonEmpty) {
+        const wasNonEmpty = descriptor.isEmpty !== true;
+        descriptor.wasNonEmptyLastFrame = wasNonEmpty;
+        descriptor.drawCountThisFrame = 0;
+        descriptor.isEmpty = remainsNonEmpty !== true;
+
+        if (wasNonEmpty !== remainsNonEmpty) {
+            this.#advanceContentRevision(descriptor);
+        }
+    }
+
+    /**
+     * 현재 프레임의 첫 draw를 surface 내용 변경으로 기록합니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 대상 descriptor입니다.
+     * @private
+     */
+    #markSurfaceDrawn(descriptor) {
+        descriptor.drawCountThisFrame += 1;
+        descriptor.isEmpty = false;
+        if (descriptor.drawCountThisFrame === 1) {
+            this.#advanceContentRevision(descriptor);
+        }
+    }
+
+    /**
+     * context loss로 표시 내용이 사라진 surface 상태를 기록합니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 대상 descriptor입니다.
+     * @private
+     */
+    #handleSurfaceContextLost(descriptor) {
+        descriptor.wasNonEmptyLastFrame = descriptor.isEmpty !== true;
+        descriptor.drawCountThisFrame = 0;
+        descriptor.isEmpty = true;
+        this.#advanceContentRevision(descriptor);
+    }
+
+    /**
+     * context restore 뒤 새 GPU 자원이 사용되도록 합성 revision을 갱신합니다.
+     * @param {DisplaySurfaceDescriptor} descriptor - 대상 descriptor입니다.
+     * @private
+     */
+    #handleSurfaceContextRestored(descriptor) {
+        descriptor.drawCountThisFrame = 0;
+        descriptor.isEmpty = true;
+        this.#advanceContentRevision(descriptor);
+    }
+
+    /**
+     * 전역 content serial과 선택한 surface의 픽셀 revision을 전진시킵니다.
+     * @param {DisplaySurfaceDescriptor} [descriptor] - 직접 변경된 descriptor입니다.
+     * @private
+     */
+    #advanceContentRevision(descriptor) {
+        this.contentRevisionSerial += 1;
+        if (this.contentRevisionSerial >= Number.MAX_SAFE_INTEGER) {
+            this.contentRevisionSerial = 1;
+            for (const surface of this.surfaceMap.values()) {
+                surface.contentRevision = 1;
+            }
+        }
+        if (descriptor) {
+            descriptor.contentRevision = this.contentRevisionSerial;
+        }
     }
 }
+
+DisplaySystem.EMPTY_COMPOSITE_SNAPSHOT = Object.freeze({
+    snapshotIdentity: 'empty',
+    sourceRevision: 0,
+    sources: Object.freeze([])
+});
 
 /**
  * 현재 DisplaySystem 인스턴스를 반환합니다.
@@ -540,6 +783,28 @@ export const renderGL = (layerName, options) => {
 };
 
 /**
+ * 동일 WebGL shape/style을 사용하는 local center 목록을 bulk batch 경로로 렌더링합니다.
+ * @param {string} layerName - 대상 레이어 식별자입니다.
+ * @param {object} options - 공통 shape 렌더 옵션입니다.
+ * @param {Array<{x:number, y:number}>} localCenters - 원점 기준 local center 목록입니다.
+ * @param {number} originX - 월드 원점 X 좌표입니다.
+ * @param {number} originY - 월드 원점 Y 좌표입니다.
+ * @param {number} localScale - local center 좌표 배율입니다.
+ * @returns {number} renderer에 전달한 instance 수입니다.
+ */
+export const renderGLShapeInstances = (layerName, options, localCenters, originX, originY, localScale) => {
+    const targetLayer = resolveDisplayWebGLLayerName(layerName);
+    return displaySystemInstance.webGLHandler.renderShapeInstances(
+        targetLayer,
+        options,
+        localCenters,
+        originX,
+        originY,
+        localScale
+    );
+};
+
+/**
  * 레이어의 지속 그림자를 켭니다.
  * @param {string} layerName - 레이어 식별자입니다.
  * @param {number} blur - 그림자 블러입니다.
@@ -559,7 +824,10 @@ export const shadowOff = (layerName) => displaySystemInstance.drawHandler.shadow
  * @param {number} g - green 채널입니다.
  * @param {number} b - blue 채널입니다.
  */
-export const setBackgroundColor = (r, g, b) => displaySystemInstance.webGLHandler.setBackgroundColor(r, g, b);
+export const setBackgroundColor = (r, g, b) => {
+    displaySystemInstance.webGLHandler.setBackgroundColor(r, g, b);
+    displaySystemInstance.markSurfaceContentChanged('background');
+};
 
 /**
  * 텍스트 너비를 측정합니다.
@@ -594,7 +862,7 @@ export const getCanvasPoolStats = () => displaySystemInstance
  * @returns {boolean} 합성 소스로 포함하면 true입니다.
  */
 function shouldIncludeDisplayCompositeSource(descriptor, target) {
-    if (!descriptor.includeInComposite || descriptor.id === target.id) {
+    if (!descriptor.includeInComposite || descriptor.compositeKind === 'skip' || descriptor.id === target.id) {
         return false;
     }
     if (!descriptor.dynamic && descriptor.id === 'top') {
@@ -608,16 +876,25 @@ function shouldIncludeDisplayCompositeSource(descriptor, target) {
 }
 
 /**
- * 합성 캡처용 canvas source 객체를 생성합니다.
+ * descriptor가 보유한 합성 source 레코드를 현재 상태로 갱신합니다.
  * @param {DisplaySurfaceDescriptor} descriptor - 합성할 surface descriptor입니다.
- * @returns {{kind: string, canvas: HTMLCanvasElement, opacity: number}} 합성 소스입니다.
+ * @returns {{kind: string, canvas?: HTMLCanvasElement, opacity: number, revision: number}|null} 합성 소스입니다.
  */
-function createDisplayCompositeCanvasSource(descriptor) {
-    return {
-        kind: 'canvas',
-        canvas: descriptor.canvas,
-        opacity: getDisplayCompositeSourceOpacity(descriptor)
-    };
+function updateDisplayCompositeSource(descriptor) {
+    const source = descriptor.compositeSource;
+    if (!source || descriptor.compositeKind === 'skip') {
+        return null;
+    }
+
+    source.kind = descriptor.compositeKind === 'solid' ? 'dim' : 'canvas';
+    source.canvas = descriptor.compositeKind === 'solid' ? undefined : descriptor.canvas;
+    source.opacity = descriptor.compositeKind === 'solid'
+        ? descriptor.compositeSolidOpacity * getDisplayCompositeSourceOpacity(descriptor)
+        : getDisplayCompositeSourceOpacity(descriptor);
+    source.revision = descriptor.compositeKind === 'solid'
+        ? descriptor.compositeStateRevision
+        : descriptor.contentRevision;
+    return source;
 }
 
 /**
