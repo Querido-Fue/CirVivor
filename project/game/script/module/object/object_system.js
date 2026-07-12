@@ -1,6 +1,7 @@
 import { getDelta, getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getData } from 'data/data_handler.js';
+import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { enemyAI } from './enemy/ai/_enemy_ai.js';
 import { createEnemyPools } from './enemy/_enemy_pool_factory.js';
 import {
@@ -162,6 +163,7 @@ export class ObjectSystem {
     fixedUpdate() {
         const delta = getFixedDelta();
         if (!Number.isFinite(delta) || delta <= 0) return;
+        let phaseStart = beginPerformanceSection();
         if (this.physicsSystem && typeof this.physicsSystem.beginFrame === 'function') {
             this.physicsSystem.beginFrame();
         }
@@ -169,7 +171,9 @@ export class ObjectSystem {
         fixedUpdateActiveObjectList(this.players, delta);
         fixedUpdateActiveObjectList(this.items, delta);
         fixedUpdateActiveObjectList(this.projectiles, delta);
+        endPerformanceSection('fixed.object.active', phaseStart);
 
+        phaseStart = beginPerformanceSection();
         const decisionGroup = this.aiDecisionGroupCursor;
         this.aiDecisionGroupCursor = (this.aiDecisionGroupCursor + 1) % this.aiDecisionGroupCount;
         clearObjectSystemAISharedCaches(this);
@@ -191,17 +195,31 @@ export class ObjectSystem {
         fixedOptions.decisionGroup = decisionGroup;
         fixedOptions.decisionGroupCount = this.aiDecisionGroupCount;
         fixedUpdateObjectSystemEnemies(fixedOptions);
+        endPerformanceSection('fixed.object.enemy', phaseStart);
 
+        phaseStart = beginPerformanceSection();
         const hexaContactPairs = this.collectHexaHiveContactPairs(delta);
+        endPerformanceSection('fixed.object.contact', phaseStart);
+
+        phaseStart = beginPerformanceSection();
         const mergeStateOptions = this.hexaMergeStateOptions;
         mergeStateOptions.enemies = this.enemies;
         mergeStateOptions.delta = delta;
         mergeStateOptions.contactPairs = hexaContactPairs;
         const hexaMergeCandidatesById = syncHexaHiveMergeState(mergeStateOptions);
+        endPerformanceSection('fixed.object.mergeState', phaseStart);
+
+        phaseStart = beginPerformanceSection();
         this.enemyCollisionOptions.delta = delta;
         this.enemyCollisionOptions.players = this.players;
         this.resolveEnemyCollisions(this.enemies, this.enemyCollisionOptions);
+        endPerformanceSection('fixed.object.collision', phaseStart);
+
+        phaseStart = beginPerformanceSection();
         this.resolveProjectileVsEnemies(this.projectiles, this.enemies, delta);
+        endPerformanceSection('fixed.object.projectile', phaseStart);
+
+        phaseStart = beginPerformanceSection();
         for (const [enemyId, enemy] of hexaMergeCandidatesById) {
             if (!enemy || enemy.active === false) {
                 hexaMergeCandidatesById.delete(enemyId);
@@ -213,6 +231,7 @@ export class ObjectSystem {
         if (this.resolveHexaHiveMerges(hexaMergeCandidatesById) > 0) {
             this.hexaHiveMergeEffectPairs.length = 0;
         }
+        endPerformanceSection('fixed.object.mergeFinalize', phaseStart);
     }
 
     /**
