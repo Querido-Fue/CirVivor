@@ -7,17 +7,31 @@ export const COLLISION_CANDIDATE_VISIT_LIMIT = CANDIDATE_BUDGET.UNIQUE_VISITS_PE
 export const COLLISION_ANCHOR_CANDIDATE_MULTIPLIER = CANDIDATE_BUDGET.ANCHOR_MULTIPLIER;
 
 /**
- * fixed frame과 pass cursor를 raw 후보 방문 창의 bucket 시작 token으로 변환합니다.
- * 방문 상한 단위로 이동해 연속 frame과 rebuild가 같은 앞쪽 후보를 반복하지 않게 합니다.
- * @param {number} frameToken - 현재 fixed frame token입니다.
- * @param {number} passCursor - 현재 pair pass cursor입니다.
+ * 실제 후보 rebuild epoch를 raw 후보 방문 창의 bucket 시작 token으로 변환합니다.
+ * body별 방문 상한 단위로 이동해 normal과 anchor가 각각 다음 page를 방문하게 합니다.
+ * @param {number} scanEpoch - 실제 후보 목록을 재구성할 때마다 증가하는 epoch입니다.
+ * @param {number} visitLimit - 현재 low body의 고유 후보 방문 상한입니다.
+ * @param {number} [cellCount=1] - 현재 low body가 순회할 grid cell 수입니다.
+ * @param {number} [lowOffset=0] - low body별 cell 시작 위상입니다.
  * @returns {number} uint32 bucket 시작 token입니다.
  */
-export function getCollisionEnemyCandidateBucketScanToken(frameToken, passCursor) {
-    const safeFrameToken = Number.isFinite(frameToken) ? Math.floor(frameToken) : 0;
-    const safePassCursor = Number.isFinite(passCursor) ? Math.floor(passCursor) : 0;
-    const phase = (safeFrameToken + safePassCursor) >>> 0;
-    return Math.imul(phase, COLLISION_CANDIDATE_VISIT_LIMIT) >>> 0;
+export function getCollisionEnemyCandidateBucketScanToken(
+    scanEpoch,
+    visitLimit,
+    cellCount = 1,
+    lowOffset = 0
+) {
+    const safeScanEpoch = Number.isFinite(scanEpoch) ? Math.floor(scanEpoch) >>> 0 : 0;
+    const safeVisitLimit = Number.isFinite(visitLimit) && visitLimit > 0
+        ? Math.floor(visitLimit) >>> 0
+        : COLLISION_CANDIDATE_VISIT_LIMIT;
+    const safeCellCount = Number.isFinite(cellCount) && cellCount > 0
+        ? Math.floor(cellCount) >>> 0
+        : 1;
+    const safeLowOffset = Number.isFinite(lowOffset) ? Math.floor(lowOffset) >>> 0 : 0;
+    const cellScanPhase = (safeScanEpoch + safeLowOffset) >>> 0;
+    const bucketPageEpoch = Math.floor(cellScanPhase / safeCellCount) >>> 0;
+    return Math.imul(bucketPageEpoch, safeVisitLimit) >>> 0;
 }
 
 /**

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const sleepState = await loadGameModule('physics/collision_enemy_sleep_state.js');
+const scratchObjects = await loadGameModule('physics/collision_scratch_objects.js');
 const {
     isCollisionEnemySleepObservationComplete,
     markCollisionEnemySleepObservationIncomplete,
@@ -15,11 +16,17 @@ resetCollisionEnemySleepObservation(observationBodyA);
 resetCollisionEnemySleepObservation(observationBodyB);
 assert.equal(isCollisionEnemySleepObservationComplete(observationBodyA), true);
 assert.equal(isCollisionEnemySleepObservationComplete(observationBodyB), true);
+assert.equal(isCollisionEnemySleepObservationComplete(null), false);
+assert.equal(isCollisionEnemySleepObservationComplete(undefined), false);
+assert.equal(isCollisionEnemySleepObservationComplete({ kind: 'wall' }), false);
 markCollisionEnemySleepObservationIncomplete(observationBodyA, observationBodyB);
 assert.equal(isCollisionEnemySleepObservationComplete(observationBodyA), false);
 assert.equal(isCollisionEnemySleepObservationComplete(observationBodyB), false);
 resetCollisionEnemySleepObservation(observationBodyA);
 assert.equal(isCollisionEnemySleepObservationComplete(observationBodyA), true);
+
+const pooledBodyShape = scratchObjects.createCollisionBody();
+assert.equal(pooledBodyShape._sleepObservationIncomplete, false);
 
 const completeEnemy = {
     position: { x: 10, y: 20 },

@@ -133,6 +133,7 @@ export class CollisionHandler {
     #processObjectPairCallback;
     #fixedFrameToken;
     #pairPassCursor;
+    #enemyCandidateScanEpoch;
     #sleepAdvanceFrameByEnemy;
     #sleepPostSolveFrameByEnemy;
     #enemyCandidateScanTruncated;
@@ -168,6 +169,7 @@ export class CollisionHandler {
         this.#processObjectPairCallback = this.#processPair.bind(this);
         this.#fixedFrameToken = 0;
         this.#pairPassCursor = 0;
+        this.#enemyCandidateScanEpoch = 0;
         this.#sleepAdvanceFrameByEnemy = new WeakMap();
         this.#sleepPostSolveFrameByEnemy = new WeakMap();
         this.#enemyCandidateScanTruncated = false;
@@ -701,11 +703,9 @@ export class CollisionHandler {
 
         const cellSize = this.#activeGridCellSize;
         const broadData = this.#broadphaseBuffer.broadData;
-        const cellScanToken = (this.#fixedFrameToken + this.#pairPassCursor) >>> 0;
-        const bucketScanToken = getCollisionEnemyCandidateBucketScanToken(
-            this.#fixedFrameToken,
-            this.#pairPassCursor
-        );
+        const candidateScanEpoch = this.#enemyCandidateScanEpoch >>> 0;
+        this.#enemyCandidateScanEpoch = (candidateScanEpoch + 1) >>> 0;
+        const cellScanToken = candidateScanEpoch;
         let priorityAdmissionCount = 0;
         let predictiveAdmissionCount = 0;
         let admissionBudgetSkipCount = 0;
@@ -731,7 +731,14 @@ export class CollisionHandler {
 
             const cellHeight = maxCellY - minCellY + 1;
             const cellCount = (maxCellX - minCellX + 1) * cellHeight;
-            const cellStart = (cellScanToken + low) % cellCount;
+            const lowCellScanToken = (cellScanToken + low) >>> 0;
+            const cellStart = lowCellScanToken % cellCount;
+            const bucketScanToken = getCollisionEnemyCandidateBucketScanToken(
+                candidateScanEpoch,
+                lowCandidateVisitLimit,
+                cellCount,
+                low
+            );
             candidateCellLoop: for (let cellOffset = 0; cellOffset < cellCount; cellOffset++) {
                 const cellIndex = (cellStart + cellOffset) % cellCount;
                 const cx = minCellX + Math.floor(cellIndex / cellHeight);

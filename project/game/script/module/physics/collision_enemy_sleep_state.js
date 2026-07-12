@@ -68,7 +68,8 @@ export function markCollisionEnemySleepObservationIncomplete(bodyA, bodyB) {
  * @returns {boolean} sleep 전환을 허용할 수 있으면 true입니다.
  */
 export function isCollisionEnemySleepObservationComplete(collisionBody) {
-    return collisionBody?._sleepObservationIncomplete !== true;
+    return collisionBody?.kind === 'enemy'
+        && collisionBody._sleepObservationIncomplete !== true;
 }
 
 /**
