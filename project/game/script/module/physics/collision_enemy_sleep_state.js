@@ -39,6 +39,39 @@ export function advanceCollisionEnemySleepState(enemy, sleeping) {
 }
 
 /**
+ * 현재 solve에서 적 body의 후보 관측이 완전한 상태로 시작하도록 초기화합니다.
+ * @param {object} collisionBody - 초기화할 적 충돌 body입니다.
+ */
+export function resetCollisionEnemySleepObservation(collisionBody) {
+    if (collisionBody) {
+        collisionBody._sleepObservationIncomplete = false;
+    }
+}
+
+/**
+ * 예산으로 pair를 생략한 두 적 body의 sleep 관측을 불완전 상태로 표시합니다.
+ * @param {object|null|undefined} bodyA - 첫 번째 충돌 body입니다.
+ * @param {object|null|undefined} bodyB - 두 번째 충돌 body입니다.
+ */
+export function markCollisionEnemySleepObservationIncomplete(bodyA, bodyB) {
+    if (bodyA?.kind === 'enemy') {
+        bodyA._sleepObservationIncomplete = true;
+    }
+    if (bodyB?.kind === 'enemy') {
+        bodyB._sleepObservationIncomplete = true;
+    }
+}
+
+/**
+ * 적 body가 이번 solve에서 sleep 전환에 충분히 완전하게 관측됐는지 반환합니다.
+ * @param {object|null|undefined} collisionBody - 검사할 충돌 body입니다.
+ * @returns {boolean} sleep 전환을 허용할 수 있으면 true입니다.
+ */
+export function isCollisionEnemySleepObservationComplete(collisionBody) {
+    return collisionBody?._sleepObservationIncomplete !== true;
+}
+
+/**
  * 충돌 해소 후 적의 sleep/idle 추적 상태를 갱신합니다.
  * @param {object} enemy - 상태를 갱신할 적 객체입니다.
  * @param {object} collisionBody - 이번 프레임에 사용한 충돌 body입니다.

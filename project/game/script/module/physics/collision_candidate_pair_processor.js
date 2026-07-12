@@ -10,6 +10,7 @@ import {
 } from './collision_enemy_pair_budget.js';
 import { areCollisionBodiesSameEntity, getCollisionPassRule } from './collision_pair_rule_guard.js';
 import { COLLISION_RULE_DYNAMIC_RESOLVE } from './_collision_rules.js';
+import { markCollisionEnemySleepObservationIncomplete } from './collision_enemy_sleep_state.js';
 import {
     COLLISION_BODY_KIND_ENEMY as BODY_KIND_ENEMY,
     COLLISION_BODY_SHAPE_CIRCLE as BODY_SHAPE_CIRCLE,
@@ -122,6 +123,7 @@ function processCollisionEnemyCandidatePair(
     }
 
     if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, context.pairBudget)) {
+        markCollisionEnemySleepObservationIncomplete(bodyA, bodyB);
         context.profileRecorder.recordCount('solveBudgetSkipCount');
         return 0;
     }
@@ -185,6 +187,7 @@ function processCollisionObjectCandidatePair(bodyA, bodyB, context) {
     if (!rule) return 0;
 
     if (shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, context.pairBudget)) {
+        markCollisionEnemySleepObservationIncomplete(bodyA, bodyB);
         context.profileRecorder.recordCount('solveBudgetSkipCount');
         return 0;
     }

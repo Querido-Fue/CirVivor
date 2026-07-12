@@ -2,7 +2,24 @@ import assert from 'node:assert/strict';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const sleepState = await loadGameModule('physics/collision_enemy_sleep_state.js');
-const { updateCollisionEnemyPostSolveSleepState } = sleepState;
+const {
+    isCollisionEnemySleepObservationComplete,
+    markCollisionEnemySleepObservationIncomplete,
+    resetCollisionEnemySleepObservation,
+    updateCollisionEnemyPostSolveSleepState
+} = sleepState;
+
+const observationBodyA = { kind: 'enemy' };
+const observationBodyB = { kind: 'enemy' };
+resetCollisionEnemySleepObservation(observationBodyA);
+resetCollisionEnemySleepObservation(observationBodyB);
+assert.equal(isCollisionEnemySleepObservationComplete(observationBodyA), true);
+assert.equal(isCollisionEnemySleepObservationComplete(observationBodyB), true);
+markCollisionEnemySleepObservationIncomplete(observationBodyA, observationBodyB);
+assert.equal(isCollisionEnemySleepObservationComplete(observationBodyA), false);
+assert.equal(isCollisionEnemySleepObservationComplete(observationBodyB), false);
+resetCollisionEnemySleepObservation(observationBodyA);
+assert.equal(isCollisionEnemySleepObservationComplete(observationBodyA), true);
 
 const completeEnemy = {
     position: { x: 10, y: 20 },

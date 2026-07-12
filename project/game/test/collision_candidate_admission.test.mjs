@@ -8,6 +8,7 @@ const {
     COLLISION_CANDIDATE_VISIT_LIMIT,
     COLLISION_CURRENT_CANDIDATE_LIMIT,
     COLLISION_PREDICTIVE_CANDIDATE_LIMIT,
+    getCollisionEnemyCandidateBucketScanToken,
     getCollisionEnemyCandidateVisitLimit,
     shouldAdmitCollisionEnemyCandidate
 } = admission;
@@ -18,6 +19,10 @@ assert.equal(COLLISION_CANDIDATE_VISIT_LIMIT, 32);
 assert.equal(COLLISION_ANCHOR_CANDIDATE_MULTIPLIER, 2);
 assert.equal(getCollisionEnemyCandidateVisitLimit(false), 32);
 assert.equal(getCollisionEnemyCandidateVisitLimit(true), 64);
+assert.equal(getCollisionEnemyCandidateBucketScanToken(0, 0), 0);
+assert.equal(getCollisionEnemyCandidateBucketScanToken(1, 0), 32);
+assert.equal(getCollisionEnemyCandidateBucketScanToken(1, 2), 96);
+assert.equal(getCollisionEnemyCandidateBucketScanToken(Number.NaN, Number.NaN), 0);
 assert.equal(shouldAdmitCollisionEnemyCandidate(11, 2, true, false), true);
 assert.equal(shouldAdmitCollisionEnemyCandidate(12, 0, true, false), false);
 assert.equal(shouldAdmitCollisionEnemyCandidate(12, 1, false, false), true);

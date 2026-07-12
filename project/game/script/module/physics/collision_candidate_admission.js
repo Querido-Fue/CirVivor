@@ -7,6 +7,20 @@ export const COLLISION_CANDIDATE_VISIT_LIMIT = CANDIDATE_BUDGET.UNIQUE_VISITS_PE
 export const COLLISION_ANCHOR_CANDIDATE_MULTIPLIER = CANDIDATE_BUDGET.ANCHOR_MULTIPLIER;
 
 /**
+ * fixed frame과 pass cursor를 raw 후보 방문 창의 bucket 시작 token으로 변환합니다.
+ * 방문 상한 단위로 이동해 연속 frame과 rebuild가 같은 앞쪽 후보를 반복하지 않게 합니다.
+ * @param {number} frameToken - 현재 fixed frame token입니다.
+ * @param {number} passCursor - 현재 pair pass cursor입니다.
+ * @returns {number} uint32 bucket 시작 token입니다.
+ */
+export function getCollisionEnemyCandidateBucketScanToken(frameToken, passCursor) {
+    const safeFrameToken = Number.isFinite(frameToken) ? Math.floor(frameToken) : 0;
+    const safePassCursor = Number.isFinite(passCursor) ? Math.floor(passCursor) : 0;
+    const phase = (safeFrameToken + safePassCursor) >>> 0;
+    return Math.imul(phase, COLLISION_CANDIDATE_VISIT_LIMIT) >>> 0;
+}
+
+/**
  * low body 하나가 한 rebuild에서 방문할 고유 enemy 후보 상한을 반환합니다.
  * @param {boolean} anchorOwner - low body가 hexa hive anchor인지 여부입니다.
  * @returns {number} 고유 후보 방문 상한입니다.

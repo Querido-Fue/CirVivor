@@ -24,6 +24,7 @@ import { detectCollisionBodies } from './collision_body_detector.js';
 import { CollisionBroadphaseBuffer } from './collision_broadphase_buffer.js';
 import { CollisionBodyPool } from './collision_body_pool.js';
 import {
+    getCollisionEnemyCandidateBucketScanToken,
     getCollisionEnemyCandidateVisitLimit,
     shouldAdmitCollisionEnemyCandidate
 } from './collision_candidate_admission.js';
@@ -37,7 +38,10 @@ import {
 } from './collision_enemy_pair_budget.js';
 import {
     advanceCollisionEnemySleepState,
+    isCollisionEnemySleepObservationComplete,
+    markCollisionEnemySleepObservationIncomplete,
     readCollisionEnemySleepState,
+    resetCollisionEnemySleepObservation,
     updateCollisionEnemyPostSolveSleepState
 } from './collision_enemy_sleep_state.js';
 import {
@@ -290,6 +294,7 @@ export class CollisionHandler {
                 dynamicBodies[i]._resolvedPairCount = 0;
                 dynamicBodies[i]._passPairProcessCount = 0;
                 dynamicBodies[i]._frameResolveMoved = 0;
+                resetCollisionEnemySleepObservation(dynamicBodies[i]);
                 const radius = Math.max(
                     1,
                     Number.isFinite(dynamicBodies[i].resolveRadius)
@@ -356,6 +361,7 @@ export class CollisionHandler {
                     COLLISION_IDLE_TICKS_TO_SLEEP,
                     COLLISION_SLEEP_TICKS,
                     !this.#enemyCandidateScanTruncated
+                        && isCollisionEnemySleepObservationComplete(dynamicBodies[i])
                 );
                 this.#sleepPostSolveFrameByEnemy.set(enemy, this.#fixedFrameToken);
             }
@@ -695,7 +701,11 @@ export class CollisionHandler {
 
         const cellSize = this.#activeGridCellSize;
         const broadData = this.#broadphaseBuffer.broadData;
-        const scanToken = (this.#fixedFrameToken + this.#pairPassCursor) >>> 0;
+        const cellScanToken = (this.#fixedFrameToken + this.#pairPassCursor) >>> 0;
+        const bucketScanToken = getCollisionEnemyCandidateBucketScanToken(
+            this.#fixedFrameToken,
+            this.#pairPassCursor
+        );
         let priorityAdmissionCount = 0;
         let predictiveAdmissionCount = 0;
         let admissionBudgetSkipCount = 0;
@@ -721,7 +731,7 @@ export class CollisionHandler {
 
             const cellHeight = maxCellY - minCellY + 1;
             const cellCount = (maxCellX - minCellX + 1) * cellHeight;
-            const cellStart = (scanToken + low) % cellCount;
+            const cellStart = (cellScanToken + low) % cellCount;
             candidateCellLoop: for (let cellOffset = 0; cellOffset < cellCount; cellOffset++) {
                 const cellIndex = (cellStart + cellOffset) % cellCount;
                 const cx = minCellX + Math.floor(cellIndex / cellHeight);
@@ -729,7 +739,7 @@ export class CollisionHandler {
                 const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
                 const bucket = this.#grid.get(key);
                 if (!bucket) continue;
-                const bucketStart = (scanToken + low + cellIndex) % bucket.count;
+                const bucketStart = (bucketScanToken + low + cellIndex) % bucket.count;
                 for (let bucketOffset = 0; bucketOffset < bucket.count; bucketOffset++) {
                         const bucketIndex = (bucketStart + bucketOffset) % bucket.count;
                         const high = bucket.indices[bucketIndex];
@@ -778,6 +788,7 @@ export class CollisionHandler {
                             priority,
                             isAnchorPair
                         )) {
+                            markCollisionEnemySleepObservationIncomplete(bodyA, bodyB);
                             admissionBudgetSkipCount++;
                             continue;
                         }
