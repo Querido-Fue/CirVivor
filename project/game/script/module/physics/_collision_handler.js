@@ -574,12 +574,9 @@ export class CollisionHandler {
         const gridStart = this.#profileRecorder.startTimer();
         if (rebuildGrid) {
             this.#rebuildGridFromBodies(bodies, 'default', gridBodyCount);
-        } else {
-            this.#broadphaseBuffer.ensure(bodyCount);
-            for (let i = 0; i < bodyCount; i++) {
-                this.#broadphaseBuffer.write(i, bodies[i]);
-            }
         }
+        // 후보 재사용 패스의 위치 해소는 broad-phase SoA도 함께 평행 이동하므로
+        // 직전 rebuild가 만든 grid와 body 메타데이터를 그대로 유지합니다.
         this.#profileRecorder.recordDuration('solveGridMs', gridStart);
 
         const pairScanStart = this.#profileRecorder.startTimer();
@@ -715,13 +712,19 @@ export class CollisionHandler {
         let duplicatePairSkipCount = 0;
         let ruleRejectCount = 0;
         let candidatePairCount = 0;
+        // grid에는 safeEnemyBodyCount 앞쪽 enemy body만 들어가므로 enemy-enemy 규칙 조회를 생략합니다.
+        // getCollisionPassRule이 함께 보장하던 same-entity 차단은 inner loop에서 그대로 유지합니다.
         for (let low = 0; low < safeEnemyBodyCount - 1; low++) {
+            const bodyA = bodies[low];
+            const bodyARef = bodyA?.ref;
+            const bodyAId = bodyA?.id;
+            const hasComparableBodyAId = Number.isInteger(bodyAId) && bodyAId >= 0;
             this.#candidatePairs.beginLowBody();
             let lowPriorityCount = 0;
             let lowPredictiveCount = 0;
             let lowCandidateVisitCount = 0;
             const lowCandidateVisitLimit = getCollisionEnemyCandidateVisitLimit(
-                isCollisionHexaHiveWallBody(bodies[low])
+                isCollisionHexaHiveWallBody(bodyA)
             );
             const broadOffset = low * BROAD_STRIDE;
             const minCellX = Math.floor(broadData[broadOffset] / cellSize);
@@ -764,10 +767,11 @@ export class CollisionHandler {
                         lowCandidateVisitCount++;
                         candidateVisitCount++;
 
-                        const bodyA = bodies[low];
                         const bodyB = bodies[high];
-                        const rule = getCollisionPassRule(bodyA, bodyB, true);
-                        if (!rule) {
+                        if (!bodyA
+                            || !bodyB
+                            || (bodyARef && bodyARef === bodyB.ref)
+                            || (hasComparableBodyAId && bodyAId === bodyB.id)) {
                             ruleRejectCount++;
                             continue;
                         }
@@ -780,8 +784,7 @@ export class CollisionHandler {
                             continue;
                         }
 
-                        const isEnemyPair = bodyA.kind === 'enemy' && bodyB.kind === 'enemy';
-                        const isAnchorPair = isEnemyPair && (
+                        const isAnchorPair = (
                             isCollisionEnemyPairAnchorBody(bodyA, bodyB)
                             || isCollisionEnemyPairAnchorBody(bodyB, bodyA)
                         );
