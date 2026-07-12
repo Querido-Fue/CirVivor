@@ -4,15 +4,9 @@ import {
     COLLISION_CANDIDATE_SWEEP_PAD_SCALE,
     COLLISION_RESOLVE_FRAME_MAX_RATIO,
     COLLISION_RESOLVE_FRAME_MIN_MAX,
-    DENSE_ADAPTIVE_DENSITY_SCALE,
-    DENSE_ADAPTIVE_LIGHT_DENSITY_THRESHOLD,
-    DENSE_ADAPTIVE_MIN_ITERATIONS,
-    DENSE_LOCAL_CANDIDATE_THRESHOLD,
-    DENSE_REBUILD_DENSITY_THRESHOLD,
-    DENSE_REBUILD_MIN_RESOLVED,
-    DENSE_STABILIZE_HEAVY_CANDIDATE_SCALE,
-    DENSE_STABILIZE_MIN_RESOLVED,
-    getDenseSolveTuning,
+    DENSE_POSITION_SOLVE_MAX_PASSES,
+    getCollisionDensePressure,
+    getCollisionResolvePassBoost,
     isCollisionEnemyPairAnchorBody
 } from './_collision_resolve_tuning.js';
 import {
@@ -308,75 +302,39 @@ export class CollisionHandler {
             for (let i = 0; i < staticBodies.length; i++) bodies.push(staticBodies[i]);
 
             let totalResolved = 0;
-            let adaptiveMax = maxIterations;
-            let minIterations = 1;
-            let lastResolved = 0;
-            let denseRebuildPasses = 0;
-            let denseMode = false;
-            let peakCandidatePairs = 0;
-            const denseSolveTuning = getDenseSolveTuning(dynamicBodies.length);
-            if (denseSolveTuning.largePopulation) {
-                this.#profileRecorder.recordCount('solveLargePopulationMode');
-            }
+            let densePressure = 0;
+            const positionPassCount = Math.min(maxIterations, DENSE_POSITION_SOLVE_MAX_PASSES);
             const positionSolveStart = this.#profileRecorder.startTimer();
-            for (let i = 0; i < adaptiveMax; i++) {
-                const shouldDenseRebuild = (
-                    i > 0 &&
-                    denseMode &&
-                    denseRebuildPasses < denseSolveTuning.denseRebuildMaxExtraPasses &&
-                    lastResolved >= DENSE_REBUILD_MIN_RESOLVED
+            for (let i = 0; i < positionPassCount; i++) {
+                const shouldRebuildGrid = i === 0 || i === 2;
+                const resolveBoost = getCollisionResolvePassBoost(
+                    i,
+                    dynamicBodies.length,
+                    densePressure
                 );
                 const resolved = this.#solveOnePass(
                     bodies,
                     true,
                     false,
-                    i === 0 || shouldDenseRebuild,
-                    denseMode && i > 0 ? denseSolveTuning.denseIterationResolveBoost : 1
+                    shouldRebuildGrid,
+                    resolveBoost
                 );
-                if (shouldDenseRebuild) denseRebuildPasses++;
-                totalResolved += resolved;
-                if (i === 0 && maxIterations > DENSE_ADAPTIVE_MIN_ITERATIONS) {
-                    const density = resolved / Math.max(1, bodies.length);
-                    peakCandidatePairs = getCollisionPeakCandidatePairs(dynamicBodies);
-                    const localDense = peakCandidatePairs >= DENSE_LOCAL_CANDIDATE_THRESHOLD;
-                    if (density < DENSE_ADAPTIVE_LIGHT_DENSITY_THRESHOLD && !localDense) {
-                        adaptiveMax = Math.max(
-                            DENSE_ADAPTIVE_MIN_ITERATIONS,
-                            Math.ceil(maxIterations * Math.min(1, density * DENSE_ADAPTIVE_DENSITY_SCALE))
-                        );
-                    } else {
-                        denseMode = density >= DENSE_REBUILD_DENSITY_THRESHOLD || localDense;
-                    }
-                    if (denseMode) {
-                        minIterations = Math.min(maxIterations, denseSolveTuning.denseMinIterationFloor);
-                    }
+                this.#profileRecorder.recordCount('solvePassCount');
+                if (shouldRebuildGrid) {
+                    this.#profileRecorder.recordCount('solveGridRebuildCount');
                 }
-                lastResolved = resolved;
-                if (resolved === 0 && (i + 1) >= minIterations) break;
+                totalResolved += resolved;
+                if (i === 0) {
+                    densePressure = getCollisionDensePressure(
+                        resolved,
+                        bodies.length,
+                        getCollisionPeakCandidatePairs(dynamicBodies)
+                    );
+                    this.#profileRecorder.recordValue('solveDensePressure', densePressure);
+                }
+                if (resolved === 0) break;
             }
             this.#profileRecorder.recordDuration('enemyPositionSolveMs', positionSolveStart);
-
-            if (denseMode && lastResolved >= DENSE_STABILIZE_MIN_RESOLVED) {
-                const stabilizeStart = this.#profileRecorder.startTimer();
-                const stabilizeMaxPasses = peakCandidatePairs >= (
-                    DENSE_LOCAL_CANDIDATE_THRESHOLD * DENSE_STABILIZE_HEAVY_CANDIDATE_SCALE
-                )
-                    ? denseSolveTuning.denseStabilizeMaxPasses
-                    : denseSolveTuning.denseStabilizeLightMaxPasses;
-                for (let pass = 0; pass < stabilizeMaxPasses; pass++) {
-                    const stabilized = this.#solveOnePass(
-                        bodies,
-                        true,
-                        false,
-                        true,
-                        denseSolveTuning.denseResolveBoost
-                    );
-                    totalResolved += stabilized;
-                    lastResolved = stabilized;
-                    if (stabilized === 0) break;
-                }
-                this.#profileRecorder.recordDuration('enemyStabilizeMs', stabilizeStart);
-            }
 
             for (let i = 0; i < dynamicBodies.length; i++) {
                 const enemy = dynamicBodies[i].ref;
