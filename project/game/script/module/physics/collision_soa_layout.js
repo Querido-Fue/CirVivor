@@ -10,6 +10,8 @@ const COLLISION_BODY_SHAPE_CODE_BY_NAME = COLLISION_SOA_LAYOUT.BODY_SHAPE_CODE_B
 export const COLLISION_BROAD_STRIDE = COLLISION_SOA_LAYOUT.BROAD_STRIDE;
 /** enemy relation SoA 레코드 stride입니다. */
 export const COLLISION_RELATION_BROAD_STRIDE = COLLISION_SOA_LAYOUT.RELATION_BROAD_STRIDE;
+/** enemy 후보 sweep SoA 레코드 stride입니다. */
+export const COLLISION_CANDIDATE_SWEEP_STRIDE = 8;
 /** contact 결과 SoA 레코드 stride입니다. */
 export const COLLISION_CONTACT_RESULT_STRIDE = COLLISION_SOA_LAYOUT.CONTACT_RESULT_STRIDE;
 
@@ -37,6 +39,17 @@ export const COLLISION_BODY_SHAPE_RECT = COLLISION_BODY_SHAPE.RECT;
 
 /** enemy relation SoA 필드 index 매핑입니다. */
 export const COLLISION_RELATION_INDEX = COLLISION_SOA_LAYOUT.RELATION_INDEX;
+/** enemy 후보 sweep SoA 필드 index 매핑입니다. */
+export const COLLISION_CANDIDATE_SWEEP_INDEX = Object.freeze({
+    MIN_X: 0,
+    MAX_X: 1,
+    MIN_Y: 2,
+    MAX_Y: 3,
+    CENTER_X: 4,
+    CENTER_Y: 5,
+    RADIUS: 6,
+    PAD: 7
+});
 /** contact 결과 SoA 필드 index 매핑입니다. */
 export const COLLISION_CONTACT_RESULT_INDEX = COLLISION_SOA_LAYOUT.CONTACT_RESULT_INDEX;
 

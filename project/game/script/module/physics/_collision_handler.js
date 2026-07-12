@@ -67,7 +67,11 @@ import {
     createCollisionScratchProjectileBody
 } from './collision_scratch_objects.js';
 import {
-    COLLISION_BROAD_STRIDE as BROAD_STRIDE
+    COLLISION_BODY_KIND_ENEMY as BODY_KIND_ENEMY,
+    COLLISION_BODY_SHAPE_CIRCLE as BODY_SHAPE_CIRCLE,
+    COLLISION_BROAD_STRIDE as BROAD_STRIDE,
+    COLLISION_CANDIDATE_SWEEP_INDEX as CANDIDATE_SWEEP_INDEX,
+    COLLISION_CANDIDATE_SWEEP_STRIDE as CANDIDATE_SWEEP_STRIDE
 } from './collision_soa_layout.js';
 import { getSimulationSetting } from '../simulation/simulation_runtime.js';
 
@@ -700,6 +704,10 @@ export class CollisionHandler {
 
         const cellSize = this.#activeGridCellSize;
         const broadData = this.#broadphaseBuffer.broadData;
+        const candidateSweepData = this.#broadphaseBuffer.candidateSweepData;
+        const candidateSweepValidity = this.#broadphaseBuffer.candidateSweepValidity;
+        const bodyKindCodes = this.#broadphaseBuffer.bodyKindCodes;
+        const bodyShapeCodes = this.#broadphaseBuffer.bodyShapeCodes;
         const candidateScanEpoch = this.#enemyCandidateScanEpoch >>> 0;
         this.#enemyCandidateScanEpoch = (candidateScanEpoch + 1) >>> 0;
         const cellScanToken = candidateScanEpoch;
@@ -719,6 +727,18 @@ export class CollisionHandler {
             const bodyARef = bodyA?.ref;
             const bodyAId = bodyA?.id;
             const hasComparableBodyAId = Number.isInteger(bodyAId) && bodyAId >= 0;
+            const candidateOffsetA = low * CANDIDATE_SWEEP_STRIDE;
+            const hasCandidateSweepA = candidateSweepValidity[low] === 1
+                && bodyKindCodes[low] === BODY_KIND_ENEMY;
+            const candidateMinAX = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.MIN_X];
+            const candidateMaxAX = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.MAX_X];
+            const candidateMinAY = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.MIN_Y];
+            const candidateMaxAY = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.MAX_Y];
+            const candidateCenterAX = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.CENTER_X];
+            const candidateCenterAY = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.CENTER_Y];
+            const candidateRadiusA = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.RADIUS];
+            const candidatePadA = candidateSweepData[candidateOffsetA + CANDIDATE_SWEEP_INDEX.PAD];
+            const bodyShapeCodeA = bodyShapeCodes[low];
             this.#candidatePairs.beginLowBody();
             let lowPriorityCount = 0;
             let lowPredictiveCount = 0;
@@ -775,13 +795,43 @@ export class CollisionHandler {
                             ruleRejectCount++;
                             continue;
                         }
-                        if (!areCollisionCandidateSweepAabbsOverlapping(bodyA, bodyB)) {
-                            continue;
-                        }
-                        const usesBroadCircle = shouldUseCollisionBroadCircleFilter(bodyA, bodyB);
-                        if (usesBroadCircle
-                            && !areCollisionCandidateSweepCirclesOverlapping(bodyA, bodyB, EPSILON)) {
-                            continue;
+                        const hasCandidateSweepB = candidateSweepValidity[high] === 1
+                            && bodyKindCodes[high] === BODY_KIND_ENEMY;
+                        let usesBroadCircle;
+                        if (hasCandidateSweepA && hasCandidateSweepB) {
+                            const candidateOffsetB = high * CANDIDATE_SWEEP_STRIDE;
+                            if (!(candidateMinAX <= candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.MAX_X]
+                                && candidateMaxAX >= candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.MIN_X]
+                                && candidateMinAY <= candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.MAX_Y]
+                                && candidateMaxAY >= candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.MIN_Y])) {
+                                continue;
+                            }
+
+                            usesBroadCircle = bodyShapeCodeA !== BODY_SHAPE_CIRCLE
+                                || bodyShapeCodes[high] !== BODY_SHAPE_CIRCLE;
+                            if (usesBroadCircle) {
+                                const dx = candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.CENTER_X]
+                                    - candidateCenterAX;
+                                const dy = candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.CENTER_Y]
+                                    - candidateCenterAY;
+                                const radiusSum = candidateRadiusA
+                                    + candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.RADIUS]
+                                    + candidatePadA
+                                    + candidateSweepData[candidateOffsetB + CANDIDATE_SWEEP_INDEX.PAD]
+                                    + EPSILON;
+                                if (!(((dx * dx) + (dy * dy)) <= (radiusSum * radiusSum))) {
+                                    continue;
+                                }
+                            }
+                        } else {
+                            if (!areCollisionCandidateSweepAabbsOverlapping(bodyA, bodyB)) {
+                                continue;
+                            }
+                            usesBroadCircle = shouldUseCollisionBroadCircleFilter(bodyA, bodyB);
+                            if (usesBroadCircle
+                                && !areCollisionCandidateSweepCirclesOverlapping(bodyA, bodyB, EPSILON)) {
+                                continue;
+                            }
                         }
 
                         const isAnchorPair = (

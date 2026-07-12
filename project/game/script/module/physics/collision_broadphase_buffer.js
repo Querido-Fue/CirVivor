@@ -1,6 +1,9 @@
 import { getData } from 'data/data_handler.js';
+import { COLLISION_CANDIDATE_SWEEP_PAD_SCALE } from './_collision_resolve_tuning.js';
 import {
     COLLISION_BROAD_STRIDE as BROAD_STRIDE,
+    COLLISION_CANDIDATE_SWEEP_INDEX as CANDIDATE_SWEEP_INDEX,
+    COLLISION_CANDIDATE_SWEEP_STRIDE as CANDIDATE_SWEEP_STRIDE,
     COLLISION_RELATION_INDEX as RELATION_INDEX,
     COLLISION_RELATION_BROAD_STRIDE as RELATION_BROAD_STRIDE,
     getCollisionBodyKindCode,
@@ -31,6 +34,69 @@ function getCollisionBroadphaseExpandedLength(currentLength, neededLength) {
 }
 
 /**
+ * enemy pair relation bound와 fixed frame sweep bound의 보수적 합집합 축 값을 반환합니다.
+ * @param {object} body - 대상 enemy body입니다.
+ * @param {string} baseField - 기본 bound 필드입니다.
+ * @param {string} relationField - enemy pair bound 필드입니다.
+ * @param {string} sweepField - fixed frame sweep 필드입니다.
+ * @param {boolean} useMinimum - 최솟값을 선택할지 여부입니다.
+ * @returns {number} 후보 sweep bound입니다.
+ */
+function getCollisionEnemyCandidateSweepBound(
+    body,
+    baseField,
+    relationField,
+    sweepField,
+    useMinimum
+) {
+    const baseValue = Number.isFinite(body?.[relationField])
+        ? body[relationField]
+        : body?.[baseField];
+    const sweepValue = Number.isFinite(body?.[sweepField]) ? body[sweepField] : baseValue;
+    const sweepDelta = (sweepValue - baseValue) * COLLISION_CANDIDATE_SWEEP_PAD_SCALE;
+    const expandedSweepValue = baseValue + sweepDelta;
+    return useMinimum
+        ? Math.min(baseValue, expandedSweepValue)
+        : Math.max(baseValue, expandedSweepValue);
+}
+
+/**
+ * 현재 AABB와 fixed frame sweep AABB 사이의 최대 축 확장량을 반환합니다.
+ * @param {object} body - 대상 body입니다.
+ * @returns {number} 후보 broad circle 확장 패딩입니다.
+ */
+function getCollisionEnemyCandidateSweepPad(body) {
+    const padLeft = Number.isFinite(body?.sweepMinX) && Number.isFinite(body?.minX)
+        ? Math.max(0, body.minX - body.sweepMinX)
+        : 0;
+    const padRight = Number.isFinite(body?.sweepMaxX) && Number.isFinite(body?.maxX)
+        ? Math.max(0, body.sweepMaxX - body.maxX)
+        : 0;
+    const padTop = Number.isFinite(body?.sweepMinY) && Number.isFinite(body?.minY)
+        ? Math.max(0, body.minY - body.sweepMinY)
+        : 0;
+    const padBottom = Number.isFinite(body?.sweepMaxY) && Number.isFinite(body?.maxY)
+        ? Math.max(0, body.sweepMaxY - body.maxY)
+        : 0;
+    return Math.max(padLeft, padRight, padTop, padBottom) * COLLISION_CANDIDATE_SWEEP_PAD_SCALE;
+}
+
+/**
+ * enemy-enemy 후보 broad circle에 사용할 관계 반경을 반환합니다.
+ * @param {object} body - 대상 enemy body입니다.
+ * @returns {number} 후보 broad circle 반경입니다.
+ */
+function getCollisionEnemyCandidateRelationRadius(body) {
+    if (Number.isFinite(body?.enemyPairBroadRadius)) {
+        return body.enemyPairBroadRadius;
+    }
+    if (body?.shape === 'circle' && Number.isFinite(body.radius)) {
+        return body.radius;
+    }
+    return Number.isFinite(body?.broadRadius) ? body.broadRadius : body?.boundRadius;
+}
+
+/**
  * broad-phase와 enemy relation narrowphase에 필요한 SoA 배열을 관리합니다.
  */
 export class CollisionBroadphaseBuffer {
@@ -40,6 +106,8 @@ export class CollisionBroadphaseBuffer {
     constructor(initialCapacity = BROADPHASE_INITIAL_CAPACITY) {
         this.broadData = new Float32Array(initialCapacity * BROAD_STRIDE);
         this.relationData = new Float64Array(initialCapacity * RELATION_BROAD_STRIDE);
+        this.candidateSweepData = new Float64Array(initialCapacity * CANDIDATE_SWEEP_STRIDE);
+        this.candidateSweepValidity = new Uint8Array(initialCapacity);
         this.bodyKindCodes = new Uint8Array(initialCapacity);
         this.bodyShapeCodes = new Uint8Array(initialCapacity);
         this.bodyCount = 0;
@@ -59,6 +127,19 @@ export class CollisionBroadphaseBuffer {
         const relationNeeded = safeBodyCount * RELATION_BROAD_STRIDE;
         if (this.relationData.length < relationNeeded) {
             this.relationData = new Float64Array(getCollisionBroadphaseExpandedLength(this.relationData.length, relationNeeded));
+        }
+        const candidateSweepNeeded = safeBodyCount * CANDIDATE_SWEEP_STRIDE;
+        if (this.candidateSweepData.length < candidateSweepNeeded) {
+            this.candidateSweepData = new Float64Array(getCollisionBroadphaseExpandedLength(
+                this.candidateSweepData.length,
+                candidateSweepNeeded
+            ));
+        }
+        if (this.candidateSweepValidity.length < safeBodyCount) {
+            this.candidateSweepValidity = new Uint8Array(getCollisionBroadphaseExpandedLength(
+                this.candidateSweepValidity.length,
+                safeBodyCount
+            ));
         }
         if (this.bodyKindCodes.length < safeBodyCount) {
             this.bodyKindCodes = new Uint8Array(getCollisionBroadphaseExpandedLength(this.bodyKindCodes.length, safeBodyCount));
@@ -117,6 +198,7 @@ export class CollisionBroadphaseBuffer {
         broadData[broadOffset + 13] = body.shape === 'circle' ? body.radius : broadRadius;
 
         this.#writeRelationData(index, body, broadRadius);
+        this.#writeCandidateSweepData(index, body);
     }
 
     /**
@@ -152,6 +234,10 @@ export class CollisionBroadphaseBuffer {
         relationData[relationOffset + RELATION_INDEX.MAX_Y] += dy;
         relationData[relationOffset + RELATION_INDEX.CENTER_X] += dx;
         relationData[relationOffset + RELATION_INDEX.CENTER_Y] += dy;
+
+        // 중간 solve pass는 기존 후보 목록을 재사용하고, 다음 후보 rebuild 전에 모든 body를 다시 씁니다.
+        // 예상 밖의 write 없는 후보 재생성에서도 object helper fallback을 타도록 이동 body만 무효화합니다.
+        this.candidateSweepValidity[bodyIndex] = 0;
     }
 
     /**
@@ -172,5 +258,73 @@ export class CollisionBroadphaseBuffer {
         relationData[relationOffset + RELATION_INDEX.CENTER_Y] = Number.isFinite(body.centerY) ? body.centerY : body.y;
         relationData[relationOffset + RELATION_INDEX.ENEMY_PAIR_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
         relationData[relationOffset + RELATION_INDEX.PROJECTILE_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
+    }
+
+    /**
+     * enemy prefix 후보 생성에 필요한 sweep bounds와 circle 데이터를 기록합니다.
+     * @param {number} index - body 인덱스입니다.
+     * @param {object} body - 충돌 body입니다.
+     * @private
+     */
+    #writeCandidateSweepData(index, body) {
+        if (body?.kind !== 'enemy') {
+            this.candidateSweepValidity[index] = 0;
+            return;
+        }
+
+        const candidateOffset = index * CANDIDATE_SWEEP_STRIDE;
+        const candidateData = this.candidateSweepData;
+        const minX = getCollisionEnemyCandidateSweepBound(
+            body,
+            'minX',
+            'enemyPairMinX',
+            'sweepMinX',
+            true
+        );
+        const maxX = getCollisionEnemyCandidateSweepBound(
+            body,
+            'maxX',
+            'enemyPairMaxX',
+            'sweepMaxX',
+            false
+        );
+        const minY = getCollisionEnemyCandidateSweepBound(
+            body,
+            'minY',
+            'enemyPairMinY',
+            'sweepMinY',
+            true
+        );
+        const maxY = getCollisionEnemyCandidateSweepBound(
+            body,
+            'maxY',
+            'enemyPairMaxY',
+            'sweepMaxY',
+            false
+        );
+        const centerX = Number.isFinite(body.centerX) ? body.centerX : body.x;
+        const centerY = Number.isFinite(body.centerY) ? body.centerY : body.y;
+        const radius = getCollisionEnemyCandidateRelationRadius(body);
+        const pad = getCollisionEnemyCandidateSweepPad(body);
+
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.MIN_X] = minX;
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.MAX_X] = maxX;
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.MIN_Y] = minY;
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.MAX_Y] = maxY;
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.CENTER_X] = centerX;
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.CENTER_Y] = centerY;
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.RADIUS] = radius;
+        candidateData[candidateOffset + CANDIDATE_SWEEP_INDEX.PAD] = pad;
+        this.candidateSweepValidity[index] = Number.isFinite(minX)
+            && Number.isFinite(maxX)
+            && Number.isFinite(minY)
+            && Number.isFinite(maxY)
+            && Number.isFinite(centerX)
+            && Number.isFinite(centerY)
+            && Number.isFinite(radius)
+            && radius > 0
+            && Number.isFinite(pad)
+            ? 1
+            : 0;
     }
 }
