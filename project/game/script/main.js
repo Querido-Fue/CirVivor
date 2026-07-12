@@ -5,6 +5,7 @@ import { MathUtil } from 'util/math_util.js';
 import { ColorUtil } from 'util/color_util.js';
 import { RuntimeTool, runtimeTool } from 'util/runtime_tool.js';
 import { getData } from 'data/data_handler.js';
+import { FixedStepCatchUpPolicy } from 'simulation/fixed_step_catch_up_policy.js';
 
 let systemHandler;
 let Game;
@@ -69,7 +70,8 @@ class App {
         this.forceCloseRequested = false;
         this.fixedStepSeconds = 1 / 60;
         this.maxFrameDeltaSeconds = 0.1;
-        this.maxFixedStepsPerFrame = 6;
+        this.fixedStepCatchUpPolicy = new FixedStepCatchUpPolicy();
+        this.lastFrameCpuSeconds = 0;
         this.accumulatorSeconds = 0;
         this.lastFrameTimestamp = 0;
         this._boundLoop = this.loop.bind(this);
@@ -99,13 +101,14 @@ class App {
         if (!this.running) return;
         this.loopRequestId = requestAnimationFrame(this._boundLoop);
         const shouldMeasurePerformance = this.systemHandler?.debugSystem?.shouldTrackPerformance?.() === true;
-        const frameMeasureStart = shouldMeasurePerformance ? performance.now() : 0;
+        const frameMeasureStart = performance.now();
         try {
             if (!Number.isFinite(this.lastFrameTimestamp) || this.lastFrameTimestamp <= 0) {
                 this.lastFrameTimestamp = now;
             }
 
-            let frameDeltaSeconds = (now - this.lastFrameTimestamp) / 1000;
+            const rawFrameDeltaSeconds = (now - this.lastFrameTimestamp) / 1000;
+            let frameDeltaSeconds = rawFrameDeltaSeconds;
             this.lastFrameTimestamp = now;
 
             if (!Number.isFinite(frameDeltaSeconds) || frameDeltaSeconds < 0) {
@@ -118,17 +121,23 @@ class App {
             let fixedStepCount = 0;
             if (shouldAdvanceFixedStep) {
                 this.accumulatorSeconds += frameDeltaSeconds;
+                const maxFixedStepsThisFrame = this.fixedStepCatchUpPolicy.resolveMaxSteps(
+                    this.lastFrameCpuSeconds,
+                    rawFrameDeltaSeconds,
+                    this.fixedStepSeconds
+                );
 
-                while (this.accumulatorSeconds >= this.fixedStepSeconds && fixedStepCount < this.maxFixedStepsPerFrame) {
+                while (this.accumulatorSeconds >= this.fixedStepSeconds && fixedStepCount < maxFixedStepsThisFrame) {
                     this.accumulatorSeconds -= this.fixedStepSeconds;
                     fixedStepCount++;
                 }
 
-                if (fixedStepCount >= this.maxFixedStepsPerFrame && this.accumulatorSeconds >= this.fixedStepSeconds) {
+                if (fixedStepCount >= maxFixedStepsThisFrame && this.accumulatorSeconds >= this.fixedStepSeconds) {
                     this.accumulatorSeconds = this.accumulatorSeconds % this.fixedStepSeconds;
                 }
             } else {
                 this.accumulatorSeconds = 0;
+                this.fixedStepCatchUpPolicy.reset();
             }
 
             const alpha = shouldAdvanceFixedStep
@@ -143,8 +152,9 @@ class App {
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
         } finally {
+            const frameMeasureEnd = performance.now();
+            this.lastFrameCpuSeconds = Math.max(0, (frameMeasureEnd - frameMeasureStart) / 1000);
             if (shouldMeasurePerformance) {
-                const frameMeasureEnd = performance.now();
                 this.systemHandler?.debugSystem?.recordPerformanceSample(
                     'frame.cpu',
                     frameMeasureEnd - frameMeasureStart,
@@ -166,6 +176,8 @@ class App {
         }
         this.accumulatorSeconds = 0;
         this.lastFrameTimestamp = 0;
+        this.lastFrameCpuSeconds = 0;
+        this.fixedStepCatchUpPolicy.reset();
     }
 
     /**
@@ -348,6 +360,8 @@ class App {
         this.running = true;
         this.accumulatorSeconds = 0;
         this.lastFrameTimestamp = performance.now();
+        this.lastFrameCpuSeconds = 0;
+        this.fixedStepCatchUpPolicy.reset();
         this.loopRequestId = requestAnimationFrame(this._boundLoop);
     }
 }
