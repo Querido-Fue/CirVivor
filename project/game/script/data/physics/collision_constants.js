@@ -180,7 +180,11 @@ export const COLLISION_CONSTANTS = Object.freeze({
             'solveLargePopulationMode',
             'solvePassCount',
             'solveGridRebuildCount',
-            'solveDensePressure'
+            'solveDensePressure',
+            'solveGuaranteedPairCount',
+            'solvePriorityAdmissionCount',
+            'solvePredictiveAdmissionCount',
+            'solveAdmissionBudgetSkipCount'
         ])
     }),
     GRID: Object.freeze({
@@ -192,8 +196,8 @@ export const COLLISION_CONSTANTS = Object.freeze({
         DEFAULT_RADIUS_WORLD_RATIO: 0.015,
         DEFAULT_RADIUS_MIN: 12,
         RADIUS_SCALE: 1.03,
-        QUERY_INITIAL_CAPACITY: 512,
-        BROADPHASE_INITIAL_CAPACITY: 512,
+        QUERY_INITIAL_CAPACITY: 1024,
+        BROADPHASE_INITIAL_CAPACITY: 1024,
         BUCKET_INITIAL_CAPACITY: 8
     }),
     SOLVER: Object.freeze({
@@ -209,6 +213,11 @@ export const COLLISION_CONSTANTS = Object.freeze({
         POSITION: 14,
         STABILIZE: 10,
         NON_POSITION: 8,
+        ANCHOR_MULTIPLIER: 2
+    }),
+    ENEMY_PAIR_CANDIDATE_BUDGET: Object.freeze({
+        CURRENT_OVERLAP_PER_QUERY: 24,
+        PREDICTIVE_PER_QUERY: 8,
         ANCHOR_MULTIPLIER: 2
     }),
     RESOLVE_TUNING: Object.freeze({
@@ -272,8 +281,8 @@ export const COLLISION_CONSTANTS = Object.freeze({
         ENEMY_WEIGHT_MIN: 0.1
     }),
     CANDIDATE_PAIR_BUFFER: Object.freeze({
-        INITIAL_PAIR_CAPACITY: 1024,
-        INITIAL_BODY_CAPACITY: 512
+        INITIAL_PAIR_CAPACITY: 32768,
+        INITIAL_BODY_CAPACITY: 1024
     }),
     BODY_BUILDER: Object.freeze({
         CIRCLE_PART_STRIDE: 3,

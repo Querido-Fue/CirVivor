@@ -22,6 +22,7 @@ import {
 import { detectCollisionBodies } from './collision_body_detector.js';
 import { CollisionBroadphaseBuffer } from './collision_broadphase_buffer.js';
 import { CollisionBodyPool } from './collision_body_pool.js';
+import { shouldAdmitCollisionEnemyCandidate } from './collision_candidate_admission.js';
 import { CollisionCandidatePairBuffer } from './collision_candidate_pair_buffer.js';
 import { getCollisionPeakCandidatePairs } from './collision_candidate_density.js';
 import { processCollisionCandidatePairs } from './collision_candidate_pair_processor.js';
@@ -317,7 +318,8 @@ export class CollisionHandler {
                     true,
                     false,
                     shouldRebuildGrid,
-                    resolveBoost
+                    resolveBoost,
+                    dynamicBodies.length
                 );
                 this.#profileRecorder.recordCount('solvePassCount');
                 if (shouldRebuildGrid) {
@@ -535,6 +537,7 @@ export class CollisionHandler {
      * @param {boolean} [applyNonPosition=false] - 비위치 효과 적용 여부입니다.
      * @param {boolean} [requestRebuildGrid=true] - grid 재구성 요청 여부입니다.
      * @param {number} [resolveBoost=1] - 위치 해소 강화 배율입니다.
+     * @param {number} [gridBodyCount=bodies.length] - grid에 삽입할 앞쪽 body 개수입니다.
      * @returns {number}
      */
     #solveOnePass(
@@ -542,7 +545,8 @@ export class CollisionHandler {
         resolvePositions = true,
         applyNonPosition = false,
         requestRebuildGrid = true,
-        resolveBoost = 1
+        resolveBoost = 1,
+        gridBodyCount = bodies.length
     ) {
         if (!bodies || bodies.length < 2) return 0;
         const safeResolveBoost = Number.isFinite(resolveBoost) && resolveBoost > 0
@@ -553,7 +557,7 @@ export class CollisionHandler {
 
         const gridStart = this.#profileRecorder.startTimer();
         if (rebuildGrid) {
-            this.#rebuildGridFromBodies(bodies);
+            this.#rebuildGridFromBodies(bodies, 'default', gridBodyCount);
         } else {
             this.#broadphaseBuffer.ensure(bodyCount);
             for (let i = 0; i < bodyCount; i++) {
@@ -566,7 +570,7 @@ export class CollisionHandler {
         const shouldRebuildCandidatePairs = rebuildGrid || this.#candidatePairs.bodyCount !== bodyCount;
         if (shouldRebuildCandidatePairs) {
             const candidateBuildStart = this.#profileRecorder.startTimer();
-            this.#buildCandidatePairsFromGrid(bodies);
+            this.#buildCandidatePairsFromGrid(bodies, gridBodyCount);
             this.#profileRecorder.recordDuration('solveCandidateBuildMs', candidateBuildStart);
         }
         const pairProcessStart = this.#profileRecorder.startTimer();
@@ -669,9 +673,13 @@ export class CollisionHandler {
      * 현재 grid bucket에서 유효 후보 pair 목록을 재구성합니다.
      * @private
      * @param {object[]} bodies
+     * @param {number} enemyBodyCount - 배열 앞쪽의 enemy body 개수입니다.
      */
-    #buildCandidatePairsFromGrid(bodies) {
+    #buildCandidatePairsFromGrid(bodies, enemyBodyCount) {
         const bodyCount = Array.isArray(bodies) ? bodies.length : 0;
+        const safeEnemyBodyCount = Number.isFinite(enemyBodyCount)
+            ? Math.min(bodyCount, Math.max(0, Math.floor(enemyBodyCount)))
+            : bodyCount;
         this.#candidatePairs.reset(bodyCount);
         if (bodyCount < 2) {
             return;
@@ -679,20 +687,33 @@ export class CollisionHandler {
 
         const cellSize = this.#activeGridCellSize;
         const broadData = this.#broadphaseBuffer.broadData;
-        for (let low = 0; low < bodyCount - 1; low++) {
+        const scanToken = (this.#fixedFrameToken + this.#pairPassCursor) >>> 0;
+        let priorityAdmissionCount = 0;
+        let predictiveAdmissionCount = 0;
+        let admissionBudgetSkipCount = 0;
+        for (let low = 0; low < safeEnemyBodyCount - 1; low++) {
             this.#candidatePairs.beginLowBody();
+            let lowPriorityCount = 0;
+            let lowPredictiveCount = 0;
             const broadOffset = low * BROAD_STRIDE;
             const minCellX = Math.floor(broadData[broadOffset] / cellSize);
             const maxCellX = Math.floor(broadData[broadOffset + 1] / cellSize);
             const minCellY = Math.floor(broadData[broadOffset + 2] / cellSize);
             const maxCellY = Math.floor(broadData[broadOffset + 3] / cellSize);
 
-            for (let cx = minCellX; cx <= maxCellX; cx++) {
-                for (let cy = minCellY; cy <= maxCellY; cy++) {
-                    const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
-                    const bucket = this.#grid.get(key);
-                    if (!bucket) continue;
-                    for (let bucketIndex = 0; bucketIndex < bucket.count; bucketIndex++) {
+            const cellHeight = maxCellY - minCellY + 1;
+            const cellCount = (maxCellX - minCellX + 1) * cellHeight;
+            const cellStart = (scanToken + low) % cellCount;
+            for (let cellOffset = 0; cellOffset < cellCount; cellOffset++) {
+                const cellIndex = (cellStart + cellOffset) % cellCount;
+                const cx = minCellX + Math.floor(cellIndex / cellHeight);
+                const cy = minCellY + (cellIndex % cellHeight);
+                const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
+                const bucket = this.#grid.get(key);
+                if (!bucket) continue;
+                const bucketStart = (scanToken + low + cellIndex) % bucket.count;
+                for (let bucketOffset = 0; bucketOffset < bucket.count; bucketOffset++) {
+                        const bucketIndex = (bucketStart + bucketOffset) % bucket.count;
                         const high = bucket.indices[bucketIndex];
                         if (high <= low) continue;
                         this.#profileRecorder.recordCount('solveBucketPairCount');
@@ -726,16 +747,70 @@ export class CollisionHandler {
                         const isCurrentOverlap = areCollisionBodyAabbsOverlapping(bodyA, bodyB)
                             && (!usesBroadCircle
                                 || areCollisionBodyBroadCirclesOverlapping(bodyA, bodyB, EPSILON));
+                        const priority = isCurrentOverlap || isAnchorPair;
+                        if (!shouldAdmitCollisionEnemyCandidate(
+                            lowPriorityCount,
+                            lowPredictiveCount,
+                            priority,
+                            isAnchorPair
+                        )) {
+                            admissionBudgetSkipCount++;
+                            continue;
+                        }
+                        if (priority) {
+                            lowPriorityCount++;
+                            priorityAdmissionCount++;
+                        } else {
+                            lowPredictiveCount++;
+                            predictiveAdmissionCount++;
+                        }
                         this.#candidatePairs.append(
                             low,
                             high,
-                            isCurrentOverlap || !isEnemyPair || isAnchorPair
+                            priority
                         );
                         this.#profileRecorder.recordCount('solveCandidatePairCount');
-                    }
                 }
             }
         }
+
+        const guaranteedPairCount = this.#appendGuaranteedNonEnemyPairs(
+            bodies,
+            safeEnemyBodyCount
+        );
+        this.#profileRecorder.recordCount('solveGuaranteedPairCount', guaranteedPairCount);
+        this.#profileRecorder.recordCount('solvePriorityAdmissionCount', priorityAdmissionCount);
+        this.#profileRecorder.recordCount('solvePredictiveAdmissionCount', predictiveAdmissionCount);
+        this.#profileRecorder.recordCount('solveAdmissionBudgetSkipCount', admissionBudgetSkipCount);
+    }
+
+    /**
+     * enemy grid 예산과 무관하게 player·wall을 포함한 pair를 보존합니다.
+     * @private
+     * @param {object[]} bodies - 전체 충돌 body 목록입니다.
+     * @param {number} enemyBodyCount - 배열 앞쪽의 enemy body 개수입니다.
+     * @returns {number} 추가한 보장 pair 수입니다.
+     */
+    #appendGuaranteedNonEnemyPairs(bodies, enemyBodyCount) {
+        let appendedCount = 0;
+        for (let low = 0; low < bodies.length - 1; low++) {
+            const highStart = low < enemyBodyCount ? enemyBodyCount : low + 1;
+            for (let high = highStart; high < bodies.length; high++) {
+                const bodyA = bodies[low];
+                const bodyB = bodies[high];
+                const rule = getCollisionPassRule(bodyA, bodyB, true);
+                if (!rule || !areCollisionCandidateSweepAabbsOverlapping(bodyA, bodyB)) {
+                    continue;
+                }
+                if (shouldUseCollisionBroadCircleFilter(bodyA, bodyB)
+                    && !areCollisionCandidateSweepCirclesOverlapping(bodyA, bodyB, EPSILON)) {
+                    continue;
+                }
+                this.#candidatePairs.append(low, high, true);
+                appendedCount++;
+            }
+        }
+        return appendedCount;
     }
 
     /**
@@ -842,18 +917,22 @@ export class CollisionHandler {
      * @private
      * @param {object[]} bodies
      * @param {'default'|'enemyPair'|'projectile'} [gridMode='default']
+     * @param {number} [gridBodyCount=bodies.length] - grid에 삽입할 앞쪽 body 개수입니다.
      * @returns {number} 재구성에 사용한 grid cell size
      */
-    #rebuildGridFromBodies(bodies, gridMode = 'default') {
+    #rebuildGridFromBodies(bodies, gridMode = 'default', gridBodyCount = bodies.length) {
+        const safeGridBodyCount = Number.isFinite(gridBodyCount)
+            ? Math.min(bodies.length, Math.max(0, Math.floor(gridBodyCount)))
+            : bodies.length;
         this.#broadphaseBuffer.ensure(bodies.length);
         for (let i = 0; i < bodies.length; i++) {
             this.#broadphaseBuffer.write(i, bodies[i], gridMode);
         }
 
-        const cellSize = estimateCollisionGridCellSize(bodies, gridMode);
+        const cellSize = estimateCollisionGridCellSize(bodies, gridMode, safeGridBodyCount);
         this.#activeGridCellSize = cellSize;
         this.#clearGrid();
-        for (let i = 0; i < bodies.length; i++) {
+        for (let i = 0; i < safeGridBodyCount; i++) {
             this.#insertBodyToGridSoA(i, cellSize);
         }
 

@@ -13,12 +13,16 @@ const DEFAULT_RADIUS_MIN = COLLISION_GRID_CONSTANTS.DEFAULT_RADIUS_MIN;
  * grid 용도에 맞는 평균 broad radius로 셀 크기를 추정합니다.
  * @param {object[]} bodies - 충돌 body 목록입니다.
  * @param {'default'|'enemyPair'|'projectile'} [gridMode='default'] - grid 사용 목적입니다.
+ * @param {number} [countLimit=bodies.length] - 평균 계산에 포함할 앞쪽 body 개수입니다.
  * @returns {number} broad-phase grid cell 크기입니다.
  */
-export function estimateCollisionGridCellSize(bodies, gridMode = 'default') {
+export function estimateCollisionGridCellSize(bodies, gridMode = 'default', countLimit = bodies.length) {
     let radiusSum = 0;
     let count = 0;
-    for (let i = 0; i < bodies.length; i++) {
+    const safeCountLimit = Number.isFinite(countLimit)
+        ? Math.min(bodies.length, Math.max(0, Math.floor(countLimit)))
+        : bodies.length;
+    for (let i = 0; i < safeCountLimit; i++) {
         const body = bodies[i];
         let radius = body?.boundRadius;
         if (gridMode === 'enemyPair' && body?.kind === 'enemy') {
