@@ -7,7 +7,8 @@ import {
     DENSE_POSITION_SOLVE_MAX_PASSES,
     getCollisionDensePressure,
     getCollisionResolvePassBoost,
-    isCollisionEnemyPairAnchorBody
+    isCollisionEnemyPairAnchorBody,
+    isCollisionHexaHiveWallBody
 } from './_collision_resolve_tuning.js';
 import {
     applyCollisionProjectileImpact,
@@ -22,7 +23,10 @@ import {
 import { detectCollisionBodies } from './collision_body_detector.js';
 import { CollisionBroadphaseBuffer } from './collision_broadphase_buffer.js';
 import { CollisionBodyPool } from './collision_body_pool.js';
-import { shouldAdmitCollisionEnemyCandidate } from './collision_candidate_admission.js';
+import {
+    getCollisionEnemyCandidateVisitLimit,
+    shouldAdmitCollisionEnemyCandidate
+} from './collision_candidate_admission.js';
 import { CollisionCandidatePairBuffer } from './collision_candidate_pair_buffer.js';
 import { getCollisionPeakCandidatePairs } from './collision_candidate_density.js';
 import { processCollisionCandidatePairs } from './collision_candidate_pair_processor.js';
@@ -691,10 +695,20 @@ export class CollisionHandler {
         let priorityAdmissionCount = 0;
         let predictiveAdmissionCount = 0;
         let admissionBudgetSkipCount = 0;
+        let candidateVisitCount = 0;
+        let scanTruncateCount = 0;
+        let bucketPairCount = 0;
+        let duplicatePairSkipCount = 0;
+        let ruleRejectCount = 0;
+        let candidatePairCount = 0;
         for (let low = 0; low < safeEnemyBodyCount - 1; low++) {
             this.#candidatePairs.beginLowBody();
             let lowPriorityCount = 0;
             let lowPredictiveCount = 0;
+            let lowCandidateVisitCount = 0;
+            const lowCandidateVisitLimit = getCollisionEnemyCandidateVisitLimit(
+                isCollisionHexaHiveWallBody(bodies[low])
+            );
             const broadOffset = low * BROAD_STRIDE;
             const minCellX = Math.floor(broadData[broadOffset] / cellSize);
             const maxCellX = Math.floor(broadData[broadOffset + 1] / cellSize);
@@ -704,7 +718,7 @@ export class CollisionHandler {
             const cellHeight = maxCellY - minCellY + 1;
             const cellCount = (maxCellX - minCellX + 1) * cellHeight;
             const cellStart = (scanToken + low) % cellCount;
-            for (let cellOffset = 0; cellOffset < cellCount; cellOffset++) {
+            candidateCellLoop: for (let cellOffset = 0; cellOffset < cellCount; cellOffset++) {
                 const cellIndex = (cellStart + cellOffset) % cellCount;
                 const cx = minCellX + Math.floor(cellIndex / cellHeight);
                 const cy = minCellY + (cellIndex % cellHeight);
@@ -716,18 +730,24 @@ export class CollisionHandler {
                         const bucketIndex = (bucketStart + bucketOffset) % bucket.count;
                         const high = bucket.indices[bucketIndex];
                         if (high <= low) continue;
-                        this.#profileRecorder.recordCount('solveBucketPairCount');
+                        bucketPairCount++;
                         if (this.#candidatePairs.hasSeenHigh(high)) {
-                            this.#profileRecorder.recordCount('solveDuplicatePairSkipCount');
+                            duplicatePairSkipCount++;
                             continue;
                         }
+                        if (lowCandidateVisitCount >= lowCandidateVisitLimit) {
+                            scanTruncateCount++;
+                            break candidateCellLoop;
+                        }
                         this.#candidatePairs.markSeenHigh(high);
+                        lowCandidateVisitCount++;
+                        candidateVisitCount++;
 
                         const bodyA = bodies[low];
                         const bodyB = bodies[high];
                         const rule = getCollisionPassRule(bodyA, bodyB, true);
                         if (!rule) {
-                            this.#profileRecorder.recordCount('solveRuleRejectCount');
+                            ruleRejectCount++;
                             continue;
                         }
                         if (!areCollisionCandidateSweepAabbsOverlapping(bodyA, bodyB)) {
@@ -769,7 +789,7 @@ export class CollisionHandler {
                             high,
                             priority
                         );
-                        this.#profileRecorder.recordCount('solveCandidatePairCount');
+                        candidatePairCount++;
                 }
             }
         }
@@ -782,6 +802,12 @@ export class CollisionHandler {
         this.#profileRecorder.recordCount('solvePriorityAdmissionCount', priorityAdmissionCount);
         this.#profileRecorder.recordCount('solvePredictiveAdmissionCount', predictiveAdmissionCount);
         this.#profileRecorder.recordCount('solveAdmissionBudgetSkipCount', admissionBudgetSkipCount);
+        this.#profileRecorder.recordCount('solveCandidateVisitCount', candidateVisitCount);
+        this.#profileRecorder.recordCount('solveScanTruncateCount', scanTruncateCount);
+        this.#profileRecorder.recordCount('solveBucketPairCount', bucketPairCount);
+        this.#profileRecorder.recordCount('solveDuplicatePairSkipCount', duplicatePairSkipCount);
+        this.#profileRecorder.recordCount('solveRuleRejectCount', ruleRejectCount);
+        this.#profileRecorder.recordCount('solveCandidatePairCount', candidatePairCount);
     }
 
     /**
@@ -793,9 +819,32 @@ export class CollisionHandler {
      */
     #appendGuaranteedNonEnemyPairs(bodies, enemyBodyCount) {
         let appendedCount = 0;
-        for (let low = 0; low < bodies.length - 1; low++) {
-            const highStart = low < enemyBodyCount ? enemyBodyCount : low + 1;
-            for (let high = highStart; high < bodies.length; high++) {
+        for (let high = enemyBodyCount; high < bodies.length; high++) {
+            const bodyB = bodies[high];
+            const candidateIndices = this.#gridQueryBuffer.collectCandidateIndices(
+                this.#grid,
+                bodyB,
+                this.#activeGridCellSize,
+                enemyBodyCount
+            );
+            for (let candidateIndex = 0; candidateIndex < candidateIndices.length; candidateIndex++) {
+                const low = candidateIndices[candidateIndex];
+                const bodyA = bodies[low];
+                const rule = getCollisionPassRule(bodyA, bodyB, true);
+                if (!rule || !areCollisionCandidateSweepAabbsOverlapping(bodyA, bodyB)) {
+                    continue;
+                }
+                if (shouldUseCollisionBroadCircleFilter(bodyA, bodyB)
+                    && !areCollisionCandidateSweepCirclesOverlapping(bodyA, bodyB, EPSILON)) {
+                    continue;
+                }
+                this.#candidatePairs.append(low, high, true);
+                appendedCount++;
+            }
+        }
+
+        for (let low = enemyBodyCount; low < bodies.length - 1; low++) {
+            for (let high = low + 1; high < bodies.length; high++) {
                 const bodyA = bodies[low];
                 const bodyB = bodies[high];
                 const rule = getCollisionPassRule(bodyA, bodyB, true);

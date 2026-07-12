@@ -184,7 +184,9 @@ export const COLLISION_CONSTANTS = Object.freeze({
             'solveGuaranteedPairCount',
             'solvePriorityAdmissionCount',
             'solvePredictiveAdmissionCount',
-            'solveAdmissionBudgetSkipCount'
+            'solveAdmissionBudgetSkipCount',
+            'solveCandidateVisitCount',
+            'solveScanTruncateCount'
         ])
     }),
     GRID: Object.freeze({
@@ -218,6 +220,7 @@ export const COLLISION_CONSTANTS = Object.freeze({
     ENEMY_PAIR_CANDIDATE_BUDGET: Object.freeze({
         CURRENT_OVERLAP_PER_QUERY: 24,
         PREDICTIVE_PER_QUERY: 8,
+        UNIQUE_VISITS_PER_QUERY: 64,
         ANCHOR_MULTIPLIER: 2
     }),
     RESOLVE_TUNING: Object.freeze({
