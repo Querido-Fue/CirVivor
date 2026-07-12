@@ -131,6 +131,7 @@ export class CollisionHandler {
     #pairPassCursor;
     #sleepAdvanceFrameByEnemy;
     #sleepPostSolveFrameByEnemy;
+    #enemyCandidateScanTruncated;
 
     constructor() {
         this.detector = new CollisionDetector();
@@ -165,6 +166,7 @@ export class CollisionHandler {
         this.#pairPassCursor = 0;
         this.#sleepAdvanceFrameByEnemy = new WeakMap();
         this.#sleepPostSolveFrameByEnemy = new WeakMap();
+        this.#enemyCandidateScanTruncated = false;
         this.#bodyDetectorContext = {
             manifold: this.#scratchManifold,
             candidateManifold: this.#scratchCandidateManifold,
@@ -308,6 +310,7 @@ export class CollisionHandler {
 
             let totalResolved = 0;
             let densePressure = 0;
+            this.#enemyCandidateScanTruncated = false;
             const positionPassCount = Math.min(maxIterations, DENSE_POSITION_SOLVE_MAX_PASSES);
             const positionSolveStart = this.#profileRecorder.startTimer();
             for (let i = 0; i < positionPassCount; i++) {
@@ -351,7 +354,8 @@ export class CollisionHandler {
                     enemy,
                     dynamicBodies[i],
                     COLLISION_IDLE_TICKS_TO_SLEEP,
-                    COLLISION_SLEEP_TICKS
+                    COLLISION_SLEEP_TICKS,
+                    !this.#enemyCandidateScanTruncated
                 );
                 this.#sleepPostSolveFrameByEnemy.set(enemy, this.#fixedFrameToken);
             }
@@ -804,6 +808,9 @@ export class CollisionHandler {
         this.#profileRecorder.recordCount('solveAdmissionBudgetSkipCount', admissionBudgetSkipCount);
         this.#profileRecorder.recordCount('solveCandidateVisitCount', candidateVisitCount);
         this.#profileRecorder.recordCount('solveScanTruncateCount', scanTruncateCount);
+        if (scanTruncateCount > 0) {
+            this.#enemyCandidateScanTruncated = true;
+        }
         this.#profileRecorder.recordCount('solveBucketPairCount', bucketPairCount);
         this.#profileRecorder.recordCount('solveDuplicatePairSkipCount', duplicatePairSkipCount);
         this.#profileRecorder.recordCount('solveRuleRejectCount', ruleRejectCount);

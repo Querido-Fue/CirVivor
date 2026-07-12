@@ -44,12 +44,14 @@ export function advanceCollisionEnemySleepState(enemy, sleeping) {
  * @param {object} collisionBody - 이번 프레임에 사용한 충돌 body입니다.
  * @param {number} idleTicksToSleep - sleep 전환 전 idle tick 수입니다.
  * @param {number} sleepTicks - sleep 상태 유지 tick 수입니다.
+ * @param {boolean} [allowSleepTransition=true] - 후보 스캔이 완전할 때만 true로 전달합니다.
  */
 export function updateCollisionEnemyPostSolveSleepState(
     enemy,
     collisionBody,
     idleTicksToSleep,
-    sleepTicks
+    sleepTicks,
+    allowSleepTransition = true
 ) {
     if (!enemy?.position || !collisionBody) {
         return;
@@ -58,6 +60,12 @@ export function updateCollisionEnemyPostSolveSleepState(
     enemy.__collisionPrevX = enemy.position.x;
     enemy.__collisionPrevY = enemy.position.y;
     if (collisionBody._candidatePairCount > 0 || collisionBody._resolvedPairCount > 0) {
+        enemy.__collisionIdleTicks = 0;
+        enemy.__collisionSleepTicks = 0;
+        return;
+    }
+
+    if (!allowSleepTransition) {
         enemy.__collisionIdleTicks = 0;
         enemy.__collisionSleepTicks = 0;
         return;

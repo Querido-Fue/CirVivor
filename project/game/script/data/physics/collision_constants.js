@@ -218,9 +218,9 @@ export const COLLISION_CONSTANTS = Object.freeze({
         ANCHOR_MULTIPLIER: 2
     }),
     ENEMY_PAIR_CANDIDATE_BUDGET: Object.freeze({
-        CURRENT_OVERLAP_PER_QUERY: 24,
-        PREDICTIVE_PER_QUERY: 8,
-        UNIQUE_VISITS_PER_QUERY: 64,
+        CURRENT_OVERLAP_PER_QUERY: 12,
+        PREDICTIVE_PER_QUERY: 2,
+        UNIQUE_VISITS_PER_QUERY: 32,
         ANCHOR_MULTIPLIER: 2
     }),
     RESOLVE_TUNING: Object.freeze({

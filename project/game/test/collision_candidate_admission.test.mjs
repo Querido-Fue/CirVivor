@@ -12,20 +12,20 @@ const {
     shouldAdmitCollisionEnemyCandidate
 } = admission;
 
-assert.equal(COLLISION_CURRENT_CANDIDATE_LIMIT, 24);
-assert.equal(COLLISION_PREDICTIVE_CANDIDATE_LIMIT, 8);
-assert.equal(COLLISION_CANDIDATE_VISIT_LIMIT, 64);
+assert.equal(COLLISION_CURRENT_CANDIDATE_LIMIT, 12);
+assert.equal(COLLISION_PREDICTIVE_CANDIDATE_LIMIT, 2);
+assert.equal(COLLISION_CANDIDATE_VISIT_LIMIT, 32);
 assert.equal(COLLISION_ANCHOR_CANDIDATE_MULTIPLIER, 2);
-assert.equal(getCollisionEnemyCandidateVisitLimit(false), 64);
-assert.equal(getCollisionEnemyCandidateVisitLimit(true), 128);
-assert.equal(shouldAdmitCollisionEnemyCandidate(23, 8, true, false), true);
-assert.equal(shouldAdmitCollisionEnemyCandidate(24, 0, true, false), false);
-assert.equal(shouldAdmitCollisionEnemyCandidate(24, 7, false, false), true);
-assert.equal(shouldAdmitCollisionEnemyCandidate(0, 8, false, false), false);
-assert.equal(shouldAdmitCollisionEnemyCandidate(47, 8, true, true), true);
-assert.equal(shouldAdmitCollisionEnemyCandidate(48, 0, true, true), false);
-assert.equal(shouldAdmitCollisionEnemyCandidate(24, 15, false, true), true);
-assert.equal(shouldAdmitCollisionEnemyCandidate(0, 16, false, true), false);
+assert.equal(getCollisionEnemyCandidateVisitLimit(false), 32);
+assert.equal(getCollisionEnemyCandidateVisitLimit(true), 64);
+assert.equal(shouldAdmitCollisionEnemyCandidate(11, 2, true, false), true);
+assert.equal(shouldAdmitCollisionEnemyCandidate(12, 0, true, false), false);
+assert.equal(shouldAdmitCollisionEnemyCandidate(12, 1, false, false), true);
+assert.equal(shouldAdmitCollisionEnemyCandidate(0, 2, false, false), false);
+assert.equal(shouldAdmitCollisionEnemyCandidate(23, 2, true, true), true);
+assert.equal(shouldAdmitCollisionEnemyCandidate(24, 0, true, true), false);
+assert.equal(shouldAdmitCollisionEnemyCandidate(12, 3, false, true), true);
+assert.equal(shouldAdmitCollisionEnemyCandidate(0, 4, false, true), false);
 
 const bodies = [
     { boundRadius: 10 },
