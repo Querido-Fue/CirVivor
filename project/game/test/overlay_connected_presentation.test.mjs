@@ -7,8 +7,8 @@ const {
     cancelOverlayConnectedPresentation,
     createOverlayConnectedPresentation,
     getOverlayConnectedPresentationBackRotationY,
+    getOverlayConnectedPresentationFrontContentRect,
     getOverlayConnectedPresentationRect,
-    getOverlayConnectedPresentationRasterSize,
     isOverlayConnectedPresentation,
     isOverlayConnectedPresentationFrontFace,
     setOverlayConnectedPresentationSource,
@@ -33,14 +33,19 @@ assert.equal(presentation.progress, 0);
 
 assert.equal(setOverlayConnectedPresentationTarget(presentation, TARGET_RECT), true);
 assert.equal(presentation.ready, true);
-const rasterSize = getOverlayConnectedPresentationRasterSize(presentation);
-assert.equal(rasterSize.width, TARGET_RECT.w);
-assert.equal(rasterSize.height, TARGET_RECT.h);
 let rect = getOverlayConnectedPresentationRect(presentation);
 assert.equal(rect.x, SOURCE_RECT.x);
 assert.equal(rect.y, SOURCE_RECT.y);
 assert.equal(rect.w, SOURCE_RECT.w);
 assert.equal(rect.h, SOURCE_RECT.h);
+const frontContentRect = getOverlayConnectedPresentationFrontContentRect(
+    presentation,
+    rect
+);
+assert.equal(frontContentRect.x, SOURCE_RECT.x);
+assert.equal(frontContentRect.y, SOURCE_RECT.y);
+assert.equal(frontContentRect.w, SOURCE_RECT.w);
+assert.equal(frontContentRect.h, SOURCE_RECT.h);
 assert.equal(isOverlayConnectedPresentationFrontFace(presentation), true);
 
 assert.equal(advanceOverlayConnectedPresentation(presentation, Number.NaN), false);
@@ -55,6 +60,22 @@ assert.equal(isOverlayConnectedPresentationFrontFace(presentation), true);
 rect = getOverlayConnectedPresentationRect(presentation);
 assert.ok(rect.x > SOURCE_RECT.x && rect.x < TARGET_RECT.x);
 assert.ok(rect.w > SOURCE_RECT.w && rect.w < TARGET_RECT.w);
+const movingFrontContentRect = getOverlayConnectedPresentationFrontContentRect(
+    presentation,
+    rect,
+    frontContentRect
+);
+assert.equal(movingFrontContentRect, frontContentRect);
+assert.equal(movingFrontContentRect.w, SOURCE_RECT.w);
+assert.equal(movingFrontContentRect.h, SOURCE_RECT.h);
+assert.equal(
+    movingFrontContentRect.x + (movingFrontContentRect.w * 0.5),
+    rect.x + (rect.w * 0.5)
+);
+assert.equal(
+    movingFrontContentRect.y + (movingFrontContentRect.h * 0.5),
+    rect.y + (rect.h * 0.5)
+);
 
 assert.equal(advanceOverlayConnectedPresentation(presentation, 0.1), false);
 assert.equal(presentation.progress, 0.5);
@@ -71,10 +92,6 @@ const RESIZED_TARGET_RECT = Object.freeze({ x: 260, y: 60, w: 820, h: 560, radiu
 assert.equal(setOverlayConnectedPresentationSource(presentation, RESIZED_SOURCE_RECT), true);
 assert.equal(setOverlayConnectedPresentationTarget(presentation, RESIZED_TARGET_RECT), true);
 assert.equal(presentation.progress, 0.5);
-const resizedRasterSize = getOverlayConnectedPresentationRasterSize(presentation, rasterSize);
-assert.equal(resizedRasterSize, rasterSize);
-assert.equal(resizedRasterSize.width, RESIZED_TARGET_RECT.w);
-assert.equal(resizedRasterSize.height, RESIZED_TARGET_RECT.h);
 rect = getOverlayConnectedPresentationRect(presentation);
 assert.equal(rect.x, RESIZED_SOURCE_RECT.x + ((RESIZED_TARGET_RECT.x - RESIZED_SOURCE_RECT.x) * (31 / 32)));
 assert.equal(rect.h, RESIZED_SOURCE_RECT.h + ((RESIZED_TARGET_RECT.h - RESIZED_SOURCE_RECT.h) * (31 / 32)));
@@ -109,10 +126,14 @@ setOverlayConnectedPresentationTarget(
     mixedAxisPresentation,
     { x: 0, y: 0, w: 700, h: 800, radius: 0 }
 );
-const mixedAxisRasterSize = getOverlayConnectedPresentationRasterSize(
-    mixedAxisPresentation
+const mixedAxisCurrentRect = getOverlayConnectedPresentationRect(mixedAxisPresentation);
+const mixedAxisContentRect = getOverlayConnectedPresentationFrontContentRect(
+    mixedAxisPresentation,
+    mixedAxisCurrentRect
 );
-assert.equal(mixedAxisRasterSize.width, 1000);
-assert.equal(mixedAxisRasterSize.height, 800);
+assert.equal(mixedAxisContentRect.w, 1000);
+assert.equal(mixedAxisContentRect.h, 300);
+assert.equal(mixedAxisContentRect.x, mixedAxisCurrentRect.x);
+assert.equal(mixedAxisContentRect.y, mixedAxisCurrentRect.y);
 
 console.log('overlay connected presentation contract: ok');

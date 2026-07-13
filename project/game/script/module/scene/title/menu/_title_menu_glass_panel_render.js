@@ -8,6 +8,7 @@
  * @param {DOMMatrix|number[]|null} [options.transformMatrix=null] - 패널 변환 행렬입니다.
  * @param {object|null} [options.perspective=null] - 패널 원근 옵션입니다.
  * @param {HTMLCanvasElement|null} [options.effectTextureCanvas=null] - 패널 위에 합성할 효과 텍스처입니다.
+ * @param {object|null} [options.effectTextureRect=null] - 효과 텍스처를 고정할 절대 화면 영역입니다.
  * @returns {void}
  */
 export function renderTitleMenuGlassPanel(
@@ -18,7 +19,8 @@ export function renderTitleMenuGlassPanel(
         alpha = 1,
         transformMatrix = null,
         perspective = null,
-        effectTextureCanvas = null
+        effectTextureCanvas = null,
+        effectTextureRect = null
     }
 ) {
     if (!session || !panelRect || !panelStyle) {
@@ -44,6 +46,7 @@ export function renderTitleMenuGlassPanel(
         alpha,
         transformMatrix,
         perspective,
-        effectTextureCanvas
+        effectTextureCanvas,
+        effectTextureRect
     });
 }

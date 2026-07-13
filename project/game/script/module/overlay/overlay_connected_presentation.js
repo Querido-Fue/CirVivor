@@ -218,23 +218,38 @@ export function getOverlayConnectedPresentationRect(presentation, out = null) {
 }
 
 /**
- * 연결 전환 양 끝점 중 더 큰 축을 기준으로 앞면 raster 크기를 계산합니다.
+ * 앞면 콘텐츠를 원래 크기로 현재 전환 패널 중앙에 고정할 영역을 계산합니다.
  * @param {object} presentation - 연결 프레젠테이션 상태입니다.
+ * @param {object} currentRect - 현재 전환 패널 영역입니다.
  * @param {object|null} [out=null] - 재사용할 출력 객체입니다.
- * @returns {{width:number,height:number}|null} 확대 손실을 막을 최소 raster 크기입니다.
+ * @returns {{x:number,y:number,w:number,h:number,radius:number}|null} 고정 콘텐츠 영역입니다.
  */
-export function getOverlayConnectedPresentationRasterSize(presentation, out = null) {
+export function getOverlayConnectedPresentationFrontContentRect(
+    presentation,
+    currentRect,
+    out = null
+) {
     if (!isOverlayConnectedPresentation(presentation)
         || !presentation.sourceRect
-        || !presentation.targetRect) {
+        || !currentRect
+        || !Number.isFinite(currentRect.x)
+        || !Number.isFinite(currentRect.y)
+        || !Number.isFinite(currentRect.w)
+        || !Number.isFinite(currentRect.h)
+        || currentRect.w <= 0
+        || currentRect.h <= 0) {
         return null;
     }
 
     const result = out && typeof out === 'object'
         ? out
-        : { width: 0, height: 0 };
-    result.width = Math.max(presentation.sourceRect.w, presentation.targetRect.w);
-    result.height = Math.max(presentation.sourceRect.h, presentation.targetRect.h);
+        : { x: 0, y: 0, w: 0, h: 0, radius: 0 };
+    const sourceRect = presentation.sourceRect;
+    result.x = currentRect.x + ((currentRect.w - sourceRect.w) * 0.5);
+    result.y = currentRect.y + ((currentRect.h - sourceRect.h) * 0.5);
+    result.w = sourceRect.w;
+    result.h = sourceRect.h;
+    result.radius = sourceRect.radius;
     return result;
 }
 

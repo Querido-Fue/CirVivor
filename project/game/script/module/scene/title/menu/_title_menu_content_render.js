@@ -26,6 +26,7 @@ import {
  * @param {boolean} options.hovered - hover 여부입니다.
  * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
  * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
+ * @param {boolean} [options.drawInnerEdges=true] - 카드 내부 장식선 렌더 여부입니다.
  * @returns {void}
  */
 export function drawTitleMenuUtilityTileContent({
@@ -34,7 +35,8 @@ export function drawTitleMenuUtilityTileContent({
     renderState,
     hovered,
     titleCardMenu,
-    uiScale = 1
+    uiScale = 1,
+    drawInnerEdges = true
 }) {
     const panelRect = renderState.panelRect;
     const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
@@ -52,7 +54,9 @@ export function drawTitleMenuUtilityTileContent({
         placeholderSize * titleCardMenu.UTILITY_TILE_PLACEHOLDER_RADIUS_RATIO
     );
 
-    _drawTitleMenuInnerEdges(context, panelRect, hovered ? 0.16 : 0);
+    if (drawInnerEdges) {
+        _drawTitleMenuInnerEdges(context, panelRect, hovered ? 0.16 : 0);
+    }
     if (drawTitleMenuIcon(context, svgDrawer, renderState.id, iconMetrics, placeholderAlpha)) {
         return;
     }
@@ -70,6 +74,7 @@ export function drawTitleMenuUtilityTileContent({
  * @param {object} options.textConstants - 텍스트 상수입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
+ * @param {boolean} [options.drawInnerEdges=true] - 카드 내부 장식선 렌더 여부입니다.
  * @returns {void}
  */
 export function drawTitleMenuCardFrontfaceContent({
@@ -79,7 +84,8 @@ export function drawTitleMenuCardFrontfaceContent({
     renderState,
     textConstants,
     uiww,
-    uiScale = 1
+    uiScale = 1,
+    drawInnerEdges = true
 }) {
     const panelRect = renderState.panelRect;
     const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
@@ -105,7 +111,9 @@ export function drawTitleMenuCardFrontfaceContent({
         : panelRect.h - bottomPadding - titleLineHeight;
 
     drawTitleMenuCardIcon(context, svgDrawer, card.cardDefinition.id, iconMetrics);
-    _drawTitleMenuInnerEdges(context, panelRect, renderState.hoverProgress || 0);
+    if (drawInnerEdges) {
+        _drawTitleMenuInnerEdges(context, panelRect, renderState.hoverProgress || 0);
+    }
 
     if (isCompactHorizontalCard) {
         const titleX = iconMetrics.x + iconMetrics.w + Math.max(14 * resolvedUiScale, panelRect.w * 0.06);

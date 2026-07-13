@@ -1,6 +1,7 @@
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { clamp01 } from 'util/number_util.js';
+import { resolveOverlayEffectTextureRect } from './_overlay_render_geometry.js';
 import {
     COMPOSITE_TEXTURE_FRAGMENT_SHADER,
     compileShader,
@@ -56,6 +57,7 @@ export class OverlayEffectRenderer {
         this.blurOutputScaleSignature = '';
         this.blurPassSignature = '';
         this.panelRectScratch = { x: 0, y: 0, w: 0, h: 0 };
+        this.effectTextureRectScratch = { x: 0, y: 0, w: 0, h: 0 };
         this.expandedRectScratch = { x: 0, y: 0, w: 0, h: 0 };
         this.transformMatrixScratch = new Float32Array(16);
         this.transparentColor = new Float32Array([0, 0, 0, 0]);
@@ -232,6 +234,7 @@ export class OverlayEffectRenderer {
             'u_transform',
             'u_perspective',
             'u_texture',
+            'u_textureRect',
             'u_radius',
             'u_alpha'
         ], ['a_unit']);
@@ -688,7 +691,8 @@ export class OverlayEffectRenderer {
                 panelRect,
                 perspective,
                 radius,
-                transformMatrix
+                transformMatrix,
+                command.effectTextureRect
             );
         }
     }
@@ -731,10 +735,24 @@ export class OverlayEffectRenderer {
      * @param {number} perspective - 원근 거리입니다.
      * @param {number} radius - 패널 반경입니다.
      * @param {Float32Array} transformMatrix - 패널 변환 행렬입니다.
+     * @param {object|null|undefined} effectTextureRect - 절대 화면 좌표의 텍스처 표시 영역입니다.
      */
-    #drawPanelTexture(alpha, canvas, panelRect, perspective, radius, transformMatrix) {
+    #drawPanelTexture(
+        alpha,
+        canvas,
+        panelRect,
+        perspective,
+        radius,
+        transformMatrix,
+        effectTextureRect
+    ) {
         const gl = this.gl;
         this.#uploadPanelTexture(canvas);
+        const textureRect = resolveOverlayEffectTextureRect(
+            panelRect,
+            effectTextureRect,
+            this.effectTextureRectScratch
+        );
 
         gl.useProgram(this.panelTextureProgram.program);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.unitQuadBuffer);
@@ -749,6 +767,13 @@ export class OverlayEffectRenderer {
         );
         gl.uniform1f(this.panelTextureProgram.uniforms.u_radius, radius);
         gl.uniform1f(this.panelTextureProgram.uniforms.u_alpha, alpha);
+        gl.uniform4f(
+            this.panelTextureProgram.uniforms.u_textureRect,
+            textureRect.x,
+            textureRect.y,
+            textureRect.w,
+            textureRect.h
+        );
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.activePanelTexture);
         gl.uniform1i(this.panelTextureProgram.uniforms.u_texture, 0);

@@ -7,8 +7,8 @@ import {
     advanceOverlayConnectedPresentation,
     cancelOverlayConnectedPresentation,
     createOverlayConnectedPresentation,
+    getOverlayConnectedPresentationFrontContentRect,
     getOverlayConnectedPresentationRect,
-    getOverlayConnectedPresentationRasterSize,
     isOverlayConnectedPresentationFrontFace,
     setOverlayConnectedPresentationSource,
     setOverlayConnectedPresentationTarget
@@ -102,7 +102,7 @@ export class TitleMenu {
         this.hoveredSecondaryMenuId = null;
         this.pendingActivation = null;
         this.connectedPresentationRect = { x: 0, y: 0, w: 0, h: 0, radius: 0 };
-        this.connectedTextureRasterSize = { width: 0, height: 0 };
+        this.connectedFrontContentRect = { x: 0, y: 0, w: 0, h: 0, radius: 0 };
         this.versionHistoryLinkButton = null;
         this.cardPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.utilityPaneInteractionState = createTitleMenuPaneRuntimeState();
@@ -280,6 +280,9 @@ export class TitleMenu {
         if (changedSettings.theme !== undefined) {
             this.#refreshMenuIcons();
             this.#syncThemeEffectOptions();
+            if (this.pendingActivation) {
+                this.pendingActivation.frontFaceTextureCanvas = null;
+            }
         }
 
         if (changedSettings.disableTransparency !== undefined && this.session) {
@@ -698,8 +701,8 @@ export class TitleMenu {
             presentation,
             overlayId: null,
             frontFaceTextureCanvas: null,
-            frontFaceRasterWidth: 0,
-            frontFaceRasterHeight: 0
+            frontFaceSourceWidth: 0,
+            frontFaceSourceHeight: 0
         };
         this.pendingActivation = activation;
         this.pointerEnabled = false;
@@ -848,32 +851,31 @@ export class TitleMenu {
         }
 
         let effectTextureCanvas = null;
+        let effectTextureRect = null;
         if (showsFrontFace) {
-            getOverlayConnectedPresentationRasterSize(
+            effectTextureRect = getOverlayConnectedPresentationFrontContentRect(
                 presentation,
-                this.connectedTextureRasterSize
+                currentRect,
+                this.connectedFrontContentRect
             );
-            const rasterWidth = Math.ceil(this.connectedTextureRasterSize.width);
-            const rasterHeight = Math.ceil(this.connectedTextureRasterSize.height);
+            const sourceWidth = presentation.sourceRect.w;
+            const sourceHeight = presentation.sourceRect.h;
             const needsFreshSnapshot = !activation.frontFaceTextureCanvas
-                || activation.frontFaceRasterWidth !== rasterWidth
-                || activation.frontFaceRasterHeight !== rasterHeight;
+                || activation.frontFaceSourceWidth !== sourceWidth
+                || activation.frontFaceSourceHeight !== sourceHeight;
 
             if (needsFreshSnapshot) {
                 activation.frontFaceTextureCanvas = activation.sourceType === 'utility'
-                    ? this.textureRenderer.buildUtilityTileTextureCanvas(
+                    ? this.textureRenderer.buildConnectedUtilityContentTextureCanvas(
                         renderState,
-                        runtimeState,
-                        this.connectedTextureRasterSize
+                        runtimeState
                     )
-                    : this.textureRenderer.buildCardTextureCanvas(
+                    : this.textureRenderer.buildConnectedCardContentTextureCanvas(
                         activation.sourceModel,
-                        runtimeState,
-                        renderState,
-                        this.connectedTextureRasterSize
+                        renderState
                     );
-                activation.frontFaceRasterWidth = rasterWidth;
-                activation.frontFaceRasterHeight = rasterHeight;
+                activation.frontFaceSourceWidth = sourceWidth;
+                activation.frontFaceSourceHeight = sourceHeight;
             }
             effectTextureCanvas = activation.frontFaceTextureCanvas;
         }
@@ -884,7 +886,8 @@ export class TitleMenu {
             alpha: renderState.alpha,
             transformMatrix: runtimeState.transformMatrix,
             perspective: runtimeState.perspective,
-            effectTextureCanvas
+            effectTextureCanvas,
+            effectTextureRect
         });
     }
 

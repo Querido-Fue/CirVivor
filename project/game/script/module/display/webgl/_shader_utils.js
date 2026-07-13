@@ -467,6 +467,7 @@ export const PANEL_TEXTURE_FRAGMENT_SHADER = `
     varying vec2 v_panelSize;
 
     uniform sampler2D u_texture;
+    uniform vec4 u_textureRect;
     uniform float u_radius;
     uniform float u_alpha;
 
@@ -483,7 +484,15 @@ export const PANEL_TEXTURE_FRAGMENT_SHADER = `
             discard;
         }
 
-        vec2 uv = v_panelLocal / max(v_panelSize, vec2(1.0));
+        vec2 textureLocal = v_panelLocal - u_textureRect.xy;
+        if (textureLocal.x < 0.0
+            || textureLocal.y < 0.0
+            || textureLocal.x > u_textureRect.z
+            || textureLocal.y > u_textureRect.w) {
+            discard;
+        }
+
+        vec2 uv = textureLocal / max(u_textureRect.zw, vec2(1.0));
         vec4 color = texture2D(u_texture, uv);
         float alpha = color.a * u_alpha * baseMask;
         gl_FragColor = vec4(color.rgb * u_alpha * baseMask, alpha);

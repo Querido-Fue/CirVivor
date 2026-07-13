@@ -61,6 +61,8 @@ export class TitleMenuTextureRenderer {
         this.paneTextureContext = null;
         this.cardPaneTextureCanvas = null;
         this.cardPaneTextureContext = null;
+        this.connectedContentTextureCanvas = null;
+        this.connectedContentTextureContext = null;
     }
 
     /**
@@ -181,6 +183,75 @@ export class TitleMenuTextureRenderer {
     }
 
     /**
+     * 연결 전환에서 원래 크기로 중앙 고정할 utility 콘텐츠 스냅샷을 만듭니다.
+     * @param {object} renderState - 타일 렌더 상태입니다.
+     * @param {object} runtimeState - 타일 런타임 상태입니다.
+     * @returns {HTMLCanvasElement|null} 콘텐츠 전용 텍스처입니다.
+     */
+    buildConnectedUtilityContentTextureCanvas(renderState, runtimeState) {
+        const panelRect = renderState?.panelRect;
+        if (!panelRect || !runtimeState) {
+            return null;
+        }
+
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            this,
+            'connectedContentTextureCanvas',
+            'connectedContentTextureContext',
+            panelRect.w,
+            panelRect.h
+        );
+        beginTitleMenuTextureClip(context, width, height, panelRect);
+        drawTitleMenuUtilityTileContent({
+            context,
+            svgDrawer: this.svgDrawer,
+            renderState,
+            hovered: runtimeState.hovered,
+            titleCardMenu: this.titleCardMenu,
+            uiScale: this._getUiScale(),
+            drawInnerEdges: false
+        });
+        context.restore();
+        this._markTextureCanvasUpdated(canvas);
+        return canvas;
+    }
+
+    /**
+     * 연결 전환에서 원래 크기로 중앙 고정할 카드 콘텐츠 스냅샷을 만듭니다.
+     * @param {TitleMenuCard} card - 대상 카드입니다.
+     * @param {object} renderState - 카드 렌더 상태입니다.
+     * @returns {HTMLCanvasElement|null} 콘텐츠 전용 텍스처입니다.
+     */
+    buildConnectedCardContentTextureCanvas(card, renderState) {
+        const panelRect = renderState?.panelRect;
+        if (!card || !panelRect) {
+            return null;
+        }
+
+        const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
+            this,
+            'connectedContentTextureCanvas',
+            'connectedContentTextureContext',
+            panelRect.w,
+            panelRect.h
+        );
+        beginTitleMenuTextureClip(context, width, height, panelRect);
+        drawTitleMenuCardFrontfaceContent({
+            context,
+            svgDrawer: this.svgDrawer,
+            card,
+            renderState,
+            textConstants: this.textConstants,
+            uiww: this._getUIWW(),
+            uiScale: this._getUiScale(),
+            drawInnerEdges: false
+        });
+        context.restore();
+        this._markTextureCanvasUpdated(canvas);
+        return canvas;
+    }
+
+    /**
      * 런타임 상태가 소유한 텍스처 캔버스들을 해제합니다.
      * @param {Iterable<object>} runtimeStates - 텍스처 상태 목록입니다.
      * @returns {void}
@@ -199,6 +270,11 @@ export class TitleMenuTextureRenderer {
     destroy() {
         this._releaseTextureCanvas(this, 'paneTextureCanvas', 'paneTextureContext');
         this._releaseTextureCanvas(this, 'cardPaneTextureCanvas', 'cardPaneTextureContext');
+        this._releaseTextureCanvas(
+            this,
+            'connectedContentTextureCanvas',
+            'connectedContentTextureContext'
+        );
         this.textureRevisionCounter = 0;
     }
 

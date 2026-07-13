@@ -666,7 +666,7 @@ export class BaseOverlay {
         transform.scaleY = currentRect.h / targetRect.h;
         transform.rotateY = getOverlayConnectedPresentationBackRotationY(presentation);
         transform.perspectiveRatio = presentation.perspective / Math.max(1, this.WW);
-        this.session.setContentTransform?.(transform);
+        this.session.setContentTransform?.(transform, false);
     }
 
     /**
