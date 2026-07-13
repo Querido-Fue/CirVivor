@@ -14,7 +14,8 @@ import {
 } from './_title_menu_effect_state.js';
 import {
     beginTitleMenuTextureClip,
-    ensureTitleMenuTextureCanvas
+    ensureTitleMenuTextureCanvas,
+    resolveTitleMenuTextureRasterSize
 } from './_title_menu_texture_canvas.js';
 import {
     buildTitleMenuCardStaticTextureSignature,
@@ -96,20 +97,26 @@ export class TitleMenuTextureRenderer {
      * 하단 보조 메뉴 타일용 텍스처 캔버스를 구성합니다.
      * @param {object} renderState - 타일 렌더 상태입니다.
      * @param {object} runtimeState - 타일 런타임 상태입니다.
+     * @param {{width?:number,height?:number}|null} [preferredRasterSize=null] - 선명도를 위해 확보할 backing 크기입니다.
      * @returns {HTMLCanvasElement|null} 생성된 타일 텍스처 캔버스입니다.
      */
-    buildUtilityTileTextureCanvas(renderState, runtimeState) {
+    buildUtilityTileTextureCanvas(renderState, runtimeState, preferredRasterSize = null) {
         if (!hasTitleMenuDynamicTextureState(runtimeState)) {
-            return this._getStaticUtilityTileTextureCanvas(renderState, runtimeState);
+            return this._getStaticUtilityTileTextureCanvas(
+                renderState,
+                runtimeState,
+                preferredRasterSize
+            );
         }
 
         const panelRect = renderState.panelRect;
+        const rasterSize = resolveTitleMenuTextureRasterSize(panelRect, preferredRasterSize);
         const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
             runtimeState,
             'textureCanvas',
             'textureContext',
-            panelRect.w,
-            panelRect.h
+            rasterSize.width,
+            rasterSize.height
         );
         beginTitleMenuTextureClip(context, width, height, panelRect);
 
@@ -133,20 +140,27 @@ export class TitleMenuTextureRenderer {
      * @param {TitleMenuCard} card - 대상 카드입니다.
      * @param {object} runtimeState - 카드 런타임 상태입니다.
      * @param {object} renderState - 카드 렌더 상태입니다.
+     * @param {{width?:number,height?:number}|null} [preferredRasterSize=null] - 선명도를 위해 확보할 backing 크기입니다.
      * @returns {HTMLCanvasElement|null} 생성된 텍스처 캔버스입니다.
      */
-    buildCardTextureCanvas(card, runtimeState, renderState) {
+    buildCardTextureCanvas(card, runtimeState, renderState, preferredRasterSize = null) {
         if (!hasTitleMenuDynamicTextureState(runtimeState, renderState)) {
-            return this._getStaticCardTextureCanvas(card, runtimeState, renderState);
+            return this._getStaticCardTextureCanvas(
+                card,
+                runtimeState,
+                renderState,
+                preferredRasterSize
+            );
         }
 
         const panelRect = renderState.panelRect;
+        const rasterSize = resolveTitleMenuTextureRasterSize(panelRect, preferredRasterSize);
         const { canvas, context, width, height } = ensureTitleMenuTextureCanvas(
             runtimeState,
             'textureCanvas',
             'textureContext',
-            panelRect.w,
-            panelRect.h
+            rasterSize.width,
+            rasterSize.height
         );
         beginTitleMenuTextureClip(context, width, height, panelRect);
 
@@ -231,17 +245,19 @@ export class TitleMenuTextureRenderer {
      * @param {TitleMenuCard} card - 대상 카드입니다.
      * @param {object} runtimeState - 카드 런타임 상태입니다.
      * @param {object} renderState - 카드 렌더 상태입니다.
+     * @param {{width?:number,height?:number}|null} [preferredRasterSize=null] - 선명도를 위해 확보할 backing 크기입니다.
      * @returns {HTMLCanvasElement|null} 정적 카드 텍스처입니다.
      * @private
      */
-    _getStaticCardTextureCanvas(card, runtimeState, renderState) {
+    _getStaticCardTextureCanvas(card, runtimeState, renderState, preferredRasterSize = null) {
         const panelRect = renderState?.panelRect;
         if (!runtimeState || !panelRect) {
             return null;
         }
 
-        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
-        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
+        const rasterSize = resolveTitleMenuTextureRasterSize(panelRect, preferredRasterSize);
+        const canvasWidth = rasterSize.width;
+        const canvasHeight = rasterSize.height;
         const signature = buildTitleMenuCardStaticTextureSignature({
             card,
             renderState,
@@ -292,17 +308,19 @@ export class TitleMenuTextureRenderer {
      * 유틸리티 타일의 정적 텍스처를 반환합니다.
      * @param {object} renderState - 타일 렌더 상태입니다.
      * @param {object} runtimeState - 타일 런타임 상태입니다.
+     * @param {{width?:number,height?:number}|null} [preferredRasterSize=null] - 선명도를 위해 확보할 backing 크기입니다.
      * @returns {HTMLCanvasElement|null} 정적 타일 텍스처입니다.
      * @private
      */
-    _getStaticUtilityTileTextureCanvas(renderState, runtimeState) {
+    _getStaticUtilityTileTextureCanvas(renderState, runtimeState, preferredRasterSize = null) {
         const panelRect = renderState?.panelRect;
         if (!runtimeState || !panelRect) {
             return null;
         }
 
-        const canvasWidth = Math.max(1, Math.ceil(panelRect.w));
-        const canvasHeight = Math.max(1, Math.ceil(panelRect.h));
+        const rasterSize = resolveTitleMenuTextureRasterSize(panelRect, preferredRasterSize);
+        const canvasWidth = rasterSize.width;
+        const canvasHeight = rasterSize.height;
         const signature = buildTitleMenuUtilityTileStaticTextureSignature({
             renderState,
             runtimeState,

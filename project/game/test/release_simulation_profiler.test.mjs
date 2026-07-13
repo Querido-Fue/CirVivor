@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const profilerModule = await loadGameModule('simulation/release_simulation_profiler.js');
-const { ReleaseSimulationProfiler } = profilerModule;
+const {
+    ReleaseSimulationProfiler,
+    shouldRecordReleaseSimulationForFrameMode
+} = profilerModule;
+
+assert.equal(shouldRecordReleaseSimulationForFrameMode('running'), true);
+assert.equal(shouldRecordReleaseSimulationForFrameMode(undefined), true);
+assert.equal(shouldRecordReleaseSimulationForFrameMode('paused'), false);
+assert.equal(shouldRecordReleaseSimulationForFrameMode('step'), false);
 
 const fixedStepSeconds = 1 / 60;
 const profiler = new ReleaseSimulationProfiler({

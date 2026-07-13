@@ -13,12 +13,14 @@ const KEYBOARD_ACTION_BY_DOM_KEY = Object.freeze({
     d: 'right',
     ' ': 'space',
     p: 'pause',
-    r: 'reload'
+    r: 'reload',
+    '/': 'debugPause',
+    '.': 'debugStep'
 });
 
 /**
  * 기본 키보드 입력 상태를 생성합니다.
- * @returns {{up:boolean, down:boolean, left:boolean, right:boolean, space:boolean, pause:boolean, reload:boolean}} 키 상태 객체입니다.
+ * @returns {{up:boolean, down:boolean, left:boolean, right:boolean, space:boolean, pause:boolean, reload:boolean, debugPause:boolean, debugStep:boolean}} 키 상태 객체입니다.
  */
 function createDefaultKeyboardState() {
     return {
@@ -28,7 +30,9 @@ function createDefaultKeyboardState() {
         right: false,
         space: false,
         pause: false,
-        reload: false
+        reload: false,
+        debugPause: false,
+        debugStep: false
     };
 }
 
@@ -40,9 +44,10 @@ function createDefaultKeyboardState() {
 export class KeyboardInputHandler {
     constructor() {
         this.keys = createDefaultKeyboardState();
+        this.pressedKeys = new Set();
 
         window.addEventListener('keydown', (e) => {
-            this.#setKeyState(e.key, true);
+            this.#setKeyState(e.key, true, e.repeat === true);
         });
 
         window.addEventListener('keyup', (e) => {
@@ -70,6 +75,7 @@ export class KeyboardInputHandler {
      */
     resetKeyboardInput() {
         this.keys = createDefaultKeyboardState();
+        this.pressedKeys.clear();
     }
 
     /**
@@ -82,17 +88,36 @@ export class KeyboardInputHandler {
     }
 
     /**
+     * 지정한 키의 반복되지 않은 누름 edge를 한 번 소비합니다.
+     * @param {string} key - 소비할 내부 입력 키 이름입니다.
+     * @returns {boolean} 대기 중인 누름 edge를 소비했는지 여부입니다.
+     */
+    consumeKeyboardPress(key) {
+        if (!this.pressedKeys.has(key)) {
+            return false;
+        }
+
+        this.pressedKeys.delete(key);
+        return true;
+    }
+
+    /**
      * DOM key 입력을 내부 키 상태에 반영합니다.
      * @param {string} domKey - KeyboardEvent.key 값입니다.
      * @param {boolean} isPressed - 눌림 여부입니다.
+     * @param {boolean} [isRepeat=false] - 브라우저 자동 반복 keydown 여부입니다.
      * @private
      */
-    #setKeyState(domKey, isPressed) {
+    #setKeyState(domKey, isPressed, isRepeat = false) {
         const keyName = KEYBOARD_ACTION_BY_DOM_KEY[domKey];
         if (!keyName) {
             return;
         }
 
+        const wasPressed = this.keys[keyName] === true;
         this.keys[keyName] = isPressed === true;
+        if (isPressed === true && !wasPressed && isRepeat !== true) {
+            this.pressedKeys.add(keyName);
+        }
     }
 }

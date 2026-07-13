@@ -13,6 +13,7 @@ import {
     isReleaseSimulationProfilerCollecting,
     recordReleaseSimulationFrame,
     resumeReleaseSimulationProfiler,
+    shouldRecordReleaseSimulationForFrameMode,
     suspendReleaseSimulationProfiler
 } from 'simulation/release_simulation_profiler.js';
 
@@ -116,6 +117,7 @@ class App {
         let fixedStepCount = 0;
         let droppedFixedStepCount = 0;
         let frameDeltaClampLossSeconds = 0;
+        let debugFrameMode = 'running';
         try {
             if (!Number.isFinite(this.lastFrameTimestamp) || this.lastFrameTimestamp <= 0) {
                 this.lastFrameTimestamp = now;
@@ -134,8 +136,23 @@ class App {
                 frameDeltaClampLossSeconds = rawFrameDeltaSeconds - frameDeltaSeconds;
             }
 
+            const debugFrameControl = this.systemHandler.prepareDebugFrameControl();
+            debugFrameMode = debugFrameControl.mode;
             const shouldAdvanceFixedStep = this.systemHandler.shouldRunFixedStep();
-            if (shouldAdvanceFixedStep) {
+            let fixedAlpha = 0;
+
+            if (debugFrameMode === 'paused') {
+                frameDeltaSeconds = 0;
+                this.accumulatorSeconds = 0;
+                this.fixedStepCatchUpPolicy.reset();
+                fixedAlpha = 1;
+            } else if (debugFrameMode === 'step') {
+                frameDeltaSeconds = this.fixedStepSeconds;
+                fixedStepCount = shouldAdvanceFixedStep ? 1 : 0;
+                this.accumulatorSeconds = 0;
+                this.fixedStepCatchUpPolicy.reset();
+                fixedAlpha = 1;
+            } else if (shouldAdvanceFixedStep) {
                 this.accumulatorSeconds += frameDeltaSeconds;
                 const maxFixedStepsThisFrame = this.fixedStepCatchUpPolicy.resolveMaxSteps(
                     this.lastFrameCpuSeconds,
@@ -155,26 +172,27 @@ class App {
                     );
                     this.accumulatorSeconds = this.accumulatorSeconds % this.fixedStepSeconds;
                 }
+                fixedAlpha = this.accumulatorSeconds / this.fixedStepSeconds;
             } else {
                 this.accumulatorSeconds = 0;
                 this.fixedStepCatchUpPolicy.reset();
             }
 
-            const alpha = shouldAdvanceFixedStep
-                ? (this.accumulatorSeconds / this.fixedStepSeconds)
-                : 0;
             this.systemHandler.tick({
                 frameDeltaSeconds,
                 fixedStepSeconds: this.fixedStepSeconds,
                 fixedStepCount,
-                fixedAlpha: alpha
+                fixedAlpha,
+                debugFrameMode
             });
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
         } finally {
             const frameWorkEnd = performance.now();
             const frameWorkCpuMs = Math.max(0, frameWorkEnd - frameMeasureStart);
-            if (shouldMeasureReleaseSimulation) {
+            const shouldRecordReleaseFrame = shouldMeasureReleaseSimulation
+                && shouldRecordReleaseSimulationForFrameMode(debugFrameMode);
+            if (shouldRecordReleaseFrame) {
                 recordReleaseSimulationFrame(
                     frameWorkEnd,
                     frameWorkCpuMs,
@@ -186,7 +204,7 @@ class App {
                     this.fixedStepCatchUpPolicy.isCpuBound()
                 );
             }
-            const frameMeasureEnd = shouldMeasureReleaseSimulation
+            const frameMeasureEnd = shouldRecordReleaseFrame
                 ? performance.now()
                 : frameWorkEnd;
             this.lastFrameCpuSeconds = Math.max(0, (frameMeasureEnd - frameMeasureStart) / 1000);

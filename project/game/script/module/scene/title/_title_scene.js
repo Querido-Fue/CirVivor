@@ -98,10 +98,11 @@ export class TitleScene extends BaseScene {
     /**
      * 타이틀 overlay를 엽니다.
      * @param {'deck'|'setting'|'credits'|'quickStart'|'records'|'research'|'achievements'} menu - 열 overlay 메뉴입니다.
+     * @param {{presentation?: object|null}} [options={}] - 선택적 오픈 프레젠테이션입니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */
-    openTitleOverlay(menu) {
-        return this.sceneSystem.systemHandler.overlayManager.openTitleOverlay(menu, this);
+    openTitleOverlay(menu, options = {}) {
+        return this.sceneSystem.systemHandler.overlayManager.openTitleOverlay(menu, this, options);
     }
 
     /**
@@ -113,9 +114,11 @@ export class TitleScene extends BaseScene {
 
     /**
      * 종료 확인 overlay를 엽니다.
+     * @param {{presentation?: object|null}} [options={}] - 선택적 오픈 프레젠테이션입니다.
+     * @returns {string|null} 생성된 overlay id입니다.
      */
-    openExitOverlay() {
-        this.sceneSystem.systemHandler.overlayManager.openExitOverlay();
+    openExitOverlay(options = {}) {
+        return this.sceneSystem.systemHandler.overlayManager.openExitOverlay(options);
     }
 
     /**

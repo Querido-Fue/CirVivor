@@ -164,6 +164,12 @@ export const setMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.se
  */
 export const getKeyboardInput = (key) => inputSystemInstance.keyboardInputHandler.getKeyboardInput(key);
 /**
+ * 지정한 키의 반복되지 않은 누름 edge를 한 번 소비합니다.
+ * @param {string} key - 소비할 내부 입력 키 이름입니다.
+ * @returns {boolean} 누름 edge 소비 여부입니다.
+ */
+export const consumeKeyboardPress = (key) => inputSystemInstance?.keyboardInputHandler?.consumeKeyboardPress?.(key) === true;
+/**
  * 키보드 입력 상태를 초기화합니다.
  */
 export const resetKeyboardInput = () => inputSystemInstance.keyboardInputHandler.resetKeyboardInput();

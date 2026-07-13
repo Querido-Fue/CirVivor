@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { shouldShowHitboxes } from 'debug/debug_system.js';
 import { render } from 'display/display_system.js';
 import {
     ENEMY_PAIR_COLLISION_RADIUS_SCALE,
@@ -6,7 +7,6 @@ import {
     HEXA_HIVE_CELL_COLLISION_RADIUS
 } from 'physics/_collision_resolve_tuning.js';
 import { getEnemyCircleCollisionRadius } from 'physics/_collision_enemy_geometry.js';
-import { getSetting } from 'save/save_system.js';
 import { rotatePoint } from 'util/math_util.js';
 import {
     getHexaHiveType
@@ -68,7 +68,7 @@ function drawDebugCircle(layer, x, y, radius, stroke, lineWidth) {
  * @param {{enemyType?: string, localCenters?: {x?: number, y?: number}[]|null, width?: number, height?: number, rotationRadians?: number, renderX?: number, renderY?: number, layer?: string}} options
  */
 export function drawEnemyCollisionDebugCircles(options = {}) {
-    if (getSetting('debugMode') !== true) {
+    if (!shouldShowHitboxes()) {
         return;
     }
 

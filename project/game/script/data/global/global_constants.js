@@ -23,7 +23,7 @@ export const GLOBAL_CONSTANTS = Object.freeze({
     WEBGL_MAX_SPRITES: 16000,
     SLIDER_MAX_OVERFLOW: 0.05,
     DEBUG_MODE_TOGGLE: Object.freeze({
-        REQUIRED_MIDDLE_CLICKS: 5,
+        REQUIRED_MIDDLE_CLICKS: 3,
         CLICK_WINDOW_MS: 2000
     }),
     FALLBACK_LAYOUT: 'ui'

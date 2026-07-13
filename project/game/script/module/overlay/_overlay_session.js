@@ -32,9 +32,11 @@ export class OverlaySession {
         this.contentScale = 1;
         this.contentScaleOriginXRatio = 0.5;
         this.contentScaleOriginYRatio = 0.5;
+        this.contentTransform = null;
         this.appliedContentScale = Number.NaN;
         this.appliedContentScaleOriginXRatio = Number.NaN;
         this.appliedContentScaleOriginYRatio = Number.NaN;
+        this.appliedContentTransformSignature = '';
         this.blurRevision = 1;
         this.closed = false;
         this.hasRegisteredEffects = Object.keys(this.effects).length > 0;
@@ -132,6 +134,49 @@ export class OverlaySession {
     setContentScaleOrigin(originXRatio, originYRatio) {
         this.contentScaleOriginXRatio = clampFiniteNumber(originXRatio, 0, 1, 0.5);
         this.contentScaleOriginYRatio = clampFiniteNumber(originYRatio, 0, 1, 0.5);
+        this.#syncContentScale();
+    }
+
+    /**
+     * overlay 콘텐츠 surface에 연결 전환용 3D 변환을 적용합니다.
+     * @param {object} transform - 변환 옵션입니다.
+     * @param {number} transform.originXRatio - 화면 너비 대비 변환 원점입니다.
+     * @param {number} transform.originYRatio - 화면 높이 대비 변환 원점입니다.
+     * @param {number} transform.translateXRatio - 화면 너비 대비 X 이동량입니다.
+     * @param {number} transform.translateYRatio - 화면 높이 대비 Y 이동량입니다.
+     * @param {number} transform.scaleX - X축 배율입니다.
+     * @param {number} transform.scaleY - Y축 배율입니다.
+     * @param {number} transform.rotateY - Y축 회전 라디안입니다.
+     * @param {number} transform.perspectiveRatio - 화면 너비 대비 원근 거리입니다.
+     */
+    setContentTransform(transform) {
+        if (!transform) {
+            this.clearContentTransform();
+            return;
+        }
+
+        this.contentTransform = {
+            originXRatio: clampFiniteNumber(transform.originXRatio, 0, 1, 0.5),
+            originYRatio: clampFiniteNumber(transform.originYRatio, 0, 1, 0.5),
+            translateXRatio: clampFiniteNumber(transform.translateXRatio, -4, 4, 0),
+            translateYRatio: clampFiniteNumber(transform.translateYRatio, -4, 4, 0),
+            scaleX: clampFiniteNumber(transform.scaleX, 0.01, 4, 1),
+            scaleY: clampFiniteNumber(transform.scaleY, 0.01, 4, 1),
+            rotateY: clampFiniteNumber(transform.rotateY, -Math.PI, Math.PI, 0),
+            perspectiveRatio: clampFiniteNumber(transform.perspectiveRatio, 0.05, 4, 1)
+        };
+        this.#syncContentScale();
+    }
+
+    /**
+     * 연결 전환용 3D 변환을 제거하고 일반 프레젠테이션 배율로 복원합니다.
+     */
+    clearContentTransform() {
+        if (!this.contentTransform) {
+            return;
+        }
+        this.contentTransform = null;
+        this.appliedContentTransformSignature = '__dirty__';
         this.#syncContentScale();
     }
 
@@ -366,15 +411,46 @@ export class OverlaySession {
      * overlay 콘텐츠 surface scale을 동기화합니다.
      */
     #syncContentScale() {
+        const contentTransformSignature = this.contentTransform
+            ? [
+                this.contentTransform.originXRatio,
+                this.contentTransform.originYRatio,
+                this.contentTransform.translateXRatio,
+                this.contentTransform.translateYRatio,
+                this.contentTransform.scaleX,
+                this.contentTransform.scaleY,
+                this.contentTransform.rotateY,
+                this.contentTransform.perspectiveRatio
+            ].join(':')
+            : '';
         if (this.appliedContentScale === this.contentScale
             && this.appliedContentScaleOriginXRatio === this.contentScaleOriginXRatio
-            && this.appliedContentScaleOriginYRatio === this.contentScaleOriginYRatio) {
+            && this.appliedContentScaleOriginYRatio === this.contentScaleOriginYRatio
+            && this.appliedContentTransformSignature === contentTransformSignature) {
             return;
         }
 
         this.appliedContentScale = this.contentScale;
         this.appliedContentScaleOriginXRatio = this.contentScaleOriginXRatio;
         this.appliedContentScaleOriginYRatio = this.contentScaleOriginYRatio;
+        this.appliedContentTransformSignature = contentTransformSignature;
+
+        if (this.contentTransform) {
+            const transform = this.contentTransform;
+            const transformOrigin = `${transform.originXRatio * 100}% ${transform.originYRatio * 100}%`;
+            const transformValue = `perspective(${transform.perspectiveRatio * 100}vw) `
+                + `translate(${transform.translateXRatio * 100}%, ${transform.translateYRatio * 100}%) `
+                + `scale(${transform.scaleX}, ${transform.scaleY}) `
+                + `rotateY(${transform.rotateY}rad)`;
+            this.uiSurface.canvas.style.transformOrigin = transformOrigin;
+            this.uiSurface.canvas.style.transform = transformValue;
+            if (this.effectSurface) {
+                this.effectSurface.canvas.style.transformOrigin = transformOrigin;
+                this.effectSurface.canvas.style.transform = transformValue;
+            }
+            return;
+        }
+
         const transformValue = Math.abs(this.contentScale - 1) <= 0.0001
             ? 'none'
             : `scale(${this.contentScale})`;

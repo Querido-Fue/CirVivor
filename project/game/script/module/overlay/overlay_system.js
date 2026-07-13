@@ -3,6 +3,7 @@ import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_syst
 import { getSetting } from 'save/save_system.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { OverlaySession } from './_overlay_session.js';
+import { DebugOverlay } from './_debug_overlay.js';
 import { ExitOverlay } from './_exit_overlay.js';
 import { ExternalLinkWarningOverlay } from './_external_link_warning_overlay.js';
 import { DeckOverlay } from './title/_deck.js';
@@ -14,6 +15,7 @@ import { ResearchOverlay } from './title/_research.js';
 import { AchievementsOverlay } from './title/_achievements.js';
 
 const OVERLAY_MANAGER_KEYS = Object.freeze({
+    DEBUG_PANEL: 'debugPanel',
     EXIT_CONFIRM: 'exitConfirm',
     EXTERNAL_LINK_WARNING: 'externalLinkWarning',
     TITLE_MENU: 'titleMenu'
@@ -161,15 +163,45 @@ export class OverlayManager {
     }
 
     /**
+     * 디버그 제어 overlay를 엽니다.
+     * 같은 패널이 이미 열려 있으면 기존 overlay id를 반환합니다.
+     * @param {object} debugSystem - 디버그 표시 상태를 소유한 시스템입니다.
+     * @returns {string|null} 생성되거나 이미 열려 있던 overlay id입니다.
+     */
+    openDebugOverlay(debugSystem) {
+        if (this.keyToIdMap.has(OVERLAY_MANAGER_KEYS.DEBUG_PANEL)) {
+            return this.keyToIdMap.get(OVERLAY_MANAGER_KEYS.DEBUG_PANEL);
+        }
+        if (!debugSystem) {
+            return null;
+        }
+
+        return this.openOverlay(new DebugOverlay(debugSystem), {
+            key: OVERLAY_MANAGER_KEYS.DEBUG_PANEL
+        });
+    }
+
+    /**
+     * 현재 열린 디버그 제어 overlay를 닫습니다.
+     */
+    closeDebugOverlay() {
+        this.closeByKey(OVERLAY_MANAGER_KEYS.DEBUG_PANEL);
+    }
+
+    /**
      * 종료 확인 overlay를 엽니다.
+     * @param {{presentation?: object|null}} [options={}] - 선택적 오픈 프레젠테이션입니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */
-    openExitOverlay() {
+    openExitOverlay(options = {}) {
         if (this.keyToIdMap.has(OVERLAY_MANAGER_KEYS.EXIT_CONFIRM)) {
             return this.keyToIdMap.get(OVERLAY_MANAGER_KEYS.EXIT_CONFIRM);
         }
 
-        return this.openOverlay(new ExitOverlay(), { key: OVERLAY_MANAGER_KEYS.EXIT_CONFIRM });
+        return this.openOverlay(new ExitOverlay(), {
+            key: OVERLAY_MANAGER_KEYS.EXIT_CONFIRM,
+            presentation: options.presentation || null
+        });
     }
 
     /**
@@ -196,9 +228,10 @@ export class OverlayManager {
      * 타이틀 메뉴 overlay를 엽니다.
      * @param {'deck'|'setting'|'credits'|'quickStart'|'records'|'research'|'achievements'} menu - 열 메뉴 이름입니다.
      * @param {object} titleScene - 타이틀 씬 인스턴스입니다.
+     * @param {{presentation?: object|null}} [options={}] - 선택적 오픈 프레젠테이션입니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */
-    openTitleOverlay(menu, titleScene) {
+    openTitleOverlay(menu, titleScene, options = {}) {
         if (this.keyToIdMap.has(OVERLAY_MANAGER_KEYS.TITLE_MENU)) {
             return this.keyToIdMap.get(OVERLAY_MANAGER_KEYS.TITLE_MENU);
         }
@@ -208,7 +241,10 @@ export class OverlayManager {
             return null;
         }
 
-        return this.openOverlay(controller, { key: OVERLAY_MANAGER_KEYS.TITLE_MENU });
+        return this.openOverlay(controller, {
+            key: OVERLAY_MANAGER_KEYS.TITLE_MENU,
+            presentation: options.presentation || null
+        });
     }
 
     /**
@@ -221,7 +257,7 @@ export class OverlayManager {
     /**
      * 일반 overlay를 엽니다.
      * @param {import('./_base_overlay.js').BaseOverlay} controller - 열 overlay 컨트롤러입니다.
-     * @param {{key?: string}} [options={}] - 등록 옵션입니다.
+     * @param {{key?: string, presentation?: object|null}} [options={}] - 등록 옵션입니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */
     openOverlay(controller, options = {}) {
@@ -237,6 +273,9 @@ export class OverlayManager {
         }
 
         const overlayId = `overlay:${++this.sequence}`;
+        if (typeof controller.setOpenPresentation === 'function') {
+            controller.setOpenPresentation(options.presentation || null);
+        }
         const session = new OverlaySession({
             ...controller.getSessionOptions(),
             displaySystem: this.displaySystem,

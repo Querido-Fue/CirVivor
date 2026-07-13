@@ -96,6 +96,13 @@ export const TITLE_MENU_DATA = Object.freeze({
     LAYOUT: Object.freeze({
         CARD_MENU_SCALE: 0.848
     }),
+    CONNECTED_OPEN: Object.freeze({
+        DURATION_SECONDS: 0.4,
+        SWITCH_PROGRESS: 0.5,
+        PERSPECTIVE: 1180,
+        SCENE_TARGET_WIDTH_UIWW_RATIO: 0.65,
+        SCENE_TARGET_HEIGHT_WH_RATIO: 0.7
+    }),
     OVERLAY_EFFECTS: Object.freeze({
         hoverTilt: Object.freeze({
             maxAngleDeg: 6,

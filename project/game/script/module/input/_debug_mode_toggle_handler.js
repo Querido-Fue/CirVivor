@@ -24,6 +24,10 @@ export class DebugModeToggleHandler {
         this.#pruneClicks(normalizedTimestamp);
         this.clickTimestamps.push(normalizedTimestamp);
 
+        if (getSetting('debugMode') === true) {
+            this.#openDebugPanel();
+        }
+
         if (this.clickTimestamps.length < DEBUG_MODE_TOGGLE.REQUIRED_MIDDLE_CLICKS) {
             return;
         }
@@ -82,9 +86,25 @@ export class DebugModeToggleHandler {
                 if (systemHandler?.debugSystem && typeof systemHandler.debugSystem.applyRuntimeSettings === 'function') {
                     systemHandler.debugSystem.applyRuntimeSettings({ debugMode: nextDebugMode });
                 }
+
+                const overlayManager = systemHandler?.overlayManager;
+                if (nextDebugMode) {
+                    overlayManager?.openDebugOverlay?.(systemHandler?.debugSystem);
+                } else {
+                    overlayManager?.closeDebugOverlay?.();
+                }
             })
             .catch((error) => {
                 console.warn('디버그 모드 토글 처리 중 오류가 발생했습니다.', error);
             });
+    }
+
+    /**
+     * 디버그 모드가 활성 상태일 때 전역 디버그 패널을 엽니다.
+     * @private
+     */
+    #openDebugPanel() {
+        const systemHandler = window.Game?.systemHandler;
+        systemHandler?.overlayManager?.openDebugOverlay?.(systemHandler?.debugSystem);
     }
 }

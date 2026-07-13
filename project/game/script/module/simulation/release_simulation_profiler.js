@@ -417,6 +417,17 @@ export function isReleaseSimulationProfilerCollecting() {
 }
 
 /**
+ * 현재 프레임 제어 모드가 release simulation profiler 기록 대상인지 반환합니다.
+ * 애니메이션 디버그의 정지·단일 스텝은 인위적인 프레임이므로 frame/fixed 샘플과
+ * scheduler debt 및 frame delta clamp 손실을 모두 기록하지 않습니다.
+ * @param {'running'|'paused'|'step'|string|undefined} frameMode - 디버그 프레임 제어 모드입니다.
+ * @returns {boolean} 일반 실행 프레임을 기록해야 하면 true입니다.
+ */
+export function shouldRecordReleaseSimulationForFrameMode(frameMode) {
+    return frameMode !== 'paused' && frameMode !== 'step';
+}
+
+/**
  * main loop 일시정지 구간을 계측에서 제외합니다.
  */
 export function suspendReleaseSimulationProfiler() {

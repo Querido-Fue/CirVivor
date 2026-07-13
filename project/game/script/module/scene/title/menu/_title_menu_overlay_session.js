@@ -23,7 +23,7 @@ export function createTitleMenuOverlaySession(displaySystem) {
         glOverlay: true,
         blurUpdateMode: 'always',
         disableTransparency: getSetting('disableTransparency'),
-        orderSequence: 1,
+        orderSequence: 0,
         effects: _createTitleMenuOverlayEffects()
     });
 }

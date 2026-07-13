@@ -39,6 +39,15 @@ export class TimeHandler {
     }
 
     /**
+     * 디버그 정지 프레임에서 가변 델타를 0으로 고정합니다.
+     * 재개 후 fallback 시간 계산에 정지 구간이 누적되지 않도록 기준 시각도 갱신합니다.
+     */
+    freezeFrameDelta() {
+        this.timeBefore = performance.now();
+        this.lastFrameTimeDelta = 0;
+    }
+
+    /**
      * 고정 틱 루프에서 호출되어 시간 델타를 업데이트합니다.
      * 고정 틱은 단일 루프에서 고정 스텝 값으로 주입됩니다.
      * @param {number} [fixedStepSeconds] - 고정 스텝(초)

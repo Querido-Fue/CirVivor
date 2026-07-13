@@ -19,7 +19,8 @@ import { drainSimulationCommands } from 'simulation/simulation_command_queue.js'
 import { syncSimulationRuntime } from 'simulation/simulation_runtime.js';
 import {
     isReleaseSimulationProfilerCollecting,
-    recordReleaseSimulationFixedStep
+    recordReleaseSimulationFixedStep,
+    shouldRecordReleaseSimulationForFrameMode
 } from 'simulation/release_simulation_profiler.js';
 import { drawReleaseSimulationProfilerHud } from 'debug/_release_simulation_profiler_hud.js';
 
@@ -32,6 +33,17 @@ const FRAME_EXECUTION_DISABLE_KEYS = SYSTEM_RUNTIME_POLICY_DATA.FRAME_EXECUTION_
 const FRAME_ANIMATION_UPDATE_OPTIONS = Object.freeze({ useFixedTick: false });
 const FIXED_ANIMATION_UPDATE_OPTIONS = Object.freeze({ useFixedTick: true });
 const EMPTY_FRAME_CONTEXT = Object.freeze({});
+const RUNNING_DEBUG_FRAME_CONTROL = Object.freeze({ mode: 'running' });
+const DEBUG_FRAME_MODES = Object.freeze(new Set(['running', 'paused', 'step']));
+const DEBUG_PAUSED_EXECUTION_DISABLE_KEYS = Object.freeze([
+    'runFrameTimeUpdate',
+    'runFixedStep',
+    'runSoundUpdate',
+    'runAnimationUpdate',
+    'runObjectUpdate',
+    'runSceneUpdate',
+    'runSimulationCommandApply'
+]);
 
 /**
  * @class SystemHandler
@@ -41,6 +53,7 @@ export class SystemHandler {
     constructor() {
         this.pauseReasons = new Map();
         this.frameExecutionPolicy = this.createPausePolicy();
+        this.debugPausedFrameExecutionPolicy = { ...this.frameExecutionPolicy };
         this.simulationRuntimeSnapshot = {
             viewport: {
                 ww: 0,
@@ -235,6 +248,17 @@ export class SystemHandler {
     }
 
     /**
+     * 현재 디버그 시스템의 프레임 실행 제어 요청을 반환합니다.
+     * @returns {{mode:'running'|'paused'|'step'}} 정규화된 프레임 제어 상태입니다.
+     */
+    prepareDebugFrameControl() {
+        const frameControl = this.debugSystem?.prepareFrameControl?.();
+        return DEBUG_FRAME_MODES.has(frameControl?.mode)
+            ? frameControl
+            : RUNNING_DEBUG_FRAME_CONTROL;
+    }
+
+    /**
      * 매 프레임 실행되는 메인 틱 함수입니다.
      * 단일 루프에서 고정 스텝 처리 후 가변 업데이트/렌더를 순차 실행합니다.
      * @param {object} [frameContext={}] 프레임 컨텍스트
@@ -242,10 +266,17 @@ export class SystemHandler {
      * @param {number} [frameContext.fixedStepSeconds] 고정 스텝 델타(초)
      * @param {number} [frameContext.fixedStepCount] 이번 프레임에 처리할 고정 스텝 횟수
      * @param {number} [frameContext.fixedAlpha] 렌더 보간 계수(0~1)
+     * @param {'running'|'paused'|'step'} [frameContext.debugFrameMode='running'] 디버그 프레임 제어 상태
      */
     tick(frameContext = EMPTY_FRAME_CONTEXT) {
-        const executionPolicy = this.frameExecutionPolicy || DEFAULT_FRAME_EXECUTION_POLICY;
+        const debugFrameMode = DEBUG_FRAME_MODES.has(frameContext.debugFrameMode)
+            ? frameContext.debugFrameMode
+            : 'running';
+        const executionPolicy = this.#resolveFrameExecutionPolicy(debugFrameMode);
         const timeHandler = getTimeHandler();
+        if (debugFrameMode === 'paused' && typeof timeHandler?.freezeFrameDelta === 'function') {
+            timeHandler.freezeFrameDelta();
+        }
         this.#syncSimulationRuntime();
         const frameDeltaSeconds = executionPolicy.runFrameTimeUpdate
             && Number.isFinite(frameContext.frameDeltaSeconds)
@@ -260,10 +291,13 @@ export class SystemHandler {
             && frameContext.fixedStepCount > 0
             ? frameContext.fixedStepCount
             : 0;
-        const fixedAlpha = executionPolicy.runFixedStep && Number.isFinite(frameContext.fixedAlpha)
-            ? frameContext.fixedAlpha
-            : 0;
-        const shouldMeasureReleaseSimulation = isReleaseSimulationProfilerCollecting();
+        const fixedAlpha = debugFrameMode !== 'running'
+            ? 1
+            : (executionPolicy.runFixedStep && Number.isFinite(frameContext.fixedAlpha)
+                ? frameContext.fixedAlpha
+                : 0);
+        const shouldMeasureReleaseSimulation = isReleaseSimulationProfilerCollecting()
+            && shouldRecordReleaseSimulationForFrameMode(debugFrameMode);
 
         if (fixedStepCount > 0) {
             const fixedTotalStart = beginPerformanceSection();
@@ -442,13 +476,15 @@ export class SystemHandler {
             this.sceneSystem.update();
             endPerformanceSection('frame.update.scene', startTime);
         }
-        const drainedSimulationCommands = drainSimulationCommands();
-        if (drainedSimulationCommands.length > 0
-            && this.sceneSystem
-            && typeof this.sceneSystem.applySimulationCommands === 'function') {
-            const startTime = beginPerformanceSection();
-            this.sceneSystem.applySimulationCommands(drainedSimulationCommands);
-            endPerformanceSection('frame.update.simulationCommands', startTime);
+        if (executionPolicy.runSimulationCommandApply) {
+            const drainedSimulationCommands = drainSimulationCommands();
+            if (drainedSimulationCommands.length > 0
+                && this.sceneSystem
+                && typeof this.sceneSystem.applySimulationCommands === 'function') {
+                const startTime = beginPerformanceSection();
+                this.sceneSystem.applySimulationCommands(drainedSimulationCommands);
+                endPerformanceSection('frame.update.simulationCommands', startTime);
+            }
         }
         if (executionPolicy.runDebugUpdate) {
             const startTime = beginPerformanceSection();
@@ -545,6 +581,26 @@ export class SystemHandler {
             this.soundSystem.draw();
             endPerformanceSection('frame.draw.sound', startTime);
         }
+    }
+
+    /**
+     * 디버그 정지 프레임에 적용할 일회성 실행 정책을 반환합니다.
+     * 입력·UI·오버레이·디버그와 렌더 정책은 현재 병합 정책을 그대로 유지합니다.
+     * @param {'running'|'paused'|'step'} debugFrameMode - 현재 디버그 프레임 제어 상태입니다.
+     * @returns {object} 이번 프레임에 사용할 실행 정책입니다.
+     * @private
+     */
+    #resolveFrameExecutionPolicy(debugFrameMode) {
+        const basePolicy = this.frameExecutionPolicy || DEFAULT_FRAME_EXECUTION_POLICY;
+        if (debugFrameMode !== 'paused') {
+            return basePolicy;
+        }
+
+        Object.assign(this.debugPausedFrameExecutionPolicy, basePolicy);
+        for (const key of DEBUG_PAUSED_EXECUTION_DISABLE_KEYS) {
+            this.debugPausedFrameExecutionPolicy[key] = false;
+        }
+        return this.debugPausedFrameExecutionPolicy;
     }
 
     /**

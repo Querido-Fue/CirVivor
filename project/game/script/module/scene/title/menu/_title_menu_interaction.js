@@ -153,21 +153,35 @@ export function resolveTitleMenuPanePointerInfo(paneRect, mouseX, mouseY) {
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {object|null} [hoverTiltOptions=null] - hover tilt 옵션입니다.
+ * @param {{panelRect?:object,rotateX?:number,rotateY?:number,perspective?:number}|null} [transformOverride=null] - 연결 전환용 변환 오버라이드입니다.
  * @returns {void}
  */
-export function updateTitleMenuCardProjection(renderState, runtimeState, hoverTiltOptions = null) {
-    const perspectiveBase = hoverTiltOptions?.perspective || TITLE_MENU_DEFAULT_PERSPECTIVE;
+export function updateTitleMenuCardProjection(
+    renderState,
+    runtimeState,
+    hoverTiltOptions = null,
+    transformOverride = null
+) {
+    const panelRect = transformOverride?.panelRect || renderState.panelRect;
+    const overridePerspective = Number(transformOverride?.perspective);
+    const perspectiveBase = Number.isFinite(overridePerspective) && overridePerspective > 0
+        ? overridePerspective
+        : (hoverTiltOptions?.perspective || TITLE_MENU_DEFAULT_PERSPECTIVE);
+    const overrideRotateX = Number(transformOverride?.rotateX);
+    const overrideRotateY = Number(transformOverride?.rotateY);
+    const rotateX = Number.isFinite(overrideRotateX) ? overrideRotateX : runtimeState.rotateX;
+    const rotateY = Number.isFinite(overrideRotateY) ? overrideRotateY : runtimeState.rotateY;
     runtimeState.perspective = perspectiveBase;
 
     runtimeState.transformMatrix = multiplyMat4(
-        createRotationYMatrix(runtimeState.rotateY),
-        createRotationXMatrix(runtimeState.rotateX)
+        createRotationYMatrix(rotateY),
+        createRotationXMatrix(rotateX)
     );
-    runtimeState.projectedQuad = projectPanelQuad(renderState.panelRect, runtimeState.transformMatrix, runtimeState.perspective);
+    runtimeState.projectedQuad = projectPanelQuad(panelRect, runtimeState.transformMatrix, runtimeState.perspective);
 
     const homography = createRectToQuadHomography(
-        renderState.panelRect.w,
-        renderState.panelRect.h,
+        panelRect.w,
+        panelRect.h,
         runtimeState.projectedQuad
     );
     runtimeState.inverseHomography = homography ? invertMat3(homography) : null;
