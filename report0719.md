@@ -70,6 +70,20 @@
 - **동일성 위험:** open/close 중간 프레임, focus 반환, blur 동기화, pointer 활성 tick, 효과 particle 시간축 가운데 하나만 달라져도 체감 동작과 최종 화면이 달라진다.
 - **선행 테스트/권장 방향:** open/close/reopen/scene 전환/중간 취소를 1-frame 단위로 기록하고 focus stack, presentation 값, surface pixel을 비교한다. state machine을 먼저 명시한 뒤 view/effect/input adapter를 분리한다.
 
+### 3.8 `BaseEnemy` 책임 집중
+
+- **파일 경로:** `project/game/script/module/object/enemy/_base_enemy.js`
+- **문제 후보:** 풀 획득·초기화·reset 수명 주기, 물리·렌더 transform과 보간, 합체 pull/settle presentation, 축 저항과 각운동, AI 수명 주기, 투사체 피격, 상태 이상 및 화면 이탈 판정이 하나의 기반 클래스에 집중되어 있다. `object_system_fixed_update_helpers.js`가 status와 fixed transform을, `object_system_update_helpers.js`가 보간과 settle을, `_shape_enemy.js`가 AI·저항·각운동을, 충돌 모듈이 축 저항·각충격·피격을 각각 호출하므로 변경 영향이 여러 실행 경계에 걸친다.
+- **동일성 위험:** 책임 분리 과정에서 reset 필드 순서, 재사용 객체 identity, AI reset/init 순서, fixed 상태와 render 상태의 기록 시점 또는 subclass override 계약이 달라질 수 있다. 개별 메서드 테스트만으로 풀 획득부터 충돌·보간·반납까지의 완전 동일성을 보장할 수 없다.
+- **선행 테스트/권장 방향:** 모든 적 subclass에 대해 acquire→init→다중 fixed tick→충돌 보정→가변 보간→release→재획득 replay를 만들고 매 단계의 전체 필드, 재사용 객체 identity, AI hook 순서를 비교한다. 그 전에는 순수 숫자 helper 재사용만 허용하고 클래스 분리는 보류한다.
+
+### 3.9 `SystemHandler` 책임 집중
+
+- **파일 경로:** `project/game/script/module/system_handler.js`
+- **문제 후보:** 서브 시스템의 생성·초기화, pause policy 병합과 사운드 side effect, fixed/variable scheduler, 성능 계측, 렌더 clear/flush 순서, 시뮬레이션 snapshot adapter, resize 및 런타임 설정 전파가 한 클래스에 결합되어 있다. `main.js`가 생성·tick·resize를 호출하고 설정 overlay와 debug 입력이 `applyRuntimeSettings()`를, App의 pause 경로가 `setPauseReason()`을 호출하므로 boot·simulation·display·설정 생명 주기가 동시에 연결된다.
+- **동일성 위험:** 모듈 분리 시 fixed step 계측의 `try/finally`, simulation snapshot 동기화 시점, pause 진입 input reset, BGM side effect, overlay backdrop용 중간 WebGL flush 가운데 하나라도 이동하면 시뮬레이션 상태나 최종 픽셀이 달라질 수 있다.
+- **선행 테스트/권장 방향:** 시스템 호출 trace를 기록하는 spy harness로 init/tick/pause/debug-step/resize/settings 변경의 정확한 호출 순서와 인자를 고정한다. WebGL flush와 최종 surface의 pixel golden까지 확보한 뒤 boot composition·pause policy·snapshot adapter를 기존 순서를 보존하는 위임 객체로 한 축씩 분리한다.
+
 ## 4. 기존 게임 기능 재사용 후보 보류
 
 ### 4.1 `CollectionOverlay`와 `DeckOverlay` 중복

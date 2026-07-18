@@ -100,6 +100,14 @@
 - [x] Computer Use로 설정 오버레이와 benchmark 진입, 적 100개 스폰 확인: 181 FPS, fixed 60.0/s, SIM 100.1%, debt 0; 종료 후 타이틀 정상 복원
 - [x] GitHub Desktop 커밋 및 푸시 완료
 
+#### 4.2 동일성 미확정 SRP 후보 보고 확장 — 완료
+
+- [x] `BaseEnemy`의 풀 수명주기·transform·합체 표시·물리 저항·AI·피격·상태 책임 집중과 필요한 전체 replay gate 기록
+- [x] `SystemHandler`의 boot·pause·scheduler·profiler·snapshot·설정·렌더 flush 책임 집중과 필요한 호출 trace/pixel gate 기록
+- [x] 생산 코드는 변경하지 않고 `report0719.md`에 3.8·3.9 항목만 추가
+- [x] Computer Use로 정상 배포 타이틀 상태 유지 확인
+- [x] GitHub Desktop 커밋 및 푸시 완료
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
