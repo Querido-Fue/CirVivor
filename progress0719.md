@@ -235,6 +235,19 @@
 - [x] Computer Use cold start·설정 benchmark 진입: 기본 181 FPS, 박스·투사체·적 100개 생성 후 178–179 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 벽·박스·투사체·적·HUD 정상 렌더 및 정상 종료 확인
 - [x] GitHub Desktop 커밋 및 푸시: `bd83447 Document world render state contracts`
 
+#### 5.5 디버그 오류 처리 계약 정정 — 완료
+
+- [x] `DebugSystem.errThrow()`와 `ErrorHandler.errThrow()` 구현·직접 호출자를 대조해 message 문자열화, strict level 분기, console 호출 순서, 오류 identity 및 throw 계약을 문서화
+- [x] 공개 adapter가 인스턴스 생성 전·초기화 전에는 `TypeError`를 던지고, 초기화 후에는 현재 handler를 receiver로 동기 위임하되 반환값을 버리는 실제 수명주기 계약을 보완
+- [x] 생산 변경 전 행동 계약 6개 green·JSDoc 구조 1개 red를 확인하고, 경계·수명주기 검증을 확장해 변경 후 actual-source 테스트 9개 전체 green으로 고정
+- [x] `undefined`·`null`·false·±0·`NaN`·`BigInt`·`Symbol`·custom coercion·null-prototype·revoked Proxy, 미지원/boxed level, console·`captureStackTrace` 예외와 truthy/falsy 오류 값을 검증
+- [x] console prefix/두 번째 인수의 호출 순서, 각 호출 지점 예외, 전달 오류의 same identity 재던지기, falsy 오류의 새 `Error`, `captureStackTrace(error, ErrorHandler._throwError)` 인수를 exact 비교
+- [x] JSDoc 전체 블록을 제거한 생산 실행 소스 SHA-256이 `debug_system.js`의 `ada62833709160de3fdd1e0fbfd930537a7d3eaa4f7766fa88bfa0cec5d07737`, `_error_handler.js`의 `72e14003640956d4818134babcb04dda2c74afde326ab93fd194f5b058e761dd`로 기존 기준과 exact 일치
+- [x] Computer Use로 실제 배포 NW.js Chromium 145에서 `document.all`의 falsy IsHTMLDDA·비-nullish 특성, message 문자열화, 오류 대체·identity·로그 순서·stack capture를 actual production handler로 검증: `PASS — Debug error contract`
+- [x] `npm test` 116개, JS/MJS 361개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] 독립 리뷰에서 production JSDoc·actual-source 하네스·NW runner에 blocker 없음 확인
+- [x] GitHub Desktop 커밋 및 푸시: `d909405 Correct debug error API documentation`
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
