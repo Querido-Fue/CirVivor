@@ -757,7 +757,22 @@ export const getBaseWH = () => displaySystemInstance.screenHandler.baseHeight;
 export const getScaleRatio = () => displaySystemInstance.screenHandler.scaleRatio;
 
 /**
+ * 캔버스 CSS X 오프셋 원시값을 반환합니다.
+ * 마우스 입력처럼 X/Y 값을 스칼라로 소비하는 핫패스에서 객체 할당을 피할 때 사용합니다.
+ * @returns {number} 캔버스 X 오프셋입니다.
+ */
+export const getCanvasOffsetX = () => displaySystemInstance.screenHandler.cssLeft;
+
+/**
+ * 캔버스 CSS Y 오프셋 원시값을 반환합니다.
+ * 마우스 입력처럼 X/Y 값을 스칼라로 소비하는 핫패스에서 객체 할당을 피할 때 사용합니다.
+ * @returns {number} 캔버스 Y 오프셋입니다.
+ */
+export const getCanvasOffsetY = () => displaySystemInstance.screenHandler.cssTop;
+
+/**
  * 캔버스 CSS 오프셋을 반환합니다.
+ * 호출할 때마다 새 일반 객체를 반환하며, 객체가 필요 없는 핫패스는 축별 accessor를 사용합니다.
  * @returns {{x: number, y: number}} 캔버스 오프셋입니다.
  */
 export const getCanvasOffset = () => ({

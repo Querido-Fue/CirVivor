@@ -52,6 +52,7 @@ background(WebGL)
 - DisplaySystem이 소유한 WebGL 레이어 renderer는 context restore 시 프로그램, 버퍼, 텍스처/FBO를 다시 생성합니다. 같은 context에 scene이 별도로 만든 GPU 자원은 해당 소유자가 복구해야 합니다.
 - 동일 shape/style의 합체 적 셀은 `renderGLShapeInstances()`가 한 번의 texture/color/회전 준비 후 기존 batch typed vertex buffer에 연속 기록합니다.
 - WebGL batch의 `begin()`은 프레임 크기와 CPU 큐만 초기화합니다. 실제 `flush()`가 draw 직전에 framebuffer, blend, program, buffer와 attribute 상태를 다시 바인딩하므로, 같은 context를 쓰는 외부 pass가 중간 상태를 바꿔도 batch 제출은 자체 상태를 복구합니다.
+- 마우스 좌표 변환 핫패스는 `getCanvasOffsetX()`/`getCanvasOffsetY()`로 CSS 오프셋 원시값을 읽습니다. 기존 `getCanvasOffset()`은 매 호출 새 `{x, y}`를 반환하는 공개 계약으로 유지하며, 입력 경로는 X/Y 원시값을 모두 읽은 뒤 숫자로 변환해 getter 평가 순서를 보존합니다.
 - 렌더 명령 규격은 [`reference/render_command_guide.md`](./reference/render_command_guide.md)를 확인합니다.
 
 ## 4. fixed step과 보간 책임

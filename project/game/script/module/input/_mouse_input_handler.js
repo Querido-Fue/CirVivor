@@ -1,4 +1,8 @@
-import { getScaleRatio, getCanvasOffset } from 'display/display_system.js';
+import {
+    getScaleRatio,
+    getCanvasOffsetX,
+    getCanvasOffsetY
+} from 'display/display_system.js';
 import { DebugModeToggleHandler } from './_debug_mode_toggle_handler.js';
 import { MouseButtonStateMachine } from './_mouse_button_state_machine.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
@@ -55,13 +59,15 @@ export class MouseInputHandler {
     /**
      * @private
      * DOM 이벤트 좌표를 내부 게임 좌표로 변환합니다.
+     * 캔버스 X/Y 원시 오프셋을 모두 읽은 뒤 숫자로 변환해 display getter 평가 순서를 유지합니다.
      * @param {MouseEvent} event - 원본 마우스 이벤트
      */
     #updateMousePosition(event) {
         const scale = resolveFiniteNumber(Number(getScaleRatio()), 1);
-        const offset = getCanvasOffset();
-        const offsetX = resolveFiniteNumber(Number(offset?.x), 0);
-        const offsetY = resolveFiniteNumber(Number(offset?.y), 0);
+        const rawOffsetX = getCanvasOffsetX();
+        const rawOffsetY = getCanvasOffsetY();
+        const offsetX = resolveFiniteNumber(Number(rawOffsetX), 0);
+        const offsetY = resolveFiniteNumber(Number(rawOffsetY), 0);
         const clientX = resolveFiniteNumber(Number(event?.clientX), offsetX);
         const clientY = resolveFiniteNumber(Number(event?.clientY), offsetY);
         this.mousePos.x = (clientX - offsetX) * scale;
