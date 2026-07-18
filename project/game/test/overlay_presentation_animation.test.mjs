@@ -15,9 +15,9 @@ assert.deepEqual(
         blur: { ...preset.open.blur }
     },
     {
-        alpha: { from: 0, to: 1, duration: 0.6, easing: 'easeOutExpo' },
-        scale: { from: 0.9, to: 1, duration: 0.6, easing: 'easeOutExpo' },
-        blur: { from: 20, to: 0, duration: 0.6, easing: 'easeInOutExpo' }
+        alpha: { from: 0, to: 1, duration: 0.5, easing: 'easeOutExpo' },
+        scale: { from: 0.9, to: 1, duration: 0.5, easing: 'easeOutExpo' },
+        blur: { from: 10, to: 0, duration: 0.5, easing: 'easeOutExpo' }
     }
 );
 assert.deepEqual(
@@ -27,9 +27,9 @@ assert.deepEqual(
         blur: { ...preset.close.blur }
     },
     {
-        alpha: { to: 0, duration: 0.6, easing: 'easeInExpo' },
-        scale: { to: 0.9, duration: 0.6, easing: 'easeInExpo' },
-        blur: { to: 20, duration: 0.6, easing: 'easeInOutExpo' }
+        alpha: { to: 0, duration: 0.5, easing: 'easeInExpo' },
+        scale: { to: 0.9, duration: 0.5, easing: 'easeInExpo' },
+        blur: { to: 10, duration: 0.5, easing: 'easeInExpo' }
     }
 );
 

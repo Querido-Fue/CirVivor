@@ -2,6 +2,9 @@
     "name": "lonely_tower",
     "version": "0.4",
     "main": "game/index.html",
+    "scripts": {
+        "test": "node --experimental-vm-modules --test game/test/*.test.mjs"
+    },
     "js-flags": "",
     "window": {
         "title": "Lonely Tower",
