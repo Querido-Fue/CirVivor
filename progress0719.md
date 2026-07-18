@@ -127,6 +127,17 @@
 - [x] Computer Use로 완전 재실행 후 benchmark 적 100개 생성: 방향 추적 도형 회전 정상, 180 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 종료 후 타이틀 정상 복원
 - [x] GitHub Desktop 커밋 및 푸시: `850e6f5 Reuse shared enemy angle normalization`
 
+#### 4.4 시뮬레이션 숫자 정규화 공용 기능 재사용 — 완료
+
+- [x] `simulation_runtime.js`의 비공개 `normalizeNumber()`와 `util/number_util.js`의 `resolveFiniteNumber()` 본문·fallback·getter 평가·import 부수효과 감사
+- [x] 기존 16개 호출 모두 명시적 fallback을 전달함을 확인하고, 별도 legacy 오라클 테스트를 변경 전 structural red → 변경 후 green으로 고정
+- [x] 명시값/fallback 224쌍, raw Float64 250,000쌍, 실제 런타임 명시값 28개·raw 값 25,000개 — 총 275,252개 exact 비교와 accessor 8회 계약 검증
+- [x] 로컬 구현 제거 후 16개 호출을 공용 `resolveFiniteNumber()`로 직접 통합
+- [x] 공용 함수 JSDoc에 숫자 primitive만 허용하며 coercion하지 않는 실제 계약 반영
+- [x] `npm test` 49개, JS/MJS 349개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary 통과
+- [x] Computer Use 완전 재실행, 설정·benchmark 진입·적 100개 생성: 179–181 FPS, fixed 60.0/s(한 표본 61.0/s), SIM 100.0% 전후, debt 0.0/s; 종료 후 타이틀 복원
+- [x] GitHub Desktop 커밋 및 푸시: `51be299 Reuse shared simulation number normalization`
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
