@@ -51,6 +51,7 @@ background(WebGL)
 - display surface는 frame draw 수, empty 상태, content revision을 기록합니다. Glass backdrop 합성은 정렬 캐시와 이 메타데이터를 사용해 빈 surface를 제외합니다.
 - DisplaySystem이 소유한 WebGL 레이어 renderer는 context restore 시 프로그램, 버퍼, 텍스처/FBO를 다시 생성합니다. 같은 context에 scene이 별도로 만든 GPU 자원은 해당 소유자가 복구해야 합니다.
 - 동일 shape/style의 합체 적 셀은 `renderGLShapeInstances()`가 한 번의 texture/color/회전 준비 후 기존 batch typed vertex buffer에 연속 기록합니다.
+- WebGL batch의 `begin()`은 프레임 크기와 CPU 큐만 초기화합니다. 실제 `flush()`가 draw 직전에 framebuffer, blend, program, buffer와 attribute 상태를 다시 바인딩하므로, 같은 context를 쓰는 외부 pass가 중간 상태를 바꿔도 batch 제출은 자체 상태를 복구합니다.
 - 렌더 명령 규격은 [`reference/render_command_guide.md`](./reference/render_command_guide.md)를 확인합니다.
 
 ## 4. fixed step과 보간 책임

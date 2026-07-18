@@ -64,14 +64,15 @@ export class WebGLBatch {
     }
 
     /**
-     * 배치 시작 전 상태를 초기화합니다.
+     * 프레임 해상도와 CPU-side 배치 큐를 초기화합니다.
+     * GL 상태는 실제 제출 직전 {@link flush}에서 복구합니다.
      * @param {number} width - 화면 너비입니다.
      * @param {number} height - 화면 높이입니다.
+     * @returns {void}
      */
     begin(width, height) {
         this.frameWidth = width;
         this.frameHeight = height;
-        this.#bindRenderState();
         this.spriteCount = 0;
         this.currentTexture = null;
     }

@@ -1,0 +1,11 @@
+{
+    "name": "lonely-tower-webgl-batch-parity",
+    "version": "1.0.0",
+    "main": "index.html",
+    "window": {
+        "title": "WebGL batch NW.js parity",
+        "width": 1120,
+        "height": 800,
+        "position": "center"
+    }
+}
