@@ -6,12 +6,13 @@ import { enqueueSimulationCommand } from 'simulation/simulation_command_queue.js
 import { createDefaultCollisionStats } from './game_scene_snapshot_utils.js';
 import {
     buildGameSceneResetBenchmarkWorldCommands,
-    buildGameSceneResetPlayWorldCommands,
     buildGameSceneSpawnEnemiesCommand,
     buildGameSceneSpawnProjectileBurstCommand,
     buildGameSceneSpawnRandomBoxCommand
 } from './commands/game_scene_benchmark_command_builder.js';
+import { buildGameSceneResetPlayWorldCommands } from './commands/game_scene_map_command_builder.js';
 import { applyGameSceneCommandsToLocalState } from './commands/game_scene_command_apply_handlers.js';
+import { normalizeGameMapId } from './map/game_map_grid.js';
 import {
     getBenchmarkEnemyFill,
     normalizeOpaqueBenchmarkEnemyFill
@@ -154,12 +155,16 @@ function enqueueGameSceneCommand(command) {
 export class GameScene extends BaseScene {
     /**
      * @param {object} sceneHandler
-     * @param {{mode?: string}} [options={}]
+     * @param {{mode?: string, mapId?: string}} [options={}]
      */
     constructor(sceneHandler, options = {}) {
         super(sceneHandler);
 
         this.mode = normalizeGameSceneMode(options.mode);
+        this.mapId = this.mode === GAME_SCENE_MODES.BENCHMARK
+            ? null
+            : normalizeGameMapId(options.mapId);
+        this.mapGeometry = null;
         this.objectSystem = getObjectSystem();
         this.enemyTypes = Array.isArray(ENEMY_SHAPE_TYPES) && ENEMY_SHAPE_TYPES.length > 0
             ? ENEMY_SHAPE_TYPES
@@ -172,6 +177,7 @@ export class GameScene extends BaseScene {
         this.collisionStats = createDefaultCollisionStats();
         this.worldDrawOptions = {
             sceneSnapshot: null,
+            mapGeometry: this.mapGeometry,
             staticWalls: this.staticWalls,
             boxWalls: this.boxWalls,
             player: null,
@@ -215,7 +221,7 @@ export class GameScene extends BaseScene {
         this.projIdCounter = 1;
         const commands = this.#isBenchmarkMode()
             ? buildGameSceneResetBenchmarkWorldCommands(this)
-            : buildGameSceneResetPlayWorldCommands(this);
+            : buildGameSceneResetPlayWorldCommands(this, this.mapId);
         this.applySimulationCommands(commands);
     }
 
@@ -358,6 +364,7 @@ export class GameScene extends BaseScene {
     #drawWorldObjects(sceneSnapshot = null) {
         const options = this.worldDrawOptions;
         options.sceneSnapshot = sceneSnapshot;
+        options.mapGeometry = this.mapGeometry;
         options.staticWalls = this.staticWalls;
         options.boxWalls = this.boxWalls;
         options.player = this.player;

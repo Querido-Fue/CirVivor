@@ -13,6 +13,7 @@ import { QuickStartOverlay } from './title/_quick_start.js';
 import { RecordsOverlay } from './title/_records.js';
 import { ResearchOverlay } from './title/_research.js';
 import { AchievementsOverlay } from './title/_achievements.js';
+import { MapSelectOverlay } from './title/_map_select_overlay.js';
 
 const OVERLAY_MANAGER_KEYS = Object.freeze({
     DEBUG_PANEL: 'debugPanel',
@@ -22,6 +23,7 @@ const OVERLAY_MANAGER_KEYS = Object.freeze({
 });
 
 const TITLE_OVERLAY_FACTORY_BY_MENU = Object.freeze({
+    mapSelect: (titleScene) => new MapSelectOverlay(titleScene),
     deck: (titleScene) => new DeckOverlay(titleScene),
     setting: (titleScene) => new SettingsOverlay(titleScene),
     credits: (titleScene) => new CreditsOverlay(titleScene),
@@ -224,7 +226,7 @@ export class OverlayManager {
 
     /**
      * 타이틀 메뉴 overlay를 엽니다.
-     * @param {'deck'|'setting'|'credits'|'quickStart'|'records'|'research'|'achievements'} menu - 열 메뉴 이름입니다.
+     * @param {'mapSelect'|'deck'|'setting'|'credits'|'quickStart'|'records'|'research'|'achievements'} menu - 열 메뉴 이름입니다.
      * @param {object} titleScene - 타이틀 씬 인스턴스입니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */

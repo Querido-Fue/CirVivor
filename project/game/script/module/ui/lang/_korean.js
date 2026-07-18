@@ -38,6 +38,12 @@ export const korean = Object.freeze({
     "title_overlay_achievements_title": "도전과제",
     "title_overlay_achievements_body": "도전과제 UI는 다음 단계에서 연결할 예정입니다.",
     "title_version_history_link": "패치 내역 열기",
+    "title_map_select_title": "맵 선택",
+    "game_map_d_corridor_name": "ㄷ자 회랑",
+    "game_map_d_corridor_description": "왼쪽이 열린 ㄷ자 형태의 그리드 통로입니다.",
+    "title_map_select_selected": "선택됨",
+    "title_map_select_cancel": "취소",
+    "title_map_select_start": "게임 시작",
 
     "title_credits_title": "크레딧",
     "title_credits_section_dev": "제작",

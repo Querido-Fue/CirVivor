@@ -34,6 +34,7 @@ import { ENEMY_SVG_SHAPES } from 'data/object/enemy/enemy_svg_shape_data.js';
 import { TITLE_CONSTANTS } from 'data/scene/title/title_constants.js';
 import { TITLE_LINK_DATA } from 'data/scene/title/title_link_data.js';
 import { GAME_SCENE_CONSTANTS } from 'data/scene/game/game_scene_constants.js';
+import { GAME_MAP_DATA } from 'data/scene/game/game_map_data.js';
 import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
 import { TITLE_MENU_ICON_DATA } from 'data/scene/title/title_menu_icon_data.js';
 import { TITLE_MAGIC_BENTO_DATA } from 'data/scene/title/title_magic_bento_data.js';
@@ -88,6 +89,7 @@ const DATA_REGISTRY = Object.freeze({
     TITLE_CONSTANTS,
     TITLE_LINK_DATA,
     GAME_SCENE_CONSTANTS,
+    GAME_MAP_DATA,
     TITLE_MENU_DATA,
     TITLE_MENU_ICON_DATA,
     TITLE_MAGIC_BENTO_DATA,

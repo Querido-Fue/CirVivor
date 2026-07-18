@@ -178,6 +178,12 @@ export const LightTheme = Object.freeze({
     Vignette: LIGHT_VIGNETTE_THEME,
     Game: Object.freeze({
         Font: '#242424',
+        Map: Object.freeze({
+            Floor: 'rgba(22, 111, 251, 0.28)',
+            Grid: 'rgba(22, 111, 251, 0.16)',
+            PreviewBackground: 'rgba(36, 48, 64, 0.06)',
+            SelectedStroke: '#166ffb'
+        }),
         Benchmark: Object.freeze({
             StaticWall: 'rgba(116, 130, 148, 0.9)',
             BoxWall: 'rgba(150, 168, 184, 0.9)',

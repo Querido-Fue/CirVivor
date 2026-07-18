@@ -8,8 +8,8 @@ export const TITLE_MENU_DATA = Object.freeze({
             layoutSlot: 'start',
             titleKey: 'title_card_start_title',
             descriptionKey: null,
-            actionType: 'scene',
-            actionKey: 'gameStart',
+            actionType: 'overlay',
+            actionKey: 'mapSelect',
             placeholder: false
         }),
         Object.freeze({

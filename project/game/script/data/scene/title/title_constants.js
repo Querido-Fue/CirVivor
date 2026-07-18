@@ -395,6 +395,28 @@ export const TITLE_CONSTANTS = Object.freeze({
                 })
             })
         }),
+        MAP_SELECT: Object.freeze({
+            WIDTH_UIWW_RATIO: 0.52,
+            HEIGHT_WH_RATIO: 0.68,
+            LAYOUT: Object.freeze({
+                PADDING_X_WW: 1.8,
+                TITLE_TOP_SPACE_WH: 2.5,
+                DIVIDER_TOP_SPACE_WH: 1.5,
+                CONTENT_TOP_SPACE_WH: 2.4,
+                HEADER_GAP_WW: 1,
+                PREVIEW_TOP_SPACE_WH: 1.2,
+                PREVIEW_HEIGHT_WH: 25,
+                DESCRIPTION_TOP_SPACE_WH: 1.4,
+                FOOTER_BOTTOM_SPACE_WH: 2.5,
+                BUTTON_GAP_WW: 1
+            }),
+            PREVIEW: Object.freeze({
+                CONTENT_INSET_WH: 1.4,
+                CORNER_RADIUS_WH: 0.9,
+                GRID_LINE_WIDTH_ABSOLUTE: 1,
+                SELECTED_LINE_WIDTH_ABSOLUTE: 2
+            })
+        }),
         DECK: Object.freeze({
             WIDTH_UIWW_RATIO: 0.65,
             HEIGHT_WH_RATIO: 0.7

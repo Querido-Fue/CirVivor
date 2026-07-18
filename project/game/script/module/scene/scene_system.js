@@ -95,11 +95,15 @@ export class SceneSystem {
     /**
      * 게임을 시작합니다.
      * 타이틀 씬에서 게임 씬으로 전환합니다.
+     * @param {string} [mapId] - 시작할 맵 ID입니다.
      */
-    gameStart() {
+    gameStart(mapId) {
         clearSimulationCommands();
         this.#destroyActiveScene();
-        this.#setScene(new GameScene(this, { mode: GAME_SCENE_MODES.PLAY }), SCENE_STATES.IN_GAME);
+        this.#setScene(new GameScene(this, {
+            mode: GAME_SCENE_MODES.PLAY,
+            mapId
+        }), SCENE_STATES.IN_GAME);
     }
 
     /**

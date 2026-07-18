@@ -38,6 +38,12 @@ export const english = Object.freeze({
     "title_overlay_achievements_title": "Achievements",
     "title_overlay_achievements_body": "The achievements UI will be connected in the next step.",
     "title_version_history_link": "Patch Notes",
+    "title_map_select_title": "Select Map",
+    "game_map_d_corridor_name": "Reverse-C Corridor",
+    "game_map_d_corridor_description": "A squared reverse-C grid corridor, open on the left.",
+    "title_map_select_selected": "Selected",
+    "title_map_select_cancel": "Cancel",
+    "title_map_select_start": "Start Game",
 
     "title_credits_title": "Credits",
     "title_credits_section_dev": "Made by",

@@ -82,6 +82,12 @@ function applyReplaceWorldCommand(scene, command) {
     scene.objectSystem.showcaseEnabled = false;
     scene.objectSystem.clearEnemies();
 
+    if (Object.prototype.hasOwnProperty.call(command, 'mapId')) {
+        scene.mapId = typeof command.mapId === 'string' ? command.mapId : null;
+    }
+    scene.mapGeometry = command.mapGeometry && typeof command.mapGeometry === 'object'
+        ? command.mapGeometry
+        : null;
     scene.player = command.player ? createGameScenePlayerEntity(command.player) : null;
     scene.projectiles = Array.isArray(command.projectiles)
         ? command.projectiles.map((projectileData) => createGameSceneProjectileEntity(projectileData))
@@ -163,6 +169,8 @@ function applyDestroyWorldCommand(scene) {
     scene.projectiles = [];
     scene.staticWalls = [];
     scene.boxWalls = [];
+    scene.mapId = null;
+    scene.mapGeometry = null;
 }
 
 /**

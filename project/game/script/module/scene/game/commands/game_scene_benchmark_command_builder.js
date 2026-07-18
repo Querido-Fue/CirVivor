@@ -5,7 +5,6 @@ import { randomIntInclusive, randomRange } from 'util/random_util.js';
 import { getBenchmarkEnemyFill } from '../render/game_scene_benchmark_palette.js';
 
 const BENCHMARK_CONSTANTS = getData('GAME_SCENE_CONSTANTS').BENCHMARK;
-const PLAY_MAP_CONSTANTS = getData('GAME_SCENE_CONSTANTS').PLAY_MAP;
 const BENCHMARK_WALL_HEIGHT_RATIO = BENCHMARK_CONSTANTS.WALL_HEIGHT_RATIO;
 const BENCHMARK_WALL_THICKNESS_RATIO = BENCHMARK_CONSTANTS.WALL_THICKNESS_RATIO;
 const BENCHMARK_BOX_SIZE_RATIO = BENCHMARK_CONSTANTS.BOX_SIZE_RATIO;
@@ -107,52 +106,6 @@ function buildRandomBenchmarkBoxWallData(scene, existingWalls = [], playerLike =
 }
 
 /**
- * 플레이용 맵 벽 정의를 실제 벽 데이터로 변환합니다.
- * @param {object} scene - 게임 씬 인스턴스입니다.
- * @param {object} wallDefinition - 비율 기반 벽 정의입니다.
- * @returns {object}
- */
-function buildPlayMapStaticWallData(scene, wallDefinition) {
-    const width = Math.max(
-        PLAY_MAP_CONSTANTS.WALL_MIN_THICKNESS,
-        scene.WW * wallDefinition.WIDTH_WW_RATIO
-    );
-    const height = Math.max(
-        PLAY_MAP_CONSTANTS.WALL_MIN_THICKNESS,
-        scene.objectWH * wallDefinition.HEIGHT_WH_RATIO
-    );
-
-    return createGameSceneWallData(
-        scene,
-        scene.WW * wallDefinition.X_RATIO,
-        scene.objectWH * wallDefinition.Y_RATIO,
-        width,
-        height
-    );
-}
-
-/**
- * 플레이용 박스 벽 정의를 실제 벽 데이터로 변환합니다.
- * @param {object} scene - 게임 씬 인스턴스입니다.
- * @param {object} boxDefinition - 비율 기반 박스 위치 정의입니다.
- * @returns {object}
- */
-function buildPlayMapBoxWallData(scene, boxDefinition) {
-    const size = Math.max(
-        PLAY_MAP_CONSTANTS.WALL_MIN_THICKNESS,
-        scene.objectWH * PLAY_MAP_CONSTANTS.BOX_SIZE_RATIO
-    );
-
-    return createGameSceneWallData(
-        scene,
-        scene.WW * boxDefinition.X_RATIO,
-        scene.objectWH * boxDefinition.Y_RATIO,
-        size,
-        size
-    );
-}
-
-/**
  * 랜덤 적 스폰 위치를 반환합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
  * @returns {{x:number, y:number}}
@@ -207,40 +160,8 @@ export function buildGameSceneResetBenchmarkWorldCommands(scene) {
 
     return [{
         type: GAME_SCENE_COMMAND_TYPES.REPLACE_WORLD,
-        player: playerData,
-        staticWalls,
-        boxWalls,
-        projectiles: [],
-        nextWallIdCounter: scene.wallIdCounter,
-        nextProjIdCounter: scene.projIdCounter
-    }];
-}
-
-/**
- * 기본 게임 씬의 간단한 플레이 맵 교체 명령을 생성합니다.
- * @param {object} scene - 게임 씬 인스턴스입니다.
- * @returns {object[]}
- */
-export function buildGameSceneResetPlayWorldCommands(scene) {
-    const playerData = {
-        id: PLAY_MAP_CONSTANTS.PLAYER_ID,
-        radius: scene.objectWH * PLAY_MAP_CONSTANTS.PLAYER_RADIUS_RATIO,
-        position: {
-            x: scene.WW * PLAY_MAP_CONSTANTS.PLAYER_POSITION.X_RATIO,
-            y: scene.objectWH * PLAY_MAP_CONSTANTS.PLAYER_POSITION.Y_RATIO
-        },
-        speed: { x: 0, y: 0 },
-        weight: PLAY_MAP_CONSTANTS.PLAYER_WEIGHT
-    };
-    const staticWalls = PLAY_MAP_CONSTANTS.STATIC_WALLS.map((wallDefinition) => {
-        return buildPlayMapStaticWallData(scene, wallDefinition);
-    });
-    const boxWalls = PLAY_MAP_CONSTANTS.BOX_POSITIONS.map((boxDefinition) => {
-        return buildPlayMapBoxWallData(scene, boxDefinition);
-    });
-
-    return [{
-        type: GAME_SCENE_COMMAND_TYPES.REPLACE_WORLD,
+        mapId: null,
+        mapGeometry: null,
         player: playerData,
         staticWalls,
         boxWalls,

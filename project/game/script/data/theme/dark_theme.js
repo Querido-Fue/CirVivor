@@ -177,6 +177,12 @@ export const DarkTheme = Object.freeze({
     Vignette: DARK_VIGNETTE_THEME,
     Game: Object.freeze({
         Font: '#e0e0e0',
+        Map: Object.freeze({
+            Floor: 'rgba(79, 163, 255, 0.28)',
+            Grid: 'rgba(124, 190, 255, 0.16)',
+            PreviewBackground: 'rgba(255, 255, 255, 0.04)',
+            SelectedStroke: '#4fa3ff'
+        }),
         Benchmark: Object.freeze({
             StaticWall: 'rgba(70, 86, 108, 0.9)',
             BoxWall: 'rgba(92, 112, 134, 0.9)',

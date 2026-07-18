@@ -271,7 +271,7 @@ export class CollisionHandler {
     resolveEnemyCollisions(enemies, options = {}) {
         const totalStart = this.#profileRecorder.startTimer();
         try {
-            if (!Array.isArray(enemies) || enemies.length === 0) return 0;
+            if (!Array.isArray(enemies)) return 0;
 
             const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
             const maxIterations = this.#resolveIterationCount();

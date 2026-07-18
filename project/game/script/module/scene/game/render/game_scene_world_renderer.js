@@ -1,18 +1,33 @@
-import { renderGL } from 'display/display_system.js';
+import { ColorSchemes } from 'display/_theme_handler.js';
+import { renderGL, renderGLShapeInstances } from 'display/display_system.js';
 import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
 import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 
 const WORLD_OBJECT_LAYER = 'object';
+const WORLD_BACKGROUND_LAYER = 'background';
 const WORLD_CIRCLE_ALPHA = 0.95;
 const EMPTY_WORLD_RENDER_OPTIONS = Object.freeze({});
 const EMPTY_WORLD_ENTITY_LIST = Object.freeze([]);
 const WORLD_RENDER_STATE_SCRATCH = {
+    mapGeometry: null,
     staticWalls: [],
     boxWalls: [],
     player: null,
     projectiles: [],
     offsetY: 0
+};
+const WORLD_MAP_GRID_RENDER_OPTIONS = {
+    shape: 'square',
+    w: 0,
+    h: 0,
+    fill: null
+};
+const WORLD_MAP_FLOOR_RENDER_OPTIONS = {
+    shape: 'square',
+    w: 0,
+    h: 0,
+    fill: null
 };
 const WORLD_WALL_RENDER_OPTIONS = {
     shape: 'rect',
@@ -32,6 +47,7 @@ const WORLD_CIRCLE_RENDER_OPTIONS = {
     alpha: WORLD_CIRCLE_ALPHA
 };
 const WORLD_RENDER_SECTIONS = Object.freeze({
+    MAP: 'scene.game.world.map',
     STATIC_WALLS: 'scene.game.world.staticWalls',
     BOX_WALLS: 'scene.game.world.boxWalls',
     PLAYER: 'scene.game.world.player',
@@ -72,18 +88,77 @@ function resolveWorldSnapshotField(sceneSnapshot, options, key) {
 /**
  * 일반 씬 월드 렌더 옵션을 스냅샷 우선 규칙으로 정규화합니다.
  * @param {object|null|undefined} options - 렌더 옵션입니다.
- * @returns {{staticWalls: object[], boxWalls: object[], player: object|null|undefined, projectiles: object[], offsetY: number}}
+ * @returns {{mapGeometry: object|null, staticWalls: object[], boxWalls: object[], player: object|null|undefined, projectiles: object[], offsetY: number}}
  */
 function resolveWorldRenderState(options, out) {
     const source = options || EMPTY_WORLD_RENDER_OPTIONS;
     const sceneSnapshot = source?.sceneSnapshot ?? null;
 
+    out.mapGeometry = resolveWorldSnapshotField(sceneSnapshot, source, 'mapGeometry') || null;
     out.staticWalls = resolveWorldSnapshotArray(sceneSnapshot, source, 'staticWalls');
     out.boxWalls = resolveWorldSnapshotArray(sceneSnapshot, source, 'boxWalls');
     out.player = resolveWorldSnapshotField(sceneSnapshot, source, 'player');
     out.projectiles = resolveWorldSnapshotArray(sceneSnapshot, source, 'projectiles');
     out.offsetY = normalizeSnapshotNumber(source?.objectOffsetY, 0);
     return out;
+}
+
+/**
+ * 현재 테마의 맵 색상을 반환합니다.
+ * @param {'Floor'|'Grid'} key - 조회할 맵 색상 키입니다.
+ * @param {string} fallback - 맵 전용 색상이 없을 때 사용할 색상입니다.
+ * @returns {string} 렌더링할 색상입니다.
+ */
+function getGameMapColor(key, fallback) {
+    const color = ColorSchemes?.Game?.Map?.[key];
+    return typeof color === 'string' && color.length > 0 ? color : fallback;
+}
+
+/**
+ * 그리드 맵의 보행 가능 바닥을 background 레이어에 일괄 렌더합니다.
+ * @param {object|null|undefined} mapGeometry - 컴파일된 맵 렌더 지오메트리입니다.
+ * @param {number} offsetY - 오브젝트 월드의 화면 Y 오프셋입니다.
+ */
+function renderGameMap(mapGeometry, offsetY) {
+    const centers = mapGeometry?.floorLocalCenters;
+    const cellSize = normalizeSnapshotNumber(mapGeometry?.cellSize, 0);
+    if (!Array.isArray(centers) || centers.length === 0 || cellSize <= 0) {
+        return;
+    }
+
+    const originX = normalizeSnapshotNumber(mapGeometry.originX, 0);
+    const originY = normalizeSnapshotNumber(mapGeometry.originY, 0) - offsetY;
+    const tileGapRatio = Math.min(
+        0.45,
+        Math.max(0, normalizeSnapshotNumber(mapGeometry.tileGapRatio, 0))
+    );
+    const floorSize = cellSize * (1 - (tileGapRatio * 2));
+
+    const gridOptions = WORLD_MAP_GRID_RENDER_OPTIONS;
+    gridOptions.w = cellSize;
+    gridOptions.h = cellSize;
+    gridOptions.fill = getGameMapColor('Grid', getBenchmarkColor('StaticWall'));
+    renderGLShapeInstances(
+        WORLD_BACKGROUND_LAYER,
+        gridOptions,
+        centers,
+        originX,
+        originY,
+        cellSize
+    );
+
+    const floorOptions = WORLD_MAP_FLOOR_RENDER_OPTIONS;
+    floorOptions.w = floorSize;
+    floorOptions.h = floorSize;
+    floorOptions.fill = getGameMapColor('Floor', getBenchmarkColor('BoxWall'));
+    renderGLShapeInstances(
+        WORLD_BACKGROUND_LAYER,
+        floorOptions,
+        centers,
+        originX,
+        originY,
+        cellSize
+    );
 }
 
 /**
@@ -148,10 +223,11 @@ function renderProjectile(projectile, fill, offsetY) {
 
 /**
  * 일반 씬 오브젝트 목록을 렌더합니다.
- * @param {{sceneSnapshot?: object|null, staticWalls?: object[], boxWalls?: object[], player?: object|null, projectiles?: object[], objectOffsetY?: number}} [options={}] - 렌더 옵션입니다.
+ * @param {{sceneSnapshot?: object|null, mapGeometry?: object|null, staticWalls?: object[], boxWalls?: object[], player?: object|null, projectiles?: object[], objectOffsetY?: number}} [options={}] - 렌더 옵션입니다.
  */
 export function drawGameSceneWorldObjects(options = EMPTY_WORLD_RENDER_OPTIONS) {
     const {
+        mapGeometry,
         staticWalls,
         boxWalls,
         player,
@@ -160,6 +236,10 @@ export function drawGameSceneWorldObjects(options = EMPTY_WORLD_RENDER_OPTIONS) 
     } = resolveWorldRenderState(options, WORLD_RENDER_STATE_SCRATCH);
 
     let startTime = beginPerformanceSection();
+    renderGameMap(mapGeometry, offsetY);
+    endPerformanceSection(WORLD_RENDER_SECTIONS.MAP, startTime);
+
+    startTime = beginPerformanceSection();
     const staticWallFill = getBenchmarkColor('StaticWall');
     for (let i = 0; i < staticWalls.length; i++) {
         renderWall(staticWalls[i], staticWallFill, offsetY);
@@ -184,6 +264,7 @@ export function drawGameSceneWorldObjects(options = EMPTY_WORLD_RENDER_OPTIONS) 
     }
     endPerformanceSection(WORLD_RENDER_SECTIONS.PROJECTILES, startTime);
 
+    WORLD_RENDER_STATE_SCRATCH.mapGeometry = null;
     WORLD_RENDER_STATE_SCRATCH.staticWalls = EMPTY_WORLD_ENTITY_LIST;
     WORLD_RENDER_STATE_SCRATCH.boxWalls = EMPTY_WORLD_ENTITY_LIST;
     WORLD_RENDER_STATE_SCRATCH.player = null;
