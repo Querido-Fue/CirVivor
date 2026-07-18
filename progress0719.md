@@ -264,6 +264,21 @@
 - [x] 완전 동일성을 깨는 생성 실패·오래된 clock·초대형 delta·mutable fixed fallback 개선은 생산 코드 대신 `report0719.md` 4.22에 기록
 - [x] GitHub Desktop 커밋 및 푸시: `10355d0 Correct TimeHandler API documentation`
 
+#### 5.7 애니메이션 완료·지연 정리·공개 adapter 계약 정정 — 완료
+
+- [x] `animation_system.js`, 실제 animation base/standard/persistent/mixed 구현과 `ObjectPool`을 전체 대조해 `remove()`가 즉시 삭제가 아니라 `complete()` 동기 호출만 수행하는 계약으로 JSDoc 정정
+- [x] 생산 변경 전 actual-source 행동 9개 green·JSDoc 구조 1개 red를 확인하고, 독립 리뷰의 Map/complete 접근·호출, 역순 순회, adapter 반환 지적을 보강해 변경 후 11개 전체 green으로 고정
+- [x] 이미 획득한 Promise resolver의 동기 호출과 반응 콜백의 마이크로태스크 실행, owner 속성/endValue 불변, Map·activeAnimations·표준 풀 반환의 후속 `update()` 지연을 실제 모듈 그래프로 검증
+- [x] delta 해석 예외 시 순회 전 보류, tick 모드 불일치·0 delta에서도 FINISHED 우선 정리, 역순 update 재진입에서 미순회 대상은 현재·이미 순회한 대상은 다음 update에 정리되는 순서를 exact 검증
+- [x] 음수·`-0`·문자열 `"0"`·`0n`·`NaN`·±Infinity·`Symbol`·throwing coercion, ID Map property/get 접근 및 `complete` property/call 예외 identity와 부분 등록 상태를 검증
+- [x] 공개 adapter의 생성 전 `TypeError`, 가장 최근 시스템 위임, 시스템별 ID 충돌, 교체된 `remove` getter 예외와 반환값 passthrough를 실제 production export로 고정
+- [x] JSDoc 전체 블록을 제거한 production 실행 소스 SHA-256 `532335a71bcd27249ce9044fc5a34fa135543251873aa771aefeaf1a77299b73`을 기존 기준과 exact 유지
+- [x] `npm test` 139개, JS/MJS 364개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] Computer Use cold start 후 타이틀·설정 전환 정상; benchmark 기본 181 FPS/fixed 60.0/s/SIM 100.2%/debt 0, 적 100개 생성 후 활성 96개에서 181 FPS/fixed 60.0/s/SIM 100.0%/debt 0 및 이동·합체·렌더 정상, 종료 확인 대화상자로 정상 종료
+- [x] 두 차례 독립 최종 리뷰에서 “정리 예약” 과장, Map·complete 접근 예외, adapter live 반환 계약을 보강한 뒤 blocker 없음 확인
+- [x] pooled animation의 이전 owner 보존·과거 handle Promise 별칭·변조 ID stale Map·최신 시스템 ID 충돌 개선은 완전 동일성을 보장할 수 없어 생산 코드 대신 `report0719.md` 4.23에 기록
+- [x] GitHub Desktop 커밋 및 푸시: `bf02bae Correct animation removal API documentation`
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료

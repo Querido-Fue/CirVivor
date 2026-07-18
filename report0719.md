@@ -257,6 +257,17 @@
 - **현재 처리:** 실행 소스는 변경하지 않고 클래스 연결 위치와 실제 coercion·clamp·반환·예외·부분 초기화 계약만 JSDoc으로 정정했다. JSDoc 전체 블록을 제거한 실행 소스 SHA-256 `bd148937177cb73c7b6b648db02ca23e683ac5408f8649d206a62e423582f15d`를 기존 기준과 exact 유지했다.
 - **선행 테스트/권장 방향:** current instance 교체 시점, 주입/fallback clock 정책, 초대형 delta 정책과 fixed-step 소유권을 새 API 계약으로 먼저 승인해야 한다. 그 뒤 생성 실패·clock 재진입, 주입 후 fallback, 2/100ms 경계·오버플로, `fixedStepSeconds` getter 0/1/2/3회와 main/system scheduler replay를 구·신 정책 양쪽에서 비교하고 의도된 차이만 migration으로 허용한다.
 
+### 4.23 `AnimationSystem.remove()`와 pooled handle 수명 안전성
+
+- **파일 경로:** `project/game/script/module/animation/animation_system.js`, `project/game/script/module/animation/_animation_base.js`, `project/game/script/module/animation/_standard_animation.js`, `project/game/script/module/object/_object_pool.js`
+- **확인된 현재 계약:** `remove(id)`는 등록 애니메이션의 `complete()`만 동기 호출한다. 상태와 이미 획득한 Promise resolver는 즉시 갱신되지만 반응 콜백은 마이크로태스크에서 실행되고, owner 속성·endValue·ID Map·active 배열·표준 풀 반환은 즉시 바뀌지 않는다. delta 해석에 성공해 순회에 들어간 현재 또는 후속 `update()`가 FINISHED 항목을 발견해야 정리된다. 실제 production animation/object-pool 그래프의 11개 계약 테스트와 JSDoc 제외 실행 소스 SHA-256 `532335a71bcd27249ce9044fc5a34fa135543251873aa771aefeaf1a77299b73`이 이 경계를 고정했다.
+- **동일성 위험 1 — idle pool의 owner 보존:** `ObjectPool.release()`는 reset 없이 객체를 free 배열에 넣고, `StandardAnimation.reset()`도 다음 `get()` 시점에만 호출된다. 따라서 풀에서 쉬는 표준 애니메이션은 다음 재사용 또는 pool clear 전까지 이전 owner와 variable 등 base 수명 필드를 계속 참조할 수 있다. release 시 즉시 reset하거나 owner를 비우면 디버그 관찰, stale handle과 다음 재사용 시점의 필드 상태가 달라진다.
+- **동일성 위험 2 — 과거 handle의 live Promise 별칭:** `animate()`가 반환하는 handle의 `promise` getter는 Promise를 캡처하지 않고 pooled animation 객체를 live 캡처한다. `complete()`는 내부 Promise 캐시를 `null`로 바꾸므로 remove 전·후 Promise identity가 달라질 수 있고, 같은 객체가 다음 animation에 재사용되면 과거 handle의 `promise`가 새 animation의 Promise를 가리키거나 새 handle과 같은 Promise가 될 수 있다. 생성 시 Promise를 캡처하면 lazy 생성 시점, 반복 조회 identity, 메모리 수명과 이미 완료된 handle의 현재 동작을 바꾼다.
+- **동일성 위험 3 — mutable ID와 stale Map:** animation의 public `id`가 등록 뒤 외부에서 바뀌면 `#removeAnimationAtIndex()`는 원래 Map key가 아니라 변경된 `anim.id`를 삭제한다. 원래 key가 풀에 반환된 객체를 계속 가리키는 stale Map이 남아 이후 remove 또는 객체 재사용과 교차할 수 있다. 등록 key를 별도 보관하거나 Map을 역검색하면 mutation 관찰성, 정리 비용·순서와 예외 지점이 달라진다.
+- **동일성 위험 4 — 최신 시스템 adapter와 ID 충돌:** 공개 `remove(id)` adapter는 가장 최근에 생성된 `AnimationSystem`만 사용하며 각 시스템의 `idCounter`는 0부터 시작한다. 오래된 시스템의 handle ID를 adapter에 넘기면 최신 시스템의 같은 ID 애니메이션을 완료할 수 있다. ID를 전역화하거나 handle에 시스템 identity를 결합하면 공개 ID 값과 다중 시스템 수명주기 계약이 달라진다.
+- **현재 처리:** 즉시 삭제라고 잘못 기술한 JSDoc만 실제 완료·지연 정리·예외·live dispatch 계약으로 정정했다. 위 네 위험은 의도된 호환 동작인지 결함인지 승인되지 않았고 완전 동일한 수정도 보장할 수 없어 생산 수명주기와 풀 코드는 변경하지 않았으며, 위험 동작 자체를 새 회귀 계약으로 영구 고정하지 않았다.
+- **선행 테스트/권장 방향:** handle Promise를 생성 시 snapshot으로 볼지 live animation view로 볼지, release 시 base 필드 reset 정책, ID 불변성과 시스템 소유권을 먼저 새 API 계약으로 확정한다. 그 뒤 remove 전/후·반복 remove Promise identity, release 직후 owner 참조, 동일 객체 재사용과 old/new handle alias, ID 변조 후 Map/pool 상태, 다중 시스템 ID 충돌을 actual-source와 실제 NW.js에서 검증하고, 의도된 차이는 명시적 migration으로만 허용한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약
