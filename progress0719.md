@@ -223,6 +223,18 @@
 - [x] Computer Use cold start 후 타이틀·설정 glass 오버레이 정상; benchmark 적 100개 생성 후 활성 97개, 181 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 재실행해 정상 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `adefbb8 Correct save handler API documentation`
 
+#### 5.4 월드 렌더 상태·void 반환 계약 정정 — 완료
+
+- [x] `game_scene_world_renderer.js` 전체와 직접 호출자를 대조해 `resolveWorldRenderState(options, out)`의 writable caller-owned `out`, same identity 반환, snapshot 우선 및 제자리 기록 계약을 문서화
+- [x] 선택된 맵·플레이어 객체와 유효 입력 배열의 live 참조, 기존 extra field 유지, shared frozen empty fallback 및 예외 전 순차 부분 쓰기를 JSDoc에 명시
+- [x] 반환이 `void`인 `renderGameMap`, `renderWall`, `renderCircleEntity`, `renderPlayer`, `renderProjectile`, `drawGameSceneWorldObjects` 6곳의 누락 `@returns` 보완
+- [x] production JSDoc 제거 실행 소스 SHA-256 `186b680c56fe506a4d57def6e20bbc8f26506eeb06b9be701be1a4818adced0d` exact 보존
+- [x] 실제 world renderer와 실제 `game_scene_snapshot_utils.js`를 VM에 링크해 same out identity, 맵·플레이어·배열 live 참조, invalid snapshot 배열 fallback, extra field, shared frozen empty, ±0·비유한·문자열 offset 및 배열 getter 두 번째 접근 예외의 부분 쓰기 검증
+- [x] 별도 계약 테스트 4개와 전체 `npm test` 97개, JS/MJS 356개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] 두 독립 리뷰에서 빈 `{}` out 허용, live 객체 범위, getter 2회 평가, cross-realm 예외 및 actual snapshot utility 연결을 보강한 뒤 blocker 없음 확인
+- [x] Computer Use cold start·설정 benchmark 진입: 기본 181 FPS, 박스·투사체·적 100개 생성 후 178–179 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 벽·박스·투사체·적·HUD 정상 렌더 및 정상 종료 확인
+- [x] GitHub Desktop 커밋 및 푸시: `bd83447 Document world render state contracts`
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
