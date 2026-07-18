@@ -150,6 +150,16 @@
 - [x] Computer Use 완전 재실행, 설정·benchmark 진입·적 100개 생성: 181 FPS, fixed 60.0/s, SIM 99.8–99.9%, debt 0.0/s; 종료 후 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `4a42e1a Correct spatial and input API documentation`
 
+#### 5.2 설정 저장·미리보기 계약 정정 — 완료
+
+- [x] `SettingHandler`, `SaveSystem`, `SettingsPreviewQueue`, `SettingsOverlay` 구현과 직접 호출자를 전체 대조해 현재값 복사, 타입 보정, 조건부 hidden 저장 및 Promise 반환 계약을 문서화
+- [x] schema 조회가 복제본이 아닌 live 내부 참조임을 명시하고, 미리보기 호출 자체의 무저장과 메모리 값의 후속 저장 가능성을 구분
+- [x] theme 즉시 효과, 같은 대기 묶음의 last-value-wins, cancel 비저장 원복, overlay 저장 결과가 초기/임시 상태 비교 결과임을 정확히 반영
+- [x] 추가·삭제 206개 행이 모두 JSDoc/주석임을 확인: `COMMENT_ONLY_EXECUTABLE_SOURCE_IDENTICAL`
+- [x] `npm test` 50개, JS/MJS 350개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary, WAT/WASM 재현성, `git diff --check` 모두 통과
+- [x] Computer Use로 설정 오버레이에서 `어둡게 → 밝게` 즉시 미리보기와 `취소` 후 원래 어두운 테마·정상 타이틀 복원을 확인
+- [x] GitHub Desktop 커밋 및 푸시: `06146d6 Correct settings persistence documentation`
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
