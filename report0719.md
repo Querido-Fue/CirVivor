@@ -220,6 +220,15 @@
 - **현재 처리:** 저장소의 정상 게임 경로에서 `Math` 변조는 확인되지 않았지만, 사용자 지시 5의 모든 관찰 가능한 동작 완전 동일 기준에는 반례가 존재한다. 따라서 import 추가, 로컬 helper 제거 및 두 호출 치환을 모두 보류하고 생산 코드는 변경하지 않았다.
 - **선행 테스트/권장 방향:** 현재 공용 `clampNumber()`를 그대로 재사용하려면 먼저 native `Math` 불변을 런타임 계약으로 명시해야 한다. 그렇지 않으면 기존 연산·property 접근·호출 순서를 보존하는 별도 공용 helper가 필요하며, `clampNumber()` 자체의 순서를 바꾸는 경우에는 모든 기존 호출자의 역전 범위, getter/Proxy, patched intrinsic, 예외와 부수효과를 별도로 exact 검증해야 한다.
 
+### 4.19 HUD metrics 객체의 지역 scalar 치환
+
+- **파일 경로:** `project/game/script/module/scene/game/render/game_scene_hud_renderer.js`
+- **문제 후보:** `drawGameSceneHud()`는 프레임마다 비공개 `createHudMetrics()`가 반환하는 ordinary object를 만들고 세 비공개 renderer에 전달한다. metrics identity는 렌더 명령이나 외부 API로 나가지 않으므로, 같은 계산 순서의 지역 scalar와 scalar 인자로 바꾸면 프레임당 객체 1개와 helper 호출 1회를 줄일 수 있는 후보로 보였다.
+- **기본 환경 검증:** 실제 production 전체 소스에서 helper 호출부만 동일 순서의 인라인 계산으로 바꾼 후보를 격리 VM에 로드했다. native intrinsic과 동일한 화면 크기·스냅샷에서 기존과 후보가 만든 6개 HUD render command 직렬화 결과는 byte-for-byte 일치했다.
+- **결정적 동일성 위험:** scalar화는 `Math.max()`와 그 뒤 `createFontString()` 내부 intrinsic의 호출 스택에서 `createHudMetrics` 프레임을 제거한다. 런타임 교체 가능한 `Math.max`가 `Error().stack`의 helper 프레임 유무로 분기하도록 한 실제 전체 모듈 반례에서 기존 두 호출의 판정은 `[true, true]`, 후보는 `[false, false]`였다. 비경유 호출에만 `777`을 반환하게 하자 폰트 크기와 최종 render command가 달라졌다. 실제 `font_util.js`까지 링크해 `Number.isFinite`가 helper 프레임에서만 true를 반환하게 한 반례에서는 기존 폰트 `20.16px`·`14.399999999999999px`가 후보에서 모두 fallback `12px`로 바뀌었다. 첫 `Number.isFinite`에서 HUD를 재진입시키고 내부 `render()`가 helper 프레임을 검사하게 하면 기존은 sentinel을 첫 title에서 전파해 완료 명령 0개, 후보는 내·외부 총 12개 명령을 완료했다. renderer까지 인라인하면 `renderHudTitle`·`renderHudEnemyCount`·`renderHudCollisionStats` 프레임도 추가로 사라진다. OOM·heap 관찰을 제외해도 반환·예외·명령 결과를 바꾸는 실행 가능한 반례다.
+- **현재 처리:** 기본 환경의 출력 동일성만으로는 사용자가 요구한 모든 edge case의 완전 동일성을 보장할 수 없으므로, metrics 객체·helper·renderer 시그니처를 모두 유지하고 생산 코드와 테스트 파일은 변경하지 않았다.
+- **선행 테스트/권장 방향:** native intrinsic 불변과 호출 스택 비관찰을 명시적 런타임 계약으로 정하거나, helper 프레임과 재진입별 독립 상태를 유지하는 allocation pool을 별도로 설계·실측해야 한다. 후자는 getter·intrinsic·render 재진입, 모든 throw 지점, 깊이별 pool 복구, 보관된 render command, prototype 오염 및 정상/예외 후속 호출을 actual-source parity로 고정하고 실제 NW.js 프레임 benchmark에서 이득이 확인될 때만 적용해야 한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약

@@ -178,6 +178,15 @@
 - [x] 실제 전체 `EnemySpatialIndex` legacy/공용 후보를 VM에서 실행한 반례에서 property/get 호출 순서와 nonzero density index `6` 대 `5`, getter 예외 `min-get` 대 `max-get` 차이 확인
 - [x] 사용자 지시 5의 완전 동일성 기준에 따라 생산 코드와 테스트 파일은 변경하지 않고 `report0719.md` 4.18에 위험·선행 계약만 기록
 
+#### 4.6 HUD metrics scalar화 — 보고 전용
+
+- [x] `game_scene_hud_renderer.js` 전체와 직접 호출자를 감사해 metrics identity가 외부로 노출되지 않고 프레임당 ordinary object 1개가 생성되는 후보 확인
+- [x] 실제 production 전체 legacy/인라인 후보를 격리 VM에 로드해 native intrinsic 환경의 6개 render command 직렬화 결과 exact 일치 확인
+- [x] stack-sensitive mutable `Math.max` 반례에서 기존 helper frame 판정 `[true, true]`, scalar 후보 `[false, false]` 및 반환값 분기에 따른 최종 render command 차이 확인
+- [x] 실제 `font_util.js`의 stack-sensitive `Number.isFinite` 반례에서 기존 계산 폰트 2개가 후보의 fallback `12px`로 바뀌고, 재진입 render 반례에서 완료 명령 `0` 대 `12` 및 sentinel 전파 차이 확인
+- [x] renderer 인라인 시 교체된 `render()`의 helper frame 관찰 차이와 OOM·heap 관찰 위험까지 교차 감사
+- [x] 모든 edge case의 완전 동일성을 보장할 수 없어 생산 코드와 테스트 파일은 변경하지 않고 `report0719.md` 4.19에 위험·선행 계약만 기록
+
 ## 5. JSDoc 정합성 정비
 
 #### 5.1 공간 broad-phase 및 마우스 포커스 계약 정정 — 완료
