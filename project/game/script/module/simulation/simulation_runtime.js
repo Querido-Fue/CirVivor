@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const SIMULATION_RUNTIME_DEFAULTS = getData('SIMULATION_RUNTIME_DEFAULTS');
 const DEFAULT_MOUSE_BUTTON_STATE = SIMULATION_RUNTIME_DEFAULTS.MOUSE_BUTTON_STATE;
@@ -10,24 +11,14 @@ const EMPTY_SIMULATION_RECORD = Object.freeze({});
 let simulationRuntimeInstance = null;
 
 /**
- * 숫자 값을 안전하게 정규화합니다.
- * @param {number} value
- * @param {number} [fallback=0]
- * @returns {number}
- */
-function normalizeNumber(value, fallback = 0) {
-    return Number.isFinite(value) ? value : fallback;
-}
-
-/**
  * 좌표 객체를 복제합니다.
  * @param {{x?: number, y?: number}|null|undefined} point
  * @returns {{x: number, y: number}}
  */
 function clonePoint(point) {
     return {
-        x: normalizeNumber(point?.x, DEFAULT_MOUSE_POSITION.x),
-        y: normalizeNumber(point?.y, DEFAULT_MOUSE_POSITION.y)
+        x: resolveFiniteNumber(point?.x, DEFAULT_MOUSE_POSITION.x),
+        y: resolveFiniteNumber(point?.y, DEFAULT_MOUSE_POSITION.y)
     };
 }
 
@@ -72,12 +63,12 @@ function cloneInputSnapshot(input = {}) {
  */
 function cloneViewportSnapshot(viewport = {}) {
     return {
-        ww: normalizeNumber(viewport.ww, DEFAULT_VIEWPORT.ww),
-        wh: normalizeNumber(viewport.wh, DEFAULT_VIEWPORT.wh),
-        objectWH: normalizeNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH),
-        objectOffsetY: normalizeNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY),
-        uiww: normalizeNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww),
-        uiOffsetX: normalizeNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX)
+        ww: resolveFiniteNumber(viewport.ww, DEFAULT_VIEWPORT.ww),
+        wh: resolveFiniteNumber(viewport.wh, DEFAULT_VIEWPORT.wh),
+        objectWH: resolveFiniteNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH),
+        objectOffsetY: resolveFiniteNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY),
+        uiww: resolveFiniteNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww),
+        uiOffsetX: resolveFiniteNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX)
     };
 }
 
@@ -103,17 +94,17 @@ function replaceSimulationArrayContents(target, source, fallback) {
 }
 
 function syncViewportSnapshotInto(target, viewport = {}) {
-    target.ww = normalizeNumber(viewport.ww, DEFAULT_VIEWPORT.ww);
-    target.wh = normalizeNumber(viewport.wh, DEFAULT_VIEWPORT.wh);
-    target.objectWH = normalizeNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH);
-    target.objectOffsetY = normalizeNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY);
-    target.uiww = normalizeNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww);
-    target.uiOffsetX = normalizeNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX);
+    target.ww = resolveFiniteNumber(viewport.ww, DEFAULT_VIEWPORT.ww);
+    target.wh = resolveFiniteNumber(viewport.wh, DEFAULT_VIEWPORT.wh);
+    target.objectWH = resolveFiniteNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH);
+    target.objectOffsetY = resolveFiniteNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY);
+    target.uiww = resolveFiniteNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww);
+    target.uiOffsetX = resolveFiniteNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX);
 }
 
 function syncInputSnapshotInto(target, input = {}) {
-    target.mousePos.x = normalizeNumber(input.mousePos?.x, DEFAULT_MOUSE_POSITION.x);
-    target.mousePos.y = normalizeNumber(input.mousePos?.y, DEFAULT_MOUSE_POSITION.y);
+    target.mousePos.x = resolveFiniteNumber(input.mousePos?.x, DEFAULT_MOUSE_POSITION.x);
+    target.mousePos.y = resolveFiniteNumber(input.mousePos?.y, DEFAULT_MOUSE_POSITION.y);
     replaceSimulationArrayContents(target.mouseButtons.left, input.mouseButtons?.left, DEFAULT_MOUSE_BUTTON_STATE);
     replaceSimulationArrayContents(target.mouseButtons.right, input.mouseButtons?.right, DEFAULT_MOUSE_BUTTON_STATE);
     replaceSimulationArrayContents(target.mouseButtons.middle, input.mouseButtons?.middle, DEFAULT_MOUSE_BUTTON_STATE);

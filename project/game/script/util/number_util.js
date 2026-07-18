@@ -10,8 +10,9 @@ export function clampNumber(value, min, max) {
 }
 
 /**
- * 유효한 숫자이면 원본 값을, 아니면 fallback 값을 반환합니다.
- * @param {number} value - 확인할 값입니다.
+ * 숫자 primitive이면서 유한하면 원본 값을, 아니면 fallback 값을 반환합니다.
+ * 문자열·객체 등의 숫자 coercion은 수행하지 않습니다.
+ * @param {unknown} value - 확인할 값입니다.
  * @param {number} fallback - 값이 유효하지 않을 때 사용할 값입니다.
  * @returns {number} 유효한 숫자 또는 fallback 값입니다.
  */
