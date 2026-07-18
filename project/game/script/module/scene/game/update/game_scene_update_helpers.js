@@ -28,33 +28,22 @@ function triggerGameSceneButtonIfHit(button, mousePos) {
 }
 
 /**
- * 로컬 투사체 제거 판정에 사용할 월드 경계를 계산합니다.
- * @param {object} scene - 게임 씬 인스턴스입니다.
- * @returns {{minX:number, maxX:number, minY:number, maxY:number}} 투사체 제거 경계입니다.
- */
-function createProjectileCullBounds(scene) {
-    return {
-        minX: -scene.WW * PROJECTILE_CULL_MARGIN_RATIO,
-        maxX: scene.WW * (1 + PROJECTILE_CULL_MARGIN_RATIO),
-        minY: -scene.objectWH * PROJECTILE_CULL_MARGIN_RATIO,
-        maxY: scene.objectWH * (1 + PROJECTILE_CULL_MARGIN_RATIO)
-    };
-}
-
-/**
  * 로컬 투사체를 제거해야 하는지 확인합니다.
  * @param {object|null|undefined} projectile - 투사체 인스턴스입니다.
- * @param {{minX:number, maxX:number, minY:number, maxY:number}} bounds - 제거 경계입니다.
+ * @param {number} minX - 제거하지 않을 최소 X 좌표입니다.
+ * @param {number} maxX - 제거하지 않을 최대 X 좌표입니다.
+ * @param {number} minY - 제거하지 않을 최소 Y 좌표입니다.
+ * @param {number} maxY - 제거하지 않을 최대 Y 좌표입니다.
  * @returns {boolean} 제거 여부입니다.
  */
-function shouldCullLocalProjectile(projectile, bounds) {
+function shouldCullLocalProjectile(projectile, minX, maxX, minY, maxY) {
     if (!projectile || projectile.active === false || !projectile.position) {
         return true;
     }
 
     const x = projectile.position.x;
     const y = projectile.position.y;
-    return x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY;
+    return x < minX || x > maxX || y < minY || y > maxY;
 }
 
 /**
@@ -87,9 +76,12 @@ export function cullLocalGameSceneProjectiles(scene) {
         return;
     }
 
-    const bounds = createProjectileCullBounds(scene);
+    const minX = -scene.WW * PROJECTILE_CULL_MARGIN_RATIO;
+    const maxX = scene.WW * (1 + PROJECTILE_CULL_MARGIN_RATIO);
+    const minY = -scene.objectWH * PROJECTILE_CULL_MARGIN_RATIO;
+    const maxY = scene.objectWH * (1 + PROJECTILE_CULL_MARGIN_RATIO);
     for (let i = scene.projectiles.length - 1; i >= 0; i--) {
-        if (shouldCullLocalProjectile(scene.projectiles[i], bounds)) {
+        if (shouldCullLocalProjectile(scene.projectiles[i], minX, maxX, minY, maxY)) {
             scene.projectiles.splice(i, 1);
         }
     }
