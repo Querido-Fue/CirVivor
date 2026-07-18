@@ -246,6 +246,15 @@
 - **동일성 위험:** 육안 QA만으로는 alpha 1단계, blur kernel, subpixel 위치, blend/clear 순서 차이를 완벽히 검출할 수 없다. 반대로 장치 의존 screenshot만 golden으로 쓰면 driver/font 차이로 불안정해질 수 있다.
 - **선행 테스트/권장 방향:** 결정론적 test scene, 고정 font/seed/time, 고정 viewport/DPR/theme/render scale을 마련한다. CPU 2D surface와 WebGL pass는 raw buffer exact 비교를 우선하고, 최종 화면은 동일 NW.js/장치 프로필의 exact golden과 허용 오차 없는 차이 이미지를 함께 저장한다.
 
+### 5.7 `DrawHandler2D` 프레임 스타일 캐시 객체 재사용
+
+- **파일 경로:** `project/game/script/module/display/_draw_handler_2d.js`, `project/game/script/module/display/draw_2d_layer_state.js`
+- **문제 후보:** 비지속 2D 레이어는 `clear()`/`clearAll()`마다 스타일 캐시를 새 `{}`로 교체한다. 정상 화면은 프레임당 4개, 일반 오버레이는 보통 6개여서 기존 객체의 11개 스타일 필드를 무효화해 재사용하는 방안이 할당 최적화 후보로 보인다.
+- **결정적 동일성 위험:** `render()`는 Map에서 읽은 캐시 C1을 지역 변수로 유지한 채 context setter를 실행한다. 이 setter나 styles getter가 같은 레이어의 `clear()`를 재진입하면 현재 구현은 Map 항목을 새 C2로 교체하고, 바깥 render가 재개된 뒤의 후속 캐시 쓰기는 Map에서 분리된 C1에만 남긴다. 다음 render는 빈 C2를 사용해 reset 뒤 필요한 Canvas 스타일을 모두 다시 설정한다. C1을 `undefined` 또는 `delete` 방식으로 재사용하면 바깥 render가 같은 객체를 다시 채우므로 다음 render가 setter를 잘못 생략할 수 있고, 그 사이 직접 변경된 context 상태가 그대로 픽셀에 반영된다. 별도 회귀 테스트에서 이 재진입 후 `fillStyle` 재적용과 실제 draw 시점 색을 고정했다.
+- **추가 위험:** own `undefined`는 fresh 객체의 absent property와 다르며 `Object.prototype`의 동명 값/getter/setter, non-writable 속성에서 조회·부수효과·예외가 달라진다. `delete`는 prototype 조회 의미를 가깝게 보존하지만 진행 중 render가 보유한 cache identity 격리는 해결하지 못하고, 합성 벤치에서도 fresh 교체보다 현저히 느렸다.
+- **현재 처리:** fresh 캐시 교체와 그 실행 위치(`resetDrawContextState()` 전체 성공 뒤, `clearRect` 전)는 생산 코드에 그대로 유지했다. 모든 호출이 사용하던 죽은 `applyTransform` 비공개 옵션과 분기만 exact 동등성 테스트 후 제거했으며, 해당 변경 자체는 4/6/8 레이어 교차 벤치에서 성능상 중립이라 속도 향상으로 기록하지 않았다.
+- **선행 테스트/권장 방향:** 할당 제거를 다시 시도하려면 진행 중인 모든 render 참조와 새 frame cache를 세대별로 분리하고, 중첩 clear·render·register/unregister·모든 setter 예외·prototype 오염에서 legacy trace와 픽셀을 exact 비교해야 한다. 현재 fresh 객체 교체 비용보다 복잡도와 재진입 위험이 커서 현 구조를 유지한다.
+
 ## 6. 권장 처리 순서
 
 1. pixel-golden, hit-test 경계, seeded fixed-step replay 기반을 먼저 만든다.

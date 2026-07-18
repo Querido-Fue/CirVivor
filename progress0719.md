@@ -89,6 +89,22 @@
 - `begin()`에서 제거한 13개 호출은 모든 실제 draw 직전 `flush()`가 같은 순서로 다시 수행하던 상태 복구 블록입니다. vertex 생성, texture 전환, upload, draw 호출은 변경하지 않았습니다.
 - 실제 NW.js 검증의 6개 장면은 모두 clear 색과 다른 픽셀을 만들었으며, 기준/후보의 전체 framebuffer 바이트와 `gl.getError()` 결과가 일치했습니다.
 
+#### 3.1 Canvas 2D 프레임 reset 비공개 계약 단순화 — 완료
+
+- [x] `DrawHandler2D.clearAll()`이 활성 렌더 프레임마다 호출되고, 정상 화면 4개·일반 오버레이 6개·중첩 오버레이 8개 비지속 2D 레이어를 reset하는 경로 감사
+- [x] 두 실제 호출이 모두 `applyTransform: false`를 넘긴 뒤 곧바로 별도 transform을 복원함을 확인하고, 매 호출의 옵션 객체 리터럴과 비공개 기본 인자·죽은 transform 분기 제거
+- [x] 생산 코드 변경 전 행동 동등성 7개 green·구조 가드 1개 red를 확인하고, `clearAll()` 중단 예외 회귀까지 보강한 변경 후 9개 전체 green으로 고정
+- [x] 실제 `_draw_handler_2d.js` 전체 소스를 격리 VM에서 평가하고 exact source block 치환으로 만든 legacy/후보 클래스의 Canvas 접근 trace·상태를 비교
+- [x] `resetTransform`/`setTransform` fallback, 11개 reset setter, `clearRect`의 method/canvas/width/height 조회, transform 복원과 callback 순서를 독립 oracle로 검증
+- [x] 모든 clear trace 위치의 예외와 후속 render 부분 상태, persistent skip, live Map iterator의 unregister/re-register, 첫 레이어 예외 뒤 즉시 중단, reset setter 재진입을 exact 비교
+- [x] `render()` 중 스타일 getter가 `clear()`를 재진입하는 결정적 반례로 fresh 스타일 캐시 교체가 진행 중 옛 캐시 쓰기를 격리하는 표시 정확성 계약임을 확인하고, 위험한 캐시 재사용은 `report0719.md` 5.7로 보류
+- [x] register/unregister/transform/shadow/render/clear/clearAll과 모든 shape·gradient를 섞은 고정 seed 50,000개 명령에서 legacy/후보 trace와 최종 컨텍스트 상태 exact 일치
+- [x] 실제 전체 클래스 합성 벤치 20회 교차 측정은 4/6/8 레이어 모두 IQR 중첩, paired 중앙값 후보 +0.068%/+0.329%/+0.488%로 성능상 중립 판정; 속도·heap 개선으로 주장하지 않고 276 source byte와 죽은 private API 제거로만 평가
+- [x] `npm test` 75개, JS/MJS 353개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary, WAT/WASM 재현성, `git diff --check` 모두 통과
+- [x] 독립 리뷰에서 production·source variant·예외·재진입 하네스 blocker 없음 확인
+- [x] Computer Use 완전 재실행 후 타이틀·설정 glass 오버레이 표시 정상; benchmark 적 100개 생성 후 활성 98개, 179 FPS, fixed 60.0/s, SIM 100.1%, debt 0.0/s; 재실행해 정상 타이틀 복원
+- [x] GitHub Desktop 커밋 및 푸시: `ea22d47 Simplify 2D frame reset contract`
+
 ### 4. 코드베이스·JSDoc·재사용성·SRP — 감사 완료, 안전 수정 대기
 
 - [x] 최근 추가 파일을 포함한 345개 JS/MJS 인벤토리 갱신 및 전체 `node --check` 통과
