@@ -79,7 +79,7 @@
 - [x] 실제 NW.js WebGL1 픽셀 oracle 2회 연속 통과: alpha on/off, 홀수 해상도, 소수 transform, 반투명 overlap, capacity 자동 flush, 외부 상태 오염의 `readPixels` RGBA 198,336바이트 exact
 - [x] 전체 `npm test` 47개, JS/MJS 347개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary 통과
 - [x] Computer Use로 일반 타이틀 복원과 benchmark 100개 스폰 확인: 179~181 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s
-- [ ] GitHub Desktop 커밋 및 푸시: WebGL batch lazy state binding 작업 단위
+- [x] GitHub Desktop 커밋 및 푸시: `95c736e Defer WebGL batch state binding until flush`
 
 동일성 메모:
 
