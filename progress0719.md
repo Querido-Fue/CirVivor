@@ -105,6 +105,22 @@
 - [x] Computer Use 완전 재실행 후 타이틀·설정 glass 오버레이 표시 정상; benchmark 적 100개 생성 후 활성 98개, 179 FPS, fixed 60.0/s, SIM 100.1%, debt 0.0/s; 재실행해 정상 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `ea22d47 Simplify 2D frame reset contract`
 
+#### 3.2 Canvas 2D 기본 그림자 상태 공유 — 완료
+
+- [x] `DrawHandler2D`의 `registerLayer()`·`shadowOff()`·누락 fallback이 같은 불변 기본 그림자 값마다 새 객체를 만들던 세 경로와 실제 overlay/UI 호출자를 감사
+- [x] 외부로 identity가 노출되지 않는 모듈 비공개 기본 상태 하나를 세 경로에서 공유하고, `shadowOn()` custom 상태와 공개 `createDrawShadowState()`의 호출별 fresh·mutable 계약은 유지
+- [x] `Object.freeze()`는 변조 가능한 전역 호출이라는 새 관찰 지점을 만들므로 사용하지 않고, 비공개 객체를 외부에 노출하거나 내부에서 변경하지 않는 불변식을 별도 구조 테스트와 가이드에 고정
+- [x] 생산 변경 전 신규 테스트의 행동 비교 5개 green·구조 가드 1개 red를 확인하고, 독립 리뷰 보강 뒤 변경 후 8개 전체 green으로 고정
+- [x] 실제 `_draw_handler_2d.js`와 의존 모듈을 격리 VM에서 평가하고 exact source 역변환으로 만든 호출별 할당 legacy와 공유 후보의 trace·상태·예외 토큰을 비교
+- [x] 모든 shape, linear gradient·color stop, 등록·해제·재등록·clear·measureText와 사용자 style/shape getter 및 Canvas 모든 관찰 지점 예외의 부분 캐시·후속 렌더를 exact 비교
+- [x] shadow setter·style getter 재진입, 현재 호출 custom snapshot과 다음 호출 기본 복귀, 두 레이어 shared-default/per-command override 격리, VM `Object.prototype` 오염·정리 후 custom 상태 복구를 독립 기대값으로 고정
+- [x] register/unregister/transform/shadow/render/clear/clearAll과 모든 shape를 섞은 고정 seed 50,000개 명령에서 legacy/후보 trace와 네 레이어 최종 컨텍스트 상태 exact 일치
+- [x] 5,000,000회 Map 상태 교체를 7회 교차 측정한 격리 벤치 중앙값은 호출별 생성 85.857ms, 공유 상태 67.724ms로 해당 경로 약 21.12% 단축; 전체 게임 FPS 향상으로 확대 해석하지 않음
+- [x] `npm test` 93개, JS/MJS 355개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary, WAT/WASM 재현성, `git diff --check` 모두 통과
+- [x] 독립 리뷰 3건에서 비공개 identity·custom 상태·source variant·getter/Canvas 예외·재진입·prototype 오염·다중 레이어 하네스 blocker 없음 확인
+- [x] Computer Use cold start 후 타이틀 커서·카드 그림자와 설정 glass 오버레이 정상; benchmark 기본 181 FPS, 적 100개 생성 후 활성 97→92개에서 180 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 재실행해 정상 타이틀 복원
+- [x] GitHub Desktop 커밋 및 푸시: `49d369d Reuse the default Canvas shadow state`
+
 ### 4. 코드베이스·JSDoc·재사용성·SRP — 감사 완료, 안전 수정 대기
 
 - [x] 최근 추가 파일을 포함한 345개 JS/MJS 인벤토리 갱신 및 전체 `node --check` 통과

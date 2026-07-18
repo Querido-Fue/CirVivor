@@ -54,6 +54,7 @@ background(WebGL)
 - WebGL batch의 `begin()`은 프레임 크기와 CPU 큐만 초기화합니다. 실제 `flush()`가 draw 직전에 framebuffer, blend, program, buffer와 attribute 상태를 다시 바인딩하므로, 같은 context를 쓰는 외부 pass가 중간 상태를 바꿔도 batch 제출은 자체 상태를 복구합니다.
 - 비지속 2D 레이어의 프레임 clear 순서는 `context 상태 reset → fresh 스타일 캐시 교체 → clearRect → transform 복원 → onFrameClear`입니다. fresh 캐시는 진행 중 `render()`에서 clear가 재진입해도 이전 render의 후속 캐시 쓰기를 다음 프레임 캐시와 격리하므로 scratch 객체나 `undefined`/`delete` 초기화로 재사용하지 않습니다.
 - persistent 2D 레이어는 위 프레임 clear 경로를 건너뛰며, `clearAll()`은 등록 Map의 live iteration 순서와 첫 예외에서 즉시 중단하는 계약을 유지합니다.
+- `DrawHandler2D`의 기본 지속 그림자는 모듈 비공개 상태 하나를 `registerLayer()`·`shadowOff()`·누락 fallback에서 공유합니다. 이 상태는 외부로 노출하거나 쓰지 않으며, `shadowOn()`의 custom 상태와 공개 `createDrawShadowState()` 반환값은 계속 호출마다 새 가변 객체여야 합니다. 렌더 중 style getter가 그림자 상태를 바꿔도 현재 호출은 진입 시 잡은 상태를 사용하고 다음 호출부터 새 상태를 사용합니다. 이 불변식은 `draw_handler_2d_shadow_state_parity.test.mjs`의 getter/Canvas 예외 전수, 재진입, prototype 오염, 다중 레이어 검증을 통과해야 합니다.
 - 마우스 좌표 변환 핫패스는 `getCanvasOffsetX()`/`getCanvasOffsetY()`로 CSS 오프셋 원시값을 읽습니다. 기존 `getCanvasOffset()`은 매 호출 새 `{x, y}`를 반환하는 공개 계약으로 유지하며, 입력 경로는 X/Y 원시값을 모두 읽은 뒤 숫자로 변환해 getter 평가 순서를 보존합니다.
 - 렌더 명령 규격은 [`reference/render_command_guide.md`](./reference/render_command_guide.md)를 확인합니다.
 
