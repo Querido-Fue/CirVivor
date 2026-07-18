@@ -208,7 +208,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#resetLayerState(layerName, context, { applyTransform: false });
+        this.#resetLayerState(layerName, context);
         context.clearRect(0, 0, context.canvas.width, context.canvas.height);
         this.#applyLayerTransform(layerName, context);
         this.#layerCallbacks.get(layerName)?.onFrameClear?.();
@@ -223,7 +223,7 @@ export class DrawHandler2D {
             if (layerOptions?.persistent === true) {
                 continue;
             }
-            this.#resetLayerState(layerName, context, { applyTransform: false });
+            this.#resetLayerState(layerName, context);
             context.clearRect(0, 0, context.canvas.width, context.canvas.height);
             this.#applyLayerTransform(layerName, context);
             this.#layerCallbacks.get(layerName)?.onFrameClear?.();
@@ -237,14 +237,10 @@ export class DrawHandler2D {
      * 항상 동일한 시작 상태에서 렌더링되도록 보장합니다.
      * @param {string} layerName - 초기화할 레이어 식별자입니다.
      * @param {CanvasRenderingContext2D} context - 초기화할 컨텍스트입니다.
-     * @param {{applyTransform?: boolean}} [options={}] - 초기화 후 레이어 transform을 복원할지 여부입니다.
      */
-    #resetLayerState(layerName, context, options = {}) {
+    #resetLayerState(layerName, context) {
         resetDrawContextState(context);
         this.#stateCaches.set(layerName, {});
-        if (options.applyTransform !== false) {
-            this.#applyLayerTransform(layerName, context);
-        }
     }
 
     /**
