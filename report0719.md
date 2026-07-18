@@ -163,6 +163,13 @@
 - **동일성 위험:** helper 치환은 수학식이 같아도 random 호출 횟수나 순서, 정수 구간의 끝점, seed 주입 여부를 바꿀 수 있어 시각 결과가 달라진다.
 - **선행 테스트/권장 방향:** 주입 가능한 RNG로 기존 호출 trace를 먼저 고정하고 particle 한 개당 소비 횟수와 각 결과를 비교한다. helper는 RNG 인자를 허용하되 기존 `Math.random` fallback과 정확한 구간 계약을 보존한다.
 
+### 4.12 `BaseEnemy` 렌더 회전 델타의 공용 각도 함수 직접 치환
+
+- **파일 경로:** `project/game/script/module/object/enemy/_base_enemy.js`, `project/game/script/util/math_util.js`
+- **문제 후보:** `BaseEnemy.interpolatePosition()`의 `-180~180` 정규화 식은 `normalizeDegrees()`와 일반 입력에서 같은 역할을 하므로 공용 기능 재사용 후보로 보인다.
+- **동일성 위험:** 이전·현재 회전은 각각 유한값으로 fallback되지만, `Number.MAX_VALUE - (-Number.MAX_VALUE)`처럼 두 유한 극값의 뺄셈이 무한대로 오버플로할 수 있다. 기존 식은 `Infinity % 360`의 결과인 `NaN`을 유지하지만 `normalizeDegrees(Infinity)`는 `0`을 반환하므로 직접 치환은 완전 동일하지 않다. `init(data.rotation)`과 공개 AI adapter가 회전값을 직접 공급할 수 있어 API 경계에서는 도달 가능하다. 별도 테스트에서 양방향 극값의 실제 `BaseEnemy.renderRotation === NaN` 계약을 고정했으며 생산 코드는 수정하지 않았다.
+- **선행 테스트/권장 방향:** 렌더 보간 hot path의 추가 분기·함수 호출 비용까지 측정하면서 오버플로 결과를 그대로 보존하는 adapter가 필요한지 먼저 결정한다. 실사용 입력 범위를 제한하는 계약이 생기기 전에는 현재 inline 식을 유지한다. 반면 `_shape_enemy.js`의 로컬 구현은 비유한 값과 부호 있는 0을 포함한 424,602개 케이스에서 공용 함수와 `Object.is` 기준으로 일치해 별도 안전 변경 대상으로 처리했다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약
