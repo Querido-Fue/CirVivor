@@ -248,6 +248,22 @@
 - [x] 독립 리뷰에서 production JSDoc·actual-source 하네스·NW runner에 blocker 없음 확인
 - [x] GitHub Desktop 커밋 및 푸시: `d909405 Correct debug error API documentation`
 
+#### 5.6 시간 델타·보간·current instance 계약 정정 — 완료
+
+- [x] `time_handler.js`, 실제 숫자 유틸과 14개 직접 import 경로를 대조해 분리돼 있던 클래스 JSDoc을 선언에 연결하고, 엄밀한 단일 인스턴스가 아닌 “가장 최근에 생성이 시작된 current instance” 계약으로 정정
+- [x] 생성 전 `handler=null`·frame/fixed delta 0·alpha 1, 정상 생성 직후 delta `1 / 60`·alpha 0, 생성 교체·clock 재진입·clock 예외 뒤 부분 초기화 인스턴스 노출을 actual-source로 검증
+- [x] `update()`의 `Number()` coercion, 양수 유한 주입, clock fallback, 2~100ms clamp, 주입 시 `timeBefore` 불변, 역행·비유한 clock, 정규화 예외 전 부분 쓰기와 custom coercion·재진입을 고정
+- [x] `updateFixed()`의 명시값·기본 인수·비유한 fallback과 `fixedStepSeconds` getter 0/1/2/3회 평가, eager getter·coercion 예외 identity를 검증하고 JSDoc에 실제 좌→우 평가 순서 반영
+- [x] 보간 alpha와 `_normalizeDeltaMs()`의 ±0·subnormal·±최대값·±Infinity·`NaN`·문자열·boolean·`BigInt`·`Symbol`·null-prototype·revoked Proxy 경계, 공개 getter의 live identity·예외 전파 검증
+- [x] 생산 변경 전 정정된 하네스에서 행동 8개 green·JSDoc 구조 1개 red를 확인하고, 독립 리뷰 보강 뒤 actual production `time_handler.js`+`number_util.js` 계약 12개 전체 green으로 고정
+- [x] JSDoc 전체 블록을 제거한 production 실행 소스 SHA-256 `bd148937177cb73c7b6b648db02ca23e683ac5408f8649d206a62e423582f15d`를 기존 기준과 exact 유지
+- [x] Computer Use 실제 NW.js Chromium 145에서 falsy·strict non-nullish `document.all`의 `Number(...) = NaN`, 생성 전/후 기본값, 2ms 정규화, fixed `1 / 60`, alpha 0, clock fallback 100ms 상한을 actual production 모듈로 확인: `PASS — TimeHandler contract`
+- [x] `npm test` 128개, JS/MJS 363개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] Computer Use 정상 게임 cold start·타이틀 복원과 benchmark 확인: 기본/적 100개 후 181 FPS, fixed 60.0/s, SIM 100.0~100.6%, debt 0.0/s, 활성 적 93개 및 이동·합체·렌더 정상
+- [x] 독립 리뷰가 `-0` 검사 위치, eager getter 예외, 변환 실패 0회, 생략 3회, 정규화 예외 문서 누락을 찾아 보강했으며 최종 blocker 없음 확인
+- [x] 완전 동일성을 깨는 생성 실패·오래된 clock·초대형 delta·mutable fixed fallback 개선은 생산 코드 대신 `report0719.md` 4.22에 기록
+- [x] GitHub Desktop 커밋 및 푸시: `10355d0 Correct TimeHandler API documentation`
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료

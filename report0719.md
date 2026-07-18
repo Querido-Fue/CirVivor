@@ -246,6 +246,17 @@
 - **현재 범위:** 정상 `ObjectSystem`이 wall version과 viewport 변경을 일관되게 관리하는 현재 경로에서는 실행 가능한 오염 사례를 확정하지 못했다. 키를 즉시 바꾸면 cache miss 시점, LRU 퇴출 순서, allocation과 적별 flow 참조 갱신 시점이 달라지므로 완전 동일성 증거 없이 수정하지 않았다.
 - **선행 테스트/권장 방향:** 같은 `Math.round()` 결과 안에서 `ceil(width/cellSize)` 또는 `ceil(height/cellSize)`가 달라지는 양쪽 경계, 같은 version의 서로 다른 wall 배열, version 없는 fractional wall bounds, 배열 제자리 변이를 조합한다. grid 차원·blocked 원시 바이트·flow key·LRU 순서와 장시간 AI replay를 고정하고, wall version을 유일 authority로 볼지 identity/derived dimensions를 키에 추가할지 계약을 먼저 확정한다.
 
+### 4.22 `TimeHandler` 현재 인스턴스와 fallback 안전성
+
+- **파일 경로:** `project/game/script/time_handler.js`, `project/game/script/main.js`, `project/game/script/module/system_handler.js`
+- **확인된 현재 계약:** 생성자는 `performance.now()`보다 먼저 새 객체를 모듈 current instance로 등록한다. `update()`의 양수 유한 주입값은 `timeBefore`를 갱신하지 않고, 초→밀리초 곱셈 뒤 비유한 값은 `_normalizeDeltaMs()`의 2ms fallback을 사용한다. `updateFixed()`는 외부에서 변경 가능한 `this.fixedStepSeconds`를 fallback 인수와 0 이하 복귀값으로 다시 읽는다. actual production `time_handler.js`와 `number_util.js`를 실행한 12개 Node 계약 테스트와 실제 NW.js Chromium 145의 `document.all` 하네스가 이 수명주기·변환·평가 순서를 고정했다.
+- **동일성 위험 1 — 실패한 생성:** 두 번째 생성의 clock 샘플이 예외를 던져도 필드 없는 새 부분 인스턴스가 기존 정상 인스턴스를 가린다. 등록을 초기화 완료 뒤로 옮기면 `getTimeHandler()` identity, 생성 재진입과 실패 후 getter 결과가 달라진다.
+- **동일성 위험 2 — 오래된 clock 기준:** 양수 delta 주입이 이어진 뒤 fallback 호출이 발생하면 마지막 주입 시점이 아니라 이전 `timeBefore`부터의 전체 간격을 계산한다. 주입 경로에서 clock을 갱신하면 이후 fallback delta와 `performance.now()` 호출 횟수가 바뀐다.
+- **동일성 위험 3 — 초대형 delta:** `Number.MAX_VALUE` 같은 양수 유한 초 값은 `* 1000`에서 `Infinity`가 되어 100ms 상한이 아니라 2ms fallback으로 축소된다. 곱셈 전 초 단위 clamp는 극값의 결과와 부동소수점 연산 순서를 바꾼다.
+- **동일성 위험 4 — mutable fixed fallback:** `fixedStepSeconds`가 비유한·음수·문자열 또는 상태형 getter로 교체되면 fallback 자체가 안전한 숫자를 보장하지 않는다. 필드를 비공개 상수로 바꾸거나 한 번만 캡처하면 현재 getter 0/1/2/3회, 예외 및 재진입 순서가 달라진다.
+- **현재 처리:** 실행 소스는 변경하지 않고 클래스 연결 위치와 실제 coercion·clamp·반환·예외·부분 초기화 계약만 JSDoc으로 정정했다. JSDoc 전체 블록을 제거한 실행 소스 SHA-256 `bd148937177cb73c7b6b648db02ca23e683ac5408f8649d206a62e423582f15d`를 기존 기준과 exact 유지했다.
+- **선행 테스트/권장 방향:** current instance 교체 시점, 주입/fallback clock 정책, 초대형 delta 정책과 fixed-step 소유권을 새 API 계약으로 먼저 승인해야 한다. 그 뒤 생성 실패·clock 재진입, 주입 후 fallback, 2/100ms 경계·오버플로, `fixedStepSeconds` getter 0/1/2/3회와 main/system scheduler replay를 구·신 정책 양쪽에서 비교하고 의도된 차이만 migration으로 허용한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약
