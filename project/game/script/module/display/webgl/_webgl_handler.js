@@ -115,7 +115,7 @@ export class WebGLHandler {
     }
 
     /**
-     * 모든 WebGL 레이어를 프레임 시작 상태로 초기화합니다.
+     * 모든 WebGL 레이어의 기본 framebuffer를 프레임당 한 번 clear합니다.
      */
     clearAll() {
         for (const [layerName, gl] of this.glContexts.entries()) {
@@ -124,6 +124,9 @@ export class WebGLHandler {
             }
             const mode = this.layerModes.get(layerName);
             const renderer = this.layerRenderers.get(layerName);
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(0, 0, this.width, this.height);
 
             if (layerName === WEBGL_BACKGROUND_LAYER_ID) {
                 gl.clearColor(this.backgroundColor[0], this.backgroundColor[1], this.backgroundColor[2], this.backgroundColor[3]);
