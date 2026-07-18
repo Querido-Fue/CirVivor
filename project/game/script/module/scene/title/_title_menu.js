@@ -17,7 +17,10 @@ import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
 import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
-import { renderTitleMenuGlassPanel } from './menu/_title_menu_glass_panel_render.js';
+import {
+    renderTitleMenuGlassPanel,
+    resolveTitleMenuConnectedFrontPanelStyle
+} from './menu/_title_menu_glass_panel_render.js';
 import {
     loadTitleMenuIconSources,
     releaseTitleMenuIconSources
@@ -880,9 +883,15 @@ export class TitleMenu {
             effectTextureCanvas = activation.frontFaceTextureCanvas;
         }
 
+        const connectedPanelStyle = resolveTitleMenuConnectedFrontPanelStyle(
+            panelStyle,
+            showsFrontFace,
+            getSetting('disableTransparency') !== true
+        );
+
         renderTitleMenuGlassPanel(this.session, {
             panelRect: currentRect,
-            panelStyle,
+            panelStyle: connectedPanelStyle,
             alpha: renderState.alpha,
             transformMatrix: runtimeState.transformMatrix,
             perspective: runtimeState.perspective,
