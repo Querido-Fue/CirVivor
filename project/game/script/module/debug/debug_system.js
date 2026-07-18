@@ -183,6 +183,16 @@ export class DebugSystem {
     }
 }
 
+/**
+ * 현재 DebugSystem의 오류 handler에 처리를 위임합니다.
+ * `DebugSystem.init()`이 실행되어 `errorHandler`가 준비된 뒤 호출해야 하며, 그 전에는
+ * native TypeError가 발생합니다. 하위 반환값은 전달하지 않아 비예외 경로는 항상 void입니다.
+ * @param {*} e - truthy이면 상세 로그 또는 error level의 원본 throw 값으로 쓰입니다.
+ * @param {*} message - handler가 문자열로 정규화할 메시지입니다.
+ * @param {*} level - strict 비교할 `'error'`, `'warning'`, `'info'` 또는 미지원 값입니다.
+ * @returns {void}
+ * @throws {*} 초기화 전 TypeError 또는 handler의 변환·로그·error 처리 예외입니다.
+ */
 export function errThrow(e, message, level) {
     debugSystemInstance.errorHandler.errThrow(e, message, level);
 }

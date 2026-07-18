@@ -17,10 +17,16 @@ export class ErrorHandler {
     }
 
     /**
-     * 에러를 처리하고 기록합니다.
-     * @param {Error} e - 에러 객체
-     * @param {string} message - 커스텀 에러 메시지
-     * @param {string} level - 에러 레벨 ('error', 'warning', 'info')
+     * 메시지를 정규화한 뒤 strict level 값에 따라 오류·경고·정보를 처리합니다.
+     * string이 아닌 message는 level을 검사하기 전에 `String(message ?? '')`로 변환합니다.
+     * `error`에서는 truthy인 e를 로그한 뒤 그대로 던지고, falsy이면 새 Error를 만듭니다.
+     * `warning`/`info`에서는 prefix를 먼저 기록하고 truthy인 e만 두 번째로 기록합니다.
+     * 알 수 없는 level은 메시지 변환 뒤 로그를 남기지 않고 종료합니다.
+     * @param {*} e - truthy이면 상세 로그 및 error level의 원본 throw 값으로 쓰입니다.
+     * @param {*} message - string이 아니면 nullish 기본값을 거쳐 문자열로 변환할 메시지입니다.
+     * @param {*} level - strict 비교할 `'error'`, `'warning'`, `'info'` 또는 미지원 값입니다.
+     * @returns {void}
+     * @throws {*} error level의 원본/새 Error 또는 변환·console·stack capture에서 발생한 예외입니다.
      */
     errThrow(e, message, level) {
         const safeMessage = typeof message === 'string' ? message : String(message ?? '');
@@ -43,8 +49,10 @@ export class ErrorHandler {
 
     /**
      * 에러 로그를 출력하고 예외를 던집니다.
-     * @param {Error|null} e - 원본 에러 객체입니다.
+     * @param {*} e - truthy이면 그대로 로그하고 던질 원본 값입니다.
      * @param {string} message - 출력할 에러 메시지입니다.
+     * @returns {never}
+     * @throws {*} truthy 원본 값, 새 Error 또는 console·stack capture에서 발생한 예외입니다.
      * @private
      */
     _throwError(e, message) {
