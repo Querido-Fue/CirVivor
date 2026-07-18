@@ -186,6 +186,22 @@
 - **동일성 위험:** 한 listener 제거, event identity dedupe, bound callback 저장 또는 `destroy()` 도입은 호출 횟수·순서·예외와 blur/visibility/mouseleave 후 상태 전이를 바꾼다. 현재 실제 이벤트 전파와 중복 호출을 포함한 브라우저 계약 없이 성능 목적으로 정리하면 완전 동일성을 보장할 수 없어 생산 코드는 수정하지 않았다.
 - **선행 테스트/권장 방향:** 실제 NW.js DOM에서 element→document→window 전파 trace와 이벤트당 좌표/버튼 갱신 횟수를 먼저 기록한다. 단일·복수 handler, 생성/폐기 반복, blur·visibilitychange·mouseleave·mousedown/up 도중 destroy, listener 예외와 재진입을 포함해 기존 trace를 고정한다. 승인된 새 수명 주기 계약이 생기면 named callback과 idempotent `destroy()`를 추가하고 `InputSystem`/`SystemHandler`가 소유권을 명시적으로 위임하도록 변경한다.
 
+### 4.15 인게임 저장 데이터 API의 prototype chain 충돌
+
+- **파일 경로:** `project/game/script/module/save/_ingame_handler.js`
+- **문제 후보:** 내부 데이터가 일반 객체이고 `setData(key, value)`와 `getValue(key)`가 own-property 검증 없이 bracket 접근을 사용한다. `setData('__proto__', object)`는 일반 데이터 프로퍼티를 만들지 않고 내부 객체의 prototype을 교체하며, `getValue('toString')`·`getValue('constructor')`는 저장되지 않은 상속값을 반환한다.
+- **현재 범위:** 저장소 내부에는 이 두 공개 메서드의 외부 호출자가 없고 정상 파일 로드는 JSON parse 결과에 누락된 기본 최상위 키만 보충하므로, 현재 일반 게임 흐름에서 임의 키가 직접 유입되는 경로는 확인되지 않았다. 다만 향후 설정 UI나 플러그인성 호출자가 임의 키를 전달하면 저장 데이터 판정과 직렬화 대상의 prototype 의미가 달라질 수 있다.
+- **동일성 위험:** `Object.hasOwn`, null-prototype 데이터, 허용 키 schema 또는 `Object.defineProperty`로 바꾸면 현재 관찰 가능한 `__proto__` 대입, 상속 키 조회, getter/Proxy 순서와 JSON 직렬화 결과가 달라진다. 정상 키만의 안전성은 높일 수 있어도 기존 모든 입력의 100% 동일 동작은 보장할 수 없으므로 생산 코드는 수정하지 않았다.
+- **선행 테스트/권장 방향:** `__proto__`, `constructor`, `toString`, own/inherited enumerable 키, null-prototype 입력, getter/Proxy와 JSON round-trip을 별도 VM에서 검사한다. 임의 키를 허용할지 저장 schema만 허용할지 새 계약을 승인한 뒤, prototype 없는 레코드와 own-key 검증을 함께 도입한다.
+
+### 4.16 overlay presentation 패널 결과 객체 재사용
+
+- **파일 경로:** `project/game/script/module/overlay/overlay_panel_region.js`, `project/game/script/module/overlay/overlay_panel_interaction_update.js`, `project/game/script/module/overlay/_base_overlay.js`
+- **문제 후보:** `getOverlayPresentedPanelRegion()`은 presentation scale이 1이 아닐 때 origin `{x, y}`와 spread 결과 패널 객체를 호출마다 만든다. update/draw의 패널별 경로라 scratch 객체 재사용 시 프레임 할당을 줄일 수 있다.
+- **현재 동작과 영향:** 결과 패널은 hit-test에 쓰일 뿐 아니라 `panel.onClick({ panel, ... })` 콜백 payload로 외부 코드에 노출된다. 현재는 호출마다 새 identity와 그 시점의 own enumerable string/symbol 속성 snapshot을 제공하고, object spread가 getter·Proxy trap을 정해진 순서로 실행해 일반 data descriptor를 만든다.
+- **동일성 위험:** 단일 scratch/out 객체를 재사용하면 콜백이 보관한 과거 패널이 다음 호출에서 변하고, 재진입·복수 패널이 같은 identity를 공유하며, 이전 호출에만 있던 키가 잔존할 수 있다. 명시적 필드 복사로 바꾸면 symbol·추가 enumerable 키, getter/Proxy 순서와 descriptor가 달라진다. 이 공개 snapshot 계약을 보존하면서 할당을 없앨 수 없어 생산 코드는 수정하지 않았다.
+- **선행 테스트/권장 방향:** 결과 identity 보관, 같은 panel 연속 호출, 복수 패널, scale 0/1/비유한 값, 추가 string/symbol 키, getter/Proxy throw, 클릭 콜백 재진입과 payload 장기 보관을 고정한다. 새 API에서 caller-owned out 객체를 명시적으로 opt-in하게 하거나 내부 hit-test 전용 scalar 경로를 별도로 만들되, 기존 callback snapshot API는 유지하는 방향이 필요하다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약

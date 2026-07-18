@@ -188,6 +188,21 @@
 - [x] 독립 리뷰 2건에서 프로덕션 평가 순서·공개 API·재진입·테스트 하네스 blocker 없음 확인
 - [x] GitHub Desktop 커밋 및 푸시: `c684b29 Eliminate mouse offset event object`
 
+#### 6.3 타이틀 AI 속도 상한 결과 객체 할당 제거 — 완료
+
+- [x] 최대 420개 타이틀 적의 매 고정 틱에서 속도 상한 helper가 `{x, y}`를 만들던 경로를 감사하고, 스칼라 배율과 X/Y 지역값으로 동일 계산을 유지
+- [x] 생산 코드 변경 전 8개 parity subtest 중 행동 검증 7개 통과·구조 가드 1개 red를 확인하고, 실제 1-ULP 경계와 coercion 보강 후 변경 뒤 9개 전체 green으로 고정
+- [x] 실제 `_title_ai.js` 전체 소스를 `vm.SourceTextModule`로 평가하고, 생산 scalar 소스에서 legacy helper·`fixedUpdate` 블록을 정확히 한 번 역변환한 독립 비교 모듈 사용
+- [x] 정확한 5의 nextDown/nextUp, `NaN`·±`Infinity`·±0·최대/최소·subnormal을 포함한 명시값과 결정적 raw IEEE-754 tuple 100,000개를 `Object.is`로 비교
+- [x] raw Float64 상태 2,048개의 전체 `fixedUpdate` 상태·호출 결과와 최종 `setAcc` 인수의 64비트 표현을 legacy와 exact 비교
+- [x] boxed number·numeric string·Symbol·BigInt·custom coercion/throw/reentry, `setAcc → speed.x → speed.y` getter 순서, 각 지점 예외의 부분 상태 및 `speed.x` 중첩 재진입 계약 exact 비교
+- [x] 두 clamped scalar를 `enemy.setAcc` member와 `enemy.speed` getter보다 먼저 계산해 기존 객체 생성 시점의 산술 순서를 유지하고, 관련 helper JSDoc 반환 계약 갱신
+- [x] 10,000,000회 합성 helper loop 5회 교차 측정: legacy 중앙값 777.66ms, scalar 중앙값 680.90ms(약 12.4% 단축). 실제 전체 프레임 향상으로 확대 해석하지 않음
+- [x] `npm test` 66개, JS/MJS 352개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary, WAT/WASM 재현성, `git diff --check` 모두 통과
+- [x] 독립 리뷰에서 실제 ULP 경계 누락을 발견해 테스트를 보강했으며, 재검토 결과 production·테스트 blocker 없음 확인
+- [x] Computer Use 완전 재실행 후 타이틀 적의 마우스 클릭 지점 자석 반응과 정상 이동 확인; benchmark 적 100개 생성 후 활성 94개, 181 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 재실행해 정상 타이틀 복원
+- [x] GitHub Desktop 커밋 및 푸시: `4b60f59 Eliminate title AI velocity object allocation`
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
