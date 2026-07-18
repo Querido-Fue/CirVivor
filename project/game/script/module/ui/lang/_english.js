@@ -19,8 +19,6 @@ export const english = Object.freeze({
 
     // 타이틀
     "title_menu_close": "Close",
-    "title_loading": "Loading",
-    "title_loading_notice": "This game is built on a browser engine.\nPerformance may drop if many web pages or browser-based apps are open.",
     "title_card_start_title": "Play",
     "title_card_quick_start_title": "Quick Start",
     "title_card_quick_start_desc": "Use latest loadout",

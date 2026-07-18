@@ -5,9 +5,9 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { getMouseFocus, setMouseFocus } from 'input/input_system.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
 import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
-import { getData } from 'data/data_handler.js';
 import { getSetting } from 'save/save_system.js';
 import { clampNumber } from 'util/number_util.js';
+import { getOverlayAnimationPreset } from './_animation_presets.js';
 import {
     DEFAULT_OVERLAY_PANEL_ID,
     createOverlayPanelMap,
@@ -18,18 +18,6 @@ import {
 import { syncOverlayPanelInteractionStates } from './overlay_panel_interaction_state.js';
 import { buildOverlayPanelEffectCanvas } from './overlay_panel_effect_canvas.js';
 import { updateOverlayPanelInteractions } from './overlay_panel_interaction_update.js';
-import {
-    cancelOverlayConnectedPresentation,
-    getOverlayConnectedPresentationBackRotationY,
-    getOverlayConnectedPresentationRect,
-    isOverlayConnectedPresentation,
-    setOverlayConnectedPresentationTarget
-} from './overlay_connected_presentation.js';
-
-const OVERLAY_PRESENTATION_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS').PRESENTATION;
-const OVERLAY_PRESENTATION_OPEN_START_SCALE = OVERLAY_PRESENTATION_CONSTANTS.OPEN_START_SCALE;
-const OVERLAY_PRESENTATION_DURATION_SECONDS = OVERLAY_PRESENTATION_CONSTANTS.DURATION_SECONDS;
-const OVERLAY_PRESENTATION_CLOSE_END_SCALE = OVERLAY_PRESENTATION_CONSTANTS.CLOSE_END_SCALE;
 
 /**
  * @typedef {object} OverlayPanelMetric
@@ -70,10 +58,8 @@ export class BaseOverlay {
     #alphaAnimId;
     #dimAnimId;
     #scaleAnimId;
+    #blurAnimId;
     #presentationAnimationToken;
-    #openPresentation;
-    #connectedOpenFocusActivated;
-    #awaitingOpenFocus;
 
     /**
      * @param {object} [options={}] - overlay 옵션입니다.
@@ -83,6 +69,7 @@ export class BaseOverlay {
      * @param {boolean} [options.glOverlay=false] - WebGL surface 요청 여부입니다.
      * @param {string} [options.blurUpdateMode='dirty'] - blur 갱신 정책입니다.
      * @param {object} [options.effects={}] - effect registry 옵션입니다.
+     * @param {string} [options.animationPreset] - overlay presentation 프리셋 이름입니다.
      */
     constructor(options = {}) {
         this.overlayOptions = {
@@ -96,9 +83,11 @@ export class BaseOverlay {
 
         this.layer = 'ui';
         this.session = null;
+        this.presentationAnimation = getOverlayAnimationPreset(options.animationPreset);
         this.alpha = 0;
         this.dimAlpha = 0;
-        this.contentScale = OVERLAY_PRESENTATION_OPEN_START_SCALE;
+        this.contentScale = this.presentationAnimation.open.scale.from;
+        this.contentBlur = this.presentationAnimation.open.blur.from;
         this.width = 0;
         this.height = 0;
         this.dx = 0;
@@ -109,10 +98,8 @@ export class BaseOverlay {
         this.#alphaAnimId = -1;
         this.#dimAnimId = -1;
         this.#scaleAnimId = -1;
+        this.#blurAnimId = -1;
         this.#presentationAnimationToken = 0;
-        this.#openPresentation = null;
-        this.#connectedOpenFocusActivated = false;
-        this.#awaitingOpenFocus = false;
         this._performanceSectionPrefix = `overlay.${this.constructor?.name || 'Overlay'}`;
         const performanceSectionPrefix = this._performanceSectionPrefix;
         this._performanceSections = Object.freeze({
@@ -133,17 +120,6 @@ export class BaseOverlay {
         });
         this._floatingItemsScratch = [];
         this._presentationOriginScratch = { x: 0, y: 0 };
-        this._connectedPresentationRectScratch = { x: 0, y: 0, w: 0, h: 0, radius: 0 };
-        this._connectedContentTransformScratch = {
-            originXRatio: 0.5,
-            originYRatio: 0.5,
-            translateXRatio: 0,
-            translateYRatio: 0,
-            scaleX: 1,
-            scaleY: 1,
-            rotateY: 0,
-            perspectiveRatio: 1
-        };
         this._panelInteractionUpdateOptions = {
             overlay: this,
             session: null,
@@ -205,18 +181,6 @@ export class BaseOverlay {
     }
 
     /**
-     * 카드에서 이어지는 오픈 프레젠테이션을 설정합니다.
-     * @param {object|null} presentation - 공유 연결 프레젠테이션 상태입니다.
-     */
-    setOpenPresentation(presentation) {
-        this.#openPresentation = isOverlayConnectedPresentation(presentation)
-            ? presentation
-            : null;
-        this.#connectedOpenFocusActivated = false;
-        this.#awaitingOpenFocus = false;
-    }
-
-    /**
      * @protected
      * 성능 프로파일러에 사용할 overlay 섹션 접두사를 반환합니다.
      * @returns {string} overlay 섹션 접두사입니다.
@@ -233,9 +197,7 @@ export class BaseOverlay {
         this.session = session;
         this.layer = session.uiLayerId;
         this.previousFocus = getMouseFocus();
-        if (!this.#hasConnectedOpenPresentation()) {
-            setMouseFocus(this.layer);
-        }
+        setMouseFocus(this.layer);
         this.positioningHandler = new PositioningHandler(this, this.uiScale);
         this.resize();
         this.#syncPresentationToSession();
@@ -254,55 +216,20 @@ export class BaseOverlay {
      * overlay를 엽니다.
      */
     open() {
-        if (this.#hasConnectedOpenPresentation() && this.#openPresentation.ready) {
-            this.#stopPresentationAnimations();
-            this.#setPresentationState(0, 0, 1);
-            this.session?.clearContentTransform?.();
-            return;
-        }
-
-        if (this.#openPresentation) {
-            cancelOverlayConnectedPresentation(this.#openPresentation);
-            this.session?.clearContentTransform?.();
-            this.#openPresentation = null;
-            this.#awaitingOpenFocus = true;
-            this.#activateOpenFocusWhenAvailable();
-        }
-
-        this.#animatePresentation({
-            alphaStart: 0,
-            alphaEnd: 1,
-            dimStart: 0,
-            dimEnd: 1,
-            scaleStart: OVERLAY_PRESENTATION_OPEN_START_SCALE,
-            scaleEnd: 1,
-            easingType: 'easeOutExpo',
-            duration: OVERLAY_PRESENTATION_DURATION_SECONDS
-        });
+        this.#animatePresentationPhase('open');
     }
 
     /**
      * overlay를 닫습니다.
      */
     close() {
-        this.#cancelConnectedOpenPresentation();
-        this.#animatePresentation({
-            alphaStart: this.alpha,
-            alphaEnd: 0,
-            dimStart: this.dimAlpha,
-            dimEnd: 0,
-            scaleStart: this.contentScale,
-            scaleEnd: OVERLAY_PRESENTATION_CLOSE_END_SCALE,
-            easingType: 'easeInExpo',
-            duration: OVERLAY_PRESENTATION_DURATION_SECONDS,
-            onComplete: () => {
-                setMouseFocus(this.previousFocus || ['ui', 'object']);
-                if (typeof this.onCloseComplete === 'function') {
-                    this.onCloseComplete();
-                }
-                if (typeof this.closeHandler === 'function') {
-                    this.closeHandler(this);
-                }
+        this.#animatePresentationPhase('close', () => {
+            setMouseFocus(this.previousFocus || ['ui', 'object']);
+            if (typeof this.onCloseComplete === 'function') {
+                this.onCloseComplete();
+            }
+            if (typeof this.closeHandler === 'function') {
+                this.closeHandler(this);
             }
         });
     }
@@ -320,6 +247,7 @@ export class BaseOverlay {
         this.session.setAlpha(this.alpha);
         this.session.setDimAlpha(this.dimAlpha);
         this.session.setContentScale(this.contentScale);
+        this.session.setContentBlur(this.contentBlur);
         if (typeof this.session.setContentScaleOrigin === 'function') {
             this.session.setContentScaleOrigin(
                 presentationOrigin.x / Math.max(1, this.WW),
@@ -334,11 +262,13 @@ export class BaseOverlay {
      * @param {number} alpha - 콘텐츠 알파값입니다.
      * @param {number} dimAlpha - dim 알파값입니다.
      * @param {number} contentScale - 콘텐츠 배율입니다.
+     * @param {number} contentBlur - 콘텐츠 blur 반경입니다.
      */
-    #setPresentationState(alpha, dimAlpha, contentScale) {
+    #setPresentationState(alpha, dimAlpha, contentScale, contentBlur) {
         this.alpha = alpha;
         this.dimAlpha = dimAlpha;
         this.contentScale = contentScale;
+        this.contentBlur = contentBlur;
         this.#syncPresentationToSession();
     }
 
@@ -360,6 +290,10 @@ export class BaseOverlay {
             remove(this.#scaleAnimId);
             this.#scaleAnimId = -1;
         }
+        if (this.#blurAnimId >= 0) {
+            remove(this.#blurAnimId);
+            this.#blurAnimId = -1;
+        }
     }
 
     /**
@@ -370,63 +304,117 @@ export class BaseOverlay {
         this.#alphaAnimId = -1;
         this.#dimAnimId = -1;
         this.#scaleAnimId = -1;
+        this.#blurAnimId = -1;
     }
 
     /**
      * @private
-     * overlay 진입/종료 프레젠테이션을 애니메이션합니다.
+     * 지정한 open/close 프리셋을 현재 presentation 상태에 적용합니다.
+     * @param {'open'|'close'} phase - 실행할 presentation 단계입니다.
+     * @param {Function} [onComplete] - 전체 트랙 완료 콜백입니다.
+     */
+    #animatePresentationPhase(phase, onComplete) {
+        const phaseConfig = this.presentationAnimation[phase];
+        const isOpening = phase === 'open';
+        this.#animatePresentation({
+            alphaStart: isOpening ? phaseConfig.alpha.from : this.alpha,
+            alphaEnd: phaseConfig.alpha.to,
+            alphaEasingType: phaseConfig.alpha.easing,
+            alphaDuration: phaseConfig.alpha.duration,
+            dimStart: isOpening ? phaseConfig.alpha.from : this.dimAlpha,
+            dimEnd: phaseConfig.alpha.to,
+            scaleStart: isOpening ? phaseConfig.scale.from : this.contentScale,
+            scaleEnd: phaseConfig.scale.to,
+            scaleEasingType: phaseConfig.scale.easing,
+            scaleDuration: phaseConfig.scale.duration,
+            blurStart: isOpening ? phaseConfig.blur.from : this.contentBlur,
+            blurEnd: phaseConfig.blur.to,
+            blurEasingType: phaseConfig.blur.easing,
+            blurDuration: phaseConfig.blur.duration,
+            onComplete
+        });
+    }
+
+    /**
+     * @private
+     * overlay alpha, scale, blur 트랙을 병렬 실행합니다.
      * @param {object} options - 애니메이션 옵션입니다.
      * @param {number} options.alphaStart - 콘텐츠 알파 시작값입니다.
      * @param {number} options.alphaEnd - 콘텐츠 알파 종료값입니다.
+     * @param {string} options.alphaEasingType - alpha/dim easing 타입입니다.
+     * @param {number} options.alphaDuration - alpha/dim 시간입니다.
      * @param {number} options.dimStart - dim 알파 시작값입니다.
      * @param {number} options.dimEnd - dim 알파 종료값입니다.
      * @param {number} options.scaleStart - 콘텐츠 배율 시작값입니다.
      * @param {number} options.scaleEnd - 콘텐츠 배율 종료값입니다.
-     * @param {string} options.easingType - 애니메이션 easing 타입입니다.
-     * @param {number} options.duration - 애니메이션 시간입니다.
+     * @param {string} options.scaleEasingType - scale easing 타입입니다.
+     * @param {number} options.scaleDuration - scale 시간입니다.
+     * @param {number} options.blurStart - 콘텐츠 blur 시작값입니다.
+     * @param {number} options.blurEnd - 콘텐츠 blur 종료값입니다.
+     * @param {string} options.blurEasingType - blur easing 타입입니다.
+     * @param {number} options.blurDuration - blur 시간입니다.
      * @param {Function} [options.onComplete] - 완료 콜백입니다.
      */
     #animatePresentation(options) {
         this.#stopPresentationAnimations();
-        this.#setPresentationState(options.alphaStart, options.dimStart, options.scaleStart);
+        this.#setPresentationState(
+            options.alphaStart,
+            options.dimStart,
+            options.scaleStart,
+            options.blurStart
+        );
         const presentationAnimationToken = this.#presentationAnimationToken;
 
         const alphaAnimation = animate(this, {
             variable: 'alpha',
             startValue: options.alphaStart,
             endValue: options.alphaEnd,
-            type: options.easingType,
-            duration: options.duration
+            type: options.alphaEasingType,
+            duration: options.alphaDuration
         });
         const dimAnimation = animate(this, {
             variable: 'dimAlpha',
             startValue: options.dimStart,
             endValue: options.dimEnd,
-            type: options.easingType,
-            duration: options.duration
+            type: options.alphaEasingType,
+            duration: options.alphaDuration
         });
         const scaleAnimation = animate(this, {
             variable: 'contentScale',
             startValue: options.scaleStart,
             endValue: options.scaleEnd,
-            type: options.easingType,
-            duration: options.duration
+            type: options.scaleEasingType,
+            duration: options.scaleDuration
+        });
+        const blurAnimation = animate(this, {
+            variable: 'contentBlur',
+            startValue: options.blurStart,
+            endValue: options.blurEnd,
+            type: options.blurEasingType,
+            duration: options.blurDuration
         });
 
         this.#alphaAnimId = alphaAnimation.id;
         this.#dimAnimId = dimAnimation.id;
         this.#scaleAnimId = scaleAnimation.id;
+        this.#blurAnimId = blurAnimation.id;
 
         Promise.all([
             alphaAnimation.promise,
             dimAnimation.promise,
-            scaleAnimation.promise
+            scaleAnimation.promise,
+            blurAnimation.promise
         ]).then(() => {
             if (presentationAnimationToken !== this.#presentationAnimationToken) {
                 return;
             }
             this.#clearPresentationAnimationIds();
-            this.#setPresentationState(options.alphaEnd, options.dimEnd, options.scaleEnd);
+            this.#setPresentationState(
+                options.alphaEnd,
+                options.dimEnd,
+                options.scaleEnd,
+                options.blurEnd
+            );
             if (typeof options.onComplete === 'function') {
                 options.onComplete();
             }
@@ -445,7 +433,6 @@ export class BaseOverlay {
         this.positioningHandler.resize(this, this.uiScale);
         this._generateLayout();
         this.markBlurDirty();
-        this.#syncConnectedOpenTarget();
     }
 
     /**
@@ -463,7 +450,6 @@ export class BaseOverlay {
     update() {
         const sections = this._performanceSections;
         const totalStart = beginPerformanceSection();
-        this.#syncConnectedOpenPresentation(true);
         if (this.session) {
             const sessionStart = beginPerformanceSection();
             this.session.updateEffects();
@@ -494,7 +480,6 @@ export class BaseOverlay {
     draw() {
         const sections = this._performanceSections;
         const totalStart = beginPerformanceSection();
-        this.#syncConnectedOpenPresentation(false);
         if (!this.session || (this.alpha <= 0 && this.dimAlpha <= 0)) {
             endPerformanceSection(sections.drawTotal, totalStart);
             return;
@@ -563,157 +548,7 @@ export class BaseOverlay {
     destroy() {
         this._releaseElements();
         this.#panelInteractionMap.clear();
-        this.#cancelConnectedOpenPresentation();
         this.#stopPresentationAnimations();
-    }
-
-    /**
-     * 카드 연결 오픈 프레젠테이션이 활성 상태인지 반환합니다.
-     * @returns {boolean} 연결 프레젠테이션 활성 여부입니다.
-     * @private
-     */
-    #hasConnectedOpenPresentation() {
-        return isOverlayConnectedPresentation(this.#openPresentation)
-            && !this.#openPresentation.cancelled;
-    }
-
-    /**
-     * 현재 overlay geometry를 연결 전환의 목표 영역에 동기화합니다.
-     * @private
-     */
-    #syncConnectedOpenTarget() {
-        if (!this.#hasConnectedOpenPresentation()) {
-            return;
-        }
-
-        const rootPanel = this.getPanelRegion(DEFAULT_OVERLAY_PANEL_ID);
-        setOverlayConnectedPresentationTarget(this.#openPresentation, rootPanel || {
-            x: this.scaledX,
-            y: this.scaledY,
-            w: this.scaledW,
-            h: this.scaledH,
-            radius: 0
-        });
-    }
-
-    /**
-     * 공유 진행률을 실제 overlay surface의 후반부 3D 변환에 반영합니다.
-     * @param {boolean} activateFocus - 완료 시 overlay 입력 포커스를 활성화할지 여부입니다.
-     * @private
-     */
-    #syncConnectedOpenPresentation(activateFocus) {
-        if (activateFocus && this.#awaitingOpenFocus) {
-            const activated = this.#activateOpenFocusWhenAvailable();
-            if (activated && this.#openPresentation?.completed) {
-                this.#openPresentation = null;
-            }
-        }
-
-        if (this.#openPresentation?.cancelled) {
-            if (activateFocus) {
-                this.session?.clearContentTransform?.();
-                this.#openPresentation = null;
-                this.#connectedOpenFocusActivated = false;
-                this.#awaitingOpenFocus = true;
-                this.open();
-                this.#activateOpenFocusWhenAvailable();
-            }
-            return;
-        }
-
-        if (!this.#hasConnectedOpenPresentation()
-            || !this.session
-            || !this.#openPresentation.ready) {
-            return;
-        }
-
-        const presentation = this.#openPresentation;
-        if (presentation.progress < presentation.switchProgress) {
-            this.#setPresentationState(0, 0, 1);
-            this.session.clearContentTransform?.();
-            return;
-        }
-
-        this.#setPresentationState(1, 1, 1);
-        if (presentation.completed) {
-            this.session.clearContentTransform?.();
-            this.#awaitingOpenFocus = true;
-            if (activateFocus && this.#activateOpenFocusWhenAvailable()) {
-                this.#openPresentation = null;
-            }
-            return;
-        }
-
-        const currentRect = getOverlayConnectedPresentationRect(
-            presentation,
-            this._connectedPresentationRectScratch
-        );
-        const targetRect = presentation.targetRect;
-        if (!currentRect || !targetRect || targetRect.w <= 0 || targetRect.h <= 0) {
-            return;
-        }
-
-        const targetCenterX = targetRect.x + (targetRect.w * 0.5);
-        const targetCenterY = targetRect.y + (targetRect.h * 0.5);
-        const currentCenterX = currentRect.x + (currentRect.w * 0.5);
-        const currentCenterY = currentRect.y + (currentRect.h * 0.5);
-        const transform = this._connectedContentTransformScratch;
-        transform.originXRatio = targetCenterX / Math.max(1, this.WW);
-        transform.originYRatio = targetCenterY / Math.max(1, this.WH);
-        transform.translateXRatio = (currentCenterX - targetCenterX) / Math.max(1, this.WW);
-        transform.translateYRatio = (currentCenterY - targetCenterY) / Math.max(1, this.WH);
-        transform.scaleX = currentRect.w / targetRect.w;
-        transform.scaleY = currentRect.h / targetRect.h;
-        transform.rotateY = getOverlayConnectedPresentationBackRotationY(presentation);
-        transform.perspectiveRatio = presentation.perspective / Math.max(1, this.WW);
-        this.session.setContentTransform?.(transform, false);
-    }
-
-    /**
-     * 진행 중인 카드 연결 오픈 상태를 취소하고 surface 변환을 복원합니다.
-     * @private
-     */
-    #cancelConnectedOpenPresentation() {
-        this.#awaitingOpenFocus = false;
-        this.#connectedOpenFocusActivated = false;
-        if (!this.#openPresentation) {
-            return;
-        }
-        cancelOverlayConnectedPresentation(this.#openPresentation);
-        this.session?.clearContentTransform?.();
-        this.#openPresentation = null;
-    }
-
-    /**
-     * 연결 오픈이 완료된 뒤 기존 포커스가 그대로일 때만 overlay 포커스를 활성화합니다.
-     * @returns {boolean} 이번 호출에서 포커스가 활성화되었는지 여부입니다.
-     * @private
-     */
-    #activateOpenFocusWhenAvailable() {
-        if (!this.#awaitingOpenFocus || this.#connectedOpenFocusActivated) {
-            return false;
-        }
-
-        const currentFocus = getMouseFocus();
-        if (Array.isArray(currentFocus) && currentFocus.includes(this.layer)) {
-            this.#connectedOpenFocusActivated = true;
-            this.#awaitingOpenFocus = false;
-            return true;
-        }
-
-        const previousFocus = this.previousFocus;
-        const matchesPreviousFocus = Array.isArray(currentFocus)
-            && Array.isArray(previousFocus)
-            && currentFocus.length === previousFocus.length
-            && currentFocus.every((focus, index) => focus === previousFocus[index]);
-        if (!matchesPreviousFocus) {
-            return false;
-        }
-
-        setMouseFocus(this.layer);
-        this.#connectedOpenFocusActivated = true;
-        this.#awaitingOpenFocus = false;
-        return true;
     }
 
     /**
@@ -886,18 +721,22 @@ export class BaseOverlay {
                 continue;
             }
 
-            const presentedPanel = getOverlayPresentedPanelRegion(panel, this);
             const interactionState = this.#panelInteractionMap.get(panel.id);
+            const canUseEffectPipeline = Boolean(this.session.effectLayerId);
+            const effectPanel = canUseEffectPipeline
+                ? getOverlayPresentedPanelRegion(panel, this)
+                : panel;
             let effectTextureCanvas = null;
             if (interactionState) {
                 const effectStart = beginPerformanceSection();
-                effectTextureCanvas = this.#buildPanelEffectCanvas(presentedPanel, interactionState);
+                effectTextureCanvas = this.#buildPanelEffectCanvas(effectPanel, interactionState);
                 endPerformanceSection(sections.drawPanelEffectCanvas, effectStart);
             }
-            const usesEffectPipeline = Boolean(this.session.effectLayerId)
+            const usesEffectPipeline = canUseEffectPipeline
                 && (this.session.effectiveTransparent
                     || effectTextureCanvas
                     || (interactionState && (Math.abs(interactionState.rotateX) > 0.0001 || Math.abs(interactionState.rotateY) > 0.0001)));
+            const presentedPanel = usesEffectPipeline ? effectPanel : panel;
 
             if (usesEffectPipeline) {
                 const glassOptions = this._glassPanelRenderOptions;

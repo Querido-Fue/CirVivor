@@ -16,7 +16,7 @@ const DEFAULT_CIRCLE_SHADER_COLORS = TITLE_LOADING.CIRCLE_SHADER.COLORS;
 
 /**
  * @class TitleLoadingCircleEffectPass
- * @description 타이틀 로딩 원형 UI를 WebGL 셰이더로 렌더링합니다.
+ * @description 타이틀 중앙 원을 WebGL 셰이더로 렌더링합니다.
  */
 export class TitleLoadingCircleEffectPass {
     /**
@@ -54,7 +54,7 @@ export class TitleLoadingCircleEffectPass {
     }
 
     /**
-     * 타이틀 로딩 원형 명령 하나를 렌더링합니다.
+     * 타이틀 중앙 원 명령 하나를 렌더링합니다.
      * @param {object} command - 렌더링 명령입니다.
      * @param {number} width - 현재 surface 너비입니다.
      * @param {number} height - 현재 surface 높이입니다.
@@ -105,13 +105,7 @@ export class TitleLoadingCircleEffectPass {
         gl.uniform2f(this.programInfo.uniforms.u_resolution, renderWidth, renderHeight);
         gl.uniform2f(this.programInfo.uniforms.u_center, centerX, centerY);
         gl.uniform1f(this.programInfo.uniforms.u_radius, radius);
-        gl.uniform1f(this.programInfo.uniforms.u_progress, Number.isFinite(command.progress) ? command.progress : 0);
         gl.uniform1f(this.programInfo.uniforms.u_outlineWidth, outlineWidth);
-        gl.uniform1f(this.programInfo.uniforms.u_wavePhase, Number.isFinite(command.wavePhase) ? command.wavePhase : 0);
-        gl.uniform1f(
-            this.programInfo.uniforms.u_secondaryWavePhase,
-            Number.isFinite(command.secondaryWavePhase) ? command.secondaryWavePhase : 0
-        );
         gl.uniform1f(this.programInfo.uniforms.u_time, Number.isFinite(command.time) ? command.time : 0);
         gl.uniform1f(this.programInfo.uniforms.u_alpha, alpha);
         gl.uniform1f(
@@ -229,10 +223,7 @@ export class TitleLoadingCircleEffectPass {
                 u_resolution: gl.getUniformLocation(program, 'u_resolution'),
                 u_center: gl.getUniformLocation(program, 'u_center'),
                 u_radius: gl.getUniformLocation(program, 'u_radius'),
-                u_progress: gl.getUniformLocation(program, 'u_progress'),
                 u_outlineWidth: gl.getUniformLocation(program, 'u_outlineWidth'),
-                u_wavePhase: gl.getUniformLocation(program, 'u_wavePhase'),
-                u_secondaryWavePhase: gl.getUniformLocation(program, 'u_secondaryWavePhase'),
                 u_time: gl.getUniformLocation(program, 'u_time'),
                 u_alpha: gl.getUniformLocation(program, 'u_alpha'),
                 u_glowStrength: gl.getUniformLocation(program, 'u_glowStrength'),
@@ -246,8 +237,7 @@ export class TitleLoadingCircleEffectPass {
                 u_baseColor: gl.getUniformLocation(program, 'u_baseColor'),
                 u_deepColor: gl.getUniformLocation(program, 'u_deepColor'),
                 u_rimColor: gl.getUniformLocation(program, 'u_rimColor'),
-                u_highlightColor: gl.getUniformLocation(program, 'u_highlightColor'),
-                u_surfaceColor: gl.getUniformLocation(program, 'u_surfaceColor')
+                u_highlightColor: gl.getUniformLocation(program, 'u_highlightColor')
             },
             attributes: {
                 a_position: gl.getAttribLocation(program, 'a_position')
@@ -693,7 +683,7 @@ export class TitleLoadingCircleEffectPass {
 
     /**
      * 셰이더 색상 uniform을 업로드합니다.
-     * @param {{base:number[], deep:number[], rim:number[], highlight:number[], surface:number[]}|undefined} colors - 색상 벡터 묶음입니다.
+     * @param {{base:number[], deep:number[], rim:number[], highlight:number[]}|undefined} colors - 색상 벡터 묶음입니다.
      * @private
      */
     #uploadColors(colors) {
@@ -702,7 +692,6 @@ export class TitleLoadingCircleEffectPass {
         gl.uniform3fv(this.programInfo.uniforms.u_deepColor, colors?.deep || DEFAULT_CIRCLE_SHADER_COLORS.deep);
         gl.uniform3fv(this.programInfo.uniforms.u_rimColor, colors?.rim || DEFAULT_CIRCLE_SHADER_COLORS.rim);
         gl.uniform3fv(this.programInfo.uniforms.u_highlightColor, colors?.highlight || DEFAULT_CIRCLE_SHADER_COLORS.highlight);
-        gl.uniform3fv(this.programInfo.uniforms.u_surfaceColor, colors?.surface || DEFAULT_CIRCLE_SHADER_COLORS.surface);
     }
 
     /**

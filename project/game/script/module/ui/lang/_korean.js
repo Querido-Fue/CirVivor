@@ -19,8 +19,6 @@ export const korean = Object.freeze({
 
     // 타이틀
     "title_menu_close": "닫기",
-    "title_loading": "불러오는 중",
-    "title_loading_notice": "이 게임은 브라우저 엔진 기반으로 제작되었습니다.\n웹 브라우저나 브라우저 엔진 기반 앱을 많이 실행 중이면 성능이 저하될 수 있습니다.",
     "title_card_start_title": "게임 시작",
     "title_card_quick_start_title": "빠른 시작",
     "title_card_quick_start_desc": "최근 로드아웃으로 게임 시작",

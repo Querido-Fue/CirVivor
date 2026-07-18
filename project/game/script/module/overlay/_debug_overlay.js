@@ -54,9 +54,11 @@ export class DebugOverlay extends BaseOverlay {
         this.alpha = 1;
         this.dimAlpha = 1;
         this.contentScale = 1;
+        this.contentBlur = 0;
         this.session?.setAlpha?.(1);
         this.session?.setDimAlpha?.(1);
         this.session?.setContentScale?.(1);
+        this.session?.setContentBlur?.(0);
     }
 
     /**
@@ -72,10 +74,11 @@ export class DebugOverlay extends BaseOverlay {
         this.alpha = 0;
         this.dimAlpha = 0;
         this.contentScale = 1;
+        this.contentBlur = 0;
         this.session?.setAlpha?.(0);
         this.session?.setDimAlpha?.(0);
         this.session?.setContentScale?.(1);
-        this.session?.clearContentTransform?.();
+        this.session?.setContentBlur?.(0);
         if (hasOwnFocus) {
             setMouseFocus(this.previousFocus || ['ui', 'object']);
         }

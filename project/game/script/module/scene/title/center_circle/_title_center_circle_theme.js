@@ -73,8 +73,8 @@ export function getLoadingGlowSettings() {
 }
 
 /**
- * 중앙 원형 로딩 WebGL 셰이더에 전달할 색상 벡터를 반환합니다.
- * @returns {{base:number[], deep:number[], rim:number[], highlight:number[], surface:number[]}} 0~1 범위 색상 벡터입니다.
+ * 중앙 원형 WebGL 셰이더에 전달할 색상 벡터를 반환합니다.
+ * @returns {{base:number[], deep:number[], rim:number[], highlight:number[]}} 0~1 범위 색상 벡터입니다.
  */
 export function getLoadingCircleShaderColors() {
     const loading = ColorSchemes?.Title?.Loading;
@@ -98,10 +98,6 @@ export function getLoadingCircleShaderColors() {
         highlight: _loadingColorToVec3(
             loadingCircle?.Highlight || highlightFallback,
             DEFAULT_LOADING_CIRCLE_SHADER_COLORS.highlight
-        ),
-        surface: _loadingColorToVec3(
-            loadingCircle?.Surface || loadingGlow?.Surface?.Highlight || highlightFallback,
-            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.surface
         )
     };
 }

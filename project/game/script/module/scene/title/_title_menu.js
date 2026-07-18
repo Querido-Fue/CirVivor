@@ -3,30 +3,17 @@ import { SVGDrawer } from 'display/_svg_drawer.js';
 import { getDisplaySystem, getUIOffsetX, getWH, getUIWW, getWW } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { consumeMouseState, getMouseInput, hasMouseState } from 'input/input_system.js';
-import {
-    advanceOverlayConnectedPresentation,
-    cancelOverlayConnectedPresentation,
-    createOverlayConnectedPresentation,
-    getOverlayConnectedPresentationFrontContentRect,
-    getOverlayConnectedPresentationRect,
-    isOverlayConnectedPresentationFrontFace,
-    setOverlayConnectedPresentationSource,
-    setOverlayConnectedPresentationTarget
-} from 'overlay/overlay_connected_presentation.js';
 import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
 import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
-import {
-    renderTitleMenuGlassPanel,
-    resolveTitleMenuConnectedFrontPanelStyle
-} from './menu/_title_menu_glass_panel_render.js';
+import { renderTitleMenuGlassPanel } from './menu/_title_menu_glass_panel_render.js';
 import {
     loadTitleMenuIconSources,
     releaseTitleMenuIconSources
 } from './menu/_title_menu_icon_lifecycle.js';
 import {
-    updateTitleMenuCardProjection,
+    shouldEnableTitleMenuPaneInteraction,
     updateTitleMenuPaneInteractionState
 } from './menu/_title_menu_interaction.js';
 import {
@@ -71,7 +58,6 @@ const TITLE_MENU_DATA = getData('TITLE_MENU_DATA');
 const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 const TITLE_MENU_CARD_REVEAL_ORDER = TITLE_MENU_DATA.CARD_REVEAL_ORDER;
 const TITLE_MENU_SECONDARY_ENTRIES = TITLE_MENU_DATA.SECONDARY_ENTRIES;
-const TITLE_MENU_CONNECTED_OPEN = TITLE_MENU_DATA.CONNECTED_OPEN;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 
 /**
@@ -102,10 +88,9 @@ export class TitleMenu {
         this.cardRevealElapsed = 0;
         this.cardRevealStarted = false;
         this.currentPaneLayout = null;
+        this.hoveredCardId = null;
         this.hoveredSecondaryMenuId = null;
-        this.pendingActivation = null;
-        this.connectedPresentationRect = { x: 0, y: 0, w: 0, h: 0, radius: 0 };
-        this.connectedFrontContentRect = { x: 0, y: 0, w: 0, h: 0, radius: 0 };
+        this.sceneStartRequested = false;
         this.versionHistoryLinkButton = null;
         this.cardPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.utilityPaneInteractionState = createTitleMenuPaneRuntimeState();
@@ -143,15 +128,14 @@ export class TitleMenu {
 
         this.pointerEnabled = transitionProgress >= 0.98
             && revealFinished
-            && !this.#hasBlockingOverlay()
-            && !this.pendingActivation;
+            && !this.#hasBlockingOverlay();
 
         this.#updateRenderStates(transitionProgress);
         const paneLayout = this.currentPaneLayout || this.#getRightPaneLayout();
         this.#updateCardInteractions(delta);
-        this.#updateConnectedActivation(delta);
         this.#updateOuterPaneInteractions(delta, paneLayout);
         this.#updateVersionHistoryLinkButton(paneLayout);
+        this.#flushSceneStartRequest();
     }
 
     /**
@@ -197,9 +181,6 @@ export class TitleMenu {
 
         const panelStyle = this.#getPanelStyle();
         for (const menuEntry of this.secondaryMenuEntries) {
-            if (this.#isPendingActivationSource('utility', menuEntry.id)) {
-                continue;
-            }
             const renderState = this.utilityTileRenderMap.get(menuEntry.id);
             const runtimeState = this.utilityTileStateMap.get(menuEntry.id);
             if (!renderState || !runtimeState || renderState.alpha <= 0.005) {
@@ -223,9 +204,6 @@ export class TitleMenu {
         const sortedCards = this.#getSortedCardsForRender();
 
         for (const card of sortedCards) {
-            if (this.#isPendingActivationSource('card', card.cardDefinition.id)) {
-                continue;
-            }
             const renderState = this.cardRenderMap.get(card.cardDefinition.id);
             const runtimeState = this.cardStateMap.get(card.cardDefinition.id);
             if (!renderState || !runtimeState || renderState.alpha <= 0.005) {
@@ -246,8 +224,6 @@ export class TitleMenu {
                 effectTextureCanvas
             });
         }
-
-        this.#drawConnectedActivationSource(panelStyle);
 
         this.versionLabelRenderer?.draw({
             session: this.session,
@@ -283,9 +259,6 @@ export class TitleMenu {
         if (changedSettings.theme !== undefined) {
             this.#refreshMenuIcons();
             this.#syncThemeEffectOptions();
-            if (this.pendingActivation) {
-                this.pendingActivation.frontFaceTextureCanvas = null;
-            }
         }
 
         if (changedSettings.disableTransparency !== undefined && this.session) {
@@ -301,10 +274,7 @@ export class TitleMenu {
      * 카드 메뉴가 사용한 리소스를 정리합니다.
      */
     destroy() {
-        if (this.pendingActivation?.presentation) {
-            cancelOverlayConnectedPresentation(this.pendingActivation.presentation);
-        }
-        this.pendingActivation = null;
+        this.sceneStartRequested = false;
         if (this.session) {
             this.session.release();
             this.session = null;
@@ -333,6 +303,8 @@ export class TitleMenu {
         this.cardRenderMap.clear();
         this.utilityTileStateMap.clear();
         this.utilityTileRenderMap.clear();
+        this.hoveredCardId = null;
+        this.hoveredSecondaryMenuId = null;
     }
 
     /**
@@ -516,6 +488,7 @@ export class TitleMenu {
             consumeMouseState('left');
             this.#handleCardClick(cardInteraction.clickedCard);
         }
+        this.hoveredCardId = cardInteraction.hoveredCardId;
 
         const utilityInteraction = updateTitleMenuUtilityTileInteractionStates({
             secondaryMenuEntries: this.secondaryMenuEntries,
@@ -564,7 +537,10 @@ export class TitleMenu {
             mouseX,
             mouseY,
             delta,
-            isInteractive,
+            isInteractive: shouldEnableTitleMenuPaneInteraction(
+                isInteractive,
+                this.hoveredCardId
+            ),
             spotlightOptions,
             borderOptions
         });
@@ -574,7 +550,10 @@ export class TitleMenu {
             mouseX,
             mouseY,
             delta,
-            isInteractive: isInteractive && !this.hoveredSecondaryMenuId,
+            isInteractive: shouldEnableTitleMenuPaneInteraction(
+                isInteractive,
+                this.hoveredSecondaryMenuId
+            ),
             spotlightOptions,
             borderOptions
         });
@@ -608,7 +587,7 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 클릭 액션을 연결 오픈 전환으로 시작합니다.
+     * 카드 클릭 액션을 실행합니다.
      * @param {TitleMenuCard} card - 클릭된 카드입니다.
      * @private
      */
@@ -617,13 +596,10 @@ export class TitleMenu {
             return;
         }
 
-        this.#beginConnectedActivation({
-            sourceType: 'card',
-            sourceId: card.cardDefinition.id,
-            sourceModel: card,
-            actionType: card.cardDefinition.actionType,
-            actionKey: card.cardDefinition.actionKey
-        });
+        this.#activateMenuAction(
+            card.cardDefinition.actionType,
+            card.cardDefinition.actionKey
+        );
     }
 
     /**
@@ -658,7 +634,7 @@ export class TitleMenu {
     }
 
     /**
-     * 하단 보조 메뉴 클릭 액션을 연결 오픈 전환으로 시작합니다.
+     * 하단 보조 메뉴 클릭 액션을 실행합니다.
      * @param {object} menuItem - 클릭된 메뉴 항목입니다.
      * @private
      */
@@ -667,237 +643,42 @@ export class TitleMenu {
             return;
         }
 
-        this.#beginConnectedActivation({
-            sourceType: 'utility',
-            sourceId: menuItem.id,
-            sourceModel: menuItem,
-            actionType: menuItem.actionType,
-            actionKey: menuItem.actionKey
-        });
+        this.#activateMenuAction(menuItem.actionType, menuItem.actionKey);
     }
 
     /**
-     * 카드형 메뉴 요소에서 실제 창 또는 씬으로 이어지는 전환을 준비합니다.
-     * @param {object} request - 전환 요청입니다.
+     * 메뉴 액션에 맞춰 공통 overlay를 열거나 씬 시작을 예약합니다.
+     * @param {'overlay'|'exit'|'scene'} actionType - 실행할 액션 종류입니다.
+     * @param {string|null} actionKey - overlay 메뉴 키입니다.
      * @private
      */
-    #beginConnectedActivation(request) {
-        if (this.pendingActivation || !request?.sourceId) {
-            return;
-        }
-
-        const renderState = request.sourceType === 'utility'
-            ? this.utilityTileRenderMap.get(request.sourceId)
-            : this.cardRenderMap.get(request.sourceId);
-        if (!renderState?.panelRect) {
-            return;
-        }
-
-        const presentation = createOverlayConnectedPresentation({
-            sourceRect: renderState.panelRect,
-            durationSeconds: TITLE_MENU_CONNECTED_OPEN.DURATION_SECONDS,
-            switchProgress: TITLE_MENU_CONNECTED_OPEN.SWITCH_PROGRESS,
-            perspective: TITLE_MENU_CONNECTED_OPEN.PERSPECTIVE
-        });
-        const activation = {
-            ...request,
-            presentation,
-            overlayId: null,
-            frontFaceTextureCanvas: null,
-            frontFaceSourceWidth: 0,
-            frontFaceSourceHeight: 0
-        };
-        this.pendingActivation = activation;
+    #activateMenuAction(actionType, actionKey) {
         this.pointerEnabled = false;
-
-        if (request.actionType === 'scene') {
-            setOverlayConnectedPresentationTarget(
-                presentation,
-                this.#buildConnectedSceneTargetRect(renderState.panelRect)
-            );
+        if (actionType === 'scene') {
+            this.sceneStartRequested = true;
             return;
         }
 
-        if (request.actionType === 'overlay') {
-            activation.overlayId = this.TitleScene.openTitleOverlay(request.actionKey, {
-                presentation
-            });
-        } else if (request.actionType === 'exit') {
-            activation.overlayId = this.TitleScene.openExitOverlay({ presentation });
+        if (actionType === 'overlay') {
+            this.TitleScene.openTitleOverlay(actionKey);
+            return;
         }
 
-        if (!activation.overlayId || !presentation.ready) {
-            cancelOverlayConnectedPresentation(presentation);
-            this.pendingActivation = null;
+        if (actionType === 'exit') {
+            this.TitleScene.openExitOverlay();
         }
     }
 
     /**
-     * 현재 연결 오픈 전환의 상태와 카드 앞면 투영을 갱신합니다.
-     * @param {number} delta - 가변 프레임 델타 초입니다.
+     * 현재 update가 끝난 뒤 예약된 게임 시작을 실행합니다.
      * @private
      */
-    #updateConnectedActivation(delta) {
-        const activation = this.pendingActivation;
-        if (!activation?.presentation) {
+    #flushSceneStartRequest() {
+        if (!this.sceneStartRequested) {
             return;
         }
-
-        if (activation.presentation.cancelled) {
-            this.pendingActivation = null;
-            return;
-        }
-
-        const renderState = activation.sourceType === 'utility'
-            ? this.utilityTileRenderMap.get(activation.sourceId)
-            : this.cardRenderMap.get(activation.sourceId);
-        const runtimeState = activation.sourceType === 'utility'
-            ? this.utilityTileStateMap.get(activation.sourceId)
-            : this.cardStateMap.get(activation.sourceId);
-        if (!renderState?.panelRect || !runtimeState) {
-            cancelOverlayConnectedPresentation(activation.presentation);
-            this.pendingActivation = null;
-            return;
-        }
-
-        setOverlayConnectedPresentationSource(activation.presentation, renderState.panelRect);
-        if (activation.actionType === 'scene') {
-            setOverlayConnectedPresentationTarget(
-                activation.presentation,
-                this.#buildConnectedSceneTargetRect(renderState.panelRect)
-            );
-        }
-
-        const completedNow = advanceOverlayConnectedPresentation(activation.presentation, delta);
-        const currentRect = getOverlayConnectedPresentationRect(
-            activation.presentation,
-            this.connectedPresentationRect
-        );
-        if (currentRect) {
-            updateTitleMenuCardProjection(renderState, runtimeState, null, {
-                panelRect: currentRect,
-                rotateX: 0,
-                rotateY: activation.presentation.rotationY,
-                perspective: activation.presentation.perspective
-            });
-        }
-
-        if (!completedNow) {
-            return;
-        }
-
-        this.pendingActivation = null;
-        if (activation.actionType === 'scene') {
-            this.TitleScene.gameStart();
-        }
-    }
-
-    /**
-     * 아직 대상 창이 없는 씬 액션에 사용할 중앙 목표 영역을 계산합니다.
-     * @param {object} sourceRect - 출발 카드 영역입니다.
-     * @returns {{x:number,y:number,w:number,h:number,radius:number}} 목표 영역입니다.
-     * @private
-     */
-    #buildConnectedSceneTargetRect(sourceRect) {
-        const width = this.UIWW * TITLE_MENU_CONNECTED_OPEN.SCENE_TARGET_WIDTH_UIWW_RATIO;
-        const height = this.WH * TITLE_MENU_CONNECTED_OPEN.SCENE_TARGET_HEIGHT_WH_RATIO;
-        return {
-            x: (this.WW - width) * 0.5,
-            y: (this.WH - height) * 0.5,
-            w: width,
-            h: height,
-            radius: sourceRect?.radius || 0
-        };
-    }
-
-    /**
-     * 지정한 메뉴 요소가 현재 연결 전환의 출발 면인지 반환합니다.
-     * @param {'card'|'utility'} sourceType - 출발 요소 종류입니다.
-     * @param {string} sourceId - 출발 요소 id입니다.
-     * @returns {boolean} 출발 면 여부입니다.
-     * @private
-     */
-    #isPendingActivationSource(sourceType, sourceId) {
-        return this.pendingActivation?.sourceType === sourceType
-            && this.pendingActivation?.sourceId === sourceId;
-    }
-
-    /**
-     * 연결 전환의 카드 앞면 또는 씬 전환용 빈 뒷면을 최상단에 그립니다.
-     * @param {object} panelStyle - 카드 glass 스타일입니다.
-     * @private
-     */
-    #drawConnectedActivationSource(panelStyle) {
-        const activation = this.pendingActivation;
-        const presentation = activation?.presentation;
-        if (!presentation?.ready) {
-            return;
-        }
-
-        const showsFrontFace = isOverlayConnectedPresentationFrontFace(presentation);
-        if (activation.actionType !== 'scene' && !showsFrontFace) {
-            return;
-        }
-
-        const renderState = activation.sourceType === 'utility'
-            ? this.utilityTileRenderMap.get(activation.sourceId)
-            : this.cardRenderMap.get(activation.sourceId);
-        const runtimeState = activation.sourceType === 'utility'
-            ? this.utilityTileStateMap.get(activation.sourceId)
-            : this.cardStateMap.get(activation.sourceId);
-        const currentRect = getOverlayConnectedPresentationRect(
-            presentation,
-            this.connectedPresentationRect
-        );
-        if (!renderState || !runtimeState || !currentRect) {
-            return;
-        }
-
-        let effectTextureCanvas = null;
-        let effectTextureRect = null;
-        if (showsFrontFace) {
-            effectTextureRect = getOverlayConnectedPresentationFrontContentRect(
-                presentation,
-                currentRect,
-                this.connectedFrontContentRect
-            );
-            const sourceWidth = presentation.sourceRect.w;
-            const sourceHeight = presentation.sourceRect.h;
-            const needsFreshSnapshot = !activation.frontFaceTextureCanvas
-                || activation.frontFaceSourceWidth !== sourceWidth
-                || activation.frontFaceSourceHeight !== sourceHeight;
-
-            if (needsFreshSnapshot) {
-                activation.frontFaceTextureCanvas = activation.sourceType === 'utility'
-                    ? this.textureRenderer.buildConnectedUtilityContentTextureCanvas(
-                        renderState,
-                        runtimeState
-                    )
-                    : this.textureRenderer.buildConnectedCardContentTextureCanvas(
-                        activation.sourceModel,
-                        renderState
-                    );
-                activation.frontFaceSourceWidth = sourceWidth;
-                activation.frontFaceSourceHeight = sourceHeight;
-            }
-            effectTextureCanvas = activation.frontFaceTextureCanvas;
-        }
-
-        const connectedPanelStyle = resolveTitleMenuConnectedFrontPanelStyle(
-            panelStyle,
-            showsFrontFace,
-            getSetting('disableTransparency') !== true
-        );
-
-        renderTitleMenuGlassPanel(this.session, {
-            panelRect: currentRect,
-            panelStyle: connectedPanelStyle,
-            alpha: renderState.alpha,
-            transformMatrix: runtimeState.transformMatrix,
-            perspective: runtimeState.perspective,
-            effectTextureCanvas,
-            effectTextureRect
-        });
+        this.sceneStartRequested = false;
+        this.TitleScene.gameStart();
     }
 
     /**

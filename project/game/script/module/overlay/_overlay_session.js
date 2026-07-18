@@ -1,9 +1,5 @@
 import { render, renderGL } from 'display/display_system.js';
-import {
-    multiplyOverlayTransformMatrices,
-    resolveOverlayContentSurfaceStyles,
-    writeOverlayContentTransformMatrix
-} from 'display/webgl/_overlay_render_geometry.js';
+import { resolveOverlayContentSurfaceStyles } from 'display/webgl/_overlay_render_geometry.js';
 import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 import { createOverlayEffectState } from './_overlay_effect_registry.js';
 
@@ -35,21 +31,20 @@ export class OverlaySession {
         this.alpha = 1;
         this.dimAlpha = 1;
         this.contentScale = 1;
+        this.contentBlur = 0;
         this.contentScaleOriginXRatio = 0.5;
         this.contentScaleOriginYRatio = 0.5;
-        this.contentTransform = null;
-        this.contentTransformAffectsEffectSurface = true;
-        this.contentTransformMatrixScratch = new Float32Array(16);
-        this.combinedEffectTransformMatrixScratch = new Float32Array(16);
         this.contentSurfaceStylesScratch = {
             transformOrigin: '',
             uiTransform: 'none',
-            effectTransform: 'none'
+            effectTransform: 'none',
+            uiFilter: 'none',
+            effectFilter: 'none'
         };
         this.appliedContentScale = Number.NaN;
+        this.appliedContentBlur = Number.NaN;
         this.appliedContentScaleOriginXRatio = Number.NaN;
         this.appliedContentScaleOriginYRatio = Number.NaN;
-        this.appliedContentTransformSignature = '';
         this.blurRevision = 1;
         this.closed = false;
         this.hasRegisteredEffects = Object.keys(this.effects).length > 0;
@@ -109,7 +104,7 @@ export class OverlaySession {
         this.effectStates = effectRegistration.list;
         this.effectStateMap = effectRegistration.map;
         this.#syncSurfaceOpacity();
-        this.#syncContentScale();
+        this.#syncContentPresentation();
     }
 
     /**
@@ -136,7 +131,16 @@ export class OverlaySession {
      */
     setContentScale(scale) {
         this.contentScale = clampFiniteNumber(scale, 0.01, 4, 1);
-        this.#syncContentScale();
+        this.#syncContentPresentation();
+    }
+
+    /**
+     * overlay 콘텐츠 surface의 CSS blur를 갱신합니다.
+     * @param {number} blur - 적용할 blur 반경(px)입니다.
+     */
+    setContentBlur(blur) {
+        this.contentBlur = clampFiniteNumber(blur, 0, 100, 0);
+        this.#syncContentPresentation();
     }
 
     /**
@@ -147,53 +151,7 @@ export class OverlaySession {
     setContentScaleOrigin(originXRatio, originYRatio) {
         this.contentScaleOriginXRatio = clampFiniteNumber(originXRatio, 0, 1, 0.5);
         this.contentScaleOriginYRatio = clampFiniteNumber(originYRatio, 0, 1, 0.5);
-        this.#syncContentScale();
-    }
-
-    /**
-     * overlay 콘텐츠 surface에 연결 전환용 3D 변환을 적용합니다.
-     * @param {object} transform - 변환 옵션입니다.
-     * @param {number} transform.originXRatio - 화면 너비 대비 변환 원점입니다.
-     * @param {number} transform.originYRatio - 화면 높이 대비 변환 원점입니다.
-     * @param {number} transform.translateXRatio - 화면 너비 대비 X 이동량입니다.
-     * @param {number} transform.translateYRatio - 화면 높이 대비 Y 이동량입니다.
-     * @param {number} transform.scaleX - X축 배율입니다.
-     * @param {number} transform.scaleY - Y축 배율입니다.
-     * @param {number} transform.rotateY - Y축 회전 라디안입니다.
-     * @param {number} transform.perspectiveRatio - 화면 너비 대비 원근 거리입니다.
-     * @param {boolean} [transformEffectSurface=true] - effect surface에도 CSS 변환을 적용할지 여부입니다.
-     */
-    setContentTransform(transform, transformEffectSurface = true) {
-        if (!transform) {
-            this.clearContentTransform();
-            return;
-        }
-
-        this.contentTransform = {
-            originXRatio: clampFiniteNumber(transform.originXRatio, 0, 1, 0.5),
-            originYRatio: clampFiniteNumber(transform.originYRatio, 0, 1, 0.5),
-            translateXRatio: clampFiniteNumber(transform.translateXRatio, -4, 4, 0),
-            translateYRatio: clampFiniteNumber(transform.translateYRatio, -4, 4, 0),
-            scaleX: clampFiniteNumber(transform.scaleX, 0.01, 4, 1),
-            scaleY: clampFiniteNumber(transform.scaleY, 0.01, 4, 1),
-            rotateY: clampFiniteNumber(transform.rotateY, -Math.PI, Math.PI, 0),
-            perspectiveRatio: clampFiniteNumber(transform.perspectiveRatio, 0.05, 4, 1)
-        };
-        this.contentTransformAffectsEffectSurface = transformEffectSurface !== false;
-        this.#syncContentScale();
-    }
-
-    /**
-     * 연결 전환용 3D 변환을 제거하고 일반 프레젠테이션 배율로 복원합니다.
-     */
-    clearContentTransform() {
-        if (!this.contentTransform) {
-            return;
-        }
-        this.contentTransform = null;
-        this.contentTransformAffectsEffectSurface = true;
-        this.appliedContentTransformSignature = '__dirty__';
-        this.#syncContentScale();
+        this.#syncContentPresentation();
     }
 
     /**
@@ -424,47 +382,35 @@ export class OverlaySession {
 
     /**
      * @private
-     * overlay 콘텐츠 surface scale을 동기화합니다.
+     * overlay 콘텐츠 surface의 scale과 blur를 동기화합니다.
      */
-    #syncContentScale() {
-        const contentTransformSignature = this.contentTransform
-            ? [
-                this.contentTransform.originXRatio,
-                this.contentTransform.originYRatio,
-                this.contentTransform.translateXRatio,
-                this.contentTransform.translateYRatio,
-                this.contentTransform.scaleX,
-                this.contentTransform.scaleY,
-                this.contentTransform.rotateY,
-                this.contentTransform.perspectiveRatio,
-                Number(this.contentTransformAffectsEffectSurface)
-            ].join(':')
-            : '';
+    #syncContentPresentation() {
         if (this.appliedContentScale === this.contentScale
+            && this.appliedContentBlur === this.contentBlur
             && this.appliedContentScaleOriginXRatio === this.contentScaleOriginXRatio
-            && this.appliedContentScaleOriginYRatio === this.contentScaleOriginYRatio
-            && this.appliedContentTransformSignature === contentTransformSignature) {
+            && this.appliedContentScaleOriginYRatio === this.contentScaleOriginYRatio) {
             return;
         }
 
         this.appliedContentScale = this.contentScale;
+        this.appliedContentBlur = this.contentBlur;
         this.appliedContentScaleOriginXRatio = this.contentScaleOriginXRatio;
         this.appliedContentScaleOriginYRatio = this.contentScaleOriginYRatio;
-        this.appliedContentTransformSignature = contentTransformSignature;
 
         const surfaceStyles = resolveOverlayContentSurfaceStyles(
-            this.contentTransform,
-            this.contentTransformAffectsEffectSurface,
             this.contentScale,
             this.contentScaleOriginXRatio,
             this.contentScaleOriginYRatio,
+            this.contentBlur,
             this.contentSurfaceStylesScratch
         );
         this.uiSurface.canvas.style.transformOrigin = surfaceStyles.transformOrigin;
         this.uiSurface.canvas.style.transform = surfaceStyles.uiTransform;
+        this.uiSurface.canvas.style.filter = surfaceStyles.uiFilter;
         if (this.effectSurface) {
             this.effectSurface.canvas.style.transformOrigin = surfaceStyles.transformOrigin;
             this.effectSurface.canvas.style.transform = surfaceStyles.effectTransform;
+            this.effectSurface.canvas.style.filter = surfaceStyles.effectFilter;
         }
     }
 
@@ -483,7 +429,8 @@ export class OverlaySession {
             this.effectLayerId = this.effectSurface.id;
             this.#syncSurfaceOpacity();
             this.appliedContentScale = Number.NaN;
-            this.#syncContentScale();
+            this.appliedContentBlur = Number.NaN;
+            this.#syncContentPresentation();
             return;
         }
 
@@ -515,33 +462,12 @@ export class OverlaySession {
     }
 
     /**
-     * effect surface의 CSS 변환을 사용하지 않는 연결 전환을 WebGL 행렬로 적용합니다.
+     * command 또는 등록 effect가 제공하는 WebGL 변환을 적용합니다.
      * @param {object} command - 현재 glass 렌더 명령입니다.
      * @private
      */
     #applyEffectTransform(command) {
-        const baseTransform = command.transformMatrix || this.#resolveEffectTransformMatrix();
-        if (!this.contentTransform || this.contentTransformAffectsEffectSurface) {
-            command.transformMatrix = baseTransform;
-            return;
-        }
-
-        const surfaceWidth = Math.max(1, this.effectSurface?.canvas?.width || 0);
-        const surfaceHeight = Math.max(1, this.effectSurface?.canvas?.height || 0);
-        const presentationTransform = writeOverlayContentTransformMatrix(
-            this.contentTransform,
-            surfaceWidth,
-            surfaceHeight,
-            this.contentTransformMatrixScratch
-        );
-        command.transformMatrix = baseTransform
-            ? multiplyOverlayTransformMatrices(
-                presentationTransform,
-                baseTransform,
-                this.combinedEffectTransformMatrixScratch
-            )
-            : presentationTransform;
-        command.perspective = this.contentTransform.perspectiveRatio * surfaceWidth;
+        command.transformMatrix = command.transformMatrix || this.#resolveEffectTransformMatrix();
     }
 
     /**

@@ -55,7 +55,7 @@ export const FULLSCREEN_VERTEX_SHADER = `
 `;
 
 /**
- * 타이틀 로딩 원형 UI의 fill, wave, glow, glass highlight를 렌더링하는 프래그먼트 셰이더입니다.
+ * 타이틀 중앙 원의 glow와 glass highlight를 렌더링하는 프래그먼트 셰이더입니다.
  */
 export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
     precision highp float;
@@ -65,10 +65,7 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
     uniform vec2 u_resolution;
     uniform vec2 u_center;
     uniform float u_radius;
-    uniform float u_progress;
     uniform float u_outlineWidth;
-    uniform float u_wavePhase;
-    uniform float u_secondaryWavePhase;
     uniform float u_time;
     uniform float u_alpha;
     uniform float u_glowStrength;
@@ -83,9 +80,6 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
     uniform vec3 u_deepColor;
     uniform vec3 u_rimColor;
     uniform vec3 u_highlightColor;
-    uniform vec3 u_surfaceColor;
-
-    const float PI = 3.141592653589793;
 
     float saturate(float value) {
         return clamp(value, 0.0, 1.0);
@@ -112,20 +106,7 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
         float edgeSoftness = 1.35;
         float circleMask = 1.0 - smoothstep(bodyRadius - edgeSoftness, bodyRadius + edgeSoftness, distanceFromCenter);
         float outsideDistance = max(distanceFromCenter - radius, 0.0);
-        float progress = saturate(u_progress);
-
-        float fillHeight = bodyRadius * 2.0 * progress;
-        float waveAmplitude = progress >= 0.999
-            ? 0.0
-            : min(bodyRadius * 0.052, max(1.25, fillHeight * 0.14));
-        float xProgress = saturate((local.x + bodyRadius) / (bodyRadius * 2.0));
-        float wave = (sin((xProgress * PI * 2.2) + u_wavePhase) * waveAmplitude)
-            + (sin((xProgress * PI * 5.2) - u_secondaryWavePhase) * waveAmplitude * 0.26);
-        float surfaceY = bodyRadius - fillHeight + wave;
-        float fillMask = progress >= 0.999
-            ? circleMask
-            : circleMask * smoothstep(surfaceY - edgeSoftness, surfaceY + edgeSoftness, local.y);
-        fillMask *= smoothstep(0.0, 0.025, progress);
+        float fillMask = circleMask;
 
         vec3 normal = vec3(normalized, sqrt(max(0.0, 1.0 - dot(normalized, normalized))));
         vec3 lightDirection = normalize(vec3(-0.45, -0.68, 0.58));
@@ -158,11 +139,6 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
             * (0.72 + (upperLight * 0.18));
         fillColor = mix(fillColor, backdropBlurColor, backdropBlend);
 
-        float surfaceLine = progress > 0.025 && progress < 0.995
-            ? exp(-pow((local.y - surfaceY) / max(1.0, bodyRadius * 0.011), 2.0)) * circleMask
-            : 0.0;
-        float surfaceAlpha = surfaceLine * 0.34;
-
         float outlineDistance = abs(distanceFromCenter - radius);
         float outlineSoftness = max(0.42, edgeSoftness * 0.38);
         float outlineCore = 1.0 - smoothstep(
@@ -188,10 +164,9 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
 
         float fillAlpha = fillMask;
         vec3 premultipliedColor = (fillColor * fillAlpha)
-            + (u_surfaceColor * surfaceAlpha)
             + (rimColor * (outlineAlpha + innerRim))
             + (glowColor * glowAlpha);
-        float alpha = saturate(fillAlpha + surfaceAlpha + outlineAlpha + innerRim + glowAlpha);
+        float alpha = saturate(fillAlpha + outlineAlpha + innerRim + glowAlpha);
         alpha = saturate(alpha * u_alpha);
         premultipliedColor *= u_alpha;
 

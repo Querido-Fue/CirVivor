@@ -103,13 +103,7 @@ export const LightTheme = Object.freeze({
             Shadow: '#cececeff'
         }),
         Loading: Object.freeze({
-            Text: '#202020',
             Accent: '#166ffb',
-            SkipButton: Object.freeze({
-                Text: '#202020',
-                Idle: 'rgba(22, 111, 251, 0.12)',
-                Hover: 'rgba(22, 111, 251, 0.22)'
-            }),
             Glow: Object.freeze({
                 HaloStops: Object.freeze([
                     Object.freeze({ offset: 0, color: '#166ffb', alphaScale: 0, maxAlpha: 0 }),

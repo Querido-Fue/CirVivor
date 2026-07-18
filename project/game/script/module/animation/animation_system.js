@@ -114,15 +114,16 @@ export class AnimationSystem {
      * @param {Array} mixedDefs - 애니메이션 정의 배열
      * @param {object} [properties={}] - 공통 속성
      * @param {boolean} [properties.useFixedTick=false] - 고정 틱 업데이트 사용 여부
-     * @returns {object} { id, promise } 형태의 결과 객체
+     * @returns {{id:null, ids:number[], promise:Promise}} 생성된 하위 ID와 완료 Promise입니다.
      */
     animateMixed(owner, mixedDefs, properties = {}) {
         const promises = [];
+        const ids = [];
         const useFixedTick = properties.useFixedTick === true;
 
         if (!Array.isArray(mixedDefs)) {
             errThrow(null, 'Animator: mixedDefs 는 배열이어야 합니다', 'error');
-            return { id: null, promise: Promise.resolve() };
+            return { id: null, ids, promise: Promise.resolve() };
         }
 
         mixedDefs.forEach(def => {
@@ -135,10 +136,11 @@ export class AnimationSystem {
 
             this.activeAnimations.push(anim);
             this.animationsById.set(subId, anim);
+            ids.push(subId);
             promises.push(anim.promise);
         });
 
-        return { id: null, promise: Promise.all(promises) };
+        return { id: null, ids, promise: Promise.all(promises) };
     }
 
     /**
@@ -284,7 +286,7 @@ export const animate = (owner, properties) => animationSystemInstance.animate(ow
  * @param {object} owner - 애니메이션 대상 객체
  * @param {Array} mixedDefs - 각 변수별 애니메이션 정의 배열
  * @param {object} [properties={}] - 공통 애니메이션 속성
- * @returns {{ id: null, promise: Promise }} 전체 완료 프로미스
+ * @returns {{id:null, ids:number[], promise:Promise}} 하위 애니메이션 ID와 전체 완료 Promise입니다.
  */
 export const animateMixed = (owner, mixedDefs, properties = {}) => animationSystemInstance.animateMixed(owner, mixedDefs, properties);
 

@@ -14,6 +14,16 @@ import { lerpNumber } from 'util/number_util.js';
 import { TITLE_MENU_DEFAULT_PERSPECTIVE } from './_title_menu_runtime_state.js';
 
 /**
+ * 앞쪽 카드가 포인터를 점유하지 않을 때만 뒤쪽 pane의 hover 효과를 허용합니다.
+ * @param {boolean} pointerEnabled - 전체 포인터 상호작용 활성 여부입니다.
+ * @param {string|null} hoveredForegroundId - 현재 호버 중인 앞쪽 카드 식별자입니다.
+ * @returns {boolean} 뒤쪽 pane의 hover 효과 허용 여부입니다.
+ */
+export function shouldEnableTitleMenuPaneInteraction(pointerEnabled, hoveredForegroundId) {
+    return pointerEnabled === true && !hoveredForegroundId;
+}
+
+/**
  * pane 상호작용 상태를 현재 포인터 위치와 효과 옵션에 맞게 갱신합니다.
  * @param {object} options - pane 상호작용 갱신 옵션입니다.
  * @param {object} options.paneState - pane 상호작용 상태입니다.
@@ -153,29 +163,20 @@ export function resolveTitleMenuPanePointerInfo(paneRect, mouseX, mouseY) {
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {object|null} [hoverTiltOptions=null] - hover tilt 옵션입니다.
- * @param {{panelRect?:object,rotateX?:number,rotateY?:number,perspective?:number}|null} [transformOverride=null] - 연결 전환용 변환 오버라이드입니다.
  * @returns {void}
  */
 export function updateTitleMenuCardProjection(
     renderState,
     runtimeState,
-    hoverTiltOptions = null,
-    transformOverride = null
+    hoverTiltOptions = null
 ) {
-    const panelRect = transformOverride?.panelRect || renderState.panelRect;
-    const overridePerspective = Number(transformOverride?.perspective);
-    const perspectiveBase = Number.isFinite(overridePerspective) && overridePerspective > 0
-        ? overridePerspective
-        : (hoverTiltOptions?.perspective || TITLE_MENU_DEFAULT_PERSPECTIVE);
-    const overrideRotateX = Number(transformOverride?.rotateX);
-    const overrideRotateY = Number(transformOverride?.rotateY);
-    const rotateX = Number.isFinite(overrideRotateX) ? overrideRotateX : runtimeState.rotateX;
-    const rotateY = Number.isFinite(overrideRotateY) ? overrideRotateY : runtimeState.rotateY;
+    const panelRect = renderState.panelRect;
+    const perspectiveBase = hoverTiltOptions?.perspective || TITLE_MENU_DEFAULT_PERSPECTIVE;
     runtimeState.perspective = perspectiveBase;
 
     runtimeState.transformMatrix = multiplyMat4(
-        createRotationYMatrix(rotateY),
-        createRotationXMatrix(rotateX)
+        createRotationYMatrix(runtimeState.rotateY),
+        createRotationXMatrix(runtimeState.rotateX)
     );
     runtimeState.projectedQuad = projectPanelQuad(panelRect, runtimeState.transformMatrix, runtimeState.perspective);
 

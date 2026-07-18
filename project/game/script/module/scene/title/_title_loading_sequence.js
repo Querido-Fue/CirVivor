@@ -1,197 +1,116 @@
-import { animate, remove } from 'animation/animation_system.js';
+import { animate, animateMixed, remove } from 'animation/animation_system.js';
 import { getData } from 'data/data_handler.js';
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
-import { getDelta } from 'game/time_handler.js';
-import { getSetting } from 'save/save_system.js';
-import { releaseUIItem } from 'ui/_ui_pool.js';
-import { clamp01 } from 'util/number_util.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
 import { TitleMenu } from './_title_menu.js';
-import {
-    applyTitleLoadingDebugSkipButtonStyle,
-    createTitleLoadingDebugSkipButton,
-    layoutTitleLoadingDebugSkipButton,
-    shouldShowTitleLoadingDebugSkipButton
-} from './loading/_title_loading_debug_skip_button.js';
-import { buildTitleLoadingSchedule } from './loading/_title_loading_schedule.js';
 import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
-import { buildTitleLoadingTextLayout } from './loading/_title_loading_text_layout.js';
-import { drawTitleLoadingText } from './loading/_title_loading_text_render.js';
-import {
-    getLoadingLogoColor
-} from './loading/_title_loading_theme.js';
+import { getLoadingLogoColor } from './loading/_title_loading_theme.js';
+import { buildTitleSceneTransitionSegments } from './loading/_title_scene_transition_segments.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
 
 /**
  * @class TitleLoadingSequence
- * @description 타이틀 화면의 로딩 진행, 텍스트, 로고와 메뉴 전환을 관리합니다.
+ * @description 타이틀 로고 등장과 중앙 원·메뉴 전환을 관리합니다.
  */
 export class TitleLoadingSequence {
     /**
-     * @param {TitleScene} titleScene - 타이틀 씬 인스턴스
+     * @param {TitleScene} titleScene - 타이틀 씬 인스턴스입니다.
      */
     constructor(titleScene) {
         this.titleScene = titleScene;
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
-        this.loadingProgress = 0;
-        this.loadingTextAlpha = TITLE_LOADING.TEXT_ALPHA;
-        this.loadingTextExitProgress = 0;
-        this.loadingNoticeAlpha = TITLE_LOADING.TEXT_ALPHA;
-        this.loadingElapsed = 0;
-        this.loadingStepIndex = 0;
-        this.loadingTextFontSize = 0;
-        this.loadingTextFont = '';
-        this.loadingTextX = 0;
-        this.loadingTextY = 0;
-        this.loadingNoticeFontSize = 0;
-        this.loadingNoticeFont = '';
-        this.loadingNoticeLineHeight = 0;
-        this.loadingNoticeStartY = 0;
-        this.loadingNoticeLines = [];
-        this.loadingTextBlockBottomY = 0;
-        this.loadingTextExitDistance = 0;
-        this.loadingSegmentEndTimes = [];
-        this.loadingSegmentTargetProgresses = [];
-        this.loadingFinished = false;
-        this.destroyed = false;
-        this.loadingLogoTimeoutId = null;
-        this.loadingProgressAnimId = -1;
-        this.loadingTextAlphaAnimId = -1;
-        this.loadingTextTranslateAnimId = -1;
-        this.loadingNoticeFadeAnimId = -1;
-        this.loadingNoticeFadeStarted = false;
-        this.loadingGlowCompensationAnimId = -1;
+        this.centerIntroBlurAnimId = -1;
+        this.sceneTransitionAnimIds = [];
         this.sceneTransitionProgress = 0;
+        this.enemySpawnReadyProgress = Number.POSITIVE_INFINITY;
         this.sceneTransitionStarted = false;
-        this.sceneTransitionAnimId = -1;
         this.centerCircle = new TitleCenterCircle();
         this.titleLogo = null;
         this.titleMenu = null;
-        this.debugSkipLoadingButton = null;
 
-        this.#recalculateLayout();
-        this.#createDebugSkipLoadingButton();
-        this.#startLoading();
+        this.centerIntroBlurAnimId = animate(this.centerCircle, {
+            variable: 'introBlur',
+            startValue: TITLE_LOADING.INTRO_BLUR_START_PX,
+            endValue: 0,
+            type: TITLE_LOADING.INTRO_BLUR_EASING,
+            duration: TITLE_LOADING.INTRO_BLUR_DURATION
+        }).id;
+        this.#updateCenterCirclePlacement();
+        this.#showTitleLogo();
     }
 
     /**
-     * 로딩 진행률, 중앙 원, 로고와 메뉴 상태를 갱신합니다.
+     * 중앙 원, 로고와 메뉴 상태를 갱신합니다.
      */
     update() {
-        this.#updateLoadingProgress();
-        this.centerCircle.setProgress(this.loadingProgress);
-        this.centerCircle.update();
+        this.centerCircle?.update();
 
         if (this.titleLogo) {
             this.titleLogo.update();
-            this.#updateLoadingNoticeFade();
             this.#updateSceneTransition();
-            this.#updateLoadingVisualPlacement();
+            this.#updateCenterCirclePlacement();
             this.#updateLogoPlacement();
-        } else {
-            this.#updateLoadingVisualPlacement();
         }
-        if (this.titleMenu) {
-            this.titleMenu.update();
-        }
-        if (this.debugSkipLoadingButton && this.#shouldShowDebugSkipButton()) {
-            this.debugSkipLoadingButton.update();
-        }
+        this.titleMenu?.update();
     }
 
     /**
-     * 로딩 관련 UI를 그립니다.
+     * 타이틀 인트로 UI를 그립니다.
      */
     draw() {
-        this.centerCircle.draw();
-        if (this.titleLogo) {
-            this.titleLogo.draw();
-        }
-        if (this.titleMenu) {
-            this.titleMenu.draw();
-        }
-        this.#drawLoadingText();
-        if (this.debugSkipLoadingButton && this.#shouldShowDebugSkipButton()) {
-            this.debugSkipLoadingButton.draw();
-        }
+        this.centerCircle?.draw();
+        this.titleLogo?.draw();
+        this.titleMenu?.draw();
     }
 
     /**
-     * 화면 크기 변경에 맞춰 로딩 시퀀스 배치를 다시 계산합니다.
+     * 화면 크기 변경에 맞춰 타이틀 인트로 배치를 다시 계산합니다.
      */
     resize() {
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
-        this.centerCircle.resize();
-        this.#updateLoadingVisualPlacement();
+        this.centerCircle?.resize();
+        this.#updateCenterCirclePlacement();
         if (this.titleLogo) {
             this.titleLogo.resize();
             this.#updateLogoPlacement();
         }
-        if (this.titleMenu) {
-            this.titleMenu.resize();
-        }
-        this.#recalculateLayout();
-        this.#layoutDebugSkipLoadingButton();
+        this.titleMenu?.resize();
     }
 
     /**
-     * 로딩 시퀀스가 생성한 리소스를 정리합니다.
+     * 타이틀 인트로가 생성한 리소스를 정리합니다.
      */
     destroy() {
-        this.destroyed = true;
-        remove(this.loadingProgressAnimId);
-        remove(this.loadingTextAlphaAnimId);
-        remove(this.loadingTextTranslateAnimId);
-        remove(this.loadingNoticeFadeAnimId);
-        remove(this.loadingGlowCompensationAnimId);
-        remove(this.sceneTransitionAnimId);
-        this.#clearLoadingLogoTimeout();
+        remove(this.centerIntroBlurAnimId);
+        for (const animationId of this.sceneTransitionAnimIds) {
+            remove(animationId);
+        }
+        this.sceneTransitionAnimIds = [];
 
-        if (this.centerCircle) {
-            this.centerCircle.destroy();
-            this.centerCircle = null;
-        }
-        if (this.titleLogo) {
-            this.titleLogo.destroy();
-            this.titleLogo = null;
-        }
-        if (this.titleMenu) {
-            this.titleMenu.destroy();
-            this.titleMenu = null;
-        }
-        if (this.debugSkipLoadingButton) {
-            releaseUIItem(this.debugSkipLoadingButton);
-            this.debugSkipLoadingButton = null;
-        }
+        this.centerCircle?.destroy();
+        this.centerCircle = null;
+        this.titleLogo?.destroy();
+        this.titleLogo = null;
+        this.titleMenu?.destroy();
+        this.titleMenu = null;
     }
 
     /**
-     * 현재 설정 변경을 로딩 시퀀스 UI에 반영합니다.
+     * 현재 설정 변경을 타이틀 인트로 UI에 반영합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
-        if (changedSettings.debugMode === true) {
-            this.#createDebugSkipLoadingButton();
-            this.#layoutDebugSkipLoadingButton();
-        } else if (changedSettings.debugMode === false && this.debugSkipLoadingButton) {
-            releaseUIItem(this.debugSkipLoadingButton);
-            this.debugSkipLoadingButton = null;
-        }
-
-        if (changedSettings.theme !== undefined) {
-            this.#applyDebugSkipButtonStyle();
-            if (this.titleLogo && typeof this.titleLogo.setColor === 'function') {
-                this.titleLogo.setColor(getLoadingLogoColor());
-            }
-            this.#layoutDebugSkipLoadingButton();
+        if (changedSettings.theme !== undefined
+            && this.titleLogo
+            && typeof this.titleLogo.setColor === 'function') {
+            this.titleLogo.setColor(getLoadingLogoColor());
         }
 
         if ((changedSettings.theme !== undefined
@@ -201,11 +120,6 @@ export class TitleLoadingSequence {
             && this.titleMenu
             && typeof this.titleMenu.applyRuntimeSettings === 'function') {
             this.titleMenu.applyRuntimeSettings(changedSettings);
-        }
-
-        if (changedSettings.language !== undefined) {
-            this.#recalculateLayout();
-            this.#layoutDebugSkipLoadingButton();
         }
     }
 
@@ -235,217 +149,30 @@ export class TitleLoadingSequence {
 
     /**
      * 타이틀 배경 적 스폰을 시작해도 되는지 반환합니다.
-     * @returns {boolean} 로고 이동 애니메이션 완료 여부입니다.
+     * @returns {boolean} 이동 전환의 가속 구간 완료 여부입니다.
      */
     isEnemySpawnReady() {
         return this.sceneTransitionStarted === true
-            && this.sceneTransitionProgress >= this.#getEnemySpawnReadyProgressThreshold();
+            && this.sceneTransitionProgress >= this.enemySpawnReadyProgress;
     }
 
     /**
-     * 적 스폰을 허용할 전환 진행률 기준을 반환합니다.
-     * 전환 종료 시점보다 일정 시간만큼 앞당겨 스폰을 시작합니다.
-     * @returns {number} 0~1 범위의 전환 진행률 기준값입니다.
-     * @private
-     */
-    #getEnemySpawnReadyProgressThreshold() {
-        const transitionDuration = Number.isFinite(TITLE_LOADING.SCENE_TRANSITION_DURATION)
-            && TITLE_LOADING.SCENE_TRANSITION_DURATION > 0
-            ? TITLE_LOADING.SCENE_TRANSITION_DURATION
-            : 1;
-        const spawnLeadSeconds = Number.isFinite(TITLE_LOADING.ENEMY_SPAWN_READY_LEAD_SECONDS)
-            ? Math.max(0, TITLE_LOADING.ENEMY_SPAWN_READY_LEAD_SECONDS)
-            : 0;
-        return clamp01(1 - (spawnLeadSeconds / transitionDuration));
-    }
-
-    /**
-     * 랜덤 체크포인트 기반 로딩 스케줄을 준비합니다.
-     * @private
-     */
-    #startLoading() {
-        const loadingSchedule = buildTitleLoadingSchedule();
-        this.loadingSegmentEndTimes = [];
-        this.loadingSegmentTargetProgresses = [];
-
-        for (let i = 0; i < loadingSchedule.length; i++) {
-            this.loadingSegmentTargetProgresses.push(loadingSchedule[i].targetProgress);
-            this.loadingSegmentEndTimes.push(loadingSchedule[i].endTime);
-        }
-    }
-
-    /**
-     * 경과 시간에 따라 다음 로딩 단계 진입 여부를 판단합니다.
-     * @private
-     */
-    #updateLoadingProgress() {
-        if (this.loadingFinished) {
-            return;
-        }
-
-        const delta = getDelta();
-        if (!Number.isFinite(delta) || delta <= 0) {
-            return;
-        }
-
-        this.loadingElapsed += delta;
-        while (
-            this.loadingStepIndex < this.loadingSegmentEndTimes.length
-            && this.loadingElapsed >= this.loadingSegmentEndTimes[this.loadingStepIndex]
-        ) {
-            this.loadingStepIndex += 1;
-            this.#animateLoadingStep(this.loadingStepIndex);
-        }
-    }
-
-    /**
-     * 현재 단계에 맞는 목표 진행률로 부드럽게 이동시킵니다.
-     * @param {number} stepIndex - 도달한 로딩 단계
-     * @private
-     */
-    #animateLoadingStep(stepIndex) {
-        if (this.loadingProgressAnimId >= 0) {
-            remove(this.loadingProgressAnimId);
-        }
-
-        const isFinalStep = stepIndex >= this.loadingSegmentEndTimes.length;
-        const targetProgress = this.loadingSegmentTargetProgresses[stepIndex - 1] ?? TITLE_LOADING.COMPLETE_PROGRESS;
-        const progressAnim = animate(this, {
-            variable: 'loadingProgress',
-            startValue: 'current',
-            endValue: targetProgress,
-            duration: TITLE_LOADING.STEP_ANIM_DURATION,
-            type: 'easeOutExpo'
-        });
-        this.loadingProgressAnimId = progressAnim.id;
-
-        if (isFinalStep) {
-            progressAnim.promise.then(() => {
-                if (this.destroyed) {
-                    return;
-                }
-                this.#finishLoading();
-            });
-        }
-    }
-
-    /**
-     * 로딩 완료 후 메인 텍스트만 사라지도록 fade out과 위 이동 애니메이션을 실행합니다.
-     * @param {{showLogoDelayMs?: number, animateTextExit?: boolean}} [options] - 완료 연출 옵션입니다.
-     * @private
-     */
-    #finishLoading(options = {}) {
-        if (this.loadingFinished) {
-            return;
-        }
-
-        const showLogoDelayMs = Number.isFinite(options.showLogoDelayMs) ? options.showLogoDelayMs : 500;
-        const animateTextExit = options.animateTextExit !== false;
-        this.loadingFinished = true;
-        this.#scheduleTitleLogo(showLogoDelayMs);
-
-        if (!animateTextExit) {
-            remove(this.loadingTextAlphaAnimId);
-            remove(this.loadingTextTranslateAnimId);
-            this.loadingTextAlphaAnimId = -1;
-            this.loadingTextTranslateAnimId = -1;
-            this.loadingTextAlpha = 0;
-            this.loadingTextExitProgress = 1;
-            return;
-        }
-
-        this.loadingTextAlphaAnimId = animate(this, {
-            variable: 'loadingTextAlpha',
-            startValue: 'current',
-            endValue: 0,
-            type: 'easeInExpo',
-            duration: TITLE_LOADING.TEXT_FADE_DURATION
-        }).id;
-        this.loadingTextTranslateAnimId = animate(this, {
-            variable: 'loadingTextExitProgress',
-            startValue: 'current',
-            endValue: 1,
-            type: 'easeInExpo',
-            duration: TITLE_LOADING.TEXT_FADE_DURATION
-        }).id;
-    }
-
-    /**
-     * 디버그 모드에서 가짜 로딩을 즉시 건너뜁니다.
-     * @private
-     */
-    #skipLoadingForDebug() {
-        if (!this.#shouldShowDebugSkipButton()) {
-            return;
-        }
-
-        remove(this.loadingProgressAnimId);
-        this.loadingProgressAnimId = -1;
-        this.loadingProgress = TITLE_LOADING.COMPLETE_PROGRESS;
-        this.loadingElapsed = this.loadingSegmentEndTimes[this.loadingSegmentEndTimes.length - 1] ?? 0;
-        this.loadingStepIndex = this.loadingSegmentEndTimes.length;
-        this.centerCircle.setProgress(this.loadingProgress);
-        this.#finishLoading({
-            showLogoDelayMs: 0,
-            animateTextExit: false
-        });
-    }
-
-    /**
-     * 로딩 완료 후 로고를 생성하고 현재 원형 로딩 UI 왼쪽에 배치합니다.
+     * 타이틀 로고 드로잉과 메뉴 대기 상태를 즉시 시작합니다.
      * @private
      */
     #showTitleLogo() {
-        const createdLogo = !this.titleLogo;
-        const createdMenu = !this.titleMenu;
-
-        if (createdLogo) {
+        if (!this.titleLogo) {
             this.titleLogo = new TitleLogo(this.titleScene);
             this.titleLogo.play(getLoadingLogoColor());
         }
-        if (createdMenu) {
+        if (!this.titleMenu) {
             this.titleMenu = new TitleMenu(this.titleScene);
         }
-
-        if (createdLogo || createdMenu) {
-            this.resize();
-            return;
-        }
-
-        this.#updateLogoPlacement();
+        this.resize();
     }
 
     /**
-     * 로고 표시 타이머를 설정합니다.
-     * @param {number} delayMs - 로고를 표시하기 전 대기 시간입니다.
-     * @private
-     */
-    #scheduleTitleLogo(delayMs) {
-        this.#clearLoadingLogoTimeout();
-        this.loadingLogoTimeoutId = window.setTimeout(() => {
-            this.loadingLogoTimeoutId = null;
-            if (this.destroyed) {
-                return;
-            }
-            this.#showTitleLogo();
-        }, Math.max(0, delayMs));
-    }
-
-    /**
-     * 예약된 로고 표시 타이머를 정리합니다.
-     * @private
-     */
-    #clearLoadingLogoTimeout() {
-        if (this.loadingLogoTimeoutId === null) {
-            return;
-        }
-
-        window.clearTimeout(this.loadingLogoTimeoutId);
-        this.loadingLogoTimeoutId = null;
-    }
-
-    /**
-     * 로고 드로잉 재생률이 기준을 넘으면 축소 및 이동 전환을 시작합니다.
+     * 로고 드로잉 재생률이 기준을 넘으면 중앙 원·로고·메뉴 전환을 시작합니다.
      * @private
      */
     #updateSceneTransition() {
@@ -458,83 +185,32 @@ export class TitleLoadingSequence {
         }
 
         this.sceneTransitionStarted = true;
-        this.sceneTransitionAnimId = animate(this, {
-            variable: 'sceneTransitionProgress',
+        const transitionSegments = buildTitleSceneTransitionSegments({
             startValue: 0,
             endValue: 1,
-            type: 'easeInOutExpo',
-            duration: TITLE_LOADING.SCENE_TRANSITION_DURATION
-        }).id;
-        this.loadingGlowCompensationAnimId = animate(this.centerCircle, {
+            motion: TITLE_LOADING.SCENE_TRANSITION_MOTION
+        });
+        this.enemySpawnReadyProgress = transitionSegments[0]?.endValue ?? 0;
+        const transitionAnimation = animateMixed(this, [{
+            variable: 'sceneTransitionProgress',
+            animations: transitionSegments
+        }]);
+        const glowAnimation = animateMixed(this.centerCircle, [{
             variable: 'glowCompensationScale',
-            startValue: 'current',
-            endValue: TITLE_LOADING.GLOW_COMPENSATION_SCALE,
-            type: 'easeInOutExpo',
-            duration: TITLE_LOADING.SCENE_TRANSITION_DURATION
-        }).id;
+            animations: buildTitleSceneTransitionSegments({
+                startValue: this.centerCircle.glowCompensationScale,
+                endValue: TITLE_LOADING.GLOW_COMPENSATION_SCALE,
+                motion: TITLE_LOADING.SCENE_TRANSITION_MOTION
+            })
+        }]);
+        this.sceneTransitionAnimIds = [
+            ...(transitionAnimation.ids || []),
+            ...(glowAnimation.ids || [])
+        ];
     }
 
     /**
-     * 원/로고 전환 시작 전 지정된 시점에 맞춰 팁 문구 페이드아웃을 시작합니다.
-     * @private
-     */
-    #updateLoadingNoticeFade() {
-        if (!this.titleLogo || this.loadingNoticeFadeStarted || this.loadingNoticeAlpha <= 0) {
-            return;
-        }
-
-        const fadeLeadTime = Number.isFinite(TITLE_LOADING.NOTICE_FADE_LEAD_TIME)
-            ? TITLE_LOADING.NOTICE_FADE_LEAD_TIME
-            : 1;
-        const fadeDuration = Number.isFinite(TITLE_LOADING.NOTICE_FADE_DURATION)
-            ? TITLE_LOADING.NOTICE_FADE_DURATION
-            : 0.5;
-        const fadeEndLeadTime = Math.max(0, fadeLeadTime - fadeDuration);
-        const remainingTime = this.titleLogo.getRemainingTimeToProgress(
-            TITLE_LOADING.SCENE_TRANSITION_TRIGGER_PROGRESS
-        );
-
-        if (remainingTime > fadeLeadTime) {
-            return;
-        }
-
-        const availableFadeDuration = Math.min(
-            fadeDuration,
-            Math.max(0, remainingTime - fadeEndLeadTime)
-        );
-        this.#startLoadingNoticeFade(availableFadeDuration);
-    }
-
-    /**
-     * 로딩 팁 문구의 페이드아웃을 시작합니다.
-     * @param {number} duration - 페이드아웃 지속 시간입니다.
-     * @private
-     */
-    #startLoadingNoticeFade(duration) {
-        if (this.loadingNoticeFadeStarted) {
-            return;
-        }
-
-        this.loadingNoticeFadeStarted = true;
-        remove(this.loadingNoticeFadeAnimId);
-        this.loadingNoticeFadeAnimId = -1;
-
-        if (!Number.isFinite(duration) || duration <= 0) {
-            this.loadingNoticeAlpha = 0;
-            return;
-        }
-
-        this.loadingNoticeFadeAnimId = animate(this, {
-            variable: 'loadingNoticeAlpha',
-            startValue: 'current',
-            endValue: 0,
-            type: 'easeInExpo',
-            duration
-        }).id;
-    }
-
-    /**
-     * 원형 로딩 UI 위치를 기준으로 로고 배치를 다시 계산합니다.
+     * 중앙 원과 전환 진행률을 기준으로 로고 배치를 다시 계산합니다.
      * @private
      */
     #updateLogoPlacement() {
@@ -553,104 +229,15 @@ export class TitleLoadingSequence {
     }
 
     /**
-     * 전환 진행률에 맞춰 중앙 원을 최종 위치로 이동시키고 크기는 유지합니다.
+     * 전환 진행률에 맞춰 중앙 원을 최종 위치로 이동시킵니다.
      * @private
      */
-    #updateLoadingVisualPlacement() {
+    #updateCenterCirclePlacement() {
         if (!this.centerCircle) {
             return;
         }
 
         this.centerCircle.setVisualScale(TITLE_LOADING.MINI_CIRCLE_SCALE || 1);
         this.centerCircle.setPlacementProgress(this.sceneTransitionProgress);
-    }
-
-    /**
-     * 디버그 전용 로딩 스킵 버튼을 생성합니다.
-     * @private
-     */
-    #createDebugSkipLoadingButton() {
-        if (this.debugSkipLoadingButton || !getSetting('debugMode')) {
-            return;
-        }
-
-        this.debugSkipLoadingButton = createTitleLoadingDebugSkipButton({
-            titleScene: this.titleScene,
-            onClick: this.#skipLoadingForDebug.bind(this),
-            wh: this.WH,
-            uiww: this.UIWW
-        });
-        this.#layoutDebugSkipLoadingButton();
-    }
-
-    /**
-     * 디버그 전용 로딩 스킵 버튼의 배치를 현재 화면에 맞춥니다.
-     * @private
-     */
-    #layoutDebugSkipLoadingButton() {
-        if (!this.debugSkipLoadingButton) {
-            return;
-        }
-
-        layoutTitleLoadingDebugSkipButton(this.debugSkipLoadingButton, {
-            wh: this.WH,
-            uiww: this.UIWW,
-            loadingTextX: this.loadingTextX,
-            loadingTextBlockBottomY: this.loadingTextBlockBottomY
-        });
-    }
-
-    /**
-     * 디버그 스킵 버튼의 테마 색상을 최신값으로 적용합니다.
-     * @private
-     */
-    #applyDebugSkipButtonStyle() {
-        applyTitleLoadingDebugSkipButtonStyle(this.debugSkipLoadingButton);
-    }
-
-    /**
-     * 현재 프레임에서 디버그 스킵 버튼을 보여줄지 반환합니다.
-     * @returns {boolean} 표시 여부입니다.
-     * @private
-     */
-    #shouldShowDebugSkipButton() {
-        return shouldShowTitleLoadingDebugSkipButton(
-            this.debugSkipLoadingButton,
-            this.loadingFinished,
-            this.titleLogo
-        );
-    }
-
-    /**
-     * 현재 상태에 맞는 메인 로딩 텍스트와 팁 문구를 그립니다.
-     * @private
-     */
-    #drawLoadingText() {
-        drawTitleLoadingText({
-            loadingTextAlpha: this.loadingTextAlpha,
-            loadingNoticeAlpha: this.loadingNoticeAlpha,
-            loadingTextExitDistance: this.loadingTextExitDistance,
-            loadingTextExitProgress: this.loadingTextExitProgress,
-            loadingTextX: this.loadingTextX,
-            loadingTextY: this.loadingTextY,
-            loadingTextFont: this.loadingTextFont,
-            loadingNoticeLines: this.loadingNoticeLines,
-            loadingNoticeStartY: this.loadingNoticeStartY,
-            loadingNoticeLineHeight: this.loadingNoticeLineHeight,
-            loadingNoticeFont: this.loadingNoticeFont
-        });
-    }
-
-    /**
-     * 현재 화면 기준으로 텍스트 배치 정보를 다시 계산합니다.
-     * @private
-     */
-    #recalculateLayout() {
-        Object.assign(this, buildTitleLoadingTextLayout({
-            textAnchor: this.centerCircle.getTextAnchor(),
-            textConstants: TEXT_CONSTANTS,
-            titleLoading: TITLE_LOADING,
-            wh: this.WH
-        }));
     }
 }

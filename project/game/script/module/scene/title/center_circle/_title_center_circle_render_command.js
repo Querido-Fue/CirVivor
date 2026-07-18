@@ -13,9 +13,6 @@ const EFFECT_TYPES = getData('EFFECT_RENDER_CONSTANTS').TYPES;
  * @param {number} state.centerY - 원 중심 Y 좌표입니다.
  * @param {number} state.radius - 현재 렌더 반경입니다.
  * @param {number} state.outlineWidth - 현재 외곽선 두께입니다.
- * @param {number} state.progress - 현재 로딩 진행률입니다.
- * @param {number} state.wavePhase - 기본 파도 위상입니다.
- * @param {number} state.secondaryWavePhase - 보조 파도 위상입니다.
  * @param {number} state.glowPhase - glow 펄스 위상입니다.
  * @param {number} state.glowCompensationScale - glow 보정 배율입니다.
  * @param {HTMLCanvasElement[]} state.blurSourceCanvases - blur 샘플링에 사용할 하위 레이어 캔버스 목록입니다.
@@ -26,9 +23,6 @@ export function buildTitleCenterCircleRenderCommand({
     centerY,
     radius,
     outlineWidth,
-    progress,
-    wavePhase,
-    secondaryWavePhase,
     glowPhase,
     glowCompensationScale,
     blurSourceCanvases
@@ -44,9 +38,6 @@ export function buildTitleCenterCircleRenderCommand({
         y: centerY,
         radius,
         outlineWidth,
-        progress,
-        wavePhase,
-        secondaryWavePhase,
         time: glowPhase,
         alpha: resolveFiniteNumber(shaderConfig.ALPHA, 1),
         glowStrength,

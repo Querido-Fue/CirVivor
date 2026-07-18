@@ -135,26 +135,29 @@ export const TITLE_CONSTANTS = Object.freeze({
         EXIT_LEFT_WIDTH_RATIO: 0.4
     }),
     TITLE_LOADING: Object.freeze({
-        DURATION: 6,
-        SEGMENT_COUNT: 6,
-        SEGMENT_MIN_DURATION: 0.21,
-        STEP_ANIM_DURATION: 0.4,
-        COMPLETE_PROGRESS: 1.1,
-        TEXT_ALPHA: 0.7,
-        TEXT_FADE_DURATION: 0.4,
-        TEXT_EXIT_DISTANCE_RATIO: 0.009,
-        NOTICE_FADE_LEAD_TIME: 2.5,
-        NOTICE_FADE_DURATION: 1,
-        ENEMY_SPAWN_READY_LEAD_SECONDS: 0.5,
+        INTRO_BLUR_START_PX: 10,
+        INTRO_BLUR_DURATION: 0.6,
+        INTRO_BLUR_EASING: 'easeOutExpo',
         CIRCLE_CENTER_X_RATIO: 0.35,
         CIRCLE_CENTER_Y_RATIO: 0.5,
         CIRCLE_RADIUS_WH_RATIO: 0.115,
         CIRCLE_RADIUS_UIWW_RATIO: 0.22,
         OUTLINE_WIDTH_WH_RATIO: 0.00085,
-        TEXT_GAP_WH_RATIO: 0.076,
-        TEXT_FONT_SIZE_WH_RATIO: 0.016,
-        SCENE_TRANSITION_TRIGGER_PROGRESS: 0.9,
-        SCENE_TRANSITION_DURATION: 1,
+        SCENE_TRANSITION_TRIGGER_PROGRESS: 1,
+        SCENE_TRANSITION_MOTION: Object.freeze({
+            ACCEL: Object.freeze({
+                DURATION: 0.3,
+                EASING: 'easeInExpo'
+            }),
+            CRUISE: Object.freeze({
+                DURATION: 0.2,
+                EASING: 'linear'
+            }),
+            DECEL: Object.freeze({
+                DURATION: 1.5,
+                EASING: 'easeOutExpo'
+            })
+        }),
         MINI_CIRCLE_SCALE: 1,
         GLOW_COMPENSATION_SCALE: 4,
         GLOW_DEFAULTS: Object.freeze({
@@ -188,8 +191,7 @@ export const TITLE_CONSTANTS = Object.freeze({
                 base: Object.freeze([0.086, 0.435, 0.984]),
                 deep: Object.freeze([0.016, 0.176, 0.62]),
                 rim: Object.freeze([0.4, 0.737, 1]),
-                highlight: Object.freeze([0.94, 0.99, 1]),
-                surface: Object.freeze([0.84, 0.973, 1])
+                highlight: Object.freeze([0.94, 0.99, 1])
             }),
             ALPHA: 0.92,
             GLOW_STRENGTH: 0.12,

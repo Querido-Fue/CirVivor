@@ -100,6 +100,7 @@ export class CanvasSurfacePool {
         canvas.style.opacity = '1';
         canvas.style.transform = 'none';
         canvas.style.transformOrigin = '';
+        canvas.style.filter = 'none';
         canvas.style.zIndex = '';
         canvas.dataset.surfaceId = '';
     }

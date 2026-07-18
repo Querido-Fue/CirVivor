@@ -1,39 +1,35 @@
-import { getCanvas, getUIOffsetX, getUIWW, getWH, getWW, renderGL } from 'display/display_system.js';
+import { getCanvas, getUIOffsetX, getUIWW, getWH, renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { getData } from 'data/data_handler.js';
-import { clamp01, clampNumber } from 'util/number_util.js';
+import { clamp01 } from 'util/number_util.js';
 import { buildTitleCenterCircleRenderCommand } from './center_circle/_title_center_circle_render_command.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
-const TWO_PI = Math.PI * 2;
 
 /**
  * @class TitleCenterCircle
- * @description 타이틀 화면 중앙의 원형 로딩 UI를 렌더링합니다.
+ * @description 타이틀 화면 중앙의 원형 glass 오브젝트를 렌더링합니다.
  */
 export class TitleCenterCircle {
     /**
-     * 중앙 원형 로딩 UI의 내부 상태를 초기화합니다.
+     * 중앙 원형 오브젝트의 내부 상태를 초기화합니다.
      */
     constructor() {
-        this.progress = 0;
-        this.wavePhase = 0;
-        this.secondaryWavePhase = Math.PI * 0.35;
         this.glowPhase = 0;
-        this.WW = getWW();
+        this.introBlur = TITLE_LOADING.INTRO_BLUR_START_PX;
+        this.appliedIntroBlur = Number.NaN;
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
-        this.loadingCenterX = 0;
-        this.loadingCenterY = 0;
+        this.introCenterX = 0;
+        this.introCenterY = 0;
         this.finalCenterX = 0;
         this.finalCenterY = 0;
         this.centerX = 0;
         this.centerY = 0;
         this.radius = 0;
         this.outlineWidth = 0;
-        this.textAnchorY = 0;
         this.visualScale = 1;
         this.placementProgress = 0;
         this.glowCompensationScale = 1;
@@ -41,19 +37,7 @@ export class TitleCenterCircle {
     }
 
     /**
-     * 로딩 진행률을 갱신합니다.
-     * @param {number} progress - 0~1.1 범위의 진행률
-     */
-    setProgress(progress) {
-        if (!Number.isFinite(progress)) {
-            this.progress = 0;
-            return;
-        }
-        this.progress = clampNumber(progress, 0, TITLE_LOADING.COMPLETE_PROGRESS);
-    }
-
-    /**
-     * 파도와 외곽 글로우의 시간 축을 갱신합니다.
+     * 외곽 글로우의 시간 축을 갱신합니다.
      */
     update() {
         const delta = getDelta();
@@ -61,16 +45,13 @@ export class TitleCenterCircle {
             return;
         }
 
-        this.wavePhase = (this.wavePhase + (delta * 1.9)) % TWO_PI;
-        this.secondaryWavePhase = (this.secondaryWavePhase + (delta * 1.15)) % TWO_PI;
-        this.glowPhase = (this.glowPhase + (delta * 1.4)) % TWO_PI;
+        this.glowPhase = (this.glowPhase + (delta * 1.4)) % (Math.PI * 2);
     }
 
     /**
-     * 화면 크기 변경 시 로딩 원과 텍스트 앵커 좌표를 다시 계산합니다.
+     * 화면 크기 변경 시 중앙 원의 좌표를 다시 계산합니다.
      */
     resize() {
-        this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
@@ -92,7 +73,7 @@ export class TitleCenterCircle {
     }
 
     /**
-     * 로딩 완료 후 원형 UI가 최종 배치로 이동하는 진행률을 설정합니다.
+     * 원형 오브젝트가 최종 배치로 이동하는 진행률을 설정합니다.
      * @param {number} progress - 0~1 범위 위치 전환 진행률입니다.
      */
     setPlacementProgress(progress) {
@@ -107,9 +88,11 @@ export class TitleCenterCircle {
     }
 
     /**
-     * 원형 로딩 애니메이션을 그립니다.
+     * 원형 glass 오브젝트를 그립니다.
      */
     draw() {
+        this.#syncIntroBlur();
+
         const drawRadius = this.radius * this.visualScale;
         const drawOutlineWidth = Math.max(1, this.outlineWidth * this.visualScale);
 
@@ -118,9 +101,6 @@ export class TitleCenterCircle {
             centerY: this.centerY,
             radius: drawRadius,
             outlineWidth: drawOutlineWidth,
-            progress: this.progress,
-            wavePhase: this.wavePhase,
-            secondaryWavePhase: this.secondaryWavePhase,
             glowPhase: this.glowPhase,
             glowCompensationScale: this.glowCompensationScale,
             blurSourceCanvases: [
@@ -131,18 +111,7 @@ export class TitleCenterCircle {
     }
 
     /**
-     * 로딩 텍스트를 배치할 중심점을 반환합니다.
-     * @returns {{x:number, y:number}} 텍스트 중심점
-     */
-    getTextAnchor() {
-        return {
-            x: this.centerX,
-            y: this.textAnchorY
-        };
-    }
-
-    /**
-     * 현재 원형 로딩 UI의 핵심 배치 정보를 반환합니다.
+     * 현재 원형 오브젝트의 핵심 배치 정보를 반환합니다.
      * @returns {{centerX:number, centerY:number, radius:number}} 원의 중심과 반경
      */
     getCircleLayout() {
@@ -157,19 +126,23 @@ export class TitleCenterCircle {
      * 내부 상태를 정리합니다.
      */
     destroy() {
-        this.progress = 0;
-        this.wavePhase = 0;
-        this.secondaryWavePhase = Math.PI * 0.35;
+        const effectCanvas = getCanvas('effect');
+        if (effectCanvas) {
+            effectCanvas.style.filter = 'none';
+        }
+
         this.glowPhase = 0;
+        this.introBlur = 0;
+        this.appliedIntroBlur = Number.NaN;
     }
 
     /**
-     * 원형 로딩 애니메이션의 기준 좌표를 다시 계산합니다.
+     * 중앙 원의 기준 좌표를 다시 계산합니다.
      * @private
      */
     #recalculateLayout() {
-        this.loadingCenterX = this.UIOffsetX + (this.UIWW * 0.5);
-        this.loadingCenterY = this.WH * 0.5;
+        this.introCenterX = this.UIOffsetX + (this.UIWW * 0.5);
+        this.introCenterY = this.WH * 0.5;
         this.finalCenterX = this.UIWW * (TITLE_LOADING.CIRCLE_CENTER_X_RATIO || 0.5);
         this.finalCenterY = this.WH * TITLE_LOADING.CIRCLE_CENTER_Y_RATIO;
         this.radius = Math.max(
@@ -184,13 +157,35 @@ export class TitleCenterCircle {
     }
 
     /**
-     * 현재 위치 전환 진행률과 시각 배율을 적용해 원 중심과 텍스트 앵커를 갱신합니다.
+     * 현재 위치 전환 진행률을 적용해 원 중심을 갱신합니다.
      * @private
      */
     #syncVisualPlacement() {
-        this.centerX = this.loadingCenterX + ((this.finalCenterX - this.loadingCenterX) * this.placementProgress);
-        this.centerY = this.loadingCenterY + ((this.finalCenterY - this.loadingCenterY) * this.placementProgress);
-        this.textAnchorY = this.centerY + (this.radius * this.visualScale) + Math.max(18, this.WH * TITLE_LOADING.TEXT_GAP_WH_RATIO);
+        this.centerX = this.introCenterX + ((this.finalCenterX - this.introCenterX) * this.placementProgress);
+        this.centerY = this.introCenterY + ((this.finalCenterY - this.introCenterY) * this.placementProgress);
+    }
+
+    /**
+     * 타이틀 진입 블러 값을 effect 캔버스에 반영합니다.
+     * @private
+     */
+    #syncIntroBlur() {
+        const blur = Number.isFinite(this.introBlur)
+            ? Math.max(0, this.introBlur)
+            : 0;
+        if (blur === this.appliedIntroBlur) {
+            return;
+        }
+
+        const effectCanvas = getCanvas('effect');
+        if (!effectCanvas) {
+            return;
+        }
+
+        effectCanvas.style.filter = blur <= 0.001
+            ? 'none'
+            : `blur(${blur}px)`;
+        this.appliedIntroBlur = blur;
     }
 
 }

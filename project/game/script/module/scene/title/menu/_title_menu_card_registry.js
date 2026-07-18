@@ -1,8 +1,4 @@
 import { getData } from 'data/data_handler.js';
-import { DeckOverlay } from 'overlay/title/_deck.js';
-import { QuickStartOverlay } from 'overlay/title/_quick_start.js';
-import { RecordsOverlay } from 'overlay/title/_records.js';
-import { ResearchOverlay } from 'overlay/title/_research.js';
 
 const TITLE_MENU_CARD_DEFINITIONS = getData('TITLE_MENU_DATA').CARD_DEFINITIONS;
 
@@ -14,7 +10,6 @@ const TITLE_MENU_CARD_DEFINITIONS = getData('TITLE_MENU_DATA').CARD_DEFINITIONS;
  * @property {string|null} descriptionKey - 카드 설명 번역 키입니다.
  * @property {'scene'|'overlay'} actionType - 카드 액션 종류입니다.
  * @property {string} actionKey - 실행 대상 키입니다.
- * @property {Function|null} overlayClass - 연결된 overlay 클래스입니다.
  * @property {boolean} placeholder - 더미 구현 여부입니다.
  */
 
@@ -53,12 +48,9 @@ export class TitleMenuCardRegistry {
      * @private
      */
     _createDefinitions() {
-        return Object.freeze(TITLE_MENU_CARD_DEFINITIONS.map((cardDefinition) => {
-            return this._createCardDefinition({
-                ...cardDefinition,
-                overlayClass: this._getOverlayClass(cardDefinition.actionKey)
-            });
-        }));
+        return Object.freeze(TITLE_MENU_CARD_DEFINITIONS.map((cardDefinition) => (
+            this._createCardDefinition(cardDefinition)
+        )));
     }
 
     /**
@@ -75,29 +67,7 @@ export class TitleMenuCardRegistry {
             descriptionKey: cardDefinition.descriptionKey || null,
             actionType: cardDefinition.actionType,
             actionKey: cardDefinition.actionKey,
-            overlayClass: cardDefinition.overlayClass || null,
             placeholder: cardDefinition.placeholder === true
         });
-    }
-
-    /**
-     * 카드 액션 키에 연결된 overlay 클래스를 반환합니다.
-     * @param {string} actionKey - 카드 액션 키입니다.
-     * @returns {Function|null} 연결된 overlay 클래스입니다.
-     * @private
-     */
-    _getOverlayClass(actionKey) {
-        switch (actionKey) {
-            case 'quickStart':
-                return QuickStartOverlay;
-            case 'records':
-                return RecordsOverlay;
-            case 'deck':
-                return DeckOverlay;
-            case 'research':
-                return ResearchOverlay;
-            default:
-                return null;
-        }
     }
 }
