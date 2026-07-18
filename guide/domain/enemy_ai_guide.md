@@ -39,6 +39,16 @@
 
 즉, 현재 구조는 “공용 pathfinding 필드 + 적별 로컬 steering”입니다.
 
+#### 2.2.1 steering 공개 API와 내부 hot-path ABI
+
+`resolveEnemyAISteeringDirection(options)`의 공개 계약은 기존 14개 named property를 읽는 options object 방식 그대로입니다. `_enemy_ai_core.js`만 `_enemy_ai_steering_call_mode.js`의 내부 함수 identity token을 마지막 인수로 전달해 같은 exported 함수의 positional 경로를 사용합니다.
+
+- token이 없거나 identity가 다르면 반드시 기존 공개 object destructuring 경로를 사용합니다. positional 형식은 외부 지원 API가 아닙니다.
+- core의 positional 인수는 기존 object literal property value의 평가 순서를 그대로 유지합니다.
+- 공개 경로의 함수 이름·길이·constructability·own descriptor, getter/Proxy receiver와 조회 순서, 예외 identity와 부분 부수효과는 호환 계약입니다.
+- token 모듈은 내부 구현 경계이며 다른 AI 모듈에서 재수출하지 않습니다. 다만 직접 import 자체를 막는 보안 경계는 아닙니다.
+- 재진입 중 외부 호출과 내부 호출이 겹칠 수 있으므로 공유 인수 배열이나 공유 options scratch 객체로 치환하지 않습니다.
+
 ### 2.3 EnemySpatialIndex와 파트너 탐색
 
 `fixedUpdateObjectSystemEnemies()`는 적별 AI를 실행하기 전에 현재 적 좌표로 `EnemySpatialIndex`를 한 번 구성합니다.
@@ -104,6 +114,7 @@ WASM 결과는 근사치가 아니라 `integration:Float32Array`, `dirX:Float32A
 - AI는 enemy 객체의 현재 상태를 읽고 최종 `acc`, `accSpeed`, `_enemyAIState`를 갱신합니다.
 - 비용이 큰 flow field와 policy target 계산은 같은 fixed tick의 공유 Map cache를 우선 사용합니다. 이 decision 공유 Map은 fixed tick 시작마다 비웁니다. Direct path는 공유 문자열 Map 대신 버전별 wall bounds와 적별 exact 숫자 캐시를 사용합니다.
 - 전체 적 density field는 공간 인덱스가 같은 tick에 이미 채운 `Uint16Array`를 공유합니다. 매 tick 새 배열을 만들지 않고 이전에 touched된 셀만 초기화합니다.
+- core→steering 내부 경로만 private positional ABI를 사용해 적마다 매 fixed tick 생성하던 options object를 제거합니다. 공개 object API와 steering 계산·상태 권한은 계속 기존 JS 경로가 소유합니다.
 - WASM은 cache miss의 순수 flow field precompute만 담당합니다. 적 상태, fixed-step 순서, cache 권한과 최종 steering 적용은 계속 메인 스레드 JS가 소유합니다.
 - 상태 권한이 메인 스레드에 있으므로 별도 authority 복제나 intent merge 경로를 두지 않습니다.
 
@@ -112,7 +123,7 @@ WASM 결과는 근사치가 아니라 `integration:Float32Array`, `dirX:Float32A
 현재 권장 순서는 아래와 같습니다.
 
 1. production flow-field backend의 WASM/JS 호출 수와 cache miss 비용 계측
-2. `enemyAI` hot path 추가 최적화
+2. positional ABI 적용 뒤 남은 `enemyAI` hot path 계측·최적화
 3. 정책별 세부 튜닝값 정리
 4. decision group과 공유 캐시 효율 검증
 

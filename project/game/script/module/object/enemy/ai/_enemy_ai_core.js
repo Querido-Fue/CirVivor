@@ -9,6 +9,7 @@ import {
     stepArrowChargeState,
     updatePolicyIntent
 } from './_enemy_ai_policy_intent.js';
+import { ENEMY_AI_STEERING_POSITIONAL_CALL } from './_enemy_ai_steering_call_mode.js';
 import { resolveEnemyAISteeringDirection } from './_enemy_ai_steering.js';
 import { applyEnemyAIRotationIntent } from './_enemy_ai_rotation.js';
 import {
@@ -377,22 +378,23 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
         incrementEnemyAIDebugCounter(aiDebugStats, 'heavyDecisionCount');
     }
 
-    const scratchDir = resolveEnemyAISteeringDirection({
+    const scratchDir = resolveEnemyAISteeringDirection(
         enemy,
         state,
         context,
         profile,
-        startX: updateFrame.startX,
-        startY: updateFrame.startY,
-        targetX: updateFrame.targetX,
-        targetY: updateFrame.targetY,
-        walls: updateFrame.walls,
-        enemyRadius: updateFrame.enemyRadius,
-        footprintMetrics: updateFrame.footprintMetrics,
-        wallsVersion: updateFrame.wallsVersion,
+        updateFrame.startX,
+        updateFrame.startY,
+        updateFrame.targetX,
+        updateFrame.targetY,
+        updateFrame.walls,
+        updateFrame.enemyRadius,
+        updateFrame.footprintMetrics,
+        updateFrame.wallsVersion,
         forcedPolicyRefresh,
-        aiDebugStats
-    });
+        aiDebugStats,
+        ENEMY_AI_STEERING_POSITIONAL_CALL
+    );
 
     applyEnemyAISteeringResult(enemy, state, scratchDir);
     applyEnemyAIRotationIntent(enemy, state, scratchDir, updateFrame.footprintMetrics, profile);
