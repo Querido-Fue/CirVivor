@@ -138,6 +138,18 @@
 - [x] Computer Use 완전 재실행, 설정·benchmark 진입·적 100개 생성: 179–181 FPS, fixed 60.0/s(한 표본 61.0/s), SIM 100.0% 전후, debt 0.0/s; 종료 후 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `51be299 Reuse shared simulation number normalization`
 
+## 5. JSDoc 정합성 정비
+
+#### 5.1 공간 broad-phase 및 마우스 포커스 계약 정정 — 완료
+
+- [x] `EnemySpatialIndex.forEachInCircle()` 구현과 직접 호출자를 대조해 AABB 셀 broad-phase, visitor 원형 판정, 무효 입력, `false` 조기 종료 및 방문 수 계약을 정확히 문서화
+- [x] `getMouseFocus()` 직접 호출 경로를 대조해 `string[]` 내부 참조, 스택 top, 제자리 변경·새 배열 교체 및 참조 수명 계약을 문서화
+- [x] `setMouseFocus()`와 `MouseInputHandler.setFocus()`의 `string|string[]`, 배열 얕은 복제, 단일 문자열 래핑 및 전체 교체 계약을 동기화
+- [x] 세 파일의 모든 JSDoc 블록을 제거한 실행 본문이 `HEAD` 기준과 byte-for-byte 동일함을 별도 비교로 확인
+- [x] `npm test` 49개, JS/MJS 349개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary 통과
+- [x] Computer Use 완전 재실행, 설정·benchmark 진입·적 100개 생성: 181 FPS, fixed 60.0/s, SIM 99.8–99.9%, debt 0.0/s; 종료 후 타이틀 복원
+- [x] GitHub Desktop 커밋 및 푸시: `4a42e1a Correct spatial and input API documentation`
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
