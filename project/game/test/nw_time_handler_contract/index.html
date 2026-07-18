@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TimeHandler contract</title>
+    <style>
+        :root { color-scheme: dark; font-family: Consolas, monospace; }
+        body { margin: 32px; background: #111827; color: #e5e7eb; }
+        h1 { font-size: 24px; }
+        #status {
+            padding: 20px;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            white-space: pre-wrap;
+        }
+        .pass { border-color: #22c55e; color: #bbf7d0; }
+        .fail { border-color: #ef4444; color: #fecaca; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "util/": "../../script/util/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <h1>TimeHandler NW.js 계약 검사</h1>
+    <div id="status">실제 TimeHandler를 검사하는 중…</div>
+    <script type="module" src="./runner.js"></script>
+</body>
+</html>

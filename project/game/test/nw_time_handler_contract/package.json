@@ -1,0 +1,11 @@
+{
+    "name": "lonely-tower-time-handler-contract",
+    "version": "1.0.0",
+    "main": "index.html",
+    "window": {
+        "title": "TimeHandler contract",
+        "width": 1050,
+        "height": 720,
+        "position": "center"
+    }
+}
