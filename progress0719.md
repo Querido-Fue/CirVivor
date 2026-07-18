@@ -172,6 +172,22 @@
 - [x] Computer Use 완전 재실행 후 benchmark 적 100개와 투사체 80개 연속 생성: 투사체 이동·충돌·화면 밖 컬링 및 잔상 없음, 178–181 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 종료 후 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `4a734b0 Eliminate projectile cull boundary allocation`
 
+#### 6.2 마우스 입력 캔버스 오프셋 aggregate 객체 경로 제거 — 완료
+
+- [x] `MouseInputHandler`의 window/document `mousemove`와 window `mousedown`/`mouseup`이 이벤트마다 `getCanvasOffset()`의 `{x, y}`를 생성하던 경로를 감사
+- [x] 기존 공개 `getCanvasOffset()`의 매 호출 fresh ordinary object, own key/descriptor, extra-argument 무시·무변형 계약은 그대로 유지하고, 객체가 필요 없는 입력 경로용 `getCanvasOffsetX()`/`getCanvasOffsetY()` 추가
+- [x] 기존 평가 순서 `scale → raw X → raw Y → X coercion → Y coercion → client X/Y → mousePos X/Y`를 유지하도록 두 원시 오프셋을 모두 읽은 뒤 숫자로 변환
+- [x] 생산 코드 변경 전 7개 parity subtest의 구조·행동 red를 확인하고 변경 후 green으로 고정
+- [x] 실제 `display_system.js` 전체 모듈을 VM에서 링크해 공개 aggregate API, 축별 singleton 재조회, getter 중 DisplaySystem 교체 및 함수 shape 검증
+- [x] `NaN`·±`Infinity`·±0·최대/최소·subnormal을 포함한 결정적 raw IEEE-754 50,000건과 string/null/boolean/BigInt/boxed number/custom coercion/Symbol 예외를 `Object.is` 및 예외 name/message/constructor로 exact 비교
+- [x] getter/coercion/예외/부분 기록 trace, 실패 시 버튼 큐 미호출, 4개 DOM listener 경로, 같은 핸들러와 서로 다른 핸들러의 중첩 재진입을 독립 legacy 오라클과 exact 비교
+- [x] V8 비표준 `Error.stack`은 함수명·행 번호에 의존하므로 비교 대상에서 명시적으로 제외하고, 게임이 분기하는 값·예외·부수효과·상태 계약은 모두 고정
+- [x] `module_architecture_guide.md`와 관련 JSDoc에 공개 aggregate/입력 scalar 경계 및 평가 순서 불변조건 반영
+- [x] `npm test` 57개, JS/MJS 351개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary, WAT/WASM 재현성, `git diff --check` 모두 통과
+- [x] Computer Use 완전 재실행 후 2560×1440 타이틀에서 마우스로 설정 오버레이 진입·취소, hover 효과·좌표 변환·정상 타이틀 복원 확인
+- [x] 독립 리뷰 2건에서 프로덕션 평가 순서·공개 API·재진입·테스트 하네스 blocker 없음 확인
+- [x] GitHub Desktop 커밋 및 푸시: `c684b29 Eliminate mouse offset event object`
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.

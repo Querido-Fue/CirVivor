@@ -170,6 +170,22 @@
 - **동일성 위험:** 이전·현재 회전은 각각 유한값으로 fallback되지만, `Number.MAX_VALUE - (-Number.MAX_VALUE)`처럼 두 유한 극값의 뺄셈이 무한대로 오버플로할 수 있다. 기존 식은 `Infinity % 360`의 결과인 `NaN`을 유지하지만 `normalizeDegrees(Infinity)`는 `0`을 반환하므로 직접 치환은 완전 동일하지 않다. `init(data.rotation)`과 공개 AI adapter가 회전값을 직접 공급할 수 있어 API 경계에서는 도달 가능하다. 별도 테스트에서 양방향 극값의 실제 `BaseEnemy.renderRotation === NaN` 계약을 고정했으며 생산 코드는 수정하지 않았다.
 - **선행 테스트/권장 방향:** 렌더 보간 hot path의 추가 분기·함수 호출 비용까지 측정하면서 오버플로 결과를 그대로 보존하는 adapter가 필요한지 먼저 결정한다. 실사용 입력 범위를 제한하는 계약이 생기기 전에는 현재 inline 식을 유지한다. 반면 `_shape_enemy.js`의 로컬 구현은 비유한 값과 부호 있는 0을 포함한 424,602개 케이스에서 공용 함수와 `Object.is` 기준으로 일치해 별도 안전 변경 대상으로 처리했다.
 
+### 4.13 설정 schema/API의 prototype chain 충돌
+
+- **파일 경로:** `project/game/script/module/save/_setting_handler.js`, `project/game/script/module/save/save_system.js`
+- **문제 후보:** `schema`가 일반 객체이고 지원 키를 own-property가 아닌 `this.schema[key]`의 truthiness로 판정한다. `setBatch()`/`previewBatch()`는 `for...in`으로 입력의 상속된 열거 가능 속성까지 처리하며, 마지막 `settings.theme` 조회도 own-property 여부를 확인하지 않는다.
+- **현재 동작과 영향:** `getSchema('__proto__')`는 `Object.prototype`을, `getSchema('constructor')`는 전역 `Object` 함수를 live 참조로 반환한다. 계산 속성, `JSON.parse()` 또는 null-prototype 객체의 own `__proto__`를 `set()`/batch API에 전달하면 지원 키처럼 처리되어 `Object.prototype.value`를 만들 수 있다. 상속된 정상 키도 batch 메모리 값과 테마 효과에 반영된다. 저장소 내부의 현재 호출자는 고정된 정상 키와 평범한 객체만 사용하므로 일반 게임 경로의 직접 발생은 확인되지 않았지만, 같은 NW.js renderer의 오용이나 향후 입력 확장 시 전역 객체 무결성과 저장 동작을 깨뜨릴 수 있다.
+- **동일성 위험:** `Object.hasOwn` 검증, own-key 전용 순회, null-prototype schema, 복제·동결 중 어느 방식을 적용해도 현재 관찰 가능한 prototype 이름 처리, 상속 입력 처리, getter/Proxy 순서, 테마 호출, 저장 횟수 또는 live 참조 계약이 달라진다. 완전한 차단을 위해 public schema 참조까지 제한하면 정상 호출자의 mutation 가능성도 제거되므로 기존 모든 입력의 100% 동일 동작과 보안 수정은 동시에 성립하지 않는다. 따라서 생산 코드는 수정하지 않았다.
+- **선행 테스트/권장 방향:** 전역 오염이 다른 테스트에 번지지 않도록 각 케이스를 별도 `vm.Context`나 자식 프로세스에서 실행한다. 정상 own 키와 `__proto__`, `constructor`, `toString`, `valueOf`, `hasOwnProperty`, 이미 오염된 임의 키를 모든 단일/batch/preview/get API에 적용하고, 객체 리터럴·계산 속성·JSON·null-prototype·상속 enumerable/non-enumerable·getter/Proxy·null/undefined 입력을 포함한다. 반환/예외/Promise, trap 순서, `setTheme`, 메모리, hidden 정책, 쓰기 횟수·JSON 바이트와 `Object.prototype` 전체 descriptor를 전후 비교한 뒤 prototype/상속 입력에 대한 별도 안전 계약을 승인해야 한다.
+
+### 4.14 마우스 DOM listener 중복 처리와 해제 수명 주기
+
+- **파일 경로:** `project/game/script/module/input/_mouse_input_handler.js`, `project/game/script/module/input/input_system.js`, `project/game/script/module/system_handler.js`
+- **문제 후보:** `MouseInputHandler`는 `mousemove`를 `window`와 `document` 양쪽에 익명 함수로 등록하고, 모든 listener를 제거하는 `destroy()`/unsubscribe 경계를 제공하지 않는다. 실제 bubbling 경로에서는 한 포인터 이동이 document와 window에서 모두 처리될 수 있으며, `InputSystem`을 다시 만들면 이전 handler의 listener와 상태 머신도 남을 수 있다.
+- **현재 범위:** 정상 `SystemHandler` 초기화는 `InputSystem`을 한 번만 만들므로 현재 일반 게임 수명 주기에서 인스턴스 누적 재생성은 확인되지 않았다. 양쪽 이동 listener는 같은 좌표 변환을 수행해 보통 최종 위치는 같지만, display/event getter와 coercion side effect, 예외 횟수, 사용자 정의 상태 머신 타이밍은 두 호출을 관찰할 수 있다.
+- **동일성 위험:** 한 listener 제거, event identity dedupe, bound callback 저장 또는 `destroy()` 도입은 호출 횟수·순서·예외와 blur/visibility/mouseleave 후 상태 전이를 바꾼다. 현재 실제 이벤트 전파와 중복 호출을 포함한 브라우저 계약 없이 성능 목적으로 정리하면 완전 동일성을 보장할 수 없어 생산 코드는 수정하지 않았다.
+- **선행 테스트/권장 방향:** 실제 NW.js DOM에서 element→document→window 전파 trace와 이벤트당 좌표/버튼 갱신 횟수를 먼저 기록한다. 단일·복수 handler, 생성/폐기 반복, blur·visibilitychange·mouseleave·mousedown/up 도중 destroy, listener 예외와 재진입을 포함해 기존 trace를 고정한다. 승인된 새 수명 주기 계약이 생기면 named callback과 idempotent `destroy()`를 추가하고 `InputSystem`/`SystemHandler`가 소유권을 명시적으로 위임하도록 변경한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약
