@@ -37,32 +37,28 @@ const hasObjectFocus = () => {
 };
 
 /**
- * 주어진 속도 벡터가 최대 속도를 넘으면 easeOutExpo 형태로 상한 쪽으로 감쇠합니다.
+ * 주어진 속도 벡터가 최대 속도를 넘으면 easeOutExpo 형태로 상한 쪽으로 감쇠할 배율을 계산합니다.
  * @param {number} vx - x축 속도입니다.
  * @param {number} vy - y축 속도입니다.
  * @param {number} maxSpeed - 허용할 최대 속도입니다.
  * @param {number} stepDelta - 현재 고정 틱 델타입니다.
- * @returns {{x:number, y:number}} 감쇠가 적용된 속도 벡터입니다.
+ * @returns {number} 원래 속도 벡터에 곱할 감쇠 배율입니다.
  */
-const easeOutExpoVelocityToMaxSpeed = (vx, vy, maxSpeed, stepDelta) => {
+const getEaseOutExpoVelocityScale = (vx, vy, maxSpeed, stepDelta) => {
     if (!(Number.isFinite(maxSpeed) && maxSpeed > 0)) {
-        return { x: vx, y: vy };
+        return 1;
     }
 
     const speed = Math.hypot(vx, vy);
     if (!(speed > maxSpeed)) {
-        return { x: vx, y: vy };
+        return 1;
     }
 
     const easedOverflow = TITLE_SPEED_CAP_EASEOUT_EXPO_RATE > 0
         ? (speed - maxSpeed) * Math.pow(2, -(TITLE_SPEED_CAP_EASEOUT_EXPO_RATE * Math.max(0, stepDelta)))
         : 0;
     const nextSpeed = maxSpeed + easedOverflow;
-    const scale = nextSpeed / speed;
-    return {
-        x: vx * scale,
-        y: vy * scale
-    };
+    return nextSpeed / speed;
 };
 
 /**
@@ -264,15 +260,17 @@ export const titleAI = {
         const burstVelY = Number.isFinite(enemy._titleBurstVel.y) ? enemy._titleBurstVel.y : 0;
         const unclampedTargetVx = (enemy._titleBaseSpeed.x * boost) + burstVelX + enemy._titleMagVel.x;
         const unclampedTargetVy = (enemy._titleBaseSpeed.y * boost) + burstVelY + enemy._titleMagVel.y;
-        const clampedTargetVelocity = easeOutExpoVelocityToMaxSpeed(
+        const targetVelocityScale = getEaseOutExpoVelocityScale(
             unclampedTargetVx,
             unclampedTargetVy,
             getTitleEnemySpeedCap(enemy),
             stepDelta
         );
+        const clampedTargetVx = unclampedTargetVx * targetVelocityScale;
+        const clampedTargetVy = unclampedTargetVy * targetVelocityScale;
         enemy.setAcc(
-            clampedTargetVelocity.x - enemy.speed.x,
-            clampedTargetVelocity.y - enemy.speed.y
+            clampedTargetVx - enemy.speed.x,
+            clampedTargetVy - enemy.speed.y
         );
         enemy.accSpeed = getTitleBurstAccelResponse(enemy);
 
