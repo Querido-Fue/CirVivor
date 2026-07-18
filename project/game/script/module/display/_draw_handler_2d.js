@@ -16,6 +16,9 @@ import {
     resetDrawContextState
 } from './draw_2d_layer_state.js';
 
+/** 모듈 내부에서 공유하는 기본 지속 그림자 상태입니다. */
+const DEFAULT_DRAW_SHADOW_STATE = createDrawShadowState();
+
 /**
  * @class DrawHandler2D
  * @description 2D 캔버스 레이어를 동적으로 등록하고 그리기 상태를 관리합니다.
@@ -65,7 +68,7 @@ export class DrawHandler2D {
 
         this.#contexts.set(layerName, context);
         this.#stateCaches.set(layerName, {});
-        this.#shadowState.set(layerName, createDrawShadowState());
+        this.#shadowState.set(layerName, DEFAULT_DRAW_SHADOW_STATE);
         this.#layerOptions.set(layerName, {
             persistent: options.persistent === true
         });
@@ -143,7 +146,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#shadowState.set(layerName, createDrawShadowState());
+        this.#shadowState.set(layerName, DEFAULT_DRAW_SHADOW_STATE);
     }
 
     /**
@@ -162,7 +165,7 @@ export class DrawHandler2D {
             context,
             cache,
             options,
-            this.#shadowState.get(layerName) || createDrawShadowState()
+            this.#shadowState.get(layerName) || DEFAULT_DRAW_SHADOW_STATE
         );
 
         let didDraw = true;
