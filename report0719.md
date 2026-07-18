@@ -229,6 +229,23 @@
 - **현재 처리:** 기본 환경의 출력 동일성만으로는 사용자가 요구한 모든 edge case의 완전 동일성을 보장할 수 없으므로, metrics 객체·helper·renderer 시그니처를 모두 유지하고 생산 코드와 테스트 파일은 변경하지 않았다.
 - **선행 테스트/권장 방향:** native intrinsic 불변과 호출 스택 비관찰을 명시적 런타임 계약으로 정하거나, helper 프레임과 재진입별 독립 상태를 유지하는 allocation pool을 별도로 설계·실측해야 한다. 후자는 getter·intrinsic·render 재진입, 모든 throw 지점, 깊이별 pool 복구, 보관된 render command, prototype 오염 및 정상/예외 후속 호출을 actual-source parity로 고정하고 실제 NW.js 프레임 benchmark에서 이득이 확인될 때만 적용해야 한다.
 
+### 4.20 navigation blocked-mask raster의 WASM 이전
+
+- **파일 경로:** `project/game/script/module/object/enemy/ai/_enemy_ai_navigation.js`
+- **문제 후보:** `buildNavGrid()`는 각 벽의 확장된 정수 셀 범위를 순회해 `Uint8Array blocked`에 1을 기록한다. 반복적인 rectangle fill이므로 flow-field에 이은 WASM 후보로 감사했다.
+- **완전 동일성 경계:** 벽 객체의 getter와 `getRectBounds()`, clearance 확장, `Math.floor()`, `clampNumber()`까지 옮기면 property 접근·coercion·교체 가능한 intrinsic·예외와 부분 부수효과의 순서가 달라질 수 있다. 안전하게 분리 가능한 최소 경계는 JS가 기존 순서로 계산한 정수 `minCx/maxCx/minCy/maxCy`를 packed buffer로 넘기고 WASM이 blocked mask만 채우는 구간이다.
+- **성능 검증:** 기존 JS와 pack→WASM→copy 후보의 중앙값은 벽 5개에서 0.0013ms 대 0.0020ms(0.65배), 32개에서 0.0038ms 대 0.0039ms(0.97배), 128개에서 0.0136ms 대 0.0131ms(1.04배), 512개에서 0.0560ms 대 0.0520ms(1.08배)였다. 512개 p95도 기존 0.0728ms보다 후보 0.0792ms가 느렸다.
+- **현재 처리:** raster는 nav-grid LRU miss에서만 실행되고 계측상 flow-field miss 비용의 약 1~3%였다. 모든 표본이 1.3배 전환 gate를 충족하지 못하고 일반적인 적은 벽 수에서 오히려 느려 생산 코드와 WASM artifact를 추가하지 않았다.
+- **재검토 조건:** 실제 맵의 벽 수와 nav-grid miss 빈도가 크게 증가하거나, packing·결과 복사 없이 기존 WASM memory를 안전하게 소유할 수 있는 ABI가 마련될 때 actual-source exact 테스트와 실제 NW.js clean-process 벤치를 다시 수행한다.
+
+### 4.21 navigation grid cache key 충돌 가능성
+
+- **파일 경로:** `project/game/script/module/object/enemy/ai/_enemy_ai_navigation.js`
+- **문제 후보:** `buildGridCacheKey()`는 viewport를 `Math.round(width/height)`로 기록하지만 실제 grid 열·행 수는 `Math.ceil(width/cellSize)`와 `Math.ceil(height/cellSize)`로 만든다. 또한 integer `wallsVersion` 경로는 wall 배열 identity와 geometry를 키에 포함하지 않는다.
+- **잠재 영향:** 같은 rounded viewport key 안에서 cell 경계를 넘는 두 크기는 서로 다른 `cols/rows`를 요구할 수 있다. 서로 다른 wall 배열이 같은 version으로 전달되면 이전 blocked mask와 flow field를 재사용할 가능성도 있다.
+- **현재 범위:** 정상 `ObjectSystem`이 wall version과 viewport 변경을 일관되게 관리하는 현재 경로에서는 실행 가능한 오염 사례를 확정하지 못했다. 키를 즉시 바꾸면 cache miss 시점, LRU 퇴출 순서, allocation과 적별 flow 참조 갱신 시점이 달라지므로 완전 동일성 증거 없이 수정하지 않았다.
+- **선행 테스트/권장 방향:** 같은 `Math.round()` 결과 안에서 `ceil(width/cellSize)` 또는 `ceil(height/cellSize)`가 달라지는 양쪽 경계, 같은 version의 서로 다른 wall 배열, version 없는 fractional wall bounds, 배열 제자리 변이를 조합한다. grid 차원·blocked 원시 바이트·flow key·LRU 순서와 장시간 AI replay를 고정하고, wall version을 유일 authority로 볼지 identity/derived dimensions를 키에 추가할지 계약을 먼저 확정한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약

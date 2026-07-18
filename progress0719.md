@@ -278,6 +278,30 @@
 - [x] Computer Use 완전 재실행 후 타이틀 적의 마우스 클릭 지점 자석 반응과 정상 이동 확인; benchmark 적 100개 생성 후 활성 94개, 181 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 재실행해 정상 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `4b60f59 Eliminate title AI velocity object allocation`
 
+#### 6.4 적 AI steering options 객체 할당 제거 — 완료
+
+- [x] 모든 적의 매 fixed tick에서 14개 property options object를 생성하던 `_enemy_ai_core.js` → `_enemy_ai_steering.js` 호출 경로 감사
+- [x] 기존 공개 options object API는 유지하고, 내부 함수 identity token이 정확히 일치하는 core 호출만 기존 property value 평가 순서의 positional 경로를 사용하도록 변경
+- [x] 생산 코드 변경 전 actual-source parity 10개 중 구조 가드 1개 red를 확인하고 변경 후 10개 전체 green으로 고정
+- [x] direct/arrival/flow/blocked/hexa/numeric 경로, 14개 공개 getter 순서·각 throw 지점, 상속 accessor·Proxy receiver·재진입, null/undefined/primitive/revoked Proxy 예외를 exact 비교
+- [x] 공개 함수의 name·length 1·constructability·own descriptor와 잘못된 내부 token fallback, steering/core namespace를 기존과 동일하게 고정
+- [x] 실제 core `updateFrame` getter/setter 평가 순서·각 throw 지점·인수 평가 중 재진입과 10,000 fixed tick의 상태를 raw Float64 기준으로 exact 비교
+- [x] 실제 NW.js Chromium의 `document.all` IsHTMLDDA 입력을 포함해 strict null/undefined 분기와 공개 getter trace가 기존과 동일함을 확인
+- [x] 최종 production 소스를 읽은 두 clean process·case별 61개 교차 표본에서 모두 mixed 3:1 p50 1.066배로 1.05배 gate 통과. 첫 실행 direct 88.6→84.6ns, flow 117.6→114.9ns, mixed 103.7→97.3ns; 둘째 실행 direct 88.8→83.6ns, flow 117.4→114.7ns, mixed 103.1→96.7ns. 호출 경로 microbenchmark이며 전체 frame 향상으로 확대 해석하지 않음
+- [x] `npm test` 107개, JS/MJS 359개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] Computer Use 변경 후 benchmark: 적 800회 생성·활성 725개 안정화에서 122 FPS, fixed 60.0/s, SIM 100.0%, frame p50/p95/p99 9.5/9.9/11.2ms, fixed CPU 11.1/12.4/14.1ms, debt/lost 0; 이동·합체·렌더 정상 및 변경 전 활성 710개 기준 비퇴행 확인
+- [x] `Error.stack`, `Function#toString()`/소스 위치, OOM·heap 관찰은 실행 계약 비교 대상에서 제외
+- [x] GitHub Desktop 커밋 및 푸시: `61c090d Optimize enemy AI steering call path`
+
+#### 6.5 navigation grid raster WASM 후보 — 보고 전용
+
+- [x] 완전 동일성을 유지할 수 있는 최소 경계를 JS에서 계산한 정수 rectangle 범위의 blocked mask fill로 제한
+- [x] 벽 getter·bounds 해석·clearance 확장·floor/clamp를 WASM으로 옮기면 평가 순서와 coercion·예외 계약이 달라질 수 있어 JS에 유지
+- [x] 기존 JS 대비 pack→WASM→copy 후보 측정: 벽 5개 0.65배, 32개 0.97배, 128개 1.04배, 512개 1.08배이며 512개 p95도 후보가 더 느림
+- [x] raster는 nav-grid LRU miss에서만 실행되고 flow-field miss 비용의 약 1~3%여서 1.3배 전환 gate를 충족하지 못함
+- [x] 생산 코드는 변경하지 않고 WASM 보류 근거를 `report0719.md` 4.20에 기록
+- [x] nav-grid cache key의 별도 잠재 위험은 도달 가능성과 새 계약이 미확정이므로 `report0719.md` 4.21에만 기록
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
