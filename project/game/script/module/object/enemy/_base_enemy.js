@@ -30,11 +30,22 @@ const ANGULAR_DECAY_MIN_SECONDS = ENEMY_MOTION_CONSTANTS.ANGULAR_DECAY_MIN_SECON
  */
 
 /**
+ * @typedef {Object} EnemyAIAdapter
+ * @property {function(BaseEnemy, number, (Object|null)): *} fixedUpdate
+ * @property {function(BaseEnemy): void} [init]
+ * @property {function(BaseEnemy): void} [reset]
+ * @property {function(BaseEnemy, Object): void} [resize]
+ */
+
+/**
  * @class BaseEnemy
  * @description 적 공통 데이터를 관리하는 기본 클래스입니다.
  * 풀링 재사용을 위해 `init()` / `reset()` / `release()` 흐름을 기준으로 작성되었습니다.
  */
 export class BaseEnemy {
+    /**
+     * 재사용할 벡터와 상태 컨테이너를 한 번 할당하고 풀 대기 상태로 초기화합니다.
+     */
     constructor() {
         this.active = false;
 
@@ -76,6 +87,7 @@ export class BaseEnemy {
     /**
      * 풀에서 꺼낸 뒤 사용할 상태로 초기화합니다.
      * @param {Object} [data={}]
+     * @returns {this} 초기화된 현재 인스턴스
      */
     init(data = {}) {
         if (this.__poolResetReady !== true) {
@@ -206,9 +218,11 @@ export class BaseEnemy {
     }
 
     /**
-     * 중심점 좌표를 설정합니다.
+     * 물리 중심점 좌표만 설정합니다. 이전/렌더 transform은 동기화하지 않으므로
+     * 순간이동 표시에는 필요에 따라 `snapRenderTransform()`을 이어서 호출합니다.
      * @param {number} x
      * @param {number} y
+     * @returns {void}
      */
     setPosition(x, y) {
         this.position.x = x;
@@ -352,20 +366,22 @@ export class BaseEnemy {
     }
 
     /**
-         * 현재 유지될 속도 벡터를 지정합니다.
-         * @param {number} x x축 속도
-         * @param {number} y y축 속도
-         */
+     * 현재 유지될 속도 벡터를 지정합니다.
+     * @param {number} x x축 속도
+     * @param {number} y y축 속도
+     * @returns {void}
+     */
     setSpeed(x, y) {
         this.speed.x = x;
         this.speed.y = y;
     }
 
     /**
-         * 초당 누적될 가속도 벡터를 결정합니다.
-         * @param {number} x x축 가속도
-         * @param {number} y y축 가속도
-         */
+     * 초당 누적될 가속도 벡터를 결정합니다.
+     * @param {number} x x축 가속도
+     * @param {number} y y축 가속도
+     * @returns {void}
+     */
     setAcc(x, y) {
         this.acc.x = x;
         this.acc.y = y;
@@ -467,7 +483,10 @@ export class BaseEnemy {
     /**
      * 적에 사용할 AI를 설정합니다.
      * 표준 인터페이스: `{ fixedUpdate(enemy, delta, context), init?, reset?, resize? }`
-     * @param {Object|null|undefined} ai
+     * 기존 AI의 `reset()`을 먼저 실행하므로 null 또는 잘못된 어댑터도 기존 AI를
+     * 해제합니다. 유효한 새 어댑터에는 `init()`을 실행합니다.
+     * @param {EnemyAIAdapter|null|undefined} ai
+     * @returns {void}
      */
     setAI(ai) {
         this.clearAI();
@@ -484,8 +503,9 @@ export class BaseEnemy {
     }
 
     /**
-         * 적에게 할당된 AI를 초기화 및 해제합니다.
-         */
+     * 현재 AI의 `reset(enemy)` 훅을 실행한 뒤 참조를 해제합니다.
+     * @returns {void}
+     */
     clearAI() {
         if (this.ai && typeof this.ai.reset === 'function') {
             this.ai.reset(this);
@@ -494,12 +514,12 @@ export class BaseEnemy {
     }
 
     /**
-         * 고정 틱 기반 AI 훅을 실행하고 결과를 반환합니다.
-         * 표준 인터페이스는 `ai.fixedUpdate(enemy, delta, context)`입니다.
-         * @param {number} stepDelta
-         * @param {Object|null} [context=null]
-         * @returns {Object|null}
-         */
+     * 고정 틱 기반 AI 훅을 실행하고 결과를 반환합니다.
+     * 표준 인터페이스는 `ai.fixedUpdate(enemy, delta, context)`입니다.
+     * @param {number} stepDelta
+     * @param {Object|null} [context=null]
+     * @returns {*} 훅의 non-nullish 반환값이며, 훅이 없거나 반환값이 nullish이면 `null`
+     */
     runAIFixed(stepDelta, context = null) {
         if (!this.ai) return null;
         if (typeof this.ai.fixedUpdate === 'function') {
@@ -509,9 +529,10 @@ export class BaseEnemy {
     }
 
     /**
-         * 화면 크기 변경 시, AI의 벡터 배율 등을 상황에 맞게 재정렬합니다.
-         * @param {Object} context 재정렬 비율 정보
-         */
+     * 화면 크기 변경 시, AI의 벡터 배율 등을 상황에 맞게 재정렬합니다.
+     * @param {Object} context 재정렬 비율 정보
+     * @returns {void}
+     */
     resizeAI(context) {
         if (!this.ai || typeof this.ai.resize !== 'function') return;
         this.ai.resize(this, context);
@@ -521,7 +542,7 @@ export class BaseEnemy {
      * 넉백 벡터를 현재 속도에 반영합니다.
      * @param {number} x
      * @param {number} y
-     * @returns {EnemyVector2}
+     * @returns {EnemyVector2} 복사본이 아닌 내부의 가변 `speed` 객체
      */
     speedFromKnockBack(x, y) {
         const knockBackX = Number.isFinite(x) ? x : 0;
@@ -593,7 +614,7 @@ export class BaseEnemy {
     }
 
     /**
-     * size=1일 때 화면 높이의 3%가 됩니다.
+     * simulation object 영역 높이와 설정 비율 및 `size`를 곱한 렌더 높이를 반환합니다.
      * @returns {number}
      */
     getRenderHeightPx() {
@@ -601,7 +622,7 @@ export class BaseEnemy {
     }
 
     /**
-     * 화면 기준으로 적이 제거 범위를 벗어났는지 판정합니다.
+     * 도형 경계가 아니라 물리 중심점이 화면 제거 범위를 벗어났는지 판정합니다.
      * @param {number} ww
      * @param {number} wh
      * @param {number} [outsideRatio=0]
@@ -619,9 +640,11 @@ export class BaseEnemy {
     }
 
     /**
-         * 적의 내부 상태 이펙트 객체를 적용/덮어씁니다.
-         * @param {EnemyStatus|Object|null|undefined} status 새로운 상태(빙결, 발화 등) 정보
-         */
+     * 적의 내부 상태 이펙트 객체를 적용/덮어씁니다.
+     * 전달된 객체의 값은 재사용 중인 `status` 컨테이너로 복사됩니다.
+     * @param {EnemyStatus|Object|null|undefined} status 새로운 상태(빙결, 발화 등) 정보
+     * @returns {void}
+     */
     setStatus(status) {
         const nextStatus = status || {};
         this.status.id = nextStatus.id ?? null;
@@ -632,8 +655,9 @@ export class BaseEnemy {
     }
 
     /**
-         * 적에게 부여된 모든 상태 이상 수치 및 시간을 초기화합니다.
-         */
+     * 적에게 부여된 모든 상태 이상 수치 및 시간을 초기화합니다.
+     * @returns {void}
+     */
     clearStatus() {
         this.status.id = null;
         this.status.type = 'none';
