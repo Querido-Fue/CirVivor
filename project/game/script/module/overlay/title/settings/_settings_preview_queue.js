@@ -2,7 +2,8 @@ import { previewSettingBatch } from 'save/save_system.js';
 import { expandCompositeSettings } from './_settings_state.js';
 
 /**
- * 설정 미리보기 반영을 마이크로태스크 단위로 합쳐 실행합니다.
+ * 설정 메모리 미리보기와 런타임 반영을 마이크로태스크 단위로 합쳐 실행합니다.
+ * 이 큐 자체는 파일 I/O를 수행하지 않지만 메모리 값은 이후 저장 호출에서 기록될 수 있습니다.
  */
 export class SettingsPreviewQueue {
     #pendingSettings;
@@ -10,7 +11,7 @@ export class SettingsPreviewQueue {
     #applyRuntimeSettings;
 
     /**
-     * @param {{applyRuntimeSettings: function(object): Promise<void>|void}} options - 큐 실행 옵션입니다.
+     * @param {{applyRuntimeSettings?: (settings: Record<string, *>) => Promise<void>|void}} [options] - 큐 실행 옵션입니다.
      */
     constructor(options) {
         this.#pendingSettings = {};
@@ -30,7 +31,7 @@ export class SettingsPreviewQueue {
 
     /**
      * 현재 대기 중인 설정을 꺼내고 큐를 비웁니다.
-     * @returns {object} 이번 flush에서 반영할 설정 묶음입니다.
+     * @returns {Record<string, *>} 이번 flush에서 반영할 설정 묶음입니다.
      */
     #drainPendingSettings() {
         const pending = this.#pendingSettings;
@@ -39,8 +40,10 @@ export class SettingsPreviewQueue {
     }
 
     /**
-     * 대기 중인 설정 묶음을 실제 미리보기와 런타임에 반영합니다.
-     * @param {object} pending - 이번 flush에서 반영할 설정 묶음입니다.
+     * 대기 묶음을 설정 메모리에 먼저 반영한 뒤 런타임 콜백을 기다립니다.
+     * `theme`은 메모리 미리보기 단계에서 즉시 적용됩니다. 이 경로 자체는 파일을 쓰지 않지만
+     * 메모리 값은 이후 저장 호출에서 기록될 수 있습니다.
+     * @param {Record<string, *>} pending - 이번 flush에서 반영할 설정 묶음입니다.
      * @returns {Promise<void>}
      */
     async #applyPendingSettings(pending) {
@@ -53,9 +56,11 @@ export class SettingsPreviewQueue {
     }
 
     /**
-     * 미리보기 설정을 다음 마이크로태스크에 합쳐 반영합니다.
-     * @param {object} changedSettings - 반영할 설정 키와 값입니다.
-     * @returns {Promise<void>}
+     * 미리보기 설정을 다음 마이크로태스크의 대기 묶음에 합쳐 반영합니다.
+     * 아직 drain되지 않은 같은 묶음에서 동일 키가 반복되면 마지막 값이 사용됩니다.
+     * 이 큐 자체는 파일 I/O를 수행하지 않습니다.
+     * @param {Record<string, *>} changedSettings - 반영할 설정 키와 값입니다.
+     * @returns {Promise<void>} 해당 호출이 속한 연속 미리보기 반영이 끝나면 이행됩니다.
      */
     queue(changedSettings) {
         Object.assign(this.#pendingSettings, expandCompositeSettings(changedSettings));

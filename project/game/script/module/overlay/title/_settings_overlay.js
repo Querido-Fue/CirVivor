@@ -202,7 +202,8 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * 미리보기 반영이 현재 업데이트 루프를 끊지 않도록 다음 마이크로태스크로 지연합니다.
+     * 이 호출 경로 자체에서 디스크를 쓰지 않는 미리보기를 현재 업데이트 루프를 끊지 않도록
+     * 다음 마이크로태스크로 지연합니다.
      * @param {object} changedSettings - 반영할 설정 키와 값입니다.
      * @returns {Promise<void>}
      */
@@ -219,7 +220,7 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * 현재 미리보기 상태를 초기 스냅샷으로 되돌린 뒤 overlay를 닫습니다.
+     * 현재 메모리·런타임 미리보기 상태를 저장 없이 초기 스냅샷으로 되돌린 뒤 overlay를 닫습니다.
      * @returns {Promise<void>}
      */
     async #cancelChanges() {
@@ -499,8 +500,10 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * 변경된 모든 임시 설정을 실제 세이브 데이터에 일괄 저장합니다.
-     * @returns {Promise<object>} 실제로 변경되어 저장된 설정 키와 값입니다.
+     * 대기 중인 미리보기를 모두 반영한 뒤 초기 상태와 다른 임시 설정 및
+     * hidden `screenModeChanged=false`를 저장합니다.
+     * @returns {Promise<Record<string, string|number|boolean>>} `screenModeChanged`를 제외한
+     * 초기/임시 상태 비교 결과입니다. 비교 결과가 비어 있으면 파일을 쓰지 않고 빈 객체를 반환합니다.
      */
     async save() {
         await this.#flushPendingPreview();
@@ -532,7 +535,9 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * overlay가 저장 없이 닫히는 경우 미리보기 설정을 원복합니다.
+     * overlay가 저장 없이 닫히는 경우 메모리·런타임 미리보기 설정을 디스크 쓰기 없이 원복합니다.
+     * 비동기 원복 작업을 시작하고 즉시 반환합니다.
+     * @returns {void}
      */
     onCloseComplete() {
         if (!this.rollbackOnClose || !this.settingsChanged) {
