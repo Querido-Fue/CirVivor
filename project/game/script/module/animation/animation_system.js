@@ -200,8 +200,14 @@ export class AnimationSystem {
     }
 
     /**
-     * 특정 ID의 애니메이션을 종료합니다.
-     * @param {number} id - 완료할 애니메이션 ID
+     * 특정 ID의 등록된 애니메이션을 완료 상태로 전환합니다.
+     * `complete()`를 동기 호출하므로 이미 획득한 완료 Promise는 해결되지만 반응 콜백은 마이크로태스크에서 실행됩니다.
+     * 소유 속성을 endValue로 강제하지 않으며 Map·activeAnimations 정리와 표준 애니메이션 풀 반환도 즉시 수행하지 않습니다.
+     * 정리는 delta 해석에 성공해 애니메이션 순회에 도달한 현재 또는 다음 `update()`에서 수행됩니다.
+     * `update()`가 호출되지 않거나 순회 전에 예외가 발생하면 등록과 풀 반환은 보류됩니다.
+     * @param {*} id - `id < 0` 비교를 통과한 뒤 `Map`의 exact key로 조회할 애니메이션 ID입니다.
+     * @returns {void}
+     * @throws {*} ID 비교, ID `Map` 접근·조회, `complete` 접근·호출 예외를 그대로 전파합니다.
      */
     remove(id) {
         if (id < 0) return;
@@ -299,8 +305,11 @@ export const animateMixed = (owner, mixedDefs, properties = {}) => animationSyst
 export const animatePersist = (owner, properties) => animationSystemInstance.animatePersist(owner, properties);
 
 /**
- * 특정 ID의 애니메이션을 즉시 제거합니다.
- * @param {number} id - 제거할 애니메이션 ID
+ * 가장 최근에 생성된 AnimationSystem의 애니메이션을 완료 처리해 후속 `update()` 순회의 정리 대상으로 만듭니다.
+ * AnimationSystem 생성 전 호출하면 인스턴스 접근에서 TypeError가 발생합니다.
+ * @param {*} id - 시스템 메서드의 비교·exact key 조회에 전달할 애니메이션 ID입니다.
+ * @returns {*} 정상 AnimationSystem 구현에서는 `undefined`이며 교체된 `remove` 메서드의 반환값을 그대로 전달합니다.
+ * @throws {*} 인스턴스·메서드 접근이나 시스템 메서드 호출 예외를 그대로 전파합니다.
  */
 export const remove = (id) => animationSystemInstance.remove(id);
 
