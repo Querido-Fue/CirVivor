@@ -266,14 +266,16 @@ export class EnemySpatialIndex {
     }
 
     /**
-     * 원형 반경과 타입 필터에 맞는 tick 시작 스냅샷을 순회합니다.
+     * 조회 원의 AABB가 덮는 공간 셀에서 타입 필터를 통과한 tick 시작 후보를 중복 없이 순회합니다.
+     * 후보 중심과 조회 중심 사이의 실제 원형 거리 판정은 수행하지 않으므로 방문 함수가 스냅샷 좌표로 판정해야 합니다.
+     * 좌표 또는 반경이 유한하지 않거나 반경이 음수이거나 방문 함수가 아니면 후보를 방문하지 않고 0을 반환합니다.
      * @param {number} x - 조회 중심 X입니다.
      * @param {number} y - 조회 중심 Y입니다.
-     * @param {number} radius - 조회 반경입니다.
-     * @param {number} typeMask - 허용 타입 비트 마스크입니다.
-     * @param {(enemy: object, snapshotX: number, snapshotY: number, sourceIndex: number, userData: object) => (boolean|void)} visitor - 후보 방문 함수입니다.
-     * @param {object} userData - 방문 함수에 전달할 재사용 문맥입니다.
-     * @returns {number} 중복 제거 후 방문한 후보 수입니다.
+     * @param {number} radius - 조회 셀 범위를 계산할 0 이상의 반경입니다.
+     * @param {number} typeMask - 허용 타입 비트 마스크입니다. `ENEMY_SPATIAL_TYPE_MASK.ANY`는 타입 필터를 생략합니다.
+     * @param {(enemy: object, snapshotX: number, snapshotY: number, sourceIndex: number, userData: any) => (boolean|void)} visitor - 후보 방문 함수입니다. 정확히 `false`를 반환하면 즉시 순회를 중단합니다.
+     * @param {any} userData - 방문 함수에 그대로 전달할 재사용 문맥입니다.
+     * @returns {number} 타입 필터를 통과해 방문한 후보 수입니다. 조기 중단을 유발한 후보도 포함합니다.
      */
     forEachInCircle(x, y, radius, typeMask, visitor, userData) {
         if (

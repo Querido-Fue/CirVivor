@@ -136,8 +136,10 @@ export class MouseInputHandler {
     }
 
     /**
-     * 마우스 포커스 레이어를 설정합니다. (기존 포커스 리스트 초기화)
-     * @param {string} focus - 포커스 레이어
+     * 기존 마우스 포커스 스택 전체를 새 배열로 교체합니다.
+     * 배열 입력은 얕게 복제하고 문자열 입력은 단일 항목 스택으로 감쌉니다.
+     * @param {string|string[]} focus - 새 포커스 스택 또는 단일 포커스 레이어입니다.
+     * @returns {void}
      */
     setFocus(focus) {
         this.focusList = Array.isArray(focus) ? [...focus] : [focus];

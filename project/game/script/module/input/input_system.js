@@ -136,8 +136,11 @@ export const consumeMouseState = (button, state = 'clicked') => inputSystemInsta
  */
 export const isMousePressing = (button) => hasMouseState(button, 'click') || hasMouseState(button, 'clicking');
 /**
- * 현재 마우스 포커스 레이어를 반환합니다.
- * @returns {string} 포커스 레이어 이름
+ * 현재 마우스 포커스 스택의 내부 배열 참조를 반환합니다.
+ * 배열 끝이 최상위 포커스입니다. `addMouseFocus()`와 `removeMouseFocus()`는 현재 배열을 제자리에서 변경하고,
+ * `setMouseFocus()`는 새 배열로 교체하므로 이전에 받은 참조가 이후의 새 스택을 가리키지는 않습니다.
+ * 호출자는 반환 배열을 읽기 전용으로 취급해야 합니다.
+ * @returns {string[]} 호출 시점의 마우스 포커스 스택 배열 참조입니다.
  */
 export const getMouseFocus = () => inputSystemInstance.mouseInputHandler.focusList;
 
@@ -153,8 +156,10 @@ export const addMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.ad
  */
 export const removeMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.removeFocus(focus);
 /**
- * 마우스 포커스 레이어를 설정합니다.
- * @param {string} focus - 포커스 레이어 이름
+ * 기존 마우스 포커스 스택 전체를 새 배열로 교체합니다.
+ * 배열 입력은 얕게 복제하고 문자열 입력은 단일 항목 스택으로 감쌉니다.
+ * @param {string|string[]} focus - 새 포커스 스택 또는 단일 포커스 레이어입니다.
+ * @returns {void}
  */
 export const setMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.setFocus(focus);
 /**
