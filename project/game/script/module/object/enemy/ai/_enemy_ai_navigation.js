@@ -2,6 +2,7 @@ import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_const
 import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
+import { buildEnemyAIFlowField } from './wasm/_enemy_ai_flow_field_backend.js';
 
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
@@ -738,7 +739,7 @@ const getFlowFieldForTargetCoords = (
         };
     }
 
-    const field = buildFlowField(grid, goalCell);
+    const field = buildEnemyAIFlowField(grid, goalCell, buildFlowField);
     flowFieldCache.set(key, field);
     const cacheLimit = Number.isInteger(profile.FLOW_CACHE_LIMIT)
         ? Math.max(1, profile.FLOW_CACHE_LIMIT)

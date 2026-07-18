@@ -40,13 +40,30 @@
 - 진입 완료 후 패널 blur·dim·glass 표현이 정상이고, 취소 종료 후 타이틀 메뉴와 입력 포커스가 복원됐습니다.
 - 런타임 프리셋 값과 표시 결과는 변경하지 않았습니다.
 
-### 2. 물리·AI WASM 경계와 동일성 하네스 — 구현 중
+### 2. 물리·AI WASM 경계와 동일성 하네스 — 검증 완료, 커밋 대기
 
-- [ ] 실제 hot path와 순수 커널 후보 확정
-- [ ] 재현 가능한 WASM 빌드 도구 고정
-- [ ] JS reference와 WASM parity 테스트 작성
-- [ ] JS fallback 및 capability gate 구현
-- [ ] 성능 기준선과 전환 게이트 검증
+- [x] 실제 hot path와 순수 커널 후보 확정: LOS 차단 시 bounded LRU cache miss에서 생성하는 Enemy AI flow field
+- [x] 재현 가능한 WASM 빌드 도구 고정: `wabt@1.0.39` exact dependency와 lockfile, WAT→byte artifact 일치 검사
+- [x] JS reference와 WASM parity 테스트 작성
+- [x] JS fallback 및 capability gate 구현: 1,024셀 임계값, 초기화/실행 실패 후 영구 JS fallback과 최초 실패 진단 보존
+- [x] 성능 기준선과 전환 게이트 검증
+- [x] `npm test`: 41개 전체 통과, flow-field parity 16개 subtest 포함
+- [x] 1×1~3×3 모든 크기·blocked mask·goal 조합 5,506개 원시 바이트 exact
+- [x] heap 동률/decrease-key, corner cut, blocked/unreachable goal, 단일 축, 축 길이 4,097, 49,601셀, 결정적 무작위, invalid input, memory growth edge case 검증
+- [x] 별도 stress: 고정 seed 1,000건·3,824,454셀 raw-byte exact와 1×1/32×32/257×193 ABI padding·guard-tail canary, 2회 PASS
+- [x] Node same-realm production JS/WASM 9개 시나리오×15쌍, 총 135쌍/270회 timed call 모두 exact; p50 1.18~1.33배
+- [x] Computer Use로 실제 배포 NW.js 0.108.0에서 3×3 전수+49,601셀 총 4,609개 exact PASS 확인
+- [x] 실제 배포 production backend 두 clean process: 1,023셀→JS, 1,024셀→WASM, 80×45 첫 memory growth exact
+- [x] 실제 NW.js p50 두 번 동일: 32×32 JS 0.237ms/WASM 0.113ms(2.11배), 80×45 JS 0.925ms/WASM 0.475ms(1.95배)
+- [x] Computer Use 실제 게임 맵 선택·플레이 진입과 benchmark 100개 스폰 확인: 활성 적 92→86 우회 이동, 180~181 FPS, fixed 60.0 tick/s, debt 0
+- [ ] GitHub Desktop 커밋 및 푸시
+
+동일성 메모:
+
+- integration/dirX/dirY 세 `Float32Array` 모두 tolerance를 두지 않고 JS/WASM의 전체 원시 바이트를 비교합니다.
+- 기존 indexed-heap JS 구현은 삭제하지 않고 oracle과 정상 fallback으로 유지했습니다.
+- WASM 결과는 linear memory에서 복사하므로 이후 memory growth가 캐시된 field를 변경하지 않습니다.
+- flow field만 순수 precompute로 이전했으며 cache/LOS/goal/steering/fixed authority는 기존 JS에 남겼습니다.
 
 ### 3. 렌더 파이프라인 — 구현 중
 
@@ -56,7 +73,7 @@
 - [x] GL 호출 계약 테스트: `bind → viewport → clear → beginFrame`, 레이어당 clear 1회
 - [x] 신규 계약 테스트 10회 및 전체 `npm test` 6회 연속 통과
 - [x] Computer Use로 게임 완전 재실행 후 2560×1440 설정 오버레이 진입·완료·취소 확인
-- [ ] GitHub Desktop 커밋 및 푸시
+- [x] GitHub Desktop 커밋 및 푸시: `90bcc1e Eliminate duplicate overlay frame clears`
 
 동일성 메모:
 
@@ -66,7 +83,7 @@
 
 ### 4. 코드베이스·JSDoc·재사용성·SRP — 감사 완료, 안전 수정 대기
 
-- [ ] 최근 추가 파일을 포함한 315개 JS 인벤토리 갱신
+- [x] 최근 추가 파일을 포함한 345개 JS/MJS 인벤토리 갱신 및 전체 `node --check` 통과
 - [x] JSDoc 누락·오래된 계약 식별
 - [x] 중복 구현과 기존 기능 미재사용 식별
 - [x] 안전 수정과 보고 전용 항목 분리
@@ -76,6 +93,6 @@
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
-- 현재 WASM 빌드 경로가 없으므로 바이너리만 수동 추가하면 재현성과 공급망 관리가 보장되지 않습니다.
+- 시작 시 없던 WASM 빌드 경로는 exact `wabt@1.0.39`, lockfile, WAT/artifact hash와 재빌드 검사로 해소했습니다.
 - 최근 `main` 변경 75개 파일이 기존 2026-07-12 가이드 기준 이후에 추가되어 문서와 코드 사이에 차이가 있습니다.
-- 기존 성능 가이드는 800개 적에서 JS 경로가 이미 fixed 60 tick/s를 통과했다고 기록하므로, WASM은 성능 수치뿐 아니라 전송·초기화·fallback 비용까지 비교해야 합니다.
+- WASM 수치는 flow-field cache miss 커널에만 해당하며 전체 fixed/frame 향상으로 확대 해석하지 않습니다. 물리/fixed authority 승격은 별도 replay와 end-to-end gate가 필요합니다.
