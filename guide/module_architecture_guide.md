@@ -72,7 +72,16 @@ background(WebGL)
 - `_enemy_ai_flow_field.wat`는 순수 grid 입력에서 integration/direction field만 계산하며 게임 객체나 렌더 상태를 알지 못합니다.
 - backend 전환은 cache miss 경계에서만 일어나므로 이미 캐시된 결과와 적별 steering 순서를 바꾸지 않습니다.
 
-## 5. 현재 주의할 특수 영역
+## 5. 저장 데이터 계약
+
+- `ProgressHandler`는 기본 128바이트 `Uint8Array`를 사용합니다. `getData()`는 live 참조이고 자동 저장하지 않으며, `init()`과 `setData()`가 새 배열로 교체하면 이전 참조는 stale 상태가 됩니다.
+- 진행도 입력은 현재 realm의 `Uint8Array`, 일반 배열 또는 식별 가능한 Buffer만 복제·정규화합니다. 다른 realm의 일반 typed array와 미지원 값은 기본 데이터로 대체합니다.
+- `IngameHandler`는 로드한 JSON에서 값이 `undefined`인 기본 최상위 키만 보완합니다. 중첩 병합은 하지 않고 기존 `null`·`false`·`0`과 알 수 없는 키를 보존하며, `getData()`/`getValue()`의 객체·배열은 live 참조입니다.
+- 저장 setter와 live 참조 변경은 자동 저장하지 않습니다. 파일 반영은 해당 `save()` 또는 `SaveSystem.saveAll()` 경계에서 수행합니다.
+- `pathExists()`는 모든 `fsPromises.access()` 실패를 `false`로 축약하고, `ensureSaveDirectory()`는 접근 가능한 경로의 디렉터리 타입을 확인하지 않습니다. `cloneJsonData()`는 JSON stringify/parse 왕복의 손실 변환과 예외를 그대로 따릅니다.
+- 저장 로직을 변경할 때는 `save_handler_jsdoc_contract.test.mjs`의 파일 오류, live/stale 참조, 길이·realm, JSON root·직렬화 edge case를 먼저 갱신하고 새 persistence 계약을 명시합니다.
+
+## 6. 현재 주의할 특수 영역
 
 | 영역 | 기준 문서 |
 | --- | --- |

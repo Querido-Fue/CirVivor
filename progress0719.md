@@ -176,6 +176,20 @@
 - [x] Computer Use로 설정 오버레이에서 `어둡게 → 밝게` 즉시 미리보기와 `취소` 후 원래 어두운 테마·정상 타이틀 복원을 확인
 - [x] GitHub Desktop 커밋 및 푸시: `06146d6 Correct settings persistence documentation`
 
+#### 5.3 진행도·인게임 저장 및 파일 helper 계약 정정 — 완료
+
+- [x] `ProgressHandler`, `IngameHandler`, `_save_file_helper.js`와 직접 호출자를 전체 대조해 생성자 경로, `Promise<void>`, live/stale 참조, 자동 저장 여부와 오류 전파 계약 문서화
+- [x] production 변경 전 실행 계약 8개 green·JSDoc 구조 1개 red를 확인하고, 독립 리뷰에서 찾은 선언 선행 JSDoc false-positive와 typed-array realm 공백을 보강해 변경 후 10개 전체 green으로 고정
+- [x] 세 실제 production 파일 전체를 `vm.SourceTextModule`로 실행하고 `nw_bridge.js`의 파일 시스템만 synthetic으로 교체해 실제 분기와 호출 순서를 검증
+- [x] `access()`의 모든 오류 축약, 디렉터리 타입 미확인, recursive mkdir 실패, JSON round-trip 손실·직렬화 훅·순환·`BigInt`·최상위 미지원 값 예외를 고정
+- [x] 진행도 길이 0/1/127/128/129/4,096, 자르기·기본값 padding, 잘못된 입력, 파일 부재·읽기 실패, same-realm/foreign `Uint8Array`·Buffer·foreign 일반 배열 경계를 검증
+- [x] 인게임 `null`/false/0·알 수 없는 키 보존, 최상위 키만 보완, 중첩 미병합, live/stale 참조, 파일 부재·잘못된 JSON·배열 root·자동 보완 저장 실패·직렬화 실패를 검증
+- [x] 세 production 파일의 JSDoc 제외 실행 소스 SHA-256이 기존 기준과 exact 일치하고 one-off 주석 제거 본문도 `COMMENT_ONLY_EXECUTABLE_SOURCE_IDENTICAL` 확인
+- [x] `npm test` 85개, JS/MJS 354개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary, WAT/WASM 재현성, `git diff --check` 모두 통과
+- [x] 독립 재검토에서 각 선언 바로 앞 JSDoc 오라클과 isolated typed-array realm 테스트 blocker 없음 확인
+- [x] Computer Use cold start 후 타이틀·설정 glass 오버레이 정상; benchmark 적 100개 생성 후 활성 97개, 181 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 재실행해 정상 타이틀 복원
+- [x] GitHub Desktop 커밋 및 푸시: `adefbb8 Correct save handler API documentation`
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료

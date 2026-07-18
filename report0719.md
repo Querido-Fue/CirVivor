@@ -202,6 +202,14 @@
 - **동일성 위험:** 단일 scratch/out 객체를 재사용하면 콜백이 보관한 과거 패널이 다음 호출에서 변하고, 재진입·복수 패널이 같은 identity를 공유하며, 이전 호출에만 있던 키가 잔존할 수 있다. 명시적 필드 복사로 바꾸면 symbol·추가 enumerable 키, getter/Proxy 순서와 descriptor가 달라진다. 이 공개 snapshot 계약을 보존하면서 할당을 없앨 수 없어 생산 코드는 수정하지 않았다.
 - **선행 테스트/권장 방향:** 결과 identity 보관, 같은 panel 연속 호출, 복수 패널, scale 0/1/비유한 값, 추가 string/symbol 키, getter/Proxy throw, 클릭 콜백 재진입과 payload 장기 보관을 고정한다. 새 API에서 caller-owned out 객체를 명시적으로 opt-in하게 하거나 내부 hit-test 전용 scalar 경로를 별도로 만들되, 기존 callback snapshot API는 유지하는 방향이 필요하다.
 
+### 4.17 인게임 저장 JSON root와 자동 보완 실패 정책
+
+- **파일 경로:** `project/game/script/module/save/_ingame_handler.js`, `project/game/script/module/save/_save_file_helper.js`
+- **문제 후보:** `IngameHandler`는 파싱한 JSON root가 일반 레코드인지 검증하지 않고 누락된 기본 키를 대입한다. 배열 root에는 이름 있는 프로퍼티가 메모리에 붙지만 `JSON.stringify()`가 이를 생략해 자동 보완 저장 결과가 다시 `[]`가 된다. `null`이나 원시 root는 병합 중 예외가 발생해 기본값으로 복구된다.
+- **현재 동작과 영향:** 기존 객체의 누락 키를 자동 보완하다 파일 쓰기가 실패하면 `save()`가 기록한 오류를 바깥 로드 `catch`가 다시 잡고, 방금 읽은 값까지 메모리 기본값으로 교체한 뒤 `init()`은 이행된다. 또한 `pathExists()`는 권한·I/O 오류까지 부재처럼 축약하고, `ensureSaveDirectory()`는 접근 가능한 경로가 실제 디렉터리인지 확인하지 않는다. 별도 VM 테스트가 배열 root의 `[]` 재저장, 보완 쓰기 실패의 이중 로그·값 교체·이행, 모든 access 오류를 현재 계약으로 고정했다.
+- **동일성 위험:** plain-object root 검증, 자동 보완 실패 재전파, atomic write, 오류 코드 구분이나 `stat()` 확인을 추가하면 현재의 복구 값·Promise 결과·로그 횟수·파일 바이트가 바뀐다. 더 안전한 동작이지만 기존 모든 입력의 100% 동일 작동과 양립하지 않아 이번에는 생산 로직을 수정하지 않고 JSDoc과 회귀 테스트만 정정했다.
+- **선행 테스트/권장 방향:** 저장 schema/version과 허용 root 타입, 손상 파일 격리·백업, 자동 repair 실패의 사용자 노출 정책을 먼저 확정한다. 승인된 새 계약 아래 object/array/null/원시/중첩·unknown 키, 권한·디스크 부족·부분 쓰기·동시 저장·process 종료를 포함한 실제 임시 파일 통합 테스트와 migration rollback을 마련한 뒤 변경한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약
