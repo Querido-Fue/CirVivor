@@ -88,7 +88,8 @@ function resolveWorldSnapshotField(sceneSnapshot, options, key) {
 /**
  * 일반 씬 월드 렌더 옵션을 스냅샷 우선 규칙으로 정규화합니다.
  * @param {object|null|undefined} options - 렌더 옵션입니다.
- * @returns {{mapGeometry: object|null, staticWalls: object[], boxWalls: object[], player: object|null|undefined, projectiles: object[], offsetY: number}}
+ * @param {object} out - 필드를 제자리 갱신할 writable 호출자 소유 결과 객체입니다.
+ * @returns {{mapGeometry: object|null, staticWalls: object[], boxWalls: object[], player: object|null|undefined, projectiles: object[], offsetY: number}} `out`과 동일한 객체입니다. 선택된 맵·플레이어 객체와 유효한 입력 엔티티 배열은 복제하지 않고 live 참조로 유지합니다. 기존의 다른 필드는 유지하고, 예외 전까지 완료된 필드 쓰기도 남깁니다.
  */
 function resolveWorldRenderState(options, out) {
     const source = options || EMPTY_WORLD_RENDER_OPTIONS;
@@ -118,6 +119,7 @@ function getGameMapColor(key, fallback) {
  * 그리드 맵의 보행 가능 바닥을 background 레이어에 일괄 렌더합니다.
  * @param {object|null|undefined} mapGeometry - 컴파일된 맵 렌더 지오메트리입니다.
  * @param {number} offsetY - 오브젝트 월드의 화면 Y 오프셋입니다.
+ * @returns {void}
  */
 function renderGameMap(mapGeometry, offsetY) {
     const centers = mapGeometry?.floorLocalCenters;
@@ -166,6 +168,7 @@ function renderGameMap(mapGeometry, offsetY) {
  * @param {object|null|undefined} wall - 벽 엔티티 또는 스냅샷입니다.
  * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
 function renderWall(wall, fill, offsetY) {
     if (!wall || wall.active === false) {
@@ -186,6 +189,7 @@ function renderWall(wall, fill, offsetY) {
  * @param {object|null|undefined} entity - 원형 엔티티 또는 스냅샷입니다.
  * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
 function renderCircleEntity(entity, fill, offsetY) {
     if (!entity || entity.active === false) {
@@ -206,6 +210,7 @@ function renderCircleEntity(entity, fill, offsetY) {
  * 플레이어 엔티티를 렌더합니다.
  * @param {object|null|undefined} player - 플레이어 엔티티 또는 스냅샷입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
 function renderPlayer(player, offsetY) {
     renderCircleEntity(player, getBenchmarkColor('Player'), offsetY);
@@ -216,6 +221,7 @@ function renderPlayer(player, offsetY) {
  * @param {object|null|undefined} projectile - 투사체 엔티티 또는 스냅샷입니다.
  * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
 function renderProjectile(projectile, fill, offsetY) {
     renderCircleEntity(projectile, fill, offsetY);
@@ -224,6 +230,7 @@ function renderProjectile(projectile, fill, offsetY) {
 /**
  * 일반 씬 오브젝트 목록을 렌더합니다.
  * @param {{sceneSnapshot?: object|null, mapGeometry?: object|null, staticWalls?: object[], boxWalls?: object[], player?: object|null, projectiles?: object[], objectOffsetY?: number}} [options={}] - 렌더 옵션입니다.
+ * @returns {void}
  */
 export function drawGameSceneWorldObjects(options = EMPTY_WORLD_RENDER_OPTIONS) {
     const {
