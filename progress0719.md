@@ -150,6 +150,18 @@
 - [x] Computer Use 완전 재실행, 설정·benchmark 진입·적 100개 생성: 181 FPS, fixed 60.0/s, SIM 99.8–99.9%, debt 0.0/s; 종료 후 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `4a42e1a Correct spatial and input API documentation`
 
+## 6. 일반 성능 최적화
+
+#### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
+
+- [x] 변경 전 프레임마다 경계 객체를 생성하던 legacy 구현을 독립 오라클로 고정하고, 생산 코드 변경 전 구조적 red → 변경 후 green 확인
+- [x] 정확한 min/max 경계와 인접 Float64, `NaN`·±`Infinity`·±0·primitive·비활성/무효 투사체 및 결정적 raw IEEE-754 50,000건 exact 비교
+- [x] getter/Proxy 평가 순서와 횟수, 호출마다 달라지는 배열, coercion·getter·splice 예외, revoked Proxy, `Symbol.species`, sparse/frozen/sealed/preventExtensions/subclass/inherited-index/부분 변이 예외 및 재진입 계약 exact 비교
+- [x] `ObjectSystem`과 공유하는 live 배열 identity, 역순 `splice`, 기존 단락 평가와 `scene.projectiles` getter `2 + N + C`회 계약을 보존하면서 가변 프레임마다 생성되던 경계 객체 1개 제거
+- [x] `npm test` 50개, JS/MJS 350개 `node --check`, WASM stress 1,000건·3,824,454셀 및 ABI canary, WAT/WASM 재현성, `git diff --check` 모두 통과
+- [x] Computer Use 완전 재실행 후 benchmark 적 100개와 투사체 80개 연속 생성: 투사체 이동·충돌·화면 밖 컬링 및 잔상 없음, 178–181 FPS, fixed 60.0/s, SIM 100.0%, debt 0.0/s; 종료 후 타이틀 복원
+- [x] GitHub Desktop 커밋 및 푸시: `4a734b0 Eliminate projectile cull boundary allocation`
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
