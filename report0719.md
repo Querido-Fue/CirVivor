@@ -210,6 +210,16 @@
 - **동일성 위험:** plain-object root 검증, 자동 보완 실패 재전파, atomic write, 오류 코드 구분이나 `stat()` 확인을 추가하면 현재의 복구 값·Promise 결과·로그 횟수·파일 바이트가 바뀐다. 더 안전한 동작이지만 기존 모든 입력의 100% 동일 작동과 양립하지 않아 이번에는 생산 로직을 수정하지 않고 JSDoc과 회귀 테스트만 정정했다.
 - **선행 테스트/권장 방향:** 저장 schema/version과 허용 root 타입, 손상 파일 격리·백업, 자동 repair 실패의 사용자 노출 정책을 먼저 확정한다. 승인된 새 계약 아래 object/array/null/원시/중첩·unknown 키, 권한·디스크 부족·부분 쓰기·동시 저장·process 종료를 포함한 실제 임시 파일 통합 테스트와 migration rollback을 마련한 뒤 변경한다.
 
+### 4.18 `EnemySpatialIndex` 셀 clamp의 공용 함수 직접 치환
+
+- **파일 경로:** `project/game/script/module/object/enemy/ai/enemy_spatial_index.js`, `project/game/script/util/number_util.js`
+- **문제 후보:** 밀도 필드 X/Y 인덱스 두 곳은 로컬 `clampCellIndex(value, max)`를 사용하며, 공용 `clampNumber(value, min, max)`와 기본 숫자 환경에서 같은 0~max 제한 역할을 한다. 실제 호출 인수는 `Math.floor()` 결과와 1 이상의 유한 정수 최대값이므로 중복 제거 후보로 보인다.
+- **확인된 정상 숫자 범위:** ±0·subnormal·±최대값·±Infinity·`NaN`을 포함한 명시값 96건과 raw Float64 1,000,000건을 실제 최대값 도메인 8종에 배치해 총 1,000,096건을 비교했으며 기본 `Math`에서는 모두 `Object.is` 기준으로 일치했다.
+- **결정적 동일성 위험:** 로컬 식 `Math.min(max, Math.max(0, value))`은 outer `Math.min` 참조 뒤 `Math.max → Math.min`을 호출하지만, 공용 함수의 `Math.max(min, Math.min(max, value))`는 outer `Math.max` 참조 뒤 `Math.min → Math.max`를 호출한다. `globalThis.Math`와 두 메서드는 런타임에서 교체·getter화할 수 있으므로 property 접근, 호출, 반환 및 예외의 관찰 순서가 달라진다. 상태형 patch 진단에서 같은 `(5, 9)` 입력의 기존 결과는 `2`, 공용 결과는 `20`이었고, `Math.max`가 토큰을 던질 때 기존 trace는 `max` 한 번, 공용 trace는 `min → max`였다. 두 경로 모두 같은 토큰을 던져도 그 전 부수효과가 다르다.
+- **실제 전체 모듈 반례:** 실제 `enemy_spatial_index.js` 전체 소스와 실제 `number_util.js`를 격리 VM에 링크한 뒤, 적 `id` getter가 density clamp 직전에 상태형 `Math` accessor를 설치하도록 했다. 같은 `rebuild()` 입력에서 기존 trace는 `get:min → get:max → call:max → call:min`이고 nonzero density index는 `6`이었지만, 공용 후보는 `get:max → get:min → call:min → call:max`와 index `5`를 만들었다. getter별 예외를 주입하면 먼저 던지는 오류도 기존 `min-get`, 후보 `max-get`으로 달라진다. 새 static import는 독립 loader에 의존성 edge도 추가한다.
+- **현재 처리:** 저장소의 정상 게임 경로에서 `Math` 변조는 확인되지 않았지만, 사용자 지시 5의 모든 관찰 가능한 동작 완전 동일 기준에는 반례가 존재한다. 따라서 import 추가, 로컬 helper 제거 및 두 호출 치환을 모두 보류하고 생산 코드는 변경하지 않았다.
+- **선행 테스트/권장 방향:** 현재 공용 `clampNumber()`를 그대로 재사용하려면 먼저 native `Math` 불변을 런타임 계약으로 명시해야 한다. 그렇지 않으면 기존 연산·property 접근·호출 순서를 보존하는 별도 공용 helper가 필요하며, `clampNumber()` 자체의 순서를 바꾸는 경우에는 모든 기존 호출자의 역전 범위, getter/Proxy, patched intrinsic, 예외와 부수효과를 별도로 exact 검증해야 한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약

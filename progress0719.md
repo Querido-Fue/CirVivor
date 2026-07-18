@@ -170,6 +170,14 @@
 - [x] Computer Use 완전 재실행, 설정·benchmark 진입·적 100개 생성: 179–181 FPS, fixed 60.0/s(한 표본 61.0/s), SIM 100.0% 전후, debt 0.0/s; 종료 후 타이틀 복원
 - [x] GitHub Desktop 커밋 및 푸시: `51be299 Reuse shared simulation number normalization`
 
+#### 4.5 공간 인덱스 셀 clamp 공용화 — 보고 전용
+
+- [x] `EnemySpatialIndex`의 로컬 `clampCellIndex()`와 공용 `clampNumber()`의 본문, 밀도 X/Y 두 호출 도메인, import 부수효과를 감사
+- [x] ±0·subnormal·±최대값·±Infinity·`NaN` 명시값 96건과 raw Float64 1,000,000건 — 총 1,000,096건은 기본 `Math`에서 `Object.is` exact 일치 확인
+- [x] mutable `Math.min/max` 진단에서 기존 호출 순서 `max → min`, 공용 호출 순서 `min → max`, 상태형 반환 `2` 대 `20`, throw 전 trace `max` 대 `min → max`의 결정적 반례 확인
+- [x] 실제 전체 `EnemySpatialIndex` legacy/공용 후보를 VM에서 실행한 반례에서 property/get 호출 순서와 nonzero density index `6` 대 `5`, getter 예외 `min-get` 대 `max-get` 차이 확인
+- [x] 사용자 지시 5의 완전 동일성 기준에 따라 생산 코드와 테스트 파일은 변경하지 않고 `report0719.md` 4.18에 위험·선행 계약만 기록
+
 ## 5. JSDoc 정합성 정비
 
 #### 5.1 공간 broad-phase 및 마우스 포커스 계약 정정 — 완료
