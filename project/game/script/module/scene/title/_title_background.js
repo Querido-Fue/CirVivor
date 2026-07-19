@@ -26,7 +26,7 @@ import {
 } from './background/_title_background_spawn_metrics.js';
 import { getTitleInitialBurstDesiredSpawnCount } from './background/_title_background_spawn_progress.js';
 import { buildTitleBackgroundSpawnData } from './background/_title_background_spawn_data.js';
-import { buildTitleBackgroundAiContext } from './background/_title_background_ai_context.js';
+import { buildTitleBackgroundAiContextFromSimulation } from './background/_title_background_ai_context.js';
 import { drawTitleBackgroundScene } from './background/_title_background_render.js';
 import {
     getSimulationObjectOffsetY,
@@ -162,13 +162,13 @@ export class TitleBackGround {
         const delta = getFixedDelta();
         if (!Number.isFinite(delta) || delta <= 0) return;
 
-        const aiContext = buildTitleBackgroundAiContext({
-            titleConstants: TITLE_CONSTANTS,
-            shieldLayout: this.shieldLayout,
-            shieldRadius: this.shieldRadius,
-            objectOffsetY: this.objectOffsetY,
-            uiww: this.UIWW
-        });
+        const aiContext = buildTitleBackgroundAiContextFromSimulation(
+            TITLE_CONSTANTS,
+            this.shieldLayout,
+            this.shieldRadius,
+            this.objectOffsetY,
+            this.UIWW
+        );
 
         for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
             const enemy = this.titleEnemies[i];

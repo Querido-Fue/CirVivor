@@ -319,6 +319,21 @@ export function getSimulationMouseInput(key) {
 }
 
 /**
+ * 현재 시뮬레이션 마우스 좌표를 호출자가 소유한 객체에 복사합니다.
+ * hot path에서 중간 좌표 객체를 만들지 않아야 할 때 사용합니다.
+ * x, y 순서로 제자리 기록하며 동일한 객체를 반환합니다.
+ * @param {{x: number, y: number}} target - 쓰기 가능한 호출자 소유 좌표 객체입니다.
+ * @returns {{x: number, y: number}} 전달받은 동일 좌표 객체입니다.
+ */
+export function copySimulationMousePositionInto(target) {
+    const input = simulationRuntimeInstance?.input;
+    const point = input ? input.mousePos : DEFAULT_MOUSE_POSITION;
+    target.x = resolveFiniteNumber(point?.x, DEFAULT_MOUSE_POSITION.x);
+    target.y = resolveFiniteNumber(point?.y, DEFAULT_MOUSE_POSITION.y);
+    return target;
+}
+
+/**
  * 시뮬레이션 입력 스냅샷에서 특정 버튼 상태를 검사합니다.
  * @param {'left'|'right'|'middle'} button
  * @param {'inactive'|'idle'|'click'|'clicking'|'clicked'} state

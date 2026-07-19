@@ -203,10 +203,23 @@ assert.doesNotMatch(
     /\bnormalizeNumber\s*\(/,
     'SimulationRuntime 호출부는 공용 함수로 직접 통합되어야 합니다.'
 );
+const copyMousePositionSource = runtimeSource.match(
+    /export function copySimulationMousePositionInto\(target\) \{[\s\S]*?\n\}/u
+)?.[0];
+assert.ok(copyMousePositionSource, '마우스 out-copy 함수 본문을 찾을 수 있어야 합니다.');
 assert.equal(
-    runtimeSource.match(/\bresolveFiniteNumber\s*\(/g)?.length,
+    runtimeSource.replace(copyMousePositionSource, '').match(/\bresolveFiniteNumber\s*\(/g)?.length,
     16,
     '기존 16개 숫자 정규화 호출은 모두 공용 함수와 명시적 fallback을 사용해야 합니다.'
+);
+assert.equal(
+    copyMousePositionSource.match(/\bresolveFiniteNumber\s*\(/g)?.length,
+    2,
+    '마우스 out-copy는 x/y를 공용 숫자 정규화 함수로 각각 한 번 처리해야 합니다.'
+);
+assert.ok(
+    copyMousePositionSource.indexOf('target.x =') < copyMousePositionSource.indexOf('target.y ='),
+    '마우스 out-copy는 기존 좌표 복제 계약과 같이 x 다음 y를 기록해야 합니다.'
 );
 
 console.log(
