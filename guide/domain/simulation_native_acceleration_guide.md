@@ -101,7 +101,7 @@ App accumulator
 | G7 native | Worker+WASM으로 목표 미달, NW별 빌드/CI/서명 유지비 승인 | native 금지 |
 | G8 full C++ | tick당 JS↔native 왕복이 commands/step/snapshot 각 1회 수준이며 parity/fallback 완료 | 부분 core에서 중단 |
 
-권장 장기 예산은 simulation p95 8.33ms 이하, p99 12ms 이하, 실제 fixed 처리율 60 tick/s, 전체 frame p95 16.67ms 이하입니다. 현재 800명 측정은 실제 fixed 60 tick/s와 frame/fixed 16.67ms 이내를 통과했지만 fixed p95/p99는 14.7/15.4ms로 장기 여유 목표보다 높습니다. native 승격보다 JS 회귀 방지와 원형 pair fused kernel 같은 후속 여유 확보를 우선합니다.
+권장 장기 예산은 simulation p95 8.33ms 이하, p99 12ms 이하, 실제 fixed 처리율 60 tick/s, 전체 frame p95 16.67ms 이하입니다. 현재 800명 측정은 실제 fixed 60 tick/s와 frame/fixed 16.67ms 이내를 통과했지만 fixed p95/p99는 14.7/15.4ms로 장기 여유 목표보다 높습니다. native 승격보다 JS 회귀 방지와, G0가 다시 실패할 때 canonical SoA가 직접 소유하는 coarse collision pipeline 재검토를 우선합니다.
 
 G5는 fixed simulation 전체 또는 authoritative Worker backend 승격 기준입니다. cache miss의 독립 pure precompute는 `원시 바이트 exact parity + 실제 배포 NW.js 검증 + 측정한 모든 대표 시나리오에서 비열세 + 즉시 JS fallback`을 별도 로컬 gate로 사용합니다.
 
@@ -152,6 +152,13 @@ Clock/backpressure 계약:
 - 멀티코어는 AI intent, body/AABB 계산, grid histogram, 후보 판정을 immutable tick snapshot 기준으로 나눕니다.
 - 위치 solve와 damage/lifecycle/merge commit은 처음에는 결정적 직렬 순서를 유지합니다.
 - shared flow/density/policy cache는 병렬 intent 전에 immutable prepass로 만들거나 thread-local 결과를 고정 순서로 merge합니다. main/GPU driver/audio용 코어를 남기고 oversubscription을 측정합니다.
+
+#### 5.5.1 2026-07-19 ordered circle resolve 감사 결론
+
+- 적 800개가 모두 non-anchor circle일 때 active enemy candidate의 tail-adjusted combinatorial 상한은 rebuild당 11,095개이고, player/wall guaranteed pair를 제외한 최대 3개 pass의 enemy-enemy admitted-pair processing loop iteration 상한은 33,285회/tick입니다. non-enemy guaranteed pair는 전체 priority/normal loop에 별도로 추가됩니다. 첫 pass가 하나 이상 resolve해 후속 pass가 열리면 dense pressure가 양수여서 `resolveBoost > 1`·stabilize budget 10이 적용됩니다. 따라서 세 pass의 normal circle process-attempt 상한은 budget 14+10+10의 13,600회/tick입니다. 이 값들은 소스 기반 정적 상한이며 실측 성능 수치가 아닙니다.
+- active pair, full broad/relation, kind/shape만 복사하는 one-way numeric snapshot 예시도 약 182.0KiB이고 candidate rebuild용 sweep/validity를 더하면 약 232.8KiB입니다. 이는 현행 layout의 복사 시나리오 크기일 뿐 hard lower bound나 측정된 전송 비용이 아니며 body/ref/counter/callback/output 상태는 제외됩니다.
+- 현재 solver는 회전한 pair 순서마다 live body와 Float64 relation·Float32 broad/circle-parts를 즉시 바꾸고, anchor 여부별 enemy budget·sleep, priority range와 normal start token에 영향을 주는 player/wall fallback, JS callback/throw의 부분 상태를 함께 관찰합니다. non-enemy pair 자체는 enemy budget을 소비하지 않습니다. pair별 export는 호출 경계 비용 때문에 NO-GO이고, circle-only 재정렬 또는 JS-owned batch는 이 계약과 trap 복구의 exact 보존이 현재 입증되지 않았으므로 채택하지 않습니다.
+- 기존 fast-path 테스트의 허용 오차 비교는 authority 이전의 raw-bit oracle이 아닙니다. fresh G0가 다시 병목을 입증한 경우에만 WASM-owned canonical SoA의 `grid → candidate → 전체 narrowphase → ordered resolve` coarse pipeline을 shadow로 만들고, pair별 원시 비트·부분 예외 상태와 10,000 tick 전체 state/event/command exact replay를 먼저 통과시킵니다. 상세 감사 근거는 `report0719.md` 4.30을 따릅니다.
 
 ### 5.6 C++
 

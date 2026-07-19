@@ -596,6 +596,22 @@
 - [x] GitHub Desktop GUI 커밋 및 푸시: `8ea8c6f Document vignette optimization no-go`
 - [x] 생산 구조·핵심 로직 변경이 없는 보고 전용 감사이므로 `AGENT_GUIDE.md` 갱신 불필요
 
+#### 6.11 enemy-enemy ordered circle resolve WASM 후보 — 동일성 경계 실패·보고 전용
+
+- [x] `_collision_handler.js`, candidate admission/processor/budget, circle SoA narrowphase, pair resolver, body translation, broadphase와 기존 fast-path 테스트를 끝까지 대조해 최대 3개 회전 pass의 live 순차 상태를 감사
+- [x] 적 800개 all-normal circle의 active candidate tail-adjusted combinatorial 상한을 `786 × 14 + Σ(1..13) = 11,095` pair/rebuild로 재계산하고, 이전 초안의 느슨한 `11,186` 수치를 폐기
+- [x] player/wall guaranteed pair를 제외한 세 pass enemy-enemy admitted-pair processing loop iteration 최대 33,285회/tick과 normal circle process-attempt 정적 상한 `5,600 + 4,000 + 4,000 = 13,600`회/tick(60Hz 816,000회/s)을 실측값과 분리해 기록하고, non-enemy pair가 전체 priority/normal loop에 별도 추가됨을 명시
+- [x] `252KiB` hard lower 및 `0.5~0.65MiB` exact-state 추정은 ABI·필드 방향 가정이 섞여 방어할 수 없으므로 폐기하고, 현행 plane에서 직접 계산 가능한 one-way snapshot 예시 182.0KiB와 candidate sweep 포함 232.8KiB만 비실측 시나리오로 명시
+- [x] `Math.hypot`/`Math.pow` raw bit, pair별 Float32 반올림, mixed fallback·budget·sleep, JS callback throw의 부분 상태와 WASM trap 복구가 exact 이전을 막음을 확인
+- [x] 기존 `collision_enemy_fast_path.test.mjs`가 `1e-8`/`1e-5` 허용 오차 기반이라 raw-bit·3-pass·mixed·throw/trap authority oracle로 부족함을 확인
+- [x] pair별 export와 JS-owned circle batch를 NO-GO 처리하고, fresh G0 뒤 WASM-owned `grid → candidate → 전체 narrowphase → ordered resolve` coarse authority만 재검토하도록 `report0719.md` 4.30과 `guide/domain/simulation_native_acceleration_guide.md` 5.5.1을 갱신
+- [x] 생산 실행 코드·테스트·WASM artifact는 변경하지 않음
+- [x] 독립 감사 2건에서 느슨한 11,186 수치, 방어 불가능한 252KiB/0.5~0.65MiB 추정, non-enemy budget·33,285 loop 범위·batch 불가능 단정을 차례로 교정하고 최신 diff 최종 재검토에서 사실 blocker 없음 확인
+- [x] 관련 충돌 계약 6/6, 전체 `npm test` 257/257, JS/MJS 375개 `node --check`, WASM backend+kernel 20/20, WAT/WASM 재현성과 `git diff --check` 통과
+- [x] 고정 seed `0x71c0ffee` WASM stress 1,000건/3,824,454 cells와 ABI canary 3 layouts 통과
+- [x] Computer Use로 실제 `lonely tower.exe`를 2560×1440 cold start해 타이틀 WebGL 합성, 설정 glass overlay 진입·취소와 타이틀 복원, 종료 확인 대화상자와 `예` 선택, 종료 뒤 프로세스 제거를 확인
+- [x] production 구조·핵심 로직 변화가 없어 `AGENT_GUIDE.md`는 유지하고, 관련 acceleration 결정만 domain guide에 최신화
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
