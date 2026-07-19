@@ -347,7 +347,7 @@
 - [x] 전체 `npm test` 181개, JS/MJS 368개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 모두 통과
 - [x] 실행 구조 변경이 없는 6줄 JSDoc 교체이고 이후 실행 코드 행 번호도 보존했으므로 `AGENT_GUIDE.md` 갱신 불필요
 - [x] Computer Use 실제 게임 cold start에서 설정·맵 선택 오버레이의 기본 프리셋 열림/닫힘, glass·blur·scale·alpha 렌더, 타이틀 복원, 종료 확인 오버레이와 정상 프로세스 종료 확인
-- [ ] GitHub Desktop 커밋 및 푸시
+- [x] GitHub Desktop 커밋 및 푸시: `68ac193 Correct overlay preset resolver documentation`
 
 ## 6. 일반 성능 최적화
 
