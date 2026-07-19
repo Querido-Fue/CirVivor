@@ -16,9 +16,11 @@ const TITLE_ENEMY_SOFTNESS_SCALE_EXPANSION = 1.035;
 
 /**
  * 적에 페럴렉스 시각/반응 프로필을 적용합니다.
+ * 적의 계층 인덱스, 모션 배율, 전용 채움색과 alpha 필드를 갱신합니다.
  * @param {object} enemy - 적용할 적 인스턴스입니다.
  * @param {object} layerProfile - 적용할 레이어 프로필입니다.
  * @param {number} [layerIndex=0] - 레이어 인덱스입니다.
+ * @returns {void}
  */
 export function applyTitleParallaxVisualProfile(enemy, layerProfile, layerIndex = 0) {
     if (!enemy || !layerProfile) {
@@ -36,6 +38,7 @@ export function applyTitleParallaxVisualProfile(enemy, layerProfile, layerIndex 
  * 페럴렉스 계층에 맞는 적 렌더 패스를 그립니다.
  * @param {object} enemy - 그릴 적 인스턴스입니다.
  * @param {object} layerProfile - 적용할 레이어 프로필입니다.
+ * @returns {void}
  */
 export function drawTitleParallaxEnemy(enemy, layerProfile) {
     if (!enemy || !layerProfile) {

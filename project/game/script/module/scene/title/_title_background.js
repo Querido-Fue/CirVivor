@@ -62,6 +62,7 @@ export class TitleBackGround {
             this.enemyTypes = ENEMY_SHAPE_TYPES;
         }
         this.titleEnemies = [];
+        this.titleCollisionOptions = { delta: 0 };
 
         this.shapesPerSecond = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SPAWN_RATE;
         this.shapeSpawnCounter = 0;
@@ -386,11 +387,12 @@ export class TitleBackGround {
         if (!this.objectSystem || typeof this.objectSystem.resolveEnemyCollisions !== 'function') {
             return;
         }
+        this.titleCollisionOptions.delta = delta;
 
         if (!Array.isArray(TITLE_PARALLAX_LAYERS) || TITLE_PARALLAX_LAYERS.length === 0) {
             this.objectSystem.resolveEnemyCollisions(
                 this.titleEnemies.filter((enemy) => this.#isCollisionResolvableTitleEnemy(enemy)),
-                { delta }
+                this.titleCollisionOptions
             );
             return;
         }
@@ -403,7 +405,7 @@ export class TitleBackGround {
             if (layerEnemies.length <= 1) {
                 continue;
             }
-            this.objectSystem.resolveEnemyCollisions(layerEnemies, { delta });
+            this.objectSystem.resolveEnemyCollisions(layerEnemies, this.titleCollisionOptions);
         }
     }
 

@@ -17,7 +17,7 @@ import { getTitlePerLayerEnemyLimit } from './_title_background_spawn_metrics.js
  * @param {number|null} [options.preferredLayerIndex=null] - 우선 스폰할 계층 인덱스입니다.
  * @param {'standard'|'initialBurst'} [options.spawnMode='standard'] - 생성 방식입니다.
  * @param {{burstSpawnIndex?: number, burstTargetCount?: number}|null} [options.spawnOptions=null] - 초기 버스트 옵션입니다.
- * @returns {object|null} 위치 및 속도 데이터입니다.
+ * @returns {{layerIndex:number, layerProfile:object, position:{x:number, y:number}, speed:{x:number, y:number}, baseSpeed:{x:number, y:number}, burstVelocity:{x:number, y:number}|null, burstDecayRate:number}|null} 위치, 속도, 계층 데이터이며 스폰할 계층이 없으면 null입니다.
  */
 export function buildTitleBackgroundSpawnData({
     titleEnemiesConfig,
