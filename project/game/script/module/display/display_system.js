@@ -63,7 +63,22 @@ export class DisplaySystem {
     }
 
     /**
-     * 디스플레이 시스템을 초기화합니다.
+     * `themeHandler.init()` Promise가 이행된 뒤 저장 테마를 적용하고 overlay host를 조회한 다음
+     * `background`, `object`, `effect`, `texteffect`, `ui`, `vignette`, `top` surface를 해당 순서로 등록합니다.
+     * `ColorSchemes.Background`의 첫 조건 조회가 truthy이면 변환 인수로 다시 live 조회해 총 두 번
+     * 읽으며, 변환 결과의 `r`, `g`, `b`를 차례로 숫자 변환해 255로 나눌 뿐 clamp하지 않습니다.
+     * `screenHandler.init()` Promise가 이행된 뒤 그 시점의 `surfaceMap.values()` live iterator로
+     * backing store를 동기화합니다. 마지막 `resize()`는 live receiver로 동기 호출하고 그 반환값은
+     * 기다리지 않고 그대로 버리는 방식입니다.
+     *
+     * 매 호출마다 새 Promise와 초기화 순회를 만들며, 중복 실행을 막는 재진입 guard가 없습니다.
+     * 실패 시 rollback하지 않으므로 이미 적용된 등록·동기화 등의 부분 상태는 유지됩니다.
+     * 속성 접근·호출의 throw, 하위 Promise 거부, thenable의 첫 reject 사유와 첫 resolve/reject 콜백
+     * 호출 전에 난 throw는 호출 시점의 동기 throw가 아니며, 반환 Promise가 같은 사유(identity)로
+     * 거부됩니다. thenable이 resolve/reject 콜백을 처음 호출한 뒤에는 adopted 값이
+     * pending이어도 추가 resolve/reject 결과와 throw를 무시합니다.
+     *
+     * @returns {Promise<void>} 초기화가 끝나면 `undefined`로 이행하고, 처리 중 오류가 나면 거부되는 Promise입니다.
      */
     async init() {
         await this.themeHandler.init();

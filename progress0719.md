@@ -378,6 +378,22 @@
 - [x] GitHub Desktop GUI 커밋 및 푸시: `a198eaa Document UISystem initialization contract`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
+#### 5.13 `DisplaySystem.init()` 렌더 surface 부트·Promise 계약 정정 — 검증 완료
+
+- [x] `display_system.js`, 실제 surface descriptor/data 모듈과 유일한 production caller `SystemHandler.init()`을 전체 감사해 기존 한 줄 JSDoc이 두 await gate, 7개 surface 등록, backing 동기화, live 조회·Promise·부분 실패 계약을 누락한 사실을 확인
+- [x] production 변경 전 actual-source 실행 계약 10개 green/JSDoc 구조 1개 red를 확인하고, 독립 리뷰 보강 뒤 실행 계약 11개 green/JSDoc 구조 1개 red를 다시 확립한 다음 JSDoc만 정정해 전용 계약 12개 전체 green으로 고정
+- [x] theme 이행→저장 테마 적용→overlay host→`background`·`object`·`effect`·`texteffect`·`ui`·`vignette`·`top` 등록→배경색→screen 이행→backing→resize의 exact 순서와 surface order/mode/persistent/composite/revision을 검증
+- [x] `ColorSchemes.Background` 첫 조회가 falsy이면 1회만 읽고 모든 색상 의존성을 건너뛰며, truthy이면 변환 인수로 다시 live 조회하는 조건부 2회 계약과 `colorUtil`/`cssToRgb`·캡처된 WebGL callee·`r→g→b` 숫자 변환·255 나눗셈·clamp 부재를 검증
+- [x] screen await 중 handler·`surfaceMap` 변경, `surfaceMap.values()` live iterator의 새 키 방문·미방문 키 삭제 skip·삭제 후 재삽입 tail 방문과 Map 프로퍼티 교체 뒤 기존 iterator 유지, backing canvas 부분 쓰기, 마지막 live `resize()` 및 반환 thenable 폐기를 검증
+- [x] theme/screen property·method 접근, 호출, then getter/본체, inner Promise 거부가 호출 시 동기 throw 없이 같은 오류 identity로 reject하고, 정확한 thenable receiver 및 첫 resolve/reject 호출 뒤 adopted 값이 pending이어도 추가 결과·throw를 무시하는 경계를 검증
+- [x] 등록·backing·resize 각 실패가 이미 반영된 surface/revision/canvas 부분 상태를 rollback하지 않는 사실과, 동시 `init()` 두 호출이 독립 Promise·중복 등록을 만들고 두 순회 모두 최종 revision 8~14 descriptor 세대를 방문하는 재진입 guard 부재를 직접 계측
+- [x] 실제 `SystemHandler` production 소스를 VM에서 실행해 Display init 정착 전 `DisplaySystem 로드` 로그와 `AnimationSystem` 생성 단계로 진행하지 않는 부트 경계를 검증
+- [x] standalone JSDoc과 CRLF를 제거·정규화한 production 실행 소스 SHA-256 `9c66acfec48a4f9521e6f4ceeddc41d67a244842bcfe98989a0558fe0c58263b` exact 보존
+- [x] 두 독립 최종 리뷰가 조건부 조회·first-call thenable·전체 event 순서·Map 변이·동시 최종 descriptor 세대 검증을 재검토해 blocker 없음 승인
+- [x] 전체 `npm test` 203개, JS/MJS 370개 `node --check`, WASM 전용 16개, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 모두 통과
+- [x] Computer Use 완전 재실행으로 2560×1440 타이틀 렌더, 설정 glass overlay 진입·취소, `ㄷ자 회랑` 맵 선택 preview 진입·취소, 각 타이틀 복원, 종료 확인 overlay와 정상 프로세스 종료를 검증
+- [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
