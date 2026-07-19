@@ -23,6 +23,17 @@ export class TitleShieldConfig {
      */
     constructor(config = DEFAULT_TITLE_SHIELD_CONFIG) {
         this.config = config || Object.freeze({});
+        this.colorCache = {
+            initialized: false,
+            shadowSource: null,
+            lowSource: null,
+            highSource: null,
+            highlightSource: null,
+            shadow: null,
+            low: null,
+            high: null,
+            highlight: null
+        };
     }
 
     /**
@@ -30,16 +41,33 @@ export class TitleShieldConfig {
      * @returns {{shadow: number[], low: number[], high: number[], highlight: number[]}} 실드 색상 벡터입니다.
      */
     getColors() {
-        const shadow = this.#colorToVec3(this.#getThemeValue(THEME_SHIELD_PATHS.shadow), DEFAULT_MAGNETIC_SHIELD_COLORS.shadow);
-        const low = this.#colorToVec3(this.#getThemeValue(THEME_SHIELD_PATHS.low), DEFAULT_MAGNETIC_SHIELD_COLORS.low);
-        const high = this.#colorToVec3(this.#getThemeValue(THEME_SHIELD_PATHS.high), DEFAULT_MAGNETIC_SHIELD_COLORS.high);
-        const highlight = this.#colorToVec3(this.#getThemeValue(THEME_SHIELD_PATHS.highlight), DEFAULT_MAGNETIC_SHIELD_COLORS.highlight);
+        const shadowSource = this.#getThemeValue(THEME_SHIELD_PATHS.shadow);
+        const lowSource = this.#getThemeValue(THEME_SHIELD_PATHS.low);
+        const highSource = this.#getThemeValue(THEME_SHIELD_PATHS.high);
+        const highlightSource = this.#getThemeValue(THEME_SHIELD_PATHS.highlight);
+        const cache = this.colorCache;
+
+        if (!cache.initialized
+            || cache.shadowSource !== shadowSource
+            || cache.lowSource !== lowSource
+            || cache.highSource !== highSource
+            || cache.highlightSource !== highlightSource) {
+            cache.shadowSource = shadowSource;
+            cache.lowSource = lowSource;
+            cache.highSource = highSource;
+            cache.highlightSource = highlightSource;
+            cache.shadow = this.#colorToVec3(shadowSource, DEFAULT_MAGNETIC_SHIELD_COLORS.shadow);
+            cache.low = this.#colorToVec3(lowSource, DEFAULT_MAGNETIC_SHIELD_COLORS.low);
+            cache.high = this.#colorToVec3(highSource, DEFAULT_MAGNETIC_SHIELD_COLORS.high);
+            cache.highlight = this.#colorToVec3(highlightSource, DEFAULT_MAGNETIC_SHIELD_COLORS.highlight);
+            cache.initialized = true;
+        }
 
         return {
-            shadow,
-            low,
-            high,
-            highlight
+            shadow: cache.shadow,
+            low: cache.low,
+            high: cache.high,
+            highlight: cache.highlight
         };
     }
 
