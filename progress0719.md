@@ -406,6 +406,7 @@
 - [x] JSDoc 전체 블록을 제거한 production 실행 소스 SHA-256 `76be28d1edda8705df26284b47aa4b6c0657d7db22d902e0dcc6c9d08c6a215f` exact 보존; 세 독립 최종 리뷰가 문서·실행·하네스 blocker 없음 승인
 - [x] 전체 `npm test` 214개, JS/MJS 371개 `node --check`, WASM 전용 16개, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 모두 통과
 - [x] Computer Use 실제 게임 2560×1440 cold start에서 타이틀 렌더, 설정 glass overlay 진입·취소, `ㄷ자 회랑` 맵 선택 preview 진입·취소, 각 타이틀 복원, 종료 확인 overlay와 정상 프로세스 종료를 검증
+- [x] GitHub Desktop GUI 커밋 및 푸시: `a7c4296 Document WebGL layer alias contract`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
 ## 6. 일반 성능 최적화
