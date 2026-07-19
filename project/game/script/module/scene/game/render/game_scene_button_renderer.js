@@ -9,6 +9,36 @@ import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 const GAME_SCENE_BUTTON_CONSTANTS = getData('GAME_SCENE_CONSTANTS').BUTTON;
 const BUTTON_RADIUS = GAME_SCENE_BUTTON_CONSTANTS.RADIUS;
 const BUTTON_MOUSE_POSITION_SCRATCH = { x: 0, y: 0 };
+const BUTTON_BACKGROUND_RENDER_OPTIONS = {
+    shape: 'roundRect',
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+    radius: BUTTON_RADIUS,
+    fill: ''
+};
+const BUTTON_BORDER_RENDER_OPTIONS = {
+    shape: 'roundRect',
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+    radius: BUTTON_RADIUS,
+    fill: false,
+    stroke: '',
+    lineWidth: GAME_SCENE_BUTTON_CONSTANTS.BORDER_LINE_WIDTH
+};
+const BUTTON_TEXT_RENDER_OPTIONS = {
+    shape: 'text',
+    text: '',
+    x: 0,
+    y: 0,
+    font: '',
+    fill: '',
+    align: 'center',
+    baseline: 'middle'
+};
 
 /**
  * 벤치마크 씬 버튼 목록을 렌더합니다.
@@ -34,35 +64,30 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
         const hovering = mousePos ? isPointInRect(mousePos.x, mousePos.y, button) : false;
         const hoverBlend = clamp01(hovering ? 1 : 0);
 
-        render('ui', {
-            shape: 'roundRect',
-            x: button.x,
-            y: button.y,
-            w: button.w,
-            h: button.h,
-            radius: BUTTON_RADIUS,
-            fill: hoverBlend > 0 ? getBenchmarkColor('ButtonHover') : getBenchmarkColor('ButtonIdle')
-        });
-        render('ui', {
-            shape: 'roundRect',
-            x: button.x,
-            y: button.y,
-            w: button.w,
-            h: button.h,
-            radius: BUTTON_RADIUS,
-            fill: false,
-            stroke: getBenchmarkColor('ButtonStroke'),
-            lineWidth: GAME_SCENE_BUTTON_CONSTANTS.BORDER_LINE_WIDTH
-        });
-        render('ui', {
-            shape: 'text',
-            text: button.label,
-            x: button.x + (button.w * GAME_SCENE_BUTTON_CONSTANTS.TEXT_X_RATIO),
-            y: button.y + (button.h * GAME_SCENE_BUTTON_CONSTANTS.TEXT_Y_RATIO),
-            font,
-            fill: getBenchmarkColor('ButtonText'),
-            align: 'center',
-            baseline: 'middle'
-        });
+        const backgroundOptions = BUTTON_BACKGROUND_RENDER_OPTIONS;
+        backgroundOptions.x = button.x;
+        backgroundOptions.y = button.y;
+        backgroundOptions.w = button.w;
+        backgroundOptions.h = button.h;
+        backgroundOptions.fill = hoverBlend > 0
+            ? getBenchmarkColor('ButtonHover')
+            : getBenchmarkColor('ButtonIdle');
+        render('ui', backgroundOptions);
+
+        const borderOptions = BUTTON_BORDER_RENDER_OPTIONS;
+        borderOptions.x = button.x;
+        borderOptions.y = button.y;
+        borderOptions.w = button.w;
+        borderOptions.h = button.h;
+        borderOptions.stroke = getBenchmarkColor('ButtonStroke');
+        render('ui', borderOptions);
+
+        const textOptions = BUTTON_TEXT_RENDER_OPTIONS;
+        textOptions.text = button.label;
+        textOptions.x = button.x + (button.w * GAME_SCENE_BUTTON_CONSTANTS.TEXT_X_RATIO);
+        textOptions.y = button.y + (button.h * GAME_SCENE_BUTTON_CONSTANTS.TEXT_Y_RATIO);
+        textOptions.font = font;
+        textOptions.fill = getBenchmarkColor('ButtonText');
+        render('ui', textOptions);
     }
 }
