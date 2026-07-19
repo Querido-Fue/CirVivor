@@ -3,6 +3,9 @@ import { render } from 'display/display_system.js';
 import { createFontString } from 'util/font_util.js';
 import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
 
+/** @type {{ww: number, wh: number, titleFont: number, statsFont: number, titleFontString: string, statsFontString: string, statsX: number, statsY: number}|null} */
+let cachedHudMetrics = null;
+
 /**
  * HUD에 표시할 적 수를 계산합니다.
  * @param {object|null} sceneSnapshot - 씬 스냅샷입니다.
@@ -108,16 +111,25 @@ function renderHudCollisionStats(metrics, collisionStats) {
 }
 
 /**
- * HUD 배치 값을 계산합니다.
+ * HUD 배치 값을 계산합니다. 동일한 viewport에서는 이전 metrics 객체를 재사용하며,
+ * viewport가 변경되면 cache miss로 새 metrics 객체를 계산합니다.
  * @param {number} ww - 화면 너비입니다.
  * @param {number} wh - 화면 높이입니다.
  * @returns {{ww: number, wh: number, titleFont: number, statsFont: number, titleFontString: string, statsFontString: string, statsX: number, statsY: number}}
  */
 function createHudMetrics(ww, wh) {
+    if (
+        cachedHudMetrics
+        && Object.is(cachedHudMetrics.ww, ww)
+        && Object.is(cachedHudMetrics.wh, wh)
+    ) {
+        return cachedHudMetrics;
+    }
+
     const titleFont = Math.max(14, ww * 0.0105);
     const statsFont = Math.max(10, ww * 0.0075);
 
-    return {
+    cachedHudMetrics = {
         ww,
         wh,
         titleFont,
@@ -135,6 +147,8 @@ function createHudMetrics(ww, wh) {
         statsX: ww * 0.985,
         statsY: wh * 0.96
     };
+
+    return cachedHudMetrics;
 }
 
 /**
