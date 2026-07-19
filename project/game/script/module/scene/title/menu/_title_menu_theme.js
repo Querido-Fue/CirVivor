@@ -13,6 +13,15 @@ const MENU_STATIC_TEXTURE_THEME_SIGNATURE_CACHE = {
     cardInnerLineFocusDelta: 0,
     signature: ''
 };
+const DEFAULT_MENU_EFFECT_COLOR = Object.freeze({ r: 255, g: 255, b: 255 });
+const MENU_EFFECT_COLOR_CACHE = {
+    initialized: false,
+    foregroundSource: null,
+    accentSource: null,
+    r: DEFAULT_MENU_EFFECT_COLOR.r,
+    g: DEFAULT_MENU_EFFECT_COLOR.g,
+    b: DEFAULT_MENU_EFFECT_COLOR.b
+};
 
 /**
  * 메뉴 기본 전경색을 반환합니다.
@@ -143,12 +152,28 @@ export function resolveMenuColorRgb(color, fallbackRgb = null) {
  * @returns {{r:number, g:number, b:number}} 효과 RGB 색상입니다.
  */
 export function getMenuEffectColor() {
-    const fallbackRgb = resolveMenuColorRgb(getMenuForegroundColor(), { r: 255, g: 255, b: 255 });
-    const rgb = resolveMenuColorRgb(getMenuAccentColor(), fallbackRgb);
+    const foregroundSource = getMenuForegroundColor();
+    const accentSource = getMenuAccentColor();
+    const cache = MENU_EFFECT_COLOR_CACHE;
+    if (
+        !cache.initialized
+        || cache.foregroundSource !== foregroundSource
+        || cache.accentSource !== accentSource
+    ) {
+        const fallbackRgb = resolveMenuColorRgb(foregroundSource, DEFAULT_MENU_EFFECT_COLOR);
+        const rgb = resolveMenuColorRgb(accentSource, fallbackRgb);
+        cache.initialized = true;
+        cache.foregroundSource = foregroundSource;
+        cache.accentSource = accentSource;
+        cache.r = rgb.r;
+        cache.g = rgb.g;
+        cache.b = rgb.b;
+    }
+
     return {
-        r: rgb.r,
-        g: rgb.g,
-        b: rgb.b
+        r: cache.r,
+        g: cache.g,
+        b: cache.b
     };
 }
 
