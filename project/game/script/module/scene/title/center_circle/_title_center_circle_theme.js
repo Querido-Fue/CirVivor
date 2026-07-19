@@ -66,21 +66,43 @@ export function getLoadingGlowSettings() {
                 ? loadingGlow.Ring.ShadowAlphaMax
                 : DEFAULT_LOADING_GLOW_RING.ShadowAlphaMax
         },
-        surface: {
-            Highlight: typeof loadingGlow?.Surface?.Highlight === 'string' && loadingGlow.Surface.Highlight
-                ? loadingGlow.Surface.Highlight
-                : fallbackColor,
-            HighlightAlpha: Number.isFinite(loadingGlow?.Surface?.HighlightAlpha)
-                ? loadingGlow.Surface.HighlightAlpha
-                : DEFAULT_LOADING_GLOW_SURFACE.HighlightAlpha,
-            Shadow: typeof loadingGlow?.Surface?.Shadow === 'string' && loadingGlow.Surface.Shadow
-                ? loadingGlow.Surface.Shadow
-                : fallbackColor,
-            ShadowAlpha: Number.isFinite(loadingGlow?.Surface?.ShadowAlpha)
-                ? loadingGlow.Surface.ShadowAlpha
-                : DEFAULT_LOADING_GLOW_SURFACE.ShadowAlpha
-        }
+        surface: _writeLoadingGlowSurfaceSettings({}, loadingGlow?.Surface, fallbackColor)
     };
+}
+
+/**
+ * 중앙 원형 수면선 glow 설정만 읽어 호출자 소유 객체에 기록합니다.
+ * @param {object|null} [out=null] - 갱신할 재사용 설정 객체입니다.
+ * @returns {{Highlight:string, HighlightAlpha:number, Shadow:string, ShadowAlpha:number}} 전달받은 객체 또는 새 설정 객체입니다.
+ */
+export function getLoadingGlowSurfaceSettings(out = null) {
+    const loadingGlowSurface = ColorSchemes?.Title?.Loading?.Glow?.Surface;
+    const fallbackColor = getLoadingAccentColor();
+    const surface = out && typeof out === 'object' ? out : {};
+    return _writeLoadingGlowSurfaceSettings(surface, loadingGlowSurface, fallbackColor);
+}
+
+/**
+ * 해석한 수면선 설정을 대상 객체에 기록합니다.
+ * @param {object} surface - 값을 기록할 설정 객체입니다.
+ * @param {object|null|undefined} loadingGlowSurface - 현재 테마의 수면선 설정입니다.
+ * @param {string} fallbackColor - 색상 fallback입니다.
+ * @returns {object} 전달받은 설정 객체입니다.
+ */
+function _writeLoadingGlowSurfaceSettings(surface, loadingGlowSurface, fallbackColor) {
+    surface.Highlight = typeof loadingGlowSurface?.Highlight === 'string' && loadingGlowSurface.Highlight
+        ? loadingGlowSurface.Highlight
+        : fallbackColor;
+    surface.HighlightAlpha = Number.isFinite(loadingGlowSurface?.HighlightAlpha)
+        ? loadingGlowSurface.HighlightAlpha
+        : DEFAULT_LOADING_GLOW_SURFACE.HighlightAlpha;
+    surface.Shadow = typeof loadingGlowSurface?.Shadow === 'string' && loadingGlowSurface.Shadow
+        ? loadingGlowSurface.Shadow
+        : fallbackColor;
+    surface.ShadowAlpha = Number.isFinite(loadingGlowSurface?.ShadowAlpha)
+        ? loadingGlowSurface.ShadowAlpha
+        : DEFAULT_LOADING_GLOW_SURFACE.ShadowAlpha;
+    return surface;
 }
 
 /**
