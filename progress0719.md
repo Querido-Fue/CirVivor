@@ -305,6 +305,22 @@
 - [x] Computer Use 실제 게임 cold start에서 설정 overlay 열기·취소, 맵 선택 overlay의 glass·미리보기 장식 렌더와 취소, 타이틀 복원, 종료 overlay 및 정상 종료 확인
 - [x] GitHub Desktop 커밋 및 푸시: `063979c Correct BaseOverlay extension hook documentation`
 
+#### 5.10 ThemeHandler live palette·최신 adapter 계약 정정 — 검증 완료
+
+- [x] `_theme_handler.js` 전체와 초기화·설정 호출 경로를 감사해 `ColorSchemes`가 초기 빈 객체이고 모든 import가 같은 identity를 공유하며, 테마의 최상위 enumerable 자체 문자열·Symbol 속성만 얕게 복사하는 실제 계약을 문서화
+- [x] `ThemeHandler` 생성자가 기본 필드 쓰기보다 먼저 자신을 최신 module adapter 대상으로 등록하고, 공개 `setTheme()`은 생성 전 no-op·생성 후 가장 최근 인스턴스에 위임하며 `getCurrentThemeKey()`는 인스턴스·메서드·반환값이 없을 때 기본 키로 복구하는 계약을 정정
+- [x] `init()`의 `Promise<void>`, instance/exported `setTheme()`과 `updateBackgroundColor()`의 `void` 반환 및 파일 오류 복구와 테마 적용 예외 전파를 JSDoc에 추가
+- [x] production 변경 전 실행 해시·행동 4개 green과 JSDoc 구조 1개 red를 확인하고, 독립 감사에서 지적한 setter/getter·Proxy·재진입·부분 실패 경계를 보강해 actual-source VM 계약 21개 전체 green으로 고정
+- [x] primitive boolean/string 정규화, boxed string·객체 Proxy·Symbol·상속 key fallback, display 인수 truthiness, 생성 실패·constructor setter 재진입과 최신 인스턴스 교체를 검증
+- [x] enumerable 문자열 삭제, 비열거·Symbol 잔존과 같은 Symbol overwrite, non-configurable/seal/preventExtensions, 비열거 setter, prototype Proxy의 true·false·throw·재진입 결과를 exact 검증
+- [x] source Proxy의 `ownKeys→descriptor→get` 순서, getter 예외의 부분 복사, getter·resolver 재진입의 hybrid/split state, 배경 getter 2회 평가·falsy 단락·RGB 비유한 passthrough와 color/display 예외 후 롤백 부재를 검증
+- [x] 정상 settings 파일의 `theme` 문자열 우선·legacy `darkMode` 변환·invalid theme 기본 키 정규화와 현재 키 adapter의 메서드 부재·property/call 예외 전파를 검증
+- [x] JSDoc 전체 블록을 제거한 production 실행 소스 SHA-256 `5c0a51f5c1b5558e010a50a9e0ae51b3a033aed5d5f4501c2581daa87fc9c560` exact 보존
+- [x] 독립 재감사에서 A~G edge 전체 해소, 잘못 고정된 기대값·blocker 없음 확인 후 마지막 settings/상속 key 공백까지 추가 보강
+- [x] 최종 `npm test` 170개, JS/MJS 367개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] Computer Use 실제 게임 cold start에서 설정 overlay의 어두운→밝은 테마 즉시 전환, 취소 뒤 어두운 테마·타이틀 렌더 복원, 종료 overlay와 정상 프로세스 종료 확인
+- [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
