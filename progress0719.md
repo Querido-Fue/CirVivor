@@ -303,6 +303,7 @@
 - [x] 최종 `npm test` 149개, JS/MJS 366개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
 - [x] 독립 감사에서 7개 protected 훅·6개 void 훅, 하위 클래스 사용, 기본 프리셋과 맵 선택 흐름을 재검토해 blocker·과장 없음 확인; 실행 구조 변경이 없어 `AGENT_GUIDE.md` 갱신 불필요
 - [x] Computer Use 실제 게임 cold start에서 설정 overlay 열기·취소, 맵 선택 overlay의 glass·미리보기 장식 렌더와 취소, 타이틀 복원, 종료 overlay 및 정상 종료 확인
+- [x] GitHub Desktop 커밋 및 푸시: `063979c Correct BaseOverlay extension hook documentation`
 
 ## 6. 일반 성능 최적화
 
