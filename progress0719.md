@@ -363,6 +363,21 @@
 - [x] Computer Use 실제 게임 cold start에서 설정·맵 선택 오버레이의 기본 프리셋 열림/닫힘, glass·blur·scale·alpha 렌더, 타이틀 복원, 종료 확인 오버레이와 정상 프로세스 종료 확인
 - [x] GitHub Desktop 커밋 및 푸시: `68ac193 Correct overlay preset resolver documentation`
 
+#### 5.12 `UISystem.init()` 순차 부트·Promise 계약 정정 — 검증 진행 중
+
+- [x] `ui_system.js`와 유일한 production caller `SystemHandler.init()`을 전체 대조해 기존 JSDoc이 cursor만 언급하고 tooltip 순차 대기·live 재조회·Promise/오류 계약을 누락한 사실을 확인
+- [x] production 변경 전 actual-source 행동·해시 8개 green/JSDoc 구조 1개 red, 리뷰 보강 뒤 행동·해시 9개 green/JSDoc 1개 red를 확인하고 최종 전용 계약 10개 전체 green으로 고정
+- [x] cursor→tooltip deferred 순서, 원래 receiver, property/init getter 1회, 하위 반환값 폐기와 최종 `undefined`, 호출별·하위와 다른 Promise identity를 검증
+- [x] cursor/tooltip property 접근·init 접근·동기 호출·then getter/본체 선행 throw·thenable/native Promise reject의 동기 throw 부재와 같은 오류 identity rejection, 첫 단계 실패 시 tooltip 미호출을 검증
+- [x] 두 단계 모두 thenable이 resolve한 뒤 throw하는 값을 first-settlement-wins 규칙으로 무시하고 최종 `undefined`로 이행하는 경계를 검증
+- [x] 첫 await 중 tooltip 교체, 동시 2회 호출, cursor 재진입과 중복 guard 부재, null receiver의 비동기 `TypeError`를 actual production 모듈로 검증
+- [x] 실제 `SystemHandler` production 소스를 VM에서 실행해 UI init 이행 전 `UISystem 로드` 로그와 ObjectSystem 생성·초기화가 진행되지 않는 부트 경계를 검증
+- [x] standalone JSDoc 11개와 종결 개행을 제거한 production 실행 소스 SHA-256 `75b73fa1387573634ca1c26941b1647b97cc401a78bc103907863a449da472a5` exact 보존
+- [x] 독립 리뷰에서 first-settlement-wins 과장을 발견해 문서·오라클을 보강하고 최종 blocker 없음 승인; 전체 `npm test` 191개, JS/MJS 369개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀, ABI canary 3종, `git diff --check` 통과
+- [x] Computer Use 실제 게임 2560×1440 cold start에서 타이틀/UI 초기화, 설정 glass overlay 진입·취소, 맵 선택 preview 진입·취소, 각 타이틀 복원, 종료 확인 overlay와 정상 프로세스 종료를 검증
+- [ ] GitHub Desktop GUI 커밋 및 푸시
+- [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
