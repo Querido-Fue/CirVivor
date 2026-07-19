@@ -15,7 +15,7 @@ const [debugSystemSource, errorHandlerSource] = await Promise.all([
 ]);
 
 const EXECUTABLE_SOURCE_HASHES = Object.freeze({
-    debugSystem: 'ada62833709160de3fdd1e0fbfd930537a7d3eaa4f7766fa88bfa0cec5d07737',
+    debugSystem: '5b4a29d20b16e35b3656bc4235ffe2d620bc3753e94164bd369b4bd1a22026a1',
     errorHandler: '72e14003640956d4818134babcb04dda2c74afde326ab93fd194f5b058e761dd'
 });
 
@@ -73,14 +73,16 @@ function createSyntheticModule(context, identifier, exports) {
 
 /**
  * 실제 debug/error production 모듈을 관찰 가능한 console과 함께 로드합니다.
+ * @param {{debugMode?:boolean}} [options={}] - 저장된 디버그 모드 초기값입니다.
  * @returns {Promise<object>} 테스트 하네스입니다.
  */
-async function createDebugHarness() {
+async function createDebugHarness({ debugMode = false } = {}) {
     const calls = {
         error: [],
         info: [],
         warn: []
     };
+    const settingCalls = [];
     const consoleApi = {
         error(...args) {
             calls.error.push(args);
@@ -131,7 +133,12 @@ async function createDebugHarness() {
     modules.set('save/save_system.js', createSyntheticModule(
         context,
         'save/save_system.js',
-        { getSetting: () => false }
+        {
+            getSetting(settingKey) {
+                settingCalls.push(settingKey);
+                return settingKey === 'debugMode' ? debugMode : false;
+            }
+        }
     ));
     modules.set('./_animation_debug_controller.js', createSyntheticModule(
         context,
@@ -170,6 +177,7 @@ async function createDebugHarness() {
 
     return {
         calls,
+        settingCalls,
         consoleApi,
         context,
         debug: debugSystemModule.namespace,
@@ -238,6 +246,50 @@ test('debug error JSDoc은 변환·level·identity·초기화와 반환 계약�
     assert.match(publicDoc, /@param \{\*\} level/);
     assert.match(publicDoc, /@returns \{void\}/);
     assert.match(publicDoc, /@throws \{\*\}/);
+});
+
+test('hitbox cache는 생성과 초기화에서만 설정을 읽고 반복 조회에는 저장소를 방문하지 않는다', async () => {
+    const harness = await createDebugHarness({ debugMode: true });
+    const { DebugSystem, shouldShowHitboxes } = harness.debug;
+    const debugSystem = new DebugSystem();
+    await debugSystem.init();
+
+    assert.equal(shouldShowHitboxes(), true);
+    assert.deepEqual(harness.settingCalls, ['debugMode', 'debugMode']);
+    for (let index = 0; index < 5; index += 1) {
+        assert.equal(shouldShowHitboxes(), true);
+    }
+    assert.equal(harness.settingCalls.length, 2);
+});
+
+test('hitbox 옵션 변경은 표시 cache를 즉시 갱신한다', async () => {
+    const harness = await createDebugHarness({ debugMode: true });
+    const { DebugSystem, shouldShowHitboxes } = harness.debug;
+    const debugSystem = new DebugSystem();
+    await debugSystem.init();
+
+    debugSystem.setControlOption('hitboxes', false);
+    assert.equal(shouldShowHitboxes(), false);
+    debugSystem.setControlOption('hitboxes', true);
+    assert.equal(shouldShowHitboxes(), true);
+});
+
+test('runtime debugMode 변경은 현재 인스턴스의 hitbox cache만 전환한다', async () => {
+    const harness = await createDebugHarness({ debugMode: true });
+    const { DebugSystem, shouldShowHitboxes } = harness.debug;
+    const debugSystem = new DebugSystem();
+    await debugSystem.init();
+
+    debugSystem.applyRuntimeSettings({ debugMode: false });
+    assert.equal(shouldShowHitboxes(), false);
+    debugSystem.applyRuntimeSettings({ debugMode: true });
+    assert.equal(shouldShowHitboxes(), true);
+
+    const currentDebugSystem = new DebugSystem();
+    await currentDebugSystem.init();
+    debugSystem.setControlOption('hitboxes', false);
+    debugSystem.applyRuntimeSettings({ debugMode: false });
+    assert.equal(shouldShowHitboxes(), true);
 });
 
 test('ErrorHandler는 message를 level 검사 전에 정확히 한 번 정규화한다', async () => {
