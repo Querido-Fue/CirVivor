@@ -400,7 +400,12 @@ export class CollisionHandler {
             if (enemyBodies.length === 0) return 0;
 
             const gridBuildStart = this.#profileRecorder.startTimer();
-            const enemyGridCellSize = this.#rebuildGridFromBodies(enemyBodies, 'projectile');
+            const enemyGridCellSize = this.#rebuildGridFromBodies(
+                enemyBodies,
+                'projectile',
+                enemyBodies.length,
+                true
+            );
             this.#profileRecorder.recordDuration('projectileGridBuildMs', gridBuildStart);
 
             const baseSteps = this.#resolveIterationCount();
@@ -515,7 +520,7 @@ export class CollisionHandler {
             createCollisionBaseStatsSnapshot(this.#frameStats, this.#contactStatsSnapshot);
             try {
                 const gridBuildStart = this.#profileRecorder.startTimer();
-                this.#rebuildGridFromBodies(bodies, 'enemyPair');
+                this.#rebuildGridFromBodies(bodies, 'enemyPair', bodies.length, true);
                 this.#profileRecorder.recordDuration('contactGridBuildMs', gridBuildStart);
                 this.#buildContactCandidatePairsFromGrid(bodies);
 
@@ -1045,16 +1050,22 @@ export class CollisionHandler {
      * @param {object[]} bodies
      * @param {'default'|'enemyPair'|'projectile'} [gridMode='default']
      * @param {number} [gridBodyCount=bodies.length] - grid에 삽입할 앞쪽 body 개수입니다.
+     * @param {boolean} [gridDataOnly=false] - relation/candidate plane을 생략하고 grid 데이터만 쓸지 여부입니다.
      * @returns {number} 재구성에 사용한 grid cell size
      */
-    #rebuildGridFromBodies(bodies, gridMode = 'default', gridBodyCount = bodies.length) {
+    #rebuildGridFromBodies(
+        bodies,
+        gridMode = 'default',
+        gridBodyCount = bodies.length,
+        gridDataOnly = false
+    ) {
         const safeGridBodyCount = Number.isFinite(gridBodyCount)
             ? Math.min(bodies.length, Math.max(0, Math.floor(gridBodyCount)))
             : bodies.length;
         this.#broadphaseBuffer.ensure(bodies.length);
-        if (gridMode === 'projectile') {
+        if (gridDataOnly) {
             for (let i = 0; i < bodies.length; i++) {
-                this.#broadphaseBuffer.writeProjectileGrid(i, bodies[i]);
+                this.#broadphaseBuffer.writeGridOnly(i, bodies[i], gridMode);
             }
         } else {
             for (let i = 0; i < bodies.length; i++) {

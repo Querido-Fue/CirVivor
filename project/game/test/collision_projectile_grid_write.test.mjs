@@ -18,7 +18,7 @@ const { CollisionBroadphaseBuffer } = broadphaseModule;
 const { COLLISION_BROAD_STRIDE } = soaModule;
 
 /**
- * projectile grid writer 계약 검증용 body를 생성합니다.
+ * grid-only writer 계약 검증용 body를 생성합니다.
  * @param {object} [overrides={}] - 기본 필드를 덮어쓸 값입니다.
  * @returns {object}
  */
@@ -72,33 +72,34 @@ function assertExactNumberArray(actual, expected, label) {
 }
 
 /**
- * 범용 projectile write와 전용 write의 공통 결과를 비교합니다.
+ * 범용 write와 grid-only write의 공통 결과를 비교합니다.
  * @param {object} bodyData - 양쪽 writer에 전달할 body 필드입니다.
+ * @param {'default'|'enemyPair'|'projectile'} gridMode - 비교할 grid 계산 모드입니다.
  * @param {string} label - case label입니다.
  */
-function assertProjectileWriteEquivalent(bodyData, label) {
+function assertGridOnlyWriteEquivalent(bodyData, gridMode, label) {
     const genericBuffer = new CollisionBroadphaseBuffer(4);
-    const projectileBuffer = new CollisionBroadphaseBuffer(4);
+    const gridOnlyBuffer = new CollisionBroadphaseBuffer(4);
     const genericBody = createBody(bodyData);
-    const projectileBody = createBody(bodyData);
+    const gridOnlyBody = createBody(bodyData);
     const index = 2;
 
-    genericBuffer.write(index, genericBody, 'projectile');
-    projectileBuffer.writeProjectileGrid(index, projectileBody);
+    genericBuffer.write(index, genericBody, gridMode);
+    gridOnlyBuffer.writeGridOnly(index, gridOnlyBody, gridMode);
 
     const start = index * COLLISION_BROAD_STRIDE;
     assertExactNumberArray(
-        projectileBuffer.broadData.subarray(start, start + COLLISION_BROAD_STRIDE),
+        gridOnlyBuffer.broadData.subarray(start, start + COLLISION_BROAD_STRIDE),
         genericBuffer.broadData.subarray(start, start + COLLISION_BROAD_STRIDE),
         `${label}.broadData`
     );
-    assert.equal(projectileBuffer.bodyKindCodes[index], genericBuffer.bodyKindCodes[index], `${label}.kind`);
-    assert.equal(projectileBuffer.bodyShapeCodes[index], genericBuffer.bodyShapeCodes[index], `${label}.shape`);
-    assert.equal(projectileBody._broadDataIndex, genericBody._broadDataIndex, `${label}.index`);
+    assert.equal(gridOnlyBuffer.bodyKindCodes[index], genericBuffer.bodyKindCodes[index], `${label}.kind`);
+    assert.equal(gridOnlyBuffer.bodyShapeCodes[index], genericBuffer.bodyShapeCodes[index], `${label}.shape`);
+    assert.equal(gridOnlyBody._broadDataIndex, genericBody._broadDataIndex, `${label}.index`);
 }
 
-assertProjectileWriteEquivalent({}, 'enemy-circle');
-assertProjectileWriteEquivalent({
+assertGridOnlyWriteEquivalent({}, 'projectile', 'projectile.enemy-circle');
+assertGridOnlyWriteEquivalent({
     shape: 'circleParts',
     projectileMinX: Number.NaN,
     projectileMaxX: Number.POSITIVE_INFINITY,
@@ -106,24 +107,50 @@ assertProjectileWriteEquivalent({
     projectileMaxY: 16_777_216.25,
     projectileBroadRadius: Number.NaN,
     broadRadius: -0
-}, 'enemy-parts-edge');
-assertProjectileWriteEquivalent({
+}, 'projectile', 'projectile.enemy-parts-edge');
+assertGridOnlyWriteEquivalent({
     kind: 'player',
     shape: 'rect',
     minX: Number.NEGATIVE_INFINITY,
     maxX: Number.POSITIVE_INFINITY,
     projectileMinX: -1,
     projectileMaxX: 1
-}, 'non-enemy');
-assertProjectileWriteEquivalent({
+}, 'projectile', 'projectile.non-enemy');
+assertGridOnlyWriteEquivalent({
     kind: 'unregistered-kind',
     shape: 'unregistered-shape',
     centerX: Number.NaN,
     centerY: -0,
     boundRadius: Number.POSITIVE_INFINITY
-}, 'unknown-codes');
+}, 'projectile', 'projectile.unknown-codes');
 
-// 전용 writer는 투사체 scan이 읽지 않는 relation/candidate plane을 건드리지 않습니다.
+const projectileAliasBuffer = new CollisionBroadphaseBuffer(1);
+const projectileHelperBuffer = new CollisionBroadphaseBuffer(1);
+const projectileAliasBody = createBody();
+const projectileHelperBody = createBody();
+projectileAliasBuffer.writeProjectileGrid(0, projectileAliasBody);
+projectileHelperBuffer.writeGridOnly(0, projectileHelperBody, 'projectile');
+assertExactNumberArray(
+    projectileAliasBuffer.broadData,
+    projectileHelperBuffer.broadData,
+    'projectile.alias.broadData'
+);
+assert.equal(projectileAliasBuffer.bodyKindCodes[0], projectileHelperBuffer.bodyKindCodes[0]);
+assert.equal(projectileAliasBuffer.bodyShapeCodes[0], projectileHelperBuffer.bodyShapeCodes[0]);
+assert.equal(projectileAliasBody._broadDataIndex, projectileHelperBody._broadDataIndex);
+
+assertGridOnlyWriteEquivalent({}, 'enemyPair', 'enemy-pair.enemy-circle');
+assertGridOnlyWriteEquivalent({
+    shape: 'circleParts',
+    enemyPairMinX: Number.NaN,
+    enemyPairMaxX: Number.POSITIVE_INFINITY,
+    enemyPairMinY: -0,
+    enemyPairMaxY: 16_777_216.25,
+    enemyPairBroadRadius: Number.NaN,
+    broadRadius: -0
+}, 'enemyPair', 'enemy-pair.edge');
+
+// grid-only writer는 현재 grid 소비자가 읽지 않는 relation/candidate plane을 건드리지 않습니다.
 const planeBuffer = new CollisionBroadphaseBuffer(2);
 planeBuffer.relationData.fill(123.5);
 planeBuffer.candidateSweepData.fill(-234.5);
@@ -131,7 +158,7 @@ planeBuffer.candidateSweepValidity.fill(7);
 const relationBefore = planeBuffer.relationData.slice();
 const candidateBefore = planeBuffer.candidateSweepData.slice();
 const validityBefore = planeBuffer.candidateSweepValidity.slice();
-planeBuffer.writeProjectileGrid(0, createBody());
+planeBuffer.writeGridOnly(0, createBody(), 'projectile');
 assertExactNumberArray(planeBuffer.relationData, relationBefore, 'projectile.relation-untouched');
 assertExactNumberArray(planeBuffer.candidateSweepData, candidateBefore, 'projectile.candidate-untouched');
 assertExactNumberArray(planeBuffer.candidateSweepValidity, validityBefore, 'projectile.validity-untouched');
@@ -144,7 +171,7 @@ for (const buffer of [reusedBuffer, freshBuffer]) {
     buffer.candidateSweepData.fill(-47.5);
     buffer.candidateSweepValidity.fill(3);
 }
-reusedBuffer.writeProjectileGrid(0, createBody());
+reusedBuffer.writeGridOnly(0, createBody(), 'enemyPair');
 const nextReusedBody = createBody({
     centerX: 50,
     centerY: 60,
@@ -196,22 +223,28 @@ function createTrackedBody(trace, throwProperty = null) {
 }
 
 // 범용 write의 relation/candidate 추가 조회 전까지 공통 property 접근 순서가 동일해야 합니다.
-const genericTrace = [];
-const projectileTrace = [];
-new CollisionBroadphaseBuffer(1).write(0, createTrackedBody(genericTrace), 'projectile');
-new CollisionBroadphaseBuffer(1).writeProjectileGrid(0, createTrackedBody(projectileTrace));
-assert.deepEqual(genericTrace.slice(0, projectileTrace.length), projectileTrace);
+for (const gridMode of ['projectile', 'enemyPair']) {
+    const genericTrace = [];
+    const gridOnlyTrace = [];
+    new CollisionBroadphaseBuffer(1).write(0, createTrackedBody(genericTrace), gridMode);
+    new CollisionBroadphaseBuffer(1).writeGridOnly(0, createTrackedBody(gridOnlyTrace), gridMode);
+    assert.deepEqual(
+        genericTrace.slice(0, gridOnlyTrace.length),
+        gridOnlyTrace,
+        `${gridMode}.property-order`
+    );
+}
 
 // 공통 broad record 중간에 예외가 나도 접근 순서와 부분 write 상태가 같아야 합니다.
-function captureCenterYThrow(useProjectileWriter) {
+function captureCenterYThrow(useGridOnlyWriter) {
     const trace = [];
     const buffer = new CollisionBroadphaseBuffer(1);
     buffer.broadData.fill(91.25);
     const body = createTrackedBody(trace, 'centerY');
     let error = null;
     try {
-        if (useProjectileWriter) {
-            buffer.writeProjectileGrid(0, body);
+        if (useGridOnlyWriter) {
+            buffer.writeGridOnly(0, body, 'projectile');
         } else {
             buffer.write(0, body, 'projectile');
         }
@@ -231,4 +264,4 @@ assertExactNumberArray(projectileThrow.buffer.bodyKindCodes, genericThrow.buffer
 assertExactNumberArray(projectileThrow.buffer.bodyShapeCodes, genericThrow.buffer.bodyShapeCodes, 'throw.shape');
 assert.equal(projectileThrow.body._broadDataIndex, genericThrow.body._broadDataIndex, 'throw.index');
 
-console.log('collision projectile grid write contract: ok');
+console.log('collision grid-only write contract: ok');

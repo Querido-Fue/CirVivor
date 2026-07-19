@@ -155,6 +155,7 @@ export class CollisionBroadphaseBuffer {
      * @param {number} index - body 인덱스입니다.
      * @param {object} body - 충돌 body입니다.
      * @param {'default'|'enemyPair'|'projectile'} [gridMode='default'] - grid 계산 모드입니다.
+     * @returns {void}
      */
     write(index, body, gridMode = 'default') {
         const broadOffset = index * BROAD_STRIDE;
@@ -202,16 +203,16 @@ export class CollisionBroadphaseBuffer {
     }
 
     /**
-     * 투사체 grid 삽입에 필요한 broad-phase 데이터만 씁니다.
+     * grid 삽입에 필요한 broad-phase 데이터만 씁니다.
      * `_broadDataIndex`, kind/shape code와 Float32 broad record는
-     * `write(index, body, 'projectile')`와 같은 조회·쓰기 순서를 유지합니다.
-     * enemy relation/candidate plane은 투사체 scan에서 소비하지 않으므로 갱신하지 않으며,
-     * 해당 plane을 사용하는 다음 경로는 반드시 범용 `write()`로 먼저 덮어써야 합니다.
+     * `write(index, body, gridMode)`와 같은 조회·쓰기 순서를 유지합니다.
+     * enemy relation/candidate plane은 갱신하지 않으므로, 해당 plane을 사용하는 다음
+     * 경로는 반드시 범용 `write()`로 먼저 덮어써야 합니다.
      * @param {number} index - body 인덱스입니다.
      * @param {object} body - 충돌 body입니다.
+     * @param {'default'|'enemyPair'|'projectile'} [gridMode='default'] - grid 계산 모드입니다.
      */
-    writeProjectileGrid(index, body) {
-        const gridMode = 'projectile';
+    writeGridOnly(index, body, gridMode = 'default') {
         const broadOffset = index * BROAD_STRIDE;
         let minX = body.minX;
         let maxX = body.maxX;
@@ -251,6 +252,16 @@ export class CollisionBroadphaseBuffer {
         broadData[broadOffset + 11] = broadRadius;
         broadData[broadOffset + 12] = broadRadius * COLLISION_GRID_RADIUS_SCALE;
         broadData[broadOffset + 13] = body.shape === 'circle' ? body.radius : broadRadius;
+    }
+
+    /**
+     * 투사체 grid 전용 writer의 공개 호환 진입점입니다.
+     * @param {number} index - body 인덱스입니다.
+     * @param {object} body - 충돌 body입니다.
+     * @returns {void}
+     */
+    writeProjectileGrid(index, body) {
+        this.writeGridOnly(index, body, 'projectile');
     }
 
     /**
