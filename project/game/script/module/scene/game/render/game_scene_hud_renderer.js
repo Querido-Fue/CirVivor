@@ -5,6 +5,27 @@ import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
 
 /** @type {{ww: number, wh: number, titleFont: number, statsFont: number, titleFontString: string, statsFontString: string, statsX: number, statsY: number}|null} */
 let cachedHudMetrics = null;
+const HUD_TITLE_RENDER_OPTIONS = {
+    shape: 'text',
+    text: '',
+    x: 0,
+    y: 0,
+    font: '',
+    fill: '',
+    align: 'left',
+    baseline: 'middle'
+};
+const HUD_STAT_RENDER_OPTIONS = {
+    shape: 'text',
+    text: '',
+    x: 0,
+    y: 0,
+    font: '',
+    fill: '',
+    align: 'right',
+    baseline: 'bottom',
+    alpha: 0.9
+};
 
 /**
  * HUD에 표시할 적 수를 계산합니다.
@@ -27,16 +48,29 @@ function resolveHudEnemyCount(sceneSnapshot, objectSystem) {
  * @param {{ww: number, wh: number, titleFont: number, titleFontString: string}} metrics - HUD 배치 값입니다.
  */
 function renderHudTitle(metrics) {
-    render('ui', {
-        shape: 'text',
-        text: 'Benchmark Scene',
-        x: metrics.ww * 0.03,
-        y: metrics.wh * 0.04,
-        font: metrics.titleFontString,
-        fill: ColorSchemes.Game.Font,
-        align: 'left',
-        baseline: 'middle'
-    });
+    const renderOptions = HUD_TITLE_RENDER_OPTIONS;
+    renderOptions.text = 'Benchmark Scene';
+    renderOptions.x = metrics.ww * 0.03;
+    renderOptions.y = metrics.wh * 0.04;
+    renderOptions.font = metrics.titleFontString;
+    renderOptions.fill = ColorSchemes.Game.Font;
+    render('ui', renderOptions);
+}
+
+/**
+ * 재사용 가능한 명령 객체로 HUD 통계 한 줄을 즉시 렌더합니다.
+ * @param {{statsX: number, statsFontString: string}} metrics - HUD 배치 값입니다.
+ * @param {string} text - 표시할 통계 문자열입니다.
+ * @param {number} y - 텍스트 기준 Y 좌표입니다.
+ */
+function renderHudStatLine(metrics, text, y) {
+    const renderOptions = HUD_STAT_RENDER_OPTIONS;
+    renderOptions.text = text;
+    renderOptions.x = metrics.statsX;
+    renderOptions.y = y;
+    renderOptions.font = metrics.statsFontString;
+    renderOptions.fill = ColorSchemes.Game.Font;
+    render('ui', renderOptions);
 }
 
 /**
@@ -45,17 +79,7 @@ function renderHudTitle(metrics) {
  * @param {number} enemyCount - 표시할 적 수입니다.
  */
 function renderHudEnemyCount(metrics, enemyCount) {
-    render('ui', {
-        shape: 'text',
-        text: `enemy count: ${enemyCount}`,
-        x: metrics.statsX,
-        y: metrics.statsY,
-        font: metrics.statsFontString,
-        fill: ColorSchemes.Game.Font,
-        align: 'right',
-        baseline: 'bottom',
-        alpha: 0.9
-    });
+    renderHudStatLine(metrics, `enemy count: ${enemyCount}`, metrics.statsY);
 }
 
 /**
@@ -64,50 +88,26 @@ function renderHudEnemyCount(metrics, enemyCount) {
  * @param {object|null|undefined} collisionStats - 충돌 통계입니다.
  */
 function renderHudCollisionStats(metrics, collisionStats) {
-    render('ui', {
-        shape: 'text',
-        text: `Collision check count: ${normalizeSnapshotNumber(collisionStats?.collisionCheckCount, 0)}`,
-        x: metrics.statsX,
-        y: metrics.statsY - (metrics.statsFont * 5.12),
-        font: metrics.statsFontString,
-        fill: ColorSchemes.Game.Font,
-        align: 'right',
-        baseline: 'bottom',
-        alpha: 0.9
-    });
-    render('ui', {
-        shape: 'text',
-        text: `AABB pass: ${normalizeSnapshotNumber(collisionStats?.aabbPassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.aabbRejectCount, 0)}`,
-        x: metrics.statsX,
-        y: metrics.statsY - (metrics.statsFont * 3.84),
-        font: metrics.statsFontString,
-        fill: ColorSchemes.Game.Font,
-        align: 'right',
-        baseline: 'bottom',
-        alpha: 0.9
-    });
-    render('ui', {
-        shape: 'text',
-        text: `Circle pass: ${normalizeSnapshotNumber(collisionStats?.circlePassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.circleRejectCount, 0)}`,
-        x: metrics.statsX,
-        y: metrics.statsY - (metrics.statsFont * 2.56),
-        font: metrics.statsFontString,
-        fill: ColorSchemes.Game.Font,
-        align: 'right',
-        baseline: 'bottom',
-        alpha: 0.9
-    });
-    render('ui', {
-        shape: 'text',
-        text: `Part check: ${normalizeSnapshotNumber(collisionStats?.partChecks, 0)}`,
-        x: metrics.statsX,
-        y: metrics.statsY - (metrics.statsFont * 1.28),
-        font: metrics.statsFontString,
-        fill: ColorSchemes.Game.Font,
-        align: 'right',
-        baseline: 'bottom',
-        alpha: 0.9
-    });
+    renderHudStatLine(
+        metrics,
+        `Collision check count: ${normalizeSnapshotNumber(collisionStats?.collisionCheckCount, 0)}`,
+        metrics.statsY - (metrics.statsFont * 5.12)
+    );
+    renderHudStatLine(
+        metrics,
+        `AABB pass: ${normalizeSnapshotNumber(collisionStats?.aabbPassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.aabbRejectCount, 0)}`,
+        metrics.statsY - (metrics.statsFont * 3.84)
+    );
+    renderHudStatLine(
+        metrics,
+        `Circle pass: ${normalizeSnapshotNumber(collisionStats?.circlePassCount, 0)} | reject: ${normalizeSnapshotNumber(collisionStats?.circleRejectCount, 0)}`,
+        metrics.statsY - (metrics.statsFont * 2.56)
+    );
+    renderHudStatLine(
+        metrics,
+        `Part check: ${normalizeSnapshotNumber(collisionStats?.partChecks, 0)}`,
+        metrics.statsY - (metrics.statsFont * 1.28)
+    );
 }
 
 /**
