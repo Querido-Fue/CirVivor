@@ -22,6 +22,7 @@ import {
 } from './collision_broad_phase_filter.js';
 import { detectCollisionBodies } from './collision_body_detector.js';
 import { detectCollisionBodiesBooleanContact } from './collision_contact_boolean_detector.js';
+import { collisionContactBackend } from './wasm/_collision_contact_backend.js';
 import { CollisionBroadphaseBuffer } from './collision_broadphase_buffer.js';
 import { CollisionBodyPool } from './collision_body_pool.js';
 import {
@@ -142,8 +143,14 @@ export class CollisionHandler {
     #sleepAdvanceFrameByEnemy;
     #sleepPostSolveFrameByEnemy;
     #enemyCandidateScanTruncated;
+    #contactBackend;
 
-    constructor() {
+    /**
+     * @param {object} [options] - 내부 backend 구성입니다.
+     * @param {{scanPreparedContacts?:Function}|null} [options.contactBackend=collisionContactBackend]
+     * prepared contact batch backend이며 null이면 JS boolean을 사용합니다.
+     */
+    constructor({ contactBackend = collisionContactBackend } = {}) {
         this.detector = new CollisionDetector();
         this.walls = [];
         this.#grid = new Map();
@@ -178,6 +185,7 @@ export class CollisionHandler {
         this.#sleepAdvanceFrameByEnemy = new WeakMap();
         this.#sleepPostSolveFrameByEnemy = new WeakMap();
         this.#enemyCandidateScanTruncated = false;
+        this.#contactBackend = contactBackend;
         this.#bodyDetectorContext = {
             manifold: this.#scratchManifold,
             candidateManifold: this.#scratchCandidateManifold,
@@ -551,6 +559,8 @@ export class CollisionHandler {
     /**
      * ObjectSystem이 같은 fixed frame에 준비한 canonical hexa enemy body만 재사용해
      * manifold와 recorder side effect 없이 boolean contact pair를 수집합니다.
+     * body와 candidate는 handler가 만든 plain record/Array 및 native typed array라는
+     * trusted-private 계약이며 Proxy나 변조된 intrinsic을 지원하지 않습니다.
      * prepared cache가 없으면 기존 공개 contact 경로로 되돌아갑니다.
      * @internal
      * @param {object[]} enemies - 준비된 enemy 목록의 hexa merge 후보 subset입니다.
@@ -585,14 +595,32 @@ export class CollisionHandler {
                 const pairScanStart = this.#profileRecorder.startTimer();
                 const lowIndices = this.#candidatePairs.lowIndices;
                 const highIndices = this.#candidatePairs.highIndices;
-                for (let pairIndex = 0; pairIndex < this.#candidatePairs.count; pairIndex++) {
-                    const bodyA = bodies[lowIndices[pairIndex]];
-                    const bodyB = bodies[highIndices[pairIndex]];
-                    if (!detectCollisionBodiesBooleanContact(bodyA, bodyB)) {
-                        continue;
+                const pairCount = this.#candidatePairs.count;
+                const contactFlags = typeof this.#contactBackend?.scanPreparedContacts === 'function'
+                    ? this.#contactBackend.scanPreparedContacts(
+                        bodies,
+                        lowIndices,
+                        highIndices,
+                        pairCount
+                    )
+                    : null;
+                if (contactFlags) {
+                    // Pure kernel이 batch 전체를 성공한 뒤에만 ordered 결과를 append합니다.
+                    for (let pairIndex = 0; pairIndex < pairCount; pairIndex++) {
+                        if (contactFlags[pairIndex] === 0) continue;
+                        const bodyA = bodies[lowIndices[pairIndex]];
+                        const bodyB = bodies[highIndices[pairIndex]];
+                        this.#appendContactPair(bodyA.ref, bodyB.ref);
                     }
-
-                    this.#appendContactPair(bodyA.ref, bodyB.ref);
+                } else {
+                    for (let pairIndex = 0; pairIndex < pairCount; pairIndex++) {
+                        const bodyA = bodies[lowIndices[pairIndex]];
+                        const bodyB = bodies[highIndices[pairIndex]];
+                        if (!detectCollisionBodiesBooleanContact(bodyA, bodyB)) {
+                            continue;
+                        }
+                        this.#appendContactPair(bodyA.ref, bodyB.ref);
+                    }
                 }
                 this.#profileRecorder.recordDuration('contactPairScanMs', pairScanStart);
 

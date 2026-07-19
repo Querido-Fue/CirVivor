@@ -170,7 +170,8 @@ function detectAggregateCircleContact(ax, ay, ar, bx, by, br) {
     if (!(distance > EPSILON)) {
         distance = 0;
     }
-    return (radiusSum - distance) > EPSILON;
+    const penetration = radiusSum - distance;
+    return Number.isFinite(penetration) && penetration > EPSILON;
 }
 
 /**

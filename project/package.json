@@ -5,6 +5,9 @@
     "scripts": {
         "build:wasm:flow-field": "node game/test/support/build_enemy_ai_flow_field_wasm.mjs",
         "check:wasm:flow-field": "node game/test/support/build_enemy_ai_flow_field_wasm.mjs --check",
+        "build:wasm:collision-contact": "node game/test/support/build_collision_contact_wasm.mjs",
+        "check:wasm:collision-contact": "node game/test/support/build_collision_contact_wasm.mjs --check",
+        "benchmark:wasm:collision-contact": "node --experimental-vm-modules game/test/benchmark/collision_hexa_contact_boolean.bench.mjs",
         "test:wasm:flow-field:stress": "node --experimental-vm-modules game/test/stress/enemy_ai_flow_field_stress.mjs",
         "benchmark:wasm:flow-field": "node game/test/benchmark/enemy_ai_flow_field_wasm.bench.mjs",
         "test:render:golden": "node game/test/support/run_nw_render_pipeline_golden.mjs --check",

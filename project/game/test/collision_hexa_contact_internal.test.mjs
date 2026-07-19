@@ -7,6 +7,9 @@ for (const modulePath of [
     'physics/_collision_detector.js',
     'util/number_util.js',
     'physics/_collision_resolve_tuning.js',
+    'physics/wasm/_collision_contact_wasm_bytes.js',
+    'physics/wasm/_collision_contact_wasm_runtime.js',
+    'physics/wasm/_collision_contact_backend.js',
     'physics/_collision_projectile_effect.js',
     'physics/collision_broad_phase_filter.js',
     'physics/collision_manifold_writer.js',
@@ -50,6 +53,11 @@ const { ENEMY_PAIR_COLLISION_RADIUS_SCALE } = await loadGameModule(
 const { CollisionProfileRecorder } = await loadGameModule(
     'physics/collision_profile_recorder.js'
 );
+const { CollisionHandler } = await loadGameModule('physics/_collision_handler.js');
+const {
+    CollisionContactBackend,
+    getCollisionContactBackendStatus
+} = await loadGameModule('physics/wasm/_collision_contact_backend.js');
 const { PhysicsSystem } = await loadGameModule('physics/physics_system.js');
 const { collectObjectSystemHexaHiveContactPairs } = await loadGameModule(
     'object/object_system_hexa_hive_orchestration.js'
@@ -146,7 +154,11 @@ const enemies = [
     createHexaEnemy(7, 'hexa_hive', 3000),
     createHexaEnemy(8, 'hexa_hive', 3000),
     createHexaEnemy(9, 'hexa_hive', 4000),
-    createHexaEnemy(10, 'hexa_hive', 4000)
+    createHexaEnemy(10, 'hexa_hive', 4000),
+    createHexaEnemy(11, 'hexa_hive', 5000),
+    createHexaEnemy(12, 'hexa', 5000),
+    createHexaEnemy(13, 'hexa', 6000),
+    createHexaEnemy(14, 'hexa', 6000)
 ];
 
 const physicsSystem = new PhysicsSystem();
@@ -188,8 +200,11 @@ try {
     const internalPairIds = snapshotPairIds(
         physicsSystem.collectPreparedHexaHiveContactPairs(enemies, { delta: FIXED_DELTA })
     );
-    assert.deepEqual(internalPairIds, ['1:2', '3:4', '9:10']);
+    assert.deepEqual(internalPairIds, ['1:2', '3:4', '9:10', '11:12', '13:14']);
     assert.equal(partCheckCalls, 0, 'prepared boolean path must not call the legacy recorder');
+    const wasmStatus = getCollisionContactBackendStatus();
+    assert.equal(wasmStatus.state, 'wasm-ready');
+    assert.ok(wasmStatus.wasmScanCount > 0, 'prepared path must execute the production WASM batch');
 
     const publicPairIds = snapshotPairIds(
         physicsSystem.collectEnemyContactPairs(enemies, { delta: FIXED_DELTA })
@@ -243,4 +258,63 @@ assert.strictEqual(collectObjectSystemHexaHiveContactPairs({
 }), fallbackSentinel);
 assert.deepEqual(fallbackTrace, ['prepare', 'public']);
 
-console.log('prepared hexa boolean contact contract: ok');
+// 초기화 실패는 재시도 없이 영구 JS 상태로 남습니다.
+let initializationAttempts = 0;
+const initializationFailureBackend = new CollisionContactBackend({
+    runtimeFactory() {
+        initializationAttempts++;
+        throw new Error('expected initialization failure');
+    }
+});
+assert.equal(initializationFailureBackend.getStatus().failure?.stage, 'initialization');
+assert.equal(
+    initializationFailureBackend.scanPreparedContacts([], new Int32Array(), new Int32Array(), 0),
+    null
+);
+assert.equal(initializationAttempts, 1);
+
+// 실행 trap 뒤에는 성공 전 append 없이 같은 batch를 JS boolean으로 처음부터 복구합니다.
+let executionAttempts = 0;
+const executionFailureBackend = new CollisionContactBackend({
+    runtimeFactory() {
+        return {
+            scanPreparedContacts() {
+                executionAttempts++;
+                throw new WebAssembly.RuntimeError('expected execution trap');
+            }
+        };
+    }
+});
+const fallbackCollisionHandler = new CollisionHandler({
+    contactBackend: executionFailureBackend
+});
+const executionFallbackEnemies = [
+    createHexaEnemy(201, 'hexa', 0),
+    createHexaEnemy(202, 'hexa_hive', 0)
+];
+fallbackCollisionHandler.resetFrameStats();
+assert.equal(
+    fallbackCollisionHandler.prepareEnemyCollisionFrame(
+        executionFallbackEnemies,
+        { delta: FIXED_DELTA }
+    ),
+    executionFallbackEnemies.length
+);
+assert.deepEqual(
+    snapshotPairIds(fallbackCollisionHandler.collectPreparedHexaHiveContactPairs(
+        executionFallbackEnemies,
+        { delta: FIXED_DELTA }
+    )),
+    ['201:202']
+);
+assert.deepEqual(
+    snapshotPairIds(fallbackCollisionHandler.collectPreparedHexaHiveContactPairs(
+        executionFallbackEnemies,
+        { delta: FIXED_DELTA }
+    )),
+    ['201:202']
+);
+assert.equal(executionAttempts, 1, 'execution failure must never retry WASM');
+assert.equal(executionFailureBackend.getStatus().failure?.stage, 'execution');
+
+console.log('prepared hexa WASM contact contract: ok');
