@@ -3,7 +3,10 @@ import { clampFiniteNumber } from 'util/number_util.js';
 const EXPO_BOUNDARY_SLOPE = 10 * Math.LN2;
 
 /**
- * 가속·등속·감속 구간의 경계 속도가 이어지는 전환 세그먼트를 만듭니다.
+ * canonical `easeInExpo → linear → easeOutExpo` 구성에서 경계 속도가 이어지는 전환 세그먼트를 만듭니다.
+ * 다른 truthy easing 이름은 그대로 전달하므로 그 조합의 경계 속도 연속성은 보장하지 않습니다.
+ * 반환 배열과 각 세그먼트 객체는 `MixedAnimation`이 변경할 수 있도록 호출마다 새로 생성하며,
+ * 서로 다른 호출 사이에서 공유하거나 동결하지 않습니다.
  * @param {object} options - 세그먼트 생성 옵션입니다.
  * @param {number} options.startValue - 전체 전환 시작값입니다.
  * @param {number} options.endValue - 전체 전환 종료값입니다.

@@ -32,6 +32,7 @@ let cachedHeight = -1;
 /**
  * 벤치마크 전용 릴리스 시뮬레이션 지표를 top 레이어에 렌더합니다.
  * overlay 뒤에 호출되므로 실시간 blur의 backdrop 입력을 변경하지 않습니다.
+ * @returns {void}
  */
 export function drawReleaseSimulationProfilerHud() {
     const snapshot = getReleaseSimulationProfilerSnapshot();
@@ -56,6 +57,7 @@ export function drawReleaseSimulationProfilerHud() {
  * @param {object} snapshot - 릴리스 계측 스냅샷입니다.
  * @param {number} ww - 표시 너비입니다.
  * @param {number} wh - 표시 높이입니다.
+ * @returns {void}
  */
 function updateHudCommands(snapshot, ww, wh) {
     const fontSize = Math.max(HUD_CONSTANTS.FONT_MIN_SIZE, ww * HUD_CONSTANTS.FONT_WW_RATIO);
