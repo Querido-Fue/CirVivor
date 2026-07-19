@@ -8,6 +8,8 @@ import { createOverlayEffectState } from './_overlay_effect_registry.js';
  * @description overlay 하나에 대응하는 surface 묶음과 blur/effect 상태를 관리합니다.
  */
 export class OverlaySession {
+    #dimRenderCommand;
+
     /**
      * @param {object} options - session 생성 옵션입니다.
      * @param {import('display/display_system.js').DisplaySystem} options.displaySystem - DisplaySystem 인스턴스입니다.
@@ -82,6 +84,15 @@ export class OverlaySession {
         this.dimLayerId = this.dimSurface?.id || null;
         this.uiLayerId = this.uiSurface.id;
         this.effectLayerId = this.effectSurface?.id || null;
+        this.#dimRenderCommand = {
+            shape: 'rect',
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            fill: '#000000',
+            alpha: 0
+        };
         this.glassRenderCommand = { shape: 'glassPanel' };
         this.glassRenderCommandKeys = [];
         this.includeOwnEffectSurface = false;
@@ -186,15 +197,16 @@ export class OverlaySession {
             this.effectiveDim * this.dimAlpha
         );
 
-        render(this.dimLayerId, {
-            shape: 'rect',
-            x: 0,
-            y: 0,
-            w: this.dimSurface?.canvas?.width || 0,
-            h: this.dimSurface?.canvas?.height || 0,
-            fill: '#000000',
-            alpha: this.effectiveDim * this.dimAlpha
-        });
+        const dimLayerId = this.dimLayerId;
+        const command = this.#dimRenderCommand;
+        command.shape = 'rect';
+        command.x = 0;
+        command.y = 0;
+        command.w = this.dimSurface?.canvas?.width || 0;
+        command.h = this.dimSurface?.canvas?.height || 0;
+        command.fill = '#000000';
+        command.alpha = this.effectiveDim * this.dimAlpha;
+        render(dimLayerId, command);
     }
 
     /**
