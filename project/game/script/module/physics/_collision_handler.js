@@ -1052,8 +1052,14 @@ export class CollisionHandler {
             ? Math.min(bodies.length, Math.max(0, Math.floor(gridBodyCount)))
             : bodies.length;
         this.#broadphaseBuffer.ensure(bodies.length);
-        for (let i = 0; i < bodies.length; i++) {
-            this.#broadphaseBuffer.write(i, bodies[i], gridMode);
+        if (gridMode === 'projectile') {
+            for (let i = 0; i < bodies.length; i++) {
+                this.#broadphaseBuffer.writeProjectileGrid(i, bodies[i]);
+            }
+        } else {
+            for (let i = 0; i < bodies.length; i++) {
+                this.#broadphaseBuffer.write(i, bodies[i], gridMode);
+            }
         }
 
         const cellSize = estimateCollisionGridCellSize(bodies, gridMode, safeGridBodyCount);

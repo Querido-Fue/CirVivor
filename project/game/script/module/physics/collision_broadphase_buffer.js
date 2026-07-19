@@ -202,6 +202,58 @@ export class CollisionBroadphaseBuffer {
     }
 
     /**
+     * 투사체 grid 삽입에 필요한 broad-phase 데이터만 씁니다.
+     * `_broadDataIndex`, kind/shape code와 Float32 broad record는
+     * `write(index, body, 'projectile')`와 같은 조회·쓰기 순서를 유지합니다.
+     * enemy relation/candidate plane은 투사체 scan에서 소비하지 않으므로 갱신하지 않으며,
+     * 해당 plane을 사용하는 다음 경로는 반드시 범용 `write()`로 먼저 덮어써야 합니다.
+     * @param {number} index - body 인덱스입니다.
+     * @param {object} body - 충돌 body입니다.
+     */
+    writeProjectileGrid(index, body) {
+        const gridMode = 'projectile';
+        const broadOffset = index * BROAD_STRIDE;
+        let minX = body.minX;
+        let maxX = body.maxX;
+        let minY = body.minY;
+        let maxY = body.maxY;
+        let broadRadius = body.broadRadius;
+        if (body.kind === 'enemy' && gridMode === 'enemyPair') {
+            minX = Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : minX;
+            maxX = Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : maxX;
+            minY = Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : minY;
+            maxY = Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : maxY;
+            broadRadius = Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
+        } else if (body.kind === 'enemy' && gridMode === 'projectile') {
+            minX = Number.isFinite(body.projectileMinX) ? body.projectileMinX : minX;
+            maxX = Number.isFinite(body.projectileMaxX) ? body.projectileMaxX : maxX;
+            minY = Number.isFinite(body.projectileMinY) ? body.projectileMinY : minY;
+            maxY = Number.isFinite(body.projectileMaxY) ? body.projectileMaxY : maxY;
+            broadRadius = Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
+        }
+
+        body._broadDataIndex = index;
+        this.bodyKindCodes[index] = getCollisionBodyKindCode(body.kind);
+        this.bodyShapeCodes[index] = getCollisionBodyShapeCode(body.shape);
+
+        const broadData = this.broadData;
+        broadData[broadOffset + 0] = minX;
+        broadData[broadOffset + 1] = maxX;
+        broadData[broadOffset + 2] = minY;
+        broadData[broadOffset + 3] = maxY;
+        broadData[broadOffset + 4] = minX;
+        broadData[broadOffset + 5] = maxX;
+        broadData[broadOffset + 6] = minY;
+        broadData[broadOffset + 7] = maxY;
+        broadData[broadOffset + 8] = body.centerX;
+        broadData[broadOffset + 9] = body.centerY;
+        broadData[broadOffset + 10] = body.boundRadius;
+        broadData[broadOffset + 11] = broadRadius;
+        broadData[broadOffset + 12] = broadRadius * COLLISION_GRID_RADIUS_SCALE;
+        broadData[broadOffset + 13] = body.shape === 'circle' ? body.radius : broadRadius;
+    }
+
+    /**
      * body 이동량을 현재 broad-phase SoA 버퍼에 반영합니다.
      * @param {object} body - 이동한 충돌 body입니다.
      * @param {number} dx - X 이동량입니다.
