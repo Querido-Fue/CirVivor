@@ -611,6 +611,7 @@
 - [x] 고정 seed `0x71c0ffee` WASM stress 1,000건/3,824,454 cells와 ABI canary 3 layouts 통과
 - [x] Computer Use로 실제 `lonely tower.exe`를 2560×1440 cold start해 타이틀 WebGL 합성, 설정 glass overlay 진입·취소와 타이틀 복원, 종료 확인 대화상자와 `예` 선택, 종료 뒤 프로세스 제거를 확인
 - [x] production 구조·핵심 로직 변화가 없어 `AGENT_GUIDE.md`는 유지하고, 관련 acceleration 결정만 domain guide에 최신화
+- [x] GitHub Desktop GUI 커밋 및 푸시: `9dafa2a Document ordered collision WASM no-go`
 
 ## 발견된 위험
 
