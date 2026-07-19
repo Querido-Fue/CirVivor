@@ -198,6 +198,7 @@
 - [x] 문서 반영 후 전체 `npm test` 170개, JS/MJS 367개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
 - [x] Computer Use 실제 게임 cold start에서 타이틀·동적 도형, 설정 glass 오버레이, 취소 뒤 타이틀 렌더 복원, 종료 확인 오버레이와 정상 프로세스 종료 확인
 - [x] 보고서만 확장하고 실행 구조를 바꾸지 않았으므로 `AGENT_GUIDE.md` 갱신 불필요
+- [x] GitHub Desktop 커밋 및 푸시: `d315084 Document audited optimization gates`
 
 ## 5. JSDoc 정합성 정비
 
