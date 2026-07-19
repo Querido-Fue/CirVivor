@@ -313,14 +313,15 @@ export class CollisionBroadphaseBuffer {
     #writeRelationData(index, body, broadRadius) {
         const relationOffset = index * RELATION_BROAD_STRIDE;
         const relationData = this.relationData;
-        relationData[relationOffset + RELATION_INDEX.MIN_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
-        relationData[relationOffset + RELATION_INDEX.MAX_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
-        relationData[relationOffset + RELATION_INDEX.MIN_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
-        relationData[relationOffset + RELATION_INDEX.MAX_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
+        const isEnemy = body.kind === 'enemy';
+        relationData[relationOffset + RELATION_INDEX.MIN_X] = isEnemy && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
+        relationData[relationOffset + RELATION_INDEX.MAX_X] = isEnemy && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
+        relationData[relationOffset + RELATION_INDEX.MIN_Y] = isEnemy && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
+        relationData[relationOffset + RELATION_INDEX.MAX_Y] = isEnemy && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
         relationData[relationOffset + RELATION_INDEX.CENTER_X] = Number.isFinite(body.centerX) ? body.centerX : body.x;
         relationData[relationOffset + RELATION_INDEX.CENTER_Y] = Number.isFinite(body.centerY) ? body.centerY : body.y;
-        relationData[relationOffset + RELATION_INDEX.ENEMY_PAIR_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
-        relationData[relationOffset + RELATION_INDEX.PROJECTILE_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
+        relationData[relationOffset + RELATION_INDEX.ENEMY_PAIR_RADIUS] = isEnemy && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
+        relationData[relationOffset + RELATION_INDEX.PROJECTILE_RADIUS] = isEnemy && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
     }
 
     /**
