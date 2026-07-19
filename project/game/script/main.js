@@ -90,7 +90,9 @@ class App {
     }
 
     /**
-     * 메인 루프를 시작합니다.
+     * 커서와 창 비활성 pause 상태를 동기화한 뒤 현재 실행 정책이 허용하면 메인 루프를 시작합니다.
+     * 강제 종료가 예약됐거나 정책이 루프 유지를 막으면 재개하지 않습니다.
+     * @returns {void}
      */
     start() {
         if (this.forceCloseRequested) return;
@@ -103,9 +105,11 @@ class App {
     }
 
     /**
-     * 매 프레임 실행되는 게임의 메인 로직입니다.
-     * accumulator 패턴으로 고정 스텝과 렌더를 단일 루프에서 순차 처리합니다.
-     * @param {number} now - requestAnimationFrame에서 전달되는 현재 시각(ms)
+     * 다음 animation frame을 먼저 예약하고 frame delta를 보정·상한 처리한 뒤 디버그 pause/step과
+     * 고정 스텝 catch-up 정책을 적용해 `SystemHandler.tick()`을 호출합니다. catch-up 상한을 넘은 정수
+     * fixed debt는 버리고 나머지만 보간에 사용하며, 프레임 오류와 무관하게 CPU·release profiler 표본을 마무리합니다.
+     * @param {number} now - requestAnimationFrame에서 전달되는 현재 시각(ms)입니다.
+     * @returns {void}
      */
     loop(now) {
         if (!this.running) return;
@@ -219,7 +223,9 @@ class App {
     }
 
     /**
-     * 메인 루프를 정지합니다.
+     * 실행 중인 메인 루프와 release profiler를 정지하고 예약된 frame 및 시간 누적 상태를 초기화합니다.
+     * 이미 정지된 상태에서는 아무 작업도 하지 않습니다.
+     * @returns {void}
      */
     stop() {
         if (!this.running) return;
@@ -408,7 +414,9 @@ class App {
 
     /**
      * @private
-     * 메인 루프를 실제로 재개합니다.
+     * 시간·catch-up 상태를 초기화하고 release profiler를 재개한 뒤 첫 animation frame을 예약합니다.
+     * 이미 실행 중이면 중복 frame을 예약하지 않습니다.
+     * @returns {void}
      */
     #resumeLoop() {
         if (this.running) return;
