@@ -1,4 +1,5 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 
@@ -20,7 +21,7 @@ const ENEMY_AI_POLICY_DEBUG_KEY_BY_ID = Object.freeze({
  */
 const getFiniteEnemyAIDebugValue = (target, fieldName) => {
     const value = target?.[fieldName];
-    return Number.isFinite(value) ? value : 0;
+    return resolveFiniteNumber(value, 0);
 };
 
 /**
@@ -57,7 +58,7 @@ export const incrementEnemyAIDebugCounter = (stats, fieldName, amount = 1) => {
         return;
     }
 
-    const safeAmount = Number.isFinite(amount) ? amount : 1;
+    const safeAmount = resolveFiniteNumber(amount, 1);
     stats[fieldName] = getFiniteEnemyAIDebugValue(stats, fieldName) + safeAmount;
 };
 
