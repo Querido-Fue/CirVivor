@@ -12,6 +12,17 @@ const DEFAULT_LOADING_GLOW_STOPS = DEFAULT_LOADING_GLOW.HALO_STOPS;
 const DEFAULT_LOADING_GLOW_RING = DEFAULT_LOADING_GLOW.RING;
 const DEFAULT_LOADING_GLOW_SURFACE = DEFAULT_LOADING_GLOW.SURFACE;
 const DEFAULT_LOADING_CIRCLE_SHADER_COLORS = TITLE_LOADING.CIRCLE_SHADER.COLORS;
+const LOADING_CIRCLE_SHADER_COLOR_CACHE = {
+    initialized: false,
+    baseSource: null,
+    deepSource: null,
+    rimSource: null,
+    highlightSource: null,
+    base: null,
+    deep: null,
+    rim: null,
+    highlight: null
+};
 
 /**
  * 중앙 원형 로딩 glow에 사용할 색상 설정을 반환합니다.
@@ -84,21 +95,35 @@ export function getLoadingCircleShaderColors() {
     const highlightFallback = ColorSchemes?.Cursor?.White
         || loadingGlow?.Surface?.Highlight
         || accent;
+    const baseSource = loadingCircle?.Base || accent;
+    const deepSource = loadingCircle?.Deep || loadingGlow?.Ring?.ShadowColor || accent;
+    const rimSource = loadingCircle?.Rim || loadingGlow?.Ring?.Color || accent;
+    const highlightSource = loadingCircle?.Highlight || highlightFallback;
+    const cache = LOADING_CIRCLE_SHADER_COLOR_CACHE;
+
+    if (
+        !cache.initialized
+        || cache.baseSource !== baseSource
+        || cache.deepSource !== deepSource
+        || cache.rimSource !== rimSource
+        || cache.highlightSource !== highlightSource
+    ) {
+        cache.initialized = true;
+        cache.baseSource = baseSource;
+        cache.deepSource = deepSource;
+        cache.rimSource = rimSource;
+        cache.highlightSource = highlightSource;
+        cache.base = _loadingColorToVec3(baseSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.base);
+        cache.deep = _loadingColorToVec3(deepSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.deep);
+        cache.rim = _loadingColorToVec3(rimSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.rim);
+        cache.highlight = _loadingColorToVec3(highlightSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.highlight);
+    }
 
     return {
-        base: _loadingColorToVec3(loadingCircle?.Base || accent, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.base),
-        deep: _loadingColorToVec3(
-            loadingCircle?.Deep || loadingGlow?.Ring?.ShadowColor || accent,
-            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.deep
-        ),
-        rim: _loadingColorToVec3(
-            loadingCircle?.Rim || loadingGlow?.Ring?.Color || accent,
-            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.rim
-        ),
-        highlight: _loadingColorToVec3(
-            loadingCircle?.Highlight || highlightFallback,
-            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.highlight
-        )
+        base: cache.base,
+        deep: cache.deep,
+        rim: cache.rim,
+        highlight: cache.highlight
     };
 }
 
