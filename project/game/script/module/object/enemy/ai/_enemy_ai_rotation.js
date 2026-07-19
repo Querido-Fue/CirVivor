@@ -66,47 +66,52 @@ const readUnitProfileNumber = (profile, key, fallback) => {
 };
 
 /**
- * 회전 목표를 잡을 진행 방향을 계산합니다.
+ * 회전 목표를 잡을 진행 방향의 각도를 계산합니다.
  * @param {object|null|undefined} enemy - 적 객체입니다.
  * @param {object|null|undefined} state - 적 AI 상태입니다.
  * @param {{x?: number, y?: number}|null|undefined} steeringDir - 현재 조향 방향입니다.
- * @returns {{x: number, y: number}|null} 정규화된 진행 방향입니다.
+ * @returns {number|null} 정규화된 진행 방향의 radians 또는 유효한 방향이 없을 때 null입니다.
  */
-const resolveRotationTargetDirection = (enemy, state, steeringDir) => {
-    const candidates = [
-        {
-            x: Number.isFinite(steeringDir?.x) ? steeringDir.x : 0,
-            y: Number.isFinite(steeringDir?.y) ? steeringDir.y : 0
-        },
-        {
-            x: Number.isFinite(state?.targetX) && Number.isFinite(enemy?.position?.x)
-                ? state.targetX - enemy.position.x
-                : 0,
-            y: Number.isFinite(state?.targetY) && Number.isFinite(enemy?.position?.y)
-                ? state.targetY - enemy.position.y
-                : 0
-        },
-        {
-            x: Number.isFinite(enemy?.speed?.x) ? enemy.speed.x : 0,
-            y: Number.isFinite(enemy?.speed?.y) ? enemy.speed.y : 0
-        },
-        {
-            x: Number.isFinite(state?.dirX) ? state.dirX : 0,
-            y: Number.isFinite(state?.dirY) ? state.dirY : 0
-        }
-    ];
+const resolveRotationTargetAngleRadians = (enemy, state, steeringDir) => {
+    const steeringX = Number.isFinite(steeringDir?.x) ? steeringDir.x : 0;
+    const steeringY = Number.isFinite(steeringDir?.y) ? steeringDir.y : 0;
+    const targetX = Number.isFinite(state?.targetX) && Number.isFinite(enemy?.position?.x)
+        ? state.targetX - enemy.position.x
+        : 0;
+    const targetY = Number.isFinite(state?.targetY) && Number.isFinite(enemy?.position?.y)
+        ? state.targetY - enemy.position.y
+        : 0;
+    const speedX = Number.isFinite(enemy?.speed?.x) ? enemy.speed.x : 0;
+    const speedY = Number.isFinite(enemy?.speed?.y) ? enemy.speed.y : 0;
+    const stateDirX = Number.isFinite(state?.dirX) ? state.dirX : 0;
+    const stateDirY = Number.isFinite(state?.dirY) ? state.dirY : 0;
 
-    for (let i = 0; i < candidates.length; i++) {
-        const candidate = candidates[i];
-        const length = Math.hypot(candidate.x, candidate.y);
-        if (length <= ROTATION_EPSILON) {
-            continue;
-        }
+    let length = Math.hypot(steeringX, steeringY);
+    if (!(length <= ROTATION_EPSILON)) {
+        const normalizedX = steeringX / length;
+        const normalizedY = steeringY / length;
+        return Math.atan2(normalizedY, normalizedX);
+    }
 
-        return {
-            x: candidate.x / length,
-            y: candidate.y / length
-        };
+    length = Math.hypot(targetX, targetY);
+    if (!(length <= ROTATION_EPSILON)) {
+        const normalizedX = targetX / length;
+        const normalizedY = targetY / length;
+        return Math.atan2(normalizedY, normalizedX);
+    }
+
+    length = Math.hypot(speedX, speedY);
+    if (!(length <= ROTATION_EPSILON)) {
+        const normalizedX = speedX / length;
+        const normalizedY = speedY / length;
+        return Math.atan2(normalizedY, normalizedX);
+    }
+
+    length = Math.hypot(stateDirX, stateDirY);
+    if (!(length <= ROTATION_EPSILON)) {
+        const normalizedX = stateDirX / length;
+        const normalizedY = stateDirY / length;
+        return Math.atan2(normalizedY, normalizedX);
     }
 
     return null;
@@ -142,8 +147,8 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
         return;
     }
 
-    const targetDirection = resolveRotationTargetDirection(enemy, state, steeringDir);
-    if (!targetDirection) {
+    const targetMoveRadians = resolveRotationTargetAngleRadians(enemy, state, steeringDir);
+    if (targetMoveRadians === null) {
         return;
     }
 
@@ -153,7 +158,7 @@ export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintM
     const axisLocalDeg = Number.isFinite(footprintMetrics?.axisLocalDeg)
         ? footprintMetrics.axisLocalDeg
         : (Number.isFinite(enemy.navigationAxisLocalDeg) ? enemy.navigationAxisLocalDeg : 0);
-    const targetMoveDeg = Math.atan2(targetDirection.y, targetDirection.x) * RADIANS_TO_DEGREES;
+    const targetMoveDeg = targetMoveRadians * RADIANS_TO_DEGREES;
     const targetRotation = targetMoveDeg - axisLocalDeg;
     const deltaDeg = getSymmetricAxisDeltaDeg(targetRotation, currentRotation);
     const absDeltaDeg = Math.abs(deltaDeg);
