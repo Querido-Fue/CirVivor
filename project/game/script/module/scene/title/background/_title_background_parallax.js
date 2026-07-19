@@ -1,6 +1,10 @@
 import { clampNumber, resolveFiniteNumber } from 'util/number_util.js';
 
-import { mixTitleEnemyColorWithBackground } from './_title_background_theme.js';
+import {
+    getTitleBackgroundColor,
+    getTitleEnemyColor,
+    mixTitleEnemyColorWithBackground
+} from './_title_background_theme.js';
 
 /**
  * 다중 softness 보조 패스를 단일 패스로 압축할 때 보정하는 알파 배율입니다.
@@ -16,7 +20,7 @@ const TITLE_ENEMY_SOFTNESS_SCALE_EXPANSION = 1.035;
 
 /**
  * 적에 페럴렉스 시각/반응 프로필을 적용합니다.
- * 적의 계층 인덱스, 모션 배율, 전용 채움색과 alpha 필드를 갱신합니다.
+ * 적의 계층 인덱스, 모션 배율, 기본·softness 채움색과 alpha 필드를 갱신합니다.
  * @param {object} enemy - 적용할 적 인스턴스입니다.
  * @param {object} layerProfile - 적용할 레이어 프로필입니다.
  * @param {number} [layerIndex=0] - 레이어 인덱스입니다.
@@ -30,6 +34,11 @@ export function applyTitleParallaxVisualProfile(enemy, layerProfile, layerIndex 
     enemy._titleParallaxLayerIndex = layerIndex;
     enemy._titleParallaxMotionScale = resolveFiniteNumber(layerProfile.MagneticScale, 1);
     enemy._titleParallaxFill = mixTitleEnemyColorWithBackground(layerProfile.ColorMix);
+    const blurMix = Math.min(1, (layerProfile.ColorMix || 0) + 0.12);
+    enemy._titleParallaxBlurMix = blurMix;
+    enemy._titleParallaxBlurEnemyColor = getTitleEnemyColor();
+    enemy._titleParallaxBlurBackgroundColor = getTitleBackgroundColor();
+    enemy._titleParallaxBlurFill = mixTitleEnemyColorWithBackground(blurMix);
     enemy.fill = enemy._titleParallaxFill;
     enemy.alpha = resolveFiniteNumber(layerProfile.Alpha, 1);
 }
@@ -50,7 +59,20 @@ export function drawTitleParallaxEnemy(enemy, layerProfile) {
     const softnessOffsetPx = resolveFiniteNumber(layerProfile.SoftnessOffsetPx, 0);
 
     if (softnessAlpha > 0.001 && softnessScale > 1) {
-        const blurFill = mixTitleEnemyColorWithBackground(Math.min(1, (layerProfile.ColorMix || 0) + 0.12));
+        const blurMix = Math.min(1, (layerProfile.ColorMix || 0) + 0.12);
+        const enemyColor = getTitleEnemyColor();
+        const backgroundColor = getTitleBackgroundColor();
+        let blurFill = enemy._titleParallaxBlurFill;
+        if (!blurFill
+            || enemy._titleParallaxBlurMix !== blurMix
+            || enemy._titleParallaxBlurEnemyColor !== enemyColor
+            || enemy._titleParallaxBlurBackgroundColor !== backgroundColor) {
+            blurFill = mixTitleEnemyColorWithBackground(blurMix);
+            enemy._titleParallaxBlurMix = blurMix;
+            enemy._titleParallaxBlurEnemyColor = enemyColor;
+            enemy._titleParallaxBlurBackgroundColor = backgroundColor;
+            enemy._titleParallaxBlurFill = blurFill;
+        }
         const blurAlpha = Math.min(1, enemy.alpha * softnessAlpha * TITLE_ENEMY_SOFTNESS_ALPHA_MULTIPLIER);
         enemy.draw({
             fill: blurFill,
