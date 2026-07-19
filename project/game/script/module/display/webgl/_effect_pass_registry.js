@@ -6,9 +6,10 @@ import { getData } from 'data/data_handler.js';
 const EFFECT_TYPES = getData('EFFECT_RENDER_CONSTANTS').TYPES;
 
 /**
- * effect 레이어에서 사용할 pass 목록을 생성합니다.
+ * effect 레이어에서 사용할 fresh pass 목록을 생성합니다.
+ * 세 pass의 생성자를 즉시 실행해 각 pass의 GL 프로그램과 fullscreen 버퍼를 준비합니다.
  * @param {WebGLRenderingContext} gl - 대상 WebGL 컨텍스트입니다.
- * @returns {Map<string, object>} effect type별 pass 맵입니다.
+ * @returns {Map<string, {draw:function(object, number, number):void, destroy:function():void}>} effect type별 명령형 pass 맵입니다.
  */
 export function createEffectPassRegistry(gl) {
     return new Map([
