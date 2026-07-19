@@ -22,6 +22,14 @@ const MENU_EFFECT_COLOR_CACHE = {
     g: DEFAULT_MENU_EFFECT_COLOR.g,
     b: DEFAULT_MENU_EFFECT_COLOR.b
 };
+const MENU_FOREGROUND_RGB_CACHE = {
+    initialized: false,
+    source: null,
+    valid: false,
+    r: 0,
+    g: 0,
+    b: 0
+};
 
 /**
  * 메뉴 기본 전경색을 반환합니다.
@@ -125,7 +133,35 @@ export function toMenuRgba(color, alpha) {
  * @returns {string} rgba 문자열
  */
 export function menuForegroundWithAlpha(alpha) {
-    return toMenuRgba(getMenuForegroundColor(), alpha);
+    const foregroundSource = getMenuForegroundColor();
+    const safeAlpha = Number.isFinite(alpha) ? alpha : 0;
+    const rgb = _getCachedMenuForegroundRgb(foregroundSource);
+    return rgb
+        ? formatRgba(rgb.r, rgb.g, rgb.b, safeAlpha)
+        : 'transparent';
+}
+
+/**
+ * 현재 메뉴 전경색을 원본 문자열이 바뀔 때만 다시 파싱합니다.
+ * @param {string|null|undefined} foregroundSource - 현재 메뉴 전경색 원본입니다.
+ * @returns {{r:number, g:number, b:number}|null} 캐시된 RGB scalar 저장소입니다.
+ */
+function _getCachedMenuForegroundRgb(foregroundSource) {
+    const cache = MENU_FOREGROUND_RGB_CACHE;
+    if (!cache.initialized || cache.source !== foregroundSource) {
+        const parsedColor = colorUtil().cssToRgb(foregroundSource);
+        const resolvedColor = parsedColor || colorUtil().cssToRgb(getMenuForegroundColor());
+        cache.initialized = true;
+        cache.source = foregroundSource;
+        cache.valid = Boolean(resolvedColor);
+        if (resolvedColor) {
+            cache.r = resolvedColor.r;
+            cache.g = resolvedColor.g;
+            cache.b = resolvedColor.b;
+        }
+    }
+
+    return cache.valid ? cache : null;
 }
 
 /**

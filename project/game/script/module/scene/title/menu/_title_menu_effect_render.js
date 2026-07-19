@@ -2,9 +2,8 @@ import { lerpNumber } from 'overlay/_panel_effect_math.js';
 import { formatRgba } from 'util/color_util.js';
 import { clampNumber } from './_title_menu_motion.js';
 import {
-    getMenuForegroundColor,
-    resolveMenuColorRgb,
-    toMenuRgba
+    menuForegroundWithAlpha,
+    resolveMenuColorRgb
 } from './_title_menu_theme.js';
 
 /**
@@ -26,7 +25,7 @@ export function drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptio
     gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.16 * runtimeState.spotlightAlpha));
     gradient.addColorStop(0.2, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.07 * runtimeState.spotlightAlpha));
     gradient.addColorStop(0.5, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.015 * runtimeState.spotlightAlpha));
-    gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
+    gradient.addColorStop(0.72, menuForegroundWithAlpha(0));
     context.fillStyle = gradient;
     context.beginPath();
     context.arc(runtimeState.localX, runtimeState.localY, spotlightOptions.radius, 0, Math.PI * 2);
@@ -135,7 +134,7 @@ export function drawTitleMenuCardRipples(context, runtimeState, effectColor) {
         const gradient = context.createRadialGradient(ripple.x, ripple.y, 0, ripple.x, ripple.y, radius);
         gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.38 * opacity));
         gradient.addColorStop(0.35, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.18 * opacity));
-        gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
+        gradient.addColorStop(0.72, menuForegroundWithAlpha(0));
         context.fillStyle = gradient;
         context.beginPath();
         context.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
