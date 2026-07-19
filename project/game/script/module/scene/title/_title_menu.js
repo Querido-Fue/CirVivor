@@ -112,6 +112,7 @@ export class TitleMenu {
         this.cardRevealStarted = false;
         this.#revealProgressResolver = this.#getRevealProgress.bind(this);
         this.currentPaneLayout = null;
+        this.versionLabelLayout = undefined;
         this.hoveredCardId = null;
         this.hoveredSecondaryMenuId = null;
         this.sceneStartRequested = false;
@@ -255,6 +256,7 @@ export class TitleMenu {
 
         this.versionLabelRenderer?.draw({
             session: this.session,
+            layout: this.versionLabelLayout,
             paneLayout,
             uiww: this.UIWW,
             wh: this.WH,
@@ -336,6 +338,7 @@ export class TitleMenu {
         this.cardRenderMap.clear();
         this.utilityTileStateMap.clear();
         this.utilityTileRenderMap.clear();
+        this.versionLabelLayout = undefined;
         this.hoveredCardId = null;
         this.hoveredSecondaryMenuId = null;
     }
@@ -437,6 +440,7 @@ export class TitleMenu {
      */
     #syncLayout() {
         this.currentPaneLayout = null;
+        this.versionLabelLayout = undefined;
         const cardRects = this.layout.buildCardRects(this.cardRegistry.getAll());
 
         for (const card of this.cards) {
@@ -612,10 +616,6 @@ export class TitleMenu {
      * @private
      */
     #updateVersionHistoryLinkButton(paneLayout) {
-        if (!this.versionHistoryLinkButton) {
-            return;
-        }
-
         const layout = this.versionLabelRenderer?.buildLayout({
             paneLayout,
             uiww: this.UIWW,
@@ -624,6 +624,11 @@ export class TitleMenu {
             uiScale: this.uiScale,
             utilityPaneRevealEase: this.#getUtilityPaneRevealEase()
         }) || null;
+        this.versionLabelLayout = layout;
+        if (!this.versionHistoryLinkButton) {
+            return;
+        }
+
         updateTitleMenuVersionHistoryLinkButton({
             button: this.versionHistoryLinkButton,
             layout,

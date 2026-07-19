@@ -92,6 +92,7 @@ export class TitleMenuVersionLabelRenderer {
      * 우상단에 현재 게임 버전 라벨을 렌더링합니다.
      * @param {object} options - 버전 라벨 렌더 옵션입니다.
      * @param {import('overlay/_overlay_session.js').OverlaySession|null} options.session - 렌더 대상 세션입니다.
+     * @param {object|null|undefined} [options.layout=undefined] - 같은 frame의 update에서 계산한 레이아웃입니다. undefined이면 직접 계산합니다.
      * @param {object|null} [options.paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
      * @param {number} options.uiww - UI 기준 너비입니다.
      * @param {number} options.wh - 화면 높이입니다.
@@ -102,6 +103,7 @@ export class TitleMenuVersionLabelRenderer {
      */
     draw({
         session,
+        layout: precomputedLayout = undefined,
         paneLayout = null,
         uiww,
         wh,
@@ -114,14 +116,16 @@ export class TitleMenuVersionLabelRenderer {
             return;
         }
 
-        const layout = this.buildLayout({
-            paneLayout,
-            uiww,
-            wh,
-            uiOffsetX,
-            uiScale,
-            utilityPaneRevealEase
-        });
+        const layout = precomputedLayout === undefined
+            ? this.buildLayout({
+                paneLayout,
+                uiww,
+                wh,
+                uiOffsetX,
+                uiScale,
+                utilityPaneRevealEase
+            })
+            : precomputedLayout;
         if (!layout || layout.alpha <= 0.005) {
             return;
         }
