@@ -105,10 +105,12 @@ export function projectPanelLocalPoint(localX, localY, transformMatrix, perspect
 
 /**
  * 패널 사각형의 투영된 4개 꼭짓점을 계산합니다.
+ * rect의 x→w→y→h와 네 w→h 쌍을 먼저 읽은 뒤, 좌상단부터 순서대로 투영합니다.
+ * 현재 realm의 live `Array.prototype.map`을 호출하며 입력은 변경하지 않습니다.
  * @param {{x:number, y:number, w:number, h:number}} panelRect - 기준 패널 rect입니다.
  * @param {number[]} transformMatrix - 적용할 4x4 행렬입니다.
  * @param {number} perspective - 원근 거리입니다.
- * @returns {{x:number, y:number}[]} 좌상단부터 시계 방향 꼭짓점 배열입니다.
+ * @returns {{x:number, y:number}[]} 호출마다 새로 생성한 좌상단부터 시계 방향 꼭짓점 배열과 좌표 객체입니다.
  */
 export function projectPanelQuad(panelRect, transformMatrix, perspective) {
     const centerX = panelRect.x + (panelRect.w * 0.5);
@@ -229,10 +231,12 @@ export function invertMat3(matrix) {
 
 /**
  * 소스 사각형에서 목적지 사각형으로의 호모그래피를 계산합니다.
+ * 4개 목적지 좌표를 순서대로 읽어 fresh 계수 행렬을 만들고 입력 quad는 변경하지 않습니다.
+ * 내부 선형계 풀이는 live `Array.prototype.map`과 각 row의 `Symbol.iterator`로 복제한 행렬만 소거합니다.
  * @param {number} width - 소스 사각형 너비입니다.
  * @param {number} height - 소스 사각형 높이입니다.
  * @param {{x:number, y:number}[]} quad - 목적지 꼭짓점 배열입니다.
- * @returns {number[]|null} 계산된 3x3 호모그래피 행렬입니다.
+ * @returns {number[]|null} 계산된 fresh 3x3 호모그래피 행렬이며 해가 없거나 quad 형식이 다르면 null입니다.
  */
 export function createRectToQuadHomography(width, height, quad) {
     if (!Array.isArray(quad) || quad.length !== 4) {
@@ -296,9 +300,10 @@ export function mapScreenPointToPanelLocal(x, y, inverseHomography) {
 
 /**
  * 선형 방정식 시스템을 가우스 소거법으로 풉니다.
- * @param {number[][]} matrix - 계수 행렬입니다.
- * @param {number[]} values - 상수 벡터입니다.
- * @returns {number[]|null} 해 벡터입니다.
+ * live `matrix.map()`과 각 row iterator로 augmented 행을 복제하므로 matrix, row, values는 변경하지 않습니다.
+ * @param {number[][]} matrix - 읽기만 하는 계수 행렬입니다.
+ * @param {number[]} values - 읽기만 하는 상수 벡터입니다.
+ * @returns {number[]|null} fresh 해 벡터이며 pivot이 특이하면 null입니다.
  */
 function solveLinearSystem(matrix, values) {
     const size = values.length;
