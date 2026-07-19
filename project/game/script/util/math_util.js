@@ -50,8 +50,7 @@ export function rotatePoint(x, y, radians) {
 
 /**
  * @class MathUtil
- * @description 게임에서 사용되는 수학 관련 유틸리티 함수들을 제공하는 클래스입니다.
- * 랜덤 값 생성, 각도 변환, 2D 좌표 변환, Simplex Noise 등을 포함합니다.
+ * @description 게임에서 사용하는 시드 기반 난수, 각도·벡터 변환, 값 감쇠와 범위 제한 기능을 제공합니다.
  */
 export class MathUtil {
     constructor() {
@@ -254,8 +253,8 @@ export class MathUtil {
 }
 
 /**
- * MathUtil 싱글톤 인스턴스를 반환합니다.
- * @returns {MathUtil} MathUtil 인스턴스
+ * 가장 최근에 생성된 MathUtil 인스턴스를 반환합니다.
+ * @returns {MathUtil|null} 생성 전에는 `null`, 생성 후에는 가장 최근 인스턴스입니다.
  */
 export function mathUtil() {
     return mathUtilInstance;

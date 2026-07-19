@@ -279,6 +279,18 @@
 - [x] pooled animation의 이전 owner 보존·과거 handle Promise 별칭·변조 ID stale Map·최신 시스템 ID 충돌 개선은 완전 동일성을 보장할 수 없어 생산 코드 대신 `report0719.md` 4.23에 기록
 - [x] GitHub Desktop 커밋 및 푸시: `bf02bae Correct animation removal API documentation`
 
+#### 5.8 유틸리티 최신 인스턴스·nullable 계약 정정 — 검증 완료
+
+- [x] `math_util.js`, `color_util.js`, `runtime_tool.js` 전체와 생성·소비 경로를 감사해 엄밀한 단일 싱글톤이 아니라 생성 전 `null`, 생성 후 가장 최근 인스턴스의 live identity를 반환하는 계약 확인
+- [x] `MathUtil`의 실제 구현에 없는 `Simplex Noise` 설명을 제거하고 시드 기반 난수, 각도·벡터 변환, 감쇠와 범위 제한이라는 현재 기능으로 정정
+- [x] 세 accessor의 반환형을 `MathUtil|null`, `ColorUtil|null`, `RuntimeTool|null`로 정정하고 다중 생성 시 최신 인스턴스로 교체되는 사실을 문서화
+- [x] `RuntimeTool`은 생성자 첫 문장에서 등록된 뒤 `_externalURLHandler`를 초기화하므로 setter 예외 시 부분 인스턴스가 남고, 초기화 재진입 시 가장 나중에 등록된 내부 인스턴스가 유지되는 계약까지 문서·테스트에 반영
+- [x] 생산 변경 전 실행 해시·행동 4개 green·JSDoc 구조 1개 red를 확인하고, 변경 후 accessor name/length, 생성 전 null, 첫/둘째 identity, 이전 상태 보존, `new` 없는 호출, handler 비승계, 초기화 예외·재진입을 포함한 actual-source 6개 전체 green
+- [x] JSDoc 제거 production 실행 소스 SHA-256 exact 보존: MathUtil `b9b2376f1d0a5636d9cf818451514cf23a5566afe79aa51204d15379655ec54d`, ColorUtil `2eef69a1a3bc8291e13a3576481676f25029d35f07aa8fe61ea90063d7b8ebf4`, RuntimeTool `edffe87defef7d1af5ed3256459ec4df42683cb004bd45f873a3847eab5a803b`
+- [x] `npm test` 145개, JS/MJS 365개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] 독립 감사에서 호출자 nullable 가정·다중 생성·부분 초기화·handler 비승계와 production/test diff를 재검토해 blocker·과장 없음 확인; 구조 변경이 없어 `AGENT_GUIDE.md` 갱신 불필요
+- [x] Computer Use 실제 게임 cold start에서 타이틀 렌더링, 설정 glass 오버레이 진입·취소 후 타이틀 복원, 종료 확인 오버레이와 정상 종료까지 확인
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
@@ -361,6 +373,7 @@
 - [x] 원복 상태 전체 `npm test` 139개, JS/MJS 364개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
 - [x] Computer Use 실제 게임 cold start에서 2560×1440 타이틀 합성·카드·동적 도형 정상, 배경 클릭 뒤 파란 자기장 표시와 도형 군집 반응, 종료 확인 오버레이 및 정상 종료 확인
 - [x] 미채택 근거와 재검토 조건을 `report0719.md` 4.24에 기록
+- [x] GitHub Desktop 커밋 및 푸시: `b63dc0d Document magnetic optimization no-go`
 
 ## 발견된 위험
 
