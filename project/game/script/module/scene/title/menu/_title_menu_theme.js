@@ -1,6 +1,19 @@
 import { ColorSchemes, getCurrentThemeKey } from 'display/_theme_handler.js';
 import { colorUtil, formatRgba } from 'util/color_util.js';
 
+const MENU_STATIC_TEXTURE_THEME_SIGNATURE_CACHE = {
+    initialized: false,
+    themeKey: null,
+    foreground: null,
+    accent: null,
+    cardTitle: null,
+    cardDescription: null,
+    placeholderOpacity: 0,
+    cardInnerLineOpacity: 0,
+    cardInnerLineFocusDelta: 0,
+    signature: ''
+};
+
 /**
  * 메뉴 기본 전경색을 반환합니다.
  * @returns {string} 메뉴 기본 전경색
@@ -219,18 +232,50 @@ export function getMenuBackdropPaneStyle(disableTransparency, unifiedStroke) {
 }
 
 /**
- * 정적 텍스처에 영향을 주는 테마 값을 문자열로 묶습니다.
+ * 정적 텍스처에 영향을 주는 테마 값을 문자열로 묶고, 원본 값이 유지되는 동안 결과를 재사용합니다.
  * @returns {string} 테마 캐시 식별자입니다.
  */
 export function buildMenuStaticTextureThemeSignature() {
-    return [
-        getCurrentThemeKey(),
-        getMenuForegroundColor(),
-        getMenuAccentColor(),
-        getMenuCardTitleColor(),
-        getMenuCardDescriptionColor(),
-        getMenuOpacity('Placeholder', 0.92),
-        getMenuOpacity('CardInnerLine', 0.08),
-        getMenuOpacity('CardInnerLineFocusDelta', 0.08)
+    const themeKey = getCurrentThemeKey();
+    const foreground = getMenuForegroundColor();
+    const accent = getMenuAccentColor();
+    const cardTitle = getMenuCardTitleColor();
+    const cardDescription = getMenuCardDescriptionColor();
+    const placeholderOpacity = getMenuOpacity('Placeholder', 0.92);
+    const cardInnerLineOpacity = getMenuOpacity('CardInnerLine', 0.08);
+    const cardInnerLineFocusDelta = getMenuOpacity('CardInnerLineFocusDelta', 0.08);
+    const cache = MENU_STATIC_TEXTURE_THEME_SIGNATURE_CACHE;
+
+    if (cache.initialized
+        && cache.themeKey === themeKey
+        && cache.foreground === foreground
+        && cache.accent === accent
+        && cache.cardTitle === cardTitle
+        && cache.cardDescription === cardDescription
+        && cache.placeholderOpacity === placeholderOpacity
+        && cache.cardInnerLineOpacity === cardInnerLineOpacity
+        && cache.cardInnerLineFocusDelta === cardInnerLineFocusDelta) {
+        return cache.signature;
+    }
+
+    cache.initialized = true;
+    cache.themeKey = themeKey;
+    cache.foreground = foreground;
+    cache.accent = accent;
+    cache.cardTitle = cardTitle;
+    cache.cardDescription = cardDescription;
+    cache.placeholderOpacity = placeholderOpacity;
+    cache.cardInnerLineOpacity = cardInnerLineOpacity;
+    cache.cardInnerLineFocusDelta = cardInnerLineFocusDelta;
+    cache.signature = [
+        themeKey,
+        foreground,
+        accent,
+        cardTitle,
+        cardDescription,
+        placeholderOpacity,
+        cardInnerLineOpacity,
+        cardInnerLineFocusDelta
     ].join(':');
+    return cache.signature;
 }
