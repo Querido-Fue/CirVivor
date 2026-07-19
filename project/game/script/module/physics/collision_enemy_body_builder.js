@@ -245,6 +245,7 @@ function _writeCollisionEnemyShapeMetrics(
         const radius = singleCircleRadius;
         const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
         const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
+        let maxCenterDistance = 0;
 
         for (let p = 0; p < partCount; p++) {
             const localCenter = hexaHiveCenters[p];
@@ -271,10 +272,11 @@ function _writeCollisionEnemyShapeMetrics(
             projectileMaxY = Math.max(projectileMaxY, wy + projectileRadius);
 
             const centerDistance = Math.hypot(wx - centerX, wy - centerY);
-            broadRadius = Math.max(broadRadius, centerDistance + radius);
-            enemyPairBroadRadius = Math.max(enemyPairBroadRadius, centerDistance + enemyPairRadius);
-            projectileBroadRadius = Math.max(projectileBroadRadius, centerDistance + projectileRadius);
+            maxCenterDistance = Math.max(maxCenterDistance, centerDistance);
         }
+        broadRadius = Math.max(0, maxCenterDistance + radius);
+        enemyPairBroadRadius = Math.max(0, maxCenterDistance + enemyPairRadius);
+        projectileBroadRadius = Math.max(0, maxCenterDistance + projectileRadius);
     } else {
         const radius = singleCircleRadius;
         const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
