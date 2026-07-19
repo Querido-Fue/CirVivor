@@ -172,9 +172,18 @@ export class WebGLHandler {
     }
 
     /**
-     * 특정 레이어에 렌더 명령을 전달합니다.
-     * @param {string} layerName - 대상 레이어 식별자입니다.
-     * @param {object} options - 렌더링 옵션입니다.
+     * 등록된 WebGL renderer에 값을 전달하고 정상 완료 뒤 현재 onDraw callback을 알립니다.
+     * `layerName`은 PropertyKey로 변환하지 않으며, 기본 Set/Map에서는 SameValueZero key로 비교됩니다.
+     * context-lost key이거나 renderer 조회 결과가 falsy이면 이후 단계를 실행하지 않고 `undefined`를 반환합니다.
+     * renderer의 live `render`를 원래 receiver와 `options` identity로 동기 호출합니다.
+     * renderer가 정상 반환한 뒤 최신 callback Map과 record의 `onDraw`를 조회해 record receiver로 인자 없이 호출합니다.
+     * 하위 renderer가 내부적으로 no-op해도 정상 반환이면 callback 통지를 수행합니다.
+     * renderer와 callback의 반환값 및 thenable은 관찰하지 않고 폐기하며, 조회·getter·호출 중 발생한 예외는 그대로 동기 전파됩니다.
+     * callback 조회 또는 호출 실패는 앞서 완료된 renderer 부수효과를 되돌리지 않습니다.
+     *
+     * @param {*} layerName - context-lost Set과 renderer/callback Map에서 조회할 key입니다.
+     * @param {*} options - renderer의 `render()`에 그대로 전달할 값입니다.
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     render(layerName, options) {
         if (this.contextLostLayers.has(layerName)) {

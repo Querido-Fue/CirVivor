@@ -423,6 +423,21 @@
 - [x] GitHub Desktop GUI 커밋 및 푸시: `2aa2329 Document static surface order contract`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
+#### 5.16 `WebGLHandler.render()` SameValueZero·live callback 계약 정정 — 검증 완료
+
+- [x] `_webgl_handler.js`, `_webgl_layer_renderer.js`, 실제 renderer 3종, `DisplaySystem.renderGL()`과 7개 외부 모듈의 8개 호출 지점을 전체 감사해 기존 `{string}`·`{object}` JSDoc이 hot-path dispatch의 key·gate·callback·오류·반환 계약을 누락한 사실을 확인
+- [x] production 변경 전 actual-class 실행 계약 10개 green/JSDoc 구조 1개 red를 확립한 뒤 JSDoc만 정정해 전용 11개 전체 green, 기존 alias/order 계약과의 결합 30개 전체 green으로 고정
+- [x] 문자열·객체·Symbol·`NaN`·±0·`undefined`·`null`·BigInt key를 실제 Set/Map SameValueZero로 조회하고 throwing coercion 객체를 PropertyKey로 변환하지 않으며, primitive·함수·inspection 거부 Proxy를 포함한 임의 options identity를 exact 1개 인자로 전달함을 검증
+- [x] context-lost, missing renderer와 `undefined`·`null`·`false`·±0·0n·`NaN`·빈 문자열 renderer가 이후 renderer/callback lookup을 완전히 차단하고 항상 `undefined`를 반환함을 검증
+- [x] handler field→`has`→renderer Map `get`→live `render` getter/call→최신 callback Map `get`→live `onDraw` getter/call의 exact 순서, 각 receiver·인자 수, renderer 완료 뒤 callback lookup을 직접 계측
+- [x] 하위 renderer가 내부 no-op으로 정상 반환해도 `onDraw`를 정확히 1회 호출하며 object·Promise·throwing thenable을 포함한 renderer/callback 반환값을 관찰하지 않고 폐기함을 검증; 독립 리뷰가 실제 `WebGLBatch`·`EffectRenderer`·`OverlayEffectRenderer` prototype no-op 3종도 3/3 확인
+- [x] callback record/onDraw의 nullish skip과 non-callable `TypeError`, 모든 field/method getter·호출 오류의 same identity 동기 전파, renderer 성공 뒤 callback 오류가 앞선 부수효과를 rollback하지 않는 부분 상태를 검증
+- [x] renderer·onDraw 양쪽 중첩 재진입에 guard가 없고 renderer 도중 callback Map 교체는 새 callback, 같은 Map의 callback 삭제는 skip으로 반영되는 live 상태를 검증
+- [x] 14개 standalone JSDoc을 제거한 production 실행 소스 SHA-256 `add9444c8b96515c2c8580c070c1b05dda06d2cb16d4d9c1f535dd1eda611b06` exact 보존; 두 독립 최종 리뷰가 false-green·blocker 없음 승인
+- [x] 전체 `npm test` 233개, JS/MJS 373개 `node --check`, WASM backend+kernel 전용 20개, WAT/WASM 재현성, stress seed `0x71c0ffee` 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 모두 통과
+- [x] Computer Use 실제 게임 2560×1440 cold start에서 타이틀 WebGL 파티클, 설정 glass/blur overlay 진입·취소, `ㄷ자 회랑` 맵 preview 진입·취소, 종료 확인 overlay와 `예` 선택 뒤 프로세스 정상 종료를 검증
+- [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
