@@ -237,10 +237,12 @@ export class ShapeEnemy extends BaseEnemy {
     }
 
     /**
-         * AI의 결과에 따라 가속 및 물리 기본 이동을 처리합니다.
-         * @param {number} [delta] 델타타임 (밀리초 등)
-         * @param {object} [aiContext=null] 환경 데이터
-         */
+     * 활성 적의 fixed-step을 `AI → 축 저항 복구 → 속도 → 위치 → 각운동 → heading` 순서로 갱신합니다.
+     * 렌더 보간과 합체 표시 오프셋은 이 물리 갱신 경계에서 다루지 않습니다.
+     * @param {number} delta - 초 단위 fixed delta입니다.
+     * @param {object|null} [aiContext=null] AI가 참조할 고정 틱 환경 데이터입니다.
+     * @returns {void}
+     */
     fixedUpdate(delta, aiContext = null) {
         if (!this.active) return;
 

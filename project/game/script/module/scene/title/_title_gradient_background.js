@@ -160,7 +160,8 @@ void main() {
 
 /**
  * @class TitleGradientBackground
- * @description 타이틀 화면 전용 풀스크린 WebGL 그라디언트 패스를 관리합니다.
+ * @description 타이틀 화면 전용 그라디언트를 필요할 때 FBO texture에 굽고 매 프레임 blit합니다.
+ * 누적 시간은 다음 bake의 phase이며, 안정 상태에서는 마지막으로 구운 정적 texture를 재사용합니다.
  */
 export class TitleGradientBackground {
     /**
@@ -199,7 +200,8 @@ export class TitleGradientBackground {
     }
 
     /**
-     * 프레임 시간에 맞춰 내부 시간 축을 갱신합니다.
+     * 다음 gradient bake에서 사용할 내부 시간 phase를 프레임 시간에 맞춰 갱신합니다.
+     * 이 메서드만으로 bake를 dirty 처리하거나 현재 화면 texture를 바꾸지는 않습니다.
      */
     update() {
         const delta = clampFiniteNumber(getDelta(), 0, Infinity, 0);
@@ -218,7 +220,8 @@ export class TitleGradientBackground {
     }
 
     /**
-     * 현재 테마 색상으로 풀스크린 그라디언트를 렌더링합니다.
+     * 해상도·팔레트·texture 또는 명시적 dirty 상태가 바뀐 경우에만 현재 phase로 다시 bake하고,
+     * 그 외 프레임에는 마지막 baked texture를 그대로 화면에 blit합니다.
      */
     draw() {
         if (!this.gl || !this.program || !this.positionBuffer || this.aPosition < 0) {
@@ -238,7 +241,7 @@ export class TitleGradientBackground {
     }
 
     /**
-     * 다음 draw 시 그라디언트 bake를 다시 수행하도록 표시합니다.
+     * 다음 draw에서 당시 누적된 시간 phase와 현재 테마·해상도로 gradient bake를 다시 수행하도록 표시합니다.
      */
     markDirty() {
         this.bakeDirty = true;
