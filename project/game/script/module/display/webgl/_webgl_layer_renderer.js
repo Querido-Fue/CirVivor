@@ -103,8 +103,13 @@ export function initializeWebGLLayerRendererSize(renderer, width, height) {
 }
 
 /**
- * renderer의 대기 중인 배치/효과 명령을 flush합니다.
- * @param {object|null|undefined} renderer - 대상 renderer입니다.
+ * 현재 module constructor의 `instanceof` 기준으로 WebGLBatch 또는 EffectRenderer만 동기 flush합니다.
+ * 두 `instanceof` 판정이 모두 false로 정상 완료된 OverlayEffectRenderer, 다른 renderer와 falsy 값은 `flush` 프로퍼티를 읽지 않고 no-op합니다.
+ * 지원 renderer의 live `flush`를 원래 receiver로 호출하며 반환값과 thenable은 관찰하지 않습니다.
+ * `instanceof` 판정·`flush` 조회·호출 예외는 변환하지 않고 그대로 전파하며 별도 재진입 guard가 없습니다.
+ *
+ * @param {*} renderer - 지원 renderer 여부를 판정하고 flush할 값입니다.
+ * @returns {undefined} 일반 함수 호출의 정상 완료 시 항상 `undefined`입니다.
  */
 export function flushWebGLLayerRenderer(renderer) {
     if (renderer instanceof WebGLBatch || renderer instanceof EffectRenderer) {

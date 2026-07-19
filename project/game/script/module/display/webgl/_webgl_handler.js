@@ -151,7 +151,14 @@ export class WebGLHandler {
     }
 
     /**
-     * 배치형 레이어를 flush합니다.
+     * 호출마다 현재 layerRenderers의 등록 순서에서 context-lost가 아닌 지원 renderer를 fail-fast로 flush합니다.
+     * 지원 대상은 flushWebGLLayerRenderer의 `instanceof` 계약에 따른 WebGLBatch와 EffectRenderer이며 두 판정이 false로 정상 완료된 다른 renderer는 no-op합니다.
+     * 메서드 자체에는 프레임당 1회 또는 재진입 guard가 없습니다.
+     * 처음 획득한 layerRenderers iterator에는 entry 추가·삭제·미방문 value 갱신이 반영되지만 프로퍼티 자체 교체는 현재 호출에 반영되지 않습니다.
+     * contextLostLayers는 각 entry에서 live 조회하고 하위 반환값과 thenable은 관찰하지 않습니다.
+     * 조회·판정·flush 예외는 rollback 없이 그대로 전파되어 현재 단계 이후와 뒤 renderer를 중단합니다.
+     *
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     flushAll() {
         for (const [layerName, renderer] of this.layerRenderers.entries()) {
