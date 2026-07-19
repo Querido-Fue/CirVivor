@@ -268,6 +268,17 @@
 - **현재 처리:** 즉시 삭제라고 잘못 기술한 JSDoc만 실제 완료·지연 정리·예외·live dispatch 계약으로 정정했다. 위 네 위험은 의도된 호환 동작인지 결함인지 승인되지 않았고 완전 동일한 수정도 보장할 수 없어 생산 수명주기와 풀 코드는 변경하지 않았으며, 위험 동작 자체를 새 회귀 계약으로 영구 고정하지 않았다.
 - **선행 테스트/권장 방향:** handle Promise를 생성 시 snapshot으로 볼지 live animation view로 볼지, release 시 base 필드 reset 정책, ID 불변성과 시스템 소유권을 먼저 새 API 계약으로 확정한다. 그 뒤 remove 전/후·반복 remove Promise identity, release 직후 owner 참조, 동일 객체 재사용과 old/new handle alias, ID 변조 후 Map/pool 상태, 다중 시스템 ID 충돌을 actual-source와 실제 NW.js에서 검증하고, 의도된 차이는 명시적 migration으로만 허용한다.
 
+### 4.24 타이틀 자기장 options 객체의 positional 치환
+
+- **파일 경로:** `project/game/script/module/scene/title/enemy/_magnetic_effect.js`, `project/game/script/module/scene/title/enemy/_title_ai.js`
+- **문제 후보:** 최대 420개 타이틀 적의 매 fixed tick에서 `_title_ai.js`가 `applyMagneticEffect()`에 전달할 options 객체를 만든다. 정상 약 378개 기준 초당 약 22,680개, 최대치 기준 약 25,200개의 source-level 객체 리터럴이므로 할당 제거 후보로 감사했다.
+- **실험 경계:** 공개 arrow 함수와 5인수+options 호출 형식, `name`·`length === 5`·own descriptor를 유지했다. 별도 비공개 함수 identity token이 정확히 일치하는 타이틀 내부 호출만 velocity/motion/impulse 세 값을 positional 인수로 전달하고, 나머지 모든 공개 호출은 기존 options property 접근 경로를 그대로 사용했다. 기존 object literal 평가 지점에서 세 값을 같은 순서로 먼저 캡처해 getter·coercion·예외와 부분 상태 순서도 보존했다.
+- **동등성 검증:** actual production source를 legacy/candidate 양방향으로 구성한 별도 테스트 11개, 기존 타이틀 속도 parity 9개와 후보 상태 전체 `npm test` 150개가 통과했다. `null`/`undefined`/primitive/revoked Proxy/잘못된 token, exact token을 public options로 전달한 경우, getter·setter throw 및 부분 쓰기, 재진입, undefined velocity fallback, 호출마다 변하는 motion, IEEE-754 경계와 결정적 10,000 tuple, 실제 title `fixedUpdate()` 전체 상태를 exact 비교했다. 실제 NW.js Chromium 145에서도 `document.all`, raw/accessor 경로, 공개 API와 420개 적의 완전한 tick 결과가 모두 legacy와 exact 일치했다.
+- **실제 성능 검증:** Computer Use로 실제 배포 NW.js를 두 clean process에서 실행하고 case 순서를 AB/BA로 뒤집어 각각 61개 paired 표본을 수집했다. 첫 실행의 legacy→candidate p50/p95는 inactive 178.2/182.1→183.7/186.4ns, single 221.6/225.5→232.5/236.0ns, dual 260.4/263.9→274.8/278.6ns, mixed 200.7/203.7→208.6/211.6ns per enemy였다. 역순 실행도 mixed 200.7/207.2→208.3/212.1ns, dual 260.2/266.2→274.8/278.8ns, single 220.7/224.1→229.7/232.0ns, inactive 176.1/178.1→181.7/184.0ns로 같은 3~5% 역행을 재현했다. dual 중앙값 비율은 0.948·0.947, mixed는 0.962·0.963으로 요구한 1.05배 gate를 모두 실패했다.
+- **해석:** V8이 기존 단명 객체 리터럴을 이미 escape analysis로 scalar replacement하고, 후보의 추가 인수·token 비교·분기 비용만 남겼을 가능성이 높다. 이는 측정 결과에 기반한 추론이며 엔진 내부 최적화 trace로 확정한 원인은 아니다.
+- **현재 처리:** 동작 동일성만 통과하고 실제 엔진 성능은 명확히 악화됐으므로 후보를 채택하지 않았다. 생산 소스·manifest·기존 테스트를 실험 전 상태로 exact 원복하고 추적되지 않은 token 모듈과 전용 parity/NW runner도 제거해, 현재 게임의 자기장 실행 경로와 배포 파일은 변경되지 않았다.
+- **재검토 조건:** 실제 Chromium/V8 프로파일에서 객체가 materialize된다는 증거가 생기거나 엔진 버전이 바뀐 경우에만 다시 측정한다. 재시도 후보도 공개 API 계약을 그대로 유지하고 actual-source edge parity, 두 clean process의 AB/BA 측정, dual·mixed p50 1.05배 이상 및 모든 p50/p95 2% 이내 비퇴행 gate를 모두 통과해야 한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약

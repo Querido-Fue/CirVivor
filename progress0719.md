@@ -346,6 +346,22 @@
 - [x] 생산 코드는 변경하지 않고 WASM 보류 근거를 `report0719.md` 4.20에 기록
 - [x] nav-grid cache key의 별도 잠재 위험은 도달 가능성과 새 계약이 미확정이므로 `report0719.md` 4.21에만 기록
 
+#### 6.6 타이틀 자기장 options 객체 할당 제거 후보 — 성능 게이트 실패·미채택
+
+- [x] 최대 420개 타이틀 적의 매 fixed tick에서 `applyMagneticEffect()` 호출용 options 객체가 생성되는 경로를 감사하고, 정상 약 378개에서 초당 약 22,680개·최대치에서 약 25,200개의 source-level 객체 리터럴 후보를 확인
+- [x] 공개 5인수+options API의 arrow/name/length/descriptor와 모든 getter·coercion·예외 계약을 유지하면서, 정확한 비공개 identity token을 전달하는 타이틀 내부 호출만 3개 scalar 값을 positional로 넘기는 실험 후보 구현
+- [x] 생산 코드 변경 전 행동 8개 green·구조 가드 1개 red를 확인하고, 후보에서는 actual-source 양방향 legacy 비교 11개 전체 green과 기존 타이틀 속도 parity 9개 전체 green으로 고정
+- [x] `null`/`undefined`/primitive/revoked Proxy/잘못된 token, public options와 exact token 충돌, getter·setter throw 및 부분 쓰기, 재진입, undefined velocity fallback, 호출마다 달라지는 motion, 명시 IEEE-754 경계와 결정적 10,000 tuple, 실제 title `fixedUpdate()` 전체 상태를 exact 비교
+- [x] 실제 NW.js Chromium 145의 falsy·strict non-nullish `document.all`과 raw/accessor 설치 경로, 공개 API, 420개 적의 완전한 title tick 결과가 legacy와 exact 일치함을 확인
+- [x] 후보 상태 전체 `npm test` 150개 통과 및 독립 리뷰에서 blocker 없음 확인
+- [x] Computer Use로 두 clean process와 AB/BA 역순 61쌍을 측정한 결과 dual 중앙값 비율이 각각 0.948·0.947, mixed 중앙값 비율이 각각 0.962·0.963으로 후보가 약 3~5% 느려 1.05배 성능 gate 실패
+- [x] 첫 실행의 legacy→candidate p50/p95는 inactive 178.2/182.1→183.7/186.4ns, single 221.6/225.5→232.5/236.0ns, dual 260.4/263.9→274.8/278.6ns, mixed 200.7/203.7→208.6/211.6ns per enemy
+- [x] 역순 실행의 legacy→candidate p50/p95도 mixed 200.7/207.2→208.3/212.1ns, dual 260.2/266.2→274.8/278.8ns, single 220.7/224.1→229.7/232.0ns, inactive 176.1/178.1→181.7/184.0ns per enemy로 같은 역행을 재현
+- [x] 성능 이득이 없으므로 생산 소스·manifest·기존 테스트를 실험 전 상태로 exact 원복하고, 추적되지 않은 후보 token 모듈·parity/NW runner를 제거; 원복 후 기존 타이틀 parity 9개 통과
+- [x] 원복 상태 전체 `npm test` 139개, JS/MJS 364개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] Computer Use 실제 게임 cold start에서 2560×1440 타이틀 합성·카드·동적 도형 정상, 배경 클릭 뒤 파란 자기장 표시와 도형 군집 반응, 종료 확인 오버레이 및 정상 종료 확인
+- [x] 미채택 근거와 재검토 조건을 `report0719.md` 4.24에 기록
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
