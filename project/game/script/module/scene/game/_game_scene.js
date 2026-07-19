@@ -289,11 +289,14 @@ export class GameScene extends BaseScene {
      * @override
      */
     update() {
-        if (this.#isBenchmarkMode()) {
+        const benchmarkMode = this.#isBenchmarkMode();
+        if (benchmarkMode) {
             updateGameSceneButtonInput(this.buttons);
         }
         cullLocalGameSceneProjectiles(this);
-        syncGameSceneCollisionStats(this);
+        if (benchmarkMode) {
+            syncGameSceneCollisionStats(this);
+        }
     }
 
     /**
