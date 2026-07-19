@@ -319,6 +319,7 @@
 - [x] 독립 재감사에서 A~G edge 전체 해소, 잘못 고정된 기대값·blocker 없음 확인 후 마지막 settings/상속 key 공백까지 추가 보강
 - [x] 최종 `npm test` 170개, JS/MJS 367개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
 - [x] Computer Use 실제 게임 cold start에서 설정 overlay의 어두운→밝은 테마 즉시 전환, 취소 뒤 어두운 테마·타이틀 렌더 복원, 종료 overlay와 정상 프로세스 종료 확인
+- [x] GitHub Desktop 커밋 및 푸시: `f94199c Document live theme palette contracts`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
 ## 6. 일반 성능 최적화
