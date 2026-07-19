@@ -23,7 +23,10 @@ assert.match(
     mapSelectOverlaySource,
     /this\.selectedMapId\s*=\s*resolveGameMapDefinition\(GAME_MAP_DATA\.DEFAULT_MAP_ID\)\?\.id[\s\S]*?\?\? GAME_MAP_DATA\.MAPS\[0\]\?\.id[\s\S]*?\?\? null/
 );
-assert.match(mapSelectOverlaySource, /isGameMapFloorCell\(selectedMap, row, column\)/);
+assert.match(
+    mapSelectOverlaySource,
+    /isResolvedGameMapFloorCell\(selectedMap, row, column\)/
+);
 assert.match(
     mapSelectOverlaySource,
     /if \(this\.startRequested \|\| !selectedMap\) \{[\s\S]*?this\.startRequested = true;[\s\S]*?this\.titleScene\.gameStart\(selectedMap\.id\);/

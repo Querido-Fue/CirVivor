@@ -3,6 +3,12 @@ import { getData } from 'data/data_handler.js';
 const GAME_MAP_DATA = getData('GAME_MAP_DATA');
 const TILE_TYPES = GAME_MAP_DATA?.TILE_TYPES || Object.freeze({ VOID: '.', FLOOR: 'F' });
 const WORLD_LAYOUT = GAME_MAP_DATA?.WORLD_LAYOUT || Object.freeze({});
+const BASE_GLOBAL_OBJECT = globalThis;
+const BASE_ARRAY_CONSTRUCTOR = Array;
+const BASE_NUMBER_CONSTRUCTOR = Number;
+const BASE_ARRAY_IS_ARRAY = Array.isArray;
+const BASE_NUMBER_IS_INTEGER = Number.isInteger;
+const BASE_GET_OWN_PROPERTY_DESCRIPTOR = Object.getOwnPropertyDescriptor;
 
 /**
  * 값이 양의 유한수이면 그대로 반환하고, 그렇지 않으면 대체값을 반환합니다.
@@ -86,6 +92,51 @@ function isFloorCellInDefinition(mapDefinition, row, column) {
 }
 
 /**
+ * 등록 맵의 불변 identity인지 확인합니다.
+ * @param {object|null|undefined} mapDefinition - 확인할 맵 정의입니다.
+ * @returns {boolean} 현재 registry에 등록된 동일 객체이면 true입니다.
+ */
+function isRegisteredGameMapIdentity(mapDefinition) {
+    const maps = GAME_MAP_DATA?.MAPS;
+    if (!BASE_ARRAY_IS_ARRAY(maps)) {
+        return false;
+    }
+    for (let i = 0; i < maps.length; i++) {
+        if (maps[i] === mapDefinition) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * 맵 검증에 쓰는 전역 intrinsic이 모듈 평가 시점의 data descriptor를 유지하는지 확인합니다.
+ * @returns {boolean} 등록 맵 전용 fast path를 안전하게 사용할 수 있으면 true입니다.
+ */
+function hasBaselineMapValidationIntrinsics() {
+    const globalArrayDescriptor = BASE_GET_OWN_PROPERTY_DESCRIPTOR(
+        BASE_GLOBAL_OBJECT,
+        'Array'
+    );
+    const globalNumberDescriptor = BASE_GET_OWN_PROPERTY_DESCRIPTOR(
+        BASE_GLOBAL_OBJECT,
+        'Number'
+    );
+    const isArrayDescriptor = BASE_GET_OWN_PROPERTY_DESCRIPTOR(
+        BASE_ARRAY_CONSTRUCTOR,
+        'isArray'
+    );
+    const isIntegerDescriptor = BASE_GET_OWN_PROPERTY_DESCRIPTOR(
+        BASE_NUMBER_CONSTRUCTOR,
+        'isInteger'
+    );
+    return globalArrayDescriptor?.value === BASE_ARRAY_CONSTRUCTOR
+        && globalNumberDescriptor?.value === BASE_NUMBER_CONSTRUCTOR
+        && isArrayDescriptor?.value === BASE_ARRAY_IS_ARRAY
+        && isIntegerDescriptor?.value === BASE_NUMBER_IS_INTEGER;
+}
+
+/**
  * 존재하지 않는 맵 ID를 기본 맵 ID로 정규화합니다.
  * @param {string|null|undefined} mapId - 정규화할 맵 ID입니다.
  * @returns {string|null} 등록된 맵 ID이며, 유효한 맵이 없으면 null입니다.
@@ -154,6 +205,29 @@ export function resolveGameMapDefinition(mapId) {
 export function isGameMapFloorCell(mapOrId, row, column) {
     const mapDefinition = resolveMapArgument(mapOrId);
     return mapDefinition ? isFloorCellInDefinition(mapDefinition, row, column) : false;
+}
+
+/**
+ * `resolveGameMapDefinition()`이 반환한 등록 맵의 바닥 셀을 반복 조회합니다.
+ * 등록 identity와 숫자/배열 intrinsic이 그대로인 일반 경로에서는 맵 전체 재검증을 생략합니다.
+ * custom 정의나 전역 intrinsic 변경이 감지되면 `isGameMapFloorCell()`의 전체 계약으로 되돌아갑니다.
+ * @param {object|null|undefined} mapDefinition - 등록 resolver가 반환한 맵 정의입니다.
+ * @param {number} row - 0부터 시작하는 행 번호입니다.
+ * @param {number} column - 0부터 시작하는 열 번호입니다.
+ * @returns {boolean} 바닥 셀이면 true입니다.
+ */
+export function isResolvedGameMapFloorCell(mapDefinition, row, column) {
+    if (!isRegisteredGameMapIdentity(mapDefinition)
+        || !hasBaselineMapValidationIntrinsics()) {
+        return isGameMapFloorCell(mapDefinition, row, column);
+    }
+    return BASE_NUMBER_IS_INTEGER(row)
+        && BASE_NUMBER_IS_INTEGER(column)
+        && row >= 0
+        && row < mapDefinition.rows
+        && column >= 0
+        && column < mapDefinition.columns
+        && mapDefinition.tiles[row][column] === TILE_TYPES.FLOOR;
 }
 
 /**

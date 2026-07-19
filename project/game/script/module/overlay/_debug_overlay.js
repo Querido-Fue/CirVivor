@@ -19,7 +19,7 @@ const DEBUG_CONTROL_ROWS = Object.freeze([
  */
 export class DebugOverlay extends BaseOverlay {
     /**
-     * @param {object} debugSystem - 디버그 제어 상태를 소유한 시스템입니다.
+     * @param {*} debugSystem - 디버그 제어 상태를 소유한 시스템입니다. falsy 값은 `null`로 저장합니다.
      */
     constructor(debugSystem) {
         super({
@@ -42,8 +42,11 @@ export class DebugOverlay extends BaseOverlay {
     }
 
     /**
-     * 애니메이션 정지 중 다시 연 패널은 제어 불능 상태를 피하도록 즉시 표시합니다.
-     * 그 외에는 공통 overlay 오픈 애니메이션을 사용합니다.
+     * animation frame이 정지 상태이면 presentation origin 재계산 없이 로컬 값을
+     * alpha→dim→scale→blur 순서로 즉시 설정하고, 연결된 session의 optional setter도
+     * 같은 순서로 호출합니다. 정지 상태가 아니면 공통 overlay open을 호출합니다.
+     * @returns {void}
+     * @throws {*} 상태 조회, session setter 또는 공통 open 오류를 부분 상태 그대로 전파합니다.
      */
     open() {
         if (!this.debugSystem?.isAnimationFramePaused?.()) {
@@ -62,7 +65,15 @@ export class DebugOverlay extends BaseOverlay {
     }
 
     /**
-     * 애니메이션 정지 중 패널을 닫을 때는 close animation을 기다리지 않고 즉시 회수합니다.
+     * 먼저 현재 focus의 overlay layer 포함 여부를 읽고 animation frame 정지 여부를
+     * 조회합니다. focus를 보유하면서 정지되지 않은 경우에만 공통 close animation을
+     * 호출합니다. 그 외에는 presentation과 session을 alpha→dim→scale→blur 순서로
+     * 즉시 닫고, focus를 보유한 경우에만 이전 focus를 복원한 뒤 호출 가능한
+     * `onCloseComplete`를 동기 호출합니다. `closeHandler`는 먼저 `null`로 만든 뒤
+     * Promise microtask에서 한 번 호출하므로 즉시 close를 반복해도 같은 handler를
+     * 다시 예약하지 않습니다.
+     * @returns {void}
+     * @throws {*} focus·상태 조회, session setter, focus 복원, 동기 완료 훅 또는 microtask 예약 오류를 부분 상태 그대로 전파합니다.
      */
     close() {
         const hasOwnFocus = getMouseFocus().includes(this.layer);

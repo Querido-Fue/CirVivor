@@ -1,7 +1,10 @@
 import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { render } from 'display/display_system.js';
-import { isGameMapFloorCell, resolveGameMapDefinition } from 'scene/game/map/game_map_grid.js';
+import {
+    isResolvedGameMapFloorCell,
+    resolveGameMapDefinition
+} from 'scene/game/map/game_map_grid.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getLangString } from 'ui/ui_system.js';
 import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
@@ -181,7 +184,7 @@ export class MapSelectOverlay extends TitleOverlay {
 
         for (let row = 0; row < selectedMap.rows; row++) {
             for (let column = 0; column < selectedMap.columns; column++) {
-                if (!isGameMapFloorCell(selectedMap, row, column)) {
+                if (!isResolvedGameMapFloorCell(selectedMap, row, column)) {
                     continue;
                 }
                 render(this.layer, {
