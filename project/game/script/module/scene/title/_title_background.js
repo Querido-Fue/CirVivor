@@ -50,6 +50,8 @@ const TITLE_PARALLAX_LAYER_COUNT = Array.isArray(TITLE_PARALLAX_LAYERS)
  * 기본 또는 페럴랙스 계층별 스폰을 조정하며 로고 실드 효과와 함께 렌더링합니다.
  */
 export class TitleBackGround {
+    #drawOptions;
+
     /**
      * 시뮬레이션 화면 지표와 스폰 설정을 캡처하고 실드 효과 및 초기 스폰 상태를 준비합니다.
      * @param {TitleScene} titleScene - 이 배경을 소유하는 타이틀 씬입니다.
@@ -87,6 +89,14 @@ export class TitleBackGround {
         this.UIWW = getSimulationUIWW();
         this.shieldRadius = 0;
         this.shieldEffect = new TitleShieldEffect();
+        this.#drawOptions = {
+            drawBackgroundFill: false,
+            ww: 0,
+            wh: 0,
+            titleEnemies: null,
+            parallaxLayers: null,
+            shieldEffect: null
+        };
 
         this.init();
     }
@@ -221,14 +231,20 @@ export class TitleBackGround {
      * @returns {void}
      */
     draw() {
-        drawTitleBackgroundScene({
-            drawBackgroundFill: this.drawBackgroundFill,
-            ww: this.WW,
-            wh: this.WH,
-            titleEnemies: this.titleEnemies,
-            parallaxLayers: TITLE_PARALLAX_LAYERS,
-            shieldEffect: this.shieldEffect
-        });
+        const drawBackgroundFill = this.drawBackgroundFill;
+        const ww = this.WW;
+        const wh = this.WH;
+        const titleEnemies = this.titleEnemies;
+        const parallaxLayers = TITLE_PARALLAX_LAYERS;
+        const shieldEffect = this.shieldEffect;
+        const options = this.#drawOptions;
+        options.drawBackgroundFill = drawBackgroundFill;
+        options.ww = ww;
+        options.wh = wh;
+        options.titleEnemies = titleEnemies;
+        options.parallaxLayers = parallaxLayers;
+        options.shieldEffect = shieldEffect;
+        drawTitleBackgroundScene(options);
     }
 
     /**
