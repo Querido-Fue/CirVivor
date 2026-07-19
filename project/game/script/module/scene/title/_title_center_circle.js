@@ -12,6 +12,8 @@ const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
  * @description 타이틀 화면 중앙의 원형 glass 오브젝트를 렌더링합니다.
  */
 export class TitleCenterCircle {
+    #renderCommandBuildState;
+
     /**
      * 중앙 원형 오브젝트의 내부 상태를 초기화합니다.
      */
@@ -33,6 +35,15 @@ export class TitleCenterCircle {
         this.visualScale = 1;
         this.placementProgress = 0;
         this.glowCompensationScale = 1;
+        this.#renderCommandBuildState = {
+            centerX: 0,
+            centerY: 0,
+            radius: 0,
+            outlineWidth: 0,
+            glowPhase: 0,
+            glowCompensationScale: 1,
+            blurSourceCanvases: null
+        };
         this.#recalculateLayout();
     }
 
@@ -95,19 +106,23 @@ export class TitleCenterCircle {
 
         const drawRadius = this.radius * this.visualScale;
         const drawOutlineWidth = Math.max(1, this.outlineWidth * this.visualScale);
-
-        renderGL('effect', buildTitleCenterCircleRenderCommand({
-            centerX: this.centerX,
-            centerY: this.centerY,
-            radius: drawRadius,
-            outlineWidth: drawOutlineWidth,
-            glowPhase: this.glowPhase,
-            glowCompensationScale: this.glowCompensationScale,
-            blurSourceCanvases: [
-                getCanvas('background'),
-                getCanvas('object')
-            ]
-        }));
+        const centerX = this.centerX;
+        const centerY = this.centerY;
+        const glowPhase = this.glowPhase;
+        const glowCompensationScale = this.glowCompensationScale;
+        const blurSourceCanvases = [
+            getCanvas('background'),
+            getCanvas('object')
+        ];
+        const state = this.#renderCommandBuildState;
+        state.centerX = centerX;
+        state.centerY = centerY;
+        state.radius = drawRadius;
+        state.outlineWidth = drawOutlineWidth;
+        state.glowPhase = glowPhase;
+        state.glowCompensationScale = glowCompensationScale;
+        state.blurSourceCanvases = blurSourceCanvases;
+        renderGL('effect', buildTitleCenterCircleRenderCommand(state));
     }
 
     /**
