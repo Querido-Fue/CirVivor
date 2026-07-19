@@ -242,6 +242,9 @@ function _writeCollisionEnemyShapeMetrics(
         if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
             enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
         }
+        const radius = singleCircleRadius;
+        const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+        const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
 
         for (let p = 0; p < partCount; p++) {
             const localCenter = hexaHiveCenters[p];
@@ -249,9 +252,6 @@ function _writeCollisionEnemyShapeMetrics(
             const ly = (Number.isFinite(localCenter?.y) ? localCenter.y : 0) * height;
             const wx = centerX + (lx * cos) - (ly * sin);
             const wy = centerY + (lx * sin) + (ly * cos);
-            const radius = singleCircleRadius;
-            const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
-            const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
             const offset = p * CIRCLE_PART_STRIDE;
             enemy.__collisionWorldCircles[offset] = wx;
             enemy.__collisionWorldCircles[offset + 1] = wy;
