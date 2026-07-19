@@ -212,7 +212,7 @@
 - [x] 독립 리뷰 3건 승인, 전체 `npm test` 181개, JS/MJS 368개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 통과
 - [x] Computer Use 실제 게임 cold start에서 타이틀 동적 도형, 설정 glass·blur·scale·alpha, 취소 뒤 타이틀 복원, 맵 preview·취소 복원, 종료 확인 overlay와 정상 프로세스 종료 확인
 - [x] 실행 구조 변경이 없으므로 `AGENT_GUIDE.md` 갱신 불필요
-- [ ] GitHub Desktop 커밋 및 푸시
+- [x] GitHub Desktop 커밋 및 푸시: `e5bb5ca Document title rendering audit gates`
 
 ## 5. JSDoc 정합성 정비
 
