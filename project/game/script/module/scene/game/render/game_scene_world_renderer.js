@@ -29,6 +29,8 @@ const WORLD_MAP_FLOOR_RENDER_OPTIONS = {
     h: 0,
     fill: null
 };
+const WORLD_MAP_GRID_VERTEX_CACHE_KEY = Object.freeze({});
+const WORLD_MAP_FLOOR_VERTEX_CACHE_KEY = Object.freeze({});
 const WORLD_WALL_RENDER_OPTIONS = {
     shape: 'rect',
     x: 0,
@@ -146,7 +148,8 @@ function renderGameMap(mapGeometry, offsetY) {
         centers,
         originX,
         originY,
-        cellSize
+        cellSize,
+        WORLD_MAP_GRID_VERTEX_CACHE_KEY
     );
 
     const floorOptions = WORLD_MAP_FLOOR_RENDER_OPTIONS;
@@ -159,7 +162,8 @@ function renderGameMap(mapGeometry, offsetY) {
         centers,
         originX,
         originY,
-        cellSize
+        cellSize,
+        WORLD_MAP_FLOOR_VERTEX_CACHE_KEY
     );
 }
 

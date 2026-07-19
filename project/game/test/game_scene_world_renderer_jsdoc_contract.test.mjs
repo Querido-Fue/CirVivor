@@ -17,7 +17,7 @@ const [source, snapshotUtilsSource] = await Promise.all([
     readFile(SOURCE_PATH, 'utf8'),
     readFile(SNAPSHOT_UTILS_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = '186b680c56fe506a4d57def6e20bbc8f26506eeb06b9be701be1a4818adced0d';
+const EXECUTABLE_SOURCE_HASH = '8eba2b67d33865b719544f605c4018047688fa57ba66dab997b2a23514c24996';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.

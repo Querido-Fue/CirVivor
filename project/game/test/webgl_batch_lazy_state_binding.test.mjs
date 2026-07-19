@@ -771,6 +771,88 @@ test('capacity 경계의 bulk instance flush trace와 vertex bytes가 정확히 
     });
 });
 
+test('shape instance cache miss와 동일 입력 cache hit은 비캐시 경로와 같은 vertex bytes를 제출한다', () => {
+    const gl = createTraceGl();
+    const batch = new WebGLBatch(gl);
+    const options = {
+        shape: 'hexagon',
+        w: 18.5,
+        h: 13.25,
+        rotation: 21.5,
+        fill: 'rgba(34,197,94,0.72)',
+        alpha: 0.81
+    };
+    const localCenters = [
+        { x: -1.5, y: 0.25 },
+        { x: 0.5, y: -2.75 },
+        { x: 3.25, y: 1.5 }
+    ];
+    const captureUpload = (cacheKey) => {
+        gl.__resetTrace();
+        batch.begin(640, 360);
+        assert.equal(
+            batch.renderShapeInstances(options, localCenters, 148.25, 93.5, 4.75, cacheKey),
+            3
+        );
+        batch.flush();
+        const uploads = getCalls(gl.__getTrace(), 'bufferSubData');
+        assert.equal(uploads.length, 1);
+        return uploads[0];
+    };
+
+    const uncached = captureUpload(null);
+    const cacheKey = Object.freeze({ id: 'same-input' });
+    const cacheMiss = captureUpload(cacheKey);
+    const preparedRecord = batch.shapeInstanceVertexCache.get(cacheKey);
+    const cacheHit = captureUpload(cacheKey);
+
+    assert.equal(batch.shapeInstanceVertexCache.get(cacheKey), preparedRecord);
+    assert.deepEqual(cacheMiss.floatValues, uncached.floatValues);
+    assert.deepEqual(cacheMiss.rawBytes, uncached.rawBytes);
+    assert.deepEqual(cacheHit.floatValues, uncached.floatValues);
+    assert.deepEqual(cacheHit.rawBytes, uncached.rawBytes);
+});
+
+test('같은 shape instance cache key에서 fill과 origin이 바뀌면 새 vertex bytes를 제출한다', () => {
+    const gl = createTraceGl();
+    const batch = new WebGLBatch(gl);
+    const localCenters = [
+        { x: -2, y: -1 },
+        { x: 1.5, y: 2.25 }
+    ];
+    const captureUpload = (options, originX, originY, cacheKey) => {
+        gl.__resetTrace();
+        batch.begin(640, 360);
+        assert.equal(
+            batch.renderShapeInstances(options, localCenters, originX, originY, 6, cacheKey),
+            2
+        );
+        batch.flush();
+        const uploads = getCalls(gl.__getTrace(), 'bufferSubData');
+        assert.equal(uploads.length, 1);
+        return uploads[0];
+    };
+    const initialOptions = {
+        shape: 'triangle',
+        w: 15,
+        h: 19,
+        rotation: -13,
+        fill: '#f97316',
+        alpha: 0.7
+    };
+    const changedOptions = { ...initialOptions, fill: '#38bdf8' };
+    const cacheKey = Object.freeze({ id: 'rebuild-on-input-change' });
+
+    const initial = captureUpload(initialOptions, 80, 55, cacheKey);
+    const rebuilt = captureUpload(changedOptions, 124.5, 71.25, cacheKey);
+    const uncachedChanged = captureUpload(changedOptions, 124.5, 71.25, null);
+
+    assert.notDeepEqual(rebuilt.floatValues, initial.floatValues);
+    assert.notDeepEqual(rebuilt.rawBytes, initial.rawBytes);
+    assert.deepEqual(rebuilt.floatValues, uncachedChanged.floatValues);
+    assert.deepEqual(rebuilt.rawBytes, uncachedChanged.rawBytes);
+});
+
 test('외부 GL 상태 오염 뒤 flush가 draw 상태를 정확히 복구한다', () => {
     assertScenarioParity('external-state-poison', ({ batch, begin, gl }) => {
         begin(960, 540);

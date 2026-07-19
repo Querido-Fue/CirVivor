@@ -223,9 +223,10 @@ export class WebGLHandler {
      * @param {number} originX - 월드 원점 X 좌표입니다.
      * @param {number} originY - 월드 원점 Y 좌표입니다.
      * @param {number} localScale - local center 좌표 배율입니다.
+     * @param {*} [cacheKey=null] - batch renderer에 전달할 명시적 prepared vertex 캐시 키입니다.
      * @returns {number} renderer에 전달한 instance 수입니다.
      */
-    renderShapeInstances(layerName, options, localCenters, originX, originY, localScale) {
+    renderShapeInstances(layerName, options, localCenters, originX, originY, localScale, cacheKey = null) {
         if (this.contextLostLayers.has(layerName)
             || !options?.shape
             || !Array.isArray(localCenters)
@@ -245,7 +246,8 @@ export class WebGLHandler {
                 localCenters,
                 originX,
                 originY,
-                localScale
+                localScale,
+                cacheKey
             );
         } else {
             const hasPrecomputedTrig = Number.isFinite(options.rotationCos)

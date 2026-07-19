@@ -619,6 +619,7 @@ test('실제 renderGL caller는 resolver 결과를 그대로 전달하고 하위
         [{ x: 1, y: 2 }],
         rejectInspection('localCenters')
     );
+    const cacheKey = Object.freeze({ id: 'prepared-vertices' });
 
     assert.equal(namespace.renderGL('main', options), undefined);
     assert.equal(calls[0][0], 'render');
@@ -634,7 +635,8 @@ test('실제 renderGL caller는 resolver 결과를 그대로 전달하고 하위
             localCenters,
             -0,
             Number.NaN,
-            Number.POSITIVE_INFINITY
+            Number.POSITIVE_INFINITY,
+            cacheKey
         ),
         bulkResult
     );
@@ -646,7 +648,8 @@ test('실제 renderGL caller는 resolver 결과를 그대로 전달하고 하위
     assert.equal(Object.is(calls[1][5], -0), true);
     assert.equal(Object.is(calls[1][6], Number.NaN), true);
     assert.equal(calls[1][7], Number.POSITIVE_INFINITY);
-    assert.equal(calls[1].length, 8);
+    assert.equal(calls[1][8], cacheKey);
+    assert.equal(calls[1].length, 9);
 
     const objectKey = {};
     assert.equal(
@@ -661,7 +664,8 @@ test('실제 renderGL caller는 resolver 결과를 그대로 전달하고 하위
     assert.equal(calls[2][5], 3);
     assert.equal(calls[2][6], 4);
     assert.equal(calls[2][7], 5);
-    assert.equal(calls[2].length, 8);
+    assert.equal(calls[2][8], null);
+    assert.equal(calls[2].length, 9);
 
     assert.equal(namespace.renderGL('toString', options), undefined);
     assert.equal(calls[3][1], webGLHandler);
