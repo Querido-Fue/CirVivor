@@ -146,8 +146,8 @@ export function updateTitleMenuUtilityTileInteractionStates({
     let clickedMenuEntry = null;
 
     if (isInteractive) {
-        const interactiveItems = [...secondaryMenuEntries].reverse();
-        for (const menuEntry of interactiveItems) {
+        for (let index = secondaryMenuEntries.length - 1; index >= 0; index--) {
+            const menuEntry = secondaryMenuEntries[index];
             const runtimeState = utilityTileStateMap.get(menuEntry.id);
             const renderState = utilityTileRenderMap.get(menuEntry.id);
             if (!runtimeState || !renderState || renderState.alpha <= 0.75) {

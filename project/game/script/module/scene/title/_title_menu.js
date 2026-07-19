@@ -101,6 +101,8 @@ export class TitleMenu {
         this.layout = new TitleMenuLayout(this.uiScale);
         this.cardRegistry = new TitleMenuCardRegistry();
         this.cards = [];
+        this.renderOrderedCards = [];
+        this.interactionOrderedCards = [];
         this.cardStateMap = new Map();
         this.cardRenderMap = new Map();
         this.utilityTileStateMap = new Map();
@@ -328,6 +330,8 @@ export class TitleMenu {
         this.titleMenuIconSources = [];
 
         this.cards.length = 0;
+        this.renderOrderedCards.length = 0;
+        this.interactionOrderedCards.length = 0;
         this.cardStateMap.clear();
         this.cardRenderMap.clear();
         this.utilityTileStateMap.clear();
@@ -370,6 +374,20 @@ export class TitleMenu {
             this.cards.push(card);
             this.cardStateMap.set(cardDefinition.id, createTitleMenuRuntimeState());
         }
+
+        this.#cacheCardTraversalOrder();
+    }
+
+    /**
+     * 생성 시 확정된 카드 등장 순서를 렌더 및 hover 판정 순서로 각각 캐시합니다.
+     * @returns {void}
+     * @private
+     */
+    #cacheCardTraversalOrder() {
+        this.renderOrderedCards = [...this.cards].sort((leftCard, rightCard) => {
+            return leftCard.animator.getState().revealOrder - rightCard.animator.getState().revealOrder;
+        });
+        this.interactionOrderedCards = [...this.renderOrderedCards].reverse();
     }
 
     /**
@@ -749,23 +767,21 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 렌더 순서를 반환합니다.
-     * @returns {TitleMenuCard[]} 렌더 순서대로 정렬된 카드 목록입니다.
+     * 생성 시 캐시한 카드 렌더 순서를 반환합니다.
+     * @returns {TitleMenuCard[]} 렌더 순서대로 정렬된 인스턴스 소유 카드 목록입니다.
      * @private
      */
     #getSortedCardsForRender() {
-        return [...this.cards].sort((leftCard, rightCard) => {
-            return leftCard.animator.getState().revealOrder - rightCard.animator.getState().revealOrder;
-        });
+        return this.renderOrderedCards;
     }
 
     /**
-     * 카드 hover 판정 순서를 반환합니다.
-     * @returns {TitleMenuCard[]} 상호작용 판정용 카드 목록입니다.
+     * 생성 시 캐시한 카드 hover 판정 순서를 반환합니다.
+     * @returns {TitleMenuCard[]} 상호작용 판정용 인스턴스 소유 카드 목록입니다.
      * @private
      */
     #getCardsForInteraction() {
-        return [...this.#getSortedCardsForRender()].reverse();
+        return this.interactionOrderedCards;
     }
 
     /**
