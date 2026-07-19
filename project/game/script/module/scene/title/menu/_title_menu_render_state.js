@@ -49,7 +49,7 @@ export function buildTitleMenuCardRenderState({
     const revealConfig = getRevealConfig(card.cardDefinition.id);
     const revealProgress = getRevealProgress(revealConfig.delaySeconds, revealConfig.durationSeconds);
     const revealEase = easeOutExpo(revealProgress);
-    const motionEase = easeOutExpo(revealProgress);
+    const motionEase = revealEase;
     const transitionEase = easeOutExpo(transitionProgress);
     const worldScale = lerpValue(titleCardMenu.ENTRANCE_START_SCALE, 1, transitionEase);
     const entryScale = lerpValue(1 + revealConfig.scaleOffset, 1, revealEase);
