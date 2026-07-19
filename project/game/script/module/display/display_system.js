@@ -165,8 +165,11 @@ export class DisplaySystem {
     }
 
     /**
-     * 동적 surface를 회수합니다.
+     * 등록된 동적 surface를 handler→registry/list→DOM 순서로 분리한 뒤 타입별 풀에 반환합니다.
+     * 미등록·정적 surface는 무시하며, 풀 반환 뒤 canvas/context의 소유권은 해당 풀로 이전됩니다.
+     * 처리 중 오류가 나도 앞서 완료된 등록 해제·revision 변경은 되돌리지 않습니다.
      * @param {string} surfaceId - 회수할 surface 식별자입니다.
+     * @returns {void}
      */
     releaseDynamicSurface(surfaceId) {
         const descriptor = this.surfaceMap.get(surfaceId);
