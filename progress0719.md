@@ -452,6 +452,7 @@
 - 연관 렌더 계약 묶음 39/39와 전체 `npm test` 242/242, JS/MJS 374개 `node --check`, WASM backend+kernel 20/20, WAT/WASM 재현성 검사를 모두 통과했다.
 - 고정 seed `0x71c0ffee` WASM 스트레스 1,000건/3,824,454 cells와 ABI canary 3 layouts도 통과했다.
 - Computer Use로 실제 `lonely tower.exe`를 콜드 실행해 타이틀, 설정, 설정 취소, 맵 선택, 맵 취소, 종료 확인 대화상자의 렌더와 상호작용을 확인했고, 종료 후 프로세스가 사라짐을 확인했다.
+- GitHub Desktop GUI 커밋 및 푸시: `284f3ba Document EffectRenderer resize contract`.
 - 구조·핵심 실행 로직 변화가 없는 JSDoc 정정 단위이므로 `AGENT_GUIDE.md` 갱신은 불필요하다고 판정했다.
 
 ## 6. 일반 성능 최적화
