@@ -69,8 +69,9 @@ export class TitleShieldEffect {
     }
 
     /**
-     * 현재 프레임에 사용 중인 실드 외곽 반경을 반환합니다.
-     * @returns {number} 실드 반경입니다.
+     * 타이틀 적 AI의 로고 자력 거리 계산에 사용할 목표 실드 외곽 반경을 반환합니다.
+     * 시각 보간 중인 `radius`가 아니라 최신 레이아웃에서 계산한 `targetRadius`입니다.
+     * @returns {number} 목표 실드 외곽 반경입니다.
      */
     getShieldRadius() {
         return this.targetRadius;
@@ -133,7 +134,9 @@ export class TitleShieldEffect {
     }
 
     /**
-     * 내부 상태를 정리합니다.
+     * 레이아웃과 impact·dent 추적 상태를 비우고 적별 WeakMap을 교체합니다.
+     * 누적 `time`과 현재 `config` 참조는 유지합니다.
+     * @returns {void}
      */
     destroy() {
         this.targetCenterX = 0;
@@ -153,8 +156,11 @@ export class TitleShieldEffect {
     }
 
     /**
+     * 원본 델타로 impact 수명과 만료를 처리하고 보정된 시각 델타로 목표 각도·강도·폭을 추종합니다.
      * @private
-     * @param {number} delta - 경과 시간입니다.
+     * @param {number} delta - impact 수명에 누적할 실제 프레임 델타입니다.
+     * @param {number} visualDelta - 각도·강도·폭 추종에 사용할 보정된 시각 델타입니다.
+     * @returns {void}
      */
     #updateImpacts(delta, visualDelta) {
         for (let index = this.impacts.length - 1; index >= 0; index--) {
@@ -176,7 +182,7 @@ export class TitleShieldEffect {
 
     /**
      * @private
-     * @param {number} delta - 경과 시간입니다.
+     * @param {number} delta - 레이아웃 추종에 사용할 설정 보정 시각 델타입니다.
      */
     #updateVisualLayout(delta) {
         if (!this.visualLayoutInitialized) {

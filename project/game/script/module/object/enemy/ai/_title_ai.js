@@ -178,12 +178,28 @@ export const ensureTitleEnemyState = (enemy) => {
 export const titleAI = {
     id: TITLE_AI_ID,
 
+    /**
+     * AI가 적에 연결될 때 타이틀 전용 상태를 보장하고 현재 속도를 기본 이동속도로 캡처합니다.
+     * 유효하지 않은 속도 축은 `0`으로 저장하며 적의 현재 속도 자체는 변경하지 않습니다.
+     * `BaseEnemy.setAI()`에서 호출된 뒤 타이틀 스폰 경로가 별도 기본 속도로 덮어쓸 수 있습니다.
+     * @param {object} enemy - 타이틀 AI를 연결할 적 인스턴스입니다.
+     * @returns {void}
+     * @throws {TypeError} 적이 필수 타이틀 상태를 보관할 수 없는 값이면 발생합니다.
+     */
     init(enemy) {
         ensureTitleEnemyState(enemy);
         enemy._titleBaseSpeed.x = Number.isFinite(enemy.speed?.x) ? enemy.speed.x : 0;
         enemy._titleBaseSpeed.y = Number.isFinite(enemy.speed?.y) ? enemy.speed.y : 0;
     },
 
+    /**
+     * 풀 반환이나 AI 교체 전에 타이틀 전용 누적 상태를 기본값으로 되돌립니다.
+     * falsy 적은 그대로 무시하고, 유효한 적은 마지막에 `setAcc(0, 0)`으로 가속도를 초기화합니다.
+     * 현재 속도, 위치와 `accSpeed`는 이 훅에서 변경하지 않습니다.
+     * @param {object|null|undefined} enemy - 초기화할 적 인스턴스입니다.
+     * @returns {void}
+     * @throws {TypeError} truthy 적이 호환 상태 또는 `setAcc()`를 제공하지 않으면 발생합니다.
+     */
     reset(enemy) {
         if (!enemy) return;
         ensureTitleEnemyState(enemy);
@@ -201,6 +217,16 @@ export const titleAI = {
         enemy.setAcc(0, 0);
     },
 
+    /**
+     * 화면 크기 변경 비율을 자력·기본 속도·버스트 속도 벡터에 축별로 적용합니다.
+     * 각 비율이 유한수가 아니면 해당 축은 배율 `1`을 사용하며 위치와 현재 물리 속도는 변경하지 않습니다.
+     * @param {object} enemy - 내부 타이틀 속도 벡터를 재조정할 적 인스턴스입니다.
+     * @param {object} [context={}] - 리사이즈 문맥입니다.
+     * @param {number} [context.ratioX=1] - X축 배율입니다.
+     * @param {number} [context.ratioY=1] - Y축 배율입니다.
+     * @returns {void}
+     * @throws {TypeError} 적이 호환 상태를 제공하지 않거나 context가 `null`이면 발생합니다.
+     */
     resize(enemy, context = {}) {
         ensureTitleEnemyState(enemy);
         const ratioX = Number.isFinite(context.ratioX) ? context.ratioX : 1;
@@ -213,6 +239,23 @@ export const titleAI = {
         enemy._titleBurstVel.y *= ratioY;
     },
 
+    /**
+     * 한 고정 틱의 마우스·로고 자력, 기본/버스트 목표 속도와 감쇠 상태를 계산합니다.
+     * 결과는 적의 가속도와 `accSpeed`, 타이틀 전용 누적 벡터에 기록하며 위치와 현재 속도 적분은 호출자가 수행합니다.
+     * 포커스·버튼 값이 불리언이 아니거나 마우스 위치가 `null` 또는 `undefined`이면 simulation runtime의 현재 스냅샷을 사용합니다.
+     * stepDelta는 호출자가 양의 유한 초 단위 값으로 보장하며 이 메서드는 별도로 검증하지 않습니다.
+     * @param {object} enemy - 갱신할 타이틀 적 인스턴스입니다.
+     * @param {number} stepDelta - 현재 고정 틱 델타입니다.
+     * @param {object} [context={}] - 타이틀 배경이 공유하는 AI 문맥입니다.
+     * @param {number} [context.uiww=0] - UI 기준 너비입니다.
+     * @param {{x:number,y:number}|null} [context.logoMagneticPoint=null] - 오브젝트 좌표계 로고 자력점입니다.
+     * @param {number} [context.logoMagneticDistance=0] - 양수이면 사용할 로고 자력 거리이며, 그 외에는 UI 너비 비율로 대체됩니다.
+     * @param {boolean} [context.objectFocused] - 오브젝트 레이어 포커스 스냅샷입니다.
+     * @param {boolean} [context.leftPressing] - 왼쪽 버튼 입력 스냅샷입니다.
+     * @param {{x:number,y:number}|null} [context.mousePos] - 오브젝트 좌표계 마우스 위치이며, `null` 또는 `undefined`이면 runtime 입력으로 대체됩니다.
+     * @returns {void}
+     * @throws {TypeError} 적이 호환 상태를 제공하지 않거나 context가 `null`이면 발생합니다.
+     */
     fixedUpdate(enemy, stepDelta, context = {}) {
         ensureTitleEnemyState(enemy);
 

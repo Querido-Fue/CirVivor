@@ -43,12 +43,14 @@ const TITLE_PARALLAX_LAYERS = TITLE_CONSTANTS.TITLE_ENEMIES.PARALLAX_LAYERS || [
 
 /**
  * @class TitleBackGround
- * @description 타이틀 화면 배경을 관리하며, 오브젝트 적을 랜덤 스폰/업데이트/렌더링합니다.
+ * @description 타이틀 씬의 풀 기반 배경 적을 가변 프레임 보간·컬링하고, 고정 틱 AI·충돌과
+ * 기본 또는 페럴랙스 계층별 스폰을 조정하며 로고 실드 효과와 함께 렌더링합니다.
  */
 export class TitleBackGround {
     /**
-     * @param {TitleScene} titleScene
-     * @param {{drawBackgroundFill?: boolean}} [options={}] - 타이틀 배경 렌더 옵션입니다.
+     * 시뮬레이션 화면 지표와 스폰 설정을 캡처하고 실드 효과 및 초기 스폰 상태를 준비합니다.
+     * @param {TitleScene} titleScene - 이 배경을 소유하는 타이틀 씬입니다.
+     * @param {{drawBackgroundFill?: boolean}} [options={}] - 배경색 채움 여부를 포함한 렌더 옵션입니다.
      */
     constructor(titleScene, options = {}) {
         this.titleScene = titleScene;
@@ -80,8 +82,10 @@ export class TitleBackGround {
     }
 
     /**
-         * 타이틀 적 스폰 카운터를 초기화합니다.
-         */
+     * 전역·계층별 스폰 누적값과 초기 버스트 진행 상태를 시작값으로 되돌립니다.
+     * 현재 생성된 적과 실드 상태는 변경하지 않습니다.
+     * @returns {void}
+     */
     init() {
         this.shapeSpawnCounter = 0;
         this.#ensureLayerSpawnCounters();
@@ -92,8 +96,10 @@ export class TitleBackGround {
     }
 
     /**
-         * 윈도우 리사이즈 시 기존에 생성된 타이틀 적들의 크기 및 위치 비율 재계산 수행
-         */
+     * 최신 시뮬레이션 화면 지표를 읽고 기존 적의 위치·현재 속도 및 타이틀 AI 내부 벡터를 축별로 재조정합니다.
+     * 보간 잔상을 막기 위해 이전 위치와 렌더 위치를 조정된 현재 위치에 맞춥니다.
+     * @returns {void}
+     */
     resize() {
         const prevWW = this.WW || 1;
         const prevObjectWH = this.objectWH || 1;
@@ -129,8 +135,11 @@ export class TitleBackGround {
     }
 
     /**
+     * 가변 프레임에서 실드 배치를 동기화하고 고정틱 위치를 보간한 뒤 비활성·화면 밖 적을 풀에 반환합니다.
+     * 마지막에 실드의 시각 상태와 적 충돌 흔적을 갱신합니다.
      * @param {{centerX:number, centerY:number, radius:number}|null} shieldLayout - 적과 실드가 공유할 중심/반경 정보입니다.
      * @param {boolean} [enemySpawnEnabled=false] - 신규 적 스폰 허용 여부입니다.
+     * @returns {void}
      */
     update(shieldLayout, enemySpawnEnabled = false) {
         this.shieldLayout = shieldLayout;
@@ -156,7 +165,9 @@ export class TitleBackGround {
     }
 
     /**
-     * 고정 틱에서 타이틀 적의 이동/스폰/충돌을 처리합니다.
+     * 유효한 고정 델타에서 타이틀 적 AI·적분과 충돌을 처리하고, 허용된 경우 초기 버스트 또는 유지 스폰을 수행합니다.
+     * 새 적이 생성되면 같은 틱에서 충돌을 한 번 더 해소합니다.
+     * @returns {void}
      */
     fixedUpdate() {
         const delta = getFixedDelta();
@@ -195,8 +206,10 @@ export class TitleBackGround {
     }
 
     /**
-         * 타이틀 백그라운드와 적 요소를 렌더링
-         */
+     * 현재 화면 지표, 페럴랙스 적 목록과 실드 효과를 배경 렌더러에 전달합니다.
+     * `drawBackgroundFill`이 거짓이면 배경색 채움만 생략합니다.
+     * @returns {void}
+     */
     draw() {
         drawTitleBackgroundScene({
             drawBackgroundFill: this.drawBackgroundFill,
@@ -209,7 +222,8 @@ export class TitleBackGround {
     }
 
     /**
-     * 현재 테마 색상에 맞춰 배경 적의 채움 색상을 갱신합니다.
+     * 현재 테마와 각 적의 페럴랙스 계층 프로필을 다시 적용해 색상·투명도 등 시각 속성을 동기화합니다.
+     * @returns {void}
      */
     applyTheme() {
         for (const enemy of this.titleEnemies) {
@@ -229,7 +243,7 @@ export class TitleBackGround {
     }
 
     /**
-         * 지정 횟수만큼 타이틀 적 형상을 배열에 추가합니다.
+     * 오브젝트 시스템의 적 풀에서 형상을 획득해 스폰 데이터와 타이틀 AI 상태를 적용하고 활성 목록에 추가합니다.
      * @param {number} times 스폰 횟수
      * @param {number[]|null} [layerCounts=null] 계층별 현재 적 수 캐시입니다.
      * @param {number|null} [preferredLayerIndex=null] 우선적으로 생성할 페럴랙스 계층 인덱스입니다.
@@ -325,10 +339,11 @@ export class TitleBackGround {
     }
 
     /**
-         * 배열 내 특정 인덱스의 적을 풀에 반환 및 리스트에서 제거합니다.
-         * @param {number} index
-         * @private
-         */
+     * 배열 내 특정 인덱스의 적을 풀에 반환하고 swap-pop 방식으로 활성 목록에서 제거합니다.
+     * @param {number} index - 반환할 적의 배열 인덱스입니다.
+     * @returns {void}
+     * @private
+     */
     #releaseEnemyAt(index) {
         const enemy = this.titleEnemies[index];
         if (!enemy) return;
@@ -347,8 +362,9 @@ export class TitleBackGround {
     }
 
     /**
-         * 타이틀 배경을 소멸시키며 모든 적을 풀로 강제 반환합니다.
-         */
+     * 실드 효과를 정리하고 모든 활성 타이틀 적을 오브젝트 풀로 반환합니다.
+     * @returns {void}
+     */
     destroy() {
         if (this.shieldEffect) {
             this.shieldEffect.destroy();

@@ -6,7 +6,8 @@ import { TitleLoadingSequence } from './_title_loading_sequence.js';
 
 /**
  * @class TitleScene
- * @description 타이틀 배경과 로딩 시퀀스를 조합하는 씬입니다.
+ * @description `SceneSystem`의 활성 타이틀 씬으로서 그라디언트 배경, 타이틀 적·실드 배경과
+ * 로딩 시퀀스를 소유하고 BaseScene 수명 주기 및 overlay·씬 전환 요청을 라우팅합니다.
  */
 export class TitleScene extends BaseScene {
     /**
@@ -77,7 +78,9 @@ export class TitleScene extends BaseScene {
     }
 
     /**
-     * 타이틀 씬이 보유한 서브 모듈을 정리합니다.
+     * @override
+     * 타이틀 씬이 보유한 서브 모듈을 순서대로 정리하고 열린 타이틀 overlay를 닫습니다.
+     * @returns {void}
      */
     destroy() {
         if (this.titleGradientBackground) {
@@ -145,8 +148,10 @@ export class TitleScene extends BaseScene {
     }
 
     /**
-     * 현재 타이틀 씬에 런타임 설정 변경을 즉시 반영합니다.
+     * @override
+     * theme 변경이 있으면 타이틀 배경에 먼저 반영하고, 변경 종류와 관계없이 동일한 설정 객체를 로딩 시퀀스에 전달합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
+     * @returns {void}
      */
     applyRuntimeSettings(changedSettings = {}) {
         if (changedSettings.theme !== undefined) {

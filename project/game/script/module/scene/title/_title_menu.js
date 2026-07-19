@@ -74,7 +74,8 @@ function resolveTitleMenuCardRevealConfig(cardId) {
 
 /**
  * @class TitleMenu
- * @description 타이틀 화면 우하단 카드 메뉴와 WebGL 카드 효과를 관리하는 클래스입니다.
+ * @description 타이틀 화면 오른쪽의 카드·보조 메뉴와 두 glass pane을 배치하고, overlay 세션 기반 효과 텍스처,
+ * 포인터 상호작용, 버전 링크 및 overlay·씬 전환 액션을 조정합니다.
  */
 export class TitleMenu {
     /**
@@ -85,7 +86,8 @@ export class TitleMenu {
     #revealProgressResolver;
 
     /**
-     * @param {TitleScene} titleScene - 타이틀 씬 인스턴스입니다.
+     * 화면·설정 지표를 캡처하고 카드/보조 타일 상태, overlay 세션, 텍스처·버전 렌더러와 링크 버튼을 준비합니다.
+     * @param {TitleScene} titleScene - 메뉴 액션과 버전 링크 UI를 소유할 타이틀 씬입니다.
      */
     constructor(titleScene) {
         this.TitleScene = titleScene;
@@ -139,7 +141,9 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 메뉴 상태를 갱신합니다.
+     * 전환·등장 시간축과 렌더 상태를 갱신하고, overlay 차단 여부를 반영해 카드·pane·버전 링크 입력을 처리합니다.
+     * 예약된 게임 시작 요청은 같은 update 호출의 마지막에 실행합니다.
+     * @returns {void}
      */
     update() {
         const delta = getDelta();
@@ -159,7 +163,9 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 메뉴를 그립니다.
+     * 선행 WebGL 배치를 flush한 뒤 두 외곽 pane, 보조 타일, 카드와 버전 라벨을 overlay 세션에 순서대로 그립니다.
+     * 세션이 이미 정리되었으면 아무 작업도 하지 않습니다.
+     * @returns {void}
      */
     draw() {
         if (!this.session) {
@@ -258,7 +264,8 @@ export class TitleMenu {
     }
 
     /**
-     * 화면 크기 변경 시 카드 레이아웃을 다시 계산합니다.
+     * 최신 디스플레이 지표와 저장된 UI 스케일을 읽어 카드 배치 및 현재 전환 시점의 렌더 상태를 다시 계산합니다.
+     * @returns {void}
      */
     resize() {
         this.WW = getWW();
@@ -272,8 +279,9 @@ export class TitleMenu {
     }
 
     /**
-     * 런타임 설정 변경을 카드 메뉴에 반영합니다.
+     * 테마 변경 시 SVG·효과 색상을 갱신하고, 투명도 설정은 overlay 세션에 전달하며, UI 스케일 변경은 전체 배치를 재계산합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 집합입니다.
+     * @returns {void}
      */
     applyRuntimeSettings(changedSettings = {}) {
         if (changedSettings.theme !== undefined) {
@@ -291,7 +299,8 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 메뉴가 사용한 리소스를 정리합니다.
+     * overlay 세션과 동적 텍스처·버전 렌더러·링크 버튼·SVG 소스를 해제하고 모든 카드 상태 컬렉션을 비웁니다.
+     * @returns {void}
      */
     destroy() {
         this.sceneStartRequested = false;
