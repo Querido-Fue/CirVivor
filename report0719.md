@@ -100,6 +100,14 @@
 - **현재 검증 공백:** 기존 테스트는 정상 60/30Hz, pause/resume와 단일 실패 tick은 다루지만 capacity wrap, 임계 timestamp 동률, 역행 시간, 집계 중 예외와 재진입 뒤의 부분 상태를 고정하지 않는다.
 - **선행 테스트/권장 방향:** capacity 1·2 및 다중 wrap, 경계 동률, 중복·역행 timestamp, live snapshot identity, scratch 예외·재진입 trace를 기존 메서드와 추출 후보에서 exact 비교하기 전에는 구조 분리를 하지 않는다.
 
+### 3.12 `SettingsOverlay` UI 구성·설정 transaction 책임 집중
+
+- **파일 경로:** `project/game/script/module/overlay/title/_settings_overlay.js`.
+- **문제 후보:** 558줄 파일의 `SettingsOverlay` 클래스가 overlay layout 생성(`_generateLayout()` 65행), 좌·우 설정 열 구성(`_buildLeftColumn()` 260행, `_buildRightColumn()` 345행), section/item header·footer 조립(440~488행)과 설정 입력·변경 표시(153~188행), 비동기 preview queue·flush·cancel(195~237행), benchmark 전환(250행), 저장(508행), runtime 재적용(530행), close rollback(542행)을 함께 담당한다. 243행의 `#openKeybindings()`는 빈 진입점이지만 저장소에는 이를 대신할 기존 keybindings overlay/route가 없어 임의 구현이나 다른 기능 재사용으로 메울 근거도 없다.
+- **동일성 위험:** layout builder를 분리하면 fluent handler 호출 순서, item identity, callback closure와 subclass override 지점이 달라질 수 있다. session/transaction 책임을 분리하면 preview 병합·flush Promise 순서, 저장 전후 `rollbackOnClose`, close 중 비동기 원복, benchmark 전환과 예외 후 부분 상태가 바뀔 수 있다.
+- **현재 검증 공백:** 현재 테스트에서 이 파일은 `BaseOverlay` JSDoc의 하위 클래스 소스 문자열 계약 검사에만 포함되며, 설정 control tree·preview/save/cancel/close 전체 상태와 픽셀을 고정하는 전용 동작 테스트는 없다.
+- **현재 처리/권장 방향:** 생산 코드는 유지한다. 먼저 viewport/DPR/UI scale별 layout tree·control callback·최종 픽셀을 고정하고, getter/Proxy 입력, preview 중 재입력·close·save·benchmark, flush/reapply reject와 재진입을 포함한 exact trace를 만든다. 그 뒤 순수 layout descriptor builder와 설정 session transaction을 기존 클래스가 같은 순서로 위임하는 방식으로 한 축씩 분리한다.
+
 ## 4. 기존 게임 기능 재사용 후보 보류
 
 ### 4.1 `CollectionOverlay`와 `DeckOverlay` 중복
@@ -330,6 +338,14 @@
 - 가능한 layout 전수에서 hole 포함 `circlePartCount`의 실제 상한과 분포를 먼저 측정한 뒤 0·1·상한 및 상한 인접 part 수, 접선·EPSILON 양쪽 1-ULP·동심·비유한 값·무효 radius·cell 경계·중복 pair를 기존 detector 및 boolean-only JS oracle과 exact 비교해야 한다. 이어 10,000 fixed tick에서 `contactSecondsByPair` 순서와 merge/spawn/release 전체 상태를 replay한다.
 - 실제 NW.js AB/BA에서 packing·호출·결과 조립을 포함해 기존 detector와 boolean-only JS 모두보다 1.3배 이상이고 작은 후보군과 p95가 비퇴행할 때만 승격하며, 그 전에는 조건부 실험 후보로만 유지한다.
 
+### 4.29 타이틀 메뉴 UI scale 정규화 중복
+
+- **파일 경로:** `project/game/script/module/scene/title/menu/_title_menu_content_render.js`, `_title_menu_text_layout.js`, `_title_menu_texture_signature.js`, `_title_menu_render_state.js`, `_title_menu_pane_layout.js`, `_title_menu_version_label.js`.
+- **문제 후보:** 여섯 파일이 각각 같은 이름의 비공개 `_normalizeTitleMenuUiScale()`을 정의하고 정적 호출 지점 16곳에서 사용한다. 네 구현은 `Number.isFinite(uiScale) && uiScale > 0 ? uiScale : 1`을 직접 실행하고, 두 구현은 공용 `resolveFiniteNumber(uiScale, 1)` 뒤 같은 양수 조건을 적용한다.
+- **동등성 탐색:** native intrinsic에서 falsy·±0·음수·subnormal·양수·`NaN`·±`Infinity`·문자열·BigInt·Symbol·객체를 포함한 16개 입력으로 여섯 실제 함수 본문을 비교했을 때 반환과 예외가 모두 일치했다.
+- **결정적 동일성 위험:** 공용 모듈 위임은 현재 inline 구현의 `Number.isFinite()` 호출 스택에 새 helper/import 경계를 추가하고, 기존 두 wrapper의 함수명·파일 프레임도 바꾼다. stack-sensitive mutable `Number.isFinite`, 예외 stack, 재진입과 module evaluation 관찰에서는 같은 값이라도 반환·예외·부수효과가 달라질 수 있다. texture signature의 `.toFixed(3)`, font size, pane rectangle과 render state까지 연쇄되므로 native 정상값 parity만으로 최종 픽셀 동일성을 보장할 수 없다.
+- **현재 처리/권장 방향:** 생산 코드는 유지한다. patched `Number.isFinite`, getter/예외·재진입과 import 평가 trace를 actual-source 양방향으로 고정하고, 16개 호출의 font·rectangle·texture signature 원시값 및 viewport/DPR/UI scale별 최종 픽셀을 exact 비교한 뒤에만 공용 helper로 통합한다.
+
 ## 5. 렌더 파이프라인 구조 개선 보류
 
 ### 5.1 title gradient의 `uTime`과 bake 무효화 계약
@@ -382,6 +398,22 @@
 - **추가 위험:** own `undefined`는 fresh 객체의 absent property와 다르며 `Object.prototype`의 동명 값/getter/setter, non-writable 속성에서 조회·부수효과·예외가 달라진다. `delete`는 prototype 조회 의미를 가깝게 보존하지만 진행 중 render가 보유한 cache identity 격리는 해결하지 못하고, 합성 벤치에서도 fresh 교체보다 현저히 느렸다.
 - **현재 처리:** fresh 캐시 교체와 그 실행 위치(`resetDrawContextState()` 전체 성공 뒤, `clearRect` 전)는 생산 코드에 그대로 유지했다. 모든 호출이 사용하던 죽은 `applyTransform` 비공개 옵션과 분기만 exact 동등성 테스트 후 제거했으며, 해당 변경 자체는 4/6/8 레이어 교차 벤치에서 성능상 중립이라 속도 향상으로 기록하지 않았다.
 - **선행 테스트/권장 방향:** 할당 제거를 다시 시도하려면 진행 중인 모든 render 참조와 새 frame cache를 세대별로 분리하고, 중첩 clear·render·register/unregister·모든 setter 예외·prototype 오염에서 legacy trace와 픽셀을 exact 비교해야 한다. 현재 fresh 객체 교체 비용보다 복잡도와 재진입 위험이 커서 현 구조를 유지한다.
+
+### 5.8 타이틀 parallax softness 색상 혼합 캐시
+
+- **파일 경로:** `project/game/script/module/scene/title/background/_title_background_parallax.js`, `_title_background_theme.js`, `project/game/script/module/scene/title/_title_background.js`, `project/game/script/module/scene/title/_title_scene.js`, `project/game/script/module/display/_theme_handler.js`, `project/game/script/module/overlay/title/settings/_settings_preview_queue.js`, `project/game/script/module/save/save_system.js`, `project/game/script/module/save/_setting_handler.js`, `project/game/script/module/system_handler.js`, `project/game/script/data/scene/title/title_constants.js`, `project/game/script/util/color_util.js`, `project/game/script/util/number_util.js`.
+- **문제 후보와 부하:** 목표 점유 상태는 레이어당 `round(140 × 0.9) = 126`, 세 레이어 합계 378개이고 현재 세 profile 모두 softness 분기를 통과한다. 따라서 이 상태의 steady frame에서 `mixTitleEnemyColorWithBackground()` 378회와 내부 `cssToRgb()` 756회, 60Hz 기준 각각 약 22,680회·45,360회가 실행되지만 실질적인 canonical blur 색 조합은 테마당 세 개뿐이다. 초기 burst·cull·보충 spawn 사이의 실제 개수는 이 목표보다 달라질 수 있다.
+- **동일성 위험:** `ColorSchemes`는 identity를 유지하는 공개 live 객체이고 frozen canonical 중첩 객체도 최상위 `Title` 교체를 통해 getter/Proxy 값으로 바뀔 수 있다. 공개 `drawTitleParallaxEnemy()`는 getter/Proxy/가변 `ColorMix`를 받을 수 있으며 `(layerProfile.ColorMix || 0) + 0.12`의 property 접근·ToPrimitive·예외가 매 draw마다 관찰된다. 색 혼합은 매번 최신 `ColorUtil` 인스턴스를 조회하고 `cssToRgb()` 2회와 `rgbToString()`을 호출하므로 생성 전 `null`, 새 인스턴스 교체, own/prototype 메서드 patch·accessor·예외·재진입도 현재 계약이다. 단순 layer/theme/색 문자열 캐시는 이 반복 관찰과 mutable `Number.isFinite`·`Math.min/max` 호출을 제거해 preview/cancel, 직접 palette mutation, 반환·예외와 부분 렌더 순서를 바꾼다.
+- **현재 처리/재검토 조건:** 현재 공개 계약에서는 blind cache와 문자열 signature fast path 모두 NO-GO이다. 실제 설정 preview coordinator는 `previewSettingBatch()`와 runtime apply를 별도로 순서 호출하고, 뒤이어 `SystemHandler`가 scene에 전파해 `TitleBackGround.applyTheme()`를 실행한다. 직접 `setTheme()` 호출이나 묶음 설정의 `await` 사이에는 새 palette와 이전 `_titleParallaxFill`이 섞인 중간 상태도 관찰될 수 있다. `ColorSchemes` 변경을 이 coordinator 경로로만 제한하고, `ColorUtil` identity와 `cssToRgb`·`hexToRgb`·`rgbToString`의 own/prototype descriptor·함수 및 숫자 intrinsic을 불변으로 본다는 새 계약을 승인한 뒤에만 theme revision·exact canonical profile identity·실제 색 문자열 signature를 함께 쓰는 private fast path를 탐색한다. 그 외 공개/custom 경로는 현재 함수를 그대로 실행해야 한다.
+- **선행 테스트:** 세 canonical profile과 임의 profile, `SoftnessAlpha` 0.001 미만·동일·초과, `SoftnessScale` 1 미만·동일·초과, 0·1·126·140개/레이어, `NaN`·±`Infinity`·-0·문자열·BigInt·Symbol·객체·revoked Proxy `ColorMix`, getter/`valueOf` 예외·접근 순서와 palette fallback chain의 각 getter·throw·재진입을 actual-source trace로 비교한다. theme preview/cancel·최상위 `ColorSchemes.Title` 교체·직접 `setTheme()` 직후의 중간 상태, 최신 `ColorUtil` 교체·생성 전 호출, own/prototype method patch·getter·throw·재진입, patched `Number.isFinite`·`Math.min/max/round`의 호출 순서도 포함한다. parallax layer별 명령을 단독 실행해 flush한 실제 `object` WebGL surface와 viewport/DPR/render scale별 최종 RGBA가 0바이트 차이여야 하며, 실제 NW.js AB/BA에서 targeted title draw p50 1.05배 이상과 전체 frame p95 2% 이내 비퇴행을 모두 통과할 때만 반영한다.
+
+### 5.9 타이틀 parallax draw override 객체 재사용
+
+- **파일 경로:** `project/game/script/module/scene/title/background/_title_background_parallax.js`, `project/game/script/module/object/enemy/_shape_enemy.js`, `project/game/script/module/display/webgl/_webgl_batch.js`.
+- **문제 후보와 부하:** 목표 점유 상태에서 softness가 활성인 378개 기준 보조 pass와 본 pass가 각각 새 override literal을 만들어 프레임당 756개, 60Hz 기준 약 45,360개의 source-level 객체가 생긴다. 다만 `ShapeEnemy`는 이미 비공개 `#renderOptions`를, `WebGLBatch`는 색상 cache를 재사용하므로 이번 객체 생성 최적화 후보는 두 공개 `enemy.draw()` 호출에 전달되는 override snapshot 경계에 한정된다.
+- **동일성 위험:** `drawTitleParallaxEnemy()`가 공개되고 `enemy`도 임의 객체이므로 custom/subclass `draw()`는 전달 객체 identity를 보관·변경하거나 재진입할 수 있다. 하나의 scratch를 재사용하면 첫 pass snapshot이 둘째 pass에서 변하고, 여러 적·중첩 draw가 같은 identity를 공유하며, getter·예외·호출 stack과 command 생성 순서가 달라질 수 있다.
+- **조건부 권장 방향:** 공개 `__poolType`이 아닌 비공개 WeakSet/token 기반 pool identity를 가진 concrete subclass 가운데 resolved draw 구현이 정확히 원본 `ShapeEnemy.prototype.draw`이고 instance own `draw`가 없으며 관련 prototype chain descriptor·함수 identity도 일치할 때만 쓰는 scalar fast path를 탐색할 수 있다. instance/prototype monkey-patch, accessor, `HexaHiveEnemy.draw`, 임의/custom 객체는 모두 기존 literal 경로로 fallback해야 한다. fast path도 기존 `enemy.draw` property 조회 시점, 세대별 재진입 격리와 공개 dispatch 의미를 보존하지 못하면 NO-GO이다.
+- **선행 테스트:** custom draw의 두 객체를 pass·적·frame 사이에 장기 보관·변경하는 경우, 첫/둘째 pass 재진입·예외, subclass override, exact instance own `draw` 교체, prototype method/descriptor/accessor patch, 실제 일곱 non-gen concrete shape와 hive/custom fallback, inactive enemy, softness 경계, WebGL 및 debug hitbox command의 property 접근·숫자·전체 순서를 actual-source로 exact 비교한다. 0·1·126·140개/레이어와 viewport/DPR/render scale 행렬에서 실제 `object` surface와 최종 화면 RGBA 0바이트 차이, targeted title draw p50 1.05배 이상 및 전체 frame p95 2% 이내 비퇴행을 모두 요구한다.
 
 ## 6. 권장 처리 순서
 

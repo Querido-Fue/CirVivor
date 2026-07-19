@@ -200,6 +200,20 @@
 - [x] 보고서만 확장하고 실행 구조를 바꾸지 않았으므로 `AGENT_GUIDE.md` 갱신 불필요
 - [x] GitHub Desktop 커밋 및 푸시: `d315084 Document audited optimization gates`
 
+#### 4.8 타이틀 메뉴·설정 overlay·parallax 정밀 감사 — 보고 전용
+
+- [x] 여섯 title menu 파일의 UI scale 정규화 6개·정적 호출 지점 16곳을 전수 확인하고 native 16개 edge 입력에서는 반환·예외 parity가 일치함을 검증
+- [x] 공용 위임 시 mutable `Number.isFinite`의 stack/import 경계, font·pane rectangle·render state·texture signature와 최종 픽셀까지 달라질 수 있어 생산 통합을 보류하고 `report0719.md` 4.29에 기록
+- [x] 558줄 `SettingsOverlay`의 layout 조립, control callback, preview queue·cancel·save·runtime apply·close rollback 책임과 빈 keybindings 진입점을 감사
+- [x] 기존 keybindings route가 없고 overlay 동작 회귀 테스트도 없어 임의 구현·SRP 분리를 보류하고 `report0719.md` 3.12에 exact trace·pixel 선행 gate를 기록
+- [x] steady-state 목표 378개 parallax 적이 모두 존재하는 frame에서 softness 색 혼합 378회·`cssToRgb` 756회와 draw override literal 756개/frame이 발생함을 실제 상수·호출 경로로 재계산
+- [x] live `ColorSchemes`·최신 `ColorUtil`·mutable intrinsic, 가변 profile/getter, custom draw의 override 보관·변경·재진입 때문에 blind cache/scratch 재사용은 NO-GO로 판정하고 새 불변 계약·조건부 fast path·0바이트 pixel gate를 `report0719.md` 5.8·5.9에 기록
+- [x] 사용자 지시 5·6의 완전 동일성 기준에 따라 생산 코드와 테스트는 변경하지 않고 보고서·진행 기록만 갱신
+- [x] 독립 리뷰 3건 승인, 전체 `npm test` 181개, JS/MJS 368개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 통과
+- [x] Computer Use 실제 게임 cold start에서 타이틀 동적 도형, 설정 glass·blur·scale·alpha, 취소 뒤 타이틀 복원, 맵 preview·취소 복원, 종료 확인 overlay와 정상 프로세스 종료 확인
+- [x] 실행 구조 변경이 없으므로 `AGENT_GUIDE.md` 갱신 불필요
+- [ ] GitHub Desktop 커밋 및 푸시
+
 ## 5. JSDoc 정합성 정비
 
 #### 5.1 공간 broad-phase 및 마우스 포커스 계약 정정 — 완료
