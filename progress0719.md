@@ -487,6 +487,20 @@
 - [x] hole 포함 실제 `circlePartCount`의 0·1·전수 상한·상한 인접값, 접선 1-ULP·비유한 입력·cell dedupe·pair identity와 10,000 tick merge/spawn/release exact replay를 선행 gate로 지정
 - [x] 실제 NW.js에서 packing 포함 기존 detector와 boolean-only JS 대비 1.3배 이상이고 p95·소규모가 비퇴행할 때만 승격하며 상세 조건은 `report0719.md` 4.28에 기록
 
+#### 6.10 비네트 ordered-dither offset 사전 계산 후보 — 동일성·성능 게이트 실패·미채택
+
+- [x] `_vignette_renderer.js`의 dirty-cache `_colorizeBlur()`에서 alpha가 0보다 큰 픽셀마다 실행되는 4×4 Bayer offset의 `/ 16 - 0.46875`를 감사
+- [x] 16개 offset이 모두 `(2m - 15) / 32`의 exact dyadic이라 native intrinsic·불변 행렬 계약에서는 직접 2D offset table의 `Math.round()` 입력과 RGBA가 binary64/byte 단위로 같음을 확인
+- [x] patched `Object.freeze`가 원래 4개 행과 외부 배열을 캡처하고 freeze를 no-op으로 만든 뒤 첫 셀을 `8`로 변경하는 actual-source 반례에서 alpha 93의 byte가 변이 전 양쪽 `92`, 변경 뒤 legacy `93`·table 후보 `102`로 불일치함을 확인
+- [x] 원래 정수 행렬 조회와 exotic cell fallback을 유지하는 switch 후보도 검토해 getter·coercion·mutation 의미를 보존하는 최소 경계를 확정
+- [x] 실제 production source SHA-256 `4109cd5e6a039d42ee7241587342926187949b470662962396853e3efeeae39a` 기반 Node 22.19.0/V8 12.4.254.21, 1920×1080, warmup 7쌍, AB/BA 31쌍 측정 수행
+- [x] 단순 2D table은 resolver p50/p95 0.9706/0.9784배로 악화됐고 39.9853%/100% alpha 점유 colorize loop만 각각 1.0311/1.0320배·1.0448/1.0452배; 측정 전후 8,294,400 RGBA byte는 native 정상 환경에서 exact 일치
+- [x] 호환 switch 후보는 resolver p50/p95 0.8347/0.8243배, 39.9853%/100% colorize loop 0.8983/0.8935배·0.8357/0.8424배로 명확히 악화되어 성능 gate 실패
+- [x] 단순 table은 완전 동일성 gate를, switch는 성능 gate를 각각 실패했으므로 production·test·WASM artifact를 변경하지 않고 `report0719.md` 5.10에 NO-GO 근거와 재검토 조건 기록
+- [x] 전체 `npm test` 191개, JS/MJS 369개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 통과
+- [x] Computer Use 실제 게임 2560×1440 cold start에서 타이틀 가장자리 비네트·동적 배경, 설정 glass overlay 진입·취소, 맵 선택 preview 진입·취소, 종료 확인 overlay와 정상 프로세스 종료를 검증
+- [x] 생산 구조·핵심 로직 변경이 없는 보고 전용 감사이므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 발견된 위험
 
 - 테스트는 `--experimental-vm-modules` 없이 실행하면 모든 파일이 로더 단계에서 실패합니다.
