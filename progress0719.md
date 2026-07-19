@@ -187,6 +187,18 @@
 - [x] renderer 인라인 시 교체된 `render()`의 helper frame 관찰 차이와 OOM·heap 관찰 위험까지 교차 감사
 - [x] 모든 edge case의 완전 동일성을 보장할 수 없어 생산 코드와 테스트 파일은 변경하지 않고 `report0719.md` 4.19에 위험·선행 계약만 기록
 
+#### 4.7 신규 SRP·숫자 helper 재사용 후보 — 보고 전용
+
+- [x] 670줄 `UIElementFactory`의 타입 dispatch·8종 생성·버튼 측정·pool·accessor/legacy props 책임 집중과 유일한 생산 호출 경로를 감사
+- [x] `handler.call(this)`, dummy/실제 요소의 pool 획득 순서, `item.props.font` mutation, getter·Proxy·`delete` 예외 전 부분 상태를 완전히 고정할 전용 테스트가 없어 구조 분리를 보류하고 `report0719.md` 3.10에 기록
+- [x] `ReleaseSimulationProfiler.#publishSnapshot()`의 ring 탐색·typed-array 정렬·rate/quantile·live snapshot 갱신·counter reset 결합을 감사
+- [x] capacity wrap·임계 timestamp 동률·역행 시간·집계 예외/재진입의 exact 계약이 없어 구조 분리를 보류하고 `report0719.md` 3.11에 기록
+- [x] `GameMapGrid.resolvePositiveNumber()`와 양수 조건을 유지한 공용 `resolveFiniteNumber()` wrapper 위임 후보를 일반·특수 입력 126건에서 비교해 일치를 확인했지만, stack-sensitive mutable `Number.isFinite`의 `(7, 1)` 반례에서 기존 `7`·위임 후보 `1` 차이를 확인
+- [x] 사용자 지시 5·6의 완전 동일성 기준에 따라 세 후보 모두 생산 코드·테스트를 변경하지 않고 상세 위험과 선행 gate만 `report0719.md`에 기록
+- [x] 문서 반영 후 전체 `npm test` 170개, JS/MJS 367개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] Computer Use 실제 게임 cold start에서 타이틀·동적 도형, 설정 glass 오버레이, 취소 뒤 타이틀 렌더 복원, 종료 확인 오버레이와 정상 프로세스 종료 확인
+- [x] 보고서만 확장하고 실행 구조를 바꾸지 않았으므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 5. JSDoc 정합성 정비
 
 #### 5.1 공간 broad-phase 및 마우스 포커스 계약 정정 — 완료
@@ -405,6 +417,31 @@
 - [x] Computer Use 실제 게임 cold start에서 2560×1440 타이틀 합성·카드·동적 도형 정상, 배경 클릭 뒤 파란 자기장 표시와 도형 군집 반응, 종료 확인 오버레이 및 정상 종료 확인
 - [x] 미채택 근거와 재검토 조건을 `report0719.md` 4.24에 기록
 - [x] GitHub Desktop 커밋 및 푸시: `b63dc0d Document magnetic optimization no-go`
+
+#### 6.7 적 LOS WAT 후보 — 성능 게이트 실패·미채택
+
+- [x] `_enemy_ai_navigation.js`·`_enemy_ai_steering.js`·`_enemy_ai_policy_intent.js` 경로에서 적당 1 query/tick의 단순 기준 부하가 적 800개·60Hz 약 48,000 query/s임을 확인; policy sample과 final/direct-path 검사로 실제 호출 수는 더 커질 수 있어 최대치로 사용하지 않음
+- [x] in-memory WAT 탐색 구현이 정상 유한 입력 16,384개에서 기존 JS boolean 결과와 exact 일치
+- [x] 벽 1/8/32/128개 p50 속도는 각각 0.975/1.156/1.233/1.325배였으며 기본 맵 8개는 1.3배 gate 실패
+- [x] 800 query/tick의 kernel-only 절감도 약 0.0086ms이므로 생산 코드·테스트·artifact를 변경하지 않고 NO-GO 처리
+- [x] 벽 128개 이상 지속 또는 batch/memory 상주 조건에서 release edge parity와 실제 NW.js AB/BA 1.3배를 재검증하고 상세 근거는 `report0719.md` 4.26에 기록
+
+#### 6.8 `EnemySpatialIndex.rebuild()` WASM 후보 — 비용·경계 게이트 실패·미채택
+
+- [x] `object_system_fixed_update_helpers.js`·`enemy_spatial_index.js`를 감사해 fixed tick마다 JS Map·객체 참조·density를 함께 재구성함을 확인
+- [x] 실제 production 모듈의 적 800개·약 10% hive 입력 rebuild p50/p95는 0.1495/0.1711ms
+- [x] 단순 bounds 100/400/800/1,200개 p95도 각각 0.060554/0.098675/0.169770/0.253185ms로 작음
+- [x] 실제 fixed p95 대비 방향성 비율 약 1.16%이고 4.17ms·25% gate에 미달하며 rebuild-only WASM은 JS 구조를 중복하므로 NO-GO 처리
+- [x] canonical numeric slot과 batch query가 마련되거나 profiler gate를 넘을 때만 exact 방문·dedupe·density·generation 하네스로 재검토하고 상세 근거는 `report0719.md` 4.27에 기록
+
+#### 6.9 hexa 합체 contact batched narrowphase WASM 후보 — 조건부 실험 대기
+
+- [x] `object_system_hexa_hive_orchestration.js`, `_hexa_hive_layout.js`, `_collision_handler.js`, `collision_enemy_body_builder.js`, `collision_body_detector.js`를 감사해 circleParts pair의 실제 `countA × countB` primitive 검사를 batch 후보로 확인
+- [x] 독립 재검토에서 구성원 최대 8개와 collision part 상한을 등치한 오류를 발견하고, hole을 포함하는 `filledLocalCenters.length`가 `circlePartCount`가 되므로 실제 layout 전수 상한을 먼저 계측하도록 정정
+- [x] JS가 body/grid/dedupe/pair 순서를 유지하고 WAT는 한 tick의 numeric 후보에 대한 `Uint8` contact flag만 반환하는 최소 경계를 확정
+- [x] 전용 contact parity 테스트와 `fixed.object.contact`/`contactPairScanMs` 대표 실측이 없어 생산 구현은 보류
+- [x] hole 포함 실제 `circlePartCount`의 0·1·전수 상한·상한 인접값, 접선 1-ULP·비유한 입력·cell dedupe·pair identity와 10,000 tick merge/spawn/release exact replay를 선행 gate로 지정
+- [x] 실제 NW.js에서 packing 포함 기존 detector와 boolean-only JS 대비 1.3배 이상이고 p95·소규모가 비퇴행할 때만 승격하며 상세 조건은 `report0719.md` 4.28에 기록
 
 ## 발견된 위험
 

@@ -84,6 +84,22 @@
 - **동일성 위험:** 모듈 분리 시 fixed step 계측의 `try/finally`, simulation snapshot 동기화 시점, pause 진입 input reset, BGM side effect, overlay backdrop용 중간 WebGL flush 가운데 하나라도 이동하면 시뮬레이션 상태나 최종 픽셀이 달라질 수 있다.
 - **선행 테스트/권장 방향:** 시스템 호출 trace를 기록하는 spy harness로 init/tick/pause/debug-step/resize/settings 변경의 정확한 호출 순서와 인자를 고정한다. WebGL flush와 최종 surface의 pixel golden까지 확보한 뒤 boot composition·pause policy·snapshot adapter를 기존 순서를 보존하는 위임 객체로 한 축씩 분리한다.
 
+### 3.10 `UIElementFactory` 생성·측정·풀 책임 집중
+
+- **파일 경로:** `project/game/script/module/ui/element/_ui_element_factory.js`, `project/game/script/module/ui/layout/_layout_handler.js`.
+- **문제 후보:** 670줄의 factory가 타입 dispatch, 8종 요소 생성, 버튼 콘텐츠 측정·조립, UI pool 획득, 접근자 정의와 legacy props 삭제를 함께 담당한다. 유일한 생산 호출자는 `_layout_handler.js`의 `#instantiateElement()`이지만 content 측정은 dummy와 실제 요소를 각각 만들고, segment/dropdown 생성은 `item.props.font`를 직접 변경한다.
+- **동일성 위험:** 분리 과정에서 `handler.call(this)`의 static dispatch, pool 객체 identity와 획득 순서, getter·Proxy·`delete` 예외의 위치 및 예외 전 부분 mutation이 달라질 수 있다. 단순 최종 값 비교로는 이러한 관찰 가능한 순서를 보장할 수 없다.
+- **현재 처리:** 모든 타입과 preset/forced/content/fill 경로를 actual-source로 고정한 테스트가 없어 생산 코드는 유지한다.
+- **선행 테스트/권장 방향:** subclass override, pool acquire trace, accessor/Proxy/delete 예외와 재진입, 최종 UI tree identity를 exact 비교하고 대표 화면 pixel golden까지 확보한 뒤 type dispatch와 element builder를 한 축씩 위임 객체로 분리한다.
+
+### 3.11 `ReleaseSimulationProfiler.#publishSnapshot()` 집계·발행 책임 집중
+
+- **파일 경로:** `project/game/script/module/simulation/release_simulation_profiler.js`, `project/game/test/release_simulation_profiler.test.mjs`.
+- **문제 후보:** 255~385행의 한 메서드가 ring 표본 탐색, scratch typed-array 정렬, rate·quantile 계산, live snapshot 필드 갱신과 window counter reset을 모두 수행한다.
+- **동일성 위험:** 분리하면 strict `timestamp > threshold`, ring 순회와 부동소수점 계산 순서, `subarray().sort()` 범위, revision·필드 쓰기·reset 시점 또는 예외 후 부분 상태가 달라질 수 있다.
+- **현재 검증 공백:** 기존 테스트는 정상 60/30Hz, pause/resume와 단일 실패 tick은 다루지만 capacity wrap, 임계 timestamp 동률, 역행 시간, 집계 중 예외와 재진입 뒤의 부분 상태를 고정하지 않는다.
+- **선행 테스트/권장 방향:** capacity 1·2 및 다중 wrap, 경계 동률, 중복·역행 timestamp, live snapshot identity, scratch 예외·재진입 trace를 기존 메서드와 추출 후보에서 exact 비교하기 전에는 구조 분리를 하지 않는다.
+
 ## 4. 기존 게임 기능 재사용 후보 보류
 
 ### 4.1 `CollectionOverlay`와 `DeckOverlay` 중복
@@ -278,6 +294,41 @@
 - **해석:** V8이 기존 단명 객체 리터럴을 이미 escape analysis로 scalar replacement하고, 후보의 추가 인수·token 비교·분기 비용만 남겼을 가능성이 높다. 이는 측정 결과에 기반한 추론이며 엔진 내부 최적화 trace로 확정한 원인은 아니다.
 - **현재 처리:** 동작 동일성만 통과하고 실제 엔진 성능은 명확히 악화됐으므로 후보를 채택하지 않았다. 생산 소스·manifest·기존 테스트를 실험 전 상태로 exact 원복하고 추적되지 않은 token 모듈과 전용 parity/NW runner도 제거해, 현재 게임의 자기장 실행 경로와 배포 파일은 변경되지 않았다.
 - **재검토 조건:** 실제 Chromium/V8 프로파일에서 객체가 materialize된다는 증거가 생기거나 엔진 버전이 바뀐 경우에만 다시 측정한다. 재시도 후보도 공개 API 계약을 그대로 유지하고 actual-source edge parity, 두 clean process의 AB/BA 측정, dual·mixed p50 1.05배 이상 및 모든 p50/p95 2% 이내 비퇴행 gate를 모두 통과해야 한다.
+
+### 4.25 `GameMapGrid` 양수 숫자 helper의 공용 함수 위임
+
+- **파일 경로:** `project/game/script/module/scene/game/map/game_map_grid.js`, `project/game/script/util/number_util.js`.
+- **문제 후보:** `game_map_grid.js`의 지역 `resolvePositiveNumber()`는 양수 유한 값 선택이라는 점에서 공용 `resolveFiniteNumber()`와 겹쳐, 공용 함수를 호출한 뒤 기존 `> 0` 조건을 유지하는 wrapper 위임 후보로 보인다.
+- **동등성 탐색:** 양수 조건을 유지한 wrapper 위임 후보를 실제 양수 fallback 6종과 `NaN`, ±`Infinity`, ±0, subnormal, 문자열, BigInt, Symbol, 객체·Proxy로 조합한 126건에서 비교했을 때 반환값과 예외가 일치했다.
+- **결정적 반례:** wrapper 위임은 `Number.isFinite()` 앞에 호출 프레임을 하나 추가한다. stack-sensitive mutable `Number.isFinite`를 사용한 동일 `(7, 1)` 입력에서 지역 구현은 `7`, 공용 위임 후보는 `1`을 반환했다. helper 자체를 이동해도 함수명·파일 경로와 import 평가 경계가 달라진다.
+- **현재 처리:** 완전 동일성을 보장할 수 없으므로 생산 코드를 유지한다. mutable intrinsic과 stack 관찰을 명시적으로 계약 밖으로 승인하지 않는 한 재사용 치환을 하지 않는다.
+
+### 4.26 적 LOS 사각형 교차 판정의 WASM 이전
+
+- **파일 경로:** `project/game/script/module/object/enemy/ai/_enemy_ai_navigation.js`, `project/game/script/module/object/enemy/ai/_enemy_ai_steering.js`, `project/game/script/module/object/enemy/ai/_enemy_ai_policy_intent.js`, `project/game/test/game_map_grid.test.mjs`.
+- 적당 tick당 LOS 1회라는 단순 기준 부하는 적 800개·60Hz에서 약 48,000 query/s이다. 다만 policy의 hexa goal sample 루프와 steering의 final/direct-path 검사는 한 decision 또는 tick에서 여러 LOS를 실행할 수 있으므로 이는 전체 경로의 최대치가 아니다. 현재 기본 맵 회귀 계약은 벽 8개이다.
+- 생산 파일을 변경하지 않은 in-memory WAT 탐색 구현은 Node 22.19.0/V8 12.4에서 정상 유한 입력 16,384개의 boolean 결과가 기존 JS와 exact 일치했다.
+- 31개 교차 표본·각 100,000회 p50은 벽 1/8/32/128개에서 JS→WASM 각각 30.990→31.779ns(0.975배), 79.603→68.854ns(1.156배), 203.346→164.957ns(1.233배), 425.081→320.931ns(1.325배)였다.
+- 기본 맵 8개 벽은 1.3배 전환 gate를 실패했고 적 800개가 매 tick 모두 조회해도 kernel-only 절감은 약 0.0086ms/tick이므로 현재 NO-GO이며 생산 코드·테스트·WASM artifact를 변경하지 않았다.
+- 실제 맵이 지속적으로 128개 이상 벽을 사용하거나 query batching과 WASM memory 상주가 가능해질 때, 퇴화 segment·접선 1-ULP·비유한 입력·memory/trap fallback exact parity와 실제 NW.js AB/BA 1.3배 gate를 다시 검증한다.
+
+### 4.27 `EnemySpatialIndex.rebuild()`의 WASM 이전
+
+- **파일 경로:** `project/game/script/module/object/object_system_fixed_update_helpers.js`, `project/game/script/module/object/enemy/ai/enemy_spatial_index.js`.
+- `rebuild()`는 fixed tick마다 실행되며 JS `Map` row/bucket, `enemyById`, 적 객체 참조와 density field를 함께 구성하므로 숫자 계산만 WASM으로 옮기면 기존 JS 구조를 다시 만들어야 한다.
+- 실제 production 모듈을 사용한 Node 벤치에서 적 800개·약 10% hive bounds 입력의 p50/p95는 0.1495/0.1711ms였다.
+- 별도 단순 bounds 표본의 p50/p95는 적 100개 0.033686/0.060554ms, 400개 0.094850/0.098675ms, 800개 0.161702/0.169770ms, 1,200개 0.222575/0.253185ms였다.
+- 800적 실제 게임 fixed CPU p95 14.7ms와의 방향성 단순 비율도 약 1.16%이고 4.17ms 또는 fixed 비용 25% gate에 크게 못 미치며, canonical WASM화는 객체 identity·방문 순서·visitor 조기 종료를 바꿀 위험이 있으므로 현재 NO-GO이다.
+- numeric entity slot과 batch query가 canonical authority가 되거나 실제 NW.js profiler에서 gate를 넘을 때만 중복 ID, 셀 경계, multi-cell dedupe, density 포화, query-generation wrap, type mask와 visitor 순서를 exact 검증한 뒤 재검토한다.
+
+### 4.28 hexa 합체 contact의 batched narrowphase WASM 이전
+
+- **파일 경로:** `project/game/script/module/object/object_system.js`, `project/game/script/module/object/object_system_hexa_hive_orchestration.js`, `project/game/script/module/object/enemy/_hexa_hive_layout.js`, `project/game/script/module/physics/_collision_handler.js`, `project/game/script/module/physics/collision_enemy_body_builder.js`, `project/game/script/module/physics/collision_body_detector.js`, `project/game/script/data/object/enemy/enemy_constants.js`.
+- 합체 contact는 JS가 body와 ordered candidate pair를 만든 뒤 circle×circle, circleParts×circle, circleParts×circleParts를 검사한다. 구성원은 최대 8개지만 collision body의 `circlePartCount`는 hole을 채운 `filledLocalCenters.length`를 사용하므로 visible member 수를 그대로 part 상한으로 볼 수 없고, circleParts pair의 primitive 검사 수는 실제 `countA × countB`이다.
+- 안전한 최소 경계는 body 생성·grid·dedupe·low/high 순서를 JS에 유지하고 한 fixed tick의 numeric planes와 후보 배열만 한 번에 WAT로 넘겨 `Uint8` contact flag를 받은 뒤 기존 record identity와 순서로 결과를 조립하는 것이다.
+- 현재 테스트에는 `collectEnemyContactPairs`, `collectHexaHiveContactPairs` 또는 `contactPairs`를 직접 고정하는 전용 회귀가 없고, `fixed.object.contact`/`contactPairScanMs`의 대표 workload 실측도 없어 즉시 구현할 근거가 부족하다.
+- 가능한 layout 전수에서 hole 포함 `circlePartCount`의 실제 상한과 분포를 먼저 측정한 뒤 0·1·상한 및 상한 인접 part 수, 접선·EPSILON 양쪽 1-ULP·동심·비유한 값·무효 radius·cell 경계·중복 pair를 기존 detector 및 boolean-only JS oracle과 exact 비교해야 한다. 이어 10,000 fixed tick에서 `contactSecondsByPair` 순서와 merge/spawn/release 전체 상태를 replay한다.
+- 실제 NW.js AB/BA에서 packing·호출·결과 조립을 포함해 기존 detector와 boolean-only JS 모두보다 1.3배 이상이고 작은 후보군과 p95가 비퇴행할 때만 승격하며, 그 전에는 조건부 실험 후보로만 유지한다.
 
 ## 5. 렌더 파이프라인 구조 개선 보류
 
