@@ -6,9 +6,12 @@ import { createEffectPassRegistry } from './_effect_pass_registry.js';
 const MIN_RENDER_TARGET_SIZE = 1;
 
 /**
- * WebGL render target 크기 입력을 정수 픽셀 크기로 정규화합니다.
- * @param {number} size - 정규화할 크기 값입니다.
- * @returns {number} 최소 render target 크기 이상으로 보정된 정수 크기입니다.
+ * WebGL render target 크기를 `Math.floor`의 ToNumber 변환 뒤 `Math.max(1, value)`를 적용합니다.
+ * 유한 결과는 1 이상으로 clamp하고 내림하지만, `NaN`과 `+Infinity`는 그대로 보존합니다.
+ * `-Infinity`와 1 미만 결과는 1이 되며, 변환 중 발생한 예외는 그대로 동기 전파됩니다.
+ *
+ * @param {*} size - 정규화할 입력입니다.
+ * @returns {number} Math 연산 결과입니다.
  */
 function normalizeRenderTargetSize(size) {
     return Math.max(MIN_RENDER_TARGET_SIZE, Math.floor(size));
@@ -31,9 +34,13 @@ export class EffectRenderer {
     }
 
     /**
-     * 렌더 타깃 크기를 갱신합니다.
-     * @param {number} width - 새 너비입니다.
-     * @param {number} height - 새 높이입니다.
+     * width를 정규화해 대입한 뒤 height를 정규화해 대입합니다.
+     * height 변환 또는 대입 실패는 이미 갱신된 width를 되돌리지 않습니다.
+     * 변환·대입 중 발생한 예외는 그대로 동기 전파됩니다.
+     *
+     * @param {*} width - 정규화해 대입할 너비 입력입니다.
+     * @param {*} height - 정규화해 대입할 높이 입력입니다.
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     resize(width, height) {
         this.width = normalizeRenderTargetSize(width);

@@ -439,6 +439,21 @@
 - [x] GitHub Desktop GUI 커밋 및 푸시: `5b93bc8 Document WebGL render dispatch contract`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
+#### 5.17 `EffectRenderer.resize()` 수치 변환·부분 상태 계약 정정 — 검증 완료
+
+- `project/game/script/module/display/webgl/_effect_renderer.js`를 끝까지 감사하고, 현재 구현이 단순한 "최소 정수 크기" 계약이 아니라 `Math.floor`의 ToNumber 변환 뒤 `Math.max(1, value)`를 순차 적용한다는 사실에 맞춰 normalizer와 `resize()` JSDoc만 정정했다. 실행문은 변경하지 않았다.
+- `render()`/`flush()`는 live command queue·registry·재진입·예외 시 큐 보존까지 별도 관찰 지점이 많아 허위 동일성 판정을 막기 위해 다음 독립 단위로 분리했다.
+- 새 `project/game/test/effect_renderer_resize_jsdoc_contract.test.mjs`는 변경 전 런타임 계약 8건 통과/JSDoc 계약 1건 실패를 재현했고, 문서 정정 뒤 9/9를 통과했다.
+- 독립 edge oracle로 `NaN`, `+/-Infinity`, `-0`, 1 경계 인접 실수, 최대·최소 수, 숫자·공백·16진·Infinity 문자열, `null`/boolean을 양축에서 검증했다.
+- 객체 ToPrimitive의 number hint, `valueOf -> toString` fallback, Symbol·BigInt·비원시 반환 TypeError, 원래 예외 identity를 실제 `EffectRenderer.prototype.resize` 경로로 고정했다.
+- Proxy receiver로 `width 변환 -> width 대입 -> height 변환 -> height 대입` 순서와 정확한 receiver를 검증했다. width/height 변환·setter 실패 시 후속 관찰 차단과 height 실패 뒤 width 부분 갱신이 rollback되지 않는 계약도 고정했다.
+- 변환 getter가 중첩 `resize()`를 재진입하는 경우 guard가 없고, 바깥 호출의 후속 순차 대입이 최종 상태를 덮는 현행 의미까지 검증했다.
+- JSDoc 제거 후 production 실행 소스 SHA-256은 변경 전·후 모두 `3061368b977709677eee734e14c12470c89cd325c3c658d9ec7d712c8076e439`로 동일하다. 독립 사후 검토에서도 blocker와 false-green이 없고 production diff가 두 JSDoc뿐임을 확인했다.
+- 연관 렌더 계약 묶음 39/39와 전체 `npm test` 242/242, JS/MJS 374개 `node --check`, WASM backend+kernel 20/20, WAT/WASM 재현성 검사를 모두 통과했다.
+- 고정 seed `0x71c0ffee` WASM 스트레스 1,000건/3,824,454 cells와 ABI canary 3 layouts도 통과했다.
+- Computer Use로 실제 `lonely tower.exe`를 콜드 실행해 타이틀, 설정, 설정 취소, 맵 선택, 맵 취소, 종료 확인 대화상자의 렌더와 상호작용을 확인했고, 종료 후 프로세스가 사라짐을 확인했다.
+- 구조·핵심 실행 로직 변화가 없는 JSDoc 정정 단위이므로 `AGENT_GUIDE.md` 갱신은 불필요하다고 판정했다.
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
