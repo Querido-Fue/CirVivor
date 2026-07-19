@@ -628,8 +628,9 @@ export class BaseOverlay {
     }
 
     /**
-     * @private
+     * @protected
      * overlay 크기와 중심 좌표를 계산합니다.
+     * @returns {void}
      */
     _calculateGeometry() {
         this.scaledW = this.width * this.uiScale;
@@ -640,20 +641,23 @@ export class BaseOverlay {
     }
 
     /**
-     * @private
+     * @protected
      * 화면 크기 변경 시 overlay 크기를 재정의합니다.
+     * @returns {void}
      */
     _onResize() {
     }
 
     /**
-     * @private
+     * @protected
      * 레이아웃을 생성합니다.
+     * @returns {void}
      */
     _generateLayout() {
     }
 
     /**
+     * @protected
      * overlay 패널 정의를 반환합니다.
      * @returns {OverlayPanelDefinition[]} 패널 정의 목록입니다.
      */
@@ -662,13 +666,17 @@ export class BaseOverlay {
     }
 
     /**
+     * @protected
      * 패널 뒤에 추가 장식을 그릴 때 사용하는 훅입니다.
+     * @returns {void}
      */
     _drawOverlayDecorations() {
     }
 
     /**
+     * @protected
      * overlay 닫기 직후 호출되는 훅입니다.
+     * @returns {void}
      */
     onCloseComplete() {
     }
@@ -798,6 +806,7 @@ export class BaseOverlay {
     /**
      * @protected
      * 빌드된 UI 요소를 안전하게 회수합니다.
+     * @returns {void}
      */
     _releaseElements() {
         if (this.staticItems) {

@@ -292,6 +292,18 @@
 - [x] Computer Use 실제 게임 cold start에서 타이틀 렌더링, 설정 glass 오버레이 진입·취소 후 타이틀 복원, 종료 확인 오버레이와 정상 종료까지 확인
 - [x] GitHub Desktop 커밋 및 푸시: `53f19e9 Correct utility singleton API documentation`
 
+#### 5.9 BaseOverlay 확장 훅 JSDoc·가이드 계약 정정 — 검증 완료
+
+- [x] `_base_overlay.js` 전체와 하위 클래스·내부 dispatch를 감사해 `_calculateGeometry`, `_onResize`, `_generateLayout`의 잘못된 `@private`를 `@protected`로 정정하고 `_getPanelDefinitions`, `_drawOverlayDecorations`, `onCloseComplete`의 누락된 `@protected`를 추가
+- [x] 값 없이 종료하는 여섯 확장 훅에 `@returns {void}`를 명시하고, `_releaseElements`의 누락 반환 계약까지 보강
+- [x] production 변경 전 실행 해시와 하위 클래스 소스·내부 dispatch 2개 green, JSDoc 구조 1개 red를 확인한 뒤 누락 훅 보강 RED 2건을 추가 확인하고 최종 actual-source 전용 4개 전체 green
+- [x] JSDoc 제거 production 실행 소스 SHA-256 exact 보존: BaseOverlay `d050e03b4e345ef4608fb563bd9da575c77cae81d88dbfbfbd667ae69d430933`
+- [x] 로컬 `ui_overlay_guide.md`, `reference/overlay_contract_guide.md`를 실제 기본 프리셋 `0.5초`·`10px`·`easeOutExpo/easeInExpo`, 선택 hook, Start→`mapSelect` 흐름으로 갱신하고 actual-source 대조 임시 테스트를 1/4 RED에서 4/4 GREEN으로 확인
+- [x] 두 로컬 overlay 가이드는 기존 allowlist형 `.gitignore` 정책상 비추적 문서이므로 저장소 정책과 검증 범위 밖 기존 문서를 원격에 새로 추가하지 않고, 커밋되는 테스트도 ignored 파일에 의존하지 않도록 정리
+- [x] 최종 `npm test` 149개, JS/MJS 366개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
+- [x] 독립 감사에서 7개 protected 훅·6개 void 훅, 하위 클래스 사용, 기본 프리셋과 맵 선택 흐름을 재검토해 blocker·과장 없음 확인; 실행 구조 변경이 없어 `AGENT_GUIDE.md` 갱신 불필요
+- [x] Computer Use 실제 게임 cold start에서 설정 overlay 열기·취소, 맵 선택 overlay의 glass·미리보기 장식 렌더와 취소, 타이틀 복원, 종료 overlay 및 정상 종료 확인
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
