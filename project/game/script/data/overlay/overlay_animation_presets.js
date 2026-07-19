@@ -47,10 +47,10 @@ export const OVERLAY_ANIMATION_PRESETS = Object.freeze({
 });
 
 /**
- * 지정된 이름의 오버레이 애니메이션 프리셋을 가져옵니다.
- * 이름이 없거나 유효하지 않으면 기본 프리셋을 반환합니다.
- * @param {string} name 프리셋 이름
- * @returns {object} 사용할 애니메이션 프리셋 객체
+ * truthy인 이름으로 프리셋 프로퍼티를 직접 조회하며, 조회값이 falsy이면 기본 프리셋을 반환합니다.
+ * own-key/type 검증이 없고 성공한 키를 다시 조회하므로 상속 키·키 변환·예외·두 조회 사이 결과를 그대로 보존합니다.
+ * @param {*} name 직접 조회할 프로퍼티 키 후보
+ * @returns {*} 두 번째 직접 조회값 또는 기본 프리셋
  */
 export const getOverlayAnimationPreset = (name) => {
     if (name && OVERLAY_ANIMATION_PRESETS[name]) {

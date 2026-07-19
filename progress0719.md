@@ -335,6 +335,20 @@
 - [x] GitHub Desktop 커밋 및 푸시: `f94199c Document live theme palette contracts`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
+#### 5.11 overlay animation preset 직접 조회 계약 정정 — 검증 완료
+
+- [x] `overlay_animation_presets.js`와 유일한 실제 소비자 `BaseOverlay`, `DATA_REGISTRY` 호환 파사드를 전체 감사해 현재 호출은 `undefined` 기본 경로만 사용하지만 공개 resolver 자체는 임의 입력을 그대로 프로퍼티 키로 사용하는 사실을 확인
+- [x] 기존의 “유효하지 않은 문자열이면 기본 프리셋” 설명을 truthy 직접 조회, falsy fallback, own-key/type 검증 부재, 성공 경로의 두 번째 조회 및 키 변환·예외·두 조회 사이 결과 보존 계약으로 정정
+- [x] production 변경 전 actual-source 행동 10개 green과 JSDoc 구조 1개 red를 확인하고 문서만 바꾼 뒤 전용 11개 계약 전체 green으로 고정
+- [x] 유효 키 3종, 표준 falsy 8종, truthy 미등록 문자열·숫자·boolean·Symbol, boxed string, `toString`·`constructor`·`__proto__`·`hasOwnProperty` 상속 키를 exact identity로 검증
+- [x] `Symbol.toPrimitive` 첫 성공/둘째 다른 키·미등록 키, 첫 실패의 단일 변환, 첫째·둘째 변환 예외 identity와 null-prototype 키의 cross-realm `TypeError`를 검증
+- [x] 호환 파사드의 기본 키·프리셋 테이블·resolver가 data 모듈 및 `getData()` 결과와 같은 production 참조임을 검증
+- [x] 독립된 세 JSDoc 블록만 제거한 actual production source SHA-256 `69f9153afc6f0a811dba8afacb3494ad2ccd220638ddc3b6813315be6e76468b` exact 보존
+- [x] 전체 `npm test` 181개, JS/MJS 368개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 모두 통과
+- [x] 실행 구조 변경이 없는 6줄 JSDoc 교체이고 이후 실행 코드 행 번호도 보존했으므로 `AGENT_GUIDE.md` 갱신 불필요
+- [x] Computer Use 실제 게임 cold start에서 설정·맵 선택 오버레이의 기본 프리셋 열림/닫힘, glass·blur·scale·alpha 렌더, 타이틀 복원, 종료 확인 오버레이와 정상 프로세스 종료 확인
+- [ ] GitHub Desktop 커밋 및 푸시
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
