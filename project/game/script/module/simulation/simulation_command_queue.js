@@ -76,9 +76,11 @@ export function enqueueSimulationCommand(command) {
 }
 
 /**
- * 명령 여러 개를 큐에 추가합니다.
- * @param {object[]} [commands=[]]
- * @returns {number}
+ * 배열의 유효한 명령을 index 순서대로 같은 객체 identity로 큐에 추가합니다.
+ * 배열이 아니거나 비어 있으면 0을 반환하고, 유효하지 않은 항목은 건너뜁니다.
+ * 판정 또는 적재 중 예외는 그대로 전파되며 그 전에 추가된 명령은 rollback하지 않습니다.
+ * @param {object[]} [commands=[]] - 순서대로 적재할 명령 배열입니다.
+ * @returns {number} 성공적으로 적재한 명령 수입니다.
  */
 export function enqueueSimulationCommands(commands = []) {
     if (!Array.isArray(commands) || commands.length === 0) {
