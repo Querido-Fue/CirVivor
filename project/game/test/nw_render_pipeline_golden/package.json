@@ -1,0 +1,15 @@
+{
+    "name": "lonely-tower-render-pipeline-golden",
+    "version": "1.0.0",
+    "main": "index.html",
+    "chromium-args": "--force-device-scale-factor=1 --disable-lcd-text",
+    "window": {
+        "title": "Render pipeline pixel golden",
+        "toolbar": false,
+        "frame": false,
+        "resizable": false,
+        "width": 640,
+        "height": 360,
+        "position": "center"
+    }
+}

@@ -1,0 +1,398 @@
+{
+    "schemaVersion": 1,
+    "fixture": {
+        "name": "canonical-overlay-v1",
+        "width": 640,
+        "height": 360,
+        "seed": 1817,
+        "timeMs": 123456,
+        "dpr": 1,
+        "theme": "dark",
+        "renderScale": 100,
+        "uiScale": 100,
+        "font": "400 18px \"Pretendard Variable\""
+    },
+    "profile": {
+        "id": "win32-x64-nw0.108.0-dpr1-7eb3079ce6d3",
+        "platform": "win32",
+        "arch": "x64",
+        "nw": "0.108.0",
+        "node": "25.2.1",
+        "dpr": 1,
+        "backgroundContext": {
+            "vendor": "WebKit",
+            "renderer": "WebKit WebGL",
+            "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+            "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+            "unmaskedVendor": "Google Inc. (NVIDIA)",
+            "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 SUPER (0x00002702) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "attributes": {
+                "alpha": false,
+                "antialias": true,
+                "depth": true,
+                "failIfMajorPerformanceCaveat": false,
+                "premultipliedAlpha": true,
+                "preserveDrawingBuffer": false,
+                "stencil": false
+            }
+        },
+        "overlayContext": {
+            "vendor": "WebKit",
+            "renderer": "WebKit WebGL",
+            "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+            "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+            "unmaskedVendor": "Google Inc. (NVIDIA)",
+            "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 SUPER (0x00002702) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "attributes": {
+                "alpha": true,
+                "antialias": true,
+                "depth": true,
+                "failIfMajorPerformanceCaveat": false,
+                "premultipliedAlpha": true,
+                "preserveDrawingBuffer": false,
+                "stencil": false
+            }
+        }
+    },
+    "canonical": {
+        "surfaces": [
+            {
+                "role": "background",
+                "sourceId": "background",
+                "type": "webgl",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "a0268e4df0d5d4f58b4bd79192caabe1c67499b347a3674e2747ae12e6712c2d",
+                "file": "canonical.background.rgba"
+            },
+            {
+                "role": "object",
+                "sourceId": "object",
+                "type": "webgl",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "d671b996a6af4b27c62932b3850e9737fbdafd0c7ce813e0d1d66987e1dbcd5f",
+                "file": "canonical.object.rgba"
+            },
+            {
+                "role": "effect",
+                "sourceId": "effect",
+                "type": "webgl",
+                "mode": "effect",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "d47207338ebfd9b7520ecbb4cc0ce54923f8118104277658c5ef9707db98b9a0",
+                "file": "canonical.effect.rgba"
+            },
+            {
+                "role": "texteffect",
+                "sourceId": "texteffect",
+                "type": "2d",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35",
+                "file": "canonical.texteffect.rgba"
+            },
+            {
+                "role": "ui",
+                "sourceId": "ui",
+                "type": "2d",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c",
+                "file": "canonical.ui.rgba"
+            },
+            {
+                "role": "vignette",
+                "sourceId": "vignette",
+                "type": "2d",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "6762b513bbebf906d7a071a9b5f2ee97cc5568a4aac986168901ddb57502fd90",
+                "file": "canonical.vignette.rgba"
+            },
+            {
+                "role": "overlay.dim",
+                "sourceId": "dynamic:2d:1",
+                "type": "2d",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "02bec1526503ee12be3b145e3689852cd07aef08633533805ee96775e77f3958",
+                "file": "canonical.overlay.dim.rgba"
+            },
+            {
+                "role": "overlay.effect",
+                "sourceId": "dynamic:webgl:2",
+                "type": "webgl",
+                "mode": "overlay-effect",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1",
+                "file": "canonical.overlay.effect.rgba"
+            },
+            {
+                "role": "overlay.ui",
+                "sourceId": "dynamic:2d:3",
+                "type": "2d",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d",
+                "file": "canonical.overlay.ui.rgba"
+            },
+            {
+                "role": "top",
+                "sourceId": "top",
+                "type": "2d",
+                "mode": "batch",
+                "width": 640,
+                "height": 360,
+                "byteLength": 921600,
+                "sha256": "08d4a31b728ca30202071695aaff38bdfe95b0ccd968c36dc69489e7cdd72ce8",
+                "file": "canonical.top.rgba"
+            }
+        ],
+        "final": {
+            "width": 640,
+            "height": 360,
+            "byteLength": 921600,
+            "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e",
+            "file": "canonical.final.rgba",
+            "reviewPng": "canonical.final.png",
+            "reviewPngSha256": "9963c329773a51f082c6fbe2798c28b30159dbb2653df716e601f144a91f6202"
+        }
+    },
+    "cases": {
+        "canonical": {
+            "surfaces": [
+                {
+                    "role": "background",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "a0268e4df0d5d4f58b4bd79192caabe1c67499b347a3674e2747ae12e6712c2d"
+                },
+                {
+                    "role": "object",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "d671b996a6af4b27c62932b3850e9737fbdafd0c7ce813e0d1d66987e1dbcd5f"
+                },
+                {
+                    "role": "effect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "d47207338ebfd9b7520ecbb4cc0ce54923f8118104277658c5ef9707db98b9a0"
+                },
+                {
+                    "role": "texteffect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35"
+                },
+                {
+                    "role": "ui",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c"
+                },
+                {
+                    "role": "vignette",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "6762b513bbebf906d7a071a9b5f2ee97cc5568a4aac986168901ddb57502fd90"
+                },
+                {
+                    "role": "overlay.dim",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "02bec1526503ee12be3b145e3689852cd07aef08633533805ee96775e77f3958"
+                },
+                {
+                    "role": "overlay.effect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1"
+                },
+                {
+                    "role": "overlay.ui",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d"
+                },
+                {
+                    "role": "top",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "08d4a31b728ca30202071695aaff38bdfe95b0ccd968c36dc69489e7cdd72ce8"
+                }
+            ],
+            "final": {
+                "width": 640,
+                "height": 360,
+                "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e"
+            }
+        },
+        "contextRestore": {
+            "surfaces": [
+                {
+                    "role": "background",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "a0268e4df0d5d4f58b4bd79192caabe1c67499b347a3674e2747ae12e6712c2d"
+                },
+                {
+                    "role": "object",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "d671b996a6af4b27c62932b3850e9737fbdafd0c7ce813e0d1d66987e1dbcd5f"
+                },
+                {
+                    "role": "effect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "d47207338ebfd9b7520ecbb4cc0ce54923f8118104277658c5ef9707db98b9a0"
+                },
+                {
+                    "role": "texteffect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35"
+                },
+                {
+                    "role": "ui",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c"
+                },
+                {
+                    "role": "vignette",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "6762b513bbebf906d7a071a9b5f2ee97cc5568a4aac986168901ddb57502fd90"
+                },
+                {
+                    "role": "overlay.dim",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "02bec1526503ee12be3b145e3689852cd07aef08633533805ee96775e77f3958"
+                },
+                {
+                    "role": "overlay.effect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1"
+                },
+                {
+                    "role": "overlay.ui",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d"
+                },
+                {
+                    "role": "top",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "08d4a31b728ca30202071695aaff38bdfe95b0ccd968c36dc69489e7cdd72ce8"
+                }
+            ],
+            "final": {
+                "width": 640,
+                "height": 360,
+                "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e"
+            }
+        },
+        "releaseReacquire": {
+            "surfaces": [
+                {
+                    "role": "background",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "a0268e4df0d5d4f58b4bd79192caabe1c67499b347a3674e2747ae12e6712c2d"
+                },
+                {
+                    "role": "object",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "d671b996a6af4b27c62932b3850e9737fbdafd0c7ce813e0d1d66987e1dbcd5f"
+                },
+                {
+                    "role": "effect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "d47207338ebfd9b7520ecbb4cc0ce54923f8118104277658c5ef9707db98b9a0"
+                },
+                {
+                    "role": "texteffect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35"
+                },
+                {
+                    "role": "ui",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c"
+                },
+                {
+                    "role": "vignette",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "6762b513bbebf906d7a071a9b5f2ee97cc5568a4aac986168901ddb57502fd90"
+                },
+                {
+                    "role": "overlay.dim",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "02bec1526503ee12be3b145e3689852cd07aef08633533805ee96775e77f3958"
+                },
+                {
+                    "role": "overlay.effect",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1"
+                },
+                {
+                    "role": "overlay.ui",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d"
+                },
+                {
+                    "role": "top",
+                    "width": 640,
+                    "height": 360,
+                    "sha256": "08d4a31b728ca30202071695aaff38bdfe95b0ccd968c36dc69489e7cdd72ce8"
+                }
+            ],
+            "final": {
+                "width": 640,
+                "height": 360,
+                "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e"
+            }
+        }
+    },
+    "poolReuse": {
+        "twoDCreatedCountBefore": 2,
+        "twoDCreatedCountAfter": 2,
+        "webglCreatedCountBefore": 1,
+        "webglCreatedCountAfter": 1,
+        "reusedTwoDCanvasSet": true,
+        "reusedWebGLCanvas": true,
+        "reusedWebGLContext": true
+    }
+}
