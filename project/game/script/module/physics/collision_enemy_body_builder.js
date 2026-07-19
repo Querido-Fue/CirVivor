@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getSimulationObjectWH } from '../simulation/simulation_runtime.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
 import {
     COLLISION_RESOLVE_MIN_MAX,
@@ -23,18 +24,6 @@ const ENEMY_RESOLVE_RADIUS_TUNING = Object.freeze({
     hexaHiveRadiusScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
     hexaHiveRootScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE
 });
-
-/**
- * 적 body 생성 옵션에서 유한 숫자 값을 조회합니다.
- * @param {object|null|undefined} options - body 생성 옵션입니다.
- * @param {string} key - 조회할 옵션 키입니다.
- * @param {number} fallback - 값이 유효하지 않을 때 사용할 기본값입니다.
- * @returns {number} 유한 숫자로 보정한 옵션 값입니다.
- */
-function getCollisionEnemyBodyOption(options, key, fallback) {
-    const value = options?.[key];
-    return Number.isFinite(value) ? value : fallback;
-}
 
 /**
  * 적 충돌 이전 위치 축 값을 조회합니다.
@@ -68,9 +57,9 @@ function getCollisionEnemyPreviousAxisValue(enemy, axis, currentValue, sleeping)
  * @returns {boolean} 유효한 적 body를 구성했는지 여부입니다.
  */
 export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, options = {}) {
-    const epsilon = getCollisionEnemyBodyOption(options, 'epsilon', DEFAULT_EPSILON);
-    const frameResolveMinMax = getCollisionEnemyBodyOption(options, 'frameResolveMinMax', 0);
-    const frameResolveMaxRatio = getCollisionEnemyBodyOption(options, 'frameResolveMaxRatio', 0);
+    const epsilon = resolveFiniteNumber(options?.epsilon, DEFAULT_EPSILON);
+    const frameResolveMinMax = resolveFiniteNumber(options?.frameResolveMinMax, 0);
+    const frameResolveMaxRatio = resolveFiniteNumber(options?.frameResolveMaxRatio, 0);
     const baseHeight = typeof enemy.getRenderHeightPx === 'function'
         ? enemy.getRenderHeightPx()
         : (getSimulationObjectWH() * ENEMY_DRAW_HEIGHT_RATIO * (enemy.size || 1));
