@@ -40,6 +40,9 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
 const TITLE_ENEMY_SPAWN_CULL_GUARD_PX = 0.5;
 const TITLE_PARALLAX_LAYERS = TITLE_CONSTANTS.TITLE_ENEMIES.PARALLAX_LAYERS || [];
+const TITLE_PARALLAX_LAYER_COUNT = Array.isArray(TITLE_PARALLAX_LAYERS)
+    ? TITLE_PARALLAX_LAYERS.length
+    : 0;
 
 /**
  * @class TitleBackGround
@@ -63,6 +66,12 @@ export class TitleBackGround {
         }
         this.titleEnemies = [];
         this.titleCollisionOptions = { delta: 0 };
+        const collisionBucketCount = Math.max(1, TITLE_PARALLAX_LAYER_COUNT);
+        this.titleCollisionEnemyBucketBanks = [
+            Array.from({ length: collisionBucketCount }, () => []),
+            Array.from({ length: collisionBucketCount }, () => [])
+        ];
+        this.titleCollisionEnemyBucketBankIndex = 0;
 
         this.shapesPerSecond = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_SPAWN_RATE;
         this.shapeSpawnCounter = 0;
@@ -195,7 +204,7 @@ export class TitleBackGround {
             return;
         }
 
-        const hasParallaxLayers = Array.isArray(TITLE_PARALLAX_LAYERS) && TITLE_PARALLAX_LAYERS.length > 0;
+        const hasParallaxLayers = TITLE_PARALLAX_LAYER_COUNT > 0;
         const spawnedCount = hasParallaxLayers
             ? (this.#hasPendingInitialBurst()
                 ? this.#spawnInitialBurstEnemies(delta)
@@ -231,9 +240,9 @@ export class TitleBackGround {
             if (!enemy) {
                 continue;
             }
-            const layerIndex = Array.isArray(TITLE_PARALLAX_LAYERS) && TITLE_PARALLAX_LAYERS.length > 0
+            const layerIndex = TITLE_PARALLAX_LAYER_COUNT > 0
                 && Number.isInteger(enemy._titleParallaxLayerIndex)
-                ? clampNumber(enemy._titleParallaxLayerIndex, 0, TITLE_PARALLAX_LAYERS.length - 1)
+                ? clampNumber(enemy._titleParallaxLayerIndex, 0, TITLE_PARALLAX_LAYER_COUNT - 1)
                 : 0;
             applyTitleParallaxVisualProfile(
                 enemy,
@@ -376,10 +385,16 @@ export class TitleBackGround {
         for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
             this.#releaseEnemyAt(i);
         }
+        for (const bucketBank of this.titleCollisionEnemyBucketBanks) {
+            for (const bucket of bucketBank) {
+                bucket.length = 0;
+            }
+        }
     }
 
     /**
-     * 같은 페럴렉스 계층끼리만 충돌을 해소합니다.
+     * 충돌 대상 적을 한 번 순회해 같은 페럴렉스 계층별 scratch 목록으로 분류하고 충돌을 해소합니다.
+     * 연속 호출은 서로 다른 bucket bank를 사용해 충돌 body cache의 기존 fresh-array miss 계약을 유지합니다.
      * @param {number} delta - 고정 틱 델타입니다.
      * @private
      */
@@ -389,19 +404,40 @@ export class TitleBackGround {
         }
         this.titleCollisionOptions.delta = delta;
 
-        if (!Array.isArray(TITLE_PARALLAX_LAYERS) || TITLE_PARALLAX_LAYERS.length === 0) {
-            this.objectSystem.resolveEnemyCollisions(
-                this.titleEnemies.filter((enemy) => this.#isCollisionResolvableTitleEnemy(enemy)),
-                this.titleCollisionOptions
-            );
+        const bucketBankIndex = this.titleCollisionEnemyBucketBankIndex;
+        const collisionBuckets = this.titleCollisionEnemyBucketBanks[bucketBankIndex];
+        this.titleCollisionEnemyBucketBankIndex = bucketBankIndex === 0 ? 1 : 0;
+        for (let bucketIndex = 0; bucketIndex < collisionBuckets.length; bucketIndex++) {
+            collisionBuckets[bucketIndex].length = 0;
+        }
+
+        const layerCount = TITLE_PARALLAX_LAYER_COUNT;
+        if (layerCount === 0) {
+            const collisionEnemies = collisionBuckets[0];
+            for (let enemyIndex = 0; enemyIndex < this.titleEnemies.length; enemyIndex++) {
+                const enemy = this.titleEnemies[enemyIndex];
+                if (this.#isCollisionResolvableTitleEnemy(enemy)) {
+                    collisionEnemies.push(enemy);
+                }
+            }
+            this.objectSystem.resolveEnemyCollisions(collisionEnemies, this.titleCollisionOptions);
             return;
         }
 
-        for (let layerIndex = 0; layerIndex < TITLE_PARALLAX_LAYERS.length; layerIndex++) {
-            const layerEnemies = this.titleEnemies.filter(
-                (enemy) => this.#isCollisionResolvableTitleEnemy(enemy)
-                    && enemy._titleParallaxLayerIndex === layerIndex
-            );
+        for (let enemyIndex = 0; enemyIndex < this.titleEnemies.length; enemyIndex++) {
+            const enemy = this.titleEnemies[enemyIndex];
+            if (!this.#isCollisionResolvableTitleEnemy(enemy)) {
+                continue;
+            }
+            const layerIndex = enemy._titleParallaxLayerIndex;
+            if (!Number.isInteger(layerIndex) || layerIndex < 0 || layerIndex >= layerCount) {
+                continue;
+            }
+            collisionBuckets[layerIndex].push(enemy);
+        }
+
+        for (let layerIndex = 0; layerIndex < layerCount; layerIndex++) {
+            const layerEnemies = collisionBuckets[layerIndex];
             if (layerEnemies.length <= 1) {
                 continue;
             }
@@ -450,7 +486,7 @@ export class TitleBackGround {
      * @private
      */
     #ensureLayerSpawnCounters() {
-        const layerCount = Array.isArray(TITLE_PARALLAX_LAYERS) ? TITLE_PARALLAX_LAYERS.length : 0;
+        const layerCount = TITLE_PARALLAX_LAYER_COUNT;
         if (Array.isArray(this.layerSpawnCounters) && this.layerSpawnCounters.length === layerCount) {
             return;
         }
@@ -462,7 +498,7 @@ export class TitleBackGround {
      * @private
      */
     #ensureInitialBurstState() {
-        const layerCount = Array.isArray(TITLE_PARALLAX_LAYERS) ? TITLE_PARALLAX_LAYERS.length : 0;
+        const layerCount = TITLE_PARALLAX_LAYER_COUNT;
         if (!Array.isArray(this.initialBurstElapsedSeconds) || this.initialBurstElapsedSeconds.length !== layerCount) {
             this.initialBurstElapsedSeconds = new Array(layerCount).fill(0);
         }
