@@ -74,7 +74,19 @@ export class EffectRenderer {
     }
 
     /**
-     * 큐에 쌓인 이펙트 명령을 순서대로 실행합니다.
+     * live commands를 index 순서로 순회해 effect pass를 동기 dispatch하고, loop 정상 종료 뒤 당시 current queue에 `length = 0`을 대입합니다.
+     * 초기 `commands.length === 0`은 무변환 엄격 비교하고, 필요할 때만 `width <= 0`과 `height <= 0`을 차례로 비교합니다.
+     * 어느 guard든 참이면 pass 조회 없이 당시 current queue의 `length = 0` 대입을 시도하고, 성공한 경우에만 `undefined`를 반환합니다.
+     * 각 command의 truthy `effectType`을 사용하고, falsy이면 live `shape`을 사용해 현재 registry의 exact Map key로 조회합니다.
+     * pass가 falsy이거나 첫 `draw` 조회 결과가 함수가 아니면 해당 command를 건너뜁니다.
+     * 호출식은 `draw`를 다시 조회하되 callable 여부를 재검사하지 않고 `command`, current width, current height를 평가합니다.
+     * 두 번째 `draw` 값이 callable이면 pass receiver로 호출하고 반환값과 thenable은 관찰하지 않으며, 아니면 인자 평가 뒤 `TypeError`가 발생합니다.
+     * queue 길이·원소, registry, pass, `draw`, dimensions는 매 관찰 지점의 live 값을 사용하고 append·truncate·reorder·재진입을 막는 guard가 없습니다.
+     * flush 자체의 clear 대입 지점은 guard branch와 loop 정상 종료뿐이며, draw와 재진입은 queue를 별도로 변이·교체할 수 있습니다.
+     * 조회·getter·coercion·두 번째 non-callable `draw`·호출·clear 대입 중 예외는 그대로 동기 전파되고 이미 수행한 draw와 queue 변이를 rollback하지 않습니다.
+     * `length = 0` 축소가 실패하면 ECMAScript가 허용한 원소 삭제와 부분 length 상태도 그대로 남습니다.
+     *
+     * @returns {undefined} guard 또는 loop 종료 뒤 current queue의 clear 대입까지 성공했을 때 `undefined`입니다.
      */
     flush() {
         if (this.commands.length === 0 || this.width <= 0 || this.height <= 0) {

@@ -455,6 +455,22 @@
 - GitHub Desktop GUI 커밋 및 푸시: `284f3ba Document EffectRenderer resize contract`.
 - 구조·핵심 실행 로직 변화가 없는 JSDoc 정정 단위이므로 `AGENT_GUIDE.md` 갱신은 불필요하다고 판정했다.
 
+#### 5.18 `EffectRenderer.flush()` live queue·double draw 계약 정정 — 검증 완료
+
+- `project/game/script/module/display/webgl/_effect_renderer.js`를 끝까지 감사하고, `beginFrame()`·`render()`·`destroy()`와 분리해 `flush()`의 live queue dispatch 계약만 독립 단위로 고정했다. production 실행문은 변경하지 않았다.
+- 변경 전 actual prototype 실행 계약 14건 통과/JSDoc 계약 1건 실패를 재현했고, 새 `project/game/test/effect_renderer_flush_jsdoc_contract.test.mjs`의 문서 정정·edge 보강 뒤 15/15를 통과했다.
+- 초기 `commands.length === 0` 엄격 비교와 `width <= 0 -> height <= 0` coercion 순서, `NaN`·`+Infinity` guard 통과, 최초 commands/length getter와 양축 coercion 오류 identity를 직접 검증했다.
+- truthy `effectType` 우선과 모든 falsy의 live `shape` fallback, 객체·Symbol·`NaN`·±0의 actual Map exact key, missing/falsy pass와 첫 non-function `draw`의 1회 조회 skip을 고정했다.
+- commands/registry/pass/dimensions의 정확한 live getter receiver와 조회 순서, `draw` getter 2회, 두 번째 값을 재검사하지 않는 호출식, width·height 인자 선평가, pass receiver, hostile thenable 반환 미관찰을 검증했다.
+- append·truncate·reorder·queue 교체, 앞선 draw의 registry·dimensions 교체, 동일 queue 및 교체 queue 재진입을 직접 실행해 nested clear가 outer loop를 끝내거나 버려진 outer array를 남기는 현행 의미를 고정했다.
+- 모든 조회·getter·coercion·lookup·draw 호출 오류의 same identity 동기 전파, 성공했던 draw의 rollback 부재와 retry 중복, guard/final `length = 0` 실패 및 non-configurable index의 ECMAScript 부분 축소 상태를 검증했다.
+- 최초 독립 리뷰가 guard clear 실패와 두 번째 non-callable `draw` 문구의 false-green 2건을 찾아 문서·assertion을 수정했고, 동일 queue 재진입·최초 getter·height coercion·receiver 검증까지 보강한 최종 독립 재검토에서 blocker 없음 승인을 받았다.
+- 9개 standalone JSDoc을 제거한 production 실행 소스 SHA-256은 변경 전·후 모두 `3061368b977709677eee734e14c12470c89cd325c3c658d9ec7d712c8076e439`로 exact 보존했다.
+- 연관 렌더 계약 묶음 54/54와 전체 `npm test` 257/257, JS/MJS 375개 `node --check`, WASM backend+kernel 20/20, WAT/WASM 재현성, `git diff --check`를 모두 통과했다.
+- 고정 seed `0x71c0ffee` WASM 스트레스 1,000건/3,824,454 cells와 ABI canary 3 layouts도 통과했다.
+- Computer Use로 실제 `lonely tower.exe`를 2560×1440 cold start해 타이틀 WebGL 배경과 설정 overlay 진입·취소, 타이틀 복원, 종료 확인 대화상자와 `예` 선택을 검증했고 종료 뒤 프로세스가 사라짐을 확인했다.
+- 구조·핵심 실행 로직 변화가 없는 JSDoc 정정 단위이므로 `AGENT_GUIDE.md` 갱신은 불필요하다고 판정했다.
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료
