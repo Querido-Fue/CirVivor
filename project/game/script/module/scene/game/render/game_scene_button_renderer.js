@@ -39,6 +39,26 @@ const BUTTON_TEXT_RENDER_OPTIONS = {
     align: 'center',
     baseline: 'middle'
 };
+let cachedButtonFontSize;
+let cachedButtonFont = '';
+
+/**
+ * 현재 버튼 글자 크기에 대응하는 font 문자열을 반환합니다.
+ * @param {number} fontSize - 버튼 글자 크기입니다.
+ * @returns {string} canvas font 문자열입니다.
+ */
+function getGameSceneButtonFont(fontSize) {
+    if (!Object.is(cachedButtonFontSize, fontSize)) {
+        cachedButtonFontSize = fontSize;
+        cachedButtonFont = createFontString({
+            weight: 500,
+            sizePx: fontSize,
+            family: 'Pretendard Variable'
+        });
+    }
+
+    return cachedButtonFont;
+}
 
 /**
  * 벤치마크 씬 버튼 목록을 렌더합니다.
@@ -52,11 +72,7 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
         GAME_SCENE_BUTTON_CONSTANTS.FONT_MIN_SIZE,
         (Number.isFinite(options?.ww) ? options.ww : 0) * GAME_SCENE_BUTTON_CONSTANTS.FONT_WW_RATIO
     );
-    const font = createFontString({
-        weight: 500,
-        sizePx: fontSize,
-        family: 'Pretendard Variable'
-    });
+    const font = getGameSceneButtonFont(fontSize);
 
     for (let i = 0; i < buttonList.length; i++) {
         const button = buttonList[i];
