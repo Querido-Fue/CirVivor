@@ -8,6 +8,9 @@ const { WebGLHandler } = await loadGameModule(
 const { OverlayEffectRenderer } = await loadGameModule(
     'display/webgl/_overlay_effect_renderer.js'
 );
+const { EffectRenderer } = await loadGameModule(
+    'display/webgl/_effect_renderer.js'
+);
 
 /**
  * OverlayEffectRenderer 생성 및 resize 계약에 필요한 WebGL 스텁을 생성합니다.
@@ -71,6 +74,36 @@ function createOverlayRendererGl(calls) {
         },
         framebufferTexture2D() {},
         deleteFramebuffer() {},
+        viewport(x, y, width, height) {
+            calls.push({ name: 'viewport', x, y, width, height });
+        },
+        clearColor(red, green, blue, alpha) {
+            calls.push({ name: 'clearColor', red, green, blue, alpha });
+        },
+        clear(mask) {
+            calls.push({ name: 'clear', mask, framebuffer: boundFramebuffer });
+        }
+    };
+}
+
+/**
+ * WebGLHandler clear와 EffectRenderer frame begin의 통합 순서를 기록하는 GL 스텁을 생성합니다.
+ * @param {Array<object>} calls - 기록할 호출 목록입니다.
+ * @param {number} drawingBufferWidth - 실제 drawing-buffer 너비입니다.
+ * @param {number} drawingBufferHeight - 실제 drawing-buffer 높이입니다.
+ * @returns {object} WebGL 컨텍스트 스텁입니다.
+ */
+function createEffectFrameGl(calls, drawingBufferWidth, drawingBufferHeight) {
+    let boundFramebuffer = null;
+    return {
+        FRAMEBUFFER: 0x8D40,
+        COLOR_BUFFER_BIT: 0x4000,
+        drawingBufferWidth,
+        drawingBufferHeight,
+        bindFramebuffer(target, framebuffer) {
+            boundFramebuffer = framebuffer;
+            calls.push({ name: 'bindFramebuffer', target, framebuffer });
+        },
         viewport(x, y, width, height) {
             calls.push({ name: 'viewport', x, y, width, height });
         },
@@ -157,4 +190,119 @@ test('OverlayEffectRenderer.beginFrame은 resize와 frameSerial만 갱신한다'
     assert.equal(renderer.frameSerial, 2);
     assert.equal(calls.filter((call) => call.name === 'createFramebuffer').length, 0);
     assert.equal(calls.filter((call) => call.name === 'clear').length, 0);
+});
+
+test('effect layer clear는 handler clear 뒤 실제 drawing-buffer viewport와 queue clear를 적용한다', () => {
+    const calls = [];
+    const gl = createEffectFrameGl(calls, 801.9, 451.9);
+    const queueBacking = [{ id: 1 }, { id: 2 }];
+    const commands = new Proxy(queueBacking, {
+        set(target, property, value, receiver) {
+            calls.push({ name: 'commands:set', property, value });
+            return Reflect.set(target, property, value, receiver);
+        }
+    });
+    const renderer = Object.create(EffectRenderer.prototype);
+    renderer.gl = gl;
+    renderer.width = 0;
+    renderer.height = 0;
+    renderer.commands = commands;
+    Object.defineProperty(renderer, 'frameSerial', {
+        get() {
+            throw new Error('EffectRenderer must not read frameSerial');
+        },
+        set() {
+            throw new Error('EffectRenderer must not write frameSerial');
+        }
+    });
+
+    const handler = new WebGLHandler();
+    handler.width = 640;
+    handler.height = 360;
+    handler.glContexts.set('effect-layer', gl);
+    handler.layerModes.set('effect-layer', 'effect');
+    handler.layerRenderers.set('effect-layer', renderer);
+    handler.layerCallbacks.set('effect-layer', {
+        onFrameClear(isBackground) {
+            calls.push({ name: 'onFrameClear', isBackground });
+        }
+    });
+
+    assert.equal(handler.clearAll(), undefined);
+    assert.equal(renderer.width, 801);
+    assert.equal(renderer.height, 451);
+    assert.equal(queueBacking.length, 0);
+    assert.deepEqual(calls, [
+        { name: 'bindFramebuffer', target: gl.FRAMEBUFFER, framebuffer: null },
+        { name: 'viewport', x: 0, y: 0, width: 640, height: 360 },
+        { name: 'clearColor', red: 0, green: 0, blue: 0, alpha: 0 },
+        { name: 'clear', mask: gl.COLOR_BUFFER_BIT, framebuffer: null },
+        { name: 'bindFramebuffer', target: gl.FRAMEBUFFER, framebuffer: null },
+        { name: 'viewport', x: 0, y: 0, width: 801, height: 451 },
+        { name: 'commands:set', property: 'length', value: 0 },
+        { name: 'onFrameClear', isBackground: false }
+    ]);
+});
+
+test('effect begin 실패는 callback과 뒤 WebGL layer 처리를 중단하고 같은 오류를 전파한다', () => {
+    const calls = [];
+    const laterCalls = [];
+    const error = Object.freeze({ stage: 'effect queue clear' });
+    const gl = createEffectFrameGl(calls, 320, 180);
+    const commands = new Proxy([{ id: 1 }], {
+        set(_target, property, value) {
+            calls.push({ name: 'commands:set', property, value });
+            throw error;
+        }
+    });
+    const renderer = Object.create(EffectRenderer.prototype);
+    renderer.gl = gl;
+    renderer.width = 0;
+    renderer.height = 0;
+    renderer.commands = commands;
+
+    const laterGl = createEffectFrameGl(laterCalls, 320, 180);
+    const handler = new WebGLHandler();
+    handler.width = 320;
+    handler.height = 180;
+    handler.glContexts.set('effect-layer', gl);
+    handler.glContexts.set('later-layer', laterGl);
+    handler.layerModes.set('effect-layer', 'effect');
+    handler.layerModes.set('later-layer', 'batch');
+    handler.layerRenderers.set('effect-layer', renderer);
+    handler.layerRenderers.set('later-layer', {
+        begin() {
+            laterCalls.push({ name: 'begin' });
+        }
+    });
+    let callbackCalls = 0;
+    handler.layerCallbacks.set('effect-layer', {
+        onFrameClear() {
+            callbackCalls += 1;
+        }
+    });
+    handler.layerCallbacks.set('later-layer', {
+        onFrameClear() {
+            callbackCalls += 1;
+        }
+    });
+
+    let thrown;
+    try {
+        handler.clearAll();
+    } catch (caught) {
+        thrown = caught;
+    }
+    assert.strictEqual(thrown, error);
+    assert.deepEqual(calls, [
+        { name: 'bindFramebuffer', target: gl.FRAMEBUFFER, framebuffer: null },
+        { name: 'viewport', x: 0, y: 0, width: 320, height: 180 },
+        { name: 'clearColor', red: 0, green: 0, blue: 0, alpha: 0 },
+        { name: 'clear', mask: gl.COLOR_BUFFER_BIT, framebuffer: null },
+        { name: 'bindFramebuffer', target: gl.FRAMEBUFFER, framebuffer: null },
+        { name: 'viewport', x: 0, y: 0, width: 320, height: 180 },
+        { name: 'commands:set', property: 'length', value: 0 }
+    ]);
+    assert.equal(callbackCalls, 0);
+    assert.deepEqual(laterCalls, []);
 });

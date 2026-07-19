@@ -48,9 +48,21 @@ export class EffectRenderer {
     }
 
     /**
-     * 프레임 시작 시 큐를 초기화합니다.
-     * @param {number} width - 현재 surface 너비입니다.
-     * @param {number} height - 현재 surface 높이입니다.
+     * live `resize`를 현재 receiver와 원본 width·height 인수로 호출한 뒤, 반환값과 thenable은 관찰하지 않습니다.
+     * 이어 `drawingBufferWidth || current width`로 width를 먼저 정규화해 대입한 뒤 height를 처리하며,
+     * height도 `drawingBufferHeight || current height`를 같은 방식으로 정규화해 대입합니다.
+     * 각 drawing-buffer 값은 `||`의 truthiness로 선택하므로 falsy이면 그 시점의 같은 축을 fallback으로 사용합니다.
+     * 크기 대입 뒤 live `gl`에서 `bindFramebuffer`와 `FRAMEBUFFER`를 각각 조회해 `bindFramebuffer`를 제공한 GL을 receiver로 기본 framebuffer를 bind하고,
+     * 그 뒤 live `gl.viewport(0, 0, current width, current height)`를 호출한 다음 마지막 current `commands.length = 0`을 대입합니다.
+     * `gl`, dimensions, commands를 snapshot하지 않으며, 이 메서드 본문은 frame serial을 직접 읽거나 갱신하지 않고 `gl.clear()`를 직접 호출하지 않습니다.
+     * 재진입 guard는 없습니다.
+     * resize·GL 호출의 반환값과 thenable은 관찰하지 않습니다.
+     * 조회·변환·대입·호출·queue 축소 중 예외는 그대로 동기 전파되고 완료된 대입·GL 호출·queue 축소를 rollback하지 않습니다.
+     * 배열 축소가 실패하면 ECMAScript가 허용한 원소 삭제와 부분 length 상태도 그대로 남습니다.
+     *
+     * @param {*} width - resize에 그대로 전달할 너비 입력입니다.
+     * @param {*} height - resize에 그대로 전달할 높이 입력입니다.
+     * @returns {undefined} 최종 current queue의 `length = 0` 대입까지 정상 완료되면 항상 `undefined`입니다.
      */
     beginFrame(width, height) {
         this.resize(width, height);
