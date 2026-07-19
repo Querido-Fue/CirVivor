@@ -28,12 +28,13 @@ import {
 } from './menu/_title_menu_runtime_state.js';
 import { buildTitleMenuRightPaneLayout } from './menu/_title_menu_pane_layout.js';
 import {
+    advanceTitleMenuCardRevealClockWithTotalDuration,
     buildTitleMenuCardRenderState,
     buildTitleMenuPaneRenderState,
     buildTitleMenuUtilityTileRenderState,
-    advanceTitleMenuCardRevealClock,
     getTitleMenuCardRevealConfig,
     getTitleMenuCardRevealCoreDuration,
+    getTitleMenuCardRevealTotalDuration,
     getTitleMenuRevealProgress,
     getTitleMenuUtilityPaneRevealEase
 } from './menu/_title_menu_render_state.js';
@@ -59,12 +60,30 @@ const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 const TITLE_MENU_CARD_REVEAL_ORDER = TITLE_MENU_DATA.CARD_REVEAL_ORDER;
 const TITLE_MENU_SECONDARY_ENTRIES = TITLE_MENU_DATA.SECONDARY_ENTRIES;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const TITLE_MENU_REVEAL_TOTAL_DURATION = getTitleMenuCardRevealTotalDuration(TITLE_CARD_MENU);
+const TITLE_MENU_REVEAL_CORE_DURATION = getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU);
+
+/**
+ * 동결된 타이틀 메뉴 데이터에서 카드별 등장 설정을 반환합니다.
+ * @param {string} cardId - 카드 식별자입니다.
+ * @returns {{delaySeconds:number, durationSeconds:number, offsetXRatio:number, offsetYRatio:number, scaleOffset:number}} 등장 설정입니다.
+ */
+function resolveTitleMenuCardRevealConfig(cardId) {
+    return getTitleMenuCardRevealConfig(TITLE_CARD_MENU, cardId);
+}
 
 /**
  * @class TitleMenu
  * @description 타이틀 화면 우하단 카드 메뉴와 WebGL 카드 효과를 관리하는 클래스입니다.
  */
 export class TitleMenu {
+    /**
+     * 현재 `cardRevealElapsed`를 읽는 instance-stable 등장 진행률 resolver입니다.
+     * @type {(delaySeconds:number, durationSeconds:number) => number}
+     * @private
+     */
+    #revealProgressResolver;
+
     /**
      * @param {TitleScene} titleScene - 타이틀 씬 인스턴스입니다.
      */
@@ -87,6 +106,7 @@ export class TitleMenu {
         this.pointerEnabled = false;
         this.cardRevealElapsed = 0;
         this.cardRevealStarted = false;
+        this.#revealProgressResolver = this.#getRevealProgress.bind(this);
         this.currentPaneLayout = null;
         this.hoveredCardId = null;
         this.hoveredSecondaryMenuId = null;
@@ -152,8 +172,8 @@ export class TitleMenu {
             paneLayout,
             uiww: this.UIWW,
             uiScale: this.uiScale,
-            revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
-            getRevealProgress: this.#getRevealProgress.bind(this)
+            revealCoreDuration: TITLE_MENU_REVEAL_CORE_DURATION,
+            getRevealProgress: this.#revealProgressResolver
         });
         const cardPaneTextureCanvas = this.textureRenderer.buildCardPaneTextureCanvas(
             paneRenderState.cardPane,
@@ -433,8 +453,8 @@ export class TitleMenu {
                     uiww: this.UIWW,
                     uiScale: this.uiScale,
                     titleCardMenu: TITLE_CARD_MENU,
-                    getRevealConfig: (cardId) => getTitleMenuCardRevealConfig(TITLE_CARD_MENU, cardId),
-                    getRevealProgress: this.#getRevealProgress.bind(this)
+                    getRevealConfig: resolveTitleMenuCardRevealConfig,
+                    getRevealProgress: this.#revealProgressResolver
                 })
             );
         }
@@ -446,8 +466,8 @@ export class TitleMenu {
                     index,
                     uiww: this.UIWW,
                     uiScale: this.uiScale,
-                    revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
-                    getRevealProgress: this.#getRevealProgress.bind(this)
+                    revealCoreDuration: TITLE_MENU_REVEAL_CORE_DURATION,
+                    getRevealProgress: this.#revealProgressResolver
                 })
             );
         }
@@ -626,10 +646,9 @@ export class TitleMenu {
      * @private
      */
     #getUtilityPaneRevealEase() {
-        const revealCoreDuration = getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU);
         return getTitleMenuUtilityPaneRevealEase({
-            revealCoreDuration,
-            getRevealProgress: this.#getRevealProgress.bind(this)
+            revealCoreDuration: TITLE_MENU_REVEAL_CORE_DURATION,
+            getRevealProgress: this.#revealProgressResolver
         });
     }
 
@@ -784,13 +803,13 @@ export class TitleMenu {
      * @private
      */
     #updateCardRevealClock(delta, transitionProgress) {
-        const revealClock = advanceTitleMenuCardRevealClock({
-            cardRevealStarted: this.cardRevealStarted,
-            cardRevealElapsed: this.cardRevealElapsed,
+        const revealClock = advanceTitleMenuCardRevealClockWithTotalDuration(
+            this.cardRevealStarted,
+            this.cardRevealElapsed,
             transitionProgress,
             delta,
-            titleCardMenu: TITLE_CARD_MENU
-        });
+            TITLE_MENU_REVEAL_TOTAL_DURATION
+        );
         this.cardRevealStarted = revealClock.cardRevealStarted;
         this.cardRevealElapsed = revealClock.cardRevealElapsed;
         return revealClock.revealFinished;

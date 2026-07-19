@@ -288,6 +288,47 @@ export function advanceTitleMenuCardRevealClock({
     }
 
     const totalDuration = getTitleMenuCardRevealTotalDuration(titleCardMenu);
+    return _advanceStartedTitleMenuCardRevealClock(cardRevealElapsed, delta, totalDuration);
+}
+
+/**
+ * 사전 계산한 전체 duration으로 카드 등장 시간축을 갱신합니다.
+ * 동결된 메뉴 설정을 사용하는 프레임 hot path에서 반복 배열 생성과 reduce를 피하기 위한 scalar 경로입니다.
+ * @param {boolean} cardRevealStarted - 기존 등장 시작 여부입니다.
+ * @param {number} cardRevealElapsed - 기존 등장 누적 시간입니다.
+ * @param {number} transitionProgress - 타이틀 전환 진행률입니다.
+ * @param {number} delta - 프레임 델타 시간입니다.
+ * @param {number} totalDuration - 사전 계산한 전체 등장 시간입니다.
+ * @returns {{cardRevealStarted:boolean, cardRevealElapsed:number, revealFinished:boolean}} 갱신된 등장 시간축입니다.
+ */
+export function advanceTitleMenuCardRevealClockWithTotalDuration(
+    cardRevealStarted,
+    cardRevealElapsed,
+    transitionProgress,
+    delta,
+    totalDuration
+) {
+    const nextStarted = cardRevealStarted || transitionProgress > 0;
+    if (!nextStarted) {
+        return {
+            cardRevealStarted: false,
+            cardRevealElapsed,
+            revealFinished: false
+        };
+    }
+
+    return _advanceStartedTitleMenuCardRevealClock(cardRevealElapsed, delta, totalDuration);
+}
+
+/**
+ * 이미 시작된 카드 등장 시간축의 scalar 계산을 수행합니다.
+ * @param {number} cardRevealElapsed - 기존 등장 누적 시간입니다.
+ * @param {number} delta - 프레임 델타 시간입니다.
+ * @param {number} totalDuration - 전체 등장 시간입니다.
+ * @returns {{cardRevealStarted:true, cardRevealElapsed:number, revealFinished:boolean}} 갱신된 시간축입니다.
+ * @private
+ */
+function _advanceStartedTitleMenuCardRevealClock(cardRevealElapsed, delta, totalDuration) {
     const elapsedDelta = clampNumber(delta, 0, Infinity);
     const nextElapsed = clampNumber(cardRevealElapsed + elapsedDelta, -Infinity, totalDuration);
     return {
