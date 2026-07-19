@@ -290,6 +290,7 @@
 - [x] `npm test` 145개, JS/MJS 365개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary, `git diff --check` 모두 통과
 - [x] 독립 감사에서 호출자 nullable 가정·다중 생성·부분 초기화·handler 비승계와 production/test diff를 재검토해 blocker·과장 없음 확인; 구조 변경이 없어 `AGENT_GUIDE.md` 갱신 불필요
 - [x] Computer Use 실제 게임 cold start에서 타이틀 렌더링, 설정 glass 오버레이 진입·취소 후 타이틀 복원, 종료 확인 오버레이와 정상 종료까지 확인
+- [x] GitHub Desktop 커밋 및 푸시: `53f19e9 Correct utility singleton API documentation`
 
 ## 6. 일반 성능 최적화
 
