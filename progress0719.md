@@ -409,6 +409,19 @@
 - [x] GitHub Desktop GUI 커밋 및 푸시: `a7c4296 Document WebGL layer alias contract`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
+#### 5.15 정적 surface 기본 order PropertyKey·fallback 계약 정정 — 검증 완료
+
+- [x] `display_surface_descriptor.js`, 실제 frozen `display_surface_data.js`와 factory caller `createDisplaySurfaceDescriptor()`를 대조해 기존 `{string}`→`{number}` 문서가 실제 PropertyKey 변환·상속 조회·비숫자 반환·예외 계약을 누락한 사실을 확인
+- [x] production 변경 전 실행 계약 7개 green/JSDoc 구조 1개 red를 확립하고, 독립 리뷰에서 찾은 actual map의 falsy drift·key 변환 재진입·오류 경계를 보강한 뒤 JSDoc만 정정해 전용 8개 전체 green, alias resolver와의 결합 19개 전체 green으로 고정
+- [x] 실제 frozen order 맵의 own key·값 `background: 0`, `object: 10`, `effect: 20`, `texteffect: 30`, `ui: 40`, `top: 1000`과 ordinary prototype의 `toString`·`valueOf`·`constructor`·`__proto__` 상속 결과를 map 자체와 production resolver 양쪽에서 직접 검증
+- [x] 문자열·Symbol·primitive·객체 입력의 표준 `ToPropertyKey`, `Symbol.toPrimitive` hint와 단락, `toString → valueOf` fallback, 변환 중 재진입, 비원시 반환 `TypeError`, 변환 오류의 same identity 동기 전파를 검증
+- [x] actual VM `Object.prototype`의 live Symbol getter로 정확한 receiver·1회 조회·truthy identity·모든 falsy의 숫자 +0 fallback·재진입·getter 오류·coercion→get 순서를 검증하고 `finally` cleanup 뒤 잔존 프로퍼티가 없음을 확인
+- [x] 실제 factory caller에서 기본 order 조회, 객체 id의 두 차례 변환, 명시적 finite `-0`의 resolver 우회와 1회 변환, 상속 객체 결과 identity 및 오류 identity를 직접 고정
+- [x] JSDoc 전체 블록을 제거한 production 실행 소스 SHA-256 `76be28d1edda8705df26284b47aa4b6c0657d7db22d902e0dcc6c9d08c6a215f` exact 보존; 두 독립 최종 리뷰가 문서·실행·cleanup blocker 없음 승인
+- [x] 전체 `npm test` 222개, JS/MJS 372개 `node --check`, WASM 전용 16개, WAT/WASM 재현성, stress seed `0x71c0ffee` 1,000건·3,824,454셀 및 ABI canary 3종 모두 통과
+- [x] Computer Use 실제 게임 2560×1440 cold start에서 타이틀 렌더, 설정 glass/blur overlay 진입·취소, `ㄷ자 회랑` 맵 선택 preview 진입·취소, 각 타이틀 복원, 종료 확인 overlay와 `예` 선택 뒤 프로세스 정상 종료를 검증
+- [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료

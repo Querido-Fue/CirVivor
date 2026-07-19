@@ -79,9 +79,13 @@ export function resolveDisplayWebGLLayerName(layerName) {
 }
 
 /**
- * 정적 surface의 기본 표시 순서를 반환합니다.
- * @param {string} surfaceId - surface 식별자입니다.
- * @returns {number} 기본 표시 순서입니다.
+ * 정적 surface 표시 순서를 모듈 초기화 때 캡처한 order 맵의 프로퍼티 조회 결과로 해석합니다.
+ * `surfaceId`는 조회 과정에서 PropertyKey로 변환되며 상속 프로퍼티도 조회에 포함됩니다.
+ * 조회 결과가 truthy이면 타입을 제한하지 않고 그대로 반환하며, falsy이면 숫자 0을 반환합니다.
+ * PropertyKey 변환 또는 프로퍼티 조회 중 발생한 예외는 그대로 동기 전파됩니다.
+ *
+ * @param {*} surfaceId - order 조회에 사용할 입력입니다.
+ * @returns {*} truthy order 맵 값 또는 숫자 0입니다.
  */
 export function getDisplayStaticSurfaceOrder(surfaceId) {
     return DISPLAY_STATIC_SURFACE_ORDER_MAP[surfaceId] || 0;
