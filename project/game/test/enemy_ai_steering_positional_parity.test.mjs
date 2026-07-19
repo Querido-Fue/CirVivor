@@ -6,6 +6,8 @@ import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
+import { loadGameModule } from './support/source_module_loader.mjs';
+
 const GAME_ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SCRIPT_ROOT = path.join(GAME_ROOT, 'script');
 const STEERING_PATH = path.join(
@@ -69,6 +71,20 @@ const ALIAS_ROOTS = Object.freeze({
     'ui/': path.join(SCRIPT_ROOT, 'module', 'ui'),
     'util/': path.join(SCRIPT_ROOT, 'util')
 });
+const FOOTPRINT_METRIC_KEYS = Object.freeze([
+    'baseHeight',
+    'baseRadius',
+    'halfWidth',
+    'halfHeight',
+    'radius',
+    'axisLocalDeg',
+    'axisAnisotropy'
+]);
+
+const footprintModule = await loadGameModule('object/enemy/ai/_enemy_ai_footprint.js');
+const fixedUpdateContextModule = await loadGameModule(
+    'object/enemy/ai/_enemy_ai_fixed_update_context.js'
+);
 
 const STEERING_DEBUG_IMPORT = [
     "import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';"
@@ -885,6 +901,121 @@ function callPublicWithIgnoredExtras(runtime, options) {
         [options, ...ignoredArguments, () => {}]
     );
 }
+
+/**
+ * footprint Into API 검증에 사용할 canonical 합체 육각형 fixture를 만듭니다.
+ * @returns {object} 합체 육각형 적 fixture입니다.
+ */
+function createCanonicalHexaFootprintEnemy() {
+    return {
+        type: 'hexa_hive',
+        position: { x: 31.25, y: -18.5 },
+        renderHeightPx: 42,
+        aspectRatio: 1.15,
+        heightScale: 0.9,
+        navigationRadiusPx: 13,
+        rotation: 17,
+        hexaHiveLayout: {
+            filledLocalCenters: [
+                { x: -1, y: 0 },
+                { x: 0, y: 0 },
+                { x: 1, y: 0 },
+                { x: 0.5, y: 0.75 }
+            ]
+        }
+    };
+}
+
+/**
+ * footprint의 공개 7필드를 exact equality로 비교합니다.
+ * @param {object} actual - 실제 footprint입니다.
+ * @param {object} expected - 기준 footprint입니다.
+ * @param {string} label - 실패 진단용 이름입니다.
+ * @returns {void}
+ */
+function assertFootprintMetricsEqual(actual, expected, label) {
+    for (const key of FOOTPRINT_METRIC_KEYS) {
+        assert.strictEqual(actual[key], expected[key], `${label}.${key}`);
+    }
+}
+
+test('footprint Into API는 allocating API의 7필드와 exact 일치하고 out identity를 반환한다', () => {
+    const enemy = createCanonicalHexaFootprintEnemy();
+    const fallbackRadius = 19;
+    const fallbackRenderHeightPx = 48;
+    const expected = footprintModule.resolveEnemyAIFootprintMetricsPx(
+        enemy,
+        fallbackRadius,
+        fallbackRenderHeightPx
+    );
+    const out = {};
+    const actual = footprintModule.resolveEnemyAIFootprintMetricsPxInto(
+        enemy,
+        fallbackRadius,
+        fallbackRenderHeightPx,
+        out
+    );
+
+    assert.strictEqual(actual, out);
+    assertFootprintMetricsEqual(actual, expected, 'canonical hexa footprint');
+});
+
+test('fixed update frame은 hexa scratch를 재사용하고 일반 적 전환 뒤 7필드를 덮어쓴다', () => {
+    const enemy = createCanonicalHexaFootprintEnemy();
+    const context = {
+        player: { position: { x: 214.5, y: 103.25 } },
+        walls: [],
+        wallsVersion: 23
+    };
+    const frame = {};
+
+    assert.strictEqual(
+        fixedUpdateContextModule.resolveEnemyAIUpdateFrameInto(enemy, context, frame),
+        frame
+    );
+    const initialScratch = frame.footprintMetricsScratch;
+    assert.strictEqual(frame.footprintMetrics, initialScratch);
+
+    enemy.rotation = 73;
+    enemy.hexaHiveLayout.filledLocalCenters = [
+        { x: -1.5, y: -0.25 },
+        { x: 0, y: 0 },
+        { x: 0.5, y: 1 },
+        { x: 1.75, y: 0.25 }
+    ];
+    fixedUpdateContextModule.resolveEnemyAIUpdateFrameInto(enemy, context, frame);
+    assert.strictEqual(frame.footprintMetricsScratch, initialScratch);
+    assert.strictEqual(frame.footprintMetrics, initialScratch);
+    assertFootprintMetricsEqual(
+        frame.footprintMetrics,
+        footprintModule.resolveEnemyAIFootprintMetricsPx(enemy, frame.fallbackRadius, null),
+        'second hexa tick'
+    );
+
+    enemy.type = 'square';
+    fixedUpdateContextModule.resolveEnemyAIUpdateFrameInto(enemy, context, frame);
+    assert.strictEqual(frame.footprintMetrics, null);
+    assert.strictEqual(frame.footprintMetricsScratch, initialScratch);
+
+    for (let index = 0; index < FOOTPRINT_METRIC_KEYS.length; index++) {
+        initialScratch[FOOTPRINT_METRIC_KEYS[index]] = 1000 + index;
+    }
+    enemy.type = 'hexa_hive';
+    enemy.rotation = -31;
+    enemy.hexaHiveLayout.filledLocalCenters = [
+        { x: -0.5, y: -1 },
+        { x: 0, y: 0 },
+        { x: 0.5, y: 1 }
+    ];
+    fixedUpdateContextModule.resolveEnemyAIUpdateFrameInto(enemy, context, frame);
+    assert.strictEqual(frame.footprintMetricsScratch, initialScratch);
+    assert.strictEqual(frame.footprintMetrics, initialScratch);
+    assertFootprintMetricsEqual(
+        frame.footprintMetrics,
+        footprintModule.resolveEnemyAIFootprintMetricsPx(enemy, frame.fallbackRadius, null),
+        'hexa after normal overwrite'
+    );
+});
 
 test('production은 private function identity token과 positional hot 호출 구조를 사용한다', () => {
     assert.equal(
