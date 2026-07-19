@@ -34,8 +34,9 @@ export class SimulationCommandQueue {
     }
 
     /**
-     * 적재된 명령을 모두 반환하고 큐를 비웁니다.
-     * @returns {object[]}
+     * 적재 순서와 element identity를 보존한 fresh 배열을 반환하고 내부 큐 배열은 제자리에서 비웁니다.
+     * 빈 큐도 호출마다 새 mutable 배열을 반환합니다. 복사 또는 큐 축소 오류는 그대로 전파하며 rollback하지 않습니다.
+     * @returns {object[]} 호출자가 소유하는 fresh 명령 배열입니다.
      */
     drain() {
         if (this.commands.length === 0) {
