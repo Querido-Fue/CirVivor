@@ -74,9 +74,11 @@ export class InputSystem {
     }
 
     /**
-     * 시뮬레이션 런타임에 전달할 입력 스냅샷을 생성합니다.
+     * 시뮬레이션 런타임에 전달할 입력 스냅샷을 최신 입력과 정확히 동기화합니다.
+     * 재사용 가능한 `out`이 있으면 같은 객체와 기존 mousePos·버튼 배열·focusList·keys 컨테이너를
+     * 제자리에서 갱신하며, 현재 입력에 없는 own key는 삭제합니다. `out`이 없으면 새 버퍼를 생성합니다.
      * @param {object|null} [out=null] - 갱신할 재사용 스냅샷입니다.
-     * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}}
+     * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}} 유효한 `out`을 전달하면 동일한 객체, 아니면 새 스냅샷입니다.
      */
     getSimulationInputSnapshot(out = null) {
         const mouseButtons = this.mouseInputHandler?.mouseButtons || {};

@@ -157,8 +157,11 @@ export class SimulationRuntime {
     }
 
     /**
-     * 메인 루프에서 전달한 최신 스냅샷으로 런타임을 동기화합니다.
-     * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}]
+     * 메인 루프에서 제공한 최상위 그룹만 런타임에 부분 동기화합니다.
+     * 생략한 그룹은 이전 상태를 유지합니다. 제공한 그룹은 기존 중첩 컨테이너 identity를 보존하면서
+     * 배열을 제자리 교체하고, input keys와 settings에서 source에 없는 own key를 삭제합니다.
+     * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}] - 적용할 부분 스냅샷입니다.
+     * @returns {void}
      */
     sync(snapshot = {}) {
         if (snapshot.viewport !== undefined) {
@@ -221,9 +224,10 @@ export function ensureSimulationRuntime() {
 }
 
 /**
- * 최신 스냅샷으로 시뮬레이션 런타임을 동기화합니다.
- * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}]
- * @returns {SimulationRuntime}
+ * 제공한 viewport·input·settings 그룹만 기존 시뮬레이션 런타임에 제자리 동기화합니다.
+ * 생략한 그룹은 이전 상태를 유지하며, 제공한 input/settings의 누락 key는 제거됩니다.
+ * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}] - 적용할 부분 스냅샷입니다.
+ * @returns {SimulationRuntime} 동기화에 사용한 싱글톤 런타임입니다.
  */
 export function syncSimulationRuntime(snapshot = {}) {
     const runtime = ensureSimulationRuntime();
