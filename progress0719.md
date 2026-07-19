@@ -499,6 +499,7 @@
 - [x] 단순 table은 완전 동일성 gate를, switch는 성능 gate를 각각 실패했으므로 production·test·WASM artifact를 변경하지 않고 `report0719.md` 5.10에 NO-GO 근거와 재검토 조건 기록
 - [x] 전체 `npm test` 191개, JS/MJS 369개 `node --check`, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 통과
 - [x] Computer Use 실제 게임 2560×1440 cold start에서 타이틀 가장자리 비네트·동적 배경, 설정 glass overlay 진입·취소, 맵 선택 preview 진입·취소, 종료 확인 overlay와 정상 프로세스 종료를 검증
+- [x] GitHub Desktop GUI 커밋 및 푸시: `8ea8c6f Document vignette optimization no-go`
 - [x] 생산 구조·핵심 로직 변경이 없는 보고 전용 감사이므로 `AGENT_GUIDE.md` 갱신 불필요
 
 ## 발견된 위험
