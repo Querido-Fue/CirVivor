@@ -52,9 +52,13 @@ function shouldCullLocalProjectile(projectile, minX, maxX, minY, maxY) {
  * @returns {boolean} 버튼 클릭 처리 여부입니다.
  */
 export function updateGameSceneButtonInput(buttons) {
-    const mousePos = getSimulationMouseInput('pos');
     const clicked = hasSimulationMouseState(GAME_SCENE_BUTTON_MOUSE_BUTTON, GAME_SCENE_BUTTON_CLICK_STATE);
-    if (!clicked || !mousePos || !Array.isArray(buttons)) {
+    if (!clicked || !Array.isArray(buttons)) {
+        return false;
+    }
+
+    const mousePos = getSimulationMouseInput('pos');
+    if (!mousePos) {
         return false;
     }
 
