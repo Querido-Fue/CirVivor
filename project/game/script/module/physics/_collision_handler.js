@@ -21,6 +21,7 @@ import {
     shouldUseCollisionBroadCircleFilter
 } from './collision_broad_phase_filter.js';
 import { detectCollisionBodies } from './collision_body_detector.js';
+import { detectCollisionBodiesBooleanContact } from './collision_contact_boolean_detector.js';
 import { CollisionBroadphaseBuffer } from './collision_broadphase_buffer.js';
 import { CollisionBodyPool } from './collision_body_pool.js';
 import {
@@ -531,6 +532,63 @@ export class CollisionHandler {
                     const bodyA = bodies[lowIndices[pairIndex]];
                     const bodyB = bodies[highIndices[pairIndex]];
                     if (!detectCollisionBodies(bodyA, bodyB, this.#bodyDetectorContext)) {
+                        continue;
+                    }
+
+                    this.#appendContactPair(bodyA.ref, bodyB.ref);
+                }
+                this.#profileRecorder.recordDuration('contactPairScanMs', pairScanStart);
+
+                return this.#contactPairs;
+            } finally {
+                restoreCollisionBaseStatsSnapshot(this.#frameStats, this.#contactStatsSnapshot);
+            }
+        } finally {
+            this.#profileRecorder.recordDuration('contactTotalMs', totalStart);
+        }
+    }
+
+    /**
+     * ObjectSystem이 같은 fixed frame에 준비한 canonical hexa enemy body만 재사용해
+     * manifold와 recorder side effect 없이 boolean contact pair를 수집합니다.
+     * prepared cache가 없으면 기존 공개 contact 경로로 되돌아갑니다.
+     * @internal
+     * @param {object[]} enemies - 준비된 enemy 목록의 hexa merge 후보 subset입니다.
+     * @param {{delta?: number}} [options]
+     * @returns {{enemyA: object, enemyB: object}[]} 다음 contact 조회 전까지 유효한 재사용 결과 배열입니다.
+     */
+    collectPreparedHexaHiveContactPairs(enemies, options = {}) {
+        if (!Array.isArray(enemies) || enemies.length < 2) {
+            return this.collectEnemyContactPairs(enemies, options);
+        }
+
+        const delta = Number.isFinite(options.delta) && options.delta > 0 ? options.delta : (1 / 60);
+        const bodies = this.#contactBodiesBuffer;
+        if (!this.#enemyBodyCache.collectReusableBodies(enemies, delta, EPSILON, bodies)) {
+            return this.collectEnemyContactPairs(enemies, options);
+        }
+
+        const totalStart = this.#profileRecorder.startTimer();
+        try {
+            this.#resetContactPairResults();
+            if (bodies.length < 2) {
+                return this.#contactPairs;
+            }
+
+            createCollisionBaseStatsSnapshot(this.#frameStats, this.#contactStatsSnapshot);
+            try {
+                const gridBuildStart = this.#profileRecorder.startTimer();
+                this.#rebuildGridFromBodies(bodies, 'enemyPair', bodies.length, true);
+                this.#profileRecorder.recordDuration('contactGridBuildMs', gridBuildStart);
+                this.#buildContactCandidatePairsFromGrid(bodies);
+
+                const pairScanStart = this.#profileRecorder.startTimer();
+                const lowIndices = this.#candidatePairs.lowIndices;
+                const highIndices = this.#candidatePairs.highIndices;
+                for (let pairIndex = 0; pairIndex < this.#candidatePairs.count; pairIndex++) {
+                    const bodyA = bodies[lowIndices[pairIndex]];
+                    const bodyB = bodies[highIndices[pairIndex]];
+                    if (!detectCollisionBodiesBooleanContact(bodyA, bodyB)) {
                         continue;
                     }
 

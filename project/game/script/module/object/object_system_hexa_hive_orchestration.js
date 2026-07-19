@@ -25,13 +25,17 @@ export function collectObjectSystemHexaHiveContactPairs(options) {
         physicsSystem.prepareEnemyCollisionFrame(enemies, { delta });
     }
     const mergeCandidates = collectHexaMergeCandidates(enemies);
-    if (mergeCandidates.length < 2
-        || !physicsSystem
-        || typeof physicsSystem.collectEnemyContactPairs !== 'function') {
+    if (mergeCandidates.length < 2 || !physicsSystem) {
         return [];
     }
 
-    return physicsSystem.collectEnemyContactPairs(mergeCandidates, { delta });
+    if (typeof physicsSystem.collectPreparedHexaHiveContactPairs === 'function') {
+        return physicsSystem.collectPreparedHexaHiveContactPairs(mergeCandidates, { delta });
+    }
+    if (typeof physicsSystem.collectEnemyContactPairs === 'function') {
+        return physicsSystem.collectEnemyContactPairs(mergeCandidates, { delta });
+    }
+    return [];
 }
 
 /**

@@ -93,6 +93,18 @@ export class PhysicsSystem {
     collectEnemyContactPairs(enemies, options = {}) {
         return this.collisionHandler.collectEnemyContactPairs(enemies, options);
     }
+
+    /**
+     * ObjectSystem이 이번 fixed frame에 준비한 hexa merge 후보의 boolean contact를 수집합니다.
+     * prepared cache miss는 기존 공개 contact 판정으로 복구합니다.
+     * @internal
+     * @param {object[]} enemies
+     * @param {{delta?: number}} [options]
+     * @returns {{enemyA: object, enemyB: object}[]} 다음 contact 조회 전까지 유효한 재사용 결과 배열입니다.
+     */
+    collectPreparedHexaHiveContactPairs(enemies, options = {}) {
+        return this.collisionHandler.collectPreparedHexaHiveContactPairs(enemies, options);
+    }
 }
 
 /**
