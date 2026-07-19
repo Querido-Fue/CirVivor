@@ -436,6 +436,7 @@ export class TitleMenu {
      * @private
      */
     #syncLayout() {
+        this.currentPaneLayout = null;
         const cardRects = this.layout.buildCardRects(this.cardRegistry.getAll());
 
         for (const card of this.cards) {
@@ -464,7 +465,6 @@ export class TitleMenu {
      */
     #updateRenderStates(transitionProgress) {
         const paneLayout = this.#getRightPaneLayout();
-        this.currentPaneLayout = paneLayout;
         this.cardRenderMap.clear();
         this.utilityTileRenderMap.clear();
         for (const card of this.cards) {
@@ -650,21 +650,25 @@ export class TitleMenu {
     }
 
     /**
-     * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 계산합니다.
-     * @returns {object} 오른쪽 패널 배치 정보입니다.
+     * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 필요할 때 계산하고 다음 resize까지 재사용합니다.
+     * @returns {object} 캐시된 오른쪽 패널 배치 정보입니다.
      * @private
      */
     #getRightPaneLayout() {
-        return buildTitleMenuRightPaneLayout({
-            cards: this.cards,
-            secondaryMenuEntries: this.secondaryMenuEntries,
-            ww: this.WW,
-            wh: this.WH,
-            uiww: this.UIWW,
-            uiOffsetX: this.UIOffsetX,
-            uiScale: this.uiScale,
-            titleCardMenu: TITLE_CARD_MENU
-        });
+        if (!this.currentPaneLayout) {
+            this.currentPaneLayout = buildTitleMenuRightPaneLayout({
+                cards: this.cards,
+                secondaryMenuEntries: this.secondaryMenuEntries,
+                ww: this.WW,
+                wh: this.WH,
+                uiww: this.UIWW,
+                uiOffsetX: this.UIOffsetX,
+                uiScale: this.uiScale,
+                titleCardMenu: TITLE_CARD_MENU
+            });
+        }
+
+        return this.currentPaneLayout;
     }
 
     /**
