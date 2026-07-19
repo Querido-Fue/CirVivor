@@ -115,7 +115,16 @@ export class WebGLHandler {
     }
 
     /**
-     * 모든 WebGL 레이어의 기본 framebuffer를 프레임당 한 번 clear합니다.
+     * 호출마다 현재 glContexts의 live 등록 순서에서 context-lost가 아닌 WebGL 레이어를 fail-fast로 처리합니다.
+     * 메서드 자체에는 프레임당 1회 또는 재진입 guard가 없습니다.
+     * 각 레이어는 mode와 renderer를 조회한 뒤 `bindFramebuffer` → `viewport` → `clearColor` → `clear` → renderer frame begin → 현재 `onFrameClear` 순서로 처리합니다.
+     * 배경 key는 strict equality로 판정하고 backgroundColor를 채널마다 다시 읽으며, 나머지는 투명색을 사용합니다.
+     * viewport와 frame begin의 width·height는 각각 live 조회하므로 중간 GL 부수효과가 두 번째 크기를 바꿀 수 있습니다.
+     * falsy renderer나 non-positive 크기는 frame begin만 no-op하며 이미 수행한 clear와 후속 callback은 유지합니다.
+     * 처음 획득한 glContexts iterator에는 entry 추가·삭제·미방문 value 갱신이 반영되지만 glContexts 프로퍼티 자체 교체는 반영되지 않으며, mode·renderer·callback은 각 조회 시점의 table을 따릅니다.
+     * 조회·변환·GL·renderer·callback 예외는 rollback 없이 그대로 전파되어 현재 단계 이후와 뒤 레이어를 중단합니다.
+     *
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     clearAll() {
         for (const [layerName, gl] of this.glContexts.entries()) {
