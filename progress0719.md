@@ -395,6 +395,19 @@
 - [x] GitHub Desktop GUI 커밋 및 푸시: `01edb73 Document DisplaySystem initialization contract`
 - [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
 
+#### 5.14 WebGL layer alias resolver PropertyKey·fallback 계약 정정 — 검증 완료
+
+- [x] `display_surface_descriptor.js`, 실제 frozen `display_surface_data.js`와 `DisplaySystem`의 `renderGL()`·`renderGLShapeInstances()`를 대조해 기존 `{string}` 문서가 실제 임의 입력·비문자열 반환·상속 조회·예외 계약을 누락한 사실을 확인
+- [x] production 변경 전 실행 계약 10개 green/JSDoc 구조 1개 red를 확립하고, 세 방향 독립 리뷰에서 찾은 actual data drift·문서 polarity·bulk 대칭 오류·재진입 reachability·입력 pass-through false-green을 모두 보강한 뒤 JSDoc만 정정해 전용 11개 전체 green으로 고정
+- [x] 실제 alias 4종과 ordinary prototype의 `toString`·`valueOf`·`constructor`·`__proto__`, truthy 객체·모든 표준 falsy 값, `null`·`undefined`·±0·`NaN`·±Infinity·BigInt·boolean·Symbol·객체 key의 반환 identity를 검증
+- [x] 표준 `ToPropertyKey`의 `toString → valueOf` fallback·Symbol 생성·비원시 반환 `TypeError`, Proxy/getter receiver, coercion·map get 양쪽 재진입, live own→prototype 값 변경과 key/map 오류의 same identity 동기 전파를 actual production resolver로 검증
+- [x] 두 실제 render caller가 resolver 완료 뒤 최신 singleton의 handler→method를 live 조회하고 정확한 receiver·인자 수·strict identity·반환 계약을 보존하며, handler/method/call 오류와 non-callable `TypeError`를 변환하지 않음을 검증
+- [x] production에서 가능한 object key의 `Symbol.toPrimitive` 중 `DisplaySystem` 교체로 단일·bulk caller가 최신 singleton을 사용하는 순서를 고정하고, key 변환 오류 시 handler getter가 실행되지 않는 gate를 검증
+- [x] JSDoc 전체 블록을 제거한 production 실행 소스 SHA-256 `76be28d1edda8705df26284b47aa4b6c0657d7db22d902e0dcc6c9d08c6a215f` exact 보존; 세 독립 최종 리뷰가 문서·실행·하네스 blocker 없음 승인
+- [x] 전체 `npm test` 214개, JS/MJS 371개 `node --check`, WASM 전용 16개, WAT/WASM 재현성, stress 1,000건·3,824,454셀 및 ABI canary 3종, `git diff --check` 모두 통과
+- [x] Computer Use 실제 게임 2560×1440 cold start에서 타이틀 렌더, 설정 glass overlay 진입·취소, `ㄷ자 회랑` 맵 선택 preview 진입·취소, 각 타이틀 복원, 종료 확인 overlay와 정상 프로세스 종료를 검증
+- [x] 실행 구조 변경이 없는 JSDoc 정정이므로 `AGENT_GUIDE.md` 갱신 불필요
+
 ## 6. 일반 성능 최적화
 
 #### 6.1 게임 씬 투사체 컬링 경계 할당 제거 — 완료

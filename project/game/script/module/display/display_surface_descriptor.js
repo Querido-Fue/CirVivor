@@ -66,9 +66,13 @@ export function createDisplaySurfaceDescriptor(options) {
 }
 
 /**
- * WebGL 렌더 별칭을 실제 surface 식별자로 변환합니다.
- * @param {string} layerName - 요청된 레이어 이름입니다.
- * @returns {string} 실제 WebGL surface 식별자입니다.
+ * WebGL 렌더 별칭을 현재 alias 맵의 프로퍼티 조회 결과로 해석합니다.
+ * `layerName`은 조회 과정에서 PropertyKey로 변환되며 상속 프로퍼티도 조회에 포함됩니다.
+ * 조회 결과가 truthy이면 해당 값을 반환하고, falsy이면 변환 전 원래 입력 identity를 반환합니다.
+ * PropertyKey 변환 또는 프로퍼티 조회 중 발생한 예외는 그대로 동기 전파됩니다.
+ *
+ * @param {*} layerName - alias 조회에 사용할 입력입니다.
+ * @returns {*} truthy alias 값 또는 변환 전 원래 입력입니다.
  */
 export function resolveDisplayWebGLLayerName(layerName) {
     return DISPLAY_WEBGL_LAYER_NAME_MAP[layerName] || layerName;
