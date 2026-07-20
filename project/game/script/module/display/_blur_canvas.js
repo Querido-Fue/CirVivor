@@ -8,6 +8,7 @@ const BLUR_CANVAS_SCALE = 0.2;
  * 블러 전용 오프스크린 캔버스를 초기화/리사이즈합니다.
  * @param {number} width - 기준 너비
  * @param {number} height - 기준 높이
+ * @returns {void}
  */
 export function initBlurCanvas(width, height) {
     if (!blurCanvas) {

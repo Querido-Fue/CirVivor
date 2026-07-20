@@ -300,6 +300,7 @@ function buildBoundaryEdgeFlags(mapDefinition) {
  * @param {Uint8Array[]} horizontalEdges - 수평 경계 표시 배열입니다.
  * @param {object} metrics - 맵 배치 수치입니다.
  * @param {object[]} walls - 결과 벽 배열입니다.
+ * @returns {void}
  */
 function appendMergedHorizontalWalls(horizontalEdges, metrics, walls) {
     const { originX, originY, cellSize, wallThickness } = metrics;
@@ -334,6 +335,7 @@ function appendMergedHorizontalWalls(horizontalEdges, metrics, walls) {
  * @param {Uint8Array[]} verticalEdges - 수직 경계 표시 배열입니다.
  * @param {object} metrics - 맵 배치 수치입니다.
  * @param {object[]} walls - 결과 벽 배열입니다.
+ * @returns {void}
  */
 function appendMergedVerticalWalls(verticalEdges, metrics, walls) {
     const { originX, originY, cellSize, wallThickness } = metrics;

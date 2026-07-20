@@ -7,6 +7,7 @@ export const SETTING_LABEL_KEYS = Object.freeze({
     widescreenSupport: 'title_settings_widescreen_support',
     renderScale: 'title_settings_render_scale',
     uiScale: 'title_settings_ui_scale',
+    disableTransparency: 'title_settings_disable_transparency',
     tooltipDelaySeconds: 'title_settings_tooltip_delay',
     language: 'title_settings_language',
     theme: 'title_settings_theme',
@@ -32,6 +33,7 @@ export function createSettingsInitialState(options) {
         widescreenSupport: getSetting('widescreenSupport') !== false,
         renderScale: getSetting('renderScale') || 100,
         uiScale: getSetting('uiScale') || 100,
+        disableTransparency: getSetting('disableTransparency') || false,
         tooltipDelaySeconds: normalizeTooltipDelaySeconds(
             getSetting('tooltipDelaySeconds') !== undefined ? getSetting('tooltipDelaySeconds') : 0.7
         ),

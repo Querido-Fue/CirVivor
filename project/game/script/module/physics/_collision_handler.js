@@ -1348,6 +1348,7 @@ function createCollisionBaseStatsSnapshot(frameStats, out) {
  * 접촉 pair 조회 전에 저장한 프레임 충돌 기본 통계를 복원합니다.
  * @param {object} frameStats - 복원 대상 프레임 통계 객체입니다.
  * @param {object} snapshot - 기본 통계 필드 스냅샷입니다.
+ * @returns {void}
  */
 function restoreCollisionBaseStatsSnapshot(frameStats, snapshot) {
     for (let i = 0; i < COLLISION_BASE_STAT_FIELDS.length; i++) {

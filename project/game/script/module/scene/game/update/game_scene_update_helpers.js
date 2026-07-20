@@ -74,6 +74,7 @@ export function updateGameSceneButtonInput(buttons) {
 /**
  * 화면 밖으로 나가거나 비활성화된 로컬 투사체를 제거합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
+ * @returns {void}
  */
 export function cullLocalGameSceneProjectiles(scene) {
     if (!scene || !Array.isArray(scene.projectiles)) {
@@ -94,6 +95,7 @@ export function cullLocalGameSceneProjectiles(scene) {
 /**
  * ObjectSystem의 최신 충돌 통계를 씬 상태로 동기화합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
+ * @returns {void}
  */
 export function syncGameSceneCollisionStats(scene) {
     if (scene?.objectSystem && typeof scene.objectSystem.getCollisionStats === 'function') {

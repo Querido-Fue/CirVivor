@@ -12,6 +12,7 @@ import {
  * @param {object[]} cards - 런타임 카드 목록
  * @param {number} appearanceElapsed - 등장 연출 경과 시간입니다.
  * @param {object} titleMagicBento - 타이틀 bento 설정입니다.
+ * @returns {void}
  */
 export function refreshBentoCardTransforms(cards, appearanceElapsed, titleMagicBento) {
     const hoverScaleDelta = titleMagicBento.HOVER_SCALE_DELTA;
@@ -178,6 +179,7 @@ export function updateBentoSpotlight({
  * @param {number} options.spotlightY - 스포트라이트 Y 좌표입니다.
  * @param {number} options.spotlightOpacity - 스포트라이트 투명도입니다.
  * @param {object} options.titleMagicBento - 타이틀 bento 설정입니다.
+ * @returns {void}
  */
 export function updateBentoCardInteractionState(card, {
     mouseX,

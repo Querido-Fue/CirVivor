@@ -285,6 +285,10 @@ async function loadActualDisplaySystem() {
         ['./_vignette_renderer.js', createSyntheticModule('display/_vignette_renderer.js', {
             VignetteRenderer: NoopHandler
         })],
+        ['./_theme_transition_controller.js', createSyntheticModule(
+            'display/_theme_transition_controller.js',
+            { ThemeTransitionController: NoopHandler }
+        )],
         ['./display_surface_descriptor.js', createSyntheticModule(
             'display/display_surface_descriptor.js',
             {

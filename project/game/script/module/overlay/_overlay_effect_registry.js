@@ -66,6 +66,7 @@ function parseEffectColor(value, fallbackValue) {
  * 오버레이 effect 플러그인을 등록합니다.
  * @param {string} effectName - effect 식별자입니다.
  * @param {OverlayEffectPlugin} plugin - 등록할 플러그인입니다.
+ * @returns {void}
  */
 export function registerOverlayEffect(effectName, plugin) {
     if (!effectName || !plugin || typeof plugin.create !== 'function') {

@@ -16,6 +16,7 @@ const runtimeCalls = [];
 const memoryPreviewCalls = [];
 const fileSaveCalls = [];
 const releasedItems = [];
+const rollbackAnimations = [];
 let generatedId = 0;
 let overlay;
 
@@ -87,7 +88,10 @@ class TitleOverlayStub {
                 this.uiScale = uiScale;
             }
         }
-        if (changedSettings.uiScale !== undefined || changedSettings.renderScale !== undefined) {
+        if (changedSettings.uiScale !== undefined
+            || changedSettings.renderScale !== undefined
+            || changedSettings.theme !== undefined
+            || changedSettings.disableTransparency !== undefined) {
             this.resize();
         }
     }
@@ -108,13 +112,23 @@ function createLayoutElement(type, id) {
     const element = {
         id: id ?? `generated-${generatedId++}`,
         __poolType: type,
-        update() {}
+        update() {},
+        animateToValue(value, options) {
+            rollbackAnimations.push({ id: this.id, value, options: { ...options } });
+            this.value = value;
+            if (this.displayValue !== undefined) {
+                this.displayValue = value;
+            }
+            return Promise.resolve();
+        }
     };
-    if (type === 'slider') {
+    if (type === 'slider' || type === 'toggle' || type === 'dropdown') {
         element.value = 0;
-        element.displayValue = 0;
-        element.dragging = false;
-        element.waitForDisplayValueSettle = () => Promise.resolve();
+        if (type === 'slider') {
+            element.displayValue = 0;
+            element.dragging = false;
+            element.waitForDisplayValueSettle = () => Promise.resolve();
+        }
         element.reconcileLayoutFrom = function reconcileLayoutFrom(source) {
             this.onChange = source.onChange;
             this.onCommit = source.onCommit;
@@ -172,6 +186,11 @@ class LayoutHandlerStub {
         return this;
     }
 
+    onClick(handler) {
+        if (this.currentItem) this.currentItem.onClick = handler;
+        return this;
+    }
+
     build() {
         return {
             dynamicItems: this.entries,
@@ -217,7 +236,10 @@ const dependencies = new Map([
     ['./_title_overlay.js', createSyntheticModule(context, { TitleOverlay: TitleOverlayStub })],
     ['ui/ui_system.js', createSyntheticModule(context, { getLangString: (key) => key })],
     ['display/_theme_handler.js', createSyntheticModule(context, { ColorSchemes: numericTree })],
-    ['display/display_system.js', createSyntheticModule(context, { getBaseWW: () => 1920, getBaseWH: () => 1080 })],
+    ['display/display_system.js', createSyntheticModule(context, {
+        getBaseWW: () => 1920,
+        getBaseWH: () => 1080
+    })],
     ['save/save_system.js', createSyntheticModule(context, {
         previewSettingBatch: (settings) => memoryPreviewCalls.push({ ...settings }),
         setSettingBatch: async (settings) => { fileSaveCalls.push({ ...settings }); },
@@ -230,6 +252,14 @@ const dependencies = new Map([
         getData: (key) => {
             if (key === 'THEME_OPTIONS') return [];
             if (key === 'DEFAULT_THEME_KEY') return 'default';
+            if (key === 'UI_CONSTANTS') {
+                return {
+                    SETTING_ROLLBACK_ANIMATION: {
+                        DURATION_SECONDS: 0.4,
+                        EASING: 'easeOutExpo'
+                    }
+                };
+            }
             return numericTree;
         }
     })],
@@ -271,6 +301,12 @@ retainedRenderSlider.displayValue = 117;
 retainedRenderSlider.dragging = true;
 retainedRenderSlider.onChange(125);
 await new Promise((resolve) => setImmediate(resolve));
+assert.deepEqual(memoryPreviewCalls, []);
+assert.deepEqual(runtimeCalls, []);
+assert.equal(typeof retainedRenderSlider.onCommit, 'function');
+
+retainedRenderSlider.onCommit(125);
+await new Promise((resolve) => setImmediate(resolve));
 assert.deepEqual(memoryPreviewCalls, [{ renderScale: 125 }]);
 assert.deepEqual(runtimeCalls, [{ renderScale: 125 }]);
 assert.strictEqual(overlay.settingComponents.control_renderScale, retainedRenderSlider);
@@ -278,7 +314,19 @@ assert.equal(retainedRenderSlider.displayValue, 117);
 assert.equal(retainedRenderSlider.dragging, true);
 assert.equal(retainedRenderSlider.reconcileCount, 1);
 assert.equal(releasedItems.includes(retainedRenderSlider), false);
-assert.equal(retainedRenderSlider.onCommit, undefined);
+
+runtimeCalls.length = 0;
+memoryPreviewCalls.length = 0;
+releasedItems.length = 0;
+const retainedTransparencyToggle = overlay.settingComponents.control_disableTransparency;
+retainedTransparencyToggle.value = true;
+retainedTransparencyToggle.onChange(true);
+await new Promise((resolve) => setImmediate(resolve));
+assert.deepEqual(memoryPreviewCalls, [{ disableTransparency: true }]);
+assert.deepEqual(runtimeCalls, [{ disableTransparency: true }]);
+assert.strictEqual(overlay.settingComponents.control_disableTransparency, retainedTransparencyToggle);
+assert.equal(retainedTransparencyToggle.reconcileCount, 1);
+assert.equal(releasedItems.includes(retainedTransparencyToggle), false);
 
 overlay.tempSettings.renderScale = 100;
 runtimeCalls.length = 0;
@@ -318,12 +366,26 @@ await new Promise((resolve) => setImmediate(resolve));
 assert.deepEqual(memoryPreviewCalls, [{ uiScale: 87 }]);
 assert.equal(fileSaveCalls.length, 0);
 assert.deepEqual(runtimeCalls.map(({ uiScale }) => uiScale), [95, 87, 87]);
+assert.strictEqual(overlay.settingComponents.control_uiScale, retainedSlider);
+assert.equal(retainedSlider.reconcileCount, 3);
+assert.equal(releasedItems.includes(retainedSlider), false);
 
+await overlay.settingComponents.cancel_btn.onClick();
+assert.equal(overlay.closed, true);
+assert.deepEqual(
+    rollbackAnimations.find(({ id }) => id === 'control_uiScale'),
+    {
+        id: 'control_uiScale',
+        value: 100,
+        options: { duration: 0.4, easing: 'easeOutExpo', notify: false }
+    }
+);
+assert.deepEqual(memoryPreviewCalls.at(-1), { uiScale: 87 });
 overlay.onCloseComplete();
 await new Promise((resolve) => setImmediate(resolve));
 await new Promise((resolve) => setImmediate(resolve));
-assert.deepEqual(memoryPreviewCalls.at(-1), { uiScale: 100 });
-assert.deepEqual(runtimeCalls.at(-1), { uiScale: 100 });
+assert.deepEqual(memoryPreviewCalls.at(-1), { uiScale: 100, disableTransparency: false });
+assert.deepEqual(runtimeCalls.at(-1), { uiScale: 100, disableTransparency: false });
 
 assert.match(baseOverlaySource, /const runtimeUiScale = Number\(changedSettings\.uiScale\) \/ 100;/);
 assert.match(baseOverlaySource, /Number\.isFinite\(runtimeUiScale\) && runtimeUiScale > 0/);
@@ -332,7 +394,11 @@ assert.match(loadingSceneSource, /this\.presentation\?\.applyRuntimeSettings\(ch
 assert.match(presentationSource, /this\.content\?\.applyRuntimeSettings\?\.\(changedSettings\);/);
 assert.match(loadingSequenceSource, /this\.titleMenu\.applyRuntimeSettings\(changedSettings\);/);
 assert.match(titleContentSource, /this\.titleMenu\.applyRuntimeSettings\(changedSettings\);/);
-for (const settingKey of ['renderScale', 'tooltipDelaySeconds', 'bgmVolume', 'sfxVolume']) {
+assert.match(
+    settingsSource,
+    /onChange\(\(val\) => \{ this\.#handleSettingInput\('renderScale', val, \{ preview: false \}\); \}\)[\s\S]*?onCommit\(\(val\) => \{ this\.#handleSettingInput\('renderScale', val\); \}\)/
+);
+for (const settingKey of ['tooltipDelaySeconds', 'bgmVolume', 'sfxVolume']) {
     assert.match(
         settingsSource,
         new RegExp(`onChange\\(\\(val\\) => \\{ this\\.#handleSettingInput\\('${settingKey}', val\\); \\}\\)`)
@@ -340,7 +406,7 @@ for (const settingKey of ['renderScale', 'tooltipDelaySeconds', 'bgmVolume', 'sf
 }
 assert.doesNotMatch(
     settingsSource,
-    /onCommit\(\(val\) => \{ this\.#handleSettingInput\('(renderScale|tooltipDelaySeconds|bgmVolume|sfxVolume)'/
+    /onCommit\(\(val\) => \{ this\.#handleSettingInput\('(tooltipDelaySeconds|bgmVolume|sfxVolume)'/
 );
 
 console.log('ui scale live preview contract: ok');

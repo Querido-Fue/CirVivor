@@ -232,6 +232,7 @@ function _getHexaHiveProjectedCellGap(enemyA, enemyB, dirX, dirY, fallbackDistan
  * @param {number} offsetX - X축 추가 오프셋입니다.
  * @param {number} offsetY - Y축 추가 오프셋입니다.
  * @param {number} maxDistance - 적별 최대 오프셋 거리입니다.
+ * @returns {void}
  */
 function _addHexaHivePullOffset(pullOffsetById, enemy, offsetX, offsetY, maxDistance) {
     if (!Number.isInteger(enemy?.id)) {
@@ -253,6 +254,7 @@ function _addHexaHivePullOffset(pullOffsetById, enemy, offsetX, offsetY, maxDist
  * 누적된 합체 예열 오프셋을 적 인스턴스에 반영합니다.
  * @param {Map<number, object>} activeMergeCandidatesById - 활성 합체 후보 맵입니다.
  * @param {Map<number, {x:number, y:number, maxDistance:number}>} pullOffsetById - 오프셋 누적 맵입니다.
+ * @returns {void}
  */
 function _applyHexaHivePullOffsets(activeMergeCandidatesById, pullOffsetById) {
     for (const [enemyId, pullOffset] of pullOffsetById.entries()) {

@@ -9,6 +9,7 @@ import { clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.j
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} hoverTiltOptions - hover tilt 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions) {
     if (!hoverTiltOptions) {
@@ -33,6 +34,7 @@ export function updateTitleMenuTiltState(renderState, runtimeState, delta, hover
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} spotlightOptions - spotlight 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions) {
     if (!spotlightOptions) {
@@ -52,6 +54,7 @@ export function updateTitleMenuSpotlightState(runtimeState, delta, spotlightOpti
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} borderOptions - hoverBorder 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuBorderState(runtimeState, delta, borderOptions) {
     if (!borderOptions) {
@@ -72,6 +75,7 @@ export function updateTitleMenuBorderState(runtimeState, delta, borderOptions) {
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} particleOptions - particle 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions) {
     if (!particleOptions) {
@@ -143,6 +147,7 @@ export function updateTitleMenuParticleState(renderState, runtimeState, delta, p
  * 카드 ripple 상태를 갱신합니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
+ * @returns {void}
  */
 export function updateTitleMenuRippleState(runtimeState, delta) {
     const ripples = runtimeState.ripples;
@@ -164,6 +169,7 @@ export function updateTitleMenuRippleState(runtimeState, delta) {
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {object} rippleOptions - ripple 옵션입니다.
+ * @returns {void}
  */
 export function pushTitleMenuRipple(renderState, runtimeState, rippleOptions) {
     runtimeState.ripples.push({
@@ -255,6 +261,7 @@ function _createTitleMenuParticles(renderState, particleOptions) {
  * @param {object} particle - 재설정할 particle입니다.
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} particleOptions - particle 옵션입니다.
+ * @returns {void}
  */
 function _resetTitleMenuParticle(particle, renderState, particleOptions) {
     const panelRect = renderState.panelRect;

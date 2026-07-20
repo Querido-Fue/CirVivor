@@ -125,6 +125,7 @@ const getTitleBurstAccelResponse = (enemy) => {
 /**
  * 일반 적 객체 내부에 타이틀 전용 변수 풀이 존재하도록 보장/초기화합니다.
  * @param {object} enemy 검사할 적 인스턴스
+ * @returns {void}
  */
 export const ensureTitleEnemyState = (enemy) => {
     if (!enemy) return;

@@ -22,6 +22,7 @@ function dispatchGameSceneCommand(command, commandHandlers) {
  * 게임 씬 시뮬레이션 명령 목록을 순서대로 적용합니다.
  * @param {object[]} [commands=[]] - 적용할 명령 목록입니다.
  * @param {Record<string, Function>} commandHandlers - 명령 타입별 handler입니다.
+ * @returns {void}
  */
 export function applyGameSceneSimulationCommands(commands = [], commandHandlers = {}) {
     if (!Array.isArray(commands) || commands.length === 0) {

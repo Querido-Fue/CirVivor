@@ -74,7 +74,7 @@ function resolveTitleMenuCardRevealConfig(cardId) {
 
 /**
  * @class TitleMenu
- * @description 타이틀 화면 오른쪽의 불투명 카드·보조 pane을 배치하고, overlay 세션 기반 효과 텍스처,
+ * @description 타이틀 화면 오른쪽의 카드·보조 메뉴와 두 glass pane을 배치하고, overlay 세션 기반 효과 텍스처,
  * 포인터 상호작용, 버전 링크 및 overlay·씬 전환 액션을 조정합니다.
  */
 export class TitleMenu {
@@ -166,7 +166,7 @@ export class TitleMenu {
     }
 
     /**
-     * 두 외곽 pane, 보조 타일, 카드와 버전 라벨을 overlay 세션에 순서대로 그립니다.
+     * 선행 WebGL 배치를 flush한 뒤 두 외곽 pane, 보조 타일, 카드와 버전 라벨을 overlay 세션에 순서대로 그립니다.
      * 세션이 이미 정리되었으면 아무 작업도 하지 않습니다.
      * @returns {void}
      */
@@ -175,6 +175,7 @@ export class TitleMenu {
             return;
         }
 
+        getDisplaySystem()?.webGLHandler?.flushAll();
         const paneLayout = this.currentPaneLayout || this.#getRightPaneLayout();
         const paneRenderState = buildTitleMenuPaneRenderState({
             paneLayout,
@@ -191,11 +192,13 @@ export class TitleMenu {
             paneRenderState.utilityPane,
             this.utilityPaneInteractionState
         );
-        const backdropPanelStyle = this.#getBackdropPaneStyle();
+        const backdropPanelStyle = this.#getBackdropPaneStyle(false);
+        const opaqueBackdropPanelStyle = this.#getBackdropPaneStyle(true);
 
         renderTitleMenuGlassPanel(this.session, {
             panelRect: paneRenderState.cardPane,
             panelStyle: backdropPanelStyle,
+            opaquePanelStyle: opaqueBackdropPanelStyle,
             alpha: paneRenderState.cardPane.alpha,
             effectTextureCanvas: cardPaneTextureCanvas
         });
@@ -203,11 +206,13 @@ export class TitleMenu {
         renderTitleMenuGlassPanel(this.session, {
             panelRect: paneRenderState.utilityPane,
             panelStyle: backdropPanelStyle,
+            opaquePanelStyle: opaqueBackdropPanelStyle,
             alpha: paneRenderState.utilityPane.alpha,
             effectTextureCanvas: utilityPaneTextureCanvas
         });
 
-        const panelStyle = this.#getPanelStyle();
+        const panelStyle = this.#getPanelStyle(false);
+        const opaquePanelStyle = this.#getPanelStyle(true);
         for (const menuEntry of this.secondaryMenuEntries) {
             const renderState = this.utilityTileRenderMap.get(menuEntry.id);
             const runtimeState = this.utilityTileStateMap.get(menuEntry.id);
@@ -222,6 +227,7 @@ export class TitleMenu {
             renderTitleMenuGlassPanel(this.session, {
                 panelRect: renderState.panelRect,
                 panelStyle,
+                opaquePanelStyle,
                 alpha: renderState.alpha,
                 transformMatrix: runtimeState.transformMatrix,
                 perspective: runtimeState.perspective,
@@ -246,6 +252,7 @@ export class TitleMenu {
             renderTitleMenuGlassPanel(this.session, {
                 panelRect: renderState.panelRect,
                 panelStyle,
+                opaquePanelStyle,
                 alpha: renderState.alpha,
                 transformMatrix: runtimeState.transformMatrix,
                 perspective: runtimeState.perspective,
@@ -286,7 +293,7 @@ export class TitleMenu {
     }
 
     /**
-     * 테마 변경 시 SVG·효과 색상을 갱신하고 UI 스케일 변경은 전체 배치를 재계산합니다.
+     * 테마 변경 시 SVG·효과 색상을 갱신하고, 투명도 설정은 overlay 세션에 전달하며, UI 스케일 변경은 전체 배치를 재계산합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 집합입니다.
      * @returns {void}
      */
@@ -294,6 +301,10 @@ export class TitleMenu {
         if (changedSettings.theme !== undefined) {
             this.#refreshMenuIcons();
             this.#syncThemeEffectOptions();
+        }
+
+        if (changedSettings.disableTransparency !== undefined && this.session) {
+            this.session.setDisableTransparency(getSetting('disableTransparency'));
         }
 
         if (changedSettings.uiScale !== undefined) {
@@ -569,7 +580,7 @@ export class TitleMenu {
     }
 
     /**
-     * 바깥 pane의 상호작용 상태를 갱신합니다.
+     * 바깥 glass 판넬의 상호작용 상태를 갱신합니다.
      * @param {number} delta - 프레임 델타입니다.
      * @param {object} paneLayout - 렌더 배치 정보입니다.
      * @private
@@ -654,7 +665,7 @@ export class TitleMenu {
     }
 
     /**
-     * 오른쪽 패널과 하단 보조 메뉴 배치를 필요할 때 계산하고 다음 resize까지 재사용합니다.
+     * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 필요할 때 계산하고 다음 resize까지 재사용합니다.
      * @returns {object} 캐시된 오른쪽 패널 배치 정보입니다.
      * @private
      */
@@ -746,21 +757,23 @@ export class TitleMenu {
 
     /**
      * 카드 패널 스타일을 반환합니다.
+     * @param {boolean} [disableTransparency=false] - 불투명 스타일 반환 여부입니다.
      * @returns {object} 패널 렌더 옵션입니다.
      * @private
      */
-    #getPanelStyle() {
-        return getMenuPanelStyle(true);
+    #getPanelStyle(disableTransparency = false) {
+        return getMenuPanelStyle(disableTransparency);
     }
 
     /**
-     * 오른쪽 보조 불투명 패널 스타일을 반환합니다.
+     * 오른쪽 보조 glass 패널 스타일을 반환합니다.
+     * @param {boolean} [disableTransparency=false] - 불투명 스타일 반환 여부입니다.
      * @returns {object} 패널 렌더 옵션입니다.
      * @private
      */
-    #getBackdropPaneStyle() {
+    #getBackdropPaneStyle(disableTransparency = false) {
         const unifiedStroke = this.#getUnifiedOuterPaneStrokeColor();
-        return getMenuBackdropPaneStyle(true, unifiedStroke);
+        return getMenuBackdropPaneStyle(disableTransparency, unifiedStroke);
     }
 
     /**

@@ -45,6 +45,7 @@ function getEnemyBaseCollisionRadius(enemyType, width, height) {
  * @param {number} radius
  * @param {string} stroke
  * @param {number} lineWidth
+ * @returns {void}
  */
 function drawDebugCircle(layer, x, y, radius, stroke, lineWidth) {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(radius) || radius <= 0) {
@@ -66,6 +67,7 @@ function drawDebugCircle(layer, x, y, radius, stroke, lineWidth) {
 /**
  * 디버그 모드에서 적 충돌 기준 원을 렌더링합니다.
  * @param {{enemyType?: string, localCenters?: {x?: number, y?: number}[]|null, width?: number, height?: number, rotationRadians?: number, renderX?: number, renderY?: number, layer?: string}} options
+ * @returns {void}
  */
 export function drawEnemyCollisionDebugCircles(options = {}) {
     if (!shouldShowHitboxes()) {

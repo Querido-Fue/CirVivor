@@ -17,7 +17,7 @@ const [source, snapshotUtilsSource] = await Promise.all([
     readFile(SOURCE_PATH, 'utf8'),
     readFile(SNAPSHOT_UTILS_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = '8eba2b67d33865b719544f605c4018047688fa57ba66dab997b2a23514c24996';
+const EXECUTABLE_SOURCE_HASH = 'bb131ee4a378951a333f8d7df83f5d412f1cb108f33f2e56a0faa79c51f05e08';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
@@ -92,6 +92,14 @@ async function loadWorldRenderStateResolver() {
             }
         }
     ));
+    modules.set('util/number_util.js', createSyntheticModule(
+        'util/number_util.js',
+        {
+            resolveFiniteNumber(value, fallback) {
+                return Number.isFinite(value) ? value : fallback;
+            }
+        }
+    ));
     modules.set('../game_scene_snapshot_utils.js', new vm.SourceTextModule(
         snapshotUtilsSource,
         { context, identifier: SNAPSHOT_UTILS_PATH }
@@ -137,7 +145,8 @@ test('world renderer JSDoc은 out identity, live 배열, 부분 쓰기와 void �
         'function renderWall\\(wall, fill, offsetY\\)',
         'function renderCircleEntity\\(entity, fill, offsetY\\)',
         'function renderPlayer\\(player, offsetY\\)',
-        'function renderProjectile\\(projectile, fill, offsetY\\)',
+        'function renderProjectileRun\\(diameter, fill, centers, renderOptions\\)',
+        'function renderProjectiles\\(projectiles, fill, offsetY\\)',
         'export function drawGameSceneWorldObjects\\(options = EMPTY_WORLD_RENDER_OPTIONS\\)'
     ]) {
         assert.match(findLeadingJsDoc(source, declaration), /@returns \{void\}/);

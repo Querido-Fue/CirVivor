@@ -12,6 +12,7 @@ import {
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {object} spotlightOptions - spotlight 옵션입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptions, effectColor) {
     const gradient = context.createRadialGradient(
@@ -39,6 +40,7 @@ export function drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptio
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} borderOptions - hoverBorder 옵션입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardBorder(context, runtimeState, renderState, borderOptions, effectColor) {
     const baseWidth = Math.max(0.5, borderOptions.width || 1);
@@ -88,6 +90,7 @@ export function drawTitleMenuCardBorder(context, runtimeState, renderState, bord
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardParticles(context, renderState, runtimeState, effectColor) {
     const centerX = renderState.panelRect.w * 0.5;
@@ -121,6 +124,7 @@ export function drawTitleMenuCardParticles(context, renderState, runtimeState, e
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardRipples(context, runtimeState, effectColor) {
     for (const ripple of runtimeState.ripples) {

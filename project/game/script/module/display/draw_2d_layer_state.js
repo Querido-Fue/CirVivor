@@ -33,6 +33,7 @@ export function normalizeDrawLayerTransform(options = {}) {
  * 등록된 레이어 transform을 컨텍스트에 적용합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {{scaleX:number, scaleY:number}} transform - 적용할 transform입니다.
+ * @returns {void}
  */
 export function applyDrawLayerTransform(context, transform) {
     if (!context || typeof context.setTransform !== 'function') {
@@ -46,6 +47,7 @@ export function applyDrawLayerTransform(context, transform) {
 /**
  * 레이어 컨텍스트를 프레임 기본 상태로 되돌립니다.
  * @param {CanvasRenderingContext2D} context - 초기화할 컨텍스트입니다.
+ * @returns {void}
  */
 export function resetDrawContextState(context) {
     if (typeof context.resetTransform === 'function') {
@@ -73,6 +75,7 @@ export function resetDrawContextState(context) {
  * @param {object} cache - 레이어별 스타일 캐시입니다.
  * @param {object} styles - 적용할 스타일입니다.
  * @param {{shadowBlur:number, shadowColor:string}} persistentShadow - 지속 그림자 상태입니다.
+ * @returns {void}
  */
 export function applyDraw2DStyles(context, cache, styles, persistentShadow) {
     let fill = styles.fill || null;
@@ -141,6 +144,7 @@ export function applyDraw2DStyles(context, cache, styles, persistentShadow) {
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} cache - 레이어별 스타일 캐시입니다.
  * @param {object} styles - 적용할 스타일입니다.
+ * @returns {void}
  */
 function applyDrawTextStyles(context, cache, styles) {
     const font = styles.font || DEFAULT_DRAW_TEXT_FONT;

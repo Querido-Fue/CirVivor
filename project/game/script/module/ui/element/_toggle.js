@@ -4,7 +4,11 @@ import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "in
 import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
 import { colorUtil, formatRgba } from "util/color_util.js";
+import { clamp01 } from "util/number_util.js";
+import { getData } from "data/data_handler.js";
 import { DropdownElement } from "./_dropdown.js";
+
+const TOGGLE_ANIMATION = getData('UI_CONSTANTS').TOGGLE_ANIMATION;
 
 /**
  * @class ToggleElement
@@ -50,22 +54,81 @@ export class ToggleElement extends BaseUIElement {
     }
 
     /**
-     * 값을 설정하고 애니메이션을 재생합니다.
-     * @param {boolean} newValue 
+     * 새 레이아웃의 배치·테마 스타일만 받아 진행 중인 토글 보간을 유지합니다.
+     * @param {ToggleElement|null|undefined} source - 새 레이아웃이 만든 토글입니다.
+     * @returns {ToggleElement} 현재 토글입니다.
+     */
+    reconcileLayoutFrom(source) {
+        if (!source || source === this) {
+            return this;
+        }
+
+        const layoutFields = [
+            'parent', 'layer', 'x', 'y', 'width', 'height',
+            'activeColor', 'inactiveColor', 'knobColor', 'onChange',
+            'alpha', 'shadow', 'visible', 'clickAble', 'tooltip',
+            'hoverScaleMultiplier', 'pressScaleMultiplier', 'renderOrder'
+        ];
+        for (const field of layoutFields) {
+            this[field] = source[field];
+        }
+        return this;
+    }
+
+    /**
+     * 값을 설정하고 현재 위치에서 새 상태까지 토글 애니메이션을 재생합니다.
+     * @param {boolean} newValue - 새 ON/OFF 값입니다.
+     * @returns {void}
      */
     setValue(newValue) {
-        if (this.value !== newValue) {
-            this.value = newValue;
-            if (this.onChange) this.onChange(this.value);
+        void this.animateToValue(newValue, { notify: true });
+    }
 
-            if (this.#animID) remove(this.#animID.id);
-            this.#animID = animate(this, {
-                variable: 'animValue',
-                endValue: this.value ? 1 : 0,
-                duration: 0.3,
-                type: 'easeOutExpo'
-            });
+    /**
+     * 현재 위치에서 새 ON/OFF 값까지 보간합니다.
+     * @param {boolean} newValue - 새 ON/OFF 값입니다.
+     * @param {{duration?:number, easing?:string, notify?:boolean}} [options={}] - 애니메이션 및 콜백 옵션입니다.
+     * @returns {Promise<void>} 최신 목표 애니메이션이 끝나면 이행됩니다.
+     */
+    animateToValue(newValue, options = {}) {
+        const valueChanged = this.value !== newValue;
+        this.value = newValue;
+        if (valueChanged && options.notify === true && this.onChange) {
+            this.onChange(this.value);
         }
+
+        if (this.#animID) {
+            remove(this.#animID.id);
+            this.#animID = null;
+        }
+
+        const targetValue = this.value ? 1 : 0;
+        if (Object.is(this.animValue, targetValue)) {
+            this.animValue = targetValue;
+            return Promise.resolve();
+        }
+
+        const duration = Number.isFinite(options.duration) && options.duration >= 0
+            ? options.duration
+            : TOGGLE_ANIMATION.DURATION_SECONDS;
+        const easing = typeof options.easing === 'string' && options.easing.length > 0
+            ? options.easing
+            : TOGGLE_ANIMATION.EASING;
+        const animation = animate(this, {
+            variable: 'animValue',
+            startValue: 'current',
+            endValue: targetValue,
+            duration,
+            type: easing
+        });
+        this.#animID = animation;
+        return animation.promise.then(() => {
+            if (this.#animID !== animation) {
+                return;
+            }
+            this.animValue = targetValue;
+            this.#animID = null;
+        });
     }
 
     /**
@@ -104,7 +167,7 @@ export class ToggleElement extends BaseUIElement {
 
         const c1 = colorUtil().cssToRgb(this.inactiveColor);
         const c2 = colorUtil().cssToRgb(this.activeColor);
-        const t = this.animValue;
+        const t = clamp01(this.animValue);
 
         const r = Math.round(c1.r + (c2.r - c1.r) * t);
         const g = Math.round(c1.g + (c2.g - c1.g) * t);
@@ -135,11 +198,13 @@ export class ToggleElement extends BaseUIElement {
             alpha: this.alpha
         });
 
-        const knobR = h * 0.4;
+        const baseKnobR = h * 0.4;
+        const travelMorph = Math.sin(Math.PI * t);
+        const knobR = baseKnobR * (1 - travelMorph * TOGGLE_ANIMATION.KNOB_TRAVEL_SHRINK_RATIO);
         const padding = h * 0.1;
-        const startX = x + padding + knobR;
-        const endX = x + w - padding - knobR;
-        const knobX = startX + (endX - startX) * this.animValue;
+        const startX = x + padding + baseKnobR;
+        const endX = x + w - padding - baseKnobR;
+        const knobX = startX + (endX - startX) * t;
         const knobY = y + h / 2;
 
         shadowOn(this.layer, 5, ColorSchemes.Overlay.Toggle.Shadow || 'rgba(0, 0, 0, 0.2)');

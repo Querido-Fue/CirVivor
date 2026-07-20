@@ -138,6 +138,20 @@ export class SliderElement extends BaseUIElement {
     }
 
     /**
+     * 콜백을 발생시키지 않고 slider를 지정 값으로 보간합니다.
+     * @param {number} value - 새 raw/표시 목표값입니다.
+     * @param {{duration?:number, easing?:string}} [options={}] - 표시값 애니메이션 옵션입니다.
+     * @returns {Promise<void>} 최신 목표 애니메이션이 끝나면 이행됩니다.
+     */
+    animateToValue(value, options = {}) {
+        const targetValue = this.#quantizeValue(value);
+        this.value = targetValue;
+        this.dragging = false;
+        this.dragChanged = false;
+        return this.#animateDisplayValueTo(targetValue, options);
+    }
+
+    /**
          * @override
          * 마우스 드래그 동작 등을 추적하여 슬라이더 값 및 오버플로우 애니메이션을 업데이트합니다.
          */
@@ -232,22 +246,7 @@ export class SliderElement extends BaseUIElement {
             if (newValue !== this.value) {
                 this.value = newValue;
                 this.dragChanged = true;
-                if (this.#valueAnim) remove(this.#valueAnim.id);
-                const displayAnimation = animate(this, {
-                    variable: 'displayValue',
-                    startValue: 'current',
-                    endValue: this.value,
-                    duration: 0.2,
-                    type: 'easeOutExpo'
-                });
-                this.#valueAnim = displayAnimation;
-                void displayAnimation.promise.then(() => {
-                    if (this.#valueAnim !== displayAnimation) {
-                        return;
-                    }
-                    this.displayValue = this.value;
-                    this.#valueAnim = null;
-                });
+                void this.#animateDisplayValueTo(this.value);
                 if (this.onChange) this.onChange(this.value);
             }
 
@@ -315,6 +314,47 @@ export class SliderElement extends BaseUIElement {
     #getDisplayValue(value) {
         const precision = this.#getStepPrecision();
         return precision > 0 ? Number(value.toFixed(precision)) : Math.round(value);
+    }
+
+    /**
+     * 현재 표시값에서 목표값까지 단일 애니메이션을 시작합니다.
+     * @param {number} targetValue - 표시 목표값입니다.
+     * @param {{duration?:number, easing?:string}} [options={}] - 애니메이션 옵션입니다.
+     * @returns {Promise<void>} 생성한 애니메이션의 완료 Promise입니다.
+     * @private
+     */
+    #animateDisplayValueTo(targetValue, options = {}) {
+        if (this.#valueAnim) {
+            remove(this.#valueAnim.id);
+            this.#valueAnim = null;
+        }
+
+        if (Object.is(this.displayValue, targetValue)) {
+            this.displayValue = targetValue;
+            return Promise.resolve();
+        }
+
+        const duration = Number.isFinite(options.duration) && options.duration >= 0
+            ? options.duration
+            : 0.2;
+        const easing = typeof options.easing === 'string' && options.easing.length > 0
+            ? options.easing
+            : 'easeOutExpo';
+        const displayAnimation = animate(this, {
+            variable: 'displayValue',
+            startValue: 'current',
+            endValue: targetValue,
+            duration,
+            type: easing
+        });
+        this.#valueAnim = displayAnimation;
+        return displayAnimation.promise.then(() => {
+            if (this.#valueAnim !== displayAnimation) {
+                return;
+            }
+            this.displayValue = targetValue;
+            this.#valueAnim = null;
+        });
     }
 
     /**
@@ -407,6 +447,7 @@ export class SliderElement extends BaseUIElement {
 
         if (this.showValue) {
             const textY = drawY - (this.trackHeight * 2.25 * this.scale);
+            const formattedDisplayValue = this.#getDisplayValue(this.displayValue);
 
             const cNormal = this.valueColor || ColorSchemes.Overlay.Slider.ValueInactive;
             const cActive = this.activeColor || ColorSchemes.Overlay.Slider.ValueActive;
@@ -417,8 +458,8 @@ export class SliderElement extends BaseUIElement {
             render(this.layer, {
                 shape: 'text',
                 text: this.valueFormatter
-                    ? this.valueFormatter(this.displayValue)
-                    : this.#getDisplayValue(this.displayValue),
+                    ? this.valueFormatter(formattedDisplayValue)
+                    : formattedDisplayValue,
                 x: baseX + baseW / 2,
                 y: textY,
                 font: this.valueFont,

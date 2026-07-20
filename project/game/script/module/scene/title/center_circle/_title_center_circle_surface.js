@@ -10,6 +10,7 @@ const LOADING_GLOW_SURFACE_SETTINGS_SCRATCH = {};
  * @param {{surfacePoints: Array<{x:number, y:number}>}} fillData - fill 표면 포인트입니다.
  * @param {number} drawRadius - 현재 렌더 반경입니다.
  * @param {number} progress - 현재 로딩 진행률입니다.
+ * @returns {void} 표면 강조선을 렌더링만 합니다.
  */
 export function drawCenterCircleSurfaceHighlight(ctx, fillData, drawRadius, progress) {
     if (progress >= 1) {

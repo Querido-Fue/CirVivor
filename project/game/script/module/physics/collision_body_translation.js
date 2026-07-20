@@ -88,6 +88,7 @@ function getCollisionBodyTranslationScale(body, resolveBoost, moveMag) {
  * @param {object} body - 이동할 충돌 body입니다.
  * @param {number} dx - X 이동량입니다.
  * @param {number} dy - Y 이동량입니다.
+ * @returns {void}
  */
 function writeCollisionBodyTranslation(body, dx, dy) {
     body.centerX += dx;
@@ -121,6 +122,7 @@ function writeCollisionBodyTranslation(body, dx, dy) {
  * @param {object} body - 이동할 충돌 body입니다.
  * @param {number} dx - X 이동량입니다.
  * @param {number} dy - Y 이동량입니다.
+ * @returns {void}
  */
 function writeCollisionBodyReferenceTranslation(body, dx, dy) {
     if (!body.ref?.position) {
@@ -183,6 +185,7 @@ function getCollisionAxisResistanceScale(move, velocity, axisRange) {
  * @param {object} body - 이동한 충돌 body입니다.
  * @param {number} dx - X 이동량입니다.
  * @param {number} dy - Y 이동량입니다.
+ * @returns {void}
  */
 function applyCollisionAxisResistance(body, dx, dy) {
     if (body.kind !== 'enemy' || typeof body.ref.applyAxisResistance !== 'function') {

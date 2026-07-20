@@ -54,6 +54,7 @@ export function getCollisionEnemyPairProcessBudget(resolvePositions, applyNonPos
 /**
  * 패스 단위 적-적 처리 카운터를 초기화합니다.
  * @param {object[]} bodies - 충돌 body 목록입니다.
+ * @returns {void}
  */
 export function resetCollisionPassPairProcessCounts(bodies) {
     for (let i = 0; i < bodies.length; i++) {
@@ -92,6 +93,7 @@ export function shouldSkipCollisionEnemyPairByBudget(bodyA, bodyB, budget) {
  * 현재 패스에서 적-적 narrowphase 시도 횟수를 누적합니다.
  * @param {object} bodyA - 첫 번째 충돌 body입니다.
  * @param {object} bodyB - 두 번째 충돌 body입니다.
+ * @returns {void}
  */
 export function markCollisionEnemyPairProcessAttempt(bodyA, bodyB) {
     if (!areCollisionEnemyBodies(bodyA, bodyB)) {

@@ -2,6 +2,7 @@ import { nw } from './util/nw_bridge.js';
 
 /**
  * NW.js 창 닫기 요청을 게임 종료 확인 흐름에 연결합니다.
+ * @returns {void}
  */
 function handleWindowClose() {
     const game = window.Game;

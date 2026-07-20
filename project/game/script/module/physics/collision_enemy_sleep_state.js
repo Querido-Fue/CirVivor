@@ -27,6 +27,7 @@ export function readCollisionEnemySleepState(enemy, delta, epsilon = DEFAULT_EPS
  * 미리 계산한 sleep snapshot을 fixed tick에서 한 번만 전진시킵니다.
  * @param {object} enemy - 상태를 전진할 적 객체입니다.
  * @param {boolean} sleeping - read 단계에서 계산한 sleep 여부입니다.
+ * @returns {void}
  */
 export function advanceCollisionEnemySleepState(enemy, sleeping) {
     if (!sleeping) {
@@ -42,6 +43,7 @@ export function advanceCollisionEnemySleepState(enemy, sleeping) {
 /**
  * 현재 solve에서 적 body의 후보 관측이 완전한 상태로 시작하도록 초기화합니다.
  * @param {object} collisionBody - 초기화할 적 충돌 body입니다.
+ * @returns {void}
  */
 export function resetCollisionEnemySleepObservation(collisionBody) {
     if (collisionBody) {
@@ -53,6 +55,7 @@ export function resetCollisionEnemySleepObservation(collisionBody) {
  * 예산으로 pair를 생략한 두 적 body의 sleep 관측을 불완전 상태로 표시합니다.
  * @param {object|null|undefined} bodyA - 첫 번째 충돌 body입니다.
  * @param {object|null|undefined} bodyB - 두 번째 충돌 body입니다.
+ * @returns {void}
  */
 export function markCollisionEnemySleepObservationIncomplete(bodyA, bodyB) {
     if (bodyA?.kind === 'enemy') {
@@ -80,6 +83,7 @@ export function isCollisionEnemySleepObservationComplete(collisionBody) {
  * @param {number} idleTicksToSleep - sleep 전환 전 idle tick 수입니다.
  * @param {number} sleepTicks - sleep 상태 유지 tick 수입니다.
  * @param {boolean} [allowSleepTransition=true] - 후보 스캔이 완전할 때만 true로 전달합니다.
+ * @returns {void}
  */
 export function updateCollisionEnemyPostSolveSleepState(
     enemy,

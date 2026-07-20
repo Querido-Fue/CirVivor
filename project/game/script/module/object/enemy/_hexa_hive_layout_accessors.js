@@ -58,6 +58,7 @@ export function cloneHexaHiveLayout(layout) {
  * 합체 적 외곽 루프를 이루는 선분을 순회합니다.
  * @param {object|null|undefined} layout - 순회할 레이아웃입니다.
  * @param {(segment: {start: {x: number, y: number}, end: {x: number, y: number}}) => void} iteratee - 선분 콜백입니다.
+ * @returns {void}
  */
 export function forEachHexaHiveOutlineSegment(layout, iteratee) {
     if (!layout || !Array.isArray(layout.outlineVertices) || layout.outlineVertices.length < 2 || typeof iteratee !== 'function') {

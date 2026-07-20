@@ -48,4 +48,34 @@ assert.equal(renderedCommand.transformMatrix, transformMatrix);
 assert.equal(renderedCommand.perspective, perspective);
 assert.equal(renderedCommand.effectTextureCanvas, effectTextureCanvas);
 
+const mixedCommands = [];
+const mixedSession = {
+    getGlassMix: () => 0.25,
+    renderGlassPanel(command) {
+        mixedCommands.push(command);
+    }
+};
+const glassStyle = { ...baseStyle, sampleBackdrop: true, blur: 14, fill: '#224466' };
+const opaqueStyle = { ...baseStyle, sampleBackdrop: false, blur: 0, fill: '#101010' };
+renderTitleMenuGlassPanel(mixedSession, {
+    panelRect,
+    panelStyle: glassStyle,
+    opaquePanelStyle: opaqueStyle,
+    alpha: 0.8,
+    transformMatrix,
+    perspective,
+    effectTextureCanvas
+});
+
+assert.equal(mixedCommands.length, 2);
+assert.deepEqual(
+    mixedCommands.map(({ sampleBackdrop, blur, fill, alpha }) => ({ sampleBackdrop, blur, fill, alpha })),
+    [
+        { sampleBackdrop: true, blur: 14, fill: '#224466', alpha: 0.2 },
+        { sampleBackdrop: false, blur: 0, fill: '#101010', alpha: 0.6000000000000001 }
+    ]
+);
+assert.equal(mixedCommands[0].transformMatrix, transformMatrix);
+assert.equal(mixedCommands[1].effectTextureCanvas, effectTextureCanvas);
+
 console.log('title menu glass panel render contract: ok');

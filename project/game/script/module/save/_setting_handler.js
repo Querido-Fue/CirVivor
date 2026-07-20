@@ -59,8 +59,7 @@ export class SettingHandler {
          */
         this.schema = {
             theme: { type: 'string', value: DEFAULT_THEME_KEY, min: -1, max: -1, hidden: false },
-            // 호환용 deprecated 키: 기존 settings.json 값은 보존하지만 UI와 렌더 정책에서는 사용하지 않습니다.
-            disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
+            disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: false },
             language: { type: 'string', value: defaultLang, min: -1, max: -1, hidden: false },
             windowMode: { type: 'string', value: 'fullscreen', min: -1, max: -1, hidden: false },
             widescreenSupport: { type: 'bool', value: true, min: -1, max: -1, hidden: false },
@@ -329,6 +328,13 @@ export class SettingHandler {
         const markHidden = options.markHidden !== false;
         const previousTheme = this.schema.theme.value;
         const previousThemeBackground = ColorSchemes.Background;
+        const nextTheme = settings.theme === undefined
+            ? previousTheme
+            : this.#capValue('theme', settings.theme);
+
+        if (nextTheme !== previousTheme) {
+            beginThemeTransition(previousThemeBackground);
+        }
 
         for (const key in settings) {
             if (!this.schema[key]) {
@@ -343,9 +349,6 @@ export class SettingHandler {
 
         if (settings.theme !== undefined) {
             setTheme(this.schema.theme.value);
-            if (this.schema.theme.value !== previousTheme) {
-                beginThemeTransition(previousThemeBackground);
-            }
         }
     }
 }

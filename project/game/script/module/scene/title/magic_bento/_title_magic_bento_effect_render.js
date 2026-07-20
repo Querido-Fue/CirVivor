@@ -15,6 +15,7 @@ const TWO_PI = Math.PI * 2;
  * @param {number} options.spotlightY - 스포트라이트 Y 좌표입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {object} options.titleMagicBento - 타이틀 bento 설정입니다.
+ * @returns {void}
  */
 export function drawBentoGlobalSpotlight(ctx, {
     groupBounds,
@@ -64,6 +65,7 @@ export function drawBentoGlobalSpotlight(ctx, {
  * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
  * @param {object} card - 대상 카드
  * @param {number} radius - 카드 모서리 반경
+ * @returns {void}
  */
 export function drawBentoCardEffects(ctx, card, radius) {
     if (card.particles.length === 0 && card.ripples.length === 0) {
@@ -84,6 +86,7 @@ export function drawBentoCardEffects(ctx, card, radius) {
  * 카드 내부의 클릭 리플을 그립니다.
  * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
  * @param {object} card - 대상 카드
+ * @returns {void}
  */
 export function drawBentoCardRipples(ctx, card) {
     for (const ripple of card.ripples) {
@@ -122,6 +125,7 @@ export function drawBentoCardRipples(ctx, card) {
  * 카드 내부에 떠다니는 입자를 그립니다.
  * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
  * @param {object} card - 대상 카드
+ * @returns {void}
  */
 export function drawBentoCardParticles(ctx, card) {
     for (const particle of card.particles) {

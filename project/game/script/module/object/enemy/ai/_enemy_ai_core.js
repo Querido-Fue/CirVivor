@@ -295,6 +295,7 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
 /**
  * 적 AI 상태를 초기화 상태로 되돌립니다.
  * @param {object|null|undefined} enemy - 적 인스턴스입니다.
+ * @returns {void}
  */
 export function resetEnemyAIState(enemy) {
     if (!enemy) return;
@@ -306,6 +307,7 @@ export function resetEnemyAIState(enemy) {
  * @param {object} enemy - 적 인스턴스입니다.
  * @param {number} stepDelta - fixedUpdate 델타입니다.
  * @param {object} [context={}] - AI fixedUpdate 문맥입니다.
+ * @returns {void}
  */
 export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     const profile = getEnemyAIProfile(context);

@@ -109,6 +109,7 @@ export function drainSimulationCommands() {
 
 /**
  * 대기 중인 명령을 모두 폐기합니다.
+ * @returns {void}
  */
 export function clearSimulationCommands() {
     ensureSimulationCommandQueue().clear();

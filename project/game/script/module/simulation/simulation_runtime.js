@@ -85,6 +85,13 @@ function cloneSettingsSnapshot(settings = {}) {
     return { ...settings };
 }
 
+/**
+ * 대상 배열의 내용을 source 또는 fallback 값으로 제자리 교체합니다.
+ * @param {any[]} target - 내용을 교체할 대상 배열입니다.
+ * @param {any[]|null|undefined} source - 우선 적용할 원본 배열입니다.
+ * @param {any[]} fallback - source가 배열이 아닐 때 적용할 기본 배열입니다.
+ * @returns {void}
+ */
 function replaceSimulationArrayContents(target, source, fallback) {
     target.length = 0;
     const values = Array.isArray(source) ? source : fallback;
@@ -93,6 +100,12 @@ function replaceSimulationArrayContents(target, source, fallback) {
     }
 }
 
+/**
+ * 뷰포트 스냅샷을 기존 대상 객체에 정규화해 기록합니다.
+ * @param {{ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}} target - 갱신할 뷰포트 객체입니다.
+ * @param {object} [viewport={}] - 적용할 뷰포트 스냅샷입니다.
+ * @returns {void}
+ */
 function syncViewportSnapshotInto(target, viewport = {}) {
     target.ww = resolveFiniteNumber(viewport.ww, DEFAULT_VIEWPORT.ww);
     target.wh = resolveFiniteNumber(viewport.wh, DEFAULT_VIEWPORT.wh);
@@ -102,6 +115,12 @@ function syncViewportSnapshotInto(target, viewport = {}) {
     target.uiOffsetX = resolveFiniteNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX);
 }
 
+/**
+ * 입력 스냅샷을 기존 중첩 컨테이너 identity를 보존하며 동기화합니다.
+ * @param {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}} target - 갱신할 입력 객체입니다.
+ * @param {object} [input={}] - 적용할 입력 스냅샷입니다.
+ * @returns {void}
+ */
 function syncInputSnapshotInto(target, input = {}) {
     target.mousePos.x = resolveFiniteNumber(input.mousePos?.x, DEFAULT_MOUSE_POSITION.x);
     target.mousePos.y = resolveFiniteNumber(input.mousePos?.y, DEFAULT_MOUSE_POSITION.y);
@@ -126,6 +145,12 @@ function syncInputSnapshotInto(target, input = {}) {
     }
 }
 
+/**
+ * 설정 스냅샷을 기존 대상 객체에 제자리 동기화합니다.
+ * @param {Record<string, any>} target - 갱신할 설정 객체입니다.
+ * @param {object} [settings={}] - 적용할 설정 스냅샷입니다.
+ * @returns {void}
+ */
 function syncSettingsSnapshotInto(target, settings = {}) {
     const source = settings && typeof settings === 'object'
         ? settings

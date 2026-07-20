@@ -33,6 +33,7 @@ export function createWebGLLayerRenderer(mode, gl) {
 /**
  * renderer가 사용한 리소스를 해제합니다.
  * @param {object|null|undefined} renderer - 대상 renderer입니다.
+ * @returns {void}
  */
 export function destroyWebGLLayerRenderer(renderer) {
     if (renderer && typeof renderer.destroy === 'function') {
@@ -76,6 +77,7 @@ export function beginWebGLLayerFrame(renderer, mode, width, height) {
  * @param {object|null|undefined} renderer - 대상 renderer입니다.
  * @param {number} width - 새 너비입니다.
  * @param {number} height - 새 높이입니다.
+ * @returns {void}
  */
 export function resizeWebGLLayerRenderer(renderer, width, height) {
     if (_isResizableWebGLLayerRenderer(renderer)) {
@@ -88,6 +90,7 @@ export function resizeWebGLLayerRenderer(renderer, width, height) {
  * @param {object|null|undefined} renderer - 대상 renderer입니다.
  * @param {number} width - 현재 surface 너비입니다.
  * @param {number} height - 현재 surface 높이입니다.
+ * @returns {void}
  */
 export function initializeWebGLLayerRendererSize(renderer, width, height) {
     if (!renderer || width <= 0 || height <= 0) {
@@ -120,6 +123,7 @@ export function flushWebGLLayerRenderer(renderer) {
 /**
  * overlay effect renderer의 blur 캐시를 무효화합니다.
  * @param {object|null|undefined} renderer - 대상 renderer입니다.
+ * @returns {void}
  */
 export function markOverlayLayerRendererDirty(renderer) {
     if (renderer instanceof OverlayEffectRenderer) {

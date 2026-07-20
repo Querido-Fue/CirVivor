@@ -3,6 +3,11 @@ import { colorUtil, formatRgba } from 'util/color_util.js';
 import { clampFiniteNumber } from 'util/number_util.js';
 import { lerpNumber } from './_panel_effect_math.js';
 
+/**
+ * 렌더링 가능한 hover particle이 하나라도 있는지 반환합니다.
+ * @param {Array<{visible?: boolean, opacity?: number}>|unknown} particles - 검사할 particle 목록입니다.
+ * @returns {boolean} 표시 가능한 particle이 있으면 true입니다.
+ */
 function hasVisibleOverlayPanelParticle(particles) {
     if (!Array.isArray(particles)) {
         return false;
@@ -35,6 +40,7 @@ function getOverlayPanelEffectColor() {
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object} spotlightOptions - spotlight 옵션입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 사용할 효과 색상입니다.
+ * @returns {void}
  */
 function drawOverlayPanelSpotlight(context, interactionState, spotlightOptions, effectColor) {
     const gradient = context.createRadialGradient(
@@ -64,6 +70,7 @@ function drawOverlayPanelSpotlight(context, interactionState, spotlightOptions, 
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object} borderOptions - hoverBorder 옵션입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 기본 보조 색상입니다.
+ * @returns {void}
  */
 function drawOverlayPanelBorder(context, panel, interactionState, borderOptions, effectColor) {
     const baseWidth = Math.max(0.5, borderOptions.width || 1);
@@ -118,6 +125,7 @@ function drawOverlayPanelBorder(context, panel, interactionState, borderOptions,
  * @param {object} panel - 대상 패널입니다.
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 사용할 효과 색상입니다.
+ * @returns {void}
  */
 function drawOverlayPanelParticles(context, panel, interactionState, effectColor) {
     const centerX = panel.w * 0.5;
@@ -148,6 +156,7 @@ function drawOverlayPanelParticles(context, panel, interactionState, effectColor
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 사용할 효과 색상입니다.
+ * @returns {void}
  */
 function drawOverlayPanelRipples(context, interactionState, effectColor) {
     for (const ripple of interactionState.ripples) {

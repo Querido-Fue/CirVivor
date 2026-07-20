@@ -36,6 +36,7 @@ function resolveMagneticImpulseScale(options) {
  * @param {number} distanceLimit - 자기력이 유효한 최대 거리입니다.
  * @param {number} stepDelta - 고정 스텝 델타 시간입니다.
  * @param {{velocity?: {x:number, y:number}, motionScale?: number, impulseScale?: number}} [options={}] - 추가 제어 옵션입니다.
+ * @returns {void}
  */
 export const applyMagneticPoint = (target, pointPos, strength, distanceLimit, stepDelta, options = {}) => {
     if (!target || !pointPos || strength <= 0 || distanceLimit <= 0) {

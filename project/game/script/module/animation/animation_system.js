@@ -319,6 +319,7 @@ export const remove = (id) => animationSystemInstance.remove(id);
  * @param {number} duration - 지속 시간
  * @param {number} [speed=1] - 속도 배율
  * @param {boolean} [cancelOldProgress=false] - 기존 진행 취소 여부
+ * @returns {void}
  */
 export const forward = (id, duration, speed = 1, cancelOldProgress = false) => animationSystemInstance.forward(id, duration, speed, cancelOldProgress);
 
@@ -328,5 +329,6 @@ export const forward = (id, duration, speed = 1, cancelOldProgress = false) => a
  * @param {number} duration - 지속 시간
  * @param {number} [speed=1] - 속도 배율
  * @param {boolean} [cancelOldProgress=false] - 기존 진행 취소 여부
+ * @returns {void}
  */
 export const backward = (id, duration, speed = 1, cancelOldProgress = false) => animationSystemInstance.backward(id, duration, speed, cancelOldProgress);

@@ -6,7 +6,7 @@ let themeTransitionControllerInstance = null;
 
 /**
  * @class ThemeTransitionController
- * @description 이전 테마 배경색을 최상단 surface에서 감쇠해 런타임 테마 교체를 가립니다.
+ * @description 이전 테마 배경색 veil을 최상단 surface에서 감쇠해 런타임 테마 전환을 표시합니다.
  */
 export class ThemeTransitionController {
     #animationId = -1;
@@ -37,8 +37,9 @@ export class ThemeTransitionController {
     }
 
     /**
-     * 이전 테마 배경색을 완전 불투명 상태에서 0으로 감쇠합니다.
+     * 이전 테마 배경색 veil을 완전 불투명 상태에서 0으로 감쇠합니다.
      * 진행 중 재요청은 이전 완료 콜백을 무효화하고 새 색상으로 즉시 재시작합니다.
+     * 전체 화면 복사본을 만들지 않으므로 GPU readback이나 canvas 합성을 유발하지 않습니다.
      * @param {string} previousBackground - 교체 직전 테마 배경색입니다.
      * @returns {boolean} 전환 시작 여부입니다.
      */
@@ -93,7 +94,7 @@ export class ThemeTransitionController {
 }
 
 /**
- * 준비된 controller에서 테마 페이드를 시작합니다. 초기화 전 호출은 아무 작업도 하지 않습니다.
+ * 준비된 controller에서 테마 veil 페이드를 시작합니다. 초기화 전 호출은 아무 작업도 하지 않습니다.
  * @param {string} previousBackground - 교체 직전 테마 배경색입니다.
  * @returns {boolean} 전환 시작 여부입니다.
  */

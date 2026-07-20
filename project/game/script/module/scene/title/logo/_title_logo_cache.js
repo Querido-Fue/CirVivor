@@ -60,6 +60,7 @@ export function calculateTitleLogoCachePadding(shadowPasses) {
  * @param {HTMLCanvasElement} canvas - 대상 캔버스입니다.
  * @param {number} width - 목표 너비입니다.
  * @param {number} height - 목표 높이입니다.
+ * @returns {void}
  */
 export function resizeTitleLogoCacheCanvas(canvas, width, height) {
     const nextWidth = Math.ceil(clampFiniteNumber(Number(width), 1, Infinity, 1));

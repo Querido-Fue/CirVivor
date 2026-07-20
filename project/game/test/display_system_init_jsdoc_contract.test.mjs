@@ -32,7 +32,7 @@ const [
     readFile(DISPLAY_SURFACE_DATA_PATH, 'utf8'),
     readFile(SYSTEM_HANDLER_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = '9c66acfec48a4f9521e6f4ceeddc41d67a244842bcfe98989a0558fe0c58263b';
+const EXECUTABLE_SOURCE_HASH = 'b881458fa12002698e794cb576868d24efb48b4340b3b3ca8ee4837d5a94ae7f';
 const STATIC_SURFACE_IDS = Object.freeze([
     'background',
     'object',
@@ -396,6 +396,9 @@ async function loadDisplaySystem(options = {}) {
     dependencies.set('data/data_handler.js', dataHandlerModule);
     addDependency('./_surface_pool.js', { CanvasSurfacePool });
     addDependency('./_vignette_renderer.js', { VignetteRenderer });
+    addDependency('./_theme_transition_controller.js', {
+        ThemeTransitionController: class ThemeTransitionController {}
+    });
 
     const descriptorModule = new vm.SourceTextModule(displayDescriptorSource, {
         context,
@@ -462,6 +465,7 @@ async function loadSystemHandler(displayGate, events) {
                 uiOffsetX: 0
             };
             this.warmupCanvasPools = () => events.push('warmup:DisplaySystem');
+            this.initializeThemeTransition = () => events.push('themeTransition:DisplaySystem');
         }
 
         async init() {
@@ -550,7 +554,7 @@ async function loadSystemHandler(displayGate, events) {
     return module.namespace;
 }
 
-test('DisplaySystem.init JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
+test('DisplaySystem production 실행 소스 SHA-256을 현재 전환 구조로 고정한다', () => {
     assert.equal(hashExecutableSource(displaySystemSource), EXECUTABLE_SOURCE_HASH);
 });
 

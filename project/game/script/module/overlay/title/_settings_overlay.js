@@ -25,8 +25,8 @@ const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const SETTING_ROLLBACK_ANIMATION = getData('UI_CONSTANTS').SETTING_ROLLBACK_ANIMATION;
 const SETTINGS_LAYOUT = TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.LAYOUT;
-const RENDER_SCALE_COMPONENT_ID = 'control_renderScale';
 const UI_SCALE_COMPONENT_ID = 'control_uiScale';
 const UI_SCALE_EPSILON = 0.000001;
 
@@ -37,13 +37,14 @@ const UI_SCALE_EPSILON = 0.000001;
 export class SettingsOverlay extends TitleOverlay {
     #pendingTransientUiScale = null;
     #transientUiScalePromise = null;
-    #preservedSliderComponentIds = new Set();
+    #preservedComponentIds = new Set();
     #lastRuntimeUiScaleDisplayValue = null;
     #uiScaleCommitGeneration = 0;
     #uiScaleCommitPromise = null;
+    #isCancelling = false;
 
     constructor(TitleScene) {
-        super(TitleScene, { titleIconId: 'setting' });
+        super(TitleScene, { glOverlay: true, titleIconId: 'setting' });
 
         this.settingsChanged = false;
         this.settingComponents = {};
@@ -76,6 +77,9 @@ export class SettingsOverlay extends TitleOverlay {
      */
     update() {
         super.update();
+        if (this.#isCancelling) {
+            return;
+        }
         this.#syncUiScaleDisplayPreview();
     }
 
@@ -84,7 +88,7 @@ export class SettingsOverlay extends TitleOverlay {
      * 화면 내 설정 항목들(왼쪽/오른쪽 단)을 배치하여 레이아웃을 빌드합니다.
      */
     _generateLayout() {
-        const retainedSliders = this.#detachPreservedSlidersForRelayout();
+        const retainedComponents = this.#detachPreservedComponentsForRelayout();
         this._releaseElements();
         const { HEADER, LEFT_COLUMN, RIGHT_COLUMN, FOOTER } = SETTINGS_LAYOUT;
         const headerHandler = new LayoutHandler(this, this.positioningHandler)
@@ -138,7 +142,12 @@ export class SettingsOverlay extends TitleOverlay {
         const resRight = rightHandler.build();
         const resFoot = footHandler.build();
 
-        this.#restorePreservedSlidersAfterRelayout(retainedSliders, resLeft);
+        this.#restorePreservedComponentsAfterRelayout(retainedComponents, [
+            resHead,
+            resLeft,
+            resRight,
+            resFoot
+        ]);
 
         this.staticItems = [
             ...resHead.staticItems,
@@ -165,43 +174,47 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * 런타임 relayout 동안 보존 대상으로 표시된 slider를 풀 회수 대상에서 분리합니다.
-     * @returns {Map<string, import('ui/element/_slider.js').SliderElement>} component ID별 보존 slider입니다.
+     * 런타임 relayout 동안 보존 대상으로 표시된 control을 풀 회수 대상에서 분리합니다.
+     * @returns {Map<string, object>} component ID별 보존 control입니다.
      */
-    #detachPreservedSlidersForRelayout() {
-        const retainedSliders = new Map();
-        for (const componentId of this.#preservedSliderComponentIds) {
-            const slider = this.settingComponents?.[componentId];
-            if (slider) {
-                retainedSliders.set(componentId, slider);
+    #detachPreservedComponentsForRelayout() {
+        const retainedComponents = new Map();
+        for (const componentId of this.#preservedComponentIds) {
+            const component = this.settingComponents?.[componentId];
+            if (component) {
+                retainedComponents.set(componentId, component);
             }
         }
 
-        if (retainedSliders.size > 0) {
-            const retainedItems = new Set(retainedSliders.values());
+        if (retainedComponents.size > 0) {
+            const retainedItems = new Set(retainedComponents.values());
             this.dynamicItems = this.dynamicItems?.filter((entry) => !retainedItems.has(entry.item)) ?? this.dynamicItems;
         }
-        return retainedSliders;
+        return retainedComponents;
     }
 
     /**
-     * 새 레이아웃의 배치·스타일을 기존 slider에 이식하고 새 임시 slider만 풀에 반환합니다.
-     * @param {Map<string, import('ui/element/_slider.js').SliderElement>} retainedSliders - component ID별 보존 slider입니다.
-     * @param {{dynamicItems: Array<object>, components: Record<string, object>}} layoutResult - 왼쪽 열 빌드 결과입니다.
+     * 새 레이아웃의 배치·스타일을 기존 control에 이식하고 새 임시 control만 풀에 반환합니다.
+     * 값·드래그·열림·보간 상태는 기존 인스턴스에 남아 첫 렌더 전 애니메이션 소실을 막습니다.
+     * @param {Map<string, object>} retainedComponents - component ID별 보존 control입니다.
+     * @param {Array<{dynamicItems: Array<object>, components: Record<string, object>}>} layoutResults - 전체 빌드 결과입니다.
      * @returns {void}
      */
-    #restorePreservedSlidersAfterRelayout(retainedSliders, layoutResult) {
-        for (const [componentId, retainedSlider] of retainedSliders) {
-            const replacement = layoutResult.components[componentId];
-            const replacementEntry = layoutResult.dynamicItems.find((entry) => entry.item === replacement);
-            if (!replacement || !replacementEntry) {
-                releaseUIItem(retainedSlider);
+    #restorePreservedComponentsAfterRelayout(retainedComponents, layoutResults) {
+        for (const [componentId, retainedComponent] of retainedComponents) {
+            const layoutResult = layoutResults.find((result) => result.components[componentId]);
+            const replacement = layoutResult?.components[componentId];
+            const replacementEntry = layoutResult?.dynamicItems.find((entry) => entry.item === replacement);
+            if (!replacement
+                || !replacementEntry
+                || typeof retainedComponent.reconcileLayoutFrom !== 'function') {
+                releaseUIItem(retainedComponent);
                 continue;
             }
 
-            retainedSlider.reconcileLayoutFrom(replacement);
-            replacementEntry.item = retainedSlider;
-            layoutResult.components[componentId] = retainedSlider;
+            retainedComponent.reconcileLayoutFrom(replacement);
+            replacementEntry.item = retainedComponent;
+            layoutResult.components[componentId] = retainedComponent;
             releaseUIItem(replacement);
         }
     }
@@ -374,26 +387,28 @@ export class SettingsOverlay extends TitleOverlay {
 
 
     /**
-     * 설정 미리보기의 renderScale relayout 동안 현재 render slider를 보존합니다.
+     * 설정 미리보기 relayout 동안 변경을 시작한 control 인스턴스를 보존합니다.
      * @param {object} changedSettings - 변경된 설정 키와 값입니다.
      * @returns {Promise<void>}
      */
     #applyPreviewRuntimeSettings(changedSettings) {
-        const preservedSliderIds = changedSettings.renderScale !== undefined
-            ? [RENDER_SCALE_COMPONENT_ID]
-            : [];
-        return this.#applyRuntimeSettings(changedSettings, preservedSliderIds);
+        const preservedComponentIds = Object.keys(changedSettings)
+            .map((settingKey) => `control_${settingKey}`)
+            .filter((componentId) => (
+                typeof this.settingComponents?.[componentId]?.reconcileLayoutFrom === 'function'
+            ));
+        return this.#applyRuntimeSettings(changedSettings, preservedComponentIds);
     }
 
     /**
-     * 변경된 설정을 런타임에 즉시 반영하며 지정 slider의 relayout 상태를 보존합니다.
+     * 변경된 설정을 런타임에 즉시 반영하며 지정 control의 relayout 상태를 보존합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
-     * @param {string[]} [preservedSliderIds=[]] - relayout 중 보존할 slider component ID입니다.
+     * @param {string[]} [preservedComponentIds=[]] - relayout 중 보존할 control component ID입니다.
      * @returns {Promise<void>}
      */
-    async #applyRuntimeSettings(changedSettings = {}, preservedSliderIds = []) {
-        for (const componentId of preservedSliderIds) {
-            this.#preservedSliderComponentIds.add(componentId);
+    async #applyRuntimeSettings(changedSettings = {}, preservedComponentIds = []) {
+        for (const componentId of preservedComponentIds) {
+            this.#preservedComponentIds.add(componentId);
         }
         try {
             const systemHandler = this.titleScene?.sceneSystem?.systemHandler;
@@ -403,8 +418,8 @@ export class SettingsOverlay extends TitleOverlay {
 
             await systemHandler.applyRuntimeSettings(changedSettings);
         } finally {
-            for (const componentId of preservedSliderIds) {
-                this.#preservedSliderComponentIds.delete(componentId);
+            for (const componentId of preservedComponentIds) {
+                this.#preservedComponentIds.delete(componentId);
             }
         }
     }
@@ -470,25 +485,40 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * 현재 메모리·런타임 미리보기 상태를 저장 없이 초기 스냅샷으로 되돌린 뒤 overlay를 닫습니다.
-     * @returns {Promise<void>}
+     * control의 초기값 복귀와 overlay 닫기를 같은 프레임에 시작합니다.
+     * 실제 메모리·런타임 원복은 닫기 완료 훅에서 처리합니다.
+     * @returns {void}
      */
-    async #cancelChanges() {
-        await this.#flushPendingPreview();
-        const revertedSettings = getRevertedSettings(this.initialSettings, this.tempSettings);
-        const runtimeRevertedSettings = this.#createRuntimeRevertedSettings(revertedSettings);
-        if (Object.keys(revertedSettings).length > 0) {
-            previewSettingBatch(revertedSettings);
+    #cancelChanges() {
+        if (this.#isCancelling) {
+            return;
         }
-        if (Object.keys(runtimeRevertedSettings).length > 0) {
-            await this.#applyRuntimeSettings(runtimeRevertedSettings);
-        }
-        this.#lastRuntimeUiScaleDisplayValue = this.initialSettings.uiScale;
-        this.tempSettings = { ...this.initialSettings };
-        this.#refreshChangedLabels();
 
-        this.rollbackOnClose = false;
+        this.#isCancelling = true;
+        this.#uiScaleCommitGeneration += 1;
+        void this.#animateControlsToInitialSettings();
         this.close();
+    }
+
+    /**
+     * 취소 닫기와 동시에 모든 설정 control을 초기 스냅샷 값으로 복귀시킵니다.
+     * @returns {Promise<void>} 시작한 control 애니메이션이 모두 끝나면 이행됩니다.
+     */
+    #animateControlsToInitialSettings() {
+        const animations = [];
+        for (const [settingKey, initialValue] of Object.entries(this.initialSettings)) {
+            const component = this.settingComponents?.[`control_${settingKey}`];
+            if (!component || typeof component.animateToValue !== 'function') {
+                continue;
+            }
+
+            animations.push(component.animateToValue(initialValue, {
+                duration: SETTING_ROLLBACK_ANIMATION.DURATION_SECONDS,
+                easing: SETTING_ROLLBACK_ANIMATION.EASING,
+                notify: false
+            }));
+        }
+        return Promise.all(animations).then(() => undefined);
     }
 
     /**
@@ -552,7 +582,8 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => `${v}% (${Math.round(getBaseWW() * v / 100)}×${Math.round(getBaseWH() * v / 100)})`)
-            .onChange((val) => { this.#handleSettingInput('renderScale', val); });
+            .onChange((val) => { this.#handleSettingInput('renderScale', val, { preview: false }); })
+            .onCommit((val) => { this.#handleSettingInput('renderScale', val); });
         this._addItemFooter(handler, 'title_settings_desc_render_scale', spacingScale);
 
         this._addItemHeader(handler, 'title_settings_ui_scale', 'uiScale');
@@ -568,6 +599,15 @@ export class SettingsOverlay extends TitleOverlay {
             .onChange((val) => { this.#handleUiScaleChange(val); })
             .onCommit((val) => { this.#handleUiScaleCommit(val); });
         this._addItemFooter(handler, 'title_settings_desc_ui_scale', spacingScale);
+
+        this._addItemHeader(handler, 'title_settings_disable_transparency', 'disableTransparency');
+        handler.width("parent", controlWrapWidth)
+            .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
+            .item("toggle", "control_disableTransparency").width("WW", CONTROL.TOGGLE_WIDTH_WW).height("WH", CONTROL.TOGGLE_HEIGHT_WH)
+            .setValue(this.tempSettings.disableTransparency)
+            .onChange((val) => { this.#handleSettingInput('disableTransparency', val); });
+        handler.endGroup();
+        this._addItemFooter(handler, 'title_settings_desc_transparency', spacingScale);
 
         this._addItemHeader(handler, 'title_settings_benchmark');
         handler.width("parent", controlWrapWidth)

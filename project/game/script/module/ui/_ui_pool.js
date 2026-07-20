@@ -47,6 +47,7 @@ function _createRawPoolItem(shape, poolType) {
 /**
  * 풀에서 재사용할 단순 UI 객체의 동적 속성을 제거합니다.
  * @param {object} item - 초기화할 단순 UI 객체입니다.
+ * @returns {void}
  */
 function _resetRawPoolItem(item) {
     for (const key of Object.keys(item)) {

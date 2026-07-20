@@ -52,6 +52,7 @@ export const getEnemyAIDebugPolicyKey = (policyId) => ENEMY_AI_POLICY_DEBUG_KEY_
  * @param {object|null|undefined} stats
  * @param {string} fieldName
  * @param {number} [amount=1]
+ * @returns {void}
  */
 export const incrementEnemyAIDebugCounter = (stats, fieldName, amount = 1) => {
     if (stats?.enabled !== true || typeof fieldName !== 'string' || fieldName.length === 0) {
@@ -67,6 +68,7 @@ export const incrementEnemyAIDebugCounter = (stats, fieldName, amount = 1) => {
  * @param {object|null|undefined} stats
  * @param {string} policyId
  * @param {number} durationMs
+ * @returns {void}
  */
 export const recordEnemyAIDebugPolicySample = (stats, policyId, durationMs) => {
     if (stats?.enabled !== true || !Number.isFinite(durationMs) || durationMs < 0) {

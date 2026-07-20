@@ -124,6 +124,7 @@ const resolveRotationTargetAngleRadians = (enemy, state, steeringDir) => {
  * @param {{x?: number, y?: number}|null|undefined} steeringDir - 현재 조향 방향입니다.
  * @param {object|null|undefined} footprintMetrics - AI footprint 메트릭입니다.
  * @param {object|null|undefined} profile - AI 품질 프로필입니다.
+ * @returns {void}
  */
 export function applyEnemyAIRotationIntent(enemy, state, steeringDir, footprintMetrics, profile) {
     if (!enemy || enemy.type !== HEXA_HIVE_TYPE) {

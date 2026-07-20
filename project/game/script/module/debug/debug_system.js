@@ -274,6 +274,7 @@ export function beginPerformanceSection() {
  * beginPerformanceSection으로 시작한 구간을 기록합니다.
  * @param {string} sectionName - 기록할 섹션 이름입니다.
  * @param {number} startTime - 구간 시작 시각 또는 -1입니다.
+ * @returns {void}
  */
 export function endPerformanceSection(sectionName, startTime) {
     if (!Number.isFinite(startTime) || startTime < 0) {

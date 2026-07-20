@@ -75,6 +75,7 @@ export function shouldRefreshEnemyAIDecision(state, context, forcedPolicyRefresh
  * @param {object} enemy - 적 인스턴스입니다.
  * @param {object} state - 적 AI 상태입니다.
  * @param {{x: number, y: number}} scratchDir - 계산된 steering 방향입니다.
+ * @returns {void}
  */
 export function applyEnemyAISteeringResult(enemy, state, scratchDir) {
     state.dirX = scratchDir.x;

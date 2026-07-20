@@ -180,6 +180,7 @@ async function loadSystemHandler(uiGate, events) {
             uiOffsetX: 0
         };
         instance.warmupCanvasPools = () => events.push('warmup:DisplaySystem');
+        instance.initializeThemeTransition = () => events.push('themeTransition:DisplaySystem');
     });
     const AnimationSystem = makeSystemClass('AnimationSystem', (instance) => {
         instance.warmup = async () => events.push('warmup:AnimationSystem');

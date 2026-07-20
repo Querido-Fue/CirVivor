@@ -14,6 +14,7 @@ function shouldCullObjectSystemEnemyAfterInterpolation(enemy, ww, objectWH, enem
  * 적의 합체 직후 렌더 정착 오프셋을 갱신합니다.
  * @param {object|null|undefined} enemy - 갱신 대상 적입니다.
  * @param {number} delta - 가변 프레임 델타입니다.
+ * @returns {void}
  */
 function updateObjectSystemEnemyMergePresentation(enemy, delta) {
     if (!enemy || typeof enemy.updateMergeSettleOffset !== 'function') {
@@ -33,6 +34,7 @@ function updateObjectSystemEnemyMergePresentation(enemy, delta) {
  * @param {number} options.enemyCullOutsideRatio - 화면 밖 제거 여백 비율입니다.
  * @param {number} options.delta - 가변 프레임 델타입니다.
  * @param {(index: number) => void} options.releaseEnemyAt - 적 반납 콜백입니다.
+ * @returns {void}
  */
 export function updateObjectSystemEnemies(options) {
     const enemies = Array.isArray(options?.enemies) ? options.enemies : [];

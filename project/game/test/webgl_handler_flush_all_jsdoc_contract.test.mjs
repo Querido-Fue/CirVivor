@@ -21,7 +21,7 @@ const { WebGLBatch } = await loadGameModule('display/webgl/_webgl_batch.js');
 const { EffectRenderer } = await loadGameModule('display/webgl/_effect_renderer.js');
 const { OverlayEffectRenderer } = await loadGameModule('display/webgl/_overlay_effect_renderer.js');
 
-const HANDLER_EXECUTABLE_HASH = 'add9444c8b96515c2c8580c070c1b05dda06d2cb16d4d9c1f535dd1eda611b06';
+const HANDLER_EXECUTABLE_HASH = '80706f8f581167d4316f1e5ab3c7ec6c4d6e14d3906927dbd9a14999cf3d4f03';
 const ADAPTER_EXECUTABLE_HASH = 'd543b3cf532b4f1653cc1d48e679a05e1609377161314ecf665b33801ded3818';
 
 function hashExecutableSource(source, expectedJsDocCount) {

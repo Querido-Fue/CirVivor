@@ -46,6 +46,7 @@ function resolveHudEnemyCount(sceneSnapshot, objectSystem) {
 /**
  * HUD 제목을 렌더합니다.
  * @param {{ww: number, wh: number, titleFont: number, titleFontString: string}} metrics - HUD 배치 값입니다.
+ * @returns {void}
  */
 function renderHudTitle(metrics) {
     const renderOptions = HUD_TITLE_RENDER_OPTIONS;
@@ -62,6 +63,7 @@ function renderHudTitle(metrics) {
  * @param {{statsX: number, statsFontString: string}} metrics - HUD 배치 값입니다.
  * @param {string} text - 표시할 통계 문자열입니다.
  * @param {number} y - 텍스트 기준 Y 좌표입니다.
+ * @returns {void}
  */
 function renderHudStatLine(metrics, text, y) {
     const renderOptions = HUD_STAT_RENDER_OPTIONS;
@@ -77,6 +79,7 @@ function renderHudStatLine(metrics, text, y) {
  * 적 수 텍스트를 렌더합니다.
  * @param {{statsX: number, statsY: number, statsFont: number, statsFontString: string}} metrics - HUD 배치 값입니다.
  * @param {number} enemyCount - 표시할 적 수입니다.
+ * @returns {void}
  */
 function renderHudEnemyCount(metrics, enemyCount) {
     renderHudStatLine(metrics, `enemy count: ${enemyCount}`, metrics.statsY);
@@ -86,6 +89,7 @@ function renderHudEnemyCount(metrics, enemyCount) {
  * 충돌 통계 텍스트를 렌더합니다.
  * @param {{statsX: number, statsY: number, statsFont: number, statsFontString: string}} metrics - HUD 배치 값입니다.
  * @param {object|null|undefined} collisionStats - 충돌 통계입니다.
+ * @returns {void}
  */
 function renderHudCollisionStats(metrics, collisionStats) {
     renderHudStatLine(
@@ -154,6 +158,7 @@ function createHudMetrics(ww, wh) {
 /**
  * 일반 스냅샷 기반 HUD를 렌더합니다.
  * @param {{sceneSnapshot?: object|null, collisionStats?: object|null, objectSystem?: object|null, ww?: number, wh?: number}} [options={}] - HUD 렌더 옵션입니다.
+ * @returns {void}
  */
 export function drawGameSceneHud(options = {}) {
     const sceneSnapshot = options?.sceneSnapshot ?? null;

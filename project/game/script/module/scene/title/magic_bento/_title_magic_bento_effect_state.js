@@ -10,6 +10,7 @@ const TWO_PI = Math.PI * 2;
  * @param {boolean} isHovered - 현재 호버 여부
  * @param {object} titleMagicBento - 타이틀 bento 설정입니다.
  * @param {number} uiww - UI 기준 너비입니다.
+ * @returns {void}
  */
 export function updateBentoCardParticles(card, delta, isHovered, titleMagicBento, uiww) {
     const targetCount = titleMagicBento.PARTICLE_COUNT;
@@ -43,6 +44,7 @@ export function updateBentoCardParticles(card, delta, isHovered, titleMagicBento
  * 카드 리플 상태를 업데이트합니다.
  * @param {object} card - 대상 카드
  * @param {number} delta - 프레임 델타
+ * @returns {void}
  */
 export function updateBentoCardRipples(card, delta) {
     for (let index = card.ripples.length - 1; index >= 0; index--) {
@@ -92,6 +94,7 @@ export function createBentoCardParticle(card, titleMagicBento, uiww) {
  * @param {number} localX - 카드 내부 X 좌표
  * @param {number} localY - 카드 내부 Y 좌표
  * @param {object} titleMagicBento - 타이틀 bento 설정입니다.
+ * @returns {void}
  */
 export function spawnBentoCardRipple(card, localX, localY, titleMagicBento) {
     const baseWidth = clampFiniteNumber(Number(card.baseWidth), 0, Infinity, 0);

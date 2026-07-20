@@ -828,6 +828,7 @@ export const getCanvasOffset = () => ({
  * 특정 레이어에 2D 렌더 명령을 실행합니다.
  * @param {string} layerName - 대상 레이어 식별자입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export const render = (layerName, options) => displaySystemInstance.drawHandler.render(layerName, options);
 
@@ -835,6 +836,7 @@ export const render = (layerName, options) => displaySystemInstance.drawHandler.
  * 특정 레이어에 WebGL 렌더 명령을 실행합니다.
  * @param {string} layerName - 대상 레이어 식별자입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export const renderGL = (layerName, options) => {
     const targetLayer = resolveDisplayWebGLLayerName(layerName);
@@ -878,12 +880,14 @@ export const renderGLShapeInstances = (
  * @param {string} layerName - 레이어 식별자입니다.
  * @param {number} blur - 그림자 블러입니다.
  * @param {string} color - 그림자 색상입니다.
+ * @returns {void}
  */
 export const shadowOn = (layerName, blur, color) => displaySystemInstance.drawHandler.shadowOn(layerName, blur, color);
 
 /**
  * 레이어의 지속 그림자를 끕니다.
  * @param {string} layerName - 레이어 식별자입니다.
+ * @returns {void}
  */
 export const shadowOff = (layerName) => displaySystemInstance.drawHandler.shadowOff(layerName);
 
@@ -892,6 +896,7 @@ export const shadowOff = (layerName) => displaySystemInstance.drawHandler.shadow
  * @param {number} r - red 채널입니다.
  * @param {number} g - green 채널입니다.
  * @param {number} b - blue 채널입니다.
+ * @returns {void}
  */
 export const setBackgroundColor = (r, g, b) => {
     displaySystemInstance.webGLHandler.setBackgroundColor(r, g, b);

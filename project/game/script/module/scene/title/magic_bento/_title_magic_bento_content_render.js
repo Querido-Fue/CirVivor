@@ -14,6 +14,7 @@ const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
  * @param {object} card - 대상 카드
  * @param {object} palette - 카드 팔레트
  * @param {number} uiww - UI 기준 너비입니다.
+ * @returns {void}
  */
 export function drawBentoCardContent(ctx, card, palette, uiww) {
     const padding = clampFiniteNumber(uiww * TITLE_MAGIC_BENTO.CONTENT_PADDING_UIWW_RATIO, 16, Infinity, 16);
@@ -68,6 +69,7 @@ export function drawBentoCardContent(ctx, card, palette, uiww) {
  * @param {number} options.padding - 카드 내부 여백입니다.
  * @param {string} options.titleText - 제목 문자열입니다.
  * @param {string} options.descriptionText - 설명 문자열입니다.
+ * @returns {void}
  */
 function drawBentoHeroCardText(ctx, card, palette, {
     padding,
@@ -106,6 +108,7 @@ function drawBentoHeroCardText(ctx, card, palette, {
  * @param {number} options.padding - 카드 내부 여백입니다.
  * @param {number} options.iconSize - 아이콘 크기입니다.
  * @param {string} options.titleText - 제목 문자열입니다.
+ * @returns {void}
  */
 function drawBentoCompactCardText(ctx, card, {
     padding,
@@ -129,6 +132,7 @@ function drawBentoCompactCardText(ctx, card, {
  * @param {number} options.padding - 카드 내부 여백입니다.
  * @param {string} options.titleText - 제목 문자열입니다.
  * @param {string} options.descriptionText - 설명 문자열입니다.
+ * @returns {void}
  */
 function drawBentoDefaultCardText(ctx, card, palette, {
     padding,

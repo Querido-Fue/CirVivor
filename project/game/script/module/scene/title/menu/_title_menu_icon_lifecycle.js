@@ -28,6 +28,7 @@ export function buildTitleMenuIconSources(cards, secondaryMenuEntries) {
  * 타이틀 메뉴 SVG 아이콘을 비동기로 미리 로드합니다.
  * @param {SVGDrawer} svgDrawer - SVG drawer 인스턴스입니다.
  * @param {string[]} iconSources - 로드할 SVG 아이콘 경로 목록입니다.
+ * @returns {void}
  */
 export function preloadTitleMenuIconSources(svgDrawer, iconSources) {
     if (!svgDrawer || !Array.isArray(iconSources)) {
@@ -44,6 +45,7 @@ export function preloadTitleMenuIconSources(svgDrawer, iconSources) {
  * 로드된 타이틀 메뉴 SVG 아이콘 참조를 해제합니다.
  * @param {SVGDrawer} svgDrawer - SVG drawer 인스턴스입니다.
  * @param {string[]} iconSources - 해제할 SVG 아이콘 경로 목록입니다.
+ * @returns {void}
  */
 export function releaseTitleMenuIconSources(svgDrawer, iconSources) {
     if (!svgDrawer || !Array.isArray(iconSources)) {

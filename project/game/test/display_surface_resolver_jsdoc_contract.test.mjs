@@ -215,6 +215,11 @@ async function loadDisplaySystemCaller(layerNameMap = createProductionLayerNameM
         './_vignette_renderer.js',
         { VignetteRenderer }
     ));
+    dependencies.set('./_theme_transition_controller.js', createSyntheticModule(
+        context,
+        './_theme_transition_controller.js',
+        { ThemeTransitionController: class ThemeTransitionController {} }
+    ));
 
     const descriptorModule = new vm.SourceTextModule(
         descriptorSource,

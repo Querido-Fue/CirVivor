@@ -187,11 +187,11 @@ assert.deepEqual({ ...animations[0].properties }, {
     type: 'easeOutExpo'
 });
 
-slider.displayValue = 50;
+slider.displayValue = 50.49;
 renderCalls.length = 0;
 slider.draw();
 const knobCommand = renderCalls.find((command) => command.shape === 'circle');
-assert.equal(knobCommand.x, 50);
+assert.equal(knobCommand.x, 50.49);
 assert.equal(formattedValue, 50);
 
 mouse.x = 500;
@@ -211,5 +211,24 @@ assert.equal(slider.isDisplayValueSettled(), true);
 mouse.pressing = false;
 slider.update();
 assert.deepEqual(committedValues, [100]);
+
+slider.displayValue = 64;
+const rollbackPromise = slider.animateToValue(20, {
+    duration: 0.4,
+    easing: 'easeOutExpo'
+});
+const rollbackAnimation = animations.at(-1);
+assert.equal(slider.value, 20);
+assert.equal(slider.dragging, false);
+assert.deepEqual({ ...rollbackAnimation.properties }, {
+    variable: 'displayValue',
+    startValue: 'current',
+    endValue: 20,
+    duration: 0.4,
+    type: 'easeOutExpo'
+});
+rollbackAnimation.finish();
+await rollbackPromise;
+assert.equal(slider.displayValue, 20);
 
 console.log('slider display value contract: ok');

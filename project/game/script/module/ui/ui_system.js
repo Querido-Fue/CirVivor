@@ -83,6 +83,7 @@ export const getLangString = (key) => {
 /**
  * 현재 프레임에 툴팁 표시를 요청합니다.
  * @param {string|string[]|object|null|undefined} content - 표시할 툴팁 콘텐츠입니다.
+ * @returns {void}
  */
 export const requestTooltip = (content) => {
     uiSystemInstance?.tooltip?.request(content);
@@ -90,6 +91,7 @@ export const requestTooltip = (content) => {
 
 /**
  * 현재 툴팁 요청을 초기화합니다.
+ * @returns {void}
  */
 export const clearTooltip = () => {
     uiSystemInstance?.tooltip?.clear();

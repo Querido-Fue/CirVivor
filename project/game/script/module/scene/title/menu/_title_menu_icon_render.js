@@ -12,6 +12,7 @@ import {
  * @param {import('display/_svg_drawer.js').SVGDrawer} svgDrawer - SVG 캐시 드로어입니다.
  * @param {string} cardId - 카드 식별자입니다.
  * @param {{x:number, y:number, w:number, h:number}} iconMetrics - 아이콘 레이아웃 정보입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardIcon(context, svgDrawer, cardId, iconMetrics) {
     if (drawTitleMenuIcon(context, svgDrawer, cardId, iconMetrics)) {
@@ -60,6 +61,7 @@ export function drawTitleMenuIcon(
  * @param {{x:number, y:number, w:number, h:number}} iconMetrics - 아이콘 레이아웃 정보입니다.
  * @param {number} [alpha=getMenuOpacity('Placeholder', 0.92)] - 플레이스홀더 알파값입니다.
  * @param {number} [cornerRadius=Math.max(4, iconMetrics.h * 0.18)] - 플레이스홀더 라운드 반경입니다.
+ * @returns {void}
  */
 export function drawTitleMenuPlaceholderIcon(
     context,

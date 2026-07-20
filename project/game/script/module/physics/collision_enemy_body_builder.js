@@ -151,6 +151,7 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
  * @param {object} body - 갱신할 충돌 body입니다.
  * @param {object} enemy - 원본 적 객체입니다.
  * @param {number} [epsilon=DEFAULT_EPSILON] - 최소 weight입니다.
+ * @returns {void}
  */
 export function syncCollisionEnemyBodyResolveState(body, enemy, epsilon = DEFAULT_EPSILON) {
     const safeEpsilon = Number.isFinite(epsilon) ? epsilon : DEFAULT_EPSILON;

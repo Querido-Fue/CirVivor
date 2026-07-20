@@ -17,5 +17,14 @@ function createMetric(base, value) {
  * 일반 UI 컴포넌트 레이아웃 상수 모음입니다.
  */
 export const UI_CONSTANTS = Object.freeze({
-    OVERLAY_PANEL_RADIUS: createMetric(UI_WIDTH_UNIT, 0.6)
+    OVERLAY_PANEL_RADIUS: createMetric(UI_WIDTH_UNIT, 0.6),
+    TOGGLE_ANIMATION: Object.freeze({
+        DURATION_SECONDS: 0.32,
+        EASING: 'easeInOutCubic',
+        KNOB_TRAVEL_SHRINK_RATIO: 0.4
+    }),
+    SETTING_ROLLBACK_ANIMATION: Object.freeze({
+        DURATION_SECONDS: 0.4,
+        EASING: 'easeOutExpo'
+    })
 });

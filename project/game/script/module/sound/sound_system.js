@@ -232,11 +232,13 @@ export const playBgm = () => soundSystemInstance?.playBgm();
 
 /**
  * BGM 정지를 요청합니다.
+ * @returns {void}
  */
 export const stopBgm = () => soundSystemInstance?.stopBgm();
 
 /**
  * BGM 볼륨 변경을 요청합니다.
  * @param {number} volume - 0~100
+ * @returns {void}
  */
 export const setBgmVolume = (volume) => soundSystemInstance?.setBgmVolume(volume);

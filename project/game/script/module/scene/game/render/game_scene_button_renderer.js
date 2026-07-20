@@ -64,6 +64,7 @@ function getGameSceneButtonFont(fontSize) {
  * 벤치마크 씬 버튼 목록을 렌더합니다.
  * @param {object[]} [buttons=[]] - 렌더할 버튼 목록입니다.
  * @param {{ww?: number}} [options={}] - 렌더 옵션입니다.
+ * @returns {void}
  */
 export function drawGameSceneButtons(buttons = [], options = {}) {
     const buttonList = Array.isArray(buttons) ? buttons : [];

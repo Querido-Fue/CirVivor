@@ -13,6 +13,7 @@ function getCollisionFrameStatValue(frameStats, fieldName) {
  * @param {object} frameStats - 기록 대상 프레임 통계 객체입니다.
  * @param {string} fieldName - 기록할 통계 필드명입니다.
  * @param {number} amount - 누적할 값입니다.
+ * @returns {void}
  */
 function addCollisionFrameStatValue(frameStats, fieldName, amount) {
     frameStats[fieldName] = getCollisionFrameStatValue(frameStats, fieldName) + amount;

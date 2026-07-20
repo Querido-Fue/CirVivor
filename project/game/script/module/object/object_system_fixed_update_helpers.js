@@ -70,6 +70,7 @@ function resolveObjectSystemEnemySpatialBoundsInto(enemy, out) {
  * active 상태인 객체 목록에 fixedUpdate를 호출합니다.
  * @param {object[]} objects - fixedUpdate 대상 객체 목록입니다.
  * @param {number} delta - 고정 스텝 시간입니다.
+ * @returns {void}
  */
 export function fixedUpdateActiveObjectList(objects, delta) {
     if (!Array.isArray(objects)) {
@@ -88,6 +89,7 @@ export function fixedUpdateActiveObjectList(objects, delta) {
 /**
  * ObjectSystem AI 공유 캐시를 비웁니다.
  * @param {{aiSharedFlowFieldByKey?: Map, aiSharedDensityFieldByKey?: Map, aiSharedPolicyTargetByKey?: Map}} system - ObjectSystem 인스턴스입니다.
+ * @returns {void}
  */
 export function clearObjectSystemAISharedCaches(system) {
     system.aiSharedFlowFieldByKey?.clear();
@@ -137,6 +139,7 @@ export function getObjectSystemEnemyDecisionGroup(enemy, fallbackIndex, decision
  * 적 상태 지속 시간을 고정 스텝 기준으로 갱신합니다.
  * @param {object} enemy - 대상 적입니다.
  * @param {number} delta - 고정 스텝 시간입니다.
+ * @returns {void}
  */
 function updateObjectSystemEnemyStatusTimer(enemy, delta) {
     if (!enemy?.status || enemy.status.remainingTime <= 0) {
@@ -158,6 +161,7 @@ function updateObjectSystemEnemyStatusTimer(enemy, delta) {
  * @param {number} options.decisionGroup - 이번 fixed step의 decision group입니다.
  * @param {number} options.decisionGroupCount - 전체 decision group 수입니다.
  * @param {(index: number) => void} options.releaseEnemyAt - 비활성 적 반납 콜백입니다.
+ * @returns {void}
  */
 export function fixedUpdateObjectSystemEnemies(options) {
     const enemies = Array.isArray(options?.enemies) ? options.enemies : [];
