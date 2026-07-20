@@ -1,5 +1,6 @@
 import { fsPromises, path } from 'util/nw_bridge.js';
-import { setTheme } from 'display/_theme_handler.js';
+import { ColorSchemes, setTheme } from 'display/_theme_handler.js';
+import { beginThemeTransition } from 'display/_theme_transition_controller.js';
 import { MathUtil } from 'util/math_util.js';
 import { getData } from 'data/data_handler.js';
 import { LANGUAGE_REGISTRY } from 'ui/lang/_language_registry.js';
@@ -58,7 +59,8 @@ export class SettingHandler {
          */
         this.schema = {
             theme: { type: 'string', value: DEFAULT_THEME_KEY, min: -1, max: -1, hidden: false },
-            disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: false },
+            // 호환용 deprecated 키: 기존 settings.json 값은 보존하지만 UI와 렌더 정책에서는 사용하지 않습니다.
+            disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             language: { type: 'string', value: defaultLang, min: -1, max: -1, hidden: false },
             windowMode: { type: 'string', value: 'fullscreen', min: -1, max: -1, hidden: false },
             widescreenSupport: { type: 'bool', value: true, min: -1, max: -1, hidden: false },
@@ -325,6 +327,8 @@ export class SettingHandler {
      */
     #applyValues(settings, options = {}) {
         const markHidden = options.markHidden !== false;
+        const previousTheme = this.schema.theme.value;
+        const previousThemeBackground = ColorSchemes.Background;
 
         for (const key in settings) {
             if (!this.schema[key]) {
@@ -339,6 +343,9 @@ export class SettingHandler {
 
         if (settings.theme !== undefined) {
             setTheme(this.schema.theme.value);
+            if (this.schema.theme.value !== previousTheme) {
+                beginThemeTransition(previousThemeBackground);
+            }
         }
     }
 }

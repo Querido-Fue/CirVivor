@@ -8,6 +8,7 @@ import { getSetting } from 'save/save_system.js';
 import { getData } from 'data/data_handler.js';
 import { CanvasSurfacePool } from './_surface_pool.js';
 import { VignetteRenderer } from './_vignette_renderer.js';
+import { ThemeTransitionController } from './_theme_transition_controller.js';
 import {
     compareDisplaySurfaceDescriptors,
     createDisplaySurfaceDescriptor,
@@ -60,6 +61,7 @@ export class DisplaySystem {
         this.dynamic2DPool = new CanvasSurfacePool('2d');
         this.dynamicWebGLPool = new CanvasSurfacePool('webgl');
         this.vignetteRenderer = new VignetteRenderer();
+        this.themeTransitionController = null;
     }
 
     /**
@@ -119,6 +121,22 @@ export class DisplaySystem {
         }
 
         this.resize();
+    }
+
+    /**
+     * AnimationSystem 준비 뒤 런타임 테마 전환 controller를 한 번 생성합니다.
+     * @returns {void}
+     */
+    initializeThemeTransition() {
+        if (this.themeTransitionController) {
+            return;
+        }
+
+        this.themeTransitionController = new ThemeTransitionController({
+            render: (layer, command) => this.drawHandler.render(layer, command),
+            getWidth: () => this.screenHandler.width,
+            getHeight: () => this.screenHandler.height
+        });
     }
 
     /**
@@ -453,6 +471,14 @@ export class DisplaySystem {
         }
 
         this.vignetteRenderer.draw(this.drawHandler);
+    }
+
+    /**
+     * 활성 런타임 테마 전환을 최상단 surface에 그립니다.
+     * @returns {void}
+     */
+    drawThemeTransition() {
+        this.themeTransitionController?.draw();
     }
 
     /**

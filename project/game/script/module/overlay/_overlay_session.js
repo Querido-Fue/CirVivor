@@ -1,7 +1,10 @@
 import { render, renderGL } from 'display/display_system.js';
 import { resolveOverlayContentSurfaceStyles } from 'display/webgl/_overlay_render_geometry.js';
+import { getData } from 'data/data_handler.js';
 import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 import { createOverlayEffectState } from './_overlay_effect_registry.js';
+
+const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
 
 /**
  * @class OverlaySession
@@ -52,7 +55,9 @@ export class OverlaySession {
         this.hasRegisteredEffects = Object.keys(this.effects).length > 0;
 
         const disableTransparency = options.disableTransparency === true;
-        this.effectiveTransparent = this.transparent && !disableTransparency;
+        this.effectiveTransparent = OVERLAY_RENDER_CONSTANTS.BACKDROP_SAMPLING_ENABLED === true
+            && this.transparent
+            && !disableTransparency;
         this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || this.hasRegisteredEffects;
 
         this.orderSequence = Math.max(0, options.orderSequence || 0);
@@ -166,11 +171,13 @@ export class OverlaySession {
     }
 
     /**
-     * 현재 세션의 투명도 비활성화 상태를 즉시 갱신합니다.
+     * 호환용 투명도 설정을 반영합니다. 전역 backdrop 정책이 꺼져 있으면 항상 불투명 상태를 유지합니다.
      * @param {boolean} disableTransparency - 투명도 비활성화 여부입니다.
      */
     setDisableTransparency(disableTransparency) {
-        this.effectiveTransparent = this.transparent && disableTransparency !== true;
+        this.effectiveTransparent = OVERLAY_RENDER_CONSTANTS.BACKDROP_SAMPLING_ENABLED === true
+            && this.transparent
+            && disableTransparency !== true;
         this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || this.hasRegisteredEffects;
         this.#syncEffectSurfaceAvailability();
         this.invalidateBlur();
@@ -291,9 +298,8 @@ export class OverlaySession {
             || this.includeOwnUISurface;
         command.sourceProvider = this.glassSourceProvider;
         this.#applyEffectTransform(command);
-        command.sampleBackdrop = command.sampleBackdrop === undefined
-            ? this.effectiveTransparent
-            : command.sampleBackdrop;
+        command.sampleBackdrop = this.effectiveTransparent
+            && command.sampleBackdrop !== false;
         renderGL(this.effectLayerId, command);
     }
 

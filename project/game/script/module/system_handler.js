@@ -97,6 +97,7 @@ export class SystemHandler {
         // 4. AnimationSystem (애니메이션 초기화)
         this.animationSystem = new AnimationSystem();
         await this.animationSystem.init();
+        this.displaySystem.initializeThemeTransition();
         this.logDebugInfo("AnimationSystem 로드");
 
         // 5. InputSystem (입력 초기화)
@@ -589,6 +590,7 @@ export class SystemHandler {
             this.soundSystem.draw();
             endPerformanceSection('frame.draw.sound', startTime);
         }
+        this.displaySystem.drawThemeTransition();
     }
 
     /**

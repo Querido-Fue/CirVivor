@@ -2,6 +2,7 @@
  * 오버레이 렌더링과 Kawase blur 합성에 사용하는 상수입니다.
  */
 export const OVERLAY_RENDER_CONSTANTS = Object.freeze({
+    BACKDROP_SAMPLING_ENABLED: false,
     BLUR_UPDATE_MODE: Object.freeze({
         DIRTY: 'dirty',
         ALWAYS: 'always'

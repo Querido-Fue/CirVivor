@@ -81,12 +81,15 @@ class TitleOverlayStub {
     }
 
     applyRuntimeSettings(changedSettings = {}) {
-        if (changedSettings.uiScale === undefined) return;
-        const uiScale = Number(changedSettings.uiScale) / 100;
-        if (Number.isFinite(uiScale) && uiScale > 0) {
-            this.uiScale = uiScale;
+        if (changedSettings.uiScale !== undefined) {
+            const uiScale = Number(changedSettings.uiScale) / 100;
+            if (Number.isFinite(uiScale) && uiScale > 0) {
+                this.uiScale = uiScale;
+            }
         }
-        this.resize();
+        if (changedSettings.uiScale !== undefined || changedSettings.renderScale !== undefined) {
+            this.resize();
+        }
     }
 
     _releaseElements() {
@@ -261,12 +264,31 @@ const titleScene = {
 };
 overlay = new SettingsOverlay(titleScene);
 
-const retainedSlider = createLayoutElement('slider', 'control_uiScale');
+overlay.resize();
+const retainedRenderSlider = overlay.settingComponents.control_renderScale;
+retainedRenderSlider.value = 125;
+retainedRenderSlider.displayValue = 117;
+retainedRenderSlider.dragging = true;
+retainedRenderSlider.onChange(125);
+await new Promise((resolve) => setImmediate(resolve));
+assert.deepEqual(memoryPreviewCalls, [{ renderScale: 125 }]);
+assert.deepEqual(runtimeCalls, [{ renderScale: 125 }]);
+assert.strictEqual(overlay.settingComponents.control_renderScale, retainedRenderSlider);
+assert.equal(retainedRenderSlider.displayValue, 117);
+assert.equal(retainedRenderSlider.dragging, true);
+assert.equal(retainedRenderSlider.reconcileCount, 1);
+assert.equal(releasedItems.includes(retainedRenderSlider), false);
+assert.equal(retainedRenderSlider.onCommit, undefined);
+
+overlay.tempSettings.renderScale = 100;
+runtimeCalls.length = 0;
+memoryPreviewCalls.length = 0;
+releasedItems.length = 0;
+
+const retainedSlider = overlay.settingComponents.control_uiScale;
 retainedSlider.value = 95;
 retainedSlider.displayValue = 95;
 retainedSlider.dragging = true;
-overlay.settingComponents = { control_uiScale: retainedSlider };
-overlay.dynamicItems = [{ id: 'control_uiScale', item: retainedSlider, dynamic: true, orderInt: 0 }];
 
 overlay.update();
 await new Promise((resolve) => setImmediate(resolve));
@@ -310,5 +332,15 @@ assert.match(loadingSceneSource, /this\.presentation\?\.applyRuntimeSettings\(ch
 assert.match(presentationSource, /this\.content\?\.applyRuntimeSettings\?\.\(changedSettings\);/);
 assert.match(loadingSequenceSource, /this\.titleMenu\.applyRuntimeSettings\(changedSettings\);/);
 assert.match(titleContentSource, /this\.titleMenu\.applyRuntimeSettings\(changedSettings\);/);
+for (const settingKey of ['renderScale', 'tooltipDelaySeconds', 'bgmVolume', 'sfxVolume']) {
+    assert.match(
+        settingsSource,
+        new RegExp(`onChange\\(\\(val\\) => \\{ this\\.#handleSettingInput\\('${settingKey}', val\\); \\}\\)`)
+    );
+}
+assert.doesNotMatch(
+    settingsSource,
+    /onCommit\(\(val\) => \{ this\.#handleSettingInput\('(renderScale|tooltipDelaySeconds|bgmVolume|sfxVolume)'/
+);
 
 console.log('ui scale live preview contract: ok');

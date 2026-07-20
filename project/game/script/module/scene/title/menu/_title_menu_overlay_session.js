@@ -1,12 +1,11 @@
 import { getData } from 'data/data_handler.js';
 import { OverlaySession } from 'overlay/_overlay_session.js';
-import { getSetting } from 'save/save_system.js';
 import { getThemeAwareMenuBorderColor } from './_title_menu_theme.js';
 
 const TITLE_MENU_OVERLAY_EFFECTS = getData('TITLE_MENU_DATA').OVERLAY_EFFECTS;
 
 /**
- * 타이틀 메뉴 glass panel용 OverlaySession을 생성합니다.
+ * 타이틀 메뉴의 WebGL 상호작용 effect panel용 OverlaySession을 생성합니다.
  * @param {object|null|undefined} displaySystem - 현재 display system입니다.
  * @returns {OverlaySession|null} 생성된 overlay session입니다.
  */
@@ -19,10 +18,9 @@ export function createTitleMenuOverlaySession(displaySystem) {
         displaySystem,
         layer: 10,
         dim: 0,
-        transparent: true,
+        transparent: false,
         glOverlay: true,
         blurUpdateMode: 'always',
-        disableTransparency: getSetting('disableTransparency'),
         orderSequence: 0,
         effects: _createTitleMenuOverlayEffects()
     });

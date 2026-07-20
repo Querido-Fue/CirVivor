@@ -716,13 +716,13 @@ export class BaseOverlay {
      */
     #drawPanels() {
         const sections = this._performanceSections;
-        const disableTransparency = getSetting('disableTransparency');
-        const defaultFill = disableTransparency
-            ? ColorSchemes.Overlay.Panel.Background
-            : ColorSchemes.Overlay.Panel.GlassBackground;
-        const defaultStroke = disableTransparency
-            ? ColorSchemes.Overlay.Panel.Border || ColorSchemes.Overlay.Panel.Background
-            : (ColorSchemes.Overlay.Panel.GlassBorder || false);
+        const usesBackdrop = this.session?.effectiveTransparent === true;
+        const defaultFill = usesBackdrop
+            ? ColorSchemes.Overlay.Panel.GlassBackground
+            : ColorSchemes.Overlay.Panel.Background;
+        const defaultStroke = usesBackdrop
+            ? (ColorSchemes.Overlay.Panel.GlassBorder || false)
+            : (ColorSchemes.Overlay.Panel.Border || ColorSchemes.Overlay.Panel.Background);
         const defaultTintColor = ColorSchemes.Overlay.Panel.GlassTint;
         const defaultEdgeColor = ColorSchemes.Overlay.Panel.GlassEdge;
         const defaultTintStrength = ColorSchemes.Overlay.Panel.GlassTintStrength;

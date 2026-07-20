@@ -5,7 +5,6 @@ import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMouse
 import { ColorSchemes } from "display/_theme_handler.js";
 import { colorUtil, formatRgba } from "util/color_util.js";
 import { createFontString, truncateTextToWidth } from "util/font_util.js";
-import { getSetting } from "save/save_system.js";
 
 /**
  * @class DropdownElement
@@ -408,7 +407,8 @@ export class DropdownElement extends BaseUIElement {
 
         const panelRadius = Math.max(2, (this.radius - 1) * this.scale);
         const panelAlpha = this.alpha * this.openProgress;
-        const disableTransparency = getSetting("disableTransparency");
+        const overlaySession = this.parent?.session || null;
+        const disableTransparency = overlaySession?.effectiveTransparent !== true;
         const transparentPanelFill = (() => {
             const rgb = colorUtil().cssToRgb(this.panelColor);
             return formatRgba(rgb.r, rgb.g, rgb.b, 0.97);
@@ -419,40 +419,22 @@ export class DropdownElement extends BaseUIElement {
         const panelStroke = disableTransparency
             ? (ColorSchemes.Overlay.Panel.Border || this.panelBorderColor)
             : (ColorSchemes.Overlay.Panel.GlassBorder || this.panelBorderColor);
-        const overlaySession = this.parent?.session || null;
         const floatingLayer = overlaySession?.uiLayerId || this.layer;
 
-        if (!disableTransparency && overlaySession?.effectiveTransparent) {
-            shadowOn(floatingLayer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
-            render(floatingLayer, {
-                shape: "roundRect",
-                x: panelRect.x,
-                y: panelRect.y,
-                w: panelRect.w,
-                h: panelRect.h,
-                radius: panelRadius,
-                fill: panelFill,
-                stroke: panelStroke,
-                lineWidth: 1,
-                alpha: panelAlpha
-            });
-            shadowOff(floatingLayer);
-        } else {
-            shadowOn(floatingLayer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
-            render(floatingLayer, {
-                shape: "roundRect",
-                x: panelRect.x,
-                y: panelRect.y,
-                w: panelRect.w,
-                h: panelRect.h,
-                radius: panelRadius,
-                fill: panelFill,
-                stroke: panelStroke,
-                lineWidth: 1,
-                alpha: panelAlpha
-            });
-            shadowOff(floatingLayer);
-        }
+        shadowOn(floatingLayer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
+        render(floatingLayer, {
+            shape: "roundRect",
+            x: panelRect.x,
+            y: panelRect.y,
+            w: panelRect.w,
+            h: panelRect.h,
+            radius: panelRadius,
+            fill: panelFill,
+            stroke: panelStroke,
+            lineWidth: 1,
+            alpha: panelAlpha
+        });
+        shadowOff(floatingLayer);
 
         const textPad = panelRect.optionH * 0.3;
         for (let i = 0; i < this.items.length; i++) {
