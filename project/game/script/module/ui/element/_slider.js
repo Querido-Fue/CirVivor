@@ -37,7 +37,7 @@ export class SliderElement extends BaseUIElement {
         this.max = properties.max !== undefined ? properties.max : 100;
         this.step = this.#normalizeStep(properties.step);
         this.value = this.#quantizeValue(properties.value !== undefined ? properties.value : this.min);
-        this.animatedValue = this.value;
+        this.displayValue = this.value;
 
         this.activeColor = properties.activeColor || ColorSchemes.Overlay.Slider.ValueActive;
         this.trackColor = properties.trackColor || ColorSchemes.Overlay.Slider.Track;
@@ -72,6 +72,69 @@ export class SliderElement extends BaseUIElement {
         if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
         this.onChange = null;
         this.onCommit = null;
+    }
+
+    /**
+     * 기존 `animatedValue` 접근 계약을 공식 표시값인 `displayValue`에 연결합니다.
+     * @returns {number} 현재 화면에 표시되는 값입니다.
+     */
+    get animatedValue() {
+        return this.displayValue;
+    }
+
+    /**
+     * 기존 `animatedValue` 쓰기를 공식 표시값인 `displayValue`에 연결합니다.
+     * @param {number} value - 새 표시값입니다.
+     */
+    set animatedValue(value) {
+        this.displayValue = value;
+    }
+
+    /**
+     * 레이아웃 재생성 결과의 배치·스타일만 받아 현재 drag와 표시값 애니메이션을 보존합니다.
+     * 전달된 slider의 raw value와 상호작용 상태는 복사하지 않습니다.
+     * @param {SliderElement|null|undefined} source - 새 레이아웃이 만든 slider입니다.
+     * @returns {SliderElement} 현재 slider입니다.
+     */
+    reconcileLayoutFrom(source) {
+        if (!source || source === this) {
+            return this;
+        }
+
+        const layoutFields = [
+            'parent', 'layer', 'x', 'y', 'width', 'height', 'trackHeight', 'knobRadius',
+            'min', 'max', 'step', 'activeColor', 'trackColor', 'knobColor', 'valueColor',
+            'valueFont', 'showValue', 'valueOffsetX', 'valueOffsetY', 'onChange', 'onCommit',
+            'valueFormatter', 'alpha', 'shadow', 'visible', 'clickAble', 'tooltip',
+            'hoverScaleMultiplier', 'pressScaleMultiplier', 'renderOrder'
+        ];
+        for (const field of layoutFields) {
+            this[field] = source[field];
+        }
+        return this;
+    }
+
+    /**
+     * 현재 표시값이 raw 목표값까지 도달했는지 반환합니다.
+     * @returns {boolean} 표시 애니메이션이 없으면 true입니다.
+     */
+    isDisplayValueSettled() {
+        return this.#valueAnim === null || this.#valueAnim === undefined;
+    }
+
+    /**
+     * rapid retarget을 따라가며 마지막 표시값 애니메이션이 끝날 때까지 기다립니다.
+     * @returns {Promise<void>} 표시값이 최신 raw 목표에 도달하면 이행됩니다.
+     */
+    async waitForDisplayValueSettle() {
+        while (this.#valueAnim) {
+            const currentAnimation = this.#valueAnim;
+            await currentAnimation.promise;
+            if (this.#valueAnim === currentAnimation) {
+                this.displayValue = this.value;
+                this.#valueAnim = null;
+            }
+        }
     }
 
     /**
@@ -170,12 +233,20 @@ export class SliderElement extends BaseUIElement {
                 this.value = newValue;
                 this.dragChanged = true;
                 if (this.#valueAnim) remove(this.#valueAnim.id);
-                this.#valueAnim = animate(this, {
-                    variable: 'animatedValue',
+                const displayAnimation = animate(this, {
+                    variable: 'displayValue',
                     startValue: 'current',
                     endValue: this.value,
                     duration: 0.2,
                     type: 'easeOutExpo'
+                });
+                this.#valueAnim = displayAnimation;
+                void displayAnimation.promise.then(() => {
+                    if (this.#valueAnim !== displayAnimation) {
+                        return;
+                    }
+                    this.displayValue = this.value;
+                    this.#valueAnim = null;
                 });
                 if (this.onChange) this.onChange(this.value);
             }
@@ -304,7 +375,7 @@ export class SliderElement extends BaseUIElement {
             alpha: this.alpha
         });
 
-        const ratio = (this.animatedValue - this.min) / (this.max - this.min);
+        const ratio = (this.displayValue - this.min) / (this.max - this.min);
         const fillW = currentWidth * ratio;
 
         if (fillW > 0) {
@@ -345,7 +416,9 @@ export class SliderElement extends BaseUIElement {
 
             render(this.layer, {
                 shape: 'text',
-                text: this.valueFormatter ? this.valueFormatter(this.value) : this.#getDisplayValue(this.value),
+                text: this.valueFormatter
+                    ? this.valueFormatter(this.displayValue)
+                    : this.#getDisplayValue(this.displayValue),
                 x: baseX + baseW / 2,
                 y: textY,
                 font: this.valueFont,

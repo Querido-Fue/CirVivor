@@ -268,15 +268,19 @@ export class TitleMenu {
     }
 
     /**
-     * 최신 디스플레이 지표와 저장된 UI 스케일을 읽어 카드 배치 및 현재 전환 시점의 렌더 상태를 다시 계산합니다.
+     * 최신 디스플레이 지표와 전달된 런타임 또는 저장 UI 스케일로 카드 배치와 렌더 상태를 다시 계산합니다.
+     * @param {number} [uiScaleOverride] - 즉시 적용할 UI 스케일 배율입니다.
      * @returns {void}
      */
-    resize() {
+    resize(uiScaleOverride) {
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
-        this.uiScale = this.#getCurrentUiScale();
+        const runtimeUiScale = Number(uiScaleOverride);
+        this.uiScale = Number.isFinite(runtimeUiScale) && runtimeUiScale > 0
+            ? runtimeUiScale
+            : this.#getCurrentUiScale();
         this.layout.resize(this.uiScale);
         this.#syncLayout();
         this.#updateRenderStates(this.#getSceneTransitionProgress());
@@ -298,7 +302,7 @@ export class TitleMenu {
         }
 
         if (changedSettings.uiScale !== undefined) {
-            this.resize();
+            this.resize(Number(changedSettings.uiScale) / 100);
         }
     }
 

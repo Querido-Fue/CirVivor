@@ -37,7 +37,7 @@ const [
     readFile(MAP_SELECT_OVERLAY_PATH, 'utf8'),
     readFile(SETTINGS_OVERLAY_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = 'd050e03b4e345ef4608fb563bd9da575c77cae81d88dbfbfbd667ae69d430933';
+const EXECUTABLE_SOURCE_HASH = '069d9783cad249e2198e7f75950aa61326ab0f70e034b7c27712bccd5e352f7d';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.

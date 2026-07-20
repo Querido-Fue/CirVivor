@@ -4,6 +4,7 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { getBaseWW, getBaseWH } from 'display/display_system.js';
 import { previewSettingBatch, setSettingBatch, getSettingSchema } from 'save/save_system.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { releaseUIItem } from 'ui/_ui_pool.js';
 import { getAvailableLanguages } from 'ui/lang/_language_handler.js';
 import { getData } from 'data/data_handler.js';
 import { createFontStringFromPreset } from 'util/font_util.js';
@@ -25,12 +26,21 @@ const THEME_OPTIONS = getData('THEME_OPTIONS');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const SETTINGS_LAYOUT = TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.LAYOUT;
+const UI_SCALE_COMPONENT_ID = 'control_uiScale';
+const UI_SCALE_EPSILON = 0.000001;
 
 /**
  * @class SettingsOverlay
  * @description 타이틀 화면의 설정 오버레이를 구성하고 변경된 옵션을 저장합니다.
  */
 export class SettingsOverlay extends TitleOverlay {
+    #pendingTransientUiScale = null;
+    #transientUiScalePromise = null;
+    #preserveUiScaleSlider = false;
+    #lastRuntimeUiScaleDisplayValue = null;
+    #uiScaleCommitGeneration = 0;
+    #uiScaleCommitPromise = null;
+
     constructor(TitleScene) {
         super(TitleScene, { glOverlay: true, titleIconId: 'setting' });
 
@@ -47,6 +57,7 @@ export class SettingsOverlay extends TitleOverlay {
             defaultThemeKey: DEFAULT_THEME_KEY
         });
         this.initialSettings = { ...this.tempSettings };
+        this.#lastRuntimeUiScaleDisplayValue = this.tempSettings.uiScale;
     }
 
     /**
@@ -60,9 +71,19 @@ export class SettingsOverlay extends TitleOverlay {
 
     /**
      * @override
+     * UI 요소를 갱신한 뒤 uiScale slider의 보간 표시값을 런타임 레이아웃에 전달합니다.
+     */
+    update() {
+        super.update();
+        this.#syncUiScaleDisplayPreview();
+    }
+
+    /**
+     * @override
      * 화면 내 설정 항목들(왼쪽/오른쪽 단)을 배치하여 레이아웃을 빌드합니다.
      */
     _generateLayout() {
+        const retainedUiScaleSlider = this.#detachUiScaleSliderForRelayout();
         this._releaseElements();
         const { HEADER, LEFT_COLUMN, RIGHT_COLUMN, FOOTER } = SETTINGS_LAYOUT;
         const headerHandler = new LayoutHandler(this, this.positioningHandler)
@@ -102,13 +123,6 @@ export class SettingsOverlay extends TitleOverlay {
             .buttonColor(ColorSchemes.Overlay.Button.Cancel).icon("deny")
             .item("button", "save_btn").stylePreset("overlay_interact_button")
             .buttonText(getLangString('title_settings_save')).onClick(async () => {
-                if (!this.settingsChanged) {
-                    this.rollbackOnClose = false;
-                    this.close();
-                    return;
-                }
-
-                await this.#flushPendingPreview();
                 await this.save();
                 this.rollbackOnClose = false;
                 this.close();
@@ -122,6 +136,8 @@ export class SettingsOverlay extends TitleOverlay {
         const resLeft = leftHandler.build();
         const resRight = rightHandler.build();
         const resFoot = footHandler.build();
+
+        this.#restoreUiScaleSliderAfterRelayout(retainedUiScaleSlider, resLeft);
 
         this.staticItems = [
             ...resHead.staticItems,
@@ -145,6 +161,48 @@ export class SettingsOverlay extends TitleOverlay {
         };
 
         this.#refreshChangedLabels();
+    }
+
+    /**
+     * transient UI scale relayout 동안 현재 slider를 풀 회수 대상에서 분리합니다.
+     * @returns {import('ui/element/_slider.js').SliderElement|null} 보존할 slider입니다.
+     */
+    #detachUiScaleSliderForRelayout() {
+        if (!this.#preserveUiScaleSlider) {
+            return null;
+        }
+
+        const slider = this.settingComponents?.[UI_SCALE_COMPONENT_ID];
+        if (!slider) {
+            return null;
+        }
+
+        this.dynamicItems = this.dynamicItems?.filter((entry) => entry.item !== slider) ?? this.dynamicItems;
+        return slider;
+    }
+
+    /**
+     * 새 레이아웃의 배치·스타일을 기존 slider에 이식하고 새 임시 slider만 풀에 반환합니다.
+     * @param {import('ui/element/_slider.js').SliderElement|null} retainedSlider - 보존한 slider입니다.
+     * @param {{dynamicItems: Array<object>, components: Record<string, object>}} layoutResult - 왼쪽 열 빌드 결과입니다.
+     * @returns {void}
+     */
+    #restoreUiScaleSliderAfterRelayout(retainedSlider, layoutResult) {
+        if (!retainedSlider) {
+            return;
+        }
+
+        const replacement = layoutResult.components[UI_SCALE_COMPONENT_ID];
+        const replacementEntry = layoutResult.dynamicItems.find((entry) => entry.item === replacement);
+        if (!replacement || !replacementEntry) {
+            releaseUIItem(retainedSlider);
+            return;
+        }
+
+        retainedSlider.reconcileLayoutFrom(replacement);
+        replacementEntry.item = retainedSlider;
+        layoutResult.components[UI_SCALE_COMPONENT_ID] = retainedSlider;
+        releaseUIItem(replacement);
     }
 
     /**
@@ -186,6 +244,135 @@ export class SettingsOverlay extends TitleOverlay {
         this.#queuePreviewSettings({ [settingKey]: value });
     }
 
+    /**
+     * uiScale raw 목표값만 임시 상태에 반영하고 기존 commit을 무효화합니다.
+     * @param {number} value - 정수 단위 uiScale 목표값입니다.
+     * @returns {void}
+     */
+    #handleUiScaleChange(value) {
+        this.#uiScaleCommitGeneration += 1;
+        this.#handleSettingChange('uiScale', value);
+    }
+
+    /**
+     * 표시값 보간이 끝난 뒤에만 기존 설정 미리보기 큐로 정수 uiScale을 commit합니다.
+     * @param {number} value - commit할 정수 단위 uiScale입니다.
+     * @returns {Promise<void>}
+     */
+    #handleUiScaleCommit(value) {
+        this.#handleSettingChange('uiScale', value);
+        const generation = ++this.#uiScaleCommitGeneration;
+        const slider = this.settingComponents?.[UI_SCALE_COMPONENT_ID];
+
+        const commit = (async () => {
+            await slider?.waitForDisplayValueSettle?.();
+            if (generation !== this.#uiScaleCommitGeneration) {
+                return;
+            }
+
+            const finalDisplayValue = Number(slider?.displayValue ?? value);
+            await this.#queueTransientUiScale(finalDisplayValue);
+            await this.#flushTransientUiScale();
+            if (generation !== this.#uiScaleCommitGeneration) {
+                return;
+            }
+
+            await this.#queuePreviewSettings({ uiScale: value });
+        })();
+
+        const trackedCommit = commit.finally(() => {
+            if (this.#uiScaleCommitPromise === trackedCommit) {
+                this.#uiScaleCommitPromise = null;
+            }
+        });
+        this.#uiScaleCommitPromise = trackedCommit;
+        return trackedCommit;
+    }
+
+    /**
+     * 현재 frame의 보간 표시값을 저장 상태를 건드리지 않는 런타임 갱신 큐에 넣습니다.
+     * @returns {void}
+     */
+    #syncUiScaleDisplayPreview() {
+        const displayValue = Number(this.settingComponents?.[UI_SCALE_COMPONENT_ID]?.displayValue);
+        if (!Number.isFinite(displayValue) || displayValue <= 0) {
+            return;
+        }
+
+        void this.#queueTransientUiScale(displayValue).catch((error) => {
+            console.error('uiScale transient runtime preview failed.', error);
+        });
+    }
+
+    /**
+     * 저장 메모리를 변경하지 않고 최신 uiScale 표시값만 런타임에 순차 반영합니다.
+     * @param {number} displayValue - 퍼센트 단위 보간 표시값입니다.
+     * @returns {Promise<void>}
+     */
+    #queueTransientUiScale(displayValue) {
+        const normalizedValue = Number(displayValue);
+        if (!Number.isFinite(normalizedValue) || normalizedValue <= 0) {
+            return Promise.resolve();
+        }
+
+        const isDuplicate = this.#lastRuntimeUiScaleDisplayValue !== null
+            && Math.abs(this.#lastRuntimeUiScaleDisplayValue - normalizedValue) <= UI_SCALE_EPSILON;
+        if (isDuplicate && this.#pendingTransientUiScale === null) {
+            return this.#transientUiScalePromise ?? Promise.resolve();
+        }
+
+        this.#lastRuntimeUiScaleDisplayValue = normalizedValue;
+        this.#pendingTransientUiScale = normalizedValue;
+        this.#startTransientUiScaleDrain();
+        return this.#transientUiScalePromise ?? Promise.resolve();
+    }
+
+    /**
+     * 대기 중인 최신 표시값을 runtime 설정 경로에 전달하는 단일 drain을 시작합니다.
+     * @returns {void}
+     */
+    #startTransientUiScaleDrain() {
+        if (this.#transientUiScalePromise || this.#pendingTransientUiScale === null) {
+            return;
+        }
+
+        const drain = (async () => {
+            await Promise.resolve();
+            while (this.#pendingTransientUiScale !== null) {
+                const nextValue = this.#pendingTransientUiScale;
+                this.#pendingTransientUiScale = null;
+                this.#preserveUiScaleSlider = true;
+                try {
+                    await this.#applyRuntimeSettings({ uiScale: nextValue });
+                } finally {
+                    this.#preserveUiScaleSlider = false;
+                }
+            }
+        })();
+
+        const trackedDrain = drain.finally(() => {
+            if (this.#transientUiScalePromise === trackedDrain) {
+                this.#transientUiScalePromise = null;
+            }
+            this.#startTransientUiScaleDrain();
+        });
+        this.#transientUiScalePromise = trackedDrain;
+    }
+
+    /**
+     * transient uiScale 런타임 반영이 모두 끝날 때까지 기다립니다.
+     * @returns {Promise<void>}
+     */
+    async #flushTransientUiScale() {
+        while (this.#transientUiScalePromise || this.#pendingTransientUiScale !== null) {
+            this.#startTransientUiScaleDrain();
+            const pendingDrain = this.#transientUiScalePromise;
+            if (pendingDrain) {
+                await pendingDrain;
+            }
+        }
+    }
+
 
     /**
      * 저장 완료 후 변경된 설정을 런타임에 즉시 반영합니다.
@@ -216,7 +403,49 @@ export class SettingsOverlay extends TitleOverlay {
      * @returns {Promise<void>}
      */
     async #flushPendingPreview() {
+        while (this.#uiScaleCommitPromise) {
+            await this.#uiScaleCommitPromise;
+        }
+        await this.#flushTransientUiScale();
         await this.previewQueue.flush();
+    }
+
+    /**
+     * 마지막으로 요청한 transient 표시값이 초기 uiScale과 다른지 확인합니다.
+     * @returns {boolean} 런타임 원복이 필요하면 true입니다.
+     */
+    #hasTransientUiScaleDrift() {
+        const initialUiScale = Number(this.initialSettings.uiScale);
+        const runtimeUiScale = Number(this.#lastRuntimeUiScaleDisplayValue);
+        return Number.isFinite(initialUiScale)
+            && Number.isFinite(runtimeUiScale)
+            && Math.abs(initialUiScale - runtimeUiScale) > UI_SCALE_EPSILON;
+    }
+
+    /**
+     * uiScale raw 값이 변경되지 않은 상태에서 남은 transient 런타임 배율을 초기값으로 되돌립니다.
+     * @returns {Promise<void>}
+     */
+    async #restoreTransientUiScaleRuntime() {
+        if (!this.#hasTransientUiScaleDrift()) {
+            return;
+        }
+
+        await this.#queueTransientUiScale(this.initialSettings.uiScale);
+        await this.#flushTransientUiScale();
+    }
+
+    /**
+     * 메모리 원복 대상에 transient 전용 uiScale 원복값을 합쳐 런타임 원복 대상을 만듭니다.
+     * @param {object} revertedSettings - 메모리에 되돌릴 설정입니다.
+     * @returns {object} 런타임에 되돌릴 설정입니다.
+     */
+    #createRuntimeRevertedSettings(revertedSettings) {
+        const runtimeSettings = { ...revertedSettings };
+        if (runtimeSettings.uiScale === undefined && this.#hasTransientUiScaleDrift()) {
+            runtimeSettings.uiScale = this.initialSettings.uiScale;
+        }
+        return runtimeSettings;
     }
 
     /**
@@ -226,12 +455,16 @@ export class SettingsOverlay extends TitleOverlay {
     async #cancelChanges() {
         await this.#flushPendingPreview();
         const revertedSettings = getRevertedSettings(this.initialSettings, this.tempSettings);
+        const runtimeRevertedSettings = this.#createRuntimeRevertedSettings(revertedSettings);
         if (Object.keys(revertedSettings).length > 0) {
             previewSettingBatch(revertedSettings);
-            await this.#applyRuntimeSettings(revertedSettings);
-            this.tempSettings = { ...this.initialSettings };
-            this.#refreshChangedLabels();
         }
+        if (Object.keys(runtimeRevertedSettings).length > 0) {
+            await this.#applyRuntimeSettings(runtimeRevertedSettings);
+        }
+        this.#lastRuntimeUiScaleDisplayValue = this.initialSettings.uiScale;
+        this.tempSettings = { ...this.initialSettings };
+        this.#refreshChangedLabels();
 
         this.rollbackOnClose = false;
         this.close();
@@ -312,8 +545,8 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("valueFont", sliderValueFont)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => `${v}%`)
-            .onChange((val) => { this.#handleSettingInput('uiScale', val, { preview: false }); })
-            .onCommit((val) => { this.#handleSettingInput('uiScale', val); });
+            .onChange((val) => { this.#handleUiScaleChange(val); })
+            .onCommit((val) => { this.#handleUiScaleCommit(val); });
         this._addItemFooter(handler, 'title_settings_desc_ui_scale', spacingScale);
 
         this._addItemHeader(handler, 'title_settings_disable_transparency', 'disableTransparency');
@@ -508,6 +741,9 @@ export class SettingsOverlay extends TitleOverlay {
     async save() {
         await this.#flushPendingPreview();
         const changedSettings = getChangedSettings(this.initialSettings, this.tempSettings);
+        if (changedSettings.uiScale === undefined) {
+            await this.#restoreTransientUiScaleRuntime();
+        }
         if (Object.keys(changedSettings).length === 0) {
             this.settingsChanged = false;
             return changedSettings;
@@ -519,6 +755,7 @@ export class SettingsOverlay extends TitleOverlay {
         });
 
         this.initialSettings = { ...this.tempSettings };
+        this.#lastRuntimeUiScaleDisplayValue = this.tempSettings.uiScale;
         this.#refreshChangedLabels();
         return changedSettings;
     }
@@ -540,19 +777,25 @@ export class SettingsOverlay extends TitleOverlay {
      * @returns {void}
      */
     onCloseComplete() {
-        if (!this.rollbackOnClose || !this.settingsChanged) {
+        const hasPendingUiScale = this.#uiScaleCommitPromise !== null
+            || this.#transientUiScalePromise !== null
+            || this.#pendingTransientUiScale !== null
+            || this.#hasTransientUiScaleDrift();
+        if (!this.rollbackOnClose || (!this.settingsChanged && !hasPendingUiScale)) {
             return;
         }
 
         void (async () => {
             await this.#flushPendingPreview();
             const revertedSettings = getRevertedSettings(this.initialSettings, this.tempSettings);
-            if (Object.keys(revertedSettings).length === 0) {
-                return;
+            const runtimeRevertedSettings = this.#createRuntimeRevertedSettings(revertedSettings);
+            if (Object.keys(revertedSettings).length > 0) {
+                previewSettingBatch(revertedSettings);
             }
-
-            previewSettingBatch(revertedSettings);
-            await this.#applyRuntimeSettings(revertedSettings);
+            if (Object.keys(runtimeRevertedSettings).length > 0) {
+                await this.#applyRuntimeSettings(runtimeRevertedSettings);
+            }
+            this.#lastRuntimeUiScaleDisplayValue = this.initialSettings.uiScale;
         })();
     }
 }

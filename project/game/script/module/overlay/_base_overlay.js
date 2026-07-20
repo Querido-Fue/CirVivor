@@ -682,14 +682,18 @@ export class BaseOverlay {
     }
 
     /**
-     * 런타임 설정 변경을 overlay에 반영합니다. (오버라이드 선택)
+     * 런타임 설정 변경을 overlay에 반영합니다. uiScale payload가 유효하면 저장값보다 우선합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
         let shouldResize = false;
 
         if (changedSettings.uiScale !== undefined) {
-            this.uiScale = getSetting('uiScale') / 100 || 1;
+            const runtimeUiScale = Number(changedSettings.uiScale) / 100;
+            const savedUiScale = Number(getSetting('uiScale')) / 100;
+            this.uiScale = Number.isFinite(runtimeUiScale) && runtimeUiScale > 0
+                ? runtimeUiScale
+                : (Number.isFinite(savedUiScale) && savedUiScale > 0 ? savedUiScale : 1);
             this.positioningHandler = new PositioningHandler(this, this.uiScale);
             shouldResize = true;
         }
