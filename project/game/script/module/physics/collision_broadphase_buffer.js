@@ -155,6 +155,7 @@ export class CollisionBroadphaseBuffer {
      * @param {number} index - body 인덱스입니다.
      * @param {object} body - 충돌 body입니다.
      * @param {'default'|'enemyPair'|'projectile'} [gridMode='default'] - grid 계산 모드입니다.
+     * @returns {void}
      */
     write(index, body, gridMode = 'default') {
         const broadOffset = index * BROAD_STRIDE;
@@ -199,6 +200,68 @@ export class CollisionBroadphaseBuffer {
 
         this.#writeRelationData(index, body, broadRadius);
         this.#writeCandidateSweepData(index, body);
+    }
+
+    /**
+     * grid 삽입에 필요한 broad-phase 데이터만 씁니다.
+     * `_broadDataIndex`, kind/shape code와 Float32 broad record는
+     * `write(index, body, gridMode)`와 같은 조회·쓰기 순서를 유지합니다.
+     * enemy relation/candidate plane은 갱신하지 않으므로, 해당 plane을 사용하는 다음
+     * 경로는 반드시 범용 `write()`로 먼저 덮어써야 합니다.
+     * @param {number} index - body 인덱스입니다.
+     * @param {object} body - 충돌 body입니다.
+     * @param {'default'|'enemyPair'|'projectile'} [gridMode='default'] - grid 계산 모드입니다.
+     */
+    writeGridOnly(index, body, gridMode = 'default') {
+        const broadOffset = index * BROAD_STRIDE;
+        let minX = body.minX;
+        let maxX = body.maxX;
+        let minY = body.minY;
+        let maxY = body.maxY;
+        let broadRadius = body.broadRadius;
+        if (body.kind === 'enemy' && gridMode === 'enemyPair') {
+            minX = Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : minX;
+            maxX = Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : maxX;
+            minY = Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : minY;
+            maxY = Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : maxY;
+            broadRadius = Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
+        } else if (body.kind === 'enemy' && gridMode === 'projectile') {
+            minX = Number.isFinite(body.projectileMinX) ? body.projectileMinX : minX;
+            maxX = Number.isFinite(body.projectileMaxX) ? body.projectileMaxX : maxX;
+            minY = Number.isFinite(body.projectileMinY) ? body.projectileMinY : minY;
+            maxY = Number.isFinite(body.projectileMaxY) ? body.projectileMaxY : maxY;
+            broadRadius = Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
+        }
+
+        body._broadDataIndex = index;
+        this.bodyKindCodes[index] = getCollisionBodyKindCode(body.kind);
+        this.bodyShapeCodes[index] = getCollisionBodyShapeCode(body.shape);
+
+        const broadData = this.broadData;
+        broadData[broadOffset + 0] = minX;
+        broadData[broadOffset + 1] = maxX;
+        broadData[broadOffset + 2] = minY;
+        broadData[broadOffset + 3] = maxY;
+        broadData[broadOffset + 4] = minX;
+        broadData[broadOffset + 5] = maxX;
+        broadData[broadOffset + 6] = minY;
+        broadData[broadOffset + 7] = maxY;
+        broadData[broadOffset + 8] = body.centerX;
+        broadData[broadOffset + 9] = body.centerY;
+        broadData[broadOffset + 10] = body.boundRadius;
+        broadData[broadOffset + 11] = broadRadius;
+        broadData[broadOffset + 12] = broadRadius * COLLISION_GRID_RADIUS_SCALE;
+        broadData[broadOffset + 13] = body.shape === 'circle' ? body.radius : broadRadius;
+    }
+
+    /**
+     * 투사체 grid 전용 writer의 공개 호환 진입점입니다.
+     * @param {number} index - body 인덱스입니다.
+     * @param {object} body - 충돌 body입니다.
+     * @returns {void}
+     */
+    writeProjectileGrid(index, body) {
+        this.writeGridOnly(index, body, 'projectile');
     }
 
     /**
@@ -250,14 +313,15 @@ export class CollisionBroadphaseBuffer {
     #writeRelationData(index, body, broadRadius) {
         const relationOffset = index * RELATION_BROAD_STRIDE;
         const relationData = this.relationData;
-        relationData[relationOffset + RELATION_INDEX.MIN_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
-        relationData[relationOffset + RELATION_INDEX.MAX_X] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
-        relationData[relationOffset + RELATION_INDEX.MIN_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
-        relationData[relationOffset + RELATION_INDEX.MAX_Y] = body.kind === 'enemy' && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
+        const isEnemy = body.kind === 'enemy';
+        relationData[relationOffset + RELATION_INDEX.MIN_X] = isEnemy && Number.isFinite(body.enemyPairMinX) ? body.enemyPairMinX : body.minX;
+        relationData[relationOffset + RELATION_INDEX.MAX_X] = isEnemy && Number.isFinite(body.enemyPairMaxX) ? body.enemyPairMaxX : body.maxX;
+        relationData[relationOffset + RELATION_INDEX.MIN_Y] = isEnemy && Number.isFinite(body.enemyPairMinY) ? body.enemyPairMinY : body.minY;
+        relationData[relationOffset + RELATION_INDEX.MAX_Y] = isEnemy && Number.isFinite(body.enemyPairMaxY) ? body.enemyPairMaxY : body.maxY;
         relationData[relationOffset + RELATION_INDEX.CENTER_X] = Number.isFinite(body.centerX) ? body.centerX : body.x;
         relationData[relationOffset + RELATION_INDEX.CENTER_Y] = Number.isFinite(body.centerY) ? body.centerY : body.y;
-        relationData[relationOffset + RELATION_INDEX.ENEMY_PAIR_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
-        relationData[relationOffset + RELATION_INDEX.PROJECTILE_RADIUS] = body.kind === 'enemy' && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
+        relationData[relationOffset + RELATION_INDEX.ENEMY_PAIR_RADIUS] = isEnemy && Number.isFinite(body.enemyPairBroadRadius) ? body.enemyPairBroadRadius : broadRadius;
+        relationData[relationOffset + RELATION_INDEX.PROJECTILE_RADIUS] = isEnemy && Number.isFinite(body.projectileBroadRadius) ? body.projectileBroadRadius : broadRadius;
     }
 
     /**

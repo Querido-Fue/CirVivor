@@ -36,6 +36,7 @@ export function createOverlayPanelInteractionState(panel) {
  * 패널 목록에 맞춰 interaction 상태 맵을 동기화합니다.
  * @param {object[]} panelRegions - 정규화된 패널 영역 목록입니다.
  * @param {Map<string, object>} panelInteractionMap - 재사용할 interaction 상태 맵입니다.
+ * @returns {void}
  */
 export function syncOverlayPanelInteractionStates(panelRegions, panelInteractionMap) {
     const activePanelIds = new Set(panelRegions.map((panel) => panel.id));

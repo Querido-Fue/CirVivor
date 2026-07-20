@@ -9,6 +9,7 @@ import { clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.j
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} hoverTiltOptions - hover tilt 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions) {
     if (!hoverTiltOptions) {
@@ -33,6 +34,7 @@ export function updateTitleMenuTiltState(renderState, runtimeState, delta, hover
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} spotlightOptions - spotlight 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions) {
     if (!spotlightOptions) {
@@ -52,6 +54,7 @@ export function updateTitleMenuSpotlightState(runtimeState, delta, spotlightOpti
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} borderOptions - hoverBorder 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuBorderState(runtimeState, delta, borderOptions) {
     if (!borderOptions) {
@@ -72,17 +75,26 @@ export function updateTitleMenuBorderState(runtimeState, delta, borderOptions) {
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
  * @param {object|null} particleOptions - particle 옵션입니다.
+ * @returns {void}
  */
 export function updateTitleMenuParticleState(renderState, runtimeState, delta, particleOptions) {
     if (!particleOptions) {
-        runtimeState.particles = [];
+        runtimeState.particles.length = 0;
         runtimeState.particleAlpha = 0;
         return;
     }
 
-    const resolvedParticleOptions = _resolveTitleMenuParticleOptions(renderState, particleOptions);
+    const isHoverEntering = !runtimeState.wasHovered && runtimeState.hovered;
+    const needsParticleOptions = isHoverEntering || runtimeState.particles.length > 0;
+    const resolvedParticleOptions = needsParticleOptions
+        ? _resolveTitleMenuParticleOptions(
+            renderState,
+            particleOptions,
+            runtimeState.particleOptionsScratch
+        )
+        : null;
 
-    if (!runtimeState.wasHovered && runtimeState.hovered) {
+    if (isHoverEntering) {
         runtimeState.particles = _createTitleMenuParticles(renderState, resolvedParticleOptions);
         runtimeState.hoverElapsed = 0;
     }
@@ -98,7 +110,11 @@ export function updateTitleMenuParticleState(renderState, runtimeState, delta, p
     );
 
     if (!runtimeState.hovered && runtimeState.particleAlpha <= 0.01) {
-        runtimeState.particles = [];
+        runtimeState.particles.length = 0;
+        return;
+    }
+
+    if (!resolvedParticleOptions) {
         return;
     }
 
@@ -131,12 +147,21 @@ export function updateTitleMenuParticleState(renderState, runtimeState, delta, p
  * 카드 ripple 상태를 갱신합니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {number} delta - 프레임 델타 시간입니다.
+ * @returns {void}
  */
 export function updateTitleMenuRippleState(runtimeState, delta) {
-    runtimeState.ripples = runtimeState.ripples.filter((ripple) => {
+    const ripples = runtimeState.ripples;
+    const rippleCount = ripples.length;
+    let nextRippleIndex = 0;
+    for (let rippleIndex = 0; rippleIndex < rippleCount; rippleIndex++) {
+        const ripple = ripples[rippleIndex];
         ripple.elapsed += delta;
-        return ripple.elapsed < ripple.duration;
-    });
+        if (ripple.elapsed < ripple.duration) {
+            ripples[nextRippleIndex] = ripple;
+            nextRippleIndex++;
+        }
+    }
+    ripples.length = nextRippleIndex;
 }
 
 /**
@@ -144,6 +169,7 @@ export function updateTitleMenuRippleState(runtimeState, delta) {
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {object} rippleOptions - ripple 옵션입니다.
+ * @returns {void}
  */
 export function pushTitleMenuRipple(renderState, runtimeState, rippleOptions) {
     runtimeState.ripples.push({
@@ -183,9 +209,10 @@ export function hasTitleMenuDynamicTextureState(runtimeState, renderState = null
  * 카드 크기에 맞춰 particle 옵션을 보정합니다.
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} particleOptions - 기본 particle 옵션입니다.
- * @returns {object} 카드 크기 기준으로 보정된 particle 옵션입니다.
+ * @param {object} [out={}] - 모든 필드를 덮어쓸 재사용 결과 객체입니다.
+ * @returns {object} 카드 크기 기준으로 보정된 `out`입니다.
  */
-function _resolveTitleMenuParticleOptions(renderState, particleOptions) {
+function _resolveTitleMenuParticleOptions(renderState, particleOptions, out = {}) {
     const panelWidth = Math.max(1, renderState.panelRect.w);
     const panelHeight = Math.max(1, renderState.panelRect.h);
     const panelArea = panelWidth * panelHeight;
@@ -193,13 +220,12 @@ function _resolveTitleMenuParticleOptions(renderState, particleOptions) {
     const areaScale = clampNumber(panelArea / 42000, 0.45, 1.5);
     const sizeScale = clampNumber(panelMinSize / 160, 0.72, 1.28);
 
-    return {
-        count: Math.round(clampNumber(particleOptions.count * areaScale, 5, 18)),
-        spawnInterval: particleOptions.spawnInterval,
-        driftDistance: particleOptions.driftDistance * sizeScale,
-        minDuration: particleOptions.minDuration * sizeScale,
-        maxDuration: particleOptions.maxDuration * sizeScale
-    };
+    out.count = Math.round(clampNumber(particleOptions.count * areaScale, 5, 18));
+    out.spawnInterval = particleOptions.spawnInterval;
+    out.driftDistance = particleOptions.driftDistance * sizeScale;
+    out.minDuration = particleOptions.minDuration * sizeScale;
+    out.maxDuration = particleOptions.maxDuration * sizeScale;
+    return out;
 }
 
 /**
@@ -235,6 +261,7 @@ function _createTitleMenuParticles(renderState, particleOptions) {
  * @param {object} particle - 재설정할 particle입니다.
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} particleOptions - particle 옵션입니다.
+ * @returns {void}
  */
 function _resetTitleMenuParticle(particle, renderState, particleOptions) {
     const panelRect = renderState.panelRect;

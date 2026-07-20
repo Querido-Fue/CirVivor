@@ -1,5 +1,5 @@
 import {
-    resolveEnemyAIFootprintMetricsPx,
+    resolveEnemyAIFootprintMetricsPxInto,
     resolveEnemyAINavigationRadiusPx,
     resolveEnemyAIRenderHeightPx
 } from './_enemy_ai_footprint.js';
@@ -36,13 +36,22 @@ export function resolveEnemyAIUpdateFrameInto(enemy, context, out) {
     targetFrame.targetX = player.position.x;
     targetFrame.targetY = player.position.y;
     targetFrame.walls = Array.isArray(safeContext.walls) ? safeContext.walls : [];
-    targetFrame.fallbackRadius = Math.max(8, resolveEnemyAIRenderHeightPx(enemy) * 0.45);
-    targetFrame.footprintMetrics = enemy?.type === HEXA_HIVE_TYPE
-        ? resolveEnemyAIFootprintMetricsPx(enemy, targetFrame.fallbackRadius)
-        : null;
+    const renderHeightPx = resolveEnemyAIRenderHeightPx(enemy);
+    targetFrame.fallbackRadius = Math.max(8, renderHeightPx * 0.45);
+    if (enemy?.type === HEXA_HIVE_TYPE) {
+        targetFrame.footprintMetrics = resolveEnemyAIFootprintMetricsPxInto(
+            enemy,
+            targetFrame.fallbackRadius,
+            renderHeightPx,
+            targetFrame.footprintMetricsScratch
+        );
+        targetFrame.footprintMetricsScratch = targetFrame.footprintMetrics;
+    } else {
+        targetFrame.footprintMetrics = null;
+    }
     targetFrame.enemyRadius = targetFrame.footprintMetrics
         ? targetFrame.footprintMetrics.radius
-        : resolveEnemyAINavigationRadiusPx(enemy, targetFrame.fallbackRadius);
+        : resolveEnemyAINavigationRadiusPx(enemy, targetFrame.fallbackRadius, renderHeightPx);
     targetFrame.wallsVersion = Number.isInteger(safeContext.wallsVersion) ? safeContext.wallsVersion : 0;
     return targetFrame;
 }
@@ -66,6 +75,7 @@ export function shouldRefreshEnemyAIDecision(state, context, forcedPolicyRefresh
  * @param {object} enemy - 적 인스턴스입니다.
  * @param {object} state - 적 AI 상태입니다.
  * @param {{x: number, y: number}} scratchDir - 계산된 steering 방향입니다.
+ * @returns {void}
  */
 export function applyEnemyAISteeringResult(enemy, state, scratchDir) {
     state.dirX = scratchDir.x;

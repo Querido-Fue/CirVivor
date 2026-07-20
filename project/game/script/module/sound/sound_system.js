@@ -56,7 +56,11 @@ export class SoundSystem {
     }
 
     /**
-     * BGM 재생을 시도합니다.
+     * BGM 재생을 시도하고 재생 요청 처리가 끝나면 이행합니다.
+     * Audio가 없으면 즉시 이행하고, 런타임 정지 중에는 autoplay·resume 대기 상태만 기록합니다.
+     * `Audio.play()`의 동기 오류나 Promise 거부는 잠금 해제 재시도 상태로 전환해 흡수하지만,
+     * unlock listener 설치·해제 자체의 오류는 반환 Promise를 거부할 수 있습니다.
+     * @returns {Promise<void>}
      */
     async playBgm() {
         if (!this.bgmAudio) return;
@@ -221,17 +225,20 @@ export class SoundSystem {
 export const getSoundSystemInstance = () => soundSystemInstance;
 
 /**
- * BGM 재생을 요청합니다.
+ * 생성된 사운드 시스템에 BGM 재생을 요청합니다.
+ * @returns {Promise<void>|undefined} 인스턴스 생성 전에는 undefined, 이후에는 `SoundSystem.playBgm()`의 원본 Promise입니다.
  */
 export const playBgm = () => soundSystemInstance?.playBgm();
 
 /**
  * BGM 정지를 요청합니다.
+ * @returns {void}
  */
 export const stopBgm = () => soundSystemInstance?.stopBgm();
 
 /**
  * BGM 볼륨 변경을 요청합니다.
  * @param {number} volume - 0~100
+ * @returns {void}
  */
 export const setBgmVolume = (volume) => soundSystemInstance?.setBgmVolume(volume);

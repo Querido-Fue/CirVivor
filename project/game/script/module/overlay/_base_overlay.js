@@ -151,7 +151,9 @@ export class BaseOverlay {
             refractionStrength: 0,
             transformMatrix: null,
             perspective: null,
-            effectTextureCanvas: null
+            effectTextureCanvas: null,
+            alpha: 1,
+            sampleBackdrop: true
         };
         this._flatPanelRenderOptions = {
             shape: 'roundRect',
@@ -162,7 +164,8 @@ export class BaseOverlay {
             radius: 0,
             fill: false,
             stroke: false,
-            lineWidth: 0
+            lineWidth: 0,
+            alpha: 1
         };
 
         this.uiScale = getSetting('uiScale') / 100 || 1;
@@ -628,8 +631,9 @@ export class BaseOverlay {
     }
 
     /**
-     * @private
+     * @protected
      * overlay 크기와 중심 좌표를 계산합니다.
+     * @returns {void}
      */
     _calculateGeometry() {
         this.scaledW = this.width * this.uiScale;
@@ -640,20 +644,23 @@ export class BaseOverlay {
     }
 
     /**
-     * @private
+     * @protected
      * 화면 크기 변경 시 overlay 크기를 재정의합니다.
+     * @returns {void}
      */
     _onResize() {
     }
 
     /**
-     * @private
+     * @protected
      * 레이아웃을 생성합니다.
+     * @returns {void}
      */
     _generateLayout() {
     }
 
     /**
+     * @protected
      * overlay 패널 정의를 반환합니다.
      * @returns {OverlayPanelDefinition[]} 패널 정의 목록입니다.
      */
@@ -662,26 +669,34 @@ export class BaseOverlay {
     }
 
     /**
+     * @protected
      * 패널 뒤에 추가 장식을 그릴 때 사용하는 훅입니다.
+     * @returns {void}
      */
     _drawOverlayDecorations() {
     }
 
     /**
+     * @protected
      * overlay 닫기 직후 호출되는 훅입니다.
+     * @returns {void}
      */
     onCloseComplete() {
     }
 
     /**
-     * 런타임 설정 변경을 overlay에 반영합니다. (오버라이드 선택)
+     * 런타임 설정 변경을 overlay에 반영합니다. uiScale payload가 유효하면 저장값보다 우선합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
         let shouldResize = false;
 
         if (changedSettings.uiScale !== undefined) {
-            this.uiScale = getSetting('uiScale') / 100 || 1;
+            const runtimeUiScale = Number(changedSettings.uiScale) / 100;
+            const savedUiScale = Number(getSetting('uiScale')) / 100;
+            this.uiScale = Number.isFinite(runtimeUiScale) && runtimeUiScale > 0
+                ? runtimeUiScale
+                : (Number.isFinite(savedUiScale) && savedUiScale > 0 ? savedUiScale : 1);
             this.positioningHandler = new PositioningHandler(this, this.uiScale);
             shouldResize = true;
         }
@@ -690,7 +705,6 @@ export class BaseOverlay {
             && this.session
             && typeof this.session.setDisableTransparency === 'function') {
             this.session.setDisableTransparency(getSetting('disableTransparency'));
-            shouldResize = true;
         }
 
         if (shouldResize) {
@@ -704,13 +718,13 @@ export class BaseOverlay {
      */
     #drawPanels() {
         const sections = this._performanceSections;
-        const disableTransparency = getSetting('disableTransparency');
-        const defaultFill = disableTransparency
-            ? ColorSchemes.Overlay.Panel.Background
-            : ColorSchemes.Overlay.Panel.GlassBackground;
-        const defaultStroke = disableTransparency
-            ? ColorSchemes.Overlay.Panel.Border || ColorSchemes.Overlay.Panel.Background
-            : (ColorSchemes.Overlay.Panel.GlassBorder || false);
+        const glassMix = typeof this.session?.getGlassMix === 'function'
+            ? this.session.getGlassMix()
+            : (this.session?.effectiveTransparent === true ? 1 : 0);
+        const glassDefaultFill = ColorSchemes.Overlay.Panel.GlassBackground;
+        const glassDefaultStroke = ColorSchemes.Overlay.Panel.GlassBorder || false;
+        const flatDefaultFill = ColorSchemes.Overlay.Panel.Background;
+        const flatDefaultStroke = ColorSchemes.Overlay.Panel.Border || flatDefaultFill;
         const defaultTintColor = ColorSchemes.Overlay.Panel.GlassTint;
         const defaultEdgeColor = ColorSchemes.Overlay.Panel.GlassEdge;
         const defaultTintStrength = ColorSchemes.Overlay.Panel.GlassTintStrength;
@@ -732,13 +746,14 @@ export class BaseOverlay {
                 effectTextureCanvas = this.#buildPanelEffectCanvas(effectPanel, interactionState);
                 endPerformanceSection(sections.drawPanelEffectCanvas, effectStart);
             }
-            const usesEffectPipeline = canUseEffectPipeline
-                && (this.session.effectiveTransparent
-                    || effectTextureCanvas
-                    || (interactionState && (Math.abs(interactionState.rotateX) > 0.0001 || Math.abs(interactionState.rotateY) > 0.0001)));
-            const presentedPanel = usesEffectPipeline ? effectPanel : panel;
+            const hasEffectVisual = Boolean(effectTextureCanvas)
+                || Boolean(interactionState
+                    && (Math.abs(interactionState.rotateX) > 0.0001 || Math.abs(interactionState.rotateY) > 0.0001));
+            const shouldRenderGlass = canUseEffectPipeline && glassMix > 0;
+            const shouldRenderEffectFlat = canUseEffectPipeline && hasEffectVisual && glassMix < 1;
+            const presentedPanel = shouldRenderGlass || shouldRenderEffectFlat ? effectPanel : panel;
 
-            if (usesEffectPipeline) {
+            if (shouldRenderGlass || shouldRenderEffectFlat) {
                 const glassOptions = this._glassPanelRenderOptions;
                 glassOptions.x = presentedPanel.x;
                 glassOptions.y = presentedPanel.y;
@@ -746,8 +761,6 @@ export class BaseOverlay {
                 glassOptions.h = presentedPanel.h;
                 glassOptions.radius = presentedPanel.radius;
                 glassOptions.blur = panel.blur;
-                glassOptions.fill = panel.fill === undefined ? defaultFill : panel.fill;
-                glassOptions.stroke = panel.stroke === undefined ? defaultStroke : panel.stroke;
                 glassOptions.lineWidth = presentedPanel.lineWidth;
                 glassOptions.tintColor = panel.tintColor === undefined ? defaultTintColor : panel.tintColor;
                 glassOptions.edgeColor = panel.edgeColor === undefined ? defaultEdgeColor : panel.edgeColor;
@@ -757,26 +770,45 @@ export class BaseOverlay {
                 glassOptions.transformMatrix = interactionState?.transformMatrix;
                 glassOptions.perspective = interactionState?.perspective;
                 glassOptions.effectTextureCanvas = effectTextureCanvas;
-                const glassStart = beginPerformanceSection();
-                this.session.renderGlassPanel(glassOptions);
-                endPerformanceSection(sections.drawGlassPanel, glassStart);
-                continue;
+
+                if (shouldRenderGlass) {
+                    glassOptions.fill = panel.fill === undefined ? glassDefaultFill : panel.fill;
+                    glassOptions.stroke = panel.stroke === undefined ? glassDefaultStroke : panel.stroke;
+                    glassOptions.alpha = glassMix;
+                    glassOptions.sampleBackdrop = true;
+                    const glassStart = beginPerformanceSection();
+                    this.session.renderGlassPanel(glassOptions);
+                    endPerformanceSection(sections.drawGlassPanel, glassStart);
+                }
+
+                if (shouldRenderEffectFlat) {
+                    glassOptions.fill = panel.fill === undefined ? flatDefaultFill : panel.fill;
+                    glassOptions.stroke = panel.stroke === undefined ? flatDefaultStroke : panel.stroke;
+                    glassOptions.alpha = 1 - glassMix;
+                    glassOptions.sampleBackdrop = false;
+                    const flatEffectStart = beginPerformanceSection();
+                    this.session.renderGlassPanel(glassOptions);
+                    endPerformanceSection(sections.drawGlassPanel, flatEffectStart);
+                }
             }
 
-            const flatOptions = this._flatPanelRenderOptions;
-            flatOptions.x = presentedPanel.x;
-            flatOptions.y = presentedPanel.y;
-            flatOptions.w = presentedPanel.w;
-            flatOptions.h = presentedPanel.h;
-            flatOptions.radius = presentedPanel.radius;
-            flatOptions.fill = panel.fill === undefined ? defaultFill : panel.fill;
-            flatOptions.stroke = panel.stroke === undefined ? defaultStroke : panel.stroke;
-            flatOptions.lineWidth = presentedPanel.lineWidth;
-            const flatStart = beginPerformanceSection();
-            shadowOn(this.layer, presentedPanel.shadowBlur, panel.shadowColor);
-            this.session.renderPanel(flatOptions);
-            shadowOff(this.layer);
-            endPerformanceSection(sections.drawFlatPanel, flatStart);
+            if (!shouldRenderEffectFlat && glassMix < 1) {
+                const flatOptions = this._flatPanelRenderOptions;
+                flatOptions.x = panel.x;
+                flatOptions.y = panel.y;
+                flatOptions.w = panel.w;
+                flatOptions.h = panel.h;
+                flatOptions.radius = panel.radius;
+                flatOptions.fill = panel.fill === undefined ? flatDefaultFill : panel.fill;
+                flatOptions.stroke = panel.stroke === undefined ? flatDefaultStroke : panel.stroke;
+                flatOptions.lineWidth = panel.lineWidth;
+                flatOptions.alpha = 1 - glassMix;
+                const flatStart = beginPerformanceSection();
+                shadowOn(this.layer, panel.shadowBlur, panel.shadowColor);
+                this.session.renderPanel(flatOptions);
+                shadowOff(this.layer);
+                endPerformanceSection(sections.drawFlatPanel, flatStart);
+            }
         }
     }
 
@@ -798,6 +830,7 @@ export class BaseOverlay {
     /**
      * @protected
      * 빌드된 UI 요소를 안전하게 회수합니다.
+     * @returns {void}
      */
     _releaseElements() {
         if (this.staticItems) {

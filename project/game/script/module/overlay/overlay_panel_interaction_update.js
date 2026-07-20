@@ -23,6 +23,7 @@ import { getOverlayPresentedPanelRegion } from './overlay_panel_region.js';
  * @param {object|null} spotlightOptions - spotlight 옵션입니다.
  * @param {object|null} particleOptions - particle 옵션입니다.
  * @param {object|null} borderOptions - border 옵션입니다.
+ * @returns {void}
  */
 function resetPanelInteractionTargets(panel, interactionState, delta, tiltOptions, spotlightOptions, particleOptions, borderOptions) {
     interactionState.hovered = false;
@@ -40,6 +41,7 @@ function resetPanelInteractionTargets(panel, interactionState, delta, tiltOption
  * @param {object} panel - 대상 패널입니다.
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object|null} tiltOptions - tilt 옵션입니다.
+ * @returns {void}
  */
 function updatePanelProjection(panel, interactionState, tiltOptions) {
     interactionState.perspective = tiltOptions?.perspective || 1000;
@@ -83,6 +85,7 @@ function resolvePanelPointerInfo(panel, interactionState, mouseX, mouseY) {
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object|null} tiltOptions - tilt 옵션입니다.
  * @param {number} delta - 프레임 델타입니다.
+ * @returns {void}
  */
 function updateTiltState(panel, interactionState, tiltOptions, delta) {
     if (!tiltOptions) {
@@ -112,6 +115,7 @@ function updateTiltState(panel, interactionState, tiltOptions, delta) {
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object|null} spotlightOptions - spotlight 옵션입니다.
  * @param {number} delta - 프레임 델타입니다.
+ * @returns {void}
  */
 function updateSpotlightState(interactionState, spotlightOptions, delta) {
     if (!spotlightOptions) {
@@ -132,6 +136,7 @@ function updateSpotlightState(interactionState, spotlightOptions, delta) {
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object|null} borderOptions - hoverBorder 옵션입니다.
  * @param {number} delta - 프레임 델타입니다.
+ * @returns {void}
  */
 function updateBorderState(interactionState, borderOptions, delta) {
     if (!borderOptions) {
@@ -152,6 +157,7 @@ function updateBorderState(interactionState, borderOptions, delta) {
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object|null} particleOptions - particle 옵션입니다.
  * @param {number} delta - 프레임 델타입니다.
+ * @returns {void}
  */
 function updateParticleState(panel, interactionState, particleOptions, delta) {
     if (!particleOptions) {
@@ -209,6 +215,7 @@ function updateParticleState(panel, interactionState, particleOptions, delta) {
  * click ripple 상태를 갱신합니다.
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {number} delta - 프레임 델타입니다.
+ * @returns {void}
  */
 function updateRippleState(interactionState, delta) {
     const ripples = interactionState.ripples;
@@ -229,6 +236,7 @@ function updateRippleState(interactionState, delta) {
  * @param {object} interactionState - 패널 interaction 상태입니다.
  * @param {object|null} rippleOptions - ripple 옵션입니다.
  * @param {object} overlay - 콜백에 전달할 overlay입니다.
+ * @returns {void}
  */
 function handlePanelClick(panel, interactionState, rippleOptions, overlay) {
     if (rippleOptions) {
@@ -289,6 +297,7 @@ function createPanelParticles(panel, particleOptions) {
  * @param {object} particle - 재설정할 particle입니다.
  * @param {object} panel - 대상 패널입니다.
  * @param {object} particleOptions - particle 옵션입니다.
+ * @returns {void}
  */
 function resetPanelParticle(particle, panel, particleOptions) {
     particle.originX = (Math.random() - 0.5) * panel.w;
@@ -310,6 +319,7 @@ function resetPanelParticle(particle, panel, particleOptions) {
  * @param {number} options.alpha - 현재 overlay alpha입니다.
  * @param {object[]} options.panelRegions - 패널 영역 목록입니다.
  * @param {Map<string, object>} options.panelInteractionMap - 패널 interaction 상태 맵입니다.
+ * @returns {void}
  */
 export function updateOverlayPanelInteractions({
     overlay,

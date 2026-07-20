@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const SIMULATION_RUNTIME_DEFAULTS = getData('SIMULATION_RUNTIME_DEFAULTS');
 const DEFAULT_MOUSE_BUTTON_STATE = SIMULATION_RUNTIME_DEFAULTS.MOUSE_BUTTON_STATE;
@@ -10,24 +11,14 @@ const EMPTY_SIMULATION_RECORD = Object.freeze({});
 let simulationRuntimeInstance = null;
 
 /**
- * 숫자 값을 안전하게 정규화합니다.
- * @param {number} value
- * @param {number} [fallback=0]
- * @returns {number}
- */
-function normalizeNumber(value, fallback = 0) {
-    return Number.isFinite(value) ? value : fallback;
-}
-
-/**
  * 좌표 객체를 복제합니다.
  * @param {{x?: number, y?: number}|null|undefined} point
  * @returns {{x: number, y: number}}
  */
 function clonePoint(point) {
     return {
-        x: normalizeNumber(point?.x, DEFAULT_MOUSE_POSITION.x),
-        y: normalizeNumber(point?.y, DEFAULT_MOUSE_POSITION.y)
+        x: resolveFiniteNumber(point?.x, DEFAULT_MOUSE_POSITION.x),
+        y: resolveFiniteNumber(point?.y, DEFAULT_MOUSE_POSITION.y)
     };
 }
 
@@ -72,12 +63,12 @@ function cloneInputSnapshot(input = {}) {
  */
 function cloneViewportSnapshot(viewport = {}) {
     return {
-        ww: normalizeNumber(viewport.ww, DEFAULT_VIEWPORT.ww),
-        wh: normalizeNumber(viewport.wh, DEFAULT_VIEWPORT.wh),
-        objectWH: normalizeNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH),
-        objectOffsetY: normalizeNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY),
-        uiww: normalizeNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww),
-        uiOffsetX: normalizeNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX)
+        ww: resolveFiniteNumber(viewport.ww, DEFAULT_VIEWPORT.ww),
+        wh: resolveFiniteNumber(viewport.wh, DEFAULT_VIEWPORT.wh),
+        objectWH: resolveFiniteNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH),
+        objectOffsetY: resolveFiniteNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY),
+        uiww: resolveFiniteNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww),
+        uiOffsetX: resolveFiniteNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX)
     };
 }
 
@@ -94,6 +85,13 @@ function cloneSettingsSnapshot(settings = {}) {
     return { ...settings };
 }
 
+/**
+ * 대상 배열의 내용을 source 또는 fallback 값으로 제자리 교체합니다.
+ * @param {any[]} target - 내용을 교체할 대상 배열입니다.
+ * @param {any[]|null|undefined} source - 우선 적용할 원본 배열입니다.
+ * @param {any[]} fallback - source가 배열이 아닐 때 적용할 기본 배열입니다.
+ * @returns {void}
+ */
 function replaceSimulationArrayContents(target, source, fallback) {
     target.length = 0;
     const values = Array.isArray(source) ? source : fallback;
@@ -102,18 +100,30 @@ function replaceSimulationArrayContents(target, source, fallback) {
     }
 }
 
+/**
+ * 뷰포트 스냅샷을 기존 대상 객체에 정규화해 기록합니다.
+ * @param {{ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}} target - 갱신할 뷰포트 객체입니다.
+ * @param {object} [viewport={}] - 적용할 뷰포트 스냅샷입니다.
+ * @returns {void}
+ */
 function syncViewportSnapshotInto(target, viewport = {}) {
-    target.ww = normalizeNumber(viewport.ww, DEFAULT_VIEWPORT.ww);
-    target.wh = normalizeNumber(viewport.wh, DEFAULT_VIEWPORT.wh);
-    target.objectWH = normalizeNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH);
-    target.objectOffsetY = normalizeNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY);
-    target.uiww = normalizeNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww);
-    target.uiOffsetX = normalizeNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX);
+    target.ww = resolveFiniteNumber(viewport.ww, DEFAULT_VIEWPORT.ww);
+    target.wh = resolveFiniteNumber(viewport.wh, DEFAULT_VIEWPORT.wh);
+    target.objectWH = resolveFiniteNumber(viewport.objectWH, DEFAULT_VIEWPORT.objectWH);
+    target.objectOffsetY = resolveFiniteNumber(viewport.objectOffsetY, DEFAULT_VIEWPORT.objectOffsetY);
+    target.uiww = resolveFiniteNumber(viewport.uiww, DEFAULT_VIEWPORT.uiww);
+    target.uiOffsetX = resolveFiniteNumber(viewport.uiOffsetX, DEFAULT_VIEWPORT.uiOffsetX);
 }
 
+/**
+ * 입력 스냅샷을 기존 중첩 컨테이너 identity를 보존하며 동기화합니다.
+ * @param {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}} target - 갱신할 입력 객체입니다.
+ * @param {object} [input={}] - 적용할 입력 스냅샷입니다.
+ * @returns {void}
+ */
 function syncInputSnapshotInto(target, input = {}) {
-    target.mousePos.x = normalizeNumber(input.mousePos?.x, DEFAULT_MOUSE_POSITION.x);
-    target.mousePos.y = normalizeNumber(input.mousePos?.y, DEFAULT_MOUSE_POSITION.y);
+    target.mousePos.x = resolveFiniteNumber(input.mousePos?.x, DEFAULT_MOUSE_POSITION.x);
+    target.mousePos.y = resolveFiniteNumber(input.mousePos?.y, DEFAULT_MOUSE_POSITION.y);
     replaceSimulationArrayContents(target.mouseButtons.left, input.mouseButtons?.left, DEFAULT_MOUSE_BUTTON_STATE);
     replaceSimulationArrayContents(target.mouseButtons.right, input.mouseButtons?.right, DEFAULT_MOUSE_BUTTON_STATE);
     replaceSimulationArrayContents(target.mouseButtons.middle, input.mouseButtons?.middle, DEFAULT_MOUSE_BUTTON_STATE);
@@ -135,6 +145,12 @@ function syncInputSnapshotInto(target, input = {}) {
     }
 }
 
+/**
+ * 설정 스냅샷을 기존 대상 객체에 제자리 동기화합니다.
+ * @param {Record<string, any>} target - 갱신할 설정 객체입니다.
+ * @param {object} [settings={}] - 적용할 설정 스냅샷입니다.
+ * @returns {void}
+ */
 function syncSettingsSnapshotInto(target, settings = {}) {
     const source = settings && typeof settings === 'object'
         ? settings
@@ -166,8 +182,11 @@ export class SimulationRuntime {
     }
 
     /**
-     * 메인 루프에서 전달한 최신 스냅샷으로 런타임을 동기화합니다.
-     * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}]
+     * 메인 루프에서 제공한 최상위 그룹만 런타임에 부분 동기화합니다.
+     * 생략한 그룹은 이전 상태를 유지합니다. 제공한 그룹은 기존 중첩 컨테이너 identity를 보존하면서
+     * 배열을 제자리 교체하고, input keys와 settings에서 source에 없는 own key를 삭제합니다.
+     * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}] - 적용할 부분 스냅샷입니다.
+     * @returns {void}
      */
     sync(snapshot = {}) {
         if (snapshot.viewport !== undefined) {
@@ -230,9 +249,10 @@ export function ensureSimulationRuntime() {
 }
 
 /**
- * 최신 스냅샷으로 시뮬레이션 런타임을 동기화합니다.
- * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}]
- * @returns {SimulationRuntime}
+ * 제공한 viewport·input·settings 그룹만 기존 시뮬레이션 런타임에 제자리 동기화합니다.
+ * 생략한 그룹은 이전 상태를 유지하며, 제공한 input/settings의 누락 key는 제거됩니다.
+ * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}] - 적용할 부분 스냅샷입니다.
+ * @returns {SimulationRuntime} 동기화에 사용한 싱글톤 런타임입니다.
  */
 export function syncSimulationRuntime(snapshot = {}) {
     const runtime = ensureSimulationRuntime();
@@ -325,6 +345,21 @@ export function getSimulationMouseInput(key) {
         default:
             return null;
     }
+}
+
+/**
+ * 현재 시뮬레이션 마우스 좌표를 호출자가 소유한 객체에 복사합니다.
+ * hot path에서 중간 좌표 객체를 만들지 않아야 할 때 사용합니다.
+ * x, y 순서로 제자리 기록하며 동일한 객체를 반환합니다.
+ * @param {{x: number, y: number}} target - 쓰기 가능한 호출자 소유 좌표 객체입니다.
+ * @returns {{x: number, y: number}} 전달받은 동일 좌표 객체입니다.
+ */
+export function copySimulationMousePositionInto(target) {
+    const input = simulationRuntimeInstance?.input;
+    const point = input ? input.mousePos : DEFAULT_MOUSE_POSITION;
+    target.x = resolveFiniteNumber(point?.x, DEFAULT_MOUSE_POSITION.x);
+    target.y = resolveFiniteNumber(point?.y, DEFAULT_MOUSE_POSITION.y);
+    return target;
 }
 
 /**

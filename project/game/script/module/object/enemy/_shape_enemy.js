@@ -2,6 +2,7 @@ import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { BaseEnemy } from './_base_enemy.js';
 import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
+import { normalizeDegrees } from 'util/math_util.js';
 import { clamp01 } from 'util/number_util.js';
 import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
 
@@ -19,7 +20,6 @@ const HEADING_FORWARD_OFFSET_DEG = ENEMY_HEADING_CONSTANTS.FORWARD_OFFSET_DEG;
 const HEADING_MIN_SPEED_SQ = ENEMY_HEADING_CONSTANTS.MIN_SPEED_SQ;
 const HEADING_SYMMETRY_STEP_BY_TYPE = ENEMY_HEADING_CONSTANTS.SYMMETRY_STEP_BY_TYPE;
 const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
-const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
 const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
 const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 const TITLE_AI_ID = getData('TITLE_CONSTANTS').TITLE_AI.ID;
@@ -168,25 +168,12 @@ export class ShapeEnemy extends BaseEnemy {
 
     /**
      * @private
-     * @param {number} angle
-     * @returns {number}
-     */
-    #normalizeAngle(angle) {
-        if (!Number.isFinite(angle)) return 0;
-        let out = angle % FULL_TURN_DEG;
-        if (out > STRAIGHT_DEG) out -= FULL_TURN_DEG;
-        if (out < -STRAIGHT_DEG) out += FULL_TURN_DEG;
-        return out;
-    }
-
-    /**
-     * @private
      * @param {number} fromDeg
      * @param {number} toDeg
      * @returns {number}
      */
     #shortestAngleDelta(fromDeg, toDeg) {
-        return this.#normalizeAngle(toDeg - fromDeg);
+        return normalizeDegrees(toDeg - fromDeg);
     }
 
     /**
@@ -250,10 +237,12 @@ export class ShapeEnemy extends BaseEnemy {
     }
 
     /**
-         * AI의 결과에 따라 가속 및 물리 기본 이동을 처리합니다.
-         * @param {number} [delta] 델타타임 (밀리초 등)
-         * @param {object} [aiContext=null] 환경 데이터
-         */
+     * 활성 적의 fixed-step을 `AI → 축 저항 복구 → 속도 → 위치 → 각운동 → heading` 순서로 갱신합니다.
+     * 렌더 보간과 합체 표시 오프셋은 이 물리 갱신 경계에서 다루지 않습니다.
+     * @param {number} delta - 초 단위 fixed delta입니다.
+     * @param {object|null} [aiContext=null] AI가 참조할 고정 틱 환경 데이터입니다.
+     * @returns {void}
+     */
     fixedUpdate(delta, aiContext = null) {
         if (!this.active) return;
 

@@ -164,6 +164,7 @@ function getEnemyRenderHeight(enemy) {
 /**
  * 합체 예열 중인 육각형 경계 WebGL 이펙트를 렌더링합니다.
  * @param {{enemyA: object, enemyB: object, progress: number}[]} effectPairs - 합체 경계 이펙트 페어 목록입니다.
+ * @returns {void}
  */
 export function drawObjectSystemHexaHiveMergeEffects(effectPairs) {
     if (!Array.isArray(effectPairs) || effectPairs.length === 0) {

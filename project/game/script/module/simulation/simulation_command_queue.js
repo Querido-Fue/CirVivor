@@ -34,8 +34,9 @@ export class SimulationCommandQueue {
     }
 
     /**
-     * 적재된 명령을 모두 반환하고 큐를 비웁니다.
-     * @returns {object[]}
+     * 적재 순서와 element identity를 보존한 fresh 배열을 반환하고 내부 큐 배열은 제자리에서 비웁니다.
+     * 빈 큐도 호출마다 새 mutable 배열을 반환합니다. 복사 또는 큐 축소 오류는 그대로 전파하며 rollback하지 않습니다.
+     * @returns {object[]} 호출자가 소유하는 fresh 명령 배열입니다.
      */
     drain() {
         if (this.commands.length === 0) {
@@ -76,9 +77,11 @@ export function enqueueSimulationCommand(command) {
 }
 
 /**
- * 명령 여러 개를 큐에 추가합니다.
- * @param {object[]} [commands=[]]
- * @returns {number}
+ * 배열의 유효한 명령을 index 순서대로 같은 객체 identity로 큐에 추가합니다.
+ * 배열이 아니거나 비어 있으면 0을 반환하고, 유효하지 않은 항목은 건너뜁니다.
+ * 판정 또는 적재 중 예외는 그대로 전파되며 그 전에 추가된 명령은 rollback하지 않습니다.
+ * @param {object[]} [commands=[]] - 순서대로 적재할 명령 배열입니다.
+ * @returns {number} 성공적으로 적재한 명령 수입니다.
  */
 export function enqueueSimulationCommands(commands = []) {
     if (!Array.isArray(commands) || commands.length === 0) {
@@ -106,6 +109,7 @@ export function drainSimulationCommands() {
 
 /**
  * 대기 중인 명령을 모두 폐기합니다.
+ * @returns {void}
  */
 export function clearSimulationCommands() {
     ensureSimulationCommandQueue().clear();

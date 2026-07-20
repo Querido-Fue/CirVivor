@@ -131,8 +131,8 @@ export class ColorUtil {
 }
 
 /**
- * ColorUtil 싱글톤 인스턴스를 반환합니다.
- * @returns {ColorUtil} ColorUtil 인스턴스
+ * 가장 최근에 생성된 ColorUtil 인스턴스를 반환합니다.
+ * @returns {ColorUtil|null} 생성 전에는 `null`, 생성 후에는 가장 최근 인스턴스입니다.
  */
 export function colorUtil() {
     return colorUtilInstance;

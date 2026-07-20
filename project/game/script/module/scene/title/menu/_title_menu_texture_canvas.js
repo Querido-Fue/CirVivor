@@ -69,6 +69,7 @@ export function ensureTitleMenuTextureCanvas(target, canvasKey, contextKey, widt
  * @param {number} canvasWidth - 캔버스 너비입니다.
  * @param {number} canvasHeight - 캔버스 높이입니다.
  * @param {object} panelRect - clip에 사용할 패널 rect입니다.
+ * @returns {void}
  */
 export function beginTitleMenuTextureClip(context, canvasWidth, canvasHeight, panelRect) {
     const logicalWidth = clampFiniteNumber(panelRect?.w, 1, Infinity, 1);

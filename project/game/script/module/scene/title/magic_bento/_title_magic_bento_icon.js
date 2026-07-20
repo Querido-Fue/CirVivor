@@ -10,6 +10,7 @@ import { EQUILATERAL_TRIANGLE_WIDTH_RATIO } from './_title_magic_bento_motion.js
  * @param {number} y - Y 좌표
  * @param {number} size - 아이콘 크기
  * @param {string} color - 아이콘 색상
+ * @returns {void}
  */
 export function drawBentoCardIcon(ctx, iconType, x, y, size, color) {
     switch (iconType) {
@@ -39,6 +40,7 @@ export function drawBentoCardIcon(ctx, iconType, x, y, size, color) {
  * @param {number} size - 아이콘 크기
  * @param {string} color - 아이콘 색상
  * @param {boolean} doubled - 빨리감기 여부
+ * @returns {void}
  */
 function drawPlayIcon(ctx, x, y, size, color, doubled) {
     const sideLength = doubled ? size * 0.66 : size * 0.92;
@@ -74,6 +76,7 @@ function drawPlayIcon(ctx, x, y, size, color, doubled) {
  * @param {number} y - Y 좌표
  * @param {number} size - 아이콘 크기
  * @param {string} color - 아이콘 색상
+ * @returns {void}
  */
 function drawListIcon(ctx, x, y, size, color) {
     const lineWidth = clampFiniteNumber(size * 0.08, 1.5, Infinity, 1.5);
@@ -110,6 +113,7 @@ function drawListIcon(ctx, x, y, size, color) {
  * @param {number} y - Y 좌표
  * @param {number} size - 아이콘 크기
  * @param {string} color - 아이콘 색상
+ * @returns {void}
  */
 function drawDeckIcon(ctx, x, y, size, color) {
     const radius = size * 0.11;
@@ -137,6 +141,7 @@ function drawDeckIcon(ctx, x, y, size, color) {
  * @param {number} y - Y 좌표
  * @param {number} size - 아이콘 크기
  * @param {string} color - 아이콘 색상
+ * @returns {void}
  */
 function drawFlaskIcon(ctx, x, y, size, color) {
     const stemWidth = size * 0.16;
@@ -187,6 +192,7 @@ function drawFlaskIcon(ctx, x, y, size, color) {
  * @param {number} x - 왼쪽 X 좌표
  * @param {number} y - 위쪽 Y 좌표
  * @param {number} sideLength - 정삼각형 한 변 길이
+ * @returns {void}
  */
 function fillTriangle(ctx, x, y, sideLength) {
     const width = sideLength * EQUILATERAL_TRIANGLE_WIDTH_RATIO;

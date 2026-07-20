@@ -1,4 +1,5 @@
 import { getData } from 'data/data_handler.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const COLLISION_FRAME_STATS = getData('COLLISION_CONSTANTS').FRAME_STATS;
 const COLLISION_STAT_FIELD_NAMES = Object.freeze([
@@ -13,7 +14,7 @@ const COLLISION_STAT_FIELD_NAMES = Object.freeze([
  * @returns {number} 정규화된 숫자입니다.
  */
 export function normalizeSnapshotNumber(value, fallback = 0) {
-    return Number.isFinite(value) ? value : fallback;
+    return resolveFiniteNumber(value, fallback);
 }
 
 /**

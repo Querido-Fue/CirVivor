@@ -1,13 +1,21 @@
 import { render, renderGL } from 'display/display_system.js';
+import { animate, remove } from 'animation/animation_system.js';
 import { resolveOverlayContentSurfaceStyles } from 'display/webgl/_overlay_render_geometry.js';
+import { getData } from 'data/data_handler.js';
 import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 import { createOverlayEffectState } from './_overlay_effect_registry.js';
+
+const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
 
 /**
  * @class OverlaySession
  * @description overlay 하나에 대응하는 surface 묶음과 blur/effect 상태를 관리합니다.
  */
 export class OverlaySession {
+    #dimRenderCommand;
+    #glassAnimation = null;
+    #glassAnimationToken = 0;
+
     /**
      * @param {object} options - session 생성 옵션입니다.
      * @param {import('display/display_system.js').DisplaySystem} options.displaySystem - DisplaySystem 인스턴스입니다.
@@ -50,7 +58,11 @@ export class OverlaySession {
         this.hasRegisteredEffects = Object.keys(this.effects).length > 0;
 
         const disableTransparency = options.disableTransparency === true;
-        this.effectiveTransparent = this.transparent && !disableTransparency;
+        this.effectiveTransparent = OVERLAY_RENDER_CONSTANTS.BACKDROP_SAMPLING_ENABLED === true
+            && this.transparent
+            && !disableTransparency;
+        this.glassMix = this.effectiveTransparent ? 1 : 0;
+        this.glassTarget = this.glassMix;
         this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || this.hasRegisteredEffects;
 
         this.orderSequence = Math.max(0, options.orderSequence || 0);
@@ -82,11 +94,27 @@ export class OverlaySession {
         this.dimLayerId = this.dimSurface?.id || null;
         this.uiLayerId = this.uiSurface.id;
         this.effectLayerId = this.effectSurface?.id || null;
+        this.floatingEffectSurface = null;
+        this.floatingUISurface = null;
+        this.floatingEffectLayerId = null;
+        this.floatingUILayerId = null;
+        this.#dimRenderCommand = {
+            shape: 'rect',
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+            fill: '#000000',
+            alpha: 0
+        };
         this.glassRenderCommand = { shape: 'glassPanel' };
         this.glassRenderCommandKeys = [];
+        this.floatingGlassRenderCommand = { shape: 'glassPanel' };
+        this.floatingGlassRenderCommandKeys = [];
         this.includeOwnEffectSurface = false;
         this.includeOwnUISurface = false;
         this.glassSourceProvider = () => this.#buildGlassSources();
+        this.floatingGlassSourceProvider = () => this.#getFloatingCompositeSources();
         this.glassSourceSnapshot = {
             snapshotIdentity: `overlay-session:${this.orderSequence}:custom:0`,
             sourceRevision: 0,
@@ -155,14 +183,64 @@ export class OverlaySession {
     }
 
     /**
-     * 현재 세션의 투명도 비활성화 상태를 즉시 갱신합니다.
+     * 투명도 설정을 반영하고 기존 패널과 glass 패널을 0.4초 동안 교차 감쇠합니다.
+     * 전역 backdrop 정책이 꺼져 있으면 항상 불투명 상태를 유지합니다.
      * @param {boolean} disableTransparency - 투명도 비활성화 여부입니다.
      */
     setDisableTransparency(disableTransparency) {
-        this.effectiveTransparent = this.transparent && disableTransparency !== true;
+        const nextGlassTarget = OVERLAY_RENDER_CONSTANTS.BACKDROP_SAMPLING_ENABLED === true
+            && this.transparent
+            && disableTransparency !== true
+            ? 1
+            : 0;
+        if (this.glassTarget === nextGlassTarget
+            && Object.is(this.glassMix, nextGlassTarget)
+            && !this.#glassAnimation) {
+            return;
+        }
+
+        this.glassTarget = nextGlassTarget;
+        const animationToken = ++this.#glassAnimationToken;
+        if (this.#glassAnimation) {
+            remove(this.#glassAnimation.id);
+            this.#glassAnimation = null;
+        }
+
+        if (nextGlassTarget > 0 || this.glassMix > 0) {
+            this.effectiveTransparent = true;
+        }
         this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || this.hasRegisteredEffects;
         this.#syncEffectSurfaceAvailability();
         this.invalidateBlur();
+
+        if (Object.is(this.glassMix, nextGlassTarget)) {
+            this.#finalizeGlassTransition(nextGlassTarget);
+            return;
+        }
+
+        const animation = animate(this, {
+            variable: 'glassMix',
+            startValue: 'current',
+            endValue: nextGlassTarget,
+            duration: OVERLAY_RENDER_CONSTANTS.GLASS_TRANSITION_DURATION_SECONDS,
+            type: OVERLAY_RENDER_CONSTANTS.GLASS_TRANSITION_EASING
+        });
+        this.#glassAnimation = animation;
+        animation.promise.then(() => {
+            if (animationToken !== this.#glassAnimationToken || this.#glassAnimation !== animation) {
+                return;
+            }
+            this.#glassAnimation = null;
+            this.#finalizeGlassTransition(nextGlassTarget);
+        });
+    }
+
+    /**
+     * 현재 glass 교차 감쇠 비율을 반환합니다.
+     * @returns {number} 0은 불투명 패널, 1은 backdrop glass 패널입니다.
+     */
+    getGlassMix() {
+        return clampNumber(this.glassMix, 0, 1);
     }
 
     /**
@@ -170,7 +248,7 @@ export class OverlaySession {
      * @returns {boolean} 중간 flush가 필요한 경우 true입니다.
      */
     requiresBackdropComposite() {
-        return Boolean(this.effectLayerId) && this.effectiveTransparent && this.alpha > 0;
+        return Boolean(this.effectLayerId) && this.getGlassMix() > 0 && this.alpha > 0;
     }
 
     /**
@@ -186,15 +264,16 @@ export class OverlaySession {
             this.effectiveDim * this.dimAlpha
         );
 
-        render(this.dimLayerId, {
-            shape: 'rect',
-            x: 0,
-            y: 0,
-            w: this.dimSurface?.canvas?.width || 0,
-            h: this.dimSurface?.canvas?.height || 0,
-            fill: '#000000',
-            alpha: this.effectiveDim * this.dimAlpha
-        });
+        const dimLayerId = this.dimLayerId;
+        const command = this.#dimRenderCommand;
+        command.shape = 'rect';
+        command.x = 0;
+        command.y = 0;
+        command.w = this.dimSurface?.canvas?.width || 0;
+        command.h = this.dimSurface?.canvas?.height || 0;
+        command.fill = '#000000';
+        command.alpha = this.effectiveDim * this.dimAlpha;
+        render(dimLayerId, command);
     }
 
     /**
@@ -204,6 +283,9 @@ export class OverlaySession {
         this.blurRevision += 1;
         if (this.effectLayerId) {
             this.displaySystem.markOverlayEffectDirty(this.effectLayerId);
+        }
+        if (this.floatingEffectLayerId) {
+            this.displaySystem.markOverlayEffectDirty(this.floatingEffectLayerId);
         }
     }
 
@@ -264,9 +346,9 @@ export class OverlaySession {
         }
 
         const command = this.glassRenderCommand;
-        this.#resetGlassRenderCommand();
-        this.#resolveEffectRenderOptions(command);
-        this.#copyGlassRenderOptions(command, options);
+        this.#resetGlassRenderCommand(command, this.glassRenderCommandKeys);
+        this.#resolveEffectRenderOptions(command, this.glassRenderCommandKeys);
+        this.#copyGlassRenderOptions(command, options, this.glassRenderCommandKeys);
 
         const includeOwnSurfaces = command.includeOwnSurfaces === true;
         this.includeOwnEffectSurface = command.includeOwnEffectSurface === true || includeOwnSurfaces;
@@ -279,10 +361,46 @@ export class OverlaySession {
             || this.includeOwnUISurface;
         command.sourceProvider = this.glassSourceProvider;
         this.#applyEffectTransform(command);
-        command.sampleBackdrop = command.sampleBackdrop === undefined
-            ? this.effectiveTransparent
-            : command.sampleBackdrop;
+        command.sampleBackdrop = this.getGlassMix() > 0
+            && command.sampleBackdrop !== false;
         renderGL(this.effectLayerId, command);
+    }
+
+    /**
+     * 일반 UI보다 위에 있는 전용 effect surface에 floating glass 패널을 렌더링합니다.
+     * source anchor가 기본 UI surface 뒤에 있어 드롭다운 뒤쪽 UI까지 실제로 blur됩니다.
+     * @param {object} options - 패널 렌더링 옵션입니다.
+     * @returns {boolean} glass 패널을 렌더링했으면 true입니다.
+     */
+    renderFloatingGlassPanel(options) {
+        if (this.getGlassMix() <= 0) {
+            return false;
+        }
+
+        this.#ensureFloatingSurfaces();
+        if (!this.floatingEffectLayerId) {
+            return false;
+        }
+
+        const command = this.floatingGlassRenderCommand;
+        this.#resetGlassRenderCommand(command, this.floatingGlassRenderCommandKeys);
+        this.#copyGlassRenderOptions(command, options, this.floatingGlassRenderCommandKeys);
+        command.shape = 'glassPanel';
+        command.blurUpdateMode = this.blurUpdateMode;
+        command.blurRevision = this.blurRevision;
+        command.sourceProvider = this.floatingGlassSourceProvider;
+        command.sampleBackdrop = command.sampleBackdrop !== false;
+        renderGL(this.floatingEffectLayerId, command);
+        return true;
+    }
+
+    /**
+     * floating glass 위에 텍스트와 상호작용 피드백을 그릴 2D layer를 반환합니다.
+     * @returns {string|null} floating UI layer ID입니다.
+     */
+    getFloatingUILayerId() {
+        this.#ensureFloatingSurfaces();
+        return this.floatingUILayerId;
     }
 
     /**
@@ -295,13 +413,15 @@ export class OverlaySession {
 
     /**
      * session이 사용하는 surface를 반환합니다.
-     * @returns {{uiLayerId: string, effectLayerId: string|null}} surface 식별자입니다.
+     * @returns {{dimLayerId:string|null, uiLayerId:string, effectLayerId:string|null, floatingUILayerId:string|null, floatingEffectLayerId:string|null}} surface 식별자입니다.
      */
     getLayerIds() {
         return {
             dimLayerId: this.dimLayerId,
             uiLayerId: this.uiLayerId,
-            effectLayerId: this.effectLayerId
+            effectLayerId: this.effectLayerId,
+            floatingUILayerId: this.floatingUILayerId,
+            floatingEffectLayerId: this.floatingEffectLayerId
         };
     }
 
@@ -314,6 +434,12 @@ export class OverlaySession {
         }
 
         this.closed = true;
+        this.#glassAnimationToken += 1;
+        if (this.#glassAnimation) {
+            remove(this.#glassAnimation.id);
+            this.#glassAnimation = null;
+        }
+        this.#releaseFloatingSurfaces();
         if (this.dimLayerId) {
             this.displaySystem.releaseDynamicSurface(this.dimLayerId);
         }
@@ -357,6 +483,12 @@ export class OverlaySession {
         this.#setSurfaceOpacity(this.uiSurface, this.alpha);
         if (this.effectSurface) {
             this.#setSurfaceOpacity(this.effectSurface, this.alpha);
+        }
+        if (this.floatingUISurface) {
+            this.#setSurfaceOpacity(this.floatingUISurface, this.alpha);
+        }
+        if (this.floatingEffectSurface) {
+            this.#setSurfaceOpacity(this.floatingEffectSurface, this.alpha);
         }
     }
 
@@ -412,6 +544,89 @@ export class OverlaySession {
             this.effectSurface.canvas.style.transform = surfaceStyles.effectTransform;
             this.effectSurface.canvas.style.filter = surfaceStyles.effectFilter;
         }
+        if (this.floatingUISurface) {
+            this.floatingUISurface.canvas.style.transformOrigin = surfaceStyles.transformOrigin;
+            this.floatingUISurface.canvas.style.transform = surfaceStyles.uiTransform;
+            this.floatingUISurface.canvas.style.filter = surfaceStyles.uiFilter;
+        }
+        if (this.floatingEffectSurface) {
+            this.floatingEffectSurface.canvas.style.transformOrigin = surfaceStyles.transformOrigin;
+            this.floatingEffectSurface.canvas.style.transform = surfaceStyles.effectTransform;
+            this.floatingEffectSurface.canvas.style.filter = surfaceStyles.effectFilter;
+        }
+    }
+
+    /**
+     * glass 전환의 최종 상태와 surface 가용성을 동기화합니다.
+     * @param {number} target - 0 또는 1인 glass 목표값입니다.
+     * @private
+     */
+    #finalizeGlassTransition(target) {
+        this.glassMix = target;
+        this.effectiveTransparent = target > 0;
+        this.needsEffectSurface = this.effectiveTransparent || this.glOverlay || this.hasRegisteredEffects;
+        this.#syncEffectSurfaceAvailability();
+        if (!this.effectiveTransparent) {
+            this.#releaseFloatingSurfaces();
+        }
+        this.invalidateBlur();
+    }
+
+    /**
+     * 기본 UI 위에 놓이는 floating effect/UI surface 쌍을 지연 생성합니다.
+     * @private
+     */
+    #ensureFloatingSurfaces() {
+        if (this.floatingEffectSurface && this.floatingUISurface) {
+            return;
+        }
+
+        this.#releaseFloatingSurfaces();
+        this.floatingEffectSurface = this.displaySystem.createDynamicSurface({
+            type: 'webgl',
+            order: this.sortOrderBase + 2,
+            mode: 'overlay-effect',
+            includeInComposite: true
+        });
+        this.floatingUISurface = this.displaySystem.createDynamicSurface({
+            type: '2d',
+            order: this.sortOrderBase + 3,
+            includeInComposite: true
+        });
+        this.floatingEffectLayerId = this.floatingEffectSurface.id;
+        this.floatingUILayerId = this.floatingUISurface.id;
+        this.#syncSurfaceOpacity();
+        this.appliedContentScale = Number.NaN;
+        this.appliedContentBlur = Number.NaN;
+        this.#syncContentPresentation();
+    }
+
+    /**
+     * floating surface 쌍을 display pool로 반환합니다.
+     * @private
+     */
+    #releaseFloatingSurfaces() {
+        if (this.floatingEffectLayerId) {
+            this.displaySystem.releaseDynamicSurface(this.floatingEffectLayerId);
+        }
+        if (this.floatingUILayerId) {
+            this.displaySystem.releaseDynamicSurface(this.floatingUILayerId);
+        }
+        this.floatingEffectSurface = null;
+        this.floatingUISurface = null;
+        this.floatingEffectLayerId = null;
+        this.floatingUILayerId = null;
+    }
+
+    /**
+     * floating effect surface 아래의 기본 panel과 UI를 포함한 backdrop source를 반환합니다.
+     * @returns {{snapshotIdentity:string, sourceRevision:number, sources:Array<object>}} 합성 snapshot입니다.
+     * @private
+     */
+    #getFloatingCompositeSources() {
+        return this.floatingEffectLayerId
+            ? this.displaySystem.getCompositeSourcesBeforeSurface(this.floatingEffectLayerId)
+            : this.displaySystem.getCompositeSourcesBeforeSurface(this.effectLayerId || this.uiLayerId);
     }
 
     /**
@@ -475,13 +690,13 @@ export class OverlaySession {
      * @param {object} target - 옵션을 기록할 명령입니다.
      * @private
      */
-    #resolveEffectRenderOptions(target) {
+    #resolveEffectRenderOptions(target, commandKeys = this.glassRenderCommandKeys) {
         for (const effectState of this.effectStates) {
             if (typeof effectState.getRenderOptions !== 'function') {
                 continue;
             }
 
-            this.#copyGlassRenderOptions(target, effectState.getRenderOptions());
+            this.#copyGlassRenderOptions(target, effectState.getRenderOptions(), commandKeys);
         }
     }
 
@@ -489,12 +704,11 @@ export class OverlaySession {
      * 이전 glass 명령의 동적 필드를 비웁니다.
      * @private
      */
-    #resetGlassRenderCommand() {
-        const command = this.glassRenderCommand;
-        for (let index = 0; index < this.glassRenderCommandKeys.length; index++) {
-            command[this.glassRenderCommandKeys[index]] = undefined;
+    #resetGlassRenderCommand(command = this.glassRenderCommand, commandKeys = this.glassRenderCommandKeys) {
+        for (let index = 0; index < commandKeys.length; index++) {
+            command[commandKeys[index]] = undefined;
         }
-        this.glassRenderCommandKeys.length = 0;
+        commandKeys.length = 0;
         command.forceBlurRefresh = undefined;
         command.transformMatrix = undefined;
         command.sampleBackdrop = undefined;
@@ -509,7 +723,7 @@ export class OverlaySession {
      * @param {object|null|undefined} options - 복사할 옵션입니다.
      * @private
      */
-    #copyGlassRenderOptions(target, options) {
+    #copyGlassRenderOptions(target, options, commandKeys = this.glassRenderCommandKeys) {
         if (!options) {
             return;
         }
@@ -519,7 +733,7 @@ export class OverlaySession {
                 continue;
             }
             target[key] = options[key];
-            this.glassRenderCommandKeys.push(key);
+            commandKeys.push(key);
         }
     }
 

@@ -52,6 +52,13 @@ const HEXA_HIVE_PAIR_IDS_SCRATCH = { enemyIdA: -1, enemyIdB: -1 };
 const HEXA_HIVE_NEIGHBOR_IDS_SCRATCH = [];
 let hexaHiveNeighborSortCandidatesById = null;
 
+/**
+ * 현재 정렬 범위에 바인딩된 후보 맵을 기준으로 인접 ID를 작은 합체 구성원 수, ID 순으로 비교합니다.
+ * 후보 맵이나 ID가 없으면 `getHexaMergeMemberCount()`의 0 fallback을 사용합니다.
+ * @param {number} leftId - 왼쪽 후보 ID입니다.
+ * @param {number} rightId - 오른쪽 후보 ID입니다.
+ * @returns {number} `Array#sort()` 비교 결과입니다.
+ */
 function _compareHexaHiveNeighborIds(leftId, rightId) {
     const leftCount = getHexaMergeMemberCount(hexaHiveNeighborSortCandidatesById?.get(leftId));
     const rightCount = getHexaMergeMemberCount(hexaHiveNeighborSortCandidatesById?.get(rightId));
@@ -225,6 +232,7 @@ function _getHexaHiveProjectedCellGap(enemyA, enemyB, dirX, dirY, fallbackDistan
  * @param {number} offsetX - X축 추가 오프셋입니다.
  * @param {number} offsetY - Y축 추가 오프셋입니다.
  * @param {number} maxDistance - 적별 최대 오프셋 거리입니다.
+ * @returns {void}
  */
 function _addHexaHivePullOffset(pullOffsetById, enemy, offsetX, offsetY, maxDistance) {
     if (!Number.isInteger(enemy?.id)) {
@@ -246,6 +254,7 @@ function _addHexaHivePullOffset(pullOffsetById, enemy, offsetX, offsetY, maxDist
  * 누적된 합체 예열 오프셋을 적 인스턴스에 반영합니다.
  * @param {Map<number, object>} activeMergeCandidatesById - 활성 합체 후보 맵입니다.
  * @param {Map<number, {x:number, y:number, maxDistance:number}>} pullOffsetById - 오프셋 누적 맵입니다.
+ * @returns {void}
  */
 function _applyHexaHivePullOffsets(activeMergeCandidatesById, pullOffsetById) {
     for (const [enemyId, pullOffset] of pullOffsetById.entries()) {
@@ -815,6 +824,15 @@ function _buildHexaHivePairKey(enemyIdA, enemyIdB) {
     return `${firstId}:${secondId}`;
 }
 
+/**
+ * 문자열의 반열린 구간 `[startIndex, endIndex)`을 ASCII 정수로 읽습니다.
+ * 숫자 앞의 `-` 하나만 허용하며, 빈 숫자부나 숫자 이외 문자가 있으면 `Number.NaN`을 반환합니다.
+ * 결과의 safe-integer 범위는 검사하지 않습니다.
+ * @param {string} value - 파싱할 원본 문자열입니다.
+ * @param {number} startIndex - 포함되는 시작 인덱스입니다.
+ * @param {number} endIndex - 포함되지 않는 끝 인덱스입니다.
+ * @returns {number} 파싱된 정수 또는 `Number.NaN`입니다.
+ */
 function _parseHexaHiveIntegerSegment(value, startIndex, endIndex) {
     let index = startIndex;
     let sign = 1;

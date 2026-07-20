@@ -146,8 +146,8 @@ export function updateTitleMenuUtilityTileInteractionStates({
     let clickedMenuEntry = null;
 
     if (isInteractive) {
-        const interactiveItems = [...secondaryMenuEntries].reverse();
-        for (const menuEntry of interactiveItems) {
+        for (let index = secondaryMenuEntries.length - 1; index >= 0; index--) {
+            const menuEntry = secondaryMenuEntries[index];
             const runtimeState = utilityTileStateMap.get(menuEntry.id);
             const renderState = utilityTileRenderMap.get(menuEntry.id);
             if (!runtimeState || !renderState || renderState.alpha <= 0.75) {
@@ -214,6 +214,7 @@ export function updateTitleMenuUtilityTileInteractionStates({
  * @param {object} runtimeState - 카드 또는 타일 런타임 상태입니다.
  * @param {object} renderState - 렌더 상태입니다.
  * @param {{x:number, y:number}} localPoint - 패널 로컬 좌표입니다.
+ * @returns {void}
  */
 function _syncTitleMenuPointerLocalState(runtimeState, renderState, localPoint) {
     runtimeState.localX = localPoint.x;
@@ -232,6 +233,7 @@ function _syncTitleMenuPointerLocalState(runtimeState, renderState, localPoint) 
  * @param {object|null} options.spotlightOptions - spotlight 옵션입니다.
  * @param {object|null} options.borderOptions - border 옵션입니다.
  * @param {object|null} options.particleOptions - particle 옵션입니다.
+ * @returns {void}
  */
 function _updateTitleMenuInteractiveEffectState({
     renderState,

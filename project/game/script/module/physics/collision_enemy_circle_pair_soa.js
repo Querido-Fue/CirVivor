@@ -7,6 +7,7 @@ import { COLLISION_RELATION_INDEX as RELATION_INDEX } from './collision_soa_layo
  * @param {object} bodyA - 첫 번째 body입니다.
  * @param {object} bodyB - 두 번째 body입니다.
  * @param {string} fieldName - 누적할 카운터 필드명입니다.
+ * @returns {void}
  */
 function incrementCollisionEnemyCirclePairCounter(bodyA, bodyB, fieldName) {
     bodyA[fieldName] = (bodyA[fieldName] || 0) + 1;

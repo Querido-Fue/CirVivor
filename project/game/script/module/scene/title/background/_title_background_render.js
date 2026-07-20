@@ -11,7 +11,8 @@ import { clampFiniteNumber } from 'util/number_util.js';
  * @param {number} options.wh - 화면 높이입니다.
  * @param {object[]} options.titleEnemies - 타이틀 배경 적 목록입니다.
  * @param {object[]} options.parallaxLayers - 페럴랙스 계층 설정 목록입니다.
- * @param {TitleShieldEffect|null} options.shieldEffect - 실드 효과 인스턴스입니다.
+ * @param {{draw: function(): void}|null} options.shieldEffect - draw 호출을 제공하는 실드 효과 인스턴스입니다.
+ * @returns {void}
  */
 export function drawTitleBackgroundScene({
     drawBackgroundFill,

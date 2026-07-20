@@ -8,6 +8,7 @@ import { getSetting } from 'save/save_system.js';
 import { getData } from 'data/data_handler.js';
 import { CanvasSurfacePool } from './_surface_pool.js';
 import { VignetteRenderer } from './_vignette_renderer.js';
+import { ThemeTransitionController } from './_theme_transition_controller.js';
 import {
     compareDisplaySurfaceDescriptors,
     createDisplaySurfaceDescriptor,
@@ -60,10 +61,26 @@ export class DisplaySystem {
         this.dynamic2DPool = new CanvasSurfacePool('2d');
         this.dynamicWebGLPool = new CanvasSurfacePool('webgl');
         this.vignetteRenderer = new VignetteRenderer();
+        this.themeTransitionController = null;
     }
 
     /**
-     * 디스플레이 시스템을 초기화합니다.
+     * `themeHandler.init()` Promise가 이행된 뒤 저장 테마를 적용하고 overlay host를 조회한 다음
+     * `background`, `object`, `effect`, `texteffect`, `ui`, `vignette`, `top` surface를 해당 순서로 등록합니다.
+     * `ColorSchemes.Background`의 첫 조건 조회가 truthy이면 변환 인수로 다시 live 조회해 총 두 번
+     * 읽으며, 변환 결과의 `r`, `g`, `b`를 차례로 숫자 변환해 255로 나눌 뿐 clamp하지 않습니다.
+     * `screenHandler.init()` Promise가 이행된 뒤 그 시점의 `surfaceMap.values()` live iterator로
+     * backing store를 동기화합니다. 마지막 `resize()`는 live receiver로 동기 호출하고 그 반환값은
+     * 기다리지 않고 그대로 버리는 방식입니다.
+     *
+     * 매 호출마다 새 Promise와 초기화 순회를 만들며, 중복 실행을 막는 재진입 guard가 없습니다.
+     * 실패 시 rollback하지 않으므로 이미 적용된 등록·동기화 등의 부분 상태는 유지됩니다.
+     * 속성 접근·호출의 throw, 하위 Promise 거부, thenable의 첫 reject 사유와 첫 resolve/reject 콜백
+     * 호출 전에 난 throw는 호출 시점의 동기 throw가 아니며, 반환 Promise가 같은 사유(identity)로
+     * 거부됩니다. thenable이 resolve/reject 콜백을 처음 호출한 뒤에는 adopted 값이
+     * pending이어도 추가 resolve/reject 결과와 throw를 무시합니다.
+     *
+     * @returns {Promise<void>} 초기화가 끝나면 `undefined`로 이행하고, 처리 중 오류가 나면 거부되는 Promise입니다.
      */
     async init() {
         await this.themeHandler.init();
@@ -104,6 +121,22 @@ export class DisplaySystem {
         }
 
         this.resize();
+    }
+
+    /**
+     * AnimationSystem 준비 뒤 런타임 테마 전환 controller를 한 번 생성합니다.
+     * @returns {void}
+     */
+    initializeThemeTransition() {
+        if (this.themeTransitionController) {
+            return;
+        }
+
+        this.themeTransitionController = new ThemeTransitionController({
+            render: (layer, command) => this.drawHandler.render(layer, command),
+            getWidth: () => this.screenHandler.width,
+            getHeight: () => this.screenHandler.height
+        });
     }
 
     /**
@@ -150,8 +183,11 @@ export class DisplaySystem {
     }
 
     /**
-     * 동적 surface를 회수합니다.
+     * 등록된 동적 surface를 handler→registry/list→DOM 순서로 분리한 뒤 타입별 풀에 반환합니다.
+     * 미등록·정적 surface는 무시하며, 풀 반환 뒤 canvas/context의 소유권은 해당 풀로 이전됩니다.
+     * 처리 중 오류가 나도 앞서 완료된 등록 해제·revision 변경은 되돌리지 않습니다.
      * @param {string} surfaceId - 회수할 surface 식별자입니다.
+     * @returns {void}
      */
     releaseDynamicSurface(surfaceId) {
         const descriptor = this.surfaceMap.get(surfaceId);
@@ -435,6 +471,14 @@ export class DisplaySystem {
         }
 
         this.vignetteRenderer.draw(this.drawHandler);
+    }
+
+    /**
+     * 활성 런타임 테마 전환을 최상단 surface에 그립니다.
+     * @returns {void}
+     */
+    drawThemeTransition() {
+        this.themeTransitionController?.draw();
     }
 
     /**
@@ -757,7 +801,22 @@ export const getBaseWH = () => displaySystemInstance.screenHandler.baseHeight;
 export const getScaleRatio = () => displaySystemInstance.screenHandler.scaleRatio;
 
 /**
+ * 캔버스 CSS X 오프셋 원시값을 반환합니다.
+ * 마우스 입력처럼 X/Y 값을 스칼라로 소비하는 핫패스에서 객체 할당을 피할 때 사용합니다.
+ * @returns {number} 캔버스 X 오프셋입니다.
+ */
+export const getCanvasOffsetX = () => displaySystemInstance.screenHandler.cssLeft;
+
+/**
+ * 캔버스 CSS Y 오프셋 원시값을 반환합니다.
+ * 마우스 입력처럼 X/Y 값을 스칼라로 소비하는 핫패스에서 객체 할당을 피할 때 사용합니다.
+ * @returns {number} 캔버스 Y 오프셋입니다.
+ */
+export const getCanvasOffsetY = () => displaySystemInstance.screenHandler.cssTop;
+
+/**
  * 캔버스 CSS 오프셋을 반환합니다.
+ * 호출할 때마다 새 일반 객체를 반환하며, 객체가 필요 없는 핫패스는 축별 accessor를 사용합니다.
  * @returns {{x: number, y: number}} 캔버스 오프셋입니다.
  */
 export const getCanvasOffset = () => ({
@@ -769,6 +828,7 @@ export const getCanvasOffset = () => ({
  * 특정 레이어에 2D 렌더 명령을 실행합니다.
  * @param {string} layerName - 대상 레이어 식별자입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export const render = (layerName, options) => displaySystemInstance.drawHandler.render(layerName, options);
 
@@ -776,6 +836,7 @@ export const render = (layerName, options) => displaySystemInstance.drawHandler.
  * 특정 레이어에 WebGL 렌더 명령을 실행합니다.
  * @param {string} layerName - 대상 레이어 식별자입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export const renderGL = (layerName, options) => {
     const targetLayer = resolveDisplayWebGLLayerName(layerName);
@@ -790,9 +851,18 @@ export const renderGL = (layerName, options) => {
  * @param {number} originX - 월드 원점 X 좌표입니다.
  * @param {number} originY - 월드 원점 Y 좌표입니다.
  * @param {number} localScale - local center 좌표 배율입니다.
+ * @param {*} [cacheKey=null] - canonical immutable instance 입력에 사용할 명시적 prepared vertex 캐시 키입니다.
  * @returns {number} renderer에 전달한 instance 수입니다.
  */
-export const renderGLShapeInstances = (layerName, options, localCenters, originX, originY, localScale) => {
+export const renderGLShapeInstances = (
+    layerName,
+    options,
+    localCenters,
+    originX,
+    originY,
+    localScale,
+    cacheKey = null
+) => {
     const targetLayer = resolveDisplayWebGLLayerName(layerName);
     return displaySystemInstance.webGLHandler.renderShapeInstances(
         targetLayer,
@@ -800,7 +870,8 @@ export const renderGLShapeInstances = (layerName, options, localCenters, originX
         localCenters,
         originX,
         originY,
-        localScale
+        localScale,
+        cacheKey
     );
 };
 
@@ -809,12 +880,14 @@ export const renderGLShapeInstances = (layerName, options, localCenters, originX
  * @param {string} layerName - 레이어 식별자입니다.
  * @param {number} blur - 그림자 블러입니다.
  * @param {string} color - 그림자 색상입니다.
+ * @returns {void}
  */
 export const shadowOn = (layerName, blur, color) => displaySystemInstance.drawHandler.shadowOn(layerName, blur, color);
 
 /**
  * 레이어의 지속 그림자를 끕니다.
  * @param {string} layerName - 레이어 식별자입니다.
+ * @returns {void}
  */
 export const shadowOff = (layerName) => displaySystemInstance.drawHandler.shadowOff(layerName);
 
@@ -823,6 +896,7 @@ export const shadowOff = (layerName) => displaySystemInstance.drawHandler.shadow
  * @param {number} r - red 채널입니다.
  * @param {number} g - green 채널입니다.
  * @param {number} b - blue 채널입니다.
+ * @returns {void}
  */
 export const setBackgroundColor = (r, g, b) => {
     displaySystemInstance.webGLHandler.setBackgroundColor(r, g, b);

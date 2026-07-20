@@ -17,6 +17,7 @@ export function createCollisionFrameStats() {
 /**
  * 충돌 프레임 통계를 0으로 초기화합니다.
  * @param {object} stats - 초기화할 통계 객체입니다.
+ * @returns {void}
  */
 export function resetCollisionFrameStats(stats) {
     for (let i = 0; i < COLLISION_BASE_STAT_FIELDS.length; i++) {

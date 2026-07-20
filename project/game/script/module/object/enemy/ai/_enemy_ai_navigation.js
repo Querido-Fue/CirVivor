@@ -2,6 +2,7 @@ import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_const
 import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
+import { buildEnemyAIFlowField } from './wasm/_enemy_ai_flow_field_backend.js';
 
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
@@ -28,6 +29,19 @@ let flowOpenPositions = new Int32Array(0);
 const wallBoundsCacheByWalls = new WeakMap();
 const wallBoundsScratch = new Float64Array(4);
 const WALL_BOUNDS_STRIDE = 4;
+const LOS_SPATIAL_CELL_SIZE = 256;
+const LOS_SPATIAL_MAX_RECT_CELL_COUNT = 64;
+const LOS_SPATIAL_MAX_QUERY_CELL_COUNT = 256;
+const LOS_SPATIAL_MIN_BOUND_COUNT = 8;
+const LOS_SPATIAL_DENSE_CANDIDATE_RATIO = 0.75;
+
+/**
+ * 캐시된 벽 인덱스를 오름차순으로 비교합니다.
+ * @param {number} left - 왼쪽 벽 인덱스입니다.
+ * @param {number} right - 오른쪽 벽 인덱스입니다.
+ * @returns {number} 정렬 비교 결과입니다.
+ */
+const compareCachedWallIndex = (left, right) => left - right;
 
 /**
  * 직선 추적 판정에 사용할 벽 확장 반경을 반환합니다.
@@ -139,6 +153,63 @@ function getCachedWallBounds(walls, wallsVersion) {
 }
 
 /**
+ * 내부 LOS fast path가 처음 필요할 때만 versioned bounds에 spatial index scratch를 붙입니다.
+ * wall getter 평가는 getCachedWallBounds()의 기존 단일 배열 순회에서 이미 끝난 뒤에 수행됩니다.
+ * @param {{count:number, values:Float64Array, spatialRows?:Map<number, Map<number, number[]>>, oversizedIndices?:number[], queryStamps?:Uint32Array, queryGeneration?:number, candidateIndices?:number[], spatialQueryDepth?:number}} cachedBounds - versioned wall bounds cache입니다.
+ * @returns {{count:number, values:Float64Array, spatialRows:Map<number, Map<number, number[]>>, oversizedIndices:number[], queryStamps:Uint32Array, queryGeneration:number, candidateIndices:number[], spatialQueryDepth:number}} spatial scratch가 보장된 cache입니다.
+ */
+function ensureCachedWallSpatialIndex(cachedBounds) {
+    if (cachedBounds.spatialRows instanceof Map) {
+        return cachedBounds;
+    }
+    const spatialRows = new Map();
+    const oversizedIndices = [];
+    for (let i = 0; i < cachedBounds.count; i++) {
+        const offset = i * WALL_BOUNDS_STRIDE;
+        const minCx = Math.floor(cachedBounds.values[offset] / LOS_SPATIAL_CELL_SIZE);
+        const maxCx = Math.floor(cachedBounds.values[offset + 1] / LOS_SPATIAL_CELL_SIZE);
+        const minCy = Math.floor(cachedBounds.values[offset + 2] / LOS_SPATIAL_CELL_SIZE);
+        const maxCy = Math.floor(cachedBounds.values[offset + 3] / LOS_SPATIAL_CELL_SIZE);
+        if (
+            !Number.isSafeInteger(minCx)
+            || !Number.isSafeInteger(maxCx)
+            || !Number.isSafeInteger(minCy)
+            || !Number.isSafeInteger(maxCy)
+        ) {
+            oversizedIndices.push(i);
+            continue;
+        }
+        const cellCount = (maxCx - minCx + 1) * (maxCy - minCy + 1);
+        if (cellCount > LOS_SPATIAL_MAX_RECT_CELL_COUNT) {
+            oversizedIndices.push(i);
+            continue;
+        }
+        for (let cy = minCy; cy <= maxCy; cy++) {
+            let row = spatialRows.get(cy);
+            if (!row) {
+                row = new Map();
+                spatialRows.set(cy, row);
+            }
+            for (let cx = minCx; cx <= maxCx; cx++) {
+                let bucket = row.get(cx);
+                if (!bucket) {
+                    bucket = [];
+                    row.set(cx, bucket);
+                }
+                bucket.push(i);
+            }
+        }
+    }
+    cachedBounds.spatialRows = spatialRows;
+    cachedBounds.oversizedIndices = oversizedIndices;
+    cachedBounds.queryStamps = new Uint32Array(cachedBounds.count);
+    cachedBounds.queryGeneration = 0;
+    cachedBounds.candidateIndices = [];
+    cachedBounds.spatialQueryDepth = 0;
+    return cachedBounds;
+}
+
+/**
  * 사각형 경계를 지정 패딩만큼 확장합니다.
  * @param {{minX: number, maxX: number, minY: number, maxY: number}} rect - 원본 경계입니다.
  * @param {number} pad - 확장 패딩입니다.
@@ -203,6 +274,225 @@ const segmentIntersectsRectByCoords = (startX, startY, endX, endY, minX, maxX, m
     }
     return tMax >= tMin;
 };
+
+/**
+ * cached wall bounds의 모든 항목을 기존 exact LOS 판정으로 검사합니다.
+ * @param {{count:number, values:Float64Array}} cachedBounds - 버전별 wall bounds cache입니다.
+ * @param {number} startX - 선분 시작 X입니다.
+ * @param {number} startY - 선분 시작 Y입니다.
+ * @param {number} endX - 선분 끝 X입니다.
+ * @param {number} endY - 선분 끝 Y입니다.
+ * @param {number} safePad - 0 이상 확장 패딩입니다.
+ * @param {object|null|undefined} aiDebugStats - 선택적인 AI debug 통계입니다.
+ * @returns {boolean} 막힌 여부입니다.
+ */
+function isSegmentBlockedByCachedWallBoundsLinear(
+    cachedBounds,
+    startX,
+    startY,
+    endX,
+    endY,
+    safePad,
+    aiDebugStats = null
+) {
+    const recordsDebugStats = aiDebugStats?.enabled === true;
+    for (let i = 0; i < cachedBounds.count; i++) {
+        const offset = i * WALL_BOUNDS_STRIDE;
+        if (recordsDebugStats) {
+            incrementEnemyAIDebugCounter(aiDebugStats, 'directPathRectTestCount');
+        }
+        if (segmentIntersectsRectByCoords(
+            startX,
+            startY,
+            endX,
+            endY,
+            cachedBounds.values[offset] - safePad,
+            cachedBounds.values[offset + 1] + safePad,
+            cachedBounds.values[offset + 2] - safePad,
+            cachedBounds.values[offset + 3] + safePad
+        )) return true;
+    }
+    return false;
+}
+
+/**
+ * spatial query의 중복 후보를 stamp로 제거하고 재사용 목록에 추가합니다.
+ * @param {{queryStamps:Uint32Array}} cachedBounds - versioned wall bounds cache입니다.
+ * @param {number} index - cached bounds 인덱스입니다.
+ * @param {number} queryStamp - 현재 query 세대입니다.
+ * @param {number[]} candidates - 재사용 후보 목록입니다.
+ * @returns {boolean} 이번 query에 처음 추가했는지 여부입니다.
+ */
+function appendCachedWallSpatialCandidate(cachedBounds, index, queryStamp, candidates) {
+    if (cachedBounds.queryStamps[index] === queryStamp) return false;
+    cachedBounds.queryStamps[index] = queryStamp;
+    candidates.push(index);
+    return true;
+}
+
+/**
+ * 정적 wall bounds의 보수적 spatial 후보만 기존 exact LOS 판정으로 검사합니다.
+ * 후보가 조밀하거나 조회 AABB가 너무 크면 null을 반환해 linear 경로가 처리합니다.
+ * @param {{count:number, values:Float64Array, spatialRows:Map<number, Map<number, number[]>>, oversizedIndices:number[], queryStamps:Uint32Array, queryGeneration:number, candidateIndices:number[], spatialQueryDepth:number}} cachedBounds - 버전별 wall bounds cache입니다.
+ * @param {number} startX - 선분 시작 X입니다.
+ * @param {number} startY - 선분 시작 Y입니다.
+ * @param {number} endX - 선분 끝 X입니다.
+ * @param {number} endY - 선분 끝 Y입니다.
+ * @param {number} safePad - 0 이상 확장 패딩입니다.
+ * @param {object|null|undefined} aiDebugStats - 선택적인 AI debug 통계입니다.
+ * @returns {boolean|null} 막힌 여부 또는 dense/large query fallback 신호입니다.
+ */
+function tryIsSegmentBlockedByCachedWallBoundsSpatial(
+    cachedBounds,
+    startX,
+    startY,
+    endX,
+    endY,
+    safePad,
+    aiDebugStats = null
+) {
+    if (cachedBounds.count < LOS_SPATIAL_MIN_BOUND_COUNT) {
+        return null;
+    }
+    const minCx = Math.floor((Math.min(startX, endX) - safePad) / LOS_SPATIAL_CELL_SIZE);
+    const maxCx = Math.floor((Math.max(startX, endX) + safePad) / LOS_SPATIAL_CELL_SIZE);
+    const minCy = Math.floor((Math.min(startY, endY) - safePad) / LOS_SPATIAL_CELL_SIZE);
+    const maxCy = Math.floor((Math.max(startY, endY) + safePad) / LOS_SPATIAL_CELL_SIZE);
+    if (
+        !Number.isSafeInteger(minCx)
+        || !Number.isSafeInteger(maxCx)
+        || !Number.isSafeInteger(minCy)
+        || !Number.isSafeInteger(maxCy)
+    ) {
+        return null;
+    }
+    const queryCellCount = (maxCx - minCx + 1) * (maxCy - minCy + 1);
+    if (!Number.isFinite(queryCellCount) || queryCellCount > LOS_SPATIAL_MAX_QUERY_CELL_COUNT) {
+        return null;
+    }
+    cachedBounds = ensureCachedWallSpatialIndex(cachedBounds);
+    if (cachedBounds.spatialQueryDepth > 0) {
+        return null;
+    }
+    cachedBounds.spatialQueryDepth++;
+    try {
+        cachedBounds.queryGeneration = (cachedBounds.queryGeneration + 1) >>> 0;
+        if (cachedBounds.queryGeneration === 0) {
+            cachedBounds.queryStamps.fill(0);
+            cachedBounds.queryGeneration = 1;
+        }
+        const queryStamp = cachedBounds.queryGeneration;
+        const candidates = cachedBounds.candidateIndices;
+        candidates.length = 0;
+        const denseCandidateLimit = Math.ceil(cachedBounds.count * LOS_SPATIAL_DENSE_CANDIDATE_RATIO);
+
+        for (let cy = minCy; cy <= maxCy; cy++) {
+            const row = cachedBounds.spatialRows.get(cy);
+            if (!row) continue;
+            for (let cx = minCx; cx <= maxCx; cx++) {
+                const bucket = row.get(cx);
+                if (!bucket) continue;
+                for (let i = 0; i < bucket.length; i++) {
+                    if (
+                        appendCachedWallSpatialCandidate(cachedBounds, bucket[i], queryStamp, candidates)
+                        && candidates.length >= denseCandidateLimit
+                    ) return null;
+                }
+            }
+        }
+        for (let i = 0; i < cachedBounds.oversizedIndices.length; i++) {
+            if (
+                appendCachedWallSpatialCandidate(
+                    cachedBounds,
+                    cachedBounds.oversizedIndices[i],
+                    queryStamp,
+                    candidates
+                )
+                && candidates.length >= denseCandidateLimit
+            ) return null;
+        }
+
+        candidates.sort(compareCachedWallIndex);
+        const recordsDebugStats = aiDebugStats?.enabled === true;
+        if (recordsDebugStats) {
+            incrementEnemyAIDebugCounter(aiDebugStats, 'directPathSpatialCandidateCount', candidates.length);
+        }
+        for (let i = 0; i < candidates.length; i++) {
+            const offset = candidates[i] * WALL_BOUNDS_STRIDE;
+            if (recordsDebugStats) {
+                incrementEnemyAIDebugCounter(aiDebugStats, 'directPathRectTestCount');
+            }
+            if (segmentIntersectsRectByCoords(
+                startX,
+                startY,
+                endX,
+                endY,
+                cachedBounds.values[offset] - safePad,
+                cachedBounds.values[offset + 1] + safePad,
+                cachedBounds.values[offset + 2] - safePad,
+                cachedBounds.values[offset + 3] + safePad
+            )) return true;
+        }
+        return false;
+    } finally {
+        cachedBounds.spatialQueryDepth--;
+    }
+}
+
+/**
+ * ObjectSystem의 versioned cached wall bounds에 한정한 LOS fast path입니다.
+ * 공개 API의 linear semantics와 무버전 fallback은 이 helper를 통과하지 않습니다.
+ * @param {number} startX - 선분 시작 X입니다.
+ * @param {number} startY - 선분 시작 Y입니다.
+ * @param {number} endX - 선분 끝 X입니다.
+ * @param {number} endY - 선분 끝 Y입니다.
+ * @param {object[]|null|undefined} walls - 벽 목록입니다.
+ * @param {number} safePad - 0 이상 확장 패딩입니다.
+ * @param {number|null} wallsVersion - ObjectSystem 벽 버전입니다.
+ * @param {object|null|undefined} aiDebugStats - 선택적인 AI debug 통계입니다.
+ * @returns {boolean} 막힌 여부입니다.
+ */
+function isSegmentBlockedByVersionedCachedWallBounds(
+    startX,
+    startY,
+    endX,
+    endY,
+    walls,
+    safePad,
+    wallsVersion,
+    aiDebugStats = null
+) {
+    const recordsDebugStats = aiDebugStats?.enabled === true;
+    const cachedBounds = getCachedWallBounds(walls, wallsVersion);
+    if (!cachedBounds) {
+        return isSegmentBlockedByCoords(startX, startY, endX, endY, walls, safePad, null);
+    }
+    const isReentrantSpatialQuery = cachedBounds.spatialQueryDepth > 0;
+    const spatialResult = tryIsSegmentBlockedByCachedWallBoundsSpatial(
+        cachedBounds,
+        startX,
+        startY,
+        endX,
+        endY,
+        safePad,
+        aiDebugStats
+    );
+    if (spatialResult !== null) {
+        return spatialResult;
+    }
+    if (recordsDebugStats && !isReentrantSpatialQuery) {
+        incrementEnemyAIDebugCounter(aiDebugStats, 'directPathSpatialFallbackCount');
+    }
+    return isSegmentBlockedByCachedWallBoundsLinear(
+        cachedBounds,
+        startX,
+        startY,
+        endX,
+        endY,
+        safePad,
+        isReentrantSpatialQuery ? null : aiDebugStats
+    );
+}
 
 /**
  * 좌표 기반 선분이 벽에 막히는지 판정합니다.
@@ -505,6 +795,7 @@ function isFlowHeapNodeBefore(leftIndex, rightIndex, integration) {
  * @param {Int32Array} positions - 셀별 heap 위치입니다.
  * @param {Float32Array} integration - 누적 비용입니다.
  * @param {number} cellIndex - 삽입할 셀 인덱스입니다.
+ * @returns {void}
  */
 function pushFlowHeapNode(heap, positions, integration, cellIndex) {
     let position = heap.length;
@@ -531,6 +822,7 @@ function pushFlowHeapNode(heap, positions, integration, cellIndex) {
  * @param {Int32Array} positions - 셀별 heap 위치입니다.
  * @param {Float32Array} integration - 누적 비용입니다.
  * @param {number} cellIndex - 갱신된 셀 인덱스입니다.
+ * @returns {void}
  */
 function decreaseFlowHeapNode(heap, positions, integration, cellIndex) {
     let position = positions[cellIndex];
@@ -738,7 +1030,7 @@ const getFlowFieldForTargetCoords = (
         };
     }
 
-    const field = buildFlowField(grid, goalCell);
+    const field = buildEnemyAIFlowField(grid, goalCell, buildFlowField);
     flowFieldCache.set(key, field);
     const cacheLimit = Number.isInteger(profile.FLOW_CACHE_LIMIT)
         ? Math.max(1, profile.FLOW_CACHE_LIMIT)
@@ -841,6 +1133,19 @@ export const getSharedDirectPathAvailability = (
     wallsVersion
 ) => {
     const cacheWallsVersion = Number.isInteger(context?.wallsVersion) ? wallsVersion : null;
+    const aiDebugStats = context?.aiDebugStats ?? null;
+    if (Number.isInteger(cacheWallsVersion)) {
+        return !isSegmentBlockedByVersionedCachedWallBounds(
+            startX,
+            startY,
+            targetX,
+            targetY,
+            walls,
+            directPad > 0 ? directPad : 0,
+            cacheWallsVersion,
+            aiDebugStats
+        );
+    }
     return !isSegmentBlockedByCoords(
         startX,
         startY,
@@ -848,7 +1153,7 @@ export const getSharedDirectPathAvailability = (
         targetY,
         walls,
         directPad,
-        cacheWallsVersion
+        null
     );
 };
 

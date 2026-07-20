@@ -29,6 +29,11 @@ const INDICES_PER_SPRITE = 6;
 const GEOMETRY_BUFFER_COMPONENTS = 8;
 
 /**
+ * 명시적 정적 instance vertex 캐시가 보관할 최대 레코드 수입니다.
+ */
+const SHAPE_INSTANCE_VERTEX_CACHE_LIMIT = 16;
+
+/**
  * WebGL attribute offset 계산에 사용하는 float byte 크기입니다.
  */
 const FLOAT_BYTES = Float32Array.BYTES_PER_ELEMENT;
@@ -55,6 +60,7 @@ export class WebGLBatch {
         this.currentTexture = null;
         this.textureCache = new Map();
         this.colorCache = new Map();
+        this.shapeInstanceVertexCache = new Map();
         this.geometryBuffer = new Float32Array(GEOMETRY_BUFFER_COMPONENTS);
         this.shapeCache = new ShapeTextureCache(gl);
         this.frameWidth = 1;
@@ -64,14 +70,15 @@ export class WebGLBatch {
     }
 
     /**
-     * 배치 시작 전 상태를 초기화합니다.
+     * 프레임 해상도와 CPU-side 배치 큐를 초기화합니다.
+     * GL 상태는 실제 제출 직전 {@link flush}에서 복구합니다.
      * @param {number} width - 화면 너비입니다.
      * @param {number} height - 화면 높이입니다.
+     * @returns {void}
      */
     begin(width, height) {
         this.frameWidth = width;
         this.frameHeight = height;
-        this.#bindRenderState();
         this.spriteCount = 0;
         this.currentTexture = null;
     }
@@ -197,11 +204,34 @@ export class WebGLBatch {
      * @param {number} originX - 월드 원점 X 좌표입니다.
      * @param {number} originY - 월드 원점 Y 좌표입니다.
      * @param {number} localScale - local center 좌표 배율입니다.
+     * @param {*} [cacheKey=null] - canonical immutable 입력에만 사용하는 명시적 prepared vertex 캐시 키입니다.
      * @returns {number} 실제 기록한 sprite 수입니다.
      */
-    renderShapeInstances(options, localCenters, originX, originY, localScale) {
+    renderShapeInstances(options, localCenters, originX, originY, localScale, cacheKey = null) {
         if (!options?.shape || !Array.isArray(localCenters) || localCenters.length === 0) {
             return 0;
+        }
+
+        const cacheEnabled = cacheKey !== null && cacheKey !== undefined;
+        const cachedRecord = cacheEnabled ? this.shapeInstanceVertexCache.get(cacheKey) : null;
+        if (cachedRecord && this.#matchesShapeInstanceVertexCache(
+            cachedRecord,
+            options,
+            localCenters,
+            originX,
+            originY,
+            localScale
+        )) {
+            if (this.currentTexture !== cachedRecord.texture
+                || this.spriteCount + cachedRecord.spriteCount > this.maxSprites) {
+                this.flush();
+                this.currentTexture = cachedRecord.texture;
+            }
+
+            const vertexOffset = this.spriteCount * VERTICES_PER_SPRITE * this.vertexSize;
+            this.vertices.set(cachedRecord.vertices, vertexOffset);
+            this.spriteCount += cachedRecord.spriteCount;
+            return cachedRecord.spriteCount;
         }
 
         const textureInfo = this.shapeCache.getTextureInfo(options.shape);
@@ -267,6 +297,27 @@ export class WebGLBatch {
         const u1 = textureInfo.u1;
         const v1 = textureInfo.v1;
         let writtenCount = 0;
+        let cacheStartSpriteIndex = 0;
+        let expectedCachedSpriteCount = 0;
+
+        if (cacheEnabled) {
+            for (let centerIndex = 0; centerIndex < localCenters.length; centerIndex++) {
+                const localCenter = localCenters[centerIndex];
+                if (localCenter && Number.isFinite(localCenter.x) && Number.isFinite(localCenter.y)) {
+                    expectedCachedSpriteCount += 1;
+                }
+            }
+
+            if (expectedCachedSpriteCount > 0 && expectedCachedSpriteCount <= this.maxSprites) {
+                if (this.spriteCount + expectedCachedSpriteCount > this.maxSprites) {
+                    this.flush();
+                    this.currentTexture = texture;
+                }
+                cacheStartSpriteIndex = this.spriteCount;
+            } else {
+                expectedCachedSpriteCount = 0;
+            }
+        }
 
         for (let centerIndex = 0; centerIndex < localCenters.length; centerIndex++) {
             const localCenter = localCenters[centerIndex];
@@ -327,7 +378,89 @@ export class WebGLBatch {
             writtenCount += 1;
         }
 
+        if (cacheEnabled
+            && expectedCachedSpriteCount > 0
+            && writtenCount === expectedCachedSpriteCount) {
+            const start = cacheStartSpriteIndex * VERTICES_PER_SPRITE * vertexSize;
+            const end = start + (writtenCount * VERTICES_PER_SPRITE * vertexSize);
+            this.#storeShapeInstanceVertexCache(cacheKey, {
+                options,
+                localCenters,
+                originX,
+                originY,
+                localScale,
+                texture,
+                spriteCount: writtenCount,
+                vertices: this.vertices.slice(start, end)
+            });
+        }
+
         return writtenCount;
+    }
+
+    /**
+     * prepared vertex 레코드가 현재 canonical instance 입력과 같은지 확인합니다.
+     * local center 배열과 내부 항목은 캐시 수명 동안 불변이라는 호출자 계약을 따릅니다.
+     * @param {object} record - 캐시 레코드입니다.
+     * @param {object} options - 현재 공통 shape 렌더 옵션입니다.
+     * @param {Array<{x:number, y:number}>} localCenters - 현재 local center 목록입니다.
+     * @param {number} originX - 현재 월드 원점 X 좌표입니다.
+     * @param {number} originY - 현재 월드 원점 Y 좌표입니다.
+     * @param {number} localScale - 현재 local center 좌표 배율입니다.
+     * @returns {boolean} 재사용 가능한 레코드이면 true입니다.
+     * @private
+     */
+    #matchesShapeInstanceVertexCache(record, options, localCenters, originX, originY, localScale) {
+        return record.localCenters === localCenters
+            && record.localCenterCount === localCenters.length
+            && record.shape === options.shape
+            && record.fill === options.fill
+            && record.alpha === options.alpha
+            && record.w === options.w
+            && record.h === options.h
+            && record.radius === options.radius
+            && record.rotation === options.rotation
+            && record.rotationCos === options.rotationCos
+            && record.rotationSin === options.rotationSin
+            && record.originX === originX
+            && record.originY === originY
+            && record.localScale === localScale;
+    }
+
+    /**
+     * prepared vertex 레코드를 제한된 삽입 순서 캐시에 저장합니다.
+     * @param {*} cacheKey - 호출자가 재사용하는 명시적 캐시 키입니다.
+     * @param {object} data - 현재 입력과 완성된 Float32 vertex 데이터입니다.
+     * @returns {void}
+     * @private
+     */
+    #storeShapeInstanceVertexCache(cacheKey, data) {
+        if (!this.shapeInstanceVertexCache.has(cacheKey)
+            && this.shapeInstanceVertexCache.size >= SHAPE_INSTANCE_VERTEX_CACHE_LIMIT) {
+            const oldestKey = this.shapeInstanceVertexCache.keys().next().value;
+            this.shapeInstanceVertexCache.delete(oldestKey);
+        }
+
+        const options = data.options;
+        this.shapeInstanceVertexCache.set(cacheKey, {
+            localCenters: data.localCenters,
+            localCenterCount: data.localCenters.length,
+            shape: options.shape,
+            fill: options.fill,
+            alpha: options.alpha,
+            w: options.w,
+            h: options.h,
+            radius: options.radius,
+            rotation: options.rotation,
+            rotationCos: options.rotationCos,
+            rotationSin: options.rotationSin,
+            originX: data.originX,
+            originY: data.originY,
+            localScale: data.localScale,
+            texture: data.texture,
+            spriteCount: data.spriteCount,
+            vertices: data.vertices
+        });
     }
 
     /**

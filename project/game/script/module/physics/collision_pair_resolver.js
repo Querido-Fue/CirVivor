@@ -13,6 +13,7 @@ import { applyCollisionBodyTranslation } from './collision_body_translation.js';
  * @param {number} moveY - Y 이동량입니다.
  * @param {number} pairResolveBoost - pair별 해소 가중치입니다.
  * @param {object|null} broadphaseBuffer - 좌표 이동 후 동기화할 broad-phase buffer입니다.
+ * @returns {void}
  */
 function applyCollisionResolvedMove(body, moveX, moveY, pairResolveBoost, broadphaseBuffer) {
     if (!moveX && !moveY) {

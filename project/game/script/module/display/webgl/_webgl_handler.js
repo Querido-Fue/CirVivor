@@ -115,7 +115,16 @@ export class WebGLHandler {
     }
 
     /**
-     * 모든 WebGL 레이어를 프레임 시작 상태로 초기화합니다.
+     * 호출마다 현재 glContexts의 live 등록 순서에서 context-lost가 아닌 WebGL 레이어를 fail-fast로 처리합니다.
+     * 메서드 자체에는 프레임당 1회 또는 재진입 guard가 없습니다.
+     * 각 레이어는 mode와 renderer를 조회한 뒤 `bindFramebuffer` → `viewport` → `clearColor` → `clear` → renderer frame begin → 현재 `onFrameClear` 순서로 처리합니다.
+     * 배경 key는 strict equality로 판정하고 backgroundColor를 채널마다 다시 읽으며, 나머지는 투명색을 사용합니다.
+     * viewport와 frame begin의 width·height는 각각 live 조회하므로 중간 GL 부수효과가 두 번째 크기를 바꿀 수 있습니다.
+     * falsy renderer나 non-positive 크기는 frame begin만 no-op하며 이미 수행한 clear와 후속 callback은 유지합니다.
+     * 처음 획득한 glContexts iterator에는 entry 추가·삭제·미방문 value 갱신이 반영되지만 glContexts 프로퍼티 자체 교체는 반영되지 않으며, mode·renderer·callback은 각 조회 시점의 table을 따릅니다.
+     * 조회·변환·GL·renderer·callback 예외는 rollback 없이 그대로 전파되어 현재 단계 이후와 뒤 레이어를 중단합니다.
+     *
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     clearAll() {
         for (const [layerName, gl] of this.glContexts.entries()) {
@@ -124,6 +133,9 @@ export class WebGLHandler {
             }
             const mode = this.layerModes.get(layerName);
             const renderer = this.layerRenderers.get(layerName);
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(0, 0, this.width, this.height);
 
             if (layerName === WEBGL_BACKGROUND_LAYER_ID) {
                 gl.clearColor(this.backgroundColor[0], this.backgroundColor[1], this.backgroundColor[2], this.backgroundColor[3]);
@@ -139,7 +151,14 @@ export class WebGLHandler {
     }
 
     /**
-     * 배치형 레이어를 flush합니다.
+     * 호출마다 현재 layerRenderers의 등록 순서에서 context-lost가 아닌 지원 renderer를 fail-fast로 flush합니다.
+     * 지원 대상은 flushWebGLLayerRenderer의 `instanceof` 계약에 따른 WebGLBatch와 EffectRenderer이며 두 판정이 false로 정상 완료된 다른 renderer는 no-op합니다.
+     * 메서드 자체에는 프레임당 1회 또는 재진입 guard가 없습니다.
+     * 처음 획득한 layerRenderers iterator에는 entry 추가·삭제·미방문 value 갱신이 반영되지만 프로퍼티 자체 교체는 현재 호출에 반영되지 않습니다.
+     * contextLostLayers는 각 entry에서 live 조회하고 하위 반환값과 thenable은 관찰하지 않습니다.
+     * 조회·판정·flush 예외는 rollback 없이 그대로 전파되어 현재 단계 이후와 뒤 renderer를 중단합니다.
+     *
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     flushAll() {
         for (const [layerName, renderer] of this.layerRenderers.entries()) {
@@ -169,9 +188,18 @@ export class WebGLHandler {
     }
 
     /**
-     * 특정 레이어에 렌더 명령을 전달합니다.
-     * @param {string} layerName - 대상 레이어 식별자입니다.
-     * @param {object} options - 렌더링 옵션입니다.
+     * 등록된 WebGL renderer에 값을 전달하고 정상 완료 뒤 현재 onDraw callback을 알립니다.
+     * `layerName`은 PropertyKey로 변환하지 않으며, 기본 Set/Map에서는 SameValueZero key로 비교됩니다.
+     * context-lost key이거나 renderer 조회 결과가 falsy이면 이후 단계를 실행하지 않고 `undefined`를 반환합니다.
+     * renderer의 live `render`를 원래 receiver와 `options` identity로 동기 호출합니다.
+     * renderer가 정상 반환한 뒤 최신 callback Map과 record의 `onDraw`를 조회해 record receiver로 인자 없이 호출합니다.
+     * 하위 renderer가 내부적으로 no-op해도 정상 반환이면 callback 통지를 수행합니다.
+     * renderer와 callback의 반환값 및 thenable은 관찰하지 않고 폐기하며, 조회·getter·호출 중 발생한 예외는 그대로 동기 전파됩니다.
+     * callback 조회 또는 호출 실패는 앞서 완료된 renderer 부수효과를 되돌리지 않습니다.
+     *
+     * @param {*} layerName - context-lost Set과 renderer/callback Map에서 조회할 key입니다.
+     * @param {*} options - renderer의 `render()`에 그대로 전달할 값입니다.
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     render(layerName, options) {
         if (this.contextLostLayers.has(layerName)) {
@@ -195,9 +223,10 @@ export class WebGLHandler {
      * @param {number} originX - 월드 원점 X 좌표입니다.
      * @param {number} originY - 월드 원점 Y 좌표입니다.
      * @param {number} localScale - local center 좌표 배율입니다.
+     * @param {*} [cacheKey=null] - batch renderer에 전달할 명시적 prepared vertex 캐시 키입니다.
      * @returns {number} renderer에 전달한 instance 수입니다.
      */
-    renderShapeInstances(layerName, options, localCenters, originX, originY, localScale) {
+    renderShapeInstances(layerName, options, localCenters, originX, originY, localScale, cacheKey = null) {
         if (this.contextLostLayers.has(layerName)
             || !options?.shape
             || !Array.isArray(localCenters)
@@ -217,7 +246,8 @@ export class WebGLHandler {
                 localCenters,
                 originX,
                 originY,
-                localScale
+                localScale,
+                cacheKey
             );
         } else {
             const hasPrecomputedTrig = Number.isFinite(options.rotationCos)

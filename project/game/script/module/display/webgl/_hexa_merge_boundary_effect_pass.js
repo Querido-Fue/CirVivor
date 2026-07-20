@@ -12,6 +12,7 @@ import {
  */
 export class HexaMergeBoundaryEffectPass {
     /**
+     * 합체 경계 shader program과 fullscreen buffer를 준비합니다.
      * @param {WebGLRenderingContext} gl - 대상 WebGL 컨텍스트입니다.
      */
     constructor(gl) {
@@ -22,9 +23,12 @@ export class HexaMergeBoundaryEffectPass {
 
     /**
      * 합체 경계 이펙트 명령 하나를 렌더링합니다.
-     * @param {object} command - 렌더링 명령입니다.
+     * program이나 명령이 없고, 선분 길이가 0.5 이하이거나 scissor 영역이 화면과 만나지 않으면 아무 작업도 하지 않습니다.
+     * program, array buffer, vertex attribute, uniform과 scissor 상태를 설정해 fullscreen quad를 그리고 scissor를 비활성화합니다.
+     * @param {{x1:number, y1:number, x2:number, y2:number, lineWidth?:number, glowWidth?:number, progress?:number, time?:number, alpha?:number, coreColor?:number[], glowColor?:number[], highlightColor?:number[]}} command - 두 끝점은 필수이고 나머지는 fallback이 있는 선택 필드입니다.
      * @param {number} width - 현재 surface 너비입니다.
      * @param {number} height - 현재 surface 높이입니다.
+     * @returns {void} GL 상태와 대상 framebuffer를 변경하며 값을 반환하지 않습니다.
      */
     draw(command, width, height) {
         if (!this.programInfo || !command) {
@@ -73,7 +77,8 @@ export class HexaMergeBoundaryEffectPass {
     }
 
     /**
-     * GL 리소스를 해제합니다.
+     * 소유한 fullscreen buffer와 합체 경계 shader program을 존재할 때 해제합니다.
+     * @returns {void} 리소스 참조를 정리하며 값을 반환하지 않습니다.
      */
     destroy() {
         if (this.fullscreenBuffer) {

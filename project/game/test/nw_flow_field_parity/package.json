@@ -1,0 +1,11 @@
+{
+    "name": "lonely-tower-flow-field-parity",
+    "version": "1.0.0",
+    "main": "index.html",
+    "window": {
+        "title": "Flow-field NW.js parity",
+        "width": 1000,
+        "height": 700,
+        "position": "center"
+    }
+}

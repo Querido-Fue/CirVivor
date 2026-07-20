@@ -12,6 +12,17 @@ const DEFAULT_LOADING_GLOW_STOPS = DEFAULT_LOADING_GLOW.HALO_STOPS;
 const DEFAULT_LOADING_GLOW_RING = DEFAULT_LOADING_GLOW.RING;
 const DEFAULT_LOADING_GLOW_SURFACE = DEFAULT_LOADING_GLOW.SURFACE;
 const DEFAULT_LOADING_CIRCLE_SHADER_COLORS = TITLE_LOADING.CIRCLE_SHADER.COLORS;
+const LOADING_CIRCLE_SHADER_COLOR_CACHE = {
+    initialized: false,
+    baseSource: null,
+    deepSource: null,
+    rimSource: null,
+    highlightSource: null,
+    base: null,
+    deep: null,
+    rim: null,
+    highlight: null
+};
 
 /**
  * 중앙 원형 로딩 glow에 사용할 색상 설정을 반환합니다.
@@ -55,21 +66,43 @@ export function getLoadingGlowSettings() {
                 ? loadingGlow.Ring.ShadowAlphaMax
                 : DEFAULT_LOADING_GLOW_RING.ShadowAlphaMax
         },
-        surface: {
-            Highlight: typeof loadingGlow?.Surface?.Highlight === 'string' && loadingGlow.Surface.Highlight
-                ? loadingGlow.Surface.Highlight
-                : fallbackColor,
-            HighlightAlpha: Number.isFinite(loadingGlow?.Surface?.HighlightAlpha)
-                ? loadingGlow.Surface.HighlightAlpha
-                : DEFAULT_LOADING_GLOW_SURFACE.HighlightAlpha,
-            Shadow: typeof loadingGlow?.Surface?.Shadow === 'string' && loadingGlow.Surface.Shadow
-                ? loadingGlow.Surface.Shadow
-                : fallbackColor,
-            ShadowAlpha: Number.isFinite(loadingGlow?.Surface?.ShadowAlpha)
-                ? loadingGlow.Surface.ShadowAlpha
-                : DEFAULT_LOADING_GLOW_SURFACE.ShadowAlpha
-        }
+        surface: _writeLoadingGlowSurfaceSettings({}, loadingGlow?.Surface, fallbackColor)
     };
+}
+
+/**
+ * 중앙 원형 수면선 glow 설정만 읽어 호출자 소유 객체에 기록합니다.
+ * @param {object|null} [out=null] - 갱신할 재사용 설정 객체입니다.
+ * @returns {{Highlight:string, HighlightAlpha:number, Shadow:string, ShadowAlpha:number}} 전달받은 객체 또는 새 설정 객체입니다.
+ */
+export function getLoadingGlowSurfaceSettings(out = null) {
+    const loadingGlowSurface = ColorSchemes?.Title?.Loading?.Glow?.Surface;
+    const fallbackColor = getLoadingAccentColor();
+    const surface = out && typeof out === 'object' ? out : {};
+    return _writeLoadingGlowSurfaceSettings(surface, loadingGlowSurface, fallbackColor);
+}
+
+/**
+ * 해석한 수면선 설정을 대상 객체에 기록합니다.
+ * @param {object} surface - 값을 기록할 설정 객체입니다.
+ * @param {object|null|undefined} loadingGlowSurface - 현재 테마의 수면선 설정입니다.
+ * @param {string} fallbackColor - 색상 fallback입니다.
+ * @returns {object} 전달받은 설정 객체입니다.
+ */
+function _writeLoadingGlowSurfaceSettings(surface, loadingGlowSurface, fallbackColor) {
+    surface.Highlight = typeof loadingGlowSurface?.Highlight === 'string' && loadingGlowSurface.Highlight
+        ? loadingGlowSurface.Highlight
+        : fallbackColor;
+    surface.HighlightAlpha = Number.isFinite(loadingGlowSurface?.HighlightAlpha)
+        ? loadingGlowSurface.HighlightAlpha
+        : DEFAULT_LOADING_GLOW_SURFACE.HighlightAlpha;
+    surface.Shadow = typeof loadingGlowSurface?.Shadow === 'string' && loadingGlowSurface.Shadow
+        ? loadingGlowSurface.Shadow
+        : fallbackColor;
+    surface.ShadowAlpha = Number.isFinite(loadingGlowSurface?.ShadowAlpha)
+        ? loadingGlowSurface.ShadowAlpha
+        : DEFAULT_LOADING_GLOW_SURFACE.ShadowAlpha;
+    return surface;
 }
 
 /**
@@ -84,21 +117,35 @@ export function getLoadingCircleShaderColors() {
     const highlightFallback = ColorSchemes?.Cursor?.White
         || loadingGlow?.Surface?.Highlight
         || accent;
+    const baseSource = loadingCircle?.Base || accent;
+    const deepSource = loadingCircle?.Deep || loadingGlow?.Ring?.ShadowColor || accent;
+    const rimSource = loadingCircle?.Rim || loadingGlow?.Ring?.Color || accent;
+    const highlightSource = loadingCircle?.Highlight || highlightFallback;
+    const cache = LOADING_CIRCLE_SHADER_COLOR_CACHE;
+
+    if (
+        !cache.initialized
+        || cache.baseSource !== baseSource
+        || cache.deepSource !== deepSource
+        || cache.rimSource !== rimSource
+        || cache.highlightSource !== highlightSource
+    ) {
+        cache.initialized = true;
+        cache.baseSource = baseSource;
+        cache.deepSource = deepSource;
+        cache.rimSource = rimSource;
+        cache.highlightSource = highlightSource;
+        cache.base = _loadingColorToVec3(baseSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.base);
+        cache.deep = _loadingColorToVec3(deepSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.deep);
+        cache.rim = _loadingColorToVec3(rimSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.rim);
+        cache.highlight = _loadingColorToVec3(highlightSource, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.highlight);
+    }
 
     return {
-        base: _loadingColorToVec3(loadingCircle?.Base || accent, DEFAULT_LOADING_CIRCLE_SHADER_COLORS.base),
-        deep: _loadingColorToVec3(
-            loadingCircle?.Deep || loadingGlow?.Ring?.ShadowColor || accent,
-            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.deep
-        ),
-        rim: _loadingColorToVec3(
-            loadingCircle?.Rim || loadingGlow?.Ring?.Color || accent,
-            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.rim
-        ),
-        highlight: _loadingColorToVec3(
-            loadingCircle?.Highlight || highlightFallback,
-            DEFAULT_LOADING_CIRCLE_SHADER_COLORS.highlight
-        )
+        base: cache.base,
+        deep: cache.deep,
+        rim: cache.rim,
+        highlight: cache.highlight
     };
 }
 

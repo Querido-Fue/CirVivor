@@ -7,6 +7,7 @@ import { getBentoAccentColor } from './_title_magic_bento_theme.js';
  * @param {object} card - 대상 카드
  * @param {object} palette - 카드 팔레트
  * @param {number} radius - 카드 모서리 반경
+ * @returns {void}
  */
 export function drawBentoCardBody(ctx, card, palette, radius) {
     const gradient = ctx.createLinearGradient(0, 0, 0, card.baseHeight);
@@ -38,6 +39,7 @@ export function drawBentoCardBody(ctx, card, palette, radius) {
  * @param {CanvasRenderingContext2D} ctx - UI 컨텍스트
  * @param {object} card - 대상 카드
  * @param {number} radius - 카드 모서리 반경
+ * @returns {void}
  */
 export function drawBentoCardSurfaceGlow(ctx, card, radius) {
     if (card.glowIntensity <= 0.01) {
@@ -75,6 +77,7 @@ export function drawBentoCardSurfaceGlow(ctx, card, radius) {
  * @param {object} palette - 카드 팔레트
  * @param {number} radius - 카드 모서리 반경
  * @param {object} titleMagicBento - 타이틀 bento 설정입니다.
+ * @returns {void}
  */
 export function drawBentoCardBorder(ctx, card, palette, radius, titleMagicBento) {
     const baseBorderWidth = titleMagicBento.BORDER_WIDTH * (1 + (card.hoverProgress * 0.95));
@@ -132,6 +135,7 @@ export function drawBentoCardBorder(ctx, card, palette, radius, titleMagicBento)
  * @param {number} width - 너비
  * @param {number} height - 높이
  * @param {number} radius - 모서리 반경
+ * @returns {void}
  */
 function traceBentoRoundRect(ctx, x, y, width, height, radius) {
     ctx.beginPath();

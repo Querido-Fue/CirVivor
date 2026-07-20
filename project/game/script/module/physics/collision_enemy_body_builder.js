@@ -1,5 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { getSimulationObjectWH } from '../simulation/simulation_runtime.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
 import {
     COLLISION_RESOLVE_MIN_MAX,
@@ -23,18 +24,6 @@ const ENEMY_RESOLVE_RADIUS_TUNING = Object.freeze({
     hexaHiveRadiusScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
     hexaHiveRootScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_ROOT_SCALE
 });
-
-/**
- * 적 body 생성 옵션에서 유한 숫자 값을 조회합니다.
- * @param {object|null|undefined} options - body 생성 옵션입니다.
- * @param {string} key - 조회할 옵션 키입니다.
- * @param {number} fallback - 값이 유효하지 않을 때 사용할 기본값입니다.
- * @returns {number} 유한 숫자로 보정한 옵션 값입니다.
- */
-function getCollisionEnemyBodyOption(options, key, fallback) {
-    const value = options?.[key];
-    return Number.isFinite(value) ? value : fallback;
-}
 
 /**
  * 적 충돌 이전 위치 축 값을 조회합니다.
@@ -68,9 +57,9 @@ function getCollisionEnemyPreviousAxisValue(enemy, axis, currentValue, sleeping)
  * @returns {boolean} 유효한 적 body를 구성했는지 여부입니다.
  */
 export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, options = {}) {
-    const epsilon = getCollisionEnemyBodyOption(options, 'epsilon', DEFAULT_EPSILON);
-    const frameResolveMinMax = getCollisionEnemyBodyOption(options, 'frameResolveMinMax', 0);
-    const frameResolveMaxRatio = getCollisionEnemyBodyOption(options, 'frameResolveMaxRatio', 0);
+    const epsilon = resolveFiniteNumber(options?.epsilon, DEFAULT_EPSILON);
+    const frameResolveMinMax = resolveFiniteNumber(options?.frameResolveMinMax, 0);
+    const frameResolveMaxRatio = resolveFiniteNumber(options?.frameResolveMaxRatio, 0);
     const baseHeight = typeof enemy.getRenderHeightPx === 'function'
         ? enemy.getRenderHeightPx()
         : (getSimulationObjectWH() * ENEMY_DRAW_HEIGHT_RATIO * (enemy.size || 1));
@@ -162,6 +151,7 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
  * @param {object} body - 갱신할 충돌 body입니다.
  * @param {object} enemy - 원본 적 객체입니다.
  * @param {number} [epsilon=DEFAULT_EPSILON] - 최소 weight입니다.
+ * @returns {void}
  */
 export function syncCollisionEnemyBodyResolveState(body, enemy, epsilon = DEFAULT_EPSILON) {
     const safeEpsilon = Number.isFinite(epsilon) ? epsilon : DEFAULT_EPSILON;
@@ -242,6 +232,10 @@ function _writeCollisionEnemyShapeMetrics(
         if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
             enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
         }
+        const radius = singleCircleRadius;
+        const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+        const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
+        let maxCenterDistance = 0;
 
         for (let p = 0; p < partCount; p++) {
             const localCenter = hexaHiveCenters[p];
@@ -249,9 +243,6 @@ function _writeCollisionEnemyShapeMetrics(
             const ly = (Number.isFinite(localCenter?.y) ? localCenter.y : 0) * height;
             const wx = centerX + (lx * cos) - (ly * sin);
             const wy = centerY + (lx * sin) + (ly * cos);
-            const radius = singleCircleRadius;
-            const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
-            const projectileRadius = radius * ENEMY_PROJECTILE_COLLISION_RADIUS_SCALE;
             const offset = p * CIRCLE_PART_STRIDE;
             enemy.__collisionWorldCircles[offset] = wx;
             enemy.__collisionWorldCircles[offset + 1] = wy;
@@ -271,10 +262,11 @@ function _writeCollisionEnemyShapeMetrics(
             projectileMaxY = Math.max(projectileMaxY, wy + projectileRadius);
 
             const centerDistance = Math.hypot(wx - centerX, wy - centerY);
-            broadRadius = Math.max(broadRadius, centerDistance + radius);
-            enemyPairBroadRadius = Math.max(enemyPairBroadRadius, centerDistance + enemyPairRadius);
-            projectileBroadRadius = Math.max(projectileBroadRadius, centerDistance + projectileRadius);
+            maxCenterDistance = Math.max(maxCenterDistance, centerDistance);
         }
+        broadRadius = Math.max(0, maxCenterDistance + radius);
+        enemyPairBroadRadius = Math.max(0, maxCenterDistance + enemyPairRadius);
+        projectileBroadRadius = Math.max(0, maxCenterDistance + projectileRadius);
     } else {
         const radius = singleCircleRadius;
         const enemyPairRadius = radius * ENEMY_PAIR_COLLISION_RADIUS_SCALE;

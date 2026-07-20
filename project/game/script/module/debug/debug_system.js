@@ -13,6 +13,7 @@ const DEBUG_CONTROL_OPTION_KEYS = new Set([
 ]);
 
 let debugSystemInstance = null;
+let hitboxesActive = false;
 
 /**
  * @class DebugSystem
@@ -27,14 +28,18 @@ export class DebugSystem {
             hitboxes: true,
             animationDebug: false
         };
+        this.debugModeEnabled = getSetting('debugMode') === true;
+        this._syncHitboxesActive();
         this.animationDebugController = new AnimationDebugController();
     }
 
     /**
      * 디버그 시스템을 초기화합니다.
-     * 에러 핸들러, 성능 디버거, 풀 디버거를 생성합니다.
+     * 저장된 디버그 모드를 한 번 다시 읽어 캐시를 동기화한 뒤 디버거들을 생성합니다.
      */
     async init() {
+        this.debugModeEnabled = getSetting('debugMode') === true;
+        this._syncHitboxesActive();
         this.errorHandler = new ErrorHandler();
         this.performanceDebugger = new PerformanceDebugger();
         this.poolDebugger = new PoolDebugger();
@@ -98,6 +103,8 @@ export class DebugSystem {
             this.performanceDebugger?.setEnabled?.(
                 this._isDebugModeEnabled() && nextEnabled
             );
+        } else if (optionKey === 'hitboxes') {
+            this._syncHitboxesActive();
         } else if (optionKey === 'animationDebug') {
             this.animationDebugController.setEnabled(
                 this._isDebugModeEnabled() && nextEnabled
@@ -154,11 +161,13 @@ export class DebugSystem {
     }
 
     /**
-     * 런타임 설정 변경 중 디버그 관련 변경을 즉시 반영합니다.
+     * 런타임 설정 변경 중 디버그 모드와 히트박스 캐시를 먼저 동기화한 뒤 관련 제어를 반영합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
         if (changedSettings.debugMode === false) {
+            this.debugModeEnabled = false;
+            this._syncHitboxesActive();
             this.performanceDebugger.setEnabled(false);
             this.controlState.animationDebug = false;
             this.animationDebugController.setEnabled(false);
@@ -169,20 +178,43 @@ export class DebugSystem {
             return;
         }
 
+        this.debugModeEnabled = true;
+        this._syncHitboxesActive();
         this.performanceDebugger.setEnabled(this.controlState.frameTime);
         this.animationDebugController.setEnabled(this.controlState.animationDebug);
     }
 
     /**
-     * 현재 디버그 모드 활성 여부를 반환합니다.
-     * @returns {boolean} 디버그 모드 활성 여부입니다.
+     * 현재 동기화된 디버그 모드 캐시를 반환합니다.
+     * @returns {boolean} 캐시된 디버그 모드 활성 여부입니다.
      * @private
      */
     _isDebugModeEnabled() {
-        return getSetting('debugMode') === true;
+        return this.debugModeEnabled;
+    }
+
+    /**
+     * 현재 전역 인스턴스가 소유한 히트박스 표시 캐시만 동기화합니다.
+     * @returns {void}
+     * @private
+     */
+    _syncHitboxesActive() {
+        if (debugSystemInstance === this) {
+            hitboxesActive = this.debugModeEnabled && this.controlState.hitboxes === true;
+        }
     }
 }
 
+/**
+ * 현재 DebugSystem의 오류 handler에 처리를 위임합니다.
+ * `DebugSystem.init()`이 실행되어 `errorHandler`가 준비된 뒤 호출해야 하며, 그 전에는
+ * native TypeError가 발생합니다. 하위 반환값은 전달하지 않아 비예외 경로는 항상 void입니다.
+ * @param {*} e - truthy이면 상세 로그 또는 error level의 원본 throw 값으로 쓰입니다.
+ * @param {*} message - handler가 문자열로 정규화할 메시지입니다.
+ * @param {*} level - strict 비교할 `'error'`, `'warning'`, `'info'` 또는 미지원 값입니다.
+ * @returns {void}
+ * @throws {*} 초기화 전 TypeError 또는 handler의 변환·로그·error 처리 예외입니다.
+ */
 export function errThrow(e, message, level) {
     debugSystemInstance.errorHandler.errThrow(e, message, level);
 }
@@ -204,11 +236,11 @@ export function getDebugSystem() {
 }
 
 /**
- * 적 충돌 히트박스 표시 여부를 반환합니다.
- * @returns {boolean} 히트박스를 그려야 하면 true입니다.
+ * 생성, 초기화 및 런타임 옵션 변경 시 동기화되는 히트박스 표시 캐시를 반환합니다.
+ * @returns {boolean} 캐시된 히트박스 표시 여부입니다.
  */
 export function shouldShowHitboxes() {
-    return debugSystemInstance?.isControlOptionActive?.('hitboxes') === true;
+    return hitboxesActive;
 }
 
 /**
@@ -242,6 +274,7 @@ export function beginPerformanceSection() {
  * beginPerformanceSection으로 시작한 구간을 기록합니다.
  * @param {string} sectionName - 기록할 섹션 이름입니다.
  * @param {number} startTime - 구간 시작 시각 또는 -1입니다.
+ * @returns {void}
  */
 export function endPerformanceSection(sectionName, startTime) {
     if (!Number.isFinite(startTime) || startTime < 0) {

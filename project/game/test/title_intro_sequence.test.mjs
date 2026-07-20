@@ -11,6 +11,9 @@ const { TITLE_CONSTANTS } = await loadGameModule(
 const { buildTitleSceneTransitionSegments } = await loadGameModule(
     'scene/title/loading/_title_scene_transition_segments.js'
 );
+const { advanceTitleIntroDelay } = await loadGameModule(
+    'scene/title/loading/_title_intro_delay.js'
+);
 const { MixedAnimation } = await loadGameModule(
     'animation/_mixed_animation.js'
 );
@@ -20,6 +23,9 @@ const sequenceSource = await readFile(
     'utf8'
 );
 assert.match(sequenceSource, /this\.#showTitleLogo\(\);/);
+assert.match(sequenceSource, /advanceTitleIntroDelay\(/);
+assert.match(sequenceSource, /TITLE_LOADING\.INTRO_START_DELAY_SECONDS/);
+assert.match(sequenceSource, /if \(delayState\.ready\) \{\s*this\.#startIntro\(\);/);
 assert.match(sequenceSource, /variable: 'introBlur'/);
 assert.match(sequenceSource, /type: TITLE_LOADING\.INTRO_BLUR_EASING/);
 assert.match(sequenceSource, /duration: TITLE_LOADING\.INTRO_BLUR_DURATION/);
@@ -55,8 +61,24 @@ assert.equal('COMPLETE_PROGRESS' in TITLE_CONSTANTS.TITLE_LOADING, false);
 assert.equal('STEP_ANIM_DURATION' in TITLE_CONSTANTS.TITLE_LOADING, false);
 assert.equal('TEXT_FADE_DURATION' in TITLE_CONSTANTS.TITLE_LOADING, false);
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.INTRO_BLUR_START_PX, 10);
+assert.equal(TITLE_CONSTANTS.TITLE_LOADING.INTRO_START_DELAY_SECONDS, 1.5);
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.INTRO_BLUR_DURATION, 0.6);
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.INTRO_BLUR_EASING, 'easeOutExpo');
+
+let introDelayState = advanceTitleIntroDelay(0, 0, 1.5);
+assert.equal(introDelayState.elapsed, 0);
+assert.equal(introDelayState.ready, false);
+introDelayState = advanceTitleIntroDelay(0, 1.49, 1.5);
+assert.equal(introDelayState.elapsed, 1.49);
+assert.equal(introDelayState.ready, false);
+introDelayState = advanceTitleIntroDelay(1.49, 0.01, 1.5);
+assert.equal(introDelayState.elapsed, 1.5);
+assert.equal(introDelayState.ready, true);
+introDelayState = advanceTitleIntroDelay(1.4, 0.5, 1.5);
+assert.equal(introDelayState.elapsed, 1.5);
+assert.equal(introDelayState.ready, true);
+assert.equal(advanceTitleIntroDelay(0.4, Number.NaN, 1.5).elapsed, 0.4);
+assert.equal(advanceTitleIntroDelay(0.4, -1, 1.5).elapsed, 0.4);
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.SCENE_TRANSITION_TRIGGER_PROGRESS, 1);
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.SCENE_TRANSITION_MOTION.ACCEL.DURATION, 0.3);
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.SCENE_TRANSITION_MOTION.ACCEL.EASING, 'easeInExpo');

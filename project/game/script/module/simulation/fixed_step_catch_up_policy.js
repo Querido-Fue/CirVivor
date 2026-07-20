@@ -28,6 +28,11 @@ export class FixedStepCatchUpPolicy {
 
     /**
      * 직전 프레임 CPU 시간과 현재 rAF 간격을 비교해 이번 프레임의 fixed step 상한을 반환합니다.
+     * 입력은 `Number.isFinite()`로 검사하며 문자열·객체를 숫자로 강제 변환하지 않습니다.
+     * CPU 비율의 기준 간격은 안전한 fixed step과 안전한 frame 간격 중 큰 값입니다.
+     * 진입 기준 이상이면 `cpuBound`를 먼저 켜고 여유 프레임 수를 0으로 만들며,
+     * 포화 중 해제 기준 이하가 연속 `recoveryFrames`회일 때만 정상 상태로 돌아갑니다.
+     * 포화 상태에서 두 기준 사이의 프레임은 누적된 여유 프레임 수만 0으로 되돌립니다.
      * @param {number} previousFrameCpuSeconds - 직전 프레임 전체 CPU 시간입니다.
      * @param {number} frameIntervalSeconds - 현재 rAF 프레임 간격입니다.
      * @param {number} fixedStepSeconds - fixed step 단위 시간입니다.
@@ -79,6 +84,7 @@ export class FixedStepCatchUpPolicy {
 
 /**
  * accumulator에 남은 정수 fixed tick 수를 계산합니다.
+ * 입력은 `Number.isFinite()`로 검사하며 문자열·객체를 숫자로 강제 변환하지 않습니다.
  * @param {number} accumulatorSeconds - 누적된 simulation 시간입니다.
  * @param {number} fixedStepSeconds - fixed tick 단위 시간입니다.
  * @returns {number} accumulator에 포함된 정수 tick 수입니다.

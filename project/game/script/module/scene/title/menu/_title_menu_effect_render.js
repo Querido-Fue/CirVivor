@@ -2,9 +2,8 @@ import { lerpNumber } from 'overlay/_panel_effect_math.js';
 import { formatRgba } from 'util/color_util.js';
 import { clampNumber } from './_title_menu_motion.js';
 import {
-    getMenuForegroundColor,
-    resolveMenuColorRgb,
-    toMenuRgba
+    menuForegroundWithAlpha,
+    resolveMenuColorRgb
 } from './_title_menu_theme.js';
 
 /**
@@ -13,6 +12,7 @@ import {
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {object} spotlightOptions - spotlight 옵션입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptions, effectColor) {
     const gradient = context.createRadialGradient(
@@ -26,7 +26,7 @@ export function drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptio
     gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.16 * runtimeState.spotlightAlpha));
     gradient.addColorStop(0.2, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.07 * runtimeState.spotlightAlpha));
     gradient.addColorStop(0.5, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.015 * runtimeState.spotlightAlpha));
-    gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
+    gradient.addColorStop(0.72, menuForegroundWithAlpha(0));
     context.fillStyle = gradient;
     context.beginPath();
     context.arc(runtimeState.localX, runtimeState.localY, spotlightOptions.radius, 0, Math.PI * 2);
@@ -40,6 +40,7 @@ export function drawTitleMenuCardSpotlight(context, runtimeState, spotlightOptio
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} borderOptions - hoverBorder 옵션입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardBorder(context, runtimeState, renderState, borderOptions, effectColor) {
     const baseWidth = Math.max(0.5, borderOptions.width || 1);
@@ -89,6 +90,7 @@ export function drawTitleMenuCardBorder(context, runtimeState, renderState, bord
  * @param {object} renderState - 카드 렌더 상태입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardParticles(context, renderState, runtimeState, effectColor) {
     const centerX = renderState.panelRect.w * 0.5;
@@ -122,6 +124,7 @@ export function drawTitleMenuCardParticles(context, renderState, runtimeState, e
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} runtimeState - 카드 런타임 상태입니다.
  * @param {{r:number, g:number, b:number}} effectColor - 효과 RGB 색상입니다.
+ * @returns {void}
  */
 export function drawTitleMenuCardRipples(context, runtimeState, effectColor) {
     for (const ripple of runtimeState.ripples) {
@@ -135,7 +138,7 @@ export function drawTitleMenuCardRipples(context, runtimeState, effectColor) {
         const gradient = context.createRadialGradient(ripple.x, ripple.y, 0, ripple.x, ripple.y, radius);
         gradient.addColorStop(0, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.38 * opacity));
         gradient.addColorStop(0.35, formatRgba(effectColor.r, effectColor.g, effectColor.b, 0.18 * opacity));
-        gradient.addColorStop(0.72, toMenuRgba(getMenuForegroundColor(), 0));
+        gradient.addColorStop(0.72, menuForegroundWithAlpha(0));
         context.fillStyle = gradient;
         context.beginPath();
         context.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);

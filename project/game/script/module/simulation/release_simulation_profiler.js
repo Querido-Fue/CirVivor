@@ -15,6 +15,11 @@ const QUANTILE_P99 = PROFILER_CONSTANTS.QUANTILE_P99;
 export class ReleaseSimulationProfiler {
     /**
      * @param {object} [options={}] - 테스트 또는 런타임 용량 설정입니다.
+     * @param {number} [options.frameCapacity] - frame 표본 ring 용량입니다. 유효하지 않으면 데이터 기본값을 사용합니다.
+     * @param {number} [options.fixedCapacity] - fixed 표본 ring 용량입니다. 유효하지 않으면 데이터 기본값을 사용합니다.
+     * @param {number} [options.rateWindowMs] - 처리율 집계 창의 밀리초 길이입니다. 유효하지 않으면 데이터 기본값을 사용합니다.
+     * @param {number} [options.quantileWindowMs] - 분위수 집계 창의 밀리초 길이입니다. 처리율 창보다 작으면 처리율 창 길이를 사용합니다.
+     * @param {number} [options.snapshotIntervalMs] - 스냅샷 발행 간격입니다. 유효하지 않으면 데이터 기본값을 사용합니다.
      */
     constructor(options = {}) {
         this.frameCapacity = normalizePositiveInteger(
@@ -74,6 +79,7 @@ export class ReleaseSimulationProfiler {
     /**
      * 누적 지표와 rolling 표본을 초기화합니다.
      * @param {number} [timestampMs=0] - 초기화 시각입니다.
+     * @returns {void}
      */
     reset(timestampMs = 0) {
         this.frameWriteIndex = 0;
@@ -102,6 +108,7 @@ export class ReleaseSimulationProfiler {
 
     /**
      * 창 비활성화처럼 main loop가 멈추는 구간을 rolling 통계에서 제외합니다.
+     * @returns {void}
      */
     suspend() {
         if (!this.enabled) {
@@ -114,6 +121,7 @@ export class ReleaseSimulationProfiler {
     /**
      * 새 활성 구간을 시작하고 pause 이전 rolling 표본을 제거합니다.
      * @param {number} [timestampMs=0] - 재개 시각입니다.
+     * @returns {void}
      */
     resume(timestampMs = 0) {
         if (!this.enabled) {
@@ -147,6 +155,7 @@ export class ReleaseSimulationProfiler {
      * @param {number} timestampMs - tick 종료 시각입니다.
      * @param {number} durationMs - tick 전체 CPU 시간입니다.
      * @param {boolean} completed - tick 정상 완료 여부입니다.
+     * @returns {void}
      */
     recordFixedStep(timestampMs, durationMs, completed) {
         if (!this.isCollecting()) {
@@ -178,6 +187,7 @@ export class ReleaseSimulationProfiler {
      * @param {number} frameDeltaClampLossSeconds - max frame delta 제한으로 폐기한 시간입니다.
      * @param {number} fixedStepSeconds - fixed tick 단위 시간입니다.
      * @param {boolean} cpuBound - catch-up 정책의 실제 CPU 포화 상태입니다.
+     * @returns {void}
      */
     recordFrame(
         timestampMs,
@@ -251,6 +261,7 @@ export class ReleaseSimulationProfiler {
     /**
      * @private
      * @param {number} timestampMs - snapshot 기준 시각입니다.
+     * @returns {void}
      */
     #publishSnapshot(timestampMs) {
         const rateThreshold = timestampMs - this.rateWindowMs;
@@ -386,6 +397,7 @@ export class ReleaseSimulationProfiler {
 
     /**
      * @private
+     * @returns {void}
      */
     #resetSnapshot() {
         const enabled = this.enabled === true;
@@ -429,6 +441,7 @@ export function shouldRecordReleaseSimulationForFrameMode(frameMode) {
 
 /**
  * main loop 일시정지 구간을 계측에서 제외합니다.
+ * @returns {void}
  */
 export function suspendReleaseSimulationProfiler() {
     releaseSimulationProfiler.suspend();
@@ -437,6 +450,7 @@ export function suspendReleaseSimulationProfiler() {
 /**
  * main loop 재개 뒤 새 rolling 구간을 시작합니다.
  * @param {number} [timestampMs=performance.now()] - 재개 시각입니다.
+ * @returns {void}
  */
 export function resumeReleaseSimulationProfiler(timestampMs = performance.now()) {
     releaseSimulationProfiler.resume(timestampMs);
@@ -447,6 +461,7 @@ export function resumeReleaseSimulationProfiler(timestampMs = performance.now())
  * @param {number} timestampMs - tick 종료 시각입니다.
  * @param {number} durationMs - tick CPU 시간입니다.
  * @param {boolean} completed - 정상 완료 여부입니다.
+ * @returns {void}
  */
 export function recordReleaseSimulationFixedStep(timestampMs, durationMs, completed) {
     releaseSimulationProfiler.recordFixedStep(timestampMs, durationMs, completed);
@@ -462,6 +477,7 @@ export function recordReleaseSimulationFixedStep(timestampMs, durationMs, comple
  * @param {number} frameDeltaClampLossSeconds - frame delta clamp 손실 시간입니다.
  * @param {number} fixedStepSeconds - fixed tick 시간입니다.
  * @param {boolean} cpuBound - CPU 포화 상태입니다.
+ * @returns {void}
  */
 export function recordReleaseSimulationFrame(
     timestampMs,
@@ -567,6 +583,7 @@ function resolveNearestRankQuantile(scratch, count, quantile) {
  * 재사용 scratch의 유효 범위만 오름차순 정렬합니다.
  * @param {Float64Array} scratch - 정렬할 배열입니다.
  * @param {number} count - 유효 표본 수입니다.
+ * @returns {void}
  */
 function sortScratch(scratch, count) {
     if (count > 1) {

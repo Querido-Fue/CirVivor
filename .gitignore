@@ -1,0 +1,19 @@
+*
+
+!.gitignore
+!project/
+!project/game/
+!project/game/**
+!project/package-lock.json
+!project/license
+!project/license/**
+!package.json
+!guide/
+!guide/domain/
+
+project/game/save/
+project/game/script/lib/
+
+# Ignore Markdown documents except README files.
+*.[mM][dD]
+![Rr][Ee][Aa][Dd][Mm][Ee].[mM][dD]

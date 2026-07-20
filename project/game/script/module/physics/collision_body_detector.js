@@ -389,6 +389,7 @@ function detectCirclePartsVsRect(partBody, rectBody, context) {
 /**
  * part 충돌 판정 계측을 안전하게 기록합니다.
  * @param {{recordPartCheck?: function(): void}|null|undefined} profileRecorder
+ * @returns {void}
  */
 function recordCollisionPartCheck(profileRecorder) {
     if (typeof profileRecorder?.recordPartCheck === 'function') {

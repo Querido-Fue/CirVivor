@@ -10,6 +10,7 @@ import { createFontString, wrapTextByWords } from 'util/font_util.js';
  * @param {number} maxWidth - 최대 줄 너비
  * @param {number} lineHeight - 줄 간격
  * @param {number} maxLines - 최대 줄 수
+ * @returns {void}
  */
 export function drawBentoWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
     const lines = wrapTextByWords(text, {

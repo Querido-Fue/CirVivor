@@ -97,6 +97,7 @@ export class SystemHandler {
         // 4. AnimationSystem (애니메이션 초기화)
         this.animationSystem = new AnimationSystem();
         await this.animationSystem.init();
+        this.displaySystem.initializeThemeTransition();
         this.logDebugInfo("AnimationSystem 로드");
 
         // 5. InputSystem (입력 초기화)
@@ -259,14 +260,16 @@ export class SystemHandler {
     }
 
     /**
-     * 매 프레임 실행되는 메인 틱 함수입니다.
-     * 단일 루프에서 고정 스텝 처리 후 가변 업데이트/렌더를 순차 실행합니다.
-     * @param {object} [frameContext={}] 프레임 컨텍스트
-     * @param {number} [frameContext.frameDeltaSeconds] 가변 프레임 델타(초)
-     * @param {number} [frameContext.fixedStepSeconds] 고정 스텝 델타(초)
-     * @param {number} [frameContext.fixedStepCount] 이번 프레임에 처리할 고정 스텝 횟수
-     * @param {number} [frameContext.fixedAlpha] 렌더 보간 계수(0~1)
-     * @param {'running'|'paused'|'step'} [frameContext.debugFrameMode='running'] 디버그 프레임 제어 상태
+     * 디버그 모드와 실행 정책을 정규화하고 시뮬레이션 스냅샷을 동기화한 뒤 fixed step 반복,
+     * 보간 alpha 설정, surface clear, 가변 update, draw, 최종 WebGL flush 순서로 한 프레임을 실행합니다.
+     * release profiler가 활성화된 fixed step은 `try/finally`로 성공 여부와 소요 시간을 기록합니다.
+     * @param {object} [frameContext={}] 프레임 컨텍스트입니다.
+     * @param {number} [frameContext.frameDeltaSeconds] 가변 프레임 델타(초)입니다.
+     * @param {number} [frameContext.fixedStepSeconds] 고정 스텝 델타(초)입니다.
+     * @param {number} [frameContext.fixedStepCount] 이번 프레임에 처리할 고정 스텝 횟수입니다.
+     * @param {number} [frameContext.fixedAlpha] 렌더 보간 계수(0~1)입니다.
+     * @param {'running'|'paused'|'step'} [frameContext.debugFrameMode='running'] 디버그 프레임 제어 상태입니다.
+     * @returns {void}
      */
     tick(frameContext = EMPTY_FRAME_CONTEXT) {
         const debugFrameMode = DEBUG_FRAME_MODES.has(frameContext.debugFrameMode)
@@ -366,7 +369,9 @@ export class SystemHandler {
     }
 
     /**
-     * 화면 크기 변경 시 디스플레이 시스템을 갱신합니다.
+     * 디스플레이 크기를 갱신하고 시뮬레이션 viewport 스냅샷을 동기화한 뒤 오브젝트, UI,
+     * overlay, 활성 씬 순서로 resize를 전파합니다.
+     * @returns {void}
      */
     resize() {
         this.displaySystem.resize();
@@ -430,9 +435,11 @@ export class SystemHandler {
     }
 
     /**
-     * 모든 시스템의 업데이트 로직을 호출합니다.
-     * @param {number} [frameDeltaSeconds] 가변 프레임 델타(초)
+     * 실행 정책에 따라 time, sound, animation, input, UI, overlay, object, scene을 순서대로 갱신하고,
+     * scene update 뒤 simulation command를 drain·적용한 다음 debug update를 수행합니다.
+     * @param {number} [frameDeltaSeconds] 가변 프레임 델타(초)입니다.
      * @param {object} [executionPolicy=this.frameExecutionPolicy] - 현재 프레임 실행 정책입니다.
+     * @returns {void}
      */
     update(frameDeltaSeconds, executionPolicy = this.frameExecutionPolicy) {
         const timeHandler = getTimeHandler();
@@ -495,8 +502,8 @@ export class SystemHandler {
 
     /**
      * @private
-     * 고정 스텝에서 실행되는 업데이트 로직입니다.
-     * 물리/전투 등 고정 시간 축이 필요한 모듈만 갱신합니다.
+     * 고정 시간 축에서 animation, object, scene, 선택적 game manager 순서로 갱신합니다.
+     * @returns {void}
      */
     #runFixedStep() {
         const totalStart = beginPerformanceSection();
@@ -529,8 +536,10 @@ export class SystemHandler {
     }
 
     /**
-     * 모든 시스템의 그리기 로직을 호출합니다.
+     * input, object, scene을 그린 뒤 overlay backdrop 합성이 필요할 때만 중간 WebGL flush를 수행하고,
+     * UI, vignette, overlay, release profiler HUD, debug, sound 순서로 렌더 명령을 발행합니다.
      * @param {object} [executionPolicy=this.frameExecutionPolicy] - 현재 프레임 실행 정책입니다.
+     * @returns {void}
      */
     draw(executionPolicy = this.frameExecutionPolicy) {
         if (executionPolicy.renderInput) {
@@ -581,6 +590,7 @@ export class SystemHandler {
             this.soundSystem.draw();
             endPerformanceSection('frame.draw.sound', startTime);
         }
+        this.displaySystem.drawThemeTransition();
     }
 
     /**

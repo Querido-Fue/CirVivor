@@ -13,6 +13,21 @@ import {
 } from './_title_shield_geometry.js';
 
 /**
+ * 실드 dent 후보를 강도, 깊이 내림차순으로 비교합니다.
+ * @param {{strength:number, depth:number}} left - 왼쪽 후보입니다.
+ * @param {{strength:number, depth:number}} right - 오른쪽 후보입니다.
+ * @returns {number} 정렬 비교 결과입니다.
+ */
+function compareTitleShieldDentPriority(left, right) {
+    const strengthGap = right.strength - left.strength;
+    if (Math.abs(strengthGap) > 0.0001) {
+        return strengthGap;
+    }
+
+    return right.depth - left.depth;
+}
+
+/**
  * @class TitleShieldEffect
  * @description 타이틀 원형 실드의 충돌 플래시와 눌림 왜곡 상태를 관리합니다.
  */
@@ -34,6 +49,10 @@ export class TitleShieldEffect {
         this.dents = [];
         this.dentCandidates = [];
         this.activeDentKeys = [];
+        this.dentCandidateMap = new Map();
+        this.retainedDentCandidates = [];
+        this.remainingDentCandidates = [];
+        this.dentRenderStatePool = [];
         this.enemyStateMap = new WeakMap();
         this.visualLayoutInitialized = false;
         this.config = new TitleShieldConfig();
@@ -69,8 +88,9 @@ export class TitleShieldEffect {
     }
 
     /**
-     * 현재 프레임에 사용 중인 실드 외곽 반경을 반환합니다.
-     * @returns {number} 실드 반경입니다.
+     * 타이틀 적 AI의 로고 자력 거리 계산에 사용할 목표 실드 외곽 반경을 반환합니다.
+     * 시각 보간 중인 `radius`가 아니라 최신 레이아웃에서 계산한 `targetRadius`입니다.
+     * @returns {number} 목표 실드 외곽 반경입니다.
      */
     getShieldRadius() {
         return this.targetRadius;
@@ -93,6 +113,9 @@ export class TitleShieldEffect {
         this.#updateVisualLayout(visualDelta);
         this.dents.length = 0;
         this.dentCandidates.length = 0;
+        this.dentCandidateMap.clear();
+        this.retainedDentCandidates.length = 0;
+        this.remainingDentCandidates.length = 0;
 
         if (!Array.isArray(enemies) || this.radius <= 0) {
             this.activeDentKeys.length = 0;
@@ -133,7 +156,9 @@ export class TitleShieldEffect {
     }
 
     /**
-     * 내부 상태를 정리합니다.
+     * 레이아웃과 impact·dent 추적 상태를 비우고 적별 WeakMap을 교체합니다.
+     * 누적 `time`과 현재 `config` 참조는 유지합니다.
+     * @returns {void}
      */
     destroy() {
         this.targetCenterX = 0;
@@ -148,13 +173,20 @@ export class TitleShieldEffect {
         this.dents.length = 0;
         this.dentCandidates.length = 0;
         this.activeDentKeys.length = 0;
+        this.dentCandidateMap.clear();
+        this.retainedDentCandidates.length = 0;
+        this.remainingDentCandidates.length = 0;
+        this.dentRenderStatePool.length = 0;
         this.enemyStateMap = new WeakMap();
         this.visualLayoutInitialized = false;
     }
 
     /**
+     * 원본 델타로 impact 수명과 만료를 처리하고 보정된 시각 델타로 목표 각도·강도·폭을 추종합니다.
      * @private
-     * @param {number} delta - 경과 시간입니다.
+     * @param {number} delta - impact 수명에 누적할 실제 프레임 델타입니다.
+     * @param {number} visualDelta - 각도·강도·폭 추종에 사용할 보정된 시각 델타입니다.
+     * @returns {void}
      */
     #updateImpacts(delta, visualDelta) {
         for (let index = this.impacts.length - 1; index >= 0; index--) {
@@ -176,7 +208,7 @@ export class TitleShieldEffect {
 
     /**
      * @private
-     * @param {number} delta - 경과 시간입니다.
+     * @param {number} delta - 레이아웃 추종에 사용할 설정 보정 시각 델타입니다.
      */
     #updateVisualLayout(delta) {
         if (!this.visualLayoutInitialized) {
@@ -260,13 +292,12 @@ export class TitleShieldEffect {
             return;
         }
 
-        this.dentCandidates.push({
-            key: state,
-            angle: state.displayAngle,
-            depth: this.config.getMaxDepthPx() * state.pressure * state.pressure,
-            width: this.#buildAngularWidth(radius),
-            strength: state.visualPressure
-        });
+        const dentCandidate = state.dentCandidate;
+        dentCandidate.angle = state.displayAngle;
+        dentCandidate.depth = this.config.getMaxDepthPx() * state.pressure * state.pressure;
+        dentCandidate.width = this.#buildAngularWidth(radius);
+        dentCandidate.strength = state.visualPressure;
+        this.dentCandidates.push(dentCandidate);
     }
 
     /**
@@ -448,7 +479,7 @@ export class TitleShieldEffect {
     /**
      * @private
      * @param {object} enemy - 평가할 적 인스턴스입니다.
-     * @returns {{enemyId:number|null, contacting:boolean, pressure:number, visualPressure:number, displayAngle:number, angleInitialized:boolean}} 적별 실드 상태입니다.
+     * @returns {{enemyId:number|null, contacting:boolean, pressure:number, visualPressure:number, displayAngle:number, angleInitialized:boolean, dentCandidate:object}} 적별 실드 상태입니다.
      */
     #getEnemyState(enemy) {
         const enemyId = Number.isInteger(enemy?.id) ? enemy.id : null;
@@ -463,7 +494,15 @@ export class TitleShieldEffect {
             pressure: 0,
             visualPressure: 0,
             displayAngle: 0,
-            angleInitialized: false
+            angleInitialized: false,
+            dentCandidate: null
+        };
+        state.dentCandidate = {
+            key: state,
+            angle: 0,
+            depth: 0,
+            width: 0,
+            strength: 0
         };
         this.enemyStateMap.set(enemy, state);
         return state;
@@ -480,12 +519,10 @@ export class TitleShieldEffect {
             this.dents.length = 0;
             return;
         }
-        const sortDentCandidates = (candidates) => candidates.sort(
-            (left, right) => this.#compareDentPriority(left, right)
-        );
 
-        const retainedCandidates = [];
-        const candidateMap = new Map();
+        const retainedCandidates = this.retainedDentCandidates;
+        const remainingCandidates = this.remainingDentCandidates;
+        const candidateMap = this.dentCandidateMap;
         for (let index = 0; index < this.dentCandidates.length; index++) {
             const candidate = this.dentCandidates[index];
             candidateMap.set(candidate.key, candidate);
@@ -501,17 +538,18 @@ export class TitleShieldEffect {
             candidateMap.delete(key);
         }
 
-        sortDentCandidates(retainedCandidates);
+        retainedCandidates.sort(compareTitleShieldDentPriority);
         while (retainedCandidates.length > maxDentCount) {
             retainedCandidates.pop();
         }
 
-        const remainingCandidates = Array.from(candidateMap.values()).sort(
-            (left, right) => this.#compareDentPriority(left, right)
-        );
+        for (const candidate of candidateMap.values()) {
+            remainingCandidates.push(candidate);
+        }
+        remainingCandidates.sort(compareTitleShieldDentPriority);
         while (retainedCandidates.length < maxDentCount && remainingCandidates.length > 0) {
             retainedCandidates.push(remainingCandidates.shift());
-            sortDentCandidates(retainedCandidates);
+            retainedCandidates.sort(compareTitleShieldDentPriority);
         }
 
         while (retainedCandidates.length > 0 && remainingCandidates.length > 0) {
@@ -523,35 +561,28 @@ export class TitleShieldEffect {
 
             retainedCandidates[retainedCandidates.length - 1] = strongestIncoming;
             remainingCandidates.shift();
-            sortDentCandidates(retainedCandidates);
+            retainedCandidates.sort(compareTitleShieldDentPriority);
         }
 
-        this.activeDentKeys = retainedCandidates.map((candidate) => candidate.key);
+        this.activeDentKeys.length = retainedCandidates.length;
+        for (let index = 0; index < retainedCandidates.length; index++) {
+            this.activeDentKeys[index] = retainedCandidates[index].key;
+        }
+
         this.dents.length = 0;
         for (let index = 0; index < retainedCandidates.length; index++) {
             const candidate = retainedCandidates[index];
-            this.dents.push({
-                angle: candidate.angle,
-                depth: candidate.depth,
-                width: candidate.width,
-                strength: candidate.strength
-            });
+            let dent = this.dentRenderStatePool[index];
+            if (!dent) {
+                dent = { angle: 0, depth: 0, width: 0, strength: 0 };
+                this.dentRenderStatePool[index] = dent;
+            }
+            dent.angle = candidate.angle;
+            dent.depth = candidate.depth;
+            dent.width = candidate.width;
+            dent.strength = candidate.strength;
+            this.dents.push(dent);
         }
-    }
-
-    /**
-     * @private
-     * @param {{strength:number, depth:number}} left - 왼쪽 후보입니다.
-     * @param {{strength:number, depth:number}} right - 오른쪽 후보입니다.
-     * @returns {number} 정렬 비교 결과입니다.
-     */
-    #compareDentPriority(left, right) {
-        const strengthGap = right.strength - left.strength;
-        if (Math.abs(strengthGap) > 0.0001) {
-            return strengthGap;
-        }
-
-        return right.depth - left.depth;
     }
 
     /**

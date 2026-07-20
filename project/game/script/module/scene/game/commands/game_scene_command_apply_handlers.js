@@ -64,6 +64,7 @@ function resolveGameSceneNextCounter(nextValue, fallbackValue) {
 /**
  * 씬의 벽 목록을 ObjectSystem에 동기화합니다.
  * @param {object|null|undefined} scene - 게임 씬 인스턴스입니다.
+ * @returns {void}
  */
 function syncGameSceneObjectSystemWalls(scene) {
     if (!scene?.objectSystem) {
@@ -77,6 +78,7 @@ function syncGameSceneObjectSystemWalls(scene) {
  * 월드 교체 명령을 로컬 씬 상태에 적용합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
  * @param {object} command - 월드 교체 명령입니다.
+ * @returns {void}
  */
 function applyReplaceWorldCommand(scene, command) {
     scene.objectSystem.showcaseEnabled = false;
@@ -111,6 +113,7 @@ function applyReplaceWorldCommand(scene, command) {
  * 적 배치 생성 명령을 로컬 ObjectSystem에 적용합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
  * @param {object} command - 적 생성 명령입니다.
+ * @returns {void}
  */
 function applySpawnEnemyBatchCommand(scene, command) {
     const enemies = Array.isArray(command.enemies) ? command.enemies : [];
@@ -131,6 +134,7 @@ function applySpawnEnemyBatchCommand(scene, command) {
  * 박스 벽 추가 명령을 로컬 씬 상태에 적용합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
  * @param {object} command - 박스 벽 추가 명령입니다.
+ * @returns {void}
  */
 function applyAppendBoxWallsCommand(scene, command) {
     const walls = Array.isArray(command.walls) ? command.walls : [];
@@ -145,6 +149,7 @@ function applyAppendBoxWallsCommand(scene, command) {
  * 투사체 추가 명령을 로컬 씬 상태에 적용합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
  * @param {object} command - 투사체 추가 명령입니다.
+ * @returns {void}
  */
 function applyAppendProjectilesCommand(scene, command) {
     const projectiles = Array.isArray(command.projectiles) ? command.projectiles : [];
@@ -158,6 +163,7 @@ function applyAppendProjectilesCommand(scene, command) {
 /**
  * 월드 파괴 명령을 로컬 씬 상태에 적용합니다.
  * @param {object} scene - 게임 씬 인스턴스입니다.
+ * @returns {void}
  */
 function applyDestroyWorldCommand(scene) {
     scene.objectSystem.setPlayers([]);
@@ -192,6 +198,7 @@ function createGameSceneCommandHandlers(scene) {
  * 게임 씬 명령 목록을 로컬 씬 상태와 ObjectSystem에 적용합니다.
  * @param {object|null|undefined} scene - 게임 씬 인스턴스입니다.
  * @param {object[]} [commands=[]] - 적용할 명령 목록입니다.
+ * @returns {void}
  */
 export function applyGameSceneCommandsToLocalState(scene, commands = []) {
     if (!scene?.objectSystem || !Array.isArray(commands) || commands.length === 0) {

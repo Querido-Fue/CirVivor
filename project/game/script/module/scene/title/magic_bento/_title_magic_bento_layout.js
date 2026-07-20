@@ -148,6 +148,7 @@ function createBentoCardLayoutMap(
  * @param {number} options.wh - 화면 높이입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {object} options.titleMagicBento - 타이틀 bento 설정입니다.
+ * @returns {void}
  */
 function applyBentoCardLayout(cards, layoutMap, {
     ww,

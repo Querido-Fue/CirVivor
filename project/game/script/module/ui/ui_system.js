@@ -18,8 +18,11 @@ export class UISystem {
     }
 
     /**
-     * UI 시스템을 초기화합니다.
-     * 커서를 초기화합니다.
+     * UI 시스템 초기화 요청마다 호출 시점의 cursor.init() 이행을 기다린 뒤 tooltip.init()을 순차 실행합니다.
+     * 첫 await 동안 tooltip이 교체되면 이후 live 객체를 사용하며, 중복·재진입 방지 없이 매 호출 두 단계를 다시 실행합니다.
+     * 하위 반환값은 버리며 접근·호출 예외, 첫 settlement 전 thenable 예외와 하위 거부는 같은 사유로 반환 Promise를 거부합니다.
+     * 오류는 호출 자체의 동기 throw가 아니며, thenable의 첫 settlement 뒤 결과는 표준 Promise 규칙대로 무시됩니다.
+     * @returns {Promise<void>} 두 단계 완료 후 undefined로 이행되는 호출별 새 Promise입니다.
      */
     async init() {
         await this.cursor.init();
@@ -80,6 +83,7 @@ export const getLangString = (key) => {
 /**
  * 현재 프레임에 툴팁 표시를 요청합니다.
  * @param {string|string[]|object|null|undefined} content - 표시할 툴팁 콘텐츠입니다.
+ * @returns {void}
  */
 export const requestTooltip = (content) => {
     uiSystemInstance?.tooltip?.request(content);
@@ -87,6 +91,7 @@ export const requestTooltip = (content) => {
 
 /**
  * 현재 툴팁 요청을 초기화합니다.
+ * @returns {void}
  */
 export const clearTooltip = () => {
     uiSystemInstance?.tooltip?.clear();

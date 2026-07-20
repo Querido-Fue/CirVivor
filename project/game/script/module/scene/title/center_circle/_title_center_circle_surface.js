@@ -1,6 +1,8 @@
 import { clampFiniteNumber } from 'util/number_util.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
-import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_theme.js';
+import { getLoadingGlowSurfaceSettings, toLoadingRgba } from './_title_center_circle_theme.js';
+
+const LOADING_GLOW_SURFACE_SETTINGS_SCRATCH = {};
 
 /**
  * 중앙 원형 로딩 fill 상단의 밝은 수면선을 그립니다.
@@ -8,6 +10,7 @@ import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_th
  * @param {{surfacePoints: Array<{x:number, y:number}>}} fillData - fill 표면 포인트입니다.
  * @param {number} drawRadius - 현재 렌더 반경입니다.
  * @param {number} progress - 현재 로딩 진행률입니다.
+ * @returns {void} 표면 강조선을 렌더링만 합니다.
  */
 export function drawCenterCircleSurfaceHighlight(ctx, fillData, drawRadius, progress) {
     if (progress >= 1) {
@@ -18,7 +21,7 @@ export function drawCenterCircleSurfaceHighlight(ctx, fillData, drawRadius, prog
     if (!Array.isArray(points) || points.length === 0) {
         return;
     }
-    const surfaceSettings = getLoadingGlowSettings().surface;
+    const surfaceSettings = getLoadingGlowSurfaceSettings(LOADING_GLOW_SURFACE_SETTINGS_SCRATCH);
 
     ctx.save();
     ctx.beginPath();

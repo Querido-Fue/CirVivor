@@ -39,11 +39,18 @@ const DEFAULT_OUTSIDE_CULL_RATIO = 0.1;
 
 let objectSystemInstance = null;
 
+/** @typedef {import('./enemy/_base_enemy.js').BaseEnemy} BaseEnemy */
+
 /**
  * @class ObjectSystem
- * @description 게임 오브젝트의 생명주기(초기화/업데이트/렌더)를 담당합니다.
+ * @description 적 풀과 ID 인덱스, fixed-step AI·물리 순서, 투사체 충돌,
+ * 육각형 합체 상태 및 적 렌더 호출을 조정하는 오브젝트 시스템입니다.
  */
 export class ObjectSystem {
+    /**
+     * 빈 런타임 컬렉션과 재사용 옵션 객체를 만들고, 이 인스턴스를 현재
+     * 오브젝트 시스템으로 등록합니다. 적 풀은 `init()`에서 생성됩니다.
+     */
     constructor() {
         objectSystemInstance = this;
         this.enemies = [];
@@ -138,13 +145,15 @@ export class ObjectSystem {
 
     /**
      * 오브젝트 시스템을 초기화합니다.
+     * @returns {Promise<void>}
      */
     async init() {
         this.enemyPools = createEnemyPools();
     }
 
     /**
-     * 모든 오브젝트를 업데이트합니다.
+     * 적의 렌더 보간·합체 정착 표시를 갱신하고 비활성 또는 화면 밖 적을 풀로 반환합니다.
+     * @returns {void}
      */
     update() {
         const options = this.enemyUpdateOptions;
@@ -159,6 +168,7 @@ export class ObjectSystem {
 
     /**
      * 고정 틱 기반 오브젝트 상태를 업데이트합니다.
+     * @returns {void}
      */
     fixedUpdate() {
         const delta = getFixedDelta();
@@ -235,7 +245,8 @@ export class ObjectSystem {
     }
 
     /**
-     * 모든 오브젝트를 그립니다.
+     * 현재 적 목록과 육각형 합체 표시 효과를 오브젝트 레이어에 그립니다.
+     * @returns {void}
      */
     draw() {
         for (let i = 0; i < this.enemies.length; i++) {
@@ -245,8 +256,9 @@ export class ObjectSystem {
     }
 
     /**
-         * 화면 크기 변경 등에 대응하여 쇼케이스가 활성화되어 있다면 다시 배치합니다.
-         */
+     * 화면 크기 변경 등에 대응하여 쇼케이스가 활성화되어 있다면 다시 배치합니다.
+     * @returns {void}
+     */
     resize() {
         if (this.showcaseEnabled) {
             this.buildEnemyShowcase();
@@ -254,11 +266,11 @@ export class ObjectSystem {
     }
 
     /**
-         * 오브젝트 풀에서 지정된 타입의 적 인스턴스를 하나 획득하고 초기값을 주입합니다.
-         * @param {'square'|'triangle'|'arrow'|'hexa'|'hexa_hive'|'penta'|'rhom'|'octa'|'gen'} type 대상 적의 형태 타입
-         * @param {object} data 초기화에 필요한 프로퍼티 보유 객체 (hp, speed 등)
-         * @returns {object|null} 초기화된 적 인스턴스
-         */
+     * 오브젝트 풀에서 지정된 타입의 적 인스턴스를 하나 획득하고 초기값을 주입합니다.
+     * @param {'square'|'triangle'|'arrow'|'hexa'|'hexa_hive'|'penta'|'rhom'|'octa'|'gen'} type 대상 적의 형태 타입
+     * @param {object} [data={}] 초기화에 필요한 프로퍼티 보유 객체 (hp, speed 등)
+     * @returns {BaseEnemy|null} 초기화된 적 인스턴스
+     */
     acquireEnemy(type, data = {}) {
         const options = this.enemyAcquireOptions;
         options.enemyPools = this.enemyPools;
@@ -271,11 +283,11 @@ export class ObjectSystem {
     }
 
     /**
-         * 지정된 타입의 적을 오브젝트 풀에서 꺼내어 활성화 큐에 추가합니다.
-         * @param {'square'|'triangle'|'arrow'|'hexa'|'hexa_hive'|'penta'|'rhom'|'octa'|'gen'} type 대상 적의 형태 타입
-         * @param {object} data 초기 속성 데이터
-         * @returns {object|null} 생성되어 배치된 적 인스턴스
-         */
+     * 지정된 타입의 적을 오브젝트 풀에서 꺼내어 활성화 목록과 ID 인덱스에 추가합니다.
+     * @param {'square'|'triangle'|'arrow'|'hexa'|'hexa_hive'|'penta'|'rhom'|'octa'|'gen'} type 대상 적의 형태 타입
+     * @param {object} [data={}] 초기 속성 데이터
+     * @returns {BaseEnemy|null} 생성되어 배치된 적 인스턴스
+     */
     spawnEnemy(type, data = {}) {
         const enemy = this.acquireEnemy(type, data);
         if (!enemy) return null;
@@ -286,9 +298,10 @@ export class ObjectSystem {
     }
 
     /**
-         * 활성화된 적 목록에서 인스턴스를 찾고, 발견 시 풀로 반환합니다.
-         * @param {object} enemy 제거(반납)할 적 인스턴스
-         */
+     * 활성화된 적 목록에서 인스턴스를 찾고, 발견 시 풀로 반환합니다.
+     * @param {BaseEnemy} enemy 제거(반납)할 적 인스턴스
+     * @returns {void}
+     */
     releaseEnemy(enemy) {
         const index = this.enemies.indexOf(enemy);
         if (index >= 0) {
@@ -297,17 +310,20 @@ export class ObjectSystem {
     }
 
     /**
-         * 주어진 대상 적 인스턴스를 초기화한 뒤 오브젝트 풀에 직접 집어넣습니다.
-         * 매핑된 ID 캐시도 삭제됩니다.
-         * @param {object} enemy 반납할 적 객체
-         */
+     * 주어진 대상 적 인스턴스를 초기화한 뒤 오브젝트 풀에 직접 집어넣습니다.
+     * 매핑된 ID 캐시는 삭제하지만 `enemies` 배열에서는 제거하지 않으므로,
+     * 등록된 활성 적을 반납할 때는 `releaseEnemy()`를 사용해야 합니다.
+     * @param {BaseEnemy} enemy 반납할 적 객체
+     * @returns {void}
+     */
     releaseEnemyToPool(enemy) {
         releaseObjectSystemEnemyToPool(enemy, this.enemyPools, this.enemyById);
     }
 
     /**
-         * 현재 화면 상에 배치된 모든 활성 적들을 전부 제거 및 반납합니다.
-         */
+     * 현재 화면 상에 배치된 모든 활성 적들을 전부 제거 및 반납합니다.
+     * @returns {void}
+     */
     clearEnemies() {
         this.hexaHiveMergeEffectPairs.length = 0;
         this.hexaHiveActiveMergeCandidatesById.clear();
@@ -325,9 +341,10 @@ export class ObjectSystem {
     }
 
     /**
-         * 활성화되어 있는 적 인스턴스의 배열을 반환합니다.
-         * @returns {object[]} 적 인스턴스 목록
-         */
+     * 활성화되어 있는 적 인스턴스의 내부 배열을 반환합니다.
+     * 외부 호출자는 배열의 길이와 순서를 직접 변경하지 않아야 합니다.
+     * @returns {BaseEnemy[]} 오브젝트 시스템이 직접 갱신하는 동일한 가변 배열 참조
+     */
     getEnemies() {
         return this.enemies;
     }
@@ -355,7 +372,7 @@ export class ObjectSystem {
     /**
      * 현재 접촉 중인 육각형/합체 육각형 쌍을 exact 판정으로 수집합니다.
      * @param {number} delta
-     * @returns {{enemyA: object, enemyB: object}[]}
+     * @returns {{enemyA: BaseEnemy, enemyB: BaseEnemy}[]} 다음 수집 전까지 유효한 재사용 결과 배열
      */
     collectHexaHiveContactPairs(delta) {
         const options = this.hexaContactOptions;
@@ -367,8 +384,9 @@ export class ObjectSystem {
 
     /**
      * 누적 접촉 시간을 기준으로 육각형 그룹 합체를 수행합니다.
-     * @param {Map<number, object>|null} [activeMergeCandidatesById=null]
-     * @returns {number}
+     * 합체된 원본 적은 풀로 반환하고 새 합체 적을 활성 목록과 ID 인덱스에 등록합니다.
+     * @param {Map<number, BaseEnemy>|null} [activeMergeCandidatesById=null]
+     * @returns {number} 새로 생성된 합체 적 수
      */
     resolveHexaHiveMerges(activeMergeCandidatesById = null) {
         const options = this.hexaMergeResolveOptions;
@@ -380,7 +398,9 @@ export class ObjectSystem {
 
     /**
      * 플레이어 충돌체 목록을 등록합니다.
+     * 배열 입력은 복제하지 않고 같은 live 참조를 보관합니다.
      * @param {object[]} players
+     * @returns {void}
      */
     setPlayers(players = []) {
         this.players = Array.isArray(players) ? players : [];
@@ -388,7 +408,7 @@ export class ObjectSystem {
 
     /**
      * 등록된 플레이어 충돌체 목록을 반환합니다.
-     * @returns {object[]}
+     * @returns {object[]} 등록 시 전달된 동일한 가변 배열 참조
      */
     getPlayers() {
         return this.players;
@@ -396,7 +416,9 @@ export class ObjectSystem {
 
     /**
      * 투사체 충돌체 목록을 등록합니다.
+     * 배열 입력은 복제하지 않고 같은 live 참조를 보관합니다.
      * @param {object[]} projectiles
+     * @returns {void}
      */
     setProjectiles(projectiles = []) {
         this.projectiles = Array.isArray(projectiles) ? projectiles : [];
@@ -404,7 +426,7 @@ export class ObjectSystem {
 
     /**
      * 등록된 투사체 충돌체 목록을 반환합니다.
-     * @returns {object[]}
+     * @returns {object[]} 등록 시 전달된 동일한 가변 배열 참조
      */
     getProjectiles() {
         return this.projectiles;
@@ -412,7 +434,9 @@ export class ObjectSystem {
 
     /**
      * 아이템 충돌체 목록을 등록합니다.
+     * 배열 입력은 복제하지 않고 같은 live 참조를 보관합니다.
      * @param {object[]} items
+     * @returns {void}
      */
     setItems(items = []) {
         this.items = Array.isArray(items) ? items : [];
@@ -420,7 +444,7 @@ export class ObjectSystem {
 
     /**
      * 등록된 아이템 충돌체 목록을 반환합니다.
-     * @returns {object[]}
+     * @returns {object[]} 등록 시 전달된 동일한 가변 배열 참조
      */
     getItems() {
         return this.items;
@@ -446,7 +470,10 @@ export class ObjectSystem {
 
     /**
      * 고정형 벽 충돌체 목록을 등록합니다.
+     * 배열 입력은 같은 live 참조로 보관하며, 호출할 때마다 AI 벽 버전을
+     * 증가시키고 물리 벽 body cache를 무효화합니다.
      * @param {object[]} walls
+     * @returns {void}
      */
     setWalls(walls = []) {
         this.walls = Array.isArray(walls) ? walls : [];
@@ -458,17 +485,19 @@ export class ObjectSystem {
 
     /**
      * 등록된 벽 목록을 반환합니다.
-     * @returns {object[]}
+     * @returns {object[]} 등록 시 전달된 동일한 가변 배열 참조
      */
     getWalls() {
         return this.walls;
     }
 
     /**
-     * 지정한 적 목록에 대해 충돌을 해소합니다.
-     * @param {object[]} enemies
+     * 지정한 적 목록의 충돌을 해소하고 위치·속도·회전 및 sleep 관련 상태를 갱신합니다.
+     * @param {BaseEnemy[]} enemies
      * @param {object} [options]
-     * @returns {number}
+     * @param {number} [options.delta=1/60]
+     * @param {object[]} [options.players=[]]
+     * @returns {number} 처리된 충돌 건수
      */
     resolveEnemyCollisions(enemies, options = {}) {
         if (!this.physicsSystem) return 0;
@@ -477,10 +506,11 @@ export class ObjectSystem {
 
     /**
      * 투사체 vs 적 충돌(고속 스윕 + 중복 타격 방지)을 처리합니다.
+     * 투사체의 중복 타격 기록과 적의 충격·피격·활성 상태를 변경할 수 있습니다.
      * @param {object[]} projectiles
-     * @param {object[]} enemies
-     * @param {number} delta
-     * @returns {number}
+     * @param {BaseEnemy[]} enemies
+     * @param {number} [delta=1/60]
+     * @returns {number} 처리된 신규 타격 건수
      */
     resolveProjectileVsEnemies(projectiles, enemies, delta) {
         if (!this.physicsSystem) return 0;
@@ -488,8 +518,9 @@ export class ObjectSystem {
     }
 
     /**
-     * 마지막 고정 틱 충돌 체크 통계를 반환합니다.
-     * @returns {{collisionCheckCount:number, aabbPassCount:number, aabbRejectCount:number, circlePassCount:number, circleRejectCount:number, partChecks:number}}
+     * 마지막 고정 틱의 기본 및 선택적 프로파일 충돌 통계 스냅샷을 반환합니다.
+     * 설정된 모든 통계 필드는 유효한 숫자로 정규화됩니다.
+     * @returns {Object.<string, number>}
      */
     getCollisionStats() {
         if (!this.physicsSystem || typeof this.physicsSystem.getCollisionStats !== 'function') {
@@ -508,6 +539,7 @@ export class ObjectSystem {
     /**
      * 요청하신 도형 샘플을 한 화면에 배치합니다.
      * 위치는 모두 중심 좌표 기준입니다.
+     * @returns {void}
      */
     buildEnemyShowcase() {
         this.showcaseEnabled = true;
@@ -537,10 +569,11 @@ export class ObjectSystem {
     }
 
     /**
-         * 지정된 인덱스에 있는 적을 반납하고, 목록 끝의 엔티티와 위치를 스왑하는 최적화 방식으로 제거합니다.
-         * @param {number} index 제거할 적의 인덱스 번호
-         * @private
-         */
+     * 지정된 인덱스에 있는 적을 반납하고, 목록 끝의 엔티티와 위치를 스왑하는 최적화 방식으로 제거합니다.
+     * @param {number} index 제거할 적의 인덱스 번호
+     * @returns {void}
+     * @private
+     */
     #releaseEnemyAt(index) {
         const enemy = this.enemies[index];
         if (!enemy) return;
@@ -573,4 +606,9 @@ export class ObjectSystem {
     }
 }
 
+/**
+ * 가장 최근 생성된 오브젝트 시스템을 반환합니다.
+ * `ObjectSystem` 생성 전에는 `null`입니다.
+ * @returns {ObjectSystem|null}
+ */
 export const getObjectSystem = () => objectSystemInstance;

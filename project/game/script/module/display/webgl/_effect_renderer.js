@@ -6,9 +6,12 @@ import { createEffectPassRegistry } from './_effect_pass_registry.js';
 const MIN_RENDER_TARGET_SIZE = 1;
 
 /**
- * WebGL render target 크기 입력을 정수 픽셀 크기로 정규화합니다.
- * @param {number} size - 정규화할 크기 값입니다.
- * @returns {number} 최소 render target 크기 이상으로 보정된 정수 크기입니다.
+ * WebGL render target 크기를 `Math.floor`의 ToNumber 변환 뒤 `Math.max(1, value)`를 적용합니다.
+ * 유한 결과는 1 이상으로 clamp하고 내림하지만, `NaN`과 `+Infinity`는 그대로 보존합니다.
+ * `-Infinity`와 1 미만 결과는 1이 되며, 변환 중 발생한 예외는 그대로 동기 전파됩니다.
+ *
+ * @param {*} size - 정규화할 입력입니다.
+ * @returns {number} Math 연산 결과입니다.
  */
 function normalizeRenderTargetSize(size) {
     return Math.max(MIN_RENDER_TARGET_SIZE, Math.floor(size));
@@ -31,9 +34,13 @@ export class EffectRenderer {
     }
 
     /**
-     * 렌더 타깃 크기를 갱신합니다.
-     * @param {number} width - 새 너비입니다.
-     * @param {number} height - 새 높이입니다.
+     * width를 정규화해 대입한 뒤 height를 정규화해 대입합니다.
+     * height 변환 또는 대입 실패는 이미 갱신된 width를 되돌리지 않습니다.
+     * 변환·대입 중 발생한 예외는 그대로 동기 전파됩니다.
+     *
+     * @param {*} width - 정규화해 대입할 너비 입력입니다.
+     * @param {*} height - 정규화해 대입할 높이 입력입니다.
+     * @returns {undefined} 정상 완료 시 항상 `undefined`입니다.
      */
     resize(width, height) {
         this.width = normalizeRenderTargetSize(width);
@@ -41,9 +48,21 @@ export class EffectRenderer {
     }
 
     /**
-     * 프레임 시작 시 큐를 초기화합니다.
-     * @param {number} width - 현재 surface 너비입니다.
-     * @param {number} height - 현재 surface 높이입니다.
+     * live `resize`를 현재 receiver와 원본 width·height 인수로 호출한 뒤, 반환값과 thenable은 관찰하지 않습니다.
+     * 이어 `drawingBufferWidth || current width`로 width를 먼저 정규화해 대입한 뒤 height를 처리하며,
+     * height도 `drawingBufferHeight || current height`를 같은 방식으로 정규화해 대입합니다.
+     * 각 drawing-buffer 값은 `||`의 truthiness로 선택하므로 falsy이면 그 시점의 같은 축을 fallback으로 사용합니다.
+     * 크기 대입 뒤 live `gl`에서 `bindFramebuffer`와 `FRAMEBUFFER`를 각각 조회해 `bindFramebuffer`를 제공한 GL을 receiver로 기본 framebuffer를 bind하고,
+     * 그 뒤 live `gl.viewport(0, 0, current width, current height)`를 호출한 다음 마지막 current `commands.length = 0`을 대입합니다.
+     * `gl`, dimensions, commands를 snapshot하지 않으며, 이 메서드 본문은 frame serial을 직접 읽거나 갱신하지 않고 `gl.clear()`를 직접 호출하지 않습니다.
+     * 재진입 guard는 없습니다.
+     * resize·GL 호출의 반환값과 thenable은 관찰하지 않습니다.
+     * 조회·변환·대입·호출·queue 축소 중 예외는 그대로 동기 전파되고 완료된 대입·GL 호출·queue 축소를 rollback하지 않습니다.
+     * 배열 축소가 실패하면 ECMAScript가 허용한 원소 삭제와 부분 length 상태도 그대로 남습니다.
+     *
+     * @param {*} width - resize에 그대로 전달할 너비 입력입니다.
+     * @param {*} height - resize에 그대로 전달할 높이 입력입니다.
+     * @returns {undefined} 최종 current queue의 `length = 0` 대입까지 정상 완료되면 항상 `undefined`입니다.
      */
     beginFrame(width, height) {
         this.resize(width, height);
@@ -67,7 +86,19 @@ export class EffectRenderer {
     }
 
     /**
-     * 큐에 쌓인 이펙트 명령을 순서대로 실행합니다.
+     * live commands를 index 순서로 순회해 effect pass를 동기 dispatch하고, loop 정상 종료 뒤 당시 current queue에 `length = 0`을 대입합니다.
+     * 초기 `commands.length === 0`은 무변환 엄격 비교하고, 필요할 때만 `width <= 0`과 `height <= 0`을 차례로 비교합니다.
+     * 어느 guard든 참이면 pass 조회 없이 당시 current queue의 `length = 0` 대입을 시도하고, 성공한 경우에만 `undefined`를 반환합니다.
+     * 각 command의 truthy `effectType`을 사용하고, falsy이면 live `shape`을 사용해 현재 registry의 exact Map key로 조회합니다.
+     * pass가 falsy이거나 첫 `draw` 조회 결과가 함수가 아니면 해당 command를 건너뜁니다.
+     * 호출식은 `draw`를 다시 조회하되 callable 여부를 재검사하지 않고 `command`, current width, current height를 평가합니다.
+     * 두 번째 `draw` 값이 callable이면 pass receiver로 호출하고 반환값과 thenable은 관찰하지 않으며, 아니면 인자 평가 뒤 `TypeError`가 발생합니다.
+     * queue 길이·원소, registry, pass, `draw`, dimensions는 매 관찰 지점의 live 값을 사용하고 append·truncate·reorder·재진입을 막는 guard가 없습니다.
+     * flush 자체의 clear 대입 지점은 guard branch와 loop 정상 종료뿐이며, draw와 재진입은 queue를 별도로 변이·교체할 수 있습니다.
+     * 조회·getter·coercion·두 번째 non-callable `draw`·호출·clear 대입 중 예외는 그대로 동기 전파되고 이미 수행한 draw와 queue 변이를 rollback하지 않습니다.
+     * `length = 0` 축소가 실패하면 ECMAScript가 허용한 원소 삭제와 부분 length 상태도 그대로 남습니다.
+     *
+     * @returns {undefined} guard 또는 loop 종료 뒤 current queue의 clear 대입까지 성공했을 때 `undefined`입니다.
      */
     flush() {
         if (this.commands.length === 0 || this.width <= 0 || this.height <= 0) {

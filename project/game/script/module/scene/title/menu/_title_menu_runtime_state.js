@@ -34,6 +34,13 @@ export function createTitleMenuRuntimeState() {
         borderAlpha: 0,
         particleAlpha: 0,
         hoverElapsed: 0,
+        particleOptionsScratch: {
+            count: 0,
+            spawnInterval: 0,
+            driftDistance: 0,
+            minDuration: 0,
+            maxDuration: 0
+        },
         particles: [],
         ripples: [],
         textureCanvas: null,

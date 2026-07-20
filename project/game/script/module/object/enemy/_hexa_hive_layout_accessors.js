@@ -6,7 +6,9 @@ import {
 import { rotatePoint, toRadians } from 'util/math_util.js';
 
 /**
- * 합체 적 레이아웃을 깊은 복제로 정규화합니다.
+ * 합체 적 레이아웃의 셀·좌표 배열을 모두 새 객체로 깊은 복제하며 숫자 필드를 정규화합니다.
+ * 비객체 입력은 `null`을 반환하고, 유효하지 않은 schema version은 현재 버전으로 대체합니다.
+ * schema 호환성 검증이나 hole·outline 재계산은 수행하지 않습니다.
  * @param {object|null|undefined} layout - 원본 레이아웃입니다.
  * @returns {object|null} 복제된 레이아웃입니다.
  */
@@ -56,6 +58,7 @@ export function cloneHexaHiveLayout(layout) {
  * 합체 적 외곽 루프를 이루는 선분을 순회합니다.
  * @param {object|null|undefined} layout - 순회할 레이아웃입니다.
  * @param {(segment: {start: {x: number, y: number}, end: {x: number, y: number}}) => void} iteratee - 선분 콜백입니다.
+ * @returns {void}
  */
 export function forEachHexaHiveOutlineSegment(layout, iteratee) {
     if (!layout || !Array.isArray(layout.outlineVertices) || layout.outlineVertices.length < 2 || typeof iteratee !== 'function') {
@@ -111,7 +114,10 @@ export function getHexaMergeMemberCount(enemy) {
 }
 
 /**
- * 적 인스턴스에서 현재 보이는 육각 조각의 월드 중심 목록을 추출합니다.
+ * 적 인스턴스에서 현재 보이는 육각 조각의 월드 중심 목록을 새 배열로 추출합니다.
+ * 비활성·비육각 적은 빈 배열, 일반 hexa는 중심 하나를 반환합니다. hive는 양의 렌더 높이와
+ * `visibleLocalCenters`가 있을 때만 모든 셀을 회전·스케일하고, 그 외에는 중심 하나로 fallback합니다.
+ * 표시용 위치·회전 override가 없으면 물리 position·rotation을 사용합니다.
  * @param {object|null|undefined} enemy - 대상 적입니다.
  * @param {{x?:number, y?:number}|null} [positionOverride=null] - 표시용 중심 좌표 override입니다.
  * @param {number} [rotationOverride=Number.NaN] - 표시용 회전 각도 override입니다.

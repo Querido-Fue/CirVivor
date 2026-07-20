@@ -22,8 +22,9 @@ export class CanvasSurfacePool {
     }
 
     /**
-     * 풀에서 캔버스를 하나 가져오거나 새로 생성합니다.
-     * @returns {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|WebGLRenderingContext|null}}
+     * freeList의 마지막 엔트리를 가져오며, 비어 있을 때만 새 canvas/context를 만들고 생성 수를 늘립니다.
+     * 획득 시 display 스타일만 복원하고 나머지 canvas/context 상태와 엔트리 identity는 유지합니다.
+     * @returns {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|WebGLRenderingContext|null}} 획득한 엔트리입니다.
      */
     acquire() {
         const shouldCreate = this.freeList.length === 0;
@@ -59,8 +60,10 @@ export class CanvasSurfacePool {
     }
 
     /**
-     * 사용이 끝난 캔버스를 풀로 반환합니다.
-     * @param {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|WebGLRenderingContext|null}} entry - 반환할 엔트리입니다.
+     * 표시 관련 style·surface id를 초기화한 뒤 동일 엔트리를 freeList에 반환합니다.
+     * DOM 분리·handler 해제·pixel/context clear는 수행하지 않으므로 호출자가 먼저 소유 관계를 정리해야 합니다.
+     * @param {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|WebGLRenderingContext|null}|null|undefined} entry - 반환할 엔트리입니다.
+     * @returns {void}
      */
     release(entry) {
         if (!entry || !entry.canvas) {

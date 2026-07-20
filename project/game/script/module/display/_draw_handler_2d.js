@@ -16,6 +16,9 @@ import {
     resetDrawContextState
 } from './draw_2d_layer_state.js';
 
+/** 모듈 내부에서 공유하는 기본 지속 그림자 상태입니다. */
+const DEFAULT_DRAW_SHADOW_STATE = createDrawShadowState();
+
 /**
  * @class DrawHandler2D
  * @description 2D 캔버스 레이어를 동적으로 등록하고 그리기 상태를 관리합니다.
@@ -65,7 +68,7 @@ export class DrawHandler2D {
 
         this.#contexts.set(layerName, context);
         this.#stateCaches.set(layerName, {});
-        this.#shadowState.set(layerName, createDrawShadowState());
+        this.#shadowState.set(layerName, DEFAULT_DRAW_SHADOW_STATE);
         this.#layerOptions.set(layerName, {
             persistent: options.persistent === true
         });
@@ -143,7 +146,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#shadowState.set(layerName, createDrawShadowState());
+        this.#shadowState.set(layerName, DEFAULT_DRAW_SHADOW_STATE);
     }
 
     /**
@@ -162,7 +165,7 @@ export class DrawHandler2D {
             context,
             cache,
             options,
-            this.#shadowState.get(layerName) || createDrawShadowState()
+            this.#shadowState.get(layerName) || DEFAULT_DRAW_SHADOW_STATE
         );
 
         let didDraw = true;
@@ -208,7 +211,7 @@ export class DrawHandler2D {
             return;
         }
 
-        this.#resetLayerState(layerName, context, { applyTransform: false });
+        this.#resetLayerState(layerName, context);
         context.clearRect(0, 0, context.canvas.width, context.canvas.height);
         this.#applyLayerTransform(layerName, context);
         this.#layerCallbacks.get(layerName)?.onFrameClear?.();
@@ -223,7 +226,7 @@ export class DrawHandler2D {
             if (layerOptions?.persistent === true) {
                 continue;
             }
-            this.#resetLayerState(layerName, context, { applyTransform: false });
+            this.#resetLayerState(layerName, context);
             context.clearRect(0, 0, context.canvas.width, context.canvas.height);
             this.#applyLayerTransform(layerName, context);
             this.#layerCallbacks.get(layerName)?.onFrameClear?.();
@@ -237,14 +240,10 @@ export class DrawHandler2D {
      * 항상 동일한 시작 상태에서 렌더링되도록 보장합니다.
      * @param {string} layerName - 초기화할 레이어 식별자입니다.
      * @param {CanvasRenderingContext2D} context - 초기화할 컨텍스트입니다.
-     * @param {{applyTransform?: boolean}} [options={}] - 초기화 후 레이어 transform을 복원할지 여부입니다.
      */
-    #resetLayerState(layerName, context, options = {}) {
+    #resetLayerState(layerName, context) {
         resetDrawContextState(context);
         this.#stateCaches.set(layerName, {});
-        if (options.applyTransform !== false) {
-            this.#applyLayerTransform(layerName, context);
-        }
     }
 
     /**

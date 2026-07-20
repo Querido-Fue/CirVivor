@@ -1,30 +1,7 @@
 import { getData } from 'data/data_handler.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const DEFAULT_EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
-
-/**
- * 플레이어 body 생성 옵션에서 유한 숫자 값을 조회합니다.
- * @param {object|null|undefined} options - body 생성 옵션입니다.
- * @param {string} key - 조회할 옵션 키입니다.
- * @param {number} fallback - 값이 유효하지 않을 때 사용할 기본값입니다.
- * @returns {number} 유한 숫자로 보정한 옵션 값입니다.
- */
-function getCollisionPlayerBodyOption(options, key, fallback) {
-    const value = options?.[key];
-    return Number.isFinite(value) ? value : fallback;
-}
-
-/**
- * 벡터 객체에서 축 값을 유한 숫자로 조회합니다.
- * @param {object|null|undefined} vector - X/Y 축을 가진 벡터 객체입니다.
- * @param {'x'|'y'} axis - 조회할 축입니다.
- * @param {number} fallback - 값이 유효하지 않을 때 사용할 기본값입니다.
- * @returns {number} 유한 숫자로 보정한 축 값입니다.
- */
-function getCollisionVectorAxisValue(vector, axis, fallback) {
-    const value = vector?.[axis];
-    return Number.isFinite(value) ? value : fallback;
-}
 
 /**
  * 이전 위치 축 값을 조회하거나 현재 위치와 속도로 역산합니다.
@@ -40,7 +17,7 @@ function getCollisionPlayerPreviousAxisValue(player, axis, currentValue, delta) 
         return previousValue;
     }
 
-    return currentValue - (getCollisionVectorAxisValue(player.speed, axis, 0) * delta);
+    return currentValue - (resolveFiniteNumber(player.speed?.[axis], 0) * delta);
 }
 
 /**
@@ -57,11 +34,11 @@ export function writeCollisionPlayerBody(body, player, delta, options) {
         return false;
     }
 
-    const epsilon = getCollisionPlayerBodyOption(options, 'epsilon', DEFAULT_EPSILON);
-    const frameResolveMinMax = getCollisionPlayerBodyOption(options, 'frameResolveMinMax', 0);
-    const frameResolveMaxRatio = getCollisionPlayerBodyOption(options, 'frameResolveMaxRatio', 0);
-    const x = getCollisionVectorAxisValue(player.position, 'x', 0);
-    const y = getCollisionVectorAxisValue(player.position, 'y', 0);
+    const epsilon = resolveFiniteNumber(options?.epsilon, DEFAULT_EPSILON);
+    const frameResolveMinMax = resolveFiniteNumber(options?.frameResolveMinMax, 0);
+    const frameResolveMaxRatio = resolveFiniteNumber(options?.frameResolveMaxRatio, 0);
+    const x = resolveFiniteNumber(player.position?.x, 0);
+    const y = resolveFiniteNumber(player.position?.y, 0);
     const prevX = getCollisionPlayerPreviousAxisValue(player, 'x', x, delta);
     const prevY = getCollisionPlayerPreviousAxisValue(player, 'y', y, delta);
     const invDelta = 1 / Math.max(epsilon, delta);

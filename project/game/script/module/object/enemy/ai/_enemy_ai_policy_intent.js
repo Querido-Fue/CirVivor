@@ -294,6 +294,7 @@ function visitHexaHiveMergePartnerCandidate(candidate, candidateX, candidateY, s
  * @param {number} searchRadius - 조회 반경입니다.
  * @param {Function} visitor - 후보 평가 함수입니다.
  * @param {object} query - 재사용 조회 문맥입니다.
+ * @returns {void}
  */
 function forEachHexaPartnerCandidate(context, enemies, startX, startY, searchRadius, visitor, query) {
     const enemySpatialIndex = context?.enemySpatialIndex;
@@ -500,6 +501,7 @@ function findEnemySnapshotByIdFromAIContext(context, enemyId, out) {
 /**
  * 파트너 추적 상태를 제거합니다.
  * @param {object} state - AI 상태입니다.
+ * @returns {void}
  */
 function clearHexaPartnerTargetState(state) {
     state.targetEnemyId = INVALID_ENEMY_ID;
@@ -514,6 +516,7 @@ function clearHexaPartnerTargetState(state) {
  * @param {object} context - AI 문맥입니다.
  * @param {object} profile - AI 품질 프로필입니다.
  * @param {{enemyId?: number}} partnerGoal - 선택한 파트너 목표입니다.
+ * @returns {void}
  */
 function retainHexaPartnerTargetState(enemy, state, context, profile, partnerGoal) {
     state.targetEnemyId = Number.isInteger(partnerGoal?.enemyId)
@@ -539,6 +542,7 @@ function retainHexaPartnerTargetState(enemy, state, context, profile, partnerGoa
  * fixed tick마다 파트너 TTL만 경량 갱신합니다.
  * @param {object} state - AI 상태입니다.
  * @param {number} stepDelta - fixed step 델타입니다.
+ * @returns {void}
  */
 export function stepEnemyAIPartnerTargetTtl(state, stepDelta) {
     const ttl = Number.isFinite(state?.targetEnemyTtlSeconds)

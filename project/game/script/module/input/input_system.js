@@ -6,6 +6,13 @@ let inputSystemInstance = null;
 const DEFAULT_MOUSE_BUTTON_SNAPSHOT = Object.freeze(['idle']);
 const DEFAULT_FOCUS_SNAPSHOT = Object.freeze(['ui', 'object']);
 
+/**
+ * 입력 배열을 재사용 대상 배열에 복사합니다.
+ * @param {Array<*>} target - 제자리에서 갱신할 대상 배열입니다.
+ * @param {Array<*>|unknown} source - 우선 복사할 입력 배열입니다.
+ * @param {Array<*>} fallback - source가 배열이 아닐 때 복사할 기본 배열입니다.
+ * @returns {void}
+ */
 function copyInputArrayInto(target, source, fallback) {
     target.length = 0;
     const values = Array.isArray(source) ? source : fallback;
@@ -14,6 +21,12 @@ function copyInputArrayInto(target, source, fallback) {
     }
 }
 
+/**
+ * 입력 키의 own 상태를 재사용 대상 객체에 동기화합니다.
+ * @param {Record<string, boolean>} target - 제자리에서 갱신할 키 상태 객체입니다.
+ * @param {Record<string, unknown>} source - 현재 키 상태 객체입니다.
+ * @returns {void}
+ */
 function copyInputKeysInto(target, source) {
     for (const key in target) {
         if (Object.prototype.hasOwnProperty.call(target, key)
@@ -28,6 +41,10 @@ function copyInputKeysInto(target, source) {
     }
 }
 
+/**
+ * 재사용 가능한 시뮬레이션 입력 스냅샷 버퍼를 생성합니다.
+ * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: Array<*>, right: Array<*>, middle: Array<*>}, focusList: Array<*>, keys: Record<string, boolean>}} 새 입력 스냅샷 버퍼입니다.
+ */
 function createSimulationInputSnapshotBuffer() {
     return {
         mousePos: { x: 0, y: 0 },
@@ -74,9 +91,11 @@ export class InputSystem {
     }
 
     /**
-     * 시뮬레이션 런타임에 전달할 입력 스냅샷을 생성합니다.
+     * 시뮬레이션 런타임에 전달할 입력 스냅샷을 최신 입력과 정확히 동기화합니다.
+     * 재사용 가능한 `out`이 있으면 같은 객체와 기존 mousePos·버튼 배열·focusList·keys 컨테이너를
+     * 제자리에서 갱신하며, 현재 입력에 없는 own key는 삭제합니다. `out`이 없으면 새 버퍼를 생성합니다.
      * @param {object|null} [out=null] - 갱신할 재사용 스냅샷입니다.
-     * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}}
+     * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}} 유효한 `out`을 전달하면 동일한 객체, 아니면 새 스냅샷입니다.
      */
     getSimulationInputSnapshot(out = null) {
         const mouseButtons = this.mouseInputHandler?.mouseButtons || {};
@@ -136,25 +155,32 @@ export const consumeMouseState = (button, state = 'clicked') => inputSystemInsta
  */
 export const isMousePressing = (button) => hasMouseState(button, 'click') || hasMouseState(button, 'clicking');
 /**
- * 현재 마우스 포커스 레이어를 반환합니다.
- * @returns {string} 포커스 레이어 이름
+ * 현재 마우스 포커스 스택의 내부 배열 참조를 반환합니다.
+ * 배열 끝이 최상위 포커스입니다. `addMouseFocus()`와 `removeMouseFocus()`는 현재 배열을 제자리에서 변경하고,
+ * `setMouseFocus()`는 새 배열로 교체하므로 이전에 받은 참조가 이후의 새 스택을 가리키지는 않습니다.
+ * 호출자는 반환 배열을 읽기 전용으로 취급해야 합니다.
+ * @returns {string[]} 호출 시점의 마우스 포커스 스택 배열 참조입니다.
  */
 export const getMouseFocus = () => inputSystemInstance.mouseInputHandler.focusList;
 
 /**
  * 마우스 포커스를 추가합니다.
  * @param {string} focus - 추가할 포커스 레이어
+ * @returns {void}
  */
 export const addMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.addFocus(focus);
 
 /**
  * 마우스 포커스를 제거합니다.
  * @param {string} focus - 제거할 포커스 레이어
+ * @returns {void}
  */
 export const removeMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.removeFocus(focus);
 /**
- * 마우스 포커스 레이어를 설정합니다.
- * @param {string} focus - 포커스 레이어 이름
+ * 기존 마우스 포커스 스택 전체를 새 배열로 교체합니다.
+ * 배열 입력은 얕게 복제하고 문자열 입력은 단일 항목 스택으로 감쌉니다.
+ * @param {string|string[]} focus - 새 포커스 스택 또는 단일 포커스 레이어입니다.
+ * @returns {void}
  */
 export const setMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.setFocus(focus);
 /**
@@ -171,5 +197,6 @@ export const getKeyboardInput = (key) => inputSystemInstance.keyboardInputHandle
 export const consumeKeyboardPress = (key) => inputSystemInstance?.keyboardInputHandler?.consumeKeyboardPress?.(key) === true;
 /**
  * 키보드 입력 상태를 초기화합니다.
+ * @returns {void}
  */
 export const resetKeyboardInput = () => inputSystemInstance.keyboardInputHandler.resetKeyboardInput();

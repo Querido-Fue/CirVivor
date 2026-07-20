@@ -47,15 +47,11 @@ function resolveModuleUrl(specifier, parentUrl) {
 }
 
 /**
- * 파일 URL의 ESM 모듈을 재귀적으로 링크하고 평가합니다.
+ * 파일 URL의 ESM 모듈을 생성합니다.
  * @param {string} moduleUrl - 대상 파일 URL입니다.
- * @returns {Promise<vm.SourceTextModule>} 평가된 모듈입니다.
+ * @returns {Promise<vm.SourceTextModule>} 생성된 모듈입니다.
  */
-async function loadModuleByUrl(moduleUrl) {
-    if (moduleCache.has(moduleUrl)) {
-        return moduleCache.get(moduleUrl);
-    }
-
+async function createModuleByUrl(moduleUrl) {
     const source = await readFile(fileURLToPath(moduleUrl), 'utf8');
     const module = new vm.SourceTextModule(source, {
         context,
@@ -64,11 +60,36 @@ async function loadModuleByUrl(moduleUrl) {
             meta.url = moduleUrl;
         }
     });
-    moduleCache.set(moduleUrl, module);
-    await module.link((specifier, referencingModule) => {
-        return loadModuleByUrl(resolveModuleUrl(specifier, referencingModule.identifier));
-    });
-    await module.evaluate();
+    return module;
+}
+
+/**
+ * 동일 URL의 모듈 생성 Promise를 재사용합니다.
+ * @param {string} moduleUrl - 대상 파일 URL입니다.
+ * @returns {Promise<vm.SourceTextModule>} 캐시된 모듈 Promise입니다.
+ */
+function getModuleByUrl(moduleUrl) {
+    if (!moduleCache.has(moduleUrl)) {
+        moduleCache.set(moduleUrl, createModuleByUrl(moduleUrl));
+    }
+    return moduleCache.get(moduleUrl);
+}
+
+/**
+ * 파일 URL의 ESM 그래프를 링크하고 평가합니다.
+ * @param {string} moduleUrl - 대상 파일 URL입니다.
+ * @returns {Promise<vm.SourceTextModule>} 평가된 모듈입니다.
+ */
+async function loadModuleByUrl(moduleUrl) {
+    const module = await getModuleByUrl(moduleUrl);
+    if (module.status === 'unlinked') {
+        await module.link((specifier, referencingModule) => {
+            return getModuleByUrl(resolveModuleUrl(specifier, referencingModule.identifier));
+        });
+    }
+    if (module.status === 'linked') {
+        await module.evaluate();
+    }
     return module;
 }
 

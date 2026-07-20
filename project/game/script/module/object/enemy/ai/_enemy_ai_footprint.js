@@ -19,6 +19,20 @@ const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
 const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
 
 /**
+ * footprint 결과의 안정적인 필드 순서를 가진 초기 버퍼를 생성합니다.
+ * @returns {{baseHeight: number, baseRadius: number, halfWidth: number, halfHeight: number, radius: number, axisLocalDeg: number, axisAnisotropy: number}}
+ */
+const createEnemyAIFootprintMetricsBuffer = () => ({
+    baseHeight: 0,
+    baseRadius: 0,
+    halfWidth: 0,
+    halfHeight: 0,
+    radius: 0,
+    axisLocalDeg: 0,
+    axisAnisotropy: 0
+});
+
+/**
  * 적의 렌더 높이를 AI 계산용 픽셀 값으로 정규화합니다.
  * @param {object|null|undefined} enemy - 검사 대상 적입니다.
  * @param {number|null} [fallbackRenderHeightPx=null] - 외부에서 계산한 렌더 높이입니다.
@@ -62,11 +76,14 @@ const getHexaHiveNavigationLocalCenters = (enemy) => {
 /**
  * 합체 육각형 로컬 중심 분포에서 가장 긴 주축을 계산합니다.
  * @param {object[]|null|undefined} localCenters - 합체 육각형 로컬 중심 목록입니다.
- * @returns {{localDeg: number, anisotropy: number}} 주축 각도와 길쭉함 비율입니다.
+ * @param {object} out - axisLocalDeg와 axisAnisotropy를 기록할 footprint 메트릭입니다.
+ * @returns {object} 전달받은 footprint 메트릭입니다.
  */
-const resolveHexaHiveNavigationAxis = (localCenters) => {
+const resolveHexaHiveNavigationAxisInto = (localCenters, out) => {
+    out.axisLocalDeg = 0;
+    out.axisAnisotropy = 0;
     if (!Array.isArray(localCenters) || localCenters.length < 2) {
-        return { localDeg: 0, anisotropy: 0 };
+        return out;
     }
 
     let meanX = 0;
@@ -85,7 +102,7 @@ const resolveHexaHiveNavigationAxis = (localCenters) => {
         count++;
     }
     if (count < 2) {
-        return { localDeg: 0, anisotropy: 0 };
+        return out;
     }
     meanX /= count;
     meanY /= count;
@@ -110,15 +127,14 @@ const resolveHexaHiveNavigationAxis = (localCenters) => {
 
     const spread = covXX + covYY;
     if (spread <= AXIS_EPSILON) {
-        return { localDeg: 0, anisotropy: 0 };
+        return out;
     }
 
     const anisotropy = Math.min(MAX_AXIS_ANISOTROPY, Math.hypot(covXX - covYY, 2 * covXY) / spread);
     const localDeg = HALF_EXTENT_RATIO * Math.atan2(2 * covXY, covXX - covYY) * RADIANS_TO_DEGREES;
-    return {
-        localDeg: Number.isFinite(localDeg) ? localDeg : 0,
-        anisotropy: Number.isFinite(anisotropy) ? anisotropy : 0
-    };
+    out.axisLocalDeg = Number.isFinite(localDeg) ? localDeg : 0;
+    out.axisAnisotropy = Number.isFinite(anisotropy) ? anisotropy : 0;
+    return out;
 };
 
 /**
@@ -159,6 +175,31 @@ export const resolveEnemyAIFootprintPathClearancePx = (metrics, profile = null) 
  * @returns {{baseHeight: number, baseRadius: number, halfWidth: number, halfHeight: number, radius: number, axisLocalDeg: number, axisAnisotropy: number}} footprint 크기입니다.
  */
 export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, fallbackRenderHeightPx = null) {
+    return resolveEnemyAIFootprintMetricsPxInto(
+        enemy,
+        fallbackRadius,
+        fallbackRenderHeightPx,
+        createEnemyAIFootprintMetricsBuffer()
+    );
+}
+
+/**
+ * 적의 AI용 footprint 크기를 재사용 객체에 기록합니다.
+ * @param {object|null|undefined} enemy - 검사 대상 적입니다.
+ * @param {number|null} [fallbackRadius=null] - 외부에서 계산한 반경입니다.
+ * @param {number|null} [fallbackRenderHeightPx=null] - 외부에서 계산한 렌더 높이입니다.
+ * @param {object|null|undefined} [out=null] - 결과를 기록할 재사용 객체입니다.
+ * @returns {{baseHeight: number, baseRadius: number, halfWidth: number, halfHeight: number, radius: number, axisLocalDeg: number, axisAnisotropy: number}} 채워진 footprint 크기입니다.
+ */
+export function resolveEnemyAIFootprintMetricsPxInto(
+    enemy,
+    fallbackRadius = null,
+    fallbackRenderHeightPx = null,
+    out = null
+) {
+    const metrics = out && typeof out === 'object'
+        ? out
+        : createEnemyAIFootprintMetricsBuffer();
     const baseHeight = resolveEnemyAIRenderHeightPx(enemy, fallbackRenderHeightPx);
     const baseRadius = Number.isFinite(fallbackRadius) && fallbackRadius > 0
         ? fallbackRadius
@@ -172,8 +213,8 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
     let halfWidth = Math.max(baseRadius, baseHeight * aspectRatio * HALF_EXTENT_RATIO);
     let halfHeight = Math.max(baseRadius, baseHeight * heightScale * HALF_EXTENT_RATIO);
     let radius = Math.max(baseRadius, readPositivePixelValue(enemy?.navigationRadiusPx));
-    let axisLocalDeg = Number.isFinite(enemy?.navigationAxisLocalDeg) ? enemy.navigationAxisLocalDeg : 0;
-    let axisAnisotropy = Number.isFinite(enemy?.navigationAxisAnisotropy)
+    metrics.axisLocalDeg = Number.isFinite(enemy?.navigationAxisLocalDeg) ? enemy.navigationAxisLocalDeg : 0;
+    metrics.axisAnisotropy = Number.isFinite(enemy?.navigationAxisAnisotropy)
         ? clampNumber(enemy.navigationAxisAnisotropy, MIN_AXIS_ANISOTROPY, MAX_AXIS_ANISOTROPY)
         : 0;
 
@@ -184,9 +225,7 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
             const rotationRadians = (Number.isFinite(enemy?.rotation) ? enemy.rotation : 0) * DEGREES_TO_RADIANS;
             const cos = Math.cos(rotationRadians);
             const sin = Math.sin(rotationRadians);
-            const axis = resolveHexaHiveNavigationAxis(localCenters);
-            axisLocalDeg = axis.localDeg;
-            axisAnisotropy = axis.anisotropy;
+            resolveHexaHiveNavigationAxisInto(localCenters, metrics);
 
             halfWidth = Math.max(halfWidth, cellRadius);
             halfHeight = Math.max(halfHeight, cellRadius);
@@ -208,15 +247,12 @@ export function resolveEnemyAIFootprintMetricsPx(enemy, fallbackRadius = null, f
     halfHeight = Math.max(halfHeight, readPositivePixelValue(enemy?.navigationHalfHeightPx));
     radius = Math.max(radius, readPositivePixelValue(enemy?.navigationRadiusPx));
 
-    return {
-        baseHeight,
-        baseRadius,
-        halfWidth,
-        halfHeight,
-        radius,
-        axisLocalDeg,
-        axisAnisotropy
-    };
+    metrics.baseHeight = baseHeight;
+    metrics.baseRadius = baseRadius;
+    metrics.halfWidth = halfWidth;
+    metrics.halfHeight = halfHeight;
+    metrics.radius = radius;
+    return metrics;
 }
 
 /**

@@ -1,6 +1,36 @@
 import { ColorSchemes, getCurrentThemeKey } from 'display/_theme_handler.js';
 import { colorUtil, formatRgba } from 'util/color_util.js';
 
+const MENU_STATIC_TEXTURE_THEME_SIGNATURE_CACHE = {
+    initialized: false,
+    themeKey: null,
+    foreground: null,
+    accent: null,
+    cardTitle: null,
+    cardDescription: null,
+    placeholderOpacity: 0,
+    cardInnerLineOpacity: 0,
+    cardInnerLineFocusDelta: 0,
+    signature: ''
+};
+const DEFAULT_MENU_EFFECT_COLOR = Object.freeze({ r: 255, g: 255, b: 255 });
+const MENU_EFFECT_COLOR_CACHE = {
+    initialized: false,
+    foregroundSource: null,
+    accentSource: null,
+    r: DEFAULT_MENU_EFFECT_COLOR.r,
+    g: DEFAULT_MENU_EFFECT_COLOR.g,
+    b: DEFAULT_MENU_EFFECT_COLOR.b
+};
+const MENU_FOREGROUND_RGB_CACHE = {
+    initialized: false,
+    source: null,
+    valid: false,
+    r: 0,
+    g: 0,
+    b: 0
+};
+
 /**
  * 메뉴 기본 전경색을 반환합니다.
  * @returns {string} 메뉴 기본 전경색
@@ -103,7 +133,35 @@ export function toMenuRgba(color, alpha) {
  * @returns {string} rgba 문자열
  */
 export function menuForegroundWithAlpha(alpha) {
-    return toMenuRgba(getMenuForegroundColor(), alpha);
+    const foregroundSource = getMenuForegroundColor();
+    const safeAlpha = Number.isFinite(alpha) ? alpha : 0;
+    const rgb = _getCachedMenuForegroundRgb(foregroundSource);
+    return rgb
+        ? formatRgba(rgb.r, rgb.g, rgb.b, safeAlpha)
+        : 'transparent';
+}
+
+/**
+ * 현재 메뉴 전경색을 원본 문자열이 바뀔 때만 다시 파싱합니다.
+ * @param {string|null|undefined} foregroundSource - 현재 메뉴 전경색 원본입니다.
+ * @returns {{r:number, g:number, b:number}|null} 캐시된 RGB scalar 저장소입니다.
+ */
+function _getCachedMenuForegroundRgb(foregroundSource) {
+    const cache = MENU_FOREGROUND_RGB_CACHE;
+    if (!cache.initialized || cache.source !== foregroundSource) {
+        const parsedColor = colorUtil().cssToRgb(foregroundSource);
+        const resolvedColor = parsedColor || colorUtil().cssToRgb(getMenuForegroundColor());
+        cache.initialized = true;
+        cache.source = foregroundSource;
+        cache.valid = Boolean(resolvedColor);
+        if (resolvedColor) {
+            cache.r = resolvedColor.r;
+            cache.g = resolvedColor.g;
+            cache.b = resolvedColor.b;
+        }
+    }
+
+    return cache.valid ? cache : null;
 }
 
 /**
@@ -130,12 +188,28 @@ export function resolveMenuColorRgb(color, fallbackRgb = null) {
  * @returns {{r:number, g:number, b:number}} 효과 RGB 색상입니다.
  */
 export function getMenuEffectColor() {
-    const fallbackRgb = resolveMenuColorRgb(getMenuForegroundColor(), { r: 255, g: 255, b: 255 });
-    const rgb = resolveMenuColorRgb(getMenuAccentColor(), fallbackRgb);
+    const foregroundSource = getMenuForegroundColor();
+    const accentSource = getMenuAccentColor();
+    const cache = MENU_EFFECT_COLOR_CACHE;
+    if (
+        !cache.initialized
+        || cache.foregroundSource !== foregroundSource
+        || cache.accentSource !== accentSource
+    ) {
+        const fallbackRgb = resolveMenuColorRgb(foregroundSource, DEFAULT_MENU_EFFECT_COLOR);
+        const rgb = resolveMenuColorRgb(accentSource, fallbackRgb);
+        cache.initialized = true;
+        cache.foregroundSource = foregroundSource;
+        cache.accentSource = accentSource;
+        cache.r = rgb.r;
+        cache.g = rgb.g;
+        cache.b = rgb.b;
+    }
+
     return {
-        r: rgb.r,
-        g: rgb.g,
-        b: rgb.b
+        r: cache.r,
+        g: cache.g,
+        b: cache.b
     };
 }
 
@@ -219,18 +293,50 @@ export function getMenuBackdropPaneStyle(disableTransparency, unifiedStroke) {
 }
 
 /**
- * 정적 텍스처에 영향을 주는 테마 값을 문자열로 묶습니다.
+ * 정적 텍스처에 영향을 주는 테마 값을 문자열로 묶고, 원본 값이 유지되는 동안 결과를 재사용합니다.
  * @returns {string} 테마 캐시 식별자입니다.
  */
 export function buildMenuStaticTextureThemeSignature() {
-    return [
-        getCurrentThemeKey(),
-        getMenuForegroundColor(),
-        getMenuAccentColor(),
-        getMenuCardTitleColor(),
-        getMenuCardDescriptionColor(),
-        getMenuOpacity('Placeholder', 0.92),
-        getMenuOpacity('CardInnerLine', 0.08),
-        getMenuOpacity('CardInnerLineFocusDelta', 0.08)
+    const themeKey = getCurrentThemeKey();
+    const foreground = getMenuForegroundColor();
+    const accent = getMenuAccentColor();
+    const cardTitle = getMenuCardTitleColor();
+    const cardDescription = getMenuCardDescriptionColor();
+    const placeholderOpacity = getMenuOpacity('Placeholder', 0.92);
+    const cardInnerLineOpacity = getMenuOpacity('CardInnerLine', 0.08);
+    const cardInnerLineFocusDelta = getMenuOpacity('CardInnerLineFocusDelta', 0.08);
+    const cache = MENU_STATIC_TEXTURE_THEME_SIGNATURE_CACHE;
+
+    if (cache.initialized
+        && cache.themeKey === themeKey
+        && cache.foreground === foreground
+        && cache.accent === accent
+        && cache.cardTitle === cardTitle
+        && cache.cardDescription === cardDescription
+        && cache.placeholderOpacity === placeholderOpacity
+        && cache.cardInnerLineOpacity === cardInnerLineOpacity
+        && cache.cardInnerLineFocusDelta === cardInnerLineFocusDelta) {
+        return cache.signature;
+    }
+
+    cache.initialized = true;
+    cache.themeKey = themeKey;
+    cache.foreground = foreground;
+    cache.accent = accent;
+    cache.cardTitle = cardTitle;
+    cache.cardDescription = cardDescription;
+    cache.placeholderOpacity = placeholderOpacity;
+    cache.cardInnerLineOpacity = cardInnerLineOpacity;
+    cache.cardInnerLineFocusDelta = cardInnerLineFocusDelta;
+    cache.signature = [
+        themeKey,
+        foreground,
+        accent,
+        cardTitle,
+        cardDescription,
+        placeholderOpacity,
+        cardInnerLineOpacity,
+        cardInnerLineFocusDelta
     ].join(':');
+    return cache.signature;
 }

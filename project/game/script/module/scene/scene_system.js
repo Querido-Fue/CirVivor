@@ -1,8 +1,10 @@
 import { TitleScene } from './title/_title_scene.js';
+import { LoadingScene } from './loading/_loading_scene.js';
 import { GAME_SCENE_MODES, GameScene } from './game/_game_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
 
 const SCENE_STATES = Object.freeze({
+    LOADING: 'loading',
     TITLE: 'title',
     IN_GAME: 'inGame'
 });
@@ -32,15 +34,35 @@ export class SceneSystem {
     constructor(systemHandler) {
         this.systemHandler = systemHandler;
         this.scene = null;
-        this.sceneState = SCENE_STATES.TITLE;
+        this.sceneState = SCENE_STATES.LOADING;
     }
 
     /**
      * 씬 시스템을 초기화합니다.
-     * 글로벌 배경과 타이틀 씬을 로드합니다.
+     * 글로벌 배경과 타이틀 인트로를 소유하는 LoadingScene을 로드합니다.
      */
     async init() {
-        this.#setScene(new TitleScene(this), SCENE_STATES.TITLE);
+        this.#setScene(new LoadingScene(this), SCENE_STATES.LOADING);
+    }
+
+    /**
+     * 현재 LoadingScene의 완료된 presentation을 동일 identity로 TitleScene에 넘깁니다.
+     * 다른 씬 또는 미완료 호출은 상태를 변경하지 않습니다.
+     * @param {LoadingScene} loadingScene - 현재 활성 loading 씬입니다.
+     * @returns {boolean} 전환 성공 여부입니다.
+     */
+    completeLoading(loadingScene) {
+        if (this.scene !== loadingScene || this.sceneState !== SCENE_STATES.LOADING) {
+            return false;
+        }
+        const handoff = loadingScene.releaseTitlePresentation?.() || null;
+        if (!handoff) {
+            return false;
+        }
+        const titleScene = new TitleScene(this, handoff);
+        loadingScene.destroy?.();
+        this.#setScene(titleScene, SCENE_STATES.TITLE);
+        return true;
     }
 
     /**

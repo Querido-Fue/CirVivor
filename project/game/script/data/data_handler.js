@@ -56,6 +56,7 @@ import { EFFECT_RENDER_CONSTANTS } from 'data/display/effect_render_constants.js
 import { OVERLAY_RENDER_CONSTANTS } from 'data/display/overlay_render_constants.js';
 import { VIGNETTE_CONSTANTS } from 'data/display/vignette_constants.js';
 import { DISPLAY_SURFACE_DATA } from 'data/display/display_surface_data.js';
+import { THEME_TRANSITION_DATA } from 'data/display/theme_transition_data.js';
 import { MOUSE_BUTTON_INPUT_DATA } from 'data/input/mouse_button_input_data.js';
 
 const DATA_REGISTRY = Object.freeze({
@@ -109,6 +110,7 @@ const DATA_REGISTRY = Object.freeze({
     OVERLAY_RENDER_CONSTANTS,
     VIGNETTE_CONSTANTS,
     DISPLAY_SURFACE_DATA,
+    THEME_TRANSITION_DATA,
     MOUSE_BUTTON_INPUT_DATA
 });
 

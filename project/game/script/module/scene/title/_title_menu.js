@@ -28,12 +28,13 @@ import {
 } from './menu/_title_menu_runtime_state.js';
 import { buildTitleMenuRightPaneLayout } from './menu/_title_menu_pane_layout.js';
 import {
+    advanceTitleMenuCardRevealClockWithTotalDuration,
     buildTitleMenuCardRenderState,
     buildTitleMenuPaneRenderState,
     buildTitleMenuUtilityTileRenderState,
-    advanceTitleMenuCardRevealClock,
     getTitleMenuCardRevealConfig,
     getTitleMenuCardRevealCoreDuration,
+    getTitleMenuCardRevealTotalDuration,
     getTitleMenuRevealProgress,
     getTitleMenuUtilityPaneRevealEase
 } from './menu/_title_menu_render_state.js';
@@ -59,14 +60,34 @@ const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 const TITLE_MENU_CARD_REVEAL_ORDER = TITLE_MENU_DATA.CARD_REVEAL_ORDER;
 const TITLE_MENU_SECONDARY_ENTRIES = TITLE_MENU_DATA.SECONDARY_ENTRIES;
 const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const TITLE_MENU_REVEAL_TOTAL_DURATION = getTitleMenuCardRevealTotalDuration(TITLE_CARD_MENU);
+const TITLE_MENU_REVEAL_CORE_DURATION = getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU);
+
+/**
+ * 동결된 타이틀 메뉴 데이터에서 카드별 등장 설정을 반환합니다.
+ * @param {string} cardId - 카드 식별자입니다.
+ * @returns {{delaySeconds:number, durationSeconds:number, offsetXRatio:number, offsetYRatio:number, scaleOffset:number}} 등장 설정입니다.
+ */
+function resolveTitleMenuCardRevealConfig(cardId) {
+    return getTitleMenuCardRevealConfig(TITLE_CARD_MENU, cardId);
+}
 
 /**
  * @class TitleMenu
- * @description 타이틀 화면 우하단 카드 메뉴와 WebGL 카드 효과를 관리하는 클래스입니다.
+ * @description 타이틀 화면 오른쪽의 카드·보조 메뉴와 두 glass pane을 배치하고, overlay 세션 기반 효과 텍스처,
+ * 포인터 상호작용, 버전 링크 및 overlay·씬 전환 액션을 조정합니다.
  */
 export class TitleMenu {
     /**
-     * @param {TitleScene} titleScene - 타이틀 씬 인스턴스입니다.
+     * 현재 `cardRevealElapsed`를 읽는 instance-stable 등장 진행률 resolver입니다.
+     * @type {(delaySeconds:number, durationSeconds:number) => number}
+     * @private
+     */
+    #revealProgressResolver;
+
+    /**
+     * 화면·설정 지표를 캡처하고 카드/보조 타일 상태, overlay 세션, 텍스처·버전 렌더러와 링크 버튼을 준비합니다.
+     * @param {TitleScene} titleScene - 메뉴 액션과 버전 링크 UI를 소유할 타이틀 씬입니다.
      */
     constructor(titleScene) {
         this.TitleScene = titleScene;
@@ -80,6 +101,8 @@ export class TitleMenu {
         this.layout = new TitleMenuLayout(this.uiScale);
         this.cardRegistry = new TitleMenuCardRegistry();
         this.cards = [];
+        this.renderOrderedCards = [];
+        this.interactionOrderedCards = [];
         this.cardStateMap = new Map();
         this.cardRenderMap = new Map();
         this.utilityTileStateMap = new Map();
@@ -87,7 +110,9 @@ export class TitleMenu {
         this.pointerEnabled = false;
         this.cardRevealElapsed = 0;
         this.cardRevealStarted = false;
+        this.#revealProgressResolver = this.#getRevealProgress.bind(this);
         this.currentPaneLayout = null;
+        this.versionLabelLayout = undefined;
         this.hoveredCardId = null;
         this.hoveredSecondaryMenuId = null;
         this.sceneStartRequested = false;
@@ -119,7 +144,9 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 메뉴 상태를 갱신합니다.
+     * 전환·등장 시간축과 렌더 상태를 갱신하고, overlay 차단 여부를 반영해 카드·pane·버전 링크 입력을 처리합니다.
+     * 예약된 게임 시작 요청은 같은 update 호출의 마지막에 실행합니다.
+     * @returns {void}
      */
     update() {
         const delta = getDelta();
@@ -139,7 +166,9 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 메뉴를 그립니다.
+     * 선행 WebGL 배치를 flush한 뒤 두 외곽 pane, 보조 타일, 카드와 버전 라벨을 overlay 세션에 순서대로 그립니다.
+     * 세션이 이미 정리되었으면 아무 작업도 하지 않습니다.
+     * @returns {void}
      */
     draw() {
         if (!this.session) {
@@ -152,8 +181,8 @@ export class TitleMenu {
             paneLayout,
             uiww: this.UIWW,
             uiScale: this.uiScale,
-            revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
-            getRevealProgress: this.#getRevealProgress.bind(this)
+            revealCoreDuration: TITLE_MENU_REVEAL_CORE_DURATION,
+            getRevealProgress: this.#revealProgressResolver
         });
         const cardPaneTextureCanvas = this.textureRenderer.buildCardPaneTextureCanvas(
             paneRenderState.cardPane,
@@ -163,11 +192,13 @@ export class TitleMenu {
             paneRenderState.utilityPane,
             this.utilityPaneInteractionState
         );
-        const backdropPanelStyle = this.#getBackdropPaneStyle();
+        const backdropPanelStyle = this.#getBackdropPaneStyle(false);
+        const opaqueBackdropPanelStyle = this.#getBackdropPaneStyle(true);
 
         renderTitleMenuGlassPanel(this.session, {
             panelRect: paneRenderState.cardPane,
             panelStyle: backdropPanelStyle,
+            opaquePanelStyle: opaqueBackdropPanelStyle,
             alpha: paneRenderState.cardPane.alpha,
             effectTextureCanvas: cardPaneTextureCanvas
         });
@@ -175,11 +206,13 @@ export class TitleMenu {
         renderTitleMenuGlassPanel(this.session, {
             panelRect: paneRenderState.utilityPane,
             panelStyle: backdropPanelStyle,
+            opaquePanelStyle: opaqueBackdropPanelStyle,
             alpha: paneRenderState.utilityPane.alpha,
             effectTextureCanvas: utilityPaneTextureCanvas
         });
 
-        const panelStyle = this.#getPanelStyle();
+        const panelStyle = this.#getPanelStyle(false);
+        const opaquePanelStyle = this.#getPanelStyle(true);
         for (const menuEntry of this.secondaryMenuEntries) {
             const renderState = this.utilityTileRenderMap.get(menuEntry.id);
             const runtimeState = this.utilityTileStateMap.get(menuEntry.id);
@@ -194,6 +227,7 @@ export class TitleMenu {
             renderTitleMenuGlassPanel(this.session, {
                 panelRect: renderState.panelRect,
                 panelStyle,
+                opaquePanelStyle,
                 alpha: renderState.alpha,
                 transformMatrix: runtimeState.transformMatrix,
                 perspective: runtimeState.perspective,
@@ -218,6 +252,7 @@ export class TitleMenu {
             renderTitleMenuGlassPanel(this.session, {
                 panelRect: renderState.panelRect,
                 panelStyle,
+                opaquePanelStyle,
                 alpha: renderState.alpha,
                 transformMatrix: runtimeState.transformMatrix,
                 perspective: runtimeState.perspective,
@@ -227,6 +262,7 @@ export class TitleMenu {
 
         this.versionLabelRenderer?.draw({
             session: this.session,
+            layout: this.versionLabelLayout,
             paneLayout,
             uiww: this.UIWW,
             wh: this.WH,
@@ -238,22 +274,28 @@ export class TitleMenu {
     }
 
     /**
-     * 화면 크기 변경 시 카드 레이아웃을 다시 계산합니다.
+     * 최신 디스플레이 지표와 전달된 런타임 또는 저장 UI 스케일로 카드 배치와 렌더 상태를 다시 계산합니다.
+     * @param {number} [uiScaleOverride] - 즉시 적용할 UI 스케일 배율입니다.
+     * @returns {void}
      */
-    resize() {
+    resize(uiScaleOverride) {
         this.WW = getWW();
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
-        this.uiScale = this.#getCurrentUiScale();
+        const runtimeUiScale = Number(uiScaleOverride);
+        this.uiScale = Number.isFinite(runtimeUiScale) && runtimeUiScale > 0
+            ? runtimeUiScale
+            : this.#getCurrentUiScale();
         this.layout.resize(this.uiScale);
         this.#syncLayout();
         this.#updateRenderStates(this.#getSceneTransitionProgress());
     }
 
     /**
-     * 런타임 설정 변경을 카드 메뉴에 반영합니다.
+     * 테마 변경 시 SVG·효과 색상을 갱신하고, 투명도 설정은 overlay 세션에 전달하며, UI 스케일 변경은 전체 배치를 재계산합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 집합입니다.
+     * @returns {void}
      */
     applyRuntimeSettings(changedSettings = {}) {
         if (changedSettings.theme !== undefined) {
@@ -266,12 +308,13 @@ export class TitleMenu {
         }
 
         if (changedSettings.uiScale !== undefined) {
-            this.resize();
+            this.resize(Number(changedSettings.uiScale) / 100);
         }
     }
 
     /**
-     * 카드 메뉴가 사용한 리소스를 정리합니다.
+     * overlay 세션과 동적 텍스처·버전 렌더러·링크 버튼·SVG 소스를 해제하고 모든 카드 상태 컬렉션을 비웁니다.
+     * @returns {void}
      */
     destroy() {
         this.sceneStartRequested = false;
@@ -299,10 +342,13 @@ export class TitleMenu {
         this.titleMenuIconSources = [];
 
         this.cards.length = 0;
+        this.renderOrderedCards.length = 0;
+        this.interactionOrderedCards.length = 0;
         this.cardStateMap.clear();
         this.cardRenderMap.clear();
         this.utilityTileStateMap.clear();
         this.utilityTileRenderMap.clear();
+        this.versionLabelLayout = undefined;
         this.hoveredCardId = null;
         this.hoveredSecondaryMenuId = null;
     }
@@ -341,6 +387,20 @@ export class TitleMenu {
             this.cards.push(card);
             this.cardStateMap.set(cardDefinition.id, createTitleMenuRuntimeState());
         }
+
+        this.#cacheCardTraversalOrder();
+    }
+
+    /**
+     * 생성 시 확정된 카드 등장 순서를 렌더 및 hover 판정 순서로 각각 캐시합니다.
+     * @returns {void}
+     * @private
+     */
+    #cacheCardTraversalOrder() {
+        this.renderOrderedCards = [...this.cards].sort((leftCard, rightCard) => {
+            return leftCard.animator.getState().revealOrder - rightCard.animator.getState().revealOrder;
+        });
+        this.interactionOrderedCards = [...this.renderOrderedCards].reverse();
     }
 
     /**
@@ -389,6 +449,8 @@ export class TitleMenu {
      * @private
      */
     #syncLayout() {
+        this.currentPaneLayout = null;
+        this.versionLabelLayout = undefined;
         const cardRects = this.layout.buildCardRects(this.cardRegistry.getAll());
 
         for (const card of this.cards) {
@@ -417,7 +479,6 @@ export class TitleMenu {
      */
     #updateRenderStates(transitionProgress) {
         const paneLayout = this.#getRightPaneLayout();
-        this.currentPaneLayout = paneLayout;
         this.cardRenderMap.clear();
         this.utilityTileRenderMap.clear();
         for (const card of this.cards) {
@@ -433,8 +494,8 @@ export class TitleMenu {
                     uiww: this.UIWW,
                     uiScale: this.uiScale,
                     titleCardMenu: TITLE_CARD_MENU,
-                    getRevealConfig: (cardId) => getTitleMenuCardRevealConfig(TITLE_CARD_MENU, cardId),
-                    getRevealProgress: this.#getRevealProgress.bind(this)
+                    getRevealConfig: resolveTitleMenuCardRevealConfig,
+                    getRevealProgress: this.#revealProgressResolver
                 })
             );
         }
@@ -446,8 +507,8 @@ export class TitleMenu {
                     index,
                     uiww: this.UIWW,
                     uiScale: this.uiScale,
-                    revealCoreDuration: getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU),
-                    getRevealProgress: this.#getRevealProgress.bind(this)
+                    revealCoreDuration: TITLE_MENU_REVEAL_CORE_DURATION,
+                    getRevealProgress: this.#revealProgressResolver
                 })
             );
         }
@@ -565,10 +626,6 @@ export class TitleMenu {
      * @private
      */
     #updateVersionHistoryLinkButton(paneLayout) {
-        if (!this.versionHistoryLinkButton) {
-            return;
-        }
-
         const layout = this.versionLabelRenderer?.buildLayout({
             paneLayout,
             uiww: this.UIWW,
@@ -577,6 +634,11 @@ export class TitleMenu {
             uiScale: this.uiScale,
             utilityPaneRevealEase: this.#getUtilityPaneRevealEase()
         }) || null;
+        this.versionLabelLayout = layout;
+        if (!this.versionHistoryLinkButton) {
+            return;
+        }
+
         updateTitleMenuVersionHistoryLinkButton({
             button: this.versionHistoryLinkButton,
             layout,
@@ -603,21 +665,25 @@ export class TitleMenu {
     }
 
     /**
-     * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 계산합니다.
-     * @returns {object} 오른쪽 패널 배치 정보입니다.
+     * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 필요할 때 계산하고 다음 resize까지 재사용합니다.
+     * @returns {object} 캐시된 오른쪽 패널 배치 정보입니다.
      * @private
      */
     #getRightPaneLayout() {
-        return buildTitleMenuRightPaneLayout({
-            cards: this.cards,
-            secondaryMenuEntries: this.secondaryMenuEntries,
-            ww: this.WW,
-            wh: this.WH,
-            uiww: this.UIWW,
-            uiOffsetX: this.UIOffsetX,
-            uiScale: this.uiScale,
-            titleCardMenu: TITLE_CARD_MENU
-        });
+        if (!this.currentPaneLayout) {
+            this.currentPaneLayout = buildTitleMenuRightPaneLayout({
+                cards: this.cards,
+                secondaryMenuEntries: this.secondaryMenuEntries,
+                ww: this.WW,
+                wh: this.WH,
+                uiww: this.UIWW,
+                uiOffsetX: this.UIOffsetX,
+                uiScale: this.uiScale,
+                titleCardMenu: TITLE_CARD_MENU
+            });
+        }
+
+        return this.currentPaneLayout;
     }
 
     /**
@@ -626,10 +692,9 @@ export class TitleMenu {
      * @private
      */
     #getUtilityPaneRevealEase() {
-        const revealCoreDuration = getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU);
         return getTitleMenuUtilityPaneRevealEase({
-            revealCoreDuration,
-            getRevealProgress: this.#getRevealProgress.bind(this)
+            revealCoreDuration: TITLE_MENU_REVEAL_CORE_DURATION,
+            getRevealProgress: this.#revealProgressResolver
         });
     }
 
@@ -692,22 +757,22 @@ export class TitleMenu {
 
     /**
      * 카드 패널 스타일을 반환합니다.
+     * @param {boolean} [disableTransparency=false] - 불투명 스타일 반환 여부입니다.
      * @returns {object} 패널 렌더 옵션입니다.
      * @private
      */
-    #getPanelStyle() {
-        const disableTransparency = getSetting('disableTransparency') === true;
+    #getPanelStyle(disableTransparency = false) {
         return getMenuPanelStyle(disableTransparency);
     }
 
     /**
      * 오른쪽 보조 glass 패널 스타일을 반환합니다.
+     * @param {boolean} [disableTransparency=false] - 불투명 스타일 반환 여부입니다.
      * @returns {object} 패널 렌더 옵션입니다.
      * @private
      */
-    #getBackdropPaneStyle() {
+    #getBackdropPaneStyle(disableTransparency = false) {
         const unifiedStroke = this.#getUnifiedOuterPaneStrokeColor();
-        const disableTransparency = getSetting('disableTransparency') === true;
         return getMenuBackdropPaneStyle(disableTransparency, unifiedStroke);
     }
 
@@ -721,23 +786,21 @@ export class TitleMenu {
     }
 
     /**
-     * 카드 렌더 순서를 반환합니다.
-     * @returns {TitleMenuCard[]} 렌더 순서대로 정렬된 카드 목록입니다.
+     * 생성 시 캐시한 카드 렌더 순서를 반환합니다.
+     * @returns {TitleMenuCard[]} 렌더 순서대로 정렬된 인스턴스 소유 카드 목록입니다.
      * @private
      */
     #getSortedCardsForRender() {
-        return [...this.cards].sort((leftCard, rightCard) => {
-            return leftCard.animator.getState().revealOrder - rightCard.animator.getState().revealOrder;
-        });
+        return this.renderOrderedCards;
     }
 
     /**
-     * 카드 hover 판정 순서를 반환합니다.
-     * @returns {TitleMenuCard[]} 상호작용 판정용 카드 목록입니다.
+     * 생성 시 캐시한 카드 hover 판정 순서를 반환합니다.
+     * @returns {TitleMenuCard[]} 상호작용 판정용 인스턴스 소유 카드 목록입니다.
      * @private
      */
     #getCardsForInteraction() {
-        return [...this.#getSortedCardsForRender()].reverse();
+        return this.interactionOrderedCards;
     }
 
     /**
@@ -784,13 +847,13 @@ export class TitleMenu {
      * @private
      */
     #updateCardRevealClock(delta, transitionProgress) {
-        const revealClock = advanceTitleMenuCardRevealClock({
-            cardRevealStarted: this.cardRevealStarted,
-            cardRevealElapsed: this.cardRevealElapsed,
+        const revealClock = advanceTitleMenuCardRevealClockWithTotalDuration(
+            this.cardRevealStarted,
+            this.cardRevealElapsed,
             transitionProgress,
             delta,
-            titleCardMenu: TITLE_CARD_MENU
-        });
+            TITLE_MENU_REVEAL_TOTAL_DURATION
+        );
         this.cardRevealStarted = revealClock.cardRevealStarted;
         this.cardRevealElapsed = revealClock.cardRevealElapsed;
         return revealClock.revealFinished;

@@ -3,9 +3,11 @@ import { animate, remove } from "animation/animation_system.js";
 import { render, shadowOn, shadowOff, measureText } from "display/display_system.js";
 import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
-import { colorUtil, formatRgba } from "util/color_util.js";
+import { colorUtil } from "util/color_util.js";
 import { createFontString, truncateTextToWidth } from "util/font_util.js";
-import { getSetting } from "save/save_system.js";
+import { getData } from "data/data_handler.js";
+
+const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
 
 /**
  * @class DropdownElement
@@ -14,6 +16,7 @@ import { getSetting } from "save/save_system.js";
 export class DropdownElement extends BaseUIElement {
     #value;
     #openAnimId;
+    #selectionAnimId;
     static openedElementId = null;
     static inputBlocker = null;
 
@@ -106,6 +109,9 @@ export class DropdownElement extends BaseUIElement {
         this.openProgress = 0;
         this.hoveredOptionIndex = -1;
         this.#openAnimId = -1;
+        this.#selectionAnimId = -1;
+        this.previousSelectionLabel = null;
+        this.selectionProgress = 1;
 
         if (properties.value !== undefined) {
             this.value = properties.value;
@@ -123,6 +129,10 @@ export class DropdownElement extends BaseUIElement {
             remove(this.#openAnimId);
             this.#openAnimId = -1;
         }
+        if (this.#selectionAnimId !== -1) {
+            remove(this.#selectionAnimId);
+            this.#selectionAnimId = -1;
+        }
 
         if (DropdownElement.openedElementId === this.id) {
             DropdownElement.openedElementId = null;
@@ -138,6 +148,38 @@ export class DropdownElement extends BaseUIElement {
         this.hoveredOptionIndex = -1;
         this.selectedIndex = -1;
         this.#value = null;
+        this.previousSelectionLabel = null;
+        this.selectionProgress = 1;
+    }
+
+    /**
+     * 새 레이아웃의 배치·테마 스타일과 항목만 받아 열림·선택 애니메이션을 유지합니다.
+     * @param {DropdownElement|null|undefined} source - 새 레이아웃이 만든 드롭다운입니다.
+     * @returns {DropdownElement} 현재 드롭다운입니다.
+     */
+    reconcileLayoutFrom(source) {
+        if (!source || source === this) {
+            return this;
+        }
+
+        const layoutFields = [
+            'parent', 'layer', 'x', 'y', 'width', 'height', 'radius',
+            'optionHeight', 'optionGap', 'openDirection', 'backgroundColor',
+            'hoverColor', 'panelColor', 'panelBorderColor', 'itemHoverColor',
+            'textColor', 'textActiveColor', 'iconColor', 'font', 'onChange',
+            'alpha', 'shadow', 'visible', 'clickAble', 'tooltip',
+            'hoverScaleMultiplier', 'pressScaleMultiplier', 'renderOrder'
+        ];
+        for (const field of layoutFields) {
+            this[field] = source[field];
+        }
+
+        this.items = source.items;
+        const selectedIndex = this.items.findIndex((item) => item.value === this.#value);
+        if (selectedIndex >= 0) {
+            this.selectedIndex = selectedIndex;
+        }
+        return this;
     }
 
     get value() {
@@ -145,6 +187,74 @@ export class DropdownElement extends BaseUIElement {
     }
 
     set value(val) {
+        if (this.#selectionAnimId !== -1) {
+            remove(this.#selectionAnimId);
+            this.#selectionAnimId = -1;
+        }
+        this.previousSelectionLabel = null;
+        this.selectionProgress = 1;
+        this.#applyValue(val);
+    }
+
+    /**
+     * 선택 라벨을 지정 값으로 교차 감쇠합니다.
+     * @param {string|number|boolean} value - 새 선택 값입니다.
+     * @param {{duration?:number, easing?:string}} [options={}] - 교차 감쇠 옵션입니다.
+     * @returns {Promise<void>} 선택 전환이 끝나면 이행됩니다.
+     */
+    animateToValue(value, options = {}) {
+        const previousLabel = this.selectedIndex >= 0
+            ? (this.items[this.selectedIndex]?.label ?? '')
+            : '';
+        const previousValue = this.#value;
+
+        if (this.#selectionAnimId !== -1) {
+            remove(this.#selectionAnimId);
+            this.#selectionAnimId = -1;
+        }
+        this.#applyValue(value);
+        const selectedLabel = this.selectedIndex >= 0
+            ? (this.items[this.selectedIndex]?.label ?? '')
+            : '';
+        if (Object.is(previousValue, this.#value) || previousLabel === selectedLabel) {
+            this.previousSelectionLabel = null;
+            this.selectionProgress = 1;
+            return Promise.resolve();
+        }
+
+        this.previousSelectionLabel = previousLabel;
+        this.selectionProgress = 0;
+        const duration = Number.isFinite(options.duration) && options.duration >= 0
+            ? options.duration
+            : 0.2;
+        const easing = typeof options.easing === 'string' && options.easing.length > 0
+            ? options.easing
+            : 'easeOutExpo';
+        const animation = animate(this, {
+            variable: 'selectionProgress',
+            startValue: 0,
+            endValue: 1,
+            duration,
+            type: easing
+        });
+        this.#selectionAnimId = animation.id;
+        return animation.promise.then(() => {
+            if (this.#selectionAnimId !== animation.id) {
+                return;
+            }
+            this.#selectionAnimId = -1;
+            this.previousSelectionLabel = null;
+            this.selectionProgress = 1;
+        });
+    }
+
+    /**
+     * 항목 목록 규칙에 따라 내부 선택값과 index를 갱신합니다.
+     * @param {string|number|boolean} val - 적용할 값입니다.
+     * @returns {void}
+     * @private
+     */
+    #applyValue(val) {
         const foundIndex = this.items.findIndex(item => item.value === val);
         if (foundIndex !== -1) {
             this.#value = val;
@@ -307,8 +417,10 @@ export class DropdownElement extends BaseUIElement {
             const selected = this.items[this.hoveredOptionIndex];
             if (selected) {
                 const changed = this.#value !== selected.value;
-                this.value = selected.value;
-                if (changed) this.onChange(this.#value);
+                if (changed) {
+                    void this.animateToValue(selected.value);
+                    this.onChange(this.#value);
+                }
             }
         }
         this.#setOpen(false);
@@ -342,6 +454,20 @@ export class DropdownElement extends BaseUIElement {
             ? (this.items[this.selectedIndex]?.label ?? "")
             : "";
 
+        if (this.previousSelectionLabel !== null && this.selectionProgress < 1) {
+            render(this.layer, {
+                shape: "text",
+                text: this.#fitText(this.previousSelectionLabel, textMaxW),
+                x: mainRect.x + basePad,
+                y: mainRect.y + (mainRect.h / 2),
+                font: this.font,
+                fill: this.textActiveColor,
+                align: "left",
+                baseline: "middle",
+                alpha: this.alpha * (1 - this.selectionProgress)
+            });
+        }
+
         render(this.layer, {
             shape: "text",
             text: this.#fitText(selectedLabel, textMaxW),
@@ -351,7 +477,7 @@ export class DropdownElement extends BaseUIElement {
             fill: this.selectedIndex >= 0 ? this.textActiveColor : this.textColor,
             align: "left",
             baseline: "middle",
-            alpha: this.alpha
+            alpha: this.alpha * (this.previousSelectionLabel !== null ? this.selectionProgress : 1)
         });
 
         const iconHalfHeight = mainRect.h * 0.12;
@@ -408,37 +534,39 @@ export class DropdownElement extends BaseUIElement {
 
         const panelRadius = Math.max(2, (this.radius - 1) * this.scale);
         const panelAlpha = this.alpha * this.openProgress;
-        const disableTransparency = getSetting("disableTransparency");
-        const transparentPanelFill = (() => {
-            const rgb = colorUtil().cssToRgb(this.panelColor);
-            return formatRgba(rgb.r, rgb.g, rgb.b, 0.97);
-        })();
-        const panelFill = disableTransparency
-            ? (ColorSchemes.Overlay.Panel.Background || this.panelColor)
-            : transparentPanelFill;
-        const panelStroke = disableTransparency
-            ? (ColorSchemes.Overlay.Panel.Border || this.panelBorderColor)
-            : (ColorSchemes.Overlay.Panel.GlassBorder || this.panelBorderColor);
         const overlaySession = this.parent?.session || null;
-        const floatingLayer = overlaySession?.uiLayerId || this.layer;
-
-        if (!disableTransparency && overlaySession?.effectiveTransparent) {
-            shadowOn(floatingLayer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
-            render(floatingLayer, {
-                shape: "roundRect",
+        const glassMix = typeof overlaySession?.getGlassMix === 'function'
+            ? overlaySession.getGlassMix()
+            : (overlaySession?.effectiveTransparent === true ? 1 : 0);
+        const shadowColor = ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)";
+        let glassRendered = false;
+        if (glassMix > 0 && typeof overlaySession?.renderFloatingGlassPanel === 'function') {
+            glassRendered = overlaySession.renderFloatingGlassPanel({
                 x: panelRect.x,
                 y: panelRect.y,
                 w: panelRect.w,
                 h: panelRect.h,
                 radius: panelRadius,
-                fill: panelFill,
-                stroke: panelStroke,
+                blur: OVERLAY_RENDER_CONSTANTS.FLOATING_DROPDOWN_BLUR_RADIUS,
+                fill: this.panelColor,
+                stroke: ColorSchemes.Overlay.Panel.GlassBorder || this.panelBorderColor,
                 lineWidth: 1,
-                alpha: panelAlpha
+                tintColor: ColorSchemes.Overlay.Panel.GlassTint,
+                edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
+                tintStrength: ColorSchemes.Overlay.Panel.GlassTintStrength,
+                edgeStrength: ColorSchemes.Overlay.Panel.GlassEdgeStrength,
+                shadowRadius: 6 * this.scale,
+                shadowColor,
+                alpha: panelAlpha * glassMix
             });
-            shadowOff(floatingLayer);
-        } else {
-            shadowOn(floatingLayer, 6 * this.scale, ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)");
+        }
+
+        const floatingLayer = glassRendered
+            ? (overlaySession.getFloatingUILayerId() || this.layer)
+            : (overlaySession?.uiLayerId || this.layer);
+        const flatMix = glassRendered ? 1 - glassMix : 1;
+        if (flatMix > 0) {
+            shadowOn(floatingLayer, 6 * this.scale, shadowColor);
             render(floatingLayer, {
                 shape: "roundRect",
                 x: panelRect.x,
@@ -446,10 +574,10 @@ export class DropdownElement extends BaseUIElement {
                 w: panelRect.w,
                 h: panelRect.h,
                 radius: panelRadius,
-                fill: panelFill,
-                stroke: panelStroke,
+                fill: ColorSchemes.Overlay.Panel.Background || this.panelColor,
+                stroke: ColorSchemes.Overlay.Panel.Border || this.panelBorderColor,
                 lineWidth: 1,
-                alpha: panelAlpha
+                alpha: panelAlpha * flatMix
             });
             shadowOff(floatingLayer);
         }

@@ -1,0 +1,11 @@
+{
+    "name": "lonely-tower-enemy-ai-steering-call-benchmark",
+    "version": "1.0.0",
+    "main": "index.html",
+    "window": {
+        "title": "Enemy AI steering call benchmark",
+        "width": 1100,
+        "height": 760,
+        "position": "center"
+    }
+}

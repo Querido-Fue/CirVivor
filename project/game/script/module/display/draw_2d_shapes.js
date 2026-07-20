@@ -8,6 +8,7 @@ const FULL_CIRCLE_RADIANS = Math.PI * 2;
  * 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export function renderDrawRect(context, options) {
     if (options.fill !== false) {
@@ -37,6 +38,7 @@ export function renderDrawRect(context, options) {
  * 둥근 사각형을 채움과 내부 스트로크 기준으로 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export function renderDrawRoundRect(context, options) {
     if (options.fill !== false) {
@@ -82,6 +84,7 @@ export function renderDrawRoundRect(context, options) {
  * 원형을 채움과 스트로크 요청에 맞춰 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export function renderDrawCircle(context, options) {
     context.beginPath();
@@ -101,6 +104,7 @@ export function renderDrawCircle(context, options) {
  * 선분을 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export function renderDrawLine(context, options) {
     context.beginPath();
@@ -113,6 +117,7 @@ export function renderDrawLine(context, options) {
  * 이미지를 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export function renderDrawImage(context, options) {
     context.drawImage(options.image, options.x, options.y, options.w, options.h);
@@ -122,6 +127,7 @@ export function renderDrawImage(context, options) {
  * 텍스트를 렌더링합니다.
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
+ * @returns {void}
  */
 export function renderDrawText(context, options) {
     if (options.rotation) {
@@ -141,6 +147,7 @@ export function renderDrawText(context, options) {
  * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
  * @param {object} options - 렌더링 옵션입니다.
  * @param {Path2D|null} path - 렌더링할 캐시 경로입니다.
+ * @returns {void}
  */
 export function renderDrawArrow(context, options, path) {
     if (!path) {

@@ -23,7 +23,10 @@ export class MouseButtonStateMachine {
     }
 
     /**
-     * 버튼별 상태머신을 한 프레임만큼 전진시킵니다.
+     * left→right→middle 고정 순서로 버튼별 상태머신을 한 프레임만큼 전진시킵니다.
+     * 각 버튼은 queued event를 최대 하나만 소비하고 기존 버튼 record를 제자리 갱신합니다.
+     * 중간 오류는 그대로 전파하며 앞선 버튼 변경을 유지하고 이후 버튼은 처리하지 않습니다.
+     * @returns {void}
      */
     updateAll() {
         this._updateButton('left');

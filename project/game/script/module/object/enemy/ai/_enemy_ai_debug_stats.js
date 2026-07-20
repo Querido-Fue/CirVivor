@@ -1,4 +1,5 @@
 import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { resolveFiniteNumber } from 'util/number_util.js';
 
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 
@@ -20,7 +21,7 @@ const ENEMY_AI_POLICY_DEBUG_KEY_BY_ID = Object.freeze({
  */
 const getFiniteEnemyAIDebugValue = (target, fieldName) => {
     const value = target?.[fieldName];
-    return Number.isFinite(value) ? value : 0;
+    return resolveFiniteNumber(value, 0);
 };
 
 /**
@@ -51,13 +52,14 @@ export const getEnemyAIDebugPolicyKey = (policyId) => ENEMY_AI_POLICY_DEBUG_KEY_
  * @param {object|null|undefined} stats
  * @param {string} fieldName
  * @param {number} [amount=1]
+ * @returns {void}
  */
 export const incrementEnemyAIDebugCounter = (stats, fieldName, amount = 1) => {
     if (stats?.enabled !== true || typeof fieldName !== 'string' || fieldName.length === 0) {
         return;
     }
 
-    const safeAmount = Number.isFinite(amount) ? amount : 1;
+    const safeAmount = resolveFiniteNumber(amount, 1);
     stats[fieldName] = getFiniteEnemyAIDebugValue(stats, fieldName) + safeAmount;
 };
 
@@ -66,6 +68,7 @@ export const incrementEnemyAIDebugCounter = (stats, fieldName, amount = 1) => {
  * @param {object|null|undefined} stats
  * @param {string} policyId
  * @param {number} durationMs
+ * @returns {void}
  */
 export const recordEnemyAIDebugPolicySample = (stats, policyId, durationMs) => {
     if (stats?.enabled !== true || !Number.isFinite(durationMs) || durationMs < 0) {

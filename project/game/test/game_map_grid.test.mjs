@@ -8,6 +8,7 @@ const {
     normalizeGameMapId,
     resolveGameMapDefinition,
     isGameMapFloorCell,
+    isResolvedGameMapFloorCell,
     buildGameMapGeometry
 } = gridModule;
 const defaultMap = resolveGameMapDefinition(GAME_MAP_DATA.DEFAULT_MAP_ID);
@@ -62,6 +63,11 @@ for (let row = 0; row < defaultMap.rows; row++) {
             expectedFloor,
             `예상하지 못한 타일: row=${row}, column=${column}`
         );
+        assert.equal(
+            isResolvedGameMapFloorCell(defaultMap, row, column),
+            expectedFloor,
+            `resolved 조회가 다른 타일: row=${row}, column=${column}`
+        );
         floorCount += expectedFloor ? 1 : 0;
     }
 }
@@ -70,6 +76,56 @@ assert.equal(
     isGameMapFloorCell(defaultMap, defaultMap.playerSpawn.row, defaultMap.playerSpawn.column),
     true
 );
+assert.equal(isResolvedGameMapFloorCell(defaultMap, -1, 0), false);
+assert.equal(isResolvedGameMapFloorCell(defaultMap, 0, defaultMap.columns), false);
+assert.equal(isResolvedGameMapFloorCell(null, 0, 0), isGameMapFloorCell(null, 0, 0));
+const customMap = { id: 'custom', rows: 1, columns: 1, tiles: ['F'] };
+assert.equal(
+    isResolvedGameMapFloorCell(customMap, 0, 0),
+    isGameMapFloorCell(customMap, 0, 0)
+);
+
+// 전역 검증 intrinsic이 바뀌면 등록 맵 전용 조회도 범용 계약의 호출·결과로 fallback합니다.
+const moduleGlobal = normalizeGameMapId.constructor('return globalThis')();
+const originalArrayIsArrayDescriptor = Object.getOwnPropertyDescriptor(
+    moduleGlobal.Array,
+    'isArray'
+);
+const originalNumberIsIntegerDescriptor = Object.getOwnPropertyDescriptor(
+    moduleGlobal.Number,
+    'isInteger'
+);
+const genericIntrinsicTrace = [];
+const resolvedIntrinsicTrace = [];
+
+function installTrackedMapIntrinsics(trace) {
+    Object.defineProperty(moduleGlobal.Array, 'isArray', {
+        ...originalArrayIsArrayDescriptor,
+        value(value) {
+            trace.push('Array.isArray');
+            return originalArrayIsArrayDescriptor.value(value);
+        }
+    });
+    Object.defineProperty(moduleGlobal.Number, 'isInteger', {
+        ...originalNumberIsIntegerDescriptor,
+        value(value) {
+            trace.push(`Number.isInteger:${String(value)}`);
+            return originalNumberIsIntegerDescriptor.value(value);
+        }
+    });
+}
+
+try {
+    installTrackedMapIntrinsics(genericIntrinsicTrace);
+    const genericPatchedResult = isGameMapFloorCell(defaultMap, 0, 0);
+    installTrackedMapIntrinsics(resolvedIntrinsicTrace);
+    const resolvedPatchedResult = isResolvedGameMapFloorCell(defaultMap, 0, 0);
+    assert.equal(resolvedPatchedResult, genericPatchedResult);
+    assert.deepEqual(resolvedIntrinsicTrace, genericIntrinsicTrace);
+} finally {
+    Object.defineProperty(moduleGlobal.Array, 'isArray', originalArrayIsArrayDescriptor);
+    Object.defineProperty(moduleGlobal.Number, 'isInteger', originalNumberIsIntegerDescriptor);
+}
 
 const visited = new Set();
 const pending = [{ row: 0, column: 0 }];

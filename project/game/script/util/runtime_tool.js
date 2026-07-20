@@ -143,8 +143,10 @@ export class RuntimeTool {
 }
 
 /**
- * runtimeTool 싱글톤 인스턴스를 반환합니다.
- * @returns {RuntimeTool} RuntimeTool 인스턴스
+ * 가장 최근에 생성이 시작되어 등록된 RuntimeTool 인스턴스를 반환합니다.
+ * 생성자는 다른 필드를 초기화하기 전에 인스턴스를 등록하므로,
+ * 이후 필드 초기화가 실패해도 해당 부분 인스턴스가 최신값으로 유지됩니다.
+ * @returns {RuntimeTool|null} 생성 전에는 `null`, 생성이 시작된 뒤에는 가장 최근에 등록된 인스턴스입니다.
  */
 export function runtimeTool() {
     return runtimeToolInstance;

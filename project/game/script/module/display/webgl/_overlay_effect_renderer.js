@@ -95,7 +95,7 @@ export class OverlayEffectRenderer {
     }
 
     /**
-     * 프레임 시작 시 렌더 타깃을 초기화합니다.
+     * 프레임 시작 시 surface 크기와 frame serial을 갱신합니다.
      * @param {number} width - 현재 surface 너비입니다.
      * @param {number} height - 현재 surface 높이입니다.
      */
@@ -105,11 +105,6 @@ export class OverlayEffectRenderer {
         if (this.frameSerial >= Number.MAX_SAFE_INTEGER) {
             this.frameSerial = 1;
         }
-
-        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
-        this.gl.viewport(0, 0, this.width, this.height);
-        this.gl.clearColor(0, 0, 0, 0);
-        this.gl.clear(this.gl.COLOR_BUFFER_BIT);
     }
 
     /**

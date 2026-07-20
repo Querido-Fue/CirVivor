@@ -3,6 +3,7 @@ import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simu
 import { clamp01, clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
+import { ENEMY_AI_STEERING_POSITIONAL_CALL } from './_enemy_ai_steering_call_mode.js';
 import {
     projectEnemyAIFootprintRadiusForDirection,
     readPositivePixelValue,
@@ -23,6 +24,13 @@ import {
 const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const HEXA_HIVE_TYPE = getHexaHiveType();
+
+/**
+ * 공개 API의 null/undefined formal destructuring 예외 계약을 유지합니다.
+ * @param {object|null|undefined} options - 검증할 공개 options입니다.
+ * @returns {*} options의 enemy 값입니다.
+ */
+const readInvalidEnemyAISteeringOptions = ({ enemy }) => enemy;
 
 /**
  * 두 성분으로 구성된 벡터 길이를 반환합니다.
@@ -260,6 +268,7 @@ const canUseHexaHiveFinalApproach = (
 
 /**
  * 적 AI의 현재 target 기준 steering 방향을 계산하고 flow/direct-path 캐시 상태를 갱신합니다.
+ * 외부 호출은 단일 options object 공개 API이며 positional 인수와 identity token은 core 전용 내부 ABI입니다.
  * @param {object} options - steering 계산 옵션입니다.
  * @param {object} options.enemy - 적 객체입니다.
  * @param {object} options.state - 적 AI 상태입니다.
@@ -277,9 +286,9 @@ const canUseHexaHiveFinalApproach = (
  * @param {object|null|undefined} options.aiDebugStats - AI 디버그 통계입니다.
  * @returns {{x: number, y: number}} steering 방향입니다.
  */
-export function resolveEnemyAISteeringDirection({
+export function resolveEnemyAISteeringDirection(
     enemy,
-    state,
+    state = undefined,
     context,
     profile,
     startX,
@@ -291,8 +300,29 @@ export function resolveEnemyAISteeringDirection({
     footprintMetrics,
     wallsVersion,
     forcedPolicyRefresh,
-    aiDebugStats
-}) {
+    aiDebugStats,
+    internalCallMode
+) {
+    if (internalCallMode !== ENEMY_AI_STEERING_POSITIONAL_CALL) {
+        const options = enemy;
+        if (options === null || options === undefined) readInvalidEnemyAISteeringOptions(options);
+        ({
+            enemy,
+            state,
+            context,
+            profile,
+            startX,
+            startY,
+            targetX,
+            targetY,
+            walls,
+            enemyRadius,
+            footprintMetrics,
+            wallsVersion,
+            forcedPolicyRefresh,
+            aiDebugStats
+        } = options);
+    }
     const scratchDir = state.scratchDir;
     const scratchCell = state.scratchCell;
     if (applyHexaHiveArrivalBrake(

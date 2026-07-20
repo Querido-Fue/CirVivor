@@ -47,6 +47,7 @@ function _createRawPoolItem(shape, poolType) {
 /**
  * 풀에서 재사용할 단순 UI 객체의 동적 속성을 제거합니다.
  * @param {object} item - 초기화할 단순 UI 객체입니다.
+ * @returns {void}
  */
 function _resetRawPoolItem(item) {
     for (const key of Object.keys(item)) {
@@ -124,8 +125,10 @@ export const UIPool = {
 };
 
 /**
- * UI 요소를 해당 오브젝트 풀에 반납합니다. 자식 요소가 있으면 재귀적으로 반납합니다.
- * @param {object} item - 반납할 UI 요소
+ * UI 요소의 left→center→right→children 자식을 먼저 재귀 반납한 뒤 현재 요소를 reset·반납합니다.
+ * 등록되지 않은 pool type은 무시하며, 처리 중 오류가 나도 앞서 완료된 반납은 되돌리지 않습니다.
+ * @param {object|null|undefined} item - 반납할 UI 요소입니다.
+ * @returns {void}
  */
 export const releaseUIItem = (item) => {
     if (!item) return;
@@ -152,7 +155,9 @@ export const releaseUIItem = (item) => {
 };
 
 /**
- * 설정된 POOL_WARMUP 수치만큼 UI 요소를 사전 생성하여 풀에 채웁니다. (프레임 드랍 방지)
+ * 고정된 type→warmup key 열거 순서대로 현재 POOL_WARMUP 수치만큼 UI 풀을 채웁니다.
+ * 중간 오류가 나면 앞서 완료된 풀 변경은 유지하고 이후 풀은 처리하지 않습니다.
+ * @returns {void}
  */
 export const warmupUIPools = () => {
     for (const [poolType, warmupKey] of Object.entries(UI_POOL_WARMUP_KEY_BY_TYPE)) {

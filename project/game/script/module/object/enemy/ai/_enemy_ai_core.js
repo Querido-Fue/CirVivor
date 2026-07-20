@@ -9,6 +9,7 @@ import {
     stepArrowChargeState,
     updatePolicyIntent
 } from './_enemy_ai_policy_intent.js';
+import { ENEMY_AI_STEERING_POSITIONAL_CALL } from './_enemy_ai_steering_call_mode.js';
 import { resolveEnemyAISteeringDirection } from './_enemy_ai_steering.js';
 import { applyEnemyAIRotationIntent } from './_enemy_ai_rotation.js';
 import {
@@ -294,6 +295,7 @@ export const ensureEnemyAIState = (enemy, profile = getEnemyAIProfile()) => {
 /**
  * 적 AI 상태를 초기화 상태로 되돌립니다.
  * @param {object|null|undefined} enemy - 적 인스턴스입니다.
+ * @returns {void}
  */
 export function resetEnemyAIState(enemy) {
     if (!enemy) return;
@@ -305,6 +307,7 @@ export function resetEnemyAIState(enemy) {
  * @param {object} enemy - 적 인스턴스입니다.
  * @param {number} stepDelta - fixedUpdate 델타입니다.
  * @param {object} [context={}] - AI fixedUpdate 문맥입니다.
+ * @returns {void}
  */
 export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
     const profile = getEnemyAIProfile(context);
@@ -377,22 +380,23 @@ export function fixedUpdateEnemyAI(enemy, stepDelta, context = {}) {
         incrementEnemyAIDebugCounter(aiDebugStats, 'heavyDecisionCount');
     }
 
-    const scratchDir = resolveEnemyAISteeringDirection({
+    const scratchDir = resolveEnemyAISteeringDirection(
         enemy,
         state,
         context,
         profile,
-        startX: updateFrame.startX,
-        startY: updateFrame.startY,
-        targetX: updateFrame.targetX,
-        targetY: updateFrame.targetY,
-        walls: updateFrame.walls,
-        enemyRadius: updateFrame.enemyRadius,
-        footprintMetrics: updateFrame.footprintMetrics,
-        wallsVersion: updateFrame.wallsVersion,
+        updateFrame.startX,
+        updateFrame.startY,
+        updateFrame.targetX,
+        updateFrame.targetY,
+        updateFrame.walls,
+        updateFrame.enemyRadius,
+        updateFrame.footprintMetrics,
+        updateFrame.wallsVersion,
         forcedPolicyRefresh,
-        aiDebugStats
-    });
+        aiDebugStats,
+        ENEMY_AI_STEERING_POSITIONAL_CALL
+    );
 
     applyEnemyAISteeringResult(enemy, state, scratchDir);
     applyEnemyAIRotationIntent(enemy, state, scratchDir, updateFrame.footprintMetrics, profile);

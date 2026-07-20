@@ -38,6 +38,7 @@ export function createCenterCircleGlowNoiseCanvas() {
  * @param {HTMLCanvasElement} canvas - 대상 캐시 캔버스입니다.
  * @param {number} width - 목표 너비입니다.
  * @param {number} height - 목표 높이입니다.
+ * @returns {void}
  */
 export function resizeCenterCircleGlowCanvas(canvas, width, height) {
     const nextWidth = Math.ceil(clampFiniteNumber(Number(width), 1, Infinity, 1));
@@ -61,6 +62,7 @@ export function resizeCenterCircleGlowCanvas(canvas, width, height) {
  * @param {number} innerRadius - halo 시작 반경입니다.
  * @param {number} outerRadius - halo 종료 반경입니다.
  * @param {CanvasGradient|CanvasPattern|string} fillStyle - 적용할 채우기 스타일입니다.
+ * @returns {void}
  */
 export function drawCenterCircleHaloRing(ctx, centerX, centerY, innerRadius, outerRadius, fillStyle) {
     ctx.save();
@@ -81,6 +83,7 @@ export function drawCenterCircleHaloRing(ctx, centerX, centerY, innerRadius, out
  * @param {number} innerRadius - halo 시작 반경입니다.
  * @param {number} outerRadius - halo 종료 반경입니다.
  * @param {number} alpha - 디더링 알파 값입니다.
+ * @returns {void}
  */
 export function drawCenterCircleDitheredHaloNoise(
     ctx,
@@ -117,6 +120,7 @@ export function drawCenterCircleDitheredHaloNoise(
  * @param {string} strokeStyle - 링 색상입니다.
  * @param {number} shadowBlur - 그림자 블러 반경입니다.
  * @param {string} shadowColor - 그림자 색상입니다.
+ * @returns {void}
  */
 export function drawCenterCircleGlowRing(ctx, centerX, centerY, radius, lineWidth, strokeStyle, shadowBlur, shadowColor) {
     ctx.save();

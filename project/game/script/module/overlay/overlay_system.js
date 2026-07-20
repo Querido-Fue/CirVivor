@@ -33,6 +33,12 @@ const TITLE_OVERLAY_FACTORY_BY_MENU = Object.freeze({
     achievements: (titleScene) => new AchievementsOverlay(titleScene)
 });
 
+/**
+ * overlay entry의 표시 순서와 생성 순서를 비교합니다.
+ * @param {{order: number, sequence: number}} left - 왼쪽 entry입니다.
+ * @param {{order: number, sequence: number}} right - 오른쪽 entry입니다.
+ * @returns {number} 정렬 비교 결과입니다.
+ */
 function compareOverlayEntries(left, right) {
     if (left.order !== right.order) {
         return left.order - right.order;

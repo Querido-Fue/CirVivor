@@ -29,6 +29,8 @@ const WORLD_MAP_FLOOR_RENDER_OPTIONS = {
     h: 0,
     fill: null
 };
+const WORLD_MAP_GRID_VERTEX_CACHE_KEY = Object.freeze({});
+const WORLD_MAP_FLOOR_VERTEX_CACHE_KEY = Object.freeze({});
 const WORLD_WALL_RENDER_OPTIONS = {
     shape: 'rect',
     x: 0,
@@ -46,6 +48,8 @@ const WORLD_CIRCLE_RENDER_OPTIONS = {
     fill: null,
     alpha: WORLD_CIRCLE_ALPHA
 };
+const WORLD_PROJECTILE_RENDER_FRAMES = [];
+let worldProjectileRenderDepth = 0;
 const WORLD_RENDER_SECTIONS = Object.freeze({
     MAP: 'scene.game.world.map',
     STATIC_WALLS: 'scene.game.world.staticWalls',
@@ -88,7 +92,8 @@ function resolveWorldSnapshotField(sceneSnapshot, options, key) {
 /**
  * 일반 씬 월드 렌더 옵션을 스냅샷 우선 규칙으로 정규화합니다.
  * @param {object|null|undefined} options - 렌더 옵션입니다.
- * @returns {{mapGeometry: object|null, staticWalls: object[], boxWalls: object[], player: object|null|undefined, projectiles: object[], offsetY: number}}
+ * @param {object} out - 필드를 제자리 갱신할 writable 호출자 소유 결과 객체입니다.
+ * @returns {{mapGeometry: object|null, staticWalls: object[], boxWalls: object[], player: object|null|undefined, projectiles: object[], offsetY: number}} `out`과 동일한 객체입니다. 선택된 맵·플레이어 객체와 유효한 입력 엔티티 배열은 복제하지 않고 live 참조로 유지합니다. 기존의 다른 필드는 유지하고, 예외 전까지 완료된 필드 쓰기도 남깁니다.
  */
 function resolveWorldRenderState(options, out) {
     const source = options || EMPTY_WORLD_RENDER_OPTIONS;
@@ -118,6 +123,7 @@ function getGameMapColor(key, fallback) {
  * 그리드 맵의 보행 가능 바닥을 background 레이어에 일괄 렌더합니다.
  * @param {object|null|undefined} mapGeometry - 컴파일된 맵 렌더 지오메트리입니다.
  * @param {number} offsetY - 오브젝트 월드의 화면 Y 오프셋입니다.
+ * @returns {void}
  */
 function renderGameMap(mapGeometry, offsetY) {
     const centers = mapGeometry?.floorLocalCenters;
@@ -144,7 +150,8 @@ function renderGameMap(mapGeometry, offsetY) {
         centers,
         originX,
         originY,
-        cellSize
+        cellSize,
+        WORLD_MAP_GRID_VERTEX_CACHE_KEY
     );
 
     const floorOptions = WORLD_MAP_FLOOR_RENDER_OPTIONS;
@@ -157,7 +164,8 @@ function renderGameMap(mapGeometry, offsetY) {
         centers,
         originX,
         originY,
-        cellSize
+        cellSize,
+        WORLD_MAP_FLOOR_VERTEX_CACHE_KEY
     );
 }
 
@@ -166,6 +174,7 @@ function renderGameMap(mapGeometry, offsetY) {
  * @param {object|null|undefined} wall - 벽 엔티티 또는 스냅샷입니다.
  * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
 function renderWall(wall, fill, offsetY) {
     if (!wall || wall.active === false) {
@@ -186,6 +195,7 @@ function renderWall(wall, fill, offsetY) {
  * @param {object|null|undefined} entity - 원형 엔티티 또는 스냅샷입니다.
  * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
 function renderCircleEntity(entity, fill, offsetY) {
     if (!entity || entity.active === false) {
@@ -206,24 +216,122 @@ function renderCircleEntity(entity, fill, offsetY) {
  * 플레이어 엔티티를 렌더합니다.
  * @param {object|null|undefined} player - 플레이어 엔티티 또는 스냅샷입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
 function renderPlayer(player, offsetY) {
     renderCircleEntity(player, getBenchmarkColor('Player'), offsetY);
 }
 
 /**
- * 투사체 엔티티를 렌더합니다.
- * @param {object|null|undefined} projectile - 투사체 엔티티 또는 스냅샷입니다.
+ * 같은 직경을 공유하는 연속 투사체를 기존 순서대로 제출합니다.
+ * 단일 투사체는 기존 단건 경로를, 복수 투사체는 동적 bulk 경로를 사용합니다.
+ * @param {number} diameter - 투사체 직경입니다.
+ * @param {string} fill - 렌더링할 색상입니다.
+ * @param {Array<{x:number, y:number}>} centers - 현재 호출 깊이가 소유한 center 목록입니다.
+ * @param {object} renderOptions - 현재 호출 깊이가 소유한 writable 렌더 옵션입니다.
+ * @returns {void}
+ */
+function renderProjectileRun(diameter, fill, centers, renderOptions) {
+    const centerCount = centers.length;
+    if (centerCount === 0) {
+        return;
+    }
+
+    renderOptions.w = diameter;
+    renderOptions.h = diameter;
+    renderOptions.fill = fill;
+
+    if (centerCount === 1) {
+        renderOptions.x = centers[0].x;
+        renderOptions.y = centers[0].y;
+        renderGL(WORLD_OBJECT_LAYER, renderOptions);
+        centers.length = 0;
+        return;
+    }
+
+    renderGLShapeInstances(
+        WORLD_OBJECT_LAYER,
+        renderOptions,
+        centers,
+        0,
+        0,
+        1
+    );
+    centers.length = 0;
+}
+
+/**
+ * 투사체 목록을 정규화하고 연속된 동일 직경 단위로 렌더합니다.
+ * center 객체는 모듈 scratch pool에서 재사용하며 움직이는 좌표에는 vertex cache를 사용하지 않습니다.
+ * @param {object[]} projectiles - 투사체 엔티티 또는 스냅샷 목록입니다.
  * @param {string} fill - 렌더링할 색상입니다.
  * @param {number} offsetY - 렌더 오프셋입니다.
+ * @returns {void}
  */
-function renderProjectile(projectile, fill, offsetY) {
-    renderCircleEntity(projectile, fill, offsetY);
+function renderProjectiles(projectiles, fill, offsetY) {
+    const frameIndex = worldProjectileRenderDepth;
+    worldProjectileRenderDepth += 1;
+    let frame = WORLD_PROJECTILE_RENDER_FRAMES[frameIndex];
+    if (!frame) {
+        frame = {
+            centers: [],
+            centerPool: [],
+            renderOptions: {
+                shape: 'circle',
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+                fill: null,
+                alpha: WORLD_CIRCLE_ALPHA
+            }
+        };
+        WORLD_PROJECTILE_RENDER_FRAMES[frameIndex] = frame;
+    }
+    const centers = frame.centers;
+    centers.length = 0;
+    let runDiameter = 0;
+    let hasRun = false;
+
+    try {
+        for (let i = 0; i < projectiles.length; i++) {
+            const projectile = projectiles[i];
+            if (!projectile || projectile.active === false) {
+                continue;
+            }
+
+            const diameter = normalizeSnapshotNumber(projectile.radius, 0) * 2;
+            if (hasRun && !Object.is(runDiameter, diameter)) {
+                renderProjectileRun(runDiameter, fill, centers, frame.renderOptions);
+                hasRun = false;
+            }
+
+            const centerIndex = centers.length;
+            let center = frame.centerPool[centerIndex];
+            if (!center) {
+                center = { x: 0, y: 0 };
+                frame.centerPool[centerIndex] = center;
+            }
+            center.x = normalizeSnapshotNumber(projectile.position?.x, 0);
+            center.y = normalizeSnapshotNumber(projectile.position?.y, 0) - offsetY;
+            centers.push(center);
+            runDiameter = diameter;
+            hasRun = true;
+        }
+
+        if (hasRun) {
+            renderProjectileRun(runDiameter, fill, centers, frame.renderOptions);
+        }
+    } finally {
+        centers.length = 0;
+        worldProjectileRenderDepth = frameIndex;
+    }
 }
 
 /**
  * 일반 씬 오브젝트 목록을 렌더합니다.
  * @param {{sceneSnapshot?: object|null, mapGeometry?: object|null, staticWalls?: object[], boxWalls?: object[], player?: object|null, projectiles?: object[], objectOffsetY?: number}} [options={}] - 렌더 옵션입니다.
+ * @returns {void}
  */
 export function drawGameSceneWorldObjects(options = EMPTY_WORLD_RENDER_OPTIONS) {
     const {
@@ -259,9 +367,7 @@ export function drawGameSceneWorldObjects(options = EMPTY_WORLD_RENDER_OPTIONS) 
 
     startTime = beginPerformanceSection();
     const projectileFill = getBenchmarkColor('Projectile');
-    for (let i = 0; i < projectiles.length; i++) {
-        renderProjectile(projectiles[i], projectileFill, offsetY);
-    }
+    renderProjectiles(projectiles, projectileFill, offsetY);
     endPerformanceSection(WORLD_RENDER_SECTIONS.PROJECTILES, startTime);
 
     WORLD_RENDER_STATE_SCRATCH.mapGeometry = null;

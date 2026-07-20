@@ -20,6 +20,8 @@ const DEFAULT_CIRCLE_SHADER_COLORS = TITLE_LOADING.CIRCLE_SHADER.COLORS;
  */
 export class TitleLoadingCircleEffectPass {
     /**
+     * 원 shader와 세 blur 보조 program, fullscreen buffer를 준비하고 texture/framebuffer cache를 초기화합니다.
+     * 실제 blur target과 source texture는 첫 사용 시 생성합니다.
      * @param {WebGLRenderingContext} gl - 대상 WebGL 컨텍스트입니다.
      */
     constructor(gl) {
@@ -55,9 +57,12 @@ export class TitleLoadingCircleEffectPass {
 
     /**
      * 타이틀 중앙 원 명령 하나를 렌더링합니다.
-     * @param {object} command - 렌더링 명령입니다.
+     * 명령·유효한 양수 `radius`·원 program 중 하나가 없거나, scissor 영역이 화면과 만나지 않거나 alpha가 0이면 아무 작업도 하지 않습니다.
+     * 가능한 경우 source canvas를 offscreen blur target에 합성한 뒤 기본 framebuffer와 viewport, blend/depth/cull, program, buffer, texture, uniform과 scissor 상태를 설정해 원을 그리고 scissor를 비활성화합니다.
+     * @param {{radius:number, x?:number, y?:number, outlineWidth?:number, time?:number, alpha?:number, glowStrength?:number, glassStrength?:number, brightnessBoost?:number, scissorPaddingMin?:number, scissorPaddingRatio?:number, bodyRadiusExpandOutlineRatio?:number, backdropBlur?:number, backdropBlurStrength?:number, backdropRefractionStrength?:number, blurSourceCanvases?:HTMLCanvasElement[], colors?:{base?:number[], deep?:number[], rim?:number[], highlight?:number[]}}} command - `radius`는 필수이고 나머지는 fallback 또는 비활성 동작이 있는 선택 필드입니다.
      * @param {number} width - 현재 surface 너비입니다.
      * @param {number} height - 현재 surface 높이입니다.
+     * @returns {void} GL 상태와 framebuffer/texture 내용을 변경하며 값을 반환하지 않습니다.
      */
     draw(command, width, height) {
         if (!command || !Number.isFinite(command.radius) || command.radius <= 0 || !this.programInfo?.program) {
@@ -146,7 +151,9 @@ export class TitleLoadingCircleEffectPass {
     }
 
     /**
-     * GL 리소스를 해제합니다.
+     * fullscreen buffer, blur용 texture/framebuffer, source/empty texture와 원·합성·downsample·upsample program을 해제합니다.
+     * source texture cache와 소유 resource collection도 비웁니다.
+     * @returns {void} 소유 GL 리소스와 관련 참조를 정리하며 값을 반환하지 않습니다.
      */
     destroy() {
         if (this.fullscreenBuffer) {
