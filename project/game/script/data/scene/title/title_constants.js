@@ -135,6 +135,7 @@ export const TITLE_CONSTANTS = Object.freeze({
         EXIT_LEFT_WIDTH_RATIO: 0.4
     }),
     TITLE_LOADING: Object.freeze({
+        INTRO_START_DELAY_SECONDS: 1.5,
         INTRO_BLUR_START_PX: 10,
         INTRO_BLUR_DURATION: 0.6,
         INTRO_BLUR_EASING: 'easeOutExpo',

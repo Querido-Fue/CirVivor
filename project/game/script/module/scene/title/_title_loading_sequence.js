@@ -1,9 +1,12 @@
 import { animate, animateMixed, remove } from 'animation/animation_system.js';
 import { getData } from 'data/data_handler.js';
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
+import { getDelta } from 'game/time_handler.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
 import { TitleMenu } from './_title_menu.js';
+import { TitleSceneContent } from './_title_scene_content.js';
+import { advanceTitleIntroDelay } from './loading/_title_intro_delay.js';
 import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
 import { getLoadingLogoColor } from './loading/_title_loading_theme.js';
 import { buildTitleSceneTransitionSegments } from './loading/_title_scene_transition_segments.js';
@@ -26,6 +29,8 @@ export class TitleLoadingSequence {
         this.UIOffsetX = getUIOffsetX();
         this.centerIntroBlurAnimId = -1;
         this.sceneTransitionAnimIds = [];
+        this.introDelayElapsed = 0;
+        this.introStarted = false;
         this.sceneTransitionProgress = 0;
         this.enemySpawnReadyProgress = Number.POSITIVE_INFINITY;
         this.sceneTransitionStarted = false;
@@ -33,21 +38,26 @@ export class TitleLoadingSequence {
         this.titleLogo = null;
         this.titleMenu = null;
 
-        this.centerIntroBlurAnimId = animate(this.centerCircle, {
-            variable: 'introBlur',
-            startValue: TITLE_LOADING.INTRO_BLUR_START_PX,
-            endValue: 0,
-            type: TITLE_LOADING.INTRO_BLUR_EASING,
-            duration: TITLE_LOADING.INTRO_BLUR_DURATION
-        }).id;
         this.#updateCenterCirclePlacement();
-        this.#showTitleLogo();
     }
 
     /**
      * 중앙 원, 로고와 메뉴 상태를 갱신합니다.
      */
     update() {
+        if (!this.introStarted) {
+            const delayState = advanceTitleIntroDelay(
+                this.introDelayElapsed,
+                getDelta(),
+                TITLE_LOADING.INTRO_START_DELAY_SECONDS
+            );
+            this.introDelayElapsed = delayState.elapsed;
+            if (delayState.ready) {
+                this.#startIntro();
+            }
+            return;
+        }
+
         this.centerCircle?.update();
 
         if (this.titleLogo) {
@@ -88,7 +98,9 @@ export class TitleLoadingSequence {
      * 타이틀 인트로가 생성한 리소스를 정리합니다.
      */
     destroy() {
-        remove(this.centerIntroBlurAnimId);
+        if (this.centerIntroBlurAnimId >= 0) {
+            remove(this.centerIntroBlurAnimId);
+        }
         for (const animationId of this.sceneTransitionAnimIds) {
             remove(animationId);
         }
@@ -157,7 +169,57 @@ export class TitleLoadingSequence {
     }
 
     /**
-     * 타이틀 로고 드로잉과 메뉴 대기 상태를 즉시 시작합니다.
+     * 로고·중앙 원 전환과 메뉴 등장·입력이 모두 완료됐는지 반환합니다.
+     * @returns {boolean} TitleScene으로 handoff 가능한 상태입니다.
+     */
+    isComplete() {
+        return this.introStarted === true
+            && this.sceneTransitionStarted === true
+            && this.sceneTransitionProgress >= 1
+            && this.titleMenu?.pointerEnabled === true;
+    }
+
+    /**
+     * 완료된 중앙 원·로고·메뉴 identity를 파괴하지 않고 정상 타이틀 content로 넘깁니다.
+     * @returns {TitleSceneContent|null} 완료 content 또는 아직 준비되지 않았으면 null입니다.
+     */
+    releaseCompletedContent() {
+        if (!this.isComplete()) return null;
+        if (this.centerIntroBlurAnimId >= 0) {
+            remove(this.centerIntroBlurAnimId);
+            this.centerIntroBlurAnimId = -1;
+        }
+        for (const animationId of this.sceneTransitionAnimIds) {
+            remove(animationId);
+        }
+        this.sceneTransitionAnimIds = [];
+        const content = new TitleSceneContent({
+            centerCircle: this.centerCircle,
+            titleLogo: this.titleLogo,
+            titleMenu: this.titleMenu
+        });
+        this.centerCircle = null;
+        this.titleLogo = null;
+        this.titleMenu = null;
+        return content;
+    }
+
+    /** blur·로고·메뉴의 기존 상대 시간축을 같은 프레임 경계에서 시작합니다. @private */
+    #startIntro() {
+        if (this.introStarted) return;
+        this.introStarted = true;
+        this.centerIntroBlurAnimId = animate(this.centerCircle, {
+            variable: 'introBlur',
+            startValue: TITLE_LOADING.INTRO_BLUR_START_PX,
+            endValue: 0,
+            type: TITLE_LOADING.INTRO_BLUR_EASING,
+            duration: TITLE_LOADING.INTRO_BLUR_DURATION
+        }).id;
+        this.#showTitleLogo();
+    }
+
+    /**
+     * 타이틀 로고 드로잉과 메뉴 대기 상태를 시작합니다.
      * @private
      */
     #showTitleLogo() {
