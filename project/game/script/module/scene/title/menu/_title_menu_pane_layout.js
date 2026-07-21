@@ -1,4 +1,5 @@
 import { clampNumber } from './_title_menu_motion.js';
+import { resolveTitleMenuVerticalStackLayout } from './_title_menu_vertical_layout.js';
 
 /**
  * 오른쪽 glass 패널과 하단 보조 메뉴 배치를 계산합니다.
@@ -10,6 +11,8 @@ import { clampNumber } from './_title_menu_motion.js';
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} options.uiOffsetX - UI 기준 X 오프셋입니다.
  * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
+ * @param {number} [options.versionBlockHeight=0] - 현재 배율의 버전 블록 높이입니다.
+ * @param {number} [options.referenceVersionBlockHeight=versionBlockHeight] - 100% 버전 블록 높이입니다.
  * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
  * @returns {object} 오른쪽 패널 배치 정보입니다.
  */
@@ -21,6 +24,8 @@ export function buildTitleMenuRightPaneLayout({
     uiww,
     uiOffsetX,
     uiScale = 1,
+    versionBlockHeight = 0,
+    referenceVersionBlockHeight = versionBlockHeight,
     titleCardMenu
 }) {
     const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
@@ -36,6 +41,8 @@ export function buildTitleMenuRightPaneLayout({
             uiww,
             uiOffsetX,
             uiScale: resolvedUiScale,
+            versionBlockHeight,
+            referenceVersionBlockHeight,
             titleCardMenu
         });
     }
@@ -62,17 +69,11 @@ export function buildTitleMenuRightPaneLayout({
     const paneWidth = groupWidth + (sidePadding * 2);
     const cardContentHeight = groupHeight;
     const cardPaneHeight = Math.max(1, cardContentHeight + (verticalPadding * 2));
-    const verticalLayout = _resolveTitleMenuRightPaneVerticalLayout(
-        cardPaneHeight,
-        wh,
-        titleCardMenu,
-        resolvedUiScale
-    );
     const unshiftedUtilityPaneLayout = _buildTitleMenuUtilityPaneLayout({
         secondaryMenuEntries,
         paneRight,
         paneWidth,
-        paneTop: verticalLayout.utilityPaneTop,
+        paneTop: 0,
         sidePadding,
         verticalPadding,
         uiww,
@@ -80,21 +81,41 @@ export function buildTitleMenuRightPaneLayout({
         uiScale: resolvedUiScale,
         titleCardMenu
     });
-    const paneShiftY = _resolveTitleMenuPaneGroupVerticalShift({
-        cardPaneTop: verticalLayout.cardPaneTop,
-        cardPaneHeight,
-        utilityPane: unshiftedUtilityPaneLayout.utilityPane,
-        wh,
-        uiScale: resolvedUiScale
+    const referenceSidePadding = sidePadding / resolvedUiScale;
+    const referenceVerticalPadding = verticalPadding / resolvedUiScale;
+    const referencePaneRight = ww - Math.max(28, uiww * 0.024);
+    const referencePaneWidth = (groupWidth / resolvedUiScale) + (referenceSidePadding * 2);
+    const referenceUtilityPaneLayout = _buildTitleMenuUtilityPaneLayout({
+        secondaryMenuEntries,
+        paneRight: referencePaneRight,
+        paneWidth: referencePaneWidth,
+        paneTop: 0,
+        sidePadding: referenceSidePadding,
+        verticalPadding: referenceVerticalPadding,
+        uiww,
+        uiOffsetX,
+        uiScale: 1,
+        titleCardMenu
     });
-    const cardPaneTop = verticalLayout.cardPaneTop + paneShiftY;
+    const verticalLayout = _resolveTitleMenuRightPaneVerticalStack({
+        cardPaneHeight,
+        utilityPaneHeight: unshiftedUtilityPaneLayout.utilityPane.h,
+        referenceCardPaneHeight: cardPaneHeight / resolvedUiScale,
+        referenceUtilityPaneHeight: referenceUtilityPaneLayout.utilityPane.h,
+        versionBlockHeight,
+        referenceVersionBlockHeight,
+        wh,
+        uiScale: resolvedUiScale,
+        titleCardMenu
+    });
+    const cardPaneTop = verticalLayout.cardPaneTop;
     const cardPaneBottom = cardPaneTop + cardPaneHeight;
     const resolvedCardPaneHeight = Math.max(1, cardPaneBottom - cardPaneTop);
     const cardOffsetX = (paneLeft + sidePadding) - groupMinX;
     const cardOffsetY = (cardPaneTop + verticalPadding) - groupMinY;
     const utilityPaneLayout = _translateTitleMenuUtilityPaneLayout(
         unshiftedUtilityPaneLayout,
-        paneShiftY
+        verticalLayout.utilityPaneTop
     );
 
     return {
@@ -110,6 +131,9 @@ export function buildTitleMenuRightPaneLayout({
             )
         },
         utilityPane: utilityPaneLayout.utilityPane,
+        versionLabelTop: verticalLayout.versionTop,
+        gapBeforeCard: verticalLayout.gapBeforeCard,
+        gapAfterCard: verticalLayout.gapAfterCard,
         cardOffsetX,
         cardOffsetY,
         secondaryMenuItems: utilityPaneLayout.secondaryMenuItems
@@ -128,6 +152,8 @@ function _buildFallbackTitleMenuRightPaneLayout({
     uiww,
     uiOffsetX,
     uiScale = 1,
+    versionBlockHeight = 0,
+    referenceVersionBlockHeight = versionBlockHeight,
     titleCardMenu
 }) {
     const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
@@ -138,17 +164,11 @@ function _buildFallbackTitleMenuRightPaneLayout({
     const fallbackCardHeight = wh * 0.36 * resolvedUiScale;
     const fallbackVerticalPadding = Math.max(18 * resolvedUiScale, wh * 0.022 * resolvedUiScale);
     const fallbackSidePadding = fallbackVerticalPadding;
-    const fallbackVerticalLayout = _resolveTitleMenuRightPaneVerticalLayout(
-        fallbackCardHeight,
-        wh,
-        titleCardMenu,
-        resolvedUiScale
-    );
     const fallbackUnshiftedUtilityLayout = _buildTitleMenuUtilityPaneLayout({
         secondaryMenuEntries,
         paneRight: fallbackRight,
         paneWidth: fallbackWidth,
-        paneTop: fallbackVerticalLayout.utilityPaneTop,
+        paneTop: 0,
         sidePadding: fallbackSidePadding,
         verticalPadding: fallbackVerticalPadding,
         uiww,
@@ -156,18 +176,38 @@ function _buildFallbackTitleMenuRightPaneLayout({
         uiScale: resolvedUiScale,
         titleCardMenu
     });
-    const fallbackShiftY = _resolveTitleMenuPaneGroupVerticalShift({
-        cardPaneTop: fallbackVerticalLayout.cardPaneTop,
+    const referenceRightOuterGap = Math.max(28, uiww * 0.024);
+    const referencePaneRight = ww - referenceRightOuterGap;
+    const referencePaneWidth = uiww * 0.26;
+    const referenceVerticalPadding = Math.max(18, wh * 0.022);
+    const referenceUtilityLayout = _buildTitleMenuUtilityPaneLayout({
+        secondaryMenuEntries,
+        paneRight: referencePaneRight,
+        paneWidth: referencePaneWidth,
+        paneTop: 0,
+        sidePadding: referenceVerticalPadding,
+        verticalPadding: referenceVerticalPadding,
+        uiww,
+        uiOffsetX,
+        uiScale: 1,
+        titleCardMenu
+    });
+    const fallbackVerticalLayout = _resolveTitleMenuRightPaneVerticalStack({
         cardPaneHeight: fallbackCardHeight,
-        utilityPane: fallbackUnshiftedUtilityLayout.utilityPane,
+        utilityPaneHeight: fallbackUnshiftedUtilityLayout.utilityPane.h,
+        referenceCardPaneHeight: wh * 0.36,
+        referenceUtilityPaneHeight: referenceUtilityLayout.utilityPane.h,
+        versionBlockHeight,
+        referenceVersionBlockHeight,
         wh,
-        uiScale: resolvedUiScale
+        uiScale: resolvedUiScale,
+        titleCardMenu
     });
     const fallbackUtilityLayout = _translateTitleMenuUtilityPaneLayout(
         fallbackUnshiftedUtilityLayout,
-        fallbackShiftY
+        fallbackVerticalLayout.utilityPaneTop
     );
-    const fallbackCardPaneTop = fallbackVerticalLayout.cardPaneTop + fallbackShiftY;
+    const fallbackCardPaneTop = fallbackVerticalLayout.cardPaneTop;
 
     return {
         cardPane: {
@@ -182,6 +222,9 @@ function _buildFallbackTitleMenuRightPaneLayout({
             )
         },
         utilityPane: fallbackUtilityLayout.utilityPane,
+        versionLabelTop: fallbackVerticalLayout.versionTop,
+        gapBeforeCard: fallbackVerticalLayout.gapBeforeCard,
+        gapAfterCard: fallbackVerticalLayout.gapAfterCard,
         cardOffsetX: 0,
         cardOffsetY: 0,
         secondaryMenuItems: fallbackUtilityLayout.secondaryMenuItems
@@ -222,6 +265,73 @@ function _resolveTitleMenuPaneGroupVerticalShift({
     }
 
     return clampNumber(preferredShiftY, minShiftY, maxShiftY);
+}
+
+/**
+ * 100%에서 사용하던 배치를 기준선으로 삼아 현재 UI 배율의 공통 세로 스택을 계산합니다.
+ * @param {object} options - 공통 세로 스택 계산 옵션입니다.
+ * @param {number} options.cardPaneHeight - 현재 주 메뉴 패널 높이입니다.
+ * @param {number} options.utilityPaneHeight - 현재 하단 메뉴 패널 높이입니다.
+ * @param {number} options.referenceCardPaneHeight - 100% 주 메뉴 패널 높이입니다.
+ * @param {number} options.referenceUtilityPaneHeight - 100% 하단 메뉴 패널 높이입니다.
+ * @param {number} options.versionBlockHeight - 현재 버전 블록 높이입니다.
+ * @param {number} options.referenceVersionBlockHeight - 100% 버전 블록 높이입니다.
+ * @param {number} options.wh - 화면 높이입니다.
+ * @param {number} options.uiScale - 현재 UI 스케일 배율입니다.
+ * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
+ * @returns {{versionTop:number, cardPaneTop:number, utilityPaneTop:number, gapBeforeCard:number, gapAfterCard:number}}
+ * 계산된 공통 세로 스택입니다.
+ */
+function _resolveTitleMenuRightPaneVerticalStack({
+    cardPaneHeight,
+    utilityPaneHeight,
+    referenceCardPaneHeight,
+    referenceUtilityPaneHeight,
+    versionBlockHeight,
+    referenceVersionBlockHeight,
+    wh,
+    uiScale,
+    titleCardMenu
+}) {
+    const resolvedReferenceCardPaneHeight = Math.max(1, referenceCardPaneHeight);
+    const resolvedReferenceUtilityPaneHeight = Math.max(1, referenceUtilityPaneHeight);
+    const resolvedReferenceVersionBlockHeight = Math.max(0, referenceVersionBlockHeight);
+    const referenceVerticalLayout = _resolveTitleMenuRightPaneVerticalLayout(
+        resolvedReferenceCardPaneHeight,
+        wh,
+        titleCardMenu,
+        1
+    );
+    const referenceShiftY = _resolveTitleMenuPaneGroupVerticalShift({
+        cardPaneTop: referenceVerticalLayout.cardPaneTop,
+        cardPaneHeight: resolvedReferenceCardPaneHeight,
+        utilityPane: {
+            y: referenceVerticalLayout.utilityPaneTop,
+            h: resolvedReferenceUtilityPaneHeight
+        },
+        wh,
+        uiScale: 1
+    });
+    const referenceCardPaneTop = referenceVerticalLayout.cardPaneTop + referenceShiftY;
+    const referenceUtilityPaneTop = referenceVerticalLayout.utilityPaneTop + referenceShiftY;
+    const referenceGap = Math.max(
+        0,
+        referenceUtilityPaneTop - (referenceCardPaneTop + resolvedReferenceCardPaneHeight)
+    );
+    const referenceTop = referenceCardPaneTop
+        - referenceGap
+        - resolvedReferenceVersionBlockHeight;
+    const referenceBottom = referenceUtilityPaneTop + resolvedReferenceUtilityPaneHeight;
+
+    return resolveTitleMenuVerticalStackLayout({
+        uiScale,
+        referenceTop,
+        referenceBottom,
+        referenceGap,
+        versionHeight: versionBlockHeight,
+        cardPaneHeight,
+        utilityPaneHeight
+    });
 }
 
 /**

@@ -89,7 +89,7 @@ const dependencies = new Map([
         getData: () => ({
             TOGGLE_ANIMATION: {
                 DURATION_SECONDS: 0.32,
-                EASING: 'easeInOutCubic',
+                EASING: 'easeOutExpo',
                 KNOB_TRAVEL_SHRINK_RATIO: 0.4
             }
         })
@@ -118,7 +118,7 @@ assert.deepEqual({ ...animations[0].properties }, {
     startValue: 'current',
     endValue: 1,
     duration: 0.32,
-    type: 'easeInOutCubic'
+    type: 'easeOutExpo'
 });
 
 const drawKnobAt = (progress) => {

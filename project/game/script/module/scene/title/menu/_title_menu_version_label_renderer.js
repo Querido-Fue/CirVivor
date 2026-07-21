@@ -6,6 +6,7 @@ import {
 import {
     buildTitleMenuVersionLabelLayout,
     getTitleMenuGameVersionText,
+    getTitleMenuVersionLabelBlockHeight,
     getTitleMenuVersionHistoryLinkText
 } from './_title_menu_version_label.js';
 import { drawTitleMenuVersionHistoryLinkArrow } from './_title_menu_version_link.js';
@@ -37,6 +38,40 @@ export class TitleMenuVersionLabelRenderer {
             this.measureCanvas = null;
             this.measureContext = null;
         }
+    }
+
+    /**
+     * 현재 화면과 UI 배율에서 버전 정보 블록이 차지하는 세로 높이를 반환합니다.
+     * @param {object} options - 버전 블록 높이 계산 옵션입니다.
+     * @param {number} options.uiww - UI 기준 너비입니다.
+     * @param {number} options.wh - 화면 높이입니다.
+     * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
+     * @returns {number} 버전 정보 블록 전체 높이입니다.
+     */
+    getBlockHeight({ uiww, wh, uiScale = 1 }) {
+        if (!getTitleMenuGameVersionText(this.globalConstants)) {
+            return 0;
+        }
+
+        const resolvedUiScale = this.#normalizeUiScale(uiScale);
+        const linkText = getTitleMenuVersionHistoryLinkText();
+        return getTitleMenuVersionLabelBlockHeight({
+            wh,
+            uiScale: resolvedUiScale,
+            versionFontSize: getTitleMenuTextPresetFontSize(
+                this.textConstants,
+                uiww,
+                'H5',
+                resolvedUiScale
+            ),
+            linkText,
+            linkFontSize: getTitleMenuTextPresetFontSize(
+                this.textConstants,
+                uiww,
+                'H5_BOLD',
+                resolvedUiScale
+            )
+        });
     }
 
     /**

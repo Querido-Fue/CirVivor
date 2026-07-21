@@ -244,11 +244,28 @@ export class OverlaySession {
     }
 
     /**
+     * 현재 glass 패널의 렌더 알파를 반환합니다.
+     * 전환 중에는 backdrop을 완전히 유지하고 불투명 전환 완료 뒤에만 제거합니다.
+     * @returns {number} glass 패널 렌더 알파입니다.
+     */
+    getGlassPanelAlpha() {
+        return this.effectiveTransparent ? 1 : 0;
+    }
+
+    /**
+     * 현재 불투명 패널의 렌더 알파를 반환합니다.
+     * @returns {number} 불투명 패널 렌더 알파입니다.
+     */
+    getOpaquePanelAlpha() {
+        return 1 - this.getGlassMix();
+    }
+
+    /**
      * 현재 프레임의 glass 패널이 하위 WebGL 결과를 샘플링할지 반환합니다.
      * @returns {boolean} 중간 flush가 필요한 경우 true입니다.
      */
     requiresBackdropComposite() {
-        return Boolean(this.effectLayerId) && this.getGlassMix() > 0 && this.alpha > 0;
+        return Boolean(this.effectLayerId) && this.getGlassPanelAlpha() > 0 && this.alpha > 0;
     }
 
     /**
@@ -361,7 +378,7 @@ export class OverlaySession {
             || this.includeOwnUISurface;
         command.sourceProvider = this.glassSourceProvider;
         this.#applyEffectTransform(command);
-        command.sampleBackdrop = this.getGlassMix() > 0
+        command.sampleBackdrop = this.getGlassPanelAlpha() > 0
             && command.sampleBackdrop !== false;
         renderGL(this.effectLayerId, command);
     }
@@ -373,7 +390,7 @@ export class OverlaySession {
      * @returns {boolean} glass 패널을 렌더링했으면 true입니다.
      */
     renderFloatingGlassPanel(options) {
-        if (this.getGlassMix() <= 0) {
+        if (this.getGlassPanelAlpha() <= 0) {
             return false;
         }
 

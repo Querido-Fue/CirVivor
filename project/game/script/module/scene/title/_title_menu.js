@@ -671,6 +671,16 @@ export class TitleMenu {
      */
     #getRightPaneLayout() {
         if (!this.currentPaneLayout) {
+            const versionBlockHeight = this.versionLabelRenderer?.getBlockHeight({
+                uiww: this.UIWW,
+                wh: this.WH,
+                uiScale: this.uiScale
+            }) || 0;
+            const referenceVersionBlockHeight = this.versionLabelRenderer?.getBlockHeight({
+                uiww: this.UIWW,
+                wh: this.WH,
+                uiScale: 1
+            }) || 0;
             this.currentPaneLayout = buildTitleMenuRightPaneLayout({
                 cards: this.cards,
                 secondaryMenuEntries: this.secondaryMenuEntries,
@@ -679,6 +689,8 @@ export class TitleMenu {
                 uiww: this.UIWW,
                 uiOffsetX: this.UIOffsetX,
                 uiScale: this.uiScale,
+                versionBlockHeight,
+                referenceVersionBlockHeight,
                 titleCardMenu: TITLE_CARD_MENU
             });
         }

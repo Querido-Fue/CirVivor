@@ -39,7 +39,15 @@ assert.match(
 );
 assert.match(
     overlaySessionSource,
-    /requiresBackdropComposite\(\)\s*\{\s*return Boolean\(this\.effectLayerId\)\s*&&\s*this\.getGlassMix\(\)\s*>\s*0\s*&&\s*this\.alpha\s*>\s*0;/s
+    /getGlassPanelAlpha\(\)[\s\S]*?return this\.effectiveTransparent \? 1 : 0;/s
+);
+assert.match(
+    overlaySessionSource,
+    /getOpaquePanelAlpha\(\)[\s\S]*?return 1 - this\.getGlassMix\(\);/s
+);
+assert.match(
+    overlaySessionSource,
+    /requiresBackdropComposite\(\)\s*\{\s*return Boolean\(this\.effectLayerId\)\s*&&\s*this\.getGlassPanelAlpha\(\)\s*>\s*0\s*&&\s*this\.alpha\s*>\s*0;/s
 );
 assert.match(overlayConstantsSource, /GLASS_TRANSITION_DURATION_SECONDS:\s*0\.4/);
 assert.match(overlayConstantsSource, /GLASS_TRANSITION_EASING:\s*'easeOutExpo'/);
@@ -89,5 +97,9 @@ assert.match(
     baseOverlaySource,
     /changedSettings\.disableTransparency !== undefined[\s\S]*?this\.session\.setDisableTransparency\(getSetting\('disableTransparency'\)\);[\s\S]*?if \(shouldResize\) \{/s
 );
+assert.match(baseOverlaySource, /const glassAlpha = typeof this\.session\?\.getGlassPanelAlpha/);
+assert.match(baseOverlaySource, /const opaqueAlpha = typeof this\.session\?\.getOpaquePanelAlpha/);
+assert.match(baseOverlaySource, /glassOptions\.alpha = glassAlpha/);
+assert.match(baseOverlaySource, /flatOptions\.alpha = opaqueAlpha/);
 
 console.log('glass transparency option contract: ok');

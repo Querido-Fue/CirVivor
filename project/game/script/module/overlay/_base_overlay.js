@@ -718,9 +718,12 @@ export class BaseOverlay {
      */
     #drawPanels() {
         const sections = this._performanceSections;
-        const glassMix = typeof this.session?.getGlassMix === 'function'
-            ? this.session.getGlassMix()
+        const glassAlpha = typeof this.session?.getGlassPanelAlpha === 'function'
+            ? this.session.getGlassPanelAlpha()
             : (this.session?.effectiveTransparent === true ? 1 : 0);
+        const opaqueAlpha = typeof this.session?.getOpaquePanelAlpha === 'function'
+            ? this.session.getOpaquePanelAlpha()
+            : 1 - glassAlpha;
         const glassDefaultFill = ColorSchemes.Overlay.Panel.GlassBackground;
         const glassDefaultStroke = ColorSchemes.Overlay.Panel.GlassBorder || false;
         const flatDefaultFill = ColorSchemes.Overlay.Panel.Background;
@@ -749,8 +752,8 @@ export class BaseOverlay {
             const hasEffectVisual = Boolean(effectTextureCanvas)
                 || Boolean(interactionState
                     && (Math.abs(interactionState.rotateX) > 0.0001 || Math.abs(interactionState.rotateY) > 0.0001));
-            const shouldRenderGlass = canUseEffectPipeline && glassMix > 0;
-            const shouldRenderEffectFlat = canUseEffectPipeline && hasEffectVisual && glassMix < 1;
+            const shouldRenderGlass = canUseEffectPipeline && glassAlpha > 0;
+            const shouldRenderEffectFlat = canUseEffectPipeline && hasEffectVisual && opaqueAlpha > 0;
             const presentedPanel = shouldRenderGlass || shouldRenderEffectFlat ? effectPanel : panel;
 
             if (shouldRenderGlass || shouldRenderEffectFlat) {
@@ -774,7 +777,7 @@ export class BaseOverlay {
                 if (shouldRenderGlass) {
                     glassOptions.fill = panel.fill === undefined ? glassDefaultFill : panel.fill;
                     glassOptions.stroke = panel.stroke === undefined ? glassDefaultStroke : panel.stroke;
-                    glassOptions.alpha = glassMix;
+                    glassOptions.alpha = glassAlpha;
                     glassOptions.sampleBackdrop = true;
                     const glassStart = beginPerformanceSection();
                     this.session.renderGlassPanel(glassOptions);
@@ -784,7 +787,7 @@ export class BaseOverlay {
                 if (shouldRenderEffectFlat) {
                     glassOptions.fill = panel.fill === undefined ? flatDefaultFill : panel.fill;
                     glassOptions.stroke = panel.stroke === undefined ? flatDefaultStroke : panel.stroke;
-                    glassOptions.alpha = 1 - glassMix;
+                    glassOptions.alpha = opaqueAlpha;
                     glassOptions.sampleBackdrop = false;
                     const flatEffectStart = beginPerformanceSection();
                     this.session.renderGlassPanel(glassOptions);
@@ -792,7 +795,7 @@ export class BaseOverlay {
                 }
             }
 
-            if (!shouldRenderEffectFlat && glassMix < 1) {
+            if (!shouldRenderEffectFlat && opaqueAlpha > 0) {
                 const flatOptions = this._flatPanelRenderOptions;
                 flatOptions.x = panel.x;
                 flatOptions.y = panel.y;
@@ -802,7 +805,7 @@ export class BaseOverlay {
                 flatOptions.fill = panel.fill === undefined ? flatDefaultFill : panel.fill;
                 flatOptions.stroke = panel.stroke === undefined ? flatDefaultStroke : panel.stroke;
                 flatOptions.lineWidth = panel.lineWidth;
-                flatOptions.alpha = 1 - glassMix;
+                flatOptions.alpha = opaqueAlpha;
                 const flatStart = beginPerformanceSection();
                 shadowOn(this.layer, panel.shadowBlur, panel.shadowColor);
                 this.session.renderPanel(flatOptions);

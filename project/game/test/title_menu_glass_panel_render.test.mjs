@@ -50,7 +50,8 @@ assert.equal(renderedCommand.effectTextureCanvas, effectTextureCanvas);
 
 const mixedCommands = [];
 const mixedSession = {
-    getGlassMix: () => 0.25,
+    getGlassPanelAlpha: () => 1,
+    getOpaquePanelAlpha: () => 0.75,
     renderGlassPanel(command) {
         mixedCommands.push(command);
     }
@@ -71,7 +72,7 @@ assert.equal(mixedCommands.length, 2);
 assert.deepEqual(
     mixedCommands.map(({ sampleBackdrop, blur, fill, alpha }) => ({ sampleBackdrop, blur, fill, alpha })),
     [
-        { sampleBackdrop: true, blur: 14, fill: '#224466', alpha: 0.2 },
+        { sampleBackdrop: true, blur: 14, fill: '#224466', alpha: 0.8 },
         { sampleBackdrop: false, blur: 0, fill: '#101010', alpha: 0.6000000000000001 }
     ]
 );

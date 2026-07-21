@@ -24,6 +24,29 @@ export function getTitleMenuVersionHistoryLinkText() {
 }
 
 /**
+ * 버전 텍스트와 업데이트 링크가 차지하는 전체 세로 높이를 계산합니다.
+ * @param {object} options - 버전 블록 높이 계산 옵션입니다.
+ * @param {number} options.wh - 화면 높이입니다.
+ * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
+ * @param {number} options.versionFontSize - 버전 텍스트 폰트 크기입니다.
+ * @param {string} options.linkText - 업데이트 링크 텍스트입니다.
+ * @param {number} options.linkFontSize - 업데이트 링크 폰트 크기입니다.
+ * @returns {number} 버전 블록 전체 높이입니다.
+ */
+export function getTitleMenuVersionLabelBlockHeight({
+    wh,
+    uiScale = 1,
+    versionFontSize,
+    linkText,
+    linkFontSize
+}) {
+    const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
+    const lineGap = Math.max(4 * resolvedUiScale, wh * 0.005 * resolvedUiScale);
+    return Math.max(0, versionFontSize)
+        + (linkText ? Math.max(0, linkFontSize) + lineGap : 0);
+}
+
+/**
  * 버전 정보 블록의 텍스트, 폰트, hitbox를 계산합니다.
  * @param {object} options - 버전 정보 레이아웃 옵션입니다.
  * @param {object|null} [options.paneLayout=null] - 현재 오른쪽 패널 배치 정보입니다.
@@ -62,7 +85,13 @@ export function buildTitleMenuVersionLabelLayout({
 
     const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
     const lineGap = Math.max(4 * resolvedUiScale, wh * 0.005 * resolvedUiScale);
-    const blockHeight = versionFontSize + (linkText ? linkFontSize + lineGap : 0);
+    const blockHeight = getTitleMenuVersionLabelBlockHeight({
+        wh,
+        uiScale: resolvedUiScale,
+        versionFontSize,
+        linkText,
+        linkFontSize
+    });
     const renderState = buildTitleMenuVersionLabelRenderState({
         paneLayout,
         blockHeight,
@@ -166,12 +195,20 @@ export function resolveTitleMenuVersionLabelSafeArea({
     const resolvedUiScale = _normalizeTitleMenuUiScale(uiScale);
     const utilityPane = paneLayout?.utilityPane || null;
     const cardPane = paneLayout?.cardPane || null;
+    const versionLabelTop = Number(paneLayout?.versionLabelTop);
     const resolvedBlockHeight = Math.max(0, blockHeight);
     if (!utilityPane || !cardPane) {
         const verticalOffset = wh * (100 / 1440) * resolvedUiScale;
         return {
             x: uiOffsetX + uiww - Math.max(18 * resolvedUiScale, uiww * 0.024 * resolvedUiScale),
             y: Math.max(14 * resolvedUiScale, wh * 0.022 * resolvedUiScale) + verticalOffset
+        };
+    }
+
+    if (Number.isFinite(versionLabelTop)) {
+        return {
+            x: utilityPane.x + utilityPane.w,
+            y: versionLabelTop
         };
     }
 

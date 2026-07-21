@@ -13,7 +13,10 @@ function animate(owner, properties) {
     let resolve;
     const animation = {
         id: animations.length + 1,
+        owner,
+        properties,
         promise: new Promise((done) => { resolve = done; }),
+        setProgress(value) { owner[properties.variable] = value; },
         complete() { owner[properties.variable] = properties.endValue; resolve(); }
     };
     animations.push(animation);
@@ -79,6 +82,9 @@ assert.deepEqual(created.map(({ type, order }) => ({ type, order })), [
 ]);
 
 assert.equal(session.getGlassMix(), 1);
+assert.equal(session.getGlassPanelAlpha(), 1);
+assert.equal(session.getOpaquePanelAlpha(), 0);
+assert.equal(session.requiresBackdropComposite(), true);
 assert.equal(session.renderFloatingGlassPanel({ x: 1, y: 2, w: 3, h: 4 }), true);
 assert.equal(session.getFloatingUILayerId(), 'surface-4');
 assert.deepEqual(created.slice(2).map(({ type, order }) => ({ type, order })), [
@@ -91,9 +97,32 @@ assert.equal(floatingGlass.command.sourceProvider().snapshotIdentity, 'before:su
 
 session.setDisableTransparency(true);
 assert.equal(session.getGlassMix(), 1);
+assert.equal(session.getGlassPanelAlpha(), 1);
+assert.equal(session.getOpaquePanelAlpha(), 0);
+animations.at(-1).setProgress(0.25);
+assert.equal(session.getGlassPanelAlpha(), 1);
+assert.equal(session.getOpaquePanelAlpha(), 0.75);
+assert.equal(session.requiresBackdropComposite(), true);
 animations.at(-1).complete();
 await Promise.resolve();
 assert.equal(session.getGlassMix(), 0);
+assert.equal(session.getGlassPanelAlpha(), 0);
+assert.equal(session.getOpaquePanelAlpha(), 1);
+assert.equal(session.requiresBackdropComposite(), false);
 assert.deepEqual(released, ['surface-1', 'surface-3', 'surface-4']);
+
+session.setDisableTransparency(false);
+assert.equal(session.getGlassMix(), 0);
+assert.equal(session.getGlassPanelAlpha(), 1);
+assert.equal(session.getOpaquePanelAlpha(), 1);
+assert.equal(session.requiresBackdropComposite(), true);
+animations.at(-1).setProgress(0.25);
+assert.equal(session.getGlassPanelAlpha(), 1);
+assert.equal(session.getOpaquePanelAlpha(), 0.75);
+animations.at(-1).complete();
+await Promise.resolve();
+assert.equal(session.getGlassPanelAlpha(), 1);
+assert.equal(session.getOpaquePanelAlpha(), 0);
+assert.equal(session.requiresBackdropComposite(), true);
 
 console.log('overlay session floating glass contract: ok');

@@ -74,14 +74,17 @@ export function renderTitleMenuGlassPanel(
         return;
     }
 
-    const glassMix = typeof session.getGlassMix === 'function'
-        ? session.getGlassMix()
+    const glassAlpha = typeof session.getGlassPanelAlpha === 'function'
+        ? session.getGlassPanelAlpha()
         : (session.effectiveTransparent === true ? 1 : 0);
+    const opaqueAlpha = typeof session.getOpaquePanelAlpha === 'function'
+        ? session.getOpaquePanelAlpha()
+        : 1 - glassAlpha;
     renderTitleMenuPanelStyle(
         session,
         panelRect,
         panelStyle,
-        alpha * glassMix,
+        alpha * glassAlpha,
         transformMatrix,
         perspective,
         effectTextureCanvas
@@ -90,7 +93,7 @@ export function renderTitleMenuGlassPanel(
         session,
         panelRect,
         opaquePanelStyle,
-        alpha * (1 - glassMix),
+        alpha * opaqueAlpha,
         transformMatrix,
         perspective,
         effectTextureCanvas

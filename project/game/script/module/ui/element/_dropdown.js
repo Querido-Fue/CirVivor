@@ -535,12 +535,15 @@ export class DropdownElement extends BaseUIElement {
         const panelRadius = Math.max(2, (this.radius - 1) * this.scale);
         const panelAlpha = this.alpha * this.openProgress;
         const overlaySession = this.parent?.session || null;
-        const glassMix = typeof overlaySession?.getGlassMix === 'function'
-            ? overlaySession.getGlassMix()
+        const glassAlpha = typeof overlaySession?.getGlassPanelAlpha === 'function'
+            ? overlaySession.getGlassPanelAlpha()
             : (overlaySession?.effectiveTransparent === true ? 1 : 0);
+        const opaqueAlpha = typeof overlaySession?.getOpaquePanelAlpha === 'function'
+            ? overlaySession.getOpaquePanelAlpha()
+            : 1 - glassAlpha;
         const shadowColor = ColorSchemes.Overlay.Panel.Shadow || "rgba(0, 0, 0, 0.25)";
         let glassRendered = false;
-        if (glassMix > 0 && typeof overlaySession?.renderFloatingGlassPanel === 'function') {
+        if (glassAlpha > 0 && typeof overlaySession?.renderFloatingGlassPanel === 'function') {
             glassRendered = overlaySession.renderFloatingGlassPanel({
                 x: panelRect.x,
                 y: panelRect.y,
@@ -557,14 +560,14 @@ export class DropdownElement extends BaseUIElement {
                 edgeStrength: ColorSchemes.Overlay.Panel.GlassEdgeStrength,
                 shadowRadius: 6 * this.scale,
                 shadowColor,
-                alpha: panelAlpha * glassMix
+                alpha: panelAlpha * glassAlpha
             });
         }
 
         const floatingLayer = glassRendered
             ? (overlaySession.getFloatingUILayerId() || this.layer)
             : (overlaySession?.uiLayerId || this.layer);
-        const flatMix = glassRendered ? 1 - glassMix : 1;
+        const flatMix = glassRendered ? opaqueAlpha : 1;
         if (flatMix > 0) {
             shadowOn(floatingLayer, 6 * this.scale, shadowColor);
             render(floatingLayer, {

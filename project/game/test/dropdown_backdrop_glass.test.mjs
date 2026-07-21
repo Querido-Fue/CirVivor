@@ -74,7 +74,8 @@ const createDropdown = (session) => {
 };
 
 const glassSession = {
-    getGlassMix: () => 1,
+    getGlassPanelAlpha: () => 1,
+    getOpaquePanelAlpha: () => 0,
     renderFloatingGlassPanel(command) { glassCalls.push({ ...command }); return true; },
     getFloatingUILayerId() { floatingLayerCalls.push('called'); return 'floating-ui'; },
     uiLayerId: 'session-ui'
@@ -92,7 +93,8 @@ renderCalls.length = 0;
 glassCalls.length = 0;
 floatingLayerCalls.length = 0;
 const opaqueSession = {
-    getGlassMix: () => 0,
+    getGlassPanelAlpha: () => 0,
+    getOpaquePanelAlpha: () => 1,
     renderFloatingGlassPanel(command) { glassCalls.push({ ...command }); return true; },
     getFloatingUILayerId() { floatingLayerCalls.push('called'); return 'floating-ui'; },
     uiLayerId: 'session-ui'
@@ -103,5 +105,21 @@ assert.deepEqual(floatingLayerCalls, []);
 const opaquePanel = renderCalls.find(({ command }) => command.shape === 'roundRect');
 assert.equal(opaquePanel.layer, 'session-ui');
 assert.equal(opaquePanel.command.fill, '#opaque');
+
+renderCalls.length = 0;
+glassCalls.length = 0;
+floatingLayerCalls.length = 0;
+const transitionSession = {
+    getGlassPanelAlpha: () => 1,
+    getOpaquePanelAlpha: () => 0.75,
+    renderFloatingGlassPanel(command) { glassCalls.push({ ...command }); return true; },
+    getFloatingUILayerId() { floatingLayerCalls.push('called'); return 'floating-ui'; },
+    uiLayerId: 'session-ui'
+};
+createDropdown(transitionSession).drawFloating();
+assert.equal(glassCalls[0].alpha, 1);
+const transitioningOpaquePanel = renderCalls.find(({ command }) => command.shape === 'roundRect');
+assert.equal(transitioningOpaquePanel.layer, 'floating-ui');
+assert.equal(transitioningOpaquePanel.command.alpha, 0.75);
 
 console.log('dropdown backdrop glass contract: ok');

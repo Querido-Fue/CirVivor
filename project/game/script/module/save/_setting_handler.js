@@ -67,9 +67,9 @@ export class SettingHandler {
             height: { type: 'int', value: 720, min: 720, max: -1, hidden: false },
             renderScale: { type: 'int', value: 100, min: 75, max: 100, hidden: false },
             uiScale: { type: 'int', value: 100, min: 75, max: 150, hidden: false },
-            tooltipDelaySeconds: { type: 'float', value: 0.7, min: 0, max: 2, hidden: false },
-            bgmVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
-            sfxVolume: { type: 'int', value: 100, min: 0, max: 100, hidden: false },
+            tooltipDelaySeconds: { type: 'float', value: 0.3, min: 0, max: 2, hidden: false },
+            bgmVolume: { type: 'int', value: 25, min: 0, max: 100, hidden: false },
+            sfxVolume: { type: 'int', value: 40, min: 0, max: 100, hidden: false },
             screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
             debugMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
         };
