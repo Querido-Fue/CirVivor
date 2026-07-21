@@ -273,6 +273,58 @@ assert.equal(
 );
 assert.equal(initializationAttempts, 1);
 
+// 실패 진단 getter와 문자열화가 다시 throw해도 영구 JS fallback 계약을 깨지 않습니다.
+const hostileInitializationError = Object.defineProperties({}, {
+    name: {
+        get() {
+            throw new Error('hostile name getter');
+        }
+    },
+    message: {
+        get() {
+            return 'diagnostic message survives';
+        }
+    }
+});
+const hostileInitializationBackend = new CollisionContactBackend({
+    runtimeFactory() {
+        throw hostileInitializationError;
+    }
+});
+assert.deepEqual({ ...hostileInitializationBackend.getStatus().failure }, {
+    stage: 'initialization',
+    name: 'Error',
+    message: 'diagnostic message survives'
+});
+
+const unstringifiableExecutionError = new Proxy({}, {
+    get(target, property, receiver) {
+        if (property === 'message' || property === Symbol.toPrimitive || property === 'toString') {
+            throw new Error(`hostile ${String(property)}`);
+        }
+        return Reflect.get(target, property, receiver);
+    }
+});
+const hostileExecutionBackend = new CollisionContactBackend({
+    runtimeFactory() {
+        return {
+            scanPreparedContacts() {
+                throw unstringifiableExecutionError;
+            }
+        };
+    }
+});
+assert.equal(
+    hostileExecutionBackend.scanPreparedContacts([], new Int32Array(), new Int32Array(), 0),
+    null
+);
+assert.deepEqual({ ...hostileExecutionBackend.getStatus().failure }, {
+    stage: 'execution',
+    name: 'Error',
+    message: 'Unknown error'
+});
+assert.equal(hostileExecutionBackend.getStatus().state, 'js-permanent');
+
 // 실행 trap 뒤에는 성공 전 append 없이 같은 batch를 JS boolean으로 처음부터 복구합니다.
 let executionAttempts = 0;
 const executionFailureBackend = new CollisionContactBackend({

@@ -150,6 +150,7 @@ export class CollisionContactWasmRuntime {
     /**
      * 현재 batch에 필요한 페이지까지 메모리를 확장합니다.
      * @param {number} requiredBytes - 필요한 전체 바이트 수입니다.
+     * @returns {void}
      */
     #ensureMemoryCapacity(requiredBytes) {
         const requiredPages = Math.ceil(requiredBytes / WASM_PAGE_BYTES);
