@@ -128,6 +128,9 @@ export class SettingsOverlay extends TitleOverlay {
             .buttonColor(ColorSchemes.Overlay.Button.Cancel).icon("deny")
             .item("button", "save_btn").stylePreset("overlay_interact_button")
             .buttonText(getLangString('title_settings_save')).onClick(async () => {
+                if (!this.lockInteractions()) {
+                    return;
+                }
                 await this.save();
                 this.rollbackOnClose = false;
                 this.close();

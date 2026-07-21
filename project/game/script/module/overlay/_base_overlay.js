@@ -60,6 +60,7 @@ export class BaseOverlay {
     #scaleAnimId;
     #blurAnimId;
     #presentationAnimationToken;
+    #interactionsLocked;
 
     /**
      * @param {object} [options={}] - overlay 옵션입니다.
@@ -100,6 +101,7 @@ export class BaseOverlay {
         this.#scaleAnimId = -1;
         this.#blurAnimId = -1;
         this.#presentationAnimationToken = 0;
+        this.#interactionsLocked = false;
         this._performanceSectionPrefix = `overlay.${this.constructor?.name || 'Overlay'}`;
         const performanceSectionPrefix = this._performanceSectionPrefix;
         this._performanceSections = Object.freeze({
@@ -126,7 +128,8 @@ export class BaseOverlay {
             layer: this.layer,
             alpha: 0,
             panelRegions: this.panelRegions,
-            panelInteractionMap: this.#panelInteractionMap
+            panelInteractionMap: this.#panelInteractionMap,
+            interactionsEnabled: true
         };
         this._panelEffectOptions = {
             spotlightOptions: null,
@@ -219,13 +222,37 @@ export class BaseOverlay {
      * overlay를 엽니다.
      */
     open() {
+        this.#interactionsLocked = false;
         this.#animatePresentationPhase('open');
+    }
+
+    /**
+     * overlay의 모든 패널과 UI 요소 입력을 잠급니다.
+     * 이미 잠긴 경우 false를 반환해 비동기 확인 동작의 중복 실행을 막을 수 있습니다.
+     * @returns {boolean} 이번 호출에서 새로 잠갔으면 true입니다.
+     */
+    lockInteractions() {
+        if (this.#interactionsLocked) {
+            return false;
+        }
+
+        this.#interactionsLocked = true;
+        return true;
+    }
+
+    /**
+     * overlay 입력 잠금 여부를 반환합니다.
+     * @returns {boolean} 패널과 UI 요소 입력이 잠겨 있으면 true입니다.
+     */
+    isInteractionLocked() {
+        return this.#interactionsLocked;
     }
 
     /**
      * overlay를 닫습니다.
      */
     close() {
+        this.lockInteractions();
         this.#animatePresentationPhase('close', () => {
             setMouseFocus(this.previousFocus || ['ui', 'object']);
             if (typeof this.onCloseComplete === 'function') {
@@ -464,12 +491,15 @@ export class BaseOverlay {
         this.#updatePanelInteractions();
         endPerformanceSection(sections.updateInteractions, interactionStart);
 
-        if (this.dynamicItems) {
+        if (!this.#interactionsLocked && this.dynamicItems) {
             const dynamicStart = beginPerformanceSection();
             for (const entry of this.dynamicItems) {
                 const item = entry.item;
                 if (item.update) {
                     item.update();
+                }
+                if (this.#interactionsLocked) {
+                    break;
                 }
             }
             endPerformanceSection(sections.updateDynamicItems, dynamicStart);
@@ -549,6 +579,7 @@ export class BaseOverlay {
      * overlay 종료 시 자원을 정리합니다.
      */
     destroy() {
+        this.#interactionsLocked = true;
         this._releaseElements();
         this.#panelInteractionMap.clear();
         this.#stopPresentationAnimations();
@@ -611,6 +642,7 @@ export class BaseOverlay {
         options.layer = this.layer;
         options.alpha = this.alpha;
         options.panelRegions = this.panelRegions;
+        options.interactionsEnabled = !this.#interactionsLocked;
         updateOverlayPanelInteractions(options);
     }
 

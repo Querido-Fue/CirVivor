@@ -246,6 +246,25 @@ export class TitleShieldConfig {
     }
 
     /**
+     * @returns {number} dent 추적 전환과 해제에 사용할 easeOutExpo 지속 시간입니다.
+     */
+    getDentTransitionDuration() {
+        return Number.isFinite(this.config.DENT_TRANSITION_DURATION_SECONDS)
+            ? Math.max(0.0001, this.config.DENT_TRANSITION_DURATION_SECONDS)
+            : 0.3;
+    }
+
+    /**
+     * @returns {number} 회전 대신 기존·신규 dent를 교차 전환할 최소 각도 차이(rad)입니다.
+     */
+    getDentCrossfadeAngleThreshold() {
+        const thresholdDegrees = Number.isFinite(this.config.DENT_CROSSFADE_ANGLE_DEGREES)
+            ? Math.max(0, this.config.DENT_CROSSFADE_ANGLE_DEGREES)
+            : 10;
+        return thresholdDegrees * (Math.PI / 180);
+    }
+
+    /**
      * @returns {number} 접촉 상태 유지용 히스테리시스 거리입니다.
      */
     getContactHysteresisPx() {
@@ -329,6 +348,16 @@ export class TitleShieldConfig {
      */
     getDentMaxCount() {
         return Number.isFinite(this.config.DENT_MAX_COUNT) ? Math.max(1, this.config.DENT_MAX_COUNT) : 8;
+    }
+
+    /**
+     * @returns {number} 교차 전환 중 해제 dent까지 포함한 최대 렌더 슬롯 수입니다.
+     */
+    getDentRenderMaxCount() {
+        const activeMaxCount = this.getDentMaxCount();
+        return Number.isFinite(this.config.DENT_RENDER_MAX_COUNT)
+            ? Math.max(activeMaxCount, this.config.DENT_RENDER_MAX_COUNT)
+            : activeMaxCount * 2;
     }
 
     /**

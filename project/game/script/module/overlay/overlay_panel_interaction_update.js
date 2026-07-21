@@ -319,6 +319,7 @@ function resetPanelParticle(particle, panel, particleOptions) {
  * @param {number} options.alpha - 현재 overlay alpha입니다.
  * @param {object[]} options.panelRegions - 패널 영역 목록입니다.
  * @param {Map<string, object>} options.panelInteractionMap - 패널 interaction 상태 맵입니다.
+ * @param {boolean} [options.interactionsEnabled=true] - 포인터 입력을 처리할지 여부입니다.
  * @returns {void}
  */
 export function updateOverlayPanelInteractions({
@@ -327,7 +328,8 @@ export function updateOverlayPanelInteractions({
     layer,
     alpha,
     panelRegions,
-    panelInteractionMap
+    panelInteractionMap,
+    interactionsEnabled = true
 }) {
     if (!session || panelRegions.length === 0) {
         return;
@@ -345,6 +347,7 @@ export function updateOverlayPanelInteractions({
     const borderOptions = session.getEffectOptions('hoverBorder');
 
     for (const panel of panelRegions) {
+        const acceptsInput = interactionsEnabled && overlay?.isInteractionLocked?.() !== true;
         const interactionState = panelInteractionMap.get(panel.id);
         if (!interactionState) {
             continue;
@@ -367,7 +370,7 @@ export function updateOverlayPanelInteractions({
 
         updatePanelProjection(presentedPanel, interactionState, tiltOptions);
 
-        const pointerInfo = hasLayerFocus
+        const pointerInfo = acceptsInput && hasLayerFocus
             ? resolvePanelPointerInfo(presentedPanel, interactionState, mouseX, mouseY)
             : null;
 
@@ -379,7 +382,7 @@ export function updateOverlayPanelInteractions({
             interactionState.normalizedY = clampNumber(((interactionState.localY / Math.max(1, presentedPanel.h)) * 2) - 1, -1, 1);
         }
 
-        if (leftClicked && interactionState.hovered) {
+        if (acceptsInput && leftClicked && interactionState.hovered) {
             handlePanelClick(presentedPanel, interactionState, rippleOptions, overlay);
         }
 

@@ -1,6 +1,6 @@
 import { renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
-import { clamp01 } from 'util/number_util.js';
+import { clamp01, easeOutExpo, lerpNumber } from 'util/number_util.js';
 import { TitleShieldConfig } from './_title_shield_config.js';
 import { buildTitleShieldRenderCommand } from './_title_shield_render_command.js';
 import {
@@ -53,6 +53,7 @@ export class TitleShieldEffect {
         this.retainedDentCandidates = [];
         this.remainingDentCandidates = [];
         this.dentRenderStatePool = [];
+        this.dentRenderStateMap = new Map();
         this.enemyStateMap = new WeakMap();
         this.visualLayoutInitialized = false;
         this.config = new TitleShieldConfig();
@@ -118,7 +119,7 @@ export class TitleShieldEffect {
         this.remainingDentCandidates.length = 0;
 
         if (!Array.isArray(enemies) || this.radius <= 0) {
-            this.activeDentKeys.length = 0;
+            this.#syncVisibleDents(delta);
             return;
         }
 
@@ -133,7 +134,7 @@ export class TitleShieldEffect {
 
             this.#registerEnemy(enemy, objectOffsetY, visualDelta);
         }
-        this.#syncVisibleDents();
+        this.#syncVisibleDents(delta);
     }
 
     /**
@@ -177,6 +178,7 @@ export class TitleShieldEffect {
         this.retainedDentCandidates.length = 0;
         this.remainingDentCandidates.length = 0;
         this.dentRenderStatePool.length = 0;
+        this.dentRenderStateMap.clear();
         this.enemyStateMap = new WeakMap();
         this.visualLayoutInitialized = false;
     }
@@ -511,18 +513,20 @@ export class TitleShieldEffect {
     /**
      * @private
      * 현재 프레임의 dent 후보를 안정적으로 선택해 가시 dent 목록을 구성합니다.
+     * @param {number} delta - dent 추적 전환 시간에 누적할 실제 프레임 델타입니다.
+     * @returns {void}
      */
-    #syncVisibleDents() {
+    #syncVisibleDents(delta) {
         const maxDentCount = this.config.getDentMaxCount();
-        if (maxDentCount <= 0 || this.dentCandidates.length === 0) {
-            this.activeDentKeys.length = 0;
-            this.dents.length = 0;
-            return;
-        }
-
         const retainedCandidates = this.retainedDentCandidates;
         const remainingCandidates = this.remainingDentCandidates;
         const candidateMap = this.dentCandidateMap;
+        if (maxDentCount <= 0 || this.dentCandidates.length === 0) {
+            this.activeDentKeys.length = 0;
+            this.#syncDentRenderStates(retainedCandidates, delta);
+            return;
+        }
+
         for (let index = 0; index < this.dentCandidates.length; index++) {
             const candidate = this.dentCandidates[index];
             candidateMap.set(candidate.key, candidate);
@@ -569,20 +573,259 @@ export class TitleShieldEffect {
             this.activeDentKeys[index] = retainedCandidates[index].key;
         }
 
-        this.dents.length = 0;
-        for (let index = 0; index < retainedCandidates.length; index++) {
-            const candidate = retainedCandidates[index];
-            let dent = this.dentRenderStatePool[index];
-            if (!dent) {
-                dent = { angle: 0, depth: 0, width: 0, strength: 0 };
-                this.dentRenderStatePool[index] = dent;
-            }
-            dent.angle = candidate.angle;
-            dent.depth = candidate.depth;
-            dent.width = candidate.width;
-            dent.strength = candidate.strength;
-            this.dents.push(dent);
+        this.#syncDentRenderStates(retainedCandidates, delta);
+    }
+
+    /**
+     * 선택된 dent 후보를 기존 렌더 슬롯에 연결하고 대상 전환·해제를 애니메이션합니다.
+     * @private
+     * @param {Array<object>} candidates - 현재 선택된 dent 후보입니다.
+     * @param {number} delta - 전환 시간에 누적할 실제 프레임 델타입니다.
+     * @returns {void}
+     */
+    #syncDentRenderStates(candidates, delta) {
+        const renderStatePool = this.dentRenderStatePool;
+        for (let index = 0; index < renderStatePool.length; index++) {
+            renderStatePool[index].targetCandidate = null;
+            renderStatePool[index].replacementReserved = false;
         }
+
+        for (let index = 0; index < candidates.length; index++) {
+            const candidate = candidates[index];
+            const renderState = this.dentRenderStateMap.get(candidate.key);
+            if (!renderState) {
+                continue;
+            }
+
+            renderState.targetCandidate = candidate;
+            if (renderState.releasing) {
+                this.#beginDentRenderTransition(renderState, false);
+            }
+        }
+
+        for (let index = 0; index < candidates.length; index++) {
+            const candidate = candidates[index];
+            if (this.dentRenderStateMap.has(candidate.key)) {
+                continue;
+            }
+
+            const renderState = this.#acquireDentRenderState(
+                candidate,
+                this.config.getDentRenderMaxCount()
+            );
+            if (!renderState) {
+                continue;
+            }
+
+            if (renderState.key === null) {
+                renderState.angle = candidate.angle;
+                renderState.depth = 0;
+                renderState.width = candidate.width;
+                renderState.strength = 0;
+            } else {
+                this.dentRenderStateMap.delete(renderState.key);
+            }
+
+            renderState.key = candidate.key;
+            renderState.targetCandidate = candidate;
+            this.dentRenderStateMap.set(candidate.key, renderState);
+            this.#beginDentRenderTransition(renderState, false);
+        }
+
+        this.dents.length = 0;
+        for (let index = 0; index < renderStatePool.length; index++) {
+            const renderState = renderStatePool[index];
+            if (!renderState.targetCandidate && renderState.key !== null && !renderState.releasing) {
+                this.#beginDentRenderTransition(renderState, true);
+            }
+
+            this.#updateDentRenderTransition(renderState, delta);
+            if (renderState.key !== null) {
+                this.dents.push(renderState);
+            }
+        }
+    }
+
+    /**
+     * 새 후보와 기존 슬롯의 각도 차이가 임계값 미만이면 해당 슬롯을 재사용합니다.
+     * 임계값 이상이면 기존 슬롯은 해제용으로 남기고 별도 슬롯에서 신규 dent를 시작합니다.
+     * @private
+     * @param {object} candidate - 새 dent 후보입니다.
+     * @param {number} maxRenderDentCount - 해제 중인 dent를 포함한 최대 렌더 슬롯 수입니다.
+     * @returns {object|null} 재사용할 렌더 상태입니다.
+     */
+    #acquireDentRenderState(candidate, maxRenderDentCount) {
+        let inactiveRenderState = null;
+        let closestRenderState = null;
+        let closestAngularDistance = Infinity;
+        let weakestReleasingState = null;
+        for (let index = 0; index < this.dentRenderStatePool.length; index++) {
+            const renderState = this.dentRenderStatePool[index];
+            if (renderState.key === null) {
+                inactiveRenderState ??= renderState;
+                continue;
+            }
+            if (renderState.targetCandidate || renderState.replacementReserved) {
+                continue;
+            }
+
+            if (renderState.releasing
+                && (!weakestReleasingState || renderState.strength < weakestReleasingState.strength)) {
+                weakestReleasingState = renderState;
+            }
+
+            const angularDistance = Math.abs(getShieldAngularDelta(renderState.angle, candidate.angle));
+            if (angularDistance >= closestAngularDistance) {
+                continue;
+            }
+
+            closestAngularDistance = angularDistance;
+            closestRenderState = renderState;
+        }
+
+        const crossfadeThreshold = this.config.getDentCrossfadeAngleThreshold();
+        const thresholdTolerance = Number.EPSILON * Math.max(1, crossfadeThreshold) * 8;
+        if (closestRenderState && (closestAngularDistance + thresholdTolerance) < crossfadeThreshold) {
+            return closestRenderState;
+        }
+
+        if (closestRenderState) {
+            closestRenderState.replacementReserved = true;
+        }
+        if (inactiveRenderState) {
+            return inactiveRenderState;
+        }
+        if (this.dentRenderStatePool.length < maxRenderDentCount) {
+            const renderState = this.#createDentRenderState();
+            this.dentRenderStatePool.push(renderState);
+            return renderState;
+        }
+
+        const fallbackRenderState = weakestReleasingState || closestRenderState;
+        if (fallbackRenderState) {
+            this.#deactivateDentRenderState(fallbackRenderState);
+        }
+        return fallbackRenderState;
+    }
+
+    /**
+     * dent 렌더 슬롯의 초기 상태를 생성합니다.
+     * @private
+     * @returns {object} 생성된 렌더 상태입니다.
+     */
+    #createDentRenderState() {
+        return {
+            key: null,
+            targetCandidate: null,
+            angle: 0,
+            depth: 0,
+            width: 0,
+            strength: 0,
+            startAngle: 0,
+            startDepth: 0,
+            startWidth: 0,
+            startStrength: 0,
+            transitionAge: 0,
+            transitioning: false,
+            releasing: false,
+            replacementReserved: false
+        };
+    }
+
+    /**
+     * 현재 표시값을 시작점으로 dent 렌더 슬롯의 easeOutExpo 전환을 시작합니다.
+     * @private
+     * @param {object} renderState - 갱신할 dent 렌더 상태입니다.
+     * @param {boolean} releasing - 추적 해제 전환인지 여부입니다.
+     * @returns {void}
+     */
+    #beginDentRenderTransition(renderState, releasing) {
+        renderState.startAngle = renderState.angle;
+        renderState.startDepth = renderState.depth;
+        renderState.startWidth = renderState.width;
+        renderState.startStrength = renderState.strength;
+        renderState.transitionAge = 0;
+        renderState.transitioning = true;
+        renderState.releasing = releasing;
+    }
+
+    /**
+     * dent 슬롯의 진행 중인 전환을 갱신하고 해제가 끝난 슬롯을 비활성화합니다.
+     * @private
+     * @param {object} renderState - 갱신할 dent 렌더 상태입니다.
+     * @param {number} delta - 전환 시간에 누적할 실제 프레임 델타입니다.
+     * @returns {void}
+     */
+    #updateDentRenderTransition(renderState, delta) {
+        if (renderState.key === null) {
+            return;
+        }
+
+        const candidate = renderState.targetCandidate;
+        if (!renderState.transitioning) {
+            if (candidate) {
+                this.#copyDentCandidate(renderState, candidate);
+            }
+            return;
+        }
+
+        renderState.transitionAge += Math.max(0, delta);
+        const duration = this.config.getDentTransitionDuration();
+        const progress = clamp01(renderState.transitionAge / duration);
+        const easedProgress = easeOutExpo(progress);
+        if (renderState.releasing || !candidate) {
+            renderState.depth = lerpNumber(renderState.startDepth, 0, easedProgress);
+            renderState.strength = lerpNumber(renderState.startStrength, 0, easedProgress);
+        } else {
+            renderState.angle = lerpShieldAngle(renderState.startAngle, candidate.angle, easedProgress);
+            renderState.depth = lerpNumber(renderState.startDepth, candidate.depth, easedProgress);
+            renderState.width = lerpNumber(renderState.startWidth, candidate.width, easedProgress);
+            renderState.strength = lerpNumber(renderState.startStrength, candidate.strength, easedProgress);
+        }
+
+        if (progress < 1) {
+            return;
+        }
+
+        renderState.transitioning = false;
+        if (!renderState.releasing && candidate) {
+            this.#copyDentCandidate(renderState, candidate);
+            return;
+        }
+
+        this.#deactivateDentRenderState(renderState);
+    }
+
+    /**
+     * dent 렌더 슬롯의 키와 전환 상태를 정리해 재사용 가능한 상태로 만듭니다.
+     * @private
+     * @param {object} renderState - 비활성화할 dent 렌더 상태입니다.
+     * @returns {void}
+     */
+    #deactivateDentRenderState(renderState) {
+        this.dentRenderStateMap.delete(renderState.key);
+        renderState.key = null;
+        renderState.targetCandidate = null;
+        renderState.depth = 0;
+        renderState.strength = 0;
+        renderState.transitionAge = 0;
+        renderState.transitioning = false;
+        renderState.releasing = false;
+        renderState.replacementReserved = false;
+    }
+
+    /**
+     * 선택 후보의 현재 값을 dent 렌더 슬롯에 복사합니다.
+     * @private
+     * @param {object} renderState - 갱신할 dent 렌더 상태입니다.
+     * @param {object} candidate - 복사할 dent 후보입니다.
+     * @returns {void}
+     */
+    #copyDentCandidate(renderState, candidate) {
+        renderState.angle = candidate.angle;
+        renderState.depth = candidate.depth;
+        renderState.width = candidate.width;
+        renderState.strength = candidate.strength;
     }
 
     /**

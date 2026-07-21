@@ -482,7 +482,7 @@ export const MAGNETIC_SHIELD_MAX_IMPACTS = 12;
 /**
  * 마그네틱 실드 셰이더가 동시에 처리할 최대 왜곡 수입니다.
  */
-export const MAGNETIC_SHIELD_MAX_DENTS = 8;
+export const MAGNETIC_SHIELD_MAX_DENTS = 16;
 
 /**
  * 마그네틱 실드 림/충돌/눌림 왜곡을 렌더링하는 프래그먼트 셰이더입니다.

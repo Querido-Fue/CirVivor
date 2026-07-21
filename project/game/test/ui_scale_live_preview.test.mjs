@@ -68,6 +68,9 @@ class TitleOverlayStub {
         this.staticItems = [];
         this.dynamicItems = [];
         this.positioningHandler = { parseUIData: () => 12 };
+        this.interactionsLocked = false;
+        this.interactionLockAttempts = 0;
+        this.closeCalls = 0;
     }
 
     update() {
@@ -103,7 +106,17 @@ class TitleOverlayStub {
         this.dynamicItems = null;
     }
 
+    lockInteractions() {
+        this.interactionLockAttempts += 1;
+        if (this.interactionsLocked) {
+            return false;
+        }
+        this.interactionsLocked = true;
+        return true;
+    }
+
     close() {
+        this.closeCalls += 1;
         this.closed = true;
     }
 }
@@ -386,6 +399,16 @@ await new Promise((resolve) => setImmediate(resolve));
 await new Promise((resolve) => setImmediate(resolve));
 assert.deepEqual(memoryPreviewCalls.at(-1), { uiScale: 100, disableTransparency: false });
 assert.deepEqual(runtimeCalls.at(-1), { uiScale: 100, disableTransparency: false });
+
+const saveOverlay = new SettingsOverlay(titleScene);
+saveOverlay.resize();
+await Promise.all([
+    saveOverlay.settingComponents.save_btn.onClick(),
+    saveOverlay.settingComponents.save_btn.onClick()
+]);
+assert.equal(saveOverlay.interactionsLocked, true);
+assert.equal(saveOverlay.interactionLockAttempts, 2);
+assert.equal(saveOverlay.closeCalls, 1);
 
 assert.match(baseOverlaySource, /const runtimeUiScale = Number\(changedSettings\.uiScale\) \/ 100;/);
 assert.match(baseOverlaySource, /Number\.isFinite\(runtimeUiScale\) && runtimeUiScale > 0/);
