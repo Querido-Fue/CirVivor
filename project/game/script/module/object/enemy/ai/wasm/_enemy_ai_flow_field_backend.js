@@ -1,6 +1,8 @@
 import { createEnemyAIFlowFieldWasmRuntimeSync } from './_enemy_ai_flow_field_wasm_runtime.js';
 
 const DEFAULT_MINIMUM_WASM_GRID_SIZE = 32 * 32;
+const FAILURE_NAME_FALLBACK = 'Error';
+const FAILURE_MESSAGE_FALLBACK = 'Unknown error';
 
 /**
  * @typedef {object} EnemyAIFlowFieldGrid
@@ -40,14 +42,53 @@ const DEFAULT_MINIMUM_WASM_GRID_SIZE = 32 * 32;
  * JS fallback을 고정한 최초 오류를 직렬화 가능한 진단값으로 보존합니다.
  * @param {'initialization'|'execution'} stage - 실패 단계입니다.
  * @param {unknown} error - 원본 오류입니다.
- * @returns {{stage:string,name:string,message:string}} 오류 스냅샷입니다.
+ * @returns {{stage:'initialization'|'execution',name:string,message:string}} 오류 스냅샷입니다.
  */
 function createFailureSnapshot(stage, error) {
     return {
         stage,
-        name: typeof error?.name === 'string' ? error.name : 'Error',
-        message: typeof error?.message === 'string' ? error.message : String(error)
+        name: getFailureName(error),
+        message: getFailureMessage(error)
     };
+}
+
+/**
+ * 기존 name 조회 순서를 유지하되 hostile getter가 실패하면 기본 이름을 반환합니다.
+ * @param {unknown} error - 원본 오류입니다.
+ * @returns {string} 직렬화 가능한 오류 이름입니다.
+ */
+function getFailureName(error) {
+    try {
+        return typeof error?.name === 'string' ? error.name : FAILURE_NAME_FALLBACK;
+    } catch {
+        return FAILURE_NAME_FALLBACK;
+    }
+}
+
+/**
+ * 기존 message 조회와 문자열 fallback 순서를 유지하며 모든 변환 실패를 흡수합니다.
+ * @param {unknown} error - 원본 오류입니다.
+ * @returns {string} 직렬화 가능한 오류 메시지입니다.
+ */
+function getFailureMessage(error) {
+    try {
+        return typeof error?.message === 'string' ? error.message : stringifyFailure(error);
+    } catch {
+        return stringifyFailure(error);
+    }
+}
+
+/**
+ * 오류 문자열 변환 자체가 실패해도 고정 진단 문자열을 반환합니다.
+ * @param {unknown} error - 문자열화할 오류입니다.
+ * @returns {string} 직렬화 가능한 오류 문자열입니다.
+ */
+function stringifyFailure(error) {
+    try {
+        return String(error);
+    } catch {
+        return FAILURE_MESSAGE_FALLBACK;
+    }
 }
 
 /**
@@ -129,7 +170,7 @@ export class EnemyAIFlowFieldBackend {
 
     /**
      * 테스트와 진단용 backend 상태 스냅샷을 반환합니다.
-     * @returns {{state:string,minimumWasmGridSize:number,failure:null|{stage:string,name:string,message:string},wasmBuildCount:number,jsBuildCount:number}} 상태입니다.
+     * @returns {{state:string,minimumWasmGridSize:number,failure:null|{stage:'initialization'|'execution',name:string,message:string},wasmBuildCount:number,jsBuildCount:number}} 상태입니다.
      */
     getStatus() {
         return {
@@ -142,6 +183,7 @@ export class EnemyAIFlowFieldBackend {
     }
 }
 
+/** @type {EnemyAIFlowFieldBackend} production flow-field backend singleton입니다. */
 const enemyAIFlowFieldBackend = new EnemyAIFlowFieldBackend();
 
 /**
@@ -157,6 +199,6 @@ export const buildEnemyAIFlowField = (grid, goalCell, jsBuilder) => (
 
 /**
  * 프로덕션 flow-field backend 상태 스냅샷을 반환합니다.
- * @returns {{state:string,minimumWasmGridSize:number,failure:null|{stage:string,name:string,message:string},wasmBuildCount:number,jsBuildCount:number}} 상태입니다.
+ * @returns {{state:string,minimumWasmGridSize:number,failure:null|{stage:'initialization'|'execution',name:string,message:string},wasmBuildCount:number,jsBuildCount:number}} 상태입니다.
  */
 export const getEnemyAIFlowFieldBackendStatus = () => enemyAIFlowFieldBackend.getStatus();

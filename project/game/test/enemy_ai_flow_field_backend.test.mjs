@@ -90,6 +90,104 @@ test('초기화 실패는 재시도 없이 영구 JS fallback으로 고정된다
     assert.equal(backend.getStatus().state, 'js-permanent');
 });
 
+test('실패 진단 getter와 문자열화가 throw해도 영구 JS fallback을 유지한다', () => {
+    const accessOrder = [];
+    const ordinaryGetterError = Object.defineProperties({}, {
+        name: {
+            get() {
+                accessOrder.push('name');
+                return 'FlowFieldFailure';
+            }
+        },
+        message: {
+            get() {
+                accessOrder.push('message');
+                return 'ordinary diagnostic';
+            }
+        }
+    });
+    const ordinaryGetterBackend = new backendModule.EnemyAIFlowFieldBackend({
+        runtimeFactory() {
+            throw ordinaryGetterError;
+        }
+    });
+    assert.deepEqual(accessOrder, ['name', 'name', 'message', 'message']);
+    assert.deepEqual({ ...ordinaryGetterBackend.getStatus().failure }, {
+        stage: 'initialization',
+        name: 'FlowFieldFailure',
+        message: 'ordinary diagnostic'
+    });
+
+    const hostileInitializationError = Object.defineProperties({}, {
+        name: {
+            get() {
+                throw new Error('hostile name getter');
+            }
+        },
+        message: {
+            get() {
+                return 'diagnostic message survives';
+            }
+        }
+    });
+    const hostileInitializationBackend = new backendModule.EnemyAIFlowFieldBackend({
+        runtimeFactory() {
+            throw hostileInitializationError;
+        }
+    });
+    assert.deepEqual({ ...hostileInitializationBackend.getStatus().failure }, {
+        stage: 'initialization',
+        name: 'Error',
+        message: 'diagnostic message survives'
+    });
+
+    const unstringifiableExecutionError = new Proxy({}, {
+        get(target, property, receiver) {
+            if (
+                property === 'message'
+                || property === Symbol.toPrimitive
+                || property === 'toString'
+            ) {
+                throw new Error(`hostile ${String(property)}`);
+            }
+            return Reflect.get(target, property, receiver);
+        }
+    });
+    let wasmCalls = 0;
+    let jsCalls = 0;
+    const hostileExecutionBackend = new backendModule.EnemyAIFlowFieldBackend({
+        minimumWasmGridSize: 1,
+        runtimeFactory() {
+            return {
+                buildFlowField() {
+                    wasmCalls++;
+                    throw unstringifiableExecutionError;
+                }
+            };
+        }
+    });
+    const jsBuilder = () => {
+        jsCalls++;
+        return { source: 'js' };
+    };
+    assert.equal(
+        hostileExecutionBackend.buildFlowField({ size: 4 }, {}, jsBuilder).source,
+        'js'
+    );
+    assert.equal(
+        hostileExecutionBackend.buildFlowField({ size: 4 }, {}, jsBuilder).source,
+        'js'
+    );
+    assert.equal(wasmCalls, 1);
+    assert.equal(jsCalls, 2);
+    assert.deepEqual({ ...hostileExecutionBackend.getStatus().failure }, {
+        stage: 'execution',
+        name: 'Error',
+        message: 'Unknown error'
+    });
+    assert.equal(hostileExecutionBackend.getStatus().state, 'js-permanent');
+});
+
 test('첫 WASM 실행 오류는 현재 호출부터 JS로 복구하고 이후 WASM을 재시도하지 않는다', () => {
     let wasmCalls = 0;
     let jsCalls = 0;
