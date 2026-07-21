@@ -21,12 +21,13 @@ export class TitleSceneController {
      * 메뉴가 조회할 현재 타이틀 전환 상태 제공자를 교체합니다.
      * `loadingSequence` 이름은 기존 TitleMenu의 private 조회 계약을 유지합니다.
      * @param {object|null} content - loading 또는 완료된 title content입니다.
+     * @returns {void}
      */
     setTitleContent(content) {
         this.loadingSequence = content || null;
     }
 
-    /** 현재 표시 viewport metric을 동기화합니다. */
+    /** 현재 표시 viewport metric을 동기화합니다. @returns {void} */
     syncViewportMetrics() {
         this.WW = getWW();
         this.WH = getWH();
@@ -34,27 +35,33 @@ export class TitleSceneController {
         this.UIOffsetX = getUIOffsetX();
     }
 
-    /** @param {string} menu - 열 타이틀 overlay 키입니다. */
+    /**
+     * @param {string} menu - 열 타이틀 overlay 키입니다.
+     * @returns {string|null} 생성된 overlay id입니다.
+     */
     openTitleOverlay(menu) {
         return this.sceneSystem.systemHandler.overlayManager.openTitleOverlay(menu, this);
     }
 
-    /** 열린 타이틀 overlay를 닫습니다. */
+    /** 열린 타이틀 overlay를 닫습니다. @returns {void} */
     closeTitleOverlay() {
         this.sceneSystem.systemHandler.overlayManager.closeTitleOverlay();
     }
 
-    /** 종료 확인 overlay를 엽니다. */
+    /** @returns {string|null} 생성된 종료 확인 overlay id입니다. */
     openExitOverlay() {
         return this.sceneSystem.systemHandler.overlayManager.openExitOverlay();
     }
 
-    /** @param {string} [mapId] - 시작할 맵 ID입니다. */
+    /**
+     * @param {string} [mapId] - 시작할 맵 ID입니다.
+     * @returns {void}
+     */
     gameStart(mapId) {
         this.sceneSystem.gameStart(mapId);
     }
 
-    /** 벤치마크 씬 시작을 요청합니다. */
+    /** 벤치마크 씬 시작을 요청합니다. @returns {void} */
     benchmarkStart() {
         this.sceneSystem.benchmarkStart();
     }

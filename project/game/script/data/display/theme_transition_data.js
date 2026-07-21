@@ -6,5 +6,5 @@ export const THEME_TRANSITION_DATA = Object.freeze({
     START_ALPHA: 1,
     END_ALPHA: 0,
     DURATION_SECONDS: 0.4,
-    EASING: 'easeOutExpo'
+    EASING: 'linear'
 });

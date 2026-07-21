@@ -8,7 +8,7 @@ const [source, displaySystemSource] = await Promise.all([
 ]);
 
 const transitionData = Object.freeze({
-    LAYER: 'top', START_ALPHA: 1, END_ALPHA: 0, DURATION_SECONDS: 0.4, EASING: 'easeOutExpo'
+    LAYER: 'top', START_ALPHA: 1, END_ALPHA: 0, DURATION_SECONDS: 0.4, EASING: 'linear'
 });
 const animations = [];
 let nextAnimationId = 1;
@@ -18,6 +18,10 @@ function animate(owner, properties) {
     const animation = {
         id: nextAnimationId++, owner, properties,
         promise: new Promise((done) => { resolve = done; }),
+        setProgress(progress) {
+            owner[properties.variable] = properties.startValue
+                + ((properties.endValue - properties.startValue) * progress);
+        },
         complete() { owner[properties.variable] = properties.endValue; resolve(); }
     };
     animations.push(animation);
@@ -57,13 +61,16 @@ const controller = new ThemeTransitionController({
 assert.equal(controller.start(''), false);
 assert.equal(controller.start('#111111'), true);
 assert.deepEqual({ ...animations[0].properties }, {
-    variable: 'alpha', startValue: 1, endValue: 0, duration: 0.4, type: 'easeOutExpo'
+    variable: 'alpha', startValue: 1, endValue: 0, duration: 0.4, type: 'linear'
 });
 controller.draw();
 assert.deepEqual(draws.at(-1), {
     layer: 'top',
     command: { shape: 'rect', x: 0, y: 0, w: 1280, h: 720, fill: '#111111', alpha: 1 }
 });
+animations[0].setProgress(0.5);
+controller.draw();
+assert.equal(draws.at(-1).command.alpha, 0.5);
 
 assert.equal(beginThemeTransition('#eeeeee'), true);
 await Promise.resolve();

@@ -1,6 +1,7 @@
 import { TitleBackGround } from './_title_background.js';
 import { TitleGradientBackground } from './_title_gradient_background.js';
 import { TitleLoadingSequence } from './_title_loading_sequence.js';
+import { TitleSceneIntroSequence } from './_title_scene_intro_sequence.js';
 
 /**
  * 타이틀 배경과 현재 foreground content를 한 수명 주기로 묶어 LoadingScene→TitleScene에 넘깁니다.
@@ -60,16 +61,29 @@ export class TitleScenePresentation {
         this.content?.applyRuntimeSettings?.(changedSettings);
     }
 
-    /** @returns {boolean} loading content의 전체 등장 완료 여부입니다. */
-    isLoadingComplete() {
-        return this.content?.isComplete?.() === true;
+    /** @returns {boolean} loading content가 이동 직전 handoff 경계에 도달했는지 여부입니다. */
+    isTitleSceneHandoffReady() {
+        return this.content?.isTitleSceneHandoffReady?.() === true;
     }
 
     /**
-     * loading content의 실제 컴포넌트 identity를 보존한 채 완료 content로 교체합니다.
-     * @returns {boolean} handoff 준비 성공 여부입니다.
+     * LoadingScene 자산 identity를 보존한 채 TitleScene 전용 이동 단계를 시작합니다.
+     * @returns {boolean} 타이틀 단계 시작 성공 여부입니다.
      */
-    promoteCompletedLoadingContent() {
+    beginTitleScenePhase() {
+        const introAssets = this.content?.releaseTitleIntroAssets?.() || null;
+        if (!introAssets) return false;
+        const titleIntro = new TitleSceneIntroSequence(this.controller, introAssets);
+        this.content = titleIntro;
+        this.controller.setTitleContent(titleIntro);
+        return true;
+    }
+
+    /**
+     * 완료된 TitleScene 인트로의 실제 컴포넌트를 정상 content로 승격합니다.
+     * @returns {boolean} 완료 content 승격 여부입니다.
+     */
+    promoteCompletedTitleIntro() {
         const completedContent = this.content?.releaseCompletedContent?.() || null;
         if (!completedContent) return false;
         this.content = completedContent;

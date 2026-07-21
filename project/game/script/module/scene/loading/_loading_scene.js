@@ -4,7 +4,7 @@ import { TitleScenePresentation } from '../title/_title_scene_presentation.js';
 
 /**
  * @class LoadingScene
- * @description 앱 시작의 타이틀 인트로 전체를 소유하고 완료된 시각 상태를 TitleScene에 넘깁니다.
+ * @description 앱 시작부터 로고 재생 완료까지 소유하고 이동 직전 시각 상태를 TitleScene에 넘깁니다.
  */
 export class LoadingScene extends BaseScene {
     /** @param {object} sceneSystem - 상위 씬 시스템입니다. */
@@ -14,10 +14,10 @@ export class LoadingScene extends BaseScene {
         this.presentation = new TitleScenePresentation(this.titleController);
     }
 
-    /** 인트로를 갱신하고 전체 등장 완료 시 단 한 번 TitleScene handoff를 요청합니다. */
+    /** 로딩 인트로를 갱신하고 이동 시작 경계에서 단 한 번 TitleScene handoff를 요청합니다. */
     update() {
         this.presentation?.update();
-        if (this.presentation?.isLoadingComplete() === true) {
+        if (this.presentation?.isTitleSceneHandoffReady() === true) {
             this.sceneSystem.completeLoading(this);
         }
     }
@@ -43,11 +43,11 @@ export class LoadingScene extends BaseScene {
     }
 
     /**
-     * 완료된 presentation과 안정적인 controller identity를 TitleScene에 한 번만 넘깁니다.
+     * 이동 직전 presentation과 안정적인 controller identity를 TitleScene에 한 번만 넘깁니다.
      * @returns {{presentation:TitleScenePresentation,titleController:TitleSceneController}|null} handoff 상태입니다.
      */
     releaseTitlePresentation() {
-        if (!this.presentation?.promoteCompletedLoadingContent?.()) {
+        if (this.presentation?.isTitleSceneHandoffReady?.() !== true) {
             return null;
         }
         const handoff = {

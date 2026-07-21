@@ -1,39 +1,34 @@
-import { animate, animateMixed, remove } from 'animation/animation_system.js';
+import { animate, remove } from 'animation/animation_system.js';
 import { getData } from 'data/data_handler.js';
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
 import { TitleLogo } from './_title_logo.js';
 import { TitleMenu } from './_title_menu.js';
-import { TitleSceneContent } from './_title_scene_content.js';
 import { advanceTitleIntroDelay } from './loading/_title_intro_delay.js';
 import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
 import { getLoadingLogoColor } from './loading/_title_loading_theme.js';
-import { buildTitleSceneTransitionSegments } from './loading/_title_scene_transition_segments.js';
 
 const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
 const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
 
 /**
  * @class TitleLoadingSequence
- * @description 타이틀 로고 등장과 중앙 원·메뉴 전환을 관리합니다.
+ * @description LoadingScene에서 타이틀 로고 등장까지 관리하고 이동 직전 자산을 넘깁니다.
  */
 export class TitleLoadingSequence {
     /**
-     * @param {TitleScene} titleScene - 타이틀 씬 인스턴스입니다.
+     * @param {import('./_title_scene_controller.js').TitleSceneController} titleController - 타이틀 action controller입니다.
      */
-    constructor(titleScene) {
-        this.titleScene = titleScene;
+    constructor(titleController) {
+        this.titleController = titleController;
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
         this.centerIntroBlurAnimId = -1;
-        this.sceneTransitionAnimIds = [];
         this.introDelayElapsed = 0;
         this.introStarted = false;
         this.sceneTransitionProgress = 0;
-        this.enemySpawnReadyProgress = Number.POSITIVE_INFINITY;
-        this.sceneTransitionStarted = false;
         this.centerCircle = new TitleCenterCircle();
         this.titleLogo = null;
         this.titleMenu = null;
@@ -62,7 +57,6 @@ export class TitleLoadingSequence {
 
         if (this.titleLogo) {
             this.titleLogo.update();
-            this.#updateSceneTransition();
             this.#updateCenterCirclePlacement();
             this.#updateLogoPlacement();
         }
@@ -101,10 +95,7 @@ export class TitleLoadingSequence {
         if (this.centerIntroBlurAnimId >= 0) {
             remove(this.centerIntroBlurAnimId);
         }
-        for (const animationId of this.sceneTransitionAnimIds) {
-            remove(animationId);
-        }
-        this.sceneTransitionAnimIds = [];
+        this.centerIntroBlurAnimId = -1;
 
         this.centerCircle?.destroy();
         this.centerCircle = null;
@@ -160,48 +151,41 @@ export class TitleLoadingSequence {
     }
 
     /**
-     * 타이틀 배경 적 스폰을 시작해도 되는지 반환합니다.
-     * @returns {boolean} 이동 전환의 가속 구간 완료 여부입니다.
+     * LoadingScene에서는 타이틀 배경 적 스폰을 허용하지 않습니다.
+     * @returns {boolean} 항상 false입니다.
      */
     isEnemySpawnReady() {
-        return this.sceneTransitionStarted === true
-            && this.sceneTransitionProgress >= this.enemySpawnReadyProgress;
+        return false;
     }
 
     /**
-     * 로고·중앙 원 전환과 메뉴 등장·입력이 모두 완료됐는지 반환합니다.
+     * 로고 재생이 이동 시작 경계에 도달했는지 반환합니다.
      * @returns {boolean} TitleScene으로 handoff 가능한 상태입니다.
      */
-    isComplete() {
+    isTitleSceneHandoffReady() {
         return this.introStarted === true
-            && this.sceneTransitionStarted === true
-            && this.sceneTransitionProgress >= 1
-            && this.titleMenu?.pointerEnabled === true;
+            && this.titleLogo !== null
+            && this.titleLogo.getPlaybackProgress()
+                >= TITLE_LOADING.SCENE_TRANSITION_TRIGGER_PROGRESS;
     }
 
     /**
-     * 완료된 중앙 원·로고·메뉴 identity를 파괴하지 않고 정상 타이틀 content로 넘깁니다.
-     * @returns {TitleSceneContent|null} 완료 content 또는 아직 준비되지 않았으면 null입니다.
+     * 이동 직전의 중앙 원·로고·메뉴 identity와 blur animation 소유권을 넘깁니다.
+     * @returns {{centerCircle:TitleCenterCircle,titleLogo:TitleLogo,titleMenu:TitleMenu,centerIntroBlurAnimId:number}|null} 타이틀 인트로 자산입니다.
      */
-    releaseCompletedContent() {
-        if (!this.isComplete()) return null;
-        if (this.centerIntroBlurAnimId >= 0) {
-            remove(this.centerIntroBlurAnimId);
-            this.centerIntroBlurAnimId = -1;
-        }
-        for (const animationId of this.sceneTransitionAnimIds) {
-            remove(animationId);
-        }
-        this.sceneTransitionAnimIds = [];
-        const content = new TitleSceneContent({
+    releaseTitleIntroAssets() {
+        if (!this.isTitleSceneHandoffReady()) return null;
+        const assets = {
             centerCircle: this.centerCircle,
             titleLogo: this.titleLogo,
-            titleMenu: this.titleMenu
-        });
+            titleMenu: this.titleMenu,
+            centerIntroBlurAnimId: this.centerIntroBlurAnimId
+        };
         this.centerCircle = null;
         this.titleLogo = null;
         this.titleMenu = null;
-        return content;
+        this.centerIntroBlurAnimId = -1;
+        return assets;
     }
 
     /** blur·로고·메뉴의 기존 상대 시간축을 같은 프레임 경계에서 시작합니다. @private */
@@ -224,51 +208,13 @@ export class TitleLoadingSequence {
      */
     #showTitleLogo() {
         if (!this.titleLogo) {
-            this.titleLogo = new TitleLogo(this.titleScene);
+            this.titleLogo = new TitleLogo(this.titleController);
             this.titleLogo.play(getLoadingLogoColor());
         }
         if (!this.titleMenu) {
-            this.titleMenu = new TitleMenu(this.titleScene);
+            this.titleMenu = new TitleMenu(this.titleController);
         }
         this.resize();
-    }
-
-    /**
-     * 로고 드로잉 재생률이 기준을 넘으면 중앙 원·로고·메뉴 전환을 시작합니다.
-     * @private
-     */
-    #updateSceneTransition() {
-        if (!this.titleLogo || this.sceneTransitionStarted) {
-            return;
-        }
-
-        if (this.titleLogo.getPlaybackProgress() < TITLE_LOADING.SCENE_TRANSITION_TRIGGER_PROGRESS) {
-            return;
-        }
-
-        this.sceneTransitionStarted = true;
-        const transitionSegments = buildTitleSceneTransitionSegments({
-            startValue: 0,
-            endValue: 1,
-            motion: TITLE_LOADING.SCENE_TRANSITION_MOTION
-        });
-        this.enemySpawnReadyProgress = transitionSegments[0]?.endValue ?? 0;
-        const transitionAnimation = animateMixed(this, [{
-            variable: 'sceneTransitionProgress',
-            animations: transitionSegments
-        }]);
-        const glowAnimation = animateMixed(this.centerCircle, [{
-            variable: 'glowCompensationScale',
-            animations: buildTitleSceneTransitionSegments({
-                startValue: this.centerCircle.glowCompensationScale,
-                endValue: TITLE_LOADING.GLOW_COMPENSATION_SCALE,
-                motion: TITLE_LOADING.SCENE_TRANSITION_MOTION
-            })
-        }]);
-        this.sceneTransitionAnimIds = [
-            ...(transitionAnimation.ids || []),
-            ...(glowAnimation.ids || [])
-        ];
     }
 
     /**

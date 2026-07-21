@@ -22,6 +22,10 @@ const sequenceSource = await readFile(
     new URL('../script/module/scene/title/_title_loading_sequence.js', import.meta.url),
     'utf8'
 );
+const titleSceneIntroSource = await readFile(
+    new URL('../script/module/scene/title/_title_scene_intro_sequence.js', import.meta.url),
+    'utf8'
+);
 assert.match(sequenceSource, /this\.#showTitleLogo\(\);/);
 assert.match(sequenceSource, /advanceTitleIntroDelay\(/);
 assert.match(sequenceSource, /TITLE_LOADING\.INTRO_START_DELAY_SECONDS/);
@@ -87,19 +91,23 @@ assert.equal(TITLE_CONSTANTS.TITLE_LOADING.SCENE_TRANSITION_MOTION.CRUISE.EASING
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.SCENE_TRANSITION_MOTION.DECEL.DURATION, 1.5);
 assert.equal(TITLE_CONSTANTS.TITLE_LOADING.SCENE_TRANSITION_MOTION.DECEL.EASING, 'easeOutExpo');
 assert.equal('ENEMY_SPAWN_READY_LEAD_SECONDS' in TITLE_CONSTANTS.TITLE_LOADING, false);
-assert.match(sequenceSource, /animateMixed\(this,/);
-assert.match(sequenceSource, /animateMixed\(this\.centerCircle,/);
-assert.match(sequenceSource, /buildTitleSceneTransitionSegments/);
-assert.doesNotMatch(sequenceSource, /sceneTransitionTimelineProgress/);
+assert.doesNotMatch(sequenceSource, /animateMixed|buildTitleSceneTransitionSegments/);
+assert.match(sequenceSource, /isTitleSceneHandoffReady\(\)/);
+assert.match(sequenceSource, /releaseTitleIntroAssets\(\)/);
+assert.match(sequenceSource, /isEnemySpawnReady\(\) \{\s*return false;/);
+assert.match(titleSceneIntroSource, /animateMixed\(this,/);
+assert.match(titleSceneIntroSource, /animateMixed\(this\.centerCircle,/);
+assert.match(titleSceneIntroSource, /buildTitleSceneTransitionSegments/);
+assert.doesNotMatch(titleSceneIntroSource, /sceneTransitionTimelineProgress/);
 assert.match(
-    sequenceSource,
+    titleSceneIntroSource,
     /this\.sceneTransitionProgress >= this\.enemySpawnReadyProgress/
 );
 assert.match(
-    sequenceSource,
+    titleSceneIntroSource,
     /this\.enemySpawnReadyProgress = transitionSegments\[0\]\?\.endValue \?\? 0;/
 );
-assert.doesNotMatch(sequenceSource, /getEnemySpawnReadyProgressThreshold|clamp01/);
+assert.doesNotMatch(titleSceneIntroSource, /getEnemySpawnReadyProgressThreshold|clamp01/);
 
 const transitionSegments = buildTitleSceneTransitionSegments({
     startValue: 0,
