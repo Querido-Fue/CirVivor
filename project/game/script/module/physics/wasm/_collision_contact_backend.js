@@ -4,6 +4,18 @@ const FAILURE_NAME_FALLBACK = 'Error';
 const FAILURE_MESSAGE_FALLBACK = 'Unknown error';
 
 /**
+ * @typedef {object} CollisionContactRuntime
+ * @property {(bodies: object[], lowIndices: Int32Array, highIndices: Int32Array, pairCount: number) => Uint8Array} scanPreparedContacts
+ * canonical prepared body와 candidate 배열의 앞 `pairCount`개를 순서대로 판정하는 WASM scan입니다.
+ */
+
+/**
+ * @typedef {object} CollisionContactBackendLike
+ * @property {(bodies: object[], lowIndices: Int32Array, highIndices: Int32Array, pairCount: number) => (Uint8Array|null)} [scanPreparedContacts]
+ * candidate 순서의 contact flag view를 반환하며, null은 현재 batch 전체를 JS로 다시 판정하라는 신호입니다.
+ */
+
+/**
  * 오류 문자열 변환 자체가 실패해도 고정 진단 문자열을 반환합니다.
  * @param {unknown} error - 문자열화할 오류입니다.
  * @returns {string} 직렬화 가능한 오류 문자열입니다.
@@ -69,7 +81,7 @@ export class CollisionContactBackend {
     /**
      * 런타임을 한 번 동기 준비하며 실패하면 이 backend를 영구 JS 모드로 고정합니다.
      * @param {object} [options] - 테스트 가능한 backend 구성입니다.
-     * @param {() => {scanPreparedContacts:Function}} [options.runtimeFactory] - 런타임 생성 함수입니다.
+     * @param {() => CollisionContactRuntime} [options.runtimeFactory] - 런타임 생성 함수입니다.
      */
     constructor({ runtimeFactory = createCollisionContactWasmRuntimeSync } = {}) {
         if (typeof runtimeFactory !== 'function') {

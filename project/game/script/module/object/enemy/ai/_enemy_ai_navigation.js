@@ -4,6 +4,10 @@ import { getHexaHiveType } from '../_hexa_hive_layout.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 import { buildEnemyAIFlowField } from './wasm/_enemy_ai_flow_field_backend.js';
 
+/** @typedef {import('./wasm/_enemy_ai_flow_field_backend.js').EnemyAIFlowFieldGrid} EnemyAIFlowFieldGrid */
+/** @typedef {import('./wasm/_enemy_ai_flow_field_backend.js').EnemyAIFlowFieldGoalCell} EnemyAIFlowFieldGoalCell */
+/** @typedef {import('./wasm/_enemy_ai_flow_field_backend.js').EnemyAIFlowFieldResult} EnemyAIFlowFieldResult */
+
 const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
 const INF = ENEMY_AI_CONSTANTS.INF;
 const DIAGONAL_COST = ENEMY_AI_CONSTANTS.DIAGONAL_COST;
@@ -887,9 +891,9 @@ function popFlowHeapNode(heap, positions, integration) {
 
 /**
  * 목표 셀에서 모든 셀까지의 flow field를 생성합니다.
- * @param {{cols: number, rows: number, size: number, blocked: Uint8Array}} grid - 네비게이션 그리드입니다.
- * @param {{cx: number, cy: number}} goalCell - 목표 셀입니다.
- * @returns {{integration: Float32Array, dirX: Float32Array, dirY: Float32Array, goalIndex: number}} flow field입니다.
+ * @param {EnemyAIFlowFieldGrid} grid - 네비게이션 그리드입니다.
+ * @param {EnemyAIFlowFieldGoalCell} goalCell - 목표 셀입니다.
+ * @returns {EnemyAIFlowFieldResult} flow field입니다.
  */
 const buildFlowField = (grid, goalCell) => {
     const size = grid.size;
@@ -992,7 +996,7 @@ const buildFlowField = (grid, goalCell) => {
  * @param {number} targetX - 목표 X 좌표입니다.
  * @param {number} targetY - 목표 Y 좌표입니다.
  * @param {number|null} [wallsVersion=null] - ObjectSystem 벽 버전입니다.
- * @returns {{key: string, grid: object, clearance: number, field: object}|null} flow field 조회 결과입니다.
+ * @returns {{key: string, grid: object, clearance: number, field: EnemyAIFlowFieldResult}|null} flow field 조회 결과입니다.
  */
 const getFlowFieldForTargetCoords = (
     walls,
@@ -1168,7 +1172,7 @@ export const getSharedDirectPathAvailability = (
  * @param {number} targetX - 목표 X 좌표입니다.
  * @param {number} targetY - 목표 Y 좌표입니다.
  * @param {string} [policyKey='chase'] - 정책 캐시 키입니다.
- * @returns {{key: string, grid: object, clearance: number, field: object}|null} flow field 조회 결과입니다.
+ * @returns {{key: string, grid: object, clearance: number, field: EnemyAIFlowFieldResult}|null} flow field 조회 결과입니다.
  */
 export const getSharedFlowFieldForTargetCoords = (
     context,
