@@ -2,28 +2,31 @@ import { BaseScene } from 'scene/_base_scene.js';
 
 /**
  * @class TitleScene
- * @description LoadingScene이 완료한 presentation을 이어받아 정상 타이틀 수명 주기와
- * overlay·씬 전환 요청만 라우팅합니다.
+ * @description LoadingScene의 이동 직전 presentation을 이어받아 원·로고 이동부터 정상 타이틀까지 소유합니다.
  */
 export class TitleScene extends BaseScene {
     /**
      * @param {object} sceneSystem - 씬 시스템 인스턴스입니다.
      * @param {object} handoff - LoadingScene이 넘긴 동일 identity 상태입니다.
-     * @param {import('./_title_scene_presentation.js').TitleScenePresentation} handoff.presentation - 완료된 타이틀 presentation입니다.
+     * @param {import('./_title_scene_presentation.js').TitleScenePresentation} handoff.presentation - 이동 직전 타이틀 presentation입니다.
      * @param {import('./_title_scene_controller.js').TitleSceneController} handoff.titleController - 안정적인 타이틀 action controller입니다.
      */
     constructor(sceneSystem, { presentation, titleController }) {
         super(sceneSystem);
         this.presentation = presentation;
         this.titleController = titleController;
+        if (this.presentation?.beginTitleScenePhase?.() !== true) {
+            throw new Error('TitleScene requires a ready loading presentation.');
+        }
     }
 
     /**
      * @override
-     * 완료된 타이틀 presentation을 갱신합니다.
+     * 이동 중이거나 완료된 타이틀 presentation을 갱신합니다.
      */
     update() {
         this.presentation?.update();
+        this.presentation?.promoteCompletedTitleIntro?.();
     }
 
     /**

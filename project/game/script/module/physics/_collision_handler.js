@@ -104,6 +104,8 @@ const COLLISION_PLAYER_BODY_BUILD_OPTIONS = COLLISION_ENEMY_BODY_BUILD_OPTIONS;
  * @property {boolean} applyImpactRotation
  */
 
+/** @typedef {import('./wasm/_collision_contact_backend.js').CollisionContactBackendLike} CollisionContactBackendLike */
+
 /**
  * @class CollisionHandler
  * @description broad-phase + narrow-phase + resolve를 담당하는 충돌 핸들러
@@ -147,7 +149,7 @@ export class CollisionHandler {
 
     /**
      * @param {object} [options] - 내부 backend 구성입니다.
-     * @param {{scanPreparedContacts?:Function}|null} [options.contactBackend=collisionContactBackend]
+     * @param {CollisionContactBackendLike|null} [options.contactBackend=collisionContactBackend]
      * prepared contact batch backend이며 null이면 JS boolean을 사용합니다.
      */
     constructor({ contactBackend = collisionContactBackend } = {}) {

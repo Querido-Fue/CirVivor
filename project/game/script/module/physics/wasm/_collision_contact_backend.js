@@ -1,16 +1,70 @@
 import { createCollisionContactWasmRuntimeSync } from './_collision_contact_wasm_runtime.js';
 
+const FAILURE_NAME_FALLBACK = 'Error';
+const FAILURE_MESSAGE_FALLBACK = 'Unknown error';
+
+/**
+ * @typedef {object} CollisionContactRuntime
+ * @property {(bodies: object[], lowIndices: Int32Array, highIndices: Int32Array, pairCount: number) => Uint8Array} scanPreparedContacts
+ * canonical prepared body와 candidate 배열의 앞 `pairCount`개를 순서대로 판정하는 WASM scan입니다.
+ */
+
+/**
+ * @typedef {object} CollisionContactBackendLike
+ * @property {(bodies: object[], lowIndices: Int32Array, highIndices: Int32Array, pairCount: number) => (Uint8Array|null)} [scanPreparedContacts]
+ * candidate 순서의 contact flag view를 반환하며, null은 현재 batch 전체를 JS로 다시 판정하라는 신호입니다.
+ */
+
+/**
+ * 오류 문자열 변환 자체가 실패해도 고정 진단 문자열을 반환합니다.
+ * @param {unknown} error - 문자열화할 오류입니다.
+ * @returns {string} 직렬화 가능한 오류 문자열입니다.
+ */
+function stringifyFailure(error) {
+    try {
+        return String(error);
+    } catch {
+        return FAILURE_MESSAGE_FALLBACK;
+    }
+}
+
+/**
+ * 기존 name 조회 순서를 유지하되 hostile getter가 실패하면 기본 이름을 반환합니다.
+ * @param {unknown} error - 원본 오류입니다.
+ * @returns {string} 직렬화 가능한 오류 이름입니다.
+ */
+function getFailureName(error) {
+    try {
+        return typeof error?.name === 'string' ? error.name : FAILURE_NAME_FALLBACK;
+    } catch {
+        return FAILURE_NAME_FALLBACK;
+    }
+}
+
+/**
+ * 기존 message 조회와 문자열 fallback 순서를 유지하며 모든 변환 실패를 흡수합니다.
+ * @param {unknown} error - 원본 오류입니다.
+ * @returns {string} 직렬화 가능한 오류 메시지입니다.
+ */
+function getFailureMessage(error) {
+    try {
+        return typeof error?.message === 'string' ? error.message : stringifyFailure(error);
+    } catch {
+        return stringifyFailure(error);
+    }
+}
+
 /**
  * 최초 WASM 실패를 직렬화 가능한 진단값으로 보존합니다.
  * @param {'initialization'|'execution'} stage - 실패 단계입니다.
  * @param {unknown} error - 원본 오류입니다.
- * @returns {{stage:string,name:string,message:string}} 실패 스냅샷입니다.
+ * @returns {{stage:'initialization'|'execution',name:string,message:string}} 실패 스냅샷입니다.
  */
 function createFailureSnapshot(stage, error) {
     return {
         stage,
-        name: typeof error?.name === 'string' ? error.name : 'Error',
-        message: typeof error?.message === 'string' ? error.message : String(error)
+        name: getFailureName(error),
+        message: getFailureMessage(error)
     };
 }
 
@@ -27,7 +81,7 @@ export class CollisionContactBackend {
     /**
      * 런타임을 한 번 동기 준비하며 실패하면 이 backend를 영구 JS 모드로 고정합니다.
      * @param {object} [options] - 테스트 가능한 backend 구성입니다.
-     * @param {() => {scanPreparedContacts:Function}} [options.runtimeFactory] - 런타임 생성 함수입니다.
+     * @param {() => CollisionContactRuntime} [options.runtimeFactory] - 런타임 생성 함수입니다.
      */
     constructor({ runtimeFactory = createCollisionContactWasmRuntimeSync } = {}) {
         if (typeof runtimeFactory !== 'function') {
@@ -86,7 +140,7 @@ export class CollisionContactBackend {
 
     /**
      * 테스트와 진단용 backend 상태를 반환합니다.
-     * @returns {{state:string,failure:null|{stage:string,name:string,message:string},wasmScanCount:number,jsFallbackCount:number}}
+     * @returns {{state:string,failure:null|{stage:'initialization'|'execution',name:string,message:string},wasmScanCount:number,jsFallbackCount:number}}
      */
     getStatus() {
         return {
@@ -98,10 +152,11 @@ export class CollisionContactBackend {
     }
 }
 
+/** @type {CollisionContactBackend} production prepared-contact backend singleton입니다. */
 export const collisionContactBackend = new CollisionContactBackend();
 
 /**
  * production collision contact backend 상태를 반환합니다.
- * @returns {{state:string,failure:null|{stage:string,name:string,message:string},wasmScanCount:number,jsFallbackCount:number}}
+ * @returns {{state:string,failure:null|{stage:'initialization'|'execution',name:string,message:string},wasmScanCount:number,jsFallbackCount:number}}
  */
 export const getCollisionContactBackendStatus = () => collisionContactBackend.getStatus();

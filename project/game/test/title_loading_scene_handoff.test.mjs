@@ -18,8 +18,48 @@ const loadingSceneSource = await readFile(
 assert.match(sceneSystemSource, /new LoadingScene\(this\), SCENE_STATES\.LOADING/);
 assert.match(sceneSystemSource, /new TitleScene\(this, handoff\)/);
 assert.doesNotMatch(titleSceneSource, /TitleLoadingSequence|new TitleGradientBackground|new TitleBackGround/);
+assert.match(titleSceneSource, /beginTitleScenePhase/);
+assert.match(titleSceneSource, /promoteCompletedTitleIntro/);
 assert.match(loadingSceneSource, /new TitleScenePresentation\(this\.titleController\)/);
 assert.match(loadingSceneSource, /releaseTitlePresentation\(\)/);
+assert.match(loadingSceneSource, /isTitleSceneHandoffReady/);
+assert.doesNotMatch(loadingSceneSource, /promoteCompletedLoadingContent|isLoadingComplete/);
+
+const titleRuntimeContext = vm.createContext({ console });
+const titleRuntimeModule = new vm.SourceTextModule(titleSceneSource, {
+    context: titleRuntimeContext,
+    identifier: '_title_scene.js'
+});
+const baseSceneModule = new vm.SyntheticModule(['BaseScene'], function init() {
+    this.setExport('BaseScene', class BaseScene {
+        constructor(sceneSystem) {
+            this.sceneSystem = sceneSystem;
+        }
+    });
+}, { context: titleRuntimeContext });
+await titleRuntimeModule.link(() => baseSceneModule);
+await titleRuntimeModule.evaluate();
+const titleLifecycleTrace = [];
+const titlePresentation = {
+    beginTitleScenePhase() {
+        titleLifecycleTrace.push('begin');
+        return true;
+    },
+    update() {
+        titleLifecycleTrace.push('update');
+    },
+    promoteCompletedTitleIntro() {
+        titleLifecycleTrace.push('promote');
+    }
+};
+const TitleSceneRuntime = titleRuntimeModule.namespace.TitleScene;
+const titleRuntime = new TitleSceneRuntime({}, {
+    presentation: titlePresentation,
+    titleController: { id: 'controller' }
+});
+assert.deepEqual(titleLifecycleTrace, ['begin']);
+titleRuntime.update();
+assert.deepEqual(titleLifecycleTrace, ['begin', 'update', 'promote']);
 
 const trace = [];
 class LoadingSceneStub {

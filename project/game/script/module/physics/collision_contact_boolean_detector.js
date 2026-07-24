@@ -38,9 +38,9 @@ export function detectCollisionBodiesBooleanContact(bodyA, bodyB) {
 
 /**
  * 원형 body 두 개의 기존 manifold truthiness와 같은 결과를 반환합니다.
- * @param {object} bodyA
- * @param {object} bodyB
- * @returns {boolean}
+ * @param {object} bodyA - 첫 번째 원형 prepared body입니다.
+ * @param {object} bodyB - 두 번째 원형 prepared body입니다.
+ * @returns {boolean} 두 원이 유효하고 겹치면 true입니다.
  */
 function detectCircleVsCircleContact(bodyA, bodyB) {
     const ax = bodyA.centerX;
@@ -62,9 +62,9 @@ function detectCircleVsCircleContact(bodyA, bodyB) {
 
 /**
  * 두 원형 part 묶음에서 기존 aggregate manifold가 생성되는 접촉이 하나라도 있는지 확인합니다.
- * @param {object} bodyA
- * @param {object} bodyB
- * @returns {boolean}
+ * @param {object} bodyA - 첫 번째 circleParts prepared body입니다.
+ * @param {object} bodyB - 두 번째 circleParts prepared body입니다.
+ * @returns {boolean} 유효한 part 접촉이 하나라도 있으면 true입니다.
  */
 function detectCirclePartsVsCirclePartsContact(bodyA, bodyB) {
     const partsA = bodyA?.circleParts;
@@ -104,9 +104,9 @@ function detectCirclePartsVsCirclePartsContact(bodyA, bodyB) {
 
 /**
  * 원형 part 묶음과 원형 body에서 기존 aggregate manifold가 생성되는지 확인합니다.
- * @param {object} partBody
- * @param {object} circleBody
- * @returns {boolean}
+ * @param {object} partBody - circleParts prepared body입니다.
+ * @param {object} circleBody - circle prepared body입니다.
+ * @returns {boolean} 유효한 part와 원이 접촉하면 true입니다.
  */
 function detectCirclePartsVsCircleContact(partBody, circleBody) {
     const parts = partBody?.circleParts;
@@ -149,13 +149,13 @@ function detectCirclePartsVsCircleContact(partBody, circleBody) {
 /**
  * aggregate part detector가 유효한 단일 접촉으로 인정하는지 반환합니다.
  * 중심 거리가 EPSILON 이하이면 기존 writer와 같이 거리를 0으로 보정합니다.
- * @param {number} ax
- * @param {number} ay
- * @param {number} ar
- * @param {number} bx
- * @param {number} by
- * @param {number} br
- * @returns {boolean}
+ * @param {number} ax - 첫 원의 중심 X입니다.
+ * @param {number} ay - 첫 원의 중심 Y입니다.
+ * @param {number} ar - 첫 원의 반경입니다.
+ * @param {number} bx - 둘째 원의 중심 X입니다.
+ * @param {number} by - 둘째 원의 중심 Y입니다.
+ * @param {number} br - 둘째 원의 반경입니다.
+ * @returns {boolean} 유효 침투량이 EPSILON보다 크면 true입니다.
  */
 function detectAggregateCircleContact(ax, ay, ar, bx, by, br) {
     const dx = bx - ax;
@@ -176,10 +176,10 @@ function detectAggregateCircleContact(ax, ay, ar, bx, by, br) {
 
 /**
  * 기존 circle manifold writer와 같은 숫자 유효성 조건을 검사합니다.
- * @param {number} x
- * @param {number} y
- * @param {number} radius
- * @returns {boolean}
+ * @param {number} x - 원 중심 X입니다.
+ * @param {number} y - 원 중심 Y입니다.
+ * @param {number} radius - 원 반경입니다.
+ * @returns {boolean} 중심과 반경이 유한하고 반경이 양수이면 true입니다.
  */
 function isValidCollisionCircle(x, y, radius) {
     return Number.isFinite(x)
