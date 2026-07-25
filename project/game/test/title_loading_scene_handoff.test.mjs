@@ -97,6 +97,7 @@ class TitleSceneStub {
 }
 
 class GameSceneStub {}
+class BenchmarkSceneStub {}
 const context = vm.createContext({ console });
 const sceneModule = new vm.SourceTextModule(sceneSystemSource, {
     context,
@@ -112,6 +113,9 @@ const dependencyModules = new Map([
     ['./game/_game_scene.js', new vm.SyntheticModule(['GAME_SCENE_MODES', 'GameScene'], function init() {
         this.setExport('GAME_SCENE_MODES', { PLAY: 'play', BENCHMARK: 'benchmark' });
         this.setExport('GameScene', GameSceneStub);
+    }, { context })],
+    ['./game/_benchmark_scene.js', new vm.SyntheticModule(['BenchmarkScene'], function init() {
+        this.setExport('BenchmarkScene', BenchmarkSceneStub);
     }, { context })],
     ['simulation/simulation_command_queue.js', new vm.SyntheticModule(['clearSimulationCommands'], function init() {
         this.setExport('clearSimulationCommands', () => {});

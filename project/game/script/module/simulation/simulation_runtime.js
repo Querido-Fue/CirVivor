@@ -395,6 +395,19 @@ export function getSimulationMouseFocus() {
 }
 
 /**
+ * 시뮬레이션 입력 스냅샷에서 지정한 내부 키가 눌려 있는지 확인합니다.
+ * live key 객체를 외부에 노출하지 않고 fixed-step 입력 adapter가 상태를 읽을 때 사용합니다.
+ * @param {string} key - 조회할 내부 입력 키 이름입니다.
+ * @returns {boolean} 현재 눌림 여부입니다.
+ */
+export function isSimulationKeyboardPressed(key) {
+    if (typeof key !== 'string' || key.length === 0) {
+        return false;
+    }
+    return simulationRuntimeInstance?.input?.keys?.[key] === true;
+}
+
+/**
  * 현재 시뮬레이션 설정 값을 반환합니다.
  * @param {string} key
  * @param {any} [fallback=undefined]

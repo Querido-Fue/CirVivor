@@ -11,6 +11,7 @@ const ALIAS_ROOTS = Object.freeze({
     'debug/': path.join(SCRIPT_ROOT, 'module', 'debug'),
     'display/': path.join(SCRIPT_ROOT, 'module', 'display'),
     'game/': SCRIPT_ROOT,
+    'ingame/': path.join(SCRIPT_ROOT, 'module', 'ingame'),
     'input/': path.join(SCRIPT_ROOT, 'module', 'input'),
     'object/': path.join(SCRIPT_ROOT, 'module', 'object'),
     'overlay/': path.join(SCRIPT_ROOT, 'module', 'overlay'),
