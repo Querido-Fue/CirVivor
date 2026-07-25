@@ -27,6 +27,7 @@ export class TheTower {
 
         this.id = 'the-tower';
         this.kind = 'tower';
+        this.cameraFollowTargetId = `${this.id}:camera-follow`;
         this.active = true;
         this.radius = Number.isFinite(radius) && radius > 0
             ? radius
@@ -85,6 +86,23 @@ export class TheTower {
      */
     getCollider() {
         return this.collider;
+    }
+
+    /** @returns {boolean} Tower를 카메라가 추종할 수 있는 활성 상태인지 여부입니다. */
+    isCameraFollowEnabled() {
+        return this.active;
+    }
+
+    /**
+     * fixed 위치가 아니라 현재 보간된 렌더 월드 좌표를 복사합니다.
+     * @param {object} [out={}] - 재사용 결과 객체입니다.
+     * @returns {{x:number,y:number}} 갱신한 결과 객체입니다.
+     */
+    copyCameraFollowPositionInto(out = {}) {
+        const target = out && typeof out === 'object' ? out : {};
+        target.x = this.renderPosition.x;
+        target.y = this.renderPosition.y;
+        return target;
     }
 
     /**

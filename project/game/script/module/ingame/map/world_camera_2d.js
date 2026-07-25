@@ -1,3 +1,5 @@
+import { CAMERA_ZOOM_LIMITS } from '../contract/camera_control_contract.js';
+
 /**
  * 유한한 0 이상 크기를 반환합니다.
  * @param {*} value - 원본 값입니다.
@@ -6,6 +8,22 @@
 function normalizeSize(value) {
     const numericValue = Number(value);
     return Number.isFinite(numericValue) ? Math.max(0, numericValue) : 0;
+}
+
+/**
+ * 값을 유한한 범위로 제한합니다.
+ * @param {*} value - 원본 값입니다.
+ * @param {number} min - 하한입니다.
+ * @param {number} max - 상한입니다.
+ * @param {number} fallback - 유효하지 않을 때의 값입니다.
+ * @returns {number} 제한된 값입니다.
+ */
+function clampFinite(value, min, max, fallback) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+        return fallback;
+    }
+    return Math.max(min, Math.min(max, numericValue));
 }
 
 /**
@@ -36,7 +54,7 @@ function resolveContainScale(
 
 /**
  * @class WorldCamera2D
- * @description 전체 타일 월드를 현재 viewport에 contain하는 직교 projection입니다.
+ * @description contain 배율과 월드 중심 추종을 지원하며 맵 가장자리 밖도 표시하는 직교 projection입니다.
  */
 export class WorldCamera2D {
     constructor() {
@@ -44,11 +62,16 @@ export class WorldCamera2D {
         this.worldHeight = 0;
         this.viewportWidth = 0;
         this.viewportHeight = 0;
+        this.fitScale = 0;
         this.scale = 0;
+        this._zoom = CAMERA_ZOOM_LIMITS.DEFAULT;
         this.offsetX = 0;
         this.offsetY = 0;
         this.projectionRevision = 0;
         this.viewBounds = { left: 0, top: 0, right: 0, bottom: 0 };
+        this.viewCenterViewport = { x: 0, y: 0 };
+        this.viewCenterWorld = { x: 0, y: 0 };
+        this.centerScratch = { x: 0, y: 0 };
     }
 
     /**
@@ -60,35 +83,136 @@ export class WorldCamera2D {
     init(worldBounds, viewport) {
         this.worldWidth = normalizeSize(worldBounds?.width);
         this.worldHeight = normalizeSize(worldBounds?.height);
-        this.viewBounds.left = 0;
-        this.viewBounds.top = 0;
-        this.viewBounds.right = this.worldWidth;
-        this.viewBounds.bottom = this.worldHeight;
+        this._zoom = CAMERA_ZOOM_LIMITS.DEFAULT;
+        this.scale = 0;
+        this.viewCenterWorld.x = this.worldWidth * 0.5;
+        this.viewCenterWorld.y = this.worldHeight * 0.5;
         this.resize(viewport);
     }
 
     /**
-     * viewport에 맞춰 contain 배율과 중앙 오프셋을 다시 계산합니다.
-     * 월드 좌표와 물리 상태는 변경하지 않습니다.
+     * viewport 크기를 갱신하되 기존 화면 중심의 월드 위치와 현재 zoom 배율을 유지합니다.
+     * 진행 중 zoom은 resize 이후 새 viewport 중앙을 앵커로 계속 진행합니다.
      * @param {{ww:number,wh:number}} viewport - 실제 표시 viewport입니다.
      * @returns {void}
      */
     resize(viewport) {
+        if (this.scale > 0) {
+            this.viewportToWorld(
+                this.viewportWidth * 0.5,
+                this.viewportHeight * 0.5,
+                this.centerScratch
+            );
+        } else {
+            this.centerScratch.x = this.worldWidth * 0.5;
+            this.centerScratch.y = this.worldHeight * 0.5;
+        }
+
         this.viewportWidth = normalizeSize(viewport?.ww);
         this.viewportHeight = normalizeSize(viewport?.wh);
-        this.scale = resolveContainScale(
+        this.fitScale = resolveContainScale(
             this.worldWidth,
             this.worldHeight,
             this.viewportWidth,
             this.viewportHeight
         );
-        this.offsetX = (
-            this.viewportWidth - (this.worldWidth * this.scale)
-        ) * 0.5;
-        this.offsetY = (
-            this.viewportHeight - (this.worldHeight * this.scale)
-        ) * 0.5;
-        this.projectionRevision++;
+        this.scale = this.fitScale * this._zoom;
+        this.viewCenterViewport.x = this.viewportWidth * 0.5;
+        this.viewCenterViewport.y = this.viewportHeight * 0.5;
+        this.viewCenterWorld.x = clampFinite(
+            this.centerScratch.x,
+            0,
+            this.worldWidth,
+            this.worldWidth * 0.5
+        );
+        this.viewCenterWorld.y = clampFinite(
+            this.centerScratch.y,
+            0,
+            this.worldHeight,
+            this.worldHeight * 0.5
+        );
+        this.#rebuildProjection();
+    }
+
+    /**
+     * 지정한 월드 좌표를 viewport 중앙에 배치합니다.
+     * offset을 월드 경계로 제한하지 않아 가장자리에서도 월드 밖을 표시합니다.
+     * @param {*} worldX - 중앙에 둘 월드 X입니다.
+     * @param {*} worldY - 중앙에 둘 월드 Y입니다.
+     * @returns {boolean} projection 중심이 실제로 바뀌었는지 여부입니다.
+     */
+    centerOnWorldPoint(worldX, worldY) {
+        const nextWorldX = clampFinite(
+            worldX,
+            0,
+            this.worldWidth,
+            this.worldWidth * 0.5
+        );
+        const nextWorldY = clampFinite(
+            worldY,
+            0,
+            this.worldHeight,
+            this.worldHeight * 0.5
+        );
+        const nextViewportX = this.viewportWidth * 0.5;
+        const nextViewportY = this.viewportHeight * 0.5;
+        if (Object.is(nextWorldX, this.viewCenterWorld.x)
+            && Object.is(nextWorldY, this.viewCenterWorld.y)
+            && Object.is(nextViewportX, this.viewCenterViewport.x)
+            && Object.is(nextViewportY, this.viewCenterViewport.y)) {
+            return false;
+        }
+
+        this.viewCenterWorld.x = nextWorldX;
+        this.viewCenterWorld.y = nextWorldY;
+        this.viewCenterViewport.x = nextViewportX;
+        this.viewCenterViewport.y = nextViewportY;
+        this.#rebuildProjection();
+        return true;
+    }
+
+    /**
+     * 맵의 기하학적 중심을 viewport 중앙에 다시 배치합니다.
+     * @returns {boolean} projection 중심이 실제로 바뀌었는지 여부입니다.
+     */
+    resetViewCenter() {
+        return this.centerOnWorldPoint(
+            this.worldWidth * 0.5,
+            this.worldHeight * 0.5
+        );
+    }
+
+    /**
+     * contain 배율 대비 zoom 배율을 반환합니다.
+     * @returns {number} contain 대비 현재 zoom 배율입니다.
+     */
+    get zoom() {
+        return this._zoom;
+    }
+
+    /**
+     * contain 배율 대비 zoom을 적용하고 현재 월드 중심을 보존합니다.
+     * AnimationSystem이 이 속성을 직접 보간할 수 있습니다.
+     * @param {*} value - 새 zoom 배율입니다.
+     */
+    set zoom(value) {
+        const nextZoom = clampFinite(
+            value,
+            CAMERA_ZOOM_LIMITS.MIN,
+            CAMERA_ZOOM_LIMITS.MAX,
+            this._zoom
+        );
+        if (Object.is(nextZoom, this._zoom)) {
+            return;
+        }
+        this._zoom = nextZoom;
+        this.scale = this.fitScale * this._zoom;
+        this.#rebuildProjection();
+    }
+
+    /** @returns {number} contain 배율 대비 현재 zoom입니다. */
+    getZoom() {
+        return this._zoom;
     }
 
     /** @returns {object} 현재 월드 기준 view bounds입니다. */
@@ -164,5 +288,36 @@ export class WorldCamera2D {
             && x - radius <= this.viewBounds.right
             && y + radius >= this.viewBounds.top
             && y - radius <= this.viewBounds.bottom;
+    }
+
+    /**
+     * 현재 zoom·앵커에서 offset과 view bounds를 다시 계산합니다.
+     * @returns {void}
+     * @private
+     */
+    #rebuildProjection() {
+        this.offsetX = this.viewCenterViewport.x
+            - (this.viewCenterWorld.x * this.scale);
+        this.offsetY = this.viewCenterViewport.y
+            - (this.viewCenterWorld.y * this.scale);
+
+        if (this.scale <= 0) {
+            this.viewBounds.left = 0;
+            this.viewBounds.top = 0;
+            this.viewBounds.right = this.worldWidth;
+            this.viewBounds.bottom = this.worldHeight;
+        } else {
+            this.viewBounds.left = Math.max(0, -this.offsetX / this.scale);
+            this.viewBounds.top = Math.max(0, -this.offsetY / this.scale);
+            this.viewBounds.right = Math.min(
+                this.worldWidth,
+                (this.viewportWidth - this.offsetX) / this.scale
+            );
+            this.viewBounds.bottom = Math.min(
+                this.worldHeight,
+                (this.viewportHeight - this.offsetY) / this.scale
+            );
+        }
+        this.projectionRevision++;
     }
 }

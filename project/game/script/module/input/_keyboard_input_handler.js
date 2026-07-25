@@ -1,61 +1,34 @@
 /**
- * DOM KeyboardEvent.key 값을 내부 입력 키 이름으로 변환하는 매핑입니다.
- * @type {Readonly<Record<string, string>>}
+ * KeyboardEvent에서 설정에 저장 가능한 물리 키 코드를 추출합니다.
+ * @param {KeyboardEvent|object|null|undefined} event - DOM 키보드 이벤트입니다.
+ * @returns {string|null} KeyboardEvent.code 또는 null입니다.
  */
-const KEYBOARD_ACTION_BY_DOM_KEY = Object.freeze({
-    ArrowUp: 'up',
-    w: 'up',
-    W: 'up',
-    ArrowDown: 'down',
-    s: 'down',
-    S: 'down',
-    ArrowLeft: 'left',
-    a: 'left',
-    A: 'left',
-    ArrowRight: 'right',
-    d: 'right',
-    D: 'right',
-    ' ': 'space',
-    p: 'pause',
-    r: 'reload',
-    '/': 'debugPause',
-    '.': 'debugStep'
-});
-
-/**
- * 기본 키보드 입력 상태를 생성합니다.
- * @returns {{up:boolean, down:boolean, left:boolean, right:boolean, space:boolean, pause:boolean, reload:boolean, debugPause:boolean, debugStep:boolean}} 키 상태 객체입니다.
- */
-function createDefaultKeyboardState() {
-    return {
-        up: false,
-        down: false,
-        left: false,
-        right: false,
-        space: false,
-        pause: false,
-        reload: false,
-        debugPause: false,
-        debugStep: false
-    };
+function resolveKeyboardCode(event) {
+    return typeof event?.code === 'string' && event.code.length > 0
+        ? event.code
+        : null;
 }
 
 /**
  * @class KeyboardInputHandler
- * @description 키보드 입력을 관리하는 클래스입니다.
- * 키 상태 등을 추적합니다.
+ * @description DOM KeyboardEvent.code의 눌림 상태와 단발 edge만 관리하는 원시 입력기입니다.
+ * 의미 action 변환은 InputBindingMap이 담당합니다.
  */
 export class KeyboardInputHandler {
     constructor() {
-        this.keys = createDefaultKeyboardState();
-        this.pressedKeys = new Set();
+        this.downCodes = new Set();
+        this.pressedCodes = new Set();
 
-        window.addEventListener('keydown', (e) => {
-            this.#setKeyState(e.key, true, e.repeat === true);
+        window.addEventListener('keydown', (event) => {
+            this.#setCodeState(
+                resolveKeyboardCode(event),
+                true,
+                event?.repeat === true
+            );
         });
 
-        window.addEventListener('keyup', (e) => {
-            this.#setKeyState(e.key, false);
+        window.addEventListener('keyup', (event) => {
+            this.#setCodeState(resolveKeyboardCode(event), false);
         });
 
         window.addEventListener('blur', () => {
@@ -75,53 +48,77 @@ export class KeyboardInputHandler {
     }
 
     /**
-     * 키보드 입력 상태를 초기화합니다.
+     * 키보드 입력 상태와 대기 중인 edge를 초기화합니다.
      */
     resetKeyboardInput() {
-        this.keys = createDefaultKeyboardState();
-        this.pressedKeys.clear();
+        this.downCodes.clear();
+        this.pressedCodes.clear();
     }
 
     /**
-     * 키보드 관련 정보를 반환합니다.
-     * @param {string} key - 요청할 데이터 키
-     * @returns {any} 키보드 데이터
+     * 물리 KeyboardEvent.code의 현재 눌림 상태를 반환합니다.
+     * @param {string} code - KeyboardEvent.code입니다.
+     * @returns {boolean} 현재 눌림 여부입니다.
      */
-    getKeyboardInput(key) {
-        return Object.prototype.hasOwnProperty.call(this.keys, key) ? this.keys[key] : null;
+    isCodePressed(code) {
+        return typeof code === 'string' && this.downCodes.has(code);
     }
 
     /**
-     * 지정한 키의 반복되지 않은 누름 edge를 한 번 소비합니다.
-     * @param {string} key - 소비할 내부 입력 키 이름입니다.
+     * 기존 직접 조회 호출을 물리 코드 조회에 연결합니다.
+     * 의미 action 조회는 InputSystem.getKeyboardInput()을 사용해야 합니다.
+     * @param {string} code - KeyboardEvent.code입니다.
+     * @returns {boolean} 현재 눌림 여부입니다.
+     */
+    getKeyboardInput(code) {
+        return this.isCodePressed(code);
+    }
+
+    /**
+     * 물리 KeyboardEvent.code의 반복되지 않은 누름 edge를 한 번 소비합니다.
+     * @param {string} code - KeyboardEvent.code입니다.
      * @returns {boolean} 대기 중인 누름 edge를 소비했는지 여부입니다.
      */
-    consumeKeyboardPress(key) {
-        if (!this.pressedKeys.has(key)) {
+    consumeCodePress(code) {
+        if (typeof code !== 'string' || !this.pressedCodes.has(code)) {
             return false;
         }
 
-        this.pressedKeys.delete(key);
+        this.pressedCodes.delete(code);
         return true;
     }
 
     /**
-     * DOM key 입력을 내부 키 상태에 반영합니다.
-     * @param {string} domKey - KeyboardEvent.key 값입니다.
+     * 기존 직접 edge 소비 호출을 물리 코드 소비에 연결합니다.
+     * 의미 action 소비는 InputSystem.consumeKeyboardPress()를 사용해야 합니다.
+     * @param {string} code - KeyboardEvent.code입니다.
+     * @returns {boolean} 대기 중인 누름 edge를 소비했는지 여부입니다.
+     */
+    consumeKeyboardPress(code) {
+        return this.consumeCodePress(code);
+    }
+
+    /**
+     * 물리 코드 상태를 내부 Set에 반영합니다.
+     * @param {string|null} code - KeyboardEvent.code입니다.
      * @param {boolean} isPressed - 눌림 여부입니다.
      * @param {boolean} [isRepeat=false] - 브라우저 자동 반복 keydown 여부입니다.
      * @private
      */
-    #setKeyState(domKey, isPressed, isRepeat = false) {
-        const keyName = KEYBOARD_ACTION_BY_DOM_KEY[domKey];
-        if (!keyName) {
+    #setCodeState(code, isPressed, isRepeat = false) {
+        if (!code) {
             return;
         }
 
-        const wasPressed = this.keys[keyName] === true;
-        this.keys[keyName] = isPressed === true;
-        if (isPressed === true && !wasPressed && isRepeat !== true) {
-            this.pressedKeys.add(keyName);
+        const wasPressed = this.downCodes.has(code);
+        if (isPressed === true) {
+            this.downCodes.add(code);
+            if (!wasPressed && isRepeat !== true) {
+                this.pressedCodes.add(code);
+            }
+            return;
         }
+
+        this.downCodes.delete(code);
     }
 }

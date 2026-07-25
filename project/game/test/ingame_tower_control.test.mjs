@@ -17,11 +17,19 @@ const {
     isCoreIntegrity
 } = await loadGameModule('ingame/contract/core_integrity_contract.js');
 const {
+    CAMERA_ZOOM_LIMITS,
+    isCameraControl2D,
+    isCameraFollowTarget2D
+} = await loadGameModule('ingame/contract/camera_control_contract.js');
+const {
     PHYSICS_BODY_TYPES,
     isPhysicsBody2D,
     isPhysicsBodyOwner
 } = await loadGameModule('ingame/contract/physics_body_contract.js');
 const { InputActionMapper } = await loadGameModule('ingame/input/input_action_mapper.js');
+const { INPUT_ACTION_IDS } = await loadGameModule(
+    'input/_input_binding_constants.js'
+);
 const { GameSystem } = await loadGameModule('ingame/game_system.js');
 const { PhysicsBody2D } = await loadGameModule('ingame/physics/physics_body_2d.js');
 const { THE_TOWER_DATA } = await loadGameModule(
@@ -34,7 +42,22 @@ const { TILE_WORLD_SIZE } = await loadGameModule(
     'ingame/map/tile_map.js'
 );
 
-const pressedDirections = new Set(['up', 'right']);
+/**
+ * 부동소수점 projection 좌표를 허용 오차로 비교합니다.
+ * @param {{x:number,y:number}} actual - 실제 좌표입니다.
+ * @param {{x:number,y:number}} expected - 기대 좌표입니다.
+ * @param {number} [epsilon=1e-9] - 허용 오차입니다.
+ * @returns {void}
+ */
+function assertPointNearlyEqual(actual, expected, epsilon = 1e-9) {
+    assert.ok(Math.abs(actual.x - expected.x) <= epsilon);
+    assert.ok(Math.abs(actual.y - expected.y) <= epsilon);
+}
+
+const pressedDirections = new Set([
+    INPUT_ACTION_IDS.MOVE_UP,
+    INPUT_ACTION_IDS.MOVE_RIGHT
+]);
 const mapper = new InputActionMapper();
 const diagonalMove = mapper.mapMoveAction({
     isPressed(key) {
@@ -45,7 +68,7 @@ assert.equal(diagonalMove.type, PLAYER_ACTION_TYPES.MOVE_VECTOR);
 assert.ok(Math.abs(diagonalMove.payload.x - Math.SQRT1_2) < 1e-12);
 assert.ok(Math.abs(diagonalMove.payload.y + Math.SQRT1_2) < 1e-12);
 
-pressedDirections.add('left');
+pressedDirections.add(INPUT_ACTION_IDS.MOVE_LEFT);
 const cancelledHorizontalMove = mapper.mapMoveAction({
     isPressed(key) {
         return pressedDirections.has(key);
@@ -92,10 +115,46 @@ const time = {
 };
 const circleDraws = [];
 const squareInstanceDraws = [];
+const wheelTotals = { x: 0, y: 0 };
+const cameraAnimations = [];
+let nextCameraAnimationId = 1;
 const gameSystem = new GameSystem({
     inputActionSource: {
         isPressed(key) {
             return keys[key] === true;
+        },
+        getWheelTotals(out) {
+            Object.assign(out, wheelTotals);
+            return out;
+        }
+    },
+    animationPort: {
+        animate(owner, properties) {
+            const record = {
+                owner,
+                properties: { ...properties },
+                retargets: [],
+                active: true
+            };
+            const handle = {
+                id: nextCameraAnimationId++,
+                promise: Promise.resolve(),
+                retarget(nextProperties) {
+                    if (!record.active) return false;
+                    record.retargets.push({ ...nextProperties });
+                    record.properties = { ...record.properties, ...nextProperties };
+                    return true;
+                },
+                remove() {
+                    record.active = false;
+                },
+                isActive() {
+                    return record.active;
+                }
+            };
+            record.handle = handle;
+            cameraAnimations.push(record);
+            return handle;
         }
     },
     timePort: {
@@ -137,9 +196,14 @@ const towerPhysicsBody = tower.getPhysicsBody();
 const corePhysicsBody = core.getPhysicsBody();
 const towerCollider = tower.getCollider();
 const coreIntegrity = gameSystem.getCoreIntegrity();
+const cameraZoomController = gameSystem.getCameraZoomController();
 const worldProjection = gameObjectSystem.getWorldViewProjection();
 assert.ok(isPlayerControllable(towerController));
 assert.ok(isPlayerControllerable(towerController));
+assert.ok(isPlayerControllable(cameraZoomController));
+assert.ok(isCameraControl2D(worldProjection));
+assert.ok(isCameraFollowTarget2D(tower));
+assert.strictEqual(gameObjectSystem.getCameraFollowTarget(), tower);
 assert.ok(isPhysicsBodyOwner(tower));
 assert.ok(isPhysicsBody2D(towerPhysicsBody));
 assert.ok(isPhysicsBody2D(corePhysicsBody));
@@ -168,7 +232,7 @@ assert.equal(tower.position.y, tileMap.getTowerSpawnPosition().y);
 assert.equal(core.position.x, tileMap.getCorePosition().x);
 assert.equal(core.position.y, tileMap.getCorePosition().y);
 
-keys.right = true;
+keys[INPUT_ACTION_IDS.MOVE_RIGHT] = true;
 const initialTowerX = tower.position.x;
 const initialTowerY = tower.position.y;
 gameSystem.fixedUpdate();
@@ -229,7 +293,7 @@ assert.ok(
     ) < 0.02
 );
 
-keys.right = false;
+keys[INPUT_ACTION_IDS.MOVE_RIGHT] = false;
 const coastingStartX = tower.position.x;
 const coastingStartVelocity = towerPhysicsBody.getVelocity().x;
 gameSystem.fixedUpdate();
@@ -269,7 +333,7 @@ assert.equal(towerPhysicsBody.applyPositionCorrection(0.125, 0), true);
 assert.equal(tower.position.x, correctionStartX + 0.125);
 assert.equal(tower.previousPosition.x, correctionPreviousX);
 
-keys.left = true;
+keys[INPUT_ACTION_IDS.MOVE_LEFT] = true;
 for (let index = 0; index < 1500; index++) {
     gameSystem.fixedUpdate();
 }
@@ -283,7 +347,7 @@ const expectedLeftBoundary = (firstWalkableColumn * TILE_WORLD_SIZE)
 assert.equal(tower.position.x, expectedLeftBoundary);
 assert.equal(towerPhysicsBody.getVelocity().x, 0);
 
-keys.left = false;
+keys[INPUT_ACTION_IDS.MOVE_LEFT] = false;
 const releasedX = tower.position.x;
 gameSystem.fixedUpdate();
 assert.equal(tower.position.x, releasedX);
@@ -306,6 +370,82 @@ gameSystem.resize();
 assert.equal(tower.position.x, releasedX);
 assert.equal(tower.position.y, initialTowerY);
 
+viewport.ww = 1280;
+viewport.wh = 720;
+gameSystem.resize();
+assert.equal(worldProjection.getZoom(), CAMERA_ZOOM_LIMITS.DEFAULT);
+assert.equal(CAMERA_ZOOM_LIMITS.DEFAULT, 0.7);
+assertPointNearlyEqual(
+    worldProjection.worldToViewport(27, 15, {}),
+    { x: 640, y: 360 }
+);
+
+wheelTotals.y = -1;
+gameSystem.update();
+assert.equal(cameraAnimations.length, 1);
+assert.equal(cameraAnimations[0].properties.variable, 'zoom');
+assert.equal(cameraAnimations[0].properties.duration, 0.4);
+assert.equal(cameraAnimations[0].properties.type, 'easeOutExpo');
+assert.ok(
+    Math.abs(
+        cameraZoomController.getTargetZoom()
+        - (CAMERA_ZOOM_LIMITS.DEFAULT * 1.16)
+    ) < 1e-12
+);
+
+worldProjection.zoom = 0.76;
+gameSystem.update();
+assertPointNearlyEqual(
+    worldProjection.worldToViewport(
+        tower.renderPosition.x,
+        tower.renderPosition.y,
+        {}
+    ),
+    { x: 640, y: 360 }
+);
+assert.ok(worldProjection.viewportToWorld(0, 360, {}).x < 0);
+
+const followStartRenderX = tower.renderPosition.x;
+assert.equal(towerPhysicsBody.applyPositionCorrection(1, 0), true);
+gameSystem.update();
+assert.ok(tower.renderPosition.x > followStartRenderX);
+assertPointNearlyEqual(
+    worldProjection.worldToViewport(
+        tower.renderPosition.x,
+        tower.renderPosition.y,
+        {}
+    ),
+    { x: 640, y: 360 }
+);
+
+wheelTotals.y = -2;
+gameSystem.update();
+assert.equal(cameraAnimations.length, 1);
+assert.equal(cameraAnimations[0].retargets.length, 1);
+assert.ok(
+    Math.abs(
+        cameraZoomController.getTargetZoom()
+        - (CAMERA_ZOOM_LIMITS.DEFAULT * (1.16 ** 2))
+    ) < 1e-12
+);
+gameSystem.update();
+assert.equal(cameraAnimations[0].retargets.length, 1);
+
+wheelTotals.y = 0;
+gameSystem.update();
+assert.equal(cameraAnimations[0].retargets.length, 2);
+assert.equal(
+    cameraZoomController.getTargetZoom(),
+    CAMERA_ZOOM_LIMITS.DEFAULT
+);
+worldProjection.zoom = CAMERA_ZOOM_LIMITS.DEFAULT;
+gameSystem.update();
+assertPointNearlyEqual(
+    worldProjection.worldToViewport(27, 15, {}),
+    { x: 640, y: 360 }
+);
+assert.ok(worldProjection.viewportToWorld(0, 0, {}).x < 0);
+
 assert.equal(
     towerController.handlePlayerAction({ type: 'unsupported' }),
     INPUT_DISPOSITIONS.PASS
@@ -315,6 +455,8 @@ gameSystem.destroy();
 assert.equal(tower.active, false);
 assert.equal(core.active, false);
 assert.equal(towerController.isControlEnabled(), false);
+assert.equal(cameraZoomController.isControlEnabled(), false);
+assert.equal(cameraAnimations[0].active, false);
 assert.equal(towerPhysicsBody.isPhysicsEnabled(), false);
 assert.equal(corePhysicsBody.isPhysicsEnabled(), false);
 assert.equal(towerCollider.isCollisionEnabled(), false);
@@ -350,17 +492,14 @@ await keyboardModule.evaluate();
 
 const KeyboardInputHandler = keyboardModule.namespace.KeyboardInputHandler;
 const keyboard = new KeyboardInputHandler();
-for (const [domKey, internalKey] of [
-    ['w', 'up'],
-    ['A', 'left'],
-    ['s', 'down'],
-    ['D', 'right']
-]) {
-    windowListeners.get('keydown')({ key: domKey, repeat: false });
-    assert.equal(keyboard.getKeyboardInput(internalKey), true);
-    windowListeners.get('keyup')({ key: domKey });
-    assert.equal(keyboard.getKeyboardInput(internalKey), false);
+for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD']) {
+    windowListeners.get('keydown')({ code, repeat: false });
+    assert.equal(keyboard.getKeyboardInput(code), true);
+    windowListeners.get('keyup')({ code });
+    assert.equal(keyboard.getKeyboardInput(code), false);
 }
+windowListeners.get('keydown')({ key: 'w', repeat: false });
+assert.equal(keyboard.getKeyboardInput('KeyW'), false);
 assert.ok(documentListeners.has('visibilitychange'));
 
 console.log('ingame tower player control contract: ok');

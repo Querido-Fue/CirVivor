@@ -30,7 +30,7 @@
 | 전체 계층, 소유권, 폴더 구조 | [`01_target_architecture.md`](./01_target_architecture.md) |
 | Core, 웨이브, 상점, 일시정지, 런 상태 | [`02_game_state_and_flow.md`](./02_game_state_and_flow.md) |
 | GameSystem과 5개 하위 시스템의 인터페이스 | [`03_system_contracts.md`](./03_system_contracts.md) |
-| 플레이어 입력, UI 포커스, PlayerControllable | [`04_input_and_control.md`](./04_input_and_control.md) |
+| 키 바인딩, 의미 action, UI 포커스, PlayerControllable, wheel 카메라 zoom | [`04_input_and_control.md`](./04_input_and_control.md) |
 | 오브젝트, 풀, 충돌, WASM 충돌 커널 | [`05_object_and_collision.md`](./05_object_and_collision.md) |
 | Core 지향 AI, Path/Lane, Flow Field, WaveDirector | [`06_ai_path_and_wave.md`](./06_ai_path_and_wave.md) |
 | 타일 월드 단위, 해상도 독립 projection, 6타일 경로, 복수 적 Gate와 방향 route | [`05_object_and_collision.md`](./05_object_and_collision.md), [`06_ai_path_and_wave.md`](./06_ai_path_and_wave.md) |
@@ -100,8 +100,11 @@ GameScene
   좌표는 viewport와 무관하다.
 - 모든 production 게임 요소는 고정 픽셀 크기를 선언하지 않는다. 월드는
   `IWorldViewProjection2D`, UI는 비율 단위와 anchor를 통해 표시한다.
-- `WorldCamera2D`는 resize 때 전체 맵을 실제 표시 viewport에 contain하고,
-  정적 타일 projection은 최초 draw와 projection revision 변경 때만 갱신한다.
+- `WorldCamera2D`의 기준 배율은 전체 맵 contain 결과이며 기본 zoom은
+  `0.7`이다. 기본 상태는 맵 중심을 표시하고, 그보다 확대되면 보간된 Tower
+  좌표를 화면 중앙에서 추종한다. 맵 경계에서도 offset을 clamp하지 않아 월드
+  밖 배경을 표시한다. 정적 타일 projection은 최초 draw와 projection
+  revision 변경 때만 갱신한다.
 - 첫 맵 통로 폭은 6타일이며 왼쪽 진입 복도는 ㄴ자, 오른쪽 Core 복도는
   ㄱ자다.
 - 맵은 `enemySpawnRoutes[]`로 복수 Gate를 지원한다. 각 route는
@@ -111,7 +114,10 @@ GameScene
   진행 방향을 결정하지 않는다. 적의 `waypointIndex`와 다음 경로 목표를 함께
   사용한다.
 - 검증된 fixed-step, 렌더, 풀, WASM 충돌·Flow Field 커널은 계약 테스트 후 재사용한다.
-- UI와 시뮬레이션은 raw 입력이나 가변 객체를 공유하지 않고 Command/View 경계를 사용한다.
+- 물리 `KeyboardEvent.code`는 input 모듈 밖으로 누출하지 않는다. UI와
+  시뮬레이션은 의미 action과 snapshot/Command/View 경계를 사용한다.
+- wheel은 정규화된 누적 합계를 snapshot으로 전달하고 각 소비 adapter가
+  직전 합계와의 차이를 한 번만 처리한다.
 - 웨이브 완료 상태는 후처리와 ShopSession 생성까지 끝난 뒤 `ingame.dat`에 저장한다.
 - 전투 중 엔티티 위치는 저장하지 않으며 마지막 안전한 웨이브 경계에서 재개한다.
 - 저장 실패를 성공처럼 처리하거나 손상 파일을 조용히 새 런으로 덮어쓰지 않는다.

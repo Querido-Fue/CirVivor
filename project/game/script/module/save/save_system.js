@@ -126,7 +126,7 @@ export const previewSettingBatch = (settings) => {
  * 지원되는 설정 키의 live 스키마 항목을 내부 참조 그대로 반환합니다.
  * 호출자는 반환 객체를 읽기 전용으로 취급해야 합니다.
  * @param {string} key - 지원되는 설정 키입니다.
- * @returns {{type: 'bool'|'int'|'float'|'string', value: *, min: number, max: number, hidden: boolean}}
+ * @returns {{type: 'bool'|'int'|'float'|'string'|'object', value: *, min: number, max: number, hidden: boolean}}
  * 해당 키의 live 스키마 항목입니다.
  */
 export const getSettingSchema = (key) => {

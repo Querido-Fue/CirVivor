@@ -1,11 +1,14 @@
 import { renderGL, renderGLShapeInstances } from 'display/display_system.js';
 import { getObjectSystem } from 'object/object_system.js';
 import {
+    copySimulationMousePositionInto,
+    copySimulationWheelTotalsInto,
     getSimulationWH,
     getSimulationWW,
-    isSimulationKeyboardPressed
+    isSimulationInputActionPressed
 } from 'simulation/simulation_runtime.js';
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
+import { animate } from 'animation/animation_system.js';
 
 /**
  * 현재 런타임 뷰포트를 호출자 소유 객체에 복사합니다.
@@ -60,7 +63,12 @@ export function createGameSceneDependencies() {
 
     return {
         inputActionSource: {
-            isPressed: isSimulationKeyboardPressed
+            isPressed: isSimulationInputActionPressed,
+            getPointerPosition: copySimulationMousePositionInto,
+            getWheelTotals: copySimulationWheelTotalsInto
+        },
+        animationPort: {
+            animate
         },
         timePort: {
             getFixedDelta,

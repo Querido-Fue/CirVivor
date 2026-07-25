@@ -16,6 +16,10 @@ const {
     'ingame/contract/world_view_projection_contract.js'
 );
 const {
+    CAMERA_ZOOM_LIMITS,
+    isCameraControl2D
+} = await loadGameModule('ingame/contract/camera_control_contract.js');
+const {
     TILE_WORLD_SIZE,
     TileMap,
     createTileMap
@@ -31,6 +35,18 @@ const {
 } = await loadGameModule(
     'object/enemy/ai/wasm/_enemy_ai_flow_field_backend.js'
 );
+
+/**
+ * 부동소수점 projection 좌표를 허용 오차로 비교합니다.
+ * @param {{x:number,y:number}} actual - 실제 좌표입니다.
+ * @param {{x:number,y:number}} expected - 기대 좌표입니다.
+ * @param {number} [epsilon=1e-9] - 허용 오차입니다.
+ * @returns {void}
+ */
+function assertPointNearlyEqual(actual, expected, epsilon = 1e-9) {
+    assert.ok(Math.abs(actual.x - expected.x) <= epsilon);
+    assert.ok(Math.abs(actual.y - expected.y) <= epsilon);
+}
 
 const tileMap = createTileMap(CORRIDOR_EIGHT_MAP_DATA.id);
 const grid = tileMap.getNavigationGrid();
@@ -239,11 +255,15 @@ assert.throws(
     /직교 인접/
 );
 
-// 월드 projection은 해상도마다 전체 맵을 같은 비율로 contain합니다.
+// 기본 0.7 projection은 해상도마다 전체 맵을 중앙에 같은 비율로 표시합니다.
 const camera = new WorldCamera2D();
 camera.init(tileMap.getWorldBounds(), { ww: 2560, wh: 1440 });
 assert.ok(isWorldViewProjection2D(camera));
-const expectedScale = Math.min(2560 / grid.cols, 1440 / grid.rows);
+assert.ok(isCameraControl2D(camera));
+assert.equal(camera.getZoom(), CAMERA_ZOOM_LIMITS.DEFAULT);
+assert.equal(CAMERA_ZOOM_LIMITS.DEFAULT, 0.7);
+const expectedScale = Math.min(2560 / grid.cols, 1440 / grid.rows)
+    * CAMERA_ZOOM_LIMITS.DEFAULT;
 assert.equal(camera.getScale(), expectedScale);
 
 const viewportTopLeft = camera.worldToViewport(0, 0, {});
@@ -252,11 +272,18 @@ const viewportBottomRight = camera.worldToViewport(
     tileMap.getWorldBounds().height,
     {}
 );
-assert.equal(viewportTopLeft.x, 0);
+assert.ok(viewportTopLeft.x > 0);
 assert.ok(viewportTopLeft.y > 0);
-assert.equal(viewportBottomRight.x, 2560);
+assert.ok(viewportBottomRight.x < 2560);
 assert.ok(viewportBottomRight.y < 1440);
-assert.deepEqual(
+assertPointNearlyEqual(
+    {
+        x: viewportTopLeft.x + viewportBottomRight.x,
+        y: viewportTopLeft.y + viewportBottomRight.y
+    },
+    { x: 2560, y: 1440 }
+);
+assertPointNearlyEqual(
     camera.viewportToWorld(viewportBottomRight.x, viewportBottomRight.y, {}),
     {
         x: tileMap.getWorldBounds().width,
@@ -264,7 +291,18 @@ assert.deepEqual(
     }
 );
 
-// 정적 타일 projection은 첫 draw와 resize에서만 재계산합니다.
+// 확대 추종은 target을 중앙에 두고 맵 가장자리 밖의 월드 좌표도 표시합니다.
+camera.zoom = 1.2;
+assert.equal(camera.centerOnWorldPoint(0.5, 0.5), true);
+const followedPoint = camera.worldToViewport(0.5, 0.5, {});
+assertPointNearlyEqual(followedPoint, { x: 1280, y: 720 });
+const outsideWorldPoint = camera.viewportToWorld(0, 0, {});
+assert.ok(outsideWorldPoint.x < 0);
+assert.ok(outsideWorldPoint.y < 0);
+camera.zoom = CAMERA_ZOOM_LIMITS.DEFAULT;
+assert.equal(camera.resetViewCenter(), true);
+
+// 정적 타일 projection은 첫 draw와 projection revision 변경 때만 재계산합니다.
 const tileBatches = [];
 const tileRenderer = new TileMapRenderer({
     drawSquareInstances(options) {

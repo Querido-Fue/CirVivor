@@ -71,6 +71,9 @@ project/game/test/
 - pause 복귀 movement clear
 - resize 중 pointer capture 정리
 - stale ShopSession revision 구매 거절
+- 사용자 KeyboardEvent.code 오버라이드가 같은 의미 action을 생성
+- runtime 바인딩 교체에서 이전 hold/press edge 초기화
+- 누적 wheel snapshot을 같은 frame에 재조회해도 zoom action 중복 없음
 
 ## 6. World와 충돌
 
@@ -84,6 +87,11 @@ project/game/test/
 - Core body 고정
 - hexa contact-before-solve와 merge
 - solver가 prev render position을 이동하지 않음
+- 기본/최소 zoom `0.7`, 최대 `3`과 해상도 비례 projection
+- 확대 중 Tower `renderPosition`의 viewport 중앙 추종
+- 맵 가장자리 추종에서 음수/맵 범위 밖 월드 좌표 표시
+- 기본 zoom 복귀 시 맵 기하학 중심 복원
+- 같은 projection revision의 정적 타일 cache 재사용과 zoom/추종 revision 갱신
 
 ## 7. AI/Path/Wave
 
@@ -289,4 +297,3 @@ PR:
 - 성능 비교
 - 남은 open decision
 - 실제 코드 경로와 가이드 링크
-

@@ -6,6 +6,10 @@ const DEFAULT_MOUSE_POSITION = Object.freeze({
     x: 0,
     y: 0
 });
+const DEFAULT_WHEEL_TOTALS = Object.freeze({
+    x: 0,
+    y: 0
+});
 const DEFAULT_VIEWPORT = Object.freeze({
     ww: 0,
     wh: 0,
@@ -40,27 +44,40 @@ function cloneMouseButtonState(state) {
 }
 
 /**
- * 입력 스냅샷을 정규화합니다.
- * @param {object} [input={}]
- * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}}
+ * boolean record를 own enumerable key만 사용해 복제합니다.
+ * @param {object|null|undefined} source - 복제할 입력 record입니다.
+ * @returns {Record<string, boolean>} 새 boolean record입니다.
  */
-function cloneInputSnapshot(input = {}) {
-    const nextKeys = {};
-    if (input.keys && typeof input.keys === 'object') {
-        for (const [key, value] of Object.entries(input.keys)) {
-            nextKeys[key] = value === true;
+function cloneBooleanRecord(source) {
+    const result = {};
+    if (source && typeof source === 'object') {
+        for (const [key, value] of Object.entries(source)) {
+            result[key] = value === true;
         }
     }
+    return result;
+}
 
+/**
+ * 입력 스냅샷을 정규화합니다.
+ * @param {object} [input={}]
+ * @returns {{mousePos: {x: number, y: number}, wheel:{x:number,y:number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], actionStates:Record<string,boolean>, keys: Record<string, boolean>}}
+ */
+function cloneInputSnapshot(input = {}) {
     return {
         mousePos: clonePoint(input.mousePos),
+        wheel: {
+            x: resolveFiniteNumber(input.wheel?.x, DEFAULT_WHEEL_TOTALS.x),
+            y: resolveFiniteNumber(input.wheel?.y, DEFAULT_WHEEL_TOTALS.y)
+        },
         mouseButtons: {
             left: cloneMouseButtonState(input.mouseButtons?.left),
             right: cloneMouseButtonState(input.mouseButtons?.right),
             middle: cloneMouseButtonState(input.mouseButtons?.middle)
         },
         focusList: Array.isArray(input.focusList) ? [...input.focusList] : [...DEFAULT_FOCUS_LIST],
-        keys: nextKeys
+        actionStates: cloneBooleanRecord(input.actionStates),
+        keys: cloneBooleanRecord(input.keys)
     };
 }
 
@@ -125,30 +142,43 @@ function syncViewportSnapshotInto(target, viewport = {}) {
 
 /**
  * 입력 스냅샷을 기존 중첩 컨테이너 identity를 보존하며 동기화합니다.
- * @param {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}} target - 갱신할 입력 객체입니다.
+ * @param {{mousePos: {x: number, y: number}, wheel:{x:number,y:number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], actionStates:Record<string,boolean>, keys: Record<string, boolean>}} target - 갱신할 입력 객체입니다.
  * @param {object} [input={}] - 적용할 입력 스냅샷입니다.
  * @returns {void}
  */
 function syncInputSnapshotInto(target, input = {}) {
     target.mousePos.x = resolveFiniteNumber(input.mousePos?.x, DEFAULT_MOUSE_POSITION.x);
     target.mousePos.y = resolveFiniteNumber(input.mousePos?.y, DEFAULT_MOUSE_POSITION.y);
+    target.wheel.x = resolveFiniteNumber(input.wheel?.x, DEFAULT_WHEEL_TOTALS.x);
+    target.wheel.y = resolveFiniteNumber(input.wheel?.y, DEFAULT_WHEEL_TOTALS.y);
     replaceSimulationArrayContents(target.mouseButtons.left, input.mouseButtons?.left, DEFAULT_MOUSE_BUTTON_STATE);
     replaceSimulationArrayContents(target.mouseButtons.right, input.mouseButtons?.right, DEFAULT_MOUSE_BUTTON_STATE);
     replaceSimulationArrayContents(target.mouseButtons.middle, input.mouseButtons?.middle, DEFAULT_MOUSE_BUTTON_STATE);
     replaceSimulationArrayContents(target.focusList, input.focusList, DEFAULT_FOCUS_LIST);
 
-    const sourceKeys = input.keys && typeof input.keys === 'object'
-        ? input.keys
+    syncBooleanRecordInto(target.actionStates, input.actionStates);
+    syncBooleanRecordInto(target.keys, input.keys);
+}
+
+/**
+ * boolean record를 기존 대상 객체에 제자리 동기화합니다.
+ * @param {Record<string,boolean>} target - 갱신할 record입니다.
+ * @param {object|null|undefined} source - 적용할 원본입니다.
+ * @returns {void}
+ */
+function syncBooleanRecordInto(target, source) {
+    const normalizedSource = source && typeof source === 'object'
+        ? source
         : EMPTY_SIMULATION_RECORD;
-    for (const key in target.keys) {
-        if (Object.prototype.hasOwnProperty.call(target.keys, key)
-            && !Object.prototype.hasOwnProperty.call(sourceKeys, key)) {
-            delete target.keys[key];
+    for (const key in target) {
+        if (Object.prototype.hasOwnProperty.call(target, key)
+            && !Object.prototype.hasOwnProperty.call(normalizedSource, key)) {
+            delete target[key];
         }
     }
-    for (const key in sourceKeys) {
-        if (Object.prototype.hasOwnProperty.call(sourceKeys, key)) {
-            target.keys[key] = sourceKeys[key] === true;
+    for (const key in normalizedSource) {
+        if (Object.prototype.hasOwnProperty.call(normalizedSource, key)) {
+            target[key] = normalizedSource[key] === true;
         }
     }
 }
@@ -192,7 +222,7 @@ export class SimulationRuntime {
     /**
      * 메인 루프에서 제공한 최상위 그룹만 런타임에 부분 동기화합니다.
      * 생략한 그룹은 이전 상태를 유지합니다. 제공한 그룹은 기존 중첩 컨테이너 identity를 보존하면서
-     * 배열을 제자리 교체하고, input keys와 settings에서 source에 없는 own key를 삭제합니다.
+     * 배열을 제자리 교체하고, input actionStates/keys와 settings에서 source에 없는 own key를 삭제합니다.
      * @param {{viewport?: object, input?: object, settings?: object}} [snapshot={}] - 적용할 부분 스냅샷입니다.
      * @returns {void}
      */
@@ -218,7 +248,7 @@ export class SimulationRuntime {
 
     /**
      * 현재 입력 스냅샷을 복제해 반환합니다.
-     * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}}
+     * @returns {{mousePos: {x: number, y: number}, wheel:{x:number,y:number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], actionStates:Record<string,boolean>, keys: Record<string, boolean>}}
      */
     getInputSnapshot() {
         return cloneInputSnapshot(this.input);
@@ -234,7 +264,7 @@ export class SimulationRuntime {
 
     /**
      * 현재 런타임 전체 스냅샷을 복제해 반환합니다.
-     * @returns {{viewport: {ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}, input: {mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}, settings: Record<string, any>}}
+     * @returns {{viewport: {ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}, input: {mousePos: {x: number, y: number}, wheel:{x:number,y:number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], actionStates:Record<string,boolean>, keys: Record<string, boolean>}, settings: Record<string, any>}}
      */
     createSnapshot() {
         return {
@@ -278,7 +308,7 @@ export function getSimulationRuntime() {
 
 /**
  * 현재 시뮬레이션 런타임 전체 스냅샷을 반환합니다.
- * @returns {{viewport: {ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}, input: {mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}, settings: Record<string, any>}}
+ * @returns {{viewport: {ww: number, wh: number, objectWH: number, objectOffsetY: number, uiww: number, uiOffsetX: number}, input: {mousePos: {x: number, y: number}, wheel:{x:number,y:number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], actionStates:Record<string,boolean>, keys: Record<string, boolean>}, settings: Record<string, any>}}
  */
 export function getSimulationRuntimeSnapshot() {
     return ensureSimulationRuntime().createSnapshot();
@@ -371,6 +401,20 @@ export function copySimulationMousePositionInto(target) {
 }
 
 /**
+ * 현재 누적 wheel unit을 호출자가 소유한 객체에 복사합니다.
+ * 누적값은 소비하지 않으며 adapter가 직전 스냅샷과의 차이를 계산합니다.
+ * @param {{x:number,y:number}} target - 쓰기 가능한 호출자 소유 객체입니다.
+ * @returns {{x:number,y:number}} 전달받은 동일 객체입니다.
+ */
+export function copySimulationWheelTotalsInto(target) {
+    const input = simulationRuntimeInstance?.input;
+    const wheel = input ? input.wheel : DEFAULT_WHEEL_TOTALS;
+    target.x = resolveFiniteNumber(wheel?.x, DEFAULT_WHEEL_TOTALS.x);
+    target.y = resolveFiniteNumber(wheel?.y, DEFAULT_WHEEL_TOTALS.y);
+    return target;
+}
+
+/**
  * 시뮬레이션 입력 스냅샷에서 특정 버튼 상태를 검사합니다.
  * @param {'left'|'right'|'middle'} button
  * @param {'inactive'|'idle'|'click'|'clicking'|'clicked'} state
@@ -403,17 +447,29 @@ export function getSimulationMouseFocus() {
 }
 
 /**
- * 시뮬레이션 입력 스냅샷에서 지정한 내부 키가 눌려 있는지 확인합니다.
- * live key 객체를 외부에 노출하지 않고 fixed-step 입력 adapter가 상태를 읽을 때 사용합니다.
- * @param {string} key - 조회할 내부 입력 키 이름입니다.
+ * 시뮬레이션 입력 스냅샷에서 지정한 의미 action이 눌려 있는지 확인합니다.
+ * 물리 KeyboardEvent.code는 이 경계에 도달하지 않습니다.
+ * @param {string} actionId - 조회할 의미 action ID입니다.
  * @returns {boolean} 현재 눌림 여부입니다.
  */
-export function isSimulationKeyboardPressed(key) {
-    if (typeof key !== 'string' || key.length === 0) {
+export function isSimulationInputActionPressed(actionId) {
+    if (typeof actionId !== 'string' || actionId.length === 0) {
         return false;
     }
-    return simulationRuntimeInstance?.input?.keys?.[key] === true;
+    const input = simulationRuntimeInstance?.input;
+    if (input?.actionStates
+        && Object.prototype.hasOwnProperty.call(input.actionStates, actionId)) {
+        return input.actionStates[actionId] === true;
+    }
+    return input?.keys?.[actionId] === true;
 }
+
+/**
+ * 기존 함수명의 호환 별칭입니다. 입력값은 물리 키가 아니라 의미 action ID로 해석합니다.
+ * @param {string} actionId - 조회할 의미 action ID입니다.
+ * @returns {boolean} 현재 눌림 여부입니다.
+ */
+export const isSimulationKeyboardPressed = isSimulationInputActionPressed;
 
 /**
  * 현재 시뮬레이션 설정 값을 반환합니다.

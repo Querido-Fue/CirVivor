@@ -13,7 +13,7 @@ const STANDARD_ANIMATION_PATH = path.join(ANIMATION_ROOT, '_standard_animation.j
 const CONSTANTS_PATH = path.join(ANIMATION_ROOT, '_constants.js');
 const animationSystemSource = await readFile(ANIMATION_SYSTEM_PATH, 'utf8');
 
-const EXECUTABLE_SOURCE_HASH = 'b09dcfb0d70e3b86ba9eb6277cce037a7fdd90035144843e30b2b0e28b9210ef';
+const EXECUTABLE_SOURCE_HASH = '299b1830a8eaf5edbdad8460c91a420e4107af01b4405d3daa5c3d2cb1efd422';
 const SYNTHETIC_PREFIX = 'synthetic:';
 const ALIAS_ROOTS = Object.freeze({
     'object/': path.join(SCRIPT_ROOT, 'module', 'object'),
@@ -133,9 +133,76 @@ async function createAnimationHarness() {
 }
 
 test('AnimationSystem 구현 상수는 production 모듈에 있고 data registry에 의존하지 않는다', () => {
-    assert.equal(hashExecutableSource(animationSystemSource, 18), EXECUTABLE_SOURCE_HASH);
+    assert.equal(hashExecutableSource(animationSystemSource, 22), EXECUTABLE_SOURCE_HASH);
     assert.doesNotMatch(animationSystemSource, /data\/data_handler\.js/);
     assert.match(animationSystemSource, /const ANIMATOR_POOL_WARMUP_COUNT = 500;/);
+});
+
+test('retarget은 같은 표준 애니메이션과 Promise를 유지하며 현재 표시값에서 최신 목표로 이어진다', async () => {
+    const harness = await createAnimationHarness();
+    const system = new harness.namespace.AnimationSystem();
+    const owner = { x: 0 };
+    const handle = system.animate(owner, {
+        variable: 'x',
+        startValue: 0,
+        endValue: 1,
+        duration: 1,
+        type: 'linear'
+    });
+    const animation = system.animationsById.get(handle.id);
+    const completion = handle.promise;
+
+    system.update({ delta: 0.25 });
+    assert.equal(owner.x, 0.25);
+    assert.equal(animation.currentTime, 0.25);
+    assert.equal(harness.standardAnimationPool.inUseCount, 1);
+
+    assert.equal(handle.retarget({
+        endValue: 2,
+        duration: 0.4,
+        type: 'easeOutExpo'
+    }), true);
+    assert.strictEqual(system.animationsById.get(handle.id), animation);
+    assert.strictEqual(handle.promise, completion);
+    assert.equal(animation.startValue, 0.25);
+    assert.equal(animation.endValue, 2);
+    assert.equal(animation.currentTime, 0);
+    assert.equal(owner.x, 0.25);
+    assert.equal(harness.standardAnimationPool.inUseCount, 1);
+
+    system.update({ delta: 0.2 });
+    const expectedHalfValue = 0.25 + ((2 - 0.25) * (1 - Math.pow(2, -5)));
+    assert.ok(Math.abs(owner.x - expectedHalfValue) < 1e-12);
+    system.update({ delta: 0.2 });
+    assert.equal(owner.x, 2);
+    system.update({ delta: Number.EPSILON });
+    await completion;
+    assert.equal(system.animationsById.has(handle.id), false);
+    assert.equal(harness.standardAnimationPool.inUseCount, 0);
+});
+
+test('완료 후 오래된 핸들은 풀에서 재사용된 다른 애니메이션을 조작하지 않는다', async () => {
+    const harness = await createAnimationHarness();
+    const system = new harness.namespace.AnimationSystem();
+    const firstOwner = { x: 0 };
+    const firstHandle = system.animate(firstOwner, {
+        variable: 'x',
+        endValue: 1
+    });
+
+    firstHandle.remove();
+    system.update({ delta: 0 });
+    const secondOwner = { x: 10 };
+    const secondHandle = system.animate(secondOwner, {
+        variable: 'x',
+        endValue: 20
+    });
+
+    assert.equal(firstHandle.isActive(), false);
+    assert.equal(firstHandle.retarget({ endValue: 99 }), false);
+    await firstHandle.promise;
+    assert.equal(secondHandle.isActive(), true);
+    assert.equal(system.animationsById.get(secondHandle.id).rawEndValue, 20);
 });
 
 test('remove JSDoc은 완료와 지연 정리·Promise·예외 계약을 정확히 명시한다', () => {

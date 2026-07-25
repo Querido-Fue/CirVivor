@@ -131,12 +131,19 @@ GameObjectSystem.getCollidables()
   벽 안쪽 속도를 해소한다.
 - 맵 전체를 매 fixed tick 훑거나 타일마다 entity 객체를 만들지 않는다.
 - `IWorldViewProjection2D`가 simulation과 renderer 사이 좌표 경계다.
-  `WorldCamera2D`는 실제 표시 `WW × WH`에 전체 맵을 contain한다.
+  `WorldCamera2D`는 실제 표시 `WW × WH`의 전체 맵 contain 배율에 기본
+  zoom `0.7`을 곱한다.
+- 카메라 제어 권한은 별도 `ICameraControl2D`, 추종 대상은
+  `ICameraFollowTarget2D`로 분리한다. The Tower는 fixed 위치가 아닌
+  `renderPosition`을 추종 좌표로 제공한다.
+- zoom이 `0.7`보다 크면 Tower를 viewport 중앙에서 추종한다. 맵 경계에서도
+  offset을 clamp하지 않아 월드 밖 배경을 표시한다.
 - resize는 projection revision만 변경하며 맵, Core, Tower 좌표를
   재생성하지 않는다.
-- `TileMapRenderer`는 정적 타일의 viewport 중심과 크기를 최초 draw/resize
-  때만 계산한다. 동적 entity만 매 draw 투영하며 대량 entity 단계에서는 같은
-  계약을 GPU view-projection uniform으로 이관할 수 있다.
+- `TileMapRenderer`는 정적 타일의 viewport 중심과 크기를 최초 draw 또는
+  projection revision 변경 때 계산한다. 확대 추종 중에는 Tower 이동도
+  revision을 바꾸므로 대량 맵 단계에서는 같은 계약을 GPU view-projection
+  uniform으로 이관할 수 있다.
 
 ## 3. Capability index
 
@@ -343,6 +350,8 @@ Core는 고정형 target body 또는 Path 끝 attack zone으로 표현한다.
   이동하지 않는다.
 - 가변 update에서 alpha로 render transform을 계산한다.
 - draw는 물리 Transform이 아니라 render Transform을 사용한다.
+- 확대 카메라도 같은 render Transform을 추종해 fixed-step 경계 떨림을 만들지
+  않는다.
 - resize는 viewport와 UI projection만 바꾸며 월드 entity를 다시 생성하지 않는다.
 - spawn/teleport/resize처럼 보간을 의도적으로 끊는 경계만 현재/이전 위치를
   함께 동기화한다.

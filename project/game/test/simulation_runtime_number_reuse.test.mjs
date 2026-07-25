@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const { resolveFiniteNumber } = await loadGameModule('util/number_util.js');
-const { SimulationRuntime } = await loadGameModule('simulation/simulation_runtime.js');
+const {
+    SimulationRuntime,
+    copySimulationWheelTotalsInto,
+    isSimulationInputActionPressed
+} = await loadGameModule('simulation/simulation_runtime.js');
 
 const MASK_64 = (1n << 64n) - 1n;
 const RANDOM_PAIR_CASE_COUNT = 250_000;
@@ -119,6 +123,20 @@ const defaultViewport = runtime.getViewportSnapshot();
 const defaultInput = runtime.getInputSnapshot();
 const viewportFields = ['ww', 'wh', 'objectWH', 'objectOffsetY', 'uiww', 'uiOffsetX'];
 
+runtime.sync({
+    input: {
+        wheel: { x: 1.25, y: -2.5 },
+        actionStates: { moveUp: true, moveDown: false },
+        keys: { legacyAction: true }
+    }
+});
+const wheelSnapshot = {};
+assert.strictEqual(copySimulationWheelTotalsInto(wheelSnapshot), wheelSnapshot);
+assert.deepEqual(wheelSnapshot, { x: 1.25, y: -2.5 });
+assert.equal(isSimulationInputActionPressed('moveUp'), true);
+assert.equal(isSimulationInputActionPressed('moveDown'), false);
+assert.equal(isSimulationInputActionPressed('legacyAction'), true);
+
 /**
  * 실제 SimulationRuntime 동기화·복제 경로의 결과를 legacy 오라클과 비교합니다.
  * @param {unknown} value - 모든 숫자 필드에 주입할 값입니다.
@@ -207,15 +225,27 @@ const copyMousePositionSource = runtimeSource.match(
     /export function copySimulationMousePositionInto\(target\) \{[\s\S]*?\n\}/u
 )?.[0];
 assert.ok(copyMousePositionSource, '마우스 out-copy 함수 본문을 찾을 수 있어야 합니다.');
+const copyWheelTotalsSource = runtimeSource.match(
+    /export function copySimulationWheelTotalsInto\(target\) \{[\s\S]*?\n\}/u
+)?.[0];
+assert.ok(copyWheelTotalsSource, 'wheel out-copy 함수 본문을 찾을 수 있어야 합니다.');
 assert.equal(
-    runtimeSource.replace(copyMousePositionSource, '').match(/\bresolveFiniteNumber\s*\(/g)?.length,
-    16,
-    '기존 16개 숫자 정규화 호출은 모두 공용 함수와 명시적 fallback을 사용해야 합니다.'
+    runtimeSource
+        .replace(copyMousePositionSource, '')
+        .replace(copyWheelTotalsSource, '')
+        .match(/\bresolveFiniteNumber\s*\(/g)?.length,
+    20,
+    'viewport·pointer·wheel 동기화 호출은 모두 공용 함수와 명시적 fallback을 사용해야 합니다.'
 );
 assert.equal(
     copyMousePositionSource.match(/\bresolveFiniteNumber\s*\(/g)?.length,
     2,
     '마우스 out-copy는 x/y를 공용 숫자 정규화 함수로 각각 한 번 처리해야 합니다.'
+);
+assert.equal(
+    copyWheelTotalsSource.match(/\bresolveFiniteNumber\s*\(/g)?.length,
+    2,
+    'wheel out-copy는 x/y를 공용 숫자 정규화 함수로 각각 한 번 처리해야 합니다.'
 );
 assert.ok(
     copyMousePositionSource.indexOf('target.x =') < copyMousePositionSource.indexOf('target.y ='),

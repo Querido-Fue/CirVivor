@@ -54,6 +54,39 @@ export class StandardAnimation extends AnimationBase {
     }
 
     /**
+     * 실행 중인 표준 애니메이션을 현재 소유 값에서 새 목표로 재지정합니다.
+     * 객체·ID·완료 Promise는 유지되어 연속 입력마다 제거와 재할당이 발생하지 않습니다.
+     * @param {object} properties - 새 endValue와 선택적인 duration, delay, type입니다.
+     * @returns {boolean} 재지정 성공 여부입니다.
+     */
+    retarget(properties = {}) {
+        if (this.state !== ANIMATION_STATE.RUNNING
+            || properties.endValue === undefined) {
+            return false;
+        }
+
+        try {
+            const currentValue = this.owner[this.variable];
+            this.rawStartValue = 'current';
+            this.rawEndValue = properties.endValue;
+            this.startValue = currentValue;
+            this.endValue = this.#evaluate(properties.endValue, currentValue);
+            this.duration = properties.duration;
+            this.delay = properties.delay;
+            this.currentTime = 0;
+            if (properties.type !== undefined) {
+                this.easingFn = Easing[properties.type] || Easing.linear;
+            }
+            this.isInitialized = true;
+            return true;
+        } catch (error) {
+            console.error('애니메이션 retarget 실패:', error);
+            this.complete();
+            return false;
+        }
+    }
+
+    /**
      * 애니메이션을 업데이트합니다.
      * @param {number} delta - 델타 타임
      */

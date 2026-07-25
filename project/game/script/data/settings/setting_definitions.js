@@ -51,6 +51,9 @@ export const SETTING_DEFINITIONS = Object.freeze({
     tooltipDelaySeconds: Object.freeze({
         type: 'float', defaultValue: 0.3, min: 0, max: 2, hidden: false
     }),
+    inputBindings: Object.freeze({
+        type: 'object', defaultValue: Object.freeze({}), min: -1, max: -1, hidden: false
+    }),
     bgmVolume: Object.freeze({
         type: 'int', defaultValue: 25, min: 0, max: 100, hidden: false
     }),

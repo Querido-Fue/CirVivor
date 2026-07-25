@@ -60,7 +60,8 @@ function animate(owner, properties) {
     const animation = {
         id: nextAnimationId++,
         owner,
-        properties,
+        properties: { ...properties },
+        retargets: [],
         completed: false,
         promise: new Promise((resolve) => {
             resolvePromise = resolve;
@@ -72,6 +73,16 @@ function animate(owner, properties) {
                 owner[properties.variable] = properties.endValue;
             }
             resolvePromise();
+        },
+        retarget(nextProperties) {
+            if (this.completed) return false;
+            this.retargets.push({ ...nextProperties });
+            this.properties = {
+                ...this.properties,
+                startValue: 'current',
+                ...nextProperties
+            };
+            return true;
         }
     };
     animations.push(animation);
@@ -195,12 +206,18 @@ mouse.x = 500;
 slider.update();
 assert.equal(slider.value, 100);
 assert.deepEqual(changedValues, [80, 100]);
-assert.equal(animations[0].completed, true);
-assert.equal(animations[1].properties.startValue, 'current');
-assert.equal(animations[1].properties.endValue, 100);
+assert.equal(animations.length, 1);
+assert.equal(animations[0].completed, false);
+assert.deepEqual(animations[0].retargets, [{
+    endValue: 100,
+    duration: 0.2,
+    type: 'easeOutExpo'
+}]);
+assert.equal(animations[0].properties.startValue, 'current');
+assert.equal(animations[0].properties.endValue, 100);
 
 const settlePromise = slider.waitForDisplayValueSettle();
-animations[1].finish();
+animations[0].finish();
 await settlePromise;
 assert.equal(slider.displayValue, 100);
 assert.equal(slider.isDisplayValueSettled(), true);

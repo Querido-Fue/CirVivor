@@ -9,6 +9,72 @@ const DEFAULT_WINDOW_MODE = SETTING_DEFINITIONS.windowMode.defaultValue;
 const FALLBACK_LANGUAGE_KEY = AVAILABLE_LANGUAGE_KEYS.includes(SETTING_DEFINITIONS.language.defaultValue)
     ? SETTING_DEFINITIONS.language.defaultValue
     : (AVAILABLE_LANGUAGE_KEYS[0] || 'korean');
+const UNSAFE_SETTING_OBJECT_KEYS = Object.freeze(new Set([
+    '__proto__',
+    'constructor',
+    'prototype'
+]));
+const MAX_SETTING_OBJECT_DEPTH = 8;
+const MAX_SETTING_OBJECT_ENTRIES = 256;
+
+/**
+ * 설정 파일의 배열·plain object를 안전한 새 컨테이너로 복제합니다.
+ * 함수·symbol·순환 참조·과도한 깊이와 prototype 오염 키는 포함하지 않습니다.
+ * @param {*} value - 복제할 설정 값입니다.
+ * @param {number} [depth=0] - 현재 재귀 깊이입니다.
+ * @param {Set<object>} [ancestors=new Set()] - 현재 경로의 순환 검사용 객체 집합입니다.
+ * @returns {*} 복제한 값이며 지원하지 않는 값은 undefined입니다.
+ */
+function cloneSafeSettingObject(value, depth = 0, ancestors = new Set()) {
+    if (value === null
+        || typeof value === 'string'
+        || typeof value === 'number'
+        || typeof value === 'boolean') {
+        return value;
+    }
+    if (depth >= MAX_SETTING_OBJECT_DEPTH
+        || !value
+        || typeof value !== 'object'
+        || ancestors.has(value)) {
+        return undefined;
+    }
+
+    ancestors.add(value);
+    if (Array.isArray(value)) {
+        const result = [];
+        const length = Math.min(value.length, MAX_SETTING_OBJECT_ENTRIES);
+        for (let index = 0; index < length; index++) {
+            const clonedValue = cloneSafeSettingObject(value[index], depth + 1, ancestors);
+            if (clonedValue !== undefined) {
+                result.push(clonedValue);
+            }
+        }
+        ancestors.delete(value);
+        return result;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && Object.getPrototypeOf(prototype) !== null) {
+        ancestors.delete(value);
+        return undefined;
+    }
+
+    const result = {};
+    const keys = Object.keys(value);
+    const length = Math.min(keys.length, MAX_SETTING_OBJECT_ENTRIES);
+    for (let index = 0; index < length; index++) {
+        const key = keys[index];
+        if (UNSAFE_SETTING_OBJECT_KEYS.has(key)) {
+            continue;
+        }
+        const clonedValue = cloneSafeSettingObject(value[key], depth + 1, ancestors);
+        if (clonedValue !== undefined) {
+            result[key] = clonedValue;
+        }
+    }
+    ancestors.delete(value);
+    return result;
+}
 
 /**
  * 실행 환경과 설정 정의를 기준으로 최초 언어 값을 결정합니다.
@@ -35,7 +101,11 @@ export function createSettingSchema(defaultLanguage) {
             key,
             {
                 ...definition,
-                value: key === 'language' ? defaultLanguage : definition.defaultValue
+                value: key === 'language'
+                    ? defaultLanguage
+                    : (definition.type === 'object'
+                        ? cloneSafeSettingObject(definition.defaultValue)
+                        : definition.defaultValue)
             }
         ])
     );
@@ -75,6 +145,14 @@ export class SettingValueCoercer {
             processedValue = Boolean(value);
         } else if (entry.type === 'string') {
             processedValue = String(value);
+        } else if (entry.type === 'object') {
+            const clonedValue = cloneSafeSettingObject(value);
+            if (!clonedValue || Array.isArray(clonedValue)) {
+                return cloneSafeSettingObject(entry.value)
+                    || cloneSafeSettingObject(entry.defaultValue)
+                    || {};
+            }
+            return clonedValue;
         }
 
         if (key === 'theme') {

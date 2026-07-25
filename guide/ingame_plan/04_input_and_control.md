@@ -6,6 +6,7 @@
 - UI 뒤의 Tower가 같은 클릭을 동시에 처리하지 않는다.
 - 가변 프레임 입력을 fixed tick command로 안정적으로 변환한다.
 - 키 리바인딩이 SkillSlot 의미와 저장 데이터를 바꾸지 않는다.
+- 카메라를 포함한 플레이 요소가 같은 `IPlayerControllable` 의미 action 경계를 사용한다.
 - 어떤 요소도 DOM/Keyboard/Mouse singleton을 직접 polling하지 않는다.
 
 ## 2. 명칭
@@ -49,10 +50,37 @@ UI_CANCEL
 UI_POINTER_MOVE
 UI_POINTER_PRIMARY
 UI_SCROLL
+CAMERA_ZOOM
 OPEN_STATUS
 ```
 
 `KeyW`, `MouseLeft` 같은 물리 입력은 action payload 밖으로 누출하지 않는다.
+
+현재 구현된 키보드 baseline:
+
+```text
+KeyboardEvent.code
+→ KeyboardInputHandler raw code set/press edge
+→ InputBindingMap
+→ InputSystem actionStates snapshot
+→ SimulationRuntime
+→ InputActionMapper
+→ PlayerControlRouter
+```
+
+- 기본 바인딩은 `moveUp/down/left/right`, `primaryAction`, `pause`, `reload`,
+  `debugPause`, `debugStep` 의미 action으로 정의한다.
+- 기본 이동은 `KeyW/A/S/D`와 방향키이며 문자·대소문자가 아니라
+  `KeyboardEvent.code`를 사용한다.
+- `settings.json`의 `inputBindings`에는 기본값 전체가 아니라 사용자
+  오버라이드만 저장한다. 명시적인 빈 배열은 해당 action을 미지정 상태로
+  유지하며 action 하나당 유효한 code를 최대 4개까지 받는다.
+- 바인딩을 runtime에 교체하거나 기본값으로 되돌릴 때 raw down/press 상태를
+  초기화해 이전 키의 hold나 edge가 새 action으로 넘어가지 않게 한다.
+- 시뮬레이션 snapshot의 공식 필드는 `actionStates`다. `keys`는 기존
+  호출부 전환용 의미 action 별칭이며 물리 code를 담지 않는다.
+- key capture 화면, 충돌 경고, 사람이 읽을 수 있는 키 이름, mouse/gamepad
+  바인딩 UI는 아직 구현되지 않았다.
 
 ## 4. IPlayerControllable
 
@@ -145,7 +173,59 @@ MOVE_VECTOR
   `IPhysicsBody2D.applyImpulse()`를 사용한다.
 - Controller는 물리 위치, 속도, 마찰 계수를 직접 변경하지 않는다.
 
-## 7. 가변 프레임에서 fixed tick으로
+## 7. 카메라 zoom과 연속 입력
+
+현재 wheel zoom 흐름:
+
+```text
+WheelEvent deltaMode 정규화·누적
+→ SimulationRuntime wheel totals
+→ InputActionMapper가 직전 합계와 차이 계산
+→ CAMERA_ZOOM
+→ PlayerControlRouter
+→ CameraZoomController (IPlayerControllable)
+→ WorldCamera2D.zoom
+```
+
+- 씬 진입 때 현재 누적 합계를 기준점으로 잡아 타이틀에서 발생한 wheel을
+  인게임 action으로 재생하지 않는다.
+- wheel down은 축소, wheel up은 확대다. contain 배율 대비 기본/최소
+  zoom은 `0.7`, 최대는 `3`, wheel unit당 목표 배율은 `1.16`의 지수
+  비율로 누적한다.
+- `CameraZoomController`는 `GAMEPLAY` context, priority `100`의
+  `IPlayerControllable`이다.
+- `WorldCamera2D`는 렌더 projection인 `IWorldViewProjection2D`와 별도로
+  zoom/중심 이동용 `ICameraControl2D`를 구현한다. Tower는
+  `ICameraFollowTarget2D`로 보간된 렌더 월드 좌표를 제공한다.
+- zoom은 `0.4초 easeOutExpo`로 보간한다. 추가 wheel이 들어오면 같은
+  animation handle을 현재 표시값에서 최신 누적 목표로 `retarget()`한다.
+- zoom `0.7`에서는 맵 기하학 중심을 viewport 중앙에 둔다. 목표 또는 현재
+  zoom이 `0.7`보다 크면 Tower의 fixed 위치가 아니라 가변 프레임에서 계산된
+  `renderPosition`을 viewport 중앙에 둔다.
+- 맵 가장자리에서도 projection offset을 월드 경계로 제한하지 않는다.
+  Tower는 계속 화면 중앙에 남고 viewport에는 음수 또는 맵 크기보다 큰 월드
+  좌표 영역, 즉 월드 밖 배경이 보일 수 있다.
+- zoom은 가변 프레임 presentation 상태다. 물리·AI·저장 좌표와 fixed tick을
+  변경하지 않는다.
+- projection revision은 zoom 애니메이션뿐 아니라 확대 추종 중 Tower의
+  보간 좌표가 움직일 때도 변하므로 현재 정적 타일 cache는 해당 프레임에
+  다시 투영된다. 현 54×30 맵에서는 허용하며 대형 맵 단계에서는 GPU
+  view-projection uniform 이전을 검토한다.
+
+## 8. 연속 입력 애니메이션 계약
+
+- `AnimationSystem.animate()`의 표준 handle은 `id`, `promise`,
+  `retarget()`, `remove()`, `isActive()`를 제공한다.
+- `retarget()`은 같은 표준 애니메이션 객체·ID·완료 Promise를 유지하고 현재
+  owner 값에서 새 목표로 다시 시작한다. 풀에서 재사용된 다른 animation을
+  오래된 handle이 조작할 수 없다.
+- 이 계약은 값의 위치 연속성을 보장한다. 이전 easing의 순간 속도까지
+  보존하는 spring/Hermite 보간은 현재 범위가 아니다.
+- Slider 표시값은 연속 drag 때 같은 handle을 retarget한다.
+- 타이틀 카드 tilt/spotlight/border/particle은 이벤트마다 animation을 만들지
+  않고 공통 `getContinuousInputBlend()`의 delta 독립 지수 smoothing을 쓴다.
+
+## 9. 가변 프레임에서 fixed tick으로
 
 연속 상태:
 
@@ -173,7 +253,7 @@ SYSTEM_PAUSE
 → E
 ```
 
-## 8. UI controllable
+## 10. UI controllable
 
 게임 UI 요소가 직접 인터페이스를 구현하거나 presenter가 여러 요소를 대표할 수
 있다. 개별 버튼 수천 개를 router에 등록하기보다 panel 단위 hit testing 후
@@ -191,7 +271,7 @@ SYSTEM_PAUSE
 UI command는 `expectedStateRevision`을 포함해 오래된 화면에서 발생한 구매를
 거절할 수 있어야 한다.
 
-## 9. Focus와 pointer capture
+## 11. Focus와 pointer capture
 
 - drag 시작 target이 pointer capture token을 획득한다.
 - release/cancel/scene destroy에서 반드시 반환한다.
@@ -199,7 +279,7 @@ UI command는 `expectedStateRevision`을 포함해 오래된 화면에서 발생
 - 창 비활성화는 현재 InputSystem의 reset 정책과 연결한다.
 - resize는 pointer 좌표를 다시 투영하지만 command나 월드를 초기화하지 않는다.
 
-## 10. 접근성
+## 12. 접근성
 
 - SkillSlot과 실제 키 binding을 분리한다.
 - hold repeat는 cooldown event에 맞춰 한 번씩만 command를 만든다.
@@ -207,7 +287,7 @@ UI command는 `expectedStateRevision`을 포함해 오래된 화면에서 발생
 - UI 탐색은 pointer 없이도 동일 command를 생성할 수 있게 한다.
 - 색상만으로 focus/disabled/save-error를 구분하지 않는다.
 
-## 11. 테스트 계약
+## 13. 테스트 계약
 
 - SHOP 클릭이 Tower LMB 스킬을 발생시키지 않는다.
 - 같은 frame의 5개 skill edge가 고정 순서로 처리된다.
@@ -218,3 +298,10 @@ UI command는 `expectedStateRevision`을 포함해 오래된 화면에서 발생
 - Tower가 `IDamageable`을 구현하지 않아도 모든 control action이 동작한다.
 - 키 입력 유지 시 속도가 가속되고, 키 해제 시 마찰을 거쳐 정지한다.
 - 반동 impulse와 control acceleration이 같은 fixed 물리 상태에 결정적으로 합성된다.
+- 사용자 바인딩을 바꿔도 snapshot과 gameplay에는 같은 의미 action ID가 전달된다.
+- 같은 frame의 wheel 누적값을 두 번 읽어도 zoom action은 한 번만 생성된다.
+- 연속 wheel 입력은 동일 animation handle을 retarget하고 최종 목표에 도달한다.
+- 기본 zoom `0.7`과 최대 `3` clamp가 유지된다.
+- 확대 중 Tower의 보간 좌표가 viewport 중앙에 있고 이동을 따라간다.
+- 맵 가장자리 추종에서도 월드 밖 좌표가 viewport에 표시된다.
+- 기본 zoom으로 복귀하면 맵 기하학 중심이 viewport 중앙으로 돌아간다.

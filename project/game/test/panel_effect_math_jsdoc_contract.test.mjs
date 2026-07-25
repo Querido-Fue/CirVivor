@@ -9,7 +9,7 @@ const PANEL_EFFECT_MATH_SOURCE_PATH = fileURLToPath(new URL(
     import.meta.url
 ));
 const panelEffectMathSource = await readFile(PANEL_EFFECT_MATH_SOURCE_PATH, 'utf8');
-const EXECUTABLE_SOURCE_HASH = '76bc6d0958af48c28b8b0d89c0439f205bfd24ba321188664c0fb840261e1ac8';
+const EXECUTABLE_SOURCE_HASH = '0df8166ca45b39ea9d27b6d690cea8c8756ebedf638e95ea14ec9b4de40a3a1c';
 
 function hashExecutableSource(productionSource) {
     const allJsDocStarts = productionSource.match(/\/\*\*/gu) ?? [];

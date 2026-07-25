@@ -6,7 +6,8 @@
 > **마지막 갱신**: 2026-07-26
 >
 > **현재 슬라이스**: 해상도 독립 타일 월드 + 6타일 ㄴ/8자/ㄱ 맵 +
-> 복수 Gate 계약 + The Core Integrity 100 + Tower 타일 충돌·가속 이동
+> 복수 Gate 계약 + The Core Integrity 100 + Tower 가속 이동 +
+> 의미 키 바인딩 + 기본 0.7 연속 wheel zoom + Tower 보간 추종 카메라
 
 ## 1. 갱신 규칙
 
@@ -30,10 +31,10 @@
 | 단계 | 상태 | 이번 시점의 실제 범위 |
 | --- | --- | --- |
 | P0 권한·baseline | NOT_STARTED | 설계 문서는 있으나 기존 가이드 충돌 정리와 WASM baseline 고정은 미완료 |
-| P1 GameSystem 기반 | IN_PROGRESS | 세션 shell, dependency port, PlayerControllable/PhysicsBody 계약 구현 |
+| P1 GameSystem 기반 | IN_PROGRESS | 세션 shell, dependency port, PlayerControllable/PhysicsBody 계약, 의미 입력 snapshot과 연속 animation port 구현 |
 | P2 체크포인트 저장 | NOT_STARTED | `ingame.dat` 신규 repository와 atomic save 미구현 |
-| P3 월드·충돌 | IN_PROGRESS | 타일 월드 TileMap, contain projection, 정적 타일 cache, CircleCollider2D, Tower 정적 타일 충돌 구현. WorldRegistry/일반 CollisionHandler 미구현 |
-| P4 Tower/Core/Input | IN_PROGRESS | 타일 단위 Tower 가속·마찰 이동과 Core Integrity 100 수직 연결. aim/pause/HUD 미구현 |
+| P3 월드·충돌 | IN_PROGRESS | 타일 월드 TileMap, contain 기반 기본 0.7 projection, Tower 추종·월드 밖 표시 카메라, 정적 타일 cache, CircleCollider2D, Tower 정적 타일 충돌 구현. WorldRegistry/일반 CollisionHandler 미구현 |
+| P4 Tower/Core/Input | IN_PROGRESS | Tower 가속·마찰, Core Integrity 100, 설정 오버라이드형 키 바인딩, PlayerControllable wheel zoom과 ICameraFollowTarget2D 수직 연결. aim/pause/키 설정 UI/HUD 미구현 |
 | P5 AI·Wave | IN_PROGRESS | 6타일 복수 Gate 방향 route와 54×30 Flow Field grid ABI 구현. 적/PathFollower/WaveDirector 미구현 |
 | P6 Word·Combat·Log | NOT_STARTED | 미구현 |
 | P7 Shop·UI·Continue | NOT_STARTED | 미구현 |
@@ -70,9 +71,11 @@ project/game/script/module/ingame/game_system.js
 현재 입력 흐름:
 
 ```text
-DOM W/A/S/D
-→ KeyboardInputHandler의 up/left/down/right 상태
-→ SimulationRuntime snapshot
+DOM KeyboardEvent.code
+→ KeyboardInputHandler raw down set/press edge
+→ InputBindingMap의 의미 action
+→ InputSystem actionStates snapshot
+→ SimulationRuntime
 → InputActionMapper의 MOVE_VECTOR
 → PlayerControlRouter
 → TowerPlayerController (IPlayerControllable)
@@ -88,10 +91,19 @@ DOM W/A/S/D
 - 초기 요구 명칭 호환을 위해 `isPlayerControllerable` 별칭을 제공한다.
 - 라우터는 context 역순, priority 내림차순, 등록 sequence 오름차순으로
   결정적으로 전달한다.
+- 기본 이동은 `KeyW/A/S/D`와 방향키를 같은
+  `moveUp/down/left/right` action에 연결한다.
+- 키 문자와 Shift 상태가 아니라 `KeyboardEvent.code`를 사용한다.
+- 사용자 오버라이드는 `settings.json`의 `inputBindings` plain object로
+  저장하고 runtime 설정 적용 시 즉시 `InputBindingMap`에 반영한다.
+- 기본 바인딩은 input 모듈이 소유하며 설정에는 바뀐 action만 저장할 수 있다.
+  명시적인 빈 배열은 unbound, action당 유효 code는 최대 4개다.
+- runtime 바인딩 교체와 기본값 복원은 raw down/press 상태를 초기화해 이전
+  키의 hold/edge가 새 action으로 전이되지 않게 한다.
+- 시뮬레이션 공식 필드는 `actionStates`이며 물리 code를 노출하지 않는다.
 - 대각선 이동 벡터를 정규화하여 축 이동보다 빠르지 않다.
 - 이동 키가 모두 해제된 fixed tick에는 0 벡터를 전달해 새 가속을 중단하며,
   기존 속도는 선형 마찰로 감속한 뒤 정지한다.
-- 소문자와 Shift가 눌린 대문자 `W/A/S/D`를 모두 인식한다.
 
 실제 파일:
 
@@ -101,7 +113,10 @@ project/game/script/module/ingame/contract/physics_body_contract.js
 project/game/script/module/ingame/input/input_action_mapper.js
 project/game/script/module/ingame/input/player_control_router.js
 project/game/script/module/ingame/object/tower_player_controller.js
+project/game/script/module/input/_input_binding_constants.js
+project/game/script/module/input/_input_binding_map.js
 project/game/script/module/input/_keyboard_input_handler.js
+project/game/script/module/input/input_system.js
 project/game/script/module/simulation/simulation_runtime.js
 ```
 
@@ -156,11 +171,15 @@ project/game/script/data/object/tower/the_tower_data.js
   수 있는 계약 테스트를 포함한다.
 - `TileMap.getNavigationGrid()`는 기존 JS/WASM Flow Field ABI와 같은
   `{cols, rows, size, cellSize, blocked}`를 반환한다.
-- `WorldCamera2D`는 실제 표시 `WW × WH`에서 전체 맵을 균일 contain하고
-  물리·AI 좌표를 변경하지 않는다.
+- `WorldCamera2D`는 실제 표시 `WW × WH`의 전체 맵 contain 배율을 기준으로
+  기본 zoom `0.7`을 적용하며 물리·AI 좌표를 변경하지 않는다.
+- zoom `0.7`에서는 맵 중심을 표시하고 그보다 확대되면 Tower의 보간된
+  `renderPosition`을 viewport 중앙에서 추종한다. 맵 경계에서도 offset을
+  clamp하지 않아 월드 밖 배경을 표시한다.
 - `TileMapRenderer`는 828개 정적 타일의 viewport 좌표와 크기를 최초 draw와
-  projection revision 변경 시에만 다시 계산한다. 매 프레임 cache를 WebGL
-  background batch로 제출한다.
+  projection revision 변경 시에만 다시 계산한다. zoom 애니메이션과 확대
+  추종 이동은 revision을 바꾸며, 매 프레임 cache를 WebGL background batch로
+  제출한다.
 - Tower/Core처럼 동적인 요소는 draw 시 동일 projection으로 좌표와 지름을
   계산하며 고정 픽셀 크기를 사용하지 않는다.
 - 제목 맵 선택 preview와 기본 mapId도 `corridor_eight_01`로 교체했다.
@@ -201,7 +220,7 @@ project/game/script/module/ingame/object/the_core_renderer.js
   추가했다.
 - 신규 계약 테스트가 가속, 마찰 정지, force/impulse, 충돌 위치 보정, 보간,
   경계, 해상도 비례 projection, 정적 타일 cache, 파란 원 렌더 payload,
-  HP 부재, WASD 대소문자 입력을 검증한다.
+  HP 부재, `KeyboardEvent.code` 의미 action 매핑을 검증한다.
 - `main`의 데이터/테마/UI 구조 개선과 신규 플레이 구조를 통합했다.
   `GameScene`은 플레이 전용 adapter로 유지하고, 기존 진단 월드는 별도
   `BenchmarkScene`으로 라우팅한다.
@@ -209,6 +228,66 @@ project/game/script/module/ingame/object/the_core_renderer.js
   직접 import하고 버튼 배치·action은 feature-local 구현 상수로 소유한다.
 - `SimulationRuntime`은 `main`의 feature-local 기본값과 신규 keyboard snapshot
   접근자를 함께 보존한다.
+
+### 3.7 Tower 추종 wheel zoom과 연속 애니메이션
+
+현재 zoom 흐름:
+
+```text
+WheelEvent deltaMode 정규화·누적
+→ InputSystem/SimulationRuntime wheel totals
+→ InputActionMapper가 직전 합계와 차이 계산
+→ CAMERA_ZOOM PlayerAction
+→ PlayerControlRouter
+→ CameraZoomController (IPlayerControllable)
+→ The Tower (ICameraFollowTarget2D)
+→ WorldCamera2D.zoom
+```
+
+- pixel/line/page wheel delta를 무차원 unit으로 정규화하고 event당 절댓값을
+  4로 제한한 뒤 누적한다. snapshot은 이 값을 소비하거나 0으로 되돌리지 않는다.
+- `GameSystem.enter()`가 현재 합계를 baseline으로 잡아 씬 진입 전 wheel을
+  재생하지 않는다. mapper가 마지막 합계와 차이를 갱신하므로 같은 snapshot을
+  여러 번 읽어도 action이 중복되지 않는다.
+- 카메라 zoom도 `GAMEPLAY` context의 priority 100
+  `IPlayerControllable`로 등록된다.
+- `WorldCamera2D`는 렌더 전용 `IWorldViewProjection2D`와 제어용
+  `ICameraControl2D`를 분리해 구현하고, The Tower는
+  `ICameraFollowTarget2D`를 제공한다.
+- contain 배율 대비 기본/최소 zoom은 `0.7`, 최대는 `3`, wheel unit당
+  `1.16` 비율로 목표값을 누적한다.
+- `0.4초 easeOutExpo` 표준 animation을 사용한다. 추가 wheel은 새
+  animation을 만들지 않고 같은 handle을 현재 표시값에서 최신 목표로
+  retarget한다.
+- 목표 또는 현재 zoom이 `0.7`보다 크면 fixed 위치가 아니라 가변 update에서
+  계산한 Tower `renderPosition`을 viewport 중앙에 둔다.
+- 맵 가장자리에서 projection offset을 제한하지 않는다. Tower는 중앙에
+  유지되고 viewport에는 음수 또는 맵 범위 밖 월드 좌표가 보일 수 있다.
+- zoom `0.7`로 복귀하면 맵 기하학 중심을 viewport 중앙에 다시 둔다.
+  resize는 현재 화면 중심과 zoom을 보존한다.
+- zoom은 가변 프레임 presentation이며 물리·AI·저장 좌표를 변경하지 않는다.
+- `AnimationSystem` 표준 handle은
+  `id/promise/retarget/remove/isActive`를 제공하며 풀 재사용 뒤 stale handle이
+  다른 animation을 조작하지 못한다.
+- `SliderElement` 표시값도 연속 drag에 같은 handle을 retarget한다.
+- 타이틀 tilt/spotlight/border/particle의 개별 delta smoothing은 공통
+  `getContinuousInputBlend()`로 이동했고 패널의 기존 함수는 호환 wrapper다.
+
+실제 파일:
+
+```text
+project/game/script/module/input/_mouse_input_handler.js
+project/game/script/module/ingame/contract/camera_control_contract.js
+project/game/script/module/ingame/input/camera_zoom_controller.js
+project/game/script/module/ingame/map/world_camera_2d.js
+project/game/script/module/ingame/object/the_tower.js
+project/game/script/module/ingame/object/game_object_system.js
+project/game/script/module/animation/_standard_animation.js
+project/game/script/module/animation/animation_system.js
+project/game/script/module/animation/_continuous_animation_math.js
+project/game/script/module/ui/element/_slider.js
+project/game/script/module/scene/title/menu/_title_menu_effect_state.js
+```
 
 ## 4. 미구현 범위
 
@@ -219,7 +298,10 @@ project/game/script/module/ingame/object/the_core_renderer.js
 - 다섯 하위 시스템 중 `AISystem`, `LogSystem`, `WordSystem`, `GameUISystem`
 - `GameObjectSystem`의 WorldRegistry, entity handle/pool, spawn/despawn
 - 일반 object-object `CollisionHandler`와 기존 JS/WASM 충돌 커널 adapter
-- aim, 스킬, pointer, edge FIFO, key rebinding
+- aim, 스킬, pointer button action, edge FIFO
+- 키 바인딩 capture/해제/충돌 경고/로컬라이즈 표시를 제공하는 설정 UI
+- mouse button/gamepad binding과 키보드 외 장치의 의미 action 매핑
+- 카메라 drag pan, 키보드 zoom/reset, touch pinch와 사용자 zoom 감도 설정
 - 상점/modal/pause context의 실제 target과 gameplay 입력 차단 정책
 - WaveDirector, 실제 적 spawn, waypoint PathFollower, stage Flow Field AI,
   한 웨이브 완료 판정
@@ -242,6 +324,11 @@ project/game/script/module/ingame/object/the_core_renderer.js
 | Tower를 최소 `GameObjectSystem`이 직접 소유 | WorldRegistry와 entity factory가 아직 없음 | P3의 handle/incarnation/pool 계약 구현 |
 | fixed tick에서 방향 snapshot을 바로 Action으로 변환 | edge command buffer와 frame-to-fixed 전달 계층이 아직 없음 | P1 command buffer 및 P4 입력 snapshot/edge FIFO 구현 |
 | gameplay context만 활성 | 상점/modal/pause target이 아직 없음 | GameUISystem과 pause 상태 구현 |
+| snapshot의 `keys`와 `isSimulationKeyboardPressed()` | `main`에서 이어진 기존 소비자 이름을 유지하되 값은 물리 키가 아니라 의미 action임 | 모든 소비자가 `actionStates`와 `isSimulationInputActionPressed()`로 전환 |
+| `up/down/left/right/space` 의미 별칭 | 기존 테스트·호출부가 새 action ID로 이동하는 동안 호환 | `moveUp/down/left/right/primaryAction` 직접 사용으로 전환 |
+| `inputBindings` 저장·runtime 적용만 제공 | 전용 key capture/충돌 해결 설정 화면은 아직 없음 | GameUISystem 또는 설정 overlay에 바인딩 편집 transaction 구현 |
+| zoom/확대 추종 중 정적 타일 projection cache 재생성 | zoom 보간 또는 Tower renderPosition 이동마다 projection revision과 viewport 좌표 cache가 달라지며 현재 54×30 맵 규모에서는 허용 가능 | 대형 맵/높은 zoom profile에서 병목 확인 시 GPU view-projection uniform으로 이전 |
+| 표준 animation retarget이 현재 값에서 easing 재시작 | 위치 연속성과 동일 handle/Promise는 보장하지만 이전 순간 속도는 보존하지 않음 | 반동·spring UI처럼 속도 연속성이 필요한 사례가 생기면 별도 spring/Hermite animation 추가 |
 | `TileMapCollisionResolver`가 Tower 대 타일만 직접 해소 | 일반 CollisionHandler/WorldRegistry가 아직 없음. ICollidable2D와 IPhysicsBody2D 경계는 최종 계약과 동일 | P3 CollisionHandler가 정적 타일과 object-object 접촉을 함께 조정 |
 | Core/Tower collider를 등록하지만 상호 접촉은 미해소 | 현재 요구는 맵 벽 이동과 Core 상태 수직 연결까지이며 일반 pair solver가 없음 | object-object CollisionHandler 연결 |
 | `CoreIntegrity`를 GameSystem component가 직접 소유 | 최소 생존 자원을 먼저 연결했고 GameStateStore/CombatResolver가 아직 없음 | P1 state store와 P4 combat authority로 이관 |
@@ -272,11 +359,16 @@ npm run check:wasm:collision-contact
 npm run test:wasm:flow-field:stress
 ```
 
-전체 결과: `414` tests, `414` pass, `0` fail.
+전체 결과: `421` tests, `421` pass, `0` fail.
 
 검증된 계약:
 
 - MOVE_VECTOR 대각선 정규화와 상쇄 입력
+- `KeyboardEvent.code` raw 상태와 의미 action 바인딩 분리
+- 사용자 키 오버라이드 검증, unbound 빈 배열, 기본값 fallback과 깊은 복사
+- runtime 바인딩 교체 시 stale raw hold/press edge 초기화
+- `inputBindings` plain object 설정의 안전한 복제와 runtime 즉시 적용 경계
+- snapshot의 `actionStates`와 임시 `keys` 의미 별칭 동기화
 - Tower fixed-step 가속과 목표 속도 수렴
 - 키 해제 직후 관성 이동, 마찰 감속, sleep 정지
 - 질량/역질량 기반 force와 impulse
@@ -287,17 +379,28 @@ npm run test:wasm:flow-field:stress
 - Tower의 HP/health 필드 부재
 - Core Integrity 초기/최대 100과 damage/restore clamp
 - Tower 주변 막힌 타일 충돌과 경계 법선 속도 제거
-- resize에서 월드 좌표 보존과 카메라 viewport 갱신
+- resize에서 월드 좌표·현재 zoom·화면 중심 보존과 카메라 viewport 갱신
+- pixel/line/page wheel delta 정규화와 누적 snapshot
+- 씬 진입 wheel baseline, 동일 snapshot 중복 방지, 연속 목표 zoom 누적
+- `CAMERA_ZOOM`의 PlayerControllable 라우팅과 0.4초 `easeOutExpo`
+- `ICameraControl2D`/`ICameraFollowTarget2D` 구조 계약
+- 기본/최소 zoom `0.7`, 최대 `3` clamp와 기본 상태 맵 중앙 정렬
+- 확대 중 Tower 보간 좌표의 viewport 중앙 추종
+- 맵 가장자리 추종에서 월드 밖 좌표 표시와 기본 zoom 복귀 시 맵 중앙 복원
+- 같은 animation handle/Promise의 현재값 retarget과 stale pooled handle 격리
+- Slider 표시값의 연속 retarget과 마지막 목표 정착
+- title/panel 연속 입력 smoothing의 공통 delta 독립 계산
 - `1타일 = 1월드 단위`, Tower 지름 1타일
 - 6타일 직선 폭, 54×30/1,620셀 grid와 828개 보행 타일
 - 왼쪽 ㄴ자, 중앙 8자, 오른쪽 ㄱ자 route 진행 순서
-- 2560×1440 contain projection과 1280×720에서 정확한 1/2 표시 배율
-- 정적 타일 projection이 연속 draw에서는 재계산되지 않고 resize에서만 갱신
+- 2560×1440 contain 기반 0.7 projection과 1280×720에서 정확한 1/2 표시 배율
+- 정적 타일 projection이 같은 revision의 연속 draw에서는 재계산되지 않고
+  resize와 zoom의 projection revision 변경 때 갱신
 - 8자 교차점의 반복 waypoint 진행 순서
 - 두 Gate가 같은 Core에 합류하는 map 계약
 - 신규 TileMap grid의 기존 WASM Flow Field backend dispatch ABI
 - controller interface와 destroy 정리
-- 소문자/대문자 WASD
+- `KeyW/A/S/D`와 방향키의 동일 MOVE action 매핑
 - 기존 loading/title handoff, mapId 전달과 실제 TileMap 선택 계약
 - play `GameScene`과 `BenchmarkScene`의 별도 생성·파괴 라우팅
 - 삭제된 중앙 `data_handler.js` 없이 benchmark 직접 import 경계
@@ -307,28 +410,38 @@ npm run test:wasm:flow-field:stress
 아직 이 문서 갱신 시점에 수행하지 않은 검증:
 
 - NW.js 실제 창에서 수동 WASD 이동과 화면 좌표 육안 확인
+- NW.js 실제 마우스 wheel/고해상도 trackpad의 zoom 방향·감도·Tower 중앙 추종 확인
+- 맵 가장자리에서 월드 밖 배경의 실제 시각 결과 확인
+- zoom/추종 도중 연속 wheel/resize를 반복하는 presentation soak와 타일 cache profile
 - 장기 입력/resize 반복 soak
 - benchmark 화면 수동 회귀
 
 ## 7. 다음 권장 구현 순서
 
-1. 실제 NW.js의 2560×1440 및 다른 종횡비에서 전체 맵, Core/Tower 위치와
-   resize cache를 육안·profile로 확인한다.
+1. 실제 NW.js의 2560×1440 및 다른 종횡비에서 전체 맵, Core/Tower 위치,
+   wheel 방향·감도·Tower 추종·월드 밖 배경과 zoom/이동 중 타일 cache를
+   육안·profile로 확인한다.
 2. `GameStateStore` 최소 schema로 현재 CoreIntegrity component를 이관한다.
 3. fixed command buffer를 넣어 raw snapshot/action/command 경계를 완성한다.
-4. WorldRegistry와 component/capability index로 현재 Core/Tower/body/collider 등록을 이관한다.
-5. 일반 CollisionHandler가 현재 타일 resolver와 object-object pair를 조정하게 한다.
-6. 기존 충돌 JS/WASM 커널을 새 CollisionHandler port 뒤에 연결한다.
-7. pause context와 입력 초기화 계약을 구현한다.
-8. 현재 `west-gate-01`에 첫 적과 waypoint PathFollower를 연결한다.
-9. route stage별 Flow Field를 연결한 뒤 두 번째 Gate fixture를 실제 맵 콘텐츠로 확장한다.
-10. WaveDirector와 한 웨이브 완료를 연결한다.
-11. 웨이브 종료 `ingame.dat` atomic checkpoint를 구현한다.
+4. pause context와 입력 초기화 계약을 구현한다.
+5. 전용 키 바인딩 설정 UI의 capture, conflict 표시, apply/cancel transaction을
+   현재 `inputBindings` runtime port에 연결한다.
+6. WorldRegistry와 component/capability index로 현재 Core/Tower/body/collider 등록을 이관한다.
+7. 일반 CollisionHandler가 현재 타일 resolver와 object-object pair를 조정하게 한다.
+8. 기존 충돌 JS/WASM 커널을 새 CollisionHandler port 뒤에 연결한다.
+9. 현재 `west-gate-01`에 첫 적과 waypoint PathFollower를 연결한다.
+10. route stage별 Flow Field를 연결한 뒤 두 번째 Gate fixture를 실제 맵 콘텐츠로 확장한다.
+11. WaveDirector와 한 웨이브 완료를 연결한다.
+12. 웨이브 종료 `ingame.dat` atomic checkpoint를 구현한다.
 
 ## 8. 변경 이력
 
 | 날짜 | 변경 |
 | --- | --- |
+| 2026-07-26 | `KeyboardEvent.code → InputBindingMap → actionStates` 의미 입력 기반, `inputBindings` 설정 오버라이드, 누적 wheel snapshot을 구현 |
+| 2026-07-26 | 기본/최소 zoom을 `0.7`로 조정하고 `ICameraControl2D`/`ICameraFollowTarget2D` 기반 Tower 보간 추종, 가장자리 월드 밖 표시, 기본 zoom 맵 중앙 복원을 구현 |
+| 2026-07-26 | `IPlayerControllable` wheel 카메라와 `0.4초 easeOutExpo` 같은-handle retarget을 구현 |
+| 2026-07-26 | AnimationSystem 표준 handle retarget/stale-pool 안전 계약, Slider 연속 retarget, title/panel 공통 delta smoothing을 구현 |
 | 2026-07-26 | 고정 픽셀 월드를 제거하고 `1타일 = 1월드 단위`와 `IWorldViewProjection2D` contain projection으로 전환. 정적 타일 projection cache와 2560×1440/1280×720 비례 검증 추가 |
 | 2026-07-26 | 첫 맵을 6타일 폭 `5×9` ㄴ/8자/ㄱ blueprint와 54×30 Flow Field grid로 압축 |
 | 2026-07-26 | Tower 목표 이동 속도를 `312 → 374.4`로 추가 20% 상향하고 control acceleration을 `3120 → 3744`로 조정 |

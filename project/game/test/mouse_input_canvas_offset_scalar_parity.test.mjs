@@ -573,6 +573,59 @@ test('all four coordinate listeners avoid the aggregate offset-object path', asy
     ]);
 });
 
+test('wheel 입력은 deltaMode별 무차원 누적값과 최신 pointer 좌표를 보존한다', async () => {
+    const raw = { scale: 2, x: 10, y: 20 };
+    const controller = {
+        readScale: () => raw.scale,
+        readOffsetX: () => raw.x,
+        readOffsetY: () => raw.y
+    };
+    const runtime = await loadMouseRuntime(controller);
+    const handler = new runtime.MouseInputHandler();
+    const wheel = runtime.windowTarget.get('wheel');
+    const totals = {};
+
+    wheel({
+        clientX: 30,
+        clientY: 50,
+        deltaX: -50,
+        deltaY: 100,
+        deltaMode: 0
+    });
+    assert.equal(handler.mousePos.x, 40);
+    assert.equal(handler.mousePos.y, 60);
+    assert.strictEqual(handler.copyWheelTotalsInto(totals), totals);
+    assert.deepEqual(totals, { x: -0.5, y: 1 });
+
+    wheel({
+        clientX: 32,
+        clientY: 52,
+        deltaX: 0,
+        deltaY: 3,
+        deltaMode: 1
+    });
+    wheel({
+        clientX: 34,
+        clientY: 54,
+        deltaX: 0,
+        deltaY: -1,
+        deltaMode: 2
+    });
+    handler.copyWheelTotalsInto(totals);
+    assert.deepEqual(totals, { x: -0.5, y: 1 });
+
+    wheel({
+        clientX: 36,
+        clientY: 56,
+        deltaX: Number.POSITIVE_INFINITY,
+        deltaY: 100000,
+        deltaMode: 0
+    });
+    handler.copyWheelTotalsInto(totals);
+    assert.deepEqual(totals, { x: -0.5, y: 5 });
+    assert.equal(runtime.windowTarget.count('wheel'), 1);
+});
+
 function createObservedScenario(failAt = null) {
     const trace = [];
     const sentinel = new RangeError(`sentinel:${failAt}`);

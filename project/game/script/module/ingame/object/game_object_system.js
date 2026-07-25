@@ -1,4 +1,5 @@
 import { assertCollidable2D } from '../contract/collidable_contract.js';
+import { assertCameraFollowTarget2D } from '../contract/camera_control_contract.js';
 import { assertCoreIntegrity } from '../contract/core_integrity_contract.js';
 import { assertPhysicsBody2D } from '../contract/physics_body_contract.js';
 import { assertTileNavigationSource } from '../contract/tile_navigation_contract.js';
@@ -44,6 +45,7 @@ export class GameObjectSystem {
         this.camera = new WorldCamera2D();
         this.core = null;
         this.tower = null;
+        this.cameraFollowTarget = null;
         this.towerController = null;
         this.playerControllables = [];
         this.physicsBodies = [];
@@ -92,6 +94,7 @@ export class GameObjectSystem {
         );
         this.towerController = new TowerPlayerController(this.tower);
         this.playerControllables.push(this.towerController);
+        this.cameraFollowTarget = assertCameraFollowTarget2D(this.tower);
 
         this.camera.init(this.tileMap.getWorldBounds(), this.viewport);
         this.initialized = true;
@@ -124,6 +127,11 @@ export class GameObjectSystem {
     /** @returns {TheTower|null} 현재 The Tower입니다. */
     getTower() {
         return this.tower;
+    }
+
+    /** @returns {object|null} 현재 ICameraFollowTarget2D 대상입니다. */
+    getCameraFollowTarget() {
+        return this.cameraFollowTarget;
     }
 
     /** @returns {TheCore|null} 현재 The Core입니다. */
@@ -222,6 +230,7 @@ export class GameObjectSystem {
         this.towerController = null;
         this.tower?.destroy();
         this.tower = null;
+        this.cameraFollowTarget = null;
         this.core?.destroy();
         this.core = null;
         this.tileCollisionResolver = null;

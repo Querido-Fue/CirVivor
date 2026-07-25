@@ -1,5 +1,6 @@
 import { MouseInputHandler } from './_mouse_input_handler.js';
 import { KeyboardInputHandler } from './_keyboard_input_handler.js';
+import { InputBindingMap } from './_input_binding_map.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 
 let inputSystemInstance = null;
@@ -22,12 +23,12 @@ function copyInputArrayInto(target, source, fallback) {
 }
 
 /**
- * 입력 키의 own 상태를 재사용 대상 객체에 동기화합니다.
- * @param {Record<string, boolean>} target - 제자리에서 갱신할 키 상태 객체입니다.
- * @param {Record<string, unknown>} source - 현재 키 상태 객체입니다.
+ * 의미 action의 own 상태를 재사용 대상 객체에 동기화합니다.
+ * @param {Record<string, boolean>} target - 제자리에서 갱신할 action 상태 객체입니다.
+ * @param {Record<string, unknown>} source - 현재 action 상태 객체입니다.
  * @returns {void}
  */
-function copyInputKeysInto(target, source) {
+function copyInputActionStatesInto(target, source) {
     for (const key in target) {
         if (Object.prototype.hasOwnProperty.call(target, key)
             && !Object.prototype.hasOwnProperty.call(source, key)) {
@@ -43,13 +44,15 @@ function copyInputKeysInto(target, source) {
 
 /**
  * 재사용 가능한 시뮬레이션 입력 스냅샷 버퍼를 생성합니다.
- * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: Array<*>, right: Array<*>, middle: Array<*>}, focusList: Array<*>, keys: Record<string, boolean>}} 새 입력 스냅샷 버퍼입니다.
+ * @returns {{mousePos: {x: number, y: number}, wheel: {x:number,y:number}, mouseButtons: {left: Array<*>, right: Array<*>, middle: Array<*>}, focusList: Array<*>, actionStates: Record<string, boolean>, keys: Record<string, boolean>}} 새 입력 스냅샷 버퍼입니다.
  */
 function createSimulationInputSnapshotBuffer() {
     return {
         mousePos: { x: 0, y: 0 },
+        wheel: { x: 0, y: 0 },
         mouseButtons: { left: [], right: [], middle: [] },
         focusList: [],
+        actionStates: {},
         keys: {}
     };
 }
@@ -59,10 +62,15 @@ function createSimulationInputSnapshotBuffer() {
  * @description 게임의 마우스 및 키보드 입력을 처리하고 관리하는 시스템입니다.
  */
 export class InputSystem {
-    constructor() {
+    /**
+     * @param {{bindings?:Record<string,string[]>}} [options={}] - 초기 사용자 키 바인딩입니다.
+     */
+    constructor(options = {}) {
         inputSystemInstance = this;
         this.mouseInputHandler = new MouseInputHandler();
         this.keyboardInputHandler = new KeyboardInputHandler();
+        this.bindingMap = new InputBindingMap(options.bindings);
+        this.actionStateScratch = {};
     }
 
     async init() {
@@ -91,33 +99,96 @@ export class InputSystem {
     }
 
     /**
+     * settings.json에서 읽은 사용자 키 바인딩 오버라이드를 즉시 적용합니다.
+     * @param {Record<string,string[]>} [bindings={}] - action별 KeyboardEvent.code 배열입니다.
+     * @returns {Record<string,string[]>} 정규화된 전체 바인딩 복사본입니다.
+     */
+    setBindings(bindings = {}) {
+        const normalizedBindings = this.bindingMap.replaceOverrides(bindings);
+        this.keyboardInputHandler.resetKeyboardInput();
+        return normalizedBindings;
+    }
+
+    /**
+     * 현재 정규화된 전체 키 바인딩을 반환합니다.
+     * @param {Record<string,string[]>} [out={}] - 재사용 대상입니다.
+     * @returns {Record<string,string[]>} 호출자가 소유하는 바인딩입니다.
+     */
+    getBindings(out = {}) {
+        return this.bindingMap.getBindings(out);
+    }
+
+    /**
+     * 모든 키 바인딩을 입력 모듈의 기본 배치로 되돌립니다.
+     * @returns {Record<string,string[]>} 기본 바인딩 복사본입니다.
+     */
+    resetBindings() {
+        const defaultBindings = this.bindingMap.reset();
+        this.keyboardInputHandler.resetKeyboardInput();
+        return defaultBindings;
+    }
+
+    /**
+     * 지정한 의미 action의 현재 눌림 상태를 반환합니다.
+     * @param {string} actionId - 의미 입력 ID 또는 legacy 의미 별칭입니다.
+     * @returns {boolean} action 활성 여부입니다.
+     */
+    isActionPressed(actionId) {
+        return this.bindingMap.isActionPressed(actionId, this.keyboardInputHandler);
+    }
+
+    /**
+     * 지정한 의미 action의 단발 누름 edge를 소비합니다.
+     * @param {string} actionId - 의미 입력 ID 또는 legacy 의미 별칭입니다.
+     * @returns {boolean} 하나 이상의 물리 edge를 소비했는지 여부입니다.
+     */
+    consumeActionPress(actionId) {
+        return this.bindingMap.consumeActionPress(actionId, this.keyboardInputHandler);
+    }
+
+    /**
      * 시뮬레이션 런타임에 전달할 입력 스냅샷을 최신 입력과 정확히 동기화합니다.
-     * 재사용 가능한 `out`이 있으면 같은 객체와 기존 mousePos·버튼 배열·focusList·keys 컨테이너를
-     * 제자리에서 갱신하며, 현재 입력에 없는 own key는 삭제합니다. `out`이 없으면 새 버퍼를 생성합니다.
+     * 재사용 가능한 `out`이 있으면 같은 객체와 기존 mousePos·wheel·버튼 배열·focusList·actionStates
+     * 컨테이너를 제자리에서 갱신합니다. 물리 KeyboardEvent.code는 스냅샷에 노출하지 않습니다.
+     * `keys`는 의미 action 상태를 담는 임시 호환 별칭입니다.
      * @param {object|null} [out=null] - 갱신할 재사용 스냅샷입니다.
-     * @returns {{mousePos: {x: number, y: number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], keys: Record<string, boolean>}} 유효한 `out`을 전달하면 동일한 객체, 아니면 새 스냅샷입니다.
+     * @returns {{mousePos: {x: number, y: number}, wheel:{x:number,y:number}, mouseButtons: {left: string[], right: string[], middle: string[]}, focusList: string[], actionStates:Record<string,boolean>, keys: Record<string, boolean>}} 유효한 `out`을 전달하면 동일한 객체, 아니면 새 스냅샷입니다.
      */
     getSimulationInputSnapshot(out = null) {
         const mouseButtons = this.mouseInputHandler?.mouseButtons || {};
-        const keyboardKeys = this.keyboardInputHandler?.keys || {};
         const snapshot = out && typeof out === 'object'
             ? out
             : createSimulationInputSnapshotBuffer();
         snapshot.mousePos ||= { x: 0, y: 0 };
+        snapshot.wheel ||= { x: 0, y: 0 };
         snapshot.mouseButtons ||= { left: [], right: [], middle: [] };
         snapshot.mouseButtons.left ||= [];
         snapshot.mouseButtons.right ||= [];
         snapshot.mouseButtons.middle ||= [];
         snapshot.focusList ||= [];
+        snapshot.actionStates ||= {};
         snapshot.keys ||= {};
 
         snapshot.mousePos.x = resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.x), 0);
         snapshot.mousePos.y = resolveFiniteNumber(Number(this.mouseInputHandler?.mousePos?.y), 0);
+        if (typeof this.mouseInputHandler?.copyWheelTotalsInto === 'function') {
+            this.mouseInputHandler.copyWheelTotalsInto(snapshot.wheel);
+        } else {
+            snapshot.wheel.x = 0;
+            snapshot.wheel.y = 0;
+        }
+        snapshot.wheel.x = resolveFiniteNumber(Number(snapshot.wheel.x), 0);
+        snapshot.wheel.y = resolveFiniteNumber(Number(snapshot.wheel.y), 0);
         copyInputArrayInto(snapshot.mouseButtons.left, mouseButtons.left?.state, DEFAULT_MOUSE_BUTTON_SNAPSHOT);
         copyInputArrayInto(snapshot.mouseButtons.right, mouseButtons.right?.state, DEFAULT_MOUSE_BUTTON_SNAPSHOT);
         copyInputArrayInto(snapshot.mouseButtons.middle, mouseButtons.middle?.state, DEFAULT_MOUSE_BUTTON_SNAPSHOT);
         copyInputArrayInto(snapshot.focusList, this.mouseInputHandler?.focusList, DEFAULT_FOCUS_SNAPSHOT);
-        copyInputKeysInto(snapshot.keys, keyboardKeys);
+        this.bindingMap.writeActionStates(
+            this.keyboardInputHandler,
+            this.actionStateScratch
+        );
+        copyInputActionStatesInto(snapshot.actionStates, this.actionStateScratch);
+        copyInputActionStatesInto(snapshot.keys, this.actionStateScratch);
         return snapshot;
     }
 }
@@ -184,19 +255,40 @@ export const removeMouseFocus = (focus) => inputSystemInstance.mouseInputHandler
  */
 export const setMouseFocus = (focus) => inputSystemInstance.mouseInputHandler.setFocus(focus);
 /**
- * 키보드 키 입력 상태를 반환합니다.
- * @param {string} key - 키 코드 (예: 'ArrowUp', 'Space')
- * @returns {boolean} 키 눌림 여부
+ * 키보드에 연결된 의미 action의 현재 상태를 반환합니다.
+ * 물리 KeyboardEvent.code를 직접 조회하지 않습니다.
+ * @param {string} actionId - 의미 action ID 또는 legacy 의미 별칭입니다.
+ * @returns {boolean} action 활성 여부입니다.
  */
-export const getKeyboardInput = (key) => inputSystemInstance.keyboardInputHandler.getKeyboardInput(key);
+export const getKeyboardInput = (actionId) => inputSystemInstance?.isActionPressed?.(actionId) === true;
 /**
- * 지정한 키의 반복되지 않은 누름 edge를 한 번 소비합니다.
- * @param {string} key - 소비할 내부 입력 키 이름입니다.
+ * 지정한 의미 action에 연결된 반복되지 않은 누름 edge를 한 번 소비합니다.
+ * @param {string} actionId - 소비할 의미 action ID 또는 legacy 의미 별칭입니다.
  * @returns {boolean} 누름 edge 소비 여부입니다.
  */
-export const consumeKeyboardPress = (key) => inputSystemInstance?.keyboardInputHandler?.consumeKeyboardPress?.(key) === true;
+export const consumeKeyboardPress = (actionId) => inputSystemInstance?.consumeActionPress?.(actionId) === true;
 /**
  * 키보드 입력 상태를 초기화합니다.
  * @returns {void}
  */
 export const resetKeyboardInput = () => inputSystemInstance.keyboardInputHandler.resetKeyboardInput();
+
+/**
+ * 사용자 키 바인딩 오버라이드를 가장 최근 InputSystem에 적용합니다.
+ * @param {Record<string,string[]>} [bindings={}] - action별 KeyboardEvent.code 배열입니다.
+ * @returns {Record<string,string[]>} 정규화된 전체 바인딩입니다.
+ */
+export const setInputBindings = (bindings = {}) => inputSystemInstance.setBindings(bindings);
+
+/**
+ * 현재 정규화된 전체 키 바인딩을 복사해 반환합니다.
+ * @param {Record<string,string[]>} [out={}] - 재사용 대상입니다.
+ * @returns {Record<string,string[]>} 호출자가 소유하는 바인딩입니다.
+ */
+export const getInputBindings = (out = {}) => inputSystemInstance.getBindings(out);
+
+/**
+ * 모든 키 바인딩을 기본 배치로 되돌립니다.
+ * @returns {Record<string,string[]>} 기본 바인딩 복사본입니다.
+ */
+export const resetInputBindings = () => inputSystemInstance.resetBindings();

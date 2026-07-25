@@ -1,6 +1,4 @@
-import {
-    getDeltaLerpFactor
-} from 'overlay/_panel_effect_math.js';
+import { getContinuousInputBlend } from 'animation/_continuous_animation_math.js';
 import { clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 /**
@@ -13,8 +11,8 @@ import { clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.j
  */
 export function updateTitleMenuTiltState(renderState, runtimeState, delta, hoverTiltOptions) {
     if (!hoverTiltOptions) {
-        runtimeState.rotateX = lerpNumber(runtimeState.rotateX, 0, getDeltaLerpFactor(0.2, delta));
-        runtimeState.rotateY = lerpNumber(runtimeState.rotateY, 0, getDeltaLerpFactor(0.2, delta));
+        runtimeState.rotateX = lerpNumber(runtimeState.rotateX, 0, getContinuousInputBlend(0.2, delta));
+        runtimeState.rotateY = lerpNumber(runtimeState.rotateY, 0, getContinuousInputBlend(0.2, delta));
         runtimeState.targetRotateX = 0;
         runtimeState.targetRotateY = 0;
         return;
@@ -24,7 +22,7 @@ export function updateTitleMenuTiltState(renderState, runtimeState, delta, hover
     runtimeState.targetRotateX = runtimeState.hovered ? (-runtimeState.normalizedY * maxAngle) : 0;
     runtimeState.targetRotateY = runtimeState.hovered ? (runtimeState.normalizedX * maxAngle) : 0;
 
-    const lerpFactor = getDeltaLerpFactor(hoverTiltOptions.smoothing, delta);
+    const lerpFactor = getContinuousInputBlend(hoverTiltOptions.smoothing, delta);
     runtimeState.rotateX = lerpNumber(runtimeState.rotateX, runtimeState.targetRotateX, lerpFactor);
     runtimeState.rotateY = lerpNumber(runtimeState.rotateY, runtimeState.targetRotateY, lerpFactor);
 }
@@ -38,14 +36,14 @@ export function updateTitleMenuTiltState(renderState, runtimeState, delta, hover
  */
 export function updateTitleMenuSpotlightState(runtimeState, delta, spotlightOptions) {
     if (!spotlightOptions) {
-        runtimeState.spotlightAlpha = lerpNumber(runtimeState.spotlightAlpha, 0, getDeltaLerpFactor(0.24, delta));
+        runtimeState.spotlightAlpha = lerpNumber(runtimeState.spotlightAlpha, 0, getContinuousInputBlend(0.24, delta));
         return;
     }
 
     runtimeState.spotlightAlpha = lerpNumber(
         runtimeState.spotlightAlpha,
         runtimeState.hovered ? spotlightOptions.opacity : 0,
-        getDeltaLerpFactor(spotlightOptions.smoothing, delta)
+        getContinuousInputBlend(spotlightOptions.smoothing, delta)
     );
 }
 
@@ -58,14 +56,14 @@ export function updateTitleMenuSpotlightState(runtimeState, delta, spotlightOpti
  */
 export function updateTitleMenuBorderState(runtimeState, delta, borderOptions) {
     if (!borderOptions) {
-        runtimeState.borderAlpha = lerpNumber(runtimeState.borderAlpha, 0, getDeltaLerpFactor(0.24, delta));
+        runtimeState.borderAlpha = lerpNumber(runtimeState.borderAlpha, 0, getContinuousInputBlend(0.24, delta));
         return;
     }
 
     runtimeState.borderAlpha = lerpNumber(
         runtimeState.borderAlpha,
         runtimeState.hovered ? borderOptions.opacity : 0,
-        getDeltaLerpFactor(borderOptions.smoothing, delta)
+        getContinuousInputBlend(borderOptions.smoothing, delta)
     );
 }
 
@@ -106,7 +104,7 @@ export function updateTitleMenuParticleState(renderState, runtimeState, delta, p
     runtimeState.particleAlpha = lerpNumber(
         runtimeState.particleAlpha,
         runtimeState.hovered ? 1 : 0,
-        getDeltaLerpFactor(0.22, delta)
+        getContinuousInputBlend(0.22, delta)
     );
 
     if (!runtimeState.hovered && runtimeState.particleAlpha <= 0.01) {
