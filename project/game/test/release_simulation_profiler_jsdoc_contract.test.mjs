@@ -13,8 +13,8 @@ const [hudSource, profilerSource] = await Promise.all([
     readFile(PROFILER_PATH, 'utf8')
 ]);
 
-const HUD_EXECUTABLE_SOURCE_HASH = 'f31a7bcbd11c9b4338034998fa6e37060bb67d55570b6aae4ffb9633edfedc20';
-const PROFILER_EXECUTABLE_SOURCE_HASH = '3c458ff7af6d890bf2e39055ea9a43ae807d83732ee45954bb9d370382d39980';
+const HUD_EXECUTABLE_SOURCE_HASH = '66289414ea265d70fdda7bf78da1d84d7c7a19436d7c1188fc3b0a230648c3cb';
+const PROFILER_EXECUTABLE_SOURCE_HASH = '2851f8a00e77906269ec67d3bce7f268de65af0f00b15af934d18887b82f3a4e';
 
 /**
  * 독립된 줄의 JSDoc을 제거한 production 실행 소스를 해시합니다.
@@ -51,9 +51,14 @@ function findLeadingJsDoc(source, escapedDeclaration) {
     return match[1];
 }
 
-test('release simulation profiler JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
+test('release simulation profiler 구현 상수는 전용 코드 모듈을 사용한다', () => {
     assert.equal(hashExecutableSource(hudSource, 5), HUD_EXECUTABLE_SOURCE_HASH);
     assert.equal(hashExecutableSource(profilerSource, 29), PROFILER_EXECUTABLE_SOURCE_HASH);
+    assert.doesNotMatch(hudSource, /data\/data_handler\.js/);
+    assert.doesNotMatch(profilerSource, /data\/data_handler\.js/);
+    assert.match(hudSource, /RELEASE_SIMULATION_PROFILER_CONSTANTS/);
+    assert.match(hudSource, /const HUD_CONSTANTS = RELEASE_SIMULATION_PROFILER_CONSTANTS\.HUD;/);
+    assert.match(profilerSource, /RELEASE_SIMULATION_PROFILER_CONSTANTS/);
 });
 
 test('ReleaseSimulationProfiler constructor JSDoc은 실제 option 속성을 명시한다', () => {

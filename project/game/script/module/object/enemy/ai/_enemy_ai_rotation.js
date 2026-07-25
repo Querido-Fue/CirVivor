@@ -1,15 +1,13 @@
-import { getData } from 'data/data_handler.js';
+import { ENEMY_AI_DATA } from 'data/object/enemy/enemy_ai_data.js';
 import { normalizeDegrees } from 'util/math_util.js';
 import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 
-const ENEMY_AI_CONSTANTS = getData('ENEMY_AI_CONSTANTS');
-const ENEMY_ANGLE_CONSTANTS = getData('ENEMY_CONSTANTS').ANGLE;
-const DEFAULT_AI_PROFILE = ENEMY_AI_CONSTANTS.QUALITY_PROFILES[ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE];
+const DEFAULT_AI_PROFILE = ENEMY_AI_DATA.QUALITY_PROFILES[ENEMY_AI_DATA.DEFAULT_QUALITY_PROFILE];
 const HEXA_HIVE_TYPE = getHexaHiveType();
-const ROTATION_EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
-const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
-const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
+const ROTATION_EPSILON = 1e-6;
+const STRAIGHT_DEG = 180;
+const RADIANS_TO_DEGREES = 180 / Math.PI;
 
 /**
  * 현재 각도에서 목표 각도까지의 최단 회전 차이를 반환합니다.

@@ -1,4 +1,4 @@
-import { getData } from 'data/data_handler.js';
+import { ENEMY_SHAPE_TYPES } from 'data/object/enemy/enemy_catalog_data.js';
 import { BaseScene } from 'scene/_base_scene.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_protocol.js';
@@ -37,17 +37,45 @@ import {
     setReleaseSimulationProfilerEnabled
 } from 'simulation/release_simulation_profiler.js';
 
-const GAME_SCENE_CONSTANTS = getData('GAME_SCENE_CONSTANTS');
-const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
-const GAME_SCENE_BENCHMARK_CONSTANTS = GAME_SCENE_CONSTANTS.BENCHMARK;
-const GAME_SCENE_BUTTON_CONSTANTS = GAME_SCENE_CONSTANTS.BUTTON;
-const GAME_SCENE_BUTTON_LAYOUT = GAME_SCENE_BUTTON_CONSTANTS.LAYOUT;
+const GAME_SCENE_BUTTON_LAYOUT = Object.freeze({
+    WIDTH_MIN: 160,
+    WIDTH_WW_RATIO: 0.13,
+    HEIGHT_MIN: 38,
+    HEIGHT_WH_RATIO: 0.052,
+    GAP_MIN: 10,
+    GAP_HEIGHT_RATIO: 0.24,
+    X_WW_RATIO: 0.03,
+    Y_WH_RATIO: 0.08
+});
 const GAME_SCENE_BUTTON_ACTION_TYPES = Object.freeze({
     SPAWN_ENEMIES: 'spawnEnemies',
     SPAWN_BOX: 'spawnBox',
     SPAWN_PROJECTILES: 'spawnProjectiles',
     TOGGLE_RELEASE_PROFILER: 'toggleReleaseProfiler'
 });
+const GAME_SCENE_BUTTON_ACTIONS = Object.freeze([
+    Object.freeze({
+        id: 'spawnEnemy100',
+        label: 'Spawn 100 Enemies',
+        type: GAME_SCENE_BUTTON_ACTION_TYPES.SPAWN_ENEMIES,
+        count: 100
+    }),
+    Object.freeze({
+        id: 'spawnBox',
+        label: 'Spawn Box',
+        type: GAME_SCENE_BUTTON_ACTION_TYPES.SPAWN_BOX
+    }),
+    Object.freeze({
+        id: 'spawnProjectile10',
+        label: 'Spawn 10 Projectiles',
+        type: GAME_SCENE_BUTTON_ACTION_TYPES.SPAWN_PROJECTILES
+    }),
+    Object.freeze({
+        id: 'toggleReleaseProfiler',
+        label: 'Toggle Profiler',
+        type: GAME_SCENE_BUTTON_ACTION_TYPES.TOGGLE_RELEASE_PROFILER
+    })
+]);
 const GAME_SCENE_DRAW_SECTIONS = Object.freeze({
     WORLD: 'scene.game.local.drawWorld',
     BUTTONS: 'scene.game.local.drawButtons',
@@ -235,7 +263,7 @@ export class GameScene extends BaseScene {
         }
 
         const metrics = createGameSceneButtonMetrics(this);
-        this.buttons = GAME_SCENE_BUTTON_CONSTANTS.ACTIONS.map((action, index) => {
+        this.buttons = GAME_SCENE_BUTTON_ACTIONS.map((action, index) => {
             return createGameSceneButton(this, action, metrics, index);
         });
     }
@@ -254,7 +282,7 @@ export class GameScene extends BaseScene {
      * @param {number} [count] - 생성할 적 수입니다.
      * @returns {boolean}
      */
-    queueSpawnEnemies(count = GAME_SCENE_BENCHMARK_CONSTANTS.DEFAULT_ENEMY_COUNT) {
+    queueSpawnEnemies(count) {
         return enqueueGameSceneCommand(buildGameSceneSpawnEnemiesCommand(this, count));
     }
 

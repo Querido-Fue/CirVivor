@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
@@ -10,27 +11,58 @@ const WEBGL_LAYER_RENDERER_SOURCE_PATH = fileURLToPath(new URL(
     import.meta.url
 ));
 const webGLLayerRendererSource = await readFile(WEBGL_LAYER_RENDERER_SOURCE_PATH, 'utf8');
-const { beginWebGLLayerFrame } = await loadGameModule(
-    'display/webgl/_webgl_layer_renderer.js'
+const EXECUTABLE_SOURCE_HASH = 'f7f1e996145edb655d524338a2b7d5a876e91af1d74a5d408f1d6ac1c607bc27';
+const { DISPLAY_WEBGL_RENDER_MODES } = await loadGameModule(
+    'display/display_surface_descriptor.js'
 );
-const { getData } = await loadGameModule('data/data_handler.js');
-const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
-const EXECUTABLE_SOURCE_HASH = 'd543b3cf532b4f1653cc1d48e679a05e1609377161314ecf665b33801ded3818';
+const context = vm.createContext({ console });
+const createSyntheticModule = (identifier, exports) => new vm.SyntheticModule(
+    Object.keys(exports),
+    function initializeSyntheticModule() {
+        for (const [name, value] of Object.entries(exports)) {
+            this.setExport(name, value);
+        }
+    },
+    { context, identifier }
+);
+const webGLLayerRendererModule = new vm.SourceTextModule(webGLLayerRendererSource, {
+    context,
+    identifier: WEBGL_LAYER_RENDERER_SOURCE_PATH
+});
+const dependencies = new Map([
+    ['./_effect_renderer.js', createSyntheticModule('./_effect_renderer.js', {
+        EffectRenderer: class EffectRenderer {}
+    })],
+    ['./_overlay_effect_renderer.js', createSyntheticModule('./_overlay_effect_renderer.js', {
+        OverlayEffectRenderer: class OverlayEffectRenderer {}
+    })],
+    ['./_webgl_batch.js', createSyntheticModule('./_webgl_batch.js', {
+        WebGLBatch: class WebGLBatch {}
+    })],
+    ['../display_surface_descriptor.js', createSyntheticModule(
+        '../display_surface_descriptor.js',
+        { DISPLAY_WEBGL_RENDER_MODES }
+    )]
+]);
+await webGLLayerRendererModule.link((specifier) => dependencies.get(specifier));
+await webGLLayerRendererModule.evaluate();
+const { beginWebGLLayerFrame } = webGLLayerRendererModule.namespace;
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
  * @param {string} productionSource - production 소스입니다.
+ * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
  * @returns {string} SHA-256 해시입니다.
  */
-function hashExecutableSource(productionSource) {
+function hashExecutableSource(productionSource, expectedJsDocCount) {
     const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
     const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
+    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
     assert.equal(
         standaloneJsDocStarts.length,
         allJsDocStarts.length,
         '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
     );
-    assert.equal(standaloneJsDocStarts.length, 8, 'production standalone JSDoc 개수가 바뀌었습니다.');
     const executableSource = productionSource
         .replace(/\/\*\*[\s\S]*?\*\//g, '')
         .replace(/\r\n/g, '\n');
@@ -69,8 +101,16 @@ function captureThrown(action) {
     return thrownValue;
 }
 
-test('beginWebGLLayerFrame executable source remains unchanged while its JSDoc is corrected', () => {
-    assert.equal(hashExecutableSource(webGLLayerRendererSource), EXECUTABLE_SOURCE_HASH);
+test('WebGL layer renderer는 feature-local mode 상수를 사용하고 중앙 data registry에 의존하지 않는다', () => {
+    assert.equal(hashExecutableSource(webGLLayerRendererSource, 8), EXECUTABLE_SOURCE_HASH);
+    assert.doesNotMatch(webGLLayerRendererSource, /data\/data_handler\.js/);
+    assert.match(
+        webGLLayerRendererSource,
+        /DISPLAY_WEBGL_RENDER_MODES.*from '\.\.\/display_surface_descriptor\.js'/s
+    );
+    assert.equal(DISPLAY_WEBGL_RENDER_MODES.BATCH, 'batch');
+    assert.equal(DISPLAY_WEBGL_RENDER_MODES.OVERLAY_EFFECT, 'overlay-effect');
+    assert.equal(DISPLAY_WEBGL_RENDER_MODES.EFFECT, 'effect');
 });
 
 test('beginWebGLLayerFrame JSDoc describes guard, coercion, dispatch, error, and return contracts', () => {

@@ -1,5 +1,5 @@
-import { getData } from 'data/data_handler.js';
 import { clamp01 } from 'util/number_util.js';
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from '../_title_runtime_constants.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 import { getLoadingGlowSettings, toLoadingRgba } from './_title_center_circle_theme.js';
 import {
@@ -10,8 +10,6 @@ import {
     resizeCenterCircleGlowCanvas
 } from './_title_center_circle_glow_canvas.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
 const GLOW_COMPENSATION_MIN_SCALE = 1;
 const GLOW_COMPENSATION_MAX_SCALE = Math.max(
     GLOW_COMPENSATION_MIN_SCALE,

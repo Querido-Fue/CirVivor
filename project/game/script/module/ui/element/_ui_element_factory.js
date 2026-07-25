@@ -1,21 +1,25 @@
 import { measureText } from 'display/display_system.js';
-import { getData } from 'data/data_handler.js';
 import { Icon } from 'ui/element/_icon.js';
 import { UIPool } from 'ui/_ui_pool.js';
-import { createFontString, createFontStringFromPreset } from 'util/font_util.js';
+import { resolveButtonStyle } from 'ui/style/_component_style_resolver.js';
+import { resolveTypography } from 'ui/style/_typography_resolver.js';
+import { createFontString } from 'util/font_util.js';
 
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
 const NO_ICON_TYPE = 'none';
-const DEFAULT_BUTTON_FONT_FAMILY = 'arial';
-const DEFAULT_BUTTON_FONT_WEIGHT = '';
-const DEFAULT_BUTTON_FONT_SIZE = 12;
 const DEFAULT_BUTTON_ALIGN = 'center';
 const DEFAULT_TEXT_ALIGN = 'left';
 const DEFAULT_TEXT_FILL = '#FFFFFF';
 const DEFAULT_LINE_STROKE = '#FFFFFF';
 const DEFAULT_LINE_WIDTH = 1;
 const ICON_BUTTON_TEXT_ALIGN = 'right';
+const FORBIDDEN_TYPOGRAPHY_PROP_KEYS = Object.freeze([
+    'font',
+    'fontSize',
+    'fontWeight',
+    'fontFamily',
+    'size',
+    'valueFont'
+]);
 
 /**
  * @class UIElementFactory
@@ -49,6 +53,7 @@ export class UIElementFactory {
      * @returns {object|null} 생성된 UI 요소
      */
     static create(item, x, y, parentW, parentH, forcedW, layoutHandler) {
+        this._assertNoRawTypographyProps(item);
         const handler = this._handlers[item.type];
         if (!handler) return null;
         return handler.call(this, item, x, y, parentW, parentH, forcedW, layoutHandler);
@@ -66,8 +71,14 @@ export class UIElementFactory {
      * @returns {object} 버튼 요소입니다.
      */
     static _createButton(item, x, y, parentW, parentH, forcedW, layoutHandler) {
-        const presetData = this._getPresetData(item.preset, BUTTON_CONSTANTS);
-        const defaultHeight = layoutHandler.parseUnit(presetData.HEIGHT?.BASE || 'WH', presetData.HEIGHT?.VALUE || 5, parentH);
+        const buttonStyle = item.buttonStyle
+            ? resolveButtonStyle(
+                item.buttonStyle,
+                (metric) => layoutHandler.parseUnit(metric.BASE, metric.VALUE, parentW)
+            )
+            : null;
+        const defaultHeight = buttonStyle?.height
+            ?? layoutHandler.parseUnit('WH', 5, parentH);
         const height = this._resolveMetricValue(item.heightObj, {
             layoutHandler,
             parentSize: parentH,
@@ -86,19 +97,18 @@ export class UIElementFactory {
             ...item.props
         };
 
-        const fontFam = props.font || presetData.FONT?.FAMILY || DEFAULT_BUTTON_FONT_FAMILY;
-        const fontWeig = props.fontWeight || presetData.FONT?.WEIGHT || DEFAULT_BUTTON_FONT_WEIGHT;
-        const fontSiz = props.size || (presetData.FONT
-            ? layoutHandler.parseUnit(presetData.FONT.SIZE?.BASE || 'WW', presetData.FONT.SIZE?.VALUE || 1, parentW)
-            : DEFAULT_BUTTON_FONT_SIZE);
+        const align = props.align || buttonStyle?.align || DEFAULT_BUTTON_ALIGN;
+        const typographyToken = item.textStyle || buttonStyle?.typography;
+        const typography = props.text
+            ? this._resolveTypography(typographyToken, parentW, layoutHandler)
+            : null;
 
-        const align = props.align || presetData.ALIGN || DEFAULT_BUTTON_ALIGN;
-
-        if (presetData.MARGIN) {
-            props.margin = layoutHandler.parseUnit(presetData.MARGIN.BASE || 'WW', presetData.MARGIN.VALUE || 0, parentW);
-        }
-        if (presetData.RADIUS) {
-            props.radius = layoutHandler.parseUnit(presetData.RADIUS.BASE || 'WW', presetData.RADIUS.VALUE || 0, parentW);
+        if (buttonStyle) {
+            props.margin = buttonStyle.margin;
+            props.radius = buttonStyle.radius;
+            if (!props.iconType && buttonStyle.iconType) {
+                props.iconType = buttonStyle.iconType;
+            }
         }
 
         this._initializeButtonContentArrays(props);
@@ -116,9 +126,9 @@ export class UIElementFactory {
                 parent: layoutHandler.parent,
                 layer: layoutHandler.layer,
                 text: props.text,
-                font: fontFam,
-                fontWeight: fontWeig,
-                size: fontSiz,
+                font: typography.family,
+                fontWeight: typography.weight,
+                size: typography.size,
                 color: props.color,
                 align: hasIcon ? ICON_BUTTON_TEXT_ALIGN : align
             });
@@ -132,7 +142,8 @@ export class UIElementFactory {
 
         this._cleanupButtonLegacyProps(props);
 
-        const defaultWidth = layoutHandler.parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW);
+        const defaultWidth = buttonStyle?.width
+            ?? layoutHandler.parseUnit('WW', 10, parentW);
         const width = forcedW !== undefined
             ? forcedW
             : this._resolveMetricValue(item.widthObj, {
@@ -163,49 +174,27 @@ export class UIElementFactory {
      * @returns {object} 텍스트 렌더 커맨드 객체입니다.
      */
     static _createText(item, x, y, parentW, parentH, _forcedW, layoutHandler) {
-        const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
-
-        const fontString = createFontStringFromPreset(presetData, {
-            defaultWeight: 400,
-            resolveSizePx: (sizeData) => layoutHandler.parseUnit(
-                sizeData.BASE || 'WW',
-                sizeData.VALUE || 1,
-                parentW
-            )
-        });
-        const fontSizePx = layoutHandler.parseUnit(
-            presetData.FONT?.SIZE?.BASE || 'WW',
-            presetData.FONT?.SIZE?.VALUE || 1,
-            parentW
-        );
-
-        const textWidth = measureText(item.props.text || '', fontString);
-
-        // 글꼴 속성이 직접 지정된 경우 문자열의 px 값을 높이 계산에 사용
-        let resolvedHeight = fontSizePx;
-        if (item.props.font) {
-            const match = String(item.props.font).match(/(\d+(?:\.\d+)?)px/);
-            if (match) resolvedHeight = parseFloat(match[1]);
-        }
-        resolvedHeight = this._resolveMetricValue(item.heightObj, {
+        const typography = this._resolveTypography(item.textStyle, parentW, layoutHandler);
+        const textWidth = measureText(item.props.text || '', typography.font);
+        const resolvedHeight = this._resolveMetricValue(item.heightObj, {
             layoutHandler,
             parentSize: parentH,
-            defaultValue: resolvedHeight,
+            defaultValue: typography.size,
             fillValue: parentH
         });
 
         const alignVal = item.props.align || DEFAULT_TEXT_ALIGN;
         const textObj = UIPool.text.get();
         Object.assign(textObj, {
+            ...item.props,
             shape: 'text',
             text: item.props.text || '',
-            font: fontString,
+            font: typography.font,
             fill: item.props.color || item.props.fill || DEFAULT_TEXT_FILL,
             align: alignVal,
             baseline: 'top',
             width: textWidth,
-            height: resolvedHeight,
-            ...item.props
+            height: resolvedHeight
         });
 
         this._defineTextXAccessor(textObj, x);
@@ -228,6 +217,11 @@ export class UIElementFactory {
      */
     static _createSlider(item, x, y, parentW, parentH, forcedW, layoutHandler) {
         const props = this._createCommonProps(item, x, y, layoutHandler);
+        props.valueFont = this._resolveTypography(
+            item.valueTextStyle,
+            parentW,
+            layoutHandler
+        ).font;
         const slider = UIPool.slider.get();
         slider.init(props);
 
@@ -295,12 +289,8 @@ export class UIElementFactory {
      * @returns {object} 세그먼트 컨트롤 요소입니다.
      */
     static _createSegmentControl(item, x, y, parentW, parentH, forcedW, layoutHandler) {
-        if (item.preset && !item.props.font) {
-            const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
-            item.props.font = this._buildPresetFontString(presetData, 600, parentW, layoutHandler);
-        }
-
         const props = this._createCommonProps(item, x, y, layoutHandler);
+        props.font = this._resolveTypography(item.textStyle, parentW, layoutHandler).font;
         const segment = UIPool.segment_control.get();
         segment.init(props);
 
@@ -334,11 +324,6 @@ export class UIElementFactory {
      * @returns {object} 드롭다운 요소입니다.
      */
     static _createDropdown(item, x, y, parentW, parentH, forcedW, layoutHandler) {
-        if (item.preset && !item.props.font) {
-            const presetData = this._getPresetData(item.preset, TEXT_CONSTANTS);
-            item.props.font = this._buildPresetFontString(presetData, 600, parentW, layoutHandler);
-        }
-
         const width = forcedW !== undefined
             ? forcedW
             : this._resolveMetricValue(item.widthObj, {
@@ -355,6 +340,7 @@ export class UIElementFactory {
         });
 
         const props = this._createCommonProps(item, x, y, layoutHandler);
+        props.font = this._resolveTypography(item.textStyle, parentW, layoutHandler).font;
         props.width = width;
         props.height = height;
 
@@ -490,6 +476,19 @@ export class UIElementFactory {
             y,
             ...item.props
         };
+    }
+
+    /**
+     * 레이아웃 메타데이터가 저수준 폰트 속성으로 의미 토큰 계약을 우회하지 않는지 확인합니다.
+     * @param {object} item - 검사할 레이아웃 아이템입니다.
+     * @returns {void}
+     */
+    static _assertNoRawTypographyProps(item) {
+        for (const key of FORBIDDEN_TYPOGRAPHY_PROP_KEYS) {
+            if (Object.prototype.hasOwnProperty.call(item?.props || {}, key)) {
+                throw new TypeError(`UIElementFactory는 raw typography prop "${key}"를 허용하지 않습니다.`);
+            }
+        }
     }
 
     /**
@@ -639,30 +638,18 @@ export class UIElementFactory {
     }
 
     /**
-     * 프리셋 이름에 해당하는 상수 데이터를 조회합니다.
-     * @param {string|undefined} preset - 프리셋 이름입니다.
-     * @param {object} constantsObj - 프리셋 상수 객체입니다.
-     * @returns {object} 프리셋 데이터입니다.
+     * 승인된 타이포그래피 토큰을 현재 레이아웃 기준 메트릭으로 변환합니다.
+     * @param {object} token - `TYPOGRAPHY` 토큰입니다.
+     * @param {number} parentW - 현재 레이아웃 부모 너비입니다.
+     * @param {object} layoutHandler - 단위 변환을 소유한 레이아웃 핸들러입니다.
+     * @returns {{font:string,size:number,lineHeight:number,weight:number,family:string}} 타이포그래피 메트릭입니다.
      */
-    static _getPresetData(preset, constantsObj) {
-        if (!preset) return {};
-        return constantsObj[preset.toUpperCase()] || {};
-    }
-
-    /**
-     * 프리셋 폰트 데이터를 Canvas font 문자열로 변환합니다.
-     * @param {object} presetData - 프리셋 데이터입니다.
-     * @param {number|string} defaultWeight - 기본 font-weight입니다.
-     * @param {number} parentW - 부모 너비입니다.
-     * @param {object} layoutHandler - 레이아웃 핸들러입니다.
-     * @returns {string} Canvas font 문자열입니다.
-     */
-    static _buildPresetFontString(presetData, defaultWeight, parentW, layoutHandler) {
-        return createFontStringFromPreset(presetData, {
-            defaultWeight,
-            resolveSizePx: (sizeData) => layoutHandler.parseUnit(
-                sizeData.BASE || 'WW',
-                sizeData.VALUE || 1,
+    static _resolveTypography(token, parentW, layoutHandler) {
+        return resolveTypography(token, {
+            uiScale: layoutHandler.uiScale,
+            resolveMetric: (metric) => layoutHandler.parseUnit(
+                metric.BASE,
+                metric.VALUE,
                 parentW
             )
         });

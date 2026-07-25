@@ -1,8 +1,9 @@
 import { getSetting } from 'save/save_system.js';
-import { getData } from 'data/data_handler.js';
+import { BGM_RESOURCE_DATA } from 'data/sound/bgm_resource_data.js';
 import { clampFiniteNumber } from 'util/number_util.js';
 
-const SOUND_CONSTANTS = getData('SOUND_CONSTANTS');
+const BGM_UNLOCK_EVENTS = Object.freeze(['pointerdown', 'keydown', 'touchstart']);
+const BGM_VOLUME_MAX = 100;
 
 let soundSystemInstance = null;
 
@@ -24,7 +25,7 @@ export class SoundSystem {
         this.bgmAudio = null;
         this.#lastBgmVolume = null;
         this.#pendingAutoplay = false;
-        this.#unlockEvents = [...SOUND_CONSTANTS.BGM.UNLOCK_EVENTS];
+        this.#unlockEvents = [...BGM_UNLOCK_EVENTS];
         this.#unlockAndPlayHandler = this.#unlockAndPlay.bind(this);
         this.#isUnlockListenerAttached = false;
         this.#runtimeSuspended = false;
@@ -35,7 +36,7 @@ export class SoundSystem {
      * 사운드 시스템을 초기화하고 BGM 재생을 시작합니다.
      */
     async init() {
-        this.bgmAudio = new Audio(SOUND_CONSTANTS.BGM.PATH);
+        this.bgmAudio = new Audio(BGM_RESOURCE_DATA.PATH);
         this.bgmAudio.loop = true;
         this.bgmAudio.preload = 'auto';
         this.#syncBgmVolume();
@@ -146,8 +147,8 @@ export class SoundSystem {
         return clampFiniteNumber(
             Number(value),
             0,
-            SOUND_CONSTANTS.BGM.DEFAULT_VOLUME,
-            SOUND_CONSTANTS.BGM.DEFAULT_VOLUME
+            BGM_VOLUME_MAX,
+            BGM_VOLUME_MAX
         );
     }
 
@@ -158,7 +159,7 @@ export class SoundSystem {
      * @private
      */
     #normalizeVolume(value) {
-        return this.#sanitizeVolume(value) / SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
+        return this.#sanitizeVolume(value) / BGM_VOLUME_MAX;
     }
 
     /**
@@ -174,7 +175,7 @@ export class SoundSystem {
         }
 
         this.#lastBgmVolume = settingVolume;
-        this.bgmAudio.volume = settingVolume / SOUND_CONSTANTS.BGM.DEFAULT_VOLUME;
+        this.bgmAudio.volume = settingVolume / BGM_VOLUME_MAX;
     }
 
     /**

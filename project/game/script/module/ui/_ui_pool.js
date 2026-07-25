@@ -7,19 +7,17 @@ import { DropdownElement } from 'ui/element/_dropdown.js';
 import { TextElement } from 'ui/element/_text.js';
 import { LineElement } from 'ui/element/_line.js';
 import { ProgressBarElement } from 'ui/element/_progress_bar.js';
-import { getData } from 'data/data_handler.js';
 
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const UI_POOL_WARMUP_KEY_BY_TYPE = Object.freeze({
-    button: 'BUTTON',
-    slider: 'SLIDER',
-    toggle: 'TOGGLE',
-    segment_control: 'SEGMENT_CONTROL',
-    dropdown: 'DROPDOWN',
-    text: 'TEXT',
-    text_element: 'TEXT',
-    line: 'LINE',
-    progress_bar: 'LINE'
+const UI_POOL_WARMUP_COUNT_BY_TYPE = Object.freeze({
+    button: 30,
+    slider: 10,
+    toggle: 10,
+    segment_control: 10,
+    dropdown: 10,
+    text: 50,
+    text_element: 50,
+    line: 30,
+    progress_bar: 30
 });
 
 /**
@@ -160,7 +158,7 @@ export const releaseUIItem = (item) => {
  * @returns {void}
  */
 export const warmupUIPools = () => {
-    for (const [poolType, warmupKey] of Object.entries(UI_POOL_WARMUP_KEY_BY_TYPE)) {
-        UIPool[poolType].warmUp(GLOBAL_CONSTANTS.POOL_WARMUP[warmupKey]);
+    for (const [poolType, warmupCount] of Object.entries(UI_POOL_WARMUP_COUNT_BY_TYPE)) {
+        UIPool[poolType].warmUp(warmupCount);
     }
 };

@@ -261,23 +261,29 @@ const dependencies = new Map([
     ['ui/layout/_layout_handler.js', createSyntheticModule(context, { LayoutHandler: LayoutHandlerStub })],
     ['ui/_ui_pool.js', createSyntheticModule(context, { releaseUIItem })],
     ['ui/lang/_language_handler.js', createSyntheticModule(context, { getAvailableLanguages: () => [] })],
-    ['data/data_handler.js', createSyntheticModule(context, {
-        getData: (key) => {
-            if (key === 'THEME_OPTIONS') return [];
-            if (key === 'DEFAULT_THEME_KEY') return 'default';
-            if (key === 'UI_CONSTANTS') {
-                return {
-                    SETTING_ROLLBACK_ANIMATION: {
-                        DURATION_SECONDS: 0.4,
-                        EASING: 'easeOutExpo'
-                    }
-                };
-            }
-            return numericTree;
-        }
+    ['data/theme/theme_registry.js', createSyntheticModule(context, {
+        DEFAULT_THEME_KEY: 'default',
+        THEME_OPTIONS: []
     })],
-    ['util/font_util.js', createSyntheticModule(context, { createFontStringFromPreset: () => '12px sans-serif' })],
+    ['ui/style/component_styles.js', createSyntheticModule(context, {
+        BUTTON_STYLE: Object.freeze({
+            OVERLAY_INTERACT: Object.freeze({}),
+            OVERLAY_LINK: Object.freeze({})
+        })
+    })],
+    ['ui/style/typography.js', createSyntheticModule(context, {
+        TYPOGRAPHY: Object.freeze({
+            CONTROL: Object.freeze({}),
+            SLIDER_VALUE: Object.freeze({})
+        })
+    })],
     ['../_overlay_confirm_icon.js', createSyntheticModule(context, { applyOverlayConfirmButtonIcon: () => {} })],
+    ['../_overlay_layout_recipes.js', createSyntheticModule(context, {
+        addOverlayPageHeader: (handler) => handler,
+        addOverlaySectionHeader: (handler) => handler,
+        beginOverlayFieldRow: (handler) => handler,
+        endOverlayFieldRow: (handler) => handler
+    })],
     ['./settings/_settings_state.js', createSyntheticModule(context, {
         SETTING_LABEL_KEYS: { uiScale: 'title_settings_ui_scale' },
         createSettingsInitialState: () => ({ ...initialSettings }),

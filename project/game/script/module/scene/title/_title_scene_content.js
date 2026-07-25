@@ -1,9 +1,7 @@
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
-import { getData } from 'data/data_handler.js';
 import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
 import { getLoadingLogoColor } from './loading/_title_loading_theme.js';
-
-const TITLE_LOADING = getData('TITLE_CONSTANTS').TITLE_LOADING;
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from './_title_runtime_constants.js';
 
 /**
  * 완료된 인트로의 중앙 원·로고·메뉴를 그대로 이어받아 타이틀 정상 상태를 관리합니다.

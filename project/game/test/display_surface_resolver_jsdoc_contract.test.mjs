@@ -18,51 +18,10 @@ const [descriptorSource, displaySystemSource] = await Promise.all([
     readFile(DESCRIPTOR_SOURCE_PATH, 'utf8'),
     readFile(DISPLAY_SYSTEM_SOURCE_PATH, 'utf8')
 ]);
-const [productionDescriptorModule, productionSurfaceDataModule] = await Promise.all([
-    loadGameModule('display/display_surface_descriptor.js'),
-    loadGameModule('data/display/display_surface_data.js')
-]);
-const productionSurfaceData = productionSurfaceDataModule.DISPLAY_SURFACE_DATA;
-const productionLayerNameMap = productionSurfaceData.WEBGL_LAYER_NAME_MAP;
-const EXECUTABLE_SOURCE_HASH = '76be28d1edda8705df26284b47aa4b6c0657d7db22d902e0dcc6c9d08c6a215f';
-
-/**
- * 테스트용 display surface 정적 데이터를 생성합니다.
- * @param {object} layerNameMap - WebGL alias 조회에 사용할 일반 객체 또는 Proxy입니다.
- * @returns {object} production getData 응답과 같은 최소 데이터입니다.
- */
-function createDisplaySurfaceData(layerNameMap) {
-    return {
-        WEBGL_RENDER_MODES: {
-            BATCH: 'batch',
-            OVERLAY_EFFECT: 'overlay-effect',
-            EFFECT: 'effect'
-        },
-        WEBGL_LAYER_NAME_MAP: layerNameMap,
-        NATIVE_2D_SURFACE_IDS: ['texteffect', 'ui', 'vignette', 'top'],
-        STATIC_SURFACE_ORDER_MAP: {
-            background: 0,
-            object: 10,
-            effect: 20,
-            texteffect: 30,
-            ui: 40,
-            top: 1000
-        }
-    };
-}
-
-/**
- * production과 같은 WebGL alias 맵을 새 일반 객체로 생성합니다.
- * @returns {object} alias 맵입니다.
- */
-function createProductionLayerNameMap() {
-    return {
-        main: 'object',
-        mainGL: 'object',
-        backgroundGL: 'background',
-        effectGL: 'effect'
-    };
-}
+const productionDescriptorModule = await loadGameModule(
+    'display/display_surface_descriptor.js'
+);
+const EXECUTABLE_SOURCE_HASH = '14896625bfa4afffcfc99baee78361948cb53c5a180fcbebc3e37d790c8a9f2d';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
@@ -98,6 +57,36 @@ function findLeadingJsDoc(productionSource, escapedDeclaration) {
 }
 
 /**
+ * 상속 getter의 receiver를 통해 private WebGL alias 맵을 캡처합니다.
+ * @returns {object} production descriptor가 직접 소유한 frozen alias 맵입니다.
+ */
+function captureProductionLayerNameMap() {
+    const { resolveDisplayWebGLLayerName: resolve } = productionDescriptorModule;
+    const mapPrototype = resolve('__proto__');
+    const probeKey = Symbol('capture-layer-name-map');
+    const probeValue = { source: 'capture-layer-name-map' };
+    let capturedMap;
+
+    try {
+        Object.defineProperty(mapPrototype, probeKey, {
+            configurable: true,
+            get() {
+                capturedMap = this;
+                return probeValue;
+            }
+        });
+        assert.equal(resolve(probeKey), probeValue);
+    } finally {
+        assert.equal(Reflect.deleteProperty(mapPrototype, probeKey), true);
+    }
+
+    assert.ok(capturedMap);
+    return capturedMap;
+}
+
+const productionLayerNameMap = captureProductionLayerNameMap();
+
+/**
  * 지정된 realm에 synthetic dependency를 만듭니다.
  * @param {vm.Context} context - 대상 VM context입니다.
  * @param {string} identifier - 모듈 식별자입니다.
@@ -117,56 +106,12 @@ function createSyntheticModule(context, identifier, exports) {
 }
 
 /**
- * 실제 descriptor production 소스를 지정 alias 맵으로 평가합니다.
- * @param {object} layerNameMap - 모듈 초기화 때 캡처할 alias 맵입니다.
- * @returns {Promise<vm.ModuleNamespace>} production namespace입니다.
- */
-async function loadDescriptorModule(layerNameMap = createProductionLayerNameMap()) {
-    const context = vm.createContext({ console });
-    const displaySurfaceData = createDisplaySurfaceData(layerNameMap);
-    const dataModule = createSyntheticModule(context, 'data/data_handler.js', {
-        getData(key) {
-            if (key !== 'DISPLAY_SURFACE_DATA') {
-                throw new Error(`지원하지 않는 테스트 데이터입니다: ${key}`);
-            }
-            return displaySurfaceData;
-        }
-    });
-    const descriptorModule = new vm.SourceTextModule(
-        descriptorSource,
-        { context, identifier: DESCRIPTOR_SOURCE_PATH }
-    );
-    await descriptorModule.link((specifier) => {
-        if (specifier !== 'data/data_handler.js') {
-            throw new Error(`지원하지 않는 descriptor import입니다: ${specifier}`);
-        }
-        return dataModule;
-    });
-    await descriptorModule.evaluate();
-    return descriptorModule.namespace;
-}
-
-/**
  * 실제 resolver와 실제 공개 render caller를 같은 모듈 그래프에서 평가합니다.
- * @param {object} layerNameMap - resolver가 캡처할 alias 맵입니다.
- * @returns {Promise<{namespace: vm.ModuleNamespace, instance: object}>} caller namespace와 최신 인스턴스입니다.
+ * @returns {Promise<{namespace: vm.ModuleNamespace, descriptorNamespace: vm.ModuleNamespace, instance: object}>} caller namespace, descriptor namespace와 최신 인스턴스입니다.
  */
-async function loadDisplaySystemCaller(layerNameMap = createProductionLayerNameMap()) {
+async function loadDisplaySystemCaller() {
     const context = vm.createContext({ console });
-    const displaySurfaceData = createDisplaySurfaceData(layerNameMap);
     const dependencies = new Map();
-    dependencies.set('data/data_handler.js', createSyntheticModule(
-        context,
-        'data/data_handler.js',
-        {
-            getData(key) {
-                if (key !== 'DISPLAY_SURFACE_DATA') {
-                    throw new Error(`지원하지 않는 테스트 데이터입니다: ${key}`);
-                }
-                return displaySurfaceData;
-            }
-        }
-    ));
     dependencies.set('save/save_system.js', createSyntheticModule(
         context,
         'save/save_system.js',
@@ -241,7 +186,11 @@ async function loadDisplaySystemCaller(layerNameMap = createProductionLayerNameM
     await displaySystemModule.link(linker);
     await displaySystemModule.evaluate();
     const instance = new displaySystemModule.namespace.DisplaySystem();
-    return { namespace: displaySystemModule.namespace, instance };
+    return {
+        namespace: displaySystemModule.namespace,
+        descriptorNamespace: descriptorModule.namespace,
+        instance
+    };
 }
 
 test('WebGL layer resolver JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
@@ -283,7 +232,15 @@ test('resolver JSDoc은 PropertyKey 조회·상속·truthy fallback과 실제 �
 
 test('실제 production alias와 미등록 값은 mapped 값 또는 원래 identity를 반환한다', () => {
     const { resolveDisplayWebGLLayerName: resolve } = productionDescriptorModule;
-    assert.equal(Object.isFrozen(productionSurfaceData), true);
+    assert.doesNotMatch(descriptorSource, /data\/data_handler\.js/);
+    assert.match(
+        descriptorSource,
+        /export const DISPLAY_WEBGL_RENDER_MODES = Object\.freeze\(\{/
+    );
+    assert.match(
+        descriptorSource,
+        /const DISPLAY_WEBGL_LAYER_NAME_MAP = Object\.freeze\(\{/
+    );
     assert.equal(Object.isFrozen(productionLayerNameMap), true);
     assert.notEqual(Object.getPrototypeOf(productionLayerNameMap), null);
     assert.deepEqual(
@@ -331,19 +288,26 @@ test('실제 production alias와 미등록 값은 mapped 값 또는 원래 ident
     assert.equal(resolve.call({ ignored: true }, 'main', 'extra'), 'object');
 });
 
-test('lookup의 truthy 결과만 채택하고 falsy 결과는 원래 key identity로 되돌린다', async () => {
+test('lookup의 truthy 결과만 채택하고 falsy 결과는 원래 key identity로 되돌린다', () => {
+    const { resolveDisplayWebGLLayerName: resolve } = productionDescriptorModule;
+    const mapPrototype = Object.getPrototypeOf(productionLayerNameMap);
+    const inheritedKey = Symbol('inherited-alias');
+    const mappedKey = Symbol('mapped-alias');
+    const constructMappedKey = Symbol('construct-mapped-alias');
+    const falsyEntries = [
+        [Symbol('zero-alias'), 0],
+        [Symbol('negative-zero-alias'), -0],
+        [Symbol('empty-alias'), ''],
+        [Symbol('false-alias'), false],
+        [Symbol('nan-alias'), Number.NaN],
+        [Symbol('bigint-zero-alias'), 0n],
+        [Symbol('null-alias'), null],
+        [Symbol('undefined-alias'), undefined]
+    ];
+    const definedKeys = [inheritedKey, mappedKey, constructMappedKey];
     const inheritedTarget = { source: 'prototype' };
-    let inheritedGetterReceiver;
-    const mapPrototype = {};
-    Object.defineProperty(mapPrototype, 'inheritedAlias', {
-        get() {
-            inheritedGetterReceiver = this;
-            return inheritedTarget;
-        }
-    });
-    const layerNameMap = Object.create(mapPrototype);
     const mappedObject = {
-        source: 'own-getter',
+        source: 'getter',
         valueOf() {
             throw new Error('truthy object를 Boolean 변환하며 valueOf를 호출했습니다.');
         },
@@ -351,226 +315,248 @@ test('lookup의 truthy 결과만 채택하고 falsy 결과는 원래 key identit
             throw new Error('truthy object를 Boolean 변환하며 toString을 호출했습니다.');
         }
     };
+    let inheritedGetterReceiver;
     let getterReceiver;
     let getterReadCount = 0;
-    Object.defineProperty(layerNameMap, 'mapped', {
-        get() {
-            getterReceiver = this;
-            getterReadCount += 1;
-            return mappedObject;
-        },
-        enumerable: true
-    });
-    for (const [key, value] of [
-        ['zero', 0],
-        ['negativeZero', -0],
-        ['empty', ''],
-        ['false', false],
-        ['nan', Number.NaN],
-        ['bigintZero', 0n],
-        ['null', null],
-        ['undefined', undefined]
-    ]) {
-        layerNameMap[key] = value;
-    }
 
-    const { resolveDisplayWebGLLayerName: resolve } = await loadDescriptorModule(layerNameMap);
-    assert.equal(resolve('mapped'), mappedObject);
-    assert.equal(getterReceiver, layerNameMap);
-    assert.equal(getterReadCount, 1);
-    assert.equal(resolve('inheritedAlias'), inheritedTarget);
-    assert.equal(inheritedGetterReceiver, layerNameMap);
-
-    for (const key of [
-        'zero',
-        'negativeZero',
-        'empty',
-        'false',
-        'nan',
-        'bigintZero',
-        'null',
-        'undefined'
-    ]) {
-        assert.equal(resolve(key), key);
-    }
-
-    const objectKey = {
-        [Symbol.toPrimitive](hint) {
-            assert.equal(hint, 'string');
-            return 'zero';
-        }
-    };
-    assert.equal(resolve(objectKey), objectKey);
-
-    layerNameMap.constructMapped = mappedObject;
-    assert.equal(new resolve('constructMapped'), mappedObject);
-    const missingObjectKey = {
-        toString() {
-            return 'missing-constructor-key';
-        }
-    };
-    assert.equal(new resolve(missingObjectKey), missingObjectKey);
-    const missingPrimitiveResult = new resolve('missing-constructor-key');
-    assert.equal(missingPrimitiveResult instanceof resolve, true);
-});
-
-test('캡처된 alias 맵의 live 값과 표준 ToPropertyKey fallback 순서를 보존한다', async () => {
-    const mapPrototype = { live: 'prototype-first' };
-    const layerNameMap = Object.create(mapPrototype);
-    layerNameMap.live = 'own-first';
-    const symbolProperty = Symbol('mapped-symbol');
-    layerNameMap[symbolProperty] = 'symbol-target';
-    const { resolveDisplayWebGLLayerName: resolve } = await loadDescriptorModule(layerNameMap);
-
-    assert.equal(resolve('live'), 'own-first');
-    layerNameMap.live = 'own-second';
-    assert.equal(resolve('live'), 'own-second');
-    delete layerNameMap.live;
-    assert.equal(resolve('live'), 'prototype-first');
-    mapPrototype.live = 'prototype-second';
-    assert.equal(resolve('live'), 'prototype-second');
-
-    const shortCircuitTrace = [];
-    const shortCircuitKey = {
-        toString() {
-            shortCircuitTrace.push('toString');
-            return 'live';
-        },
-        valueOf() {
-            shortCircuitTrace.push('valueOf');
-            return 'unused';
-        }
-    };
-    assert.equal(resolve(shortCircuitKey), 'prototype-second');
-    assert.deepEqual(shortCircuitTrace, ['toString']);
-
-    const fallbackTrace = [];
-    const valueOfFallbackKey = {
-        toString() {
-            fallbackTrace.push('toString');
-            return {};
-        },
-        valueOf() {
-            fallbackTrace.push('valueOf');
-            return 'live';
-        }
-    };
-    assert.equal(resolve(valueOfFallbackKey), 'prototype-second');
-    assert.deepEqual(fallbackTrace, ['toString', 'valueOf']);
-
-    const symbolProducingKey = {
-        [Symbol.toPrimitive](hint) {
-            assert.equal(hint, 'string');
-            return symbolProperty;
-        }
-    };
-    assert.equal(resolve(symbolProducingKey), 'symbol-target');
-
-    const invalidPrimitiveKey = {
-        [Symbol.toPrimitive]() {
-            return {};
-        }
-    };
-    assert.throws(
-        () => resolve(invalidPrimitiveKey),
-        (error) => error?.name === 'TypeError'
-    );
-});
-
-test('PropertyKey coercion·Proxy get·재진입 순서와 receiver를 그대로 보존한다', async () => {
-    const trace = [];
-    let proxy;
-    let resolve;
-    let insideOuterGet = false;
-    const target = {
-        inner: 'inner-target',
-        outer: 'outer-target'
-    };
-    proxy = new Proxy(target, {
-        get(receiverTarget, property, receiver) {
-            trace.push(['get', property, receiver === proxy]);
-            if (property === 'outer' && !insideOuterGet) {
-                insideOuterGet = true;
-                trace.push(['getReentry', resolve('inner')]);
-                insideOuterGet = false;
+    try {
+        Object.defineProperty(mapPrototype, inheritedKey, {
+            configurable: true,
+            get() {
+                inheritedGetterReceiver = this;
+                return inheritedTarget;
             }
-            return Reflect.get(receiverTarget, property, receiver);
+        });
+        Object.defineProperty(mapPrototype, mappedKey, {
+            configurable: true,
+            get() {
+                getterReceiver = this;
+                getterReadCount += 1;
+                return mappedObject;
+            }
+        });
+        Object.defineProperty(mapPrototype, constructMappedKey, {
+            configurable: true,
+            value: mappedObject
+        });
+        for (const [key, value] of falsyEntries) {
+            definedKeys.push(key);
+            Object.defineProperty(mapPrototype, key, {
+                configurable: true,
+                value
+            });
         }
-    });
-    ({ resolveDisplayWebGLLayerName: resolve } = await loadDescriptorModule(proxy));
-    const reentrantKey = {
-        [Symbol.toPrimitive](hint) {
-            trace.push(['toPrimitive', hint]);
-            trace.push(['innerResult', resolve('inner')]);
-            return 'outer';
+
+        assert.equal(resolve(mappedKey), mappedObject);
+        assert.equal(getterReceiver, productionLayerNameMap);
+        assert.equal(getterReadCount, 1);
+        assert.equal(resolve(inheritedKey), inheritedTarget);
+        assert.equal(inheritedGetterReceiver, productionLayerNameMap);
+
+        for (const [key] of falsyEntries) {
+            assert.equal(resolve(key), key);
         }
-    };
 
-    assert.equal(resolve(reentrantKey), 'outer-target');
-    assert.deepEqual(trace, [
-        ['toPrimitive', 'string'],
-        ['get', 'inner', true],
-        ['innerResult', 'inner-target'],
-        ['get', 'outer', true],
-        ['get', 'inner', true],
-        ['getReentry', 'inner-target']
-    ]);
+        const objectKey = {
+            [Symbol.toPrimitive](hint) {
+                assert.equal(hint, 'string');
+                return falsyEntries[0][0];
+            }
+        };
+        assert.equal(resolve(objectKey), objectKey);
 
-    trace.length = 0;
-    const symbolKey = Symbol('direct');
-    assert.equal(resolve(symbolKey), symbolKey);
-    assert.deepEqual(trace, [['get', symbolKey, true]]);
-
-    for (const [input, expectedProperty] of [
-        [null, 'null'],
-        [undefined, 'undefined'],
-        [-0, '0'],
-        [17n, '17'],
-        [Number.NaN, 'NaN'],
-        [Number.POSITIVE_INFINITY, 'Infinity'],
-        [Number.NEGATIVE_INFINITY, '-Infinity'],
-        [true, 'true'],
-        [false, 'false']
-    ]) {
-        trace.length = 0;
-        const result = resolve(input);
-        assert.equal(Object.is(result, input), true);
-        assert.deepEqual(trace, [['get', expectedProperty, true]]);
+        assert.equal(new resolve(constructMappedKey), mappedObject);
+        const missingSymbol = Symbol('missing-constructor-key');
+        const missingObjectKey = {
+            [Symbol.toPrimitive]() {
+                return missingSymbol;
+            }
+        };
+        assert.equal(new resolve(missingObjectKey), missingObjectKey);
+        const missingPrimitiveResult = new resolve(missingSymbol);
+        assert.equal(missingPrimitiveResult instanceof resolve, true);
+    } finally {
+        for (const key of definedKeys) {
+            assert.equal(Reflect.deleteProperty(mapPrototype, key), true);
+        }
     }
 });
 
-test('key coercion과 map 조회 오류는 같은 identity로 동기 전파된다', async () => {
+test('캡처된 alias 맵의 live 값과 표준 ToPropertyKey fallback 순서를 보존한다', () => {
+    const { resolveDisplayWebGLLayerName: resolve } = productionDescriptorModule;
+    const mapPrototype = Object.getPrototypeOf(productionLayerNameMap);
+    const liveKey = Symbol('live-alias');
+    const symbolProperty = Symbol('mapped-symbol');
+    const definedKeys = [liveKey, symbolProperty];
+
+    try {
+        Object.defineProperty(mapPrototype, liveKey, {
+            configurable: true,
+            writable: true,
+            value: 'prototype-first'
+        });
+        Object.defineProperty(mapPrototype, symbolProperty, {
+            configurable: true,
+            value: 'symbol-target'
+        });
+
+        assert.equal(resolve(liveKey), 'prototype-first');
+        mapPrototype[liveKey] = 'prototype-second';
+        assert.equal(resolve(liveKey), 'prototype-second');
+
+        const shortCircuitTrace = [];
+        const shortCircuitKey = {
+            toString() {
+                shortCircuitTrace.push('toString');
+                return liveKey;
+            },
+            valueOf() {
+                shortCircuitTrace.push('valueOf');
+                return Symbol('unused');
+            }
+        };
+        assert.equal(resolve(shortCircuitKey), 'prototype-second');
+        assert.deepEqual(shortCircuitTrace, ['toString']);
+
+        const fallbackTrace = [];
+        const valueOfFallbackKey = {
+            toString() {
+                fallbackTrace.push('toString');
+                return {};
+            },
+            valueOf() {
+                fallbackTrace.push('valueOf');
+                return liveKey;
+            }
+        };
+        assert.equal(resolve(valueOfFallbackKey), 'prototype-second');
+        assert.deepEqual(fallbackTrace, ['toString', 'valueOf']);
+
+        const symbolProducingKey = {
+            [Symbol.toPrimitive](hint) {
+                assert.equal(hint, 'string');
+                return symbolProperty;
+            }
+        };
+        assert.equal(resolve(symbolProducingKey), 'symbol-target');
+
+        const invalidPrimitiveKey = {
+            [Symbol.toPrimitive]() {
+                return {};
+            }
+        };
+        assert.throws(
+            () => resolve(invalidPrimitiveKey),
+            (error) => error?.name === 'TypeError'
+        );
+    } finally {
+        for (const key of definedKeys) {
+            assert.equal(Reflect.deleteProperty(mapPrototype, key), true);
+        }
+    }
+});
+
+test('PropertyKey coercion·상속 getter·재진입 순서와 receiver를 그대로 보존한다', () => {
+    const { resolveDisplayWebGLLayerName: resolve } = productionDescriptorModule;
+    const mapPrototype = Object.getPrototypeOf(productionLayerNameMap);
+    const innerKey = Symbol('inner-alias');
+    const outerKey = Symbol('outer-alias');
+    const directFalsyKey = Symbol('direct-falsy-alias');
+    const trace = [];
+    let insideOuterGet = false;
+
+    try {
+        Object.defineProperty(mapPrototype, innerKey, {
+            configurable: true,
+            get() {
+                trace.push(['get', innerKey, this === productionLayerNameMap]);
+                return 'inner-target';
+            }
+        });
+        Object.defineProperty(mapPrototype, outerKey, {
+            configurable: true,
+            get() {
+                trace.push(['get', outerKey, this === productionLayerNameMap]);
+                if (!insideOuterGet) {
+                    insideOuterGet = true;
+                    trace.push(['getReentry', resolve(innerKey)]);
+                    insideOuterGet = false;
+                }
+                return 'outer-target';
+            }
+        });
+        Object.defineProperty(mapPrototype, directFalsyKey, {
+            configurable: true,
+            get() {
+                trace.push(['get', directFalsyKey, this === productionLayerNameMap]);
+                return undefined;
+            }
+        });
+        const reentrantKey = {
+            [Symbol.toPrimitive](hint) {
+                trace.push(['toPrimitive', hint]);
+                trace.push(['innerResult', resolve(innerKey)]);
+                return outerKey;
+            }
+        };
+
+        assert.equal(resolve(reentrantKey), 'outer-target');
+        assert.deepEqual(trace, [
+            ['toPrimitive', 'string'],
+            ['get', innerKey, true],
+            ['innerResult', 'inner-target'],
+            ['get', outerKey, true],
+            ['get', innerKey, true],
+            ['getReentry', 'inner-target']
+        ]);
+
+        trace.length = 0;
+        assert.equal(resolve(directFalsyKey), directFalsyKey);
+        assert.deepEqual(trace, [['get', directFalsyKey, true]]);
+    } finally {
+        for (const key of [innerKey, outerKey, directFalsyKey]) {
+            assert.equal(Reflect.deleteProperty(mapPrototype, key), true);
+        }
+    }
+});
+
+test('key coercion과 map 조회 오류는 같은 identity로 동기 전파된다', () => {
+    const { resolveDisplayWebGLLayerName: resolve } = productionDescriptorModule;
+    const mapPrototype = Object.getPrototypeOf(productionLayerNameMap);
+    const throwingGetKey = Symbol('throwing-get-alias');
     const getToken = new Error('get sentinel');
     const keyToken = new Error('key sentinel');
     const trace = [];
-    const layerNameMap = new Proxy({}, {
-        get(_target, property) {
-            trace.push(['get', property]);
-            if (property === 'explode') {
+
+    try {
+        Object.defineProperty(mapPrototype, throwingGetKey, {
+            configurable: true,
+            get() {
+                trace.push(['get', throwingGetKey, this === productionLayerNameMap]);
                 throw getToken;
             }
-            return undefined;
-        }
-    });
-    const { resolveDisplayWebGLLayerName: resolve } = await loadDescriptorModule(layerNameMap);
-    const throwingKey = {
-        [Symbol.toPrimitive](hint) {
-            trace.push(['toPrimitive', hint]);
-            throw keyToken;
-        }
-    };
+        });
+        const throwingKey = {
+            [Symbol.toPrimitive](hint) {
+                trace.push(['toPrimitive', hint]);
+                throw keyToken;
+            }
+        };
 
-    assert.throws(() => resolve(throwingKey), (error) => error === keyToken);
-    assert.deepEqual(trace, [['toPrimitive', 'string']]);
-    assert.throws(() => resolve('explode'), (error) => error === getToken);
-    assert.deepEqual(trace, [
-        ['toPrimitive', 'string'],
-        ['get', 'explode']
-    ]);
+        assert.throws(() => resolve(throwingKey), (error) => error === keyToken);
+        assert.deepEqual(trace, [['toPrimitive', 'string']]);
+        assert.throws(() => resolve(throwingGetKey), (error) => error === getToken);
+        assert.deepEqual(trace, [
+            ['toPrimitive', 'string'],
+            ['get', throwingGetKey, true]
+        ]);
+    } finally {
+        assert.equal(Reflect.deleteProperty(mapPrototype, throwingGetKey), true);
+    }
 });
 
 test('실제 renderGL caller는 resolver 결과를 그대로 전달하고 하위 반환값 계약을 보존한다', async () => {
-    const { namespace, instance } = await loadDisplaySystemCaller();
+    const { namespace, descriptorNamespace, instance } = await loadDisplaySystemCaller();
     const calls = [];
     const bulkResult = { rendered: 7 };
     const webGLHandler = {
@@ -674,7 +660,10 @@ test('실제 renderGL caller는 resolver 결과를 그대로 전달하고 하위
 
     assert.equal(namespace.renderGL('toString', options), undefined);
     assert.equal(calls[3][1], webGLHandler);
-    assert.equal(calls[3][2], Object.prototype.toString);
+    assert.equal(
+        calls[3][2],
+        descriptorNamespace.resolveDisplayWebGLLayerName('toString')
+    );
     assert.equal(calls[3][3], options);
     assert.equal(calls[3].length, 4);
     assert.equal(calls.length, 4);
@@ -682,13 +671,14 @@ test('실제 renderGL caller는 resolver 결과를 그대로 전달하고 하위
 
 test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 identity를 보존한다', async () => {
     const trace = [];
-    const layerNameMap = new Proxy(createProductionLayerNameMap(), {
-        get(target, property, receiver) {
-            trace.push(['mapGet', property]);
-            return Reflect.get(target, property, receiver);
+    const layerNameKey = {
+        [Symbol.toPrimitive](hint) {
+            assert.equal(hint, 'string');
+            trace.push(['mapGet', 'main']);
+            return 'main';
         }
-    });
-    const { namespace, instance } = await loadDisplaySystemCaller(layerNameMap);
+    };
+    const { namespace, instance } = await loadDisplaySystemCaller();
     const options = { id: 'options' };
     const handler = {};
     Object.defineProperty(handler, 'render', {
@@ -714,7 +704,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
         }
     });
 
-    assert.equal(namespace.renderGL('main', options), undefined);
+    assert.equal(namespace.renderGL(layerNameKey, options), undefined);
     assert.deepEqual(trace, [
         ['mapGet', 'main'],
         ['handlerGet'],
@@ -731,7 +721,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
         }
     });
     trace.length = 0;
-    assert.throws(() => namespace.renderGL('main', options), (error) => error === handlerToken);
+    assert.throws(() => namespace.renderGL(layerNameKey, options), (error) => error === handlerToken);
     assert.deepEqual(trace, [['mapGet', 'main'], ['handlerGet']]);
 
     const methodToken = new Error('method getter sentinel');
@@ -750,7 +740,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
         }
     });
     trace.length = 0;
-    assert.throws(() => namespace.renderGL('main', options), (error) => error === methodToken);
+    assert.throws(() => namespace.renderGL(layerNameKey, options), (error) => error === methodToken);
     assert.deepEqual(trace, [
         ['mapGet', 'main'],
         ['handlerGet'],
@@ -769,7 +759,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
         }
     });
     trace.length = 0;
-    assert.throws(() => namespace.renderGL('main', options), (error) => error === callToken);
+    assert.throws(() => namespace.renderGL(layerNameKey, options), (error) => error === callToken);
     assert.deepEqual(trace, [
         ['mapGet', 'main'],
         ['handlerGet'],
@@ -786,7 +776,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
     });
     trace.length = 0;
     assert.throws(
-        () => namespace.renderGL('main', options),
+        () => namespace.renderGL(layerNameKey, options),
         (error) => error?.name === 'TypeError'
     );
     assert.deepEqual(trace, [
@@ -805,7 +795,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
     });
     trace.length = 0;
     assert.throws(
-        () => namespace.renderGLShapeInstances('main', options, [], 0, 0, 1),
+        () => namespace.renderGLShapeInstances(layerNameKey, options, [], 0, 0, 1),
         (error) => error === bulkHandlerToken
     );
     assert.deepEqual(trace, [['mapGet', 'main'], ['handlerGet']]);
@@ -827,7 +817,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
     });
     trace.length = 0;
     assert.throws(
-        () => namespace.renderGLShapeInstances('main', options, [], 0, 0, 1),
+        () => namespace.renderGLShapeInstances(layerNameKey, options, [], 0, 0, 1),
         (error) => error === bulkMethodToken
     );
     assert.deepEqual(trace, [
@@ -845,7 +835,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
     });
     trace.length = 0;
     assert.throws(
-        () => namespace.renderGLShapeInstances('main', options, [], 0, 0, 1),
+        () => namespace.renderGLShapeInstances(layerNameKey, options, [], 0, 0, 1),
         (error) => error?.name === 'TypeError'
     );
     assert.deepEqual(trace, [
@@ -867,7 +857,7 @@ test('실제 caller는 resolver 뒤 handler·method를 live 조회하고 오류 
     });
     trace.length = 0;
     assert.throws(
-        () => namespace.renderGLShapeInstances('main', options, [], -0, Number.NaN, 1),
+        () => namespace.renderGLShapeInstances(layerNameKey, options, [], -0, Number.NaN, 1),
         (error) => error === bulkToken
     );
     assert.deepEqual(trace, [

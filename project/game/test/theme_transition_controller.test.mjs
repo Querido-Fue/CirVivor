@@ -7,9 +7,6 @@ const [source, displaySystemSource] = await Promise.all([
     readFile(new URL('../script/module/display/display_system.js', import.meta.url), 'utf8')
 ]);
 
-const transitionData = Object.freeze({
-    LAYER: 'top', START_ALPHA: 1, END_ALPHA: 0, DURATION_SECONDS: 0.4, EASING: 'linear'
-});
 const animations = [];
 let nextAnimationId = 1;
 
@@ -41,10 +38,7 @@ function createSyntheticModule(context, exports) {
 const context = vm.createContext({ console });
 const controllerModule = new vm.SourceTextModule(source, { context, identifier: '_theme_transition_controller.js' });
 const dependencies = new Map([
-    ['animation/animation_system.js', createSyntheticModule(context, { animate, remove })],
-    ['data/data_handler.js', createSyntheticModule(context, {
-        getData: (key) => key === 'THEME_TRANSITION_DATA' ? transitionData : undefined
-    })]
+    ['animation/animation_system.js', createSyntheticModule(context, { animate, remove })]
 ]);
 await controllerModule.link((specifier) => dependencies.get(specifier));
 await controllerModule.evaluate();

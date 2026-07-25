@@ -5,15 +5,13 @@ import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const PRESET_SOURCE_URL = new URL(
-    '../script/data/overlay/overlay_animation_presets.js',
+    '../script/module/overlay/_animation_presets.js',
     import.meta.url
 );
 const EXPECTED_RUNTIME_SOURCE_SHA256 = '69f9153afc6f0a811dba8afacb3494ad2ccd220638ddc3b6813315be6e76468b';
 
 const presetSource = await readFile(PRESET_SOURCE_URL, 'utf8');
-const presetModule = await loadGameModule('data/overlay/overlay_animation_presets.js');
-const facadeModule = await loadGameModule('overlay/_animation_presets.js');
-const dataHandlerModule = await loadGameModule('data/data_handler.js');
+const presetModule = await loadGameModule('overlay/_animation_presets.js');
 
 function stripStandaloneJSDoc(source) {
     const matches = [...source.matchAll(/\/\*\*[\s\S]*?\*\//g)];
@@ -58,15 +56,25 @@ test('JSDoc을 제외한 actual production source는 바이트 단위로 동일�
     assert.equal(runtimeSourceHash(presetSource), EXPECTED_RUNTIME_SOURCE_SHA256);
 });
 
-test('호환 파사드는 DATA_REGISTRY의 세 production 참조를 그대로 노출한다', () => {
-    for (const exportName of [
-        'DEFAULT_OVERLAY_ANIMATION_PRESET',
-        'OVERLAY_ANIMATION_PRESETS',
-        'getOverlayAnimationPreset'
-    ]) {
-        assert.strictEqual(facadeModule[exportName], presetModule[exportName]);
-        assert.strictEqual(facadeModule[exportName], dataHandlerModule.getData(exportName));
-    }
+test('overlay 구현 모듈이 세 production export와 preset 값을 직접 소유한다', () => {
+    assert.doesNotMatch(presetSource, /data\/data_handler\.js/);
+    assert.match(presetSource, /export const DEFAULT_OVERLAY_ANIMATION_PRESET/);
+    assert.match(presetSource, /export const OVERLAY_ANIMATION_PRESETS/);
+    assert.match(presetSource, /export const getOverlayAnimationPreset/);
+
+    const table = presetModule.OVERLAY_ANIMATION_PRESETS;
+    assert.equal(presetModule.DEFAULT_OVERLAY_ANIMATION_PRESET, 'uiAnimation');
+    assert.deepEqual(Object.keys(table), ['uiAnimation', 'softFocus', 'snapZoom']);
+    assert.equal(Object.isFrozen(table), true);
+    assert.deepEqual({ ...table.uiAnimation.open.alpha }, {
+        from: 0, to: 1, duration: 0.5, easing: 'easeOutExpo'
+    });
+    assert.deepEqual({ ...table.softFocus.close.blur }, {
+        to: 6, duration: 0.22, easing: 'easeInCubic'
+    });
+    assert.deepEqual({ ...table.snapZoom.open.scale }, {
+        from: 0.92, to: 1, duration: 0.2, easing: 'easeOutExpo'
+    });
 });
 
 test('유효 키와 표준 falsy fallback은 정확한 preset identity를 보존한다', () => {

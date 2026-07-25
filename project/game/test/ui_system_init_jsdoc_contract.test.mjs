@@ -225,22 +225,6 @@ async function loadSystemHandler(uiGate, events) {
     addDependency('ui/_ui_pool.js', {
         warmupUIPools: () => events.push('warmup:UISystem')
     });
-    addDependency('data/data_handler.js', {
-        getData(key) {
-            if (key === 'GLOBAL_CONSTANTS') {
-                return { POOL_WARMUP: { CANVAS_2D: 0, CANVAS_WEBGL: 0 } };
-            }
-            if (key === 'SYSTEM_RUNTIME_POLICY_DATA') {
-                return {
-                    DISPLAY_REFRESH_SETTING_KEYS: [],
-                    SIMULATION_RUNTIME_SETTING_KEYS: [],
-                    DEFAULT_FRAME_EXECUTION_POLICY: {},
-                    FRAME_EXECUTION_DISABLE_KEYS: []
-                };
-            }
-            throw new Error(`지원하지 않는 SystemHandler data key입니다: ${key}`);
-        }
-    });
     addDependency('simulation/simulation_command_queue.js', {
         drainSimulationCommands: () => []
     });

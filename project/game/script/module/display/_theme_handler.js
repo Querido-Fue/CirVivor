@@ -1,13 +1,11 @@
-import { getData } from 'data/data_handler.js';
+import { DEFAULT_THEME_KEY, THEMES } from 'data/theme/theme_registry.js';
 import { setBackgroundColor } from 'display/display_system.js';
 import { colorUtil } from 'util/color_util.js';
+import { getThemeByKey } from './_theme_registry.js';
 const fs = require('fs');
 const fsPromises = fs.promises;
 const path = require('path');
 
-const THEMES = getData('THEMES');
-const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
-const getThemeByKey = getData('getThemeByKey');
 /**
  * 모든 import가 공유하는 live 색상 스킴 객체입니다.
  * 초기화 전에는 빈 객체이며, 테마 전환 뒤에도 같은 객체 identity를 유지합니다.

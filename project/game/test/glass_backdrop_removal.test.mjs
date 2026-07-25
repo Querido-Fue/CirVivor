@@ -14,15 +14,17 @@ const [
     titleMenuSource,
     settingsOverlaySource,
     settingsStateSource,
+    settingDefinitionsSource,
     settingHandlerSource
 ] = await Promise.all([
-    readSource('../script/data/display/overlay_render_constants.js'),
+    readSource('../script/module/display/webgl/_webgl_constants.js'),
     readSource('../script/module/overlay/_overlay_session.js'),
     readSource('../script/module/scene/title/menu/_title_menu_overlay_session.js'),
     readSource('../script/module/scene/title/menu/_title_menu_theme.js'),
     readSource('../script/module/scene/title/_title_menu.js'),
     readSource('../script/module/overlay/title/_settings_overlay.js'),
     readSource('../script/module/overlay/title/settings/_settings_state.js'),
+    readSource('../script/data/settings/setting_definitions.js'),
     readSource('../script/module/save/_setting_handler.js')
 ]);
 
@@ -81,8 +83,8 @@ assert.match(settingsOverlaySource, /super\(TitleScene, \{ glOverlay: true, titl
 assert.match(settingsOverlaySource, /item\("toggle", "control_disableTransparency"\)/);
 assert.match(settingsStateSource, /disableTransparency:\s*getSetting\('disableTransparency'\) \|\| false/);
 assert.match(
-    settingHandlerSource,
-    /disableTransparency:\s*\{[^}]*hidden:\s*false/
+    settingDefinitionsSource,
+    /disableTransparency:\s*Object\.freeze\(\{[^}]*hidden:\s*false/
 );
 assert.match(titleMenuSource, /this\.session\.setDisableTransparency\(getSetting\('disableTransparency'\)\)/);
 assert.match(titleMenuSource, /getDisplaySystem\(\)\?\.webGLHandler\?\.flushAll\(\)/);

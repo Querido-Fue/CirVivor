@@ -1,16 +1,14 @@
 import { getCanvas, getDisplaySystem, getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
-import { getData } from 'data/data_handler.js';
 import {
     advanceTitleLogoPlayback,
     calculateTitleLogoPlaybackProgress,
     calculateTitleLogoRemainingTimeToProgress
 } from './logo/_title_logo_playback.js';
 import { TitleLogoRenderCache } from './logo/_title_logo_render_cache.js';
+import { TITLE_LOGO_ASSET } from './logo/_title_logo_asset.js';
 import { getDefaultLogoColor, getDefaultLogoShadowColor } from './logo/_title_logo_theme.js';
-
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_LOGO_DATA = getData('TITLE_LOGO_DATA');
+import { TITLE_IMAGE_LAYOUT } from './_title_runtime_constants.js';
 
 /**
  * @class TitleLogo
@@ -197,12 +195,12 @@ export class TitleLogo {
      * @private
      */
     #recalculateLayout() {
-        const defaultWidth = this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.WIDTH_RATIO;
+        const defaultWidth = this.UIWW * TITLE_IMAGE_LAYOUT.WIDTH_RATIO;
         this.logoWidth = this.customPlacement
             ? Math.max(1, this.customPlacement.width)
             : defaultWidth;
-        this.scale = this.logoWidth / TITLE_LOGO_DATA.VIEWBOX.width;
-        this.logoHeight = TITLE_LOGO_DATA.VIEWBOX.height * this.scale;
+        this.scale = this.logoWidth / TITLE_LOGO_ASSET.VIEWBOX.width;
+        this.logoHeight = TITLE_LOGO_ASSET.VIEWBOX.height * this.scale;
 
         if (this.customPlacement) {
             this.logoX = this.customPlacement.x;
@@ -210,7 +208,7 @@ export class TitleLogo {
             return;
         }
 
-        this.logoX = this.UIOffsetX + (this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.ENTER_X_RATIO);
+        this.logoX = this.UIOffsetX + (this.UIWW * TITLE_IMAGE_LAYOUT.ENTER_X_RATIO);
         this.logoY = (this.WH - this.logoHeight) * 0.5;
     }
 

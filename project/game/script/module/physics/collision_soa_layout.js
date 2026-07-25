@@ -1,44 +1,58 @@
-import { getData } from 'data/data_handler.js';
-
-const COLLISION_SOA_LAYOUT = getData('COLLISION_CONSTANTS').SOA_LAYOUT;
-const COLLISION_BODY_KIND = COLLISION_SOA_LAYOUT.BODY_KIND;
-const COLLISION_BODY_SHAPE = COLLISION_SOA_LAYOUT.BODY_SHAPE;
-const COLLISION_BODY_KIND_CODE_BY_NAME = COLLISION_SOA_LAYOUT.BODY_KIND_CODE_BY_NAME;
-const COLLISION_BODY_SHAPE_CODE_BY_NAME = COLLISION_SOA_LAYOUT.BODY_SHAPE_CODE_BY_NAME;
-
 /** broad-phase SoA 레코드 stride입니다. */
-export const COLLISION_BROAD_STRIDE = COLLISION_SOA_LAYOUT.BROAD_STRIDE;
+export const COLLISION_BROAD_STRIDE = 14;
 /** enemy relation SoA 레코드 stride입니다. */
-export const COLLISION_RELATION_BROAD_STRIDE = COLLISION_SOA_LAYOUT.RELATION_BROAD_STRIDE;
+export const COLLISION_RELATION_BROAD_STRIDE = 8;
 /** enemy 후보 sweep SoA 레코드 stride입니다. */
 export const COLLISION_CANDIDATE_SWEEP_STRIDE = 8;
 /** contact 결과 SoA 레코드 stride입니다. */
-export const COLLISION_CONTACT_RESULT_STRIDE = COLLISION_SOA_LAYOUT.CONTACT_RESULT_STRIDE;
+export const COLLISION_CONTACT_RESULT_STRIDE = 8;
 
 /** 등록되지 않은 충돌 body kind 코드입니다. */
-export const COLLISION_BODY_KIND_NONE = COLLISION_BODY_KIND.NONE;
+export const COLLISION_BODY_KIND_NONE = 0;
 /** 적 충돌 body kind 코드입니다. */
-export const COLLISION_BODY_KIND_ENEMY = COLLISION_BODY_KIND.ENEMY;
+export const COLLISION_BODY_KIND_ENEMY = 1;
 /** 플레이어 충돌 body kind 코드입니다. */
-export const COLLISION_BODY_KIND_PLAYER = COLLISION_BODY_KIND.PLAYER;
+export const COLLISION_BODY_KIND_PLAYER = 2;
 /** 벽 충돌 body kind 코드입니다. */
-export const COLLISION_BODY_KIND_WALL = COLLISION_BODY_KIND.WALL;
+export const COLLISION_BODY_KIND_WALL = 3;
 /** 투사체 충돌 body kind 코드입니다. */
-export const COLLISION_BODY_KIND_PROJECTILE = COLLISION_BODY_KIND.PROJECTILE;
+export const COLLISION_BODY_KIND_PROJECTILE = 4;
 /** 아이템 충돌 body kind 코드입니다. */
-export const COLLISION_BODY_KIND_ITEM = COLLISION_BODY_KIND.ITEM;
+export const COLLISION_BODY_KIND_ITEM = 5;
 
 /** 등록되지 않은 충돌 body shape 코드입니다. */
-export const COLLISION_BODY_SHAPE_NONE = COLLISION_BODY_SHAPE.NONE;
+export const COLLISION_BODY_SHAPE_NONE = 0;
 /** 원형 충돌 body shape 코드입니다. */
-export const COLLISION_BODY_SHAPE_CIRCLE = COLLISION_BODY_SHAPE.CIRCLE;
+export const COLLISION_BODY_SHAPE_CIRCLE = 1;
 /** 원형 part 묶음 충돌 body shape 코드입니다. */
-export const COLLISION_BODY_SHAPE_CIRCLE_PARTS = COLLISION_BODY_SHAPE.CIRCLE_PARTS;
+export const COLLISION_BODY_SHAPE_CIRCLE_PARTS = 2;
 /** 사각형 충돌 body shape 코드입니다. */
-export const COLLISION_BODY_SHAPE_RECT = COLLISION_BODY_SHAPE.RECT;
+export const COLLISION_BODY_SHAPE_RECT = 3;
+
+const COLLISION_BODY_KIND_CODE_BY_NAME = Object.freeze({
+    enemy: COLLISION_BODY_KIND_ENEMY,
+    player: COLLISION_BODY_KIND_PLAYER,
+    wall: COLLISION_BODY_KIND_WALL,
+    projectile: COLLISION_BODY_KIND_PROJECTILE,
+    item: COLLISION_BODY_KIND_ITEM
+});
+const COLLISION_BODY_SHAPE_CODE_BY_NAME = Object.freeze({
+    circle: COLLISION_BODY_SHAPE_CIRCLE,
+    circleParts: COLLISION_BODY_SHAPE_CIRCLE_PARTS,
+    rect: COLLISION_BODY_SHAPE_RECT
+});
 
 /** enemy relation SoA 필드 index 매핑입니다. */
-export const COLLISION_RELATION_INDEX = COLLISION_SOA_LAYOUT.RELATION_INDEX;
+export const COLLISION_RELATION_INDEX = Object.freeze({
+    MIN_X: 0,
+    MAX_X: 1,
+    MIN_Y: 2,
+    MAX_Y: 3,
+    CENTER_X: 4,
+    CENTER_Y: 5,
+    ENEMY_PAIR_RADIUS: 6,
+    PROJECTILE_RADIUS: 7
+});
 /** enemy 후보 sweep SoA 필드 index 매핑입니다. */
 export const COLLISION_CANDIDATE_SWEEP_INDEX = Object.freeze({
     MIN_X: 0,
@@ -51,7 +65,16 @@ export const COLLISION_CANDIDATE_SWEEP_INDEX = Object.freeze({
     PAD: 7
 });
 /** contact 결과 SoA 필드 index 매핑입니다. */
-export const COLLISION_CONTACT_RESULT_INDEX = COLLISION_SOA_LAYOUT.CONTACT_RESULT_INDEX;
+export const COLLISION_CONTACT_RESULT_INDEX = Object.freeze({
+    PAIR_INDEX: 0,
+    BODY_A_INDEX: 1,
+    BODY_B_INDEX: 2,
+    NORMAL_X: 3,
+    NORMAL_Y: 4,
+    PENETRATION: 5,
+    POINT_X: 6,
+    POINT_Y: 7
+});
 
 /**
  * 정적 코드 매핑에서 유한 숫자 코드를 조회합니다.

@@ -1,5 +1,6 @@
-import { getData } from 'data/data_handler.js';
 import { toRadians } from 'util/math_util.js';
+import { DISPLAY_WEBGL_RENDER_MODES } from '../display_surface_descriptor.js';
+import { WEBGL_CONSTANTS } from './_webgl_constants.js';
 import {
     beginWebGLLayerFrame,
     createWebGLLayerRenderer,
@@ -10,8 +11,6 @@ import {
     resizeWebGLLayerRenderer
 } from './_webgl_layer_renderer.js';
 
-const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
-const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
 const WEBGL_BACKGROUND_LAYER_ID = 'background';
 
 /**

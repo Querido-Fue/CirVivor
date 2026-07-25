@@ -1,4 +1,5 @@
 import { fsPromises, path } from 'util/nw_bridge.js';
+import { INGAME_DEFAULT_DATA } from 'data/save/save_defaults.js';
 import { cloneJsonData, ensureSaveDirectory, pathExists } from './_save_file_helper.js';
 
 /**
@@ -11,11 +12,7 @@ export class IngameHandler {
         this.dataDir = dataDir;
         this.filePath = path.join(this.dataDir, 'ingame.dat');
         this.data = {};
-        this.defaultData = {
-            current_level: 0,
-            current_xp: 0,
-            items: []
-        };
+        this.defaultData = cloneJsonData(INGAME_DEFAULT_DATA);
     }
 
     /**

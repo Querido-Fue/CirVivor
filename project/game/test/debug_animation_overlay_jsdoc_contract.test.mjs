@@ -14,7 +14,15 @@ const [controllerSource, overlaySource] = await Promise.all([
     readFile(OVERLAY_PATH, 'utf8')
 ]);
 
-function hashExecutableSource(source) {
+function hashExecutableSource(source, expectedJsDocCount) {
+    const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
+    const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
+    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
+    assert.equal(
+        standaloneJsDocStarts.length,
+        allJsDocStarts.length,
+        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
+    );
     const executableSource = source
         .replace(/^[ \t]*\/\*\*[\s\S]*?\*\/[ \t]*(?:\r?\n|$)/gm, '')
         .replace(/\r\n/g, '\n');
@@ -35,9 +43,14 @@ function createSyntheticModule(context, identifier, exports) {
     }, { context, identifier });
 }
 
-test('JSDoc만 바뀌며 실제 순서 계약을 명시한다', () => {
-    assert.equal(hashExecutableSource(controllerSource), '56afb8c50ec2f08de235f0860c38c5b0456ad14acd35c1dfec611ebccdc687ef');
-    assert.equal(hashExecutableSource(overlaySource), '473612f3177ce87a2fa5e53ed7bd2368871e5aeb6c23e2dc44cf655e8f65d9d9');
+test('animation controller 실행 계약과 debug overlay의 코드-local 상수 경계를 명시한다', () => {
+    assert.equal(hashExecutableSource(controllerSource, 5), '56afb8c50ec2f08de235f0860c38c5b0456ad14acd35c1dfec611ebccdc687ef');
+    assert.equal(hashExecutableSource(overlaySource, 7), '13f603b3f6fbec2aeda58c1d135fe5fcb0ab495915baa8ec982d285df17f3b85');
+    assert.doesNotMatch(overlaySource, /data\/data_handler\.js/);
+    assert.match(overlaySource, /const DEBUG_OVERLAY = Object\.freeze\(\{/);
+    assert.match(overlaySource, /\.textStyle\(TYPOGRAPHY\./);
+    assert.match(overlaySource, /\.buttonStyle\(BUTTON_STYLE\./);
+    assert.doesNotMatch(overlaySource, /\.stylePreset\(/);
 
     const frameDoc = findLeadingJsDoc(controllerSource, 'prepareFrame\\(consumePress\\)');
     assert.match(frameDoc, /`debugPause`, `debugStep`을 이 순서로/);
@@ -99,15 +112,32 @@ async function createOverlayHarness() {
     }
     class LayoutHandler {}
     const modules = new Map([
-        ['data/data_handler.js', createSyntheticModule(context, 'data/data_handler.js', {
-            getData: () => ({ DEBUG_OVERLAY: { LAYER: 0, DIM_ALPHA: 0 } })
-        })],
         ['display/_theme_handler.js', createSyntheticModule(context, 'display/_theme_handler.js', { ColorSchemes: {} })],
         ['input/input_system.js', createSyntheticModule(context, 'input/input_system.js', {
             getMouseFocus: () => { trace.push('focus.get'); return state.focus; },
             setMouseFocus: (focus) => { trace.push('focus.set'); state.focus = focus; }
         })],
         ['ui/layout/_layout_handler.js', createSyntheticModule(context, 'ui/layout/_layout_handler.js', { LayoutHandler })],
+        ['ui/style/component_styles.js', createSyntheticModule(
+            context,
+            'ui/style/component_styles.js',
+            {
+                BUTTON_STYLE: Object.freeze({
+                    OVERLAY_INTERACT: Object.freeze({})
+                })
+            }
+        )],
+        ['ui/style/typography.js', createSyntheticModule(
+            context,
+            'ui/style/typography.js',
+            {
+                TYPOGRAPHY: Object.freeze({
+                    H2: Object.freeze({}),
+                    LABEL: Object.freeze({}),
+                    SETTINGS_DESCRIPTION: Object.freeze({})
+                })
+            }
+        )],
         ['util/runtime_tool.js', createSyntheticModule(context, 'util/runtime_tool.js', { runtimeTool: () => null })],
         ['./_base_overlay.js', createSyntheticModule(context, './_base_overlay.js', { BaseOverlay })]
     ]);

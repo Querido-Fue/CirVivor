@@ -1,11 +1,27 @@
-import { getData } from 'data/data_handler.js';
+/**
+ * display surface가 지원하는 WebGL renderer mode입니다.
+ */
+export const DISPLAY_WEBGL_RENDER_MODES = Object.freeze({
+    BATCH: 'batch',
+    OVERLAY_EFFECT: 'overlay-effect',
+    EFFECT: 'effect'
+});
 
-const {
-    WEBGL_RENDER_MODES: DISPLAY_WEBGL_RENDER_MODES,
-    WEBGL_LAYER_NAME_MAP: DISPLAY_WEBGL_LAYER_NAME_MAP,
-    NATIVE_2D_SURFACE_IDS: DISPLAY_NATIVE_2D_SURFACE_IDS,
-    STATIC_SURFACE_ORDER_MAP: DISPLAY_STATIC_SURFACE_ORDER_MAP
-} = getData('DISPLAY_SURFACE_DATA');
+const DISPLAY_WEBGL_LAYER_NAME_MAP = Object.freeze({
+    main: 'object',
+    mainGL: 'object',
+    backgroundGL: 'background',
+    effectGL: 'effect'
+});
+const DISPLAY_NATIVE_2D_SURFACE_IDS = Object.freeze(['texteffect', 'ui', 'vignette', 'top']);
+const DISPLAY_STATIC_SURFACE_ORDER_MAP = Object.freeze({
+    background: 0,
+    object: 10,
+    effect: 20,
+    texteffect: 30,
+    ui: 40,
+    top: 1000
+});
 const DISPLAY_NATIVE_2D_SURFACE_ID_SET = new Set(DISPLAY_NATIVE_2D_SURFACE_IDS);
 
 /**

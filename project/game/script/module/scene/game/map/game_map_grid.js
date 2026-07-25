@@ -1,8 +1,13 @@
-import { getData } from 'data/data_handler.js';
+import { GAME_MAP_DATA } from 'data/scene/game/game_map_data.js';
 
-const GAME_MAP_DATA = getData('GAME_MAP_DATA');
-const TILE_TYPES = GAME_MAP_DATA?.TILE_TYPES || Object.freeze({ VOID: '.', FLOOR: 'F' });
-const WORLD_LAYOUT = GAME_MAP_DATA?.WORLD_LAYOUT || Object.freeze({});
+const TILE_TYPES = GAME_MAP_DATA.TILE_TYPES;
+const WORLD_LAYOUT = Object.freeze({
+    MAX_WIDTH_RATIO: 0.78,
+    MAX_OBJECT_HEIGHT_RATIO: 0.82,
+    WALL_THICKNESS_CELL_RATIO: 0.12,
+    WALL_MIN_THICKNESS_PX: 6,
+    TILE_GAP_CELL_RATIO: 0.035
+});
 const BASE_GLOBAL_OBJECT = globalThis;
 const BASE_ARRAY_CONSTRUCTOR = Array;
 const BASE_NUMBER_CONSTRUCTOR = Number;

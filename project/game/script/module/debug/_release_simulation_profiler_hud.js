@@ -1,9 +1,11 @@
-import { getData } from 'data/data_handler.js';
 import { getWH, getWW, render } from 'display/display_system.js';
 import { getReleaseSimulationProfilerSnapshot } from 'simulation/release_simulation_profiler.js';
+import {
+    RELEASE_SIMULATION_PROFILER_CONSTANTS
+} from 'simulation/release_simulation_profiler_constants.js';
 import { createFontString } from 'util/font_util.js';
 
-const HUD_CONSTANTS = getData('DEBUG_CONSTANTS').RELEASE_SIMULATION_PROFILER.HUD;
+const HUD_CONSTANTS = RELEASE_SIMULATION_PROFILER_CONSTANTS.HUD;
 const HUD_LINE_COUNT = 4;
 const hudLines = new Array(HUD_LINE_COUNT).fill('');
 const textCommands = Array.from({ length: HUD_LINE_COUNT }, () => ({

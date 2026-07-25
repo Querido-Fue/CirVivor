@@ -4,14 +4,11 @@ import {
     DEFAULT_FRAGMENT_SHADER,
     DEFAULT_VERTEX_SHADER
 } from './_shader_utils.js';
-import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { toRadians } from 'util/math_util.js';
 import { ShapeGeometryBuilder } from './_shape_geometry_builder.js';
 import { ShapeTextureCache } from './_shape_texture_cache.js';
-
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
+import { WEBGL_CONSTANTS, WEBGL_MAX_SPRITES } from './_webgl_constants.js';
 
 /**
  * 하나의 스프라이트를 구성하는 정점 수입니다.
@@ -53,7 +50,7 @@ export class WebGLBatch {
      */
     constructor(gl) {
         this.gl = gl;
-        this.maxSprites = GLOBAL_CONSTANTS.WEBGL_MAX_SPRITES;
+        this.maxSprites = WEBGL_MAX_SPRITES;
         this.vertexSize = WEBGL_CONSTANTS.BATCH_VERTEX_SIZE;
         this.vertices = new Float32Array(this.maxSprites * VERTICES_PER_SPRITE * this.vertexSize);
         this.spriteCount = 0;

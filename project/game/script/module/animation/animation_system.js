@@ -2,12 +2,11 @@ import { StandardAnimation, standardAnimationPool } from './_standard_animation.
 import { PersistentAnimation } from './_persistent_animation.js';
 import { MixedAnimation } from './_mixed_animation.js';
 import { ANIMATION_STATE } from './_constants.js';
-import { getData } from 'data/data_handler.js';
 import { getDelta, getFixedDelta } from 'game/time_handler.js';
 import { errThrow } from 'debug/debug_system.js';
 import { clampFiniteNumber } from 'util/number_util.js';
 
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const ANIMATOR_POOL_WARMUP_COUNT = 500;
 
 let animationSystemInstance = null;
 
@@ -67,7 +66,7 @@ export class AnimationSystem {
      */
     async warmup() {
         // 애니메이션 풀 미리 할당
-        for (let i = 0; i < GLOBAL_CONSTANTS.POOL_WARMUP.ANIMATOR; i++) {
+        for (let i = 0; i < ANIMATOR_POOL_WARMUP_COUNT; i++) {
             standardAnimationPool.release(standardAnimationPool.get());
         }
     }

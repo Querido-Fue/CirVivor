@@ -1,13 +1,21 @@
-import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
 import { SVGDrawer } from 'display/_svg_drawer.js';
 import { BaseOverlay } from 'overlay/_base_overlay.js';
 import { getTitleMenuIconSource } from 'scene/title/menu/_title_menu_icon.js';
+import { resolveTypography } from 'ui/style/_typography_resolver.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_ICON_LAYOUT = TITLE_CONSTANTS.TITLE_OVERLAY.TITLE_ICON;
 const DEFAULT_TITLE_ICON_ASPECT_RATIO = 1;
+const TITLE_ICON_LAYOUT = Object.freeze({
+    GAP: Object.freeze({
+        BASE: 'WW',
+        VALUE: 0.22
+    }),
+    MAX_HEIGHT_RATIO: 0.92,
+    SCALE_MULTIPLIER: 1.08,
+    GAP_MULTIPLIER: 2.5,
+    DEFAULT_SCALE_MULTIPLIER: 1
+});
 const TITLE_ICON_ANCHOR_ITEM_IDS = Object.freeze([
     'title_text',
     'dummy_overlay_title'
@@ -136,7 +144,9 @@ export class TitleOverlay extends BaseOverlay {
         const iconGap = this.positioningHandler.parseUIData(TITLE_ICON_LAYOUT.GAP, this.uiScale);
         const titleFontSize = Number.isFinite(titleItem.height) && titleItem.height > 0
             ? titleItem.height
-            : this.positioningHandler.parseUIData(TEXT_CONSTANTS.H1.FONT.SIZE, this.uiScale);
+            : resolveTypography(TYPOGRAPHY.H1, {
+                resolveMetric: (metric) => this.positioningHandler.parseUIData(metric, this.uiScale)
+            }).size;
         const iconGapTotal = iconGap * TITLE_ICON_LAYOUT.GAP_MULTIPLIER;
         const maxIconHeight = Math.max(
             0,

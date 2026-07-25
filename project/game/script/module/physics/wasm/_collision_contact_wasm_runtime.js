@@ -1,8 +1,7 @@
-import { getData } from 'data/data_handler.js';
 import { ENEMY_PAIR_COLLISION_RADIUS_SCALE } from '../_collision_resolve_tuning.js';
+import { COLLISION_EPSILON } from '../collision_math_constants.js';
 import { COLLISION_CONTACT_WASM_BYTES } from './_collision_contact_wasm_bytes.js';
 
-const EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
 const WASM_PAGE_BYTES = 64 * 1024;
 const MEMORY_ALIGNMENT_BYTES = 64;
 const BODY_RECORD_BYTES = 32;
@@ -262,7 +261,7 @@ export class CollisionContactWasmRuntime {
             layout.pairOffset,
             pairCount,
             layout.resultOffset,
-            EPSILON,
+            COLLISION_EPSILON,
             ENEMY_PAIR_COLLISION_RADIUS_SCALE
         );
         if (status !== 0) {

@@ -26,8 +26,8 @@ const titleLoading = {
     GLOW_COMPENSATION_SCALE: 1.25,
     MINI_CIRCLE_SCALE: 0.75
 };
-const dataModule = new vm.SyntheticModule(['getData'], function init() {
-    this.setExport('getData', () => ({ TITLE_LOADING: titleLoading }));
+const titleRuntimeConstantsModule = new vm.SyntheticModule(['TITLE_LOADING_CONSTANTS'], function init() {
+    this.setExport('TITLE_LOADING_CONSTANTS', titleLoading);
 }, { context });
 const displayModule = new vm.SyntheticModule(
     ['getUIOffsetX', 'getUIWW', 'getWH'],
@@ -60,7 +60,7 @@ const transitionModule = new vm.SyntheticModule(['buildTitleSceneTransitionSegme
 }, { context });
 const dependencyModules = new Map([
     ['animation/animation_system.js', animationModule],
-    ['data/data_handler.js', dataModule],
+    ['./_title_runtime_constants.js', titleRuntimeConstantsModule],
     ['display/display_system.js', displayModule],
     ['./_title_scene_content.js', contentModule],
     ['./loading/_title_loading_logo_placement.js', placementModule],

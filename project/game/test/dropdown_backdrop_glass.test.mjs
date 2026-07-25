@@ -56,8 +56,8 @@ const dependencies = new Map([
     ['util/font_util.js', createSyntheticModule(context, {
         createFontString: () => '12px sans-serif', truncateTextToWidth: (text) => text
     })],
-    ['data/data_handler.js', createSyntheticModule(context, {
-        getData: () => ({ FLOATING_DROPDOWN_BLUR_RADIUS: 18 })
+    ['display/webgl/_webgl_constants.js', createSyntheticModule(context, {
+        OVERLAY_RENDER_CONSTANTS: { FLOATING_DROPDOWN_BLUR_RADIUS: 18 }
     })]
 ]);
 await dropdownModule.link((specifier) => dependencies.get(specifier));

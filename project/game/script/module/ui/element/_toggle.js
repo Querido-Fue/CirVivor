@@ -5,10 +5,13 @@ import { ColorSchemes } from "display/_theme_handler.js";
 import { animate, remove } from "animation/animation_system.js";
 import { colorUtil, formatRgba } from "util/color_util.js";
 import { clamp01 } from "util/number_util.js";
-import { getData } from "data/data_handler.js";
 import { DropdownElement } from "./_dropdown.js";
 
-const TOGGLE_ANIMATION = getData('UI_CONSTANTS').TOGGLE_ANIMATION;
+const TOGGLE_ANIMATION = Object.freeze({
+    DURATION_SECONDS: 0.32,
+    EASING: 'easeOutExpo',
+    KNOB_TRAVEL_SHRINK_RATIO: 0.4
+});
 
 /**
  * @class ToggleElement

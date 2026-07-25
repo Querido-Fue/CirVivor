@@ -2,10 +2,24 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
-const { TITLE_MENU_DATA } = await loadGameModule(
-    'data/scene/title/title_menu_data.js'
+const { TitleMenuCardRegistry } = await loadGameModule(
+    'scene/title/menu/_title_menu_card_registry.js'
 );
-const startCard = TITLE_MENU_DATA.CARD_DEFINITIONS.find((card) => card.id === 'start');
+const { GAME_MAP_DATA } = await loadGameModule(
+    'data/scene/game/game_map_data.js'
+);
+assert.equal(resolveDefaultMapId(), GAME_MAP_DATA.DEFAULT_MAP_ID);
+
+/**
+ * 맵 선택 화면의 초기 선택값으로 사용할 등록 기본 맵 ID를 반환합니다.
+ * @returns {string|null} 등록된 기본 맵 ID입니다.
+ */
+function resolveDefaultMapId() {
+    return GAME_MAP_DATA.MAPS.find(({ id }) => id === GAME_MAP_DATA.DEFAULT_MAP_ID)?.id ?? null;
+}
+
+const titleMenuCardRegistry = new TitleMenuCardRegistry();
+const startCard = titleMenuCardRegistry.getById('start');
 assert.equal(startCard?.actionType, 'overlay');
 assert.equal(startCard?.actionKey, 'mapSelect');
 

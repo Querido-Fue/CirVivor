@@ -1,11 +1,9 @@
-import { getData } from 'data/data_handler.js';
 import {
     createRotationXMatrix,
     createRotationYMatrix,
     multiplyMat4
 } from 'overlay/_panel_effect_math.js';
-
-const TITLE_MENU_OVERLAY_EFFECTS = getData('TITLE_MENU_DATA').OVERLAY_EFFECTS;
+import { TITLE_MENU_OVERLAY_EFFECTS } from './_title_menu_constants.js';
 
 /** 타이틀 메뉴 카드 투영에 사용할 기본 원근 거리입니다. */
 export const TITLE_MENU_DEFAULT_PERSPECTIVE = TITLE_MENU_OVERLAY_EFFECTS.hoverTilt.perspective;

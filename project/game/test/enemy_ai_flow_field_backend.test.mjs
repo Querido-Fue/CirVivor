@@ -10,7 +10,7 @@ const navigationModule = await loadGameModule('object/enemy/ai/_enemy_ai_navigat
 const runtimeModule = await loadGameModule(
     'object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js'
 );
-const constantsModule = await loadGameModule('data/object/enemy/enemy_ai_constants.js');
+const aiDataModule = await loadGameModule('data/object/enemy/enemy_ai_data.js');
 
 /**
  * typed array 두 개의 모든 원시 바이트가 같은지 검사합니다.
@@ -218,7 +218,7 @@ test('첫 WASM 실행 오류는 현재 호출부터 JS로 복구하고 이후 WA
 });
 
 test('실제 navigation cache miss는 WASM을 한 번 사용하고 같은 key hit는 재사용한다', async () => {
-    const profile = constantsModule.ENEMY_AI_CONSTANTS.QUALITY_PROFILES.inline_safe;
+    const profile = aiDataModule.ENEMY_AI_DATA.QUALITY_PROFILES.inline_safe;
     const context = {
         aiDebugStats: null,
         sharedFlowFieldByKey: new Map(),

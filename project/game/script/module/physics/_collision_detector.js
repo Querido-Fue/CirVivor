@@ -1,6 +1,4 @@
-import { getData } from 'data/data_handler.js';
-
-const EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
 /**
  * @class CollisionDetector
@@ -25,7 +23,7 @@ export class CollisionDetector {
         let nx = 1;
         let ny = 0;
         let distance = Math.sqrt(distSq);
-        if (distance > EPSILON) {
+        if (distance > COLLISION_EPSILON) {
             nx = dx / distance;
             ny = dy / distance;
         } else {
@@ -56,8 +54,8 @@ export class CollisionDetector {
 
         const movableA = bodyA?.movable !== false;
         const movableB = bodyB?.movable !== false;
-        const weightA = Math.max(EPSILON, Number.isFinite(bodyA?.weight) ? bodyA.weight : 1);
-        const weightB = Math.max(EPSILON, Number.isFinite(bodyB?.weight) ? bodyB.weight : 1);
+        const weightA = Math.max(COLLISION_EPSILON, Number.isFinite(bodyA?.weight) ? bodyA.weight : 1);
+        const weightB = Math.max(COLLISION_EPSILON, Number.isFinite(bodyB?.weight) ? bodyB.weight : 1);
         return this.addResolutionScalars(manifold, weightA, movableA, weightB, movableB);
     }
 
@@ -73,8 +71,8 @@ export class CollisionDetector {
     addResolutionScalars(manifold, weightA, movableA, weightB, movableB) {
         if (!manifold) return null;
 
-        const safeWeightA = Math.max(EPSILON, Number.isFinite(weightA) ? weightA : 1);
-        const safeWeightB = Math.max(EPSILON, Number.isFinite(weightB) ? weightB : 1);
+        const safeWeightA = Math.max(COLLISION_EPSILON, Number.isFinite(weightA) ? weightA : 1);
+        const safeWeightB = Math.max(COLLISION_EPSILON, Number.isFinite(weightB) ? weightB : 1);
         const penetration = manifold.penetration;
 
         let ratioA = 0;

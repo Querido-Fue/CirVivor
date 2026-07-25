@@ -12,9 +12,9 @@ const TITLE_AI_PATH = resolve(
     'script/module/object/enemy/ai/_title_ai.js'
 );
 const NUMBER_UTIL_PATH = resolve(GAME_DIRECTORY, 'script/util/number_util.js');
-const TITLE_CONSTANTS_PATH = resolve(
+const TITLE_RUNTIME_CONSTANTS_PATH = resolve(
     GAME_DIRECTORY,
-    'script/data/scene/title/title_constants.js'
+    'script/module/scene/title/_title_runtime_constants.js'
 );
 const RAW_FLOAT_CASE_COUNT = 100_000;
 const FULL_UPDATE_RAW_CASE_COUNT = 2_048;
@@ -22,11 +22,11 @@ const MASK_64 = (1n << 64n) - 1n;
 const floatView = new DataView(new ArrayBuffer(8));
 
 const normalizeLineEndings = (source) => source.replace(/\r\n?/g, '\n');
-const [titleAISource, numberUtilSource, titleConstantsSource] = (
+const [titleAISource, numberUtilSource, titleRuntimeConstantsSource] = (
     await Promise.all([
         readFile(TITLE_AI_PATH, 'utf8'),
         readFile(NUMBER_UTIL_PATH, 'utf8'),
-        readFile(TITLE_CONSTANTS_PATH, 'utf8')
+        readFile(TITLE_RUNTIME_CONSTANTS_PATH, 'utf8')
     ])
 ).map(normalizeLineEndings);
 
@@ -150,26 +150,26 @@ const legacySource = deriveLegacySource(scalarCandidateSource);
 
 /**
  * 실제 상수 모듈 전체를 평가합니다.
- * @returns {Promise<object>} TITLE_CONSTANTS입니다.
+ * @returns {Promise<object>} TITLE_AI_CONSTANTS입니다.
  */
-async function loadActualTitleConstants() {
+async function loadActualTitleAIConstants() {
     const context = vm.createContext({ console });
-    const module = new vm.SourceTextModule(titleConstantsSource, {
+    const module = new vm.SourceTextModule(titleRuntimeConstantsSource, {
         context,
-        identifier: pathToFileURL(TITLE_CONSTANTS_PATH).href
+        identifier: pathToFileURL(TITLE_RUNTIME_CONSTANTS_PATH).href
     });
     await module.link((specifier) => {
         throw new Error(`unexpected title constants import: ${specifier}`);
     });
     await module.evaluate();
-    return module.namespace.TITLE_CONSTANTS;
+    return module.namespace.TITLE_AI_CONSTANTS;
 }
 
-const TITLE_CONSTANTS = await loadActualTitleConstants();
+const TITLE_AI_CONSTANTS = await loadActualTitleAIConstants();
 const TITLE_SPEED_CAP_EASEOUT_EXPO_RATE = Number.isFinite(
-    TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_EASEOUT_EXPO_RATE
+    TITLE_AI_CONSTANTS.MAX_SPEED_CAP_EASEOUT_EXPO_RATE
 )
-    ? Math.max(0, TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
+    ? Math.max(0, TITLE_AI_CONSTANTS.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
     : 0;
 
 /**
@@ -190,12 +190,12 @@ async function loadTitleAIRuntime(source, hooks = {}, exportScalarHelper = false
         },
         { context, identifier }
     );
-    const dataModule = createSyntheticModule('data/data_handler.js', {
-        getData(key) {
-            if (key === 'TITLE_CONSTANTS') return TITLE_CONSTANTS;
-            throw new Error(`unexpected data key: ${key}`);
+    const titleRuntimeConstantsModule = createSyntheticModule(
+        'scene/title/_title_runtime_constants.js',
+        {
+            TITLE_AI_CONSTANTS
         }
-    });
+    );
     const physicsModule = createSyntheticModule('physics/_magnetic_effect.js', {
         applyMagneticPoint(...args) {
             return hooks.applyMagneticPoint?.(...args);
@@ -227,7 +227,9 @@ async function loadTitleAIRuntime(source, hooks = {}, exportScalarHelper = false
     });
 
     await titleModule.link((specifier) => {
-        if (specifier === 'data/data_handler.js') return dataModule;
+        if (specifier === 'scene/title/_title_runtime_constants.js') {
+            return titleRuntimeConstantsModule;
+        }
         if (specifier === 'physics/_magnetic_effect.js') return physicsModule;
         if (specifier === 'simulation/simulation_runtime.js') return simulationModule;
         if (specifier === 'util/number_util.js') return numberModule;
@@ -453,7 +455,7 @@ const ordinaryValues = Object.freeze({
 
 test('실제 production 전체 타이틀 AI 모듈을 VM SourceTextModule로 로드한다', async () => {
     const runtime = await loadTitleAIRuntime(titleAISource, { identifier: 'actual-production' });
-    assert.equal(runtime.titleAI.id, TITLE_CONSTANTS.TITLE_AI.ID);
+    assert.equal(runtime.titleAI.id, TITLE_AI_CONSTANTS.ID);
     assert.equal(typeof runtime.titleAI.fixedUpdate, 'function');
     assert.equal(typeof runtime.ensureTitleEnemyState, 'function');
 });

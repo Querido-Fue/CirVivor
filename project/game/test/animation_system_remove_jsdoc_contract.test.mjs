@@ -13,7 +13,7 @@ const STANDARD_ANIMATION_PATH = path.join(ANIMATION_ROOT, '_standard_animation.j
 const CONSTANTS_PATH = path.join(ANIMATION_ROOT, '_constants.js');
 const animationSystemSource = await readFile(ANIMATION_SYSTEM_PATH, 'utf8');
 
-const EXECUTABLE_SOURCE_HASH = '532335a71bcd27249ce9044fc5a34fa135543251873aa771aefeaf1a77299b73';
+const EXECUTABLE_SOURCE_HASH = 'b09dcfb0d70e3b86ba9eb6277cce037a7fdd90035144843e30b2b0e28b9210ef';
 const SYNTHETIC_PREFIX = 'synthetic:';
 const ALIAS_ROOTS = Object.freeze({
     'object/': path.join(SCRIPT_ROOT, 'module', 'object'),
@@ -23,11 +23,13 @@ const ALIAS_ROOTS = Object.freeze({
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
  * @param {string} source - production 소스입니다.
+ * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
  * @returns {string} SHA-256 해시입니다.
  */
-function hashExecutableSource(source) {
+function hashExecutableSource(source, expectedJsDocCount) {
     const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
     const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
+    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
     assert.equal(
         standaloneJsDocStarts.length,
         allJsDocStarts.length,
@@ -64,9 +66,6 @@ async function createAnimationHarness() {
     const context = vm.createContext({ console });
     const moduleCache = new Map();
     const syntheticExports = new Map([
-        [`${SYNTHETIC_PREFIX}data/data_handler.js`, {
-            getData: () => ({ POOL_WARMUP: { ANIMATOR: 0 } })
-        }],
         [`${SYNTHETIC_PREFIX}game/time_handler.js`, {
             getDelta: () => frameDelta,
             getFixedDelta: () => fixedDelta
@@ -133,8 +132,10 @@ async function createAnimationHarness() {
     };
 }
 
-test('AnimationSystem.remove JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
-    assert.equal(hashExecutableSource(animationSystemSource), EXECUTABLE_SOURCE_HASH);
+test('AnimationSystem 구현 상수는 production 모듈에 있고 data registry에 의존하지 않는다', () => {
+    assert.equal(hashExecutableSource(animationSystemSource, 18), EXECUTABLE_SOURCE_HASH);
+    assert.doesNotMatch(animationSystemSource, /data\/data_handler\.js/);
+    assert.match(animationSystemSource, /const ANIMATOR_POOL_WARMUP_COUNT = 500;/);
 });
 
 test('remove JSDoc은 완료와 지연 정리·Promise·예외 계약을 정확히 명시한다', () => {

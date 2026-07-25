@@ -98,8 +98,8 @@ export const clearTooltip = () => {
 };
 
 /**
- * 문자열 기반 UI 상수 데이터를 실제 값으로 변환합니다.
- * @param {string|object|number} data - 파싱할 UI 데이터
+ * 직접 import한 UI 수치 객체를 실제 값으로 변환합니다.
+ * @param {object|number} data - 파싱할 UI 데이터
  * @param {number} [uiScale=1] - UI 스케일 배율
  * @returns {number} 파싱된 수치 값
  */

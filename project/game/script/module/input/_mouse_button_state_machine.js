@@ -1,9 +1,15 @@
-import { getData } from 'data/data_handler.js';
-
-const {
-    STATE_LISTS: MOUSE_BUTTON_STATE_LISTS,
-    BUTTON_CODES: MOUSE_BUTTON_CODES
-} = getData('MOUSE_BUTTON_INPUT_DATA');
+const MOUSE_BUTTON_STATE_LISTS = Object.freeze({
+    inactive: Object.freeze(['inactive']),
+    idle: Object.freeze(['idle']),
+    click: Object.freeze(['click', 'clicking']),
+    clicking: Object.freeze(['clicking']),
+    clicked: Object.freeze(['idle', 'clicked'])
+});
+const MOUSE_BUTTON_CODES = Object.freeze({
+    0: 'left',
+    1: 'middle',
+    2: 'right'
+});
 
 /**
  * @class MouseButtonStateMachine

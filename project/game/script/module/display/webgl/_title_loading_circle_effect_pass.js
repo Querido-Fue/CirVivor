@@ -1,4 +1,4 @@
-import { getData } from 'data/data_handler.js';
+import { TITLE_LOADING_CONSTANTS } from 'scene/title/_title_runtime_constants.js';
 import { clamp01 } from 'util/number_util.js';
 import {
     COMPOSITE_TEXTURE_FRAGMENT_SHADER,
@@ -9,10 +9,9 @@ import {
     KAWASE_UPSAMPLE_FRAGMENT_SHADER,
     TITLE_LOADING_CIRCLE_FRAGMENT_SHADER
 } from './_shader_utils.js';
+import { OVERLAY_RENDER_CONSTANTS } from './_webgl_constants.js';
 
-const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
-const TITLE_LOADING = getData('TITLE_CONSTANTS').TITLE_LOADING;
-const DEFAULT_CIRCLE_SHADER_COLORS = TITLE_LOADING.CIRCLE_SHADER.COLORS;
+const DEFAULT_CIRCLE_SHADER_COLORS = TITLE_LOADING_CONSTANTS.CIRCLE_SHADER.COLORS;
 
 /**
  * @class TitleLoadingCircleEffectPass

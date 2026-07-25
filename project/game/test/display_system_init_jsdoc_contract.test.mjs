@@ -13,10 +13,6 @@ const DISPLAY_DESCRIPTOR_PATH = fileURLToPath(new URL(
     '../script/module/display/display_surface_descriptor.js',
     import.meta.url
 ));
-const DISPLAY_SURFACE_DATA_PATH = fileURLToPath(new URL(
-    '../script/data/display/display_surface_data.js',
-    import.meta.url
-));
 const SYSTEM_HANDLER_PATH = fileURLToPath(new URL(
     '../script/module/system_handler.js',
     import.meta.url
@@ -24,15 +20,13 @@ const SYSTEM_HANDLER_PATH = fileURLToPath(new URL(
 const [
     displaySystemSource,
     displayDescriptorSource,
-    displaySurfaceDataSource,
     systemHandlerSource
 ] = await Promise.all([
     readFile(DISPLAY_SYSTEM_PATH, 'utf8'),
     readFile(DISPLAY_DESCRIPTOR_PATH, 'utf8'),
-    readFile(DISPLAY_SURFACE_DATA_PATH, 'utf8'),
     readFile(SYSTEM_HANDLER_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = 'b881458fa12002698e794cb576868d24efb48b4340b3b3ca8ee4837d5a94ae7f';
+const EXECUTABLE_SOURCE_HASH = '28b321f32dfc146636dddb06d887d057fb00e7dbb9f2463d92fed3795d530992';
 const STATIC_SURFACE_IDS = Object.freeze([
     'background',
     'object',
@@ -46,11 +40,13 @@ const STATIC_SURFACE_IDS = Object.freeze([
 /**
  * 독립된 줄의 JSDoc을 제거한 production 실행 소스를 해시합니다.
  * @param {string} source - production 소스입니다.
+ * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
  * @returns {string} SHA-256 해시입니다.
  */
-function hashExecutableSource(source) {
+function hashExecutableSource(source, expectedJsDocCount) {
     const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
     const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
+    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
     assert.equal(
         standaloneJsDocStarts.length,
         allJsDocStarts.length,
@@ -166,7 +162,7 @@ function createCanvas(id, records) {
 }
 
 /**
- * 실제 DisplaySystem과 실제 descriptor/data 모듈을 최소 대역 의존성과 함께 로드합니다.
+ * 실제 DisplaySystem과 실제 descriptor 모듈을 최소 대역 의존성과 함께 로드합니다.
  * @param {object} [options={}] - controller 초기값과 DOM 훅입니다.
  * @returns {Promise<object>} namespace와 controller/기록입니다.
  */
@@ -228,16 +224,6 @@ async function loadDisplaySystem(options = {}) {
         }
     };
     const context = vm.createContext({ console, document: documentObject });
-
-    const dataModule = new vm.SourceTextModule(displaySurfaceDataSource, {
-        context,
-        identifier: DISPLAY_SURFACE_DATA_PATH
-    });
-    await dataModule.link((specifier) => {
-        throw new Error(`지원하지 않는 display surface data import입니다: ${specifier}`);
-    });
-    await dataModule.evaluate();
-    const surfaceData = dataModule.namespace.DISPLAY_SURFACE_DATA;
 
     const instances = {
         screens: [],
@@ -387,13 +373,6 @@ async function loadDisplaySystem(options = {}) {
             return controls.getSetting(key);
         }
     });
-    const dataHandlerModule = createSyntheticModule(context, 'data/data_handler.js', {
-        getData(key) {
-            if (key === 'DISPLAY_SURFACE_DATA') return surfaceData;
-            throw new Error(`지원하지 않는 display data key입니다: ${key}`);
-        }
-    });
-    dependencies.set('data/data_handler.js', dataHandlerModule);
     addDependency('./_surface_pool.js', { CanvasSurfacePool });
     addDependency('./_vignette_renderer.js', { VignetteRenderer });
     addDependency('./_theme_transition_controller.js', {
@@ -508,22 +487,6 @@ async function loadSystemHandler(displayGate, events) {
     addDependency('ui/_ui_pool.js', {
         warmupUIPools: () => events.push('warmup:UISystem')
     });
-    addDependency('data/data_handler.js', {
-        getData(key) {
-            if (key === 'GLOBAL_CONSTANTS') {
-                return { POOL_WARMUP: { CANVAS_2D: 0, CANVAS_WEBGL: 0 } };
-            }
-            if (key === 'SYSTEM_RUNTIME_POLICY_DATA') {
-                return {
-                    DISPLAY_REFRESH_SETTING_KEYS: [],
-                    SIMULATION_RUNTIME_SETTING_KEYS: [],
-                    DEFAULT_FRAME_EXECUTION_POLICY: {},
-                    FRAME_EXECUTION_DISABLE_KEYS: []
-                };
-            }
-            throw new Error(`지원하지 않는 SystemHandler data key입니다: ${key}`);
-        }
-    });
     addDependency('simulation/simulation_command_queue.js', {
         drainSimulationCommands: () => []
     });
@@ -554,8 +517,15 @@ async function loadSystemHandler(displayGate, events) {
     return module.namespace;
 }
 
-test('DisplaySystem production 실행 소스 SHA-256을 현재 전환 구조로 고정한다', () => {
-    assert.equal(hashExecutableSource(displaySystemSource), EXECUTABLE_SOURCE_HASH);
+test('DisplaySystem은 코드-local descriptor 상수를 사용하고 중앙 data registry에 의존하지 않는다', () => {
+    assert.equal(hashExecutableSource(displaySystemSource, 58), EXECUTABLE_SOURCE_HASH);
+    assert.doesNotMatch(displaySystemSource, /data\/data_handler\.js/);
+    assert.doesNotMatch(displayDescriptorSource, /data\/data_handler\.js/);
+    assert.match(displaySystemSource, /DISPLAY_WEBGL_RENDER_MODES/);
+    assert.match(
+        displayDescriptorSource,
+        /export const DISPLAY_WEBGL_RENDER_MODES = Object\.freeze\(\{/
+    );
 });
 
 test('init JSDoc은 순서·live·Promise·부분 상태 계약을 정확히 명시한다', () => {

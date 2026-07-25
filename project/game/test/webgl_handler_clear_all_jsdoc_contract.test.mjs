@@ -11,7 +11,7 @@ const WEBGL_HANDLER_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const webGLHandlerSource = await readFile(WEBGL_HANDLER_SOURCE_PATH, 'utf8');
 const { WebGLHandler } = await loadGameModule('display/webgl/_webgl_handler.js');
-const EXECUTABLE_SOURCE_HASH = '80706f8f581167d4316f1e5ab3c7ec6c4d6e14d3906927dbd9a14999cf3d4f03';
+const EXECUTABLE_SOURCE_HASH = '091808e7adbdc37468fe890179d4d52707453b6eda3060336ce213074e986478';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.

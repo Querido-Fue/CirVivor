@@ -1,5 +1,5 @@
-import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
-import { ENEMY_CONSTANTS } from '../../../../data/object/enemy/enemy_constants.js';
+import { ENEMY_AI_DATA } from 'data/object/enemy/enemy_ai_data.js';
+import { HEXA_HIVE_MERGE_BALANCE } from 'data/object/enemy/enemy_balance_data.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
 import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType, getHexaMergeMemberCount } from '../_hexa_hive_layout.js';
@@ -23,15 +23,14 @@ import {
 } from './_enemy_ai_navigation.js';
 import { ENEMY_SPATIAL_TYPE_MASK } from './enemy_spatial_index.js';
 
-const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
-const ENEMY_AI_POLICY_BY_TYPE = ENEMY_AI_CONSTANTS.POLICY_BY_TYPE;
-const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
-const INF = ENEMY_AI_CONSTANTS.INF;
+const ENEMY_AI_POLICY = ENEMY_AI_DATA.POLICY;
+const ENEMY_AI_POLICY_BY_TYPE = ENEMY_AI_DATA.POLICY_BY_TYPE;
+const EPSILON = 1e-6;
+const INF = 1e20;
 const HEXA_TYPE = 'hexa';
 const HEXA_HIVE_TYPE = getHexaHiveType();
-const HEXA_HIVE_MERGE_CONSTANTS = ENEMY_CONSTANTS.HEXA_HIVE.MERGE;
-const HEXA_HIVE_MAX_MEMBER_COUNT = Number.isInteger(HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
-    ? Math.max(2, HEXA_HIVE_MERGE_CONSTANTS.MAX_MEMBER_COUNT)
+const HEXA_HIVE_MAX_MEMBER_COUNT = Number.isInteger(HEXA_HIVE_MERGE_BALANCE.MAX_MEMBER_COUNT)
+    ? Math.max(2, HEXA_HIVE_MERGE_BALANCE.MAX_MEMBER_COUNT)
     : Number.POSITIVE_INFINITY;
 const INVALID_ENEMY_ID = -1;
 

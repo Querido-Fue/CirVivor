@@ -1,5 +1,5 @@
 /**
- * 현재 `_enemy_ai_navigation.js`의 buildFlowField 원문과 WASM 커널의 Float32 결과를
+ * 현재 `_enemy_ai_flow_field_store.js`의 buildFlowField 원문과 WASM 커널의 Float32 결과를
  * 정상·차단·대각선 모서리·도달 불가·소형 전수·장축·대형·결정적 난수·목표 경계 조건에서
  * 바이트 단위로 검증합니다.
  */
@@ -15,14 +15,15 @@ import { fileURLToPath } from 'node:url';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const GAME_ROOT = fileURLToPath(new URL('../', import.meta.url));
-const NAVIGATION_PATH = path.join(
+const FLOW_FIELD_STORE_PATH = path.join(
     GAME_ROOT,
     'script',
     'module',
     'object',
     'enemy',
     'ai',
-    '_enemy_ai_navigation.js'
+    'navigation',
+    '_enemy_ai_flow_field_store.js'
 );
 const WAT_PATH = path.join(
     GAME_ROOT,
@@ -44,12 +45,13 @@ const BUILD_SCRIPT_PATH = path.join(
 const runtimeModule = await loadGameModule(
     'object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js'
 );
-const constantsModule = await loadGameModule('data/object/enemy/enemy_ai_constants.js');
 const bytesModule = await loadGameModule(
     'object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_bytes.js'
 );
 const wasmRuntime = await runtimeModule.createEnemyAIFlowFieldWasmRuntime();
-const navigationSource = (await readFile(NAVIGATION_PATH, 'utf8')).replace(/\r\n/g, '\n');
+const flowFieldStoreSource = (
+    await readFile(FLOW_FIELD_STORE_PATH, 'utf8')
+).replace(/\r\n/g, '\n');
 
 /**
  * 소스에서 두 고유 마커 사이의 코드 구간을 추출합니다.
@@ -68,11 +70,15 @@ function extractSourceSection(source, startMarker, endMarker) {
 
 /**
  * 프로덕션 파일의 실제 buildFlowField와 heap helper 원문을 격리 실행합니다.
- * @param {string} source - `_enemy_ai_navigation.js` 전체 소스입니다.
- * @param {object} constants - 현재 ENEMY_AI_CONSTANTS입니다.
- * @returns {{build:(grid:object,goalCell:object)=>object,buildWithHeapStats:(grid:object,goalCell:object)=>{result:object,stats:{tieComparisons:number,decreaseCalls:number}}}} JS 기준 buildFlowField와 heap 계측 진입점입니다.
+ * @param {string} source - `_enemy_ai_flow_field_store.js` 전체 소스입니다.
+ * @returns {{build:(grid:object,goalCell:object)=>object,buildWithHeapStats:(grid:object,goalCell:object)=>{result:object,stats:{tieComparisons:number,decreaseCalls:number}},inf:number}} JS 기준 buildFlowField와 heap 계측 진입점입니다.
  */
-function createReferenceBuildFlowField(source, constants) {
+function createReferenceBuildFlowField(source) {
+    const flowMathConstantsSource = extractSourceSection(
+        source,
+        'const EPSILON = ',
+        '\nconst CLEARANCE_BUCKET_STEP'
+    );
     const directionsSource = extractSourceSection(
         source,
         'const DIRS = Object.freeze([',
@@ -119,9 +125,7 @@ function createReferenceBuildFlowField(source, constants) {
         'heap decrease-key 계측 코드를 기준 구현에 주입하지 못했습니다.'
     );
     const isolatedSource = `
-        const EPSILON = ${JSON.stringify(constants.EPSILON)};
-        const INF = ${JSON.stringify(constants.INF)};
-        const DIAGONAL_COST = ${JSON.stringify(constants.DIAGONAL_COST)};
+        ${flowMathConstantsSource}
         ${directionsSource}
         const flowOpenHeap = [];
         let flowOpenPositions = new Int32Array(0);
@@ -145,21 +149,20 @@ function createReferenceBuildFlowField(source, constants) {
     `;
     const context = vm.createContext({});
     vm.runInContext(isolatedSource, context, {
-        filename: '_enemy_ai_navigation.build_flow_field.reference.js'
+        filename: '_enemy_ai_flow_field_store.build_flow_field.reference.js'
     });
     return {
         build: context.__referenceBuildFlowField,
-        buildWithHeapStats: context.__referenceBuildFlowFieldWithHeapStats
+        buildWithHeapStats: context.__referenceBuildFlowFieldWithHeapStats,
+        inf: vm.runInContext('INF', context)
     };
 }
 
 const {
     build: referenceBuildFlowField,
-    buildWithHeapStats: referenceBuildFlowFieldWithHeapStats
-} = createReferenceBuildFlowField(
-    navigationSource,
-    constantsModule.ENEMY_AI_CONSTANTS
-);
+    buildWithHeapStats: referenceBuildFlowFieldWithHeapStats,
+    inf: referenceFlowFieldInf
+} = createReferenceBuildFlowField(flowFieldStoreSource);
 
 /**
  * 지정 크기의 직접 제어 가능한 네비게이션 그리드를 생성합니다.
@@ -363,7 +366,7 @@ test('대각선 corner-cut이 금지되고 고립 셀은 unreachable로 남는�
     blockCell(grid, 1, 0);
     blockCell(grid, 0, 1);
     const { expected } = runParityCase('corner-cut', grid, { cx: 1, cy: 1 });
-    assert.ok(expected.integration[0] >= constantsModule.ENEMY_AI_CONSTANTS.INF * 0.5);
+    assert.ok(expected.integration[0] >= referenceFlowFieldInf * 0.5);
     assert.equal(expected.dirX[0], 0);
     assert.equal(expected.dirY[0], 0);
 });
@@ -375,7 +378,7 @@ test('완전 장벽 뒤 unreachable 영역과 영벡터가 정확히 동일하�
     const unreachableIndex = (6 * grid.cols) + 3;
     assert.ok(
         expected.integration[unreachableIndex]
-        >= constantsModule.ENEMY_AI_CONSTANTS.INF * 0.5
+        >= referenceFlowFieldInf * 0.5
     );
     assert.equal(expected.dirX[unreachableIndex], 0);
     assert.equal(expected.dirY[unreachableIndex], 0);

@@ -1,5 +1,5 @@
 import { getLangString } from 'ui/ui_system.js';
-import { createFontString } from 'util/font_util.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import {
     drawTitleMenuCardIcon,
     drawTitleMenuIcon,
@@ -8,7 +8,7 @@ import {
     getTitleMenuUtilityTileIconMetrics
 } from './_title_menu_icon_render.js';
 import { clampNumber } from './_title_menu_motion.js';
-import { getTitleMenuTextPresetFontSize } from './_title_menu_text_layout.js';
+import { resolveTitleMenuTypography } from './_title_menu_text_layout.js';
 import { drawTitleMenuWrappedText } from './_title_menu_text_render.js';
 import {
     getMenuCardDescriptionColor,
@@ -67,7 +67,6 @@ export function drawTitleMenuUtilityTileContent({
  * @param {import('display/_svg_drawer.js').SVGDrawer} options.svgDrawer - SVG 캐시 드로어입니다.
  * @param {object} options.card - 대상 카드입니다.
  * @param {object} options.renderState - 카드 렌더 상태입니다.
- * @param {object} options.textConstants - 텍스트 상수입니다.
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
  * @returns {void}
@@ -77,7 +76,6 @@ export function drawTitleMenuCardFrontfaceContent({
     svgDrawer,
     card,
     renderState,
-    textConstants,
     uiww,
     uiScale = 1
 }) {
@@ -88,16 +86,23 @@ export function drawTitleMenuCardFrontfaceContent({
     const description = card.cardDefinition.descriptionKey ? getLangString(card.cardDefinition.descriptionKey) : '';
     const isCompactHorizontalCard = card.cardDefinition.id === 'records';
     const iconMetrics = getTitleMenuCardIconMetrics(card.cardDefinition.id, panelRect, inset);
-    const titleFontSize = Math.max(
-        16 * resolvedUiScale,
-        panelRect.w * (panelRect.h > panelRect.w * 0.7 ? 0.095 : 0.08),
-        isCompactHorizontalCard ? panelRect.h * 0.28 : 0
+    const titleTypography = resolveTitleMenuTypography(
+        TYPOGRAPHY.CARD_TITLE,
+        uiww,
+        resolvedUiScale,
+        {
+            containerWidth: panelRect.w,
+            containerHeight: panelRect.h,
+            variant: isCompactHorizontalCard ? 'compact-horizontal' : undefined
+        }
     );
-    const descriptionFontSize = getTitleMenuTextPresetFontSize(textConstants, uiww, 'H6', resolvedUiScale);
-    const titleFont = createFontString({ weight: 700, sizePx: titleFontSize });
-    const descriptionFont = createFontString({ weight: 500, sizePx: descriptionFontSize });
-    const descriptionLineHeight = descriptionFontSize * 1.32;
-    const titleLineHeight = titleFontSize * 1.06;
+    const descriptionTypography = resolveTitleMenuTypography(
+        TYPOGRAPHY.CARD_DESCRIPTION,
+        uiww,
+        resolvedUiScale
+    );
+    const descriptionLineHeight = descriptionTypography.lineHeight;
+    const titleLineHeight = titleTypography.lineHeight;
     const bottomPadding = inset * 0.8;
     const descriptionY = panelRect.h - bottomPadding - descriptionLineHeight;
     const titleY = description
@@ -115,7 +120,7 @@ export function drawTitleMenuCardFrontfaceContent({
             y: (panelRect.h - titleLineHeight) * 0.5,
             maxWidth: panelRect.w - titleX - inset,
             lineHeight: titleLineHeight,
-            font: titleFont,
+            font: titleTypography.font,
             fillStyle: getMenuCardTitleColor(),
             align: 'left'
         });
@@ -128,7 +133,7 @@ export function drawTitleMenuCardFrontfaceContent({
         y: titleY,
         maxWidth: panelRect.w - (inset * 2),
         lineHeight: titleLineHeight,
-        font: titleFont,
+        font: titleTypography.font,
         fillStyle: getMenuCardTitleColor(),
         align: 'left'
     });
@@ -140,7 +145,7 @@ export function drawTitleMenuCardFrontfaceContent({
             y: descriptionY,
             maxWidth: panelRect.w - (inset * 2),
             lineHeight: descriptionLineHeight,
-            font: descriptionFont,
+            font: descriptionTypography.font,
             fillStyle: getMenuCardDescriptionColor(),
             align: 'left'
         });

@@ -1,4 +1,4 @@
-import { getData } from 'data/data_handler.js';
+import { GAME_MAP_DATA } from 'data/scene/game/game_map_data.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { render } from 'display/display_system.js';
 import {
@@ -6,15 +6,30 @@ import {
     resolveGameMapDefinition
 } from 'scene/game/map/game_map_grid.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { BUTTON_STYLE } from 'ui/style/component_styles.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { getLangString } from 'ui/ui_system.js';
 import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
+import { addOverlayPageHeader } from '../_overlay_layout_recipes.js';
 import { TitleOverlay } from './_title_overlay.js';
 
-const GAME_MAP_DATA = getData('GAME_MAP_DATA');
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const MAP_SELECT = TITLE_CONSTANTS.TITLE_OVERLAY.MAP_SELECT;
-const MAP_SELECT_LAYOUT = MAP_SELECT.LAYOUT;
-const MAP_PREVIEW = MAP_SELECT.PREVIEW;
+const MAP_SELECT_WIDTH_UIWW_RATIO = 0.52;
+const MAP_SELECT_HEIGHT_WH_RATIO = 0.68;
+const MAP_SELECT_LAYOUT = Object.freeze({
+    CONTENT_TOP_SPACE_WH: 2.4,
+    HEADER_GAP_WW: 1,
+    PREVIEW_TOP_SPACE_WH: 1.2,
+    PREVIEW_HEIGHT_WH: 25,
+    DESCRIPTION_TOP_SPACE_WH: 1.4,
+    FOOTER_BOTTOM_SPACE_WH: 2.5,
+    BUTTON_GAP_WW: 1
+});
+const MAP_PREVIEW = Object.freeze({
+    CONTENT_INSET_WH: 1.4,
+    CORNER_RADIUS_WH: 0.9,
+    GRID_LINE_WIDTH_ABSOLUTE: 1,
+    SELECTED_LINE_WIDTH_ABSOLUTE: 2
+});
 const MAP_PREVIEW_ITEM_ID = 'map_select_preview';
 
 /**
@@ -53,8 +68,8 @@ export class MapSelectOverlay extends TitleOverlay {
      * 맵 선택 오버레이 크기를 현재 화면에 맞춰 갱신합니다.
      */
     _onResize() {
-        this.width = this.UIWW * MAP_SELECT.WIDTH_UIWW_RATIO;
-        this.height = this.WH * MAP_SELECT.HEIGHT_WH_RATIO;
+        this.width = this.UIWW * MAP_SELECT_WIDTH_UIWW_RATIO;
+        this.height = this.WH * MAP_SELECT_HEIGHT_WH_RATIO;
     }
 
     /**
@@ -67,31 +82,26 @@ export class MapSelectOverlay extends TitleOverlay {
 
         const selectedMap = this.#getSelectedMap();
         const previewColors = getMapPreviewColors();
-        const handler = new LayoutHandler(this, this.positioningHandler)
-            .paddingX('WW', MAP_SELECT_LAYOUT.PADDING_X_WW)
-            .space('WH', MAP_SELECT_LAYOUT.TITLE_TOP_SPACE_WH)
-            .item('text', 'title_text')
-            .stylePreset('h1')
-            .text(getLangString('title_map_select_title'))
-            .fill(ColorSchemes.Title.TextDark)
-            .space('WH', MAP_SELECT_LAYOUT.DIVIDER_TOP_SPACE_WH)
-            .item('line', 'map_select_divider')
-            .width('fill')
-            .stroke(ColorSchemes.Overlay.Panel.Divider)
-            .lineWidth(MAP_PREVIEW.GRID_LINE_WIDTH_ABSOLUTE)
-            .align('center')
+        const handler = addOverlayPageHeader(
+            new LayoutHandler(this, this.positioningHandler),
+            {
+                title: getLangString('title_map_select_title'),
+                dividerId: 'map_select_divider',
+                dividerLineWidth: MAP_PREVIEW.GRID_LINE_WIDTH_ABSOLUTE
+            }
+        )
             .space('WH', MAP_SELECT_LAYOUT.CONTENT_TOP_SPACE_WH)
             .group('map_select_header')
             .justifyContent('space-between', 'WW', MAP_SELECT_LAYOUT.HEADER_GAP_WW)
             .width('fill')
             .item('text', 'map_select_name')
-            .stylePreset('h3')
+            .textStyle(TYPOGRAPHY.H3)
             .text(selectedMap ? getLangString(selectedMap.nameKey) : '')
             .fill(ColorSchemes.Title.TextDark)
             .vAlign('center')
             .spacer()
             .item('text', 'map_select_selected_label')
-            .stylePreset('h5')
+            .textStyle(TYPOGRAPHY.H5)
             .text(getLangString('title_map_select_selected'))
             .fill(previewColors.selectedStroke)
             .vAlign('center')
@@ -105,7 +115,7 @@ export class MapSelectOverlay extends TitleOverlay {
             .onClick(() => this.#selectMap(selectedMap?.id))
             .space('WH', MAP_SELECT_LAYOUT.DESCRIPTION_TOP_SPACE_WH)
             .item('text', 'map_select_description')
-            .stylePreset('h5')
+            .textStyle(TYPOGRAPHY.H5)
             .text(selectedMap ? getLangString(selectedMap.descriptionKey) : '')
             .fill(ColorSchemes.Overlay.Text.Item)
             .bottomSpace('WH', MAP_SELECT_LAYOUT.FOOTER_BOTTOM_SPACE_WH)
@@ -113,13 +123,13 @@ export class MapSelectOverlay extends TitleOverlay {
             .justifyContent('right', 'WW', MAP_SELECT_LAYOUT.BUTTON_GAP_WW)
             .align('right')
             .item('button', 'map_select_cancel')
-            .stylePreset('overlay_interact_button')
+            .buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT)
             .buttonText(getLangString('title_map_select_cancel'))
             .buttonColor(ColorSchemes.Overlay.Button.Cancel)
             .icon('deny')
             .onClick(this.close.bind(this))
             .item('button', 'map_select_start')
-            .stylePreset('overlay_interact_button')
+            .buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT)
             .buttonText(getLangString('title_map_select_start'))
             .onClick(this.#startGame.bind(this));
 

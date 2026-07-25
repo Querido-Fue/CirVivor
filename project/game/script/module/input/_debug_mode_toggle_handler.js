@@ -1,9 +1,8 @@
-import { getData } from 'data/data_handler.js';
 import { getSetting, setSetting } from 'save/save_system.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const DEBUG_MODE_TOGGLE = GLOBAL_CONSTANTS.DEBUG_MODE_TOGGLE;
+const REQUIRED_MIDDLE_CLICKS = 3;
+const DEBUG_MODE_TOGGLE_WINDOW_MS = 2000;
 
 /**
  * @class DebugModeToggleHandler
@@ -28,7 +27,7 @@ export class DebugModeToggleHandler {
             this.#openDebugPanel();
         }
 
-        if (this.clickTimestamps.length < DEBUG_MODE_TOGGLE.REQUIRED_MIDDLE_CLICKS) {
+        if (this.clickTimestamps.length < REQUIRED_MIDDLE_CLICKS) {
             return;
         }
 
@@ -59,7 +58,7 @@ export class DebugModeToggleHandler {
      * @param {number} referenceTimestamp - 비교 기준 시각(ms)입니다.
      */
     #pruneClicks(referenceTimestamp) {
-        const minimumTimestamp = referenceTimestamp - DEBUG_MODE_TOGGLE.CLICK_WINDOW_MS;
+        const minimumTimestamp = referenceTimestamp - DEBUG_MODE_TOGGLE_WINDOW_MS;
         while (
             this.clickTimestamps.length > 0
             && this.clickTimestamps[0] < minimumTimestamp
