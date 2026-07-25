@@ -81,16 +81,9 @@ async function loadWorldRenderStateResolver() {
         'debug/debug_system.js',
         { beginPerformanceSection: () => 0, endPerformanceSection() {} }
     ));
-    modules.set('data/data_handler.js', createSyntheticModule(
-        'data/data_handler.js',
-        {
-            getData(key) {
-                if (key !== 'COLLISION_CONSTANTS') {
-                    throw new Error(`지원하지 않는 테스트 데이터입니다: ${key}`);
-                }
-                return { FRAME_STATS: { BASE_FIELDS: [], PROFILE_FIELDS: [] } };
-            }
-        }
+    modules.set('physics/collision_frame_stats.js', createSyntheticModule(
+        'physics/collision_frame_stats.js',
+        { COLLISION_FRAME_STAT_FIELDS: Object.freeze([]) }
     ));
     modules.set('util/number_util.js', createSyntheticModule(
         'util/number_util.js',

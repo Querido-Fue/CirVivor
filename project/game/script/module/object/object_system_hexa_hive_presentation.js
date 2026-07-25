@@ -1,18 +1,10 @@
 import { getObjectOffsetY, renderGL } from 'display/display_system.js';
-import { getData } from 'data/data_handler.js';
+import { EFFECT_TYPES } from 'display/webgl/_webgl_constants.js';
 import { collectHexaWorldCellsFromEnemy } from './enemy/_hexa_hive_layout.js';
 
-const EFFECT_TYPES = getData('EFFECT_RENDER_CONSTANTS').TYPES;
-const HEXA_HIVE_MERGE_PRESENTATION = getData('ENEMY_CONSTANTS').HEXA_HIVE.MERGE.PRESENTATION;
-const EFFECT_LINE_LENGTH_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.EFFECT_LINE_LENGTH_RATIO)
-    ? Math.max(0.1, HEXA_HIVE_MERGE_PRESENTATION.EFFECT_LINE_LENGTH_RATIO)
-    : 0.74;
-const EFFECT_LINE_WIDTH_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.EFFECT_LINE_WIDTH_RATIO)
-    ? Math.max(0.01, HEXA_HIVE_MERGE_PRESENTATION.EFFECT_LINE_WIDTH_RATIO)
-    : 0.08;
-const EFFECT_GLOW_WIDTH_RATIO = Number.isFinite(HEXA_HIVE_MERGE_PRESENTATION.EFFECT_GLOW_WIDTH_RATIO)
-    ? Math.max(0.02, HEXA_HIVE_MERGE_PRESENTATION.EFFECT_GLOW_WIDTH_RATIO)
-    : 0.34;
+const EFFECT_LINE_LENGTH_RATIO = 0.78;
+const EFFECT_LINE_WIDTH_RATIO = 0.11;
+const EFFECT_GLOW_WIDTH_RATIO = 0.2;
 const EPSILON = 1e-6;
 
 /**

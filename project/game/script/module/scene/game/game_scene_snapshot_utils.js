@@ -1,11 +1,7 @@
-import { getData } from 'data/data_handler.js';
+import { COLLISION_FRAME_STAT_FIELDS } from 'physics/collision_frame_stats.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 
-const COLLISION_FRAME_STATS = getData('COLLISION_CONSTANTS').FRAME_STATS;
-const COLLISION_STAT_FIELD_NAMES = Object.freeze([
-    ...COLLISION_FRAME_STATS.BASE_FIELDS,
-    ...COLLISION_FRAME_STATS.PROFILE_FIELDS
-]);
+const COLLISION_STAT_FIELD_NAMES = COLLISION_FRAME_STAT_FIELDS;
 
 /**
  * 스냅샷 숫자 필드를 유효 숫자로 정규화합니다.

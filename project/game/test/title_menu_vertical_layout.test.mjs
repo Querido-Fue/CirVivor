@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
-const { TITLE_CONSTANTS } = await loadGameModule('data/scene/title/title_constants.js');
+const { TITLE_CARD_MENU_CONSTANTS: TITLE_CARD_MENU } = await loadGameModule(
+    'scene/title/_title_runtime_constants.js'
+);
 const { buildTitleMenuRightPaneLayout } = await loadGameModule(
     'scene/title/menu/_title_menu_pane_layout.js'
 );
 const { resolveTitleMenuVerticalStackLayout } = await loadGameModule(
     'scene/title/menu/_title_menu_vertical_layout.js'
 );
-const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 const SECONDARY_MENU_ENTRIES = Object.freeze([
     Object.freeze({ id: 'setting' }),
     Object.freeze({ id: 'credits' }),

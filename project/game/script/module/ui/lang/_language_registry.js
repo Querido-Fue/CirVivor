@@ -1,22 +1,15 @@
-import { korean } from './_korean.js';
-import { english } from './_english.js';
-import { userLanguage } from './_usertranslation.js';
+import {
+    DEFAULT_LANGUAGE_KEY,
+    LANGUAGE_PACKS
+} from 'data/localization/language_packs.js';
 
-/**
- * 저장된 언어 설정이 없거나 알 수 없는 경우 사용할 기본 언어 키입니다.
- * @type {string}
- */
-export const DEFAULT_LANGUAGE_KEY = 'korean';
+export { DEFAULT_LANGUAGE_KEY };
 
 /**
  * UI 언어팩을 언어 키로 조회하기 위한 레지스트리입니다.
  * @type {Readonly<Record<string, object>>}
  */
-export const LANGUAGE_REGISTRY = Object.freeze({
-    korean,
-    english,
-    userLanguage
-});
+export const LANGUAGE_REGISTRY = LANGUAGE_PACKS;
 
 /**
  * 등록된 언어 키인지 확인합니다.

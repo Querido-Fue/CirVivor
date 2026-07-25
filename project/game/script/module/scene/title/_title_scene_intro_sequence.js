@@ -1,12 +1,10 @@
 import { animateMixed, remove } from 'animation/animation_system.js';
-import { getData } from 'data/data_handler.js';
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { TitleSceneContent } from './_title_scene_content.js';
 import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
 import { getLoadingLogoColor } from './loading/_title_loading_theme.js';
 import { buildTitleSceneTransitionSegments } from './loading/_title_scene_transition_segments.js';
-
-const TITLE_LOADING = getData('TITLE_CONSTANTS').TITLE_LOADING;
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from './_title_runtime_constants.js';
 
 /**
  * TitleScene 진입 이후 중앙 원·로고 이동, 메뉴 등장과 적 스폰 게이트를 관리합니다.

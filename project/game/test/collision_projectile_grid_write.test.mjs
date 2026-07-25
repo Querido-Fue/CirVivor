@@ -3,8 +3,8 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 // VM loader가 공유 의존성을 안정적으로 재사용하도록 leaf 모듈부터 평가합니다.
 for (const modulePath of [
-    'data/data_handler.js',
     'util/number_util.js',
+    'physics/collision_math_constants.js',
     'physics/collision_soa_layout.js',
     'physics/_collision_resolve_tuning.js'
 ]) {

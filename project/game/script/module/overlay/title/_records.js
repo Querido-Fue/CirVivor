@@ -1,7 +1,10 @@
-import { getData } from 'data/data_handler.js';
 import { DummyMenuOverlay } from './_dummy_menu_overlay.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const RECORDS_OVERLAY_LAYOUT = Object.freeze({
+    WIDTH_UIWW_RATIO: 0.5,
+    HEIGHT_WH_RATIO: 0.42,
+    TITLE_ICON_SCALE_MULTIPLIER: 0.75
+});
 
 /**
  * @class RecordsOverlay
@@ -16,9 +19,9 @@ export class RecordsOverlay extends DummyMenuOverlay {
             titleKey: 'title_overlay_records_title',
             bodyKey: 'title_overlay_records_body',
             titleIconId: 'records',
-            titleIconScaleMultiplier: TITLE_CONSTANTS.TITLE_OVERLAY.RECORDS.TITLE_ICON_SCALE_MULTIPLIER,
-            widthRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RECORDS.WIDTH_UIWW_RATIO,
-            heightRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RECORDS.HEIGHT_WH_RATIO
+            titleIconScaleMultiplier: RECORDS_OVERLAY_LAYOUT.TITLE_ICON_SCALE_MULTIPLIER,
+            widthRatio: RECORDS_OVERLAY_LAYOUT.WIDTH_UIWW_RATIO,
+            heightRatio: RECORDS_OVERLAY_LAYOUT.HEIGHT_WH_RATIO
         });
     }
 }

@@ -1,5 +1,4 @@
 import { animate, remove } from 'animation/animation_system.js';
-import { getData } from 'data/data_handler.js';
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
@@ -8,9 +7,7 @@ import { TitleMenu } from './_title_menu.js';
 import { advanceTitleIntroDelay } from './loading/_title_intro_delay.js';
 import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
 import { getLoadingLogoColor } from './loading/_title_loading_theme.js';
-
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from './_title_runtime_constants.js';
 
 /**
  * @class TitleLoadingSequence

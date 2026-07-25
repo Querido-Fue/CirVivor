@@ -1,9 +1,7 @@
-import { getData } from 'data/data_handler.js';
 import { OverlaySession } from 'overlay/_overlay_session.js';
 import { getSetting } from 'save/save_system.js';
+import { TITLE_MENU_OVERLAY_EFFECTS } from './_title_menu_constants.js';
 import { getThemeAwareMenuBorderColor } from './_title_menu_theme.js';
-
-const TITLE_MENU_OVERLAY_EFFECTS = getData('TITLE_MENU_DATA').OVERLAY_EFFECTS;
 
 /**
  * 타이틀 메뉴 glass panel용 OverlaySession을 생성합니다.

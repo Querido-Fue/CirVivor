@@ -46,8 +46,12 @@ const dependencies = new Map([
             transformOrigin: 'center', uiTransform: 'none', effectTransform: 'none', uiFilter: 'none', effectFilter: 'none'
         })
     })],
-    ['data/data_handler.js', createSyntheticModule(context, {
-        getData: () => ({ BACKDROP_SAMPLING_ENABLED: true, GLASS_TRANSITION_DURATION_SECONDS: 0.4, GLASS_TRANSITION_EASING: 'easeOutExpo' })
+    ['display/webgl/_webgl_constants.js', createSyntheticModule(context, {
+        OVERLAY_RENDER_CONSTANTS: {
+            BACKDROP_SAMPLING_ENABLED: true,
+            GLASS_TRANSITION_DURATION_SECONDS: 0.4,
+            GLASS_TRANSITION_EASING: 'easeOutExpo'
+        }
     })],
     ['util/number_util.js', createSyntheticModule(context, {
         clampFiniteNumber: (value, min, max, fallback) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback,

@@ -1,8 +1,7 @@
-import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { clampNumber } from 'util/number_util.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
 
-const INF = ENEMY_AI_CONSTANTS.INF;
+const INF = 1e20;
 const DENSITY_CACHE_COUNT_BASE = 65536;
 
 /**

@@ -1,11 +1,8 @@
 import { getCanvas, getUIOffsetX, getUIWW, getWH, renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
-import { getData } from 'data/data_handler.js';
 import { clamp01 } from 'util/number_util.js';
 import { buildTitleCenterCircleRenderCommand } from './center_circle/_title_center_circle_render_command.js';
-
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from './_title_runtime_constants.js';
 
 /**
  * @class TitleCenterCircle

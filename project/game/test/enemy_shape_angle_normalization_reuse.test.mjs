@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 for (const modulePath of [
-    'data/data_handler.js',
     'util/number_util.js',
     'util/math_util.js',
     'simulation/simulation_runtime.js',
@@ -13,13 +12,11 @@ for (const modulePath of [
     await loadGameModule(modulePath);
 }
 
-const { getData } = await loadGameModule('data/data_handler.js');
 const { normalizeDegrees } = await loadGameModule('util/math_util.js');
 const { BaseEnemy } = await loadGameModule('object/enemy/_base_enemy.js');
 
-const ENEMY_ANGLE_CONSTANTS = getData('ENEMY_CONSTANTS').ANGLE;
-const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
-const STRAIGHT_DEG = ENEMY_ANGLE_CONSTANTS.STRAIGHT_DEG;
+const FULL_TURN_DEG = 360;
+const STRAIGHT_DEG = 180;
 const MASK_64 = (1n << 64n) - 1n;
 const RANDOM_FLOAT_CASE_COUNT = 200_000;
 const RANDOM_DELTA_CASE_COUNT = 200_000;
@@ -116,8 +113,8 @@ function floatFromBits(bits) {
     return floatView.getFloat64(0, false);
 }
 
-assert.equal(FULL_TURN_DEG, 360, '공용 유틸과 적 데이터의 한 바퀴 상수가 같아야 합니다.');
-assert.equal(STRAIGHT_DEG, 180, '공용 유틸과 적 데이터의 직선각 상수가 같아야 합니다.');
+assert.equal(FULL_TURN_DEG, 360, '적 회전 구현은 360도를 한 바퀴로 사용해야 합니다.');
+assert.equal(STRAIGHT_DEG, 180, '적 회전 구현은 180도를 직선각으로 사용해야 합니다.');
 
 const explicitCases = [
     Number.NaN,

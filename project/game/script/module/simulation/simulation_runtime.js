@@ -1,11 +1,19 @@
-import { getData } from 'data/data_handler.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 
-const SIMULATION_RUNTIME_DEFAULTS = getData('SIMULATION_RUNTIME_DEFAULTS');
-const DEFAULT_MOUSE_BUTTON_STATE = SIMULATION_RUNTIME_DEFAULTS.MOUSE_BUTTON_STATE;
-const DEFAULT_FOCUS_LIST = SIMULATION_RUNTIME_DEFAULTS.FOCUS_LIST;
-const DEFAULT_MOUSE_POSITION = SIMULATION_RUNTIME_DEFAULTS.MOUSE_POSITION;
-const DEFAULT_VIEWPORT = SIMULATION_RUNTIME_DEFAULTS.VIEWPORT;
+const DEFAULT_MOUSE_BUTTON_STATE = Object.freeze(['idle']);
+const DEFAULT_FOCUS_LIST = Object.freeze(['ui', 'object']);
+const DEFAULT_MOUSE_POSITION = Object.freeze({
+    x: 0,
+    y: 0
+});
+const DEFAULT_VIEWPORT = Object.freeze({
+    ww: 0,
+    wh: 0,
+    objectWH: 0,
+    objectOffsetY: 0,
+    uiww: 0,
+    uiOffsetX: 0
+});
 const EMPTY_SIMULATION_RECORD = Object.freeze({});
 
 let simulationRuntimeInstance = null;

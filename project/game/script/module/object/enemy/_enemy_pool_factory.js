@@ -1,4 +1,4 @@
-import { getData } from 'data/data_handler.js';
+import { ENEMY_SHAPE_TYPES } from 'data/object/enemy/enemy_catalog_data.js';
 import { ObjectPool } from '../_object_pool.js';
 import { ArrowEnemy } from './_arrow_enemy.js';
 import { GenEnemy } from './_gen_enemy.js';
@@ -11,8 +11,8 @@ import { SquareEnemy } from './_square_enemy.js';
 import { TriangleEnemy } from './_triangle_enemy.js';
 import { getHexaHiveType } from './_hexa_hive_layout.js';
 
-const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
-const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
+const ENEMY_POOL_WARMUP_COUNT = 300;
+const ENEMY_POOL_MAX_RETAINED_COUNT = 600;
 const HEXA_HIVE_TYPE = getHexaHiveType();
 const ENEMY_CLASS_BY_TYPE = Object.freeze({
     square: SquareEnemy,
@@ -64,9 +64,9 @@ export function createEnemyPools() {
                 }
             },
             `Enemy.${type}`,
-            ENEMY_CONSTANTS.POOL_MAX_RETAINED_COUNT
+            ENEMY_POOL_MAX_RETAINED_COUNT
         );
-        pools[type].warmUp(ENEMY_CONSTANTS.POOL_WARMUP_COUNT);
+        pools[type].warmUp(ENEMY_POOL_WARMUP_COUNT);
     }
     return pools;
 }

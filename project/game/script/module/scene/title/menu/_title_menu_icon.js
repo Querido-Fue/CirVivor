@@ -1,8 +1,6 @@
-import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { applyTitleMenuIconColorTemplate } from 'util/title_menu_icon_util.js';
-
-const TITLE_MENU_ICON_TEMPLATES = getData('TITLE_MENU_ICON_DATA').TEMPLATES;
+import { TITLE_MENU_ICON_TEMPLATES } from './_title_menu_icon_assets.js';
 
 /**
  * 메뉴 아이콘 렌더링에 사용할 색상값을 반환합니다.

@@ -1,5 +1,5 @@
-import { getData } from 'data/data_handler.js';
 import { applyMagneticPoint } from 'physics/_magnetic_effect.js';
+import { TITLE_AI_CONSTANTS } from 'scene/title/_title_runtime_constants.js';
 import {
     getSimulationMouseFocus,
     getSimulationMouseInput,
@@ -7,24 +7,22 @@ import {
 } from 'simulation/simulation_runtime.js';
 import { clamp01 } from 'util/number_util.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_AI_CONSTANTS = TITLE_CONSTANTS.TITLE_AI;
 const TITLE_ACCEL_RESPONSE = TITLE_AI_CONSTANTS.ACCEL_RESPONSE;
 const TITLE_PARALLAX_DEFAULT_SCALE = TITLE_AI_CONSTANTS.PARALLAX_DEFAULT_SCALE;
 const TITLE_AI_ID = TITLE_AI_CONSTANTS.ID;
 const SPAWN_BOOST_SETTLE_EPSILON = TITLE_AI_CONSTANTS.SPAWN_BOOST_SETTLE_EPSILON;
 const BURST_VELOCITY_SETTLE_EPSILON = TITLE_AI_CONSTANTS.BURST_VELOCITY_SETTLE_EPSILON;
-const TITLE_SPEED_CAP_EASEOUT_EXPO_RATE = Number.isFinite(TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
-    ? Math.max(0, TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
+const TITLE_SPEED_CAP_EASEOUT_EXPO_RATE = Number.isFinite(TITLE_AI_CONSTANTS.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
+    ? Math.max(0, TITLE_AI_CONSTANTS.MAX_SPEED_CAP_EASEOUT_EXPO_RATE)
     : 0;
-const TITLE_BURST_EASEOUT_EXPO_RATE = Number.isFinite(TITLE_CONSTANTS.TITLE_AI.BURST_VELOCITY_EASEOUT_EXPO_RATE)
-    ? Math.max(0, TITLE_CONSTANTS.TITLE_AI.BURST_VELOCITY_EASEOUT_EXPO_RATE)
+const TITLE_BURST_EASEOUT_EXPO_RATE = Number.isFinite(TITLE_AI_CONSTANTS.BURST_VELOCITY_EASEOUT_EXPO_RATE)
+    ? Math.max(0, TITLE_AI_CONSTANTS.BURST_VELOCITY_EASEOUT_EXPO_RATE)
     : 0;
-const TITLE_BURST_ACCEL_RESPONSE_MULTIPLIER = Number.isFinite(TITLE_CONSTANTS.TITLE_AI.BURST_ACCEL_RESPONSE_MULTIPLIER)
-    ? Math.max(1, TITLE_CONSTANTS.TITLE_AI.BURST_ACCEL_RESPONSE_MULTIPLIER)
+const TITLE_BURST_ACCEL_RESPONSE_MULTIPLIER = Number.isFinite(TITLE_AI_CONSTANTS.BURST_ACCEL_RESPONSE_MULTIPLIER)
+    ? Math.max(1, TITLE_AI_CONSTANTS.BURST_ACCEL_RESPONSE_MULTIPLIER)
     : 1;
-const TITLE_BURST_MAX_SPEED_CAP_MULTIPLIER = Number.isFinite(TITLE_CONSTANTS.TITLE_AI.BURST_MAX_SPEED_CAP_MULTIPLIER)
-    ? Math.max(1, TITLE_CONSTANTS.TITLE_AI.BURST_MAX_SPEED_CAP_MULTIPLIER)
+const TITLE_BURST_MAX_SPEED_CAP_MULTIPLIER = Number.isFinite(TITLE_AI_CONSTANTS.BURST_MAX_SPEED_CAP_MULTIPLIER)
+    ? Math.max(1, TITLE_AI_CONSTANTS.BURST_MAX_SPEED_CAP_MULTIPLIER)
     : 1;
 
 /**
@@ -79,8 +77,8 @@ const getTitleEnemyBaseSpeedMagnitude = (enemy) => {
  */
 const getTitleEnemySpeedCap = (enemy) => {
     const baseSpeedMagnitude = getTitleEnemyBaseSpeedMagnitude(enemy);
-    const capMultiplier = Number.isFinite(TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_MULTIPLIER)
-        ? Math.max(1, TITLE_CONSTANTS.TITLE_AI.MAX_SPEED_CAP_MULTIPLIER)
+    const capMultiplier = Number.isFinite(TITLE_AI_CONSTANTS.MAX_SPEED_CAP_MULTIPLIER)
+        ? Math.max(1, TITLE_AI_CONSTANTS.MAX_SPEED_CAP_MULTIPLIER)
         : 1;
     if (!(baseSpeedMagnitude > 0)) {
         return 0;
@@ -274,15 +272,15 @@ export const titleAI = {
         const magneticOptions = {
             velocity: enemy._titleMagVel,
             motionScale: enemy._titleParallaxMotionScale,
-            impulseScale: TITLE_CONSTANTS.TITLE_AI.MAGNETIC_IMPULSE
+            impulseScale: TITLE_AI_CONSTANTS.MAGNETIC_IMPULSE
         };
         if (objectFocused) {
             mouseStrength = leftPressing
-                ? TITLE_CONSTANTS.TITLE_AI.MOUSE_CLICK_STRENGTH
-                : TITLE_CONSTANTS.TITLE_AI.MOUSE_IDLE_STRENGTH;
+                ? TITLE_AI_CONSTANTS.MOUSE_CLICK_STRENGTH
+                : TITLE_AI_CONSTANTS.MOUSE_IDLE_STRENGTH;
             mouseDistance = leftPressing
-                ? uiww * TITLE_CONSTANTS.TITLE_AI.MOUSE_CLICK_DISTANCE_RATIO
-                : uiww * TITLE_CONSTANTS.TITLE_AI.MOUSE_IDLE_DISTANCE_RATIO;
+                ? uiww * TITLE_AI_CONSTANTS.MOUSE_CLICK_DISTANCE_RATIO
+                : uiww * TITLE_AI_CONSTANTS.MOUSE_IDLE_DISTANCE_RATIO;
         }
 
         applyMagneticPoint(enemy, mousePos, mouseStrength, mouseDistance, stepDelta, magneticOptions);
@@ -290,10 +288,10 @@ export const titleAI = {
             applyMagneticPoint(
                 enemy,
                 logoMagneticPoint,
-                TITLE_CONSTANTS.TITLE_AI.LOGO_STRENGTH,
+                TITLE_AI_CONSTANTS.LOGO_STRENGTH,
                 logoMagneticDistance > 0
                     ? logoMagneticDistance
-                    : uiww * TITLE_CONSTANTS.TITLE_AI.LOGO_DISTANCE_RATIO,
+                    : uiww * TITLE_AI_CONSTANTS.LOGO_DISTANCE_RATIO,
                 stepDelta,
                 magneticOptions
             );
@@ -318,7 +316,7 @@ export const titleAI = {
         );
         enemy.accSpeed = getTitleBurstAccelResponse(enemy);
 
-        const damping = Math.max(0, 1 - (stepDelta * TITLE_CONSTANTS.TITLE_AI.MAGNETIC_DAMPING));
+        const damping = Math.max(0, 1 - (stepDelta * TITLE_AI_CONSTANTS.MAGNETIC_DAMPING));
         enemy._titleMagVel.x *= damping;
         enemy._titleMagVel.y *= damping;
 

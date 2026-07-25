@@ -7,32 +7,37 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const SAVE_ROOT = fileURLToPath(new URL('../script/module/save/', import.meta.url));
+const SAVE_DATA_ROOT = fileURLToPath(new URL('../script/data/save/', import.meta.url));
 const SOURCE_PATHS = Object.freeze({
     progress: path.join(SAVE_ROOT, '_progress_handler.js'),
     ingame: path.join(SAVE_ROOT, '_ingame_handler.js'),
-    helper: path.join(SAVE_ROOT, '_save_file_helper.js')
+    helper: path.join(SAVE_ROOT, '_save_file_helper.js'),
+    defaults: path.join(SAVE_DATA_ROOT, 'save_defaults.js')
 });
 
-const [progressSource, ingameSource, helperSource] = await Promise.all([
+const [progressSource, ingameSource, helperSource, defaultsSource] = await Promise.all([
     readFile(SOURCE_PATHS.progress, 'utf8'),
     readFile(SOURCE_PATHS.ingame, 'utf8'),
-    readFile(SOURCE_PATHS.helper, 'utf8')
+    readFile(SOURCE_PATHS.helper, 'utf8'),
+    readFile(SOURCE_PATHS.defaults, 'utf8')
 ]);
 
 const EXECUTABLE_SOURCE_HASHES = Object.freeze({
-    progress: '9675d92d9ced9bad68499f9204374b82d4fe0b637d0bfb87d587a8597c4ce41d',
-    ingame: '006f7bbf161048414513ccb2a3f960f5a18c5919fad446f477e9f9b103543641',
+    progress: '4a859bfd12c49738da13b48bd6b6ed7ac8a7a3dab7b282cbc192adb6e7ed7c17',
+    ingame: 'f08af33433480922f2438601ad874f01b1dc573a8f8c7f8426035d6da289bbd4',
     helper: '83d03d997567243009a7956f8e6e20f335fc52b28b490d609ea8639dc9f5f5aa'
 });
 
 /**
  * 대상 JSDoc만 제거한 실행 소스의 안정적인 해시를 계산합니다.
  * @param {string} source - production 소스입니다.
+ * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
  * @returns {string} SHA-256 해시입니다.
  */
-function hashExecutableSource(source) {
+function hashExecutableSource(source, expectedJsDocCount) {
     const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
     const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
+    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
     assert.equal(
         standaloneJsDocStarts.length,
         allJsDocStarts.length,
@@ -136,9 +141,16 @@ async function createSaveHarness(overrides = {}) {
         context,
         identifier: 'save/_ingame_handler.js'
     });
+    const defaultsModule = new vm.SourceTextModule(defaultsSource, {
+        context,
+        identifier: 'data/save/save_defaults.js'
+    });
     const linker = (specifier) => {
         if (specifier === 'util/nw_bridge.js') {
             return nwBridgeModule;
+        }
+        if (specifier === 'data/save/save_defaults.js') {
+            return defaultsModule;
         }
         if (specifier === './_save_file_helper.js') {
             return helperModule;
@@ -154,6 +166,7 @@ async function createSaveHarness(overrides = {}) {
     return {
         calls,
         helper: helperModule.namespace,
+        defaults: defaultsModule.namespace,
         progress: progressModule.namespace,
         ingame: ingameModule.namespace,
         realm: {
@@ -162,10 +175,18 @@ async function createSaveHarness(overrides = {}) {
     };
 }
 
-test('save JSDoc 변경은 세 production 파일의 JSDoc 제외 실행 소스 SHA-256을 보존한다', () => {
-    assert.equal(hashExecutableSource(progressSource), EXECUTABLE_SOURCE_HASHES.progress);
-    assert.equal(hashExecutableSource(ingameSource), EXECUTABLE_SOURCE_HASHES.ingame);
-    assert.equal(hashExecutableSource(helperSource), EXECUTABLE_SOURCE_HASHES.helper);
+test('save 기본값은 data 모듈이 소유하고 파일 helper 실행 소스는 유지된다', async () => {
+    assert.equal(hashExecutableSource(progressSource, 8), EXECUTABLE_SOURCE_HASHES.progress);
+    assert.equal(hashExecutableSource(ingameSource, 7), EXECUTABLE_SOURCE_HASHES.ingame);
+    assert.equal(hashExecutableSource(helperSource, 3), EXECUTABLE_SOURCE_HASHES.helper);
+    assert.match(progressSource, /data\/save\/save_defaults\.js/);
+    assert.match(ingameSource, /data\/save\/save_defaults\.js/);
+
+    const harness = await createSaveHarness();
+    assert.equal(harness.defaults.PROGRESS_DEFAULT_BYTE_LENGTH, 128);
+    assert.equal(harness.defaults.INGAME_DEFAULT_DATA.current_level, 0);
+    assert.equal(harness.defaults.INGAME_DEFAULT_DATA.current_xp, 0);
+    assert.deepEqual(Array.from(harness.defaults.INGAME_DEFAULT_DATA.items), []);
 });
 
 test('save JSDoc은 Promise, live 참조, 정규화, 최상위 병합과 오류 축약 계약을 명시한다', () => {

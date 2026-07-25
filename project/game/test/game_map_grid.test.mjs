@@ -12,6 +12,13 @@ const {
     buildGameMapGeometry
 } = gridModule;
 const defaultMap = resolveGameMapDefinition(GAME_MAP_DATA.DEFAULT_MAP_ID);
+const EXPECTED_WORLD_LAYOUT = Object.freeze({
+    MAX_WIDTH_RATIO: 0.78,
+    MAX_OBJECT_HEIGHT_RATIO: 0.82,
+    WALL_THICKNESS_CELL_RATIO: 0.12,
+    WALL_MIN_THICKNESS_PX: 6,
+    TILE_GAP_CELL_RATIO: 0.035
+});
 
 /**
  * 두 수가 허용 오차 안에서 같은지 확인합니다.
@@ -29,8 +36,8 @@ function assertNear(actual, expected, label, epsilon = 1e-9) {
 
 assert.ok(Object.isFrozen(GAME_MAP_DATA));
 assert.ok(Object.isFrozen(GAME_MAP_DATA.TILE_TYPES));
-assert.ok(Object.isFrozen(GAME_MAP_DATA.WORLD_LAYOUT));
 assert.ok(Object.isFrozen(GAME_MAP_DATA.MAPS));
+assert.equal(Object.hasOwn(GAME_MAP_DATA, 'WORLD_LAYOUT'), false);
 assert.ok(defaultMap);
 assert.ok(Object.isFrozen(defaultMap));
 assert.ok(Object.isFrozen(defaultMap.tiles));
@@ -148,8 +155,8 @@ assert.equal(visited.size, floorCount);
 const viewport = Object.freeze({ ww: 1200, objectWH: 900 });
 const geometry = buildGameMapGeometry(defaultMap.id, viewport);
 const expectedCellSize = Math.min(
-    (viewport.ww * GAME_MAP_DATA.WORLD_LAYOUT.MAX_WIDTH_RATIO) / defaultMap.columns,
-    (viewport.objectWH * GAME_MAP_DATA.WORLD_LAYOUT.MAX_OBJECT_HEIGHT_RATIO) / defaultMap.rows
+    (viewport.ww * EXPECTED_WORLD_LAYOUT.MAX_WIDTH_RATIO) / defaultMap.columns,
+    (viewport.objectWH * EXPECTED_WORLD_LAYOUT.MAX_OBJECT_HEIGHT_RATIO) / defaultMap.rows
 );
 assertNear(geometry.cellSize, expectedCellSize, '정사각 셀 크기');
 assertNear(geometry.width, geometry.cellSize * geometry.columns, '맵 너비');
@@ -159,7 +166,7 @@ assertNear(geometry.originY + (geometry.height * 0.5), viewport.objectWH * 0.5, 
 assert.equal(geometry.mapId, defaultMap.id);
 assert.equal(geometry.rows, defaultMap.rows);
 assert.equal(geometry.columns, defaultMap.columns);
-assert.equal(geometry.tileGapRatio, GAME_MAP_DATA.WORLD_LAYOUT.TILE_GAP_CELL_RATIO);
+assert.equal(geometry.tileGapRatio, EXPECTED_WORLD_LAYOUT.TILE_GAP_CELL_RATIO);
 assert.equal(geometry.floorLocalCenters.length, floorCount);
 for (const center of geometry.floorLocalCenters) {
     assert.equal(isGameMapFloorCell(defaultMap, center.row, center.column), true);
@@ -178,8 +185,8 @@ assertNear(
 );
 
 const expectedWallThickness = Math.max(
-    GAME_MAP_DATA.WORLD_LAYOUT.WALL_MIN_THICKNESS_PX,
-    geometry.cellSize * GAME_MAP_DATA.WORLD_LAYOUT.WALL_THICKNESS_CELL_RATIO
+    EXPECTED_WORLD_LAYOUT.WALL_MIN_THICKNESS_PX,
+    geometry.cellSize * EXPECTED_WORLD_LAYOUT.WALL_THICKNESS_CELL_RATIO
 );
 assert.equal(geometry.boundaryWalls.length, 8);
 let mergedBoundaryCellLength = 0;

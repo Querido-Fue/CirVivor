@@ -1,7 +1,5 @@
-import { getData } from 'data/data_handler.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
-
-const DEFAULT_EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
 /**
  * 이전 위치 축 값을 조회하거나 현재 위치와 속도로 역산합니다.
@@ -34,7 +32,7 @@ export function writeCollisionPlayerBody(body, player, delta, options) {
         return false;
     }
 
-    const epsilon = resolveFiniteNumber(options?.epsilon, DEFAULT_EPSILON);
+    const epsilon = resolveFiniteNumber(options?.epsilon, COLLISION_EPSILON);
     const frameResolveMinMax = resolveFiniteNumber(options?.frameResolveMinMax, 0);
     const frameResolveMaxRatio = resolveFiniteNumber(options?.frameResolveMaxRatio, 0);
     const x = resolveFiniteNumber(player.position?.x, 0);

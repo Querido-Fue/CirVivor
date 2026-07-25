@@ -1,11 +1,10 @@
-import { getData } from 'data/data_handler.js';
 import {
     getSimulationMouseInput,
     hasSimulationMouseState
 } from 'simulation/simulation_runtime.js';
 import { isPointInRect } from 'util/geometry_util.js';
 
-const PROJECTILE_CULL_MARGIN_RATIO = getData('GAME_SCENE_CONSTANTS').PROJECTILE.CULL_MARGIN_RATIO;
+const PROJECTILE_CULL_MARGIN_RATIO = 0.2;
 const GAME_SCENE_BUTTON_MOUSE_BUTTON = 'left';
 const GAME_SCENE_BUTTON_CLICK_STATE = 'clicked';
 

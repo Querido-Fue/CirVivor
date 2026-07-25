@@ -1,9 +1,7 @@
 import { HexaMergeBoundaryEffectPass } from './_hexa_merge_boundary_effect_pass.js';
 import { MagneticShieldEffectPass } from './_magnetic_shield_effect_pass.js';
 import { TitleLoadingCircleEffectPass } from './_title_loading_circle_effect_pass.js';
-import { getData } from 'data/data_handler.js';
-
-const EFFECT_TYPES = getData('EFFECT_RENDER_CONSTANTS').TYPES;
+import { EFFECT_TYPES } from './_webgl_constants.js';
 
 /**
  * effect 레이어에서 사용할 fresh pass 목록을 생성합니다.

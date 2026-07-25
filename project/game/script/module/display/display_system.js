@@ -5,19 +5,18 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { ThemeHandler, setTheme } from 'display/_theme_handler.js';
 import { getSetting } from 'save/save_system.js';
-import { getData } from 'data/data_handler.js';
 import { CanvasSurfacePool } from './_surface_pool.js';
 import { VignetteRenderer } from './_vignette_renderer.js';
 import { ThemeTransitionController } from './_theme_transition_controller.js';
 import {
     compareDisplaySurfaceDescriptors,
     createDisplaySurfaceDescriptor,
+    DISPLAY_WEBGL_RENDER_MODES,
     resolveDisplayWebGLLayerName,
     usesNativeDisplay2DResolution
 } from './display_surface_descriptor.js';
 
 let displaySystemInstance = null;
-const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
 
 /**
  * @typedef {object} DisplaySurfaceDescriptor

@@ -1,9 +1,7 @@
 import { EffectRenderer } from './_effect_renderer.js';
 import { OverlayEffectRenderer } from './_overlay_effect_renderer.js';
 import { WebGLBatch } from './_webgl_batch.js';
-import { getData } from 'data/data_handler.js';
-
-const DISPLAY_WEBGL_RENDER_MODES = getData('DISPLAY_SURFACE_DATA').WEBGL_RENDER_MODES;
+import { DISPLAY_WEBGL_RENDER_MODES } from '../display_surface_descriptor.js';
 
 /**
  * renderer가 별도 resize 계약을 가진 WebGL 레이어 renderer인지 확인합니다.

@@ -1,9 +1,8 @@
-import { ENEMY_AI_CONSTANTS } from '../../script/data/object/enemy/enemy_ai_constants.js';
 import { createEnemyAIFlowFieldWasmRuntimeSync } from '../../script/module/object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js';
 
 const statusElement = document.querySelector('#status');
-const navigationUrl = new URL(
-    '../../script/module/object/enemy/ai/_enemy_ai_navigation.js',
+const flowFieldStoreUrl = new URL(
+    '../../script/module/object/enemy/ai/navigation/_enemy_ai_flow_field_store.js',
     import.meta.url
 );
 const backendUrl = new URL(
@@ -27,10 +26,15 @@ function extractSourceSection(source, startMarker, endMarker) {
 
 /**
  * 현재 프로덕션 JS 원문으로 브라우저 realm 기준 구현을 만듭니다.
- * @param {string} source - navigation 전체 소스입니다.
+ * @param {string} source - flow-field store 전체 소스입니다.
  * @returns {(grid:object,goalCell:object)=>object} 기준 구현입니다.
  */
 function createReferenceBuildFlowField(source) {
+    const flowMathConstantsSource = extractSourceSection(
+        source,
+        'const EPSILON = ',
+        '\nconst CLEARANCE_BUCKET_STEP'
+    );
     const directionsSource = extractSourceSection(
         source,
         'const DIRS = Object.freeze([',
@@ -51,11 +55,9 @@ function createReferenceBuildFlowField(source) {
         'function prepareFlowOpenHeap',
         '\n\n/**\n * 목표 좌표 기준 flow field'
     );
-    return Function('constants', `
+    return Function(`
         "use strict";
-        const EPSILON = constants.EPSILON;
-        const INF = constants.INF;
-        const DIAGONAL_COST = constants.DIAGONAL_COST;
+        ${flowMathConstantsSource}
         ${directionsSource}
         const flowOpenHeap = [];
         let flowOpenPositions = new Int32Array(0);
@@ -63,7 +65,7 @@ function createReferenceBuildFlowField(source) {
         ${isBlockedCellSource}
         ${heapAndFieldSource}
         return buildFlowField;
-    `)(ENEMY_AI_CONSTANTS);
+    `)();
 }
 
 /**
@@ -241,8 +243,8 @@ function yieldFrame() {
 }
 
 async function run() {
-    const response = await fetch(navigationUrl);
-    if (!response.ok) throw new Error(`navigation 원문 로드 실패: ${response.status}`);
+    const response = await fetch(flowFieldStoreUrl);
+    if (!response.ok) throw new Error(`flow-field store 원문 로드 실패: ${response.status}`);
     const source = (await response.text()).replace(/\r\n/g, '\n');
     const referenceBuild = createReferenceBuildFlowField(source);
     const runtimeInitStartedAt = performance.now();

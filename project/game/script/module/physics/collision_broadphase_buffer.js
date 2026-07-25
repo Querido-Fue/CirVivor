@@ -1,4 +1,3 @@
-import { getData } from 'data/data_handler.js';
 import { COLLISION_CANDIDATE_SWEEP_PAD_SCALE } from './_collision_resolve_tuning.js';
 import {
     COLLISION_BROAD_STRIDE as BROAD_STRIDE,
@@ -10,9 +9,8 @@ import {
     getCollisionBodyShapeCode
 } from './collision_soa_layout.js';
 
-const COLLISION_GRID_CONSTANTS = getData('COLLISION_CONSTANTS').GRID;
-const COLLISION_GRID_RADIUS_SCALE = COLLISION_GRID_CONSTANTS.RADIUS_SCALE;
-const BROADPHASE_INITIAL_CAPACITY = COLLISION_GRID_CONSTANTS.BROADPHASE_INITIAL_CAPACITY;
+const COLLISION_GRID_RADIUS_SCALE = 1.03;
+const BROADPHASE_INITIAL_CAPACITY = 1024;
 
 /**
  * broad-phase buffer에서 사용할 body 개수를 정규화합니다.

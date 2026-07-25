@@ -1,11 +1,28 @@
-import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getMouseFocus, setMouseFocus } from 'input/input_system.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { BUTTON_STYLE } from 'ui/style/component_styles.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { BaseOverlay } from './_base_overlay.js';
 
-const DEBUG_OVERLAY = getData('DEBUG_CONSTANTS').DEBUG_OVERLAY;
+const DEBUG_OVERLAY = Object.freeze({
+    LAYER: 90,
+    DIM_ALPHA: 0.16,
+    WIDTH_UIWW_RATIO: 0.36,
+    HEIGHT_WH_RATIO: 0.52,
+    PADDING_X_WW: 1.8,
+    TOP_SPACE_WH: 2.2,
+    TITLE_DIVIDER_TOP_SPACE_WH: 1,
+    TITLE_DIVIDER_BOTTOM_SPACE_WH: 1.8,
+    ROW_CONTROL_GAP_WW: 1.5,
+    ROW_GAP_WH: 1.35,
+    TOGGLE_WIDTH_WW: 4.8,
+    TOGGLE_HEIGHT_WH: 2.4,
+    HINT_TOP_SPACE_WH: 0.3,
+    FOOTER_BOTTOM_SPACE_WH: 2.2,
+    FOOTER_BUTTON_GAP_WW: 1
+});
 const DEBUG_CONTROL_ROWS = Object.freeze([
     Object.freeze({ key: 'frameTime', label: '프레임타임 보이기' }),
     Object.freeze({ key: 'poolInfo', label: '풀 정보 보이기' }),
@@ -116,7 +133,7 @@ export class DebugOverlay extends BaseOverlay {
             .paddingX('WW', DEBUG_OVERLAY.PADDING_X_WW)
             .space('WH', DEBUG_OVERLAY.TOP_SPACE_WH)
             .item('text', 'debug_overlay_title')
-            .stylePreset('h2')
+            .textStyle(TYPOGRAPHY.H2)
             .text('디버그 패널')
             .fill(ColorSchemes.Title.TextDark)
             .space('WH', DEBUG_OVERLAY.TITLE_DIVIDER_TOP_SPACE_WH)
@@ -134,7 +151,7 @@ export class DebugOverlay extends BaseOverlay {
                 .align('center')
                 .item('text', `debug_control_label_${control.key}`)
                 .text(control.label)
-                .stylePreset('h5_bold')
+                .textStyle(TYPOGRAPHY.LABEL)
                 .fill(ColorSchemes.Overlay.Text.Item)
                 .vAlign('center')
                 .spacer()
@@ -156,7 +173,7 @@ export class DebugOverlay extends BaseOverlay {
         handler
             .space('WH', DEBUG_OVERLAY.HINT_TOP_SPACE_WH)
             .item('text', 'animation_debug_hint')
-            .stylePreset('settings_desc')
+            .textStyle(TYPOGRAPHY.SETTINGS_DESCRIPTION)
             .text('/ : 업데이트 정지·재개   . : 정지 상태에서 1프레임 실행')
             .fill(ColorSchemes.Overlay.Text.Item)
             .bottomSpace('WH', DEBUG_OVERLAY.FOOTER_BOTTOM_SPACE_WH)
@@ -164,7 +181,7 @@ export class DebugOverlay extends BaseOverlay {
             .justifyContent('right', 'WW', DEBUG_OVERLAY.FOOTER_BUTTON_GAP_WW)
             .align('right')
             .item('button', 'open_devtools_btn')
-            .stylePreset('overlay_interact_button')
+            .buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT)
             .buttonText('DevTools 열기')
             .buttonColor(ColorSchemes.Overlay.Button.Link)
             .icon('arrow')
@@ -172,7 +189,7 @@ export class DebugOverlay extends BaseOverlay {
                 runtimeTool()?.openDebugWindow?.();
             })
             .item('button', 'close_debug_overlay_btn')
-            .stylePreset('overlay_interact_button')
+            .buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT)
             .buttonText('닫기')
             .buttonColor(ColorSchemes.Overlay.Button.Cancel)
             .icon('deny')

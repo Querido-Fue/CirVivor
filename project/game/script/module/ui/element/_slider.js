@@ -6,10 +6,9 @@ import { animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
 import { mathUtil } from "util/math_util.js";
 import { clamp01 } from "util/number_util.js";
-import { getData } from "data/data_handler.js";
 import { DropdownElement } from "./_dropdown.js";
 
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const SLIDER_MAX_OVERFLOW = 0.05;
 
 /**
  * @class SliderElement
@@ -251,7 +250,7 @@ export class SliderElement extends BaseUIElement {
             }
 
             // 최대 오버플로우를 너비 비례로 설정 (해상도 독립적)
-            const maxOverflow = this.width * GLOBAL_CONSTANTS.SLIDER_MAX_OVERFLOW * this.scale;
+            const maxOverflow = this.width * SLIDER_MAX_OVERFLOW * this.scale;
 
             if (mx < baseX) {
                 this._overflow = mathUtil().decay(baseX - mx, maxOverflow);
@@ -392,7 +391,7 @@ export class SliderElement extends BaseUIElement {
             pullDirection = 'left';
         }
 
-        const maxOverflow = this.width * GLOBAL_CONSTANTS.SLIDER_MAX_OVERFLOW * this.scale;
+        const maxOverflow = this.width * SLIDER_MAX_OVERFLOW * this.scale;
         const overflowValue = this._overflow * this.scale;
         const currentWidth = baseW + overflowValue;
         const currentHeight = baseH * (1 - (this._overflow / maxOverflow) * 0.2);

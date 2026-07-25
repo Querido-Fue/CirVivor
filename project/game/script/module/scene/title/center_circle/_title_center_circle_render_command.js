@@ -1,10 +1,7 @@
-import { getData } from 'data/data_handler.js';
+import { EFFECT_TYPES } from 'display/webgl/_webgl_constants.js';
 import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from '../_title_runtime_constants.js';
 import { getLoadingCircleShaderColors } from './_title_center_circle_theme.js';
-
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
-const EFFECT_TYPES = getData('EFFECT_RENDER_CONSTANTS').TYPES;
 
 /**
  * titleLoadingCircle effect renderer에 전달할 렌더 명령을 생성합니다.

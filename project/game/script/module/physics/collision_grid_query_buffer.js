@@ -1,9 +1,9 @@
-import { getData } from 'data/data_handler.js';
+import {
+    COLLISION_GRID_CELL_KEY_OFFSET,
+    COLLISION_GRID_CELL_KEY_STRIDE
+} from './collision_grid_layout.js';
 
-const COLLISION_GRID_CONSTANTS = getData('COLLISION_CONSTANTS').GRID;
-const CELL_KEY_OFFSET = COLLISION_GRID_CONSTANTS.CELL_KEY_OFFSET;
-const CELL_KEY_STRIDE = COLLISION_GRID_CONSTANTS.CELL_KEY_STRIDE;
-const GRID_QUERY_INITIAL_CAPACITY = COLLISION_GRID_CONSTANTS.QUERY_INITIAL_CAPACITY;
+const GRID_QUERY_INITIAL_CAPACITY = 1024;
 
 /**
  * grid query를 실행할 수 있는 입력인지 반환합니다.
@@ -63,7 +63,8 @@ export class CollisionGridQueryBuffer {
 
         for (let cx = minCellX; cx <= maxCellX; cx++) {
             for (let cy = minCellY; cy <= maxCellY; cy++) {
-                const key = ((cx + CELL_KEY_OFFSET) * CELL_KEY_STRIDE) + (cy + CELL_KEY_OFFSET);
+                const key = ((cx + COLLISION_GRID_CELL_KEY_OFFSET) * COLLISION_GRID_CELL_KEY_STRIDE)
+                    + (cy + COLLISION_GRID_CELL_KEY_OFFSET);
                 const bucket = grid.get(key);
                 if (!bucket || bucket.count <= 0) {
                     continue;

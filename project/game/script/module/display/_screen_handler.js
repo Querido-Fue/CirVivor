@@ -1,10 +1,9 @@
-import { getData } from 'data/data_handler.js';
 import { getSetting, setSetting } from 'save/save_system.js';
 import { clampNumber } from 'util/number_util.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { nw } from 'util/nw_bridge.js';
 
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
+const GAME_ASPECT_RATIO = 16 / 9;
 
 /**
  * @class ScreenHandler
@@ -102,7 +101,7 @@ export class ScreenHandler {
      * @returns {boolean} 설정 변경 여부 (재렌더링 필요 시 true 반환)
      */
     #recalculateRenderTarget(windowMode) {
-        const gameRatio = GLOBAL_CONSTANTS.ASPECT_RATIO.RATIO;
+        const gameRatio = GAME_ASPECT_RATIO;
         const renderScale = getSetting("renderScale") || 100;
         const widescreenSupport = getSetting("widescreenSupport") !== false;
         const scaleFactor = renderScale / 100;

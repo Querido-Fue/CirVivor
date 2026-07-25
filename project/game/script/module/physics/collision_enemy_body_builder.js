@@ -1,4 +1,4 @@
-import { getData } from 'data/data_handler.js';
+import { ENEMY_DRAW_HEIGHT_RATIO } from 'data/object/enemy/enemy_catalog_data.js';
 import { getSimulationObjectWH } from '../simulation/simulation_runtime.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 import { getEnemyCircleCollisionRadius, getEnemyResolveRadius } from './_collision_enemy_geometry.js';
@@ -11,14 +11,13 @@ import {
     HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
     MERGE_PENDING_RESOLVE_WEIGHT
 } from './_collision_resolve_tuning.js';
+import {
+    COLLISION_BOUND_RADIUS_HALF_SCALE,
+    COLLISION_CIRCLE_PART_STRIDE
+} from './collision_body_layout.js';
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
-const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
-const COLLISION_BODY_BUILDER = COLLISION_CONSTANTS.BODY_BUILDER;
-const DEFAULT_EPSILON = COLLISION_CONSTANTS.EPSILON;
-const ENEMY_DRAW_HEIGHT_RATIO = getData('ENEMY_DRAW_HEIGHT_RATIO');
-const CIRCLE_PART_STRIDE = COLLISION_BODY_BUILDER.CIRCLE_PART_STRIDE;
-const BOUND_RADIUS_HALF_SCALE = COLLISION_BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
-const DEGREES_TO_RADIANS = COLLISION_BODY_BUILDER.DEGREES_TO_RADIANS;
+const DEGREES_TO_RADIANS = Math.PI / 180;
 const ENEMY_RESOLVE_RADIUS_TUNING = Object.freeze({
     minRadius: COLLISION_RESOLVE_MIN_MAX,
     hexaHiveRadiusScale: HEXA_HIVE_COLLISION_RESOLVE_RADIUS_SCALE,
@@ -57,7 +56,7 @@ function getCollisionEnemyPreviousAxisValue(enemy, axis, currentValue, sleeping)
  * @returns {boolean} 유효한 적 body를 구성했는지 여부입니다.
  */
 export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, options = {}) {
-    const epsilon = resolveFiniteNumber(options?.epsilon, DEFAULT_EPSILON);
+    const epsilon = resolveFiniteNumber(options?.epsilon, COLLISION_EPSILON);
     const frameResolveMinMax = resolveFiniteNumber(options?.frameResolveMinMax, 0);
     const frameResolveMaxRatio = resolveFiniteNumber(options?.frameResolveMaxRatio, 0);
     const baseHeight = typeof enemy.getRenderHeightPx === 'function'
@@ -150,11 +149,11 @@ export function writeCollisionEnemyBody(body, enemy, delta, sleeping = false, op
  * prepare 이후 바뀔 수 있는 합체 pending/weight 상태를 body에 동기화합니다.
  * @param {object} body - 갱신할 충돌 body입니다.
  * @param {object} enemy - 원본 적 객체입니다.
- * @param {number} [epsilon=DEFAULT_EPSILON] - 최소 weight입니다.
+ * @param {number} [epsilon=COLLISION_EPSILON] - 최소 weight입니다.
  * @returns {void}
  */
-export function syncCollisionEnemyBodyResolveState(body, enemy, epsilon = DEFAULT_EPSILON) {
-    const safeEpsilon = Number.isFinite(epsilon) ? epsilon : DEFAULT_EPSILON;
+export function syncCollisionEnemyBodyResolveState(body, enemy, epsilon = COLLISION_EPSILON) {
+    const safeEpsilon = Number.isFinite(epsilon) ? epsilon : COLLISION_EPSILON;
     body.mergeLock = enemy?.hexaHiveMergePending === true;
     body.weight = body.mergeLock
         ? Math.max(
@@ -228,7 +227,7 @@ function _writeCollisionEnemyShapeMetrics(
     }
 
     if (useHiveCells) {
-        const circleBufferLength = partCount * CIRCLE_PART_STRIDE;
+        const circleBufferLength = partCount * COLLISION_CIRCLE_PART_STRIDE;
         if (!(enemy.__collisionWorldCircles instanceof Float32Array) || enemy.__collisionWorldCircles.length !== circleBufferLength) {
             enemy.__collisionWorldCircles = new Float32Array(circleBufferLength);
         }
@@ -243,7 +242,7 @@ function _writeCollisionEnemyShapeMetrics(
             const ly = (Number.isFinite(localCenter?.y) ? localCenter.y : 0) * height;
             const wx = centerX + (lx * cos) - (ly * sin);
             const wy = centerY + (lx * sin) + (ly * cos);
-            const offset = p * CIRCLE_PART_STRIDE;
+            const offset = p * COLLISION_CIRCLE_PART_STRIDE;
             enemy.__collisionWorldCircles[offset] = wx;
             enemy.__collisionWorldCircles[offset + 1] = wy;
             enemy.__collisionWorldCircles[offset + 2] = radius;
@@ -305,8 +304,8 @@ function _writeCollisionEnemyShapeMetrics(
     body.enemyPairBroadRadius = enemyPairBroadRadius;
     body.projectileBroadRadius = projectileBroadRadius;
     body.boundRadius = Math.max(
-        (maxX - minX) * BOUND_RADIUS_HALF_SCALE,
-        (maxY - minY) * BOUND_RADIUS_HALF_SCALE
+        (maxX - minX) * COLLISION_BOUND_RADIUS_HALF_SCALE,
+        (maxY - minY) * COLLISION_BOUND_RADIUS_HALF_SCALE
     );
     return Number.isFinite(body.boundRadius) && body.boundRadius > 0;
 }

@@ -14,9 +14,20 @@ const loadingSceneSource = await readFile(
     new URL('../script/module/scene/loading/_loading_scene.js', import.meta.url),
     'utf8'
 );
+const benchmarkSceneSource = await readFile(
+    new URL('../script/module/scene/game/_benchmark_scene.js', import.meta.url),
+    'utf8'
+);
 
 assert.match(sceneSystemSource, /new LoadingScene\(this\), SCENE_STATES\.LOADING/);
 assert.match(sceneSystemSource, /new TitleScene\(this, handoff\)/);
+assert.match(sceneSystemSource, /new GameScene\(this, \{/);
+assert.match(sceneSystemSource, /new BenchmarkScene\(this\)/);
+assert.doesNotMatch(benchmarkSceneSource, /data\/data_handler\.js/);
+assert.match(
+    benchmarkSceneSource,
+    /data\/object\/enemy\/enemy_catalog_data\.js/
+);
 assert.doesNotMatch(titleSceneSource, /TitleLoadingSequence|new TitleGradientBackground|new TitleBackGround/);
 assert.match(titleSceneSource, /beginTitleScenePhase/);
 assert.match(titleSceneSource, /promoteCompletedTitleIntro/);
@@ -96,8 +107,27 @@ class TitleSceneStub {
     }
 }
 
-class GameSceneStub {}
-class BenchmarkSceneStub {}
+const gameSceneTransitions = [];
+class GameSceneStub {
+    constructor(sceneSystem, options) {
+        this.sceneSystem = sceneSystem;
+        this.options = options;
+        this.destroyCount = 0;
+        gameSceneTransitions.push('play-create');
+    }
+
+    destroy() {
+        this.destroyCount++;
+        gameSceneTransitions.push('play-destroy');
+    }
+}
+class BenchmarkSceneStub {
+    constructor(sceneSystem) {
+        this.sceneSystem = sceneSystem;
+        gameSceneTransitions.push('benchmark-create');
+    }
+}
+let clearSimulationCommandCount = 0;
 const context = vm.createContext({ console });
 const sceneModule = new vm.SourceTextModule(sceneSystemSource, {
     context,
@@ -118,7 +148,9 @@ const dependencyModules = new Map([
         this.setExport('BenchmarkScene', BenchmarkSceneStub);
     }, { context })],
     ['simulation/simulation_command_queue.js', new vm.SyntheticModule(['clearSimulationCommands'], function init() {
-        this.setExport('clearSimulationCommands', () => {});
+        this.setExport('clearSimulationCommands', () => {
+            clearSimulationCommandCount++;
+        });
     }, { context })]
 ]);
 
@@ -149,5 +181,22 @@ assert.equal(loadingScene.destroyCount, 1);
 assert.deepEqual(trace, ['title-create', 'loading-destroy']);
 assert.equal(sceneSystem.completeLoading(loadingScene), false);
 assert.equal(loadingScene.releaseCount, 2);
+
+sceneSystem.gameStart('map-test');
+assert.ok(sceneSystem.scene instanceof GameSceneStub);
+assert.equal(sceneSystem.scene.options.mode, 'play');
+assert.equal(sceneSystem.scene.options.mapId, 'map-test');
+assert.equal(clearSimulationCommandCount, 1);
+const playScene = sceneSystem.scene;
+
+sceneSystem.benchmarkStart();
+assert.equal(playScene.destroyCount, 1);
+assert.ok(sceneSystem.scene instanceof BenchmarkSceneStub);
+assert.equal(clearSimulationCommandCount, 2);
+assert.deepEqual(gameSceneTransitions, [
+    'play-create',
+    'play-destroy',
+    'benchmark-create'
+]);
 
 console.log('title loading scene handoff contract: ok');

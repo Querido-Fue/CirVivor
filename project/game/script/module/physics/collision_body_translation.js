@@ -1,15 +1,11 @@
-import { getData } from 'data/data_handler.js';
 import { getCollisionDenseFrameScale } from './_collision_resolve_tuning.js';
+import { COLLISION_CIRCLE_PART_STRIDE } from './collision_body_layout.js';
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
-const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
-const COLLISION_BODY_TRANSLATION = COLLISION_CONSTANTS.BODY_TRANSLATION;
-const COLLISION_BODY_BUILDER = COLLISION_CONSTANTS.BODY_BUILDER;
-const EPSILON = COLLISION_CONSTANTS.EPSILON;
-const COLLISION_AXIS_RESISTANCE_MIN = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_MIN;
-const COLLISION_AXIS_RESISTANCE_GAIN = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_GAIN;
-const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_RADIUS_RATIO;
-const COLLISION_AXIS_RESISTANCE_RADIUS_MIN = COLLISION_BODY_TRANSLATION.AXIS_RESISTANCE_RADIUS_MIN;
-const CIRCLE_PART_STRIDE = COLLISION_BODY_BUILDER.CIRCLE_PART_STRIDE;
+const COLLISION_AXIS_RESISTANCE_MIN = 0.25;
+const COLLISION_AXIS_RESISTANCE_GAIN = 0.85;
+const COLLISION_AXIS_RESISTANCE_RADIUS_RATIO = 0.35;
+const COLLISION_AXIS_RESISTANCE_RADIUS_MIN = 1;
 
 /**
  * resolve 이동량을 body와 원본 객체, broad-phase 버퍼에 반영합니다.
@@ -38,7 +34,7 @@ export function applyCollisionBodyTranslation(
     }
 
     const moveMag = Math.hypot(dx, dy);
-    if (moveMag <= EPSILON) {
+    if (moveMag <= COLLISION_EPSILON) {
         return false;
     }
 
@@ -75,7 +71,7 @@ function getCollisionBodyTranslationScale(body, resolveBoost, moveMag) {
     const remain = frameMax - frameMoved;
     const moveScale = remain < moveMag ? (remain / moveMag) : 1;
     const appliedMag = moveMag * moveScale;
-    if (appliedMag <= EPSILON) {
+    if (appliedMag <= COLLISION_EPSILON) {
         return 0;
     }
 
@@ -109,8 +105,8 @@ function writeCollisionBodyTranslation(body, dx, dy) {
     body.y = body.centerY;
 
     if (body.circleParts instanceof Float32Array) {
-        const limit = Math.max(0, Math.floor(body.circlePartCount || 0)) * CIRCLE_PART_STRIDE;
-        for (let i = 0; i < limit; i += CIRCLE_PART_STRIDE) {
+        const limit = Math.max(0, Math.floor(body.circlePartCount || 0)) * COLLISION_CIRCLE_PART_STRIDE;
+        for (let i = 0; i < limit; i += COLLISION_CIRCLE_PART_STRIDE) {
             body.circleParts[i] += dx;
             body.circleParts[i + 1] += dy;
         }
@@ -172,7 +168,7 @@ function getCollisionBodyVelocityAxis(body, axis) {
  * @returns {number} 적용할 축 저항 배율입니다.
  */
 function getCollisionAxisResistanceScale(move, velocity, axisRange) {
-    if ((move * velocity) >= -EPSILON) {
+    if ((move * velocity) >= -COLLISION_EPSILON) {
         return 1;
     }
 

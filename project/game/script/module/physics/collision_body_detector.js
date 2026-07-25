@@ -1,5 +1,6 @@
-import { getData } from 'data/data_handler.js';
 import { getCollisionBodyCollisionRadiusScale } from './_collision_resolve_tuning.js';
+import { COLLISION_CIRCLE_PART_STRIDE } from './collision_body_layout.js';
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 import {
     copyCollisionManifold,
     finalizeCollisionAggregatePartManifold,
@@ -8,10 +9,6 @@ import {
     writeCollisionCircleOverlapManifoldFromDelta,
     writeCollisionCircleRectOverlapManifold
 } from './collision_manifold_writer.js';
-
-const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
-const EPSILON = COLLISION_CONSTANTS.EPSILON;
-const CIRCLE_PART_STRIDE = COLLISION_CONSTANTS.BODY_BUILDER.CIRCLE_PART_STRIDE;
 
 /**
  * @typedef {object} CollisionBodyDetectorContext
@@ -124,7 +121,7 @@ function detectCirclePartsVsCircleParts(bodyA, bodyB, context) {
     const fallbackNormalY = bodyB.centerY - bodyA.centerY;
 
     for (let i = 0; i < countA; i++) {
-        const offsetA = i * CIRCLE_PART_STRIDE;
+        const offsetA = i * COLLISION_CIRCLE_PART_STRIDE;
         const ax = partsA[offsetA];
         const ay = partsA[offsetA + 1];
         const ar = partsA[offsetA + 2] * scaleA;
@@ -132,7 +129,7 @@ function detectCirclePartsVsCircleParts(bodyA, bodyB, context) {
             continue;
         }
         for (let j = 0; j < countB; j++) {
-            const offsetB = j * CIRCLE_PART_STRIDE;
+            const offsetB = j * COLLISION_CIRCLE_PART_STRIDE;
             recordCollisionPartCheck(context.profileRecorder);
             const bx = partsB[offsetB];
             const by = partsB[offsetB + 1];
@@ -161,7 +158,7 @@ function detectCirclePartsVsCircleParts(bodyA, bodyB, context) {
             );
             if (!manifold) continue;
             const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-            if (penetration <= EPSILON) continue;
+            if (penetration <= COLLISION_EPSILON) continue;
             contactCount++;
             normalSumX += manifold.normalX * penetration;
             normalSumY += manifold.normalY * penetration;
@@ -225,7 +222,7 @@ function detectCirclePartsVsCircle(partBody, circleBody, context) {
     const fallbackNormalY = circleY - partBody.centerY;
 
     for (let i = 0; i < count; i++) {
-        const offset = i * CIRCLE_PART_STRIDE;
+        const offset = i * COLLISION_CIRCLE_PART_STRIDE;
         recordCollisionPartCheck(context.profileRecorder);
         const ax = parts[offset];
         const ay = parts[offset + 1];
@@ -254,7 +251,7 @@ function detectCirclePartsVsCircle(partBody, circleBody, context) {
         );
         if (!manifold) continue;
         const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-        if (penetration <= EPSILON) continue;
+        if (penetration <= COLLISION_EPSILON) continue;
         contactCount++;
         normalSumX += manifold.normalX * penetration;
         normalSumY += manifold.normalY * penetration;
@@ -331,7 +328,7 @@ function detectCirclePartsVsRect(partBody, rectBody, context) {
     const rectMaxY = Number.isFinite(rectBody?.maxY) ? rectBody.maxY : 0;
 
     for (let i = 0; i < count; i++) {
-        const offset = i * CIRCLE_PART_STRIDE;
+        const offset = i * COLLISION_CIRCLE_PART_STRIDE;
         recordCollisionPartCheck(context.profileRecorder);
         const circleX = parts[offset];
         const circleY = parts[offset + 1];
@@ -356,7 +353,7 @@ function detectCirclePartsVsRect(partBody, rectBody, context) {
         );
         if (!manifold) continue;
         const penetration = Number.isFinite(manifold.penetration) ? manifold.penetration : 0;
-        if (penetration <= EPSILON) continue;
+        if (penetration <= COLLISION_EPSILON) continue;
         contactCount++;
         normalSumX += manifold.normalX * penetration;
         normalSumY += manifold.normalY * penetration;

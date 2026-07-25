@@ -1,7 +1,10 @@
-import { getData } from 'data/data_handler.js';
 import { DummyMenuOverlay } from './_dummy_menu_overlay.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const ACHIEVEMENTS_OVERLAY_LAYOUT = Object.freeze({
+    WIDTH_UIWW_RATIO: 0.54,
+    HEIGHT_WH_RATIO: 0.5,
+    TITLE_ICON_SCALE_MULTIPLIER: 0.95
+});
 
 /**
  * @class AchievementsOverlay
@@ -16,9 +19,9 @@ export class AchievementsOverlay extends DummyMenuOverlay {
             titleKey: 'title_overlay_achievements_title',
             bodyKey: 'title_overlay_achievements_body',
             titleIconId: 'achievements',
-            titleIconScaleMultiplier: TITLE_CONSTANTS.TITLE_OVERLAY.ACHIEVEMENTS.TITLE_ICON_SCALE_MULTIPLIER,
-            widthRatio: TITLE_CONSTANTS.TITLE_OVERLAY.ACHIEVEMENTS.WIDTH_UIWW_RATIO,
-            heightRatio: TITLE_CONSTANTS.TITLE_OVERLAY.ACHIEVEMENTS.HEIGHT_WH_RATIO
+            titleIconScaleMultiplier: ACHIEVEMENTS_OVERLAY_LAYOUT.TITLE_ICON_SCALE_MULTIPLIER,
+            widthRatio: ACHIEVEMENTS_OVERLAY_LAYOUT.WIDTH_UIWW_RATIO,
+            heightRatio: ACHIEVEMENTS_OVERLAY_LAYOUT.HEIGHT_WH_RATIO
         });
     }
 }

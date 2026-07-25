@@ -5,9 +5,7 @@ import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMouse
 import { ColorSchemes } from "display/_theme_handler.js";
 import { colorUtil } from "util/color_util.js";
 import { createFontString, truncateTextToWidth } from "util/font_util.js";
-import { getData } from "data/data_handler.js";
-
-const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
+import { OVERLAY_RENDER_CONSTANTS } from "display/webgl/_webgl_constants.js";
 
 /**
  * @class DropdownElement

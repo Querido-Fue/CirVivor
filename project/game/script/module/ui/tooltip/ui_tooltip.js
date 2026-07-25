@@ -1,4 +1,3 @@
-import { getData } from 'data/data_handler.js';
 import {
     getDisplaySystem,
     getWH,
@@ -11,11 +10,25 @@ import { getDelta } from 'game/time_handler.js';
 import { getMouseInput } from 'input/input_system.js';
 import { getSetting } from 'save/save_system.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
-import { createFontString, wrapTextByCharacters } from 'util/font_util.js';
+import { resolveTypography } from 'ui/style/_typography_resolver.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
+import { wrapTextByCharacters } from 'util/font_util.js';
 import { clampNumber } from 'util/number_util.js';
 
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-const TOOLTIP_CONSTANTS = getData('TOOLTIP_CONSTANTS');
+const TOOLTIP_CONSTANTS = Object.freeze({
+    SURFACE_ORDER: 190000,
+    OFFSET_X: Object.freeze({ BASE: 'WW', VALUE: 0.9 }),
+    SCREEN_MARGIN: Object.freeze({ BASE: 'WW', VALUE: 0.8 }),
+    MAX_WIDTH: Object.freeze({ BASE: 'WW', VALUE: 18 }),
+    PADDING_X: Object.freeze({ BASE: 'WH', VALUE: 0.7 }),
+    PADDING_Y: Object.freeze({ BASE: 'WH', VALUE: 0.7 }),
+    TITLE_GAP: Object.freeze({ BASE: 'WH', VALUE: 0.35 }),
+    BODY_LINE_GAP: Object.freeze({ BASE: 'WH', VALUE: 0.18 }),
+    PANEL_RADIUS: Object.freeze({ BASE: 'WH', VALUE: 0.4 }),
+    BORDER_COLOR: '#404040',
+    BORDER_WIDTH: 1,
+    MAX_LINES: 10
+});
 const TOOLTIP_FADE_DURATION_SECONDS = 0.2;
 
 /**
@@ -339,12 +352,17 @@ export class UITooltipSystem {
      */
     _buildTooltipLayout(content) {
         const uiScale = getSetting('uiScale') / 100 || 1;
-        const titleFont = this.#buildFontString(TEXT_CONSTANTS.H6_BOLD.FONT, uiScale);
-        const bodyFont = this.#buildFontString(TEXT_CONSTANTS.H6.FONT, uiScale);
-        const titleFontSize = this.#getFontSize(TEXT_CONSTANTS.H6_BOLD.FONT, uiScale);
-        const bodyFontSize = this.#getFontSize(TEXT_CONSTANTS.H6.FONT, uiScale);
-        const titleLineHeight = this.#getLineHeight(TEXT_CONSTANTS.H6_BOLD.FONT, uiScale);
-        const bodyLineHeight = this.#getLineHeight(TEXT_CONSTANTS.H6.FONT, uiScale);
+        const typographyOptions = {
+            resolveMetric: (metric) => parseUIData(metric, uiScale)
+        };
+        const titleTypography = resolveTypography(TYPOGRAPHY.TOOLTIP_TITLE, typographyOptions);
+        const bodyTypography = resolveTypography(TYPOGRAPHY.TOOLTIP_BODY, typographyOptions);
+        const titleFont = titleTypography.font;
+        const bodyFont = bodyTypography.font;
+        const titleFontSize = titleTypography.size;
+        const bodyFontSize = bodyTypography.size;
+        const titleLineHeight = titleTypography.lineHeight;
+        const bodyLineHeight = bodyTypography.lineHeight;
         const paddingX = parseUIData(TOOLTIP_CONSTANTS.PADDING_X, uiScale);
         const paddingY = parseUIData(TOOLTIP_CONSTANTS.PADDING_Y, uiScale);
         const titleGap = parseUIData(TOOLTIP_CONSTANTS.TITLE_GAP, uiScale);
@@ -460,44 +478,6 @@ export class UITooltipSystem {
             titleLines,
             bodyLines
         };
-    }
-
-    /**
-     * @private
-     * 텍스트 프리셋으로부터 실제 폰트 문자열을 구성합니다.
-     * @param {{SIZE: object, WEIGHT: number, FAMILY: string}} fontPreset - 폰트 프리셋입니다.
-     * @param {number} uiScale - 현재 UI 스케일입니다.
-     * @returns {string} 폰트 문자열입니다.
-     */
-    #buildFontString(fontPreset, uiScale) {
-        const fontSize = parseUIData(fontPreset.SIZE, uiScale);
-        return createFontString({
-            weight: fontPreset.WEIGHT,
-            sizePx: fontSize,
-            family: fontPreset.FAMILY
-        });
-    }
-
-    /**
-     * @private
-     * 텍스트 프리셋의 줄 높이를 계산합니다.
-     * @param {{SIZE: object}} fontPreset - 폰트 프리셋입니다.
-     * @param {number} uiScale - 현재 UI 스케일입니다.
-     * @returns {number} 줄 높이입니다.
-     */
-    #getLineHeight(fontPreset, uiScale) {
-        return this.#getFontSize(fontPreset, uiScale) * TOOLTIP_CONSTANTS.LINE_HEIGHT_MULTIPLIER;
-    }
-
-    /**
-     * @private
-     * 텍스트 프리셋의 실제 폰트 크기를 계산합니다.
-     * @param {{SIZE: object}} fontPreset - 폰트 프리셋입니다.
-     * @param {number} uiScale - 현재 UI 스케일입니다.
-     * @returns {number} 폰트 크기입니다.
-     */
-    #getFontSize(fontPreset, uiScale) {
-        return parseUIData(fontPreset.SIZE, uiScale);
     }
 
     /**

@@ -1,4 +1,4 @@
-import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { ENEMY_AI_DATA } from 'data/object/enemy/enemy_ai_data.js';
 import { getSimulationObjectWH, getSimulationWW } from '../../../simulation/simulation_runtime.js';
 import { clamp01, clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
@@ -21,8 +21,8 @@ import {
     worldToCellInto
 } from './_enemy_ai_navigation.js';
 
-const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
-const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
+const ENEMY_AI_POLICY = ENEMY_AI_DATA.POLICY;
+const EPSILON = 1e-6;
 const HEXA_HIVE_TYPE = getHexaHiveType();
 
 /**

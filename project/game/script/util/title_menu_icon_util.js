@@ -1,7 +1,16 @@
-import { getData } from 'data/data_handler.js';
+import { TITLE_MENU_ICON_COLOR_TOKENS } from 'scene/title/menu/_title_menu_icon_assets.js';
 
-const TITLE_MENU_DATA = getData('TITLE_MENU_DATA');
-const TITLE_MENU_ICON_DATA = getData('TITLE_MENU_ICON_DATA');
+const TITLE_MENU_ICON_DRAW_SCALE = Object.freeze({
+    DEFAULT: Object.freeze({
+        x: 1,
+        y: 1,
+        alignX: 'center'
+    }),
+    BY_ID: Object.freeze({
+        research: Object.freeze({ x: 0.9, y: 1, alignX: 'left' }),
+        records: Object.freeze({ x: 0.85, y: 0.85, alignX: 'center' })
+    })
+});
 
 /**
  * 카드별 아이콘 실제 렌더 스케일을 반환합니다.
@@ -9,8 +18,7 @@ const TITLE_MENU_ICON_DATA = getData('TITLE_MENU_ICON_DATA');
  * @returns {{x:number, y:number, alignX:'left'|'center'}} 아이콘 축별 스케일 값입니다.
  */
 export function getTitleMenuIconDrawScale(iconId) {
-    const iconDrawScale = TITLE_MENU_DATA.ICON_DRAW_SCALE;
-    return iconDrawScale.BY_ID[iconId] || iconDrawScale.DEFAULT;
+    return TITLE_MENU_ICON_DRAW_SCALE.BY_ID[iconId] || TITLE_MENU_ICON_DRAW_SCALE.DEFAULT;
 }
 
 /**
@@ -21,8 +29,7 @@ export function getTitleMenuIconDrawScale(iconId) {
  * @returns {string} 색상 치환이 완료된 SVG 문자열입니다.
  */
 export function applyTitleMenuIconColorTemplate(template, fill, shadow) {
-    const colorTokens = TITLE_MENU_ICON_DATA.COLOR_TOKENS;
     return template
-        .replaceAll(colorTokens.FILL, fill)
-        .replaceAll(colorTokens.SHADOW, shadow);
+        .replaceAll(TITLE_MENU_ICON_COLOR_TOKENS.FILL, fill)
+        .replaceAll(TITLE_MENU_ICON_COLOR_TOKENS.SHADOW, shadow);
 }

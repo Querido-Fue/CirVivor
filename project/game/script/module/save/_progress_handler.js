@@ -1,4 +1,5 @@
 import { fsPromises, path } from 'util/nw_bridge.js';
+import { PROGRESS_DEFAULT_BYTE_LENGTH } from 'data/save/save_defaults.js';
 import { ensureSaveDirectory, pathExists } from './_save_file_helper.js';
 
 /**
@@ -10,7 +11,7 @@ export class ProgressHandler {
     constructor(dataDir) {
         this.dataDir = dataDir;
         this.filePath = path.join(this.dataDir, 'progress.dat');
-        this.defaultData = new Uint8Array(128);
+        this.defaultData = new Uint8Array(PROGRESS_DEFAULT_BYTE_LENGTH);
         this.data = new Uint8Array(this.defaultData);
     }
 

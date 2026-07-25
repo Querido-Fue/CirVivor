@@ -1,11 +1,9 @@
-import { getData } from 'data/data_handler.js';
+import { TITLE_LINK_DATA } from 'data/scene/title/title_link_data.js';
 import { consumeMouseState, hasMouseState } from 'input/input_system.js';
 import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
 import { formatRgba } from 'util/color_util.js';
 import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 import { runtimeTool } from 'util/runtime_tool.js';
-
-const TITLE_LINK_DATA = getData('TITLE_LINK_DATA');
 /** 업데이트 링크 버튼의 시각 요소를 숨기는 투명 색상입니다. */
 const TRANSPARENT_BUTTON_COLOR = formatRgba(0, 0, 0, 0);
 

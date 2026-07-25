@@ -30,7 +30,6 @@ export class TitleMenuTextureRenderer {
     /**
      * @param {object} options - 텍스처 렌더러 의존성입니다.
      * @param {import('display/_svg_drawer.js').SVGDrawer} options.svgDrawer - SVG 캐시 드로어입니다.
-     * @param {object} options.textConstants - 텍스트 상수입니다.
      * @param {object} options.titleCardMenu - 타이틀 카드 메뉴 상수입니다.
      * @param {Function} options.getSession - 현재 overlay session 반환 함수입니다.
      * @param {Function} options.getEffectColor - 효과 색상 반환 함수입니다.
@@ -40,7 +39,6 @@ export class TitleMenuTextureRenderer {
      */
     constructor({
         svgDrawer,
-        textConstants,
         titleCardMenu,
         getSession,
         getEffectColor,
@@ -49,7 +47,6 @@ export class TitleMenuTextureRenderer {
         getUiScale
     }) {
         this.svgDrawer = svgDrawer;
-        this.textConstants = textConstants;
         this.titleCardMenu = titleCardMenu;
         this.getSession = getSession;
         this.getEffectColor = getEffectColor;
@@ -170,7 +167,6 @@ export class TitleMenuTextureRenderer {
             svgDrawer: this.svgDrawer,
             card,
             renderState,
-            textConstants: this.textConstants,
             uiww: this._getUIWW(),
             uiScale: this._getUiScale()
         });
@@ -264,7 +260,6 @@ export class TitleMenuTextureRenderer {
             uiww: this._getUIWW(),
             wh: this._getWH(),
             uiScale: this._getUiScale(),
-            textConstants: this.textConstants,
             svgDrawer: this.svgDrawer
         });
 
@@ -293,7 +288,6 @@ export class TitleMenuTextureRenderer {
                 ...renderState,
                 hoverProgress: 0
             },
-            textConstants: this.textConstants,
             uiww: this._getUIWW(),
             uiScale: this._getUiScale()
         });

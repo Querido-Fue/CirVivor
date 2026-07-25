@@ -2,10 +2,18 @@ import { TitleOverlay } from './_title_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
-import { getData } from 'data/data_handler.js';
+import { UI_RADIUS } from 'ui/layout/layout_tokens.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
+import {
+    addOverlayCloseFooter,
+    addOverlayPageHeader
+} from '../_overlay_layout_recipes.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const DECK_OVERLAY_LAYOUT = Object.freeze({
+    WIDTH_UIWW_RATIO: 0.65,
+    HEIGHT_WH_RATIO: 0.7
+});
 
 /**
  * @class DeckOverlay
@@ -24,8 +32,8 @@ export class DeckOverlay extends TitleOverlay {
      * 화면 크기 비율에 맞춰 오버레이 너비/높이를 재지정합니다.
      */
     _onResize() {
-        this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.DECK.WIDTH_UIWW_RATIO;
-        this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.DECK.HEIGHT_WH_RATIO;
+        this.width = this.UIWW * DECK_OVERLAY_LAYOUT.WIDTH_UIWW_RATIO;
+        this.height = this.WH * DECK_OVERLAY_LAYOUT.HEIGHT_WH_RATIO;
     }
 
     /**
@@ -34,42 +42,41 @@ export class DeckOverlay extends TitleOverlay {
      */
     _generateLayout() {
         this._releaseElements();
-        const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.8)
-            .space("WH", 2.5)
-            .item("text", "title_text").stylePreset("h1").text(getLangString('title_deck_title')).fill(ColorSchemes.Title.TextDark)
-            .space("WH", 1.5)
-            .item("line", "divider_line").width("fill").stroke(ColorSchemes.Overlay.Panel.Divider).lineWidth(1).align("center")
-            .space("OH", 6)
+        const handler = addOverlayPageHeader(
+            new LayoutHandler(this, this.positioningHandler),
+            { title: getLangString('title_deck_title') }
+        ).space("OH", 6)
 
             .group().justifyContent("space-evenly", "WW", 2).width("parent", 100).align("center")
-            .item("button", "achievement_btn").width("fill").height("OH", 65).prop("text", "").radius("preset", "overlay_panel_radius")
+            .item("button", "achievement_btn").width("fill").height("OH", 65).prop("text", "").radius(UI_RADIUS.OVERLAY_PANEL)
             .buttonColor(ColorSchemes.Overlay.Control).prop("enableHoverGradient", false)
             .childSpace("parent", 20)
-            .child("text").text("🏆").prop("font", `${this.UIWW * 0.04 * this.uiScale}px "Pretendard Variable", arial`).align("center").fill(ColorSchemes.Title.TextDark)
+            .child("text").text("🏆").textStyle(TYPOGRAPHY.DISPLAY_ICON).align("center").fill(ColorSchemes.Title.TextDark)
             .childSpace("parent", 5)
-            .child("text").stylePreset("h3").text(getLangString('title_deck_achievements')).align("center").fill(ColorSchemes.Title.TextDark)
+            .child("text").textStyle(TYPOGRAPHY.H3).text(getLangString('title_deck_achievements')).align("center").fill(ColorSchemes.Title.TextDark)
             .childSpace("parent", 25)
             .child("progress_bar").width("parent", 70).height("WH", 0.8).prop("percent", this.achievementProgress).prop("baseColor", ColorSchemes.Overlay.Text.Item).prop("fillColor", ColorSchemes.Cursor.Active).align("center")
             .childSpace("parent", 5)
-            .child("text").text(`${this.achievementProgress}%`).stylePreset("h4_bold").align("center").fill(ColorSchemes.Cursor.Active)
+            .child("text").text(`${this.achievementProgress}%`).textStyle(TYPOGRAPHY.PROGRESS_VALUE).align("center").fill(ColorSchemes.Cursor.Active)
 
-            .item("button", "encyclopedia_btn").width("fill").height("OH", 65).prop("text", "").radius("preset", "overlay_panel_radius")
+            .item("button", "encyclopedia_btn").width("fill").height("OH", 65).prop("text", "").radius(UI_RADIUS.OVERLAY_PANEL)
             .buttonColor(ColorSchemes.Overlay.Control).prop("enableHoverGradient", false)
             .childSpace("parent", 20)
-            .child("text").text("📖").prop("font", `${this.UIWW * 0.04 * this.uiScale}px "Pretendard Variable", arial`).align("center").fill(ColorSchemes.Title.TextDark)
+            .child("text").text("📖").textStyle(TYPOGRAPHY.DISPLAY_ICON).align("center").fill(ColorSchemes.Title.TextDark)
             .childSpace("parent", 5)
-            .child("text").stylePreset("h3").text(getLangString('title_deck_encyclopedia')).align("center").fill(ColorSchemes.Title.TextDark)
+            .child("text").textStyle(TYPOGRAPHY.H3).text(getLangString('title_deck_encyclopedia')).align("center").fill(ColorSchemes.Title.TextDark)
             .childSpace("parent", 25)
             .child("progress_bar").width("parent", 70).height("WH", 0.8).prop("percent", this.encyclopediaProgress).prop("baseColor", ColorSchemes.Overlay.Text.Item).prop("fillColor", ColorSchemes.Cursor.Active).align("center")
             .childSpace("parent", 5)
-            .child("text").text(`${this.encyclopediaProgress}%`).stylePreset("h4_bold").align("center").fill(ColorSchemes.Cursor.Active)
+            .child("text").text(`${this.encyclopediaProgress}%`).textStyle(TYPOGRAPHY.PROGRESS_VALUE).align("center").fill(ColorSchemes.Cursor.Active)
 
-            .endGroup()
+            .endGroup();
 
-            .bottomSpace("WH", 2.5)
-            .bottomItem("button", "close_btn").stylePreset("overlay_interact_button").buttonText(getLangString('title_deck_close'))
-            .onClick(this.close.bind(this)).align("right");
-
+        addOverlayCloseFooter(handler, {
+            id: 'close_btn',
+            text: getLangString('title_deck_close'),
+            onClick: this.close.bind(this)
+        });
         applyOverlayConfirmButtonIcon(handler);
 
         const buildRes = handler.build();

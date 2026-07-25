@@ -1,7 +1,10 @@
-import { getData } from 'data/data_handler.js';
 import { DummyMenuOverlay } from './_dummy_menu_overlay.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const RESEARCH_OVERLAY_LAYOUT = Object.freeze({
+    WIDTH_UIWW_RATIO: 0.54,
+    HEIGHT_WH_RATIO: 0.5,
+    TITLE_ICON_SCALE_MULTIPLIER: 0.9
+});
 
 /**
  * @class ResearchOverlay
@@ -16,9 +19,9 @@ export class ResearchOverlay extends DummyMenuOverlay {
             titleKey: 'title_overlay_research_title',
             bodyKey: 'title_overlay_research_body',
             titleIconId: 'research',
-            titleIconScaleMultiplier: TITLE_CONSTANTS.TITLE_OVERLAY.RESEARCH.TITLE_ICON_SCALE_MULTIPLIER,
-            widthRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RESEARCH.WIDTH_UIWW_RATIO,
-            heightRatio: TITLE_CONSTANTS.TITLE_OVERLAY.RESEARCH.HEIGHT_WH_RATIO
+            titleIconScaleMultiplier: RESEARCH_OVERLAY_LAYOUT.TITLE_ICON_SCALE_MULTIPLIER,
+            widthRatio: RESEARCH_OVERLAY_LAYOUT.WIDTH_UIWW_RATIO,
+            heightRatio: RESEARCH_OVERLAY_LAYOUT.HEIGHT_WH_RATIO
         });
     }
 }

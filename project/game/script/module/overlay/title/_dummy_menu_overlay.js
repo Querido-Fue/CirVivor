@@ -1,11 +1,15 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { getData } from 'data/data_handler.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { getLangString } from 'ui/ui_system.js';
 import { TitleOverlay } from './_title_overlay.js';
 import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
+import { addOverlayCloseFooter } from '../_overlay_layout_recipes.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const DUMMY_OVERLAY_DEFAULT_LAYOUT = Object.freeze({
+    WIDTH_UIWW_RATIO: 0.4,
+    HEIGHT_WH_RATIO: 0.55
+});
 
 /**
  * @class DummyMenuOverlay
@@ -26,8 +30,8 @@ export class DummyMenuOverlay extends TitleOverlay {
         this.titleKey = options.titleKey || 'title_card_dummy_status';
         this.bodyKey = options.bodyKey || 'title_card_dummy_status';
         this.closeKey = options.closeKey || 'title_menu_close';
-        this.widthRatio = Number.isFinite(options.widthRatio) ? options.widthRatio : TITLE_CONSTANTS.TITLE_OVERLAY.CREDITS.WIDTH_UIWW_RATIO;
-        this.heightRatio = Number.isFinite(options.heightRatio) ? options.heightRatio : TITLE_CONSTANTS.TITLE_OVERLAY.CREDITS.HEIGHT_WH_RATIO;
+        this.widthRatio = Number.isFinite(options.widthRatio) ? options.widthRatio : DUMMY_OVERLAY_DEFAULT_LAYOUT.WIDTH_UIWW_RATIO;
+        this.heightRatio = Number.isFinite(options.heightRatio) ? options.heightRatio : DUMMY_OVERLAY_DEFAULT_LAYOUT.HEIGHT_WH_RATIO;
     }
 
     /**
@@ -49,7 +53,7 @@ export class DummyMenuOverlay extends TitleOverlay {
             .paddingX('WW', 1.8)
             .space('WH', 2.4)
             .item('text', 'dummy_overlay_title')
-            .stylePreset('h1')
+            .textStyle(TYPOGRAPHY.H1)
             .text(getLangString(this.titleKey))
             .fill(ColorSchemes.Title.TextDark)
             .space('WH', 1.2)
@@ -60,21 +64,20 @@ export class DummyMenuOverlay extends TitleOverlay {
             .align('center')
             .space('WH', 2.2)
             .item('text', 'dummy_overlay_status')
-            .stylePreset('h3')
+            .textStyle(TYPOGRAPHY.H3)
             .text(getLangString('title_card_dummy_status'))
             .fill(ColorSchemes.Cursor.Active)
             .space('WH', 1.2)
             .item('text', 'dummy_overlay_body')
-            .stylePreset('h5')
+            .textStyle(TYPOGRAPHY.H5)
             .text(getLangString(this.bodyKey))
-            .fill(ColorSchemes.Overlay.Text.Item)
-            .bottomSpace('WH', 2.5)
-            .bottomItem('button', 'dummy_overlay_close')
-            .stylePreset('overlay_interact_button')
-            .buttonText(getLangString(this.closeKey))
-            .onClick(this.close.bind(this))
-            .align('right');
+            .fill(ColorSchemes.Overlay.Text.Item);
 
+        addOverlayCloseFooter(handler, {
+            id: 'dummy_overlay_close',
+            text: getLangString(this.closeKey),
+            onClick: this.close.bind(this)
+        });
         applyOverlayConfirmButtonIcon(handler);
 
         const buildResult = handler.build();

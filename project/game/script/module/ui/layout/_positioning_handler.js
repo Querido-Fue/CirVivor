@@ -1,41 +1,4 @@
-import { getData } from 'data/data_handler.js';
 import { getWW, getWH, getUIWW } from 'display/display_system.js';
-
-const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
-const UI_CONSTANTS = getData('UI_CONSTANTS');
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-
-const UI_DATA_NAMESPACES = Object.freeze({
-    UI_CONSTANTS,
-    BUTTON_CONSTANTS,
-    TEXT_CONSTANTS,
-});
-
-/**
- * @private
- * 중첩 객체 내부 특정 경로의 UI 상수 데이터를 탐색합니다.
- * @param {string} path "UI_CONSTANTS.BUTTON.WIDTH"와 같은 참조 경로 문자열
- * @returns {*}
- */
-const resolveUIDataByPath = (path) => {
-    const keys = path.split('.');
-    let current = UI_DATA_NAMESPACES;
-
-    for (const key of keys) {
-        if (current === null || current === undefined || typeof current !== 'object') {
-            console.warn(`[PositioningHandler] "${path}" 경로를 찾을 수 없습니다. ("${key}" 에서 탐색 실패)`);
-            return null;
-        }
-        current = current[key];
-    }
-
-    if (current === null || current === undefined) {
-        console.warn(`[PositioningHandler] "${path}" 경로의 값이 없습니다.`);
-        return null;
-    }
-
-    return current;
-};
 
 /**
  * @class PositioningHandler
@@ -63,8 +26,9 @@ export class PositioningHandler {
     }
 
     /**
-     * 문자열 경로 또는 { BASE, VALUE } 객체를 실제 픽셀 float 값으로 변환합니다.
-     * @param {string|{ BASE: string, VALUE: number }|number} data
+     * 직접 import한 `{ BASE, VALUE }` 객체를 실제 픽셀 float 값으로 변환합니다.
+     * 문자열 registry 경로는 지원하지 않습니다.
+     * @param {{ BASE: string, VALUE: number }|number} data
      * @param {number} [uiScale=this.uiScale]
      * @returns {number}
      */
@@ -76,18 +40,12 @@ export class PositioningHandler {
 
         if (typeof data === 'number') return data;
 
-        let resolvedData = data;
-        if (typeof resolvedData === 'string') {
-            resolvedData = resolveUIDataByPath(resolvedData);
-            if (resolvedData === null) return 0;
-        }
-
-        if (typeof resolvedData !== 'object' || resolvedData.BASE === undefined || resolvedData.VALUE === undefined) {
+        if (typeof data !== 'object' || data.BASE === undefined || data.VALUE === undefined) {
             console.warn('[PositioningHandler] parseUIData()에 유효하지 않은 데이터가 전달되었습니다:', data);
             return 0;
         }
 
-        return this.parseUnit(resolvedData.BASE, resolvedData.VALUE, undefined, uiScale);
+        return this.parseUnit(data.BASE, data.VALUE, undefined, uiScale);
     }
 
     /**
@@ -207,8 +165,8 @@ export class PositioningHandler {
 }
 
 /**
- * 문자열 기반 UI 상수 데이터를 실제 값으로 변환합니다.
- * @param {string|object|number} data - 파싱할 UI 데이터
+ * 직접 import한 UI 수치 객체를 실제 값으로 변환합니다.
+ * @param {object|number} data - 파싱할 UI 데이터
  * @param {number} [uiScale=1] - UI 스케일 배율
  * @returns {number} 파싱된 수치 값
  */

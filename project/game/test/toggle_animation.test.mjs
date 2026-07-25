@@ -85,15 +85,6 @@ const dependencies = new Map([
     ['util/number_util.js', createSyntheticModule(context, {
         clamp01: (value) => Math.min(1, Math.max(0, value))
     })],
-    ['data/data_handler.js', createSyntheticModule(context, {
-        getData: () => ({
-            TOGGLE_ANIMATION: {
-                DURATION_SECONDS: 0.32,
-                EASING: 'easeOutExpo',
-                KNOB_TRAVEL_SHRINK_RATIO: 0.4
-            }
-        })
-    })],
     ['./_dropdown.js', createSyntheticModule(context, {
         DropdownElement: class DropdownElementStub {
             static isPointerBlockedFor() { return false; }
