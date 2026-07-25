@@ -1,6 +1,4 @@
-import { getData } from 'data/data_handler.js';
-
-const BOUND_RADIUS_HALF_SCALE = getData('COLLISION_CONSTANTS').BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
+import { COLLISION_BOUND_RADIUS_HALF_SCALE } from './collision_body_layout.js';
 
 /**
  * 벽 rect에서 중심과 반치수 metric을 계산합니다.
@@ -11,8 +9,8 @@ function createCollisionWallRectMetrics(rect) {
     const w = Number.isFinite(rect.w) ? rect.w : 0;
     const h = Number.isFinite(rect.h) ? rect.h : 0;
     const isCenter = rect.origin === 'center' || rect.isCenter === true;
-    const hw = w * BOUND_RADIUS_HALF_SCALE;
-    const hh = h * BOUND_RADIUS_HALF_SCALE;
+    const hw = w * COLLISION_BOUND_RADIUS_HALF_SCALE;
+    const hh = h * COLLISION_BOUND_RADIUS_HALF_SCALE;
     const cx = isCenter ? rect.x : (rect.x + hw);
     const cy = isCenter ? rect.y : (rect.y + hh);
     return { cx, cy, hw, hh };

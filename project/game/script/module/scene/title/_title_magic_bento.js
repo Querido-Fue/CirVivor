@@ -1,5 +1,5 @@
 import { getCanvas, getDisplaySystem, getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
-import { getData } from 'data/data_handler.js';
+import { TITLE_MAGIC_BENTO_DATA } from 'data/scene/title/title_magic_bento_data.js';
 import { getMouseInput, hasMouseState } from 'input/input_system.js';
 import { getDelta } from 'game/time_handler.js';
 import {
@@ -17,6 +17,10 @@ import {
     updateBentoCardRipples
 } from './magic_bento/_title_magic_bento_effect_state.js';
 import { recalculateBentoCardLayout } from './magic_bento/_title_magic_bento_layout.js';
+import {
+    getTitleMagicBentoEntranceMotion,
+    TITLE_MAGIC_BENTO_SHARED_CONSTANTS
+} from './magic_bento/_title_magic_bento_constants.js';
 import { getBentoCardPalette } from './magic_bento/_title_magic_bento_theme.js';
 import { clamp } from './magic_bento/_title_magic_bento_motion.js';
 import {
@@ -27,11 +31,9 @@ import {
     updateBentoCardInteractionState,
     updateBentoSpotlight
 } from './magic_bento/_title_magic_bento_state.js';
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from './_title_runtime_constants.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_MAGIC_BENTO_DATA = getData('TITLE_MAGIC_BENTO_DATA');
-const TITLE_MAGIC_BENTO = TITLE_CONSTANTS.TITLE_MAGIC_BENTO;
-const TITLE_LOADING = TITLE_CONSTANTS.TITLE_LOADING;
+const TITLE_MAGIC_BENTO = TITLE_MAGIC_BENTO_SHARED_CONSTANTS;
 
 /**
  * @class TitleMagicBento
@@ -181,8 +183,10 @@ export class TitleMagicBento {
      * @private
      */
     #createCardRuntime(definition) {
+        const entranceMotion = getTitleMagicBentoEntranceMotion(definition.id) || {};
         return {
             ...definition,
+            ...entranceMotion,
             baseWidth: 0,
             baseHeight: 0,
             finalCenterX: 0,

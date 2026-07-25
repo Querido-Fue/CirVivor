@@ -59,10 +59,14 @@ function extractSourceSection(source, startMarker, endMarker) {
 /**
  * 현재 `_enemy_ai_navigation.js`의 실제 heap helper와 buildFlowField 원문으로 oracle을 만듭니다.
  * @param {string} source - navigation production 소스입니다.
- * @param {object} constants - 현재 production Enemy AI 상수입니다.
  * @returns {(grid:object,goalCell:object)=>object} production JS flow-field oracle입니다.
  */
-function createProductionFlowFieldOracle(source, constants) {
+function createProductionFlowFieldOracle(source) {
+    const flowMathConstantsSource = extractSourceSection(
+        source,
+        'const EPSILON = ',
+        '\nconst CLEARANCE_BUCKET_STEP'
+    );
     const directionsSource = extractSourceSection(
         source,
         'const DIRS = Object.freeze([',
@@ -85,9 +89,7 @@ function createProductionFlowFieldOracle(source, constants) {
     );
     const executableSource = `
         "use strict";
-        const EPSILON = ${JSON.stringify(constants.EPSILON)};
-        const INF = ${JSON.stringify(constants.INF)};
-        const DIAGONAL_COST = ${JSON.stringify(constants.DIAGONAL_COST)};
+        ${flowMathConstantsSource}
         ${directionsSource}
         const flowOpenHeap = [];
         let flowOpenPositions = new Int32Array(0);
@@ -334,15 +336,11 @@ const totalStartedAt = performance.now();
 const runtimeModule = await loadGameModule(
     'object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js'
 );
-const constantsModule = await loadGameModule('data/object/enemy/enemy_ai_constants.js');
 const bytesModule = await loadGameModule(
     'object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_bytes.js'
 );
 const navigationSource = (await readFile(NAVIGATION_PATH, 'utf8')).replace(/\r\n/g, '\n');
-const oracle = createProductionFlowFieldOracle(
-    navigationSource,
-    constantsModule.ENEMY_AI_CONSTANTS
-);
+const oracle = createProductionFlowFieldOracle(navigationSource);
 const wasmRuntime = runtimeModule.createEnemyAIFlowFieldWasmRuntimeSync();
 const fuzz = runDeterministicFuzz(oracle, wasmRuntime);
 const canary = runAbiCanaries(bytesModule.ENEMY_AI_FLOW_FIELD_WASM_BYTES);

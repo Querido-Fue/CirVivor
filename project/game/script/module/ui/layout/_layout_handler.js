@@ -1,12 +1,11 @@
-import { getData } from 'data/data_handler.js';
 import { UIElementFactory } from 'ui/element/_ui_element_factory.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
 import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
+import { resolveButtonStyle } from 'ui/style/_component_style_resolver.js';
+import { isButtonStyleToken } from 'ui/style/component_styles.js';
+import { isTypographyToken } from 'ui/style/typography.js';
 
-const BUTTON_CONSTANTS = getData('BUTTON_CONSTANTS');
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const UI_CONSTANTS = getData('UI_CONSTANTS');
-
+const DEFAULT_LAYOUT_LAYER = 'ui';
 const DEFAULT_LAYOUT_ALIGN = 'left';
 const DEFAULT_LAYOUT_VERTICAL_ALIGN = 'top';
 const DEFAULT_SPACER_UNIT = 'fill';
@@ -31,6 +30,20 @@ const LAYOUT_JUSTIFY_CONTENT_TYPES = Object.freeze([
     'space-between',
     'space-around',
     'space-evenly'
+]);
+const TYPOGRAPHY_PROP_KEYS = new Set([
+    'font',
+    'fontSize',
+    'fontWeight',
+    'fontFamily',
+    'size',
+    'valueFont'
+]);
+const TEXT_STYLE_ITEM_TYPES = new Set([
+    'text',
+    'button',
+    'dropdown',
+    'segment_control'
 ]);
 
 /**
@@ -74,6 +87,18 @@ function resolveMetricKeyword(unit) {
 }
 
 /**
+ * 값이 `{ BASE, VALUE }` 형태의 반응형 레이아웃 수치인지 확인합니다.
+ * @param {*} value - 검사할 값입니다.
+ * @returns {boolean} 레이아웃 수치 객체이면 true입니다.
+ */
+function isLayoutMetric(value) {
+    return value !== null
+        && typeof value === 'object'
+        && typeof value.BASE === 'string'
+        && Number.isFinite(value.VALUE);
+}
+
+/**
  * @class LayoutHandler
  * @description 게임 UI 컴포넌트의 위치(x, y)를 단위(WW, WH 등) 기반으로 자동 계산해 주는 빌더 패턴 클래스입니다.
  */
@@ -92,7 +117,7 @@ export class LayoutHandler {
      */
     constructor(parent, positioningHandler = null) {
         this.parent = parent;
-        this.layer = parent.layer || GLOBAL_CONSTANTS.FALLBACK_LAYOUT;
+        this.layer = parent.layer || DEFAULT_LAYOUT_LAYER;
         this.uiScale = parent.uiScale || 1;
         this.positioningHandler = positioningHandler || new PositioningHandler(parent, this.uiScale);
         this.positioningHandler.resize(parent, this.uiScale);
@@ -183,12 +208,12 @@ export class LayoutHandler {
 
     /**
      * 레이아웃 내부의 좌우 패딩을 지정합니다.
-     * @param {string} unit - 패딩 단위 ('WW', 'OW' 등)
-     * @param {number} value - 패딩 크기
+     * @param {string|{BASE:string,VALUE:number}} unit - 패딩 단위 또는 레이아웃 토큰
+     * @param {number} [value] - 패딩 크기
      * @returns {LayoutHandler}
      */
     paddingX(unit, value) {
-        this.#paddingX = { unit, value };
+        this.#paddingX = this.#normalizeMetricSpec(unit, value);
         return this;
     }
 
@@ -252,8 +277,8 @@ export class LayoutHandler {
 
     /**
      * 현재 아이템 내부에 세로 공간을 추가합니다.
-     * @param {string} unit - 간격 단위
-     * @param {number} value - 간격 값
+     * @param {string|{BASE:string,VALUE:number}} unit - 간격 단위 또는 레이아웃 토큰
+     * @param {number} [value] - 간격 값
      * @param {string} [id=null] - 고유 식별자 ID
      * @returns {LayoutHandler}
      */
@@ -263,8 +288,8 @@ export class LayoutHandler {
 
     /**
      * 현재 컨텍스트에 세로 공간을 추가합니다.
-     * @param {string} unit - 간격 단위
-     * @param {number} value - 간격 값
+     * @param {string|{BASE:string,VALUE:number}} unit - 간격 단위 또는 레이아웃 토큰
+     * @param {number} [value] - 간격 값
      * @param {string} [id=null] - 고유 식별자 ID
      * @returns {LayoutHandler}
      */
@@ -274,8 +299,8 @@ export class LayoutHandler {
 
     /**
      * 하단 누적 영역에 세로 공간을 추가합니다.
-     * @param {string} unit - 간격 단위
-     * @param {number} value - 간격 값
+     * @param {string|{BASE:string,VALUE:number}} unit - 간격 단위 또는 레이아웃 토큰
+     * @param {number} [value] - 간격 값
      * @param {string} [id=null] - 고유 식별자 ID
      * @returns {LayoutHandler}
      */
@@ -338,19 +363,64 @@ export class LayoutHandler {
     /** 항목의 값(Value)을 지정합니다. margin 아이템 등의 크기를 지정할 때 사용합니다. */
     value(unit, val) {
         if (this.#currentItem) {
-            this.#currentItem.unit = unit;
-            this.#currentItem.value = val;
+            const metric = this.#normalizeMetricSpec(unit, val);
+            this.#currentItem.unit = metric.unit;
+            this.#currentItem.value = metric.value;
         }
         return this;
     }
 
     /**
-     * 프리셋 이름을 지정합니다.
-     * @param {string} preset - 프리셋 이름
+     * 현재 텍스트 표시 요소에 승인된 타이포그래피 토큰을 지정합니다.
+     * @param {object} token - `TYPOGRAPHY`에서 가져온 토큰입니다.
      * @returns {LayoutHandler}
      */
-    stylePreset(preset) {
-        if (this.#currentItem) this.#currentItem.preset = preset;
+    textStyle(token) {
+        if (!isTypographyToken(token)) {
+            throw new TypeError('textStyle()에는 TYPOGRAPHY 토큰만 전달할 수 있습니다.');
+        }
+        if (this.#currentItem && !TEXT_STYLE_ITEM_TYPES.has(this.#currentItem.type)) {
+            throw new TypeError(`textStyle()은 ${this.#currentItem.type} 아이템에 사용할 수 없습니다.`);
+        }
+        if (this.#currentItem) {
+            this.#currentItem.textStyle = token;
+        }
+        return this;
+    }
+
+    /**
+     * 현재 slider의 값 표시에 승인된 타이포그래피 토큰을 지정합니다.
+     * @param {object} token - `TYPOGRAPHY`에서 가져온 토큰입니다.
+     * @returns {LayoutHandler}
+     */
+    valueTextStyle(token) {
+        if (!isTypographyToken(token)) {
+            throw new TypeError('valueTextStyle()에는 TYPOGRAPHY 토큰만 전달할 수 있습니다.');
+        }
+        if (this.#currentItem && this.#currentItem.type !== 'slider') {
+            throw new TypeError(`valueTextStyle()은 ${this.#currentItem.type} 아이템에 사용할 수 없습니다.`);
+        }
+        if (this.#currentItem) {
+            this.#currentItem.valueTextStyle = token;
+        }
+        return this;
+    }
+
+    /**
+     * 현재 button에 승인된 컴포넌트 스타일 토큰을 지정합니다.
+     * @param {object} token - `BUTTON_STYLE`에서 가져온 토큰입니다.
+     * @returns {LayoutHandler}
+     */
+    buttonStyle(token) {
+        if (!isButtonStyleToken(token)) {
+            throw new TypeError('buttonStyle()에는 BUTTON_STYLE 토큰만 전달할 수 있습니다.');
+        }
+        if (this.#currentItem && this.#currentItem.type !== 'button') {
+            throw new TypeError(`buttonStyle()은 ${this.#currentItem.type} 아이템에 사용할 수 없습니다.`);
+        }
+        if (this.#currentItem) {
+            this.#currentItem.buttonStyle = token;
+        }
         return this;
     }
 
@@ -496,13 +566,13 @@ export class LayoutHandler {
 
     /**
      * 현재 아이템의 모서리 반경을 지정합니다.
-     * @param {string} unitOrPreset - 단위 또는 preset 키워드입니다.
-     * @param {number|string} valueOrKey - 단위 값 또는 preset 키입니다.
+     * @param {string|{BASE:string, VALUE:number}} unitOrPreset - 단위 또는 공용 반경 토큰입니다.
+     * @param {number} [valueOrKey] - 단위 값입니다.
      * @returns {LayoutHandler}
      */
     radius(unitOrPreset, valueOrKey) {
         if (this.#currentItem) {
-            this.#currentItem.radiusObj = { unit: unitOrPreset, value: valueOrKey };
+            this.#currentItem.radiusObj = this.#normalizeMetricSpec(unitOrPreset, valueOrKey);
         }
         return this;
     }
@@ -555,6 +625,9 @@ export class LayoutHandler {
      * @returns {LayoutHandler}
      */
     prop(key, value) {
+        if (TYPOGRAPHY_PROP_KEYS.has(key)) {
+            throw new TypeError(`LayoutHandler.prop('${key}') 직접 타이포그래피 접근은 허용되지 않습니다.`);
+        }
         if (this.#currentItem) this.#currentItem.props[key] = value;
         return this;
     }
@@ -670,8 +743,8 @@ export class LayoutHandler {
         const targetGroup = this.#getCurrentGroup();
         if (targetGroup) {
             targetGroup.justifyContent = type;
-            if (gapUnit && gapValue !== undefined) {
-                targetGroup.gap = { unit: gapUnit, value: gapValue };
+            if (isLayoutMetric(gapUnit) || (gapUnit && gapValue !== undefined)) {
+                targetGroup.gap = this.#normalizeMetricSpec(gapUnit, gapValue);
             }
         }
         return this;
@@ -704,11 +777,14 @@ export class LayoutHandler {
 
     /**
      * 크기 지정 인자를 내부 규격으로 정규화합니다.
-     * @param {string} unit - 입력 단위 또는 키워드
+     * @param {string|{BASE:string, VALUE:number}} unit - 입력 단위, 키워드 또는 레이아웃 토큰
      * @param {number} [value] - 입력 값
      * @returns {{unit:string, value:number|undefined}}
      */
     #normalizeMetricSpec(unit, value) {
+        if (isLayoutMetric(unit)) {
+            return { unit: unit.BASE, value: unit.VALUE };
+        }
         const normalizedUnit = resolveMetricKeyword(unit);
         if (normalizedUnit) return { unit: normalizedUnit, value: undefined };
         return { unit, value };
@@ -814,6 +890,7 @@ export class LayoutHandler {
             return this.#resolveSpacerLayout(item, parentW, isHboxChild);
         }
 
+        this.#validateStyleContract(item);
         this.#applyRadius(item, parentW);
         const widthMode = item.widthObj?.unit || null;
 
@@ -871,24 +948,40 @@ export class LayoutHandler {
      */
     #applyRadius(item, parentW) {
         if (!item.radiusObj) return;
-
-        if (item.radiusObj.unit === 'preset') {
-            let key = item.radiusObj.value;
-            if (key) key = key.toUpperCase();
-            const presetData = UI_CONSTANTS[key];
-            if (presetData) {
-                item.props.radius = this.parseUnit(presetData.BASE, presetData.VALUE, parentW);
-            } else {
-                item.props.radius = 0;
-            }
-            return;
-        }
-
         item.props.radius = this.parseUnit(item.radiusObj.unit, item.radiusObj.value, parentW);
     }
 
     /**
-     * 아이템의 최종 너비를 타입, preset, width 규칙에 따라 계산합니다.
+     * 텍스트를 표시하는 아이템이 승인된 의미 토큰을 사용하는지 검증합니다.
+     * @param {object} item - 검증할 레이아웃 아이템입니다.
+     * @returns {void}
+     * @private
+     */
+    #validateStyleContract(item) {
+        if (item.type === 'text' && !isTypographyToken(item.textStyle)) {
+            throw new TypeError(`text 아이템 "${item.id}"에는 textStyle(TYPOGRAPHY.*)가 필요합니다.`);
+        }
+        if (
+            item.type === 'button'
+            && item.props.text
+            && !isButtonStyleToken(item.buttonStyle)
+            && !isTypographyToken(item.textStyle)
+        ) {
+            throw new TypeError(`텍스트 button "${item.id}"에는 buttonStyle() 또는 textStyle()이 필요합니다.`);
+        }
+        if (
+            (item.type === 'dropdown' || item.type === 'segment_control')
+            && !isTypographyToken(item.textStyle)
+        ) {
+            throw new TypeError(`${item.type} 아이템 "${item.id}"에는 textStyle(TYPOGRAPHY.*)가 필요합니다.`);
+        }
+        if (item.type === 'slider' && !isTypographyToken(item.valueTextStyle)) {
+            throw new TypeError(`slider 아이템 "${item.id}"에는 valueTextStyle(TYPOGRAPHY.*)가 필요합니다.`);
+        }
+    }
+
+    /**
+     * 아이템의 최종 너비를 타입, 컴포넌트 스타일, width 규칙에 따라 계산합니다.
      * @param {object} item - 레이아웃 아이템 상태입니다.
      * @param {number} parentW - 부모 너비입니다.
      * @param {number} parentH - 부모 높이입니다.
@@ -912,12 +1005,14 @@ export class LayoutHandler {
             return contentW;
         }
 
-        const presetData = (item.type === 'button' && item.preset)
-            ? (BUTTON_CONSTANTS[item.preset.toUpperCase()] || {})
-            : {};
-
         if (item.type === 'button') {
-            return this.parseUnit(presetData.WIDTH?.BASE || 'WW', presetData.WIDTH?.VALUE || 10, parentW);
+            if (isButtonStyleToken(item.buttonStyle)) {
+                return resolveButtonStyle(
+                    item.buttonStyle,
+                    (metric) => this.parseUnit(metric.BASE, metric.VALUE, parentW)
+                ).width;
+            }
+            return this.parseUnit('WW', 10, parentW);
         }
         if (item.type === 'slider' || item.type === 'line' || item.type === 'progress_bar') {
             return this.parseUnit('WW', 10, parentW);

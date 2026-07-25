@@ -1,12 +1,9 @@
-import { getData } from 'data/data_handler.js';
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
-const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
-const PROJECTILE_IMPACT = COLLISION_CONSTANTS.PROJECTILE_IMPACT;
-const EPSILON = COLLISION_CONSTANTS.EPSILON;
-const ROTATION_IMPULSE_SCALE = PROJECTILE_IMPACT.ROTATION_IMPULSE_SCALE;
-const ROTATION_RESPONSE_MULTIPLIER = PROJECTILE_IMPACT.ROTATION_RESPONSE_MULTIPLIER;
-const PROJECTILE_WEIGHT_MIN = PROJECTILE_IMPACT.PROJECTILE_WEIGHT_MIN;
-const ENEMY_WEIGHT_MIN = PROJECTILE_IMPACT.ENEMY_WEIGHT_MIN;
+const ROTATION_IMPULSE_SCALE = 0.12;
+const ROTATION_RESPONSE_MULTIPLIER = 1.3;
+const PROJECTILE_WEIGHT_MIN = 0.01;
+const ENEMY_WEIGHT_MIN = 0.1;
 
 /**
  * 투사체 속도 축 값을 velocity, speed fallback 순서로 조회합니다.
@@ -83,7 +80,7 @@ export function applyCollisionProjectileImpact(projectile, enemy, manifold) {
     const vx = getCollisionProjectileVelocityAxis(projectile, 'x');
     const vy = getCollisionProjectileVelocityAxis(projectile, 'y');
     const speed = Math.hypot(vx, vy);
-    if (speed <= EPSILON) return;
+    if (speed <= COLLISION_EPSILON) return;
 
     const impactX = Number.isFinite(manifold.pointX) ? manifold.pointX : enemy.position.x;
     const impactY = Number.isFinite(manifold.pointY) ? manifold.pointY : enemy.position.y;

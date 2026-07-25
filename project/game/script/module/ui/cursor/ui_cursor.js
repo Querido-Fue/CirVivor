@@ -2,12 +2,32 @@ import { getCanvas, getDisplaySystem, getWW, getWH, render, shadowOn, shadowOff 
 import { getDelta } from 'game/time_handler.js';
 import { animate, remove } from 'animation/animation_system.js';
 import { getMouseInput, isMousePressing } from 'input/input_system.js';
-import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { toRadians } from 'util/math_util.js';
 import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 
-const CURSOR_CONSTANTS = getData('CURSOR_CONSTANTS');
+const CURSOR_CONSTANTS = Object.freeze({
+    NORMAL: Object.freeze({
+        ARROW_ROTATION_DEG: 330,
+        LARGE_ARROW_SIZE_WH_RATIO: 0.015,
+        SMALL_ARROW_SIZE_WH_RATIO: 0.014,
+        SUB_CIRCLE_RADIUS_WH_RATIO: 0.015,
+        SUB_CIRCLE_ALPHA: 0.5,
+        SUB_CIRCLE_OFFSET_X_WH_RATIO: 0.01,
+        SUB_CIRCLE_OFFSET_Y_WH_RATIO: 0.02,
+        CLICK_RADIUS_MULTIPLIER: 0.7,
+        CLICK_ALPHA_MULTIPLIER: 1.5,
+        ANIM_DURATION: 0.5
+    }),
+    ATTACK: Object.freeze({
+        LINE_LONG_PX: 8,
+        LINE_SHORT_PX: 3,
+        CENTER_DOT_RADIUS_PX: 2,
+        SHADOW_BLUR_PX: 10,
+        LINE_WIDTH_PX: 1,
+        ANIM_DURATION: 0.3
+    })
+});
 const NORMAL_CURSOR_CONSTANTS = CURSOR_CONSTANTS.NORMAL;
 const ATTACK_CURSOR_CONSTANTS = CURSOR_CONSTANTS.ATTACK;
 const CURSOR_LAYER = 'top';

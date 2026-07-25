@@ -1,4 +1,3 @@
-import { getData } from 'data/data_handler.js';
 import { CollisionDetector } from './_collision_detector.js';
 import {
     COLLISION_CANDIDATE_SWEEP_PAD_SCALE,
@@ -59,6 +58,7 @@ import { getCollisionPassRule, areCollisionBodiesSameEntity } from './collision_
 import { writeCollisionProjectileSweepBody } from './collision_projectile_sweep_body.js';
 import { writeCollisionWallBodies } from './collision_wall_body_builder.js';
 import {
+    COLLISION_BASE_STAT_FIELDS,
     createCollisionFrameStats,
     createCollisionFrameStatsSnapshot,
     resetCollisionFrameStats
@@ -75,18 +75,18 @@ import {
     COLLISION_CANDIDATE_SWEEP_INDEX as CANDIDATE_SWEEP_INDEX,
     COLLISION_CANDIDATE_SWEEP_STRIDE as CANDIDATE_SWEEP_STRIDE
 } from './collision_soa_layout.js';
+import {
+    COLLISION_GRID_CELL_KEY_OFFSET as CELL_KEY_OFFSET,
+    COLLISION_GRID_CELL_KEY_STRIDE as CELL_KEY_STRIDE
+} from './collision_grid_layout.js';
+import { COLLISION_EPSILON as EPSILON } from './collision_math_constants.js';
 import { getSimulationSetting } from '../simulation/simulation_runtime.js';
 
-const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
-const EPSILON = COLLISION_CONSTANTS.EPSILON;
-const CELL_KEY_OFFSET = COLLISION_CONSTANTS.GRID.CELL_KEY_OFFSET;
-const CELL_KEY_STRIDE = COLLISION_CONSTANTS.GRID.CELL_KEY_STRIDE;
-const DEFAULT_PHYSICS_ITERATION_COUNT = COLLISION_CONSTANTS.SOLVER.DEFAULT_PHYSICS_ITERATION_COUNT;
-const PROJECTILE_SWEEP_RADIUS_STEP = COLLISION_CONSTANTS.SOLVER.PROJECTILE_SWEEP_RADIUS_STEP;
-const COLLISION_IDLE_TICKS_TO_SLEEP = COLLISION_CONSTANTS.SLEEP.IDLE_TICKS_TO_SLEEP;
-const COLLISION_SLEEP_TICKS = COLLISION_CONSTANTS.SLEEP.TICKS;
-const COLLISION_SLEEP_SPEED_SQ = COLLISION_CONSTANTS.SLEEP.SPEED_SQ;
-const COLLISION_BASE_STAT_FIELDS = COLLISION_CONSTANTS.FRAME_STATS.BASE_FIELDS;
+const DEFAULT_PHYSICS_ITERATION_COUNT = 3;
+const PROJECTILE_SWEEP_RADIUS_STEP = 0.45;
+const COLLISION_IDLE_TICKS_TO_SLEEP = 45;
+const COLLISION_SLEEP_TICKS = 2;
+const COLLISION_SLEEP_SPEED_SQ = 9;
 const COLLISION_ENEMY_BODY_BUILD_OPTIONS = Object.freeze({
     epsilon: EPSILON,
     frameResolveMinMax: COLLISION_RESOLVE_FRAME_MIN_MAX,

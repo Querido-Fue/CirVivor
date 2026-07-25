@@ -1,6 +1,10 @@
 import { getDelta, getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { getData } from 'data/data_handler.js';
+import { ENEMY_AI_DATA } from 'data/object/enemy/enemy_ai_data.js';
+import {
+    ENEMY_DEFAULT_WEIGHT,
+    ENEMY_SHAPE_TYPES
+} from 'data/object/enemy/enemy_catalog_data.js';
 import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { enemyAI } from './enemy/ai/_enemy_ai.js';
 import { createEnemyPools } from './enemy/_enemy_pool_factory.js';
@@ -29,12 +33,9 @@ import { updateObjectSystemEnemies } from './object_system_update_helpers.js';
 import { PhysicsSystem } from 'physics/physics_system.js';
 import { getSimulationObjectWH, getSimulationWW } from 'simulation/simulation_runtime.js';
 
-const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
-const ENEMY_DEFAULT_WEIGHT = getData('ENEMY_DEFAULT_WEIGHT');
-const ENEMY_AI_CONSTANTS = getData('ENEMY_AI_CONSTANTS');
 const AI_DECISION_GROUP_COUNT = 60;
 const AI_DECISION_INTERVAL_SECONDS = 1.0;
-const DEFAULT_ENEMY_AI_QUALITY_PROFILE = ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE;
+const DEFAULT_ENEMY_AI_QUALITY_PROFILE = ENEMY_AI_DATA.DEFAULT_QUALITY_PROFILE;
 const DEFAULT_OUTSIDE_CULL_RATIO = 0.1;
 
 let objectSystemInstance = null;

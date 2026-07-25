@@ -1,7 +1,8 @@
 import { getLangString } from 'ui/ui_system.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 import { getTitleMenuIconSource } from './_title_menu_icon.js';
-import { getTitleMenuTextPresetFontSize } from './_title_menu_text_layout.js';
+import { resolveTitleMenuTypography } from './_title_menu_text_layout.js';
 import { buildMenuStaticTextureThemeSignature } from './_title_menu_theme.js';
 
 /**
@@ -12,7 +13,6 @@ import { buildMenuStaticTextureThemeSignature } from './_title_menu_theme.js';
  * @param {number} options.uiww - UI 기준 너비입니다.
  * @param {number} options.wh - 화면 높이입니다.
  * @param {number} [options.uiScale=1] - 현재 UI 스케일 배율입니다.
- * @param {object} options.textConstants - 텍스트 상수입니다.
  * @param {import('display/_svg_drawer.js').SVGDrawer} options.svgDrawer - SVG 캐시 드로어입니다.
  * @returns {string} 캐시 식별자입니다.
  */
@@ -22,7 +22,6 @@ export function buildTitleMenuCardStaticTextureSignature({
     uiww,
     wh,
     uiScale = 1,
-    textConstants,
     svgDrawer
 }) {
     const panelRect = renderState.panelRect;
@@ -40,7 +39,11 @@ export function buildTitleMenuCardStaticTextureSignature({
         Math.round(uiww),
         Math.round(wh),
         _normalizeTitleMenuUiScale(uiScale).toFixed(3),
-        getTitleMenuTextPresetFontSize(textConstants, uiww, 'H6', uiScale),
+        resolveTitleMenuTypography(
+            TYPOGRAPHY.CARD_DESCRIPTION,
+            uiww,
+            uiScale
+        ).size,
         buildMenuStaticTextureThemeSignature(),
         getTitleMenuIconTextureSignature(svgDrawer, card.cardDefinition.id)
     ].join('|');

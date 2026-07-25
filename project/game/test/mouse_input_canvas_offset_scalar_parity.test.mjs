@@ -270,15 +270,6 @@ async function loadActualDisplaySystem() {
         ['save/save_system.js', createSyntheticModule('save/save_system.js', {
             getSetting: () => undefined
         })],
-        ['data/data_handler.js', createSyntheticModule('data/data_handler.js', {
-            getData: () => ({
-                WEBGL_RENDER_MODES: {
-                    BATCH: 'batch',
-                    OVERLAY_EFFECT: 'overlay-effect',
-                    EFFECT: 'effect'
-                }
-            })
-        })],
         ['./_surface_pool.js', createSyntheticModule('display/_surface_pool.js', {
             CanvasSurfacePool
         })],
@@ -292,6 +283,11 @@ async function loadActualDisplaySystem() {
         ['./display_surface_descriptor.js', createSyntheticModule(
             'display/display_surface_descriptor.js',
             {
+                DISPLAY_WEBGL_RENDER_MODES: Object.freeze({
+                    BATCH: 'batch',
+                    OVERLAY_EFFECT: 'overlay-effect',
+                    EFFECT: 'effect'
+                }),
                 compareDisplaySurfaceDescriptors: () => 0,
                 createDisplaySurfaceDescriptor: (value) => value,
                 resolveDisplayWebGLLayerName: (value) => value,

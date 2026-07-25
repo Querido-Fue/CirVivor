@@ -1,9 +1,6 @@
-import { getData } from 'data/data_handler.js';
 import { getCollisionBodyCollisionRadiusScale } from './_collision_resolve_tuning.js';
-
-const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
-const EPSILON = COLLISION_CONSTANTS.EPSILON;
-const CIRCLE_PART_STRIDE = COLLISION_CONSTANTS.BODY_BUILDER.CIRCLE_PART_STRIDE;
+import { COLLISION_CIRCLE_PART_STRIDE } from './collision_body_layout.js';
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
 /**
  * handler가 준비한 canonical enemy body 두 개의 boolean 접촉 여부만 판정합니다.
@@ -78,7 +75,7 @@ function detectCirclePartsVsCirclePartsContact(bodyA, bodyB) {
     const countA = Math.max(0, Math.floor(bodyA.circlePartCount || 0));
     const countB = Math.max(0, Math.floor(bodyB.circlePartCount || 0));
     for (let i = 0; i < countA; i++) {
-        const offsetA = i * CIRCLE_PART_STRIDE;
+        const offsetA = i * COLLISION_CIRCLE_PART_STRIDE;
         const ax = partsA[offsetA];
         const ay = partsA[offsetA + 1];
         const ar = partsA[offsetA + 2] * scaleA;
@@ -87,7 +84,7 @@ function detectCirclePartsVsCirclePartsContact(bodyA, bodyB) {
         }
 
         for (let j = 0; j < countB; j++) {
-            const offsetB = j * CIRCLE_PART_STRIDE;
+            const offsetB = j * COLLISION_CIRCLE_PART_STRIDE;
             const bx = partsB[offsetB];
             const by = partsB[offsetB + 1];
             const br = partsB[offsetB + 2] * scaleB;
@@ -125,7 +122,7 @@ function detectCirclePartsVsCircleContact(partBody, circleBody) {
     const partScale = getCollisionBodyCollisionRadiusScale(partBody, circleBody);
     const count = Math.max(0, Math.floor(partBody.circlePartCount || 0));
     for (let i = 0; i < count; i++) {
-        const offset = i * CIRCLE_PART_STRIDE;
+        const offset = i * COLLISION_CIRCLE_PART_STRIDE;
         const partX = parts[offset];
         const partY = parts[offset + 1];
         const partRadius = parts[offset + 2] * partScale;
@@ -167,11 +164,11 @@ function detectAggregateCircleContact(ax, ay, ar, bx, by, br) {
     }
 
     let distance = Math.sqrt(distSq);
-    if (!(distance > EPSILON)) {
+    if (!(distance > COLLISION_EPSILON)) {
         distance = 0;
     }
     const penetration = radiusSum - distance;
-    return Number.isFinite(penetration) && penetration > EPSILON;
+    return Number.isFinite(penetration) && penetration > COLLISION_EPSILON;
 }
 
 /**

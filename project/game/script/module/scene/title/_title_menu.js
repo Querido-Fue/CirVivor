@@ -1,4 +1,5 @@
-import { getData } from 'data/data_handler.js';
+import { TITLE_METADATA } from 'data/scene/title/title_metadata.js';
+import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
 import { SVGDrawer } from 'display/_svg_drawer.js';
 import { getDisplaySystem, getUIOffsetX, getWH, getUIWW, getWW } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
@@ -53,13 +54,13 @@ import {
     getThemeAwareMenuBorderColor,
     getUnifiedOuterPaneStrokeColor
 } from './menu/_title_menu_theme.js';
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
-const TITLE_MENU_DATA = getData('TITLE_MENU_DATA');
-const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
+import { TITLE_CARD_MENU_CONSTANTS as TITLE_CARD_MENU } from './_title_runtime_constants.js';
+
+const TITLE_VERSION_CONTEXT = Object.freeze({
+    GAME_VERSION: TITLE_METADATA.GAME_VERSION
+});
 const TITLE_MENU_CARD_REVEAL_ORDER = TITLE_MENU_DATA.CARD_REVEAL_ORDER;
 const TITLE_MENU_SECONDARY_ENTRIES = TITLE_MENU_DATA.SECONDARY_ENTRIES;
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
 const TITLE_MENU_REVEAL_TOTAL_DURATION = getTitleMenuCardRevealTotalDuration(TITLE_CARD_MENU);
 const TITLE_MENU_REVEAL_CORE_DURATION = getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU);
 
@@ -123,7 +124,6 @@ export class TitleMenu {
         this.session = this.#createSession();
         this.textureRenderer = new TitleMenuTextureRenderer({
             svgDrawer: this.svgDrawer,
-            textConstants: TEXT_CONSTANTS,
             titleCardMenu: TITLE_CARD_MENU,
             getSession: () => this.session,
             getEffectColor: this.#getEffectColor.bind(this),
@@ -132,8 +132,7 @@ export class TitleMenu {
             getUiScale: () => this.uiScale
         });
         this.versionLabelRenderer = new TitleMenuVersionLabelRenderer({
-            globalConstants: GLOBAL_CONSTANTS,
-            textConstants: TEXT_CONSTANTS
+            globalConstants: TITLE_VERSION_CONTEXT
         });
         this.versionHistoryLinkButton = createTitleMenuVersionHistoryLinkButton(this.TitleScene);
 

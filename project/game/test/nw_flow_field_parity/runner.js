@@ -1,4 +1,3 @@
-import { ENEMY_AI_CONSTANTS } from '../../script/data/object/enemy/enemy_ai_constants.js';
 import { createEnemyAIFlowFieldWasmRuntimeSync } from '../../script/module/object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js';
 
 const statusElement = document.querySelector('#status');
@@ -31,6 +30,11 @@ function extractSourceSection(source, startMarker, endMarker) {
  * @returns {(grid:object,goalCell:object)=>object} 기준 구현입니다.
  */
 function createReferenceBuildFlowField(source) {
+    const flowMathConstantsSource = extractSourceSection(
+        source,
+        'const EPSILON = ',
+        '\nconst CLEARANCE_BUCKET_STEP'
+    );
     const directionsSource = extractSourceSection(
         source,
         'const DIRS = Object.freeze([',
@@ -51,11 +55,9 @@ function createReferenceBuildFlowField(source) {
         'function prepareFlowOpenHeap',
         '\n\n/**\n * 목표 좌표 기준 flow field'
     );
-    return Function('constants', `
+    return Function(`
         "use strict";
-        const EPSILON = constants.EPSILON;
-        const INF = constants.INF;
-        const DIAGONAL_COST = constants.DIAGONAL_COST;
+        ${flowMathConstantsSource}
         ${directionsSource}
         const flowOpenHeap = [];
         let flowOpenPositions = new Int32Array(0);
@@ -63,7 +65,7 @@ function createReferenceBuildFlowField(source) {
         ${isBlockedCellSource}
         ${heapAndFieldSource}
         return buildFlowField;
-    `)(ENEMY_AI_CONSTANTS);
+    `)();
 }
 
 /**

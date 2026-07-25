@@ -3,7 +3,9 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 // VM loader가 공유 의존성을 안정적으로 재사용하도록 collision graph를 leaf부터 평가합니다.
 for (const modulePath of [
-    'data/data_handler.js',
+    'physics/collision_math_constants.js',
+    'physics/collision_body_layout.js',
+    'physics/collision_grid_layout.js',
     'physics/_collision_detector.js',
     'util/number_util.js',
     'physics/_collision_resolve_tuning.js',
@@ -46,7 +48,9 @@ for (const modulePath of [
     await loadGameModule(modulePath);
 }
 
-const { getData } = await loadGameModule('data/data_handler.js');
+const { COLLISION_EPSILON: EPSILON } = await loadGameModule(
+    'physics/collision_math_constants.js'
+);
 const { ENEMY_PAIR_COLLISION_RADIUS_SCALE } = await loadGameModule(
     'physics/_collision_resolve_tuning.js'
 );
@@ -63,7 +67,6 @@ const { collectObjectSystemHexaHiveContactPairs } = await loadGameModule(
     'object/object_system_hexa_hive_orchestration.js'
 );
 
-const EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
 const FIXED_DELTA = 1 / 60;
 
 /**

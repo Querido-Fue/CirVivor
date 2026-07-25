@@ -1,11 +1,8 @@
-import { getData } from 'data/data_handler.js';
 import { getUIWW, getWH, getWW } from 'display/display_system.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
+import { TITLE_CARD_MENU_CONSTANTS as TITLE_CARD_MENU } from '../_title_runtime_constants.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_MENU_DATA = getData('TITLE_MENU_DATA');
-const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
-const TITLE_CARD_MENU_SCALE = TITLE_MENU_DATA.LAYOUT.CARD_MENU_SCALE;
+const TITLE_CARD_MENU_SCALE = 0.848;
 
 /**
  * @typedef {object} TitleMenuCardRect

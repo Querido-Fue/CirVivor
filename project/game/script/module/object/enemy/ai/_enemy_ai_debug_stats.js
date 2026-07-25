@@ -1,7 +1,7 @@
-import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
+import { ENEMY_AI_DATA } from 'data/object/enemy/enemy_ai_data.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 
-const ENEMY_AI_POLICY = ENEMY_AI_CONSTANTS.POLICY;
+const ENEMY_AI_POLICY = ENEMY_AI_DATA.POLICY;
 
 const DEFAULT_POLICY_DEBUG_KEY = 'chase';
 const ENEMY_AI_POLICY_DEBUG_KEY_BY_ID = Object.freeze({

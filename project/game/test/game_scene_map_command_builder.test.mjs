@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { loadGameModule } from './support/source_module_loader.mjs';
 
 const DEFAULT_MAP_ID = 'd_corridor_01';
-const PLAY_MAP_CONSTANTS = Object.freeze({
-    PLAYER_ID: 1,
-    PLAYER_RADIUS_CELL_RATIO: 0.3,
-    PLAYER_WEIGHT: 999999
-});
+const { PLAY_MAP_DATA } = await loadGameModule('data/scene/game/play_map_data.js');
 const GAME_SCENE_COMMAND_TYPES = Object.freeze({
     REPLACE_WORLD: 'gameScene.replaceWorldState'
 });
@@ -55,11 +52,8 @@ const builderModule = new vm.SourceTextModule(builderSource, {
     context,
     identifier: 'game_scene_map_command_builder.js'
 });
-const dataModule = new vm.SyntheticModule(['getData'], function initializeDataModule() {
-    this.setExport('getData', (key) => {
-        assert.equal(key, 'GAME_SCENE_CONSTANTS');
-        return { PLAY_MAP: PLAY_MAP_CONSTANTS };
-    });
+const dataModule = new vm.SyntheticModule(['PLAY_MAP_DATA'], function initializeDataModule() {
+    this.setExport('PLAY_MAP_DATA', PLAY_MAP_DATA);
 }, { context });
 const protocolModule = new vm.SyntheticModule(
     ['GAME_SCENE_COMMAND_TYPES'],
@@ -78,7 +72,7 @@ const gridModule = new vm.SyntheticModule(
 );
 
 await builderModule.link((specifier) => {
-    if (specifier === 'data/data_handler.js') return dataModule;
+    if (specifier === 'data/scene/game/play_map_data.js') return dataModule;
     if (specifier === 'simulation/game_scene_simulation_protocol.js') return protocolModule;
     if (specifier === '../map/game_map_grid.js') return gridModule;
     throw new Error(`예상하지 못한 import입니다: ${specifier}`);
@@ -119,7 +113,7 @@ assert.equal(firstCommand.player.position.x, firstCommand.mapGeometry.playerSpaw
 assert.equal(firstCommand.player.position.y, firstCommand.mapGeometry.playerSpawn.y);
 assert.equal(
     firstCommand.player.radius,
-    firstCommand.mapGeometry.cellSize * PLAY_MAP_CONSTANTS.PLAYER_RADIUS_CELL_RATIO
+    firstCommand.mapGeometry.cellSize * PLAY_MAP_DATA.PLAYER_RADIUS_CELL_RATIO
 );
 
 for (let i = 0; i < firstCommand.staticWalls.length; i++) {

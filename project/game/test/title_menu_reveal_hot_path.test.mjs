@@ -9,7 +9,9 @@ const TITLE_MENU_SOURCE_PATH = fileURLToPath(new URL(
     import.meta.url
 ));
 const titleMenuSource = await readFile(TITLE_MENU_SOURCE_PATH, 'utf8');
-const { TITLE_CONSTANTS } = await loadGameModule('data/scene/title/title_constants.js');
+const { TITLE_CARD_MENU_CONSTANTS: TITLE_CARD_MENU } = await loadGameModule(
+    'scene/title/_title_runtime_constants.js'
+);
 const renderState = await loadGameModule('scene/title/menu/_title_menu_render_state.js');
 
 const {
@@ -22,7 +24,6 @@ const {
     getTitleMenuCardRevealTotalDuration,
     getTitleMenuRevealProgress
 } = renderState;
-const TITLE_CARD_MENU = TITLE_CONSTANTS.TITLE_CARD_MENU;
 
 /**
  * reveal clock 반환 객체를 `Object.is` 기준으로 비교합니다.
@@ -102,7 +103,6 @@ function createRevealResolver(receiver, trace) {
 }
 
 test('TitleMenu은 고정 reveal timing과 instance당 resolver를 프레임 경로에서 재사용한다', () => {
-    assert.ok(Object.isFrozen(TITLE_CONSTANTS));
     assert.ok(Object.isFrozen(TITLE_CARD_MENU));
     assert.ok(Object.isFrozen(TITLE_CARD_MENU.REVEAL_CONFIGS));
     for (const revealConfig of Object.values(TITLE_CARD_MENU.REVEAL_CONFIGS)) {

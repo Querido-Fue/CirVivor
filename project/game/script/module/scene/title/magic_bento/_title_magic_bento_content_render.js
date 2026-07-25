@@ -1,12 +1,9 @@
-import { getData } from 'data/data_handler.js';
 import { getLangString } from 'ui/ui_system.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { clampFiniteNumber } from 'util/number_util.js';
+import { TITLE_MAGIC_BENTO_SHARED_CONSTANTS as TITLE_MAGIC_BENTO } from './_title_magic_bento_constants.js';
 import { drawBentoCardIcon } from './_title_magic_bento_icon.js';
-import { drawBentoWrappedText, getBentoTypography } from './_title_magic_bento_text.js';
-
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const TITLE_MAGIC_BENTO = TITLE_CONSTANTS.TITLE_MAGIC_BENTO;
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+import { drawBentoWrappedText, resolveBentoTypography } from './_title_magic_bento_text.js';
 
 /**
  * 카드 아이콘과 텍스트를 렌더링합니다.
@@ -76,8 +73,8 @@ function drawBentoHeroCardText(ctx, card, palette, {
     titleText,
     descriptionText
 }) {
-    const titleFont = getBentoTypography(TEXT_CONSTANTS, 'H3_BOLD', 1.18);
-    const descriptionFont = getBentoTypography(TEXT_CONSTANTS, 'H6', 1.04);
+    const titleFont = resolveBentoTypography(TYPOGRAPHY.BENTO_HERO_TITLE);
+    const descriptionFont = resolveBentoTypography(TYPOGRAPHY.BENTO_HERO_DESCRIPTION);
     const titleY = card.baseHeight - padding - titleFont.size - (descriptionText ? (descriptionFont.size * 1.7) : 0);
 
     ctx.font = titleFont.font;
@@ -94,7 +91,7 @@ function drawBentoHeroCardText(ctx, card, palette, {
             padding,
             titleY + titleFont.size + descriptionGap,
             maxWidth,
-            descriptionFont.size * 1.35,
+            descriptionFont.lineHeight,
             2
         );
     }
@@ -115,7 +112,7 @@ function drawBentoCompactCardText(ctx, card, {
     iconSize,
     titleText
 }) {
-    const compactFont = getBentoTypography(TEXT_CONSTANTS, 'H5_BOLD', 1.04);
+    const compactFont = resolveBentoTypography(TYPOGRAPHY.BENTO_COMPACT_TITLE);
     const titleSize = compactFont.size;
     const compactX = padding + iconSize + clampFiniteNumber(padding * 0.7, 14, Infinity, 14);
 
@@ -139,8 +136,8 @@ function drawBentoDefaultCardText(ctx, card, palette, {
     titleText,
     descriptionText
 }) {
-    const titleFont = getBentoTypography(TEXT_CONSTANTS, 'H4_BOLD', 1.08);
-    const descriptionFont = getBentoTypography(TEXT_CONSTANTS, 'H6', 1.12);
+    const titleFont = resolveBentoTypography(TYPOGRAPHY.BENTO_CARD_TITLE);
+    const descriptionFont = resolveBentoTypography(TYPOGRAPHY.BENTO_CARD_DESCRIPTION);
     const titleSize = titleFont.size;
     const descriptionSize = descriptionFont.size;
     const contentX = padding;
@@ -160,7 +157,7 @@ function drawBentoDefaultCardText(ctx, card, palette, {
             contentX,
             titleY + titleSize + descriptionGap,
             maxWidth,
-            descriptionSize * 1.35,
+            descriptionFont.lineHeight,
             2
         );
     }

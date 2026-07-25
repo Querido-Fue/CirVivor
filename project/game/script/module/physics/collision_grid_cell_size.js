@@ -1,13 +1,11 @@
-import { getData } from 'data/data_handler.js';
 import { clampNumber } from 'util/number_util.js';
 import { getSimulationObjectWH } from '../simulation/simulation_runtime.js';
 
-const COLLISION_GRID_CONSTANTS = getData('COLLISION_CONSTANTS').GRID;
-const MIN_CELL_SIZE = COLLISION_GRID_CONSTANTS.MIN_CELL_SIZE;
-const MAX_CELL_SIZE = COLLISION_GRID_CONSTANTS.MAX_CELL_SIZE;
-const CELL_SIZE_RADIUS_SCALE = COLLISION_GRID_CONSTANTS.CELL_SIZE_RADIUS_SCALE;
-const DEFAULT_RADIUS_WORLD_RATIO = COLLISION_GRID_CONSTANTS.DEFAULT_RADIUS_WORLD_RATIO;
-const DEFAULT_RADIUS_MIN = COLLISION_GRID_CONSTANTS.DEFAULT_RADIUS_MIN;
+const MIN_CELL_SIZE = 20;
+const MAX_CELL_SIZE = 280;
+const CELL_SIZE_RADIUS_SCALE = 2.4;
+const DEFAULT_RADIUS_WORLD_RATIO = 0.015;
+const DEFAULT_RADIUS_MIN = 12;
 
 /**
  * grid 용도에 맞는 평균 broad radius로 셀 크기를 추정합니다.

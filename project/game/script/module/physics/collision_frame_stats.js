@@ -1,8 +1,64 @@
-import { getData } from 'data/data_handler.js';
+/** 충돌 판정에서 항상 수집하는 기본 통계 필드입니다. */
+export const COLLISION_BASE_STAT_FIELDS = Object.freeze([
+    'collisionCheckCount',
+    'aabbPassCount',
+    'aabbRejectCount',
+    'circlePassCount',
+    'circleRejectCount',
+    'partChecks'
+]);
 
-const COLLISION_FRAME_STATS = getData('COLLISION_CONSTANTS').FRAME_STATS;
-const COLLISION_BASE_STAT_FIELDS = COLLISION_FRAME_STATS.BASE_FIELDS;
-const COLLISION_PROFILE_STAT_FIELDS = COLLISION_FRAME_STATS.PROFILE_FIELDS;
+/** 디버그 계측에서 사용하는 상세 통계 필드입니다. */
+export const COLLISION_PROFILE_STAT_FIELDS = Object.freeze([
+    'enemyTotalMs',
+    'enemyBodyBuildMs',
+    'playerBodyBuildMs',
+    'wallBodyBuildMs',
+    'enemyPositionSolveMs',
+    'enemyStabilizeMs',
+    'enemyNonPositionMs',
+    'solveGridMs',
+    'solvePairScanMs',
+    'solveCandidateBuildMs',
+    'solvePairProcessMs',
+    'solveNarrowphaseMs',
+    'projectileTotalMs',
+    'projectileEnemyBodyBuildMs',
+    'projectileGridBuildMs',
+    'projectileScanMs',
+    'projectileCandidateQueryMs',
+    'projectileNarrowphaseMs',
+    'contactTotalMs',
+    'contactBodyBuildMs',
+    'contactGridBuildMs',
+    'contactPairScanMs',
+    'solveBucketPairCount',
+    'solveCandidatePairCount',
+    'solveDuplicatePairSkipCount',
+    'solveRuleRejectCount',
+    'solveAabbPassCount',
+    'solveCirclePassCount',
+    'solveResolvedPairCount',
+    'solveSoACirclePairCount',
+    'solveObjectNarrowphasePairCount',
+    'solveBudgetSkipCount',
+    'solveLargePopulationMode',
+    'solvePassCount',
+    'solveGridRebuildCount',
+    'solveDensePressure',
+    'solveGuaranteedPairCount',
+    'solvePriorityAdmissionCount',
+    'solvePredictiveAdmissionCount',
+    'solveAdmissionBudgetSkipCount',
+    'solveCandidateVisitCount',
+    'solveScanTruncateCount'
+]);
+
+/** 씬 스냅샷 등 외부 소비자가 복제할 전체 충돌 통계 필드입니다. */
+export const COLLISION_FRAME_STAT_FIELDS = Object.freeze([
+    ...COLLISION_BASE_STAT_FIELDS,
+    ...COLLISION_PROFILE_STAT_FIELDS
+]);
 
 /**
  * 충돌 프레임 통계 기본 객체를 생성합니다.

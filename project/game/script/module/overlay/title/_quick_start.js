@@ -1,7 +1,9 @@
-import { getData } from 'data/data_handler.js';
 import { DummyMenuOverlay } from './_dummy_menu_overlay.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const QUICK_START_OVERLAY_LAYOUT = Object.freeze({
+    WIDTH_UIWW_RATIO: 0.42,
+    HEIGHT_WH_RATIO: 0.34
+});
 
 /**
  * @class QuickStartOverlay
@@ -15,8 +17,8 @@ export class QuickStartOverlay extends DummyMenuOverlay {
         super(titleScene, {
             titleKey: 'title_overlay_quick_start_title',
             bodyKey: 'title_overlay_quick_start_body',
-            widthRatio: TITLE_CONSTANTS.TITLE_OVERLAY.QUICK_START.WIDTH_UIWW_RATIO,
-            heightRatio: TITLE_CONSTANTS.TITLE_OVERLAY.QUICK_START.HEIGHT_WH_RATIO
+            widthRatio: QUICK_START_OVERLAY_LAYOUT.WIDTH_UIWW_RATIO,
+            heightRatio: QUICK_START_OVERLAY_LAYOUT.HEIGHT_WH_RATIO
         });
     }
 }

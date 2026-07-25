@@ -6,9 +6,16 @@ import { previewSettingBatch, setSettingBatch, getSettingSchema } from 'save/sav
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
 import { getAvailableLanguages } from 'ui/lang/_language_handler.js';
-import { getData } from 'data/data_handler.js';
-import { createFontStringFromPreset } from 'util/font_util.js';
+import { DEFAULT_THEME_KEY, THEME_OPTIONS } from 'data/theme/theme_registry.js';
+import { BUTTON_STYLE } from 'ui/style/component_styles.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { applyOverlayConfirmButtonIcon } from '../_overlay_confirm_icon.js';
+import {
+    addOverlayPageHeader,
+    addOverlaySectionHeader,
+    beginOverlayFieldRow,
+    endOverlayFieldRow
+} from '../_overlay_layout_recipes.js';
 import {
     SETTING_LABEL_KEYS,
     createSettingsInitialState,
@@ -21,12 +28,72 @@ import {
 } from './settings/_settings_state.js';
 import { SettingsPreviewQueue } from './settings/_settings_preview_queue.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const THEME_OPTIONS = getData('THEME_OPTIONS');
-const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
-const SETTING_ROLLBACK_ANIMATION = getData('UI_CONSTANTS').SETTING_ROLLBACK_ANIMATION;
-const SETTINGS_LAYOUT = TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.LAYOUT;
+const SETTING_ROLLBACK_ANIMATION = Object.freeze({
+    DURATION_SECONDS: 0.4,
+    EASING: 'easeOutExpo'
+});
+const SETTINGS_OVERLAY_WIDTH_UIWW_RATIO = 0.65;
+const SETTINGS_OVERLAY_HEIGHT_WH_RATIO = 0.7;
+const SETTINGS_LAYOUT = Object.freeze({
+    HEADER: Object.freeze({
+        START_X_OX: 0,
+        START_Y_OY: 0,
+        WIDTH_OW: 100,
+        HEIGHT_OH: 19
+    }),
+    LEFT_COLUMN: Object.freeze({
+        START_X_OX: 3,
+        START_Y_OY: 15,
+        WIDTH_OW: 44,
+        HEIGHT_OH: 100
+    }),
+    RIGHT_COLUMN: Object.freeze({
+        START_X_OX: 53,
+        START_Y_OY: 15,
+        WIDTH_OW: 44,
+        HEIGHT_OH: 100
+    }),
+    FOOTER: Object.freeze({
+        START_X_OX: 0,
+        START_Y_OY: 0,
+        WIDTH_OW: 100,
+        HEIGHT_OH: 100,
+        PADDING_X_WW: 1.8,
+        BOTTOM_SPACE_WH: 3,
+        BUTTON_GAP_WW: 1
+    }),
+    COLUMN: Object.freeze({
+        SPACING_SCALE: 0.9,
+        CONTROL_WRAP_WIDTH_PARENT: 65,
+        CONTROL_MAX_WIDTH_PARENT: 66.66,
+        SECTION_HEADER_BOTTOM_SPACE_OH: 3.5,
+        SECTION_GROUP_GAP_OH: 1,
+        COLUMN_END_SPACE_OH: 4
+    }),
+    CONTROL: Object.freeze({
+        DROPDOWN_HEIGHT_WH: 3,
+        TOGGLE_WIDTH_WW: 2.55,
+        TOGGLE_HEIGHT_WH: 2
+    }),
+    SLIDER: Object.freeze({
+        TRACK_HEIGHT_WH_RATIO: 0.008,
+        KNOB_RADIUS_WH_RATIO: 0.009,
+        VALUE_OFFSET_X_UIWW_RATIO: 0.015,
+        VALUE_OFFSET_Y_WH_RATIO: 0.009
+    }),
+    ITEM_HEADER: Object.freeze({
+        ROW_WIDTH_PARENT: 94,
+        LABEL_WIDTH_PARENT: 35,
+        CONTROL_GAP_WW: 1
+    }),
+    ITEM_FOOTER: Object.freeze({
+        DESCRIPTION_TOP_SPACE_OH: 2.25,
+        DESCRIPTION_WIDTH_PARENT: 94,
+        DESCRIPTION_ALPHA: 0.8,
+        DESCRIPTION_BOTTOM_SPACE_MULTIPLIER: 4.5,
+        EMPTY_BOTTOM_SPACE_MULTIPLIER: 5
+    })
+});
 const UI_SCALE_COMPONENT_ID = 'control_uiScale';
 const UI_SCALE_EPSILON = 0.000001;
 
@@ -67,8 +134,8 @@ export class SettingsOverlay extends TitleOverlay {
      * 화면 크기에 비례하여 설정 메뉴 팝업 크기를 계산합니다.
      */
     _onResize() {
-        this.width = this.UIWW * TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.WIDTH_UIWW_RATIO;
-        this.height = this.WH * TITLE_CONSTANTS.TITLE_OVERLAY.SETTINGS.HEIGHT_WH_RATIO;
+        this.width = this.UIWW * SETTINGS_OVERLAY_WIDTH_UIWW_RATIO;
+        this.height = this.WH * SETTINGS_OVERLAY_HEIGHT_WH_RATIO;
     }
 
     /**
@@ -91,14 +158,12 @@ export class SettingsOverlay extends TitleOverlay {
         const retainedComponents = this.#detachPreservedComponentsForRelayout();
         this._releaseElements();
         const { HEADER, LEFT_COLUMN, RIGHT_COLUMN, FOOTER } = SETTINGS_LAYOUT;
-        const headerHandler = new LayoutHandler(this, this.positioningHandler)
+        const headerHandler = addOverlayPageHeader(
+            new LayoutHandler(this, this.positioningHandler)
             .layoutStartPos("OX", HEADER.START_X_OX, "OY", HEADER.START_Y_OY)
-            .layoutSize("OW", HEADER.WIDTH_OW, "OH", HEADER.HEIGHT_OH)
-            .paddingX("WW", HEADER.PADDING_X_WW)
-            .space("WH", HEADER.TITLE_TOP_SPACE_WH)
-            .item("text", "title_text").stylePreset("h1").text(getLangString('title_settings_title')).fill(ColorSchemes.Title.TextDark)
-            .space("WH", HEADER.DIVIDER_TOP_SPACE_WH)
-            .item("line", "divider_line").width("fill").stroke(ColorSchemes.Overlay.Panel.Divider).lineWidth(1).align("center");
+            .layoutSize("OW", HEADER.WIDTH_OW, "OH", HEADER.HEIGHT_OH),
+            { title: getLangString('title_settings_title') }
+        );
 
         const leftHandler = new LayoutHandler(this, this.positioningHandler)
             .layoutStartPos("OX", LEFT_COLUMN.START_X_OX, "OY", LEFT_COLUMN.START_Y_OY)
@@ -121,12 +186,12 @@ export class SettingsOverlay extends TitleOverlay {
 
         footHandler.bottomSpace("WH", FOOTER.BOTTOM_SPACE_WH)
             .bottomGroup().justifyContent("right", "WW", FOOTER.BUTTON_GAP_WW).align("right")
-            .item("button", "cancel_btn").stylePreset("overlay_interact_button")
+            .item("button", "cancel_btn").buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT)
             .buttonText(getLangString('title_settings_cancel')).onClick(async () => {
                 await this.#cancelChanges();
             })
             .buttonColor(ColorSchemes.Overlay.Button.Cancel).icon("deny")
-            .item("button", "save_btn").stylePreset("overlay_interact_button")
+            .item("button", "save_btn").buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT)
             .buttonText(getLangString('title_settings_save')).onClick(async () => {
                 if (!this.lockInteractions()) {
                     return;
@@ -549,7 +614,6 @@ export class SettingsOverlay extends TitleOverlay {
         const spacingScale = COLUMN.SPACING_SCALE;
         const controlWrapWidth = COLUMN.CONTROL_WRAP_WIDTH_PARENT;
         const controlMaxWidth = COLUMN.CONTROL_MAX_WIDTH_PARENT;
-        const sliderValueFont = this._getTextPresetFont('SETTINGS_SLIDER_VALUE');
 
         this._addSectionHeader(handler, 'title_settings_section_display');
         handler.space("OH", COLUMN.SECTION_HEADER_BOTTOM_SPACE_OH * spacingScale);
@@ -561,7 +625,7 @@ export class SettingsOverlay extends TitleOverlay {
         ];
         handler.width("parent", controlWrapWidth).item("dropdown", "control_windowMode").width("parent", controlMaxWidth).height("WH", CONTROL.DROPDOWN_HEIGHT_WH)
             .items(windowModeItems)
-            .setValue(this.tempSettings.windowMode).stylePreset("h6_bold")
+            .setValue(this.tempSettings.windowMode).textStyle(TYPOGRAPHY.CONTROL)
             .prop("openDirection", "down")
             .onChange((val) => { this.#handleSettingInput('windowMode', val); });
         this._addItemFooter(handler, null, spacingScale);
@@ -582,7 +646,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("min", rsSchema.min).prop("max", rsSchema.max).setValue(this.tempSettings.renderScale)
             .prop("valueSuffix", '%')
             .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
-            .prop("valueFont", sliderValueFont)
+            .valueTextStyle(TYPOGRAPHY.SLIDER_VALUE)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => `${v}% (${Math.round(getBaseWW() * v / 100)}×${Math.round(getBaseWH() * v / 100)})`)
             .onChange((val) => { this.#handleSettingInput('renderScale', val, { preview: false }); })
@@ -596,7 +660,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("min", usSchema.min).prop("max", usSchema.max).setValue(this.tempSettings.uiScale)
             .prop("valueSuffix", '%')
             .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
-            .prop("valueFont", sliderValueFont)
+            .valueTextStyle(TYPOGRAPHY.SLIDER_VALUE)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => `${v}%`)
             .onChange((val) => { this.#handleUiScaleChange(val); })
@@ -615,7 +679,7 @@ export class SettingsOverlay extends TitleOverlay {
         this._addItemHeader(handler, 'title_settings_benchmark');
         handler.width("parent", controlWrapWidth)
             .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .item("button", "control_benchmark").stylePreset("overlay_link_button")
+            .item("button", "control_benchmark").buttonStyle(BUTTON_STYLE.OVERLAY_LINK)
             .buttonText(getLangString('title_settings_benchmark_open'))
             .buttonColor(ColorSchemes.Overlay.Button.Link).icon("arrow")
             .onClick(async () => { await this.#startBenchmarkScene(); });
@@ -634,7 +698,6 @@ export class SettingsOverlay extends TitleOverlay {
         const spacingScale = COLUMN.SPACING_SCALE;
         const controlWrapWidth = COLUMN.CONTROL_WRAP_WIDTH_PARENT;
         const controlMaxWidth = COLUMN.CONTROL_MAX_WIDTH_PARENT;
-        const sliderValueFont = this._getTextPresetFont('SETTINGS_SLIDER_VALUE');
 
         this._addSectionHeader(handler, 'title_settings_section_ui');
         handler.space("OH", COLUMN.SECTION_HEADER_BOTTOM_SPACE_OH * spacingScale);
@@ -642,7 +705,7 @@ export class SettingsOverlay extends TitleOverlay {
         this._addItemHeader(handler, 'title_settings_language', 'language');
         handler.width("parent", controlWrapWidth).item("dropdown", "control_language").width("parent", controlMaxWidth).height("WH", CONTROL.DROPDOWN_HEIGHT_WH)
             .items(this.availableLanguages.map((lang) => ({ label: lang.languageName, value: lang.key })))
-            .setValue(this.tempSettings.language).stylePreset("h6_bold")
+            .setValue(this.tempSettings.language).textStyle(TYPOGRAPHY.CONTROL)
             .prop("openDirection", "down")
             .onChange((val) => { this.#handleSettingInput('language', val); });
         this._addItemFooter(handler, null, spacingScale);
@@ -654,7 +717,7 @@ export class SettingsOverlay extends TitleOverlay {
         }));
         handler.width("parent", controlWrapWidth).item("dropdown", "control_theme").width("parent", controlMaxWidth).height("WH", CONTROL.DROPDOWN_HEIGHT_WH)
             .items(themeItems)
-            .setValue(this.tempSettings.theme).stylePreset("h6_bold")
+            .setValue(this.tempSettings.theme).textStyle(TYPOGRAPHY.CONTROL)
             .prop("openDirection", "down")
             .onChange((val) => { this.#handleSettingInput('theme', val); });
         this._addItemFooter(handler, null, spacingScale);
@@ -665,7 +728,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", tooltipDelaySchema.min).prop("max", tooltipDelaySchema.max).prop("step", 0.1).setValue(this.tempSettings.tooltipDelaySeconds)
             .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
-            .prop("valueFont", sliderValueFont)
+            .valueTextStyle(TYPOGRAPHY.SLIDER_VALUE)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .prop("valueFormatter", (v) => formatTooltipDelayValue(v, this.tempSettings.language))
             .onChange((val) => { this.#handleSettingInput('tooltipDelaySeconds', val); });
@@ -682,7 +745,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", bgmSchema.min).prop("max", bgmSchema.max).setValue(this.tempSettings.bgmVolume)
             .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
-            .prop("valueFont", sliderValueFont)
+            .valueTextStyle(TYPOGRAPHY.SLIDER_VALUE)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .onChange((val) => { this.#handleSettingInput('bgmVolume', val); });
         this._addItemFooter(handler, null, spacingScale);
@@ -693,7 +756,7 @@ export class SettingsOverlay extends TitleOverlay {
             .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
             .prop("min", sfxSchema.min).prop("max", sfxSchema.max).setValue(this.tempSettings.sfxVolume)
             .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
-            .prop("valueFont", sliderValueFont)
+            .valueTextStyle(TYPOGRAPHY.SLIDER_VALUE)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
             .onChange((val) => { this.#handleSettingInput('sfxVolume', val); });
         this._addItemFooter(handler, null, spacingScale);
@@ -706,7 +769,7 @@ export class SettingsOverlay extends TitleOverlay {
         this._addItemHeader(handler, 'title_settings_keybindings');
         handler.width("parent", controlWrapWidth)
             .group().justifyContent("left", "WW", 0).width("parent", controlMaxWidth)
-            .item("button", "control_keybindings").stylePreset("overlay_link_button")
+            .item("button", "control_keybindings").buttonStyle(BUTTON_STYLE.OVERLAY_LINK)
             .buttonText(getLangString('title_settings_keybindings_open'))
             .buttonColor(ColorSchemes.Overlay.Button.Link).icon("arrow")
             .onClick(() => { this.#openKeybindings(); });
@@ -723,10 +786,10 @@ export class SettingsOverlay extends TitleOverlay {
      */
     _addSectionHeader(handler, labelKey) {
         const { ITEM_HEADER } = SETTINGS_LAYOUT;
-        handler.group().justifyContent("space-between", "WW", ITEM_HEADER.CONTROL_GAP_WW).width("parent", 100).align("center")
-            .item("text").text(getLangString(labelKey)).stylePreset("h3").fill(ColorSchemes.Overlay.Text.Section).vAlign("center")
-            .item("line").width("fill").stroke(ColorSchemes.Overlay.Panel.Divider).lineWidth(1).vAlign("center")
-            .endGroup();
+        addOverlaySectionHeader(handler, {
+            text: getLangString(labelKey),
+            gapWW: ITEM_HEADER.CONTROL_GAP_WW
+        });
     }
     /**
      * 설정 항목 헤더를 생성합니다.
@@ -741,13 +804,13 @@ export class SettingsOverlay extends TitleOverlay {
             ? getSettingLabelText(this.initialSettings, this.tempSettings, settingKey, labelKey)
             : getLangString(labelKey);
 
-        // 라벨 길이(언어별 차이)에 영향을 받지 않도록 라벨 영역을 고정 폭으로 분리
-        handler.group().justifyContent("left", "WW", 0).width("parent", ITEM_HEADER.ROW_WIDTH_PARENT).align("center")
-            .group().justifyContent("left", "WW", 0).width("parent", ITEM_HEADER.LABEL_WIDTH_PARENT).vAlign("center")
-            .item("text", labelId).text(labelText).stylePreset("h5_bold").fill(ColorSchemes.Overlay.Text.Item).vAlign("center")
-            .endGroup()
-            .spacer()
-            .group().justifyContent("right", "WW", ITEM_HEADER.CONTROL_GAP_WW).vAlign("center");
+        beginOverlayFieldRow(handler, {
+            label: labelText,
+            labelId,
+            rowWidthPercent: ITEM_HEADER.ROW_WIDTH_PARENT,
+            labelWidthPercent: ITEM_HEADER.LABEL_WIDTH_PARENT,
+            controlGapWW: ITEM_HEADER.CONTROL_GAP_WW
+        });
     }
 
     /**
@@ -758,28 +821,16 @@ export class SettingsOverlay extends TitleOverlay {
      */
     _addItemFooter(handler, descriptionKey, spacingScale) {
         const { ITEM_FOOTER } = SETTINGS_LAYOUT;
-        handler.endGroup().endGroup();
-        if (descriptionKey) {
-            handler.space("OH", ITEM_FOOTER.DESCRIPTION_TOP_SPACE_OH);
-            handler.group().justifyContent("left", "WW", 0).width("parent", ITEM_FOOTER.DESCRIPTION_WIDTH_PARENT).align("center")
-                .item("text").text(getLangString(descriptionKey)).stylePreset("settings_desc").fill(ColorSchemes.Overlay.Text.Item).prop("alpha", ITEM_FOOTER.DESCRIPTION_ALPHA)
-                .endGroup()
-                .space("OH", ITEM_FOOTER.DESCRIPTION_BOTTOM_SPACE_MULTIPLIER * spacingScale);
-        } else {
-            handler.space("OH", ITEM_FOOTER.EMPTY_BOTTOM_SPACE_MULTIPLIER * spacingScale);
-        }
-    }
-
-    /**
-     * 텍스트 프리셋을 현재 UI 스케일에 맞는 Canvas font 문자열로 변환합니다.
-     * @param {keyof typeof TEXT_CONSTANTS} presetKey - 텍스트 프리셋 키입니다.
-     * @returns {string} Canvas font 속성 문자열입니다.
-     */
-    _getTextPresetFont(presetKey) {
-        return createFontStringFromPreset(TEXT_CONSTANTS[presetKey], {
-            fallbackData: TEXT_CONSTANTS.H6,
-            defaultWeight: 400,
-            resolveSizePx: (sizeData) => this.positioningHandler.parseUIData(sizeData, this.uiScale)
+        endOverlayFieldRow(handler, {
+            description: descriptionKey ? getLangString(descriptionKey) : null,
+            descriptionTopSpaceOH: ITEM_FOOTER.DESCRIPTION_TOP_SPACE_OH,
+            descriptionWidthPercent: ITEM_FOOTER.DESCRIPTION_WIDTH_PARENT,
+            descriptionAlpha: ITEM_FOOTER.DESCRIPTION_ALPHA,
+            bottomSpaceOH: (
+                descriptionKey
+                    ? ITEM_FOOTER.DESCRIPTION_BOTTOM_SPACE_MULTIPLIER
+                    : ITEM_FOOTER.EMPTY_BOTTOM_SPACE_MULTIPLIER
+            ) * spacingScale
         });
     }
 

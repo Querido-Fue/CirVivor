@@ -1,6 +1,6 @@
-import { getData } from 'data/data_handler.js';
+import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
 
-const TITLE_MENU_CARD_DEFINITIONS = getData('TITLE_MENU_DATA').CARD_DEFINITIONS;
+const TITLE_MENU_CARD_DEFINITIONS = TITLE_MENU_DATA.CARD_DEFINITIONS;
 
 /**
  * @typedef {object} TitleMenuCardDefinition

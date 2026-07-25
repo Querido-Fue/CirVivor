@@ -1,7 +1,6 @@
-import { getData } from 'data/data_handler.js';
 import { createCollisionGridBucket } from './collision_scratch_objects.js';
 
-const GRID_BUCKET_INITIAL_CAPACITY = getData('COLLISION_CONSTANTS').GRID.BUCKET_INITIAL_CAPACITY;
+const GRID_BUCKET_INITIAL_CAPACITY = 8;
 
 /**
  * broad-phase grid bucket 객체와 인덱스 버퍼 용량을 재사용 관리합니다.

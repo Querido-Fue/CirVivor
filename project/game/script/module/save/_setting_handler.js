@@ -2,16 +2,34 @@ import { fsPromises, path } from 'util/nw_bridge.js';
 import { ColorSchemes, setTheme } from 'display/_theme_handler.js';
 import { beginThemeTransition } from 'display/_theme_transition_controller.js';
 import { MathUtil } from 'util/math_util.js';
-import { getData } from 'data/data_handler.js';
-import { LANGUAGE_REGISTRY } from 'ui/lang/_language_registry.js';
+import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 import { ensureSaveDirectory, pathExists } from './_save_file_helper.js';
 
-const THEME_KEYS = getData('THEME_KEYS');
-const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
-const AVAILABLE_LANGUAGE_KEYS = Object.keys(LANGUAGE_REGISTRY);
-const FALLBACK_LANGUAGE_KEY = AVAILABLE_LANGUAGE_KEYS.includes('english')
-    ? 'english'
+const THEME_KEYS = SETTING_DEFINITIONS.theme.allowedValues;
+const DEFAULT_THEME_KEY = SETTING_DEFINITIONS.theme.defaultValue;
+const AVAILABLE_LANGUAGE_KEYS = SETTING_DEFINITIONS.language.allowedValues;
+const WINDOW_MODE_VALUES = SETTING_DEFINITIONS.windowMode.allowedValues;
+const DEFAULT_WINDOW_MODE = SETTING_DEFINITIONS.windowMode.defaultValue;
+const FALLBACK_LANGUAGE_KEY = AVAILABLE_LANGUAGE_KEYS.includes(SETTING_DEFINITIONS.language.defaultValue)
+    ? SETTING_DEFINITIONS.language.defaultValue
     : (AVAILABLE_LANGUAGE_KEYS[0] || 'korean');
+
+/**
+ * 불변 설정 정의를 현재 값을 보관할 가변 런타임 스키마로 복제합니다.
+ * @param {string} defaultLanguage - 현재 환경에 적용할 기본 언어 키입니다.
+ * @returns {Record<string, SettingSchemaEntry>} 새 설정 스키마입니다.
+ */
+function createSettingSchema(defaultLanguage) {
+    return Object.fromEntries(
+        Object.entries(SETTING_DEFINITIONS).map(([key, definition]) => [
+            key,
+            {
+                ...definition,
+                value: key === 'language' ? defaultLanguage : definition.defaultValue
+            }
+        ])
+    );
+}
 
 /**
  * @typedef {'bool'|'int'|'float'|'string'} SettingSchemaType
@@ -24,6 +42,8 @@ const FALLBACK_LANGUAGE_KEY = AVAILABLE_LANGUAGE_KEYS.includes('english')
  * @property {number} min - 숫자 하한이며 `-1`은 제한 없음입니다.
  * @property {number} max - 숫자 상한이며 `-1`은 제한 없음입니다.
  * @property {boolean} hidden - 옵션 UI 비노출 및 조건부 파일 저장 여부입니다.
+ * @property {*} defaultValue - 설정 정의에 선언된 정적 기본값입니다.
+ * @property {ReadonlyArray<*>} [allowedValues] - 허용된 열거형 값 목록입니다.
  */
 
 /**
@@ -57,22 +77,7 @@ export class SettingHandler {
          * hidden 항목은 파일에 이미 존재했거나 영구 설정 API로 명시된 경우에만 저장 대상에 포함됩니다.
          * @type {Record<string, SettingSchemaEntry>}
          */
-        this.schema = {
-            theme: { type: 'string', value: DEFAULT_THEME_KEY, min: -1, max: -1, hidden: false },
-            disableTransparency: { type: 'bool', value: false, min: -1, max: -1, hidden: false },
-            language: { type: 'string', value: defaultLang, min: -1, max: -1, hidden: false },
-            windowMode: { type: 'string', value: 'fullscreen', min: -1, max: -1, hidden: false },
-            widescreenSupport: { type: 'bool', value: true, min: -1, max: -1, hidden: false },
-            width: { type: 'int', value: 1280, min: 1280, max: -1, hidden: false },
-            height: { type: 'int', value: 720, min: 720, max: -1, hidden: false },
-            renderScale: { type: 'int', value: 100, min: 75, max: 100, hidden: false },
-            uiScale: { type: 'int', value: 100, min: 75, max: 150, hidden: false },
-            tooltipDelaySeconds: { type: 'float', value: 0.3, min: 0, max: 2, hidden: false },
-            bgmVolume: { type: 'int', value: 25, min: 0, max: 100, hidden: false },
-            sfxVolume: { type: 'int', value: 40, min: 0, max: 100, hidden: false },
-            screenModeChanged: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-            debugMode: { type: 'bool', value: false, min: -1, max: -1, hidden: true },
-        };
+        this.schema = createSettingSchema(defaultLang);
 
         this.#mathUtil = new MathUtil();
 
@@ -134,11 +139,11 @@ export class SettingHandler {
             return DEFAULT_THEME_KEY;
         }
         if (key === 'windowMode') {
-            if (processedValue === 'borderless') processedValue = 'fullscreen';
-            if (processedValue === 'fullscreen' || processedValue === 'windowed') {
+            if (processedValue === 'borderless') processedValue = DEFAULT_WINDOW_MODE;
+            if (WINDOW_MODE_VALUES.includes(processedValue)) {
                 return processedValue;
             }
-            return 'fullscreen';
+            return DEFAULT_WINDOW_MODE;
         }
         if (key === 'language') {
             if (AVAILABLE_LANGUAGE_KEYS.includes(processedValue)) {

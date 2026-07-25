@@ -11,10 +11,7 @@ const DESCRIPTOR_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const descriptorSource = await readFile(DESCRIPTOR_SOURCE_PATH, 'utf8');
 const productionDescriptorModule = await loadGameModule('display/display_surface_descriptor.js');
-const productionSurfaceDataModule = await loadGameModule('data/display/display_surface_data.js');
-const productionSurfaceData = productionSurfaceDataModule.DISPLAY_SURFACE_DATA;
-const productionStaticOrderMap = productionSurfaceData.STATIC_SURFACE_ORDER_MAP;
-const EXECUTABLE_SOURCE_HASH = '76be28d1edda8705df26284b47aa4b6c0657d7db22d902e0dcc6c9d08c6a215f';
+const EXECUTABLE_SOURCE_HASH = '14896625bfa4afffcfc99baee78361948cb53c5a180fcbebc3e37d790c8a9f2d';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
@@ -48,6 +45,36 @@ function findLeadingJsDoc(productionSource, escapedDeclaration) {
     assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
     return match[1];
 }
+
+/**
+ * 상속 getter의 receiver를 통해 private static order 맵을 캡처합니다.
+ * @returns {object} production descriptor가 직접 소유한 frozen order 맵입니다.
+ */
+function captureProductionStaticOrderMap() {
+    const { getDisplayStaticSurfaceOrder: getOrder } = productionDescriptorModule;
+    const mapPrototype = getOrder('__proto__');
+    const probeKey = Symbol('capture-static-order-map');
+    const probeValue = { source: 'capture-static-order-map' };
+    let capturedMap;
+
+    try {
+        Object.defineProperty(mapPrototype, probeKey, {
+            configurable: true,
+            get() {
+                capturedMap = this;
+                return probeValue;
+            }
+        });
+        assert.equal(getOrder(probeKey), probeValue);
+    } finally {
+        assert.equal(Reflect.deleteProperty(mapPrototype, probeKey), true);
+    }
+
+    assert.ok(capturedMap);
+    return capturedMap;
+}
+
+const productionStaticOrderMap = captureProductionStaticOrderMap();
 
 test('static surface order JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
     assert.equal(hashExecutableSource(descriptorSource), EXECUTABLE_SOURCE_HASH);
@@ -91,7 +118,6 @@ test('실제 frozen order 맵은 own 숫자와 ordinary prototype의 상속 값�
     const { getDisplayStaticSurfaceOrder: getOrder } = productionDescriptorModule;
     const mapPrototype = Object.getPrototypeOf(productionStaticOrderMap);
 
-    assert.equal(Object.isFrozen(productionSurfaceData), true);
     assert.equal(Object.isFrozen(productionStaticOrderMap), true);
     assert.notEqual(mapPrototype, null);
     assert.equal(Object.getPrototypeOf(mapPrototype), null);

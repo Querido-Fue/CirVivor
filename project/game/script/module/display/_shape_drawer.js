@@ -1,7 +1,5 @@
 import { SVGDrawer } from './_svg_drawer.js';
-import { getData } from 'data/data_handler.js';
-
-const ENEMY_SVG_SHAPES = getData('ENEMY_SVG_SHAPES');
+import { ENEMY_SVG_SHAPES } from 'object/enemy/_enemy_shape_assets.js';
 
 /** 적 SVG 도형을 구분하는 shape 접두사입니다. */
 const ENEMY_SHAPE_PREFIX = 'enemy_';

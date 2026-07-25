@@ -1,0 +1,22 @@
+/**
+ * 적 공통 이동 반응 밸런스입니다.
+ */
+export const ENEMY_MOTION_BALANCE = Object.freeze({
+    MAX_ANGULAR_VELOCITY: 720,
+    AXIS_RESISTANCE_RECOVERY_SECONDS: 1,
+    AXIS_RESISTANCE_RECOVER_DELAY_SECONDS: 0.08,
+    ANGULAR_DECAY_MIN_SECONDS: 0.016
+});
+
+/**
+ * 육각 합체의 구성원·접촉·속도·무게·체력 밸런스입니다.
+ */
+export const HEXA_HIVE_MERGE_BALANCE = Object.freeze({
+    MAX_MEMBER_COUNT: 8,
+    CONTACT_SECONDS: 0.5,
+    MOVE_SPEED_DECAY: 0.95,
+    MOVE_SPEED_FLOOR_RATIO: 0.5,
+    WEIGHT_SCALE_PER_EXTRA_CELL: 0.5,
+    PENDING_WEIGHT: 100000,
+    HP_RECOVERY_RATIO: 0.1
+});

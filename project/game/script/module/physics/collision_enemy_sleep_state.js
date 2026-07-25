@@ -1,17 +1,15 @@
-import { getData } from 'data/data_handler.js';
-
-const DEFAULT_EPSILON = getData('COLLISION_CONSTANTS').EPSILON;
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
 /**
  * 적 충돌 sleep 상태를 변경하지 않고 이번 프레임 sleep 여부를 계산합니다.
  * @param {object} enemy - 상태를 확인할 적 객체입니다.
  * @param {number} delta - fixed step delta입니다.
- * @param {number} [epsilon=DEFAULT_EPSILON] - 속도 계산 최소 delta입니다.
+ * @param {number} [epsilon=COLLISION_EPSILON] - 속도 계산 최소 delta입니다.
  * @param {number} [sleepSpeedSq=0] - sleep 유지 속도 제곱 상한입니다.
  * @returns {boolean} 이번 프레임 충돌 body를 정지 상태로 다룰지 여부입니다.
  */
-export function readCollisionEnemySleepState(enemy, delta, epsilon = DEFAULT_EPSILON, sleepSpeedSq = 0) {
-    const safeEpsilon = Number.isFinite(epsilon) ? epsilon : DEFAULT_EPSILON;
+export function readCollisionEnemySleepState(enemy, delta, epsilon = COLLISION_EPSILON, sleepSpeedSq = 0) {
+    const safeEpsilon = Number.isFinite(epsilon) ? epsilon : COLLISION_EPSILON;
     const safeSleepSpeedSq = Number.isFinite(sleepSpeedSq) ? sleepSpeedSq : 0;
     const prevX = Number.isFinite(enemy.__collisionPrevX) ? enemy.__collisionPrevX : enemy.position.x;
     const prevY = Number.isFinite(enemy.__collisionPrevY) ? enemy.__collisionPrevY : enemy.position.y;

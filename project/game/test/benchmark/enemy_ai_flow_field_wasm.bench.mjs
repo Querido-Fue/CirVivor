@@ -21,14 +21,6 @@ const NAVIGATION_PATH = path.join(
     'ai',
     '_enemy_ai_navigation.js'
 );
-const CONSTANTS_PATH = path.join(
-    GAME_ROOT,
-    'script',
-    'data',
-    'object',
-    'enemy',
-    'enemy_ai_constants.js'
-);
 const WASM_BYTES_PATH = path.join(
     GAME_ROOT,
     'script',
@@ -81,27 +73,16 @@ function extractSourceSection(source, startMarker, endMarker) {
 }
 
 /**
- * 프로덕션 상수 모듈 원문을 현재 realm에서 실행합니다.
- * @param {string} source - `enemy_ai_constants.js` 원문입니다.
- * @returns {object} 현재 프로덕션 AI 상수입니다.
- */
-function createSameRealmEnemyAIConstants(source) {
-    const executableSource = source.replace(
-        'export const ENEMY_AI_CONSTANTS',
-        'const ENEMY_AI_CONSTANTS'
-    );
-    return new Function(
-        `"use strict";\n${executableSource}\nreturn ENEMY_AI_CONSTANTS;`
-    )();
-}
-
-/**
  * 프로덕션 buildFlowField와 heap helper 원문을 현재 realm의 Function으로 실행합니다.
  * @param {string} source - `_enemy_ai_navigation.js` 원문입니다.
- * @param {object} constants - 현재 프로덕션 AI 상수입니다.
  * @returns {(grid:object,goalCell:object)=>object} JS 기준 구현입니다.
  */
-function createSameRealmReferenceBuildFlowField(source, constants) {
+function createSameRealmReferenceBuildFlowField(source) {
+    const flowMathConstantsSource = extractSourceSection(
+        source,
+        'const EPSILON = ',
+        '\nconst CLEARANCE_BUCKET_STEP'
+    );
     const directionsSource = extractSourceSection(
         source,
         'const DIRS = Object.freeze([',
@@ -124,9 +105,7 @@ function createSameRealmReferenceBuildFlowField(source, constants) {
     );
     const executableSource = `
         "use strict";
-        const EPSILON = ${JSON.stringify(constants.EPSILON)};
-        const INF = ${JSON.stringify(constants.INF)};
-        const DIAGONAL_COST = ${JSON.stringify(constants.DIAGONAL_COST)};
+        ${flowMathConstantsSource}
         ${directionsSource}
         const flowOpenHeap = [];
         let flowOpenPositions = new Int32Array(0);
@@ -443,17 +422,15 @@ function printResults(rows) {
     }
 }
 
-const [navigationSourceRaw, constantsSource, wasmBytesSource, wasmRuntimeSource] = (
+const [navigationSourceRaw, wasmBytesSource, wasmRuntimeSource] = (
     await Promise.all([
         readFile(NAVIGATION_PATH, 'utf8'),
-        readFile(CONSTANTS_PATH, 'utf8'),
         readFile(WASM_BYTES_PATH, 'utf8'),
         readFile(WASM_RUNTIME_PATH, 'utf8')
     ])
 );
 const navigationSource = navigationSourceRaw.replace(/\r\n/g, '\n');
-const constants = createSameRealmEnemyAIConstants(constantsSource);
-const jsBuilder = createSameRealmReferenceBuildFlowField(navigationSource, constants);
+const jsBuilder = createSameRealmReferenceBuildFlowField(navigationSource);
 const wasmBytes = createSameRealmWasmBytes(wasmBytesSource);
 const wasmRuntime = createSameRealmWasmRuntime(wasmRuntimeSource, wasmBytes);
 

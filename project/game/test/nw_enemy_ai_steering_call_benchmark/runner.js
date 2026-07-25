@@ -1,4 +1,4 @@
-import { ENEMY_AI_CONSTANTS } from '../../script/data/object/enemy/enemy_ai_constants.js';
+import { ENEMY_AI_DATA } from '../../script/data/object/enemy/enemy_ai_data.js';
 
 const statusElement = document.querySelector('#status');
 const steeringUrl = new URL(
@@ -173,8 +173,8 @@ async function importSourceModule(source) {
  * @returns {object} 독립 실행 fixture입니다.
  */
 function createDirectReuseFixture() {
-    const profile = ENEMY_AI_CONSTANTS.QUALITY_PROFILES[
-        ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE
+    const profile = ENEMY_AI_DATA.QUALITY_PROFILES[
+        ENEMY_AI_DATA.DEFAULT_QUALITY_PROFILE
     ];
     const startX = 12.25;
     const startY = -7.5;
@@ -184,7 +184,7 @@ function createDirectReuseFixture() {
     const directPad = Math.max(0, enemyRadius * profile.NAV_DIRECT_CHECK_PAD_RATIO);
     const wallsVersion = 19;
     const state = {
-        policyId: ENEMY_AI_CONSTANTS.POLICY.CHASE,
+        policyId: ENEMY_AI_DATA.POLICY.CHASE,
         flowPolicyKey: 'chase',
         flowData: null,
         flowKey: '',

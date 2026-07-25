@@ -1,11 +1,9 @@
-import { getData } from 'data/data_handler.js';
+import { PLAY_MAP_DATA } from 'data/scene/game/play_map_data.js';
 import { GAME_SCENE_COMMAND_TYPES } from 'simulation/game_scene_simulation_protocol.js';
 import {
     buildGameMapGeometry,
     resolveGameMapDefinition
 } from '../map/game_map_grid.js';
-
-const PLAY_MAP_CONSTANTS = getData('GAME_SCENE_CONSTANTS').PLAY_MAP;
 
 /**
  * 컴파일된 맵 경계 벽에 씬 고유 ID를 부여합니다.
@@ -37,14 +35,14 @@ export function buildGameSceneResetPlayWorldCommands(scene, mapId = scene?.mapId
         objectWH: scene?.objectWH
     });
     const playerData = {
-        id: PLAY_MAP_CONSTANTS.PLAYER_ID,
-        radius: mapGeometry.cellSize * PLAY_MAP_CONSTANTS.PLAYER_RADIUS_CELL_RATIO,
+        id: PLAY_MAP_DATA.PLAYER_ID,
+        radius: mapGeometry.cellSize * PLAY_MAP_DATA.PLAYER_RADIUS_CELL_RATIO,
         position: {
             x: mapGeometry.playerSpawn.x,
             y: mapGeometry.playerSpawn.y
         },
         speed: { x: 0, y: 0 },
-        weight: PLAY_MAP_CONSTANTS.PLAYER_WEIGHT
+        weight: PLAY_MAP_DATA.PLAYER_WEIGHT
     };
     const staticWalls = mapGeometry.boundaryWalls.map((wall) => {
         return createGameMapWallData(scene, wall);

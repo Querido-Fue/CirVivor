@@ -3,7 +3,8 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 // 공유 의존성을 먼저 평가해 VM module graph의 중복 링크를 피합니다.
 for (const modulePath of [
-    'data/data_handler.js',
+    'data/object/enemy/enemy_catalog_data.js',
+    'data/object/enemy/enemy_balance_data.js',
     'util/number_util.js',
     'util/math_util.js',
     'simulation/simulation_runtime.js',

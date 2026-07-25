@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const presetModule = await loadGameModule(
-    'data/overlay/overlay_animation_presets.js'
+    'overlay/_animation_presets.js'
 );
 const preset = presetModule.getOverlayAnimationPreset();
 assert.equal('dim' in preset, false);

@@ -1,8 +1,24 @@
-import { getData } from 'data/data_handler.js';
 import { ColorSchemes, getCurrentThemeKey } from 'display/_theme_handler.js';
 import { clampNumber } from 'util/number_util.js';
 
-const VIGNETTE_CONSTANTS = getData('VIGNETTE_CONSTANTS');
+const VIGNETTE_CONSTANTS = Object.freeze({
+    BASE_REFERENCE_HEIGHT_PX: 1080,
+    BASE_EDGE_WIDTH_PX: 200,
+    BASE_EDGE_ALPHA: 0.68,
+    BASE_CORNER_RADIUS_PX: 260,
+    DITHER_STRENGTH: 1.1,
+    MASK_INSET_MULTIPLIER: 0.24,
+    BLUR_RADIUS_MULTIPLIER: 0.82,
+    MIN_EDGE_WIDTH_RATIO: 0.08,
+    MAX_EDGE_WIDTH_RATIO: 0.42,
+    LAYERS: Object.freeze({
+        WORLD: Object.freeze({
+            ID: 'vignette',
+            ORDER: 50,
+            EDGE_WIDTH_MULTIPLIER: 0.7716
+        })
+    })
+});
 const ORDERED_DITHER_MATRIX_4X4 = Object.freeze([
     Object.freeze([0, 8, 2, 10]),
     Object.freeze([12, 4, 14, 6]),

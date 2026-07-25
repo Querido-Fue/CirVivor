@@ -1,8 +1,8 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
+import { UI_RADIUS } from 'ui/layout/layout_tokens.js';
 import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 export const DEFAULT_OVERLAY_PANEL_ID = 'root';
-const DEFAULT_OVERLAY_PANEL_RADIUS_KEY = 'UI_CONSTANTS.OVERLAY_PANEL_RADIUS';
 const PRESENTATION_SCALE_EPSILON = 0.0001;
 const DEFAULT_PANEL_BLUR = 0.1;
 const DEFAULT_PANEL_LINE_WIDTH = 1;
@@ -30,7 +30,7 @@ const resolveOverlayPresentationAxis = (position, size, fallbackSize) => {
  * @returns {number} 기본 패널 반경입니다.
  */
 const getDefaultOverlayPanelRadius = (positioningHandler, uiScale) => (
-    positioningHandler.parseUIData(DEFAULT_OVERLAY_PANEL_RADIUS_KEY, uiScale)
+    positioningHandler.parseUIData(UI_RADIUS.OVERLAY_PANEL, uiScale)
 );
 
 /**
@@ -77,7 +77,7 @@ export function getOverlayPresentedPanelRegion(panel, overlay) {
 
 /**
  * 패널 metric을 실제 픽셀 값으로 변환합니다.
- * @param {number|object|string|undefined} metric - 변환할 metric입니다.
+ * @param {number|{BASE:string,VALUE:number}|{unit:string,value:number}|undefined} metric - 변환할 metric입니다.
  * @param {number} fallbackValue - 기본값입니다.
  * @param {number} referenceSize - parent 단위 계산 기준입니다.
  * @param {object} positioningHandler - 단위 파서를 제공하는 positioning handler입니다.
@@ -91,8 +91,11 @@ export function resolveOverlayPanelMetric(metric, fallbackValue, referenceSize, 
     if (typeof metric === 'number') {
         return resolveFiniteNumber(metric, fallbackValue);
     }
-    if (typeof metric === 'string') {
-        return resolveFiniteNumber(positioningHandler.parseUIData(metric, uiScale), fallbackValue);
+    if (typeof metric === 'object' && metric.BASE && metric.VALUE !== undefined) {
+        return resolveFiniteNumber(
+            positioningHandler.parseUIData(metric, uiScale),
+            fallbackValue
+        );
     }
     if (typeof metric === 'object' && metric.unit && metric.value !== undefined) {
         return resolveFiniteNumber(positioningHandler.parseUnit(metric.unit, metric.value, referenceSize), fallbackValue);
@@ -103,7 +106,7 @@ export function resolveOverlayPanelMetric(metric, fallbackValue, referenceSize, 
 
 /**
  * 패널 반경을 계산합니다.
- * @param {number|object|string|undefined} radius - 반경 정의입니다.
+ * @param {number|{BASE:string,VALUE:number}|{unit:string,value:number}|undefined} radius - 반경 정의입니다.
  * @param {number} panelWidth - 패널 너비입니다.
  * @param {object} positioningHandler - 단위 파서를 제공하는 positioning handler입니다.
  * @param {number} uiScale - 현재 UI scale입니다.
@@ -117,7 +120,7 @@ export function resolveOverlayPanelRadius(radius, panelWidth, positioningHandler
     if (typeof radius === 'number') {
         return resolveFiniteNumber(radius, defaultRadius);
     }
-    if (typeof radius === 'string') {
+    if (typeof radius === 'object' && radius.BASE && radius.VALUE !== undefined) {
         return resolveFiniteNumber(
             positioningHandler.parseUIData(radius, uiScale),
             defaultRadius

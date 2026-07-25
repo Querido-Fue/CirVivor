@@ -1,4 +1,3 @@
-import { ENEMY_AI_CONSTANTS } from '../../../../data/object/enemy/enemy_ai_constants.js';
 import { clampNumber } from 'util/number_util.js';
 import { getHexaHiveType } from '../_hexa_hive_layout.js';
 import { incrementEnemyAIDebugCounter } from './_enemy_ai_debug_stats.js';
@@ -8,9 +7,12 @@ import { buildEnemyAIFlowField } from './wasm/_enemy_ai_flow_field_backend.js';
 /** @typedef {import('./wasm/_enemy_ai_flow_field_backend.js').EnemyAIFlowFieldGoalCell} EnemyAIFlowFieldGoalCell */
 /** @typedef {import('./wasm/_enemy_ai_flow_field_backend.js').EnemyAIFlowFieldResult} EnemyAIFlowFieldResult */
 
-const EPSILON = ENEMY_AI_CONSTANTS.EPSILON;
-const INF = ENEMY_AI_CONSTANTS.INF;
-const DIAGONAL_COST = ENEMY_AI_CONSTANTS.DIAGONAL_COST;
+const EPSILON = 1e-6;
+const INF = 1e20;
+const DIAGONAL_COST = 1.41421356237;
+const CLEARANCE_BUCKET_STEP = 4;
+const NAV_GRID_CACHE_LIMIT = 12;
+const FLOW_CACHE_LIMIT = 18;
 const HEXA_HIVE_TYPE = getHexaHiveType();
 
 const DIRS = Object.freeze([
@@ -603,12 +605,11 @@ const buildGridCacheKey = (walls, width, height, cellSize, clearance, wallsVersi
 /**
  * clearance 값을 캐시 버킷 단위로 정규화합니다.
  * @param {number} clearanceRaw - 원본 clearance 값입니다.
- * @param {object} profile - AI 품질 프로필입니다.
  * @returns {number} 정규화한 clearance 값입니다.
  */
-const getClearanceBucket = (clearanceRaw, profile) => Math.max(
-    profile.CLEARANCE_BUCKET_STEP,
-    Math.round(clearanceRaw / profile.CLEARANCE_BUCKET_STEP) * profile.CLEARANCE_BUCKET_STEP
+const getClearanceBucket = (clearanceRaw) => Math.max(
+    CLEARANCE_BUCKET_STEP,
+    Math.round(clearanceRaw / CLEARANCE_BUCKET_STEP) * CLEARANCE_BUCKET_STEP
 );
 
 /**
@@ -659,7 +660,7 @@ const buildNavGrid = (walls, width, height, cellSize, clearance) => {
  * @returns {{grid: object, gridKey: string, clearance: number}} 그리드 조회 결과입니다.
  */
 export const getNavGrid = (walls, width, height, profile, clearanceRaw, wallsVersion = null) => {
-    const clearance = getClearanceBucket(clearanceRaw, profile);
+    const clearance = getClearanceBucket(clearanceRaw);
     const key = buildGridCacheKey(
         walls,
         width,
@@ -678,10 +679,7 @@ export const getNavGrid = (walls, width, height, profile, clearanceRaw, wallsVer
 
     const grid = buildNavGrid(walls, width, height, profile.NAV_CELL_SIZE, clearance);
     navGridCache.set(key, grid);
-    const cacheLimit = Number.isInteger(profile.NAV_GRID_CACHE_LIMIT)
-        ? Math.max(1, profile.NAV_GRID_CACHE_LIMIT)
-        : 12;
-    if (navGridCache.size > cacheLimit) {
+    if (navGridCache.size > NAV_GRID_CACHE_LIMIT) {
         const oldestKey = navGridCache.keys().next().value;
         if (oldestKey !== undefined) {
             navGridCache.delete(oldestKey);
@@ -1036,10 +1034,7 @@ const getFlowFieldForTargetCoords = (
 
     const field = buildEnemyAIFlowField(grid, goalCell, buildFlowField);
     flowFieldCache.set(key, field);
-    const cacheLimit = Number.isInteger(profile.FLOW_CACHE_LIMIT)
-        ? Math.max(1, profile.FLOW_CACHE_LIMIT)
-        : 18;
-    if (flowFieldCache.size > cacheLimit) {
+    if (flowFieldCache.size > FLOW_CACHE_LIMIT) {
         const firstKey = flowFieldCache.keys().next().value;
         if (firstKey !== undefined) flowFieldCache.delete(firstKey);
     }
@@ -1062,7 +1057,7 @@ const getFlowFieldForTargetCoords = (
  * @returns {string} 공유 flow 캐시 키입니다.
  */
 const buildSharedFlowDecisionKey = (clearance, targetX, targetY, profile, policyKey = 'chase') => (
-    `${profile.KEY}|${policyKey}|${getClearanceBucket(clearance, profile)}|${Math.floor(targetX / profile.NAV_CELL_SIZE)}|${Math.floor(targetY / profile.NAV_CELL_SIZE)}`
+    `${profile.KEY}|${policyKey}|${getClearanceBucket(clearance)}|${Math.floor(targetX / profile.NAV_CELL_SIZE)}|${Math.floor(targetY / profile.NAV_CELL_SIZE)}`
 );
 
 /**

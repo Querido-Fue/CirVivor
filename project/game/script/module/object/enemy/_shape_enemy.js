@@ -1,28 +1,33 @@
 import { getObjectOffsetY, renderGL } from 'display/display_system.js';
 import { BaseEnemy } from './_base_enemy.js';
-import { getData } from 'data/data_handler.js';
+import {
+    ENEMY_ASPECT_RATIO,
+    ENEMY_HEIGHT_SCALE
+} from 'data/object/enemy/enemy_catalog_data.js';
+import { TITLE_AI_CONSTANTS } from 'scene/title/_title_runtime_constants.js';
 import { colorUtil } from 'util/color_util.js';
 import { normalizeDegrees } from 'util/math_util.js';
 import { clamp01 } from 'util/number_util.js';
 import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
+import { getEnemyShapeKey } from './_enemy_shape_assets.js';
 
-const ENEMY_ASPECT_RATIO = getData('ENEMY_ASPECT_RATIO');
-const ENEMY_HEIGHT_SCALE = getData('ENEMY_HEIGHT_SCALE');
-const getEnemyShapeKey = getData('getEnemyShapeKey');
-const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
-const ENEMY_ANGLE_CONSTANTS = ENEMY_CONSTANTS.ANGLE;
-const ENEMY_HEADING_CONSTANTS = ENEMY_CONSTANTS.SHAPE_HEADING;
-const HEADING_TRACK_TYPES = new Set(ENEMY_HEADING_CONSTANTS.TRACK_TYPES);
-const HEADING_TURN_MAX_DEG_PER_SEC = ENEMY_HEADING_CONSTANTS.TURN_MAX_DEG_PER_SEC;
-const HEADING_TURN_DAMP_START_DEG = ENEMY_HEADING_CONSTANTS.TURN_DAMP_START_DEG;
-const HEADING_TURN_SNAP_EPSILON_DEG = ENEMY_HEADING_CONSTANTS.TURN_SNAP_EPSILON_DEG;
-const HEADING_FORWARD_OFFSET_DEG = ENEMY_HEADING_CONSTANTS.FORWARD_OFFSET_DEG;
-const HEADING_MIN_SPEED_SQ = ENEMY_HEADING_CONSTANTS.MIN_SPEED_SQ;
-const HEADING_SYMMETRY_STEP_BY_TYPE = ENEMY_HEADING_CONSTANTS.SYMMETRY_STEP_BY_TYPE;
-const FULL_TURN_DEG = ENEMY_ANGLE_CONSTANTS.FULL_TURN_DEG;
-const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
-const RADIANS_TO_DEGREES = ENEMY_ANGLE_CONSTANTS.RADIANS_TO_DEGREES;
-const TITLE_AI_ID = getData('TITLE_CONSTANTS').TITLE_AI.ID;
+const DEFAULT_ENEMY_FILL = '#ff6c6c';
+const DEFAULT_ENEMY_ALPHA = 1;
+const DEFAULT_ENEMY_ROTATION = 0;
+const HEADING_TRACK_TYPES = new Set(['triangle', 'arrow', 'rhom']);
+const HEADING_TURN_MAX_DEG_PER_SEC = 90;
+const HEADING_TURN_DAMP_START_DEG = 45;
+const HEADING_TURN_SNAP_EPSILON_DEG = 0.15;
+const HEADING_FORWARD_OFFSET_DEG = 90;
+const HEADING_MIN_SPEED_SQ = 36;
+const HEADING_SYMMETRY_STEP_BY_TYPE = Object.freeze({
+    triangle: 120,
+    rhom: 180
+});
+const FULL_TURN_DEG = 360;
+const DEGREES_TO_RADIANS = Math.PI / 180;
+const RADIANS_TO_DEGREES = 180 / Math.PI;
+const TITLE_AI_ID = TITLE_AI_CONSTANTS.ID;
 const EMPTY_DRAW_OPTIONS = Object.freeze({});
 
 /**
@@ -41,7 +46,7 @@ function isTitleSceneEnemy(enemy) {
  */
 function normalizeOpaqueEnemyFill(fill) {
     if (typeof fill !== 'string' || fill.length === 0) {
-        return ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
+        return DEFAULT_ENEMY_FILL;
     }
 
     const parsed = colorUtil().cssToRgb(fill);
@@ -67,9 +72,9 @@ export class ShapeEnemy extends BaseEnemy {
         this.aspectRatio = ENEMY_ASPECT_RATIO[shapeType] ?? 1;
         this.heightScale = ENEMY_HEIGHT_SCALE[shapeType] ?? 1;
         this.shapeKey = getEnemyShapeKey(shapeType);
-        this.fill = ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
-        this.alpha = ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA;
-        this.rotation = ENEMY_CONSTANTS.DEFAULT_STYLE.ROTATION;
+        this.fill = DEFAULT_ENEMY_FILL;
+        this.alpha = DEFAULT_ENEMY_ALPHA;
+        this.rotation = DEFAULT_ENEMY_ROTATION;
         this.snapRenderTransform();
         this.#rotationCacheDeg = Number.NaN;
         this.#rotationCos = 1;
@@ -107,12 +112,12 @@ export class ShapeEnemy extends BaseEnemy {
         this.type = data.type ?? this.shapeType;
         this.shapeKey = getEnemyShapeKey(this.type);
         this.fill = isTitleSceneEnemy(this)
-            ? (data.fill ?? this.fill ?? ENEMY_CONSTANTS.DEFAULT_STYLE.FILL)
-            : normalizeOpaqueEnemyFill(data.fill ?? this.fill ?? ENEMY_CONSTANTS.DEFAULT_STYLE.FILL);
+            ? (data.fill ?? this.fill ?? DEFAULT_ENEMY_FILL)
+            : normalizeOpaqueEnemyFill(data.fill ?? this.fill ?? DEFAULT_ENEMY_FILL);
         this.alpha = isTitleSceneEnemy(this)
-            ? (data.alpha ?? ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA)
+            ? (data.alpha ?? DEFAULT_ENEMY_ALPHA)
             : 1;
-        this.rotation = data.rotation ?? ENEMY_CONSTANTS.DEFAULT_STYLE.ROTATION;
+        this.rotation = data.rotation ?? DEFAULT_ENEMY_ROTATION;
         this.snapRenderTransform();
         this.#renderOptions.shape = this.shapeKey;
         this.#renderOptions.fill = this.fill;
@@ -128,9 +133,9 @@ export class ShapeEnemy extends BaseEnemy {
         super.reset();
         const shapeType = this.shapeType ?? this.type ?? 'square';
         this.shapeKey = getEnemyShapeKey(shapeType);
-        this.fill = ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
-        this.alpha = ENEMY_CONSTANTS.DEFAULT_STYLE.ALPHA;
-        this.rotation = ENEMY_CONSTANTS.DEFAULT_STYLE.ROTATION;
+        this.fill = DEFAULT_ENEMY_FILL;
+        this.alpha = DEFAULT_ENEMY_ALPHA;
+        this.rotation = DEFAULT_ENEMY_ROTATION;
         this.snapRenderTransform();
         if (!(#renderOptions in this) || !this.#renderOptions) return;
         this.#renderOptions.shape = this.shapeKey;

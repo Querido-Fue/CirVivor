@@ -1,24 +1,21 @@
 import { getObjectOffsetY, renderGLShapeInstances } from 'display/display_system.js';
 import { colorUtil } from 'util/color_util.js';
-import { getData } from 'data/data_handler.js';
 import { ShapeEnemy } from './_shape_enemy.js';
 import { drawEnemyCollisionDebugCircles } from './_enemy_collision_debug.js';
+import { getEnemyShapeKey } from './_enemy_shape_assets.js';
 import {
     cloneHexaHiveLayout,
     getHexaHiveType
 } from './_hexa_hive_layout.js';
 
-const getEnemyShapeKey = getData('getEnemyShapeKey');
-const ENEMY_CONSTANTS = getData('ENEMY_CONSTANTS');
-const ENEMY_HEXA_HIVE_RENDER = ENEMY_CONSTANTS.HEXA_HIVE.RENDER;
-const ENEMY_ANGLE_CONSTANTS = ENEMY_CONSTANTS.ANGLE;
 const HEXA_SHAPE_KEY = getEnemyShapeKey('hexa');
-const BACKDROP_FALLBACK_FILL = ENEMY_HEXA_HIVE_RENDER.BACKDROP_FALLBACK_FILL;
-const BACKDROP_FILL_BLEND_RATIO = ENEMY_HEXA_HIVE_RENDER.BACKDROP_FILL_BLEND_RATIO;
-const HEXA_HIVE_CELL_SHAPE = ENEMY_HEXA_HIVE_RENDER.CELL_SHAPE;
-const HEXA_HIVE_FRONT_SCALE = ENEMY_HEXA_HIVE_RENDER.FRONT_SCALE;
-const HEXA_HIVE_BACKDROP_SCALE = ENEMY_HEXA_HIVE_RENDER.BACKDROP_SCALE;
-const DEGREES_TO_RADIANS = ENEMY_ANGLE_CONSTANTS.DEGREES_TO_RADIANS;
+const DEFAULT_ENEMY_FILL = '#ff6c6c';
+const BACKDROP_FALLBACK_FILL = 'rgb(255, 212, 184)';
+const BACKDROP_FILL_BLEND_RATIO = 0.72;
+const HEXA_HIVE_CELL_SHAPE = 'hexagon';
+const HEXA_HIVE_FRONT_SCALE = 1;
+const HEXA_HIVE_BACKDROP_SCALE = 1.14;
+const DEGREES_TO_RADIANS = Math.PI / 180;
 const EMPTY_DRAW_OPTIONS = Object.freeze({});
 
 /**
@@ -149,7 +146,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
      * @returns {string}
      */
     _resolveBackdropFill() {
-        const sourceFill = typeof this.fill === 'string' ? this.fill : ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
+        const sourceFill = typeof this.fill === 'string' ? this.fill : DEFAULT_ENEMY_FILL;
         if (this._hiveBackdropFillSource === sourceFill) {
             return this._hiveBackdropFill;
         }
@@ -188,7 +185,7 @@ export class HexaHiveEnemy extends ShapeEnemy {
             + (Number.isFinite(this.mergeSettleOffset?.y) ? this.mergeSettleOffset.y : 0);
         const renderX = this.renderPosition.x + mergeOffsetX;
         const renderY = this.renderPosition.y - objectOffsetY + mergeOffsetY;
-        const frontFill = typeof this.fill === 'string' ? this.fill : ENEMY_CONSTANTS.DEFAULT_STYLE.FILL;
+        const frontFill = typeof this.fill === 'string' ? this.fill : DEFAULT_ENEMY_FILL;
         const backdropFill = this._resolveBackdropFill();
         const backdropAlpha = Number.isFinite(this.alpha) ? this.alpha : 1;
         const frontAlpha = Number.isFinite(this.alpha) ? this.alpha : 1;

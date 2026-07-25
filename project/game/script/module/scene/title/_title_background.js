@@ -1,7 +1,7 @@
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
 import { clampNumber } from 'util/number_util.js';
-import { getData } from 'data/data_handler.js';
+import { ENEMY_SHAPE_TYPES } from 'data/object/enemy/enemy_catalog_data.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { titleAI } from 'object/enemy/ai/_title_ai.js';
 import { TitleShieldEffect } from './shield/_title_shield_effect.js';
@@ -35,9 +35,87 @@ import {
     getSimulationWH,
     getSimulationWW
 } from 'simulation/simulation_runtime.js';
+import { TITLE_AI_CONSTANTS } from './_title_runtime_constants.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
-const ENEMY_SHAPE_TYPES = getData('ENEMY_SHAPE_TYPES');
+const TITLE_ENEMY_CONSTANTS = Object.freeze({
+    ENEMY_SPAWN_RATE: 40,
+    ENEMY_LIMIT: 420,
+    ENEMY_LIMIT_PER_LAYER: 140,
+    ENEMY_TARGET_OCCUPANCY_RATIO: 0.9,
+    INITIAL_BURST_FILL_RATIO: 0.7,
+    INITIAL_BURST_DURATION_SECONDS: 1,
+    INITIAL_BURST_COLLISION_GRACE_SECONDS: 0.3,
+    INITIAL_BURST_SPAWN_EASEOUT_EXPO_POWER: 14,
+    INITIAL_BURST_MAX_SPAWN_PER_STEP: 5,
+    INITIAL_BURST_SPAWN_X_MIN_RATIO: 1,
+    INITIAL_BURST_SPAWN_X_MAX_RATIO: 1.03,
+    INITIAL_BURST_AXIS_SPEED_MIN_MULTIPLIER: 0,
+    INITIAL_BURST_AXIS_SPEED_MAX_MULTIPLIER: 60,
+    INITIAL_BURST_DRIFT_SPEED_MIN_MULTIPLIER: 1.1,
+    INITIAL_BURST_DRIFT_SPEED_MAX_MULTIPLIER: 2.8,
+    INITIAL_BURST_LAYER_COMPENSATION_MIN: 0.4,
+    INITIAL_BURST_Y_JITTER_RATIO: 0.78,
+    ENEMY_EXCLUDED_TYPES: Object.freeze(['gen']),
+    SHIELD_RADIUS_RATIO: 0.07,
+    SHIELD_ANIM_DURATION: 1.2,
+    SHIELD_ANIM_DELAY: 1,
+    ENEMY_CULL_OUTSIDE_RATIO: 0.1,
+    ENEMY_SPAWN_X_RATIO: 1.05,
+    ENEMY_SIZE_MIN: 1,
+    ENEMY_SIZE_MAX: 1.2,
+    ENEMY_ALPHA_MIN: 0.2,
+    ENEMY_ALPHA_MAX: 0.45,
+    AXIS_SPEED_MIN_RATIO: 0.02,
+    AXIS_SPEED_MAX_RATIO: 0.07,
+    AXIS_SPEED_LEFT_MULTIPLIER: 1.1,
+    DRIFT_SPEED_MIN_RATIO: -0.02,
+    DRIFT_SPEED_MAX_RATIO: 0.02,
+    PARALLAX_LAYERS: Object.freeze([
+        Object.freeze({
+            Id: 'far',
+            SizeMin: 0.42,
+            SizeMax: 0.56,
+            Alpha: 0.4,
+            SpeedScale: 0.3,
+            MagneticScale: 0,
+            ColorMix: 0.72,
+            SoftnessScale: 1.14,
+            SoftnessAlpha: 0.16,
+            SoftnessOffsetPx: 1.4
+        }),
+        Object.freeze({
+            Id: 'mid',
+            SizeMin: 0.64,
+            SizeMax: 0.8,
+            Alpha: 0.52,
+            SpeedScale: 0.62,
+            MagneticScale: 1,
+            ColorMix: 0.38,
+            SoftnessScale: 1.06,
+            SoftnessAlpha: 0.08,
+            SoftnessOffsetPx: 0.7
+        }),
+        Object.freeze({
+            Id: 'near',
+            SizeMin: 0.88,
+            SizeMax: 1,
+            Alpha: 0.7,
+            SpeedScale: 1,
+            MagneticScale: 1,
+            ColorMix: 0.1,
+            SoftnessScale: 1.02,
+            SoftnessAlpha: 0.03,
+            SoftnessOffsetPx: 0.2
+        })
+    ]),
+    SPAWN_Y_MIN_RATIO: 0.03,
+    SPAWN_Y_MAX_RATIO: 0.97
+});
+
+const TITLE_CONSTANTS = Object.freeze({
+    TITLE_AI: TITLE_AI_CONSTANTS,
+    TITLE_ENEMIES: TITLE_ENEMY_CONSTANTS
+});
 const TITLE_ENEMY_SPAWN_CULL_GUARD_PX = 0.5;
 const TITLE_PARALLAX_LAYERS = TITLE_CONSTANTS.TITLE_ENEMIES.PARALLAX_LAYERS || [];
 const TITLE_PARALLAX_LAYER_COUNT = Array.isArray(TITLE_PARALLAX_LAYERS)

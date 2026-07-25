@@ -1,4 +1,3 @@
-import { getData } from 'data/data_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { clamp01 } from 'util/number_util.js';
 import { resolveOverlayEffectTextureRect } from './_overlay_render_geometry.js';
@@ -15,9 +14,7 @@ import {
     SHADOW_PANEL_FRAGMENT_SHADER,
     SOLID_COLOR_FRAGMENT_SHADER
 } from './_shader_utils.js';
-
-const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
-const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
+import { OVERLAY_RENDER_CONSTANTS, WEBGL_CONSTANTS } from './_webgl_constants.js';
 
 /**
  * @class OverlayEffectRenderer

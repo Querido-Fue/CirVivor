@@ -2,14 +2,18 @@ import { BaseOverlay } from './_base_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
+import { UI_SPACING } from 'ui/layout/layout_tokens.js';
+import { BUTTON_STYLE } from 'ui/style/component_styles.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { runtimeTool } from 'util/runtime_tool.js';
-import { getData } from 'data/data_handler.js';
 import { applyOverlayConfirmButtonIcon } from './_overlay_confirm_icon.js';
+import { EXIT_LAYOUT_CONSTANTS } from './_overlay_layout_constants.js';
 
-const OVERLAY_LAYOUT_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS');
-const EXIT_LAYOUT_CONSTANTS = OVERLAY_LAYOUT_CONSTANTS.EXIT;
-const EXTERNAL_LINK_WARNING_CONSTANTS = OVERLAY_LAYOUT_CONSTANTS.EXTERNAL_LINK_WARNING;
-const TEXT_CONSTANTS = getData('TEXT_CONSTANTS');
+const EXTERNAL_LINK_WARNING_CONSTANTS = Object.freeze({
+    DISPLAY_MAX_LENGTH: 55,
+    HEIGHT_MULTIPLIER: 1.15,
+    TRANSPARENT_COLOR: 'rgba(0, 0, 0, 0)'
+});
 const EXTERNAL_LINK_DISPLAY_MAX_LENGTH = EXTERNAL_LINK_WARNING_CONSTANTS.DISPLAY_MAX_LENGTH;
 const EXTERNAL_LINK_WARNING_HEIGHT_MULTIPLIER = EXTERNAL_LINK_WARNING_CONSTANTS.HEIGHT_MULTIPLIER;
 const TRANSPARENT_COLOR = EXTERNAL_LINK_WARNING_CONSTANTS.TRANSPARENT_COLOR;
@@ -77,14 +81,6 @@ export class ExternalLinkWarningOverlay extends BaseOverlay {
     }
 
     /**
-     * 링크 미리보기 버튼용 글꼴 크기를 반환합니다.
-     * @returns {number} 버튼 텍스트 글꼴 크기입니다.
-     */
-    _getLinkPreviewFontSize() {
-        return this.positioningHandler.parseUIData(TEXT_CONSTANTS.H5.FONT.SIZE, this.uiScale);
-    }
-
-    /**
      * 외부 링크 열기를 확정합니다.
      */
     _handleConfirm() {
@@ -98,30 +94,27 @@ export class ExternalLinkWarningOverlay extends BaseOverlay {
      */
     _generateLayout() {
         this._releaseElements();
-        const linkPreviewFontSize = this._getLinkPreviewFontSize();
-        const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.5)
-            .space("WH", 2.5)
-            .item("text").stylePreset("h2").text(getLangString('external_link_warning_title')).fill(ColorSchemes.Title.TextDark)
-            .space("WH", 1.4)
-            .item("text").stylePreset("h4").text(getLangString('external_link_warning_body')).fill(ColorSchemes.Overlay.Text.Item)
+        const handler = new LayoutHandler(this, this.positioningHandler).paddingX(UI_SPACING.DIALOG_PADDING_X)
+            .space(UI_SPACING.OVERLAY_TITLE_TOP)
+            .item("text").textStyle(TYPOGRAPHY.H2).text(getLangString('external_link_warning_title')).fill(ColorSchemes.Title.TextDark)
+            .space(UI_SPACING.DIALOG_BODY_GAP)
+            .item("text").textStyle(TYPOGRAPHY.H4).text(getLangString('external_link_warning_body')).fill(ColorSchemes.Overlay.Text.Item)
             .space("WH", 0.8)
             .item("button", "external_link_preview")
             .width("content")
             .height("WH", 2.2)
+            .textStyle(TYPOGRAPHY.LINK_PREVIEW)
             .buttonText(this._getDisplayURL())
             .buttonColor(TRANSPARENT_COLOR, TRANSPARENT_COLOR, ColorSchemes.Overlay.Text.Item)
-            .prop("font", TEXT_CONSTANTS.H5_BOLD.FONT.FAMILY)
-            .prop("fontWeight", TEXT_CONSTANTS.H5_BOLD.FONT.WEIGHT)
-            .prop("size", linkPreviewFontSize)
             .prop("margin", 0)
-            .prop("radius", 0)
+            .radius("absolute", 0)
             .onHover(() => { })
-            .bottomSpace("WH", 2.5)
+            .bottomSpace(UI_SPACING.OVERLAY_FOOTER_BOTTOM)
             .bottomGroup().justifyContent("right", "WW", 1).align("right");
 
-        handler.item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_no")).onClick(this.close.bind(this))
+        handler.item("button").buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT).buttonText(getLangString("exit_no")).onClick(this.close.bind(this))
             .icon("deny").buttonColor(ColorSchemes.Overlay.Button.Cancel)
-            .item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_yes")).onClick(this._handleConfirm.bind(this));
+            .item("button").buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT).buttonText(getLangString("exit_yes")).onClick(this._handleConfirm.bind(this));
 
         applyOverlayConfirmButtonIcon(handler);
 

@@ -1,12 +1,11 @@
-import { getData } from 'data/data_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { clamp01 } from 'util/number_util.js';
+import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from '../_title_runtime_constants.js';
 import { getLoadingAccentColor } from '../loading/_title_loading_theme.js';
 
 export { toLoadingRgba } from '../loading/_title_loading_theme.js';
 
-const TITLE_LOADING = getData('TITLE_CONSTANTS').TITLE_LOADING;
 const DEFAULT_LOADING_GLOW = TITLE_LOADING.GLOW_DEFAULTS;
 const DEFAULT_LOADING_GLOW_STOPS = DEFAULT_LOADING_GLOW.HALO_STOPS;
 const DEFAULT_LOADING_GLOW_RING = DEFAULT_LOADING_GLOW.RING;

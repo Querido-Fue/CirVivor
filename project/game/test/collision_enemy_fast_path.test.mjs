@@ -3,8 +3,9 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 // VM test loader가 공유 의존성을 동시에 링크하지 않도록 공통 graph를 아래에서 위로 평가합니다.
 for (const modulePath of [
-    'data/data_handler.js',
     'util/number_util.js',
+    'physics/collision_math_constants.js',
+    'physics/collision_body_layout.js',
     'physics/collision_soa_layout.js',
     'physics/_collision_rules.js',
     'physics/collision_pair_rule_guard.js',

@@ -1,12 +1,9 @@
-import { getData } from 'data/data_handler.js';
 import { clampNumber } from 'util/number_util.js';
+import { COLLISION_EPSILON } from './collision_math_constants.js';
 
-const COLLISION_CONSTANTS = getData('COLLISION_CONSTANTS');
-const COLLISION_MANIFOLD = COLLISION_CONSTANTS.MANIFOLD;
-const EPSILON = COLLISION_CONSTANTS.EPSILON;
-const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = COLLISION_MANIFOLD.MULTI_CONTACT_NORMAL_DIVERSITY_SCALE;
-const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = COLLISION_MANIFOLD.MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX;
-const MULTI_CONTACT_DIVERSITY_SAMPLE_CAP = COLLISION_MANIFOLD.MULTI_CONTACT_DIVERSITY_SAMPLE_CAP;
+const MULTI_CONTACT_NORMAL_DIVERSITY_SCALE = 0.9;
+const MULTI_CONTACT_PENETRATION_MULTIPLIER_MAX = 1.85;
+const MULTI_CONTACT_DIVERSITY_SAMPLE_CAP = 3;
 
 /**
  * manifold 출력 객체를 채웁니다.
@@ -112,12 +109,12 @@ export function writeCollisionCircleOverlapManifoldFromDelta(
     let distance = Math.sqrt(distSq);
     let normalX = 1;
     let normalY = 0;
-    if (distance > EPSILON) {
+    if (distance > COLLISION_EPSILON) {
         normalX = dx / distance;
         normalY = dy / distance;
     } else {
         const fallbackLength = Math.hypot(fallbackNormalX, fallbackNormalY);
-        if (fallbackLength > EPSILON) {
+        if (fallbackLength > COLLISION_EPSILON) {
             normalX = fallbackNormalX / fallbackLength;
             normalY = fallbackNormalY / fallbackLength;
         }
@@ -161,7 +158,7 @@ export function writeCollisionCircleRectOverlapManifold(circleX, circleY, radius
         return null;
     }
 
-    if (distSq > EPSILON) {
+    if (distSq > COLLISION_EPSILON) {
         const distance = Math.sqrt(distSq);
         return writeCollisionManifold(
             out,
@@ -259,7 +256,7 @@ export function finalizeCollisionAggregatePartManifold(
     }
 
     const normalLen = Math.hypot(normalSumX, normalSumY);
-    if (normalLen <= EPSILON || penetrationSum <= EPSILON) {
+    if (normalLen <= COLLISION_EPSILON || penetrationSum <= COLLISION_EPSILON) {
         return best;
     }
 
@@ -273,7 +270,7 @@ export function finalizeCollisionAggregatePartManifold(
             * MULTI_CONTACT_NORMAL_DIVERSITY_SCALE
         )
     );
-    const pointWeight = Math.max(EPSILON, penetrationSum);
+    const pointWeight = Math.max(COLLISION_EPSILON, penetrationSum);
 
     best.normalX = normalSumX / normalLen;
     best.normalY = normalSumY / normalLen;

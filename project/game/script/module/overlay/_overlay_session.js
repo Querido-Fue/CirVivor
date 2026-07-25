@@ -1,11 +1,9 @@
 import { render, renderGL } from 'display/display_system.js';
 import { animate, remove } from 'animation/animation_system.js';
 import { resolveOverlayContentSurfaceStyles } from 'display/webgl/_overlay_render_geometry.js';
-import { getData } from 'data/data_handler.js';
+import { OVERLAY_RENDER_CONSTANTS } from 'display/webgl/_webgl_constants.js';
 import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
 import { createOverlayEffectState } from './_overlay_effect_registry.js';
-
-const OVERLAY_RENDER_CONSTANTS = getData('OVERLAY_RENDER_CONSTANTS');
 
 /**
  * @class OverlaySession

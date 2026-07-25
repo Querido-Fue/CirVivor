@@ -1,5 +1,6 @@
 import { parseUIData } from 'ui/ui_system.js';
-import { createFontString, wrapTextByWords } from 'util/font_util.js';
+import { resolveTypography } from 'ui/style/_typography_resolver.js';
+import { wrapTextByWords } from 'util/font_util.js';
 
 /**
  * 설명 문구를 여러 줄로 그립니다.
@@ -25,22 +26,12 @@ export function drawBentoWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxL
 }
 
 /**
- * 공용 타이포그래피 프리셋으로부터 카드용 폰트를 계산합니다.
- * @param {object} textConstants - 텍스트 상수입니다.
- * @param {string} presetKey - TEXT_CONSTANTS 프리셋 키
- * @param {number} [sizeMultiplier=1] - 크기 배율
- * @returns {{size:number, font:string}} 계산된 폰트 정보
+ * 승인된 역할 토큰을 Magic Bento 카드용 렌더 메트릭으로 변환합니다.
+ * @param {object} token - `TYPOGRAPHY`에서 발급한 타이포그래피 토큰입니다.
+ * @returns {{size:number,lineHeight:number,font:string}} 계산된 폰트 정보입니다.
  */
-export function getBentoTypography(textConstants, presetKey, sizeMultiplier = 1) {
-    const preset = textConstants[presetKey] || textConstants.H5;
-    const size = parseUIData(preset.FONT.SIZE) * sizeMultiplier;
-
-    return {
-        size,
-        font: createFontString({
-            sizePx: size,
-            weight: preset.FONT.WEIGHT,
-            family: preset.FONT.FAMILY
-        })
-    };
+export function resolveBentoTypography(token) {
+    return resolveTypography(token, {
+        resolveMetric: parseUIData
+    });
 }

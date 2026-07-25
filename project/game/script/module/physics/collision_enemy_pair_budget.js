@@ -1,8 +1,11 @@
-import { getData } from 'data/data_handler.js';
 import { isCollisionEnemyPairAnchorBody } from './_collision_resolve_tuning.js';
 
-const COLLISION_ENEMY_PAIR_PROCESS_BUDGET = getData('COLLISION_CONSTANTS').ENEMY_PAIR_PROCESS_BUDGET;
-const COLLISION_ENEMY_ANCHOR_PAIR_BUDGET_MULTIPLIER = COLLISION_ENEMY_PAIR_PROCESS_BUDGET.ANCHOR_MULTIPLIER;
+const COLLISION_ENEMY_PAIR_PROCESS_BUDGET = Object.freeze({
+    POSITION: 14,
+    STABILIZE: 10,
+    NON_POSITION: 8
+});
+const COLLISION_ENEMY_ANCHOR_PAIR_BUDGET_MULTIPLIER = 2;
 
 /**
  * 두 충돌 body가 적-적 pair인지 반환합니다.

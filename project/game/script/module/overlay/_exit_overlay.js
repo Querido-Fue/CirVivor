@@ -3,11 +3,11 @@ import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getSetting } from 'save/save_system.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
-import { getData } from 'data/data_handler.js';
+import { UI_SPACING } from 'ui/layout/layout_tokens.js';
+import { BUTTON_STYLE } from 'ui/style/component_styles.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
 import { applyOverlayConfirmButtonIcon } from './_overlay_confirm_icon.js';
-
-const OVERLAY_LAYOUT_CONSTANTS = getData('OVERLAY_LAYOUT_CONSTANTS');
-const EXIT_LAYOUT_CONSTANTS = OVERLAY_LAYOUT_CONSTANTS.EXIT;
+import { EXIT_LAYOUT_CONSTANTS } from './_overlay_layout_constants.js';
 
 /**
  * @class ExitOverlay
@@ -38,23 +38,23 @@ export class ExitOverlay extends BaseOverlay {
      */
     _generateLayout() {
         this._releaseElements();
-        const handler = new LayoutHandler(this, this.positioningHandler).paddingX("WW", 1.5)
-            .space("WH", 2.5)
-            .item("text").stylePreset("h2").text(getLangString('exit_title')).fill(ColorSchemes.Title.TextDark)
-            .space("WH", 1.4)
-            .item("text").stylePreset("h4").text(getLangString('exit_query')).fill(ColorSchemes.Overlay.Text.Item)
-            .bottomSpace("WH", 2.5)
+        const handler = new LayoutHandler(this, this.positioningHandler).paddingX(UI_SPACING.DIALOG_PADDING_X)
+            .space(UI_SPACING.OVERLAY_TITLE_TOP)
+            .item("text").textStyle(TYPOGRAPHY.H2).text(getLangString('exit_title')).fill(ColorSchemes.Title.TextDark)
+            .space(UI_SPACING.DIALOG_BODY_GAP)
+            .item("text").textStyle(TYPOGRAPHY.H4).text(getLangString('exit_query')).fill(ColorSchemes.Overlay.Text.Item)
+            .bottomSpace(UI_SPACING.OVERLAY_FOOTER_BOTTOM)
             .bottomGroup().justifyContent("right", "WW", 1).align("right");
 
         if (getSetting('debugMode')) {
-            handler.item("button").stylePreset("overlay_interact_button").buttonText("재시작").onClick(() => { location.reload(); })
+            handler.item("button").buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT).buttonText("재시작").onClick(() => { location.reload(); })
                 .icon("deny").buttonColor(ColorSchemes.Overlay.Button.Cancel);
         }
 
-        handler.item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_no")).onClick(this.close.bind(this))
+        handler.item("button").buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT).buttonText(getLangString("exit_no")).onClick(this.close.bind(this))
             .icon("deny").buttonColor(ColorSchemes.Overlay.Button.Cancel)
 
-            .item("button").stylePreset("overlay_interact_button").buttonText(getLangString("exit_yes")).onClick(() => { Game.close(); });
+            .item("button").buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT).buttonText(getLangString("exit_yes")).onClick(() => { Game.close(); });
 
         applyOverlayConfirmButtonIcon(handler);
 

@@ -1,8 +1,6 @@
 import { clampNumber, lerpNumber, resolveFiniteNumber } from 'util/number_util.js';
-import {
-    getTitleMenuTextPresetFont,
-    getTitleMenuTextPresetFontSize
-} from './_title_menu_text_layout.js';
+import { TYPOGRAPHY } from 'ui/style/typography.js';
+import { resolveTitleMenuTypography } from './_title_menu_text_layout.js';
 import {
     buildTitleMenuVersionLabelLayout,
     getTitleMenuGameVersionText,
@@ -19,11 +17,9 @@ export class TitleMenuVersionLabelRenderer {
     /**
      * @param {object} options - 버전 라벨 렌더러 옵션입니다.
      * @param {object} options.globalConstants - 전역 상수 객체입니다.
-     * @param {object} options.textConstants - 텍스트 상수 객체입니다.
      */
-    constructor({ globalConstants, textConstants }) {
+    constructor({ globalConstants }) {
         this.globalConstants = globalConstants;
-        this.textConstants = textConstants;
         this.measureCanvas = null;
         this.measureContext = null;
     }
@@ -55,22 +51,22 @@ export class TitleMenuVersionLabelRenderer {
 
         const resolvedUiScale = this.#normalizeUiScale(uiScale);
         const linkText = getTitleMenuVersionHistoryLinkText();
+        const versionTypography = resolveTitleMenuTypography(
+            TYPOGRAPHY.H5,
+            uiww,
+            resolvedUiScale
+        );
+        const linkTypography = resolveTitleMenuTypography(
+            TYPOGRAPHY.LABEL,
+            uiww,
+            resolvedUiScale
+        );
         return getTitleMenuVersionLabelBlockHeight({
             wh,
             uiScale: resolvedUiScale,
-            versionFontSize: getTitleMenuTextPresetFontSize(
-                this.textConstants,
-                uiww,
-                'H5',
-                resolvedUiScale
-            ),
+            versionFontSize: versionTypography.size,
             linkText,
-            linkFontSize: getTitleMenuTextPresetFontSize(
-                this.textConstants,
-                uiww,
-                'H5_BOLD',
-                resolvedUiScale
-            )
+            linkFontSize: linkTypography.size
         });
     }
 
@@ -99,12 +95,20 @@ export class TitleMenuVersionLabelRenderer {
         }
 
         const resolvedUiScale = this.#normalizeUiScale(uiScale);
-        const versionFontSize = getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H5', resolvedUiScale);
-        const linkFontSize = getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H5_BOLD', resolvedUiScale);
-        const versionFont = getTitleMenuTextPresetFont(this.textConstants, uiww, 'H5', null, resolvedUiScale);
-        const linkFont = getTitleMenuTextPresetFont(this.textConstants, uiww, 'H5_BOLD', null, resolvedUiScale);
+        const versionTypography = resolveTitleMenuTypography(
+            TYPOGRAPHY.H5,
+            uiww,
+            resolvedUiScale
+        );
+        const linkTypography = resolveTitleMenuTypography(
+            TYPOGRAPHY.LABEL,
+            uiww,
+            resolvedUiScale
+        );
         const linkText = getTitleMenuVersionHistoryLinkText();
-        const linkTextWidth = linkText ? this.#measureTextWidth(linkText, linkFont, uiww, resolvedUiScale) : 0;
+        const linkTextWidth = linkText
+            ? this.#measureTextWidth(linkText, linkTypography.font, uiww, resolvedUiScale)
+            : 0;
 
         return buildTitleMenuVersionLabelLayout({
             paneLayout,
@@ -114,11 +118,11 @@ export class TitleMenuVersionLabelRenderer {
             uiScale: resolvedUiScale,
             utilityPaneRevealEase,
             versionText,
-            versionFont,
-            versionFontSize,
+            versionFont: versionTypography.font,
+            versionFontSize: versionTypography.size,
             linkText,
-            linkFont,
-            linkFontSize,
+            linkFont: linkTypography.font,
+            linkFontSize: linkTypography.size,
             linkTextWidth
         });
     }
@@ -218,10 +222,15 @@ export class TitleMenuVersionLabelRenderer {
     #measureTextWidth(text, font, uiww, uiScale = 1) {
         const context = this.#getMeasureContext();
         if (!context) {
+            const fallbackTypography = resolveTitleMenuTypography(
+                TYPOGRAPHY.H6,
+                uiww,
+                uiScale
+            );
             return Math.max(
                 1,
                 String(text || '').length
-                    * getTitleMenuTextPresetFontSize(this.textConstants, uiww, 'H6', uiScale)
+                    * fallbackTypography.size
                     * 0.6
             );
         }

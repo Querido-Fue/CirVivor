@@ -10,16 +10,18 @@ const SOURCE_PATH = fileURLToPath(new URL(
     import.meta.url
 ));
 const source = await readFile(SOURCE_PATH, 'utf8');
-const EXECUTABLE_SOURCE_HASH = '5c0a51f5c1b5558e010a50a9e0ae51b3a033aed5d5f4501c2581daa87fc9c560';
+const EXECUTABLE_SOURCE_HASH = 'e358ea5fb30a1c82cd2bdf7e65a794112d4658d119ec103e6dd0811b06d9ce45';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
  * @param {string} productionSource - production 소스입니다.
+ * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
  * @returns {string} SHA-256 해시입니다.
  */
-function hashExecutableSource(productionSource) {
+function hashExecutableSource(productionSource, expectedJsDocCount) {
     const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
     const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
+    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
     assert.equal(
         standaloneJsDocStarts.length,
         allJsDocStarts.length,
@@ -109,19 +111,12 @@ async function loadThemeHandler({
         { context, identifier }
     );
     const dependencies = new Map([
-        ['data/data_handler.js', createSyntheticModule('data/data_handler.js', {
-            getData(key) {
-                if (key === 'THEMES') {
-                    return themes;
-                }
-                if (key === 'DEFAULT_THEME_KEY') {
-                    return defaultThemeKey;
-                }
-                if (key === 'getThemeByKey') {
-                    return getThemeByKey;
-                }
-                throw new Error(`지원하지 않는 data key입니다: ${key}`);
-            }
+        ['data/theme/theme_registry.js', createSyntheticModule('data/theme/theme_registry.js', {
+            THEMES: themes,
+            DEFAULT_THEME_KEY: defaultThemeKey
+        })],
+        ['./_theme_registry.js', createSyntheticModule('./_theme_registry.js', {
+            getThemeByKey
         })],
         ['display/display_system.js', createSyntheticModule('display/display_system.js', {
             setBackgroundColor(...args) {
@@ -160,8 +155,11 @@ async function loadThemeHandler({
     };
 }
 
-test('ThemeHandler JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
-    assert.equal(hashExecutableSource(source), EXECUTABLE_SOURCE_HASH);
+test('ThemeHandler는 승인된 테마 데이터와 코드 resolver를 직접 import한다', () => {
+    assert.equal(hashExecutableSource(source, 12), EXECUTABLE_SOURCE_HASH);
+    assert.match(source, /from 'data\/theme\/theme_registry\.js'/);
+    assert.match(source, /from '\.\/_theme_registry\.js'/);
+    assert.doesNotMatch(source, /data\/data_handler\.js|getData\(/);
 });
 
 test('ThemeHandler JSDoc은 live palette와 최신 adapter의 반환·fallback 계약을 명시한다', () => {

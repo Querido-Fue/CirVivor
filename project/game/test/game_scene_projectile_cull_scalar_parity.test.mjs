@@ -3,12 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
-const { getData } = await loadGameModule('data/data_handler.js');
 const { cullLocalGameSceneProjectiles } = await loadGameModule(
     'scene/game/update/game_scene_update_helpers.js'
 );
 
-const PROJECTILE_CULL_MARGIN_RATIO = getData('GAME_SCENE_CONSTANTS').PROJECTILE.CULL_MARGIN_RATIO;
+const PROJECTILE_CULL_MARGIN_RATIO = 0.2;
 const RAW_FLOAT_CASE_COUNT = 50_000;
 const MASK_64 = (1n << 64n) - 1n;
 const floatView = new DataView(new ArrayBuffer(8));

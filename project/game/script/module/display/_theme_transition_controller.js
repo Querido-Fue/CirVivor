@@ -1,7 +1,12 @@
 import { animate, remove } from 'animation/animation_system.js';
-import { getData } from 'data/data_handler.js';
 
-const THEME_TRANSITION_DATA = getData('THEME_TRANSITION_DATA');
+const THEME_TRANSITION_DATA = Object.freeze({
+    LAYER: 'top',
+    START_ALPHA: 1,
+    END_ALPHA: 0,
+    DURATION_SECONDS: 0.4,
+    EASING: 'linear'
+});
 let themeTransitionControllerInstance = null;
 
 /**

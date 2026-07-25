@@ -1,14 +1,14 @@
-import { ENEMY_AI_CONSTANTS } from '../../data/object/enemy/enemy_ai_constants.js';
+import { ENEMY_AI_DATA } from 'data/object/enemy/enemy_ai_data.js';
 import { getSimulationObjectWH, getSimulationWW } from '../simulation/simulation_runtime.js';
 import { EnemySpatialIndex } from './enemy/ai/enemy_spatial_index.js';
 
-const DEFAULT_ENEMY_AI_PROFILE = ENEMY_AI_CONSTANTS.QUALITY_PROFILES[
-    ENEMY_AI_CONSTANTS.DEFAULT_QUALITY_PROFILE
+const DEFAULT_ENEMY_AI_PROFILE = ENEMY_AI_DATA.QUALITY_PROFILES[
+    ENEMY_AI_DATA.DEFAULT_QUALITY_PROFILE
 ];
 const OBJECT_SYSTEM_ENEMY_SPATIAL_INDEX = new EnemySpatialIndex(
     DEFAULT_ENEMY_AI_PROFILE.DENSITY_CELL_SIZE
 );
-const ENEMY_AI_FOOTPRINT = ENEMY_AI_CONSTANTS.FOOTPRINT;
+const ENEMY_AI_FOOTPRINT = ENEMY_AI_DATA.FOOTPRINT;
 const OBJECT_SYSTEM_ENEMY_SPATIAL_OPTIONS = {
     cellSize: DEFAULT_ENEMY_AI_PROFILE.DENSITY_CELL_SIZE,
     resolveBoundsInto: resolveObjectSystemEnemySpatialBoundsInto
@@ -44,7 +44,7 @@ function resolveObjectSystemEnemySpatialBoundsInto(enemy, out) {
     );
     const cellRadius = Math.max(
         baseRadius,
-        baseHeight * ENEMY_AI_CONSTANTS.HEXA_HIVE_NAV_CELL_RADIUS_RATIO
+        baseHeight * ENEMY_AI_DATA.HEXA_HIVE_NAV_CELL_RADIUS_RATIO
     );
     const localCenters = Array.isArray(enemy.hexaHiveLayout?.filledLocalCenters)
         && enemy.hexaHiveLayout.filledLocalCenters.length > 0
@@ -179,7 +179,7 @@ export function fixedUpdateObjectSystemEnemies(options) {
         return;
     }
 
-    const profile = ENEMY_AI_CONSTANTS.QUALITY_PROFILES[aiContext.enemyAIQualityProfile]
+    const profile = ENEMY_AI_DATA.QUALITY_PROFILES[aiContext.enemyAIQualityProfile]
         || DEFAULT_ENEMY_AI_PROFILE;
     OBJECT_SYSTEM_ENEMY_SPATIAL_OPTIONS.cellSize = profile.DENSITY_CELL_SIZE;
     aiContext.enemySpatialIndex = OBJECT_SYSTEM_ENEMY_SPATIAL_INDEX.rebuild(

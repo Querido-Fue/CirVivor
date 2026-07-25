@@ -1,9 +1,13 @@
 import { getWW, getWH, getUIWW, render } from 'display/display_system.js';
 import { animate } from 'animation/animation_system.js';
-import { getData } from 'data/data_handler.js';
+import { TITLE_METADATA } from 'data/scene/title/title_metadata.js';
 import { clampFiniteNumber } from 'util/number_util.js';
+import { TITLE_IMAGE_LAYOUT } from './_title_runtime_constants.js';
 
-const TITLE_CONSTANTS = getData('TITLE_CONSTANTS');
+const TITLE_IMAGE_ENTER_MOTION = Object.freeze({
+    DURATION_SECONDS: 0.6,
+    ALPHA_DURATION_SECONDS: 0.6
+});
 
 /**
  * @class TitleImage
@@ -22,23 +26,23 @@ export class TitleImage {
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.#magneticPoint = { x: 0, y: 0 };
-        this.image.src = TITLE_CONSTANTS.TITLE_IMAGE.SRC;
+        this.image.src = TITLE_METADATA.IMAGE_SRC;
         const imageW = this.#getImageWidth();
         this.imageX = -imageW;
         this.alpha = 0;
         animate(this, {
             variable: 'imageX',
             startValue: -imageW,
-            endValue: this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.ENTER_X_RATIO,
+            endValue: this.UIWW * TITLE_IMAGE_LAYOUT.ENTER_X_RATIO,
             type: "easeOutExpo",
-            duration: TITLE_CONSTANTS.TITLE_IMAGE.ENTER_DURATION
+            duration: TITLE_IMAGE_ENTER_MOTION.DURATION_SECONDS
         });
         animate(this, {
             variable: 'alpha',
             startValue: 0,
             endValue: 1,
             type: "easeOutExpo",
-            duration: TITLE_CONSTANTS.TITLE_IMAGE.ENTER_ALPHA_DURATION
+            duration: TITLE_IMAGE_ENTER_MOTION.ALPHA_DURATION_SECONDS
         });
     }
 
@@ -96,6 +100,6 @@ export class TitleImage {
      * @returns {number} 타이틀 이미지 렌더 너비입니다.
      */
     #getImageWidth() {
-        return this.UIWW * TITLE_CONSTANTS.TITLE_IMAGE.WIDTH_RATIO;
+        return this.UIWW * TITLE_IMAGE_LAYOUT.WIDTH_RATIO;
     }
 }

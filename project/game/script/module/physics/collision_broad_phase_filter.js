@@ -1,6 +1,4 @@
-import { getData } from 'data/data_handler.js';
-
-const BOUND_RADIUS_HALF_SCALE = getData('COLLISION_CONSTANTS').BODY_BUILDER.BOUND_RADIUS_HALF_SCALE;
+import { COLLISION_BOUND_RADIUS_HALF_SCALE } from './collision_body_layout.js';
 
 /**
  * broad circle 판정에 사용할 중심 좌표 축 값을 조회합니다.
@@ -24,7 +22,10 @@ function getCollisionBodyAabbFallbackRadius(body) {
     const maxX = Number.isFinite(body.maxX) ? body.maxX : 0;
     const minY = Number.isFinite(body.minY) ? body.minY : 0;
     const maxY = Number.isFinite(body.maxY) ? body.maxY : 0;
-    return Math.hypot((maxX - minX) * BOUND_RADIUS_HALF_SCALE, (maxY - minY) * BOUND_RADIUS_HALF_SCALE);
+    return Math.hypot(
+        (maxX - minX) * COLLISION_BOUND_RADIUS_HALF_SCALE,
+        (maxY - minY) * COLLISION_BOUND_RADIUS_HALF_SCALE
+    );
 }
 
 /**

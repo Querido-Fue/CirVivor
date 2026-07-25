@@ -1,4 +1,3 @@
-import { getData } from 'data/data_handler.js';
 import { render } from 'display/display_system.js';
 import { copySimulationMousePositionInto } from 'simulation/simulation_runtime.js';
 import { isPointInRect } from 'util/geometry_util.js';
@@ -6,8 +5,12 @@ import { createFontString } from 'util/font_util.js';
 import { clamp01 } from 'util/number_util.js';
 import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 
-const GAME_SCENE_BUTTON_CONSTANTS = getData('GAME_SCENE_CONSTANTS').BUTTON;
-const BUTTON_RADIUS = GAME_SCENE_BUTTON_CONSTANTS.RADIUS;
+const BUTTON_RADIUS = 10;
+const BUTTON_FONT_MIN_SIZE = 11;
+const BUTTON_FONT_WW_RATIO = 0.0092;
+const BUTTON_TEXT_X_RATIO = 0.5;
+const BUTTON_TEXT_Y_RATIO = 0.54;
+const BUTTON_BORDER_LINE_WIDTH = 1;
 const BUTTON_MOUSE_POSITION_SCRATCH = { x: 0, y: 0 };
 const BUTTON_BACKGROUND_RENDER_OPTIONS = {
     shape: 'roundRect',
@@ -27,7 +30,7 @@ const BUTTON_BORDER_RENDER_OPTIONS = {
     radius: BUTTON_RADIUS,
     fill: false,
     stroke: '',
-    lineWidth: GAME_SCENE_BUTTON_CONSTANTS.BORDER_LINE_WIDTH
+    lineWidth: BUTTON_BORDER_LINE_WIDTH
 };
 const BUTTON_TEXT_RENDER_OPTIONS = {
     shape: 'text',
@@ -70,8 +73,8 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
     const buttonList = Array.isArray(buttons) ? buttons : [];
     const mousePos = copySimulationMousePositionInto(BUTTON_MOUSE_POSITION_SCRATCH);
     const fontSize = Math.max(
-        GAME_SCENE_BUTTON_CONSTANTS.FONT_MIN_SIZE,
-        (Number.isFinite(options?.ww) ? options.ww : 0) * GAME_SCENE_BUTTON_CONSTANTS.FONT_WW_RATIO
+        BUTTON_FONT_MIN_SIZE,
+        (Number.isFinite(options?.ww) ? options.ww : 0) * BUTTON_FONT_WW_RATIO
     );
     const font = getGameSceneButtonFont(fontSize);
 
@@ -101,8 +104,8 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
 
         const textOptions = BUTTON_TEXT_RENDER_OPTIONS;
         textOptions.text = button.label;
-        textOptions.x = button.x + (button.w * GAME_SCENE_BUTTON_CONSTANTS.TEXT_X_RATIO);
-        textOptions.y = button.y + (button.h * GAME_SCENE_BUTTON_CONSTANTS.TEXT_Y_RATIO);
+        textOptions.x = button.x + (button.w * BUTTON_TEXT_X_RATIO);
+        textOptions.y = button.y + (button.h * BUTTON_TEXT_Y_RATIO);
         textOptions.font = font;
         textOptions.fill = getBenchmarkColor('ButtonText');
         render('ui', textOptions);

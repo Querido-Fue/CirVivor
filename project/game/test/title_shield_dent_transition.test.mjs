@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-const [effectSource, configSource, titleConstantsSource, shaderUtilsSource] = await Promise.all([
+const [effectSource, configSource, shaderUtilsSource] = await Promise.all([
     readFile(new URL('../script/module/scene/title/shield/_title_shield_effect.js', import.meta.url), 'utf8'),
     readFile(new URL('../script/module/scene/title/shield/_title_shield_config.js', import.meta.url), 'utf8'),
-    readFile(new URL('../script/data/scene/title/title_constants.js', import.meta.url), 'utf8'),
     readFile(new URL('../script/module/display/webgl/_shader_utils.js', import.meta.url), 'utf8')
 ]);
 
@@ -206,9 +205,9 @@ effect.update([], 0);
 effect.draw();
 assert.equal(lastRenderCommand.command.dents.length, 0);
 
-assert.match(titleConstantsSource, /DENT_TRANSITION_DURATION_SECONDS:\s*0\.3/);
-assert.match(titleConstantsSource, /DENT_CROSSFADE_ANGLE_DEGREES:\s*10/);
-assert.match(titleConstantsSource, /DENT_RENDER_MAX_COUNT:\s*16/);
+assert.match(configSource, /DENT_TRANSITION_DURATION_SECONDS:\s*0\.3/);
+assert.match(configSource, /DENT_CROSSFADE_ANGLE_DEGREES:\s*10/);
+assert.match(configSource, /DENT_RENDER_MAX_COUNT:\s*16/);
 assert.match(configSource, /getDentTransitionDuration\(\)[\s\S]*?DENT_TRANSITION_DURATION_SECONDS/);
 assert.match(configSource, /getDentCrossfadeAngleThreshold\(\)[\s\S]*?DENT_CROSSFADE_ANGLE_DEGREES/);
 assert.match(shaderUtilsSource, /MAGNETIC_SHIELD_MAX_DENTS\s*=\s*16/);

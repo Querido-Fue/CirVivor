@@ -1,8 +1,6 @@
-import { getData } from 'data/data_handler.js';
 import { ShapeDrawer } from 'display/_shape_drawer.js';
-
-const WEBGL_CONSTANTS = getData('WEBGL_CONSTANTS');
-const ENEMY_WEBGL_SHAPES = getData('ENEMY_WEBGL_SHAPES');
+import { ENEMY_WEBGL_SHAPES } from 'object/enemy/_enemy_shape_assets.js';
+import { WEBGL_CONSTANTS } from './_webgl_constants.js';
 
 /**
  * 적 전용 도형 앞에 배치되는 기본 WebGL 도형 아틀라스 순서입니다.

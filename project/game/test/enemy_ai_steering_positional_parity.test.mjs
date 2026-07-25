@@ -475,19 +475,19 @@ async function loadRuntime(kind, steeringSource, coreSource, callModeSource) {
     const coreModule = await loader.load(CORE_URL);
     const steeringModule = await loader.load(STEERING_URL);
     const callModeModule = await loader.load(CALL_MODE_URL);
-    const constantsModule = await loader.load(pathToFileURL(path.join(
+    const aiDataModule = await loader.load(pathToFileURL(path.join(
         SCRIPT_ROOT,
         'data',
         'object',
         'enemy',
-        'enemy_ai_constants.js'
+        'enemy_ai_data.js'
     )).href);
     return {
         kind,
         steering: steeringModule.namespace,
         core: coreModule.namespace,
         callMode: callModeModule.namespace,
-        constants: constantsModule.namespace
+        aiData: aiDataModule.namespace
     };
 }
 
@@ -699,13 +699,13 @@ function createTraceProxy(target, label, trace) {
  * @returns {object} 실행 fixture입니다.
  */
 function createSteeringFixture(runtime, scenarioName, numericTarget = 0) {
-    const constants = runtime.constants.ENEMY_AI_CONSTANTS;
-    const profile = constants.QUALITY_PROFILES[constants.DEFAULT_QUALITY_PROFILE];
+    const aiData = runtime.aiData.ENEMY_AI_DATA;
+    const profile = aiData.QUALITY_PROFILES[aiData.DEFAULT_QUALITY_PROFILE];
     const trace = [];
     const scratchDirTarget = { x: -0, y: +0 };
     const scratchDir = createTraceProxy(scratchDirTarget, 'scratchDir', trace);
     const stateTarget = {
-        policyId: constants.POLICY.CHASE,
+        policyId: aiData.POLICY.CHASE,
         flowPolicyKey: 'chase',
         flowKey: '',
         flowData: null,
