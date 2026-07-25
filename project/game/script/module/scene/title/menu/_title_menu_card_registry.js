@@ -1,6 +1,4 @@
-import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
-
-const TITLE_MENU_CARD_DEFINITIONS = TITLE_MENU_DATA.CARD_DEFINITIONS;
+import { TITLE_MENU_CARD_DEFINITIONS } from './_title_menu_definitions.js';
 
 /**
  * @typedef {object} TitleMenuCardDefinition
@@ -15,7 +13,7 @@ const TITLE_MENU_CARD_DEFINITIONS = TITLE_MENU_DATA.CARD_DEFINITIONS;
 
 /**
  * @class TitleMenuCardRegistry
- * @description 타이틀 카드 메뉴의 메타데이터를 관리하는 레지스트리입니다.
+ * @description 타이틀 카드 메뉴의 카드 정의를 정규화하고 조회하는 레지스트리입니다.
  */
 export class TitleMenuCardRegistry {
     /**

@@ -1,5 +1,4 @@
 import { TITLE_METADATA } from 'data/scene/title/title_metadata.js';
-import { TITLE_MENU_DATA } from 'data/scene/title/title_menu_data.js';
 import { SVGDrawer } from 'display/_svg_drawer.js';
 import { getDisplaySystem, getUIOffsetX, getWH, getUIWW, getWW } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
@@ -8,6 +7,10 @@ import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
 import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
+import {
+    TITLE_MENU_CARD_REVEAL_ORDER,
+    TITLE_MENU_SECONDARY_ENTRIES
+} from './menu/_title_menu_definitions.js';
 import { renderTitleMenuGlassPanel } from './menu/_title_menu_glass_panel_render.js';
 import {
     loadTitleMenuIconSources,
@@ -59,13 +62,11 @@ import { TITLE_CARD_MENU_CONSTANTS as TITLE_CARD_MENU } from './_title_runtime_c
 const TITLE_VERSION_CONTEXT = Object.freeze({
     GAME_VERSION: TITLE_METADATA.GAME_VERSION
 });
-const TITLE_MENU_CARD_REVEAL_ORDER = TITLE_MENU_DATA.CARD_REVEAL_ORDER;
-const TITLE_MENU_SECONDARY_ENTRIES = TITLE_MENU_DATA.SECONDARY_ENTRIES;
 const TITLE_MENU_REVEAL_TOTAL_DURATION = getTitleMenuCardRevealTotalDuration(TITLE_CARD_MENU);
 const TITLE_MENU_REVEAL_CORE_DURATION = getTitleMenuCardRevealCoreDuration(TITLE_CARD_MENU);
 
 /**
- * 동결된 타이틀 메뉴 데이터에서 카드별 등장 설정을 반환합니다.
+ * 동결된 타이틀 메뉴 구현 정의에서 카드별 등장 설정을 반환합니다.
  * @param {string} cardId - 카드 식별자입니다.
  * @returns {{delaySeconds:number, durationSeconds:number, offsetXRatio:number, offsetYRatio:number, scaleOffset:number}} 등장 설정입니다.
  */

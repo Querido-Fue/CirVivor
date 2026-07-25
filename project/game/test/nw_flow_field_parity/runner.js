@@ -1,8 +1,8 @@
 import { createEnemyAIFlowFieldWasmRuntimeSync } from '../../script/module/object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js';
 
 const statusElement = document.querySelector('#status');
-const navigationUrl = new URL(
-    '../../script/module/object/enemy/ai/_enemy_ai_navigation.js',
+const flowFieldStoreUrl = new URL(
+    '../../script/module/object/enemy/ai/navigation/_enemy_ai_flow_field_store.js',
     import.meta.url
 );
 const backendUrl = new URL(
@@ -26,7 +26,7 @@ function extractSourceSection(source, startMarker, endMarker) {
 
 /**
  * 현재 프로덕션 JS 원문으로 브라우저 realm 기준 구현을 만듭니다.
- * @param {string} source - navigation 전체 소스입니다.
+ * @param {string} source - flow-field store 전체 소스입니다.
  * @returns {(grid:object,goalCell:object)=>object} 기준 구현입니다.
  */
 function createReferenceBuildFlowField(source) {
@@ -243,8 +243,8 @@ function yieldFrame() {
 }
 
 async function run() {
-    const response = await fetch(navigationUrl);
-    if (!response.ok) throw new Error(`navigation 원문 로드 실패: ${response.status}`);
+    const response = await fetch(flowFieldStoreUrl);
+    if (!response.ok) throw new Error(`flow-field store 원문 로드 실패: ${response.status}`);
     const source = (await response.text()).replace(/\r\n/g, '\n');
     const referenceBuild = createReferenceBuildFlowField(source);
     const runtimeInitStartedAt = performance.now();

@@ -63,14 +63,6 @@ const TYPOGRAPHY_ADAPTER_FILES = new Set([
         'title',
         'menu',
         '_title_menu_text_layout.js'
-    ),
-    path.join(
-        SCRIPT_ROOT,
-        'module',
-        'scene',
-        'title',
-        'magic_bento',
-        '_title_magic_bento_text.js'
     )
 ]);
 const TYPOGRAPHY_RESOLVER_IMPORT_PATTERN = /from\s*['"]ui\/style\/_typography_resolver\.js['"]/;
@@ -184,7 +176,6 @@ async function createLayoutHandlerHarness() {
         loadGameModule('ui/style/component_styles.js'),
         loadGameModule('ui/style/_component_style_resolver.js')
     ]);
-    const layoutSource = await readFile(LAYOUT_HANDLER_PATH, 'utf8');
     const factoryCalls = [];
     const releasedItems = [];
     let generatedId = 0;
@@ -255,18 +246,44 @@ async function createLayoutHandlerHarness() {
             }
         )]
     ]);
-    const layoutModule = new vm.SourceTextModule(layoutSource, {
-        context,
-        identifier: LAYOUT_HANDLER_PATH
-    });
+    const sourceModules = new Map();
 
-    await layoutModule.link((specifier) => {
-        const dependency = dependencies.get(specifier);
-        if (!dependency) {
-            throw new Error(`LayoutHandler 테스트 의존성이 없습니다: ${specifier}`);
+    /**
+     * LayoutHandler facade와 상대 경로 내부 모듈을 같은 VM 문맥에 재귀 로드합니다.
+     * bare 의미 토큰 모듈은 dependencies의 동일 SyntheticModule을 재사용합니다.
+     * @param {string} modulePath - 로드할 source module 절대 경로입니다.
+     * @returns {Promise<vm.SourceTextModule>} 연결된 source module입니다.
+     */
+    async function loadLayoutSourceModule(modulePath) {
+        const normalizedPath = path.resolve(modulePath);
+        const cachedModule = sourceModules.get(normalizedPath);
+        if (cachedModule) {
+            return cachedModule;
         }
-        return dependency;
-    });
+
+        const source = await readFile(normalizedPath, 'utf8');
+        const sourceModule = new vm.SourceTextModule(source, {
+            context,
+            identifier: normalizedPath
+        });
+        sourceModules.set(normalizedPath, sourceModule);
+        await sourceModule.link((specifier, referencingModule) => {
+            const dependency = dependencies.get(specifier);
+            if (dependency) {
+                return dependency;
+            }
+            if (specifier.startsWith('.')) {
+                return loadLayoutSourceModule(path.resolve(
+                    path.dirname(referencingModule.identifier),
+                    specifier
+                ));
+            }
+            throw new Error(`LayoutHandler 테스트 의존성이 없습니다: ${specifier}`);
+        });
+        return sourceModule;
+    }
+
+    const layoutModule = await loadLayoutSourceModule(LAYOUT_HANDLER_PATH);
     await layoutModule.evaluate();
 
     return {

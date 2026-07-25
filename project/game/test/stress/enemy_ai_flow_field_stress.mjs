@@ -31,14 +31,15 @@ const ABI_CANARY_GRIDS = Object.freeze([
 ]);
 
 const GAME_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const NAVIGATION_PATH = path.join(
+const FLOW_FIELD_STORE_PATH = path.join(
     GAME_ROOT,
     'script',
     'module',
     'object',
     'enemy',
     'ai',
-    '_enemy_ai_navigation.js'
+    'navigation',
+    '_enemy_ai_flow_field_store.js'
 );
 
 /**
@@ -57,8 +58,8 @@ function extractSourceSection(source, startMarker, endMarker) {
 }
 
 /**
- * 현재 `_enemy_ai_navigation.js`의 실제 heap helper와 buildFlowField 원문으로 oracle을 만듭니다.
- * @param {string} source - navigation production 소스입니다.
+ * 현재 `_enemy_ai_flow_field_store.js`의 실제 heap helper와 buildFlowField 원문으로 oracle을 만듭니다.
+ * @param {string} source - flow-field store production 소스입니다.
  * @returns {(grid:object,goalCell:object)=>object} production JS flow-field oracle입니다.
  */
 function createProductionFlowFieldOracle(source) {
@@ -339,8 +340,10 @@ const runtimeModule = await loadGameModule(
 const bytesModule = await loadGameModule(
     'object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_bytes.js'
 );
-const navigationSource = (await readFile(NAVIGATION_PATH, 'utf8')).replace(/\r\n/g, '\n');
-const oracle = createProductionFlowFieldOracle(navigationSource);
+const flowFieldStoreSource = (
+    await readFile(FLOW_FIELD_STORE_PATH, 'utf8')
+).replace(/\r\n/g, '\n');
+const oracle = createProductionFlowFieldOracle(flowFieldStoreSource);
 const wasmRuntime = runtimeModule.createEnemyAIFlowFieldWasmRuntimeSync();
 const fuzz = runDeterministicFuzz(oracle, wasmRuntime);
 const canary = runAbiCanaries(bytesModule.ENEMY_AI_FLOW_FIELD_WASM_BYTES);

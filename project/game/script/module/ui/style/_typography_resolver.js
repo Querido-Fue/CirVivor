@@ -70,12 +70,7 @@ const TYPOGRAPHY_DEFINITIONS = new Map([
     [TYPOGRAPHY.TOOLTIP_TITLE, createDefinition(0.85, 700, 1.35)],
     [TYPOGRAPHY.TOOLTIP_BODY, createDefinition(0.85, 300, 1.35)],
     [TYPOGRAPHY.CARD_TITLE, createFluidDefinition(TITLE_CARD_FLUID_POLICY, 700, 1.06)],
-    [TYPOGRAPHY.CARD_DESCRIPTION, createDefinition(0.85, 500, 1.32)],
-    [TYPOGRAPHY.BENTO_HERO_TITLE, createDefinition(1.534, 700)],
-    [TYPOGRAPHY.BENTO_HERO_DESCRIPTION, createDefinition(0.884, 300, 1.35)],
-    [TYPOGRAPHY.BENTO_COMPACT_TITLE, createDefinition(1.04, 700)],
-    [TYPOGRAPHY.BENTO_CARD_TITLE, createDefinition(1.188, 700)],
-    [TYPOGRAPHY.BENTO_CARD_DESCRIPTION, createDefinition(0.952, 300, 1.35)]
+    [TYPOGRAPHY.CARD_DESCRIPTION, createDefinition(0.85, 500, 1.32)]
 ]);
 
 /**

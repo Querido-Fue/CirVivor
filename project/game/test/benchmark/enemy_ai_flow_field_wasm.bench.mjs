@@ -12,14 +12,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const GAME_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const NAVIGATION_PATH = path.join(
+const FLOW_FIELD_STORE_PATH = path.join(
     GAME_ROOT,
     'script',
     'module',
     'object',
     'enemy',
     'ai',
-    '_enemy_ai_navigation.js'
+    'navigation',
+    '_enemy_ai_flow_field_store.js'
 );
 const WASM_BYTES_PATH = path.join(
     GAME_ROOT,
@@ -74,7 +75,7 @@ function extractSourceSection(source, startMarker, endMarker) {
 
 /**
  * 프로덕션 buildFlowField와 heap helper 원문을 현재 realm의 Function으로 실행합니다.
- * @param {string} source - `_enemy_ai_navigation.js` 원문입니다.
+ * @param {string} source - `_enemy_ai_flow_field_store.js` 원문입니다.
  * @returns {(grid:object,goalCell:object)=>object} JS 기준 구현입니다.
  */
 function createSameRealmReferenceBuildFlowField(source) {
@@ -422,22 +423,22 @@ function printResults(rows) {
     }
 }
 
-const [navigationSourceRaw, wasmBytesSource, wasmRuntimeSource] = (
+const [flowFieldStoreSourceRaw, wasmBytesSource, wasmRuntimeSource] = (
     await Promise.all([
-        readFile(NAVIGATION_PATH, 'utf8'),
+        readFile(FLOW_FIELD_STORE_PATH, 'utf8'),
         readFile(WASM_BYTES_PATH, 'utf8'),
         readFile(WASM_RUNTIME_PATH, 'utf8')
     ])
 );
-const navigationSource = navigationSourceRaw.replace(/\r\n/g, '\n');
-const jsBuilder = createSameRealmReferenceBuildFlowField(navigationSource);
+const flowFieldStoreSource = flowFieldStoreSourceRaw.replace(/\r\n/g, '\n');
+const jsBuilder = createSameRealmReferenceBuildFlowField(flowFieldStoreSource);
 const wasmBytes = createSameRealmWasmBytes(wasmBytesSource);
 const wasmRuntime = createSameRealmWasmRuntime(wasmRuntimeSource, wasmBytes);
 
 console.log('Enemy AI flow-field JS ↔ WASM benchmark');
 console.log(`runtime: Node ${process.version}, V8 ${process.versions.v8}, ${process.platform}/${process.arch}`);
 console.log(`warmup: ${WARMUP_ITERATIONS}, measured pairs: ${MEASURED_ITERATIONS} per case`);
-console.log(`JS source sha256: ${sha256(navigationSource)}`);
+console.log(`JS source sha256: ${sha256(flowFieldStoreSource)}`);
 console.log(`WASM sha256:      ${sha256(wasmBytes)}`);
 console.log('');
 

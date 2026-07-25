@@ -50,19 +50,6 @@ const FIXED_TYPOGRAPHY_EXPECTATIONS = Object.freeze({
         sizeValue: 0.85,
         weight: 500,
         lineHeightMultiplier: 1.32
-    }),
-    BENTO_HERO_TITLE: Object.freeze({ sizeValue: 1.534, weight: 700 }),
-    BENTO_HERO_DESCRIPTION: Object.freeze({
-        sizeValue: 0.884,
-        weight: 300,
-        lineHeightMultiplier: 1.35
-    }),
-    BENTO_COMPACT_TITLE: Object.freeze({ sizeValue: 1.04, weight: 700 }),
-    BENTO_CARD_TITLE: Object.freeze({ sizeValue: 1.188, weight: 700 }),
-    BENTO_CARD_DESCRIPTION: Object.freeze({
-        sizeValue: 0.952,
-        weight: 300,
-        lineHeightMultiplier: 1.35
     })
 });
 

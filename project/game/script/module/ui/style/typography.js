@@ -34,12 +34,7 @@ export const TYPOGRAPHY = Object.freeze({
     TOOLTIP_TITLE: createTypographyToken('TOOLTIP_TITLE'),
     TOOLTIP_BODY: createTypographyToken('TOOLTIP_BODY'),
     CARD_TITLE: createTypographyToken('CARD_TITLE'),
-    CARD_DESCRIPTION: createTypographyToken('CARD_DESCRIPTION'),
-    BENTO_HERO_TITLE: createTypographyToken('BENTO_HERO_TITLE'),
-    BENTO_HERO_DESCRIPTION: createTypographyToken('BENTO_HERO_DESCRIPTION'),
-    BENTO_COMPACT_TITLE: createTypographyToken('BENTO_COMPACT_TITLE'),
-    BENTO_CARD_TITLE: createTypographyToken('BENTO_CARD_TITLE'),
-    BENTO_CARD_DESCRIPTION: createTypographyToken('BENTO_CARD_DESCRIPTION')
+    CARD_DESCRIPTION: createTypographyToken('CARD_DESCRIPTION')
 });
 
 /**

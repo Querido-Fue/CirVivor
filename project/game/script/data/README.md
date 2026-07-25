@@ -6,7 +6,7 @@
 
 - 설정 항목 정의와 기본값
 - 진행도·인게임 저장 기본값
-- 맵·메뉴·카드·적 type 같은 콘텐츠 catalog
+- 맵·적 type처럼 실행 계약과 독립적인 콘텐츠 catalog
 - 적 능력치·충돌 크기·AI profile 같은 게임 밸런스
 - 테마별 색상 토큰과 선택 옵션
 - 언어별 번역 pack
@@ -31,7 +31,12 @@ import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 - `save/`: 진행도·인게임 저장 초기값
 - `object/enemy/`: 적 catalog와 게임플레이·AI 밸런스
 - `scene/game/`: 맵 catalog와 실제 플레이 초기 데이터
-- `scene/title/`: 메뉴·카드 콘텐츠와 링크 메타데이터
+- `scene/title/`: 타이틀 버전 메타데이터와 외부 링크
 - `theme/`: 라이트/다크 테마 토큰과 선택 옵션
 - `localization/`: 언어별 번역 pack
 - `sound/`: 오디오 리소스 메타데이터
+
+타이틀 메뉴의 action, layout slot, reveal 순서는 화면 동작과 함께 바뀌는 구현
+계약이므로 `module/scene/title/menu/_title_menu_definitions.js`가 소유합니다.
+사용되지 않던 Magic Bento와 `TitleImage` 구현은 제거되었으며 타이틀 데이터
+영역으로 다시 두지 않습니다.
