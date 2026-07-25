@@ -1,10 +1,18 @@
+import { PHYSICS_BODY_TYPES } from '../contract/physics_body_contract.js';
+import { PhysicsBody2D } from '../physics/physics_body_2d.js';
+
 /**
  * The Tower의 현재 첫 구현 기본값입니다.
- * @type {Readonly<{RADIUS:number,MOVE_SPEED:number}>}
+ * @type {Readonly<{RADIUS:number,MOVE_SPEED:number,CONTROL_ACCELERATION:number,LINEAR_FRICTION:number,SLEEP_SPEED:number,MASS:number,MAX_LINEAR_SPEED:number}>}
  */
 export const THE_TOWER_DEFAULTS = Object.freeze({
     RADIUS: 24,
-    MOVE_SPEED: 260
+    MOVE_SPEED: 260,
+    CONTROL_ACCELERATION: 2600,
+    LINEAR_FRICTION: 10,
+    SLEEP_SPEED: 0.5,
+    MASS: 1,
+    MAX_LINEAR_SPEED: 1200
 });
 
 /**
@@ -34,15 +42,20 @@ function clampCircleAxis(value, size, radius) {
 
 /**
  * @class TheTower
- * @description HP 없이 위치·이동 의도·렌더 보간 상태만 소유하는 파란 Tower 엔티티입니다.
+ * @description HP 없이 이동 의도와 IPhysicsBody2D 컴포넌트를 소유하는 파란 Tower 엔티티입니다.
  */
 export class TheTower {
     /**
-     * @param {{x?:number,y?:number,radius?:number,moveSpeed?:number}} [options={}] - 생성 옵션입니다.
+     * @param {{x?:number,y?:number,radius?:number,moveSpeed?:number,controlAcceleration?:number,linearFriction?:number,sleepSpeed?:number,mass?:number,maxLinearSpeed?:number}} [options={}] - 생성 옵션입니다.
      */
     constructor(options = {}) {
         const radius = Number(options.radius);
         const moveSpeed = Number(options.moveSpeed);
+        const controlAcceleration = Number(options.controlAcceleration);
+        const linearFriction = Number(options.linearFriction);
+        const sleepSpeed = Number(options.sleepSpeed);
+        const mass = Number(options.mass);
+        const maxLinearSpeed = Number(options.maxLinearSpeed);
         const x = Number(options.x);
         const y = Number(options.y);
 
@@ -55,13 +68,44 @@ export class TheTower {
         this.moveSpeed = Number.isFinite(moveSpeed) && moveSpeed >= 0
             ? moveSpeed
             : THE_TOWER_DEFAULTS.MOVE_SPEED;
-        this.position = {
+        this.linearFriction = Number.isFinite(linearFriction) && linearFriction >= 0
+            ? linearFriction
+            : THE_TOWER_DEFAULTS.LINEAR_FRICTION;
+        this.controlAcceleration = Number.isFinite(controlAcceleration)
+            && controlAcceleration >= 0
+            ? controlAcceleration
+            : this.moveSpeed * (
+                this.linearFriction > 0
+                    ? this.linearFriction
+                    : THE_TOWER_DEFAULTS.LINEAR_FRICTION
+            );
+        this.physicsBody = new PhysicsBody2D({
+            physicsBodyId: `${this.id}:physics`,
+            bodyType: PHYSICS_BODY_TYPES.DYNAMIC,
             x: Number.isFinite(x) ? x : 0,
-            y: Number.isFinite(y) ? y : 0
-        };
-        this.previousPosition = { ...this.position };
+            y: Number.isFinite(y) ? y : 0,
+            mass: Number.isFinite(mass) && mass > 0 ? mass : THE_TOWER_DEFAULTS.MASS,
+            linearFriction: this.linearFriction,
+            sleepSpeed: Number.isFinite(sleepSpeed) && sleepSpeed >= 0
+                ? sleepSpeed
+                : THE_TOWER_DEFAULTS.SLEEP_SPEED,
+            maxLinearSpeed: Number.isFinite(maxLinearSpeed) && maxLinearSpeed > 0
+                ? maxLinearSpeed
+                : THE_TOWER_DEFAULTS.MAX_LINEAR_SPEED
+        });
+        this.position = this.physicsBody.getPosition();
+        this.previousPosition = this.physicsBody.getPreviousPosition();
         this.renderPosition = { ...this.position };
         this.moveIntent = { x: 0, y: 0 };
+    }
+
+    /**
+     * Tower에 부착된 IPhysicsBody2D 컴포넌트를 반환합니다.
+     * 향후 Collider는 이 메서드로 같은 바디를 참조합니다.
+     * @returns {PhysicsBody2D} Tower 물리 바디입니다.
+     */
+    getPhysicsBody() {
+        return this.physicsBody;
     }
 
     /**
@@ -85,7 +129,7 @@ export class TheTower {
     }
 
     /**
-     * 고정 시간축에서 이동을 적분하고 Tower를 월드 경계 안에 유지합니다.
+     * 이동 의도를 가속도로 물리 바디에 전달하고 fixed-step 운동을 적분합니다.
      * @param {number} delta - 초 단위 fixed delta입니다.
      * @param {{ww?:number,objectWH?:number}} viewport - 현재 월드 뷰포트입니다.
      * @returns {void}
@@ -100,11 +144,13 @@ export class TheTower {
             return;
         }
 
-        this.previousPosition.x = this.position.x;
-        this.previousPosition.y = this.position.y;
-        this.position.x += this.moveIntent.x * this.moveSpeed * safeDelta;
-        this.position.y += this.moveIntent.y * this.moveSpeed * safeDelta;
-        this.#clampPosition(viewport);
+        this.physicsBody.beginStep();
+        this.physicsBody.addAcceleration(
+            this.moveIntent.x * this.controlAcceleration,
+            this.moveIntent.y * this.controlAcceleration
+        );
+        this.physicsBody.integrate(safeDelta);
+        this.#resolveWorldBounds(viewport);
     }
 
     /**
@@ -129,9 +175,8 @@ export class TheTower {
      * @returns {void}
      */
     resize(viewport) {
-        this.#clampPosition(viewport);
-        this.previousPosition.x = this.position.x;
-        this.previousPosition.y = this.position.y;
+        this.#resolveWorldBounds(viewport);
+        this.physicsBody.setPosition(this.position.x, this.position.y, true);
         this.renderPosition.x = this.position.x;
         this.renderPosition.y = this.position.y;
     }
@@ -143,18 +188,38 @@ export class TheTower {
     destroy() {
         this.active = false;
         this.setMoveIntent(0, 0);
+        this.physicsBody.destroy();
     }
 
     /**
-     * 현재 위치를 월드 경계 안으로 제한합니다.
+     * 현재 원을 월드 경계 안으로 위치 보정하고 경계 밖을 향하는 속도만 제거합니다.
+     * CollisionHandler 도입 전까지 사용하는 최소 constraint입니다.
      * @param {{ww?:number,objectWH?:number}} viewport - 현재 월드 뷰포트입니다.
      * @returns {void}
      * @private
      */
-    #clampPosition(viewport) {
+    #resolveWorldBounds(viewport) {
         const width = normalizeWorldSize(viewport?.ww);
         const height = normalizeWorldSize(viewport?.objectWH);
-        this.position.x = clampCircleAxis(this.position.x, width, this.radius);
-        this.position.y = clampCircleAxis(this.position.y, height, this.radius);
+        const nextX = clampCircleAxis(this.position.x, width, this.radius);
+        const nextY = clampCircleAxis(this.position.y, height, this.radius);
+        const correctionX = nextX - this.position.x;
+        const correctionY = nextY - this.position.y;
+        this.physicsBody.applyPositionCorrection(correctionX, correctionY);
+
+        const velocity = this.physicsBody.getVelocity();
+        let velocityX = velocity.x;
+        let velocityY = velocity.y;
+        if (width <= this.radius * 2
+            || (correctionX > 0 && velocityX < 0)
+            || (correctionX < 0 && velocityX > 0)) {
+            velocityX = 0;
+        }
+        if (height <= this.radius * 2
+            || (correctionY > 0 && velocityY < 0)
+            || (correctionY < 0 && velocityY > 0)) {
+            velocityY = 0;
+        }
+        this.physicsBody.setVelocity(velocityX, velocityY);
     }
 }

@@ -1,3 +1,4 @@
+import { assertPhysicsBody2D } from '../contract/physics_body_contract.js';
 import { TheTower } from './the_tower.js';
 import { TheTowerRenderer } from './the_tower_renderer.js';
 import { TowerPlayerController } from './tower_player_controller.js';
@@ -20,7 +21,7 @@ function syncWorldViewport(target, source = {}) {
 
 /**
  * @class GameObjectSystem
- * @description 현재 구현 범위에서 The Tower의 생성·fixed 이동·보간·렌더를 소유합니다.
+ * @description 현재 구현 범위에서 The Tower와 등록된 물리 바디의 생명주기·fixed 이동·렌더를 소유합니다.
  */
 export class GameObjectSystem {
     /**
@@ -31,6 +32,7 @@ export class GameObjectSystem {
         this.tower = null;
         this.towerController = null;
         this.playerControllables = [];
+        this.physicsBodies = [];
         this.renderer = new TheTowerRenderer(dependencies?.worldRenderPort);
         this.initialized = false;
         this.destroyed = false;
@@ -51,6 +53,7 @@ export class GameObjectSystem {
             y: this.viewport.objectWH * 0.5
         });
         this.tower.resize(this.viewport);
+        this.physicsBodies.push(assertPhysicsBody2D(this.tower.getPhysicsBody()));
         this.towerController = new TowerPlayerController(this.tower);
         this.playerControllables.push(this.towerController);
         this.initialized = true;
@@ -63,6 +66,15 @@ export class GameObjectSystem {
      */
     getPlayerControllables() {
         return this.playerControllables;
+    }
+
+    /**
+     * 물리 단계와 향후 CollisionHandler가 사용할 IPhysicsBody2D 목록을 반환합니다.
+     * 호출자는 배열과 바디의 읽기 전용 벡터를 직접 변경하지 않아야 합니다.
+     * @returns {object[]} 등록된 물리 바디의 동일한 목록 참조입니다.
+     */
+    getPhysicsBodies() {
+        return this.physicsBodies;
     }
 
     /**
@@ -120,6 +132,7 @@ export class GameObjectSystem {
         }
         this.destroyed = true;
         this.playerControllables.length = 0;
+        this.physicsBodies.length = 0;
         this.towerController?.destroy();
         this.towerController = null;
         this.tower?.destroy();

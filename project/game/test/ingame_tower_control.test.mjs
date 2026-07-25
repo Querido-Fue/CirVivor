@@ -9,8 +9,14 @@ const {
     isPlayerControllable,
     isPlayerControllerable
 } = await loadGameModule('ingame/contract/player_controllable_contract.js');
+const {
+    PHYSICS_BODY_TYPES,
+    isPhysicsBody2D,
+    isPhysicsBodyOwner
+} = await loadGameModule('ingame/contract/physics_body_contract.js');
 const { InputActionMapper } = await loadGameModule('ingame/input/input_action_mapper.js');
 const { GameSystem } = await loadGameModule('ingame/game_system.js');
+const { PhysicsBody2D } = await loadGameModule('ingame/physics/physics_body_2d.js');
 const { THE_TOWER_DEFAULTS } = await loadGameModule('ingame/object/the_tower.js');
 
 const pressedDirections = new Set(['up', 'right']);
@@ -32,6 +38,33 @@ const cancelledHorizontalMove = mapper.mapMoveAction({
 });
 assert.equal(cancelledHorizontalMove.payload.x, 0);
 assert.ok(Math.abs(cancelledHorizontalMove.payload.y + 1) < 1e-12);
+
+const contractBody = new PhysicsBody2D({
+    physicsBodyId: 'contract-body',
+    mass: 2,
+    linearFriction: 0,
+    maxLinearSpeed: 100
+});
+assert.ok(isPhysicsBody2D(contractBody));
+assert.ok(isPhysicsBodyOwner({
+    getPhysicsBody() {
+        return contractBody;
+    }
+}));
+assert.equal(contractBody.getBodyType(), PHYSICS_BODY_TYPES.DYNAMIC);
+assert.equal(contractBody.getMass(), 2);
+assert.equal(contractBody.getInverseMass(), 0.5);
+assert.equal(contractBody.beginStep(), true);
+assert.equal(contractBody.applyImpulse(10, 0), true);
+assert.equal(contractBody.applyForce(4, 0), true);
+assert.equal(contractBody.integrate(0.5), true);
+assert.equal(contractBody.getVelocity().x, 6);
+assert.equal(contractBody.getPosition().x, 3);
+assert.equal(contractBody.getPreviousPosition().x, 0);
+assert.equal(contractBody.applyPositionCorrection(2, -1), true);
+assert.equal(contractBody.getPosition().x, 5);
+assert.equal(contractBody.getPosition().y, -1);
+assert.equal(contractBody.getPreviousPosition().x, 0);
 
 const keys = Object.create(null);
 const viewport = {
@@ -77,8 +110,12 @@ assert.equal(gameSystem.enter(), false);
 const gameObjectSystem = gameSystem.getObjectSystem();
 const tower = gameObjectSystem.getTower();
 const [towerController] = gameObjectSystem.getPlayerControllables();
+const towerPhysicsBody = tower.getPhysicsBody();
 assert.ok(isPlayerControllable(towerController));
 assert.ok(isPlayerControllerable(towerController));
+assert.ok(isPhysicsBodyOwner(tower));
+assert.ok(isPhysicsBody2D(towerPhysicsBody));
+assert.strictEqual(gameObjectSystem.getPhysicsBodies()[0], towerPhysicsBody);
 assert.equal('hp' in tower, false);
 assert.equal('health' in tower, false);
 assert.equal(tower.position.x, 500);
@@ -86,7 +123,15 @@ assert.equal(tower.position.y, 300);
 
 keys.right = true;
 gameSystem.fixedUpdate();
-const expectedStep = THE_TOWER_DEFAULTS.MOVE_SPEED * time.fixedDelta;
+const frictionDecay = Math.exp(
+    -THE_TOWER_DEFAULTS.LINEAR_FRICTION * time.fixedDelta
+);
+const expectedVelocity = (
+    THE_TOWER_DEFAULTS.CONTROL_ACCELERATION
+    / THE_TOWER_DEFAULTS.LINEAR_FRICTION
+) * (1 - frictionDecay);
+const expectedStep = expectedVelocity * time.fixedDelta;
+assert.ok(Math.abs(towerPhysicsBody.getVelocity().x - expectedVelocity) < 1e-9);
 assert.ok(Math.abs(tower.position.x - (500 + expectedStep)) < 1e-9);
 assert.equal(tower.position.y, 300);
 
@@ -101,12 +146,61 @@ assert.equal(circleDraws[0].diameter, THE_TOWER_DEFAULTS.RADIUS * 2);
 assert.equal(circleDraws[0].fill, '#2785ff');
 assert.equal(circleDraws[0].y, 260);
 
+const firstAcceleratedVelocity = towerPhysicsBody.getVelocity().x;
+for (let index = 0; index < 60; index++) {
+    gameSystem.fixedUpdate();
+}
+assert.ok(towerPhysicsBody.getVelocity().x > firstAcceleratedVelocity);
+assert.ok(
+    Math.abs(towerPhysicsBody.getVelocity().x - THE_TOWER_DEFAULTS.MOVE_SPEED) < 0.02
+);
+
 keys.right = false;
+const coastingStartX = tower.position.x;
+const coastingStartVelocity = towerPhysicsBody.getVelocity().x;
+gameSystem.fixedUpdate();
+assert.ok(tower.position.x > coastingStartX);
+assert.ok(towerPhysicsBody.getVelocity().x > 0);
+assert.ok(towerPhysicsBody.getVelocity().x < coastingStartVelocity);
+assert.ok(
+    Math.abs(
+        towerPhysicsBody.getVelocity().x - (coastingStartVelocity * frictionDecay)
+    ) < 1e-9
+);
+
+for (let index = 0; index < 100; index++) {
+    gameSystem.fixedUpdate();
+}
+assert.equal(towerPhysicsBody.getVelocity().x, 0);
+const frictionStoppedX = tower.position.x;
+gameSystem.fixedUpdate();
+assert.equal(tower.position.x, frictionStoppedX);
+
+assert.equal(towerPhysicsBody.applyImpulse(-120, 0), true);
+assert.equal(towerPhysicsBody.getVelocity().x, -120);
+const recoilStartX = tower.position.x;
+gameSystem.fixedUpdate();
+assert.ok(tower.position.x < recoilStartX);
+assert.ok(towerPhysicsBody.getVelocity().x < 0);
+assert.ok(towerPhysicsBody.getVelocity().x > -120);
+
+for (let index = 0; index < 100; index++) {
+    gameSystem.fixedUpdate();
+}
+assert.equal(towerPhysicsBody.getVelocity().x, 0);
+
+const correctionStartX = tower.position.x;
+const correctionPreviousX = tower.previousPosition.x;
+assert.equal(towerPhysicsBody.applyPositionCorrection(7, 0), true);
+assert.equal(tower.position.x, correctionStartX + 7);
+assert.equal(tower.previousPosition.x, correctionPreviousX);
+
 keys.left = true;
 for (let index = 0; index < 200; index++) {
     gameSystem.fixedUpdate();
 }
 assert.equal(tower.position.x, THE_TOWER_DEFAULTS.RADIUS);
+assert.equal(towerPhysicsBody.getVelocity().x, 0);
 
 keys.left = false;
 const releasedX = tower.position.x;
@@ -133,6 +227,8 @@ gameSystem.destroy();
 gameSystem.destroy();
 assert.equal(tower.active, false);
 assert.equal(towerController.isControlEnabled(), false);
+assert.equal(towerPhysicsBody.isPhysicsEnabled(), false);
+contractBody.destroy();
 
 const keyboardHandlerSource = await readFile(
     new URL('../script/module/input/_keyboard_input_handler.js', import.meta.url),
