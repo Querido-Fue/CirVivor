@@ -10,6 +10,13 @@ const {
     isPlayerControllerable
 } = await loadGameModule('ingame/contract/player_controllable_contract.js');
 const {
+    isCollidable2D,
+    isCircleCollidable2D
+} = await loadGameModule('ingame/contract/collidable_contract.js');
+const {
+    isCoreIntegrity
+} = await loadGameModule('ingame/contract/core_integrity_contract.js');
+const {
     PHYSICS_BODY_TYPES,
     isPhysicsBody2D,
     isPhysicsBodyOwner
@@ -17,7 +24,15 @@ const {
 const { InputActionMapper } = await loadGameModule('ingame/input/input_action_mapper.js');
 const { GameSystem } = await loadGameModule('ingame/game_system.js');
 const { PhysicsBody2D } = await loadGameModule('ingame/physics/physics_body_2d.js');
-const { THE_TOWER_DEFAULTS } = await loadGameModule('ingame/object/the_tower.js');
+const { THE_TOWER_DATA } = await loadGameModule(
+    'data/object/tower/the_tower_data.js'
+);
+const { THE_CORE_DATA } = await loadGameModule(
+    'data/object/core/the_core_data.js'
+);
+const { TILE_WORLD_SIZE } = await loadGameModule(
+    'ingame/map/tile_map.js'
+);
 
 const pressedDirections = new Set(['up', 'right']);
 const mapper = new InputActionMapper();
@@ -68,15 +83,15 @@ assert.equal(contractBody.getPreviousPosition().x, 0);
 
 const keys = Object.create(null);
 const viewport = {
-    ww: 1000,
-    objectWH: 600,
-    objectOffsetY: 40
+    ww: 2560,
+    wh: 1440
 };
 const time = {
     fixedDelta: 1 / 60,
     alpha: 0.5
 };
 const circleDraws = [];
+const squareInstanceDraws = [];
 const gameSystem = new GameSystem({
     inputActionSource: {
         isPressed(key) {
@@ -100,6 +115,12 @@ const gameSystem = new GameSystem({
     worldRenderPort: {
         drawCircle(options) {
             circleDraws.push({ ...options });
+        },
+        drawSquareInstances(options) {
+            squareInstanceDraws.push({
+                ...options,
+                centers: options.centers.map((center) => ({ ...center }))
+            });
         }
     }
 });
@@ -109,42 +130,92 @@ assert.equal(gameSystem.enter(), false);
 
 const gameObjectSystem = gameSystem.getObjectSystem();
 const tower = gameObjectSystem.getTower();
+const core = gameObjectSystem.getCore();
+const tileMap = gameObjectSystem.getTileMap();
 const [towerController] = gameObjectSystem.getPlayerControllables();
 const towerPhysicsBody = tower.getPhysicsBody();
+const corePhysicsBody = core.getPhysicsBody();
+const towerCollider = tower.getCollider();
+const coreIntegrity = gameSystem.getCoreIntegrity();
+const worldProjection = gameObjectSystem.getWorldViewProjection();
 assert.ok(isPlayerControllable(towerController));
 assert.ok(isPlayerControllerable(towerController));
 assert.ok(isPhysicsBodyOwner(tower));
 assert.ok(isPhysicsBody2D(towerPhysicsBody));
+assert.ok(isPhysicsBody2D(corePhysicsBody));
+assert.ok(isCollidable2D(towerCollider));
+assert.ok(isCircleCollidable2D(towerCollider));
+assert.ok(isCollidable2D(core.getCollider()));
+assert.ok(isCoreIntegrity(coreIntegrity));
+assert.strictEqual(core.getCoreIntegrity(), coreIntegrity);
 assert.strictEqual(gameObjectSystem.getPhysicsBodies()[0], towerPhysicsBody);
+assert.strictEqual(gameObjectSystem.getPhysicsBodies()[1], corePhysicsBody);
+assert.strictEqual(gameObjectSystem.getCollidables()[0], towerCollider);
 assert.equal('hp' in tower, false);
 assert.equal('health' in tower, false);
-assert.equal(tower.position.x, 500);
-assert.equal(tower.position.y, 300);
+assert.equal(coreIntegrity.getMaxIntegrity(), THE_CORE_DATA.MAX_INTEGRITY);
+assert.equal(coreIntegrity.getCurrentIntegrity(), 100);
+assert.equal(coreIntegrity.applyIntegrityDamage(30), 30);
+assert.equal(coreIntegrity.getCurrentIntegrity(), 70);
+assert.equal(coreIntegrity.restoreIntegrity(30), 30);
+assert.equal(coreIntegrity.getCurrentIntegrity(), 100);
+assert.equal(tileMap.getNavigationGrid().cellSize, TILE_WORLD_SIZE);
+assert.equal(tileMap.getNavigationGrid().cols, 54);
+assert.equal(tileMap.getNavigationGrid().rows, 30);
+assert.equal(gameObjectSystem.getEnemySpawnRoutes().length, 1);
+assert.equal(tower.position.x, tileMap.getTowerSpawnPosition().x);
+assert.equal(tower.position.y, tileMap.getTowerSpawnPosition().y);
+assert.equal(core.position.x, tileMap.getCorePosition().x);
+assert.equal(core.position.y, tileMap.getCorePosition().y);
 
 keys.right = true;
+const initialTowerX = tower.position.x;
+const initialTowerY = tower.position.y;
 gameSystem.fixedUpdate();
 const frictionDecay = Math.exp(
-    -THE_TOWER_DEFAULTS.LINEAR_FRICTION * time.fixedDelta
+    -THE_TOWER_DATA.LINEAR_FRICTION_PER_SECOND * time.fixedDelta
 );
 const expectedVelocity = (
-    THE_TOWER_DEFAULTS.CONTROL_ACCELERATION
-    / THE_TOWER_DEFAULTS.LINEAR_FRICTION
+    THE_TOWER_DATA.CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED
+    / THE_TOWER_DATA.LINEAR_FRICTION_PER_SECOND
 ) * (1 - frictionDecay);
 const expectedStep = expectedVelocity * time.fixedDelta;
 assert.ok(Math.abs(towerPhysicsBody.getVelocity().x - expectedVelocity) < 1e-9);
-assert.ok(Math.abs(tower.position.x - (500 + expectedStep)) < 1e-9);
-assert.equal(tower.position.y, 300);
+assert.ok(Math.abs(tower.position.x - (initialTowerX + expectedStep)) < 1e-9);
+assert.equal(tower.position.y, initialTowerY);
 
 gameSystem.update();
-assert.ok(Math.abs(tower.renderPosition.x - (500 + (expectedStep * 0.5))) < 1e-9);
-assert.equal(tower.renderPosition.y, 300);
+assert.ok(
+    Math.abs(tower.renderPosition.x - (initialTowerX + (expectedStep * 0.5))) < 1e-9
+);
+assert.equal(tower.renderPosition.y, initialTowerY);
 
 gameSystem.draw();
-assert.equal(circleDraws.length, 1);
-assert.equal(circleDraws[0].layer, 'object');
-assert.equal(circleDraws[0].diameter, THE_TOWER_DEFAULTS.RADIUS * 2);
-assert.equal(circleDraws[0].fill, '#2785ff');
-assert.equal(circleDraws[0].y, 260);
+assert.equal(squareInstanceDraws.length, 1);
+assert.ok(squareInstanceDraws[0].centers.length > 0);
+assert.equal(squareInstanceDraws[0].layer, 'background');
+const projectedTileSize = worldProjection.worldLengthToViewport(TILE_WORLD_SIZE);
+assert.equal(
+    squareInstanceDraws[0].size,
+    projectedTileSize * (1 - (1 / 24))
+);
+assert.equal(circleDraws.length, 2);
+const coreDraw = circleDraws.find(({ fill }) => fill === '#ffb52e');
+const towerDraw = circleDraws.find(({ fill }) => fill === '#2785ff');
+assert.ok(coreDraw);
+assert.ok(towerDraw);
+assert.equal(towerDraw.layer, 'object');
+assert.equal(
+    towerDraw.diameter,
+    worldProjection.worldLengthToViewport(THE_TOWER_DATA.RADIUS_TILES * 2)
+);
+const projectedTowerPosition = worldProjection.worldToViewport(
+    tower.renderPosition.x,
+    tower.renderPosition.y,
+    {}
+);
+assert.equal(towerDraw.x, projectedTowerPosition.x);
+assert.equal(towerDraw.y, projectedTowerPosition.y);
 
 const firstAcceleratedVelocity = towerPhysicsBody.getVelocity().x;
 for (let index = 0; index < 60; index++) {
@@ -152,7 +223,10 @@ for (let index = 0; index < 60; index++) {
 }
 assert.ok(towerPhysicsBody.getVelocity().x > firstAcceleratedVelocity);
 assert.ok(
-    Math.abs(towerPhysicsBody.getVelocity().x - THE_TOWER_DEFAULTS.MOVE_SPEED) < 0.02
+    Math.abs(
+        towerPhysicsBody.getVelocity().x
+        - THE_TOWER_DATA.MOVE_SPEED_TILES_PER_SECOND
+    ) < 0.02
 );
 
 keys.right = false;
@@ -176,13 +250,13 @@ const frictionStoppedX = tower.position.x;
 gameSystem.fixedUpdate();
 assert.equal(tower.position.x, frictionStoppedX);
 
-assert.equal(towerPhysicsBody.applyImpulse(-120, 0), true);
-assert.equal(towerPhysicsBody.getVelocity().x, -120);
+assert.equal(towerPhysicsBody.applyImpulse(-2.5, 0), true);
+assert.equal(towerPhysicsBody.getVelocity().x, -2.5);
 const recoilStartX = tower.position.x;
 gameSystem.fixedUpdate();
 assert.ok(tower.position.x < recoilStartX);
 assert.ok(towerPhysicsBody.getVelocity().x < 0);
-assert.ok(towerPhysicsBody.getVelocity().x > -120);
+assert.ok(towerPhysicsBody.getVelocity().x > -2.5);
 
 for (let index = 0; index < 100; index++) {
     gameSystem.fixedUpdate();
@@ -191,15 +265,22 @@ assert.equal(towerPhysicsBody.getVelocity().x, 0);
 
 const correctionStartX = tower.position.x;
 const correctionPreviousX = tower.previousPosition.x;
-assert.equal(towerPhysicsBody.applyPositionCorrection(7, 0), true);
-assert.equal(tower.position.x, correctionStartX + 7);
+assert.equal(towerPhysicsBody.applyPositionCorrection(0.125, 0), true);
+assert.equal(tower.position.x, correctionStartX + 0.125);
 assert.equal(tower.previousPosition.x, correctionPreviousX);
 
 keys.left = true;
-for (let index = 0; index < 200; index++) {
+for (let index = 0; index < 1500; index++) {
     gameSystem.fixedUpdate();
 }
-assert.equal(tower.position.x, THE_TOWER_DEFAULTS.RADIUS);
+const centerTile = tileMap.worldToTile(tower.position.x, tower.position.y, {});
+let firstWalkableColumn = 0;
+while (!tileMap.isWalkableTile(centerTile.row, firstWalkableColumn)) {
+    firstWalkableColumn++;
+}
+const expectedLeftBoundary = (firstWalkableColumn * TILE_WORLD_SIZE)
+    + THE_TOWER_DATA.RADIUS_TILES;
+assert.equal(tower.position.x, expectedLeftBoundary);
 assert.equal(towerPhysicsBody.getVelocity().x, 0);
 
 keys.left = false;
@@ -207,17 +288,23 @@ const releasedX = tower.position.x;
 gameSystem.fixedUpdate();
 assert.equal(tower.position.x, releasedX);
 
-viewport.ww = 1600;
-viewport.objectWH = 900;
+viewport.ww = 1280;
+viewport.wh = 720;
 gameSystem.resize();
 assert.equal(tower.position.x, releasedX);
-assert.equal(tower.position.y, 300);
+assert.equal(tower.position.y, initialTowerY);
+gameSystem.draw();
+const resizedTowerDraw = circleDraws
+    .slice(-2)
+    .find(({ fill }) => fill === '#2785ff');
+assert.ok(resizedTowerDraw);
+assert.equal(resizedTowerDraw.diameter, towerDraw.diameter * 0.5);
 
 viewport.ww = 30;
-viewport.objectWH = 40;
+viewport.wh = 40;
 gameSystem.resize();
-assert.equal(tower.position.x, 15);
-assert.equal(tower.position.y, 20);
+assert.equal(tower.position.x, releasedX);
+assert.equal(tower.position.y, initialTowerY);
 
 assert.equal(
     towerController.handlePlayerAction({ type: 'unsupported' }),
@@ -226,8 +313,11 @@ assert.equal(
 gameSystem.destroy();
 gameSystem.destroy();
 assert.equal(tower.active, false);
+assert.equal(core.active, false);
 assert.equal(towerController.isControlEnabled(), false);
 assert.equal(towerPhysicsBody.isPhysicsEnabled(), false);
+assert.equal(corePhysicsBody.isPhysicsEnabled(), false);
+assert.equal(towerCollider.isCollisionEnabled(), false);
 contractBody.destroy();
 
 const keyboardHandlerSource = await readFile(

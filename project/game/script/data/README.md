@@ -8,6 +8,7 @@
 - 진행도·인게임 저장 기본값
 - 맵·적 type처럼 실행 계약과 독립적인 콘텐츠 catalog
 - 적 능력치·충돌 크기·AI profile 같은 게임 밸런스
+- Tower 이동·물리 수치와 Core Integrity 같은 인게임 entity 밸런스
 - 테마별 색상 토큰과 선택 옵션
 - 언어별 번역 pack
 - 이미지·오디오·외부 링크 같은 리소스 메타데이터
@@ -30,7 +31,9 @@ import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 - `settings/`: 설정 정의와 기본값
 - `save/`: 진행도·인게임 저장 초기값
 - `object/enemy/`: 적 catalog와 게임플레이·AI 밸런스
-- `scene/game/`: 맵 catalog와 실제 플레이 초기 데이터
+- `object/tower/`: Tower 크기·이동·물리 밸런스. Tower HP 데이터는 두지 않음
+- `object/core/`: Core 크기와 Integrity 기본값
+- `scene/game/`: 맵 catalog, 방향 경로, 복수 적 진입 route와 실제 플레이 초기 데이터
 - `scene/title/`: 타이틀 버전 메타데이터와 외부 링크
 - `theme/`: 라이트/다크 테마 토큰과 선택 옵션
 - `localization/`: 언어별 번역 pack
@@ -40,3 +43,12 @@ import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 계약이므로 `module/scene/title/menu/_title_menu_definitions.js`가 소유합니다.
 사용되지 않던 Magic Bento와 `TitleImage` 구현은 제거되었으며 타이틀 데이터
 영역으로 다시 두지 않습니다.
+
+## 해상도 독립 단위
+
+- 게임플레이 길이·속도·가속도는 렌더 픽셀이 아니라 타일 월드 단위를 사용한다.
+- 신규 인게임에서 `1 실제 타일 = 1 월드 단위`이고 Tower 지름은 1타일이다.
+- 길이 필드는 `_TILES`, 속도는 `_TILES_PER_SECOND`, 가속도는
+  `_TILES_PER_SECOND_SQUARED`처럼 단위를 이름에 드러낸다.
+- viewport 크기나 2560×1440 같은 표시 해상도를 balance data에 넣지 않는다.
+  최종 표시 크기는 projection이 런타임에 계산한다.
