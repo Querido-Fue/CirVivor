@@ -13,12 +13,13 @@
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: MSVC Debug·Release CTest 각 17/17, GCC headless 12/12, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- 네이티브 검증: MSVC Debug·Release CTest 각 19/19, GCC headless 14/14, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 정상 실행: SDL 의미 입력→짧은 입력 latch→60Hz `GameSystem`→94-command playable `FramePacket` 연결 및 Computer Use 실기 이동 확인
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas 통과
 - 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료, 세 backend 실제 실행은 아직 계측 가능한 placeholder
-- Software 960×540 성능 게이트: Release 180-frame render p95 24.456ms, 33.33ms 예산 통과
+- 네이티브 UI runtime 기반: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler와 논리 safe-area 레이아웃 완료. 정상 앱 경로·실제 콘텐츠·FramePacket 생성은 아직 미연결
+- Software 960×540 성능 게이트: 최신 Release 180-frame render p95 24.698ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 
 ## 단계별 상태
@@ -65,6 +66,7 @@
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없어 Windows 시스템 emoji fallback 결과를 Android에서 재현할 수 없으므로 고정 벡터/bitmap asset으로 교체해야 한다.
 - `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. 다만 세 backend의 신규 명령은 아직 marker placeholder이므로 실제 atlas sampling·shader·clip·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
 - text foundation은 45~930 variable weight, no-hinting grayscale raster와 고정-capacity glyph atlas까지 완료됐고 FramePacket glyph run 계약도 존재한다. 실제 UI 문자열 shaped cache와 backend atlas upload/draw는 아직 구현해야 한다.
+- `ui_runtime`은 아직 `Application`이 소유하거나 정상 frame branch에서 호출하지 않는다. `game_desktop`은 `render_text`를 링크하지 않고 backend-neutral atlas resource upload seam도 없으며, 8개 title overlay·Debug/Settings control·floating/hover 콘텐츠는 presenter에 구현되지 않았다.
 
 ## 검증 기록
 
@@ -528,6 +530,22 @@ canonical v1/v2 wire hash: 불변
 - pass capture anchor는 실제 command header의 sequence/layer/layer-order와 정확히 일치해야 한다. 다른 source session은 해당 composite command 이후에만 참조할 수 있다.
 - GLES의 legacy overlay begin/capture/end도 미구현 placeholder로 계측한다. SDL_GPU에서 유한한 입력의 glyph/mesh bounds 계산이 overflow하면 결정적 marker로 대체해 프레임 전체 실패를 막는다.
 
+### 2026-07-27 — 순수 C++ 타이틀·오버레이 상태/레이아웃 기반
+
+```text
+TitleOverlayStateMachine: 16/16 통과
+UiLayoutMetrics: 10/10 통과
+MSVC Debug 전체 CTest: 19/19 통과
+MSVC Release 전체 CTest: 19/19 통과
+GCC 16.1 headless strict 전체 CTest: 14/14 통과
+```
+
+- native UI는 JavaScript를 실행·해석하거나 그 runtime을 에뮬레이션하지 않는 독립 C++20 rewrite다. 기존 NW.js는 21개 승인 화면과 관찰 가능한 입력·상태 전이의 read-only oracle로만 남긴다.
+- `TitleOverlayStateMachine::advance(deltaSeconds)`는 30/60/120/144Hz에서 같은 wall-clock 진행을 만들고 큰 frame delta를 0.1초로 제한한다. Loading→logo→scene transition, title factory 8종, Debug/Exit/External key/layer, draw order와 최신 attach input focus를 고정 배열에서 관리한다.
+- Debug pause/focus 즉시 수명주기, UTF-8 Unicode 경계 공백·NUL·HTTP(S) authority 검증, 외부 URL sequence success/failure acknowledge, one-shot 종료 latch와 잠긴 overlay의 취소 거부를 검증했다.
+- 레이아웃은 light/dark title·settings·overlay 렌더 토큰과 card/pane/utility entrance, 동적 typography, exit/external shell, title icon 계약을 제공한다. L/T/R/B 논리 safe-area를 usable rect로 반영하며 zero-inset Desktop 좌표와 기존 150% UI clip 동작은 oracle 그대로 보존한다.
+- 이 배치는 상태·레이아웃 seam만 완료했다. `Application` 소유/이벤트 소비, title `FramePacket` presenter, 실제 문자열·control 콘텐츠, atlas upload와 세 backend draw, native 21개 pixel golden은 후속 단계다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture
@@ -555,6 +573,7 @@ canonical v1/v2 wire hash: 불변
 - [x] 다중 weight grayscale glyph raster와 고정-capacity source-keyed atlas
 - [ ] shaped-text cache, atlas backend upload와 세 backend text drawing
 - [x] `FramePacket v2` glyph/projective mesh/gradient/clip/render-pass·중첩 capture wire/build/validation 계약
+- [x] 순수 C++ 가변 시간 타이틀·keyed overlay 상태기와 light/dark·safe-area·entrance 레이아웃 기반
 - [ ] 세 backend의 v2 atlas/mesh/gradient/clip/pass 실제 렌더와 production UI `placeholderCommands == 0`
 - [ ] 타이틀 화면과 모든 오버레이의 시각·입력·상태 전이 완전 동일 구현
 - [ ] Android SDK/NDK/Gradle 툴체인 설치와 ARM64 빌드

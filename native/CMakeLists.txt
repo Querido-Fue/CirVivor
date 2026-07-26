@@ -85,6 +85,13 @@ target_include_directories(app_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(app_runtime PUBLIC game_core)
 cirvivor_configure_target(app_runtime)
 
+add_library(ui_runtime STATIC
+    src/ui/layout/ui_layout_metrics.cpp
+    src/ui/title_overlay_state_machine.cpp
+)
+target_include_directories(ui_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+cirvivor_configure_target(ui_runtime)
+
 if(MSVC)
     set_source_files_properties(
         src/core/math/deterministic_math.cpp
@@ -178,6 +185,18 @@ if(BUILD_TESTING)
     target_link_libraries(movement_input_buffer_tests PRIVATE app_runtime)
     cirvivor_configure_target(movement_input_buffer_tests)
 
+    add_executable(title_overlay_state_machine_tests
+        tests/title_overlay_state_machine_test.cpp
+    )
+    target_link_libraries(title_overlay_state_machine_tests PRIVATE ui_runtime)
+    cirvivor_configure_target(title_overlay_state_machine_tests)
+
+    add_executable(ui_layout_metrics_tests
+        tests/ui_layout_metrics_test.cpp
+    )
+    target_link_libraries(ui_layout_metrics_tests PRIVATE ui_runtime)
+    cirvivor_configure_target(ui_layout_metrics_tests)
+
     add_executable(renderer_router_tests
         tests/renderer_router_test.cpp
     )
@@ -232,6 +251,11 @@ if(BUILD_TESTING)
     add_test(NAME frame_packet_tests COMMAND frame_packet_tests)
     add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
     add_test(NAME movement_input_buffer_tests COMMAND movement_input_buffer_tests)
+    add_test(
+        NAME title_overlay_state_machine_tests
+        COMMAND title_overlay_state_machine_tests
+    )
+    add_test(NAME ui_layout_metrics_tests COMMAND ui_layout_metrics_tests)
     add_test(NAME renderer_router_tests COMMAND renderer_router_tests)
     add_test(NAME simulation_parity_tests COMMAND simulation_parity_tests)
     add_test(NAME game_replay_parity_tests COMMAND game_replay_parity_tests)
@@ -302,6 +326,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
         PRIVATE
             game_core
             app_runtime
+            ui_runtime
             platform_sdl
             render_frontend
             renderer_backend

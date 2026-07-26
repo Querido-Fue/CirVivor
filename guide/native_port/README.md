@@ -5,6 +5,7 @@
 ## 전환 원칙
 
 - 기존 `project/`의 JavaScript/NW.js 경로는 native parity가 증명될 때까지 기준 실행기(oracle)로 보존한다.
+- `native/`는 독립적인 C++20 rewrite다. JavaScript engine을 embed·실행·해석하거나 ECMAScript event loop, Promise/microtask, 우연한 부동소수점 진행을 에뮬레이션하지 않는다. 기존 경로에서는 관찰 가능한 게임 규칙·화면·입력·상태 전이와 승인 fixture만 가져온다.
 - `native/src/core/`와 `native/src/engine/`는 SDL 헤더, SDL handle, OS 파일 경로 타입을 포함하지 않는다.
 - 입력은 플랫폼 event가 아니라 의미 action으로 simulation에 전달한다.
 - authoritative simulation은 60Hz fixed step으로 실행하고 rendering은 보간 가능한 `FramePacket`을 소비한다.
@@ -19,6 +20,7 @@
 | `native/src/engine/` / `game_core` | fixed-step frame scheduling과 공통 runtime 정책 |
 | `native/src/game/` / `game_core` | 의미 입력을 소비하는 세션 GameSystem과 Core/Tower authoritative snapshot 조립 |
 | `native/src/app/movement_input_buffer.*` / `app_runtime` | 물리 source alias 합성, 짧은 press의 첫 fixed tick 보존, focus/background clear를 담당하는 SDL 비의존 입력 버퍼 |
+| `native/src/ui/` / `ui_runtime` | 가변 시간 Loading/Title·overlay 상태, light/dark 렌더 토큰, responsive/safe-area 레이아웃과 presentation sampler |
 | `native/src/headless/` / `game_headless` | 창 없이 seed·tick 기반 결정성 실행 |
 | `native/src/platform/sdl/` / `platform_sdl` | SDL 창, event 변환, lifecycle, user storage, 기본 audio device 수명 |
 | `native/src/app/` / `game_desktop` | `SDL_MAIN_USE_CALLBACKS` 진입점과 application 조립 |
@@ -48,6 +50,10 @@ UI 입력용 `PlatformEvent`는 mouse motion/down/up, wheel 방향, touch down/m
 타이틀 화면과 production에서 도달 가능한 기존 오버레이는 JS/NW.js 경로를 oracle로 삼아 시각과 동작을 동일하게 이식한다. `project/game/test/fixtures/ui_visual/scenarios_v1.json`은 Loading/Title 전환과 hover, title factory 8종, Debug/Exit/ExternalLink manager overlay 3종, 중첩 외부 링크 경고·floating dropdown·불투명 모드를 포함한 21개 상태를 고정한다. `CollectionOverlay`는 구현 파일만 있고 production 진입점이 없는 orphan으로 명시한다.
 
 완료 판정은 화면별 진입 상태와 입력 전이, 레이어 순서, 문구·폰트·색·크기·anchor, 애니메이션 시점과 overlay 합성 결과를 고정한 뒤 native 출력과 비교한다. 단순히 유사한 모양을 만들거나 placeholder text/texture를 표시한 상태는 완료가 아니다. 현재 JS 제품에 없는 일반 플레이 HUD·pause·game-over·tutorial·shop/status 화면은 동일 포팅 항목이 아니라 별도 제품 설계다.
+
+현재 `ui_runtime`은 30/60/120/144Hz에서 같은 wall-clock presentation을 만드는 seconds 기반 상태기와 Loading→Title 시간축, title factory 8종 및 Debug/Exit/External keyed overlay stack을 제공한다. Debug pause/focus 특례, 외부 URL 실행의 sequence acknowledge, one-shot 종료 요청, 고정 용량·무할당 snapshot도 계약으로 고정했다. 레이아웃은 Desktop zero-inset 좌표를 보존하면서 Android용 논리 safe-area, light/dark title·settings·overlay 렌더 토큰, 타이틀 카드/pane/tile entrance와 exit/external shell geometry를 계산한다.
+
+이 기반은 아직 `Application` 정상 경로에서 사용되지 않고 `FramePacket`을 만들지도 않는다. 8개 title overlay와 Debug/Settings control 콘텐츠, hover/floating 상태, shaped-text cache, atlas resource upload, 세 backend의 glyph/gradient/clip/pass 실제 렌더와 21개 native pixel golden 비교가 남아 있으므로 타이틀·오버레이 parity 완료로 판정하지 않는다.
 
 ## 창과 renderer 소유권
 
@@ -149,6 +155,8 @@ seed 42, 60 tick의 현재 headless 기준 hash는 `58e40b4174f11e95`다. 이 �
 `game_replay_parity_tests`는 실제 JS `GameSystem → GameObjectSystem → Tower → PhysicsBody2D → TileMapCollisionResolver` 기준과 같은 480 fixed tick 입력을 C++ 세션에 재생한다. static world `fd31f3c2801962f7`, initial state `9deef2f12bd1257d`, 전체 record digest `11fd486e39710bf6`, final state `748a6b36a9213900`, tile correction `4`, tick heap allocation `0`이 모두 맞아야 한다. 현재 oracle에 없는 RNG·투사체·일반 contact/event는 capability와 `null/0`으로 유지하며 구현된 것처럼 확장하지 않는다.
 
 `movement_input_buffer_tests`는 짧은 down/up pulse, held input, repeat idempotence, 복수 alias source, focus/background에 대응하는 clear 계약을 검사한다. `sdl_platform_event_tests`는 mouse/touch/cancel/wheel, UTF-8 경계 절단, IME composition, focus clear와 dismissible window-close seam을 검사한다. `font_stack_tests`는 WOFF2/OFL hash, memory face, 누락 emoji asset 정책과 canonical 한국어/라틴 shaping을 검사한다. `playable_game_scene_tests`는 94-command 장면, 보간·safe area·DPI·capacity transaction과 반복 build의 무할당을 검사한다.
+
+`title_overlay_state_machine_tests`는 가변 frame rate, 큰 delta 제한, Loading→Title carry, overlay open/close retarget, Debug pause/focus, UTF-8 URL 경계·scheme/authority와 플랫폼 acknowledge, exactly-once 종료 및 무할당 snapshot을 검사한다. `ui_layout_metrics_tests`는 16:9/ultrawide, zero-inset Desktop과 비대칭 Android safe-area, uiScale, light/dark token, 타이틀 entrance 중간값, exit/external geometry와 transactional invalid input을 검사한다.
 
 `wat_scalar_parity_tests`는 production flow-field와 prepared-hexa-contact WAT의 raw 결과를 C++ scalar reference와 비교한다. flow는 f32 integration/direction bit, 8방향/corner-cut/heap tie와 전수·대형·난수 digest를, contact는 f64 body·f32 part·ordered u8 flag, 반경 배율 `0.765`, epsilon `1e-6`를 보존한다. 두 API 모두 생성 시 capacity를 고정하고 `build()`/`scan()` 중 C++ `new`가 0이어야 한다. 이는 범용 spatial grid·position solve·projectile 구현 완료를 의미하지 않는다.
 
