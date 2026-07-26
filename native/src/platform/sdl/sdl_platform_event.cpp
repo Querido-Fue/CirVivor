@@ -35,6 +35,143 @@ struct MovementBinding final {
     }
 }
 
+[[nodiscard]] constexpr PlatformPointerButton pointerButton(
+    const std::uint8_t button
+) noexcept {
+    switch (button) {
+    case SDL_BUTTON_LEFT:
+        return PlatformPointerButton::primary;
+    case SDL_BUTTON_MIDDLE:
+        return PlatformPointerButton::middle;
+    case SDL_BUTTON_RIGHT:
+        return PlatformPointerButton::secondary;
+    case SDL_BUTTON_X1:
+        return PlatformPointerButton::auxiliary1;
+    case SDL_BUTTON_X2:
+        return PlatformPointerButton::auxiliary2;
+    default:
+        return PlatformPointerButton::other;
+    }
+}
+
+[[nodiscard]] constexpr std::uint32_t pointerButtonState(
+    const SDL_MouseButtonFlags state
+) noexcept {
+    std::uint32_t translated = 0;
+    if ((state & SDL_BUTTON_LMASK) != 0U) {
+        translated |= platformPointerButtonMask(PlatformPointerButton::primary);
+    }
+    if ((state & SDL_BUTTON_MMASK) != 0U) {
+        translated |= platformPointerButtonMask(PlatformPointerButton::middle);
+    }
+    if ((state & SDL_BUTTON_RMASK) != 0U) {
+        translated |= platformPointerButtonMask(PlatformPointerButton::secondary);
+    }
+    if ((state & SDL_BUTTON_X1MASK) != 0U) {
+        translated |= platformPointerButtonMask(PlatformPointerButton::auxiliary1);
+    }
+    if ((state & SDL_BUTTON_X2MASK) != 0U) {
+        translated |= platformPointerButtonMask(PlatformPointerButton::auxiliary2);
+    }
+    return translated;
+}
+
+[[nodiscard]] constexpr bool isUtf8Continuation(const char value) noexcept {
+    const auto byte = static_cast<unsigned char>(value);
+    return byte >= 0x80U && byte <= 0xBFU;
+}
+
+[[nodiscard]] constexpr std::size_t validUtf8SequenceLength(
+    const char* const text
+) noexcept {
+    const auto first = static_cast<unsigned char>(text[0]);
+    if (first <= 0x7FU) {
+        return 1;
+    }
+    if (first >= 0xC2U && first <= 0xDFU) {
+        return isUtf8Continuation(text[1]) ? 2U : 0U;
+    }
+    if (first == 0xE0U) {
+        const auto second = static_cast<unsigned char>(text[1]);
+        return second >= 0xA0U && second <= 0xBFU
+                && isUtf8Continuation(text[2])
+            ? 3U
+            : 0U;
+    }
+    if ((first >= 0xE1U && first <= 0xECU)
+        || (first >= 0xEEU && first <= 0xEFU)) {
+        return isUtf8Continuation(text[1]) && isUtf8Continuation(text[2])
+            ? 3U
+            : 0U;
+    }
+    if (first == 0xEDU) {
+        const auto second = static_cast<unsigned char>(text[1]);
+        return second >= 0x80U && second <= 0x9FU
+                && isUtf8Continuation(text[2])
+            ? 3U
+            : 0U;
+    }
+    if (first == 0xF0U) {
+        const auto second = static_cast<unsigned char>(text[1]);
+        return second >= 0x90U && second <= 0xBFU
+                && isUtf8Continuation(text[2])
+                && isUtf8Continuation(text[3])
+            ? 4U
+            : 0U;
+    }
+    if (first >= 0xF1U && first <= 0xF3U) {
+        return isUtf8Continuation(text[1])
+                && isUtf8Continuation(text[2])
+                && isUtf8Continuation(text[3])
+            ? 4U
+            : 0U;
+    }
+    if (first == 0xF4U) {
+        const auto second = static_cast<unsigned char>(text[1]);
+        return second >= 0x80U && second <= 0x8FU
+                && isUtf8Continuation(text[2])
+                && isUtf8Continuation(text[3])
+            ? 4U
+            : 0U;
+    }
+    return 0;
+}
+
+[[nodiscard]] PlatformTextData copyUtf8Text(
+    const char* const source,
+    const std::int32_t selectionStart = -1,
+    const std::int32_t selectionLength = -1
+) noexcept {
+    PlatformTextData translated;
+    translated.selectionStart = selectionStart;
+    translated.selectionLength = selectionLength;
+    if (source == nullptr) {
+        return translated;
+    }
+
+    std::size_t inputBytes = 0;
+    std::size_t outputBytes = 0;
+    while (source[inputBytes] != '\0') {
+        const std::size_t sequenceBytes = validUtf8SequenceLength(source + inputBytes);
+        if (sequenceBytes == 0U) {
+            translated.sourceValidUtf8 = false;
+            break;
+        }
+        if (outputBytes + sequenceBytes >= PlatformTextData::storageCapacity) {
+            translated.truncated = true;
+            break;
+        }
+        for (std::size_t offset = 0; offset < sequenceBytes; ++offset) {
+            translated.utf8[outputBytes + offset] = source[inputBytes + offset];
+        }
+        inputBytes += sequenceBytes;
+        outputBytes += sequenceBytes;
+    }
+    translated.utf8[outputBytes] = '\0';
+    translated.byteCount = static_cast<std::uint16_t>(outputBytes);
+    return translated;
+}
+
 } // namespace
 
 PlatformEvent translateEvent(const SDL_Event& event) noexcept {
@@ -54,11 +191,16 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
     case SDL_EVENT_DID_ENTER_FOREGROUND:
         return {PlatformEventKind::didEnterForeground, 0};
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-        return {PlatformEventKind::quitRequested, event.window.windowID};
+        return {PlatformEventKind::windowCloseRequested, event.window.windowID};
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
         return {PlatformEventKind::focusGained, event.window.windowID};
-    case SDL_EVENT_WINDOW_FOCUS_LOST:
-        return {PlatformEventKind::focusLost, event.window.windowID};
+    case SDL_EVENT_WINDOW_FOCUS_LOST: {
+        PlatformEvent translated;
+        translated.kind = PlatformEventKind::focusLost;
+        translated.windowId = event.window.windowID;
+        translated.clearInputStateRequested = true;
+        return translated;
+    }
     case SDL_EVENT_WINDOW_SHOWN:
     case SDL_EVENT_WINDOW_RESTORED:
         return {PlatformEventKind::windowShown, event.window.windowID};
@@ -83,6 +225,111 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
         return {PlatformEventKind::renderDeviceReset, event.render.windowID};
     case SDL_EVENT_RENDER_DEVICE_LOST:
         return {PlatformEventKind::renderDeviceLost, event.render.windowID};
+    case SDL_EVENT_MOUSE_MOTION: {
+        PlatformEvent translated;
+        translated.kind = PlatformEventKind::pointerChanged;
+        translated.windowId = event.motion.windowID;
+        translated.pointer.device = PlatformPointerDevice::mouse;
+        translated.pointer.phase = PlatformPointerPhase::moved;
+        translated.pointer.deviceId = static_cast<std::uint64_t>(event.motion.which);
+        translated.pointer.pointerId = static_cast<std::uint64_t>(event.motion.which);
+        translated.pointer.x = event.motion.x;
+        translated.pointer.y = event.motion.y;
+        translated.pointer.deltaX = event.motion.xrel;
+        translated.pointer.deltaY = event.motion.yrel;
+        translated.pointer.buttons = pointerButtonState(event.motion.state);
+        return translated;
+    }
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        PlatformEvent translated;
+        translated.kind = PlatformEventKind::pointerChanged;
+        translated.windowId = event.button.windowID;
+        translated.pointer.device = PlatformPointerDevice::mouse;
+        translated.pointer.phase = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+            ? PlatformPointerPhase::pressed
+            : PlatformPointerPhase::released;
+        translated.pointer.button = pointerButton(event.button.button);
+        translated.pointer.clickCount = event.button.clicks;
+        translated.pointer.deviceId = static_cast<std::uint64_t>(event.button.which);
+        translated.pointer.pointerId = static_cast<std::uint64_t>(event.button.which);
+        translated.pointer.x = event.button.x;
+        translated.pointer.y = event.button.y;
+        if (translated.pointer.phase == PlatformPointerPhase::pressed) {
+            translated.pointer.buttons = platformPointerButtonMask(
+                translated.pointer.button
+            );
+        }
+        return translated;
+    }
+    case SDL_EVENT_MOUSE_WHEEL: {
+        PlatformEvent translated;
+        translated.kind = PlatformEventKind::wheelChanged;
+        translated.windowId = event.wheel.windowID;
+        translated.wheel.pointerId = static_cast<std::uint64_t>(event.wheel.which);
+        const float direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
+            ? -1.0F
+            : 1.0F;
+        translated.wheel.deltaX = event.wheel.x * direction;
+        translated.wheel.deltaY = event.wheel.y * direction;
+        translated.wheel.pointerX = event.wheel.mouse_x;
+        translated.wheel.pointerY = event.wheel.mouse_y;
+        return translated;
+    }
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED: {
+        PlatformEvent translated;
+        translated.kind = PlatformEventKind::pointerChanged;
+        translated.windowId = event.tfinger.windowID;
+        translated.pointer.device = PlatformPointerDevice::touch;
+        if (event.type == SDL_EVENT_FINGER_DOWN) {
+            translated.pointer.phase = PlatformPointerPhase::pressed;
+            translated.pointer.button = PlatformPointerButton::primary;
+        } else if (event.type == SDL_EVENT_FINGER_UP) {
+            translated.pointer.phase = PlatformPointerPhase::released;
+            translated.pointer.button = PlatformPointerButton::primary;
+        } else if (event.type == SDL_EVENT_FINGER_CANCELED) {
+            translated.pointer.phase = PlatformPointerPhase::canceled;
+            translated.pointer.button = PlatformPointerButton::primary;
+        } else {
+            translated.pointer.phase = PlatformPointerPhase::moved;
+        }
+        translated.pointer.deviceId = static_cast<std::uint64_t>(event.tfinger.touchID);
+        translated.pointer.pointerId = static_cast<std::uint64_t>(event.tfinger.fingerID);
+        translated.pointer.x = event.tfinger.x;
+        translated.pointer.y = event.tfinger.y;
+        translated.pointer.deltaX = event.tfinger.dx;
+        translated.pointer.deltaY = event.tfinger.dy;
+        translated.pointer.pressure = event.tfinger.pressure;
+        translated.pointer.coordinatesNormalized = true;
+        if (translated.pointer.phase != PlatformPointerPhase::released
+            && translated.pointer.phase != PlatformPointerPhase::canceled) {
+            translated.pointer.buttons = platformPointerButtonMask(
+                PlatformPointerButton::primary
+            );
+        }
+        return translated;
+    }
+    case SDL_EVENT_TEXT_INPUT: {
+        PlatformEvent translated;
+        translated.kind = PlatformEventKind::textCommitted;
+        translated.windowId = event.text.windowID;
+        translated.text = copyUtf8Text(event.text.text);
+        return translated;
+    }
+    case SDL_EVENT_TEXT_EDITING: {
+        PlatformEvent translated;
+        translated.kind = PlatformEventKind::textComposing;
+        translated.windowId = event.edit.windowID;
+        translated.text = copyUtf8Text(
+            event.edit.text,
+            event.edit.start,
+            event.edit.length
+        );
+        return translated;
+    }
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const MovementBinding binding = movementBinding(event.key.scancode);

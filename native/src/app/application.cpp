@@ -759,8 +759,14 @@ ApplicationResult Application::handleEvent(
         return ApplicationResult::continueRunning;
     }
 
+    if (platformEvent.kind == platform::sdl::PlatformEventKind::windowCloseRequested
+        && tryConsumeWindowCloseRequest()) {
+        return ApplicationResult::continueRunning;
+    }
     if (platformEvent.kind == platform::sdl::PlatformEventKind::quitRequested
-        || platformEvent.kind == platform::sdl::PlatformEventKind::terminating) {
+        || platformEvent.kind == platform::sdl::PlatformEventKind::terminating
+        || platformEvent.kind
+            == platform::sdl::PlatformEventKind::windowCloseRequested) {
         scheduler_.suspend();
         return ApplicationResult::success;
     }
@@ -1081,6 +1087,12 @@ bool Application::setExecutionActive(const bool active) noexcept {
         );
     }
     return true;
+}
+
+bool Application::tryConsumeWindowCloseRequest() noexcept {
+    // The native UI state machine will open its dismissible exit overlay here.
+    // Until that consumer exists, handleEvent preserves the legacy quit fallback.
+    return false;
 }
 
 void Application::applyMovementAction(

@@ -52,6 +52,7 @@ private:
     [[nodiscard]] bool updatePlatformServices() noexcept;
     [[nodiscard]] bool runStorageSmokeTest() noexcept;
     [[nodiscard]] bool setExecutionActive(bool active) noexcept;
+    [[nodiscard]] bool tryConsumeWindowCloseRequest() noexcept;
     void applyMovementAction(const platform::sdl::PlatformEvent& event) noexcept;
     void clearMovementActions() noexcept;
     void configureActiveCallbackRate() noexcept;
