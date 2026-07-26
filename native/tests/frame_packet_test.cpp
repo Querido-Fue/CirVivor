@@ -567,6 +567,166 @@ void testFixedCapacityReuseAndOrderingGuard() {
     builder.abort();
 }
 
+void testMaximumFramePacketCapacityMergesEveryField() {
+    using namespace cirvivor::render;
+
+    static_assert(std::is_aggregate_v<FramePacketCapacity>);
+    static_assert(noexcept(maximumFramePacketCapacity(
+        FramePacketCapacity{},
+        FramePacketCapacity{}
+    )));
+
+    constexpr FramePacketCapacity legacyPrefix{
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+    };
+    static_assert(legacyPrefix.utf8ByteCount == 9U);
+    static_assert(legacyPrefix.glyphRunCount == 0U);
+    static_assert(legacyPrefix.glyphInstanceCount == 0U);
+    static_assert(legacyPrefix.texturedMeshCount == 0U);
+    static_assert(legacyPrefix.meshVertexCount == 0U);
+    static_assert(legacyPrefix.meshIndexCount == 0U);
+    static_assert(legacyPrefix.gradientCount == 0U);
+    static_assert(legacyPrefix.gradientStopCount == 0U);
+    static_assert(legacyPrefix.clipCount == 0U);
+    static_assert(legacyPrefix.passCount == 0U);
+
+    constexpr FramePacketCapacity first{
+        101,
+        2,
+        103,
+        4,
+        105,
+        6,
+        107,
+        8,
+        109,
+        10,
+        111,
+        12,
+        113,
+        14,
+        115,
+        16,
+        117,
+        18
+    };
+    constexpr FramePacketCapacity second{
+        1,
+        202,
+        3,
+        204,
+        5,
+        206,
+        7,
+        208,
+        9,
+        210,
+        11,
+        212,
+        13,
+        214,
+        15,
+        216,
+        17,
+        218
+    };
+    constexpr FramePacketCapacity expected{
+        101,
+        202,
+        103,
+        204,
+        105,
+        206,
+        107,
+        208,
+        109,
+        210,
+        111,
+        212,
+        113,
+        214,
+        115,
+        216,
+        117,
+        218
+    };
+    static_assert(maximumFramePacketCapacity(first, second) == expected);
+    static_assert(maximumFramePacketCapacity(first, {}) == first);
+    static_assert(maximumFramePacketCapacity({}, second) == second);
+    static_assert(maximumFramePacketCapacity(first, second)
+        == maximumFramePacketCapacity(second, first));
+
+    constexpr FramePacketCapacity third{
+        50,
+        250,
+        150,
+        25,
+        205,
+        60,
+        207,
+        80,
+        209,
+        100,
+        211,
+        120,
+        213,
+        140,
+        215,
+        160,
+        217,
+        180
+    };
+    static_assert(
+        maximumFramePacketCapacity(
+            maximumFramePacketCapacity(first, second),
+            third
+        )
+        == maximumFramePacketCapacity(
+            first,
+            maximumFramePacketCapacity(second, third)
+        )
+    );
+    static_assert(maximumFramePacketCapacity(expected, expected) == expected);
+
+    constexpr std::size_t uint32Maximum = std::numeric_limits<std::uint32_t>::max();
+    constexpr FramePacketCapacity extreme{
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum,
+        uint32Maximum
+    };
+    static_assert(maximumFramePacketCapacity(extreme, expected) == extreme);
+    static_assert(maximumFramePacketCapacity(extreme, extreme) == extreme);
+
+    FramePacket packet;
+    packet.reserve(maximumFramePacketCapacity(first, second));
+    REQUIRE(packet.hasCapacityFor(first));
+    REQUIRE(packet.hasCapacityFor(second));
+    REQUIRE(packet.hasCapacityFor(expected));
+}
+
 void testMalformedDecodeDoesNotMutateDestination() {
     using namespace cirvivor::render;
     using namespace cirvivor::render::frontend;
@@ -1189,6 +1349,7 @@ int main() {
         TestCase{"v1 migration record", testV1MigrationRecordAndSchemaGate},
         TestCase{"v2 malformed ranges", testV2MalformedRangesAndLimitsAreTransactional},
         TestCase{"fixed capacity and order", testFixedCapacityReuseAndOrderingGuard},
+        TestCase{"maximum frame packet capacity", testMaximumFramePacketCapacityMergesEveryField},
         TestCase{"malformed decode transaction", testMalformedDecodeDoesNotMutateDestination},
         TestCase{"UTF-8 slice boundaries and overlap", testUtf8SliceBoundariesAndOverlappingSlices},
         TestCase{"legacy decode limit aggregate prefix", testDecodeLimitLegacyAggregatePrefix},

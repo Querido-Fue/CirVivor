@@ -3,6 +3,7 @@
 #include "render/common/render_command.h"
 #include "render/common/viewport_state.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -50,6 +51,36 @@ struct FramePacketCapacity final {
 
     constexpr bool operator==(const FramePacketCapacity&) const noexcept = default;
 };
+
+/**
+ * 서로 배타적인 frame 대안의 예약 용량을 필드별 최댓값으로 병합합니다.
+ * 두 frame을 한 packet에 함께 담기 위한 합계나 saturating sum이 아닙니다.
+ */
+[[nodiscard]] constexpr FramePacketCapacity maximumFramePacketCapacity(
+    const FramePacketCapacity& first,
+    const FramePacketCapacity& second
+) noexcept {
+    return {
+        std::max(first.commandCount, second.commandCount),
+        std::max(first.spriteCount, second.spriteCount),
+        std::max(first.shapeCount, second.shapeCount),
+        std::max(first.lineCount, second.lineCount),
+        std::max(first.textCount, second.textCount),
+        std::max(first.effectCount, second.effectCount),
+        std::max(first.uiCount, second.uiCount),
+        std::max(first.overlayCount, second.overlayCount),
+        std::max(first.utf8ByteCount, second.utf8ByteCount),
+        std::max(first.glyphRunCount, second.glyphRunCount),
+        std::max(first.glyphInstanceCount, second.glyphInstanceCount),
+        std::max(first.texturedMeshCount, second.texturedMeshCount),
+        std::max(first.meshVertexCount, second.meshVertexCount),
+        std::max(first.meshIndexCount, second.meshIndexCount),
+        std::max(first.gradientCount, second.gradientCount),
+        std::max(first.gradientStopCount, second.gradientStopCount),
+        std::max(first.clipCount, second.clipCount),
+        std::max(first.passCount, second.passCount)
+    };
+}
 
 struct FramePacketView final {
     const FrameMetadata& metadata;
