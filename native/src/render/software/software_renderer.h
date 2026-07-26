@@ -19,9 +19,11 @@ enum class SoftwareRenderError : std::uint8_t {
     invalidViewport
 };
 
+/** placeholderCommands는 rendered/skipped 합계와 겹치는 진단 축입니다. */
 struct SoftwareRenderStats final {
     std::uint64_t submittedCommands = 0;
     std::uint64_t renderedCommands = 0;
+    std::uint64_t placeholderCommands = 0;
     std::uint64_t skippedCommands = 0;
     double wallClockMilliseconds = 0.0;
 };

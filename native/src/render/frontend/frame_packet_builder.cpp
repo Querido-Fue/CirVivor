@@ -61,6 +61,33 @@ void reserveOneMore(std::vector<T>& values, const std::size_t minimumCapacity) {
     return text.size() > storageStart - inputStart;
 }
 
+template<typename T>
+[[nodiscard]] bool aliasesStorage(
+    const std::span<const T> input,
+    const std::vector<T>& storage
+) noexcept {
+    if (input.empty() || input.data() == nullptr || storage.data() == nullptr
+        || storage.capacity() == 0U) {
+        return false;
+    }
+
+    const auto inputStart = reinterpret_cast<std::uintptr_t>(input.data());
+    const auto storageStart = reinterpret_cast<std::uintptr_t>(storage.data());
+    const std::size_t storageBytes = storage.capacity() * sizeof(T);
+    if (inputStart >= storageStart) {
+        return inputStart - storageStart < storageBytes;
+    }
+    return input.size_bytes() > storageStart - inputStart;
+}
+
+[[nodiscard]] bool appendRangeFits(
+    const std::size_t current,
+    const std::size_t additional
+) noexcept {
+    constexpr std::size_t maximum = std::numeric_limits<std::uint32_t>::max();
+    return current <= maximum && additional <= maximum - current;
+}
+
 } // namespace
 
 FramePacketBuilder::FramePacketBuilder(
@@ -199,7 +226,11 @@ bool FramePacketBuilder::prepareCommand(
 
 bool FramePacketBuilder::ensureCommandCapacity(
     const CommandKind kind,
-    const std::size_t textByteCount
+    const std::size_t textByteCount,
+    const std::size_t glyphCount,
+    const std::size_t meshVertexCount,
+    const std::size_t meshIndexCount,
+    const std::size_t gradientStopCount
 ) {
     const std::size_t nextCommandCount = packet_.commandStream_.size() + 1U;
     const bool commandStreamFull = nextCommandCount > packet_.commandStream_.capacity();
@@ -226,11 +257,41 @@ bool FramePacketBuilder::ensureCommandCapacity(
         case CommandKind::overlay:
             commandTypeFull = packet_.overlays_.size() + 1U > packet_.overlays_.capacity();
             break;
+        case CommandKind::glyphRun:
+            commandTypeFull = packet_.glyphRuns_.size() + 1U > packet_.glyphRuns_.capacity();
+            break;
+        case CommandKind::texturedMesh:
+            commandTypeFull = packet_.texturedMeshes_.size() + 1U
+                > packet_.texturedMeshes_.capacity();
+            break;
+        case CommandKind::gradient:
+            commandTypeFull = packet_.gradients_.size() + 1U > packet_.gradients_.capacity();
+            break;
+        case CommandKind::clip:
+            commandTypeFull = packet_.clips_.size() + 1U > packet_.clips_.capacity();
+            break;
+        case CommandKind::pass:
+            commandTypeFull = packet_.passes_.size() + 1U > packet_.passes_.capacity();
+            break;
     }
 
     const bool textStorageFull = textByteCount > packet_.utf8Bytes_.capacity() - packet_.utf8Bytes_.size();
+    const bool glyphStorageFull = glyphCount
+        > packet_.glyphInstances_.capacity() - packet_.glyphInstances_.size();
+    const bool meshVertexStorageFull = meshVertexCount
+        > packet_.meshVertices_.capacity() - packet_.meshVertices_.size();
+    const bool meshIndexStorageFull = meshIndexCount
+        > packet_.meshIndices_.capacity() - packet_.meshIndices_.size();
+    const bool gradientStopStorageFull = gradientStopCount
+        > packet_.gradientStops_.capacity() - packet_.gradientStops_.size();
     if (capacityPolicy_ == PacketCapacityPolicy::fixedCapacity
-        && (commandStreamFull || commandTypeFull || textStorageFull)) {
+        && (commandStreamFull
+            || commandTypeFull
+            || textStorageFull
+            || glyphStorageFull
+            || meshVertexStorageFull
+            || meshIndexStorageFull
+            || gradientStopStorageFull)) {
         fail(FrameBuildError::capacityExceeded);
         return false;
     }
@@ -258,10 +319,37 @@ bool FramePacketBuilder::ensureCommandCapacity(
         case CommandKind::overlay:
             reserveOneMore(packet_.overlays_, packet_.overlays_.size() + 1U);
             break;
+        case CommandKind::glyphRun:
+            reserveOneMore(packet_.glyphRuns_, packet_.glyphRuns_.size() + 1U);
+            break;
+        case CommandKind::texturedMesh:
+            reserveOneMore(packet_.texturedMeshes_, packet_.texturedMeshes_.size() + 1U);
+            break;
+        case CommandKind::gradient:
+            reserveOneMore(packet_.gradients_, packet_.gradients_.size() + 1U);
+            break;
+        case CommandKind::clip:
+            reserveOneMore(packet_.clips_, packet_.clips_.size() + 1U);
+            break;
+        case CommandKind::pass:
+            reserveOneMore(packet_.passes_, packet_.passes_.size() + 1U);
+            break;
     }
 
     if (textByteCount > 0) {
         reserveOneMore(packet_.utf8Bytes_, packet_.utf8Bytes_.size() + textByteCount);
+    }
+    if (glyphCount > 0U) {
+        reserveOneMore(packet_.glyphInstances_, packet_.glyphInstances_.size() + glyphCount);
+    }
+    if (meshVertexCount > 0U) {
+        reserveOneMore(packet_.meshVertices_, packet_.meshVertices_.size() + meshVertexCount);
+    }
+    if (meshIndexCount > 0U) {
+        reserveOneMore(packet_.meshIndices_, packet_.meshIndices_.size() + meshIndexCount);
+    }
+    if (gradientStopCount > 0U) {
+        reserveOneMore(packet_.gradientStops_, packet_.gradientStops_.size() + gradientStopCount);
     }
     return true;
 }
@@ -379,6 +467,162 @@ bool FramePacketBuilder::addOverlay(OverlayCommand command) {
     const auto index = static_cast<std::uint32_t>(packet_.overlays_.size());
     packet_.overlays_.push_back(command);
     packet_.commandStream_.push_back({CommandKind::overlay, {}, index});
+    commitOrder(command.header);
+    return true;
+}
+
+bool FramePacketBuilder::addGlyphRun(
+    GlyphRunCommand command,
+    const std::span<const GlyphInstance> glyphs
+) {
+    if (!prepareCommand(command.header, false)) {
+        return false;
+    }
+    if (aliasesStorage(glyphs, packet_.glyphInstances_)) {
+        fail(FrameBuildError::storageAliasesPacketStorage);
+        return false;
+    }
+    const std::size_t offset = packet_.glyphInstances_.size();
+    if (!appendRangeFits(offset, glyphs.size())) {
+        fail(FrameBuildError::auxiliaryStorageOverflow);
+        return false;
+    }
+    if (!ensureCommandCapacity(CommandKind::glyphRun, 0, glyphs.size())) {
+        return false;
+    }
+
+    command.header.sequence = nextSequence_;
+    command.glyphs = {
+        static_cast<std::uint32_t>(offset),
+        static_cast<std::uint32_t>(glyphs.size())
+    };
+    packet_.glyphInstances_.insert(
+        packet_.glyphInstances_.end(),
+        glyphs.begin(),
+        glyphs.end()
+    );
+    const auto index = static_cast<std::uint32_t>(packet_.glyphRuns_.size());
+    packet_.glyphRuns_.push_back(command);
+    packet_.commandStream_.push_back({CommandKind::glyphRun, {}, index});
+    commitOrder(command.header);
+    return true;
+}
+
+bool FramePacketBuilder::addTexturedMesh(
+    TexturedMeshCommand command,
+    const std::span<const ProjectiveVertex> vertices,
+    const std::span<const std::uint32_t> indices
+) {
+    if (!prepareCommand(command.header, false)) {
+        return false;
+    }
+    if (aliasesStorage(vertices, packet_.meshVertices_)
+        || aliasesStorage(indices, packet_.meshIndices_)) {
+        fail(FrameBuildError::storageAliasesPacketStorage);
+        return false;
+    }
+    const std::size_t vertexOffset = packet_.meshVertices_.size();
+    const std::size_t indexOffset = packet_.meshIndices_.size();
+    if (!appendRangeFits(vertexOffset, vertices.size())
+        || !appendRangeFits(indexOffset, indices.size())) {
+        fail(FrameBuildError::auxiliaryStorageOverflow);
+        return false;
+    }
+    if (!ensureCommandCapacity(
+            CommandKind::texturedMesh,
+            0,
+            0,
+            vertices.size(),
+            indices.size()
+        )) {
+        return false;
+    }
+
+    command.header.sequence = nextSequence_;
+    command.vertices = {
+        static_cast<std::uint32_t>(vertexOffset),
+        static_cast<std::uint32_t>(vertices.size())
+    };
+    command.indices = {
+        static_cast<std::uint32_t>(indexOffset),
+        static_cast<std::uint32_t>(indices.size())
+    };
+    packet_.meshVertices_.insert(
+        packet_.meshVertices_.end(),
+        vertices.begin(),
+        vertices.end()
+    );
+    packet_.meshIndices_.insert(
+        packet_.meshIndices_.end(),
+        indices.begin(),
+        indices.end()
+    );
+    const auto index = static_cast<std::uint32_t>(packet_.texturedMeshes_.size());
+    packet_.texturedMeshes_.push_back(command);
+    packet_.commandStream_.push_back({CommandKind::texturedMesh, {}, index});
+    commitOrder(command.header);
+    return true;
+}
+
+bool FramePacketBuilder::addGradient(
+    GradientCommand command,
+    const std::span<const GradientStop> stops
+) {
+    if (!prepareCommand(command.header, false)) {
+        return false;
+    }
+    if (aliasesStorage(stops, packet_.gradientStops_)) {
+        fail(FrameBuildError::storageAliasesPacketStorage);
+        return false;
+    }
+    const std::size_t offset = packet_.gradientStops_.size();
+    if (!appendRangeFits(offset, stops.size())) {
+        fail(FrameBuildError::auxiliaryStorageOverflow);
+        return false;
+    }
+    if (!ensureCommandCapacity(CommandKind::gradient, 0, 0, 0, 0, stops.size())) {
+        return false;
+    }
+
+    command.header.sequence = nextSequence_;
+    command.stops = {
+        static_cast<std::uint32_t>(offset),
+        static_cast<std::uint32_t>(stops.size())
+    };
+    packet_.gradientStops_.insert(
+        packet_.gradientStops_.end(),
+        stops.begin(),
+        stops.end()
+    );
+    const auto index = static_cast<std::uint32_t>(packet_.gradients_.size());
+    packet_.gradients_.push_back(command);
+    packet_.commandStream_.push_back({CommandKind::gradient, {}, index});
+    commitOrder(command.header);
+    return true;
+}
+
+bool FramePacketBuilder::addClip(ClipCommand command) {
+    if (!prepareCommand(command.header, false)
+        || !ensureCommandCapacity(CommandKind::clip)) {
+        return false;
+    }
+    command.header.sequence = nextSequence_;
+    const auto index = static_cast<std::uint32_t>(packet_.clips_.size());
+    packet_.clips_.push_back(command);
+    packet_.commandStream_.push_back({CommandKind::clip, {}, index});
+    commitOrder(command.header);
+    return true;
+}
+
+bool FramePacketBuilder::addPass(PassCommand command) {
+    if (!prepareCommand(command.header, true)
+        || !ensureCommandCapacity(CommandKind::pass)) {
+        return false;
+    }
+    command.header.sequence = nextSequence_;
+    const auto index = static_cast<std::uint32_t>(packet_.passes_.size());
+    packet_.passes_.push_back(command);
+    packet_.commandStream_.push_back({CommandKind::pass, {}, index});
     commitOrder(command.header);
     return true;
 }

@@ -306,6 +306,179 @@ struct TextCommand final {
     constexpr bool operator==(const TextCommand&) const noexcept = default;
 };
 
+struct StorageRange final {
+    std::uint32_t offset = 0;
+    std::uint32_t count = 0;
+
+    constexpr bool operator==(const StorageRange&) const noexcept = default;
+};
+
+/**
+ * frontend text shaper가 확정한 한 glyph의 배치입니다. renderer는 glyph index나
+ * advance를 다시 측정하지 않고 atlas page/UV와 위치를 그대로 소비합니다.
+ */
+struct GlyphInstance final {
+    std::uint32_t glyphIndex = 0;
+    std::uint32_t atlasPage = 0;
+    Vec2F position;
+    Vec2F advance;
+    Vec2F offset;
+    RectF uv;
+
+    constexpr bool operator==(const GlyphInstance&) const noexcept = default;
+};
+
+struct GlyphRunCommand final {
+    CommandHeader header;
+    ResourceId fontId = invalid_resource_id;
+    ResourceId glyphAtlasId = invalid_resource_id;
+    StorageRange glyphs;
+    Vec2F origin;
+    float pixelsPerEm = 0.0F;
+    std::int32_t weight = 400;
+    std::array<float, 4> variationCoordinates{};
+    PremultipliedRgba color = PremultipliedRgba::opaque(1.0F, 1.0F, 1.0F);
+    Mat3F transform;
+    RectF clipBounds;
+    std::uint8_t clipEnabled = 0;
+    SamplingMode sampling = SamplingMode::linear;
+    std::array<std::uint8_t, 2> reserved{};
+
+    constexpr bool operator==(const GlyphRunCommand&) const noexcept = default;
+};
+
+/** projectiveWeight는 perspective-correct UV 보간에 사용할 양의 q 값입니다. */
+struct ProjectiveVertex final {
+    Vec2F position;
+    Vec2F uv;
+    float projectiveWeight = 1.0F;
+
+    constexpr bool operator==(const ProjectiveVertex&) const noexcept = default;
+};
+
+struct TexturedMeshCommand final {
+    CommandHeader header;
+    ResourceId textureId = invalid_resource_id;
+    StorageRange vertices;
+    StorageRange indices;
+    Mat3F transform;
+    PremultipliedRgba tint = PremultipliedRgba::opaque(1.0F, 1.0F, 1.0F);
+    SamplingMode sampling = SamplingMode::linear;
+    std::array<std::uint8_t, 3> reserved{};
+
+    constexpr bool operator==(const TexturedMeshCommand&) const noexcept = default;
+};
+
+enum class GradientType : std::uint8_t {
+    linear = 0,
+    radial = 1
+};
+
+enum class GradientSpread : std::uint8_t {
+    clamp = 0,
+    repeat = 1,
+    reflect = 2
+};
+
+struct GradientStop final {
+    float offset = 0.0F;
+    PremultipliedRgba color = PremultipliedRgba::transparent();
+
+    constexpr bool operator==(const GradientStop&) const noexcept = default;
+};
+
+struct GradientCommand final {
+    CommandHeader header;
+    GradientType type = GradientType::linear;
+    GradientSpread spread = GradientSpread::clamp;
+    std::array<std::uint8_t, 2> reserved{};
+    RectF bounds;
+    Vec2F start;
+    Vec2F end;
+    float startRadius = 0.0F;
+    float endRadius = 0.0F;
+    Mat3F transform;
+    StorageRange stops;
+
+    constexpr bool operator==(const GradientCommand&) const noexcept = default;
+};
+
+enum class ClipOperation : std::uint8_t {
+    pushScissor = 0,
+    pushRoundedRect = 1,
+    pop = 2
+};
+
+struct ClipCommand final {
+    CommandHeader header;
+    ClipOperation operation = ClipOperation::pushScissor;
+    std::uint8_t antialias = 0;
+    std::array<std::uint8_t, 2> reserved{};
+    RectF bounds;
+    float cornerRadius = 0.0F;
+    Mat3F transform;
+
+    constexpr bool operator==(const ClipCommand&) const noexcept = default;
+};
+
+enum class PassOperation : std::uint8_t {
+    beginSession = 0,
+    capture = 1,
+    composite = 2,
+    endSession = 3
+};
+
+enum class PassCompositeMode : std::uint8_t {
+    sourceOver = 0,
+    replace = 1
+};
+
+enum class PassUpdateMode : std::uint8_t {
+    dirty = 0,
+    always = 1
+};
+
+/**
+ * offscreen capture/pass/composite의 명시적 계약입니다. sourceSessionId가 0이면
+ * source anchor(layer/order/sequence)까지의 frame stream을 캡처하고, 0이 아니면
+ * 더 먼저 시작한 pass의 destinationId를 입력으로 사용합니다.
+ */
+struct PassCommand final {
+    CommandHeader header{
+        RenderLayer::dynamicOverlay,
+        CoordinateSpace::logicalUi,
+        BlendMode::premultipliedAlpha,
+        0,
+        0,
+        0
+    };
+    PassOperation operation = PassOperation::beginSession;
+    PassUpdateMode updateMode = PassUpdateMode::dirty;
+    PassCompositeMode compositeMode = PassCompositeMode::sourceOver;
+    std::uint8_t reserved0 = 0;
+    RenderLayer sourceAnchorLayer = RenderLayer::background;
+    std::array<std::uint8_t, 3> reserved1{};
+    StableElementId sessionId = 0;
+    StableElementId sourceSessionId = 0;
+    StableElementId destinationId = 0;
+    std::uint64_t sourceRevision = 0;
+    std::int32_t sourceAnchorLayerOrder = 0;
+    std::uint32_t sourceAnchorSequence = 0;
+    RectF sourceBounds;
+    RectF destinationBounds;
+    Vec2F scale{1.0F, 1.0F};
+    float opacity = 1.0F;
+    float contentBlurRadius = 0.0F;
+    float glassBlurRadius = 0.0F;
+    float refractionStrength = 0.0F;
+    float edgeStrength = 0.0F;
+    PremultipliedRgba tintColor = PremultipliedRgba::transparent();
+    PremultipliedRgba edgeColor = PremultipliedRgba::transparent();
+    PremultipliedRgba shadowColor = PremultipliedRgba::transparent();
+
+    constexpr bool operator==(const PassCommand&) const noexcept = default;
+};
+
 enum class EffectType : std::uint8_t {
     magneticShield = 0,
     hexaMergeBoundary = 1,
@@ -424,7 +597,12 @@ enum class CommandKind : std::uint8_t {
     text = 3,
     effect = 4,
     ui = 5,
-    overlay = 6
+    overlay = 6,
+    glyphRun = 7,
+    texturedMesh = 8,
+    gradient = 9,
+    clip = 10,
+    pass = 11
 };
 
 struct CommandRef final {
@@ -452,6 +630,15 @@ static_assert(std::is_trivially_copyable_v<SpriteCommand>);
 static_assert(std::is_trivially_copyable_v<ShapeCommand>);
 static_assert(std::is_trivially_copyable_v<LineCommand>);
 static_assert(std::is_trivially_copyable_v<TextCommand>);
+static_assert(std::is_trivially_copyable_v<StorageRange>);
+static_assert(std::is_trivially_copyable_v<GlyphInstance>);
+static_assert(std::is_trivially_copyable_v<GlyphRunCommand>);
+static_assert(std::is_trivially_copyable_v<ProjectiveVertex>);
+static_assert(std::is_trivially_copyable_v<TexturedMeshCommand>);
+static_assert(std::is_trivially_copyable_v<GradientStop>);
+static_assert(std::is_trivially_copyable_v<GradientCommand>);
+static_assert(std::is_trivially_copyable_v<ClipCommand>);
+static_assert(std::is_trivially_copyable_v<PassCommand>);
 static_assert(std::is_trivially_copyable_v<EffectCommand>);
 static_assert(std::is_trivially_copyable_v<UiCommand>);
 static_assert(std::is_trivially_copyable_v<OverlayCommand>);
@@ -460,6 +647,14 @@ static_assert(std::is_standard_layout_v<SpriteCommand>);
 static_assert(std::is_standard_layout_v<ShapeCommand>);
 static_assert(std::is_standard_layout_v<LineCommand>);
 static_assert(std::is_standard_layout_v<TextCommand>);
+static_assert(std::is_standard_layout_v<GlyphInstance>);
+static_assert(std::is_standard_layout_v<GlyphRunCommand>);
+static_assert(std::is_standard_layout_v<ProjectiveVertex>);
+static_assert(std::is_standard_layout_v<TexturedMeshCommand>);
+static_assert(std::is_standard_layout_v<GradientStop>);
+static_assert(std::is_standard_layout_v<GradientCommand>);
+static_assert(std::is_standard_layout_v<ClipCommand>);
+static_assert(std::is_standard_layout_v<PassCommand>);
 static_assert(std::is_standard_layout_v<EffectCommand>);
 static_assert(std::is_standard_layout_v<UiCommand>);
 static_assert(std::is_standard_layout_v<OverlayCommand>);

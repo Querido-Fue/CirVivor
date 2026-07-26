@@ -38,6 +38,15 @@ struct FramePacketCapacity final {
     std::size_t uiCount = 0;
     std::size_t overlayCount = 0;
     std::size_t utf8ByteCount = 0;
+    std::size_t glyphRunCount = 0;
+    std::size_t glyphInstanceCount = 0;
+    std::size_t texturedMeshCount = 0;
+    std::size_t meshVertexCount = 0;
+    std::size_t meshIndexCount = 0;
+    std::size_t gradientCount = 0;
+    std::size_t gradientStopCount = 0;
+    std::size_t clipCount = 0;
+    std::size_t passCount = 0;
 
     constexpr bool operator==(const FramePacketCapacity&) const noexcept = default;
 };
@@ -54,6 +63,15 @@ struct FramePacketView final {
     std::span<const UiCommand> ui;
     std::span<const OverlayCommand> overlays;
     std::span<const char> utf8Bytes;
+    std::span<const GlyphRunCommand> glyphRuns;
+    std::span<const GlyphInstance> glyphInstances;
+    std::span<const TexturedMeshCommand> texturedMeshes;
+    std::span<const ProjectiveVertex> meshVertices;
+    std::span<const std::uint32_t> meshIndices;
+    std::span<const GradientCommand> gradients;
+    std::span<const GradientStop> gradientStops;
+    std::span<const ClipCommand> clips;
+    std::span<const PassCommand> passes;
 };
 
 /**
@@ -62,7 +80,7 @@ struct FramePacketView final {
  */
 class FramePacket final {
 public:
-    static constexpr std::uint16_t schema_version = 1;
+    static constexpr std::uint16_t schema_version = 2;
 
     FramePacket() = default;
     explicit FramePacket(const FramePacketCapacity& capacity);
@@ -85,6 +103,15 @@ public:
     [[nodiscard]] std::span<const UiCommand> ui() const noexcept;
     [[nodiscard]] std::span<const OverlayCommand> overlays() const noexcept;
     [[nodiscard]] std::span<const char> utf8Bytes() const noexcept;
+    [[nodiscard]] std::span<const GlyphRunCommand> glyphRuns() const noexcept;
+    [[nodiscard]] std::span<const GlyphInstance> glyphInstances() const noexcept;
+    [[nodiscard]] std::span<const TexturedMeshCommand> texturedMeshes() const noexcept;
+    [[nodiscard]] std::span<const ProjectiveVertex> meshVertices() const noexcept;
+    [[nodiscard]] std::span<const std::uint32_t> meshIndices() const noexcept;
+    [[nodiscard]] std::span<const GradientCommand> gradients() const noexcept;
+    [[nodiscard]] std::span<const GradientStop> gradientStops() const noexcept;
+    [[nodiscard]] std::span<const ClipCommand> clips() const noexcept;
+    [[nodiscard]] std::span<const PassCommand> passes() const noexcept;
     [[nodiscard]] std::string_view text(TextSlice slice) const noexcept;
     [[nodiscard]] FramePacketView view() const noexcept;
     [[nodiscard]] FramePacketCapacity size() const noexcept;
@@ -110,6 +137,15 @@ private:
     std::vector<UiCommand> ui_;
     std::vector<OverlayCommand> overlays_;
     std::vector<char> utf8Bytes_;
+    std::vector<GlyphRunCommand> glyphRuns_;
+    std::vector<GlyphInstance> glyphInstances_;
+    std::vector<TexturedMeshCommand> texturedMeshes_;
+    std::vector<ProjectiveVertex> meshVertices_;
+    std::vector<std::uint32_t> meshIndices_;
+    std::vector<GradientCommand> gradients_;
+    std::vector<GradientStop> gradientStops_;
+    std::vector<ClipCommand> clips_;
+    std::vector<PassCommand> passes_;
     frontend::FramePacketBuilder* activeBuilder_ = nullptr;
 };
 

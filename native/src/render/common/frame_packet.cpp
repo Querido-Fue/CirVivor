@@ -20,6 +20,15 @@ namespace {
     return offset <= byteCount && length <= byteCount - offset;
 }
 
+[[nodiscard]] bool storageRangeIsValid(
+    const StorageRange range,
+    const std::size_t elementCount
+) noexcept {
+    const auto offset = static_cast<std::size_t>(range.offset);
+    const auto count = static_cast<std::size_t>(range.count);
+    return offset <= elementCount && count <= elementCount - offset;
+}
+
 [[nodiscard]] bool finite(const float value) noexcept {
     return std::isfinite(value);
 }
@@ -41,6 +50,13 @@ namespace {
     return finite(value.x) && finite(value.y)
         && finite(value.width) && finite(value.height)
         && value.width >= 0.0F && value.height >= 0.0F;
+}
+
+[[nodiscard]] bool rectIsNormalized(const RectF value) noexcept {
+    return rectIsNonNegative(value)
+        && value.x >= 0.0F && value.y >= 0.0F
+        && value.x + value.width <= 1.0F
+        && value.y + value.height <= 1.0F;
 }
 
 [[nodiscard]] bool colorIsPremultiplied(const PremultipliedRgba color) noexcept {
@@ -276,6 +292,132 @@ namespace {
         && colorIsPremultiplied(command.color);
 }
 
+[[nodiscard]] bool glyphInstanceIsValid(const GlyphInstance& glyph) noexcept {
+    return vecIsFinite(glyph.position)
+        && vecIsFinite(glyph.advance)
+        && vecIsFinite(glyph.offset)
+        && rectIsNormalized(glyph.uv);
+}
+
+[[nodiscard]] bool commandValuesAreValid(
+    const GlyphRunCommand& command,
+    const std::size_t glyphCount
+) noexcept {
+    return commandHeaderIsValid(command.header)
+        && command.fontId != invalid_resource_id
+        && command.glyphAtlasId != invalid_resource_id
+        && storageRangeIsValid(command.glyphs, glyphCount)
+        && command.glyphs.count > 0U
+        && vecIsFinite(command.origin)
+        && finite(command.pixelsPerEm) && command.pixelsPerEm > 0.0F
+        && command.weight >= 1 && command.weight <= 1'000
+        && std::all_of(
+            command.variationCoordinates.begin(),
+            command.variationCoordinates.end(),
+            [](const float value) noexcept { return finite(value); }
+        )
+        && colorIsPremultiplied(command.color)
+        && matrixIsFinite(command.transform)
+        && rectIsNonNegative(command.clipBounds)
+        && command.clipEnabled <= 1U
+        && static_cast<std::uint8_t>(command.sampling)
+            <= static_cast<std::uint8_t>(SamplingMode::linear)
+        && command.reserved == std::array<std::uint8_t, 2>{};
+}
+
+[[nodiscard]] bool projectiveVertexIsValid(const ProjectiveVertex& vertex) noexcept {
+    return vecIsFinite(vertex.position)
+        && vecIsFinite(vertex.uv)
+        && finite(vertex.projectiveWeight)
+        && vertex.projectiveWeight > 0.0F;
+}
+
+[[nodiscard]] bool commandValuesAreValid(
+    const TexturedMeshCommand& command,
+    const std::size_t vertexCount,
+    const std::size_t indexCount
+) noexcept {
+    return commandHeaderIsValid(command.header)
+        && command.textureId != invalid_resource_id
+        && storageRangeIsValid(command.vertices, vertexCount)
+        && storageRangeIsValid(command.indices, indexCount)
+        && command.vertices.count >= 3U
+        && command.indices.count >= 3U
+        && command.indices.count % 3U == 0U
+        && matrixIsFinite(command.transform)
+        && colorIsPremultiplied(command.tint)
+        && static_cast<std::uint8_t>(command.sampling)
+            <= static_cast<std::uint8_t>(SamplingMode::linear)
+        && command.reserved == std::array<std::uint8_t, 3>{};
+}
+
+[[nodiscard]] bool gradientStopIsValid(const GradientStop& stop) noexcept {
+    return finite(stop.offset)
+        && stop.offset >= 0.0F && stop.offset <= 1.0F
+        && colorIsPremultiplied(stop.color);
+}
+
+[[nodiscard]] bool commandValuesAreValid(
+    const GradientCommand& command,
+    const std::size_t stopCount
+) noexcept {
+    return commandHeaderIsValid(command.header)
+        && static_cast<std::uint8_t>(command.type)
+            <= static_cast<std::uint8_t>(GradientType::radial)
+        && static_cast<std::uint8_t>(command.spread)
+            <= static_cast<std::uint8_t>(GradientSpread::reflect)
+        && command.reserved == std::array<std::uint8_t, 2>{}
+        && rectIsNonNegative(command.bounds)
+        && vecIsFinite(command.start)
+        && vecIsFinite(command.end)
+        && finite(command.startRadius) && command.startRadius >= 0.0F
+        && finite(command.endRadius) && command.endRadius >= 0.0F
+        && matrixIsFinite(command.transform)
+        && storageRangeIsValid(command.stops, stopCount)
+        && command.stops.count >= 2U;
+}
+
+[[nodiscard]] bool commandValuesAreValid(const ClipCommand& command) noexcept {
+    return commandHeaderIsValid(command.header)
+        && static_cast<std::uint8_t>(command.operation)
+            <= static_cast<std::uint8_t>(ClipOperation::pop)
+        && command.antialias <= 1U
+        && command.reserved == std::array<std::uint8_t, 2>{}
+        && rectIsNonNegative(command.bounds)
+        && finite(command.cornerRadius) && command.cornerRadius >= 0.0F
+        && matrixIsFinite(command.transform)
+        && (command.operation != ClipOperation::pushScissor
+            || (command.antialias == 0U && command.cornerRadius == 0.0F));
+}
+
+[[nodiscard]] bool commandValuesAreValid(const PassCommand& command) noexcept {
+    return commandHeaderIsValid(command.header)
+        && command.header.layer == RenderLayer::dynamicOverlay
+        && static_cast<std::uint8_t>(command.operation)
+            <= static_cast<std::uint8_t>(PassOperation::endSession)
+        && static_cast<std::uint8_t>(command.updateMode)
+            <= static_cast<std::uint8_t>(PassUpdateMode::always)
+        && static_cast<std::uint8_t>(command.compositeMode)
+            <= static_cast<std::uint8_t>(PassCompositeMode::replace)
+        && command.reserved0 == 0U
+        && isRenderLayer(command.sourceAnchorLayer)
+        && command.reserved1 == std::array<std::uint8_t, 3>{}
+        && command.sessionId != 0U
+        && command.destinationId != 0U
+        && rectIsNonNegative(command.sourceBounds)
+        && rectIsNonNegative(command.destinationBounds)
+        && vecIsFinite(command.scale)
+        && command.scale.x > 0.0F && command.scale.y > 0.0F
+        && finite(command.opacity) && command.opacity >= 0.0F && command.opacity <= 1.0F
+        && finite(command.contentBlurRadius) && command.contentBlurRadius >= 0.0F
+        && finite(command.glassBlurRadius) && command.glassBlurRadius >= 0.0F
+        && finite(command.refractionStrength) && command.refractionStrength >= 0.0F
+        && finite(command.edgeStrength) && command.edgeStrength >= 0.0F
+        && colorIsPremultiplied(command.tintColor)
+        && colorIsPremultiplied(command.edgeColor)
+        && colorIsPremultiplied(command.shadowColor);
+}
+
 [[nodiscard]] bool commandValuesAreValid(const EffectCommand& command) noexcept {
     const auto effect = static_cast<std::uint8_t>(command.effect);
     return commandHeaderIsValid(command.header)
@@ -343,7 +485,7 @@ namespace {
 
 [[nodiscard]] std::size_t commandKindIndex(const CommandKind kind) noexcept {
     const auto index = static_cast<std::size_t>(kind);
-    return index < 7U ? index : 7U;
+    return index < 12U ? index : 12U;
 }
 
 } // namespace
@@ -363,7 +505,16 @@ FramePacket::FramePacket(const FramePacket& other)
       effects_(other.effects_),
       ui_(other.ui_),
       overlays_(other.overlays_),
-      utf8Bytes_(other.utf8Bytes_) {
+      utf8Bytes_(other.utf8Bytes_),
+      glyphRuns_(other.glyphRuns_),
+      glyphInstances_(other.glyphInstances_),
+      texturedMeshes_(other.texturedMeshes_),
+      meshVertices_(other.meshVertices_),
+      meshIndices_(other.meshIndices_),
+      gradients_(other.gradients_),
+      gradientStops_(other.gradientStops_),
+      clips_(other.clips_),
+      passes_(other.passes_) {
 }
 
 FramePacket& FramePacket::operator=(const FramePacket& other) {
@@ -381,6 +532,15 @@ FramePacket& FramePacket::operator=(const FramePacket& other) {
     ui_ = other.ui_;
     overlays_ = other.overlays_;
     utf8Bytes_ = other.utf8Bytes_;
+    glyphRuns_ = other.glyphRuns_;
+    glyphInstances_ = other.glyphInstances_;
+    texturedMeshes_ = other.texturedMeshes_;
+    meshVertices_ = other.meshVertices_;
+    meshIndices_ = other.meshIndices_;
+    gradients_ = other.gradients_;
+    gradientStops_ = other.gradientStops_;
+    clips_ = other.clips_;
+    passes_ = other.passes_;
     return *this;
 }
 
@@ -395,7 +555,16 @@ FramePacket::FramePacket(FramePacket&& other) noexcept
       effects_(std::move(other.effects_)),
       ui_(std::move(other.ui_)),
       overlays_(std::move(other.overlays_)),
-      utf8Bytes_(std::move(other.utf8Bytes_)) {
+      utf8Bytes_(std::move(other.utf8Bytes_)),
+      glyphRuns_(std::move(other.glyphRuns_)),
+      glyphInstances_(std::move(other.glyphInstances_)),
+      texturedMeshes_(std::move(other.texturedMeshes_)),
+      meshVertices_(std::move(other.meshVertices_)),
+      meshIndices_(std::move(other.meshIndices_)),
+      gradients_(std::move(other.gradients_)),
+      gradientStops_(std::move(other.gradientStops_)),
+      clips_(std::move(other.clips_)),
+      passes_(std::move(other.passes_)) {
 }
 
 FramePacket& FramePacket::operator=(FramePacket&& other) noexcept {
@@ -413,6 +582,15 @@ FramePacket& FramePacket::operator=(FramePacket&& other) noexcept {
     ui_ = std::move(other.ui_);
     overlays_ = std::move(other.overlays_);
     utf8Bytes_ = std::move(other.utf8Bytes_);
+    glyphRuns_ = std::move(other.glyphRuns_);
+    glyphInstances_ = std::move(other.glyphInstances_);
+    texturedMeshes_ = std::move(other.texturedMeshes_);
+    meshVertices_ = std::move(other.meshVertices_);
+    meshIndices_ = std::move(other.meshIndices_);
+    gradients_ = std::move(other.gradients_);
+    gradientStops_ = std::move(other.gradientStops_);
+    clips_ = std::move(other.clips_);
+    passes_ = std::move(other.passes_);
     return *this;
 }
 
@@ -426,6 +604,15 @@ void FramePacket::reserve(const FramePacketCapacity& capacity) {
     ui_.reserve(capacity.uiCount);
     overlays_.reserve(capacity.overlayCount);
     utf8Bytes_.reserve(capacity.utf8ByteCount);
+    glyphRuns_.reserve(capacity.glyphRunCount);
+    glyphInstances_.reserve(capacity.glyphInstanceCount);
+    texturedMeshes_.reserve(capacity.texturedMeshCount);
+    meshVertices_.reserve(capacity.meshVertexCount);
+    meshIndices_.reserve(capacity.meshIndexCount);
+    gradients_.reserve(capacity.gradientCount);
+    gradientStops_.reserve(capacity.gradientStopCount);
+    clips_.reserve(capacity.clipCount);
+    passes_.reserve(capacity.passCount);
 }
 
 void FramePacket::clear() noexcept {
@@ -440,6 +627,15 @@ void FramePacket::clear() noexcept {
     ui_.clear();
     overlays_.clear();
     utf8Bytes_.clear();
+    glyphRuns_.clear();
+    glyphInstances_.clear();
+    texturedMeshes_.clear();
+    meshVertices_.clear();
+    meshIndices_.clear();
+    gradients_.clear();
+    gradientStops_.clear();
+    clips_.clear();
+    passes_.clear();
 }
 
 const FrameMetadata& FramePacket::metadata() const noexcept {
@@ -486,6 +682,42 @@ std::span<const char> FramePacket::utf8Bytes() const noexcept {
     return utf8Bytes_;
 }
 
+std::span<const GlyphRunCommand> FramePacket::glyphRuns() const noexcept {
+    return glyphRuns_;
+}
+
+std::span<const GlyphInstance> FramePacket::glyphInstances() const noexcept {
+    return glyphInstances_;
+}
+
+std::span<const TexturedMeshCommand> FramePacket::texturedMeshes() const noexcept {
+    return texturedMeshes_;
+}
+
+std::span<const ProjectiveVertex> FramePacket::meshVertices() const noexcept {
+    return meshVertices_;
+}
+
+std::span<const std::uint32_t> FramePacket::meshIndices() const noexcept {
+    return meshIndices_;
+}
+
+std::span<const GradientCommand> FramePacket::gradients() const noexcept {
+    return gradients_;
+}
+
+std::span<const GradientStop> FramePacket::gradientStops() const noexcept {
+    return gradientStops_;
+}
+
+std::span<const ClipCommand> FramePacket::clips() const noexcept {
+    return clips_;
+}
+
+std::span<const PassCommand> FramePacket::passes() const noexcept {
+    return passes_;
+}
+
 std::string_view FramePacket::text(const TextSlice slice) const noexcept {
     if (!textSliceIsValid(slice, utf8Bytes_.size())) {
         return {};
@@ -511,7 +743,16 @@ FramePacketView FramePacket::view() const noexcept {
         effects_,
         ui_,
         overlays_,
-        utf8Bytes_
+        utf8Bytes_,
+        glyphRuns_,
+        glyphInstances_,
+        texturedMeshes_,
+        meshVertices_,
+        meshIndices_,
+        gradients_,
+        gradientStops_,
+        clips_,
+        passes_
     };
 }
 
@@ -525,7 +766,16 @@ FramePacketCapacity FramePacket::size() const noexcept {
         effects_.size(),
         ui_.size(),
         overlays_.size(),
-        utf8Bytes_.size()
+        utf8Bytes_.size(),
+        glyphRuns_.size(),
+        glyphInstances_.size(),
+        texturedMeshes_.size(),
+        meshVertices_.size(),
+        meshIndices_.size(),
+        gradients_.size(),
+        gradientStops_.size(),
+        clips_.size(),
+        passes_.size()
     };
 }
 
@@ -539,7 +789,16 @@ FramePacketCapacity FramePacket::capacity() const noexcept {
         effects_.capacity(),
         ui_.capacity(),
         overlays_.capacity(),
-        utf8Bytes_.capacity()
+        utf8Bytes_.capacity(),
+        glyphRuns_.capacity(),
+        glyphInstances_.capacity(),
+        texturedMeshes_.capacity(),
+        meshVertices_.capacity(),
+        meshIndices_.capacity(),
+        gradients_.capacity(),
+        gradientStops_.capacity(),
+        clips_.capacity(),
+        passes_.capacity()
     };
 }
 
@@ -553,7 +812,16 @@ bool FramePacket::hasCapacityFor(const FramePacketCapacity& required) const noex
         && required.effectCount <= available.effectCount
         && required.uiCount <= available.uiCount
         && required.overlayCount <= available.overlayCount
-        && required.utf8ByteCount <= available.utf8ByteCount;
+        && required.utf8ByteCount <= available.utf8ByteCount
+        && required.glyphRunCount <= available.glyphRunCount
+        && required.glyphInstanceCount <= available.glyphInstanceCount
+        && required.texturedMeshCount <= available.texturedMeshCount
+        && required.meshVertexCount <= available.meshVertexCount
+        && required.meshIndexCount <= available.meshIndexCount
+        && required.gradientCount <= available.gradientCount
+        && required.gradientStopCount <= available.gradientStopCount
+        && required.clipCount <= available.clipCount
+        && required.passCount <= available.passCount;
 }
 
 const CommandHeader* FramePacket::commandHeader(const CommandRef& reference) const noexcept {
@@ -573,6 +841,16 @@ const CommandHeader* FramePacket::commandHeader(const CommandRef& reference) con
             return index < ui_.size() ? &ui_[index].header : nullptr;
         case CommandKind::overlay:
             return index < overlays_.size() ? &overlays_[index].header : nullptr;
+        case CommandKind::glyphRun:
+            return index < glyphRuns_.size() ? &glyphRuns_[index].header : nullptr;
+        case CommandKind::texturedMesh:
+            return index < texturedMeshes_.size() ? &texturedMeshes_[index].header : nullptr;
+        case CommandKind::gradient:
+            return index < gradients_.size() ? &gradients_[index].header : nullptr;
+        case CommandKind::clip:
+            return index < clips_.size() ? &clips_[index].header : nullptr;
+        case CommandKind::pass:
+            return index < passes_.size() ? &passes_[index].header : nullptr;
     }
     return nullptr;
 }
@@ -586,7 +864,12 @@ bool FramePacket::isStructurallyValid() const noexcept {
         textRuns_.size(),
         effects_.size(),
         ui_.size(),
-        overlays_.size()
+        overlays_.size(),
+        glyphRuns_.size(),
+        texturedMeshes_.size(),
+        gradients_.size(),
+        clips_.size(),
+        passes_.size()
     };
     for (const std::size_t count : commandCounts) {
         if (count > std::numeric_limits<std::size_t>::max() - expectedCommands) {
@@ -596,6 +879,10 @@ bool FramePacket::isStructurallyValid() const noexcept {
     }
     if (commandStream_.size() != expectedCommands
         || commandStream_.size() > std::numeric_limits<std::uint32_t>::max()
+        || glyphInstances_.size() > std::numeric_limits<std::uint32_t>::max()
+        || meshVertices_.size() > std::numeric_limits<std::uint32_t>::max()
+        || meshIndices_.size() > std::numeric_limits<std::uint32_t>::max()
+        || gradientStops_.size() > std::numeric_limits<std::uint32_t>::max()
         || metadata_.alphaEncoding != AlphaEncoding::premultiplied
         || !finite(metadata_.presentationTimeSeconds)
         || metadata_.presentationTimeSeconds < 0.0
@@ -650,7 +937,104 @@ bool FramePacket::isStructurallyValid() const noexcept {
         }
     }
 
-    std::array<std::size_t, 7> nextIndexes{};
+    std::size_t nextGlyphOffset = 0;
+    for (const GlyphRunCommand& command : glyphRuns_) {
+        if (!commandValuesAreValid(command, glyphInstances_.size())
+            || command.glyphs.offset != nextGlyphOffset) {
+            return false;
+        }
+        const auto glyphOffset = static_cast<std::size_t>(command.glyphs.offset);
+        const auto glyphCount = static_cast<std::size_t>(command.glyphs.count);
+        for (const GlyphInstance& glyph : std::span<const GlyphInstance>{glyphInstances_}.subspan(
+                 glyphOffset,
+                 glyphCount
+             )) {
+            if (!glyphInstanceIsValid(glyph)) {
+                return false;
+            }
+        }
+        nextGlyphOffset += glyphCount;
+    }
+    if (nextGlyphOffset != glyphInstances_.size()) {
+        return false;
+    }
+
+    std::size_t nextVertexOffset = 0;
+    std::size_t nextIndexOffset = 0;
+    for (const TexturedMeshCommand& command : texturedMeshes_) {
+        if (!commandValuesAreValid(
+                command,
+                meshVertices_.size(),
+                meshIndices_.size()
+            )
+            || command.vertices.offset != nextVertexOffset
+            || command.indices.offset != nextIndexOffset) {
+            return false;
+        }
+        const auto vertexOffset = static_cast<std::size_t>(command.vertices.offset);
+        const auto vertexCount = static_cast<std::size_t>(command.vertices.count);
+        const auto indexOffset = static_cast<std::size_t>(command.indices.offset);
+        const auto indexCount = static_cast<std::size_t>(command.indices.count);
+        for (const ProjectiveVertex& vertex : std::span<const ProjectiveVertex>{meshVertices_}.subspan(
+                 vertexOffset,
+                 vertexCount
+             )) {
+            if (!projectiveVertexIsValid(vertex)) {
+                return false;
+            }
+        }
+        for (const std::uint32_t index : std::span<const std::uint32_t>{meshIndices_}.subspan(
+                 indexOffset,
+                 indexCount
+             )) {
+            if (index >= command.vertices.count) {
+                return false;
+            }
+        }
+        nextVertexOffset += vertexCount;
+        nextIndexOffset += indexCount;
+    }
+    if (nextVertexOffset != meshVertices_.size()
+        || nextIndexOffset != meshIndices_.size()) {
+        return false;
+    }
+
+    std::size_t nextGradientStopOffset = 0;
+    for (const GradientCommand& command : gradients_) {
+        if (!commandValuesAreValid(command, gradientStops_.size())
+            || command.stops.offset != nextGradientStopOffset) {
+            return false;
+        }
+        const auto stopOffset = static_cast<std::size_t>(command.stops.offset);
+        const auto stopCount = static_cast<std::size_t>(command.stops.count);
+        float previousOffset = -1.0F;
+        for (const GradientStop& stop : std::span<const GradientStop>{gradientStops_}.subspan(
+                 stopOffset,
+                 stopCount
+             )) {
+            if (!gradientStopIsValid(stop) || stop.offset < previousOffset) {
+                return false;
+            }
+            previousOffset = stop.offset;
+        }
+        nextGradientStopOffset += stopCount;
+    }
+    if (nextGradientStopOffset != gradientStops_.size()) {
+        return false;
+    }
+
+    for (const ClipCommand& command : clips_) {
+        if (!commandValuesAreValid(command)) {
+            return false;
+        }
+    }
+    for (const PassCommand& command : passes_) {
+        if (!commandValuesAreValid(command)) {
+            return false;
+        }
+    }
+
+    std::array<std::size_t, 12> nextIndexes{};
     for (const CommandRef& reference : commandStream_) {
         const std::size_t kindIndex = commandKindIndex(reference.kind);
         if (kindIndex >= nextIndexes.size()
@@ -667,7 +1051,12 @@ bool FramePacket::isStructurallyValid() const noexcept {
         || nextIndexes[commandKindIndex(CommandKind::text)] != textRuns_.size()
         || nextIndexes[commandKindIndex(CommandKind::effect)] != effects_.size()
         || nextIndexes[commandKindIndex(CommandKind::ui)] != ui_.size()
-        || nextIndexes[commandKindIndex(CommandKind::overlay)] != overlays_.size()) {
+        || nextIndexes[commandKindIndex(CommandKind::overlay)] != overlays_.size()
+        || nextIndexes[commandKindIndex(CommandKind::glyphRun)] != glyphRuns_.size()
+        || nextIndexes[commandKindIndex(CommandKind::texturedMesh)] != texturedMeshes_.size()
+        || nextIndexes[commandKindIndex(CommandKind::gradient)] != gradients_.size()
+        || nextIndexes[commandKindIndex(CommandKind::clip)] != clips_.size()
+        || nextIndexes[commandKindIndex(CommandKind::pass)] != passes_.size()) {
         return false;
     }
     return true;
@@ -678,6 +1067,25 @@ bool FramePacket::isRenderOrderValid() const noexcept {
         return false;
     }
 
+    struct ClipScope final {
+        RenderLayer layer = RenderLayer::background;
+        CoordinateSpace coordinateSpace = CoordinateSpace::drawablePixels;
+        std::int32_t layerOrder = 0;
+    };
+    struct PassState final {
+        StableElementId sessionId = 0;
+        StableElementId sourceSessionId = 0;
+        StableElementId destinationId = 0;
+        std::uint32_t beginSequence = 0;
+        std::int32_t layerOrder = 0;
+        bool captured = false;
+        bool composited = false;
+        bool ended = false;
+    };
+    constexpr std::size_t maximumClipDepth = 64;
+    constexpr std::size_t maximumPassDepth = 16;
+    constexpr std::size_t maximumPassSessions = 256;
+
     bool hasPrevious = false;
     std::uint8_t previousLayer = 0;
     std::int32_t previousLayerOrder = 0;
@@ -685,6 +1093,24 @@ bool FramePacket::isRenderOrderValid() const noexcept {
     bool overlaySessionOpen = false;
     StableElementId overlaySessionId = 0;
     std::int32_t overlayLayerOrder = 0;
+    std::array<ClipScope, maximumClipDepth> clipStack{};
+    std::size_t clipDepth = 0;
+    std::array<PassState, maximumPassSessions> passStates{};
+    std::size_t passStateCount = 0;
+    std::array<std::size_t, maximumPassDepth> passStack{};
+    std::size_t passDepth = 0;
+
+    const auto findPassState = [&passStates, &passStateCount](
+        const StableElementId sessionId
+    ) noexcept -> PassState* {
+        for (std::size_t index = 0; index < passStateCount; ++index) {
+            if (passStates[index].sessionId == sessionId) {
+                return &passStates[index];
+            }
+        }
+        return nullptr;
+    };
+
     for (const CommandRef& reference : commandStream_) {
         const CommandHeader* const header = commandHeader(reference);
         if (header == nullptr
@@ -701,8 +1127,20 @@ bool FramePacket::isRenderOrderValid() const noexcept {
             }
         }
 
+        if (clipDepth > 0U) {
+            const ClipScope& scope = clipStack[clipDepth - 1U];
+            if (header->layer != scope.layer
+                || header->coordinateSpace != scope.coordinateSpace
+                || header->layerOrder != scope.layerOrder) {
+                return false;
+            }
+        }
+
         if (header->layer == RenderLayer::dynamicOverlay) {
             if (reference.kind == CommandKind::overlay) {
+                if (passDepth > 0U) {
+                    return false;
+                }
                 const auto overlayIndex = static_cast<std::size_t>(reference.index);
                 if (overlayIndex >= overlays_.size()) {
                     return false;
@@ -736,11 +1174,158 @@ bool FramePacket::isRenderOrderValid() const noexcept {
                         }
                         break;
                 }
-            } else if (!overlaySessionOpen || header->layerOrder != overlayLayerOrder) {
+            } else if (reference.kind == CommandKind::pass) {
+                if (overlaySessionOpen) {
+                    return false;
+                }
+                const auto passIndex = static_cast<std::size_t>(reference.index);
+                if (passIndex >= passes_.size()) {
+                    return false;
+                }
+                const PassCommand& pass = passes_[passIndex];
+                switch (pass.operation) {
+                    case PassOperation::beginSession: {
+                        if (passDepth >= passStack.size()
+                            || passStateCount >= passStates.size()
+                            || findPassState(pass.sessionId) != nullptr
+                            || pass.sourceSessionId != 0U
+                            || clipDepth > 0U) {
+                            return false;
+                        }
+                        for (std::size_t index = 0; index < passStateCount; ++index) {
+                            if (passStates[index].destinationId == pass.destinationId) {
+                                return false;
+                            }
+                        }
+                        if (passDepth > 0U) {
+                            const PassState& parent = passStates[passStack[passDepth - 1U]];
+                            if (!parent.composited
+                                || header->layerOrder != parent.layerOrder) {
+                                return false;
+                            }
+                        }
+                        PassState& state = passStates[passStateCount];
+                        state.sessionId = pass.sessionId;
+                        state.destinationId = pass.destinationId;
+                        state.beginSequence = header->sequence;
+                        state.layerOrder = header->layerOrder;
+                        passStack[passDepth] = passStateCount;
+                        ++passStateCount;
+                        ++passDepth;
+                        break;
+                    }
+                    case PassOperation::capture: {
+                        if (passDepth == 0U) {
+                            return false;
+                        }
+                        PassState& state = passStates[passStack[passDepth - 1U]];
+                        const std::uint8_t sourceLayer = renderLayerOrder(
+                            pass.sourceAnchorLayer
+                        );
+                        if (pass.sessionId != state.sessionId
+                            || pass.destinationId != state.destinationId
+                            || header->layerOrder != state.layerOrder
+                            || state.captured
+                            || state.composited
+                            || pass.sourceAnchorSequence >= header->sequence
+                            || sourceLayer > renderLayerOrder(header->layer)
+                            || (pass.sourceAnchorLayer == header->layer
+                                && pass.sourceAnchorLayerOrder > header->layerOrder)) {
+                            return false;
+                        }
+                        if (pass.sourceSessionId != 0U) {
+                            PassState* const source = findPassState(pass.sourceSessionId);
+                            if (source == nullptr
+                                || source->beginSequence >= state.beginSequence
+                                || !source->composited
+                                || source->destinationId == state.destinationId
+                                || pass.sourceAnchorSequence < source->beginSequence) {
+                                return false;
+                            }
+                        }
+                        state.sourceSessionId = pass.sourceSessionId;
+                        state.captured = true;
+                        break;
+                    }
+                    case PassOperation::composite: {
+                        if (passDepth == 0U) {
+                            return false;
+                        }
+                        PassState& state = passStates[passStack[passDepth - 1U]];
+                        if (pass.sessionId != state.sessionId
+                            || pass.sourceSessionId != state.sourceSessionId
+                            || pass.destinationId != state.destinationId
+                            || header->layerOrder != state.layerOrder
+                            || !state.captured
+                            || state.composited) {
+                            return false;
+                        }
+                        state.composited = true;
+                        break;
+                    }
+                    case PassOperation::endSession: {
+                        if (passDepth == 0U || clipDepth > 0U) {
+                            return false;
+                        }
+                        PassState& state = passStates[passStack[passDepth - 1U]];
+                        if (pass.sessionId != state.sessionId
+                            || pass.sourceSessionId != state.sourceSessionId
+                            || pass.destinationId != state.destinationId
+                            || header->layerOrder != state.layerOrder
+                            || !state.captured
+                            || !state.composited
+                            || state.ended) {
+                            return false;
+                        }
+                        state.ended = true;
+                        --passDepth;
+                        break;
+                    }
+                }
+            } else {
+                if (overlaySessionOpen) {
+                    if (header->layerOrder != overlayLayerOrder) {
+                        return false;
+                    }
+                } else if (passDepth > 0U) {
+                    const PassState& state = passStates[passStack[passDepth - 1U]];
+                    if (!state.composited || header->layerOrder != state.layerOrder) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+        } else if (overlaySessionOpen || passDepth > 0U) {
+            return false;
+        }
+
+        if (reference.kind == CommandKind::clip) {
+            const auto clipIndex = static_cast<std::size_t>(reference.index);
+            if (clipIndex >= clips_.size()) {
                 return false;
             }
-        } else if (overlaySessionOpen) {
-            return false;
+            const ClipCommand& clip = clips_[clipIndex];
+            switch (clip.operation) {
+                case ClipOperation::pushScissor:
+                case ClipOperation::pushRoundedRect:
+                    if (clipDepth >= clipStack.size()) {
+                        return false;
+                    }
+                    clipStack[clipDepth] = {
+                        header->layer,
+                        header->coordinateSpace,
+                        header->layerOrder
+                    };
+                    ++clipDepth;
+                    break;
+                case ClipOperation::pop:
+                    if (clipDepth == 0U) {
+                        return false;
+                    }
+                    --clipDepth;
+                    break;
+            }
         }
 
         hasPrevious = true;
@@ -748,7 +1333,7 @@ bool FramePacket::isRenderOrderValid() const noexcept {
         previousLayerOrder = header->layerOrder;
         ++expectedSequence;
     }
-    return !overlaySessionOpen;
+    return !overlaySessionOpen && passDepth == 0U && clipDepth == 0U;
 }
 
 } // namespace cirvivor::render

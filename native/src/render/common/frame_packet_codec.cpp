@@ -54,6 +54,50 @@ struct FramePacketStorageAccess final {
         return packet.utf8Bytes_;
     }
 
+    [[nodiscard]] static std::vector<GlyphRunCommand>& glyphRuns(FramePacket& packet) noexcept {
+        return packet.glyphRuns_;
+    }
+
+    [[nodiscard]] static std::vector<GlyphInstance>& glyphInstances(FramePacket& packet) noexcept {
+        return packet.glyphInstances_;
+    }
+
+    [[nodiscard]] static std::vector<TexturedMeshCommand>& texturedMeshes(
+        FramePacket& packet
+    ) noexcept {
+        return packet.texturedMeshes_;
+    }
+
+    [[nodiscard]] static std::vector<ProjectiveVertex>& meshVertices(
+        FramePacket& packet
+    ) noexcept {
+        return packet.meshVertices_;
+    }
+
+    [[nodiscard]] static std::vector<std::uint32_t>& meshIndices(
+        FramePacket& packet
+    ) noexcept {
+        return packet.meshIndices_;
+    }
+
+    [[nodiscard]] static std::vector<GradientCommand>& gradients(FramePacket& packet) noexcept {
+        return packet.gradients_;
+    }
+
+    [[nodiscard]] static std::vector<GradientStop>& gradientStops(
+        FramePacket& packet
+    ) noexcept {
+        return packet.gradientStops_;
+    }
+
+    [[nodiscard]] static std::vector<ClipCommand>& clips(FramePacket& packet) noexcept {
+        return packet.clips_;
+    }
+
+    [[nodiscard]] static std::vector<PassCommand>& passes(FramePacket& packet) noexcept {
+        return packet.passes_;
+    }
+
     [[nodiscard]] static bool hasActiveBuilder(const FramePacket& packet) noexcept {
         return packet.activeBuilder_ != nullptr;
     }
@@ -68,7 +112,7 @@ inline constexpr std::array<std::byte, 4> wire_magic{
     std::byte{'P'}
 };
 
-inline constexpr std::size_t wire_fixed_byte_count = 320;
+inline constexpr std::size_t wire_fixed_byte_count = 356;
 inline constexpr std::size_t wire_command_reference_byte_count = 5;
 inline constexpr std::size_t wire_sprite_byte_count = 84;
 inline constexpr std::size_t wire_shape_byte_count = 76;
@@ -77,6 +121,15 @@ inline constexpr std::size_t wire_text_byte_count = 76;
 inline constexpr std::size_t wire_effect_byte_count = 120;
 inline constexpr std::size_t wire_ui_byte_count = 100;
 inline constexpr std::size_t wire_overlay_byte_count = 128;
+inline constexpr std::size_t wire_glyph_run_byte_count = 140;
+inline constexpr std::size_t wire_glyph_instance_byte_count = 48;
+inline constexpr std::size_t wire_textured_mesh_byte_count = 92;
+inline constexpr std::size_t wire_mesh_vertex_byte_count = 20;
+inline constexpr std::size_t wire_mesh_index_byte_count = 4;
+inline constexpr std::size_t wire_gradient_byte_count = 100;
+inline constexpr std::size_t wire_gradient_stop_byte_count = 20;
+inline constexpr std::size_t wire_clip_byte_count = 72;
+inline constexpr std::size_t wire_pass_byte_count = 168;
 
 [[nodiscard]] bool addWireBlock(
     std::size_t& total,
@@ -103,7 +156,16 @@ inline constexpr std::size_t wire_overlay_byte_count = 128;
         && addWireBlock(result, size.effectCount, wire_effect_byte_count)
         && addWireBlock(result, size.uiCount, wire_ui_byte_count)
         && addWireBlock(result, size.overlayCount, wire_overlay_byte_count)
-        && addWireBlock(result, size.utf8ByteCount, 1U);
+        && addWireBlock(result, size.utf8ByteCount, 1U)
+        && addWireBlock(result, size.glyphRunCount, wire_glyph_run_byte_count)
+        && addWireBlock(result, size.glyphInstanceCount, wire_glyph_instance_byte_count)
+        && addWireBlock(result, size.texturedMeshCount, wire_textured_mesh_byte_count)
+        && addWireBlock(result, size.meshVertexCount, wire_mesh_vertex_byte_count)
+        && addWireBlock(result, size.meshIndexCount, wire_mesh_index_byte_count)
+        && addWireBlock(result, size.gradientCount, wire_gradient_byte_count)
+        && addWireBlock(result, size.gradientStopCount, wire_gradient_stop_byte_count)
+        && addWireBlock(result, size.clipCount, wire_clip_byte_count)
+        && addWireBlock(result, size.passCount, wire_pass_byte_count);
 }
 
 [[nodiscard]] bool calculateDecodedByteCount(
@@ -119,7 +181,16 @@ inline constexpr std::size_t wire_overlay_byte_count = 128;
         && addWireBlock(result, size.effectCount, sizeof(EffectCommand))
         && addWireBlock(result, size.uiCount, sizeof(UiCommand))
         && addWireBlock(result, size.overlayCount, sizeof(OverlayCommand))
-        && addWireBlock(result, size.utf8ByteCount, sizeof(char));
+        && addWireBlock(result, size.utf8ByteCount, sizeof(char))
+        && addWireBlock(result, size.glyphRunCount, sizeof(GlyphRunCommand))
+        && addWireBlock(result, size.glyphInstanceCount, sizeof(GlyphInstance))
+        && addWireBlock(result, size.texturedMeshCount, sizeof(TexturedMeshCommand))
+        && addWireBlock(result, size.meshVertexCount, sizeof(ProjectiveVertex))
+        && addWireBlock(result, size.meshIndexCount, sizeof(std::uint32_t))
+        && addWireBlock(result, size.gradientCount, sizeof(GradientCommand))
+        && addWireBlock(result, size.gradientStopCount, sizeof(GradientStop))
+        && addWireBlock(result, size.clipCount, sizeof(ClipCommand))
+        && addWireBlock(result, size.passCount, sizeof(PassCommand));
 }
 
 class ByteWriter final {
@@ -382,6 +453,15 @@ void writeColor(ByteWriter& writer, const PremultipliedRgba& value) {
         && reader.f32(value.green)
         && reader.f32(value.blue)
         && reader.f32(value.alpha);
+}
+
+void writeStorageRange(ByteWriter& writer, const StorageRange& value) {
+    writer.u32(value.offset);
+    writer.u32(value.count);
+}
+
+[[nodiscard]] bool readStorageRange(ByteReader& reader, StorageRange& value) noexcept {
+    return reader.u32(value.offset) && reader.u32(value.count);
 }
 
 void writeHeader(ByteWriter& writer, const CommandHeader& header) {
@@ -718,6 +798,286 @@ void writeOverlay(ByteWriter& writer, const OverlayCommand& command) {
     return true;
 }
 
+void writeGlyphRun(ByteWriter& writer, const GlyphRunCommand& command) {
+    writeHeader(writer, command.header);
+    writer.u64(command.fontId);
+    writer.u64(command.glyphAtlasId);
+    writeStorageRange(writer, command.glyphs);
+    writeVec2(writer, command.origin);
+    writer.f32(command.pixelsPerEm);
+    writer.i32(command.weight);
+    for (const float coordinate : command.variationCoordinates) {
+        writer.f32(coordinate);
+    }
+    writeColor(writer, command.color);
+    writeMat3(writer, command.transform);
+    writeRectF(writer, command.clipBounds);
+    writer.u8(command.clipEnabled);
+    writer.u8(static_cast<std::uint8_t>(command.sampling));
+    for (const std::uint8_t value : command.reserved) {
+        writer.u8(value);
+    }
+}
+
+[[nodiscard]] bool readGlyphRun(ByteReader& reader, GlyphRunCommand& command) noexcept {
+    std::uint8_t sampling = 0;
+    if (!readHeader(reader, command.header)
+        || !reader.u64(command.fontId)
+        || !reader.u64(command.glyphAtlasId)
+        || !readStorageRange(reader, command.glyphs)
+        || !readVec2(reader, command.origin)
+        || !reader.f32(command.pixelsPerEm)
+        || !reader.i32(command.weight)) {
+        return false;
+    }
+    for (float& coordinate : command.variationCoordinates) {
+        if (!reader.f32(coordinate)) {
+            return false;
+        }
+    }
+    if (!readColor(reader, command.color)
+        || !readMat3(reader, command.transform)
+        || !readRectF(reader, command.clipBounds)
+        || !reader.u8(command.clipEnabled)
+        || !reader.u8(sampling)) {
+        return false;
+    }
+    for (std::uint8_t& value : command.reserved) {
+        if (!reader.u8(value)) {
+            return false;
+        }
+    }
+    command.sampling = static_cast<SamplingMode>(sampling);
+    return true;
+}
+
+void writeGlyphInstance(ByteWriter& writer, const GlyphInstance& glyph) {
+    writer.u32(glyph.glyphIndex);
+    writer.u32(glyph.atlasPage);
+    writeVec2(writer, glyph.position);
+    writeVec2(writer, glyph.advance);
+    writeVec2(writer, glyph.offset);
+    writeRectF(writer, glyph.uv);
+}
+
+[[nodiscard]] bool readGlyphInstance(ByteReader& reader, GlyphInstance& glyph) noexcept {
+    return reader.u32(glyph.glyphIndex)
+        && reader.u32(glyph.atlasPage)
+        && readVec2(reader, glyph.position)
+        && readVec2(reader, glyph.advance)
+        && readVec2(reader, glyph.offset)
+        && readRectF(reader, glyph.uv);
+}
+
+void writeTexturedMesh(ByteWriter& writer, const TexturedMeshCommand& command) {
+    writeHeader(writer, command.header);
+    writer.u64(command.textureId);
+    writeStorageRange(writer, command.vertices);
+    writeStorageRange(writer, command.indices);
+    writeMat3(writer, command.transform);
+    writeColor(writer, command.tint);
+    writer.u8(static_cast<std::uint8_t>(command.sampling));
+    for (const std::uint8_t value : command.reserved) {
+        writer.u8(value);
+    }
+}
+
+[[nodiscard]] bool readTexturedMesh(
+    ByteReader& reader,
+    TexturedMeshCommand& command
+) noexcept {
+    std::uint8_t sampling = 0;
+    if (!readHeader(reader, command.header)
+        || !reader.u64(command.textureId)
+        || !readStorageRange(reader, command.vertices)
+        || !readStorageRange(reader, command.indices)
+        || !readMat3(reader, command.transform)
+        || !readColor(reader, command.tint)
+        || !reader.u8(sampling)) {
+        return false;
+    }
+    for (std::uint8_t& value : command.reserved) {
+        if (!reader.u8(value)) {
+            return false;
+        }
+    }
+    command.sampling = static_cast<SamplingMode>(sampling);
+    return true;
+}
+
+void writeProjectiveVertex(ByteWriter& writer, const ProjectiveVertex& vertex) {
+    writeVec2(writer, vertex.position);
+    writeVec2(writer, vertex.uv);
+    writer.f32(vertex.projectiveWeight);
+}
+
+[[nodiscard]] bool readProjectiveVertex(
+    ByteReader& reader,
+    ProjectiveVertex& vertex
+) noexcept {
+    return readVec2(reader, vertex.position)
+        && readVec2(reader, vertex.uv)
+        && reader.f32(vertex.projectiveWeight);
+}
+
+void writeGradient(ByteWriter& writer, const GradientCommand& command) {
+    writeHeader(writer, command.header);
+    writer.u8(static_cast<std::uint8_t>(command.type));
+    writer.u8(static_cast<std::uint8_t>(command.spread));
+    for (const std::uint8_t value : command.reserved) {
+        writer.u8(value);
+    }
+    writeRectF(writer, command.bounds);
+    writeVec2(writer, command.start);
+    writeVec2(writer, command.end);
+    writer.f32(command.startRadius);
+    writer.f32(command.endRadius);
+    writeMat3(writer, command.transform);
+    writeStorageRange(writer, command.stops);
+}
+
+[[nodiscard]] bool readGradient(ByteReader& reader, GradientCommand& command) noexcept {
+    std::uint8_t type = 0;
+    std::uint8_t spread = 0;
+    if (!readHeader(reader, command.header)
+        || !reader.u8(type)
+        || !reader.u8(spread)) {
+        return false;
+    }
+    for (std::uint8_t& value : command.reserved) {
+        if (!reader.u8(value)) {
+            return false;
+        }
+    }
+    if (!readRectF(reader, command.bounds)
+        || !readVec2(reader, command.start)
+        || !readVec2(reader, command.end)
+        || !reader.f32(command.startRadius)
+        || !reader.f32(command.endRadius)
+        || !readMat3(reader, command.transform)
+        || !readStorageRange(reader, command.stops)) {
+        return false;
+    }
+    command.type = static_cast<GradientType>(type);
+    command.spread = static_cast<GradientSpread>(spread);
+    return true;
+}
+
+void writeGradientStop(ByteWriter& writer, const GradientStop& stop) {
+    writer.f32(stop.offset);
+    writeColor(writer, stop.color);
+}
+
+[[nodiscard]] bool readGradientStop(ByteReader& reader, GradientStop& stop) noexcept {
+    return reader.f32(stop.offset) && readColor(reader, stop.color);
+}
+
+void writeClip(ByteWriter& writer, const ClipCommand& command) {
+    writeHeader(writer, command.header);
+    writer.u8(static_cast<std::uint8_t>(command.operation));
+    writer.u8(command.antialias);
+    for (const std::uint8_t value : command.reserved) {
+        writer.u8(value);
+    }
+    writeRectF(writer, command.bounds);
+    writer.f32(command.cornerRadius);
+    writeMat3(writer, command.transform);
+}
+
+[[nodiscard]] bool readClip(ByteReader& reader, ClipCommand& command) noexcept {
+    std::uint8_t operation = 0;
+    if (!readHeader(reader, command.header)
+        || !reader.u8(operation)
+        || !reader.u8(command.antialias)) {
+        return false;
+    }
+    for (std::uint8_t& value : command.reserved) {
+        if (!reader.u8(value)) {
+            return false;
+        }
+    }
+    if (!readRectF(reader, command.bounds)
+        || !reader.f32(command.cornerRadius)
+        || !readMat3(reader, command.transform)) {
+        return false;
+    }
+    command.operation = static_cast<ClipOperation>(operation);
+    return true;
+}
+
+void writePass(ByteWriter& writer, const PassCommand& command) {
+    writeHeader(writer, command.header);
+    writer.u8(static_cast<std::uint8_t>(command.operation));
+    writer.u8(static_cast<std::uint8_t>(command.updateMode));
+    writer.u8(static_cast<std::uint8_t>(command.compositeMode));
+    writer.u8(command.reserved0);
+    writer.u8(static_cast<std::uint8_t>(command.sourceAnchorLayer));
+    for (const std::uint8_t value : command.reserved1) {
+        writer.u8(value);
+    }
+    writer.u64(command.sessionId);
+    writer.u64(command.sourceSessionId);
+    writer.u64(command.destinationId);
+    writer.u64(command.sourceRevision);
+    writer.i32(command.sourceAnchorLayerOrder);
+    writer.u32(command.sourceAnchorSequence);
+    writeRectF(writer, command.sourceBounds);
+    writeRectF(writer, command.destinationBounds);
+    writeVec2(writer, command.scale);
+    writer.f32(command.opacity);
+    writer.f32(command.contentBlurRadius);
+    writer.f32(command.glassBlurRadius);
+    writer.f32(command.refractionStrength);
+    writer.f32(command.edgeStrength);
+    writeColor(writer, command.tintColor);
+    writeColor(writer, command.edgeColor);
+    writeColor(writer, command.shadowColor);
+}
+
+[[nodiscard]] bool readPass(ByteReader& reader, PassCommand& command) noexcept {
+    std::uint8_t operation = 0;
+    std::uint8_t updateMode = 0;
+    std::uint8_t compositeMode = 0;
+    std::uint8_t sourceLayer = 0;
+    if (!readHeader(reader, command.header)
+        || !reader.u8(operation)
+        || !reader.u8(updateMode)
+        || !reader.u8(compositeMode)
+        || !reader.u8(command.reserved0)
+        || !reader.u8(sourceLayer)) {
+        return false;
+    }
+    for (std::uint8_t& value : command.reserved1) {
+        if (!reader.u8(value)) {
+            return false;
+        }
+    }
+    if (!reader.u64(command.sessionId)
+        || !reader.u64(command.sourceSessionId)
+        || !reader.u64(command.destinationId)
+        || !reader.u64(command.sourceRevision)
+        || !reader.i32(command.sourceAnchorLayerOrder)
+        || !reader.u32(command.sourceAnchorSequence)
+        || !readRectF(reader, command.sourceBounds)
+        || !readRectF(reader, command.destinationBounds)
+        || !readVec2(reader, command.scale)
+        || !reader.f32(command.opacity)
+        || !reader.f32(command.contentBlurRadius)
+        || !reader.f32(command.glassBlurRadius)
+        || !reader.f32(command.refractionStrength)
+        || !reader.f32(command.edgeStrength)
+        || !readColor(reader, command.tintColor)
+        || !readColor(reader, command.edgeColor)
+        || !readColor(reader, command.shadowColor)) {
+        return false;
+    }
+    command.operation = static_cast<PassOperation>(operation);
+    command.updateMode = static_cast<PassUpdateMode>(updateMode);
+    command.compositeMode = static_cast<PassCompositeMode>(compositeMode);
+    command.sourceAnchorLayer = static_cast<RenderLayer>(sourceLayer);
+    return true;
+}
+
 [[nodiscard]] bool countWithinLimit(
     const std::uint32_t value,
     const FramePacketDecodeLimits& limits
@@ -745,7 +1105,16 @@ bool serializeFramePacket(
             || packetSize.effectCount > std::numeric_limits<std::uint32_t>::max()
             || packetSize.uiCount > std::numeric_limits<std::uint32_t>::max()
             || packetSize.overlayCount > std::numeric_limits<std::uint32_t>::max()
-            || packetSize.utf8ByteCount > std::numeric_limits<std::uint32_t>::max()) {
+            || packetSize.utf8ByteCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.glyphRunCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.glyphInstanceCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.texturedMeshCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.meshVertexCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.meshIndexCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.gradientCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.gradientStopCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.clipCount > std::numeric_limits<std::uint32_t>::max()
+            || packetSize.passCount > std::numeric_limits<std::uint32_t>::max()) {
             return false;
         }
 
@@ -781,6 +1150,15 @@ bool serializeFramePacket(
         writer.u32(static_cast<std::uint32_t>(packetSize.uiCount));
         writer.u32(static_cast<std::uint32_t>(packetSize.overlayCount));
         writer.u32(static_cast<std::uint32_t>(packetSize.utf8ByteCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.glyphRunCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.glyphInstanceCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.texturedMeshCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.meshVertexCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.meshIndexCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.gradientCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.gradientStopCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.clipCount));
+        writer.u32(static_cast<std::uint32_t>(packetSize.passCount));
 
         for (const CommandRef& reference : packet.commandStream()) {
             writer.u8(static_cast<std::uint8_t>(reference.kind));
@@ -808,6 +1186,33 @@ bool serializeFramePacket(
             writeOverlay(writer, command);
         }
         writer.bytes(packet.utf8Bytes());
+        for (const GlyphRunCommand& command : packet.glyphRuns()) {
+            writeGlyphRun(writer, command);
+        }
+        for (const GlyphInstance& glyph : packet.glyphInstances()) {
+            writeGlyphInstance(writer, glyph);
+        }
+        for (const TexturedMeshCommand& command : packet.texturedMeshes()) {
+            writeTexturedMesh(writer, command);
+        }
+        for (const ProjectiveVertex& vertex : packet.meshVertices()) {
+            writeProjectiveVertex(writer, vertex);
+        }
+        for (const std::uint32_t index : packet.meshIndices()) {
+            writer.u32(index);
+        }
+        for (const GradientCommand& command : packet.gradients()) {
+            writeGradient(writer, command);
+        }
+        for (const GradientStop& stop : packet.gradientStops()) {
+            writeGradientStop(writer, stop);
+        }
+        for (const ClipCommand& command : packet.clips()) {
+            writeClip(writer, command);
+        }
+        for (const PassCommand& command : packet.passes()) {
+            writePass(writer, command);
+        }
         return output.size() == wireByteCount;
     } catch (const std::bad_alloc&) {
         output.clear();
@@ -878,6 +1283,15 @@ FramePacketDecodeResult deserializeFramePacket(
     std::uint32_t uiCount = 0;
     std::uint32_t overlayCount = 0;
     std::uint32_t utf8ByteCount = 0;
+    std::uint32_t glyphRunCount = 0;
+    std::uint32_t glyphInstanceCount = 0;
+    std::uint32_t texturedMeshCount = 0;
+    std::uint32_t meshVertexCount = 0;
+    std::uint32_t meshIndexCount = 0;
+    std::uint32_t gradientCount = 0;
+    std::uint32_t gradientStopCount = 0;
+    std::uint32_t clipCount = 0;
+    std::uint32_t passCount = 0;
     if (!reader.u32(commandCount)
         || !reader.u32(spriteCount)
         || !reader.u32(shapeCount)
@@ -886,7 +1300,16 @@ FramePacketDecodeResult deserializeFramePacket(
         || !reader.u32(effectCount)
         || !reader.u32(uiCount)
         || !reader.u32(overlayCount)
-        || !reader.u32(utf8ByteCount)) {
+        || !reader.u32(utf8ByteCount)
+        || !reader.u32(glyphRunCount)
+        || !reader.u32(glyphInstanceCount)
+        || !reader.u32(texturedMeshCount)
+        || !reader.u32(meshVertexCount)
+        || !reader.u32(meshIndexCount)
+        || !reader.u32(gradientCount)
+        || !reader.u32(gradientStopCount)
+        || !reader.u32(clipCount)
+        || !reader.u32(passCount)) {
         return {FramePacketDecodeError::truncated, reader.offset()};
     }
 
@@ -896,7 +1319,12 @@ FramePacketDecodeResult deserializeFramePacket(
         + static_cast<std::uint64_t>(textCount)
         + static_cast<std::uint64_t>(effectCount)
         + static_cast<std::uint64_t>(uiCount)
-        + static_cast<std::uint64_t>(overlayCount);
+        + static_cast<std::uint64_t>(overlayCount)
+        + static_cast<std::uint64_t>(glyphRunCount)
+        + static_cast<std::uint64_t>(texturedMeshCount)
+        + static_cast<std::uint64_t>(gradientCount)
+        + static_cast<std::uint64_t>(clipCount)
+        + static_cast<std::uint64_t>(passCount);
     if (summedCommandCount != commandCount) {
         return {FramePacketDecodeError::invalidPacket, reader.offset()};
     }
@@ -908,7 +1336,16 @@ FramePacketDecodeResult deserializeFramePacket(
         || !countWithinLimit(effectCount, limits)
         || !countWithinLimit(uiCount, limits)
         || !countWithinLimit(overlayCount, limits)
-        || utf8ByteCount > limits.maximumUtf8ByteCount) {
+        || !countWithinLimit(glyphRunCount, limits)
+        || !countWithinLimit(texturedMeshCount, limits)
+        || !countWithinLimit(gradientCount, limits)
+        || !countWithinLimit(clipCount, limits)
+        || !countWithinLimit(passCount, limits)
+        || utf8ByteCount > limits.maximumUtf8ByteCount
+        || glyphInstanceCount > limits.maximumGlyphInstanceCount
+        || meshVertexCount > limits.maximumMeshVertexCount
+        || meshIndexCount > limits.maximumMeshIndexCount
+        || gradientStopCount > limits.maximumGradientStopCount) {
         return {FramePacketDecodeError::sizeLimitExceeded, reader.offset()};
     }
 
@@ -921,7 +1358,16 @@ FramePacketDecodeResult deserializeFramePacket(
         effectCount,
         uiCount,
         overlayCount,
-        utf8ByteCount
+        utf8ByteCount,
+        glyphRunCount,
+        glyphInstanceCount,
+        texturedMeshCount,
+        meshVertexCount,
+        meshIndexCount,
+        gradientCount,
+        gradientStopCount,
+        clipCount,
+        passCount
     };
     std::size_t requiredWireByteCount = 0;
     if (!calculateWireByteCount(capacity, requiredWireByteCount)) {
@@ -945,6 +1391,15 @@ FramePacketDecodeResult deserializeFramePacket(
     auto& ui = FramePacketStorageAccess::ui(decoded);
     auto& overlays = FramePacketStorageAccess::overlays(decoded);
     auto& utf8Bytes = FramePacketStorageAccess::utf8Bytes(decoded);
+    auto& glyphRuns = FramePacketStorageAccess::glyphRuns(decoded);
+    auto& glyphInstances = FramePacketStorageAccess::glyphInstances(decoded);
+    auto& texturedMeshes = FramePacketStorageAccess::texturedMeshes(decoded);
+    auto& meshVertices = FramePacketStorageAccess::meshVertices(decoded);
+    auto& meshIndices = FramePacketStorageAccess::meshIndices(decoded);
+    auto& gradients = FramePacketStorageAccess::gradients(decoded);
+    auto& gradientStops = FramePacketStorageAccess::gradientStops(decoded);
+    auto& clips = FramePacketStorageAccess::clips(decoded);
+    auto& passes = FramePacketStorageAccess::passes(decoded);
     try {
         decoded.reserve(capacity);
         commandStream.resize(commandCount);
@@ -956,6 +1411,15 @@ FramePacketDecodeResult deserializeFramePacket(
         ui.resize(uiCount);
         overlays.resize(overlayCount);
         utf8Bytes.resize(utf8ByteCount);
+        glyphRuns.resize(glyphRunCount);
+        glyphInstances.resize(glyphInstanceCount);
+        texturedMeshes.resize(texturedMeshCount);
+        meshVertices.resize(meshVertexCount);
+        meshIndices.resize(meshIndexCount);
+        gradients.resize(gradientCount);
+        gradientStops.resize(gradientStopCount);
+        clips.resize(clipCount);
+        passes.resize(passCount);
     } catch (const std::bad_alloc&) {
         return {FramePacketDecodeError::allocationFailure, reader.offset()};
     } catch (const std::length_error&) {
@@ -1006,6 +1470,51 @@ FramePacketDecodeResult deserializeFramePacket(
     }
     if (!reader.bytes(utf8Bytes)) {
         return {FramePacketDecodeError::truncated, reader.offset()};
+    }
+    for (GlyphRunCommand& command : glyphRuns) {
+        if (!readGlyphRun(reader, command)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (GlyphInstance& glyph : glyphInstances) {
+        if (!readGlyphInstance(reader, glyph)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (TexturedMeshCommand& command : texturedMeshes) {
+        if (!readTexturedMesh(reader, command)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (ProjectiveVertex& vertex : meshVertices) {
+        if (!readProjectiveVertex(reader, vertex)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (std::uint32_t& index : meshIndices) {
+        if (!reader.u32(index)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (GradientCommand& command : gradients) {
+        if (!readGradient(reader, command)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (GradientStop& stop : gradientStops) {
+        if (!readGradientStop(reader, stop)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (ClipCommand& command : clips) {
+        if (!readClip(reader, command)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
+    }
+    for (PassCommand& command : passes) {
+        if (!readPass(reader, command)) {
+            return {FramePacketDecodeError::truncated, reader.offset()};
+        }
     }
     if (reader.remaining() != 0U) {
         return {FramePacketDecodeError::trailingBytes, reader.offset()};

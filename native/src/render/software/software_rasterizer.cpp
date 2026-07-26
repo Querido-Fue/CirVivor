@@ -2001,14 +2001,63 @@ public:
     return false;
 }
 
+[[nodiscard]] RectF meshPlaceholderBounds(
+    const FramePacket& frame,
+    const TexturedMeshCommand& command
+) noexcept {
+    const auto vertices = frame.meshVertices().subspan(
+        static_cast<std::size_t>(command.vertices.offset),
+        static_cast<std::size_t>(command.vertices.count)
+    );
+    float left = vertices.front().position.x;
+    float top = vertices.front().position.y;
+    float right = left;
+    float bottom = top;
+    for (const ProjectiveVertex& vertex : vertices) {
+        left = std::min(left, vertex.position.x);
+        top = std::min(top, vertex.position.y);
+        right = std::max(right, vertex.position.x);
+        bottom = std::max(bottom, vertex.position.y);
+    }
+    return {left, top, right - left, bottom - top};
+}
+
+[[nodiscard]] bool drawV2Placeholder(
+    RasterCanvas& canvas,
+    const CommandHeader& header,
+    const RectF bounds,
+    const PremultipliedRgba color
+) noexcept {
+    if (!(bounds.width > 0.0F) || !(bounds.height > 0.0F)) {
+        return true;
+    }
+    RectD mapped;
+    if (!mapAxisAlignedRect(canvas, bounds, header, mapped)) {
+        return false;
+    }
+    return drawRoundedRectangleScreen(
+        canvas,
+        mapped,
+        std::min(bounds.width, bounds.height) * 0.04,
+        1.0,
+        withOpacity(color, 0.64F),
+        color,
+        header.blendMode,
+        true,
+        true
+    );
+}
+
 [[nodiscard]] bool dispatchCommand(
     RasterCanvas& canvas,
     const FramePacket& frame,
-    const CommandRef reference
+    const CommandRef reference,
+    bool& placeholder
 ) noexcept {
     const std::size_t index = static_cast<std::size_t>(reference.index);
     switch (reference.kind) {
         case CommandKind::sprite:
+            placeholder = true;
             return index < frame.sprites().size()
                 && canvas.drawSprite(frame.sprites()[index]);
         case CommandKind::shape:
@@ -2018,17 +2067,96 @@ public:
             return index < frame.lines().size()
                 && canvas.drawLine(frame.lines()[index]);
         case CommandKind::text:
+            placeholder = true;
             return index < frame.textRuns().size()
                 && drawText(canvas, frame, frame.textRuns()[index]);
         case CommandKind::effect:
+            placeholder = true;
             return index < frame.effects().size()
                 && drawEffect(canvas, frame.effects()[index]);
         case CommandKind::ui:
             return index < frame.ui().size()
                 && drawUi(canvas, frame.ui()[index]);
         case CommandKind::overlay:
+            placeholder = true;
             return index < frame.overlays().size()
                 && drawOverlay(canvas, frame.overlays()[index]);
+        case CommandKind::glyphRun: {
+            placeholder = true;
+            if (index >= frame.glyphRuns().size()) {
+                return false;
+            }
+            const GlyphRunCommand& command = frame.glyphRuns()[index];
+            return drawV2Placeholder(
+                canvas,
+                command.header,
+                {
+                    command.origin.x,
+                    command.origin.y - command.pixelsPerEm,
+                    command.pixelsPerEm * 0.62F * static_cast<float>(command.glyphs.count),
+                    command.pixelsPerEm
+                },
+                command.color
+            );
+        }
+        case CommandKind::texturedMesh: {
+            placeholder = true;
+            if (index >= frame.texturedMeshes().size()) {
+                return false;
+            }
+            const TexturedMeshCommand& command = frame.texturedMeshes()[index];
+            return drawV2Placeholder(
+                canvas,
+                command.header,
+                meshPlaceholderBounds(frame, command),
+                command.tint
+            );
+        }
+        case CommandKind::gradient: {
+            placeholder = true;
+            if (index >= frame.gradients().size()) {
+                return false;
+            }
+            const GradientCommand& command = frame.gradients()[index];
+            return drawV2Placeholder(
+                canvas,
+                command.header,
+                command.bounds,
+                frame.gradientStops()[command.stops.offset].color
+            );
+        }
+        case CommandKind::clip: {
+            placeholder = true;
+            if (index >= frame.clips().size()) {
+                return false;
+            }
+            const ClipCommand& command = frame.clips()[index];
+            return drawV2Placeholder(
+                canvas,
+                command.header,
+                command.operation == ClipOperation::pop ? RectF{} : command.bounds,
+                PremultipliedRgba::fromStraight(0.96F, 0.62F, 0.12F, 0.72F)
+            );
+        }
+        case CommandKind::pass: {
+            placeholder = true;
+            if (index >= frame.passes().size()) {
+                return false;
+            }
+            const PassCommand& command = frame.passes()[index];
+            RectF bounds = command.destinationBounds;
+            if (!(bounds.width > 0.0F) || !(bounds.height > 0.0F)) {
+                bounds = command.sourceBounds;
+            }
+            return drawV2Placeholder(
+                canvas,
+                command.header,
+                bounds,
+                command.tintColor.alpha > 0.0F
+                    ? command.tintColor
+                    : PremultipliedRgba::fromStraight(0.32F, 0.72F, 1.0F, 0.72F)
+            );
+        }
     }
     return false;
 }
@@ -2079,15 +2207,15 @@ RasterResult rasterFrame(
     const FramePacket& frame
 ) noexcept {
     if (!surfaceIsUsable(surface)) {
-        return {RasterError::invalidSurface, 0, 0};
+        return {RasterError::invalidSurface, 0, 0, 0};
     }
     SurfaceAccess access(surface);
     if (!access.isValid()) {
-        return {RasterError::surfaceLockFailed, 0, 0};
+        return {RasterError::surfaceLockFailed, 0, 0, 0};
     }
     RasterCanvas canvas(surface, access, frame.viewport());
     if (!canvas.isValid()) {
-        return {RasterError::invalidViewport, 0, frame.commandStream().size()};
+        return {RasterError::invalidViewport, 0, 0, frame.commandStream().size()};
     }
 
     const std::uint32_t clearPixel = packColor(frame.metadata().clearColor);
@@ -2098,10 +2226,17 @@ RasterResult rasterFrame(
 
     RasterResult result;
     for (const CommandRef reference : frame.commandStream()) {
-        if (dispatchCommand(canvas, frame, reference)) {
+        bool placeholder = false;
+        if (dispatchCommand(canvas, frame, reference, placeholder)) {
             ++result.renderedCommands;
+            if (placeholder) {
+                ++result.placeholderCommands;
+            }
         } else {
             ++result.skippedCommands;
+            if (placeholder) {
+                ++result.placeholderCommands;
+            }
         }
     }
     return result;

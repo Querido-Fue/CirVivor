@@ -18,6 +18,7 @@ enum class RasterError : std::uint8_t {
 struct RasterResult final {
     RasterError error = RasterError::none;
     std::uint64_t renderedCommands = 0;
+    std::uint64_t placeholderCommands = 0;
     std::uint64_t skippedCommands = 0;
 };
 

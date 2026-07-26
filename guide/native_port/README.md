@@ -94,7 +94,15 @@ OFL SHA-256 dbbfd9862cc8513c40d307d892a446b33ef4767e6423a3f74a913b8a210b91fd
 
 WOFF2를 TTF로 변환해 같은 Reserved Font Name으로 재배포하지 않는다. `TextAssets.cmake`가 저장소 원본 WOFF2와 OFL hash를 configure 때 검사한 뒤 `runtime_assets`로 무변환 복사한다. `FontFace`는 `FT_New_Memory_Face`, unicode charmap, variable `wght`, `hb-ft`와 no-hinting grayscale raster를 사용하며 public header에는 FreeType/HarfBuzz 타입을 노출하지 않는다. 64px·wght 400 shaping과 32px·wght 300 raster를 canonical hash로 고정한다.
 
-`GlyphAtlas`는 font source FNV-1a fingerprint, glyph index, pixel size, weight를 key로 사용하며 생성 때 pixel/entry/open-address lookup 저장소를 모두 확보한다. 1px padding shelf pack은 중복 조회, entry/공간 초과와 실패 시 pixel·entry·generation 불변을 검사한다. atlas 채우기는 asset/UI preload 단계 작업이며 frame tick에서는 lookup만 사용한다. 실제 FramePacket glyph run, backend texture upload·draw와 shaped-text cache는 후속 단계다.
+`GlyphAtlas`는 font source FNV-1a fingerprint, glyph index, pixel size, weight를 key로 사용하며 생성 때 pixel/entry/open-address lookup 저장소를 모두 확보한다. 1px padding shelf pack은 중복 조회, entry/공간 초과와 실패 시 pixel·entry·generation 불변을 검사한다. atlas 채우기는 asset/UI preload 단계 작업이며 frame tick에서는 lookup만 사용한다. 실제 shaped-text cache와 backend atlas upload·draw는 후속 단계다.
+
+## FramePacket v2 UI 렌더 계약
+
+`FramePacket::schema_version` 2는 기존 command kind 0~6과 `FramePacketCapacity`의 기존 prefix를 그대로 두고 glyph run, projective textured mesh, linear/radial gradient, scissor/rounded clip stack, offscreen capture/composite pass를 추가한다. glyph·vertex/index·gradient stop은 packet이 별도 연속 저장소로 소유하며 fixed-capacity builder에서는 command와 부속 저장소 어느 쪽이든 부족하면 부분 결과를 publish하지 않는다.
+
+canonical codec은 padding과 host endian에 의존하지 않는 little-endian v2만 decode한다. v1 synthetic wire `2,862B / be64e77fc11fc188`은 migration fixture로 보존하고 v2 decoder가 명시적으로 거부한다. 기존 명령만 담은 v2 fixture는 `2,898B / 73c9f4cc45c2d5db`, 모든 신규 명령 fixture는 `1,809B / dc42ba9a8b97777b`다. decode는 count·wire·decoded memory 상한을 allocation 전에 검사하고 실패 시 destination을 변경하지 않는다.
+
+clip/pass stack의 균형, layer·coordinate-space·order 범위, session/destination 중복, capture dependency와 source anchor의 선후 관계는 packet validation에서 거부한다. SDL_GPU/GLES/Software는 아직 신규 고급 명령을 결정적인 marker geometry로만 처리하며 `placeholderCommands`를 별도 계측한다. 실제 atlas sampling, perspective-correct mesh, gradient, clip, blur/glass pass를 구현해 production UI frame에서 이 값이 0이 되기 전에는 UI 렌더 완료로 보지 않는다.
 
 ## Windows 빌드와 검증
 

@@ -13,6 +13,10 @@ struct FramePacketDecodeLimits final {
     std::uint32_t maximumCommandCount = 131'072;
     std::uint32_t maximumCommandsPerKind = 65'536;
     std::uint32_t maximumUtf8ByteCount = 8U * 1'024U * 1'024U;
+    std::uint32_t maximumGlyphInstanceCount = 1U * 1'024U * 1'024U;
+    std::uint32_t maximumMeshVertexCount = 1U * 1'024U * 1'024U;
+    std::uint32_t maximumMeshIndexCount = 3U * 1'024U * 1'024U;
+    std::uint32_t maximumGradientStopCount = 256U * 1'024U;
     std::size_t maximumWireByteCount = 64U * 1'024U * 1'024U;
     std::size_t maximumDecodedByteCount = 64U * 1'024U * 1'024U;
 };
@@ -40,7 +44,7 @@ struct FramePacketDecodeResult final {
 };
 
 /**
- * FramePacket을 padding과 host endian에 의존하지 않는 canonical little-endian v1으로 기록합니다.
+ * FramePacket을 padding과 host endian에 의존하지 않는 canonical little-endian v2로 기록합니다.
  * output은 재사용할 수 있으며 clear 뒤 기존 capacity를 유지합니다.
  */
 [[nodiscard]] bool serializeFramePacket(
@@ -49,7 +53,7 @@ struct FramePacketDecodeResult final {
 );
 
 /**
- * canonical v1을 읽습니다. 실패하면 destination을 변경하지 않으며, 비정상 count는
+ * canonical v2를 읽습니다. 실패하면 destination을 변경하지 않으며, 비정상 count는
  * allocation 전에 limits로 차단합니다.
  */
 [[nodiscard]] FramePacketDecodeResult deserializeFramePacket(

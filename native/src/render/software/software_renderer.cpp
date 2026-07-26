@@ -119,6 +119,7 @@ bool SoftwareRenderer::render(const FramePacket& frame) noexcept {
     const auto end = std::chrono::steady_clock::now();
 
     lastStats_.renderedCommands = result.renderedCommands;
+    lastStats_.placeholderCommands = result.placeholderCommands;
     lastStats_.skippedCommands = result.skippedCommands;
     lastStats_.wallClockMilliseconds = std::chrono::duration<double, std::milli>(end - start).count();
     lastError_ = mapRasterError(result.error);

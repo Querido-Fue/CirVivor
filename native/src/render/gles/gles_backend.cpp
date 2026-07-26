@@ -361,6 +361,45 @@ enum class GeometryOutcome : std::uint8_t {
     return {x, y, width, height};
 }
 
+[[nodiscard]] RectF v2MarkerBounds(
+    const ViewportState& viewport,
+    const std::uint64_t seed
+) noexcept {
+    const RectF content = viewport.logicalUi.contentRect;
+    const float marker = std::max(
+        std::min(content.width, content.height) * 0.014F,
+        4.0F
+    );
+    const float offset = static_cast<float>(seed & 0x1fU) * marker * 0.08F;
+    return {
+        content.x + marker + offset,
+        content.y + marker * 2.0F,
+        marker,
+        marker
+    };
+}
+
+[[nodiscard]] RectF meshPlaceholderBounds(
+    const FramePacket& frame,
+    const TexturedMeshCommand& command
+) noexcept {
+    const auto vertices = frame.meshVertices().subspan(
+        static_cast<std::size_t>(command.vertices.offset),
+        static_cast<std::size_t>(command.vertices.count)
+    );
+    float left = vertices.front().position.x;
+    float top = vertices.front().position.y;
+    float right = left;
+    float bottom = top;
+    for (const ProjectiveVertex& vertex : vertices) {
+        left = std::min(left, vertex.position.x);
+        top = std::min(top, vertex.position.y);
+        right = std::max(right, vertex.position.x);
+        bottom = std::max(bottom, vertex.position.y);
+    }
+    return {left, top, right - left, bottom - top};
+}
+
 } // namespace
 
 struct GlesBackend::Impl final {
@@ -1445,6 +1484,105 @@ struct GlesBackend::Impl final {
                     );
                     break;
                 }
+                break;
+            }
+            case CommandKind::glyphRun: {
+                const GlyphRunCommand& command = frame.glyphRuns()[index];
+                record(
+                    drawRectangle(
+                        {
+                            command.origin.x,
+                            command.origin.y - command.pixelsPerEm,
+                            command.pixelsPerEm * 0.62F
+                                * static_cast<float>(command.glyphs.count),
+                            command.pixelsPerEm
+                        },
+                        command.header,
+                        visibleColorOr(
+                            command.color,
+                            PremultipliedRgba::fromStraight(0.82F, 0.36F, 1.0F, 0.78F)
+                        ),
+                        mapper
+                    ),
+                    true,
+                    false
+                );
+                break;
+            }
+            case CommandKind::texturedMesh: {
+                const TexturedMeshCommand& command = frame.texturedMeshes()[index];
+                record(
+                    drawRectangle(
+                        meshPlaceholderBounds(frame, command),
+                        command.header,
+                        visibleColorOr(
+                            command.tint,
+                            PremultipliedRgba::fromStraight(0.94F, 0.32F, 0.84F, 0.78F)
+                        ),
+                        mapper
+                    ),
+                    true,
+                    false
+                );
+                break;
+            }
+            case CommandKind::gradient: {
+                const GradientCommand& command = frame.gradients()[index];
+                const GradientStop& stop = frame.gradientStops()[command.stops.offset];
+                record(
+                    drawRectangle(
+                        command.bounds,
+                        command.header,
+                        visibleColorOr(
+                            stop.color,
+                            PremultipliedRgba::fromStraight(0.22F, 0.72F, 0.96F, 0.72F)
+                        ),
+                        mapper
+                    ),
+                    true,
+                    false
+                );
+                break;
+            }
+            case CommandKind::clip: {
+                const ClipCommand& command = frame.clips()[index];
+                const RectF bounds = command.operation == ClipOperation::pop
+                    ? v2MarkerBounds(frame.viewport(), index)
+                    : command.bounds;
+                record(
+                    drawRectangle(
+                        bounds,
+                        command.header,
+                        PremultipliedRgba::fromStraight(0.96F, 0.62F, 0.12F, 0.72F),
+                        mapper
+                    ),
+                    true,
+                    false
+                );
+                break;
+            }
+            case CommandKind::pass: {
+                const PassCommand& command = frame.passes()[index];
+                RectF bounds = command.destinationBounds;
+                if (!(bounds.width > 0.0F) || !(bounds.height > 0.0F)) {
+                    bounds = command.sourceBounds;
+                }
+                if (!(bounds.width > 0.0F) || !(bounds.height > 0.0F)) {
+                    bounds = v2MarkerBounds(frame.viewport(), command.sessionId);
+                }
+                record(
+                    drawRectangle(
+                        bounds,
+                        command.header,
+                        visibleColorOr(
+                            command.tintColor,
+                            PremultipliedRgba::fromStraight(0.32F, 0.72F, 1.0F, 0.72F)
+                        ),
+                        mapper
+                    ),
+                    true,
+                    false
+                );
                 break;
             }
             }

@@ -981,6 +981,73 @@ private:
     return false;
 }
 
+[[nodiscard]] inline bool drawV2Placeholder(
+    FrameGeometry& geometry,
+    const Mapper& mapper,
+    const ViewportState& viewport,
+    const CommandHeader& header,
+    RectF bounds,
+    const PremultipliedRgba color,
+    const std::uint64_t markerSeed
+) noexcept {
+    if (!(bounds.width > 0.0F) || !(bounds.height > 0.0F)) {
+        const RectF content = viewport.logicalUi.contentRect;
+        const float marker = std::max(
+            std::min(content.width, content.height) * 0.014F,
+            4.0F
+        );
+        const float offset = static_cast<float>(markerSeed & 0x1fU) * marker * 0.08F;
+        bounds = {
+            content.x + marker + offset,
+            content.y + marker * 2.0F,
+            marker,
+            marker
+        };
+    }
+    const Point center{
+        static_cast<double>(bounds.x) + bounds.width * 0.5,
+        static_cast<double>(bounds.y) + bounds.height * 0.5
+    };
+    return addMappedRect(
+            geometry,
+            mapper,
+            bounds,
+            header.coordinateSpace,
+            0.0F,
+            center,
+            scaledColor(color, 0.72F, 0.68F)
+        )
+        && addRectOutline(
+            geometry,
+            mapper,
+            bounds,
+            header.coordinateSpace,
+            color,
+            std::max(bounds.width, bounds.height) * 0.006F
+        );
+}
+
+[[nodiscard]] inline RectF meshPlaceholderBounds(
+    const FramePacket& frame,
+    const TexturedMeshCommand& command
+) noexcept {
+    const auto vertices = frame.meshVertices().subspan(
+        static_cast<std::size_t>(command.vertices.offset),
+        static_cast<std::size_t>(command.vertices.count)
+    );
+    float left = vertices.front().position.x;
+    float top = vertices.front().position.y;
+    float right = left;
+    float bottom = top;
+    for (const ProjectiveVertex& vertex : vertices) {
+        left = std::min(left, vertex.position.x);
+        top = std::min(top, vertex.position.y);
+        right = std::max(right, vertex.position.x);
+        bottom = std::max(bottom, vertex.position.y);
+    }
+    return {left, top, right - left, bottom - top};
+}
+
 [[nodiscard]] inline bool dispatchCommand(
     FrameGeometry& geometry,
     const Mapper& mapper,
@@ -1021,6 +1088,96 @@ private:
                 frame.viewport(),
                 frame.overlays()[index]
             );
+    case CommandKind::glyphRun: {
+        placeholder = true;
+        if (index >= frame.glyphRuns().size()) {
+            return false;
+        }
+        const GlyphRunCommand& command = frame.glyphRuns()[index];
+        return drawV2Placeholder(
+            geometry,
+            mapper,
+            frame.viewport(),
+            command.header,
+            {
+                command.origin.x,
+                command.origin.y - command.pixelsPerEm,
+                command.pixelsPerEm * 0.62F * static_cast<float>(command.glyphs.count),
+                command.pixelsPerEm
+            },
+            command.color,
+            command.fontId
+        );
+    }
+    case CommandKind::texturedMesh: {
+        placeholder = true;
+        if (index >= frame.texturedMeshes().size()) {
+            return false;
+        }
+        const TexturedMeshCommand& command = frame.texturedMeshes()[index];
+        return drawV2Placeholder(
+            geometry,
+            mapper,
+            frame.viewport(),
+            command.header,
+            meshPlaceholderBounds(frame, command),
+            command.tint,
+            command.textureId
+        );
+    }
+    case CommandKind::gradient: {
+        placeholder = true;
+        if (index >= frame.gradients().size()) {
+            return false;
+        }
+        const GradientCommand& command = frame.gradients()[index];
+        const GradientStop& stop = frame.gradientStops()[command.stops.offset];
+        return drawV2Placeholder(
+            geometry,
+            mapper,
+            frame.viewport(),
+            command.header,
+            command.bounds,
+            stop.color,
+            command.stops.offset
+        );
+    }
+    case CommandKind::clip: {
+        placeholder = true;
+        if (index >= frame.clips().size()) {
+            return false;
+        }
+        const ClipCommand& command = frame.clips()[index];
+        return drawV2Placeholder(
+            geometry,
+            mapper,
+            frame.viewport(),
+            command.header,
+            command.operation == ClipOperation::pop ? RectF{} : command.bounds,
+            PremultipliedRgba::fromStraight(0.95F, 0.62F, 0.12F, 0.72F),
+            index
+        );
+    }
+    case CommandKind::pass: {
+        placeholder = true;
+        if (index >= frame.passes().size()) {
+            return false;
+        }
+        const PassCommand& command = frame.passes()[index];
+        RectF bounds = command.destinationBounds;
+        if (!(bounds.width > 0.0F) || !(bounds.height > 0.0F)) {
+            bounds = command.sourceBounds;
+        }
+        return drawV2Placeholder(
+            geometry,
+            mapper,
+            frame.viewport(),
+            command.header,
+            bounds,
+            overlayMarkerColor(command.sessionId),
+            command.sessionId
+        );
+    }
     }
     return false;
 }
@@ -1045,6 +1202,18 @@ private:
         return index < frame.ui().size() ? &frame.ui()[index].header : nullptr;
     case CommandKind::overlay:
         return index < frame.overlays().size() ? &frame.overlays()[index].header : nullptr;
+    case CommandKind::glyphRun:
+        return index < frame.glyphRuns().size() ? &frame.glyphRuns()[index].header : nullptr;
+    case CommandKind::texturedMesh:
+        return index < frame.texturedMeshes().size()
+            ? &frame.texturedMeshes()[index].header
+            : nullptr;
+    case CommandKind::gradient:
+        return index < frame.gradients().size() ? &frame.gradients()[index].header : nullptr;
+    case CommandKind::clip:
+        return index < frame.clips().size() ? &frame.clips()[index].header : nullptr;
+    case CommandKind::pass:
+        return index < frame.passes().size() ? &frame.passes()[index].header : nullptr;
     }
     return nullptr;
 }

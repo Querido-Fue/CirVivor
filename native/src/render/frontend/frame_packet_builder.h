@@ -3,6 +3,7 @@
 #include "render/common/frame_packet.h"
 
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace cirvivor::render::frontend {
@@ -21,6 +22,8 @@ enum class FrameBuildError : std::uint8_t {
     commandCountOverflow,
     textStorageOverflow,
     textAliasesPacketStorage,
+    auxiliaryStorageOverflow,
+    storageAliasesPacketStorage,
     invalidLayer,
     invalidOverlayLayer,
     renderOrderRegression,
@@ -58,6 +61,21 @@ public:
     [[nodiscard]] bool addEffect(EffectCommand command);
     [[nodiscard]] bool addUi(UiCommand command);
     [[nodiscard]] bool addOverlay(OverlayCommand command);
+    [[nodiscard]] bool addGlyphRun(
+        GlyphRunCommand command,
+        std::span<const GlyphInstance> glyphs
+    );
+    [[nodiscard]] bool addTexturedMesh(
+        TexturedMeshCommand command,
+        std::span<const ProjectiveVertex> vertices,
+        std::span<const std::uint32_t> indices
+    );
+    [[nodiscard]] bool addGradient(
+        GradientCommand command,
+        std::span<const GradientStop> stops
+    );
+    [[nodiscard]] bool addClip(ClipCommand command);
+    [[nodiscard]] bool addPass(PassCommand command);
 
     [[nodiscard]] FrameBuildError error() const noexcept;
     [[nodiscard]] bool isBuilding() const noexcept;
@@ -65,7 +83,14 @@ public:
 
 private:
     [[nodiscard]] bool prepareCommand(const CommandHeader& header, bool overlayCommand) noexcept;
-    [[nodiscard]] bool ensureCommandCapacity(CommandKind kind, std::size_t textByteCount);
+    [[nodiscard]] bool ensureCommandCapacity(
+        CommandKind kind,
+        std::size_t textByteCount = 0,
+        std::size_t glyphCount = 0,
+        std::size_t meshVertexCount = 0,
+        std::size_t meshIndexCount = 0,
+        std::size_t gradientStopCount = 0
+    );
     void commitOrder(const CommandHeader& header) noexcept;
     void releasePacket() noexcept;
     void resetBuildState() noexcept;
