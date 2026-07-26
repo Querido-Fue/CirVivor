@@ -1,0 +1,15 @@
+{
+    "name": "lonely-tower-ui-visual-golden",
+    "version": "1.0.0",
+    "main": "index.html",
+    "chromium-args": "--force-device-scale-factor=1 --disable-lcd-text --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
+    "window": {
+        "title": "UI visual pixel golden",
+        "toolbar": false,
+        "frame": false,
+        "resizable": false,
+        "width": 1280,
+        "height": 720,
+        "position": "center"
+    }
+}

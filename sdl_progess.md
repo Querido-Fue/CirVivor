@@ -11,10 +11,11 @@
 - 기존 JS 테스트: 433/433 통과
 - 기존 WAT/WASM 재현성: flow-field 및 collision-contact 통과
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
+- 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
 - 네이티브 검증: MSVC Debug·Release CTest 각 17/17, GCC headless 12/12, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 정상 실행: SDL 의미 입력→짧은 입력 latch→60Hz `GameSystem`→94-command playable `FramePacket` 연결 및 Computer Use 실기 이동 확인
-- 기존판 UI oracle: Computer Use로 로딩 이후 타이틀과 factory 8종·종료·외부 링크 경고·디버그 등 도달 가능한 오버레이를 직접 열어 시각·중첩·입력 상태 확인, 21개 결정적 시나리오 계약 고정
+- 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 한국어·라틴 canonical shaping 통과
 - Software 960×540 성능 게이트: Release 180-frame render p95 24.456ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
@@ -28,7 +29,7 @@
 | Phase 2 — SDL3 Desktop 셸 | 완료 | callback·창·이벤트·lifecycle·scheduler·storage·audio를 실제/dummy driver에서 검증 |
 | Phase 3 — FramePacket/기본 렌더 백엔드 | 완료 | 세 backend 실제 command drawing·fallback·reset/pacing과 Software 960×540 Release p95 30fps 게이트 통과 |
 | Phase 4 — Simulation parity | 진행 중 | Body SoA·타일 충돌·GameSystem replay, 두 WAT scalar, 첫 solve spatial grid/candidate와 generic narrowphase exact parity 및 Desktop playable session bridge 통과. position solve/projectile 진행 중 |
-| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI oracle) | playable vertical slice, 기존에 실제 존재하는 타이틀·전체 도달 가능 오버레이의 시각·입력·상태 전이 parity와 세 품질 경로 완료. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분 |
+| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | playable vertical slice, 기존에 실제 존재하는 타이틀·전체 도달 가능 오버레이의 시각·입력·상태 전이 parity와 세 품질 경로 완료. 기존판 pixel oracle은 고정 완료, native 구현은 진행 중. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분 |
 | Phase 9 — Android | 준비 중 | 사용자 범위 SDK/NDK 설치, ARM64 빌드, Vulkan→GLES→Software 폴백, lifecycle 검증 |
 | Phase 10 — iOS | 현재 범위 제외 | Mac 환경이 없어 사용자 요청에 따라 건너뛴다. 코드 경계는 훼손하지 않되 빌드·서명·실기 완료로 표시하지 않는다. |
 | Phase 11~12 — 멀티코어·Cutover | 대기 | worker parity, native-only release candidate, NW.js 제품 경로 제거 |
@@ -453,11 +454,20 @@ manager/global overlay: 3/3
 orphan inventory: CollectionOverlay 1개
 JavaScript full suite: 433/433 통과
 MSVC Debug·Release CTest: 16/16 통과
+
+NW.js production pixel golden
+scenario: 21/21 PASS
+static / dynamic / final: 147 / 114 / 21
+raw surface hash: 282개 / 1,039,564,800 bytes 생성 후 폐기
+tracked final PNG: 21개 / 6,030,950 bytes
+capture set SHA-256: e35810d66459529dc87b3bc10d4613f30f6a4c83d954130352b6fc228dc024ec
 ```
 
 - `ui_visual/scenarios_v1.json`은 1280×720, DPR 1, 60Hz fixed clock, seed 1817에서 Loading/Title 시점, hover, overlay open/mid/close, floating dropdown, 불투명 설정, 중첩 외부 링크 경고와 Debug/Exit 상태를 고정한다.
 - SDL event는 backend 중립 mouse/touch/cancel/wheel, pointer identity, 고정 크기 UTF-8 commit/composition, focus-loss clear로 변환된다. 이후 UI 상태기는 이 seam만 소비하며 SDL 타입을 직접 참조하지 않는다.
 - `Alt+F4`를 Computer Use로 원본 NW.js에 전달했을 때 즉시 종료되지 않고 `종료 / 게임을 종료할까요? / 아니오 / 예` overlay가 열리는 것을 재확인했다. native도 `windowCloseRequested`를 별도 event로 운반하며, exit overlay가 아직 연결되지 않은 현재만 정상 종료 fallback을 사용한다.
+- UI golden harness는 각 시나리오를 격리한 실제 `SystemHandler → LoadingScene → TitleScene → OverlayManager` 경로로 실행한다. 정적·동적 production surface는 raw RGBA 길이/SHA-256으로, 최종 compositor는 승인 PNG를 다시 RGBA로 디코드해 byte-exact로 검사한다.
+- 약 1.04GB의 raw RGBA는 Git에 저장하지 않고 실행 중 해시 검증 후 폐기한다. 저장소에는 사람이 검토할 최종 PNG 21개와 same-profile manifest만 약 6.2MB로 고정했다.
 
 ### 2026-07-27 — 원본 WOFF2 기반 네이티브 text foundation
 
@@ -503,7 +513,7 @@ total advance 26.6: 24388
 - [x] 기존 타이틀·도달 가능한 overlay 11종과 orphan overlay의 source/Computer Use 인벤토리
 - [x] 21개 Loading/Title/overlay 시각·상태·입력 시나리오 계약과 JS 회귀 테스트
 - [x] SDL mouse/touch/wheel/text/IME/window-close의 backend 중립 UI 입력 seam
-- [ ] 실제 Loading/Title/overlay 결정적 NW.js pixel golden 캡처·승인
+- [x] 실제 Loading/Title/overlay 21개 결정적 NW.js pixel golden 캡처·승인 및 exact check
 - [x] 원본 WOFF2/OFL asset 고정과 공통 FreeType/HarfBuzz memory-face/shaping foundation
 - [ ] 다중 weight glyph raster/atlas/cache와 세 backend text drawing
 - [ ] `FramePacket v2` glyph/vector/gradient/clip/render-pass·중첩 overlay capture 계약

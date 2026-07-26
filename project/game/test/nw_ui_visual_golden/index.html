@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>UI visual pixel golden</title>
+    <link rel="stylesheet" type="text/css" href="../../style.css">
+    <style>
+        html,
+        body {
+            width: 1280px;
+            height: 720px;
+        }
+
+        body {
+            display: block;
+        }
+
+        #harness-status {
+            display: none;
+        }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "display/": "../../script/module/display/",
+            "scene/": "../../script/module/scene/",
+            "simulation/": "../../script/module/simulation/",
+            "ui/": "../../script/module/ui/",
+            "util/": "../../script/util/",
+            "animation/": "../../script/module/animation/",
+            "input/": "../../script/module/input/",
+            "sound/": "../../script/module/sound/",
+            "save/": "../../script/module/save/",
+            "physics/": "../../script/module/physics/",
+            "ingame/": "../../script/module/ingame/",
+            "data/": "../../script/data/",
+            "object/": "../../script/module/object/",
+            "debug/": "../../script/module/debug/",
+            "game/": "../../script/",
+            "overlay/": "../../script/module/overlay/"
+        }
+    }
+    </script>
+    <script>
+        (() => {
+            const fs = window.require('fs');
+            const resultPath = process.env.CIRVIVOR_UI_GOLDEN_RESULT_PATH;
+            let reported = false;
+            window.reportUiGoldenBootstrapFailure = (error) => {
+                if (reported) return;
+                reported = true;
+                const message = error?.stack || error?.message || String(error);
+                if (resultPath) {
+                    fs.writeFileSync(`${resultPath}.progress`, 'bootstrap:module-load-failed\n', 'utf8');
+                    fs.writeFileSync(resultPath, JSON.stringify({
+                        status: 'fail',
+                        mode: process.env.CIRVIVOR_UI_GOLDEN_MODE || null,
+                        scenarioId: process.env.CIRVIVOR_UI_GOLDEN_SCENARIO_ID || null,
+                        error: message
+                    }, null, 2), 'utf8');
+                }
+                setTimeout(() => nw.App.quit(), 25);
+            };
+            window.addEventListener('error', (event) => {
+                const source = event?.target?.src || event?.filename || 'unknown module';
+                window.reportUiGoldenBootstrapFailure(
+                    event.error || new Error(event.message || `모듈 로드 실패: ${source}`)
+                );
+            }, true);
+            window.addEventListener('unhandledrejection', (event) => {
+                window.reportUiGoldenBootstrapFailure(event.reason);
+            });
+            if (resultPath) {
+                fs.writeFileSync(`${resultPath}.progress`, 'bootstrap:index-loaded\n', 'utf8');
+            }
+        })();
+    </script>
+</head>
+<body>
+    <canvas class="canvas" id="background"></canvas>
+    <canvas class="canvas" id="object"></canvas>
+    <canvas class="canvas" id="effect"></canvas>
+    <canvas class="canvas" id="texteffect"></canvas>
+    <canvas class="canvas" id="ui"></canvas>
+    <div id="overlaylayerhost"></div>
+    <canvas class="canvas" id="vignette"></canvas>
+    <canvas class="canvas" id="top"></canvas>
+    <output id="harness-status" aria-live="polite"></output>
+    <script type="module" src="./runner.js"></script>
+</body>
+</html>

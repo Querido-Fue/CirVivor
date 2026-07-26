@@ -1,0 +1,3 @@
+# Raw RGBA and mismatch artifacts are generated outside the repository by default.
+goldens/**/*.rgba
+artifacts/

@@ -12,6 +12,8 @@
         "benchmark:wasm:flow-field": "node game/test/benchmark/enemy_ai_flow_field_wasm.bench.mjs",
         "test:render:golden": "node game/test/support/run_nw_render_pipeline_golden.mjs --check",
         "update:render:golden": "node game/test/support/run_nw_render_pipeline_golden.mjs --update",
+        "test:ui:golden": "node game/test/support/run_nw_ui_visual_golden.mjs --check",
+        "update:ui:golden": "node game/test/support/run_nw_ui_visual_golden.mjs --update",
         "baseline:sdl": "node --experimental-vm-modules game/test/support/export_sdl_game_system_baseline.mjs --check",
         "baseline:sdl:update": "node --experimental-vm-modules game/test/support/export_sdl_game_system_baseline.mjs --update",
         "baseline:sdl:legacy": "node --experimental-vm-modules game/test/support/export_legacy_collision_projectile_baseline.mjs --check",

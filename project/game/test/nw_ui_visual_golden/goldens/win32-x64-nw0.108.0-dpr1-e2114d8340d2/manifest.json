@@ -1,0 +1,4548 @@
+{
+    "schemaVersion": 2,
+    "suite": {
+        "id": "title-overlay-parity-v1",
+        "source": "game/test/fixtures/ui_visual/scenarios_v1.json",
+        "sourceSha256": "1500c88fd2666b20676b9e085d888a6a499ed712253c57013cf0e3f93c85dd3d",
+        "oracle": {
+            "runtime": "nwjs",
+            "entryPoint": "game/index.html",
+            "viewport": {
+                "width": 1280,
+                "height": 720,
+                "devicePixelRatio": 1
+            },
+            "clock": {
+                "fixedStepHz": 60,
+                "frameDurationMs": 16.666666666666668,
+                "timeOriginMs": 123456,
+                "titleReadyFrame": 420,
+                "overlayOpenCompleteFrames": 30
+            },
+            "random": {
+                "algorithm": "xorshift32",
+                "seed": 1817,
+                "patchTarget": "Math.random"
+            },
+            "pointer": {
+                "x": 16,
+                "y": 16,
+                "buttons": []
+            },
+            "settings": {
+                "windowMode": "windowed",
+                "widescreenSupport": true,
+                "width": 1280,
+                "height": 720,
+                "renderScale": 100,
+                "uiScale": 100,
+                "disableTransparency": false,
+                "language": "korean",
+                "theme": "dark",
+                "tooltipDelaySeconds": 0.3,
+                "bgmVolume": 0,
+                "sfxVolume": 0,
+                "debugMode": false
+            }
+        },
+        "capture": {
+            "staticSurfaceRoles": [
+                "background",
+                "object",
+                "effect",
+                "texteffect",
+                "ui",
+                "vignette",
+                "top"
+            ],
+            "dynamicSurfacePolicy": "all-in-sort-order",
+            "includeFinalComposite": true
+        }
+    },
+    "profile": {
+        "id": "win32-x64-nw0.108.0-dpr1-e2114d8340d2",
+        "platform": "win32",
+        "arch": "x64",
+        "nw": "0.108.0",
+        "node": "25.2.1",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "dpr": 1,
+        "viewport": {
+            "width": 1280,
+            "height": 720
+        },
+        "runtimeClock": {
+            "timeOriginMs": 123456,
+            "frameDurationMs": 16.666666666666668
+        },
+        "font": {
+            "family": "Pretendard Variable",
+            "file": "game/font/PretendardVariable.woff2",
+            "byteLength": 2057688,
+            "sha256": "9599f12fd42fc0bce1cd50b47a0c022e108d7aa64dd0d1bb0ed44f3282d900b4",
+            "specs": [
+                "400 18px \"Pretendard Variable\"",
+                "600 18px \"Pretendard Variable\"",
+                "700 24px \"Pretendard Variable\""
+            ]
+        },
+        "backgroundContext": {
+            "vendor": "WebKit",
+            "renderer": "WebKit WebGL",
+            "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+            "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+            "unmaskedVendor": "Google Inc. (NVIDIA)",
+            "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 SUPER (0x00002702) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "attributes": {
+                "alpha": false,
+                "antialias": true,
+                "depth": true,
+                "desynchronized": false,
+                "failIfMajorPerformanceCaveat": false,
+                "powerPreference": "default",
+                "premultipliedAlpha": true,
+                "preserveDrawingBuffer": false,
+                "stencil": false,
+                "xrCompatible": false
+            }
+        },
+        "effectContext": {
+            "vendor": "WebKit",
+            "renderer": "WebKit WebGL",
+            "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+            "shadingLanguageVersion": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+            "unmaskedVendor": "Google Inc. (NVIDIA)",
+            "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 SUPER (0x00002702) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+            "attributes": {
+                "alpha": true,
+                "antialias": true,
+                "depth": true,
+                "desynchronized": false,
+                "failIfMajorPerformanceCaveat": false,
+                "powerPreference": "default",
+                "premultipliedAlpha": true,
+                "preserveDrawingBuffer": false,
+                "stencil": false,
+                "xrCompatible": false
+            }
+        }
+    },
+    "capabilities": {
+        "status": "complete",
+        "productionPath": [
+            "SystemHandler",
+            "SceneSystem",
+            "LoadingScene",
+            "TitleScene",
+            "OverlayManager"
+        ],
+        "supportedActions": [
+            "activateOverlayElement",
+            "advanceFrames",
+            "clickMouseButton",
+            "closeTitleOverlay",
+            "flushAsyncJobs",
+            "movePointerToTitleEntry",
+            "openExitOverlay",
+            "openExternalLinkWarningOverlay",
+            "openTitleOverlay"
+        ],
+        "executedScenarioIds": [
+            "title.loading.pre-intro",
+            "title.loading.logo-half",
+            "title.transition.midpoint",
+            "title.settled",
+            "title.start-card.hover",
+            "title.overlay.map-select.opening-midpoint",
+            "title.overlay.map-select.open",
+            "title.overlay.map-select.closing-midpoint",
+            "title.overlay.deck.open",
+            "title.overlay.setting.open",
+            "title.overlay.setting.language-dropdown",
+            "title.overlay.setting.opaque",
+            "title.overlay.credits.open",
+            "title.overlay.quick-start.open",
+            "title.overlay.records.open",
+            "title.overlay.research.open",
+            "title.overlay.achievements.open",
+            "global.overlay.debug.open",
+            "title.overlay.exit.open",
+            "title.overlay.external-link-warning.open",
+            "title.overlay.credits.external-link-warning"
+        ],
+        "unsupportedScenarios": []
+    },
+    "scenarios": [
+        {
+            "id": "title.loading.pre-intro",
+            "definition": {
+                "id": "title.loading.pre-intro",
+                "kind": "title",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 45
+                    }
+                ],
+                "captureState": "loading-delay"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "loading",
+                "currentSceneClass": "LoadingScene",
+                "titleContentClass": "TitleLoadingSequence",
+                "activeOverlays": []
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "e8d30b0882fa88da0acf7a293d5a48b0329e6ba21a8f46a6265f3f1a483a6d18"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "a0090eb08c27b4e355306470b18d162ceadcd10c98bae6e69b7a4861de919b80",
+                "reviewPng": "title.loading.pre-intro.final.png",
+                "reviewPngByteLength": 392180,
+                "reviewPngSha256": "e7206a2c5aa3538013a736d29b74035eca5ce9a89a77daf01e51864c085fec47"
+            }
+        },
+        {
+            "id": "title.loading.logo-half",
+            "definition": {
+                "id": "title.loading.logo-half",
+                "kind": "title",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 180
+                    }
+                ],
+                "captureState": "logo-playback-half"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "loading",
+                "currentSceneClass": "LoadingScene",
+                "titleContentClass": "TitleLoadingSequence",
+                "activeOverlays": []
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c38cc8b902c51b2961f19337c928e347e433d59a6c914491b3088e983828d24e"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "cbd8617692626fb07f32e8ff62da23b75ac7ff0c01cada4842ff0df05d4bd094"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "ce066983a24069d3e02762937fc7e6f970462a713ba7a729b808035b38e6355f",
+                "reviewPng": "title.loading.logo-half.final.png",
+                "reviewPngByteLength": 398460,
+                "reviewPngSha256": "d3665f15572bb87d12b304dea9bc9e01e3017e6d68bfce11c40e4939ebb6018d"
+            }
+        },
+        {
+            "id": "title.transition.midpoint",
+            "definition": {
+                "id": "title.transition.midpoint",
+                "kind": "title",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 330
+                    }
+                ],
+                "captureState": "circle-logo-menu-transition"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneIntroSequence",
+                "activeOverlays": []
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "e312c320af2fdbe3bc08a52e4d1f984d11441f0b72bd1feb629483126c5c94fd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "9e5619a740964b705ef4769fadc8bd040c6cd73c26ac1799732f13512a5d5318"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "805dd96257e2886188c14e3d13ad38c37fde6b35c08b9aa56ba2e012ad0fe962"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "ab0061e8832ac97dc82ab6dbbaa086f79a3fdc4c392fa3a42eff4d55b6ce5568"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "8e16b4d3562a0ef61e07c5e2dc8b64df079ad12b6bf1025788481b747cad62af",
+                "reviewPng": "title.transition.midpoint.final.png",
+                "reviewPngByteLength": 447957,
+                "reviewPngSha256": "275cf3f33b1c6780ac785cd53e6365bfdbfcaa48e416fa6a89d26dc18408ea83"
+            }
+        },
+        {
+            "id": "title.settled",
+            "definition": {
+                "id": "title.settled",
+                "kind": "title",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    }
+                ],
+                "captureState": "interactive-title"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": []
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "cdbe3f1f5cc43a48bc1e3445113ea9b1a37b45e791f9258fca62acf1cbdc3cbb"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "428d2b04cd444ebbac39fae9abfd8953f5aafc40ec0cc954028e512f9e8f6fdf"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8da354e09a9809aa6823a369388fc9e56db88f731e5ee4cdd6c6165ff29c7041"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "08df5c338bc6ecb13bff4b48e90e060f4fbba0c176bab41bc8091711b83ddc1d",
+                "reviewPng": "title.settled.final.png",
+                "reviewPngByteLength": 480816,
+                "reviewPngSha256": "26f6d301a5ebc499888d8eb80229754a60e749ed323b4e27d689fefcc567c231"
+            }
+        },
+        {
+            "id": "title.start-card.hover",
+            "definition": {
+                "id": "title.start-card.hover",
+                "kind": "title",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "movePointerToTitleEntry",
+                        "entryId": "start"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 18
+                    }
+                ],
+                "captureState": "hover-tilt-spotlight-particles"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": []
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "284ef3d0eb6c8908e07d027c542a2d04cc2123f910ea33c5f5a43e6a21c2d10d"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d127a855ea221c857feb18fb1c2974091d6aff43ef6073908f7b4869719d8c4f"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "ec2a1fde9bde68df45b871200d517f5561067ef8d64917dfba1fa1eb7ad47701"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "7e87f020a9605e1d44aa8ee301546d8421c445f712f35cdfcd4709e9a6eae6f6"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "39e9fdc6d7775bcc641c170ac68df140d947933ab9ac2df66ccdbfa43b5f4a99",
+                "reviewPng": "title.start-card.hover.final.png",
+                "reviewPngByteLength": 491122,
+                "reviewPngSha256": "f780f3233dcb027766c5df5e2dbbba1de3857600dd84cacd5c18def09fcf8c70"
+            }
+        },
+        {
+            "id": "title.overlay.map-select.opening-midpoint",
+            "definition": {
+                "id": "title.overlay.map-select.opening-midpoint",
+                "kind": "titleOverlay",
+                "coverageKey": "mapSelect",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "mapSelect"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 15
+                    }
+                ],
+                "captureState": "open-midpoint"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "MapSelectOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "34a31b42bd2e4ff4ab45e3f3f583e730174b31d1386810c88d46e201e85695b5"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c11452a5b885e0dfee03fbabce8488a9c239dae683a66270db5b4780f348732"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "4d3d796222f7e615976e6c451b3156b4d69d3c350d3ca8af989f6122adb9afdc"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "b4fce9f6c3cb6ce294df806eeb40ffe76504d88ee26d9ef48d7f3ebcba4e68a2"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "1850adbbc2b793872ed77efd7081d89684f4aa55b94ae7479f173d87ca22334b"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "cf9edbff3e5d65ce95fd4ddaa0d5e56a6ffb4d3d964d22303a1208a9ab56fd2a"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "6d90ac0de660055188ebee62aa9c93b93ad9dfcc9acbdd2e47cc7bbfbf6aedea",
+                "reviewPng": "title.overlay.map-select.opening-midpoint.final.png",
+                "reviewPngByteLength": 221436,
+                "reviewPngSha256": "edbc71f8fb414166835885ef8bf78fdb31bc59e9942767ffa17dd47e61e23656"
+            }
+        },
+        {
+            "id": "title.overlay.map-select.open",
+            "definition": {
+                "id": "title.overlay.map-select.open",
+                "kind": "titleOverlay",
+                "coverageKey": "mapSelect",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "mapSelect"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "MapSelectOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "781e099b2967764626ffaaa3b6d7873bcca033d91fdcf635502cafb66df657d7"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "cf9edbff3e5d65ce95fd4ddaa0d5e56a6ffb4d3d964d22303a1208a9ab56fd2a"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "0f937c4321d8271a61b849b672cb21c095d5d124cff64d8bef31495e39da1d09",
+                "reviewPng": "title.overlay.map-select.open.final.png",
+                "reviewPngByteLength": 202637,
+                "reviewPngSha256": "66c1a376f1e2a8af22dc4028dcaa0bbd07bed249c2f89f0e8c8296dccd2a81b1"
+            }
+        },
+        {
+            "id": "title.overlay.map-select.closing-midpoint",
+            "definition": {
+                "id": "title.overlay.map-select.closing-midpoint",
+                "kind": "titleOverlay",
+                "coverageKey": "mapSelect",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "mapSelect"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    },
+                    {
+                        "action": "closeTitleOverlay"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 15
+                    }
+                ],
+                "captureState": "close-midpoint"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "MapSelectOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "6faf39b66196d336223647c52803394f5b5e11fdc676878bfb1d8e4fc38f94b3"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "a10fa0780116cc13a9e24dc6664a533f424e3236a04a7b822465c029c6f53d9e"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "fa2a1d988ea5825247a70278d33f742a909090429d14a225235ee012d6e19f9d"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "b4fce9f6c3cb6ce294df806eeb40ffe76504d88ee26d9ef48d7f3ebcba4e68a2"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "06908758d5b31442a5eb2c2b13c4cb4107a10fa34e32fed1a65cad785cab3adf"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "cf9edbff3e5d65ce95fd4ddaa0d5e56a6ffb4d3d964d22303a1208a9ab56fd2a"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "c22a5538440b155c041c12b509dd76cf4d2dc51cc77ddda0bd15ace7551b7e81",
+                "reviewPng": "title.overlay.map-select.closing-midpoint.final.png",
+                "reviewPngByteLength": 223092,
+                "reviewPngSha256": "46e2f4beaa40b6dcdf397a2c13ac05efc8a7bcd382166e0f9b845bb3e3bef880"
+            }
+        },
+        {
+            "id": "title.overlay.deck.open",
+            "definition": {
+                "id": "title.overlay.deck.open",
+                "kind": "titleOverlay",
+                "coverageKey": "deck",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "deck"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "DeckOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0ee66a1c250ad61b0566f61cbb43c0c739cf5fb05f2980cf9683d37d06320abc"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "99bca443da04d40e93b9f681866e557b5e0f88445a0cdcd8ad4fc823c5dbf70f"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "d17fb108dbcfa813932d37bb76ebc7f40b60b498fa2a160259e3c201286d893f",
+                "reviewPng": "title.overlay.deck.open.final.png",
+                "reviewPngByteLength": 178804,
+                "reviewPngSha256": "397ee0a0d490b75bc5770d2063a90703fcce7d8e1ecbd24087e029d5fa2fa524"
+            }
+        },
+        {
+            "id": "title.overlay.setting.open",
+            "definition": {
+                "id": "title.overlay.setting.open",
+                "kind": "titleOverlay",
+                "coverageKey": "setting",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "setting"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "SettingsOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0ee66a1c250ad61b0566f61cbb43c0c739cf5fb05f2980cf9683d37d06320abc"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "aa5100a5a1ec510b913912f052324eeb21e813b02b3a04400b51bc9f349728ab"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "123781ae6e216ed9025e5dc95f90cce853e13e39bb858be8fc6e345f6044ba5d",
+                "reviewPng": "title.overlay.setting.open.final.png",
+                "reviewPngByteLength": 230970,
+                "reviewPngSha256": "907cc0480747c000105918d53d4c8374f0e81a525644f610d725b7d30510d54d"
+            }
+        },
+        {
+            "id": "title.overlay.setting.language-dropdown",
+            "definition": {
+                "id": "title.overlay.setting.language-dropdown",
+                "kind": "titleOverlay",
+                "coverageKey": "setting",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "setting"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    },
+                    {
+                        "action": "activateOverlayElement",
+                        "elementId": "control_language"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 18
+                    }
+                ],
+                "captureState": "floating-dropdown-open"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "SettingsOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0cfbf93bc2fff9fe6acf9e40329e08169827b6e108c7dbbfd21696536a2e7c8c"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "b41c8bc905b77a18befba759c9414b0625eeeed092281d4fb77a8ec8617d65bf"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3a2e42682934189e6be00034173eca0fab95f215fad1ea7da3c6e6e54e25233a"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "41c1e5a87f19edf2a310dd021700aca866f44ea52c9316bd27d57119d13ff166"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "bfe10bf961582562e51eb0569bb9b7142f8d55dc0989eb30a60e206ecfcdc7a4"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "bc8dabfff4336234caca5789f516d62d99a93d86b6c846c24be5096fe1003528"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:webgl:7",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10012,
+                    "sequence": 7,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "fab1c437c87e4a2eb93cb60e0dd9fae298669e849370b4cd194783013dd30f2b"
+                },
+                {
+                    "role": "dynamic.006",
+                    "sourceId": "dynamic:2d:8",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10013,
+                    "sequence": 8,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d3e0b66da47b9a5a9f48a79933e05829afddcfbab43a35947d7ad63dec13bb28"
+                },
+                {
+                    "role": "dynamic.007",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "00ae840b3c4bbbeb8d46da6c9443f6ae540cd314d8a59c8eae5664165a63b5b0",
+                "reviewPng": "title.overlay.setting.language-dropdown.final.png",
+                "reviewPngByteLength": 231630,
+                "reviewPngSha256": "2e632b380e9f750ab075dd76957dacd407091105efb390a45eb93162d956e052"
+            }
+        },
+        {
+            "id": "title.overlay.setting.opaque",
+            "definition": {
+                "id": "title.overlay.setting.opaque",
+                "kind": "titleOverlay",
+                "coverageKey": "setting",
+                "settingsOverride": {
+                    "disableTransparency": true
+                },
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "setting"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete-opaque"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "SettingsOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "aad943403c19ba2e78c857f634b8816830a408ee1083894daacbddbe099bed8e"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "9ed9e007bdab3807fd15cc9fa79764bf48da8d17a4c62bc20229bca72e4dfd5f"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "1e84e7d255b3daaa9f707f69bf02d70215a53f34579c1ef4e4eacc3a391caf95",
+                "reviewPng": "title.overlay.setting.opaque.final.png",
+                "reviewPngByteLength": 173937,
+                "reviewPngSha256": "e825eb6d8f4ac3d9224c1def8fda50ed098f6870a63637c65510dcd6af41a87a"
+            }
+        },
+        {
+            "id": "title.overlay.credits.open",
+            "definition": {
+                "id": "title.overlay.credits.open",
+                "kind": "titleOverlay",
+                "coverageKey": "credits",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "credits"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "CreditsOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "ea7dd38ace809fd9743d4709ec039e3609c083b57f4361c7f562a8a11ff5dbc6"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c7e3ef48cc8f3903477fe56d0f40d7090732aed05d658206fb025380c58481be"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "297fda80121ff3f1f5062cdcbfaf1b993d46dcb663fdcc8c1cc2f3dc36926e85",
+                "reviewPng": "title.overlay.credits.open.final.png",
+                "reviewPngByteLength": 230650,
+                "reviewPngSha256": "265e905e79ea5d83b5067c7412eef05bee5bf78926548a976f8c8ff434715e9e"
+            }
+        },
+        {
+            "id": "title.overlay.quick-start.open",
+            "definition": {
+                "id": "title.overlay.quick-start.open",
+                "kind": "titleOverlay",
+                "coverageKey": "quickStart",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "quickStart"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "QuickStartOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "def15f0bd9eb21e52efe2da7c1a704d35b849da5fdfab6a536dcd241a871fc80"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "294e5744b2a3f02e5c26acb35fdcf0bc0801fc3bf599b675e9add0087202d4e8"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "bfa4742a8cc63bf93d74693346f4881bed385d201077169692fe4ed9cd3d6ab9",
+                "reviewPng": "title.overlay.quick-start.open.final.png",
+                "reviewPngByteLength": 243789,
+                "reviewPngSha256": "f598659be833ca927689bec9aa9bc2d639a70fbed1cc7dbca51a113672f40d50"
+            }
+        },
+        {
+            "id": "title.overlay.records.open",
+            "definition": {
+                "id": "title.overlay.records.open",
+                "kind": "titleOverlay",
+                "coverageKey": "records",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "records"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "RecordsOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "31a407f0bf8caa5c4685712086871ca947af3dccabf59ea98fed832c6fd5fba7"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3cd2a916981b2017af94299b6db08ad7c54052503f3114c0fba8f375bfe65ca3"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "49f10a9ca811f3165d4e2d9f12f67795c94ba807790f58d50b61d6efcef884e1",
+                "reviewPng": "title.overlay.records.open.final.png",
+                "reviewPngByteLength": 227490,
+                "reviewPngSha256": "72b22083e6454b8b3455dd779455c0d6ded77221534eca41db3bc2b4b061f5da"
+            }
+        },
+        {
+            "id": "title.overlay.research.open",
+            "definition": {
+                "id": "title.overlay.research.open",
+                "kind": "titleOverlay",
+                "coverageKey": "research",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "research"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "ResearchOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "6ba50ba8afb293cfdf201adbb7cfc56b8782c6fb895a8632f4aa82c0b217b08d"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "cf26306a55e1f9ce7aea80e572d8103b7704a091b8c9b023961d8185326b3610"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "5d478deb0caf2d158e51f31f2bd92d762362a8f403dbba653359b162b309d911",
+                "reviewPng": "title.overlay.research.open.final.png",
+                "reviewPngByteLength": 216058,
+                "reviewPngSha256": "bdbeebcf67b80ff2ec39ef7c0074e8a769609767efe357777059fcd26494cfce"
+            }
+        },
+        {
+            "id": "title.overlay.achievements.open",
+            "definition": {
+                "id": "title.overlay.achievements.open",
+                "kind": "titleOverlay",
+                "coverageKey": "achievements",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "achievements"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "AchievementsOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "6ba50ba8afb293cfdf201adbb7cfc56b8782c6fb895a8632f4aa82c0b217b08d"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c2deb527aa7152405ee204feaa06470829d3854760dff18386a1bf60cec1733d"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "87cb7715b72378984a34bed1e361b9496e0242cf9fa8003e5e08f05ec6137f4c",
+                "reviewPng": "title.overlay.achievements.open.final.png",
+                "reviewPngByteLength": 217263,
+                "reviewPngSha256": "73cd333858728fc145386a1db027098f1dbe02babf4826e06f30e12542f6f926"
+            }
+        },
+        {
+            "id": "global.overlay.debug.open",
+            "definition": {
+                "id": "global.overlay.debug.open",
+                "kind": "managerOverlay",
+                "managerCoverageMethod": "openDebugOverlay",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "clickMouseButton",
+                        "button": "middle",
+                        "eventTimeMs": 123500
+                    },
+                    {
+                        "action": "clickMouseButton",
+                        "button": "middle",
+                        "eventTimeMs": 123750
+                    },
+                    {
+                        "action": "clickMouseButton",
+                        "button": "middle",
+                        "eventTimeMs": 124000
+                    },
+                    {
+                        "action": "flushAsyncJobs"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "expectedControllerClass": "DebugOverlay",
+                "expectedRuntimeState": {
+                    "debugMode": true,
+                    "controlState": {
+                        "frameTime": true,
+                        "poolInfo": true,
+                        "hitboxes": true,
+                        "animationDebug": false
+                    },
+                    "hitboxesActive": true,
+                    "performanceProfilerEnabled": true,
+                    "poolInfoVisible": true
+                },
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "debugPanel",
+                        "controllerClass": "DebugOverlay",
+                        "layer": 90,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0619101f8eebe2c00c2b1fbafeb046655f1ec78ceb8552e9b0f524134da8c6b9"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "89cb5fe6c0624646580f9d8c65125ebedd4b55da4b2960bbc3ba94f9fc435d82"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 90009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "623d22c92044af7d6642ffd94ea2d3f01d770c50b9a0f75b67cc2fa95354125d"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 90010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "53d860952bf5f89e6b84ddacf24318d7f662f130d889c72d9d534b6fe88f749d"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 90011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "617c03628a438d425d7507cc13a1189ae0912e27eaafa4563e55f906f91a445a"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "b7574186f0a80fa27c88529c4eb927ac18975e464590540f69262eb2f52ab2b5",
+                "reviewPng": "global.overlay.debug.open.final.png",
+                "reviewPngByteLength": 570036,
+                "reviewPngSha256": "239b2b505a477339de6fa6c536b981e6df5349104b63160285c0291aab2c9b4d"
+            }
+        },
+        {
+            "id": "title.overlay.exit.open",
+            "definition": {
+                "id": "title.overlay.exit.open",
+                "kind": "managerOverlay",
+                "managerCoverageMethod": "openExitOverlay",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openExitOverlay"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "expectedControllerClass": "ExitOverlay",
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "exitConfirm",
+                        "controllerClass": "ExitOverlay",
+                        "layer": 100,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 100009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 100010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "805d8066daccdee73664f2d88c186fcc4a5a1235523101417455da8bd1ef0929"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 100011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c81a5c83e582388359504aa0d05cfe1f1be3d9c9b0ab7ded5063faac2da1954e"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "ae41810c7e758ec82f6463f9b5cb163ef40993ef6ddefee5861f6bbcb2482dd1",
+                "reviewPng": "title.overlay.exit.open.final.png",
+                "reviewPngByteLength": 258305,
+                "reviewPngSha256": "cbf9e640df796393d1b6c32519ad0717cba19694d1d558baed48e971abdf827f"
+            }
+        },
+        {
+            "id": "title.overlay.external-link-warning.open",
+            "definition": {
+                "id": "title.overlay.external-link-warning.open",
+                "kind": "managerOverlay",
+                "managerCoverageMethod": "openExternalLinkWarningOverlay",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openExternalLinkWarningOverlay",
+                        "url": "https://jukchang.com"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "expectedControllerClass": "ExternalLinkWarningOverlay",
+                "captureState": "open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "externalLinkWarning",
+                        "controllerClass": "ExternalLinkWarningOverlay",
+                        "layer": 15,
+                        "sequence": 1
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "3d022b30cdac0f0ced7edeecbb3c301be420fb773c0eb47fea79348c615623bd"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8c11606928454943d5b0db245dd50142704699def46a22e307605e928f134093"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8cfa10a180cbebe2d82abb53ab1280439097d72ca5dfea5af18402091924f517"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "d336b5d4f4654e94fe4e1f96197a4143b4596d033b01662564150ef451e4f954"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 15009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 15010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "332f797ad5be832d8e49365658ce0608d7bca1c6560b5db72d94f1f7da2096e3"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 15011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "4f94883c729081008c9c106141e6e10435b9fe28532f7788fee9462cbe213afd"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "85ac81b5424f71036ffb80fccdcda5419409bf19a385a2b5c7d84906e7491947",
+                "reviewPng": "title.overlay.external-link-warning.open.final.png",
+                "reviewPngByteLength": 259719,
+                "reviewPngSha256": "7b1f429ce3b6f5e5e7a3fed3306842aef655f8f85834ab01d15f217e1b5f7a49"
+            }
+        },
+        {
+            "id": "title.overlay.credits.external-link-warning",
+            "definition": {
+                "id": "title.overlay.credits.external-link-warning",
+                "kind": "managerOverlay",
+                "coverageKey": "credits",
+                "steps": [
+                    {
+                        "action": "advanceFrames",
+                        "frames": 420
+                    },
+                    {
+                        "action": "openTitleOverlay",
+                        "menu": "credits"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    },
+                    {
+                        "action": "activateOverlayElement",
+                        "elementId": "btn_0"
+                    },
+                    {
+                        "action": "advanceFrames",
+                        "frames": 30
+                    }
+                ],
+                "expectedControllerClass": "ExternalLinkWarningOverlay",
+                "captureState": "stacked-open-complete"
+            },
+            "reach": {
+                "systemHandlerClass": "SystemHandler",
+                "initialSceneClass": "LoadingScene",
+                "sceneState": "title",
+                "currentSceneClass": "TitleScene",
+                "titleContentClass": "TitleSceneContent",
+                "activeOverlays": [
+                    {
+                        "key": "titleMenu",
+                        "controllerClass": "CreditsOverlay",
+                        "layer": 10,
+                        "sequence": 1
+                    },
+                    {
+                        "key": "externalLinkWarning",
+                        "controllerClass": "ExternalLinkWarningOverlay",
+                        "layer": 15,
+                        "sequence": 2
+                    }
+                ]
+            },
+            "sideEffects": {
+                "externalOpenRequests": [],
+                "devToolsRequests": 0,
+                "gameCloseRequests": 0,
+                "windowCloseRequests": 0,
+                "audioPlayCalls": 1,
+                "audioPauseCalls": 0
+            },
+            "staticSurfaces": [
+                {
+                    "role": "background",
+                    "sourceId": "background",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 0,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0f9a1e3f0c1413c9bdb5b730bb8b827c0d65b24eec95d7ee57ef0b7aabb27d0a"
+                },
+                {
+                    "role": "object",
+                    "sourceId": "object",
+                    "type": "webgl",
+                    "mode": "batch",
+                    "order": 10,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "8d5d1d53ed99a6ddee75eceb1f7c7af23afa1b9f590350647beb6233cc0ee1ad"
+                },
+                {
+                    "role": "effect",
+                    "sourceId": "effect",
+                    "type": "webgl",
+                    "mode": "effect",
+                    "order": 20,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "07d7528c47d8e6685c1453c685fe424cbed4f9f74f4f253436d9913d468db34c"
+                },
+                {
+                    "role": "texteffect",
+                    "sourceId": "texteffect",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 30,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                },
+                {
+                    "role": "ui",
+                    "sourceId": "ui",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 40,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "250d76ed547364db136038a7c67f9eb245e9bf94af2bc5868cc08b379f9d6bfc"
+                },
+                {
+                    "role": "vignette",
+                    "sourceId": "vignette",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 50,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "df0bd1dfafd7d23fc9b551e56928195065f0e2e51ce2a9b3b2e6eefe2bb9d927"
+                },
+                {
+                    "role": "top",
+                    "sourceId": "top",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 1000,
+                    "sequence": 0,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "6e8712f11338a5152111fecb238c75f64a8cce4088ad6e020cd501084bd77fa8"
+                }
+            ],
+            "dynamicSurfaces": [
+                {
+                    "role": "dynamic.000",
+                    "sourceId": "dynamic:webgl:2",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10000,
+                    "sequence": 2,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "f70719b4237060272fc83f36e691140a696a5230a80223d300f1af46a5997d6e"
+                },
+                {
+                    "role": "dynamic.001",
+                    "sourceId": "dynamic:2d:3",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10001,
+                    "sequence": 3,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c721fe5cd12e2fb94f890dffc395a6e1ee28364df2ed17c7abcf58540a9dc995"
+                },
+                {
+                    "role": "dynamic.002",
+                    "sourceId": "dynamic:2d:4",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10009,
+                    "sequence": 4,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.003",
+                    "sourceId": "dynamic:webgl:5",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 10010,
+                    "sequence": 5,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "2e8adf89cb453585c977eb6dfe48dac6a3a2c45bb5041cdf88a36573bb4e897c"
+                },
+                {
+                    "role": "dynamic.004",
+                    "sourceId": "dynamic:2d:6",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 10011,
+                    "sequence": 6,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "ba76638f1ad51c960108cc95e5e2ae6141ccaa0ca8ef80a91ca52e399ce8ee36"
+                },
+                {
+                    "role": "dynamic.005",
+                    "sourceId": "dynamic:2d:7",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 15019,
+                    "sequence": 7,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "490c7dae409f9e1f6d5d1f68f09c0e133f3a6f31c9be7250ac4e1c3b88eb2a46"
+                },
+                {
+                    "role": "dynamic.006",
+                    "sourceId": "dynamic:webgl:8",
+                    "type": "webgl",
+                    "mode": "overlay-effect",
+                    "order": 15020,
+                    "sequence": 8,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "c68aedce83f7f9bad8e1236dfb16c2641c000aa27a765a4d8bdaa7423ca28945"
+                },
+                {
+                    "role": "dynamic.007",
+                    "sourceId": "dynamic:2d:9",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 15021,
+                    "sequence": 9,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "4f94883c729081008c9c106141e6e10435b9fe28532f7788fee9462cbe213afd"
+                },
+                {
+                    "role": "dynamic.008",
+                    "sourceId": "dynamic:2d:1",
+                    "type": "2d",
+                    "mode": "batch",
+                    "order": 190000,
+                    "sequence": 1,
+                    "width": 1280,
+                    "height": 720,
+                    "byteLength": 3686400,
+                    "sha256": "0c660f2bd3eff3150dd0040789abe2291613b9af319df870203d4f77a4913a5f"
+                }
+            ],
+            "final": {
+                "width": 1280,
+                "height": 720,
+                "byteLength": 3686400,
+                "sha256": "3f855f22eda15c5091fdad8fe769af6c53ef026b2b3bd938e80926badc34e1d8",
+                "reviewPng": "title.overlay.credits.external-link-warning.final.png",
+                "reviewPngByteLength": 134599,
+                "reviewPngSha256": "7766561da5d8cbde9cd094af35d27361ab96183e38bdd54ece701944e54959f8"
+            }
+        }
+    ],
+    "summary": {
+        "scenarioCount": 21,
+        "staticSurfaceCount": 147,
+        "dynamicSurfaceCount": 114,
+        "finalCompositeCount": 21,
+        "rawCaptureCount": 282,
+        "generatedRawByteLength": 1039564800,
+        "pngByteLength": 6030950,
+        "trackedCaptureByteLength": 6030950,
+        "captureSetSha256": "e35810d66459529dc87b3bc10d4613f30f6a4c83d954130352b6fc228dc024ec"
+    }
+}
