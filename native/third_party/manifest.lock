@@ -1,5 +1,5 @@
 {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "dependencies": [
         {
             "name": "SDL",
@@ -13,6 +13,39 @@
             "licenseFile": "LICENSE.txt"
         },
         {
+            "name": "Brotli",
+            "version": "1.2.0",
+            "releaseTag": "v1.2.0",
+            "gitRepository": "https://github.com/google/brotli.git",
+            "gitCommit": "028fb5a23661f123017c060daa546b55cf4bde29",
+            "sourceUrl": "https://github.com/google/brotli/archive/028fb5a23661f123017c060daa546b55cf4bde29.tar.gz",
+            "sourceSha256": "0afe09a53c8bad9861c8dd1fc1284308d54f19d2979ba3541cfdcc9b05fe360f",
+            "license": "MIT",
+            "licenseFile": "LICENSE"
+        },
+        {
+            "name": "FreeType",
+            "version": "2.14.3",
+            "releaseTag": "VER-2-14-3",
+            "gitRepository": "https://gitlab.freedesktop.org/freetype/freetype.git",
+            "gitCommit": "0a0221a1347e2f1e07c395263540026e9a0aa7c7",
+            "sourceUrl": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+            "sourceSha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
+            "license": "FreeType License or GPL-2.0-only",
+            "licenseFile": "LICENSE.TXT"
+        },
+        {
+            "name": "HarfBuzz",
+            "version": "14.2.1",
+            "releaseTag": "14.2.1",
+            "gitRepository": "https://github.com/harfbuzz/harfbuzz.git",
+            "gitCommit": "56feae4035bdd48f62ba2b8d8c16232d4d89b3a4",
+            "sourceUrl": "https://github.com/harfbuzz/harfbuzz/releases/download/14.2.1/harfbuzz-14.2.1.tar.xz",
+            "sourceSha256": "a54a5d8e9380a41fbb762ce367bcbf7704792dfca0d93f1bbca86c5a57902e0e",
+            "license": "MIT",
+            "licenseFile": "COPYING"
+        },
+        {
             "name": "V8 fdlibm exponential reference",
             "version": "12.4.254",
             "gitRepository": "https://chromium.googlesource.com/v8/v8",
@@ -22,6 +55,24 @@
             "adaptedFile": "src/core/math/deterministic_math.cpp",
             "license": "V8 BSD-style and Sun fdlibm notice",
             "noticeFile": "src/core/math/deterministic_math.cpp"
+        }
+    ],
+    "assets": [
+        {
+            "name": "Pretendard Variable",
+            "sourcePath": "project/game/font/PretendardVariable.woff2",
+            "format": "WOFF2",
+            "sourceSha256": "9599f12fd42fc0bce1cd50b47a0c022e108d7aa64dd0d1bb0ed44f3282d900b4",
+            "license": "SIL Open Font License 1.1",
+            "licensePath": "project/license/pretendard.txt",
+            "licenseSha256": "dbbfd9862cc8513c40d307d892a446b33ef4767e6423a3f74a913b8a210b91fd",
+            "missingGlyphPolicy": {
+                "fontFallback": false,
+                "assetReplacementCodepoints": [
+                    "U+1F3C6",
+                    "U+1F4D6"
+                ]
+            }
         }
     ]
 }

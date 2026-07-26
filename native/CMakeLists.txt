@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(CirVivorNative VERSION 0.1.0 LANGUAGES CXX)
+project(CirVivorNative VERSION 0.1.0 LANGUAGES C CXX)
 
 include(CTest)
 
 option(CIRVIVOR_WARNINGS_AS_ERRORS "Treat compiler warnings as errors." ON)
 option(CIRVIVOR_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer when supported." OFF)
 option(CIRVIVOR_BUILD_SDL_APP "Build the SDL3 desktop application shell." ON)
+option(CIRVIVOR_BUILD_TEXT_STACK "Build the pinned FreeType and HarfBuzz text stack." ON)
 
 function(cirvivor_configure_target target_name)
     target_compile_features(${target_name} PUBLIC cxx_std_20)
@@ -113,6 +114,22 @@ add_library(renderer_common STATIC
 target_include_directories(renderer_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 cirvivor_configure_target(renderer_common)
 
+if(CIRVIVOR_BUILD_TEXT_STACK)
+    include(cmake/TextDependencies.cmake)
+    include(cmake/TextAssets.cmake)
+    cirvivor_prepare_text_assets(
+        CIRVIVOR_PRETENDARD_FONT_ASSET
+        CIRVIVOR_PRETENDARD_LICENSE_ASSET
+    )
+
+    add_library(render_text STATIC
+        src/render/text/font_face.cpp
+    )
+    target_include_directories(render_text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(render_text PRIVATE freetype harfbuzz)
+    cirvivor_configure_target(render_text)
+endif()
+
 add_library(render_frontend STATIC
     src/render/frontend/frame_packet_builder.cpp
     src/render/frontend/playable_game_scene.cpp
@@ -196,6 +213,20 @@ if(BUILD_TESTING)
     target_link_libraries(legacy_collision_narrowphase_parity_tests PRIVATE game_core)
     cirvivor_configure_target(legacy_collision_narrowphase_parity_tests)
 
+    if(CIRVIVOR_BUILD_TEXT_STACK)
+        add_executable(font_stack_tests
+            tests/font_stack_test.cpp
+        )
+        target_link_libraries(font_stack_tests PRIVATE render_text)
+        target_compile_definitions(
+            font_stack_tests
+            PRIVATE
+                CIRVIVOR_PRETENDARD_FONT_PATH="${CIRVIVOR_PRETENDARD_FONT_ASSET}"
+                CIRVIVOR_PRETENDARD_LICENSE_PATH="${CIRVIVOR_PRETENDARD_LICENSE_ASSET}"
+        )
+        cirvivor_configure_target(font_stack_tests)
+    endif()
+
     add_test(NAME game_tests COMMAND game_tests)
     add_test(NAME frame_packet_tests COMMAND frame_packet_tests)
     add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
@@ -204,6 +235,9 @@ if(BUILD_TESTING)
     add_test(NAME simulation_parity_tests COMMAND simulation_parity_tests)
     add_test(NAME game_replay_parity_tests COMMAND game_replay_parity_tests)
     add_test(NAME wat_scalar_parity_tests COMMAND wat_scalar_parity_tests)
+    if(CIRVIVOR_BUILD_TEXT_STACK)
+        add_test(NAME font_stack_tests COMMAND font_stack_tests)
+    endif()
     add_test(
         NAME legacy_collision_broadphase_parity_tests
         COMMAND legacy_collision_broadphase_parity_tests

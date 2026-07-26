@@ -8,13 +8,14 @@
 
 - 상태: Phase 0~3 완료, Phase 4 simulation parity와 Phase 5 UI oracle 고정을 병행 중
 - SDL 기준 버전: 공식 최신 안정 릴리스 `3.4.10`
-- 기존 JS 테스트: 427/427 통과
+- 기존 JS 테스트: 433/433 통과
 - 기존 WAT/WASM 재현성: flow-field 및 collision-contact 통과
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: MSVC Debug·Release CTest 각 16/16, GCC headless 11/11, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- 네이티브 검증: MSVC Debug·Release CTest 각 17/17, GCC headless 12/12, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 정상 실행: SDL 의미 입력→짧은 입력 latch→60Hz `GameSystem`→94-command playable `FramePacket` 연결 및 Computer Use 실기 이동 확인
-- 기존판 UI oracle: Computer Use로 로딩 이후 타이틀과 factory 8종·종료·외부 링크 경고·디버그 등 도달 가능한 오버레이를 직접 열어 시각·중첩·입력 상태 확인
+- 기존판 UI oracle: Computer Use로 로딩 이후 타이틀과 factory 8종·종료·외부 링크 경고·디버그 등 도달 가능한 오버레이를 직접 열어 시각·중첩·입력 상태 확인, 21개 결정적 시나리오 계약 고정
+- 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 한국어·라틴 canonical shaping 통과
 - Software 960×540 성능 게이트: Release 180-frame render p95 24.456ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 
@@ -61,6 +62,7 @@
 - 사용자 요구에 따라 타이틀 화면과 모든 오버레이는 유사 구현이 아니라 기존 JS 기준 실행기의 장면별 시각·텍스트·레이어·입력·상태 전이를 완전히 동일하게 재현해야 한다. 화면 인벤토리와 결정적 골든을 먼저 고정하지 않으면 완료로 표시하지 않는다.
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없어 Windows 시스템 emoji fallback 결과를 Android에서 재현할 수 없으므로 고정 벡터/bitmap asset으로 교체해야 한다.
 - 현 `FramePacket v1`은 shaped glyph, gradient, clip, vector/projective geometry, render-pass barrier와 중첩 overlay capture anchor를 표현하지 못한다. 타이틀 UI를 placeholder 위에 직접 구현하지 않고 text/asset 기반과 `FramePacket v2`를 먼저 구축한다.
+- text foundation은 memory face와 canonical shaping까지만 완료됐다. 실제 UI와 동일한 300/400/500/600/700 weight, glyph raster/atlas/cache, backend upload와 FramePacket glyph run은 아직 구현해야 한다.
 
 ## 검증 기록
 
@@ -439,8 +441,45 @@ SHA-256: DBBFD9862CC8513C40D307D892A446B33EF4767E6423A3F74A913B8A210B91FD
 ```
 
 - 실제 로드는 `game/index.html`→`game/style.css`→원본 WOFF2 경로이며, `font/pretendardvariable.css`는 미참조이고 존재하지 않는 하위 경로를 가리키는 중복 파일이다.
-- 네이티브는 아직 FreeType/HarfBuzz/Brotli, asset catalog, glyph atlas가 없고 세 backend 모두 text/sprite/effect/overlay placeholder를 사용한다.
+- 감사 시점에는 네이티브 FreeType/HarfBuzz/Brotli와 glyph atlas가 없었으며 세 backend 모두 text/sprite/effect/overlay placeholder를 사용했다. 이후 아래의 text foundation을 추가했지만 실제 atlas/backend drawing은 아직 placeholder다.
 - 구현 순서를 원본 asset/hash/license 고정 → 공통 shape/raster/glyph atlas → `FramePacket v2` glyph run/vector/effect 계약 → SDL_GPU render graph → GLES/Software 동등 경로 → scene/UI 상태기로 확정한다.
+
+### 2026-07-27 — 타이틀·오버레이 parity 계약과 UI 입력 seam
+
+```text
+결정적 UI 시나리오: 21개
+title factory: 8/8
+manager/global overlay: 3/3
+orphan inventory: CollectionOverlay 1개
+JavaScript full suite: 433/433 통과
+MSVC Debug·Release CTest: 16/16 통과
+```
+
+- `ui_visual/scenarios_v1.json`은 1280×720, DPR 1, 60Hz fixed clock, seed 1817에서 Loading/Title 시점, hover, overlay open/mid/close, floating dropdown, 불투명 설정, 중첩 외부 링크 경고와 Debug/Exit 상태를 고정한다.
+- SDL event는 backend 중립 mouse/touch/cancel/wheel, pointer identity, 고정 크기 UTF-8 commit/composition, focus-loss clear로 변환된다. 이후 UI 상태기는 이 seam만 소비하며 SDL 타입을 직접 참조하지 않는다.
+- `Alt+F4`를 Computer Use로 원본 NW.js에 전달했을 때 즉시 종료되지 않고 `종료 / 게임을 종료할까요? / 아니오 / 예` overlay가 열리는 것을 재확인했다. native도 `windowCloseRequested`를 별도 event로 운반하며, exit overlay가 아직 연결되지 않은 현재만 정상 종료 fallback을 사용한다.
+
+### 2026-07-27 — 원본 WOFF2 기반 네이티브 text foundation
+
+```text
+Brotli 1.2.0 → FreeType 2.14.3 (WOFF2) → HarfBuzz 14.2.1 (hb-ft)
+MSVC Debug CTest: 17/17 통과
+MSVC Release CTest: 17/17 통과
+GCC 16.1 SDL-off strict CTest: 12/12 통과
+
+설정, 64px / wght 400 / no hinting
+glyph IDs: 6948, 8725
+total advance 26.6: 7080
+
+Lonely Tower, 64px / wght 400 / no hinting
+glyph count: 12
+total advance 26.6: 24388
+```
+
+- source-built 정적 dependency의 version·tag·commit·archive SHA-256을 `manifest.lock`에 고정했다. FreeType은 고정 Brotli로 WOFF2를 직접 읽고 HarfBuzz는 같은 FT face/size/variation을 공유한다.
+- `TextAssets.cmake`는 Pretendard 원본 WOFF2와 OFL SHA-256을 configure 때 검증해 runtime asset으로 무변환 복사한다. public `FontFace`는 Pimpl 경계를 사용해 FreeType/HarfBuzz 타입을 노출하지 않는다.
+- Pretendard에 없는 `🏆`·`📖`는 운영체제 font fallback을 사용하지 않고 고정 asset 대체 정책으로 분류했다. OS별 emoji 차이를 동일 구현으로 오인하지 않는다.
+- 이 단계는 font 로드·shape 계약만 고정한다. 실제 UI에 필요한 다중 weight, glyph raster/atlas/cache, FramePacket glyph run과 세 backend 출력은 후속 작업이다.
 
 ## 현재 작업
 
@@ -462,8 +501,11 @@ SHA-256: DBBFD9862CC8513C40D307D892A446B33EF4767E6423A3F74A913B8A210B91FD
 - [ ] 3-pass position solve·projectile sweep C++ exact parity
 - [x] Desktop 정상 실행의 SDL 의미 입력→짧은 입력 latch→GameSystem fixed update→playable FramePacket 연결 및 Computer Use 실기 확인
 - [x] 기존 타이틀·도달 가능한 overlay 11종과 orphan overlay의 source/Computer Use 인벤토리
+- [x] 21개 Loading/Title/overlay 시각·상태·입력 시나리오 계약과 JS 회귀 테스트
+- [x] SDL mouse/touch/wheel/text/IME/window-close의 backend 중립 UI 입력 seam
 - [ ] 실제 Loading/Title/overlay 결정적 NW.js pixel golden 캡처·승인
-- [ ] 원본 WOFF2/OFL asset 고정과 공통 FreeType/HarfBuzz glyph pipeline
+- [x] 원본 WOFF2/OFL asset 고정과 공통 FreeType/HarfBuzz memory-face/shaping foundation
+- [ ] 다중 weight glyph raster/atlas/cache와 세 backend text drawing
 - [ ] `FramePacket v2` glyph/vector/gradient/clip/render-pass·중첩 overlay capture 계약
 - [ ] 타이틀 화면과 모든 오버레이의 시각·입력·상태 전이 완전 동일 구현
 - [ ] Android SDK/NDK/Gradle 툴체인 설치와 ARM64 빌드
