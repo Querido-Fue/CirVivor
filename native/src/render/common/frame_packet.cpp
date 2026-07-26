@@ -223,6 +223,25 @@ namespace {
     return true;
 }
 
+[[nodiscard]] bool utf8SliceBoundariesAreValid(
+    const std::span<const char> bytes,
+    const TextSlice slice
+) noexcept {
+    if (!textSliceIsValid(slice, bytes.size())) {
+        return false;
+    }
+
+    const auto offset = static_cast<std::size_t>(slice.byteOffset);
+    const auto length = static_cast<std::size_t>(slice.byteLength);
+    if (length == 0U) {
+        return true;
+    }
+
+    const std::size_t end = offset + length;
+    return !isContinuationByte(utf8Byte(bytes, offset))
+        && (end == bytes.size() || !isContinuationByte(utf8Byte(bytes, end)));
+}
+
 [[nodiscard]] bool commandHeaderIsValid(const CommandHeader& header) noexcept {
     const auto coordinateSpace = static_cast<std::uint8_t>(header.coordinateSpace);
     const auto blendMode = static_cast<std::uint8_t>(header.blendMode);
@@ -913,11 +932,8 @@ bool FramePacket::isStructurallyValid() const noexcept {
         return false;
     }
     for (const TextCommand& command : textRuns_) {
-        const auto byteOffset = static_cast<std::size_t>(command.utf8.byteOffset);
-        const auto byteLength = static_cast<std::size_t>(command.utf8.byteLength);
         if (!commandValuesAreValid(command, utf8Bytes_.size())
-            || byteLength > utf8Bytes_.size() - byteOffset
-            || !utf8IsValid(std::span<const char>{utf8Bytes_}.subspan(byteOffset, byteLength))) {
+            || !utf8SliceBoundariesAreValid(utf8Bytes_, command.utf8)) {
             return false;
         }
     }
@@ -1077,6 +1093,7 @@ bool FramePacket::isRenderOrderValid() const noexcept {
         StableElementId sourceSessionId = 0;
         StableElementId destinationId = 0;
         std::uint32_t beginSequence = 0;
+        std::uint32_t compositeSequence = 0;
         std::int32_t layerOrder = 0;
         bool captured = false;
         bool composited = false;
@@ -1222,12 +1239,22 @@ bool FramePacket::isRenderOrderValid() const noexcept {
                         const std::uint8_t sourceLayer = renderLayerOrder(
                             pass.sourceAnchorLayer
                         );
+                        const CommandHeader* anchorHeader = nullptr;
+                        if (pass.sourceAnchorSequence < commandStream_.size()) {
+                            anchorHeader = commandHeader(
+                                commandStream_[pass.sourceAnchorSequence]
+                            );
+                        }
                         if (pass.sessionId != state.sessionId
                             || pass.destinationId != state.destinationId
                             || header->layerOrder != state.layerOrder
                             || state.captured
                             || state.composited
                             || pass.sourceAnchorSequence >= header->sequence
+                            || anchorHeader == nullptr
+                            || anchorHeader->sequence != pass.sourceAnchorSequence
+                            || anchorHeader->layer != pass.sourceAnchorLayer
+                            || anchorHeader->layerOrder != pass.sourceAnchorLayerOrder
                             || sourceLayer > renderLayerOrder(header->layer)
                             || (pass.sourceAnchorLayer == header->layer
                                 && pass.sourceAnchorLayerOrder > header->layerOrder)) {
@@ -1239,7 +1266,7 @@ bool FramePacket::isRenderOrderValid() const noexcept {
                                 || source->beginSequence >= state.beginSequence
                                 || !source->composited
                                 || source->destinationId == state.destinationId
-                                || pass.sourceAnchorSequence < source->beginSequence) {
+                                || pass.sourceAnchorSequence < source->compositeSequence) {
                                 return false;
                             }
                         }
@@ -1261,6 +1288,7 @@ bool FramePacket::isRenderOrderValid() const noexcept {
                             return false;
                         }
                         state.composited = true;
+                        state.compositeSequence = header->sequence;
                         break;
                     }
                     case PassOperation::endSession: {

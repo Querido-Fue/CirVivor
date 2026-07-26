@@ -400,6 +400,20 @@ enum class GeometryOutcome : std::uint8_t {
     return {left, top, right - left, bottom - top};
 }
 
+[[nodiscard]] constexpr bool legacyOverlayControlNeedsPlaceholder(
+    const OverlayOperation operation
+) noexcept {
+    return operation == OverlayOperation::beginSession
+        || operation == OverlayOperation::captureBackdrop
+        || operation == OverlayOperation::endSession;
+}
+
+static_assert(legacyOverlayControlNeedsPlaceholder(OverlayOperation::beginSession));
+static_assert(legacyOverlayControlNeedsPlaceholder(OverlayOperation::captureBackdrop));
+static_assert(legacyOverlayControlNeedsPlaceholder(OverlayOperation::endSession));
+static_assert(!legacyOverlayControlNeedsPlaceholder(OverlayOperation::dim));
+static_assert(!legacyOverlayControlNeedsPlaceholder(OverlayOperation::glassPanel));
+
 } // namespace
 
 struct GlesBackend::Impl final {
@@ -1441,7 +1455,11 @@ struct GlesBackend::Impl final {
                 case OverlayOperation::beginSession:
                 case OverlayOperation::captureBackdrop:
                 case OverlayOperation::endSession:
-                    ++stats.noOpCommands;
+                    record(
+                        GeometryOutcome::skipped,
+                        legacyOverlayControlNeedsPlaceholder(command.operation),
+                        false
+                    );
                     break;
                 case OverlayOperation::dim: {
                     RectF destination = command.destinationBounds;

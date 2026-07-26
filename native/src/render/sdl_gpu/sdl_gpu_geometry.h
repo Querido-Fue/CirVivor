@@ -990,7 +990,12 @@ private:
     const PremultipliedRgba color,
     const std::uint64_t markerSeed
 ) noexcept {
-    if (!(bounds.width > 0.0F) || !(bounds.height > 0.0F)) {
+    if (!std::isfinite(bounds.x)
+        || !std::isfinite(bounds.y)
+        || !std::isfinite(bounds.width)
+        || !std::isfinite(bounds.height)
+        || !(bounds.width > 0.0F)
+        || !(bounds.height > 0.0F)) {
         const RectF content = viewport.logicalUi.contentRect;
         const float marker = std::max(
             std::min(content.width, content.height) * 0.014F,

@@ -513,6 +513,21 @@ Software Release gate: p95 24.698ms / tracked allocation 0 / PASS
 - validation은 UTF-8·PMA·유한값·연속 storage range뿐 아니라 clip stack, pass session/destination, capture dependency/source anchor와 render order를 검사한다.
 - SDL_GPU/GLES/Software가 신규 kind를 누락 없이 dispatch하지만 현재는 결정적 marker geometry이며 `placeholderCommands`로 별도 계측한다. 이는 wire/render seam 완료이지 타이틀 픽셀 parity 완료가 아니다.
 
+### 2026-07-27 — FramePacket v2 검증 경계 보강
+
+```text
+MSVC Debug·Release FramePacket: 각각 16/16 통과
+MSVC Debug·Release Software renderer: 각각 4/4 통과
+MSVC Debug·Release GLES /W4 /WX: 빌드 통과
+GCC 16.1 strict FramePacket: 16/16 통과
+canonical v1/v2 wire hash: 불변
+```
+
+- UTF-8 저장소를 한 번만 검증한 뒤 각 text slice의 code-point 시작·끝 경계를 O(1)로 확인한다. 최대 text command가 같은 대형 문자열을 겹쳐 가리켜도 전체 문자열을 반복 스캔하지 않는다.
+- `FramePacketDecodeLimits`의 기존 5개 positional aggregate prefix를 유지하고 신규 aux 상한은 뒤에 추가한다.
+- pass capture anchor는 실제 command header의 sequence/layer/layer-order와 정확히 일치해야 한다. 다른 source session은 해당 composite command 이후에만 참조할 수 있다.
+- GLES의 legacy overlay begin/capture/end도 미구현 placeholder로 계측한다. SDL_GPU에서 유한한 입력의 glyph/mesh bounds 계산이 overflow하면 결정적 marker로 대체해 프레임 전체 실패를 막는다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture

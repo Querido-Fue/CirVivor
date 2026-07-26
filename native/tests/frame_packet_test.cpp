@@ -1,6 +1,7 @@
 #include "render/common/frame_packet_codec.h"
 #include "render/frontend/frame_packet_builder.h"
 #include "render/frontend/synthetic_test_scene.h"
+#include "render/sdl_gpu/sdl_gpu_geometry.h"
 
 #include <array>
 #include <cmath>
@@ -614,6 +615,120 @@ void testMalformedDecodeDoesNotMutateDestination() {
     REQUIRE(destinationAfter == destinationBefore);
 }
 
+void testUtf8SliceBoundariesAndOverlappingSlices() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    FramePacketCapacity capacity;
+    capacity.commandCount = 1;
+    capacity.textCount = 1;
+    capacity.utf8ByteCount = 5;
+    FramePacket source(capacity);
+    FramePacketBuilder builder(source, PacketCapacityPolicy::fixedCapacity);
+    REQUIRE(builder.begin({}, makeSyntheticViewport({})));
+    TextCommand command;
+    const std::string utf8{"A\xe2\x82\xac" "B"};
+    REQUIRE(utf8.size() == 5U);
+    REQUIRE(builder.addText(command, utf8));
+    REQUIRE(builder.finish());
+
+    std::vector<std::byte> encoded;
+    REQUIRE(serializeFramePacket(source, encoded));
+    constexpr std::size_t fixedBytes = 356U;
+    constexpr std::size_t commandReferenceBytes = 5U;
+    constexpr std::size_t textSliceOffset = fixedBytes
+        + commandReferenceBytes + 12U + 8U;
+
+    std::vector<std::byte> exactCodePoint = encoded;
+    writeU32LittleEndian(exactCodePoint, textSliceOffset, 1U);
+    writeU32LittleEndian(exactCodePoint, textSliceOffset + 4U, 3U);
+    FramePacket exactDecoded;
+    REQUIRE(static_cast<bool>(deserializeFramePacket(exactCodePoint, exactDecoded)));
+    REQUIRE(exactDecoded.text(exactDecoded.textRuns().front().utf8).size() == 3U);
+
+    std::vector<std::byte> emptyInsideCodePoint = encoded;
+    writeU32LittleEndian(emptyInsideCodePoint, textSliceOffset, 2U);
+    writeU32LittleEndian(emptyInsideCodePoint, textSliceOffset + 4U, 0U);
+    FramePacket emptyDecoded;
+    REQUIRE(static_cast<bool>(deserializeFramePacket(emptyInsideCodePoint, emptyDecoded)));
+    REQUIRE(emptyDecoded.text(emptyDecoded.textRuns().front().utf8).empty());
+
+    std::vector<std::byte> invalidStart = encoded;
+    writeU32LittleEndian(invalidStart, textSliceOffset, 2U);
+    writeU32LittleEndian(invalidStart, textSliceOffset + 4U, 1U);
+    FramePacket invalidDestination;
+    REQUIRE(
+        deserializeFramePacket(invalidStart, invalidDestination).error
+        == FramePacketDecodeError::invalidPacket
+    );
+
+    std::vector<std::byte> invalidEnd = encoded;
+    writeU32LittleEndian(invalidEnd, textSliceOffset, 1U);
+    writeU32LittleEndian(invalidEnd, textSliceOffset + 4U, 1U);
+    REQUIRE(
+        deserializeFramePacket(invalidEnd, invalidDestination).error
+        == FramePacketDecodeError::invalidPacket
+    );
+
+    FramePacket overlappingSource(syntheticTestSceneCapacity());
+    REQUIRE(buildSyntheticTestScene(
+        overlappingSource,
+        {},
+        PacketCapacityPolicy::fixedCapacity
+    ).success);
+    std::vector<std::byte> overlappingWire;
+    REQUIRE(serializeFramePacket(overlappingSource, overlappingWire));
+    constexpr std::size_t syntheticCommandReferences = 25U * 5U;
+    constexpr std::size_t syntheticTextBlock = fixedBytes
+        + syntheticCommandReferences
+        + 6U * 84U
+        + 2U * 76U
+        + 2U * 52U;
+    for (std::size_t index = 0; index < 5U; ++index) {
+        const std::size_t slice = syntheticTextBlock + index * 76U + 12U + 8U;
+        writeU32LittleEndian(overlappingWire, slice, 0U);
+        writeU32LittleEndian(overlappingWire, slice + 4U, 85U);
+    }
+    FramePacket overlappingDecoded;
+    REQUIRE(static_cast<bool>(deserializeFramePacket(overlappingWire, overlappingDecoded)));
+    for (const TextCommand& text : overlappingDecoded.textRuns()) {
+        REQUIRE(text.utf8.byteOffset == 0U);
+        REQUIRE(text.utf8.byteLength == 85U);
+    }
+}
+
+void testDecodeLimitLegacyAggregatePrefix() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    constexpr FramePacketDecodeLimits legacyPrefix{101U, 102U, 103U, 104U, 105U};
+    static_assert(legacyPrefix.maximumCommandCount == 101U);
+    static_assert(legacyPrefix.maximumCommandsPerKind == 102U);
+    static_assert(legacyPrefix.maximumUtf8ByteCount == 103U);
+    static_assert(legacyPrefix.maximumWireByteCount == 104U);
+    static_assert(legacyPrefix.maximumDecodedByteCount == 105U);
+    static_assert(legacyPrefix.maximumGlyphInstanceCount == 1U * 1'024U * 1'024U);
+    static_assert(legacyPrefix.maximumMeshVertexCount == 1U * 1'024U * 1'024U);
+    static_assert(legacyPrefix.maximumMeshIndexCount == 3U * 1'024U * 1'024U);
+    static_assert(legacyPrefix.maximumGradientStopCount == 256U * 1'024U);
+
+    REQUIRE(legacyPrefix.maximumWireByteCount == 104U);
+    REQUIRE(legacyPrefix.maximumDecodedByteCount == 105U);
+    FramePacket source(syntheticTestSceneCapacity());
+    REQUIRE(buildSyntheticTestScene(
+        source,
+        {},
+        PacketCapacityPolicy::fixedCapacity
+    ).success);
+    std::vector<std::byte> encoded;
+    REQUIRE(serializeFramePacket(source, encoded));
+    FramePacket destination;
+    REQUIRE(
+        deserializeFramePacket(encoded, destination, legacyPrefix).error
+        == FramePacketDecodeError::sizeLimitExceeded
+    );
+}
+
 void testPremultipliedAlphaAndViewportInverse() {
     using namespace cirvivor::render;
     using namespace cirvivor::render::frontend;
@@ -868,6 +983,170 @@ void testPassDependencyCycleAndOpenPassLayerEscapeAreRejected() {
     REQUIRE(escape.size() == FramePacketCapacity{});
 }
 
+void testPassCaptureAnchorMatchesExactSourceAndCompositeAvailability() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    FramePacketCapacity mismatchCapacity;
+    mismatchCapacity.commandCount = 5;
+    mismatchCapacity.shapeCount = 1;
+    mismatchCapacity.passCount = 4;
+    FramePacket mismatch(mismatchCapacity);
+    FramePacketBuilder mismatchBuilder(mismatch, PacketCapacityPolicy::fixedCapacity);
+    REQUIRE(mismatchBuilder.begin({}, makeSyntheticViewport({})));
+    ShapeCommand background;
+    background.bounds = {0.0F, 0.0F, 32.0F, 32.0F};
+    REQUIRE(mismatchBuilder.addShape(background));
+
+    PassCommand begin;
+    begin.header = makeHeader(RenderLayer::dynamicOverlay, CoordinateSpace::logicalUi, 10);
+    begin.operation = PassOperation::beginSession;
+    begin.sessionId = 0x101U;
+    begin.destinationId = 0x201U;
+    REQUIRE(mismatchBuilder.addPass(begin));
+    PassCommand mismatchedCapture = begin;
+    mismatchedCapture.operation = PassOperation::capture;
+    mismatchedCapture.sourceAnchorLayer = RenderLayer::ui;
+    mismatchedCapture.sourceAnchorLayerOrder = 0;
+    mismatchedCapture.sourceAnchorSequence = 0;
+    REQUIRE(mismatchBuilder.addPass(mismatchedCapture));
+    PassCommand mismatchedComposite = mismatchedCapture;
+    mismatchedComposite.operation = PassOperation::composite;
+    REQUIRE(mismatchBuilder.addPass(mismatchedComposite));
+    PassCommand mismatchedEnd = mismatchedComposite;
+    mismatchedEnd.operation = PassOperation::endSession;
+    REQUIRE(mismatchBuilder.addPass(mismatchedEnd));
+    REQUIRE(!mismatchBuilder.finish());
+    REQUIRE(mismatchBuilder.error() == FrameBuildError::structurallyInvalid);
+
+    const auto dependentPassBuildSucceeds = [](const std::uint32_t sourceAnchorSequence) {
+        FramePacketCapacity capacity;
+        capacity.commandCount = 9;
+        capacity.shapeCount = 1;
+        capacity.passCount = 8;
+        FramePacket packet(capacity);
+        FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+        if (!builder.begin({}, makeSyntheticViewport({}))) {
+            return false;
+        }
+
+        ShapeCommand sourceBackground;
+        sourceBackground.bounds = {0.0F, 0.0F, 32.0F, 32.0F};
+        if (!builder.addShape(sourceBackground)) {
+            return false;
+        }
+
+        PassCommand sourceBegin;
+        sourceBegin.header = makeHeader(
+            RenderLayer::dynamicOverlay,
+            CoordinateSpace::logicalUi,
+            10
+        );
+        sourceBegin.operation = PassOperation::beginSession;
+        sourceBegin.sessionId = 0x301U;
+        sourceBegin.destinationId = 0x401U;
+        if (!builder.addPass(sourceBegin)) {
+            return false;
+        }
+        PassCommand sourceCapture = sourceBegin;
+        sourceCapture.operation = PassOperation::capture;
+        sourceCapture.sourceAnchorLayer = RenderLayer::background;
+        sourceCapture.sourceAnchorLayerOrder = 0;
+        sourceCapture.sourceAnchorSequence = 0;
+        if (!builder.addPass(sourceCapture)) {
+            return false;
+        }
+        PassCommand sourceComposite = sourceCapture;
+        sourceComposite.operation = PassOperation::composite;
+        if (!builder.addPass(sourceComposite)) {
+            return false;
+        }
+        PassCommand sourceEnd = sourceComposite;
+        sourceEnd.operation = PassOperation::endSession;
+        if (!builder.addPass(sourceEnd)) {
+            return false;
+        }
+
+        PassCommand dependentBegin = sourceBegin;
+        dependentBegin.operation = PassOperation::beginSession;
+        dependentBegin.sessionId = 0x501U;
+        dependentBegin.destinationId = 0x601U;
+        if (!builder.addPass(dependentBegin)) {
+            return false;
+        }
+        PassCommand dependentCapture = dependentBegin;
+        dependentCapture.operation = PassOperation::capture;
+        dependentCapture.sourceSessionId = sourceBegin.sessionId;
+        dependentCapture.sourceAnchorLayer = RenderLayer::dynamicOverlay;
+        dependentCapture.sourceAnchorLayerOrder = 10;
+        dependentCapture.sourceAnchorSequence = sourceAnchorSequence;
+        if (!builder.addPass(dependentCapture)) {
+            return false;
+        }
+        PassCommand dependentComposite = dependentCapture;
+        dependentComposite.operation = PassOperation::composite;
+        if (!builder.addPass(dependentComposite)) {
+            return false;
+        }
+        PassCommand dependentEnd = dependentComposite;
+        dependentEnd.operation = PassOperation::endSession;
+        return builder.addPass(dependentEnd) && builder.finish();
+    };
+
+    REQUIRE(!dependentPassBuildSucceeds(1U));
+    REQUIRE(dependentPassBuildSucceeds(3U));
+}
+
+void testSdlGpuNonFiniteDerivedPlaceholderBoundsFallback() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    FramePacketCapacity capacity;
+    capacity.commandCount = 2;
+    capacity.glyphRunCount = 1;
+    capacity.glyphInstanceCount = 2;
+    capacity.texturedMeshCount = 1;
+    capacity.meshVertexCount = 4;
+    capacity.meshIndexCount = 6;
+    FramePacket packet(capacity);
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    REQUIRE(builder.begin({}, makeSyntheticViewport({})));
+
+    GlyphRunCommand glyphRun;
+    glyphRun.header = makeHeader(RenderLayer::background, CoordinateSpace::logicalUi);
+    glyphRun.fontId = stableResourceId("font/extreme");
+    glyphRun.glyphAtlasId = stableResourceId("font/extreme/atlas");
+    glyphRun.pixelsPerEm = std::numeric_limits<float>::max();
+    const std::array glyphs{
+        GlyphInstance{1, 0, {}, {}, {}, {0.0F, 0.0F, 0.25F, 0.25F}},
+        GlyphInstance{2, 0, {}, {}, {}, {0.25F, 0.0F, 0.25F, 0.25F}}
+    };
+    REQUIRE(builder.addGlyphRun(glyphRun, glyphs));
+
+    const float lowest = -std::numeric_limits<float>::max();
+    const float highest = std::numeric_limits<float>::max();
+    TexturedMeshCommand mesh;
+    mesh.header = makeHeader(RenderLayer::background, CoordinateSpace::logicalUi);
+    mesh.textureId = stableResourceId("mesh/extreme");
+    const std::array vertices{
+        ProjectiveVertex{{lowest, lowest}, {0.0F, 0.0F}, 1.0F},
+        ProjectiveVertex{{highest, lowest}, {1.0F, 0.0F}, 1.0F},
+        ProjectiveVertex{{highest, highest}, {1.0F, 1.0F}, 1.0F},
+        ProjectiveVertex{{lowest, highest}, {0.0F, 1.0F}, 1.0F}
+    };
+    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    REQUIRE(builder.addTexturedMesh(mesh, vertices, indices));
+    REQUIRE(builder.finish());
+
+    cirvivor::render::sdl_gpu::detail::FrameGeometry geometry(256U, 8U);
+    const cirvivor::render::sdl_gpu::detail::GeometryBuildResult result =
+        cirvivor::render::sdl_gpu::detail::buildFrameGeometry(packet, geometry);
+    REQUIRE(result.error == cirvivor::render::sdl_gpu::detail::GeometryBuildError::none);
+    REQUIRE(result.stats.renderedCommands == 2U);
+    REQUIRE(result.stats.placeholderCommands == 2U);
+    REQUIRE(result.stats.generatedVertices > 0U);
+}
+
 void testDecodeRejectsBusyDestination() {
     using namespace cirvivor::render;
     using namespace cirvivor::render::frontend;
@@ -911,11 +1190,15 @@ int main() {
         TestCase{"v2 malformed ranges", testV2MalformedRangesAndLimitsAreTransactional},
         TestCase{"fixed capacity and order", testFixedCapacityReuseAndOrderingGuard},
         TestCase{"malformed decode transaction", testMalformedDecodeDoesNotMutateDestination},
+        TestCase{"UTF-8 slice boundaries and overlap", testUtf8SliceBoundariesAndOverlappingSlices},
+        TestCase{"legacy decode limit aggregate prefix", testDecodeLimitLegacyAggregatePrefix},
         TestCase{"PMA and viewport inverse", testPremultipliedAlphaAndViewportInverse},
         TestCase{"builder failure transaction", testBuilderFailureIsTransactional},
         TestCase{"v2 capacity and alias transaction", testV2FixedCapacityAndStorageAliasAreTransactional},
         TestCase{"clip stack validation", testClipStackUnderflowAndUnclosedAreRejected},
         TestCase{"pass dependency and layer validation", testPassDependencyCycleAndOpenPassLayerEscapeAreRejected},
+        TestCase{"pass exact capture anchor", testPassCaptureAnchorMatchesExactSourceAndCompositeAvailability},
+        TestCase{"SDL GPU non-finite placeholder fallback", testSdlGpuNonFiniteDerivedPlaceholderBoundsFallback},
         TestCase{"busy decode destination", testDecodeRejectsBusyDestination}
     };
 

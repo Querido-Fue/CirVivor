@@ -13,12 +13,12 @@ struct FramePacketDecodeLimits final {
     std::uint32_t maximumCommandCount = 131'072;
     std::uint32_t maximumCommandsPerKind = 65'536;
     std::uint32_t maximumUtf8ByteCount = 8U * 1'024U * 1'024U;
+    std::size_t maximumWireByteCount = 64U * 1'024U * 1'024U;
+    std::size_t maximumDecodedByteCount = 64U * 1'024U * 1'024U;
     std::uint32_t maximumGlyphInstanceCount = 1U * 1'024U * 1'024U;
     std::uint32_t maximumMeshVertexCount = 1U * 1'024U * 1'024U;
     std::uint32_t maximumMeshIndexCount = 3U * 1'024U * 1'024U;
     std::uint32_t maximumGradientStopCount = 256U * 1'024U;
-    std::size_t maximumWireByteCount = 64U * 1'024U * 1'024U;
-    std::size_t maximumDecodedByteCount = 64U * 1'024U * 1'024U;
 };
 
 enum class FramePacketDecodeError : std::uint8_t {
