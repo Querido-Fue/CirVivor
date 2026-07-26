@@ -92,7 +92,9 @@ PretendardVariable.woff2 SHA-256 9599f12fd42fc0bce1cd50b47a0c022e108d7aa64dd0d1b
 OFL SHA-256 dbbfd9862cc8513c40d307d892a446b33ef4767e6423a3f74a913b8a210b91fd
 ```
 
-WOFF2를 TTF로 변환해 같은 Reserved Font Name으로 재배포하지 않는다. `TextAssets.cmake`가 저장소 원본 WOFF2와 OFL hash를 configure 때 검사한 뒤 `runtime_assets`로 무변환 복사한다. `FontFace`는 `FT_New_Memory_Face`, unicode charmap, variable `wght`, `hb-ft`를 사용하며 public header에는 FreeType/HarfBuzz 타입을 노출하지 않는다. 현재 canonical smoke는 64px·wght 400·no-hinting에서 `설정`과 `Lonely Tower` glyph/26.6 advance를 고정한다. 실제 UI에 필요한 다중 weight, glyph atlas/raster cache와 FramePacket glyph run은 후속 단계다.
+WOFF2를 TTF로 변환해 같은 Reserved Font Name으로 재배포하지 않는다. `TextAssets.cmake`가 저장소 원본 WOFF2와 OFL hash를 configure 때 검사한 뒤 `runtime_assets`로 무변환 복사한다. `FontFace`는 `FT_New_Memory_Face`, unicode charmap, variable `wght`, `hb-ft`와 no-hinting grayscale raster를 사용하며 public header에는 FreeType/HarfBuzz 타입을 노출하지 않는다. 64px·wght 400 shaping과 32px·wght 300 raster를 canonical hash로 고정한다.
+
+`GlyphAtlas`는 font source FNV-1a fingerprint, glyph index, pixel size, weight를 key로 사용하며 생성 때 pixel/entry/open-address lookup 저장소를 모두 확보한다. 1px padding shelf pack은 중복 조회, entry/공간 초과와 실패 시 pixel·entry·generation 불변을 검사한다. atlas 채우기는 asset/UI preload 단계 작업이며 frame tick에서는 lookup만 사용한다. 실제 FramePacket glyph run, backend texture upload·draw와 shaped-text cache는 후속 단계다.
 
 ## Windows 빌드와 검증
 

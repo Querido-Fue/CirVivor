@@ -16,7 +16,7 @@
 - 네이티브 검증: MSVC Debug·Release CTest 각 17/17, GCC headless 12/12, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 정상 실행: SDL 의미 입력→짧은 입력 latch→60Hz `GameSystem`→94-command playable `FramePacket` 연결 및 Computer Use 실기 이동 확인
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
-- 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 한국어·라틴 canonical shaping 통과
+- 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas 통과
 - Software 960×540 성능 게이트: Release 180-frame render p95 24.456ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 
@@ -63,7 +63,7 @@
 - 사용자 요구에 따라 타이틀 화면과 모든 오버레이는 유사 구현이 아니라 기존 JS 기준 실행기의 장면별 시각·텍스트·레이어·입력·상태 전이를 완전히 동일하게 재현해야 한다. 화면 인벤토리와 결정적 골든을 먼저 고정하지 않으면 완료로 표시하지 않는다.
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없어 Windows 시스템 emoji fallback 결과를 Android에서 재현할 수 없으므로 고정 벡터/bitmap asset으로 교체해야 한다.
 - 현 `FramePacket v1`은 shaped glyph, gradient, clip, vector/projective geometry, render-pass barrier와 중첩 overlay capture anchor를 표현하지 못한다. 타이틀 UI를 placeholder 위에 직접 구현하지 않고 text/asset 기반과 `FramePacket v2`를 먼저 구축한다.
-- text foundation은 memory face와 canonical shaping까지만 완료됐다. 실제 UI와 동일한 300/400/500/600/700 weight, glyph raster/atlas/cache, backend upload와 FramePacket glyph run은 아직 구현해야 한다.
+- text foundation은 45~930 variable weight, no-hinting grayscale raster와 고정-capacity glyph atlas까지 완료됐다. 실제 UI 문자열 shaped cache, backend atlas upload/draw와 FramePacket glyph run은 아직 구현해야 한다.
 
 ## 검증 기록
 
@@ -489,7 +489,9 @@ total advance 26.6: 24388
 - source-built 정적 dependency의 version·tag·commit·archive SHA-256을 `manifest.lock`에 고정했다. FreeType은 고정 Brotli로 WOFF2를 직접 읽고 HarfBuzz는 같은 FT face/size/variation을 공유한다.
 - `TextAssets.cmake`는 Pretendard 원본 WOFF2와 OFL SHA-256을 configure 때 검증해 runtime asset으로 무변환 복사한다. public `FontFace`는 Pimpl 경계를 사용해 FreeType/HarfBuzz 타입을 노출하지 않는다.
 - Pretendard에 없는 `🏆`·`📖`는 운영체제 font fallback을 사용하지 않고 고정 asset 대체 정책으로 분류했다. OS별 emoji 차이를 동일 구현으로 오인하지 않는다.
-- 이 단계는 font 로드·shape 계약만 고정한다. 실제 UI에 필요한 다중 weight, glyph raster/atlas/cache, FramePacket glyph run과 세 backend 출력은 후속 작업이다.
+- 이후 32px·wght 300/700 grayscale raster와 고정-capacity atlas까지 추가했다. Pretendard source FNV-1a는 `3f4eab9610b4cfb3`, 첫 `설` raster는 `a432e67001540319`, 256×256 세 glyph atlas pixel hash는 `ced22a0a2891f249`로 MSVC Debug·Release와 GCC strict에서 일치한다.
+- atlas는 font source fingerprint+glyph index+pixel size+weight를 key로 하고 pixel/entry/open-address lookup 저장소를 생성 때 모두 확보한다. 중복, entry capacity/공간 초과와 clear 재사용은 실패/성공 시 generation과 pixel의 transactional 계약을 지킨다.
+- 실제 UI 문자열 shaped cache, FramePacket glyph run, backend texture upload·draw는 후속 작업이다.
 
 ## 현재 작업
 
@@ -515,7 +517,8 @@ total advance 26.6: 24388
 - [x] SDL mouse/touch/wheel/text/IME/window-close의 backend 중립 UI 입력 seam
 - [x] 실제 Loading/Title/overlay 21개 결정적 NW.js pixel golden 캡처·승인 및 exact check
 - [x] 원본 WOFF2/OFL asset 고정과 공통 FreeType/HarfBuzz memory-face/shaping foundation
-- [ ] 다중 weight glyph raster/atlas/cache와 세 backend text drawing
+- [x] 다중 weight grayscale glyph raster와 고정-capacity source-keyed atlas
+- [ ] shaped-text cache, atlas backend upload와 세 backend text drawing
 - [ ] `FramePacket v2` glyph/vector/gradient/clip/render-pass·중첩 overlay capture 계약
 - [ ] 타이틀 화면과 모든 오버레이의 시각·입력·상태 전이 완전 동일 구현
 - [ ] Android SDK/NDK/Gradle 툴체인 설치와 ARM64 빌드

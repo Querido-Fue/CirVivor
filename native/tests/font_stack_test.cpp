@@ -1,5 +1,7 @@
 #include "render/text/font_face.h"
+#include "render/text/glyph_atlas.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -9,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -210,6 +213,7 @@ void testAssetIntegrityAndMemoryFace() {
     REQUIRE(error == FontLoadError::none);
     REQUIRE(face != nullptr);
     REQUIRE(face->sourceByteCount() == 2'057'688U);
+    REQUIRE(face->sourceFingerprint() == 0x3f4eab9610b4cfb3ULL);
     REQUIRE(face->weightCoordinate() == FontFace::canonicalWeight);
     REQUIRE(face->pixelSize() == FontFace::canonicalPixelSize);
 
@@ -243,6 +247,200 @@ void testAssetIntegrityAndMemoryFace() {
     requireShapeContract(latin, expectedLatin, 24'388);
 }
 
+[[nodiscard]] std::unique_ptr<cirvivor::render::text::FontFace> loadPretendardFace() {
+    using namespace cirvivor::render::text;
+
+    FontLoadError error = FontLoadError::none;
+    std::unique_ptr<FontFace> face = FontFace::loadFromMemory(
+        readBytes(CIRVIVOR_PRETENDARD_FONT_PATH),
+        error
+    );
+    REQUIRE(error == FontLoadError::none);
+    REQUIRE(face != nullptr);
+    return face;
+}
+
+[[nodiscard]] std::uint64_t fnv1a64(const std::span<const std::uint8_t> bytes) noexcept {
+    std::uint64_t hash = 0xcbf29ce484222325ULL;
+    for (const std::uint8_t value : bytes) {
+        hash ^= value;
+        hash *= 1'099'511'628'211ULL;
+    }
+    return hash;
+}
+
+void testVariableWeightAndDeterministicRaster() {
+    using namespace cirvivor::render::text;
+
+    std::unique_ptr<FontFace> face = loadPretendardFace();
+    REQUIRE(face->minimumWeightCoordinate() == 45);
+    REQUIRE(face->maximumWeightCoordinate() == 930);
+
+    REQUIRE(!face->setPixelSize(0));
+    REQUIRE(!face->setPixelSize(FontFace::maximumPixelSize + 1U));
+    REQUIRE(face->pixelSize() == FontFace::canonicalPixelSize);
+    REQUIRE(!face->setWeightCoordinate(44));
+    REQUIRE(!face->setWeightCoordinate(931));
+    REQUIRE(face->weightCoordinate() == FontFace::canonicalWeight);
+
+    REQUIRE(face->setPixelSize(32));
+    REQUIRE(face->setWeightCoordinate(300));
+    const ShapeResult lightShape = face->shapeUtf8("설정");
+    REQUIRE(lightShape.success);
+    REQUIRE(lightShape.glyphs.size() == 2U);
+    const GlyphRasterResult first = face->rasterizeGlyph(lightShape.glyphs[0].glyphIndex);
+    const GlyphRasterResult repeated = face->rasterizeGlyph(lightShape.glyphs[0].glyphIndex);
+    REQUIRE(first.success());
+    REQUIRE(repeated.success());
+    REQUIRE(first.glyph.width > 0U);
+    REQUIRE(first.glyph.height > 0U);
+    REQUIRE(first.glyph.coverage.size()
+        == static_cast<std::size_t>(first.glyph.width) * first.glyph.height);
+    REQUIRE(first.glyph.width == repeated.glyph.width);
+    REQUIRE(first.glyph.height == repeated.glyph.height);
+    REQUIRE(first.glyph.bearingX == repeated.glyph.bearingX);
+    REQUIRE(first.glyph.bearingY == repeated.glyph.bearingY);
+    REQUIRE(first.glyph.advanceX26Dot6 == repeated.glyph.advanceX26Dot6);
+    REQUIRE(first.glyph.coverage == repeated.glyph.coverage);
+    REQUIRE(std::any_of(
+        first.glyph.coverage.begin(),
+        first.glyph.coverage.end(),
+        [](const std::uint8_t value) { return value != 0U; }
+    ));
+    REQUIRE(fnv1a64(first.glyph.coverage) == 0xa432e67001540319ULL);
+
+    REQUIRE(face->setWeightCoordinate(700));
+    const ShapeResult boldShape = face->shapeUtf8("설정");
+    REQUIRE(boldShape.success);
+    REQUIRE(boldShape.glyphs.size() == lightShape.glyphs.size());
+    const GlyphRasterResult bold = face->rasterizeGlyph(boldShape.glyphs[0].glyphIndex);
+    REQUIRE(bold.success());
+    REQUIRE(bold.glyph.coverage != first.glyph.coverage);
+
+    const ShapeResult spaceShape = face->shapeUtf8(" ");
+    REQUIRE(spaceShape.success);
+    REQUIRE(spaceShape.glyphs.size() == 1U);
+    const GlyphRasterResult space = face->rasterizeGlyph(spaceShape.glyphs[0].glyphIndex);
+    REQUIRE(space.success());
+    REQUIRE(space.glyph.width == 0U);
+    REQUIRE(space.glyph.height == 0U);
+    REQUIRE(space.glyph.coverage.empty());
+
+    const GlyphRasterResult invalid = face->rasterizeGlyph(UINT32_MAX);
+    REQUIRE(!invalid.success());
+    REQUIRE(invalid.error == GlyphRasterError::invalidGlyphIndex);
+}
+
+void testFixedCapacityGlyphAtlas() {
+    using namespace cirvivor::render::text;
+
+    GlyphAtlasCreateError createError = GlyphAtlasCreateError::none;
+    REQUIRE(GlyphAtlas::create(0, 256, 16, createError) == nullptr);
+    REQUIRE(createError == GlyphAtlasCreateError::invalidDimensions);
+    REQUIRE(GlyphAtlas::create(256, 256, 0, createError) == nullptr);
+    REQUIRE(createError == GlyphAtlasCreateError::invalidCapacity);
+
+    std::unique_ptr<GlyphAtlas> atlas = GlyphAtlas::create(256, 256, 16, createError);
+    REQUIRE(createError == GlyphAtlasCreateError::none);
+    REQUIRE(atlas != nullptr);
+    REQUIRE(atlas->width() == 256U);
+    REQUIRE(atlas->height() == 256U);
+    REQUIRE(atlas->entryCapacity() == 16U);
+
+    std::unique_ptr<FontFace> face = loadPretendardFace();
+    REQUIRE(face->setPixelSize(32));
+    REQUIRE(face->setWeightCoordinate(400));
+    const ShapeResult shaped = face->shapeUtf8("설정 설정");
+    REQUIRE(shaped.success);
+    REQUIRE(shaped.glyphs.size() == 5U);
+
+    const GlyphAtlasCacheResult first = atlas->cacheGlyph(
+        *face,
+        shaped.glyphs[0].glyphIndex
+    );
+    const GlyphAtlasCacheResult second = atlas->cacheGlyph(
+        *face,
+        shaped.glyphs[1].glyphIndex
+    );
+    const GlyphAtlasCacheResult space = atlas->cacheGlyph(
+        *face,
+        shaped.glyphs[2].glyphIndex
+    );
+    REQUIRE(first.status == GlyphAtlasCacheStatus::inserted);
+    REQUIRE(second.status == GlyphAtlasCacheStatus::inserted);
+    REQUIRE(space.status == GlyphAtlasCacheStatus::inserted);
+    REQUIRE(atlas->entryCount() == 3U);
+    REQUIRE(atlas->generation() == 3U);
+
+    const std::uint64_t populatedPixelHash = fnv1a64(atlas->pixels());
+    REQUIRE(populatedPixelHash == 0xced22a0a2891f249ULL);
+    REQUIRE(populatedPixelHash != fnv1a64(
+        std::vector<std::uint8_t>(65'536U, std::uint8_t{0})
+    ));
+    const std::uint64_t generationBeforeDuplicate = atlas->generation();
+    const GlyphAtlasCacheResult duplicate = atlas->cacheGlyph(
+        *face,
+        shaped.glyphs[3].glyphIndex
+    );
+    REQUIRE(duplicate.status == GlyphAtlasCacheStatus::alreadyCached);
+    REQUIRE(duplicate.entryIndex == first.entryIndex);
+    REQUIRE(atlas->generation() == generationBeforeDuplicate);
+    REQUIRE(fnv1a64(atlas->pixels()) == populatedPixelHash);
+
+    const GlyphAtlasEntry* firstEntry = atlas->entry(first.entryIndex);
+    REQUIRE(firstEntry != nullptr);
+    REQUIRE(firstEntry->x >= GlyphAtlas::padding);
+    REQUIRE(firstEntry->y >= GlyphAtlas::padding);
+    REQUIRE(atlas->find(firstEntry->key) == first.entryIndex);
+    REQUIRE(atlas->entry(UINT32_MAX) == nullptr);
+    const GlyphAtlasKey firstKey = firstEntry->key;
+
+    std::unique_ptr<GlyphAtlas> capacityLimited = GlyphAtlas::create(
+        256,
+        256,
+        1,
+        createError
+    );
+    REQUIRE(capacityLimited != nullptr);
+    REQUIRE(capacityLimited->cacheGlyph(*face, shaped.glyphs[0].glyphIndex).success());
+    const std::uint64_t limitedGeneration = capacityLimited->generation();
+    const std::uint64_t limitedHash = fnv1a64(capacityLimited->pixels());
+    const GlyphAtlasCacheResult capacityFailure = capacityLimited->cacheGlyph(
+        *face,
+        shaped.glyphs[1].glyphIndex
+    );
+    REQUIRE(capacityFailure.status == GlyphAtlasCacheStatus::entryCapacityExceeded);
+    REQUIRE(capacityLimited->entryCount() == 1U);
+    REQUIRE(capacityLimited->generation() == limitedGeneration);
+    REQUIRE(fnv1a64(capacityLimited->pixels()) == limitedHash);
+
+    std::unique_ptr<GlyphAtlas> spaceLimited = GlyphAtlas::create(4, 4, 4, createError);
+    REQUIRE(spaceLimited != nullptr);
+    const GlyphAtlasCacheResult spaceFailure = spaceLimited->cacheGlyph(
+        *face,
+        shaped.glyphs[0].glyphIndex
+    );
+    REQUIRE(spaceFailure.status == GlyphAtlasCacheStatus::atlasSpaceExceeded);
+    REQUIRE(spaceLimited->entryCount() == 0U);
+    REQUIRE(spaceLimited->generation() == 0U);
+    REQUIRE(std::all_of(
+        spaceLimited->pixels().begin(),
+        spaceLimited->pixels().end(),
+        [](const std::uint8_t value) { return value == 0U; }
+    ));
+
+    const std::uint64_t generationBeforeClear = atlas->generation();
+    atlas->clear();
+    REQUIRE(atlas->entryCount() == 0U);
+    REQUIRE(atlas->generation() == generationBeforeClear + 1U);
+    REQUIRE(atlas->find(firstKey) == GlyphAtlasCacheResult::invalidEntryIndex);
+    REQUIRE(std::all_of(
+        atlas->pixels().begin(),
+        atlas->pixels().end(),
+        [](const std::uint8_t value) { return value == 0U; }
+    ));
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
@@ -252,7 +450,9 @@ struct TestCase final {
 
 int main() {
     constexpr std::array tests{
-        TestCase{"asset integrity, memory face, and shaping", testAssetIntegrityAndMemoryFace}
+        TestCase{"asset integrity, memory face, and shaping", testAssetIntegrityAndMemoryFace},
+        TestCase{"variable weight and deterministic raster", testVariableWeightAndDeterministicRaster},
+        TestCase{"fixed-capacity glyph atlas", testFixedCapacityGlyphAtlas}
     };
 
     std::size_t passed = 0;

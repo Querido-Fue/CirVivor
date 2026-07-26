@@ -124,6 +124,7 @@ if(CIRVIVOR_BUILD_TEXT_STACK)
 
     add_library(render_text STATIC
         src/render/text/font_face.cpp
+        src/render/text/glyph_atlas.cpp
     )
     target_include_directories(render_text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(render_text PRIVATE freetype harfbuzz)
