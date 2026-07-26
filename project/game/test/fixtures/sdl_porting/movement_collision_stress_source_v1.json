@@ -1,0 +1,31 @@
+{
+    "schemaVersion": 1,
+    "fixtureId": "sdl-phase0-movement-collision-stress-v1",
+    "mapId": "corridor_eight_01",
+    "fixedStep": {
+        "hz": 60,
+        "deltaSeconds": 0.016666666666666666,
+        "tickCount": 240
+    },
+    "participantCount": 800,
+    "placementPattern": "route-waypoint-grid-v1",
+    "movementPattern": {
+        "id": "rotating-cardinal-v1",
+        "phaseTicks": 30
+    },
+    "checkpointTicks": [
+        0,
+        29,
+        59,
+        89,
+        119,
+        149,
+        179,
+        209,
+        239
+    ],
+    "operationBudget": {
+        "maxTileProbesPerResolve": 32,
+        "maxPositionCorrectionsPerResolve": 8
+    }
+}

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "corridor-eight-tower-fixed-control-v1",
+  "description": "현재 production GameSystem의 corridor_eight_01에서 의미 이동 action, 가속·마찰·대각선 정규화와 타일 충돌 보정을 실행하는 SDL C++ parity replay",
+  "mapId": "corridor_eight_01",
+  "fixedStep": {
+    "hz": 60,
+    "deltaSeconds": 0.016666666666666666,
+    "tickCount": 480,
+    "tickAuthority": "executed-fixed-tick",
+    "presentationUpdates": 0
+  },
+  "viewport": {
+    "ww": 2560,
+    "wh": 1440
+  },
+  "inputTimeline": [
+    {
+      "tick": 0,
+      "pressedActions": [
+        "moveRight"
+      ]
+    },
+    {
+      "tick": 72,
+      "pressedActions": [
+        "moveDown"
+      ]
+    },
+    {
+      "tick": 132,
+      "pressedActions": [
+        "moveDown",
+        "moveLeft"
+      ]
+    },
+    {
+      "tick": 192,
+      "pressedActions": [
+        "moveUp"
+      ]
+    },
+    {
+      "tick": 252,
+      "pressedActions": []
+    },
+    {
+      "tick": 312,
+      "pressedActions": [
+        "moveLeft",
+        "moveRight",
+        "moveUp"
+      ]
+    },
+    {
+      "tick": 342,
+      "pressedActions": [
+        "moveRight",
+        "moveDown"
+      ]
+    },
+    {
+      "tick": 402,
+      "pressedActions": []
+    }
+  ],
+  "checkpointTicks": [
+    0,
+    71,
+    131,
+    191,
+    251,
+    311,
+    341,
+    401,
+    479
+  ]
+}

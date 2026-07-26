@@ -1,0 +1,326 @@
+cmake_minimum_required(VERSION 3.25)
+
+project(CirVivorNative VERSION 0.1.0 LANGUAGES CXX)
+
+include(CTest)
+
+option(CIRVIVOR_WARNINGS_AS_ERRORS "Treat compiler warnings as errors." ON)
+option(CIRVIVOR_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer when supported." OFF)
+option(CIRVIVOR_BUILD_SDL_APP "Build the SDL3 desktop application shell." ON)
+
+function(cirvivor_configure_target target_name)
+    target_compile_features(${target_name} PUBLIC cxx_std_20)
+    set_target_properties(${target_name} PROPERTIES
+        CXX_EXTENSIONS OFF
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE
+            /W4
+            /permissive-
+            /utf-8
+            /Zc:__cplusplus
+        )
+        if(CIRVIVOR_WARNINGS_AS_ERRORS)
+            target_compile_options(${target_name} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target_name} PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Wconversion
+            -Wshadow
+            -Wsign-conversion
+        )
+        if(CIRVIVOR_WARNINGS_AS_ERRORS)
+            target_compile_options(${target_name} PRIVATE -Werror)
+        endif()
+    endif()
+
+    if(CIRVIVOR_ENABLE_SANITIZERS)
+        if(MSVC)
+            target_compile_options(${target_name} PRIVATE /fsanitize=address)
+            target_link_options(${target_name} PRIVATE /fsanitize=address)
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(${target_name} PRIVATE
+                -fsanitize=address,undefined
+                -fno-omit-frame-pointer
+            )
+            target_link_options(${target_name} PRIVATE
+                -fsanitize=address,undefined
+                -fno-omit-frame-pointer
+            )
+        else()
+            message(FATAL_ERROR "CIRVIVOR_ENABLE_SANITIZERS is not supported by ${CMAKE_CXX_COMPILER_ID}.")
+        endif()
+    endif()
+endfunction()
+
+add_library(game_core STATIC
+    src/core/math/deterministic_math.cpp
+    src/core/navigation/flow_field_scalar.cpp
+    src/core/physics/body_soa.cpp
+    src/core/physics/collision_candidate_builder.cpp
+    src/core/physics/collision_narrowphase.cpp
+    src/core/physics/collision_spatial_grid.cpp
+    src/core/physics/prepared_contact_scalar.cpp
+    src/core/physics/tile_collision_solver.cpp
+    src/core/rng/deterministic_rng.cpp
+    src/core/state_hash/canonical_state_hasher.cpp
+    src/core/state_hash/state_hasher.cpp
+    src/core/world/tile_map.cpp
+    src/engine/frame_scheduler.cpp
+    src/game/game_system.cpp
+)
+target_include_directories(game_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+cirvivor_configure_target(game_core)
+
+add_library(app_runtime STATIC
+    src/app/movement_input_buffer.cpp
+)
+target_include_directories(app_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(app_runtime PUBLIC game_core)
+cirvivor_configure_target(app_runtime)
+
+if(MSVC)
+    set_source_files_properties(
+        src/core/math/deterministic_math.cpp
+        src/core/navigation/flow_field_scalar.cpp
+        src/core/physics/collision_candidate_builder.cpp
+        src/core/physics/collision_narrowphase.cpp
+        src/core/physics/collision_spatial_grid.cpp
+        src/core/physics/prepared_contact_scalar.cpp
+        PROPERTIES COMPILE_OPTIONS "/fp:strict"
+    )
+else()
+    set_source_files_properties(
+        src/core/math/deterministic_math.cpp
+        src/core/navigation/flow_field_scalar.cpp
+        src/core/physics/collision_candidate_builder.cpp
+        src/core/physics/collision_narrowphase.cpp
+        src/core/physics/collision_spatial_grid.cpp
+        src/core/physics/prepared_contact_scalar.cpp
+        PROPERTIES COMPILE_OPTIONS "-ffp-contract=off"
+    )
+endif()
+
+add_library(renderer_common STATIC
+    src/render/common/frame_packet.cpp
+    src/render/common/frame_packet_codec.cpp
+)
+target_include_directories(renderer_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+cirvivor_configure_target(renderer_common)
+
+add_library(render_frontend STATIC
+    src/render/frontend/frame_packet_builder.cpp
+    src/render/frontend/playable_game_scene.cpp
+    src/render/frontend/synthetic_test_scene.cpp
+)
+target_include_directories(render_frontend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(render_frontend PUBLIC game_core renderer_common)
+cirvivor_configure_target(render_frontend)
+
+add_library(renderer_backend STATIC
+    src/render/backend/renderer_router.cpp
+)
+target_include_directories(renderer_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(renderer_backend PUBLIC renderer_common)
+cirvivor_configure_target(renderer_backend)
+
+add_executable(game_headless
+    src/headless/main.cpp
+)
+target_link_libraries(game_headless PRIVATE game_core)
+cirvivor_configure_target(game_headless)
+
+if(BUILD_TESTING)
+    add_executable(game_tests
+        tests/test_main.cpp
+    )
+    target_link_libraries(game_tests PRIVATE game_core)
+    cirvivor_configure_target(game_tests)
+
+    add_executable(frame_packet_tests
+        tests/frame_packet_test.cpp
+    )
+    target_link_libraries(frame_packet_tests PRIVATE render_frontend renderer_common)
+    cirvivor_configure_target(frame_packet_tests)
+
+    add_executable(playable_game_scene_tests
+        tests/playable_game_scene_test.cpp
+    )
+    target_link_libraries(playable_game_scene_tests PRIVATE render_frontend game_core)
+    cirvivor_configure_target(playable_game_scene_tests)
+
+    add_executable(movement_input_buffer_tests
+        tests/movement_input_buffer_test.cpp
+    )
+    target_link_libraries(movement_input_buffer_tests PRIVATE app_runtime)
+    cirvivor_configure_target(movement_input_buffer_tests)
+
+    add_executable(renderer_router_tests
+        tests/renderer_router_test.cpp
+    )
+    target_link_libraries(renderer_router_tests PRIVATE renderer_backend renderer_common)
+    cirvivor_configure_target(renderer_router_tests)
+
+    add_executable(simulation_parity_tests
+        tests/simulation_parity_test.cpp
+    )
+    target_link_libraries(simulation_parity_tests PRIVATE game_core)
+    cirvivor_configure_target(simulation_parity_tests)
+
+    add_executable(game_replay_parity_tests
+        tests/game_replay_parity_test.cpp
+    )
+    target_link_libraries(game_replay_parity_tests PRIVATE game_core)
+    cirvivor_configure_target(game_replay_parity_tests)
+
+    add_executable(wat_scalar_parity_tests
+        tests/wat_scalar_parity_test.cpp
+    )
+    target_link_libraries(wat_scalar_parity_tests PRIVATE game_core)
+    cirvivor_configure_target(wat_scalar_parity_tests)
+
+    add_executable(legacy_collision_broadphase_parity_tests
+        tests/legacy_collision_broadphase_parity_test.cpp
+    )
+    target_link_libraries(legacy_collision_broadphase_parity_tests PRIVATE game_core)
+    cirvivor_configure_target(legacy_collision_broadphase_parity_tests)
+
+    add_executable(legacy_collision_narrowphase_parity_tests
+        tests/legacy_collision_narrowphase_parity_test.cpp
+    )
+    target_link_libraries(legacy_collision_narrowphase_parity_tests PRIVATE game_core)
+    cirvivor_configure_target(legacy_collision_narrowphase_parity_tests)
+
+    add_test(NAME game_tests COMMAND game_tests)
+    add_test(NAME frame_packet_tests COMMAND frame_packet_tests)
+    add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
+    add_test(NAME movement_input_buffer_tests COMMAND movement_input_buffer_tests)
+    add_test(NAME renderer_router_tests COMMAND renderer_router_tests)
+    add_test(NAME simulation_parity_tests COMMAND simulation_parity_tests)
+    add_test(NAME game_replay_parity_tests COMMAND game_replay_parity_tests)
+    add_test(NAME wat_scalar_parity_tests COMMAND wat_scalar_parity_tests)
+    add_test(
+        NAME legacy_collision_broadphase_parity_tests
+        COMMAND legacy_collision_broadphase_parity_tests
+    )
+    add_test(
+        NAME legacy_collision_narrowphase_parity_tests
+        COMMAND legacy_collision_narrowphase_parity_tests
+    )
+    add_test(
+        NAME architecture_boundaries
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/src"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckArchitecture.cmake"
+    )
+endif()
+
+if(CIRVIVOR_BUILD_SDL_APP)
+    include(cmake/Dependencies.cmake)
+
+    add_library(renderer_sdl_gpu STATIC
+        src/render/sdl_gpu/sdl_gpu_backend.cpp
+    )
+    target_include_directories(renderer_sdl_gpu PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(renderer_sdl_gpu PUBLIC renderer_common SDL3::SDL3)
+    cirvivor_configure_target(renderer_sdl_gpu)
+
+    add_library(renderer_gles STATIC
+        src/render/gles/gles_backend.cpp
+    )
+    target_include_directories(renderer_gles PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(renderer_gles PUBLIC renderer_common SDL3::SDL3)
+    cirvivor_configure_target(renderer_gles)
+
+    add_library(renderer_software STATIC
+        src/render/software/software_backend.cpp
+        src/render/software/software_rasterizer.cpp
+        src/render/software/software_renderer.cpp
+    )
+    target_include_directories(renderer_software PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(renderer_software PUBLIC renderer_common SDL3::SDL3)
+    cirvivor_configure_target(renderer_software)
+
+    add_library(platform_sdl STATIC
+        src/platform/sdl/audio/sdl_playback_device.cpp
+        src/platform/sdl/sdl_lifecycle.cpp
+        src/platform/sdl/sdl_platform_event.cpp
+        src/platform/sdl/storage/sdl_user_storage.cpp
+        src/platform/sdl/sdl_window.cpp
+    )
+    target_include_directories(platform_sdl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(platform_sdl PRIVATE SDL3::SDL3)
+    cirvivor_configure_target(platform_sdl)
+
+    add_executable(game_desktop
+        src/app/application.cpp
+        src/app/sdl_app.cpp
+    )
+    target_link_libraries(
+        game_desktop
+        PRIVATE
+            game_core
+            app_runtime
+            platform_sdl
+            render_frontend
+            renderer_backend
+            renderer_gles
+            renderer_sdl_gpu
+            renderer_software
+            SDL3::SDL3
+    )
+    cirvivor_configure_target(game_desktop)
+
+    if(BUILD_TESTING)
+        add_executable(sdl_platform_event_tests
+            tests/sdl_platform_event_test.cpp
+        )
+        target_link_libraries(sdl_platform_event_tests PRIVATE platform_sdl SDL3::SDL3)
+        cirvivor_configure_target(sdl_platform_event_tests)
+
+        add_executable(software_renderer_tests
+            tests/software_renderer_test.cpp
+        )
+        target_link_libraries(
+            software_renderer_tests
+            PRIVATE render_frontend renderer_software
+        )
+        cirvivor_configure_target(software_renderer_tests)
+
+        add_executable(software_renderer_benchmark
+            tests/software_renderer_benchmark.cpp
+        )
+        target_link_libraries(
+            software_renderer_benchmark
+            PRIVATE render_frontend renderer_software
+        )
+        cirvivor_configure_target(software_renderer_benchmark)
+
+        add_test(NAME sdl_platform_event_tests COMMAND sdl_platform_event_tests)
+        add_test(NAME software_renderer_tests COMMAND software_renderer_tests)
+        add_test(NAME game_desktop_smoke COMMAND game_desktop --smoke-test)
+        add_test(
+            NAME game_desktop_software_smoke
+            COMMAND game_desktop --smoke-test --renderer software
+        )
+        add_test(
+            NAME game_desktop_render_recovery_smoke
+            COMMAND game_desktop --smoke-test-render-recovery
+        )
+        set_tests_properties(
+            game_desktop_smoke
+            game_desktop_software_smoke
+            game_desktop_render_recovery_smoke
+            PROPERTIES
+            ENVIRONMENT "SDL_AUDIODRIVER=dummy;SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"
+            RESOURCE_LOCK cirvivor_user_storage_smoke
+            TIMEOUT 15
+        )
+    endif()
+endif()

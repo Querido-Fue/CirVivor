@@ -1,6 +1,6 @@
 # CirVivor AI Agent Guide
 
-> **기준 코드**: 0.48 연속 UI interaction retarget 베이스라인 | **런타임**: NW.js 데스크톱 | **렌더링**: Canvas 2D + WebGL
+> **기준 코드**: 0.48 연속 UI interaction retarget 베이스라인 | **전환 상태**: NW.js oracle + C++20/SDL3 native 병행 | **렌더링**: Canvas 2D + WebGL oracle, SDL_GPU/GLES/Software 기본 드로우 병행
 > 이 문서는 진입 인덱스만 담당합니다. 작업에 필요한 문서만 골라 읽고, 수정 대상 파일은 반드시 전체 내용을 확인한 뒤 변경합니다.
 
 ---
@@ -39,6 +39,7 @@
 | 적 AI/pathfinding 구조 | [`domain/enemy_ai_guide.md`](C:/CirVivor/guide/domain/enemy_ai_guide.md) |
 | 육각형 합체 적 구조 | [`domain/hexa_hive_enemy_guide.md`](C:/CirVivor/guide/domain/hexa_hive_enemy_guide.md) |
 | Worker, WASM, 멀티코어, native C++ 시뮬레이션 가속 | [`domain/simulation_native_acceleration_guide.md`](C:/CirVivor/guide/domain/simulation_native_acceleration_guide.md), [`core_architecture_guide.md`](C:/CirVivor/guide/core_architecture_guide.md), [`domain/game_scene_simulation_guide.md`](C:/CirVivor/guide/domain/game_scene_simulation_guide.md), [`domain/collision_pipeline_guide.md`](C:/CirVivor/guide/domain/collision_pipeline_guide.md) |
+| SDL3 Desktop/Android/iOS 포트, CMake, native core/render/platform | [`native_port/README.md`](C:/CirVivor/guide/native_port/README.md), [`sdl3_desktop_android_ios_porting_plan.md`](C:/CirVivor/guide/sdl3_desktop_android_ios_porting_plan.md), [`sdl_progess.md`](C:/CirVivor/sdl_progess.md) |
 | GitHub Desktop, 게임 실행, 성능 벤치마크 Windows 조작 | [`computer-use-guide.md`](C:/CirVivor/guide/computer-use-guide.md) |
 | 에이전트 실수 방지 체크 | [`agent_pitfalls_guide.md`](C:/CirVivor/guide/agent_pitfalls_guide.md) |
 
@@ -48,6 +49,16 @@
 
 - **게임 로직/물리/AI**는 fixed step 기준으로 판단합니다.
 - **UI/오버레이/렌더링**은 가변 프레임과 표시 좌표계를 기준으로 판단합니다.
+- SDL3 전환 중에는 기존 `project/` 경로를 parity oracle로 보존합니다. `native/src/core/`와 `native/src/engine/`에는 SDL 헤더·handle·OS 경로 타입을 넣지 않고, 플랫폼 경계는 `native/src/platform/`, application 조립은 `native/src/app/`에 둡니다.
+- native authoritative 물리는 `native/src/core/physics/BodySoA`의 setup-time 고정 capacity와 `double` 배열을 사용합니다. fixed tick에서 배열 성장과 heap allocation을 금지하고, JS `Math.exp` parity가 필요한 적분에는 플랫폼 CRT 대신 `native/src/core/math/deterministic_math.*`의 V8/fdlibm 호환 함수를 사용합니다.
+- native `FlowFieldScalar`와 `PreparedContactScalar`는 production WAT의 scalar reference이며 생성 시 scratch capacity를 고정하고 caller span만 사용합니다. prepared-contact boolean은 범용 spatial grid·position solve·projectile 이식 완료를 뜻하지 않습니다.
+- legacy 일반 충돌 parity는 `legacy_collision_projectile_baseline_v1.json`의 실제 `ObjectSystem.fixedUpdate()` 60틱 순서와 raw f32/f64 plane을 기준으로 합니다. `CollisionHandler.setDeterministicOracleTraceSink()`는 fixture 전용 opt-in seam이므로 제품 경로에서 활성화하거나 production 정책 API로 승격하지 않습니다.
+- native 세션 조립은 `native/src/game/GameSystem`이 의미 입력을 Tower intent로 바꾸고 60Hz BodySoA·타일 충돌을 실행한 뒤 Core/Tower canonical snapshot을 만듭니다. 현재 480-tick JS replay 범위를 넘어 RNG·투사체·일반 contact/event가 구현된 것으로 가정하지 않습니다.
+- native 제품 실행은 `Application`이 `GameSystem`을 소유하고 정상 모드에서 `playable_game_scene`을 빌드합니다. synthetic scene은 smoke와 `--diagnostic-scene` 전용입니다. `app_runtime`의 `MovementInputBuffer`는 물리 source alias를 합성하고 짧은 press를 첫 fixed tick까지 보존하며 focus/background 전환에서 held/pending을 함께 지웁니다.
+- native 타이틀 화면과 HUD·일시정지·설정·게임오버 등 오버레이는 기존 JS/NW.js를 시각·입력·상태 전이 oracle로 사용합니다. 장면별 고정 해상도/DPI/시간 상태의 골든과 레이어·텍스트 계약이 일치하기 전에는 해당 UI 이식을 완료로 표시하지 않습니다.
+- native renderer는 한 SDL window에 여러 그래픽 API 자원을 동시에 붙이지 않습니다. `Application`의 Router factory가 후보마다 숨김 창을 재생성하며, `neutral → SDL_GPU`, `SDL_WINDOW_OPENGL + 사전 GL attributes → GLES ES3/ES2`, `neutral → Software` 순서로 하나의 backend만 소유하게 합니다. 종료는 backend를 먼저 내린 뒤 window를 파괴합니다.
+- SDL dependency는 `native/third_party/manifest.lock`과 `native/cmake/Dependencies.cmake`의 version·tag·commit·archive hash를 함께 고정합니다. 임의의 system SDL이나 floating branch로 대체하지 않습니다.
+- native simulation 또는 render 계약을 변경한 작업은 종료 전에 `sdl_progess.md`를 실제 완료 범위와 검증 결과에 맞게 갱신합니다.
 - 시작 인트로는 로고 완료까지 `LoadingScene`, 원·로고 이동과 적 spawn부터 `TitleScene`이 소유하며 presentation과 시각 컴포넌트 identity를 handoff합니다.
 - `App`은 fixed step 횟수만 계산하고, 실제 실행 순서와 정책 적용은 `SystemHandler.tick()`이 담당합니다.
 - 시뮬레이션 경로는 display/input/save 싱글톤 대신 `simulation_runtime.js`의 스냅샷을 우선 읽습니다.

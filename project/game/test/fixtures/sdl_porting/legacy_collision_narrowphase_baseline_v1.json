@@ -1,0 +1,420 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "legacy_collision_narrowphase_baseline_v1",
+  "oracle": {
+    "runtime": "javascript-production-generic-narrowphase",
+    "contractVersion": 1,
+    "productionEntrypoint": "physics/collision_body_detector.js::detectCollisionBodies(bodyA, bodyB, context)",
+    "directExportInvocation": true,
+    "circlePartsRealmAdapter": "CollisionBroadphaseBuffer.broadData.constructor (constructor only; no grid execution)",
+    "manifoldFields": [
+      "normalX",
+      "normalY",
+      "penetration",
+      "pointX",
+      "pointY"
+    ],
+    "authoritativeScope": [
+      "circle-to-circle",
+      "circle-to-circleParts and reverse normal inversion",
+      "circleParts-to-circleParts ordered aggregation",
+      "circle-to-rect including inside and tie cases",
+      "circleParts-to-rect aggregation and reverse normal inversion"
+    ],
+    "unavailableCapabilities": [
+      "position solve",
+      "grid and candidate generation",
+      "projectile sweep and hit processing"
+    ],
+    "productionSources": [
+      {
+        "path": "physics/collision_body_detector.js",
+        "sha256": "ce5fc7ea664a33b3494ed88510314dfa850ad9ed02e0c0fc83961b091d4dab09"
+      },
+      {
+        "path": "physics/collision_manifold_writer.js",
+        "sha256": "66067211fd2d4e5e25de8273c507de6ca876090f8dc9ec86d655888f6d01872b"
+      },
+      {
+        "path": "physics/_collision_resolve_tuning.js",
+        "sha256": "617a95223deba29e75f73af5a9c141c89e32efbf9a89ee04ebec7c068e7c3872"
+      },
+      {
+        "path": "physics/collision_math_constants.js",
+        "sha256": "a895ecd1f5023ddd08219671c3e28fc40b8f6f9d7db8dc5f50660d15a97295c3"
+      },
+      {
+        "path": "physics/collision_body_layout.js",
+        "sha256": "fa17d115f0ee5d89607b36701d17d2a198bb6bd69616947027cb8a4c1a86bf4f"
+      },
+      {
+        "path": "util/number_util.js",
+        "sha256": "fc40f8ed6350942988632f87e5d353ad7f4d26eae3a812fc9e7a6b0d62715399"
+      }
+    ],
+    "productionSourcesSha256": "d8bf18c4d175b9e00354615312f60f8e72040728bba749148eed07fd18925be9"
+  },
+  "source": {
+    "fixtureId": "legacy_collision_narrowphase_source_v1",
+    "canonicalEncoding": "JSON.stringify(source fixture)",
+    "canonicalSha256": "a0dbe0e4b6c5ed040fe3120def34ef84b01d99e86fe4bd2f961ee4626021efe1",
+    "bodyCount": 28,
+    "bodyF64FieldOrder": [
+      "centerX",
+      "centerY",
+      "radius",
+      "minX",
+      "maxX",
+      "minY",
+      "maxY"
+    ],
+    "bodyF64ValueCount": 196,
+    "bodyF64RawSha256": "f9c41849d90830a5bb349c49657d8c9ad34c7f216127bc6bf368df6f104cd61c",
+    "circlePartCount": 17,
+    "circlePartF32FieldOrder": [
+      "centerX",
+      "centerY",
+      "radius"
+    ],
+    "circlePartF32ValueCount": 51,
+    "circlePartF32RawSha256": "e47c942a1e574d2e5c531e72568af50441f5c5f7bc55ea2e815aeaa07922b99f",
+    "caseCount": 27,
+    "caseOrderSha256": "0c704b9a1e9657643dda0684b1e59b1b8d8d69756ec46b47656c96fe1d11ab3d"
+  },
+  "result": {
+    "collisionCount": 22,
+    "collisionMaskSha256": "d2c9ebe5581b24589f93a6ca162f47f7ad7be2bba6f1a26a94a3d93da440ec4e",
+    "manifoldF64FieldOrder": [
+      "normalX",
+      "normalY",
+      "penetration",
+      "pointX",
+      "pointY"
+    ],
+    "manifoldF64ValueCount": 110,
+    "manifoldF64RawSha256": "89648ea08dbcf1a9c6158623d48c1f67ddf6001b5ea5f887cd483ae3d518e9e1"
+  },
+  "cases": [
+    {
+      "id": "circle_circle_enemy_scaled_overlap",
+      "bodyA": "cc_enemy_a",
+      "bodyB": "cc_enemy_b",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3fed89d89d89d89e",
+        "normalY": "0x3fd89d89d89d89d9",
+        "penetration": "0x4002666666666668",
+        "pointX": "0x401c3f03f03f03f1",
+        "pointY": "0x400789d89d89d89e"
+      }
+    },
+    {
+      "id": "circle_circle_enemy_scaled_tangent_rejected",
+      "bodyA": "cc_enemy_a",
+      "bodyB": "cc_enemy_tangent",
+      "collided": false,
+      "rawF64": null
+    },
+    {
+      "id": "circle_circle_coincident_default_normal",
+      "bodyA": "cc_same_a",
+      "bodyB": "cc_same_b",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3ff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x4020000000000000",
+        "pointX": "0x4022000000000000",
+        "pointY": "0xc008000000000000"
+      }
+    },
+    {
+      "id": "circle_circle_invalid_nan_rejected",
+      "bodyA": "cc_invalid_nan",
+      "bodyB": "cc_same_a",
+      "collided": false,
+      "rawF64": null
+    },
+    {
+      "id": "parts_circle_multi_contact",
+      "bodyA": "parts_circle_a",
+      "bodyB": "parts_circle_b",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x0000000000000000",
+        "normalY": "0x3ff0000000000000",
+        "penetration": "0x4015ac8fe621fc54",
+        "pointX": "0x0000000000000000",
+        "pointY": "0x4009f707af371edb"
+      }
+    },
+    {
+      "id": "circle_parts_reverse_signed_zero",
+      "bodyA": "parts_circle_b",
+      "bodyB": "parts_circle_a",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x8000000000000000",
+        "normalY": "0xbff0000000000000",
+        "penetration": "0x4015ac8fe621fc54",
+        "pointX": "0x0000000000000000",
+        "pointY": "0x4009f707af371edb"
+      }
+    },
+    {
+      "id": "parts_circle_diagonal_fallback_normal",
+      "bodyA": "parts_fallback_a",
+      "bodyB": "circle_fallback_b",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3fe6a09e667f3bcc",
+        "normalY": "0x3fe6a09e667f3bcc",
+        "penetration": "0x4024000000000000",
+        "pointX": "0x40162463000f8560",
+        "pointY": "0x40162463000f8560"
+      }
+    },
+    {
+      "id": "circle_parts_diagonal_fallback_reverse",
+      "bodyA": "circle_fallback_b",
+      "bodyB": "parts_fallback_a",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0xbfe6a09e667f3bcc",
+        "normalY": "0xbfe6a09e667f3bcc",
+        "penetration": "0x4024000000000000",
+        "pointX": "0x40162463000f8560",
+        "pointY": "0x40162463000f8560"
+      }
+    },
+    {
+      "id": "parts_parts_order_ab",
+      "bodyA": "parts_parts_a",
+      "bodyB": "parts_parts_b",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x0000000000000000",
+        "normalY": "0x3ff0000000000000",
+        "penetration": "0x40107bf43c77bf7a",
+        "pointX": "0x0000000000000000",
+        "pointY": "0x400d232b7fb3e0bb"
+      }
+    },
+    {
+      "id": "parts_parts_order_ba",
+      "bodyA": "parts_parts_b",
+      "bodyB": "parts_parts_a",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x0000000000000000",
+        "normalY": "0xbff0000000000000",
+        "penetration": "0x40107bf43c77bf7a",
+        "pointX": "0x0000000000000000",
+        "pointY": "0x3fd6e6a40260fa29"
+      }
+    },
+    {
+      "id": "circle_rect_edge",
+      "bodyA": "rect_circle_edge",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0xbff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x3ff0000000000000",
+        "pointX": "0x4024000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "rect_circle_reverse_signed_zero",
+      "bodyA": "rect_standard",
+      "bodyB": "rect_circle_edge",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3ff0000000000000",
+        "normalY": "0x8000000000000000",
+        "penetration": "0x3ff0000000000000",
+        "pointX": "0x4024000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_corner",
+      "bodyA": "rect_circle_corner",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0xbfe6a09e667f3bcc",
+        "normalY": "0xbfe6a09e667f3bcc",
+        "penetration": "0x3fe2bec333018866",
+        "pointX": "0x4024000000000000",
+        "pointY": "0x4024000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_tangent_rejected",
+      "bodyA": "rect_circle_tangent",
+      "bodyB": "rect_standard",
+      "collided": false,
+      "rawF64": null
+    },
+    {
+      "id": "circle_rect_inside_left",
+      "bodyA": "rect_circle_left",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3ff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x4008000000000000",
+        "pointX": "0x0000000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_inside_right",
+      "bodyA": "rect_circle_right",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0xbff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x4008000000000000",
+        "pointX": "0x4024000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_inside_top",
+      "bodyA": "rect_circle_top",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x0000000000000000",
+        "normalY": "0x3ff0000000000000",
+        "penetration": "0x4008000000000000",
+        "pointX": "0x4014000000000000",
+        "pointY": "0x0000000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_inside_bottom",
+      "bodyA": "rect_circle_bottom",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x0000000000000000",
+        "normalY": "0xbff0000000000000",
+        "penetration": "0x4008000000000000",
+        "pointX": "0x4014000000000000",
+        "pointY": "0x4024000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_inside_all_tie_right_wins",
+      "bodyA": "rect_circle_all_tie",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0xbff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x401c000000000000",
+        "pointX": "0x4024000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_inside_left_top_tie_top_wins",
+      "bodyA": "rect_circle_left_top_tie",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x0000000000000000",
+        "normalY": "0x3ff0000000000000",
+        "penetration": "0x4008000000000000",
+        "pointX": "0x3ff0000000000000",
+        "pointY": "0x0000000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_near_uses_inside_branch",
+      "bodyA": "rect_circle_near_inside_branch",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3ff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x3ff0000000000000",
+        "pointX": "0x0000000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_near_uses_distance_branch",
+      "bodyA": "rect_circle_near_distance_branch",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3ff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x3feff6fd21ff2e49",
+        "pointX": "0x0000000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "circle_rect_nonfinite_bound_falls_back_zero",
+      "bodyA": "rect_circle_edge",
+      "bodyB": "rect_nan_min_x",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0xbff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x3ff0000000000000",
+        "pointX": "0x4024000000000000",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "parts_rect_multi_contact",
+      "bodyA": "parts_rect",
+      "bodyB": "rect_standard",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0x3ff0000000000000",
+        "normalY": "0x0000000000000000",
+        "penetration": "0x4016333333333334",
+        "pointX": "0x400d1745d1745d17",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "rect_parts_reverse_signed_zero",
+      "bodyA": "rect_standard",
+      "bodyB": "parts_rect",
+      "collided": true,
+      "rawF64": {
+        "normalX": "0xbff0000000000000",
+        "normalY": "0x8000000000000000",
+        "penetration": "0x4016333333333334",
+        "pointX": "0x400d1745d1745d17",
+        "pointY": "0x4014000000000000"
+      }
+    },
+    {
+      "id": "parts_rect_invalid_only_rejected",
+      "bodyA": "parts_invalid_only",
+      "bodyB": "rect_standard",
+      "collided": false,
+      "rawF64": null
+    },
+    {
+      "id": "rect_rect_unsupported",
+      "bodyA": "rect_standard",
+      "bodyB": "rect_second",
+      "collided": false,
+      "rawF64": null
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schema": "cirvivor-sdl-gpu-shader-manifest-v1",
+  "sdlVersion": "3.4.10",
+  "sdlCommit": "8e37db5e797b6167f3a00d697d816a684bd259c7",
+  "provenance": {
+    "mode": "byte-for-byte vendored from the pinned SDL GPU renderer",
+    "vertexBase": "src/render/gpu/shaders/tri_color.vert",
+    "fragmentBase": "src/render/gpu/shaders/color.frag",
+    "generator": "src/render/gpu/shaders/build-shaders.sh (SDL_shadercross CLI)",
+    "note": "HLSL is the canonical source. Generated payload headers are copied from the pinned SDL commit so local runtime shader compilation is never required."
+  },
+  "contract": {
+    "vertexStrideBytes": 24,
+    "attributes": [
+      { "location": 0, "format": "float2", "semantic": "position" },
+      { "location": 1, "format": "float4", "semantic": "premultipliedColor" }
+    ],
+    "vertexUniformBuffers": 1,
+    "fragmentUniformBuffers": 1,
+    "entrypoints": {
+      "dxil": "main",
+      "spirv": "main",
+      "msl": "main0"
+    },
+    "blendPipelines": {
+      "opaque": "ONE, ZERO with blending disabled",
+      "premultipliedAlpha": "ONE, ONE_MINUS_SRC_ALPHA",
+      "additivePremultiplied": "ONE, ONE"
+    }
+  },
+  "sha256": {
+    "solid_2d.vert.hlsl": "2dbc4f7d2df8bc7c371a0eaf1712e6463b0149438edcce41ecfaac0cfc6a6866",
+    "solid_2d.frag.hlsl": "aa014b3975abf3f3571a95fd2a1f8038d9e047292f54df725da5ab90f1b8ce19",
+    "solid_2d_common.frag.hlsli": "c09ebf7bd8fed613c87ef67f4ccd8bd00d9c85b69d181412889ebf7ce47f7472",
+    "generated/solid_2d.vert.dxil.h": "aa63481c5b385e4695131569d295dc5a40672bd9606fda714593d0aa0e933a88",
+    "generated/solid_2d.frag.dxil.h": "24158ff560c43317bcee19434e87591940cabb4864098c226c969ca2ffea2fa9",
+    "generated/solid_2d.vert.spv.h": "544653d5e04ca49c625f632f7cfefab02999d728e1862fa39bec6c7417456d9f",
+    "generated/solid_2d.frag.spv.h": "c6f769000df125469efa9330b167fd9e19a95bb55163fc425b1eca6a81cd4296",
+    "generated/solid_2d.vert.msl.h": "6b7d3c1e3bd375cddbf625441aed5da92fe05413d7035022d1a24bcbdb5b23df",
+    "generated/solid_2d.frag.msl.h": "49691b530451f69171aaf27f68ec4dc6eca2d88166170450f5f9e7030af229ad"
+  }
+}

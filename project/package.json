@@ -12,6 +12,12 @@
         "benchmark:wasm:flow-field": "node game/test/benchmark/enemy_ai_flow_field_wasm.bench.mjs",
         "test:render:golden": "node game/test/support/run_nw_render_pipeline_golden.mjs --check",
         "update:render:golden": "node game/test/support/run_nw_render_pipeline_golden.mjs --update",
+        "baseline:sdl": "node --experimental-vm-modules game/test/support/export_sdl_game_system_baseline.mjs --check",
+        "baseline:sdl:update": "node --experimental-vm-modules game/test/support/export_sdl_game_system_baseline.mjs --update",
+        "baseline:sdl:legacy": "node --experimental-vm-modules game/test/support/export_legacy_collision_projectile_baseline.mjs --check",
+        "baseline:sdl:legacy:update": "node --experimental-vm-modules game/test/support/export_legacy_collision_projectile_baseline.mjs --update",
+        "validate:sdl:baseline": "npm test && npm run baseline:sdl && npm run baseline:sdl:legacy && npm run check:wasm:flow-field && npm run check:wasm:collision-contact",
+        "validate:sdl:baseline:full": "npm run validate:sdl:baseline && npm run test:render:golden",
         "test": "node --experimental-vm-modules --test game/test/*.test.mjs"
     },
     "js-flags": "",

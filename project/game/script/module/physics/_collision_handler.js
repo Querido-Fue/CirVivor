@@ -146,6 +146,7 @@ export class CollisionHandler {
     #sleepPostSolveFrameByEnemy;
     #enemyCandidateScanTruncated;
     #contactBackend;
+    #oracleTraceSink;
 
     /**
      * @param {object} [options] - 내부 backend 구성입니다.
@@ -188,6 +189,7 @@ export class CollisionHandler {
         this.#sleepPostSolveFrameByEnemy = new WeakMap();
         this.#enemyCandidateScanTruncated = false;
         this.#contactBackend = contactBackend;
+        this.#oracleTraceSink = null;
         this.#bodyDetectorContext = {
             manifold: this.#scratchManifold,
             candidateManifold: this.#scratchCandidateManifold,
@@ -228,6 +230,20 @@ export class CollisionHandler {
     }
 
     /**
+     * SDL native parity fixture가 production 충돌 내부 순서를 관찰할 opt-in trace sink를 설정합니다.
+     * sink가 없을 때는 snapshot 할당이나 hot-path 분기를 제외한 추가 작업을 하지 않습니다.
+     * @internal
+     * @param {((event: object) => void)|null} sink - 즉시 소비할 trace callback입니다.
+     * @returns {void}
+     */
+    setDeterministicOracleTraceSink(sink) {
+        if (sink !== null && typeof sink !== 'function') {
+            throw new TypeError('충돌 oracle trace sink는 함수 또는 null이어야 합니다.');
+        }
+        this.#oracleTraceSink = sink;
+    }
+
+    /**
      * 고정 틱 시작 시 충돌 체크 카운터를 초기화합니다.
      */
     resetFrameStats() {
@@ -236,6 +252,27 @@ export class CollisionHandler {
         this.#fixedFrameToken++;
         this.#pairPassCursor = 0;
         resetCollisionFrameStats(this.#frameStats);
+        if (this.#oracleTraceSink) {
+            this.#emitOracleTrace({
+                type: 'frameBegin',
+                fixedFrameToken: this.#fixedFrameToken,
+                candidateScanEpoch: this.#enemyCandidateScanEpoch
+            });
+        }
+    }
+
+    /**
+     * 활성화된 parity oracle sink에 즉시 소비해야 하는 내부 view event를 전달합니다.
+     * grid/body/typed array 참조는 다음 production 단계에서 재사용·변경될 수 있습니다.
+     * @private
+     * @param {object} event - 현재 단계의 trace event입니다.
+     * @returns {void}
+     */
+    #emitOracleTrace(event) {
+        if (typeof this.#oracleTraceSink !== 'function') {
+            return;
+        }
+        this.#oracleTraceSink(event);
     }
 
     /**
@@ -440,6 +477,20 @@ export class CollisionHandler {
                 const travelSteps = Math.max(1, Math.ceil(travelDist / stepDistance));
                 const steps = Math.max(baseSteps, travelSteps);
 
+                if (this.#oracleTraceSink) {
+                    this.#emitOracleTrace({
+                        type: 'projectileSweep',
+                        fixedFrameToken: this.#fixedFrameToken,
+                        projectileId: Number.isInteger(projectile.id) ? projectile.id : -1,
+                        piercing: projectile.piercing === true,
+                        startX,
+                        startY,
+                        endX,
+                        endY,
+                        steps
+                    });
+                }
+
                 let hitThisProjectile = false;
                 for (let s = 1; s <= steps; s++) {
                     const t = s / steps;
@@ -462,37 +513,129 @@ export class CollisionHandler {
                         enemyBodies.length
                     );
                     this.#profileRecorder.recordDuration('projectileCandidateQueryMs', candidateQueryStart);
+                    const traceCandidateOutcomes = this.#oracleTraceSink ? [] : null;
 
                     const narrowphaseStart = this.#profileRecorder.startTimer();
                     for (let j = 0; j < candidateIndices.length; j++) {
-                        const enemyBody = enemyBodies[candidateIndices[j]];
-                        if (!enemyBody || enemyBody.ref?.active === false) continue;
+                        const enemyBodyIndex = candidateIndices[j];
+                        const enemyBody = enemyBodies[enemyBodyIndex];
+                        if (!enemyBody) {
+                            traceCandidateOutcomes?.push({
+                                candidateOffset: j,
+                                enemyBodyIndex,
+                                enemyId: -1,
+                                result: 'missing'
+                            });
+                            continue;
+                        }
                         const enemyId = enemyBody.id;
-                        if (hasCollisionProjectileHit(projectile, enemyId)) continue;
+                        if (enemyBody.ref?.active === false) {
+                            traceCandidateOutcomes?.push({
+                                candidateOffset: j,
+                                enemyBodyIndex,
+                                enemyId,
+                                result: 'inactive'
+                            });
+                            continue;
+                        }
+                        if (hasCollisionProjectileHit(projectile, enemyId)) {
+                            traceCandidateOutcomes?.push({
+                                candidateOffset: j,
+                                enemyBodyIndex,
+                                enemyId,
+                                result: 'alreadyHit'
+                            });
+                            continue;
+                        }
                         this.#frameStats.collisionCheckCount++;
                         if (!areCollisionBodyAabbsOverlapping(circleBody, enemyBody)) {
                             this.#frameStats.aabbRejectCount++;
+                            traceCandidateOutcomes?.push({
+                                candidateOffset: j,
+                                enemyBodyIndex,
+                                enemyId,
+                                result: 'aabbReject'
+                            });
                             continue;
                         }
                         this.#frameStats.aabbPassCount++;
                         if (shouldUseCollisionBroadCircleFilter(circleBody, enemyBody)) {
                             if (!areCollisionBodyBroadCirclesOverlapping(circleBody, enemyBody, EPSILON)) {
                                 this.#frameStats.circleRejectCount++;
+                                traceCandidateOutcomes?.push({
+                                    candidateOffset: j,
+                                    enemyBodyIndex,
+                                    enemyId,
+                                    result: 'circleReject'
+                                });
                                 continue;
                             }
                             this.#frameStats.circlePassCount++;
                         }
 
                         const manifold = detectCollisionBodies(circleBody, enemyBody, this.#bodyDetectorContext);
-                        if (!manifold) continue;
+                        if (!manifold) {
+                            traceCandidateOutcomes?.push({
+                                candidateOffset: j,
+                                enemyBodyIndex,
+                                enemyId,
+                                result: 'narrowMiss'
+                            });
+                            continue;
+                        }
 
                         markCollisionProjectileHit(projectile, enemyId);
                         applyCollisionProjectileImpact(projectile, enemyBody.ref, manifold);
                         hitCount++;
                         hitThisProjectile = true;
+                        traceCandidateOutcomes?.push({
+                            candidateOffset: j,
+                            enemyBodyIndex,
+                            enemyId,
+                            result: 'hit'
+                        });
+                        if (this.#oracleTraceSink) {
+                            this.#emitOracleTrace({
+                                type: 'projectileHit',
+                                fixedFrameToken: this.#fixedFrameToken,
+                                projectileId: Number.isInteger(projectile.id) ? projectile.id : -1,
+                                enemyId,
+                                substep: s,
+                                candidateOffset: j,
+                                enemyActiveAfterImpact: enemyBody.ref?.active !== false,
+                                enemyProjectileHitCount: Number.isFinite(enemyBody.ref?.projectileHitCount)
+                                    ? enemyBody.ref.projectileHitCount
+                                    : 0,
+                                enemyAngularVelocityAfterImpact: Number.isFinite(enemyBody.ref?.angularVelocity)
+                                    ? enemyBody.ref.angularVelocity
+                                    : 0,
+                                projectileHitIds: projectile.hitEnemyIds instanceof Set
+                                    ? [...projectile.hitEnemyIds]
+                                    : []
+                            });
+                        }
                         if (!projectile.piercing) break;
                     }
                     this.#profileRecorder.recordDuration('projectileNarrowphaseMs', narrowphaseStart);
+                    if (this.#oracleTraceSink) {
+                        this.#emitOracleTrace({
+                            type: 'projectileQuery',
+                            fixedFrameToken: this.#fixedFrameToken,
+                            projectileId: Number.isInteger(projectile.id) ? projectile.id : -1,
+                            substep: s,
+                            steps,
+                            centerX: cx,
+                            centerY: cy,
+                            candidateIndices: [...candidateIndices],
+                            candidateEnemyIds: candidateIndices.map((candidateIndex) => (
+                                Number.isInteger(enemyBodies[candidateIndex]?.id)
+                                    ? enemyBodies[candidateIndex].id
+                                    : -1
+                            )),
+                            candidateOutcomes: traceCandidateOutcomes,
+                            stoppedOnNonPiercingHit: hitThisProjectile && !projectile.piercing
+                        });
+                    }
                     if (hitThisProjectile && !projectile.piercing) break;
                 }
             }
@@ -683,6 +826,7 @@ export class CollisionHandler {
             this.#buildCandidatePairsFromGrid(bodies, gridBodyCount);
             this.#profileRecorder.recordDuration('solveCandidateBuildMs', candidateBuildStart);
         }
+        const pairStartToken = this.#fixedFrameToken + this.#pairPassCursor;
         const pairProcessStart = this.#profileRecorder.startTimer();
         const resolvedCount = this.#processCandidatePairs(
             bodies,
@@ -692,6 +836,24 @@ export class CollisionHandler {
         );
         this.#profileRecorder.recordDuration('solvePairProcessMs', pairProcessStart);
         this.#profileRecorder.recordDuration('solvePairScanMs', pairScanStart);
+
+        if (this.#oracleTraceSink) {
+            this.#emitOracleTrace({
+                type: 'solvePass',
+                fixedFrameToken: this.#fixedFrameToken,
+                passIndex: this.#pairPassCursor - 1,
+                rebuiltGrid: rebuildGrid,
+                rebuiltCandidates: shouldRebuildCandidatePairs,
+                pairStartToken,
+                resolveBoost: safeResolveBoost,
+                resolvedCount,
+                priorityPairCount: this.#candidatePairs.priorityCount,
+                normalPairCount: this.#candidatePairs.count,
+                bodies,
+                candidatePairs: this.#candidatePairs,
+                broadphaseBuffer: this.#broadphaseBuffer
+            });
+        }
 
         return resolvedCount;
     }
@@ -804,6 +966,7 @@ export class CollisionHandler {
         const candidateScanEpoch = this.#enemyCandidateScanEpoch >>> 0;
         this.#enemyCandidateScanEpoch = (candidateScanEpoch + 1) >>> 0;
         const cellScanToken = candidateScanEpoch;
+        const traceFairness = this.#oracleTraceSink ? [] : null;
         let priorityAdmissionCount = 0;
         let predictiveAdmissionCount = 0;
         let admissionBudgetSkipCount = 0;
@@ -855,6 +1018,17 @@ export class CollisionHandler {
                 cellCount,
                 low
             );
+            if (traceFairness) {
+                traceFairness.push({
+                    low,
+                    enemyId: Number.isInteger(bodyAId) ? bodyAId : -1,
+                    visitLimit: lowCandidateVisitLimit,
+                    cellCount,
+                    cellScanToken: lowCellScanToken,
+                    cellStart,
+                    bucketScanToken
+                });
+            }
             candidateCellLoop: for (let cellOffset = 0; cellOffset < cellCount; cellOffset++) {
                 const cellIndex = (cellStart + cellOffset) % cellCount;
                 const cx = minCellX + Math.floor(cellIndex / cellHeight);
@@ -979,6 +1153,30 @@ export class CollisionHandler {
         this.#profileRecorder.recordCount('solveDuplicatePairSkipCount', duplicatePairSkipCount);
         this.#profileRecorder.recordCount('solveRuleRejectCount', ruleRejectCount);
         this.#profileRecorder.recordCount('solveCandidatePairCount', candidatePairCount);
+        if (this.#oracleTraceSink) {
+            this.#emitOracleTrace({
+                type: 'candidateBuild',
+                fixedFrameToken: this.#fixedFrameToken,
+                candidateScanEpoch,
+                nextCandidateScanEpoch: this.#enemyCandidateScanEpoch,
+                cellScanToken,
+                bodies,
+                candidatePairs: this.#candidatePairs,
+                fairness: traceFairness,
+                counters: {
+                    guaranteedPairCount,
+                    priorityAdmissionCount,
+                    predictiveAdmissionCount,
+                    admissionBudgetSkipCount,
+                    candidateVisitCount,
+                    scanTruncateCount,
+                    bucketPairCount,
+                    duplicatePairSkipCount,
+                    ruleRejectCount,
+                    candidatePairCount
+                }
+            });
+        }
     }
 
     /**
@@ -1166,6 +1364,20 @@ export class CollisionHandler {
         this.#clearGrid();
         for (let i = 0; i < safeGridBodyCount; i++) {
             this.#insertBodyToGridSoA(i, cellSize);
+        }
+
+        if (this.#oracleTraceSink) {
+            this.#emitOracleTrace({
+                type: 'gridRebuild',
+                fixedFrameToken: this.#fixedFrameToken,
+                gridMode,
+                gridDataOnly,
+                cellSize,
+                gridBodyCount: safeGridBodyCount,
+                bodies,
+                broadphaseBuffer: this.#broadphaseBuffer,
+                grid: this.#grid
+            });
         }
 
         return cellSize;

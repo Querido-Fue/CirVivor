@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "legacy_collision_projectile_replay_v1",
+  "fixedStep": {
+    "seconds": 0.016666666666666666,
+    "tickCount": 60
+  },
+  "viewport": {
+    "ww": 1280,
+    "wh": 720,
+    "objectWH": 720,
+    "objectOffsetY": 0,
+    "uiww": 1280,
+    "uiOffsetX": 0
+  },
+  "denseCluster": {
+    "idStart": 1000,
+    "count": 40,
+    "type": "square",
+    "columns": 8,
+    "origin": { "x": 192, "y": 192 },
+    "spacing": { "x": 3, "y": 3 },
+    "size": 1,
+    "weight": 1
+  },
+  "enemies": [
+    {
+      "id": 1100,
+      "type": "hexa_hive",
+      "position": { "x": 202.5, "y": 198 },
+      "size": 1,
+      "weight": 8,
+      "rotation": 30,
+      "hexaHiveLayout": {
+        "schemaVersion": 1,
+        "visibleCells": [{ "q": 0, "r": 0 }, { "q": 1, "r": 0 }],
+        "filledCells": [{ "q": 0, "r": 0 }, { "q": 1, "r": 0 }],
+        "visibleLocalCenters": [{ "x": -0.406, "y": 0 }, { "x": 0.406, "y": 0 }],
+        "filledLocalCenters": [{ "x": -0.406, "y": 0 }, { "x": 0.406, "y": 0 }],
+        "outlineVertices": []
+      }
+    },
+    { "id": 2000, "type": "square", "position": { "x": 650, "y": 100 }, "size": 1, "weight": 1 },
+    { "id": 2001, "type": "square", "position": { "x": 760, "y": 100 }, "size": 1, "weight": 1 },
+    { "id": 2002, "type": "square", "position": { "x": 820, "y": 100 }, "size": 1, "weight": 1 },
+    { "id": 2003, "type": "square", "position": { "x": 760, "y": 180 }, "size": 1, "weight": 1 },
+    { "id": 2004, "type": "square", "position": { "x": 820, "y": 180 }, "size": 1, "weight": 1 },
+    { "id": 2005, "type": "square", "position": { "x": 880, "y": 180 }, "size": 1, "weight": 1 },
+    { "id": 2006, "type": "square", "position": { "x": 650, "y": 260 }, "size": 1, "weight": 1, "projectileHitsToKill": 1 },
+    { "id": 2007, "type": "square", "position": { "x": 1030, "y": 360 }, "size": 1, "weight": 1 },
+    { "id": 2100, "type": "square", "position": { "x": 1160, "y": 650 }, "size": 1, "weight": 1 }
+  ],
+  "players": [
+    { "id": 4000, "position": { "x": 220, "y": 204 }, "radius": 12, "weight": 1, "speed": { "x": 0, "y": 0 } }
+  ],
+  "walls": [
+    { "id": 5000, "x": 180, "y": 205, "w": 18, "h": 120, "origin": "center" }
+  ],
+  "projectiles": [
+    { "id": 3000, "position": { "x": 650, "y": 100 }, "speed": { "x": 0, "y": 0 }, "radius": 5, "weight": 0.2, "impactForce": 1, "piercing": false },
+    { "id": 3001, "position": { "x": 700, "y": 100 }, "speed": { "x": 12000, "y": 0 }, "radius": 4, "weight": 0.2, "impactForce": 1, "piercing": false },
+    { "id": 3002, "position": { "x": 700, "y": 180 }, "speed": { "x": 12000, "y": 0 }, "radius": 4, "weight": 0.2, "impactForce": 1, "piercing": true },
+    { "id": 3003, "position": { "x": 649.5, "y": 260 }, "speed": { "x": 30, "y": 0 }, "radius": 5, "weight": 0.2, "impactForce": 1, "piercing": true },
+    { "id": 3004, "position": { "x": 649.5, "y": 260 }, "speed": { "x": 30, "y": 0 }, "radius": 5, "weight": 0.2, "impactForce": 1, "piercing": true }
+  ],
+  "events": [
+    {
+      "tick": 6,
+      "releaseEnemyIds": [
+        1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007,
+        1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015,
+        1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023,
+        1024, 1025, 1026, 1027
+      ]
+    }
+  ],
+  "checkpointTicks": [0, 1, 6, 46, 59],
+  "traceCheckpointTicks": [0, 1, 2, 6, 46]
+}

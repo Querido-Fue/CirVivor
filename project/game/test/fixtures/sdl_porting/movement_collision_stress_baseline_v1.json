@@ -1,0 +1,128 @@
+{
+    "schemaVersion": 1,
+    "fixtureId": "sdl-phase0-movement-collision-stress-v1",
+    "oracle": {
+        "runtime": "javascript-production-physics-primitives",
+        "contractVersion": 1,
+        "hashAlgorithm": "fnv1a64-utf8",
+        "canonicalEncoding": "cirvivor-canonical-v1-f64be",
+        "authoritativeScope": [
+            "PhysicsBody2D fixed-step integration",
+            "CircleCollider2D world collision filter",
+            "TileMapCollisionResolver position correction",
+            "production map blocked-grid probes"
+        ],
+        "excludedGameplayClaims": [
+            "participants are enemies",
+            "participants are projectiles",
+            "dynamic participants collide with each other",
+            "overlay blur or rendering is measured"
+        ],
+        "unavailableCapabilities": [
+            "enemy simulation in current GameSystem",
+            "projectile simulation in current GameSystem",
+            "general dynamic contact pipeline in current GameSystem",
+            "tick heap-allocation telemetry",
+            "render and overlay blur timing"
+        ]
+    },
+    "source": {
+        "mapId": "corridor_eight_01",
+        "fixedStep": {
+            "hz": 60,
+            "deltaSeconds": 0.016666666666666666,
+            "tickCount": 240
+        },
+        "participantCount": 800,
+        "participantKind": "independent production movement circles",
+        "placementPattern": "route-waypoint-grid-v1",
+        "movementPattern": {
+            "id": "rotating-cardinal-v1",
+            "phaseTicks": 30
+        },
+        "productionParameters": {
+            "radiusTiles": 0.5,
+            "mass": 1,
+            "controlAccelerationTilesPerSecondSquared": 78,
+            "linearFrictionPerSecond": 10,
+            "sleepSpeedTilesPerSecond": 0.010416666666666666,
+            "maxLinearSpeedTilesPerSecond": 25
+        }
+    },
+    "initialStateHash": "83adf889c06a6f90",
+    "recordsDigest": "0f701c9ea7aef6a2",
+    "checkpoints": [
+        {
+            "tick": 0,
+            "stateHash": "4cc6685342a718d3",
+            "tileProbeCount": 3200,
+            "positionCorrectionCount": 0
+        },
+        {
+            "tick": 29,
+            "stateHash": "a5689d0bb256abfa",
+            "tileProbeCount": 4024,
+            "positionCorrectionCount": 206
+        },
+        {
+            "tick": 59,
+            "stateHash": "5dbbfa4a69ee9c76",
+            "tileProbeCount": 4172,
+            "positionCorrectionCount": 243
+        },
+        {
+            "tick": 89,
+            "stateHash": "62aa8c5e1b48a8f4",
+            "tileProbeCount": 3448,
+            "positionCorrectionCount": 62
+        },
+        {
+            "tick": 119,
+            "stateHash": "6a41f722cae247cc",
+            "tileProbeCount": 3200,
+            "positionCorrectionCount": 0
+        },
+        {
+            "tick": 149,
+            "stateHash": "76a121e882e4530f",
+            "tileProbeCount": 3200,
+            "positionCorrectionCount": 0
+        },
+        {
+            "tick": 179,
+            "stateHash": "017e00a0242862c3",
+            "tileProbeCount": 3200,
+            "positionCorrectionCount": 0
+        },
+        {
+            "tick": 209,
+            "stateHash": "c18ff854dbc59f63",
+            "tileProbeCount": 3200,
+            "positionCorrectionCount": 0
+        },
+        {
+            "tick": 239,
+            "stateHash": "ed129825bfe92c12",
+            "tileProbeCount": 3200,
+            "positionCorrectionCount": 0
+        }
+    ],
+    "summary": {
+        "integrateCallCount": 192000,
+        "resolverCallCount": 192000,
+        "tileProbeCount": 796220,
+        "positionCorrectionCount": 7055,
+        "maximumTileProbesPerResolve": 8,
+        "maximumPositionCorrectionsPerResolve": 1,
+        "maximumTileProbesPerTick": 4188,
+        "maximumPositionCorrectionsPerTick": 247,
+        "maximumSpeed": 7.747934030995142,
+        "finalStateHash": "ed129825bfe92c12"
+    },
+    "operationBudget": {
+        "maxTileProbesPerResolve": 32,
+        "maxPositionCorrectionsPerResolve": 8,
+        "maxTotalTileProbes": 6144000,
+        "maxTotalPositionCorrections": 1536000
+    }
+}

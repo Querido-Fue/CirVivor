@@ -1,0 +1,155 @@
+# SDL3 네이티브 포트 가이드
+
+이 문서는 SDL3 포트의 안정된 구조와 로컬 검증 경로를 설명한다. 단계별 완료 여부와 최신 실패·검증 기록은 [`sdl_progess.md`](C:/CirVivor/sdl_progess.md), 전체 전환 순서와 종료 조건은 [`sdl3_desktop_android_ios_porting_plan.md`](C:/CirVivor/guide/sdl3_desktop_android_ios_porting_plan.md)를 기준으로 한다.
+
+## 전환 원칙
+
+- 기존 `project/`의 JavaScript/NW.js 경로는 native parity가 증명될 때까지 기준 실행기(oracle)로 보존한다.
+- `native/src/core/`와 `native/src/engine/`는 SDL 헤더, SDL handle, OS 파일 경로 타입을 포함하지 않는다.
+- 입력은 플랫폼 event가 아니라 의미 action으로 simulation에 전달한다.
+- authoritative simulation은 60Hz fixed step으로 실행하고 rendering은 보간 가능한 `FramePacket`을 소비한다.
+- 같은 replay의 canonical state hash가 JS와 C++에서 일치하기 전에는 해당 시스템의 이식을 완료로 간주하지 않는다.
+- backend 종류(SDL_GPU, GLES, Software)와 품질 profile(Full, Reduced, Software)을 별도 축으로 다룬다.
+
+## 현재 네이티브 구조
+
+| 경로/target | 책임 |
+| --- | --- |
+| `native/src/core/` / `game_core` | 결정적 수학·RNG·EntityId·state hash, 고정 capacity Body SoA·타일 충돌·flow-field/prepared-contact scalar reference 등 플랫폼 독립 기반 |
+| `native/src/engine/` / `game_core` | fixed-step frame scheduling과 공통 runtime 정책 |
+| `native/src/game/` / `game_core` | 의미 입력을 소비하는 세션 GameSystem과 Core/Tower authoritative snapshot 조립 |
+| `native/src/app/movement_input_buffer.*` / `app_runtime` | 물리 source alias 합성, 짧은 press의 첫 fixed tick 보존, focus/background clear를 담당하는 SDL 비의존 입력 버퍼 |
+| `native/src/headless/` / `game_headless` | 창 없이 seed·tick 기반 결정성 실행 |
+| `native/src/platform/sdl/` / `platform_sdl` | SDL 창, event 변환, lifecycle, user storage, 기본 audio device 수명 |
+| `native/src/app/` / `game_desktop` | `SDL_MAIN_USE_CALLBACKS` 진입점과 application 조립 |
+| `native/src/render/common/` | backend 중립 render command와 FramePacket 계약 |
+| `native/src/render/frontend/` | simulation/presentation 상태를 FramePacket으로 변환 |
+| `native/src/render/backend/` / `renderer_backend` | SDL 타입을 모르는 backend 수명 인터페이스와 선택/fallback Router |
+| `native/src/render/sdl_gpu/` / `renderer_sdl_gpu` | SDL_GPU device, window claim, swapchain 제출 |
+| `native/src/render/gles/` / `renderer_gles` | 사전 구성된 ES3/ES2 window용 compatibility renderer |
+| `native/src/render/software/` / `renderer_software` | SDL_Surface CPU raster와 streaming texture presenter |
+| `native/tests/` | 플랫폼 독립 단위·계약, FramePacket/router, Software golden, JS simulation parity 테스트 |
+
+`native/build/`는 생성물이며 버전 관리하지 않는다. Android target은 아직 추가하지 않았고 iOS는 Mac 부재와 사용자 요청으로 현재 작업 범위에서 제외했으므로 현재 구조를 모바일 지원 완료로 해석하지 않는다.
+
+## 정상 실행과 입력 계약
+
+정상 `game_desktop`은 `Application`이 세션 `GameSystem`을 소유하고 scheduler가 산출한 60Hz fixed step마다 의미 입력을 소비한다. 각 표시 프레임은 타일맵·Core·Tower를 `playable_game_scene`의 backend 중립 `FramePacket`으로 변환한다. synthetic scene은 `--smoke-test`, `--smoke-test-render-recovery`, `--diagnostic-scene`에서만 사용한다.
+
+SDL keyboard event는 W/↑, S/↓, A/←, D/→의 물리 source bit를 보존한다. `MovementInputBuffer`는 같은 SDL event batch에서 keydown과 keyup이 모두 도착해도 press를 첫 fixed step까지 latch한다. held action은 모든 fixed step에 유지되고 repeat keydown은 새 pulse를 만들지 않는다. focus/background 전환과 shutdown에서는 source와 pending press를 모두 지워 phantom input을 막는다.
+
+현재 playable presenter는 corridor 맵을 행 run으로 압축해 Shape 70개와 Line 24개, 총 94개 command를 생성한다. 기본 zoom에서는 맵 중심 투영과 Core/Tower 보간을 사용한다. 이 최소 장면은 실행 조립 검증용이며 적·전투·웨이브·타이틀·HUD·오버레이 완성을 의미하지 않는다.
+
+## 타이틀·UI·오버레이 parity 계약
+
+타이틀 화면과 HUD, 일시정지, 설정, 게임오버 등 모든 오버레이는 기존 JS/NW.js 경로를 oracle로 삼아 시각과 동작을 동일하게 이식한다. 완료 판정은 화면별 진입 상태와 입력 전이, 레이어 순서, 문구·폰트·색·크기·anchor, 애니메이션 시점과 overlay 합성 결과를 고정한 뒤 native 출력과 비교한다. 단순히 유사한 모양을 만들거나 placeholder text/texture를 표시한 상태는 완료가 아니다.
+
+## 창과 renderer 소유권
+
+`SdlWindow`는 `SDL_Window`만 소유하고 renderer/context/device를 만들지 않는다. Router factory는 각 후보를 초기화하기 전에 숨김 창을 profile에 맞게 새로 만들고, 선택이 끝난 뒤에만 창을 표시한다.
+
+```text
+neutral window → SDL_GPU claim
+실패·완전 종료
+SDL_WINDOW_OPENGL + ES3 attributes → GLES ES3
+실패·창 파괴
+SDL_WINDOW_OPENGL + ES2 attributes → GLES ES2
+실패·창 파괴
+neutral window → Software SDL_Renderer presenter
+```
+
+Android에서는 OpenGL 창 생성 시 EGL surface가 붙어 Vulkan surface와 충돌할 수 있으므로 GPU와 GLES가 같은 창을 공유해서는 안 된다. GLES context version도 창 생성 뒤 같은 창에서 임의로 낮추지 않는다. 종료 순서는 renderer backend → window이며 둘 다 SDL video 종료보다 먼저 끝나야 한다.
+
+## SDL 의존성 고정
+
+SDL은 `native/third_party/manifest.lock`과 `native/cmake/Dependencies.cmake` 양쪽에서 다음 값으로 고정한다.
+
+```text
+version: 3.4.10
+tag: release-3.4.10
+commit: 8e37db5e797b6167f3a00d697d816a684bd259c7
+source SHA-256: 12b34280415ec8418c864408b93d008a20a6530687ee613d60bfbd20411f2785
+```
+
+CMake configure는 archive SHA-256뿐 아니라 압축 파일의 `.git-hash`도 확인한다. 버전을 바꿀 때는 manifest, CMake 상수, 포팅 계획, 진행 문서를 한 작업에서 함께 갱신하고 Desktop/Android/iOS 영향 범위를 다시 검토한다.
+
+authoritative `deterministicExp()`는 Node 22.19.0의 V8 12.4 oracle과 bit parity를 위해 V8 `12.4.254` commit `309640da62fae0485c7e4f64829627c92d53b35d`, `src/base/ieee754.cc` blob `e71b63fd7c17711e5dc04d9acc040be0aa0b7c40`의 fdlibm exponential을 최소 범위로 이식했다. 원 저작권·사용 허가는 구현 파일에 보존하고 provenance는 `manifest.lock`에 고정한다.
+
+## Windows 빌드와 검증
+
+명령은 `C:\CirVivor\native`에서 실행한다. 로컬 Visual Studio 2026 환경은 다음 preset을 사용한다.
+
+```powershell
+cmake --preset windows-msvc-debug
+cmake --build --preset windows-msvc-debug --parallel
+ctest --preset windows-msvc-debug --output-on-failure
+
+cmake --preset windows-msvc-release
+cmake --build --preset windows-msvc-release --parallel
+ctest --preset windows-msvc-release --output-on-failure
+```
+
+Ninja가 compiler 환경에서 검색 가능하면 `ninja-debug`와 `ninja-release` preset도 사용할 수 있다. SDL shell 없이 core만 빠르게 검사하려면 별도 build directory에 `-DCIRVIVOR_BUILD_SDL_APP=OFF`를 지정한다.
+
+```powershell
+cmake -S . -B build/headless -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCIRVIVOR_BUILD_SDL_APP=OFF
+cmake --build build/headless --parallel
+ctest --test-dir build/headless --output-on-failure
+```
+
+실행 수준 검증은 빌드 구성에 맞는 출력 폴더에서 수행한다.
+
+```powershell
+.\game_headless.exe --seed 42 --ticks 60
+.\game_desktop.exe --smoke-test
+.\game_desktop.exe --smoke-test --renderer sdl-gpu
+.\game_desktop.exe --smoke-test --renderer gles
+.\game_desktop.exe --smoke-test --renderer software
+.\game_desktop.exe --smoke-test-render-recovery
+.\software_renderer_benchmark.exe --gate
+$env:SDL_VIDEODRIVER = 'dummy'
+$env:SDL_RENDER_DRIVER = 'software'
+$env:SDL_AUDIODRIVER = 'dummy'
+.\game_desktop.exe --smoke-test
+```
+
+seed 42, 60 tick의 현재 headless 기준 hash는 `58e40b4174f11e95`다. 이 값은 테스트 계약을 의도적으로 변경할 때만 fixture와 함께 갱신한다.
+
+`simulation_parity_tests`는 JS production `PhysicsBody2D`와 `TileMapCollisionResolver`로 고정한 800개 body × 240 tick oracle을 실행한다. `initialStateHash=83adf889c06a6f90`, 전체 tick record digest `0f701c9ea7aef6a2`, 최종 hash `ed129825bfe92c12`, tile probe `796220`, position correction `7055`, tick heap allocation `0`이 모두 맞아야 한다. authoritative 지수 마찰은 OS별 `std::exp` 결과를 사용하지 않고 V8 12.4/fdlibm 호환 `deterministicExp`를 사용한다.
+
+`game_replay_parity_tests`는 실제 JS `GameSystem → GameObjectSystem → Tower → PhysicsBody2D → TileMapCollisionResolver` 기준과 같은 480 fixed tick 입력을 C++ 세션에 재생한다. static world `fd31f3c2801962f7`, initial state `9deef2f12bd1257d`, 전체 record digest `11fd486e39710bf6`, final state `748a6b36a9213900`, tile correction `4`, tick heap allocation `0`이 모두 맞아야 한다. 현재 oracle에 없는 RNG·투사체·일반 contact/event는 capability와 `null/0`으로 유지하며 구현된 것처럼 확장하지 않는다.
+
+`movement_input_buffer_tests`는 짧은 down/up pulse, held input, repeat idempotence, 복수 alias source, focus/background에 대응하는 clear 계약을 검사한다. `playable_game_scene_tests`는 94-command 장면, 보간·safe area·DPI·capacity transaction과 반복 build의 무할당을 검사한다.
+
+`wat_scalar_parity_tests`는 production flow-field와 prepared-hexa-contact WAT의 raw 결과를 C++ scalar reference와 비교한다. flow는 f32 integration/direction bit, 8방향/corner-cut/heap tie와 전수·대형·난수 digest를, contact는 f64 body·f32 part·ordered u8 flag, 반경 배율 `0.765`, epsilon `1e-6`를 보존한다. 두 API 모두 생성 시 capacity를 고정하고 `build()`/`scan()` 중 C++ `new`가 0이어야 한다. 이는 범용 spatial grid·position solve·projectile 구현 완료를 의미하지 않는다.
+
+Release `software_renderer_benchmark --gate`는 960×540 synthetic FramePacket을 60 frame warmup 뒤 180 frame 측정하고 render call nearest-rank p95 `33.33ms`를 강제한다. phase-37 pixel golden, 동적 phase checkpoint, command count와 FramePacket build+render 구간 C++ `new` 0회도 함께 검사한다. 이 실행 파일은 변동성 때문에 일반 CTest에는 넣지 않으며 CPU raster와 현재 placeholder command 성능만 나타낸다.
+
+`--smoke-test`는 선택된 backend가 synthetic `FramePacket`을 처리한 뒤 기본 playback 장치의 open/pause/resume/close와 SDL user storage의 임시 파일 write/read-cap/read/remove/close까지 함께 검증한다. `--smoke-test-render-recovery`는 background/foreground와 deferred metrics, target reset, device reset에 따른 backend/window 전체 재생성 및 최종 present를 추가로 검사한다. storage가 준비될 때까지 main callback에서 block 없이 폴링한다. 제품 실행에서는 audio 장치가 없는 환경을 치명 오류로 취급하지 않지만 smoke에서는 명시적인 실패다. dummy video에서 auto 선택은 SDL_GPU와 GLES 실패 후 Software로 내려가는 계약도 검증한다. 종료 시 renderer를 window보다 먼저 내리고 audio/storage/window를 SDL runtime보다 먼저 정리한다.
+
+foreground에서는 backend context/device 복구가 resize보다 먼저다. background 중 metrics는 dirty 상태로만 저장하고, 0×0 drawable에서는 FramePacket build/render를 건너뛴다. render-target reset은 backend target 계약으로 처리하며 device reset/lost는 backend와 창을 다시 만든 뒤 실패 시 다음 후보로 내려간다. present 동기화를 보장하지 못하는 backend는 `RenderCapabilities::mainCallbackRateLimitHz`로 callback 상한을 선언한다.
+
+## JS 기준선
+
+명령은 `C:\CirVivor\project`에서 실행한다.
+
+```powershell
+npm test
+npm run baseline:sdl
+npm run baseline:sdl:legacy
+npm run check:wasm:flow-field
+npm run check:wasm:collision-contact
+npm run test:render:golden
+```
+
+`baseline:sdl:update`와 `baseline:sdl:legacy:update`는 검증 명령이 아니라 fixture 재생성 명령이다. 상태 계약을 의도적으로 바꿨고 diff를 검토할 준비가 된 경우에만 사용한다. legacy fixture는 production `ObjectSystem.fixedUpdate()` 60틱의 spatial grid/candidate/3-pass solve/projectile/swap-pop/sleep 순서와 raw f32/f64 plane을 고정한다. 렌더 골든은 NW.js와 Windows 그래픽 실행 환경이 필요하므로 headless CI와 동일한 성격으로 취급하지 않는다.
+
+## 변경 시 체크
+
+1. 수정 대상 파일을 전체 읽고 소유 계층을 확인한다.
+2. simulation 변경이면 JS replay/state hash와 C++ hash 범위를 먼저 정의한다.
+3. SDL 타입이 `core/`나 backend 중립 render 계약으로 새지 않았는지 검색한다.
+4. Debug와 Release에서 엄격 경고 빌드 및 CTest를 실행한다.
+5. 창·lifecycle 변경이면 실제 video driver와 dummy/software smoke를 모두 실행한다.
+6. `sdl_progess.md`에 새 완료 범위, 실패 원인, 검증 결과, 외부 환경 blocker를 반영한다.
+7. `git diff --check`로 마무리한다.

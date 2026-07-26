@@ -1,0 +1,27 @@
+{
+    "schemaVersion": 1,
+    "dependencies": [
+        {
+            "name": "SDL",
+            "version": "3.4.10",
+            "releaseTag": "release-3.4.10",
+            "gitRepository": "https://github.com/libsdl-org/SDL.git",
+            "gitCommit": "8e37db5e797b6167f3a00d697d816a684bd259c7",
+            "sourceUrl": "https://github.com/libsdl-org/SDL/releases/download/release-3.4.10/SDL3-3.4.10.tar.gz",
+            "sourceSha256": "12b34280415ec8418c864408b93d008a20a6530687ee613d60bfbd20411f2785",
+            "license": "Zlib",
+            "licenseFile": "LICENSE.txt"
+        },
+        {
+            "name": "V8 fdlibm exponential reference",
+            "version": "12.4.254",
+            "gitRepository": "https://chromium.googlesource.com/v8/v8",
+            "gitCommit": "309640da62fae0485c7e4f64829627c92d53b35d",
+            "sourcePath": "src/base/ieee754.cc",
+            "sourceBlob": "e71b63fd7c17711e5dc04d9acc040be0aa0b7c40",
+            "adaptedFile": "src/core/math/deterministic_math.cpp",
+            "license": "V8 BSD-style and Sun fdlibm notice",
+            "noticeFile": "src/core/math/deterministic_math.cpp"
+        }
+    ]
+}

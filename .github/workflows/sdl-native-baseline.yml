@@ -1,0 +1,145 @@
+name: SDL Native Baseline
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# `npm run test:render:golden`은 project/에 로컬 배치된 NW.js Windows 런타임과
+# GUI 렌더 profile에 의존하므로 hosted runner 기준선에서는 실행하지 않는다.
+# 승인된 Windows 개발 환경에서만 local-only 검사로 유지한다.
+
+jobs:
+  javascript-baseline:
+    name: JavaScript replay and WAT baseline
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: project
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: project/package-lock.json
+
+      - name: Install locked JavaScript dependencies
+        run: npm ci
+
+      - name: Run JavaScript unit tests
+        run: npm test
+
+      - name: Verify SDL replay baseline
+        run: npm run baseline:sdl
+
+      - name: Verify legacy collision and projectile baseline
+        run: npm run baseline:sdl:legacy
+
+      - name: Verify flow-field WAT artifact
+        run: npm run check:wasm:flow-field
+
+      - name: Verify collision-contact WAT artifact
+        run: npm run check:wasm:collision-contact
+
+  native-windows:
+    name: MSVC core and SDL desktop smoke
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Configure MSVC and verify pinned SDL source
+        shell: pwsh
+        run: >-
+          cmake
+          -S native
+          -B native/build/ci-windows-msvc
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DBUILD_TESTING=ON
+          -DCIRVIVOR_BUILD_SDL_APP=ON
+          -DCIRVIVOR_WARNINGS_AS_ERRORS=ON
+
+      - name: Build headless core and SDL desktop shell
+        shell: pwsh
+        run: cmake --build native/build/ci-windows-msvc --config Debug --parallel
+
+      - name: Run C++ core tests and SDL dummy-driver smoke
+        shell: pwsh
+        run: >-
+          ctest
+          --test-dir native/build/ci-windows-msvc
+          -C Debug
+          --output-on-failure
+          --no-tests=error
+
+      - name: Verify deterministic headless state hash
+        shell: pwsh
+        run: |
+          $executable = Join-Path $env:GITHUB_WORKSPACE 'native/build/ci-windows-msvc/Debug/game_headless.exe'
+          $actual = (& $executable --seed 42 --ticks 60) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+              throw "game_headless failed with exit code $LASTEXITCODE"
+          }
+
+          $expected = '{"ticks":60,"seed":42,"stateHash":"58e40b4174f11e95"}'
+          if ($actual.Trim() -cne $expected) {
+              throw "Unexpected game_headless output: $actual"
+          }
+
+  native-linux-sanitizers:
+    name: GCC headless ASan and UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Configure platform-independent native core
+        run: >-
+          cmake
+          -S native
+          -B native/build/ci-linux-sanitizers
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DCIRVIVOR_BUILD_SDL_APP=OFF
+          -DCIRVIVOR_ENABLE_SANITIZERS=ON
+          -DCIRVIVOR_WARNINGS_AS_ERRORS=ON
+
+      - name: Build platform-independent targets with sanitizers
+        run: >-
+          cmake
+          --build native/build/ci-linux-sanitizers
+          --parallel
+          --target
+          game_headless
+          game_tests
+          frame_packet_tests
+          playable_game_scene_tests
+          renderer_router_tests
+          simulation_parity_tests
+          game_replay_parity_tests
+          wat_scalar_parity_tests
+          legacy_collision_broadphase_parity_tests
+          legacy_collision_narrowphase_parity_tests
+
+      - name: Run native core and architecture tests
+        run: >-
+          ctest
+          --test-dir native/build/ci-linux-sanitizers
+          --output-on-failure
+          --no-tests=error

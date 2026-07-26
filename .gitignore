@@ -8,6 +8,15 @@
 !project/license
 !project/license/**
 !package.json
+!native/
+!native/**
+native/build/
+native/out/
+native/*.obj
+!baseline/
+!baseline/**
+!.github/
+!.github/**
 !guide/
 !guide/domain/
 
@@ -20,5 +29,9 @@ project/game/script/lib/
 
 # Keep the agent entry guide and authoritative ingame plan in version control.
 !AGENT_GUIDE.md
+!sdl_progess.md
+!guide/sdl3_desktop_android_ios_porting_plan.md
+!guide/native_port/
+!guide/native_port/**
 !guide/ingame_plan/
 !guide/ingame_plan/**

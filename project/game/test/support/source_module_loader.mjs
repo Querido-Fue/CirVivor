@@ -28,6 +28,24 @@ const context = vm.createContext({ console });
 const moduleCache = new Map();
 
 /**
+ * 게임 모듈을 처음 불러오기 전에 VM 전역에 테스트 런타임 어댑터를 설치합니다.
+ * NW.js 전용 모듈처럼 명시적인 전역이 필요한 production graph를 계약 테스트에서
+ * 실행할 때 사용하며, 모듈 평가가 시작된 뒤에는 graph 상태가 달라지지 않도록 거부합니다.
+ * @param {Record<string, *>} globals - VM 전역에 추가할 값입니다.
+ * @returns {void}
+ */
+export function installSourceModuleTestGlobals(globals = {}) {
+    if (!globals || typeof globals !== 'object') {
+        throw new TypeError('테스트 VM 전역은 객체여야 합니다.');
+    }
+    if (moduleCache.size > 0) {
+        throw new Error('게임 모듈을 불러온 뒤에는 테스트 VM 전역을 변경할 수 없습니다.');
+    }
+
+    Object.assign(context, globals);
+}
+
+/**
  * importmap 별칭과 상대 경로를 테스트용 파일 URL로 변환합니다.
  * @param {string} specifier - import 대상 경로입니다.
  * @param {string} parentUrl - import를 요청한 모듈 URL입니다.
