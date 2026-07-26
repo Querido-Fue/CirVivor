@@ -3,6 +3,11 @@ import { Easing } from './_easing.js';
 import { ANIMATION_STATE } from './_constants.js';
 import { ObjectPool } from 'object/_object_pool.js';
 import { clampFiniteNumber, lerpNumber } from 'util/number_util.js';
+import {
+    getEasedVelocity,
+    getSpeedEasedValue,
+    getSpeedEasedVelocity
+} from './_speed_easing.js';
 
 /**
  * @class StandardAnimation
@@ -27,6 +32,8 @@ export class StandardAnimation extends AnimationBase {
         this.delay = 0;
         this.currentTime = 0;
         this.easingFn = Easing.linear;
+        this.speedEasing = false;
+        this.startVelocity = 0;
         this.isInitialized = false;
     }
 
@@ -50,6 +57,8 @@ export class StandardAnimation extends AnimationBase {
         this.delay = delay || 0;
         this.currentTime = 0;
         this.easingFn = Easing[type] || Easing.linear;
+        this.speedEasing = false;
+        this.startVelocity = 0;
         this.isInitialized = false;
     }
 
@@ -57,9 +66,10 @@ export class StandardAnimation extends AnimationBase {
      * 실행 중인 표준 애니메이션을 현재 소유 값에서 새 목표로 재지정합니다.
      * 객체·ID·완료 Promise는 유지되어 연속 입력마다 제거와 재할당이 발생하지 않습니다.
      * @param {object} properties - 새 endValue와 선택적인 duration, delay, type입니다.
+     * @param {boolean} [speedEasing=false] - 직전 순간 속도를 Hermite 보간의 시작 속도로 유지할지 여부입니다.
      * @returns {boolean} 재지정 성공 여부입니다.
      */
-    retarget(properties = {}) {
+    retarget(properties = {}, speedEasing = false) {
         if (this.state !== ANIMATION_STATE.RUNNING
             || properties.endValue === undefined) {
             return false;
@@ -67,6 +77,9 @@ export class StandardAnimation extends AnimationBase {
 
         try {
             const currentValue = this.owner[this.variable];
+            const currentVelocity = speedEasing === true
+                ? this.#getCurrentVelocity()
+                : 0;
             this.rawStartValue = 'current';
             this.rawEndValue = properties.endValue;
             this.startValue = currentValue;
@@ -74,6 +87,8 @@ export class StandardAnimation extends AnimationBase {
             this.duration = properties.duration;
             this.delay = properties.delay;
             this.currentTime = 0;
+            this.speedEasing = speedEasing === true;
+            this.startVelocity = currentVelocity;
             if (properties.type !== undefined) {
                 this.easingFn = Easing[properties.type] || Easing.linear;
             }
@@ -106,7 +121,15 @@ export class StandardAnimation extends AnimationBase {
         if (this.currentTime < this.duration) {
             this.currentTime += delta;
             const progress = clampFiniteNumber(this.currentTime / this.duration, 0, 1, 1);
-            this.owner[this.variable] = lerpNumber(this.startValue, this.endValue, this.easingFn(progress));
+            this.owner[this.variable] = this.speedEasing
+                ? getSpeedEasedValue(
+                    this.startValue,
+                    this.endValue,
+                    this.startVelocity,
+                    this.duration,
+                    progress
+                )
+                : lerpNumber(this.startValue, this.endValue, this.easingFn(progress));
         } else {
             this.owner[this.variable] = this.endValue;
             this.complete();
@@ -137,6 +160,40 @@ export class StandardAnimation extends AnimationBase {
         if (typeof value === 'function') return value(initialValue);
         if (value === 'current') return initialValue;
         return value;
+    }
+
+    /**
+     * 현재 보간 곡선의 순간 속도를 계산합니다.
+     * 아직 시작하지 않았거나 목표에 도달한 애니메이션은 정지 상태로 취급합니다.
+     * @returns {number} 초당 값 변화량입니다.
+     * @private
+     */
+    #getCurrentVelocity() {
+        if (!this.isInitialized
+            || this.delay > 0
+            || !Number.isFinite(this.duration)
+            || this.duration <= 0
+            || this.currentTime <= 0
+            || this.currentTime >= this.duration) {
+            return 0;
+        }
+
+        const progress = clampFiniteNumber(this.currentTime / this.duration, 0, 1, 0);
+        return this.speedEasing
+            ? getSpeedEasedVelocity(
+                this.startValue,
+                this.endValue,
+                this.startVelocity,
+                this.duration,
+                progress
+            )
+            : getEasedVelocity(
+                this.easingFn,
+                this.startValue,
+                this.endValue,
+                this.duration,
+                progress
+            );
     }
 }
 

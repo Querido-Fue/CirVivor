@@ -15,7 +15,7 @@ let animationSystemInstance = null;
  * @param {AnimationSystem} system - 애니메이션을 소유한 시스템입니다.
  * @param {number} id - 애니메이션 ID입니다.
  * @param {StandardAnimation} animation - 생성 시점의 표준 애니메이션입니다.
- * @returns {{id:number,promise:Promise,retarget:(properties:object)=>boolean,remove:()=>void,isActive:()=>boolean}} 안전한 핸들입니다.
+ * @returns {{id:number,promise:Promise,retarget:(properties:object,speedEasing?:boolean)=>boolean,remove:()=>void,isActive:()=>boolean}} 안전한 핸들입니다.
  */
 function createStandardAnimationHandle(system, id, animation) {
     let cachedPromise = null;
@@ -29,8 +29,8 @@ function createStandardAnimationHandle(system, id, animation) {
             }
             return cachedPromise;
         },
-        retarget(properties) {
-            return system.retarget(id, properties);
+        retarget(properties, speedEasing = false) {
+            return system.retarget(id, properties, speedEasing);
         },
         remove() {
             return system.remove(id);
@@ -125,7 +125,7 @@ export class AnimationSystem {
      * 단일 변수에 대한 표준 애니메이션을 생성합니다.
      * @param {object} owner - 애니메이션 대상 객체
      * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type, useFixedTick 등)
-     * @returns {{id:number,promise:Promise,retarget:(properties:object)=>boolean,remove:()=>void,isActive:()=>boolean}} 풀 객체와 분리된 표준 animation handle입니다.
+     * @returns {{id:number,promise:Promise,retarget:(properties:object,speedEasing?:boolean)=>boolean,remove:()=>void,isActive:()=>boolean}} 풀 객체와 분리된 표준 animation handle입니다.
      */
     animate(owner, properties) {
         if (!this.#validateProperties(properties, ['variable'])) {
@@ -160,9 +160,10 @@ export class AnimationSystem {
      * 같은 ID와 완료 Promise를 유지하며 완료·제거 대기 상태나 다른 animation 종류는 거부합니다.
      * @param {number} id - 재지정할 표준 애니메이션 ID입니다.
      * @param {object} properties - endValue와 선택적인 duration, delay, type입니다.
+     * @param {boolean} [speedEasing=false] - 직전 순간 속도를 유지하는 Hermite 보간을 사용할지 여부입니다.
      * @returns {boolean} 재지정 성공 여부입니다.
      */
-    retarget(id, properties) {
+    retarget(id, properties, speedEasing = false) {
         if (!Number.isInteger(id) || id < 0
             || !this.#validateProperties(properties, ['endValue'])) {
             return false;
@@ -184,12 +185,15 @@ export class AnimationSystem {
         const delay = properties.delay !== undefined
             ? clampFiniteNumber(Number(properties.delay), 0, Infinity, 0)
             : 0;
-        return animation.retarget({
-            endValue: properties.endValue,
-            duration,
-            delay,
-            type: properties.type
-        });
+        return animation.retarget(
+            {
+                endValue: properties.endValue,
+                duration,
+                delay,
+                type: properties.type
+            },
+            speedEasing === true
+        );
     }
 
     /**
@@ -367,7 +371,7 @@ export class AnimationSystem {
  * 단일 변수에 대한 표준 애니메이션을 실행합니다.
  * @param {object} owner - 애니메이션 대상 객체
  * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type, useFixedTick 등)
- * @returns {{id:number,promise:Promise,retarget:(properties:object)=>boolean,remove:()=>void,isActive:()=>boolean}} 풀 객체와 분리된 표준 animation handle입니다.
+ * @returns {{id:number,promise:Promise,retarget:(properties:object,speedEasing?:boolean)=>boolean,remove:()=>void,isActive:()=>boolean}} 풀 객체와 분리된 표준 animation handle입니다.
  */
 export const animate = (owner, properties) => animationSystemInstance.animate(owner, properties);
 
@@ -375,9 +379,12 @@ export const animate = (owner, properties) => animationSystemInstance.animate(ow
  * 가장 최근 AnimationSystem의 실행 중인 표준 애니메이션을 현재 값에서 새 목표로 재지정합니다.
  * @param {number} id - 표준 애니메이션 ID입니다.
  * @param {object} properties - endValue와 선택적인 duration, delay, type입니다.
+ * @param {boolean} [speedEasing=false] - 직전 순간 속도를 유지하는 Hermite 보간을 사용할지 여부입니다.
  * @returns {boolean} 재지정 성공 여부입니다.
  */
-export const retarget = (id, properties) => animationSystemInstance.retarget(id, properties);
+export const retarget = (id, properties, speedEasing = false) => (
+    animationSystemInstance.retarget(id, properties, speedEasing)
+);
 
 /**
  * 여러 변수에 대한 혼합(병렬) 애니메이션을 실행합니다.

@@ -1,6 +1,6 @@
 # CirVivor AI Agent Guide
 
-> **기준 코드**: 0.47 Tower 추종 카메라 베이스라인 | **런타임**: NW.js 데스크톱 | **렌더링**: Canvas 2D + WebGL
+> **기준 코드**: 0.48 연속 UI interaction retarget 베이스라인 | **런타임**: NW.js 데스크톱 | **렌더링**: Canvas 2D + WebGL
 > 이 문서는 진입 인덱스만 담당합니다. 작업에 필요한 문서만 골라 읽고, 수정 대상 파일은 반드시 전체 내용을 확인한 뒤 변경합니다.
 
 ---
@@ -53,7 +53,8 @@
 - 시뮬레이션 경로는 display/input/save 싱글톤 대신 `simulation_runtime.js`의 스냅샷을 우선 읽습니다.
 - 물리 `KeyboardEvent.code`는 `input/` 원시 경계에서만 사용합니다. 게임·UI·디버그 소비자는 `INPUT_ACTION_IDS`의 의미 action을 읽고, 사용자 변경값은 `settings.json`의 `inputBindings` 오버라이드로 적용합니다.
 - wheel 스냅샷은 소비형 event가 아니라 정규화된 누적 합계입니다. 씬 adapter가 직전 합계와의 차이를 한 번만 action으로 만들며 씬 진입 시 현재 합계를 기준점으로 잡습니다.
-- 연속 입력으로 목표가 자주 바뀌는 표준 애니메이션은 handle의 `retarget()`으로 현재 표시값에서 이어갑니다. 매 입력마다 `remove()` 후 새 애니메이션을 만들지 않으며, 위치 연속성과 같은 ID·Promise를 보존합니다.
+- 연속 입력으로 목표가 자주 바뀌는 표준 애니메이션은 handle의 `retarget(properties, speedEasing = false)`로 현재 표시값에서 이어갑니다. 매 입력마다 `remove()` 후 새 애니메이션을 만들지 않으며, 위치 연속성과 같은 ID·Promise를 보존합니다. 두 번째 인자 `speedEasing = true`는 별도 cubic Hermite 경로로 직전 순간 속도를 보존하지만, 일반 UI 호버·슬라이더·zoom의 기본값과 현재 placeholder는 `false`입니다.
+- 공통 `BaseUIElement`의 hover/press scale과 hover color는 요소별 scale·hover handle을 하나씩 유지해 상태 반전 때 retarget합니다. 설정 control마다 별도 hover animation을 추가하지 않습니다.
 - 신규 인게임 구현에서 Tower는 체력·피해·다운·재부팅 상태가 없으며, Core Integrity가 기본 생존 자원입니다.
 - 현재 `GameScene` play 경로는 세션 `GameSystem`과 최소 `GameObjectSystem`으로 전환되었고, benchmark는 별도 `BenchmarkScene`에 보존되어 있습니다. 구현 전에는 `guide/ingame_plan/`의 권한 계약과 `game_implement_progress.md`의 미구현·임시 우회를 함께 확인합니다.
 - 신규 인게임 코드를 변경한 작업은 종료 전에 `guide/ingame_plan/game_implement_progress.md`를 실제 코드와 검증 결과에 맞게 갱신합니다.
