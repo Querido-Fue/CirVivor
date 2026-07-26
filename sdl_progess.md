@@ -6,7 +6,7 @@
 
 ## 현재 요약
 
-- 상태: Phase 0~3 완료, Phase 4 simulation parity 진행 중
+- 상태: Phase 0~3 완료, Phase 4 simulation parity와 Phase 5 UI oracle 고정을 병행 중
 - SDL 기준 버전: 공식 최신 안정 릴리스 `3.4.10`
 - 기존 JS 테스트: 427/427 통과
 - 기존 WAT/WASM 재현성: flow-field 및 collision-contact 통과
@@ -14,6 +14,7 @@
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
 - 네이티브 검증: MSVC Debug·Release CTest 각 16/16, GCC headless 11/11, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 정상 실행: SDL 의미 입력→짧은 입력 latch→60Hz `GameSystem`→94-command playable `FramePacket` 연결 및 Computer Use 실기 이동 확인
+- 기존판 UI oracle: Computer Use로 로딩 이후 타이틀과 factory 8종·종료·외부 링크 경고·디버그 등 도달 가능한 오버레이를 직접 열어 시각·중첩·입력 상태 확인
 - Software 960×540 성능 게이트: Release 180-frame render p95 24.456ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 
@@ -26,7 +27,7 @@
 | Phase 2 — SDL3 Desktop 셸 | 완료 | callback·창·이벤트·lifecycle·scheduler·storage·audio를 실제/dummy driver에서 검증 |
 | Phase 3 — FramePacket/기본 렌더 백엔드 | 완료 | 세 backend 실제 command drawing·fallback·reset/pacing과 Software 960×540 Release p95 30fps 게이트 통과 |
 | Phase 4 — Simulation parity | 진행 중 | Body SoA·타일 충돌·GameSystem replay, 두 WAT scalar, 첫 solve spatial grid/candidate와 generic narrowphase exact parity 및 Desktop playable session bridge 통과. position solve/projectile 진행 중 |
-| Phase 5~8 — 효과·세션·UI·저장 | 대기 | playable vertical slice, 기존 타이틀·HUD·일시정지·게임오버 등 전체 화면/오버레이의 시각·입력·상태 전이 parity와 세 품질 경로 완료 |
+| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI oracle) | playable vertical slice, 기존에 실제 존재하는 타이틀·전체 도달 가능 오버레이의 시각·입력·상태 전이 parity와 세 품질 경로 완료. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분 |
 | Phase 9 — Android | 준비 중 | 사용자 범위 SDK/NDK 설치, ARM64 빌드, Vulkan→GLES→Software 폴백, lifecycle 검증 |
 | Phase 10 — iOS | 현재 범위 제외 | Mac 환경이 없어 사용자 요청에 따라 건너뛴다. 코드 경계는 훼손하지 않되 빌드·서명·실기 완료로 표시하지 않는다. |
 | Phase 11~12 — 멀티코어·Cutover | 대기 | worker parity, native-only release candidate, NW.js 제품 경로 제거 |
@@ -58,6 +59,8 @@
 - C++ 800-body 이동·타일 충돌, 현재 GameSystem 480-tick replay와 두 WAT scalar reference는 JS/WAT와 완전 일치한다. production legacy spatial grid/contact solve/projectile은 60-tick oracle만 동결됐고 C++ 이식이 Phase 4 종료 조건으로 남아 있다.
 - 2026-07-27 Computer Use 실기 감사에서 발견한 정상 `game_desktop`의 synthetic-only 통합 공백은 playable session bridge와 짧은 입력 latch로 보완했다. 다만 현재 native 장면은 맵·Core·Tower만 표시하며 기존 타이틀 화면, HUD와 각종 오버레이, 적·전투·웨이브·실제 texture/font/effect는 아직 이식되지 않았다.
 - 사용자 요구에 따라 타이틀 화면과 모든 오버레이는 유사 구현이 아니라 기존 JS 기준 실행기의 장면별 시각·텍스트·레이어·입력·상태 전이를 완전히 동일하게 재현해야 한다. 화면 인벤토리와 결정적 골든을 먼저 고정하지 않으면 완료로 표시하지 않는다.
+- Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없어 Windows 시스템 emoji fallback 결과를 Android에서 재현할 수 없으므로 고정 벡터/bitmap asset으로 교체해야 한다.
+- 현 `FramePacket v1`은 shaped glyph, gradient, clip, vector/projective geometry, render-pass barrier와 중첩 overlay capture anchor를 표현하지 못한다. 타이틀 UI를 placeholder 위에 직접 구현하지 않고 text/asset 기반과 `FramePacket v2`를 먼저 구축한다.
 
 ## 검증 기록
 
@@ -406,6 +409,39 @@ Android SDK / sdkmanager / platform-tools / NDK: 없음
 - Gradle/SDK 명령은 전역 Java 25 대신 `JAVA_HOME=C:\Program Files\Java\jdk-17`을 세션별로 고정한다. 전역 Gradle 대신 프로젝트 Gradle Wrapper 8.12를 사용한다.
 - SDK 약관 동의는 UAC가 아니지만 사용자 법적 동의이므로 자동 승인하지 않는다. Command-line Tools 준비와 프로젝트 skeleton은 진행할 수 있으나 package 설치는 사용자 승인 이후 수행한다.
 
+### 2026-07-27 — 기존 타이틀·오버레이 Computer Use oracle 감사
+
+```text
+검증 해상도: 2560×1440
+타이틀: 로고·shield/circle·적 배경·glass 메뉴·버전/패치·utility menu·custom cursor 확인
+title factory overlay: mapSelect / deck / setting / credits / quickStart / records / research / achievements
+manager/global overlay: exitConfirm / externalLinkWarning / debugPanel
+factory 도달성: 8/8
+```
+
+- 기존 NW.js 제품 실행기를 read-only oracle로 직접 조작해 타이틀의 최종 정지 상태와 각 overlay의 open-complete 상태를 확인했다. 설정의 floating dropdown, 투명/불투명 glass, credits 위 external-link 경고의 하위 overlay dim/lock, 디버그 profiler·pool·hitbox와 animation control도 포함한다.
+- 공통 overlay 전환은 약 0.5초 동안 alpha 0↔1, scale 0.9↔1, content blur 10↔0이며 open은 ease-out, close는 ease-in 계열이다. 중첩 overlay는 아래 session을 dim하고 interaction을 잠근다.
+- Loading→Title은 동일 scene identity를 유지하며 1.5초 hold, 0.6초 blur, 3초 logo playback과 후속 circle/logo/menu 전환을 거친다. 타이틀 logo는 bitmap이 아니라 1178.8×589.45 기준 vector path다.
+- `CollectionOverlay`는 소스에 남아 있지만 production 메뉴/factory 진입점이 없는 orphan이다. 관찰 가능한 제품 parity에서 누락된 것으로 오인하지 않도록 비도달 inventory로 별도 고정한다.
+- 현재 JS 제품에는 일반 플레이 HUD·pause·game-over·tutorial·shop/status overlay가 구현돼 있지 않다. 이런 화면은 기존판과 동일 포팅 완료 항목으로 가장하지 않고 향후 별도 제품 설계 항목으로 다룬다.
+
+### 2026-07-27 — 폰트·네이티브 UI 기반 감사
+
+```text
+PretendardVariable.woff2
+bytes: 2,057,688
+SHA-256: 9599F12FD42FC0BCE1CD50B47A0C022E108D7AA64DD0D1BB0ED44F3282D900B4
+wght axis: 45..930, default 400
+glyph count: 14,757
+
+project/license/pretendard.txt
+SHA-256: DBBFD9862CC8513C40D307D892A446B33EF4767E6423A3F74A913B8A210B91FD
+```
+
+- 실제 로드는 `game/index.html`→`game/style.css`→원본 WOFF2 경로이며, `font/pretendardvariable.css`는 미참조이고 존재하지 않는 하위 경로를 가리키는 중복 파일이다.
+- 네이티브는 아직 FreeType/HarfBuzz/Brotli, asset catalog, glyph atlas가 없고 세 backend 모두 text/sprite/effect/overlay placeholder를 사용한다.
+- 구현 순서를 원본 asset/hash/license 고정 → 공통 shape/raster/glyph atlas → `FramePacket v2` glyph run/vector/effect 계약 → SDL_GPU render graph → GLES/Software 동등 경로 → scene/UI 상태기로 확정한다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture
@@ -425,7 +461,10 @@ Android SDK / sdkmanager / platform-tools / NDK: 없음
 - [x] generic narrowphase representative fixture C++ exact parity·무할당 검증
 - [ ] 3-pass position solve·projectile sweep C++ exact parity
 - [x] Desktop 정상 실행의 SDL 의미 입력→짧은 입력 latch→GameSystem fixed update→playable FramePacket 연결 및 Computer Use 실기 확인
-- [ ] 기존 타이틀·HUD·일시정지·게임오버 등 전체 화면/오버레이 인벤토리와 결정적 골든 고정
+- [x] 기존 타이틀·도달 가능한 overlay 11종과 orphan overlay의 source/Computer Use 인벤토리
+- [ ] 실제 Loading/Title/overlay 결정적 NW.js pixel golden 캡처·승인
+- [ ] 원본 WOFF2/OFL asset 고정과 공통 FreeType/HarfBuzz glyph pipeline
+- [ ] `FramePacket v2` glyph/vector/gradient/clip/render-pass·중첩 overlay capture 계약
 - [ ] 타이틀 화면과 모든 오버레이의 시각·입력·상태 전이 완전 동일 구현
 - [ ] Android SDK/NDK/Gradle 툴체인 설치와 ARM64 빌드
 - [x] iOS는 Mac 부재와 사용자 요청으로 현재 범위에서 제외(완료로 가장하지 않음)

@@ -1,0 +1,603 @@
+{
+    "schemaVersion": 1,
+    "suiteId": "title-overlay-parity-v1",
+    "oracle": {
+        "runtime": "nwjs",
+        "entryPoint": "game/index.html",
+        "viewport": {
+            "width": 1280,
+            "height": 720,
+            "devicePixelRatio": 1
+        },
+        "clock": {
+            "fixedStepHz": 60,
+            "frameDurationMs": 16.666666666666668,
+            "timeOriginMs": 123456,
+            "titleReadyFrame": 420,
+            "overlayOpenCompleteFrames": 30
+        },
+        "random": {
+            "algorithm": "xorshift32",
+            "seed": 1817,
+            "patchTarget": "Math.random"
+        },
+        "pointer": {
+            "x": 16,
+            "y": 16,
+            "buttons": []
+        },
+        "settings": {
+            "windowMode": "windowed",
+            "widescreenSupport": true,
+            "width": 1280,
+            "height": 720,
+            "renderScale": 100,
+            "uiScale": 100,
+            "disableTransparency": false,
+            "language": "korean",
+            "theme": "dark",
+            "tooltipDelaySeconds": 0.3,
+            "bgmVolume": 0,
+            "sfxVolume": 0,
+            "debugMode": false
+        }
+    },
+    "capture": {
+        "staticSurfaceRoles": [
+            "background",
+            "object",
+            "effect",
+            "texteffect",
+            "ui",
+            "vignette",
+            "top"
+        ],
+        "dynamicSurfacePolicy": "all-in-sort-order",
+        "includeFinalComposite": true
+    },
+    "coverage": {
+        "titleOverlayFactory": [
+            {
+                "key": "mapSelect",
+                "controllerClass": "MapSelectOverlay",
+                "trigger": {
+                    "group": "card",
+                    "entryId": "start"
+                }
+            },
+            {
+                "key": "deck",
+                "controllerClass": "DeckOverlay",
+                "trigger": {
+                    "group": "card",
+                    "entryId": "deck"
+                }
+            },
+            {
+                "key": "setting",
+                "controllerClass": "SettingsOverlay",
+                "trigger": {
+                    "group": "secondary",
+                    "entryId": "setting"
+                }
+            },
+            {
+                "key": "credits",
+                "controllerClass": "CreditsOverlay",
+                "trigger": {
+                    "group": "secondary",
+                    "entryId": "credits"
+                }
+            },
+            {
+                "key": "quickStart",
+                "controllerClass": "QuickStartOverlay",
+                "trigger": {
+                    "group": "card",
+                    "entryId": "quick_start"
+                }
+            },
+            {
+                "key": "records",
+                "controllerClass": "RecordsOverlay",
+                "trigger": {
+                    "group": "card",
+                    "entryId": "records"
+                }
+            },
+            {
+                "key": "research",
+                "controllerClass": "ResearchOverlay",
+                "trigger": {
+                    "group": "card",
+                    "entryId": "research"
+                }
+            },
+            {
+                "key": "achievements",
+                "controllerClass": "AchievementsOverlay",
+                "trigger": {
+                    "group": "secondary",
+                    "entryId": "achievements"
+                }
+            }
+        ],
+        "managerOverlays": [
+            {
+                "managerMethod": "openDebugOverlay",
+                "managerKey": "debugPanel",
+                "controllerClass": "DebugOverlay",
+                "activation": "three-middle-clicks"
+            },
+            {
+                "managerMethod": "openExitOverlay",
+                "managerKey": "exitConfirm",
+                "controllerClass": "ExitOverlay",
+                "activation": "title-secondary-exit"
+            },
+            {
+                "managerMethod": "openExternalLinkWarningOverlay",
+                "managerKey": "externalLinkWarning",
+                "controllerClass": "ExternalLinkWarningOverlay",
+                "activation": "external-url-request"
+            }
+        ]
+    },
+    "inventory": {
+        "orphanOverlayImplementations": [
+            {
+                "controllerClass": "CollectionOverlay",
+                "sourcePath": "game/script/module/overlay/title/_collection.js",
+                "productionEntryPoint": null
+            }
+        ]
+    },
+    "exclusions": {
+        "visualScenarios": [
+            {
+                "controllerClass": "CollectionOverlay",
+                "reason": "no-production-entry-point"
+            }
+        ]
+    },
+    "scenarios": [
+        {
+            "id": "title.loading.pre-intro",
+            "kind": "title",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 45
+                }
+            ],
+            "captureState": "loading-delay"
+        },
+        {
+            "id": "title.loading.logo-half",
+            "kind": "title",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 180
+                }
+            ],
+            "captureState": "logo-playback-half"
+        },
+        {
+            "id": "title.transition.midpoint",
+            "kind": "title",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 330
+                }
+            ],
+            "captureState": "circle-logo-menu-transition"
+        },
+        {
+            "id": "title.settled",
+            "kind": "title",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                }
+            ],
+            "captureState": "interactive-title"
+        },
+        {
+            "id": "title.start-card.hover",
+            "kind": "title",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "movePointerToTitleEntry",
+                    "entryId": "start"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 18
+                }
+            ],
+            "captureState": "hover-tilt-spotlight-particles"
+        },
+        {
+            "id": "title.overlay.map-select.opening-midpoint",
+            "kind": "titleOverlay",
+            "coverageKey": "mapSelect",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "mapSelect"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 15
+                }
+            ],
+            "captureState": "open-midpoint"
+        },
+        {
+            "id": "title.overlay.map-select.open",
+            "kind": "titleOverlay",
+            "coverageKey": "mapSelect",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "mapSelect"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.map-select.closing-midpoint",
+            "kind": "titleOverlay",
+            "coverageKey": "mapSelect",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "mapSelect"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                },
+                {
+                    "action": "closeTitleOverlay"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 15
+                }
+            ],
+            "captureState": "close-midpoint"
+        },
+        {
+            "id": "title.overlay.deck.open",
+            "kind": "titleOverlay",
+            "coverageKey": "deck",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "deck"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.setting.open",
+            "kind": "titleOverlay",
+            "coverageKey": "setting",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "setting"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.setting.language-dropdown",
+            "kind": "titleOverlay",
+            "coverageKey": "setting",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "setting"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                },
+                {
+                    "action": "activateOverlayElement",
+                    "elementId": "control_language"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 18
+                }
+            ],
+            "captureState": "floating-dropdown-open"
+        },
+        {
+            "id": "title.overlay.setting.opaque",
+            "kind": "titleOverlay",
+            "coverageKey": "setting",
+            "settingsOverride": {
+                "disableTransparency": true
+            },
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "setting"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete-opaque"
+        },
+        {
+            "id": "title.overlay.credits.open",
+            "kind": "titleOverlay",
+            "coverageKey": "credits",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "credits"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.quick-start.open",
+            "kind": "titleOverlay",
+            "coverageKey": "quickStart",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "quickStart"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.records.open",
+            "kind": "titleOverlay",
+            "coverageKey": "records",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "records"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.research.open",
+            "kind": "titleOverlay",
+            "coverageKey": "research",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "research"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.achievements.open",
+            "kind": "titleOverlay",
+            "coverageKey": "achievements",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "achievements"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "captureState": "open-complete"
+        },
+        {
+            "id": "global.overlay.debug.open",
+            "kind": "managerOverlay",
+            "managerCoverageMethod": "openDebugOverlay",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "clickMouseButton",
+                    "button": "middle",
+                    "eventTimeMs": 123500
+                },
+                {
+                    "action": "clickMouseButton",
+                    "button": "middle",
+                    "eventTimeMs": 123750
+                },
+                {
+                    "action": "clickMouseButton",
+                    "button": "middle",
+                    "eventTimeMs": 124000
+                },
+                {
+                    "action": "flushAsyncJobs"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "expectedControllerClass": "DebugOverlay",
+            "expectedRuntimeState": {
+                "debugMode": true,
+                "controlState": {
+                    "frameTime": true,
+                    "poolInfo": true,
+                    "hitboxes": true,
+                    "animationDebug": false
+                },
+                "hitboxesActive": true,
+                "performanceProfilerEnabled": true,
+                "poolInfoVisible": true
+            },
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.exit.open",
+            "kind": "managerOverlay",
+            "managerCoverageMethod": "openExitOverlay",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openExitOverlay"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "expectedControllerClass": "ExitOverlay",
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.external-link-warning.open",
+            "kind": "managerOverlay",
+            "managerCoverageMethod": "openExternalLinkWarningOverlay",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openExternalLinkWarningOverlay",
+                    "url": "https://jukchang.com"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "expectedControllerClass": "ExternalLinkWarningOverlay",
+            "captureState": "open-complete"
+        },
+        {
+            "id": "title.overlay.credits.external-link-warning",
+            "kind": "managerOverlay",
+            "coverageKey": "credits",
+            "steps": [
+                {
+                    "action": "advanceFrames",
+                    "frames": 420
+                },
+                {
+                    "action": "openTitleOverlay",
+                    "menu": "credits"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                },
+                {
+                    "action": "activateOverlayElement",
+                    "elementId": "btn_0"
+                },
+                {
+                    "action": "advanceFrames",
+                    "frames": 30
+                }
+            ],
+            "expectedControllerClass": "ExternalLinkWarningOverlay",
+            "captureState": "stacked-open-complete"
+        }
+    ]
+}
