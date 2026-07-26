@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
-const DEFAULT_MAP_ID = 'd_corridor_01';
+const DEFAULT_MAP_ID = 'corridor_eight_01';
 const { PLAY_MAP_DATA } = await loadGameModule('data/scene/game/play_map_data.js');
 const GAME_SCENE_COMMAND_TYPES = Object.freeze({
     REPLACE_WORLD: 'gameScene.replaceWorldState'

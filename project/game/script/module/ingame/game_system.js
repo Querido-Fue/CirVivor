@@ -1,6 +1,9 @@
+import { THE_CORE_DATA } from 'data/object/core/the_core_data.js';
 import { InputActionMapper } from './input/input_action_mapper.js';
+import { CameraZoomController } from './input/camera_zoom_controller.js';
 import { PlayerControlRouter } from './input/player_control_router.js';
 import { GameObjectSystem } from './object/game_object_system.js';
+import { CoreIntegrity } from './state/core_integrity.js';
 
 /**
  * @class GameSystem
@@ -9,27 +12,39 @@ import { GameObjectSystem } from './object/game_object_system.js';
 export class GameSystem {
     /**
      * @param {object} dependencies - 엔진 adapter로부터 주입된 의존성입니다.
-     * @param {{isPressed:(key:string)=>boolean}} dependencies.inputActionSource - 방향 입력 소스입니다.
+     * @param {{isPressed:(actionId:string)=>boolean,getWheelTotals:(out:object)=>object}} dependencies.inputActionSource - 의미 입력 소스입니다.
+     * @param {{animate:(owner:object,properties:object)=>object}} dependencies.animationPort - 표현 애니메이션 포트입니다.
      * @param {{getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
-     * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 뷰포트 포트입니다.
-     * @param {{drawCircle:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
+     * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
+     * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
+     * @param {{mapId?:string|null}} [options={}] - 세션 시작 옵션입니다.
      */
-    constructor(dependencies) {
+    constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
             || typeof dependencies.inputActionSource.isPressed !== 'function'
+            || typeof dependencies.inputActionSource.getWheelTotals !== 'function'
+            || typeof dependencies?.animationPort?.animate !== 'function'
             || typeof dependencies?.timePort?.getFixedDelta !== 'function'
             || typeof dependencies?.timePort?.getFixedInterpolationAlpha !== 'function'
             || typeof dependencies?.viewportPort?.getSnapshot !== 'function'
-            || typeof dependencies?.worldRenderPort?.drawCircle !== 'function') {
+            || typeof dependencies?.worldRenderPort?.drawCircle !== 'function'
+            || typeof dependencies?.worldRenderPort?.drawSquareInstances !== 'function') {
             throw new TypeError('GameSystem 필수 dependency port가 누락되었습니다.');
         }
 
         this.dependencies = dependencies;
         this.inputActionMapper = new InputActionMapper();
         this.playerControlRouter = new PlayerControlRouter();
-        this.objectSystem = new GameObjectSystem(dependencies);
+        this.coreIntegrity = new CoreIntegrity({
+            maxIntegrity: THE_CORE_DATA.MAX_INTEGRITY
+        });
+        this.objectSystem = new GameObjectSystem(dependencies, {
+            mapId: options.mapId,
+            coreIntegrity: this.coreIntegrity
+        });
+        this.cameraZoomController = null;
         this.registrationTokens = [];
-        this.viewportSnapshot = { ww: 0, objectWH: 0, objectOffsetY: 0 };
+        this.viewportSnapshot = { ww: 0, wh: 0 };
         this.entered = false;
         this.destroyed = false;
     }
@@ -44,17 +59,28 @@ export class GameSystem {
         }
         this.#syncViewportSnapshot();
         this.objectSystem.init(this.viewportSnapshot);
+        this.cameraZoomController = new CameraZoomController(
+            this.objectSystem.getWorldViewProjection(),
+            this.dependencies.animationPort,
+            this.objectSystem.getCameraFollowTarget()
+        );
 
         const controllables = this.objectSystem.getPlayerControllables();
         for (let index = 0; index < controllables.length; index++) {
             this.registrationTokens.push(this.playerControlRouter.register(controllables[index]));
         }
+        this.registrationTokens.push(
+            this.playerControlRouter.register(this.cameraZoomController)
+        );
+        this.inputActionMapper.primeWheelBaseline(
+            this.dependencies.inputActionSource
+        );
         this.entered = true;
         return true;
     }
 
     /**
-     * 방향 입력을 MOVE_VECTOR로 변환·전달한 뒤 오브젝트 fixed-step을 실행합니다.
+     * 이동 의미 입력을 MOVE_VECTOR로 변환·전달한 뒤 오브젝트 fixed-step을 실행합니다.
      * @returns {void}
      */
     fixedUpdate() {
@@ -76,7 +102,14 @@ export class GameSystem {
         if (!this.entered || this.destroyed) {
             return;
         }
+        const cameraZoomAction = this.inputActionMapper.mapCameraZoomAction(
+            this.dependencies.inputActionSource
+        );
+        if (cameraZoomAction) {
+            this.playerControlRouter.dispatch(cameraZoomAction);
+        }
         this.objectSystem.update(this.dependencies.timePort.getFixedInterpolationAlpha());
+        this.cameraZoomController.updateFollowTarget();
     }
 
     /**
@@ -121,6 +154,22 @@ export class GameSystem {
     }
 
     /**
+     * 세션 생존 자원인 ICoreIntegrity를 반환합니다.
+     * @returns {CoreIntegrity} Core Integrity component입니다.
+     */
+    getCoreIntegrity() {
+        return this.coreIntegrity;
+    }
+
+    /**
+     * 테스트·디버그용으로 카메라 의미 입력 제어기를 반환합니다.
+     * @returns {CameraZoomController|null} 진입 후 생성된 카메라 zoom 제어기입니다.
+     */
+    getCameraZoomController() {
+        return this.cameraZoomController;
+    }
+
+    /**
      * 입력 등록과 세션 오브젝트를 역순으로 정리합니다.
      * 반복 호출해도 안전합니다.
      * @returns {void}
@@ -135,6 +184,8 @@ export class GameSystem {
         }
         this.registrationTokens.length = 0;
         this.playerControlRouter.destroy();
+        this.cameraZoomController?.destroy();
+        this.cameraZoomController = null;
         this.objectSystem.destroy();
         this.entered = false;
     }
@@ -148,8 +199,7 @@ export class GameSystem {
         const snapshot = this.dependencies.viewportPort.getSnapshot(this.viewportSnapshot);
         if (snapshot && snapshot !== this.viewportSnapshot) {
             this.viewportSnapshot.ww = snapshot.ww;
-            this.viewportSnapshot.objectWH = snapshot.objectWH;
-            this.viewportSnapshot.objectOffsetY = snapshot.objectOffsetY;
+            this.viewportSnapshot.wh = snapshot.wh;
         }
     }
 }

@@ -17,6 +17,7 @@ const SLIDER_MAX_OVERFLOW = 0.05;
 export class SliderElement extends BaseUIElement {
     #valueAnim;
     #overflowAnim;
+    #valueAnimRevision;
     constructor(properties) {
         super(properties);
         this.init(properties);
@@ -59,6 +60,7 @@ export class SliderElement extends BaseUIElement {
         this.pressScaleMultiplier = 1.1;
 
         if (this.#valueAnim) { remove(this.#valueAnim.id); this.#valueAnim = null; }
+        this.#valueAnimRevision = (this.#valueAnimRevision || 0) + 1;
         if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
     }
 
@@ -68,6 +70,7 @@ export class SliderElement extends BaseUIElement {
     reset() {
         super.reset();
         if (this.#valueAnim) { remove(this.#valueAnim.id); this.#valueAnim = null; }
+        this.#valueAnimRevision = (this.#valueAnimRevision || 0) + 1;
         if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
         this.onChange = null;
         this.onCommit = null;
@@ -323,12 +326,12 @@ export class SliderElement extends BaseUIElement {
      * @private
      */
     #animateDisplayValueTo(targetValue, options = {}) {
-        if (this.#valueAnim) {
-            remove(this.#valueAnim.id);
-            this.#valueAnim = null;
-        }
-
         if (Object.is(this.displayValue, targetValue)) {
+            if (this.#valueAnim) {
+                remove(this.#valueAnim.id);
+                this.#valueAnim = null;
+                this.#valueAnimRevision = (this.#valueAnimRevision || 0) + 1;
+            }
             this.displayValue = targetValue;
             return Promise.resolve();
         }
@@ -339,6 +342,30 @@ export class SliderElement extends BaseUIElement {
         const easing = typeof options.easing === 'string' && options.easing.length > 0
             ? options.easing
             : 'easeOutExpo';
+        const animationRevision = (this.#valueAnimRevision || 0) + 1;
+        this.#valueAnimRevision = animationRevision;
+
+        if (this.#valueAnim?.retarget?.({
+            endValue: targetValue,
+            duration,
+            type: easing
+        }) === true) {
+            const retargetedAnimation = this.#valueAnim;
+            return retargetedAnimation.promise.then(() => {
+                if (this.#valueAnim !== retargetedAnimation
+                    || this.#valueAnimRevision !== animationRevision) {
+                    return;
+                }
+                this.displayValue = targetValue;
+                this.#valueAnim = null;
+            });
+        }
+
+        if (this.#valueAnim) {
+            remove(this.#valueAnim.id);
+            this.#valueAnim = null;
+        }
+
         const displayAnimation = animate(this, {
             variable: 'displayValue',
             startValue: 'current',
@@ -348,7 +375,8 @@ export class SliderElement extends BaseUIElement {
         });
         this.#valueAnim = displayAnimation;
         return displayAnimation.promise.then(() => {
-            if (this.#valueAnim !== displayAnimation) {
+            if (this.#valueAnim !== displayAnimation
+                || this.#valueAnimRevision !== animationRevision) {
                 return;
             }
             this.displayValue = targetValue;

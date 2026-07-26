@@ -1,3 +1,7 @@
+import {
+    assertWorldViewProjection2D
+} from '../contract/world_view_projection_contract.js';
+
 const TOWER_FILL = '#2785ff';
 const TOWER_ALPHA = 1;
 
@@ -22,22 +26,30 @@ export class TheTowerRenderer {
             fill: TOWER_FILL,
             alpha: TOWER_ALPHA
         };
+        this.viewportPosition = { x: 0, y: 0 };
     }
 
     /**
-     * Tower의 보간 위치를 오브젝트 레이어 좌표로 변환해 제출합니다.
+     * Tower의 보간 위치를 카메라 기준 오브젝트 레이어 좌표로 변환해 제출합니다.
      * @param {import('./the_tower.js').TheTower|null} tower - 렌더할 Tower입니다.
-     * @param {number} objectOffsetY - 오브젝트 월드의 화면 Y 오프셋입니다.
+     * @param {object} projection - IWorldViewProjection2D입니다.
      * @returns {void}
      */
-    draw(tower, objectOffsetY) {
+    draw(tower, projection) {
         if (!tower || tower.active === false) {
             return;
         }
-        const safeOffsetY = Number.isFinite(objectOffsetY) ? objectOffsetY : 0;
-        this.renderOptions.x = tower.renderPosition.x;
-        this.renderOptions.y = tower.renderPosition.y - safeOffsetY;
-        this.renderOptions.diameter = tower.radius * 2;
+        const worldProjection = assertWorldViewProjection2D(projection);
+        worldProjection.worldToViewport(
+            tower.renderPosition.x,
+            tower.renderPosition.y,
+            this.viewportPosition
+        );
+        this.renderOptions.x = this.viewportPosition.x;
+        this.renderOptions.y = this.viewportPosition.y;
+        this.renderOptions.diameter = worldProjection.worldLengthToViewport(
+            tower.radius * 2
+        );
         this.worldRenderPort.drawCircle(this.renderOptions);
     }
 

@@ -42,14 +42,14 @@ assert.ok(defaultMap);
 assert.ok(Object.isFrozen(defaultMap));
 assert.ok(Object.isFrozen(defaultMap.tiles));
 assert.ok(Object.isFrozen(defaultMap.playerSpawn));
-assert.equal(defaultMap.rows, 11);
-assert.equal(defaultMap.columns, 15);
+assert.equal(defaultMap.rows, 5);
+assert.equal(defaultMap.columns, 9);
 assert.equal(defaultMap.tiles.length, defaultMap.rows);
 for (const tileRow of defaultMap.tiles) {
     assert.equal(tileRow.length, defaultMap.columns);
 }
 
-assert.equal(normalizeGameMapId(' d_corridor_01 '), 'd_corridor_01');
+assert.equal(normalizeGameMapId(' corridor_eight_01 '), 'corridor_eight_01');
 assert.equal(normalizeGameMapId('unknown_map'), GAME_MAP_DATA.DEFAULT_MAP_ID);
 assert.equal(resolveGameMapDefinition('unknown_map'), defaultMap);
 assert.equal(isGameMapFloorCell(defaultMap, -1, 0), false);
@@ -62,9 +62,16 @@ assert.equal(isGameMapFloorCell({
 }, 0, 0), false);
 
 let floorCount = 0;
+const expectedPreviewTiles = [
+    'F.FFF....',
+    'F.F.F....',
+    'FFFFFFFFF',
+    '..F.F...F',
+    '..FFF...F'
+];
 for (let row = 0; row < defaultMap.rows; row++) {
     for (let column = 0; column < defaultMap.columns; column++) {
-        const expectedFloor = row < 3 || row >= 8 || column >= 12;
+        const expectedFloor = expectedPreviewTiles[row][column] === 'F';
         assert.equal(
             isGameMapFloorCell(defaultMap, row, column),
             expectedFloor,
@@ -78,7 +85,7 @@ for (let row = 0; row < defaultMap.rows; row++) {
         floorCount += expectedFloor ? 1 : 0;
     }
 }
-assert.equal(floorCount, 105);
+assert.equal(floorCount, 23);
 assert.equal(
     isGameMapFloorCell(defaultMap, defaultMap.playerSpawn.row, defaultMap.playerSpawn.column),
     true
@@ -135,7 +142,10 @@ try {
 }
 
 const visited = new Set();
-const pending = [{ row: 0, column: 0 }];
+const pending = [{
+    row: defaultMap.playerSpawn.row,
+    column: defaultMap.playerSpawn.column
+}];
 while (pending.length > 0) {
     const cell = pending.pop();
     const key = `${cell.row}:${cell.column}`;
@@ -188,7 +198,7 @@ const expectedWallThickness = Math.max(
     EXPECTED_WORLD_LAYOUT.WALL_MIN_THICKNESS_PX,
     geometry.cellSize * EXPECTED_WORLD_LAYOUT.WALL_THICKNESS_CELL_RATIO
 );
-assert.equal(geometry.boundaryWalls.length, 8);
+assert.equal(geometry.boundaryWalls.length, 24);
 let mergedBoundaryCellLength = 0;
 for (const wall of geometry.boundaryWalls) {
     for (const value of [wall.x, wall.y, wall.w, wall.h]) {
@@ -205,7 +215,7 @@ for (const wall of geometry.boundaryWalls) {
         ? wall.w / geometry.cellSize
         : wall.h / geometry.cellSize;
 }
-assertNear(mergedBoundaryCellLength, 76, '병합 벽의 전체 경계 길이');
+assertNear(mergedBoundaryCellLength, 44, '병합 벽의 전체 경계 길이');
 
 const fallbackGeometry = buildGameMapGeometry('unknown_map', {
     ww: Number.NaN,

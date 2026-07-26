@@ -17,7 +17,8 @@ export const PLAYER_CONTROL_CONTEXTS = Object.freeze({
  * @type {Readonly<Record<string, string>>}
  */
 export const PLAYER_ACTION_TYPES = Object.freeze({
-    MOVE_VECTOR: 'moveVector'
+    MOVE_VECTOR: 'moveVector',
+    CAMERA_ZOOM: 'cameraZoom'
 });
 
 /**

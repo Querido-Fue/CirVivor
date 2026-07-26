@@ -9,7 +9,7 @@ import { migrateLegacySettingData } from './setting/_setting_legacy_migration.js
 import { SettingRepository } from './setting/_setting_repository.js';
 
 /**
- * @typedef {'bool'|'int'|'float'|'string'} SettingSchemaType
+ * @typedef {'bool'|'int'|'float'|'string'|'object'} SettingSchemaType
  */
 
 /**

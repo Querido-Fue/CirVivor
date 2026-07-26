@@ -1,4 +1,5 @@
 import { clampNumber } from 'util/number_util.js';
+import { getContinuousInputBlend } from 'animation/_continuous_animation_math.js';
 
 export { lerpNumber } from 'util/number_util.js';
 
@@ -75,10 +76,7 @@ export function createTiltMatrix(rotateX, rotateY) {
  * @returns {number} 보간 계수입니다.
  */
 export function getDeltaLerpFactor(smoothing, deltaSeconds) {
-    const clampedSmoothing = clampNumber(smoothing, 0, 0.999);
-    const safeDelta = Math.max(0, deltaSeconds || 0);
-    const frames = safeDelta * 60;
-    return 1 - Math.pow(1 - clampedSmoothing, frames);
+    return getContinuousInputBlend(smoothing, deltaSeconds);
 }
 
 /**

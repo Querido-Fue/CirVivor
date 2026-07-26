@@ -1,22 +1,23 @@
-import { renderGL } from 'display/display_system.js';
+import { renderGL, renderGLShapeInstances } from 'display/display_system.js';
 import { getObjectSystem } from 'object/object_system.js';
 import {
-    getSimulationObjectOffsetY,
-    getSimulationObjectWH,
+    copySimulationMousePositionInto,
+    copySimulationWheelTotalsInto,
+    getSimulationWH,
     getSimulationWW,
-    isSimulationKeyboardPressed
+    isSimulationInputActionPressed
 } from 'simulation/simulation_runtime.js';
 import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
+import { animate } from 'animation/animation_system.js';
 
 /**
  * 현재 런타임 뷰포트를 호출자 소유 객체에 복사합니다.
  * @param {object} [out={}] - 값을 기록할 재사용 객체입니다.
- * @returns {{ww:number,objectWH:number,objectOffsetY:number}} 같은 결과 객체입니다.
+ * @returns {{ww:number,wh:number}} 같은 결과 객체입니다.
  */
 function getGameViewportSnapshot(out = {}) {
     out.ww = getSimulationWW();
-    out.objectWH = getSimulationObjectWH();
-    out.objectOffsetY = getSimulationObjectOffsetY();
+    out.wh = getSimulationWH();
     return out;
 }
 
@@ -52,10 +53,22 @@ export function createGameSceneDependencies() {
         fill: null,
         alpha: 1
     };
+    const squareRenderOptions = {
+        shape: 'square',
+        w: 0,
+        h: 0,
+        fill: null,
+        alpha: 1
+    };
 
     return {
         inputActionSource: {
-            isPressed: isSimulationKeyboardPressed
+            isPressed: isSimulationInputActionPressed,
+            getPointerPosition: copySimulationMousePositionInto,
+            getWheelTotals: copySimulationWheelTotalsInto
+        },
+        animationPort: {
+            animate
         },
         timePort: {
             getFixedDelta,
@@ -73,6 +86,20 @@ export function createGameSceneDependencies() {
                 circleRenderOptions.fill = options.fill;
                 circleRenderOptions.alpha = options.alpha;
                 renderGL(options.layer, circleRenderOptions);
+            },
+            drawSquareInstances(options) {
+                squareRenderOptions.w = options.size;
+                squareRenderOptions.h = options.size;
+                squareRenderOptions.fill = options.fill;
+                squareRenderOptions.alpha = options.alpha;
+                renderGLShapeInstances(
+                    options.layer,
+                    squareRenderOptions,
+                    options.centers,
+                    0,
+                    0,
+                    1
+                );
             }
         },
         legacyWorldPort: {

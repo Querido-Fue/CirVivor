@@ -111,8 +111,10 @@ export class SystemHandler {
             },
             input: {
                 mousePos: { x: 0, y: 0 },
+                wheel: { x: 0, y: 0 },
                 mouseButtons: { left: [], right: [], middle: [] },
                 focusList: [],
+                actionStates: {},
                 keys: {}
             },
             settings: {}
@@ -147,7 +149,9 @@ export class SystemHandler {
         this.logDebugInfo("AnimationSystem 로드");
 
         // 5. InputSystem (입력 초기화)
-        this.inputSystem = new InputSystem();
+        this.inputSystem = new InputSystem({
+            bindings: this.saveSystem.getSetting('inputBindings')
+        });
         await this.inputSystem.init();
         this.logDebugInfo("InputSystem 로드");
         this.#syncSimulationRuntime();
@@ -463,6 +467,12 @@ export class SystemHandler {
             && this.soundSystem
             && typeof this.soundSystem.setBgmVolume === 'function') {
             this.soundSystem.setBgmVolume(changedSettings.bgmVolume);
+        }
+
+        if (changedSettings.inputBindings !== undefined
+            && this.inputSystem
+            && typeof this.inputSystem.setBindings === 'function') {
+            this.inputSystem.setBindings(changedSettings.inputBindings);
         }
 
         if (this.overlayManager && typeof this.overlayManager.applyRuntimeSettings === 'function') {

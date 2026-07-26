@@ -12,6 +12,33 @@ import { resolveFiniteNumber } from 'util/number_util.js';
  * @type {ReadonlyArray<string>}
  */
 const DEFAULT_MOUSE_FOCUS_LIST = Object.freeze(['ui', 'object']);
+const WHEEL_PIXEL_MODE_UNITS = 1 / 100;
+const WHEEL_LINE_MODE_UNITS = 1 / 3;
+const WHEEL_PAGE_MODE_UNITS = 1;
+const MAX_WHEEL_UNITS_PER_EVENT = 4;
+
+/**
+ * DOM WheelEvent delta를 장치·deltaMode 차이를 줄인 무차원 wheel unit으로 바꿉니다.
+ * @param {*} rawDelta - deltaX 또는 deltaY입니다.
+ * @param {*} rawDeltaMode - WheelEvent.deltaMode입니다.
+ * @returns {number} 이벤트 하나의 정규화된 wheel unit입니다.
+ */
+function normalizeWheelDelta(rawDelta, rawDeltaMode) {
+    const delta = Number(rawDelta);
+    if (!Number.isFinite(delta) || delta === 0) {
+        return 0;
+    }
+
+    const deltaMode = Number(rawDeltaMode);
+    const modeScale = deltaMode === 1
+        ? WHEEL_LINE_MODE_UNITS
+        : (deltaMode === 2 ? WHEEL_PAGE_MODE_UNITS : WHEEL_PIXEL_MODE_UNITS);
+    const normalizedDelta = delta * modeScale;
+    return Math.max(
+        -MAX_WHEEL_UNITS_PER_EVENT,
+        Math.min(MAX_WHEEL_UNITS_PER_EVENT, normalizedDelta)
+    );
+}
 
 /**
  * @class MouseInputHandler
@@ -21,6 +48,7 @@ const DEFAULT_MOUSE_FOCUS_LIST = Object.freeze(['ui', 'object']);
 export class MouseInputHandler {
     constructor() {
         this.mousePos = { x: 0, y: 0 };
+        this.wheelTotals = { x: 0, y: 0 };
         this.buttonStateMachine = new MouseButtonStateMachine(new DebugModeToggleHandler());
         this.mouseButtons = this.buttonStateMachine.mouseButtons;
 
@@ -40,6 +68,11 @@ export class MouseInputHandler {
             this.#updateMousePosition(e);
             this.buttonStateMachine.queueButtonStateChange(e.button, 'release', e.timeStamp);
         });
+        window.addEventListener('wheel', (e) => {
+            this.#updateMousePosition(e);
+            this.wheelTotals.x += normalizeWheelDelta(e?.deltaX, e?.deltaMode);
+            this.wheelTotals.y += normalizeWheelDelta(e?.deltaY, e?.deltaMode);
+        }, { passive: true });
         window.addEventListener('blur', () => {
             this.buttonStateMachine.setAllButtonsInactive();
         });
@@ -97,7 +130,7 @@ export class MouseInputHandler {
 
     /**
      * 마우스 관련 정보를 반환합니다.
-     * @param {string} key - 요청할 데이터 키 (pos, x, y, left, right, middle)
+     * @param {string} key - 요청할 데이터 키 (pos, x, y, wheel, left, right, middle)
      * @returns {any} 마우스 데이터
      */
     getMouseInput(key) {
@@ -108,6 +141,12 @@ export class MouseInputHandler {
                 return this.mousePos.y;
             case 'x':
                 return this.mousePos.x;
+            case 'wheel':
+                return this.wheelTotals;
+            case 'wheelX':
+                return this.wheelTotals.x;
+            case 'wheelY':
+                return this.wheelTotals.y;
             case 'left':
                 return this.buttonStateMachine.getButtonState('left');
             case 'right':
@@ -116,6 +155,18 @@ export class MouseInputHandler {
                 return this.buttonStateMachine.getButtonState('middle');
         }
         return null;
+    }
+
+    /**
+     * 누적 wheel unit을 호출자 소유 객체에 복사합니다.
+     * 누적값은 소비하지 않으며 의미 입력 adapter가 직전 값과의 차이를 한 번만 처리합니다.
+     * @param {{x:number,y:number}} [out={}] - 재사용 결과 객체입니다.
+     * @returns {{x:number,y:number}} 갱신한 동일 객체입니다.
+     */
+    copyWheelTotalsInto(out = {}) {
+        out.x = this.wheelTotals.x;
+        out.y = this.wheelTotals.y;
+        return out;
     }
 
     /**

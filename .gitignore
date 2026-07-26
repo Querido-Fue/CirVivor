@@ -17,3 +17,8 @@ project/game/script/lib/
 # Ignore Markdown documents except README files.
 *.[mM][dD]
 ![Rr][Ee][Aa][Dd][Mm][Ee].[mM][dD]
+
+# Keep the agent entry guide and authoritative ingame plan in version control.
+!AGENT_GUIDE.md
+!guide/ingame_plan/
+!guide/ingame_plan/**

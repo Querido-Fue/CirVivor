@@ -29,7 +29,9 @@ export class GameScene extends BaseScene {
         this.destroyed = false;
 
         this.dependencies.legacyWorldPort?.clear?.();
-        this.gameSystem = new GameSystem(this.dependencies);
+        this.gameSystem = new GameSystem(this.dependencies, {
+            mapId: this.mapId
+        });
         this.gameSystem.enter();
     }
 
