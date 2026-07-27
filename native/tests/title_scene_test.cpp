@@ -1327,10 +1327,11 @@ void testInteractionTargetsChangeOnlyTheirShellAndRejectInvalidTables() {
 }
 
 void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
+    const SyntheticTitleTextResources text;
     const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
     const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
     TitleOverlayStateMachine state = interactiveState();
-    REQUIRE(state.apply(UiAction::openTitle(OverlayKind::records)).accepted());
+    REQUIRE(state.apply(UiAction::openTitle(OverlayKind::setting)).accepted());
     REQUIRE(state.apply(
         UiAction::openExternalLink("https://jukchang.com")
     ).accepted());
@@ -1344,19 +1345,22 @@ void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
         interaction,
         layout,
         entrance,
-        darkThemeMetrics()
+        darkThemeMetrics(),
+        text.view(),
+        cirvivor::render::UiTextLocale::korean
     };
     const FramePacketCapacity required = titleSceneCapacity(input);
     const FramePacketCapacity maximum = maximumTitleSceneCapacity();
     REQUIRE(capacityContains(maximum, required));
-    REQUIRE(maximum.commandCount == 119U);
-    REQUIRE(maximum.lineCount == 3U);
-    REQUIRE(maximum.uiCount == 32U);
+    REQUIRE(maximum.commandCount == 512U);
+    REQUIRE(maximum.shapeCount == 128U);
+    REQUIRE(maximum.lineCount == 64U);
+    REQUIRE(maximum.uiCount == 128U);
     REQUIRE(maximum.overlayCount == 20U);
     REQUIRE(maximum.clipCount == 12U);
     REQUIRE(maximum.passCount == 16U);
-    REQUIRE(maximum.glyphRunCount == 32U);
-    REQUIRE(maximum.glyphInstanceCount == 1'024U);
+    REQUIRE(maximum.glyphRunCount == 128U);
+    REQUIRE(maximum.glyphInstanceCount == 8'192U);
 
     FramePacket packet(maximum);
     allocation_probe::count = 0U;
@@ -1371,15 +1375,15 @@ void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
     REQUIRE(allocations == 0U);
     REQUIRE(packet.size() == required);
     REQUIRE(packet.isRenderOrderValid());
-    REQUIRE(titleSceneCapabilityIsMissing(
+    REQUIRE(!titleSceneCapabilityIsMissing(
         second.missingCapabilities,
-        TitleSceneMissingCapability::recordsContent
+        TitleSceneMissingCapability::settingContent
     ));
-    REQUIRE(titleSceneCapabilityIsMissing(
+    REQUIRE(!titleSceneCapabilityIsMissing(
         second.missingCapabilities,
         TitleSceneMissingCapability::debugOverlayShell
     ));
-    REQUIRE(second.commandStats.titleOverlayContentCommands == 0U);
+    REQUIRE(second.commandStats.shapedTextCommands > 32U);
 }
 
 void testResourceBackedTitleOverlayPartialAndResponsiveText() {
@@ -1556,7 +1560,7 @@ void testResourceBackedTitleOverlayPartialAndResponsiveText() {
 
     TitleOverlayStateMachine mapState = interactiveState();
     REQUIRE(mapState.apply(UiAction::openTitle(OverlayKind::mapSelect)).accepted());
-    const float mapConfirmSize = verifyOverlay(mapState, 16U, true);
+    const float mapConfirmSize = verifyOverlay(mapState, 16U, false);
     REQUIRE_NEAR(mapConfirmSize, labelSize, 1.0e-6);
 
     TitleOverlayStateMachine exitState = interactiveState();
@@ -1607,7 +1611,7 @@ void testResourceBackedTitleOverlayPartialAndResponsiveText() {
     REQUIRE(unknownExternalResult.success);
     REQUIRE(unknownExternalPacket.glyphRuns().size() == 14U);
     REQUIRE(unknownExternalResult.commandStats.externalLinkShellCommands == 12U);
-    REQUIRE(unknownExternalPacket.ui().size() == 20U);
+    REQUIRE(unknownExternalPacket.ui().size() == 19U);
     REQUIRE(titleSceneCapabilityIsMissing(
         unknownExternalResult.missingCapabilities,
         TitleSceneMissingCapability::preShapedTextResources
@@ -1622,6 +1626,76 @@ void testResourceBackedTitleOverlayPartialAndResponsiveText() {
         1.0e-6
     );
     REQUIRE(unknownExternalPacket.isRenderOrderValid());
+}
+
+void testAllElevenOverlayKindsRenderResourceBackedContent() {
+    const SyntheticTitleTextResources text;
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    constexpr std::array kinds{
+        OverlayKind::mapSelect,
+        OverlayKind::deck,
+        OverlayKind::setting,
+        OverlayKind::credits,
+        OverlayKind::quickStart,
+        OverlayKind::records,
+        OverlayKind::research,
+        OverlayKind::achievements,
+        OverlayKind::debug,
+        OverlayKind::exitConfirm,
+        OverlayKind::externalLinkWarning
+    };
+    constexpr std::array expectedControlCounts{
+        2U, 3U, 14U, 6U, 1U, 1U, 1U, 1U, 6U, 2U, 2U
+    };
+
+    for (std::size_t index = 0U; index < kinds.size(); ++index) {
+        TitleOverlayStateMachine state = interactiveState();
+        UiAction action = UiAction::openTitle(kinds[index]);
+        if (kinds[index] == OverlayKind::debug) {
+            action = UiAction::openDebug();
+        } else if (kinds[index] == OverlayKind::exitConfirm) {
+            action = UiAction::openExit();
+        } else if (kinds[index] == OverlayKind::externalLinkWarning) {
+            action = UiAction::openExternalLink("https://jukchang.com");
+        }
+        REQUIRE(state.apply(action).accepted());
+        advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+        const UiStateSnapshot uiState = state.snapshot();
+        cirvivor::ui::TitleOverlayPresentationSet presentations{};
+        REQUIRE(cirvivor::ui::tryBuildTitleOverlayPresentationSet(
+            uiState,
+            layout,
+            presentations
+        ));
+        REQUIRE(presentations.overlayCount == 1U);
+        REQUIRE(presentations.overlays[0].kind == kinds[index]);
+        REQUIRE(presentations.overlays[0].controlCount
+            == expectedControlCounts[index]);
+        const TitleSceneInput input{
+            uiState,
+            interaction,
+            layout,
+            entrance,
+            darkThemeMetrics(),
+            text.view(),
+            cirvivor::render::UiTextLocale::korean,
+            &presentations
+        };
+        const FramePacketCapacity required = titleSceneCapacity(input);
+        REQUIRE(capacityContains(maximumTitleSceneCapacity(), required));
+        FramePacket packet(required);
+        const auto result = buildTitleScene(packet, input);
+        REQUIRE(result.success);
+        REQUIRE(result.missingCapabilities == 0U);
+        REQUIRE(result.commandStats.titleOverlayContentCommands > 0U);
+        REQUIRE(packet.glyphRuns().size() > 10U);
+        REQUIRE(packet.passes().size() == 4U);
+        REQUIRE(packet.overlays().size() == 5U);
+        REQUIRE(packet.clips().size() == 6U);
+        REQUIRE(packet.isRenderOrderValid());
+    }
 }
 
 struct TestCase final {
@@ -1675,6 +1749,10 @@ int main() {
         TestCase{
             "resource-backed title, overlays, partial, and responsive text",
             testResourceBackedTitleOverlayPartialAndResponsiveText
+        },
+        TestCase{
+            "all eleven overlay content renderers",
+            testAllElevenOverlayKindsRenderResourceBackedContent
         }
     };
 

@@ -23,13 +23,13 @@
 | `native/src/data/` / `game_core` | native 제품이 공유하는 map ID 등 선언형 catalog |
 | `native/src/game/` / `game_core` | 의미 입력을 소비하는 세션 GameSystem과 Core/Tower authoritative snapshot 조립 |
 | `native/src/app/movement_input_buffer.*` / `app_runtime` | 물리 source alias 합성, 짧은 press의 첫 fixed tick 보존, focus/background clear를 담당하는 SDL 비의존 입력 버퍼 |
-| `native/src/ui/` / `ui_runtime` | 가변 시간 Loading/Title·overlay 상태, light/dark 렌더 토큰, responsive/safe-area 레이아웃과 presentation sampler |
+| `native/src/ui/` / `ui_runtime` | 가변 시간 Loading/Title·overlay 상태, light/dark 렌더 토큰, responsive/safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation snapshot |
 | `native/src/headless/` / `game_headless` | 창 없이 seed·tick 기반 결정성 실행 |
 | `native/src/platform/sdl/` / `platform_sdl` | SDL 창, event 변환, lifecycle, user storage, 기본 audio device 수명 |
 | `native/src/app/` / `game_desktop` | `SDL_MAIN_USE_CALLBACKS` 진입점과 application 조립 |
 | `native/src/render/common/` | backend 중립 render command와 FramePacket 계약 |
 | `native/src/render/text/` / `render_text` | 원본 WOFF2 memory face, variable weight/HarfBuzz shaping, 고정 UI run과 immutable A8 atlas snapshot의 third-party 비노출 경계 |
-| `native/src/render/frontend/` | simulation/presentation 상태를 FramePacket으로 변환 |
+| `native/src/render/frontend/` | simulation/presentation 상태를 FramePacket으로 변환하며 `title_overlay_presenter`가 11종 overlay의 실제 content command를 기록 |
 | `native/src/render/backend/` / `renderer_backend` | SDL 타입을 모르는 backend 수명 인터페이스와 선택/fallback Router |
 | `native/src/render/sdl_gpu/` / `renderer_sdl_gpu` | SDL_GPU device, window claim, swapchain 제출 |
 | `native/src/render/gles/` / `renderer_gles` | 사전 구성된 ES3/ES2 window용 compatibility renderer |
@@ -56,9 +56,9 @@ UI 입력용 `PlatformEvent`는 mouse motion/down/up, wheel 방향, touch down/m
 
 구현 순서는 breadth-first다. 먼저 Windows에서 title→메뉴/overlay→playable session→종료의 실제 C++ 기능 흐름을 한 번 완성하고, 그 결과물을 실행하면서 21개 oracle 상태를 기준으로 text/logo/glass/blur/간격/애니메이션을 화면별로 보완한다. 이 순서는 JS 내부 구조를 복제하지 않으면서도 기능 없는 버튼이나 영구 placeholder를 최종 결과로 남기지 않기 위한 작업 순서다.
 
-현재 `ui_runtime`은 30/60/120/144Hz에서 같은 wall-clock presentation을 만드는 seconds 기반 상태기와 Loading→Title 시간축, title factory 8종 및 Debug/Exit/External keyed overlay stack을 제공한다. Debug pause/focus 특례, 외부 URL 실행의 sequence acknowledge, one-shot 종료 요청, 고정 용량·무할당 snapshot도 계약으로 고정했다. 레이아웃은 논리 safe-area, light/dark title·settings·overlay 렌더 토큰, 타이틀 카드/pane/tile entrance와 exit/external shell geometry를 계산한다.
+현재 `ui_runtime`은 30/60/120/144Hz에서 같은 wall-clock presentation을 만드는 seconds 기반 상태기와 Loading→Title 시간축, title factory 8종 및 Debug/Exit/External keyed overlay stack을 제공한다. Debug pause/focus 특례, 외부 URL 실행의 sequence acknowledge, one-shot 종료 요청, 고정 용량·무할당 snapshot도 계약으로 고정했다. 레이아웃은 논리 safe-area, light/dark title·settings·overlay 렌더 토큰, 타이틀 카드/pane/tile entrance와 11종 overlay geometry를 계산한다. `TitleOverlayPresentationSet`은 overlay sequence·animation·panel/body/control rect를 상태/layout revision과 함께 원자적으로 만들며, `Application`은 같은 객체를 controller와 renderer에 전달한다. 입력 최상단은 배열 뒤가 아니라 입력 가능한 최대 sequence로 결정하고 둥근 control rect를 그대로 hit-test한다.
 
-`Application`은 이 runtime을 기본 실행 경로에서 소유하고 title `FramePacket`을 만든다. title pointer, 창 닫기, exit/external confirmation, 버전 링크의 플랫폼 URL handoff와 Start→MapSelect→playable 전환까지 연결했다. MapSelect에는 responsive panel과 취소/시작 hit geometry가 있으며 mouse/touch pointer release를 소비한다. 원본 Pretendard로 미리 만든 title/card/version 및 MapSelect/Exit/External 고정 문자열을 Software backend가 실제 A8 glyph로 그린다. 그러나 MapSelect preview, 나머지 title overlay와 Debug/Settings control 본문, floating 상태, 로고·아이콘·texture, GPU 계열 atlas/고급 렌더 및 21개 native 시각 회귀가 남아 있으므로 타이틀·오버레이 완료로 판정하지 않는다.
+`Application`은 이 runtime을 기본 실행 경로에서 소유하고 title `FramePacket`을 만든다. title pointer, 창 닫기, exit/external confirmation과 Start→MapSelect→playable 전환까지 연결했다. 버전 링크도 JS 제품과 같이 External warning을 먼저 연다. Software backend는 원본 Pretendard로 미리 만든 title/card/version 및 11종 overlay 고정 문자열을 실제 A8 glyph로 그리며 MapSelect 5×9 preview, Deck 0% 카드, 네 dummy 화면, Settings 정적 본문, Credits 5개 행, Debug panel과 Exit/External dialog를 표시한다. 공통 Close/Cancel과 Map 시작은 실제 pointer release를 소비한다. Settings Save/control과 Credits 링크, Debug의 middle-click 진입 gesture·toggle은 다음 기능 배치까지 passive다. 로고·utility icon·texture, floating settings 상태, GPU 계열 atlas/고급 렌더와 21개 native 시각 회귀도 남아 있으므로 타이틀·오버레이 완료로 판정하지 않는다.
 
 ## 창과 renderer 소유권
 
@@ -167,7 +167,7 @@ seed 42, 60 tick의 현재 headless 기준 hash는 `58e40b4174f11e95`다. 이 �
 
 `movement_input_buffer_tests`는 짧은 down/up pulse, held input, repeat idempotence, 복수 alias source, focus/background에 대응하는 clear 계약을 검사한다. `sdl_platform_event_tests`는 mouse/touch/cancel/wheel, UTF-8 경계 절단, IME composition, focus clear와 dismissible window-close seam을 검사한다. `font_stack_tests`는 WOFF2/OFL hash, memory face, 누락 emoji asset 정책, canonical 한국어/라틴 shaping과 shaped cache의 generation·원자적 실패를 검사한다. `software_renderer_tests`는 실제 A8 nearest/linear sampling, PMA, transform, 이중 clip, invalid resource와 반복 render 무할당을 검사한다. `playable_game_scene_tests`는 94-command 장면, 보간·safe area·DPI·capacity transaction과 반복 build의 무할당을 검사한다.
 
-`title_overlay_state_machine_tests`는 가변 frame rate, 큰 delta 제한, Loading→Title carry, overlay open/close retarget, Debug pause/focus, UTF-8 URL 경계·scheme/authority와 플랫폼 acknowledge, exactly-once 종료 및 무할당 snapshot을 검사한다. `ui_layout_metrics_tests`는 16:9/ultrawide, zero-inset Desktop과 비대칭 Android safe-area, uiScale, light/dark token, 타이틀 entrance 중간값, exit/external geometry와 transactional invalid input을 검사한다. `title_scene_tests`는 resource-backed base/Map/Exit/External glyph run 수, partial text table의 transactional rollback, responsive target size/transform와 반복 build 무할당을 검사한다.
+`title_overlay_state_machine_tests`는 가변 frame rate, 큰 delta 제한, Loading→Title carry, overlay open/close retarget, Debug pause/focus, UTF-8 URL 경계·scheme/authority와 플랫폼 acknowledge, exactly-once 종료 및 무할당 snapshot을 검사한다. `ui_layout_metrics_tests`는 16:9/ultrawide, zero-inset Desktop과 비대칭 Android safe-area, uiScale, light/dark token, 타이틀 entrance 중간값, exit/external geometry와 transactional invalid input을 검사한다. `title_ui_controller_tests`는 latest-sequence top input, shared rounded rect, 8종 breadth Close와 passive control no-reject를 검사한다. `title_scene_tests`는 11종 resource-backed content, partial text table의 transactional rollback, worst overlay stack의 fixed capacity·반복 build 무할당과 responsive target size/transform을 검사한다.
 
 `wat_scalar_parity_tests`는 production flow-field와 prepared-hexa-contact WAT의 raw 결과를 C++ scalar reference와 비교한다. flow는 f32 integration/direction bit, 8방향/corner-cut/heap tie와 전수·대형·난수 digest를, contact는 f64 body·f32 part·ordered u8 flag, 반경 배율 `0.765`, epsilon `1e-6`를 보존한다. 두 API 모두 생성 시 capacity를 고정하고 `build()`/`scan()` 중 C++ `new`가 0이어야 한다. 이는 범용 spatial grid·position solve·projectile 구현 완료를 의미하지 않는다.
 

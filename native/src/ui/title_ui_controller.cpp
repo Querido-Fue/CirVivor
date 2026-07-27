@@ -387,13 +387,20 @@ constexpr std::array canonical_targets{
 }
 
 [[nodiscard]] TitleUiTarget hitOverlayTarget(
-    const layout::OverlayDialogRenderMetrics& dialog,
+    const TitleOverlayPresentation& presentation,
     const layout::PointD& position
 ) noexcept {
-    if (pointInsideRoundedRect(position, dialog.confirmButtonRect)) {
+    const TitleOverlayControl* const control = hitTestTitleOverlayControl(
+        presentation,
+        position
+    );
+    if (control == nullptr) {
+        return TitleUiTarget::none;
+    }
+    if (control->action == TitleOverlayControlAction::confirmTop) {
         return TitleUiTarget::overlayConfirm;
     }
-    if (pointInsideRoundedRect(position, dialog.cancelButtonRect)) {
+    if (control->action == TitleOverlayControlAction::cancelTop) {
         return TitleUiTarget::overlayCancel;
     }
     return TitleUiTarget::none;
@@ -467,7 +474,7 @@ void clearInteraction(TitleUiControllerSnapshot& snapshot) noexcept {
         action = UiAction::openExit();
         return true;
     case TitleUiTarget::versionHistoryLink:
-        action = UiAction::openExternalDirect(
+        action = UiAction::openExternalLink(
             cirvivor::ui::data::title_version_history_url
         );
         return true;
@@ -483,37 +490,17 @@ void clearInteraction(TitleUiControllerSnapshot& snapshot) noexcept {
     return false;
 }
 
-struct LatestOverlay final {
-    const OverlaySnapshot* snapshot = nullptr;
-};
-
-[[nodiscard]] LatestOverlay latestOverlay(
+[[nodiscard]] const OverlaySnapshot* latestOverlay(
     const UiStateSnapshot& state
 ) noexcept {
-    LatestOverlay result{};
+    const OverlaySnapshot* result = nullptr;
     for (std::size_t index = 0U; index < state.overlayCount; ++index) {
-        if (result.snapshot == nullptr
-            || state.overlays[index].sequence > result.snapshot->sequence) {
-            result.snapshot = &state.overlays[index];
+        if (result == nullptr
+            || state.overlays[index].sequence > result->sequence) {
+            result = &state.overlays[index];
         }
     }
     return result;
-}
-
-[[nodiscard]] const layout::OverlayDialogMetrics* dialogForOverlay(
-    const layout::UiLayoutSnapshot& layoutSnapshot,
-    const OverlayKind kind
-) noexcept {
-    switch (kind) {
-    case OverlayKind::mapSelect:
-        return &layoutSnapshot.overlays.mapSelect;
-    case OverlayKind::exitConfirm:
-        return &layoutSnapshot.overlays.exit;
-    case OverlayKind::externalLinkWarning:
-        return &layoutSnapshot.overlays.externalLinkWarning;
-    default:
-        return nullptr;
-    }
 }
 
 } // namespace
@@ -531,38 +518,73 @@ UiInputResult TitleUiController::handlePointer(
     const UiStateSnapshot& uiState,
     TitleOverlayStateMachine& stateMachine
 ) noexcept {
+    TitleOverlayPresentationSet presentations{};
+    if (!tryBuildTitleOverlayPresentationSet(
+            uiState,
+            layoutSnapshot,
+            presentations)) {
+        return {.status = UiInputStatus::rejectedInvalidInput};
+    }
+    return handlePointer(
+        event,
+        layoutSnapshot,
+        entranceState,
+        uiState,
+        presentations,
+        stateMachine
+    );
+}
+
+UiInputResult TitleUiController::handlePointer(
+    const UiPointerEvent& event,
+    const layout::UiLayoutSnapshot& layoutSnapshot,
+    const layout::TitleEntranceRenderState& entranceState,
+    const UiStateSnapshot& uiState,
+    const TitleOverlayPresentationSet& overlayPresentations,
+    TitleOverlayStateMachine& stateMachine
+) noexcept {
     if (!validPointerEvent(event) || !validUiState(uiState)) {
         return {.status = UiInputStatus::rejectedInvalidInput};
     }
     if (stateMachine.snapshot() != uiState) {
         return {.status = UiInputStatus::rejectedStaleState};
     }
+    if (overlayPresentations.stateRevision != uiState.revision
+        || overlayPresentations.layoutRevision != layoutSnapshot.revision
+        || overlayPresentations.overlayCount != uiState.overlayCount) {
+        return {.status = UiInputStatus::rejectedStaleState};
+    }
 
     TitleUiControllerSnapshot candidate = snapshot_;
     const OverlaySnapshot* activeOverlay = nullptr;
-    layout::OverlayDialogRenderMetrics activeDialog{};
+    const TitleOverlayPresentation* activePresentation = nullptr;
     std::uint32_t activeOverlaySequence = 0U;
     if (uiState.overlayCount > 0U) {
-        const LatestOverlay overlay = latestOverlay(uiState);
-        if (overlay.snapshot == nullptr) {
-            return {.status = UiInputStatus::rejectedInvalidInput};
-        }
-        activeOverlay = overlay.snapshot;
-        activeOverlaySequence = activeOverlay->sequence;
-        const layout::OverlayDialogMetrics* dialog = dialogForOverlay(
-            layoutSnapshot,
-            activeOverlay->kind
+        activePresentation = findLatestTitleOverlayPresentation(
+            overlayPresentations
         );
-        if (dialog == nullptr) {
+        if (activePresentation == nullptr) {
+            const OverlaySnapshot* const latest = latestOverlay(uiState);
             clearInteraction(candidate);
             const bool changed = commit(candidate);
             return {
-                .status = UiInputStatus::unsupportedOverlayInput,
-                .unsupportedOverlay = activeOverlay->kind,
-                .overlaySequence = activeOverlaySequence,
+                .status = UiInputStatus::overlayInputLocked,
+                .overlaySequence = latest == nullptr ? 0U : latest->sequence,
                 .controllerStateChanged = changed
             };
         }
+        for (std::size_t index = 0U; index < uiState.overlayCount; ++index) {
+            if (uiState.overlays[index].sequence == activePresentation->sequence) {
+                activeOverlay = &uiState.overlays[index];
+                break;
+            }
+        }
+        if (activeOverlay == nullptr
+            || activeOverlay->kind != activePresentation->kind
+            || activeOverlay->sequence == 0U) {
+            return {.status = UiInputStatus::rejectedInvalidInput};
+        }
+        activeOverlaySequence = activeOverlay->sequence;
         if (!activeOverlay->acceptsInput || activeOverlay->interactionsLocked) {
             clearInteraction(candidate);
             const bool changed = commit(candidate);
@@ -573,12 +595,7 @@ UiInputResult TitleUiController::handlePointer(
             };
         }
         if (layoutSnapshot.revision == 0U
-            || !layout::tryResolveOverlayDialogRenderMetrics(
-                *dialog,
-                layoutSnapshot.overlayPage,
-                activeOverlay->contentScale,
-                activeDialog
-            )) {
+            || !finiteRect(activePresentation->panelRect)) {
             return {.status = UiInputStatus::rejectedInvalidInput};
         }
         if (candidate.capture.active
@@ -641,7 +658,7 @@ UiInputResult TitleUiController::handlePointer(
     }
 
     TitleUiTarget hit = activeOverlay != nullptr
-        ? hitOverlayTarget(activeDialog, event.position)
+        ? hitOverlayTarget(*activePresentation, event.position)
         : hitTarget(layoutSnapshot, entranceState, event.position);
     if (event.device == UiPointerDevice::touch
         && hit == TitleUiTarget::versionHistoryLink) {
@@ -739,7 +756,7 @@ UiInputResult TitleUiController::handlePointer(
         setHovered(candidate, hit);
         setPressed(candidate, TitleUiTarget::none, false);
         const UiActionOutcome actionOutcome = stateMachine.apply(
-            UiAction::openExternalDirect(
+            UiAction::openExternalLink(
                 cirvivor::ui::data::title_version_history_url
             )
         );

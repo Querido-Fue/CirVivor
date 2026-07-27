@@ -3,6 +3,7 @@
 #include "render/common/pre_shaped_text.h"
 #include "render/frontend/frame_packet_builder.h"
 #include "ui/layout/ui_layout_metrics.h"
+#include "ui/title_overlay_content.h"
 #include "ui/title_overlay_state_machine.h"
 #include "ui/title_ui_controller.h"
 
@@ -63,6 +64,8 @@ struct TitleSceneInput final {
     const ui::layout::ThemeMetrics& theme;
     PreShapedTextResourcesView textResources{};
     UiTextLocale locale = UiTextLocale::korean;
+    /** null이면 build 함수가 동일 DTO를 stack-local로 구성하는 test 호환 경로입니다. */
+    const ui::TitleOverlayPresentationSet* overlayPresentations = nullptr;
 };
 
 struct TitleSceneConfig final {
@@ -121,17 +124,17 @@ struct TitleSceneResult final {
 /** 앱 초기화 시 한 번 reserve할 수 있는 4-overlay supported shell 상한입니다. */
 [[nodiscard]] constexpr FramePacketCapacity maximumTitleSceneCapacity() noexcept {
     FramePacketCapacity capacity{};
-    capacity.commandCount = 119U;
-    capacity.shapeCount = 3U;
-    capacity.lineCount = 3U;
-    capacity.uiCount = 32U;
+    capacity.commandCount = 512U;
+    capacity.shapeCount = 128U;
+    capacity.lineCount = 64U;
+    capacity.uiCount = 128U;
     capacity.overlayCount = 20U;
     capacity.gradientCount = 1U;
     capacity.gradientStopCount = ui::layout::title_gradient_color_count;
     capacity.clipCount = 12U;
     capacity.passCount = 16U;
-    capacity.glyphRunCount = 32U;
-    capacity.glyphInstanceCount = 1'024U;
+    capacity.glyphRunCount = 128U;
+    capacity.glyphInstanceCount = 8'192U;
     return capacity;
 }
 

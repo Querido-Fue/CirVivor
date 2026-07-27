@@ -97,6 +97,7 @@ private:
     ui::TitleUiController titleUiController_;
     ui::layout::UiLayoutMetrics titleLayout_;
     ui::layout::TitleEntranceRenderState titleEntrance_;
+    ui::TitleOverlayPresentationSet titleOverlayPresentations_{};
     render::FramePacket framePacket_;
     std::vector<std::byte> titleFontBytes_;
     std::unique_ptr<render::text::ShapedTextCache> titleTextCache_;

@@ -58,6 +58,8 @@ using cirvivor::ui::OverlayKind;
 using cirvivor::ui::OverlayPhase;
 using cirvivor::ui::OverlaySnapshot;
 using cirvivor::ui::TitleOverlayStateMachine;
+using cirvivor::ui::TitleOverlayControlId;
+using cirvivor::ui::TitleOverlayPresentationSet;
 using cirvivor::ui::TitleUiController;
 using cirvivor::ui::TitleUiControllerSnapshot;
 using cirvivor::ui::TitleUiTarget;
@@ -72,6 +74,7 @@ using cirvivor::ui::UiPointerDevice;
 using cirvivor::ui::UiPointerEvent;
 using cirvivor::ui::UiPointerEventType;
 using cirvivor::ui::UiStateSnapshot;
+using cirvivor::ui::tryBuildTitleOverlayPresentationSet;
 using cirvivor::ui::layout::PointD;
 using cirvivor::ui::layout::OverlayDialogMetrics;
 using cirvivor::ui::layout::OverlayDialogRenderMetrics;
@@ -224,6 +227,31 @@ void advanceToInteractiveTitle(TitleOverlayStateMachine& state) noexcept {
     return {rect.x + (rect.width * 0.5), rect.y + (rect.height * 0.5)};
 }
 
+[[nodiscard]] PointD overlayControlCenter(
+    const Presentation& presentation,
+    const UiStateSnapshot& state,
+    const std::uint32_t sequence,
+    const TitleOverlayControlId id
+) {
+    TitleOverlayPresentationSet overlays{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        state,
+        presentation.layout,
+        overlays
+    ));
+    const auto* const overlay = cirvivor::ui::findTitleOverlayPresentation(
+        overlays,
+        sequence
+    );
+    REQUIRE(overlay != nullptr);
+    for (std::size_t index = 0U; index < overlay->controlCount; ++index) {
+        if (overlay->controls[index].id == id) {
+            return center(overlay->controls[index].rect);
+        }
+    }
+    throw TestFailure("missing overlay control");
+}
+
 [[nodiscard]] const cirvivor::ui::TitleUiTargetInteraction& interaction(
     const TitleUiControllerSnapshot& snapshot,
     const TitleUiTarget target
@@ -327,7 +355,7 @@ void testAllTitleTargetsDispatchExactActions() {
     }
 }
 
-void testVersionHistoryLinkUsesMouseReleaseDirectEffectWithoutCapture() {
+void testVersionHistoryLinkUsesMouseReleaseWarningOverlayWithoutCapture() {
     const Presentation presentation = makePresentation();
     const PointD linkCenter = center(rectForTarget(
         presentation,
@@ -375,21 +403,24 @@ void testVersionHistoryLinkUsesMouseReleaseDirectEffectWithoutCapture() {
         TitleUiTarget::versionHistoryLink
     ).pressed);
 
-    const UiStateSnapshot beforeDirect = state.snapshot();
-    const UiInputResult direct = controller.handlePointer(
+    const UiStateSnapshot beforeWarning = state.snapshot();
+    const UiInputResult warning = controller.handlePointer(
         mouseEvent(UiPointerEventType::up, linkCenter, UiPointerButton::left),
         presentation.layout,
         presentation.entrance,
-        beforeDirect,
+        beforeWarning,
         state
     );
-    REQUIRE(direct.status == UiInputStatus::actionApplied);
-    REQUIRE(direct.actionOutcome.effect == UiEffect::openExternalUrl);
-    REQUIRE(direct.actionOutcome.overlaySequence == 0U);
-    REQUIRE(direct.actionOutcome.effectText.view()
+    REQUIRE(warning.status == UiInputStatus::actionApplied);
+    REQUIRE(warning.actionOutcome.effect == UiEffect::none);
+    REQUIRE(warning.actionOutcome.overlaySequence != 0U);
+    REQUIRE(warning.actionOutcome.effectText.empty());
+    REQUIRE(state.snapshot() != beforeWarning);
+    REQUIRE(state.snapshot().overlayCount == 1U);
+    REQUIRE(state.snapshot().overlays[0].kind
+        == OverlayKind::externalLinkWarning);
+    REQUIRE(state.snapshot().overlays[0].externalUrl.view()
         == cirvivor::ui::data::title_version_history_url);
-    REQUIRE(state.snapshot() == beforeDirect);
-    REQUIRE(state.snapshot().overlayCount == 0U);
     REQUIRE(!controller.snapshot().capture.active);
     REQUIRE(interaction(
         controller.snapshot(),
@@ -418,7 +449,8 @@ void testVersionHistoryLinkUsesMouseReleaseDirectEffectWithoutCapture() {
         edgeState
     );
     REQUIRE(releaseEdge.actionAccepted());
-    REQUIRE(releaseEdge.actionOutcome.effect == UiEffect::openExternalUrl);
+    REQUIRE(releaseEdge.actionOutcome.effect == UiEffect::none);
+    REQUIRE(edgeState.snapshot().overlayCount == 1U);
 
     TitleOverlayStateMachine touchState;
     advanceToInteractiveTitle(touchState);
@@ -511,7 +543,7 @@ void testMouseHoverPressedRoundedHitAndReleaseRule() {
     REQUIRE(inactive.target == TitleUiTarget::none);
 }
 
-void testTitleGateAndExplicitUnsupportedOverlayResult() {
+void testTitleGateAndLatestSequenceOverlayInput() {
     const Presentation presentation = makePresentation();
     const PointD startCenter = center(rectForTarget(
         presentation,
@@ -537,19 +569,37 @@ void testTitleGateAndExplicitUnsupportedOverlayResult() {
     const UiStateSnapshot nestedSnapshot = nestedState.snapshot();
     REQUIRE(hasOverlayKind(nestedSnapshot, OverlayKind::debug));
     REQUIRE(hasOverlayKind(nestedSnapshot, OverlayKind::exitConfirm));
+    nestedState.advance(0.5);
+    const UiStateSnapshot openNestedSnapshot = nestedState.snapshot();
+    const PointD debugClose = overlayControlCenter(
+        presentation,
+        openNestedSnapshot,
+        debug.overlaySequence,
+        TitleOverlayControlId::close
+    );
 
     TitleUiController nestedController;
-    const UiInputResult unsupported = nestedController.handlePointer(
-        mouseEvent(UiPointerEventType::down, startCenter, UiPointerButton::left),
+    const UiInputResult latest = nestedController.handlePointer(
+        mouseEvent(UiPointerEventType::move, debugClose),
         presentation.layout,
         presentation.entrance,
-        nestedSnapshot,
+        openNestedSnapshot,
         nestedState
     );
-    REQUIRE(unsupported.status == UiInputStatus::unsupportedOverlayInput);
-    REQUIRE(unsupported.unsupportedOverlay == OverlayKind::debug);
-    REQUIRE(unsupported.overlaySequence == debug.overlaySequence);
+    REQUIRE(latest.status == UiInputStatus::moved);
+    REQUIRE(latest.target == TitleUiTarget::overlayCancel);
+    REQUIRE(latest.overlaySequence == debug.overlaySequence);
     REQUIRE(!nestedController.snapshot().capture.active);
+    REQUIRE(nestedState.apply(UiAction::lockTop()).accepted());
+    const UiInputResult lockedLatest = nestedController.handlePointer(
+        mouseEvent(UiPointerEventType::move, debugClose),
+        presentation.layout,
+        presentation.entrance,
+        nestedState.snapshot(),
+        nestedState
+    );
+    REQUIRE(lockedLatest.status == UiInputStatus::overlayInputLocked);
+    REQUIRE(lockedLatest.overlaySequence == debug.overlaySequence);
 
     TitleOverlayStateMachine closingState;
     advanceToInteractiveTitle(closingState);
@@ -557,13 +607,14 @@ void testTitleGateAndExplicitUnsupportedOverlayResult() {
     REQUIRE(closingState.apply(UiAction::closeDebug()).accepted());
     REQUIRE(closingState.snapshot().overlays[0].phase == OverlayPhase::closing);
     TitleUiController closingController;
-    REQUIRE(closingController.handlePointer(
+    const UiInputResult closing = closingController.handlePointer(
         mouseEvent(UiPointerEventType::move, startCenter),
         presentation.layout,
         presentation.entrance,
         closingState.snapshot(),
         closingState
-    ).status == UiInputStatus::unsupportedOverlayInput);
+    );
+    REQUIRE(closing.status == UiInputStatus::overlayInputLocked);
 }
 
 void testExitOverlayCancelConfirmAndSequenceBoundCapture() {
@@ -686,8 +737,7 @@ void testExitOverlayCancelConfirmAndSequenceBoundCapture() {
         sequenceState.snapshot(),
         sequenceState
     );
-    REQUIRE(staleRelease.status == UiInputStatus::unsupportedOverlayInput);
-    REQUIRE(staleRelease.unsupportedOverlay == OverlayKind::debug);
+    REQUIRE(staleRelease.status == UiInputStatus::ignoredNoCapture);
     REQUIRE(staleRelease.overlaySequence == debug.overlaySequence);
     REQUIRE(!sequenceController.snapshot().capture.active);
     REQUIRE(overlayOfKind(
@@ -776,15 +826,16 @@ void testOverlayAppearanceCancelsExistingBaseCapture() {
     ).status == UiInputStatus::captured);
     REQUIRE(state.apply(UiAction::openDebug()).accepted());
 
-    const UiInputResult unsupported = controller.handlePointer(
+    const UiInputResult moved = controller.handlePointer(
         mouseEvent(UiPointerEventType::move, startCenter),
         presentation.layout,
         presentation.entrance,
         state.snapshot(),
         state
     );
-    REQUIRE(unsupported.status == UiInputStatus::unsupportedOverlayInput);
-    REQUIRE(unsupported.controllerStateChanged);
+    REQUIRE(moved.status == UiInputStatus::moved);
+    REQUIRE(moved.target == TitleUiTarget::none);
+    REQUIRE(moved.controllerStateChanged);
     REQUIRE(!controller.snapshot().capture.active);
     REQUIRE(!interaction(controller.snapshot(), TitleUiTarget::cardStart).pressed);
 }
@@ -882,16 +933,143 @@ void testMapSelectControlsDispatchStartOnPointerReleaseAndQuickStartStaysDummy()
     REQUIRE(quickStartState.apply(
         UiAction::openTitle(OverlayKind::quickStart)
     ).accepted());
+    quickStartState.advance(0.5);
+    const OverlaySnapshot quickOverlay = overlayOfKind(
+        quickStartState.snapshot(),
+        OverlayKind::quickStart
+    );
+    const PointD quickClose = overlayControlCenter(
+        presentation,
+        quickStartState.snapshot(),
+        quickOverlay.sequence,
+        TitleOverlayControlId::close
+    );
     TitleUiController quickStartController;
-    const UiInputResult unsupported = quickStartController.handlePointer(
-        mouseEvent(UiPointerEventType::move, confirmCenter),
+    const UiInputResult closeHover = quickStartController.handlePointer(
+        mouseEvent(UiPointerEventType::move, quickClose),
         presentation.layout,
         presentation.entrance,
         quickStartState.snapshot(),
         quickStartState
     );
-    REQUIRE(unsupported.status == UiInputStatus::unsupportedOverlayInput);
-    REQUIRE(unsupported.unsupportedOverlay == OverlayKind::quickStart);
+    REQUIRE(closeHover.status == UiInputStatus::moved);
+    REQUIRE(closeHover.target == TitleUiTarget::overlayCancel);
+}
+
+void testBreadthOverlaysCloseAndPassiveControlsDoNotReject() {
+    const Presentation presentation = makePresentation();
+    constexpr std::array kinds{
+        OverlayKind::deck,
+        OverlayKind::setting,
+        OverlayKind::credits,
+        OverlayKind::quickStart,
+        OverlayKind::records,
+        OverlayKind::research,
+        OverlayKind::achievements,
+        OverlayKind::debug
+    };
+    for (const OverlayKind kind : kinds) {
+        TitleOverlayStateMachine state;
+        advanceToInteractiveTitle(state);
+        const UiActionOutcome opened = kind == OverlayKind::debug
+            ? state.apply(UiAction::openDebug())
+            : state.apply(UiAction::openTitle(kind));
+        REQUIRE(opened.accepted());
+        state.advance(0.5);
+        const TitleOverlayControlId closeId = kind == OverlayKind::setting
+            ? TitleOverlayControlId::cancel
+            : TitleOverlayControlId::close;
+        const PointD closePoint = overlayControlCenter(
+            presentation,
+            state.snapshot(),
+            opened.overlaySequence,
+            closeId
+        );
+        TitleUiController controller;
+        REQUIRE(controller.handlePointer(
+            mouseEvent(UiPointerEventType::down, closePoint, UiPointerButton::left),
+            presentation.layout,
+            presentation.entrance,
+            state.snapshot(),
+            state
+        ).status == UiInputStatus::captured);
+        const UiInputResult closed = controller.handlePointer(
+            mouseEvent(UiPointerEventType::up, closePoint, UiPointerButton::left),
+            presentation.layout,
+            presentation.entrance,
+            state.snapshot(),
+            state
+        );
+        REQUIRE(closed.actionAccepted());
+        REQUIRE(closed.target == TitleUiTarget::overlayCancel);
+        REQUIRE(overlayOfKind(state.snapshot(), kind).phase == OverlayPhase::closing);
+    }
+
+    TitleOverlayStateMachine passiveState;
+    advanceToInteractiveTitle(passiveState);
+    const UiActionOutcome setting = passiveState.apply(
+        UiAction::openTitle(OverlayKind::setting)
+    );
+    REQUIRE(setting.accepted());
+    passiveState.advance(0.5);
+    TitleOverlayPresentationSet settingsPresentation{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        passiveState.snapshot(),
+        presentation.layout,
+        settingsPresentation
+    ));
+    const auto* const settings = cirvivor::ui::findTitleOverlayPresentation(
+        settingsPresentation,
+        setting.overlaySequence
+    );
+    REQUIRE(settings != nullptr);
+    const auto* save = static_cast<const cirvivor::ui::TitleOverlayControl*>(nullptr);
+    for (std::size_t index = 0U; index < settings->controlCount; ++index) {
+        if (settings->controls[index].id == TitleOverlayControlId::confirm) {
+            save = &settings->controls[index];
+        }
+    }
+    REQUIRE(save != nullptr);
+    REQUIRE(!save->enabled);
+    REQUIRE(save->action == cirvivor::ui::TitleOverlayControlAction::none);
+    REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+        *settings,
+        center(save->rect)
+    ) == nullptr);
+
+    TitleOverlayStateMachine creditsState;
+    advanceToInteractiveTitle(creditsState);
+    const UiActionOutcome credits = creditsState.apply(
+        UiAction::openTitle(OverlayKind::credits)
+    );
+    REQUIRE(credits.accepted());
+    creditsState.advance(0.5);
+    TitleOverlayPresentationSet creditsPresentation{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        creditsState.snapshot(),
+        presentation.layout,
+        creditsPresentation
+    ));
+    const auto* const creditsOverlay = cirvivor::ui::findTitleOverlayPresentation(
+        creditsPresentation,
+        credits.overlaySequence
+    );
+    REQUIRE(creditsOverlay != nullptr);
+    std::size_t passiveLinks = 0U;
+    for (std::size_t index = 0U; index < creditsOverlay->controlCount; ++index) {
+        const auto& control = creditsOverlay->controls[index];
+        if (control.id >= TitleOverlayControlId::creditsBlog
+            && control.id <= TitleOverlayControlId::creditsReactBitsGithub) {
+            ++passiveLinks;
+            REQUIRE(control.action
+                == cirvivor::ui::TitleOverlayControlAction::none);
+            REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+                *creditsOverlay,
+                center(control.rect)
+            ) == nullptr);
+        }
+    }
+    REQUIRE(passiveLinks == 5U);
 }
 
 void testTouchIdentityMultiPointerAndCancel() {
@@ -1302,7 +1480,9 @@ void testControllerPathsPerformNoHeapAllocation() {
         || !actionUp.actionAccepted()
         || overlayDown.status != UiInputStatus::captured
         || !overlayUp.actionAccepted()
-        || direct.actionOutcome.effect != UiEffect::openExternalUrl) {
+        || !direct.actionAccepted()
+        || direct.actionOutcome.effect != UiEffect::none
+        || directState.snapshot().overlayCount != 1U) {
         std::abort();
     }
     for (std::size_t index = 0U; index < 2'000U; ++index) {
@@ -1350,15 +1530,19 @@ struct TestCase final {
 int main() {
     const std::array tests{
         TestCase{"exact title target actions", testAllTitleTargetsDispatchExactActions},
-        TestCase{"version link direct release", testVersionHistoryLinkUsesMouseReleaseDirectEffectWithoutCapture},
+        TestCase{"version link warning release", testVersionHistoryLinkUsesMouseReleaseWarningOverlayWithoutCapture},
         TestCase{"mouse hover pressed release", testMouseHoverPressedRoundedHitAndReleaseRule},
-        TestCase{"title gate and overlay unsupported", testTitleGateAndExplicitUnsupportedOverlayResult},
+        TestCase{"title gate and latest overlay", testTitleGateAndLatestSequenceOverlayInput},
         TestCase{"exit dialog controls", testExitOverlayCancelConfirmAndSequenceBoundCapture},
         TestCase{"external dialog effect ack", testExternalWarningConfirmEffectLockAndAcknowledgement},
         TestCase{"overlay cancels base capture", testOverlayAppearanceCancelsExistingBaseCapture},
         TestCase{
             "map select controls and quick start dummy",
             testMapSelectControlsDispatchStartOnPointerReleaseAndQuickStartStaysDummy
+        },
+        TestCase{
+            "breadth overlay close and passive controls",
+            testBreadthOverlaysCloseAndPassiveControlsDoNotReject
         },
         TestCase{"touch identity and cancel", testTouchIdentityMultiPointerAndCancel},
         TestCase{"focus loss and mouse buttons", testFocusLossAndUnsupportedMouseButtons},

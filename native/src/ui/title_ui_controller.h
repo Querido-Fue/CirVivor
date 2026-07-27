@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ui/layout/ui_layout_metrics.h"
+#include "ui/title_overlay_content.h"
 #include "ui/title_overlay_state_machine.h"
 
 #include <array>
@@ -135,6 +136,16 @@ public:
         const layout::UiLayoutSnapshot& layoutSnapshot,
         const layout::TitleEntranceRenderState& entranceState,
         const UiStateSnapshot& uiState,
+        TitleOverlayStateMachine& stateMachine
+    ) noexcept;
+
+    /** renderer와 동일한 최종 contentScale 적용 rect snapshot을 소비합니다. */
+    [[nodiscard]] UiInputResult handlePointer(
+        const UiPointerEvent& event,
+        const layout::UiLayoutSnapshot& layoutSnapshot,
+        const layout::TitleEntranceRenderState& entranceState,
+        const UiStateSnapshot& uiState,
+        const TitleOverlayPresentationSet& overlayPresentations,
         TitleOverlayStateMachine& stateMachine
     ) noexcept;
 

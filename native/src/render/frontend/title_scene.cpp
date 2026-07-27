@@ -1,5 +1,6 @@
 #include "render/frontend/title_scene.h"
 
+#include "render/frontend/title_overlay_presenter.h"
 #include "render/text/title_text_catalog.h"
 
 #include <algorithm>
@@ -217,90 +218,9 @@ enum class TextVerticalAnchor : std::uint8_t {
     if (!hasTextResources(input)) {
         return false;
     }
-    constexpr std::array baseSemantics{
-        UiTextSemanticId::titleCardStart,
-        UiTextSemanticId::titleCardQuickStart,
-        UiTextSemanticId::titleCardQuickStartDescription,
-        UiTextSemanticId::titleCardRecords,
-        UiTextSemanticId::titleCardDeck,
-        UiTextSemanticId::titleCardDeckDescription,
-        UiTextSemanticId::titleCardResearch,
-        UiTextSemanticId::titleCardResearchDescription,
-        UiTextSemanticId::versionLabel,
-        UiTextSemanticId::versionHistoryLink
-    };
-    for (const UiTextSemanticId semantic : baseSemantics) {
-        if (textRunFor(input, semantic) == nullptr) {
+    for (const text::TitleTextCatalogEntry& entry : text::title_text_catalog) {
+        if (textRunFor(input, entry.semantic) == nullptr) {
             return false;
-        }
-    }
-    const std::size_t overlayCount = std::min<std::size_t>(
-        input.uiState.overlayCount,
-        input.uiState.overlays.size()
-    );
-    for (std::size_t index = 0U; index < overlayCount; ++index) {
-        const ui::OverlaySnapshot& overlay = input.uiState.overlays[index];
-        std::array<UiTextSemanticId, 6> required{};
-        std::size_t requiredCount = 0U;
-        switch (overlay.kind) {
-        case ui::OverlayKind::mapSelect:
-            required = {
-                UiTextSemanticId::mapSelectTitle,
-                UiTextSemanticId::mapName,
-                UiTextSemanticId::mapSelected,
-                UiTextSemanticId::mapDescription,
-                UiTextSemanticId::mapCancel,
-                UiTextSemanticId::mapStart
-            };
-            requiredCount = required.size();
-            break;
-        case ui::OverlayKind::exitConfirm:
-            required = {
-                UiTextSemanticId::exitTitle,
-                UiTextSemanticId::exitBody,
-                UiTextSemanticId::exitNo,
-                UiTextSemanticId::exitYes,
-                UiTextSemanticId::exitYes,
-                UiTextSemanticId::exitYes
-            };
-            requiredCount = 4U;
-            break;
-        case ui::OverlayKind::externalLinkWarning: {
-            UiTextSemanticId urlSemantic{};
-            if (!text::titleExternalUrlSemantic(
-                    overlay.externalUrl.view(),
-                    urlSemantic
-                )) {
-                return false;
-            }
-            required = {
-                UiTextSemanticId::externalTitle,
-                UiTextSemanticId::externalBody,
-                UiTextSemanticId::externalNo,
-                UiTextSemanticId::externalYes,
-                urlSemantic,
-                urlSemantic
-            };
-            requiredCount = 5U;
-            break;
-        }
-        case ui::OverlayKind::none:
-        case ui::OverlayKind::deck:
-        case ui::OverlayKind::setting:
-        case ui::OverlayKind::credits:
-        case ui::OverlayKind::quickStart:
-        case ui::OverlayKind::records:
-        case ui::OverlayKind::research:
-        case ui::OverlayKind::achievements:
-        case ui::OverlayKind::debug:
-            break;
-        }
-        for (std::size_t requiredIndex = 0U;
-             requiredIndex < requiredCount;
-             ++requiredIndex) {
-            if (textRunFor(input, required[requiredIndex]) == nullptr) {
-                return false;
-            }
         }
     }
     return input.uiState.overlayCount <= input.uiState.overlays.size();
@@ -581,10 +501,13 @@ enum class TextVerticalAnchor : std::uint8_t {
         input.uiState.overlayCount,
         input.uiState.overlays.size()
     );
+    const bool fullOverlayContent = hasRequiredTextRuns(input);
     for (std::size_t index = 0U; index < overlayCount; ++index) {
-        result |= titleSceneCapabilityBit(
-            missingCapabilityFor(input.uiState.overlays[index].kind)
-        );
+        if (!fullOverlayContent) {
+            result |= titleSceneCapabilityBit(
+                missingCapabilityFor(input.uiState.overlays[index].kind)
+            );
+        }
         if (input.uiState.overlays[index].kind
                 == ui::OverlayKind::externalLinkWarning) {
             UiTextSemanticId ignored{};
@@ -619,6 +542,11 @@ enum class TextVerticalAnchor : std::uint8_t {
         input.uiState.overlays.size()
     );
     result.overlayDimCommands = overlayCount * dim_session_command_count;
+    if (hasRequiredTextRuns(input)) {
+        result.titleOverlayContentCommands = capacity.commandCount
+            - result.titleShellCommands
+            - result.overlayDimCommands;
+    }
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         const ui::OverlayKind kind = input.uiState.overlays[index].kind;
         if (kind == ui::OverlayKind::mapSelect) {
@@ -657,6 +585,16 @@ enum class TextVerticalAnchor : std::uint8_t {
         || input.uiState.title.elapsedSeconds < 0.0) {
         return false;
     }
+    if (hasTextResources(input) && !hasRequiredTextRuns(input)) {
+        return false;
+    }
+    if (input.overlayPresentations != nullptr
+        && (input.overlayPresentations->stateRevision != input.uiState.revision
+            || input.overlayPresentations->layoutRevision != input.layout.revision
+            || input.overlayPresentations->overlayCount
+                != input.uiState.overlayCount)) {
+        return false;
+    }
     const std::size_t overlayCount = std::min<std::size_t>(
         input.uiState.overlayCount,
         input.uiState.overlays.size()
@@ -668,6 +606,17 @@ enum class TextVerticalAnchor : std::uint8_t {
                 orders
             )) {
             return false;
+        }
+        if (input.overlayPresentations != nullptr) {
+            const ui::TitleOverlayPresentation* const presentation =
+                ui::findTitleOverlayPresentation(
+                    *input.overlayPresentations,
+                    input.uiState.overlays[index].sequence
+                );
+            if (presentation == nullptr
+                || presentation->kind != input.uiState.overlays[index].kind) {
+                return false;
+            }
         }
     }
     return true;
@@ -739,15 +688,98 @@ void addTitleTextCapacity(
             }
             break;
         }
-        case ui::OverlayKind::none:
         case ui::OverlayKind::deck:
-        case ui::OverlayKind::setting:
-        case ui::OverlayKind::credits:
+            addTextCapacity(capacity, input, UiTextSemanticId::deckTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::deckAchievements);
+            addTextCapacity(capacity, input, UiTextSemanticId::deckZeroPercent);
+            addTextCapacity(capacity, input, UiTextSemanticId::deckEncyclopedia);
+            addTextCapacity(capacity, input, UiTextSemanticId::deckZeroPercent);
+            addTextCapacity(capacity, input, UiTextSemanticId::overlayClose);
+            break;
         case ui::OverlayKind::quickStart:
+            addTextCapacity(capacity, input, UiTextSemanticId::quickStartTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::comingSoon);
+            addTextCapacity(capacity, input, UiTextSemanticId::quickStartBody);
+            addTextCapacity(capacity, input, UiTextSemanticId::overlayClose);
+            break;
         case ui::OverlayKind::records:
+            addTextCapacity(capacity, input, UiTextSemanticId::recordsTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::comingSoon);
+            addTextCapacity(capacity, input, UiTextSemanticId::recordsBody);
+            addTextCapacity(capacity, input, UiTextSemanticId::overlayClose);
+            break;
         case ui::OverlayKind::research:
+            addTextCapacity(capacity, input, UiTextSemanticId::researchTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::comingSoon);
+            addTextCapacity(capacity, input, UiTextSemanticId::researchBody);
+            addTextCapacity(capacity, input, UiTextSemanticId::overlayClose);
+            break;
         case ui::OverlayKind::achievements:
+            addTextCapacity(capacity, input, UiTextSemanticId::achievementsTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::comingSoon);
+            addTextCapacity(capacity, input, UiTextSemanticId::achievementsBody);
+            addTextCapacity(capacity, input, UiTextSemanticId::overlayClose);
+            break;
+        case ui::OverlayKind::setting:
+            for (const UiTextSemanticId semantic : std::array{
+                    UiTextSemanticId::settingsTitle,
+                    UiTextSemanticId::settingsDisplaySection,
+                    UiTextSemanticId::settingsUiSection,
+                    UiTextSemanticId::settingWindowMode,
+                    UiTextSemanticId::settingUltrawide,
+                    UiTextSemanticId::settingRenderScale,
+                    UiTextSemanticId::settingUiScale,
+                    UiTextSemanticId::settingOpaqueUi,
+                    UiTextSemanticId::settingBenchmark,
+                    UiTextSemanticId::settingLanguage,
+                    UiTextSemanticId::settingTheme,
+                    UiTextSemanticId::settingTooltipDelay,
+                    UiTextSemanticId::settingBgm,
+                    UiTextSemanticId::settingSfx,
+                    UiTextSemanticId::settingKeybindings,
+                    UiTextSemanticId::settingUltrawideDescription,
+                    UiTextSemanticId::settingRenderScaleDescription,
+                    UiTextSemanticId::settingUiScaleDescription,
+                    UiTextSemanticId::settingOpaqueUiDescription,
+                    UiTextSemanticId::settingTooltipDelayDescription,
+                    UiTextSemanticId::settingsSoundSection,
+                    UiTextSemanticId::settingsControlsSection,
+                    UiTextSemanticId::settingsCancel,
+                    UiTextSemanticId::settingsSave
+                }) {
+                addTextCapacity(capacity, input, semantic);
+            }
+            break;
+        case ui::OverlayKind::credits:
+            for (const UiTextSemanticId semantic : std::array{
+                    UiTextSemanticId::creditsTitle,
+                    UiTextSemanticId::creditsMadeBy,
+                    UiTextSemanticId::creditsBlog,
+                    UiTextSemanticId::creditsCirvivor,
+                    UiTextSemanticId::creditsAssets,
+                    UiTextSemanticId::creditsPretendard,
+                    UiTextSemanticId::creditsOutfit,
+                    UiTextSemanticId::creditsReactBits,
+                    UiTextSemanticId::overlayClose
+                }) {
+                addTextCapacity(capacity, input, semantic);
+            }
+            break;
         case ui::OverlayKind::debug:
+            for (const UiTextSemanticId semantic : std::array{
+                    UiTextSemanticId::debugTitle,
+                    UiTextSemanticId::debugFrameTime,
+                    UiTextSemanticId::debugPoolInfo,
+                    UiTextSemanticId::debugHitboxes,
+                    UiTextSemanticId::debugAnimation,
+                    UiTextSemanticId::debugHint,
+                    UiTextSemanticId::debugDevTools,
+                    UiTextSemanticId::debugClose
+                }) {
+                addTextCapacity(capacity, input, semantic);
+            }
+            break;
+        case ui::OverlayKind::none:
             break;
         }
     }
@@ -1197,6 +1229,9 @@ void addTitleTextCapacity(
     const ui::OverlayKind kind,
     const TitleSceneInput& input
 ) noexcept {
+    if (kind == ui::OverlayKind::debug) {
+        return 0.16;
+    }
     if (ui::isTitleOverlayKind(kind)) {
         return input.layout.overlays.titleBaseDim;
     }
@@ -1668,15 +1703,80 @@ void addTitleTextCapacity(
     return builder.addOverlay(end);
 }
 
+[[nodiscard]] bool addPresentationUiShell(
+    FramePacketBuilder& builder,
+    const TitleSceneInput& input,
+    const ui::OverlaySnapshot& overlay,
+    const OverlaySurfaceLayerOrders orders,
+    const ui::TitleOverlayPresentation& presentation
+) {
+    OverlayCommand begin{};
+    begin.header = makeHeader(RenderLayer::dynamicOverlay, orders.ui);
+    begin.operation = OverlayOperation::beginSession;
+    begin.sessionId = instanceId(overlay_ui_session_id, overlay.sequence);
+    if (!builder.addOverlay(begin)) {
+        return false;
+    }
+
+    ClipCommand clip{};
+    clip.header = begin.header;
+    clip.operation = ClipOperation::pushRoundedRect;
+    clip.antialias = 1U;
+    clip.bounds = renderRect(presentation.panelRect);
+    clip.cornerRadius = finiteFloat(presentation.panelRect.radius);
+    if (!builder.addClip(clip)
+        || !addTitleOverlayPresentation(
+            builder,
+            {
+                presentation,
+                overlay,
+                input.interaction,
+                input.layout,
+                input.theme,
+                input.textResources,
+                input.locale,
+                begin.header
+            })) {
+        return false;
+    }
+
+    ClipCommand pop = clip;
+    pop.operation = ClipOperation::pop;
+    if (!builder.addClip(pop)) {
+        return false;
+    }
+    OverlayCommand end = begin;
+    end.operation = OverlayOperation::endSession;
+    return builder.addOverlay(end);
+}
+
 [[nodiscard]] bool addOverlayShells(
     FramePacketBuilder& builder,
     const TitleSceneInput& input,
     const TitleSceneConfig& config
 ) {
+    ui::TitleOverlayPresentationSet localPresentations{};
+    const ui::TitleOverlayPresentationSet* presentations =
+        input.overlayPresentations;
+    if (presentations == nullptr) {
+        if (!ui::tryBuildTitleOverlayPresentationSet(
+                input.uiState,
+                input.layout,
+                localPresentations)) {
+            return false;
+        }
+        presentations = &localPresentations;
+    }
+    if (presentations->stateRevision != input.uiState.revision
+        || presentations->layoutRevision != input.layout.revision
+        || presentations->overlayCount != input.uiState.overlayCount) {
+        return false;
+    }
     const std::size_t overlayCount = std::min<std::size_t>(
         input.uiState.overlayCount,
         input.uiState.overlays.size()
     );
+    const bool fullOverlayContent = hasRequiredTextRuns(input);
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         const ui::OverlaySnapshot& overlay = input.uiState.overlays[index];
         OverlaySurfaceLayerOrders orders{};
@@ -1694,29 +1794,54 @@ void addTitleTextCapacity(
             )) {
             return false;
         }
-
-        const bool isMapSelect = overlay.kind == ui::OverlayKind::mapSelect;
-        const bool isExit = overlay.kind == ui::OverlayKind::exitConfirm;
-        const bool isExternal = overlay.kind
-            == ui::OverlayKind::externalLinkWarning;
-        if (!isMapSelect && !isExit && !isExternal) {
+        if (!fullOverlayContent) {
+            const bool isMapSelect = overlay.kind == ui::OverlayKind::mapSelect;
+            const bool isExit = overlay.kind == ui::OverlayKind::exitConfirm;
+            const bool isExternal = overlay.kind
+                == ui::OverlayKind::externalLinkWarning;
+            if (!isMapSelect && !isExit && !isExternal) {
+                continue;
+            }
+            const ui::layout::OverlayDialogMetrics& sourceDialog = isMapSelect
+                ? input.layout.overlays.mapSelect
+                : isExit
+                    ? input.layout.overlays.exit
+                    : input.layout.overlays.externalLinkWarning;
+            ui::layout::OverlayDialogRenderMetrics dialog{};
+            if (!ui::layout::tryResolveOverlayDialogRenderMetrics(
+                    sourceDialog,
+                    input.layout.overlayPage,
+                    overlay.contentScale,
+                    dialog
+                )
+                || !addGlassPass(
+                    builder,
+                    input,
+                    overlay,
+                    orders,
+                    renderRect(dialog.panelRect),
+                    anchorSequence,
+                    config.backdropRevision
+                )
+                || !addOverlayUiShell(
+                    builder,
+                    input,
+                    overlay,
+                    orders,
+                    dialog,
+                    isExternal
+                )) {
+                return false;
+            }
             continue;
         }
-        const ui::layout::OverlayDialogMetrics& sourceDialog = isMapSelect
-            ? input.layout.overlays.mapSelect
-            : isExit
-                ? input.layout.overlays.exit
-                : input.layout.overlays.externalLinkWarning;
-        ui::layout::OverlayDialogRenderMetrics dialog{};
-        if (!ui::layout::tryResolveOverlayDialogRenderMetrics(
-                sourceDialog,
-                input.layout.overlayPage,
-                overlay.contentScale,
-                dialog
-            )) {
+        const ui::TitleOverlayPresentation* const presentation =
+            ui::findTitleOverlayPresentation(*presentations, overlay.sequence);
+        if (presentation == nullptr
+            || presentation->kind != overlay.kind) {
             return false;
         }
-        const RectF panelBounds = renderRect(dialog.panelRect);
+        const RectF panelBounds = renderRect(presentation->panelRect);
         if (!addGlassPass(
                 builder,
                 input,
@@ -1726,13 +1851,12 @@ void addTitleTextCapacity(
                 anchorSequence,
                 config.backdropRevision
             )
-            || !addOverlayUiShell(
+            || !addPresentationUiShell(
                 builder,
                 input,
                 overlay,
                 orders,
-                dialog,
-                isExternal
+                *presentation
             )) {
             return false;
         }
@@ -1799,24 +1923,65 @@ FramePacketCapacity titleSceneCapacity(const TitleSceneInput& input) noexcept {
         input.uiState.overlayCount,
         input.uiState.overlays.size()
     );
+    const bool fullOverlayContent = hasRequiredTextRuns(input);
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         capacity.overlayCount += dim_session_command_count;
         const ui::OverlayKind kind = input.uiState.overlays[index].kind;
-        if (kind == ui::OverlayKind::mapSelect) {
-            capacity.overlayCount += shell_overlay_command_count;
-            capacity.passCount += glass_pass_command_count;
-            capacity.clipCount += shell_clip_command_count;
-            capacity.uiCount += map_select_shell_ui_count;
-        } else if (kind == ui::OverlayKind::exitConfirm) {
-            capacity.overlayCount += shell_overlay_command_count;
-            capacity.passCount += glass_pass_command_count;
-            capacity.clipCount += shell_clip_command_count;
-            capacity.uiCount += exit_shell_ui_count;
-        } else if (kind == ui::OverlayKind::externalLinkWarning) {
-            capacity.overlayCount += shell_overlay_command_count;
-            capacity.passCount += glass_pass_command_count;
-            capacity.clipCount += shell_clip_command_count;
-            capacity.uiCount += external_shell_ui_count;
+        if (!fullOverlayContent) {
+            if (kind == ui::OverlayKind::mapSelect) {
+                capacity.overlayCount += shell_overlay_command_count;
+                capacity.passCount += glass_pass_command_count;
+                capacity.clipCount += shell_clip_command_count;
+                capacity.uiCount += map_select_shell_ui_count;
+            } else if (kind == ui::OverlayKind::exitConfirm) {
+                capacity.overlayCount += shell_overlay_command_count;
+                capacity.passCount += glass_pass_command_count;
+                capacity.clipCount += shell_clip_command_count;
+                capacity.uiCount += exit_shell_ui_count;
+            } else if (kind == ui::OverlayKind::externalLinkWarning) {
+                capacity.overlayCount += shell_overlay_command_count;
+                capacity.passCount += glass_pass_command_count;
+                capacity.clipCount += shell_clip_command_count;
+                capacity.uiCount += external_shell_ui_count;
+            }
+            continue;
+        }
+        capacity.overlayCount += shell_overlay_command_count;
+        capacity.passCount += glass_pass_command_count;
+        capacity.clipCount += shell_clip_command_count;
+        capacity.shapeCount += 1U; // header divider
+        capacity.uiCount += 1U; // panel
+        switch (kind) {
+        case ui::OverlayKind::mapSelect:
+            capacity.shapeCount += 24U; // preview background + 23 floor cells
+            capacity.lineCount += 16U; // complete 9x5 grid
+            capacity.uiCount += 2U;
+            break;
+        case ui::OverlayKind::deck:
+            capacity.shapeCount += 2U;
+            capacity.uiCount += 5U; // 3 controls + 2 progress bars
+            break;
+        case ui::OverlayKind::setting:
+            capacity.uiCount += 14U;
+            break;
+        case ui::OverlayKind::credits:
+            capacity.uiCount += 6U;
+            break;
+        case ui::OverlayKind::quickStart:
+        case ui::OverlayKind::records:
+        case ui::OverlayKind::research:
+        case ui::OverlayKind::achievements:
+            capacity.uiCount += 1U;
+            break;
+        case ui::OverlayKind::debug:
+            capacity.uiCount += 6U;
+            break;
+        case ui::OverlayKind::exitConfirm:
+        case ui::OverlayKind::externalLinkWarning:
+            capacity.uiCount += 2U;
+            break;
+        case ui::OverlayKind::none:
+            break;
         }
     }
     addTitleTextCapacity(capacity, input);

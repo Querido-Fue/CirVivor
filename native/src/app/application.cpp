@@ -943,6 +943,16 @@ bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcep
 
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
     const ui::TitleUiControllerSnapshot interaction = titleUiController_.snapshot();
+    if (!ui::tryBuildTitleOverlayPresentationSet(
+            state,
+            titleLayout_.snapshot(),
+            titleOverlayPresentations_)) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Native title overlay presentation refresh failed."
+        );
+        return false;
+    }
     const std::uint64_t backdropRevision = refreshTitleBackdropRevision(
         state,
         interaction
@@ -956,7 +966,8 @@ bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcep
         titleTextCache_ == nullptr
             ? render::PreShapedTextResourcesView{}
             : titleTextCache_->textResources(),
-        render::UiTextLocale::korean
+        render::UiTextLocale::korean,
+        &titleOverlayPresentations_
     };
     render::frontend::TitleSceneConfig config{};
     config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
@@ -1024,6 +1035,7 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     titleUiController_ = {};
     titleLayout_ = {};
     titleEntrance_ = {};
+    titleOverlayPresentations_ = {};
     titleBackdropLayout_ = {};
     titleBackdropEntrance_ = {};
     titleBackdropInteraction_ = {};
@@ -1355,11 +1367,18 @@ ApplicationResult Application::handleTitlePointer(
         return ApplicationResult::continueRunning;
     }
     const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    if (!ui::tryBuildTitleOverlayPresentationSet(
+            state,
+            titleLayout_.snapshot(),
+            titleOverlayPresentations_)) {
+        return ApplicationResult::failure;
+    }
     const ui::UiInputResult result = titleUiController_.handlePointer(
         pointer,
         titleLayout_.snapshot(),
         titleEntrance_,
         state,
+        titleOverlayPresentations_,
         titleUiState_
     );
     const SceneMode sceneBeforeEffect = sceneMode_;
@@ -1486,6 +1505,7 @@ bool Application::startPlayableSession(
     titleUiController_ = {};
     titleLayout_ = {};
     titleEntrance_ = {};
+    titleOverlayPresentations_ = {};
     titleBackdropLayout_ = {};
     titleBackdropEntrance_ = {};
     titleBackdropInteraction_ = {};
@@ -1648,6 +1668,12 @@ ApplicationResult Application::iterate() noexcept {
         }
         if (titleToPlayableSmokeStage_ == titleToPlayableSmokeMapStage) {
             const ui::UiStateSnapshot beforePress = titleUiState_.snapshot();
+            if (!ui::tryBuildTitleOverlayPresentationSet(
+                    beforePress,
+                    titleLayout_.snapshot(),
+                    titleOverlayPresentations_)) {
+                return ApplicationResult::failure;
+            }
             const ui::OverlaySnapshot* mapOverlay = nullptr;
             for (std::size_t index = 0U; index < beforePress.overlayCount; ++index) {
                 if (beforePress.overlays[index].kind == ui::OverlayKind::mapSelect) {
@@ -1655,15 +1681,28 @@ ApplicationResult Application::iterate() noexcept {
                     break;
                 }
             }
-            ui::layout::OverlayDialogRenderMetrics dialog{};
+            const ui::TitleOverlayPresentation* mapPresentation =
+                mapOverlay == nullptr
+                ? nullptr
+                : ui::findTitleOverlayPresentation(
+                    titleOverlayPresentations_,
+                    mapOverlay->sequence
+                );
+            const ui::TitleOverlayControl* startControl = nullptr;
+            if (mapPresentation != nullptr) {
+                for (std::size_t index = 0U;
+                     index < mapPresentation->controlCount;
+                     ++index) {
+                    if (mapPresentation->controls[index].id
+                            == ui::TitleOverlayControlId::confirm) {
+                        startControl = &mapPresentation->controls[index];
+                        break;
+                    }
+                }
+            }
             if (mapOverlay == nullptr
-                || !titleLayout_.hasSnapshot()
-                || !ui::layout::tryResolveOverlayDialogRenderMetrics(
-                    titleLayout_.snapshot().overlays.mapSelect,
-                    titleLayout_.snapshot().overlayPage,
-                    mapOverlay->contentScale,
-                    dialog
-                )) {
+                || mapPresentation == nullptr
+                || startControl == nullptr) {
                 SDL_LogError(
                     SDL_LOG_CATEGORY_APPLICATION,
                     "Title-to-playable smoke could not resolve the start button."
@@ -1671,8 +1710,8 @@ ApplicationResult Application::iterate() noexcept {
                 return ApplicationResult::failure;
             }
             const ui::layout::PointD startButtonCenter{
-                dialog.confirmButtonRect.x + (dialog.confirmButtonRect.width * 0.5),
-                dialog.confirmButtonRect.y + (dialog.confirmButtonRect.height * 0.5)
+                startControl->rect.x + (startControl->rect.width * 0.5),
+                startControl->rect.y + (startControl->rect.height * 0.5)
             };
             const ui::UiInputResult pressed = titleUiController_.handlePointer(
                 {
@@ -1685,6 +1724,7 @@ ApplicationResult Application::iterate() noexcept {
                 titleLayout_.snapshot(),
                 titleEntrance_,
                 beforePress,
+                titleOverlayPresentations_,
                 titleUiState_
             );
             const ui::TitleUiControllerSnapshot captured =
@@ -1712,6 +1752,7 @@ ApplicationResult Application::iterate() noexcept {
                 titleLayout_.snapshot(),
                 titleEntrance_,
                 titleUiState_.snapshot(),
+                titleOverlayPresentations_,
                 titleUiState_
             );
             if (released.status != ui::UiInputStatus::actionApplied
@@ -1777,6 +1818,7 @@ void Application::shutdown() noexcept {
     titleUiController_ = {};
     titleLayout_ = {};
     titleEntrance_ = {};
+    titleOverlayPresentations_ = {};
     titleBackdropLayout_ = {};
     titleBackdropEntrance_ = {};
     titleBackdropInteraction_ = {};

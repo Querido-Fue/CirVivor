@@ -91,6 +91,7 @@ cirvivor_configure_target(app_runtime)
 
 add_library(ui_runtime STATIC
     src/ui/layout/ui_layout_metrics.cpp
+    src/ui/title_overlay_content.cpp
     src/ui/title_overlay_state_machine.cpp
     src/ui/title_ui_controller.cpp
 )
@@ -148,6 +149,7 @@ add_library(render_frontend STATIC
     src/render/frontend/frame_packet_builder.cpp
     src/render/frontend/playable_game_scene.cpp
     src/render/frontend/synthetic_test_scene.cpp
+    src/render/frontend/title_overlay_presenter.cpp
     src/render/frontend/title_scene.cpp
 )
 target_include_directories(render_frontend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
