@@ -36,6 +36,15 @@ struct StorageReadResult final {
     }
 };
 
+struct StorageExistsResult final {
+    StorageResult status = StorageResult::backendFailure;
+    bool exists = false;
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == StorageResult::success;
+    }
+};
+
 // SDL user storage의 batch 수명을 소유한다. 준비 대기는 호출자의 메인 루프가 폴링한다.
 class SdlUserStorage final {
 public:
@@ -55,6 +64,7 @@ public:
     ) noexcept;
     [[nodiscard]] StorageReadyState readyState() const noexcept;
 
+    [[nodiscard]] StorageExistsResult exists(const char* path) const noexcept;
     [[nodiscard]] StorageReadResult read(
         const char* path,
         std::uint64_t maximumBytes = defaultMaximumReadBytes
@@ -62,6 +72,12 @@ public:
     [[nodiscard]] StorageResult write(
         const char* path,
         std::span<const std::byte> bytes
+    ) noexcept;
+    // 같은 storage 안에서 destination을 교체한다. Windows SDL backend는
+    // MOVEFILE_REPLACE_EXISTING을 사용하므로 실패 시 기존 destination이 유지된다.
+    [[nodiscard]] StorageResult renameReplace(
+        const char* source,
+        const char* destination
     ) noexcept;
     [[nodiscard]] StorageResult remove(const char* path) noexcept;
 

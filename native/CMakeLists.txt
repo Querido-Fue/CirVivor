@@ -101,9 +101,16 @@ cirvivor_configure_target(ui_runtime)
 add_library(settings_runtime STATIC
     src/settings/settings_codec.cpp
     src/settings/settings_model.cpp
+    src/settings/settings_repository.cpp
 )
 target_include_directories(settings_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 cirvivor_configure_target(settings_runtime)
+
+add_library(debug_runtime STATIC
+    src/debug/debug_runtime_controller.cpp
+)
+target_include_directories(debug_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+cirvivor_configure_target(debug_runtime)
 
 if(MSVC)
     set_source_files_properties(
@@ -237,6 +244,18 @@ if(BUILD_TESTING)
     target_link_libraries(settings_codec_tests PRIVATE settings_runtime)
     cirvivor_configure_target(settings_codec_tests)
 
+    add_executable(settings_repository_tests
+        tests/settings_repository_test.cpp
+    )
+    target_link_libraries(settings_repository_tests PRIVATE settings_runtime)
+    cirvivor_configure_target(settings_repository_tests)
+
+    add_executable(debug_runtime_controller_tests
+        tests/debug_runtime_controller_test.cpp
+    )
+    target_link_libraries(debug_runtime_controller_tests PRIVATE debug_runtime)
+    cirvivor_configure_target(debug_runtime_controller_tests)
+
     add_executable(renderer_router_tests
         tests/renderer_router_test.cpp
     )
@@ -300,6 +319,11 @@ if(BUILD_TESTING)
     add_test(NAME ui_layout_metrics_tests COMMAND ui_layout_metrics_tests)
     add_test(NAME title_ui_controller_tests COMMAND title_ui_controller_tests)
     add_test(NAME settings_codec_tests COMMAND settings_codec_tests)
+    add_test(NAME settings_repository_tests COMMAND settings_repository_tests)
+    add_test(
+        NAME debug_runtime_controller_tests
+        COMMAND debug_runtime_controller_tests
+    )
     add_test(NAME renderer_router_tests COMMAND renderer_router_tests)
     add_test(NAME simulation_parity_tests COMMAND simulation_parity_tests)
     add_test(NAME game_replay_parity_tests COMMAND game_replay_parity_tests)
@@ -355,11 +379,12 @@ if(CIRVIVOR_BUILD_SDL_APP)
         src/platform/sdl/sdl_lifecycle.cpp
         src/platform/sdl/sdl_platform_event.cpp
         src/platform/sdl/sdl_runtime_asset.cpp
+        src/platform/sdl/storage/sdl_settings_storage.cpp
         src/platform/sdl/storage/sdl_user_storage.cpp
         src/platform/sdl/sdl_window.cpp
     )
     target_include_directories(platform_sdl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(platform_sdl PRIVATE SDL3::SDL3)
+    target_link_libraries(platform_sdl PRIVATE settings_runtime SDL3::SDL3)
     cirvivor_configure_target(platform_sdl)
 
     add_executable(game_desktop
@@ -371,6 +396,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
         PRIVATE
             game_core
             app_runtime
+            debug_runtime
             settings_runtime
             ui_runtime
             platform_sdl
@@ -405,6 +431,15 @@ if(CIRVIVOR_BUILD_SDL_APP)
         target_link_libraries(sdl_platform_event_tests PRIVATE platform_sdl SDL3::SDL3)
         cirvivor_configure_target(sdl_platform_event_tests)
 
+        add_executable(sdl_settings_storage_tests
+            tests/sdl_settings_storage_test.cpp
+        )
+        target_link_libraries(
+            sdl_settings_storage_tests
+            PRIVATE platform_sdl settings_runtime SDL3::SDL3
+        )
+        cirvivor_configure_target(sdl_settings_storage_tests)
+
         add_executable(software_renderer_tests
             tests/software_renderer_test.cpp
         )
@@ -424,6 +459,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
         cirvivor_configure_target(software_renderer_benchmark)
 
         add_test(NAME sdl_platform_event_tests COMMAND sdl_platform_event_tests)
+        add_test(NAME sdl_settings_storage_tests COMMAND sdl_settings_storage_tests)
         add_test(NAME software_renderer_tests COMMAND software_renderer_tests)
         add_test(NAME game_desktop_smoke COMMAND game_desktop --smoke-test)
         add_test(
@@ -459,6 +495,12 @@ if(CIRVIVOR_BUILD_SDL_APP)
         add_test(
             NAME game_desktop_render_recovery_smoke
             COMMAND game_desktop --smoke-test-render-recovery
+        )
+        set_tests_properties(
+            sdl_settings_storage_tests
+            PROPERTIES
+            RESOURCE_LOCK cirvivor_settings_storage_test
+            TIMEOUT 15
         )
         set_tests_properties(
             game_desktop_smoke
