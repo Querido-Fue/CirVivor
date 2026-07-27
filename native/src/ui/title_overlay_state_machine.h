@@ -1,5 +1,7 @@
 #pragma once
 
+#include "data/game_map_catalog.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -77,7 +79,8 @@ enum class UiActionStatus : std::uint8_t {
 
 enum class UiEffect : std::uint8_t {
     none,
-    openExternalUrl
+    openExternalUrl,
+    startPlayableSession
 };
 
 struct FixedUiText final {
@@ -95,6 +98,30 @@ struct FixedUiText final {
     friend bool operator==(const FixedUiText&, const FixedUiText&) = default;
 };
 
+struct FixedGameMapId final {
+    std::array<char, ::cirvivor::data::maximum_game_map_id_bytes + 1U> bytes{};
+    std::uint8_t length = 0U;
+
+    [[nodiscard]] std::string_view view() const noexcept {
+        return {bytes.data(), length};
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return length == 0U;
+    }
+
+    friend bool operator==(const FixedGameMapId&, const FixedGameMapId&) = default;
+};
+
+struct StartPlayableSession final {
+    FixedGameMapId mapId{};
+
+    friend bool operator==(
+        const StartPlayableSession&,
+        const StartPlayableSession&
+    ) = default;
+};
+
 struct UiFrameContext final {
     bool animationPaused = false;
 };
@@ -105,9 +132,10 @@ struct UiAction final {
     std::string_view text{};
 
     [[nodiscard]] static constexpr UiAction openTitle(
-        const OverlayKind overlayKind
+        const OverlayKind overlayKind,
+        const std::string_view payload = {}
     ) noexcept {
-        return {UiActionType::openTitleOverlay, overlayKind, {}};
+        return {UiActionType::openTitleOverlay, overlayKind, payload};
     }
 
     [[nodiscard]] static constexpr UiAction closeTitle() noexcept {
@@ -176,6 +204,7 @@ struct UiActionOutcome final {
     UiEffect effect = UiEffect::none;
     std::uint32_t overlaySequence = 0U;
     FixedUiText effectText{};
+    StartPlayableSession playableSession{};
 
     [[nodiscard]] bool accepted() const noexcept {
         return status == UiActionStatus::applied
@@ -215,7 +244,9 @@ struct OverlaySnapshot final {
     double contentBlur = 10.0;
     bool interactionsLocked = false;
     bool acceptsInput = false;
+    bool playableStartPending = false;
     FixedUiText externalUrl{};
+    FixedGameMapId selectedMapId{};
 
     friend bool operator==(const OverlaySnapshot&, const OverlaySnapshot&) = default;
 };
@@ -254,6 +285,10 @@ public:
         std::uint32_t overlaySequence,
         bool success
     ) noexcept;
+    [[nodiscard]] UiActionOutcome acknowledgePlayableSession(
+        std::uint32_t overlaySequence,
+        bool success
+    ) noexcept;
 
 private:
     struct OverlayEntry final {
@@ -273,7 +308,9 @@ private:
         double closeStartBlur = 10.0;
         bool interactionsLocked = false;
         bool externalOpenPending = false;
+        bool playableStartPending = false;
         FixedUiText externalUrl{};
+        FixedGameMapId selectedMapId{};
     };
 
     [[nodiscard]] UiActionOutcome openOverlay(

@@ -13,12 +13,12 @@
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: MSVC Debug·Release CTest 각 23/23, GCC headless 17/17, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
-- Desktop 기본 실행: 순수 C++ 타이틀 장면으로 진입한다. 최소 `GameSystem` 장면은 `--playable-scene`, synthetic 장면은 smoke/`--diagnostic-scene`으로 분리했다.
+- 네이티브 검증: MSVC Debug·Release CTest 각 27/27, GCC headless 17/17, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- Desktop 기본 실행: 순수 C++ 타이틀 장면으로 진입하고 Start→MapSelect→새 `GameSystem` playable 세션으로 전환한다. `--playable-scene`은 개발용 직접 진입, synthetic 장면은 smoke/`--diagnostic-scene`으로 분리했다.
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas 통과
 - 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software의 gradient/clip은 실제 raster이며 glyph/mesh/pass 및 GPU 계열 고급 명령은 아직 계측 가능한 placeholder다.
-- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃, title presenter와 pointer/창 닫기/외부 링크 입력을 기본 앱 경로에 연결했다. 실제 문자열·메뉴별 콘텐츠·플레이 전환은 아직 미완성이다.
+- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃, title presenter와 pointer/창 닫기/외부 링크 입력을 기본 앱 경로에 연결했다. MapSelect panel·취소·시작과 transactional playable 전환까지 동작하며 실제 문자열·메뉴별 콘텐츠는 아직 미완성이다.
 - Software 960×540 성능 게이트: 최신 Release 180-frame render p95 27.167ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 - 구현 전략: Windows 전체 기능 흐름을 breadth-first로 먼저 연결한 뒤 실제 결과물을 실행하며 화면별 시각·입력 fidelity를 반복 보완한다.
@@ -61,12 +61,12 @@
 - SDL_GPU의 sprite·text·effect·UI·overlay는 아직 solid geometry placeholder다. Windows SDL_GPU에서 실제 texture/glyph atlas, render graph와 overlay composite가 필요하다.
 - Android SDK/NDK와 iOS/macOS 환경은 현재 범위 밖이다. 모바일 준비 여부는 Windows native 완료 조건이나 blocker로 계산하지 않는다.
 - C++ 800-body 이동·타일 충돌, 현재 GameSystem 480-tick replay와 두 WAT scalar reference는 JS/WAT와 완전 일치한다. production legacy spatial grid/contact solve/projectile은 60-tick oracle만 동결됐고 C++ 이식이 Phase 4 종료 조건으로 남아 있다.
-- 2026-07-27 Computer Use 실기 감사에서 발견한 synthetic-only 통합 공백은 playable session bridge와 짧은 입력 latch로 보완했다. 현재 기본 실행은 native title shell이며 `--playable-scene`은 맵·Core·Tower만 표시한다. 실제 타이틀 text/logo/texture/effect, 메뉴별 오버레이 본문, 적·전투·웨이브는 아직 이식되지 않았다.
+- 2026-07-27 Computer Use 실기 감사에서 발견한 synthetic-only 통합 공백은 playable session bridge와 짧은 입력 latch로 보완했다. 현재 기본 실행은 native title shell이고 Start→MapSelect→맵·Core·Tower playable frame까지 이어진다. 실제 타이틀 text/logo/texture/effect, 메뉴별 오버레이 본문, 적·전투·웨이브는 아직 이식되지 않았다.
 - 타이틀 화면과 모든 도달 가능한 오버레이는 기존 JS 기준 실행기와 같은 기능·문구·레이어·입력·상태 흐름과 충분한 시각 fidelity를 제공해야 한다. C++ 코드는 JS 실행 순서나 내부 객체 구조를 원자적으로 복제하지 않으며, 결정적 골든은 관찰 가능한 회귀 기준으로 사용한다.
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없으므로 OS별 시스템 font fallback 대신 고정 vector/bitmap asset으로 교체해야 한다.
 - `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip은 실제 raster로 전환됐지만 glyph/mesh/pass와 SDL_GPU/GLES 고급 명령은 아직 marker placeholder이므로 실제 atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
 - text foundation은 45~930 variable weight, no-hinting grayscale raster와 고정-capacity glyph atlas까지 완료됐고 FramePacket glyph run 계약도 존재한다. 실제 UI 문자열 shaped cache와 backend atlas upload/draw는 아직 구현해야 한다.
-- `Application`이 `ui_runtime`과 title presenter를 소유하고 기본 frame branch에서 호출한다. 다만 `game_desktop`은 아직 `render_text`를 링크하지 않고 backend-neutral atlas resource upload seam도 없으며, 8개 title overlay·Debug/Settings control·floating 콘텐츠와 title→playable 전환은 구현되지 않았다.
+- `Application`이 `ui_runtime`과 title presenter를 소유하고 기본 frame branch에서 호출한다. Start→MapSelect→playable 전환은 강타입 map ID와 후보 세션 commit으로 연결됐다. 다만 `game_desktop`은 아직 `render_text`를 링크하지 않고 backend-neutral atlas resource upload seam도 없으며, 8개 title overlay·Debug/Settings control·floating 콘텐츠 본문은 구현되지 않았다.
 
 ## 검증 기록
 
@@ -566,6 +566,21 @@ Software Release gate: p95 27.167ms / 33.330ms, tracked allocation 0 / PASS
 - GLES는 완전 투명 UI hit shell을 fallback 진단색으로 그리지 않고 no-op으로 분류한다. 실제 backend와 테스트가 같은 dispatch/stat seam을 사용해 submitted/rendered/skipped/no-op invariant를 보존한다.
 - 이후 구현은 세부 픽셀을 화면 하나씩 완성하는 순서보다 Windows의 title→메뉴/overlay→playable→종료 전체 기능 흐름을 먼저 연결한다. 전체 기능판을 직접 실행한 뒤 21개 oracle 화면을 기준으로 text/logo/glass/blur/간격/애니메이션을 반복 보완한다.
 
+### 2026-07-27 — Start→MapSelect→playable 제품 전환
+
+```text
+MSVC Debug 전체 CTest: 27/27 통과
+MSVC Release 전체 CTest: 27/27 통과
+GCC 16.1 headless strict 전체 CTest: 17/17 통과
+title→map-select→playable auto/software smoke: 통과
+```
+
+- `native/src/data/game_map_catalog.h`를 현재 단일 map ID의 권위로 두고 `GameSystem`과 MapSelect 상태가 같은 ID를 사용한다.
+- Start 카드는 responsive MapSelect panel을 열며 취소·시작 버튼은 실제 pointer-release hit geometry를 공유한다. QuickStart는 원본 JS와 같이 준비 중 dummy로 유지한다.
+- 시작 확인은 overlay sequence와 map ID를 담은 one-shot effect다. 중복 확인을 잠그고, 세션 생성이나 검증이 실패하면 같은 overlay의 lock을 풀어 재시도할 수 있다.
+- `Application`은 후보 `GameSystem`을 먼저 만든 뒤 movement input, scheduler clock, frame packet과 title interaction/layout/backdrop cache를 정리하고 `sceneMode`를 마지막에 playable로 commit한다. 실패 전에는 기존 title 상태를 변경하지 않는다.
+- 두 Desktop smoke는 실제 title frame, 열린 MapSelect shell frame, confirm 버튼의 controller pointer down/up, playable frame을 연속으로 검증한다. 상충하는 scene CLI 옵션은 마지막 옵션이 승리하며 별도 정규식 smoke가 실제 선택 로그를 확인한다. MapSelect의 preview·설명·실제 문자열은 아직 missing capability로 남기므로 화면 fidelity 완료를 의미하지 않는다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture
@@ -595,6 +610,7 @@ Software Release gate: p95 27.167ms / 33.330ms, tracked allocation 0 / PASS
 - [x] `FramePacket v2` glyph/projective mesh/gradient/clip/render-pass·중첩 capture wire/build/validation 계약
 - [x] 순수 C++ 가변 시간 타이틀·keyed overlay 상태기와 light/dark·safe-area·entrance 레이아웃 기반
 - [x] title presenter와 기본 앱 진입, pointer·종료 확인·버전/외부 링크 입력 shell 연결
+- [x] Start→MapSelect panel·취소/시작 입력→transactional `GameSystem` playable 전환과 auto/software smoke
 - [x] Software backend의 v2 gradient/clip 실제 raster 구현
 - [ ] 세 backend의 v2 atlas/mesh/pass 및 SDL_GPU/GLES gradient/clip 실제 렌더와 production UI `placeholderCommands == 0`
 - [ ] 타이틀 화면과 모든 오버레이의 같은 기능·시각·입력·상태 흐름 구현

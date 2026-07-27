@@ -145,6 +145,7 @@ void testCompactPlayableCommandContract() {
     };
     const FramePacketCapacity capacity = playableGameSceneCapacity(gameSystem);
     REQUIRE(capacity == expectedCapacity);
+    REQUIRE(maximumPlayableGameSceneCapacity() == expectedCapacity);
     REQUIRE(capacity.commandCount <= 150U);
 
     FramePacket packet(capacity);

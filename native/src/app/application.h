@@ -68,6 +68,10 @@ private:
         const platform::sdl::PlatformEvent& event
     ) noexcept;
     void handleUiEffect(const ui::UiActionOutcome& outcome) noexcept;
+    [[nodiscard]] bool startPlayableSession(
+        const ui::StartPlayableSession& request,
+        std::uint32_t overlaySequence
+    ) noexcept;
     [[nodiscard]] bool updatePlatformServices() noexcept;
     [[nodiscard]] bool runStorageSmokeTest() noexcept;
     [[nodiscard]] bool setExecutionActive(bool active) noexcept;
@@ -78,7 +82,7 @@ private:
     void resetFrameClock() noexcept;
 
     engine::FrameScheduler scheduler_;
-    game::GameSystem gameSystem_;
+    std::unique_ptr<game::GameSystem> gameSystem_;
     platform::sdl::SdlLifecycle lifecycle_;
     platform::sdl::SdlWindow window_;
     render::backend::RendererRouter renderer_;
@@ -104,10 +108,12 @@ private:
     std::array<ui::OverlaySnapshot, ui::maximum_overlay_count> titleBackdropOverlays_{};
     std::uint8_t titleBackdropOverlayCount_ = 0;
     std::uint8_t renderRecoverySmokeStage_ = 0;
+    std::uint8_t titleToPlayableSmokeStage_ = 0;
     double previousFrameCpuSeconds_ = 0;
     SceneMode sceneMode_ = SceneMode::title;
     bool initialized_ = false;
     bool smokeTest_ = false;
+    bool titleToPlayableSmoke_ = false;
     bool titleMissingCapabilitiesReported_ = false;
     bool titleBackdropSnapshotValid_ = false;
     bool storageReadyReported_ = false;

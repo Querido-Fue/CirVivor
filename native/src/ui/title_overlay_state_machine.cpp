@@ -331,6 +331,22 @@ struct NormalizedBoundaryText final {
     return true;
 }
 
+[[nodiscard]] bool copyGameMapId(
+    const std::string_view value,
+    FixedGameMapId& destination
+) noexcept {
+    if (value.size() > ::cirvivor::data::maximum_game_map_id_bytes
+        || !::cirvivor::data::isKnownGameMapId(value)) {
+        return false;
+    }
+
+    destination = {};
+    std::copy(value.begin(), value.end(), destination.bytes.begin());
+    destination.bytes[value.size()] = '\0';
+    destination.length = static_cast<std::uint8_t>(value.size());
+    return true;
+}
+
 [[nodiscard]] double calculateSceneTransitionProgress(
     const double transitionElapsedSeconds
 ) noexcept {
@@ -377,7 +393,7 @@ UiActionOutcome TitleOverlayStateMachine::apply(
         if (!isTitleOverlayKind(action.overlay)) {
             return {.status = UiActionStatus::rejectedInvalidAction};
         }
-        return openOverlay(action.overlay, {}, true, context);
+        return openOverlay(action.overlay, action.text, true, context);
     case UiActionType::closeTitleOverlay:
         return beginCloseByKey(OverlayKey::titleMenu, context);
     case UiActionType::openDebugOverlay:
@@ -420,7 +436,8 @@ UiActionOutcome TitleOverlayStateMachine::apply(
             return {.status = UiActionStatus::rejectedMissingOverlay};
         }
         if (overlays_[overlayCount_ - 1U].interactionsLocked
-            || overlays_[overlayCount_ - 1U].externalOpenPending) {
+            || overlays_[overlayCount_ - 1U].externalOpenPending
+            || overlays_[overlayCount_ - 1U].playableStartPending) {
             return {
                 .status = UiActionStatus::rejectedInteractionLocked,
                 .overlaySequence = overlays_[overlayCount_ - 1U].sequence
@@ -542,7 +559,9 @@ UiStateSnapshot TitleOverlayStateMachine::snapshot() const noexcept {
         overlay.acceptsInput = entry.sequence == focusedSequence
             && entry.phase != OverlayPhase::closing
             && !entry.interactionsLocked;
+        overlay.playableStartPending = entry.playableStartPending;
         overlay.externalUrl = entry.externalUrl;
+        overlay.selectedMapId = entry.selectedMapId;
     }
 
     // Draw order and input ownership are deliberately independent. The original
@@ -614,6 +633,41 @@ UiActionOutcome TitleOverlayStateMachine::acknowledgeExternalUrl(
     };
 }
 
+UiActionOutcome TitleOverlayStateMachine::acknowledgePlayableSession(
+    const std::uint32_t overlaySequence,
+    const bool success
+) noexcept {
+    const std::size_t index = findOverlay(OverlayKey::titleMenu);
+    if (index == invalid_overlay_index
+        || overlays_[index].kind != OverlayKind::mapSelect
+        || overlays_[index].sequence != overlaySequence) {
+        return {
+            .status = UiActionStatus::rejectedStaleSequence,
+            .overlaySequence = overlaySequence
+        };
+    }
+
+    OverlayEntry& entry = overlays_[index];
+    if (!entry.playableStartPending) {
+        return {
+            .status = UiActionStatus::rejectedEffectNotPending,
+            .overlaySequence = entry.sequence
+        };
+    }
+
+    entry.playableStartPending = false;
+    if (success) {
+        return beginCloseAt(index, {});
+    }
+
+    entry.interactionsLocked = false;
+    incrementRevision();
+    return {
+        .status = UiActionStatus::applied,
+        .overlaySequence = entry.sequence
+    };
+}
+
 UiActionOutcome TitleOverlayStateMachine::openOverlay(
     const OverlayKind kind,
     const std::string_view payload,
@@ -634,6 +688,15 @@ UiActionOutcome TitleOverlayStateMachine::openOverlay(
             return {.status = UiActionStatus::rejectedPayload};
         }
         normalizedPayload = normalized.value;
+    } else if (kind == OverlayKind::mapSelect) {
+        normalizedPayload = payload.empty()
+            ? ::cirvivor::data::default_game_map_id
+            : payload;
+        if (!::cirvivor::data::isKnownGameMapId(normalizedPayload)) {
+            return {.status = UiActionStatus::rejectedPayload};
+        }
+    } else if (!payload.empty()) {
+        return {.status = UiActionStatus::rejectedPayload};
     }
 
     const std::size_t existingIndex = findOverlay(key);
@@ -667,6 +730,10 @@ UiActionOutcome TitleOverlayStateMachine::openOverlay(
     candidate.layer = overlayLayerForKind(kind);
     if (key == OverlayKey::externalLinkWarning
         && !copyFixedText(normalizedPayload, candidate.externalUrl)) {
+        return {.status = UiActionStatus::rejectedPayload};
+    }
+    if (kind == OverlayKind::mapSelect
+        && !copyGameMapId(normalizedPayload, candidate.selectedMapId)) {
         return {.status = UiActionStatus::rejectedPayload};
     }
     if (kind == OverlayKind::debug && context.animationPaused) {
@@ -739,6 +806,7 @@ UiActionOutcome TitleOverlayStateMachine::beginCloseAt(
     entry.phaseElapsedSeconds = 0.0;
     entry.interactionsLocked = true;
     entry.externalOpenPending = false;
+    entry.playableStartPending = false;
     incrementRevision();
     return {
         .status = UiActionStatus::applied,
@@ -784,6 +852,25 @@ UiActionOutcome TitleOverlayStateMachine::confirmTopOverlay() noexcept {
             .effect = UiEffect::openExternalUrl,
             .overlaySequence = entry.sequence,
             .effectText = entry.externalUrl
+        };
+    }
+
+    if (entry.kind == OverlayKind::mapSelect) {
+        if (entry.selectedMapId.empty()
+            || !::cirvivor::data::isKnownGameMapId(entry.selectedMapId.view())) {
+            return {
+                .status = UiActionStatus::rejectedPayload,
+                .overlaySequence = entry.sequence
+            };
+        }
+        entry.interactionsLocked = true;
+        entry.playableStartPending = true;
+        incrementRevision();
+        return {
+            .status = UiActionStatus::applied,
+            .effect = UiEffect::startPlayableSession,
+            .overlaySequence = entry.sequence,
+            .playableSession = {entry.selectedMapId}
         };
     }
 

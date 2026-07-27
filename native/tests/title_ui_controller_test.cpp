@@ -205,9 +205,11 @@ void advanceToInteractiveTitle(TitleOverlayStateMachine& state) noexcept {
     const Presentation& presentation,
     const OverlaySnapshot& overlay
 ) {
-    const OverlayDialogMetrics& source = overlay.kind == OverlayKind::exitConfirm
-        ? presentation.layout.overlays.exit
-        : presentation.layout.overlays.externalLinkWarning;
+    const OverlayDialogMetrics& source = overlay.kind == OverlayKind::mapSelect
+        ? presentation.layout.overlays.mapSelect
+        : overlay.kind == OverlayKind::exitConfirm
+            ? presentation.layout.overlays.exit
+            : presentation.layout.overlays.externalLinkWarning;
     OverlayDialogRenderMetrics result{};
     REQUIRE(tryResolveOverlayDialogRenderMetrics(
         source,
@@ -787,6 +789,111 @@ void testOverlayAppearanceCancelsExistingBaseCapture() {
     REQUIRE(!interaction(controller.snapshot(), TitleUiTarget::cardStart).pressed);
 }
 
+void testMapSelectControlsDispatchStartOnPointerReleaseAndQuickStartStaysDummy() {
+    const Presentation presentation = makePresentation();
+    TitleOverlayStateMachine state;
+    advanceToInteractiveTitle(state);
+    const UiActionOutcome opened = state.apply(
+        UiAction::openTitle(OverlayKind::mapSelect)
+    );
+    REQUIRE(opened.accepted());
+    state.advance(0.5);
+    const OverlaySnapshot overlay = overlayOfKind(
+        state.snapshot(),
+        OverlayKind::mapSelect
+    );
+    const OverlayDialogRenderMetrics dialog = dialogFor(presentation, overlay);
+    const PointD confirmCenter = center(dialog.confirmButtonRect);
+    const PointD cancelCenter = center(dialog.cancelButtonRect);
+    TitleUiController controller;
+
+    REQUIRE(controller.handlePointer(
+        mouseEvent(UiPointerEventType::down, confirmCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    ).status == UiInputStatus::captured);
+    const UiInputResult releasedElsewhere = controller.handlePointer(
+        mouseEvent(UiPointerEventType::up, cancelCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    );
+    REQUIRE(releasedElsewhere.status == UiInputStatus::released);
+    REQUIRE(releasedElsewhere.actionOutcome.effect == UiEffect::none);
+    REQUIRE(!state.snapshot().overlays[0].interactionsLocked);
+
+    REQUIRE(controller.handlePointer(
+        mouseEvent(UiPointerEventType::down, confirmCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    ).status == UiInputStatus::captured);
+    const UiInputResult confirmed = controller.handlePointer(
+        mouseEvent(UiPointerEventType::up, confirmCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    );
+    REQUIRE(confirmed.actionAccepted());
+    REQUIRE(confirmed.target == TitleUiTarget::overlayConfirm);
+    REQUIRE(confirmed.actionOutcome.effect == UiEffect::startPlayableSession);
+    REQUIRE(
+        confirmed.actionOutcome.playableSession.mapId.view()
+        == cirvivor::data::default_game_map_id
+    );
+
+    TitleOverlayStateMachine cancelState;
+    advanceToInteractiveTitle(cancelState);
+    REQUIRE(cancelState.apply(
+        UiAction::openTitle(OverlayKind::mapSelect)
+    ).accepted());
+    cancelState.advance(0.5);
+    const OverlaySnapshot cancelOverlay = overlayOfKind(
+        cancelState.snapshot(),
+        OverlayKind::mapSelect
+    );
+    const PointD mapCancelCenter = center(
+        dialogFor(presentation, cancelOverlay).cancelButtonRect
+    );
+    TitleUiController cancelController;
+    REQUIRE(cancelController.handlePointer(
+        mouseEvent(UiPointerEventType::down, mapCancelCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        cancelState.snapshot(),
+        cancelState
+    ).status == UiInputStatus::captured);
+    REQUIRE(cancelController.handlePointer(
+        mouseEvent(UiPointerEventType::up, mapCancelCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        cancelState.snapshot(),
+        cancelState
+    ).actionAccepted());
+    REQUIRE(cancelState.snapshot().overlays[0].phase == OverlayPhase::closing);
+
+    TitleOverlayStateMachine quickStartState;
+    advanceToInteractiveTitle(quickStartState);
+    REQUIRE(quickStartState.apply(
+        UiAction::openTitle(OverlayKind::quickStart)
+    ).accepted());
+    TitleUiController quickStartController;
+    const UiInputResult unsupported = quickStartController.handlePointer(
+        mouseEvent(UiPointerEventType::move, confirmCenter),
+        presentation.layout,
+        presentation.entrance,
+        quickStartState.snapshot(),
+        quickStartState
+    );
+    REQUIRE(unsupported.status == UiInputStatus::unsupportedOverlayInput);
+    REQUIRE(unsupported.unsupportedOverlay == OverlayKind::quickStart);
+}
+
 void testTouchIdentityMultiPointerAndCancel() {
     constexpr std::uint64_t firstTouch = 0xFEDCBA9876543210ULL;
     constexpr std::uint64_t secondTouch = 0x0123456789ABCDEFULL;
@@ -1249,6 +1356,10 @@ int main() {
         TestCase{"exit dialog controls", testExitOverlayCancelConfirmAndSequenceBoundCapture},
         TestCase{"external dialog effect ack", testExternalWarningConfirmEffectLockAndAcknowledgement},
         TestCase{"overlay cancels base capture", testOverlayAppearanceCancelsExistingBaseCapture},
+        TestCase{
+            "map select controls and quick start dummy",
+            testMapSelectControlsDispatchStartOnPointerReleaseAndQuickStartStaysDummy
+        },
         TestCase{"touch identity and cancel", testTouchIdentityMultiPointerAndCancel},
         TestCase{"focus loss and mouse buttons", testFocusLossAndUnsupportedMouseButtons},
         TestCase{"resize capture identity", testResizeAndEntranceChangesKeepCaptureIdentity},

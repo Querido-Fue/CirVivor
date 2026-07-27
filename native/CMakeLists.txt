@@ -397,6 +397,28 @@ if(CIRVIVOR_BUILD_SDL_APP)
             COMMAND game_desktop --smoke-test-title --renderer software
         )
         add_test(
+            NAME game_desktop_title_to_playable_smoke
+            COMMAND game_desktop --smoke-test-title-to-playable
+        )
+        add_test(
+            NAME game_desktop_title_to_playable_software_smoke
+            COMMAND game_desktop --smoke-test-title-to-playable --renderer software
+        )
+        add_test(
+            NAME game_desktop_cli_last_playable_scene_smoke
+            COMMAND game_desktop
+                --smoke-test-title-to-playable
+                --playable-scene
+                --renderer software
+        )
+        add_test(
+            NAME game_desktop_cli_last_title_transition_smoke
+            COMMAND game_desktop
+                --playable-scene
+                --smoke-test-title-to-playable
+                --renderer software
+        )
+        add_test(
             NAME game_desktop_render_recovery_smoke
             COMMAND game_desktop --smoke-test-render-recovery
         )
@@ -404,11 +426,26 @@ if(CIRVIVOR_BUILD_SDL_APP)
             game_desktop_smoke
             game_desktop_software_smoke
             game_desktop_title_smoke
+            game_desktop_title_to_playable_smoke
+            game_desktop_title_to_playable_software_smoke
+            game_desktop_cli_last_playable_scene_smoke
+            game_desktop_cli_last_title_transition_smoke
             game_desktop_render_recovery_smoke
             PROPERTIES
             ENVIRONMENT "SDL_AUDIODRIVER=dummy;SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"
             RESOURCE_LOCK cirvivor_user_storage_smoke
             TIMEOUT 15
+        )
+        set_tests_properties(
+            game_desktop_cli_last_playable_scene_smoke
+            PROPERTIES
+            FAIL_REGULAR_EXPRESSION
+                "Title, map-select shell, and playable frames rendered successfully"
+        )
+        set_tests_properties(
+            game_desktop_cli_last_title_transition_smoke
+            PROPERTIES
+            FAIL_REGULAR_EXPRESSION "scene playable"
         )
     endif()
 endif()

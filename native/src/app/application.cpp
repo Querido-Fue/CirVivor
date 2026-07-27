@@ -31,6 +31,24 @@ constexpr std::uint8_t renderRecoverySmokeLifecycleStage = 1;
 constexpr std::uint8_t renderRecoverySmokeTargetsStage = 2;
 constexpr std::uint8_t renderRecoverySmokeDeviceStage = 3;
 constexpr std::uint8_t renderRecoverySmokeCompleteStage = 4;
+constexpr std::uint8_t titleToPlayableSmokeTitleStage = 1;
+constexpr std::uint8_t titleToPlayableSmokeMapStage = 2;
+constexpr std::uint8_t titleToPlayableSmokePlayableStage = 3;
+constexpr std::uint8_t titleToPlayableSmokeCompleteStage = 4;
+
+void advanceUiStateForSmoke(
+    ui::TitleOverlayStateMachine& state,
+    double seconds
+) noexcept {
+    while (seconds > 0.0) {
+        const double step = std::min(
+            seconds,
+            ui::TitleOverlayStateMachine::maximum_frame_delta_seconds
+        );
+        state.advance(step);
+        seconds -= step;
+    }
+}
 
 class GlesWindowBackend final : public render::backend::IRenderBackend {
 public:
@@ -397,7 +415,7 @@ Application::Application()
       framePacket_(render::maximumFramePacketCapacity(
           render::maximumFramePacketCapacity(
               render::frontend::syntheticTestSceneCapacity(),
-              render::frontend::playableGameSceneCapacity(gameSystem_)
+              render::frontend::maximumPlayableGameSceneCapacity()
           ),
           render::frontend::maximumTitleSceneCapacity()
       )) {}
@@ -742,6 +760,13 @@ bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noe
 }
 
 bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noexcept {
+    if (gameSystem_ == nullptr) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Playable scene has no authoritative GameSystem session."
+        );
+        return false;
+    }
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
     render::frontend::PlayableGameSceneConfig config;
     config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
@@ -764,7 +789,7 @@ bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noex
         const render::frontend::PlayableGameSceneResult result =
             render::frontend::buildPlayableGameScene(
                 framePacket_,
-                gameSystem_,
+                *gameSystem_,
                 config,
                 render::frontend::PacketCapacityPolicy::fixedCapacity
             );
@@ -880,7 +905,9 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     }
     lifecycle_.reset();
     smokeTest_ = false;
+    titleToPlayableSmoke_ = false;
     sceneMode_ = SceneMode::title;
+    gameSystem_.reset();
     titleUiState_ = {};
     titleUiController_ = {};
     titleLayout_ = {};
@@ -901,6 +928,7 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     simulationTick_ = 0;
     projectionRevision_ = 1;
     renderRecoverySmokeStage_ = 0;
+    titleToPlayableSmokeStage_ = 0;
     rendererPreference_ = render::backend::RendererPreference::automatic;
     framePacket_.clear();
     redrawPending_ = true;
@@ -909,6 +937,15 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     renderTargetsResetPending_ = false;
     renderDeviceRecoveryPending_ = false;
     titleMissingCapabilitiesReported_ = false;
+    // Scene choice follows the existing last-option-wins CLI convention.
+    // A smoke flag remains sticky for service/one-frame validation, while a
+    // staged scene driver belongs only to the most recently selected scene.
+    const auto selectSceneOption = [this](const SceneMode mode) noexcept {
+        sceneMode_ = mode;
+        renderRecoverySmokeStage_ = 0U;
+        titleToPlayableSmoke_ = false;
+        titleToPlayableSmokeStage_ = 0U;
+    };
     for (int argumentIndex = 1; argumentIndex < argc; ++argumentIndex) {
         if (argv[argumentIndex] == nullptr) {
             continue;
@@ -916,26 +953,33 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
         const std::string_view argument(argv[argumentIndex]);
         if (argument == "--smoke-test") {
             smokeTest_ = true;
-            sceneMode_ = SceneMode::diagnostic;
+            selectSceneOption(SceneMode::diagnostic);
             continue;
         }
         if (argument == "--smoke-test-title") {
             smokeTest_ = true;
-            sceneMode_ = SceneMode::title;
+            selectSceneOption(SceneMode::title);
+            continue;
+        }
+        if (argument == "--smoke-test-title-to-playable") {
+            smokeTest_ = true;
+            selectSceneOption(SceneMode::title);
+            titleToPlayableSmoke_ = true;
+            titleToPlayableSmokeStage_ = titleToPlayableSmokeTitleStage;
             continue;
         }
         if (argument == "--smoke-test-render-recovery") {
             smokeTest_ = true;
-            sceneMode_ = SceneMode::diagnostic;
+            selectSceneOption(SceneMode::diagnostic);
             renderRecoverySmokeStage_ = renderRecoverySmokeLifecycleStage;
             continue;
         }
         if (argument == "--diagnostic-scene") {
-            sceneMode_ = SceneMode::diagnostic;
+            selectSceneOption(SceneMode::diagnostic);
             continue;
         }
         if (argument == "--playable-scene") {
-            sceneMode_ = SceneMode::playable;
+            selectSceneOption(SceneMode::playable);
             continue;
         }
 
@@ -961,6 +1005,24 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
                 "Unknown renderer preference: %.*s",
                 static_cast<int>(rendererValue.size()),
                 rendererValue.data()
+            );
+            return false;
+        }
+    }
+    if (sceneMode_ == SceneMode::playable) {
+        try {
+            gameSystem_ = std::make_unique<game::GameSystem>();
+        } catch (const std::exception& error) {
+            SDL_LogError(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Initial playable session creation failed: %s",
+                error.what()
+            );
+            return false;
+        } catch (...) {
+            SDL_LogError(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Initial playable session creation raised a non-standard exception."
             );
             return false;
         }
@@ -1181,10 +1243,14 @@ ApplicationResult Application::handleTitlePointer(
         state,
         titleUiState_
     );
+    const SceneMode sceneBeforeEffect = sceneMode_;
     handleUiEffect(result.actionOutcome);
     redrawPending_ = redrawPending_
         || result.controllerStateChanged
         || result.actionAccepted();
+    if (sceneMode_ != sceneBeforeEffect) {
+        return ApplicationResult::continueRunning;
+    }
     if (titleUiState_.tryConsumeApplicationExitRequest()) {
         scheduler_.suspend();
         return ApplicationResult::success;
@@ -1193,6 +1259,24 @@ ApplicationResult Application::handleTitlePointer(
 }
 
 void Application::handleUiEffect(const ui::UiActionOutcome& outcome) noexcept {
+    if (outcome.effect == ui::UiEffect::startPlayableSession) {
+        if (!startPlayableSession(
+                outcome.playableSession,
+                outcome.overlaySequence
+            )) {
+            const ui::UiActionOutcome acknowledged =
+                titleUiState_.acknowledgePlayableSession(
+                    outcome.overlaySequence,
+                    false
+                );
+            SDL_LogWarn(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Playable session handoff failed%s.",
+                acknowledged.accepted() ? "" : " after its request became stale"
+            );
+        }
+        return;
+    }
     if (outcome.effect != ui::UiEffect::openExternalUrl
         || outcome.effectText.empty()) {
         return;
@@ -1220,6 +1304,86 @@ void Application::handleUiEffect(const ui::UiActionOutcome& outcome) noexcept {
             SDL_GetError()
         );
     }
+}
+
+bool Application::startPlayableSession(
+    const ui::StartPlayableSession& request,
+    const std::uint32_t overlaySequence
+) noexcept {
+    if (sceneMode_ != SceneMode::title
+        || overlaySequence == 0U
+        || request.mapId.empty()
+        || !::cirvivor::data::isKnownGameMapId(request.mapId.view())
+        || request.mapId.view() != game::GameSystem::map_id
+        || !framePacket_.hasCapacityFor(
+            render::frontend::maximumPlayableGameSceneCapacity()
+        )) {
+        return false;
+    }
+
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    const ui::OverlaySnapshot* requestedOverlay = nullptr;
+    for (std::size_t index = 0U; index < state.overlayCount; ++index) {
+        const ui::OverlaySnapshot& overlay = state.overlays[index];
+        if (overlay.sequence == overlaySequence) {
+            requestedOverlay = &overlay;
+            break;
+        }
+    }
+    if (requestedOverlay == nullptr
+        || requestedOverlay->kind != ui::OverlayKind::mapSelect
+        || !requestedOverlay->playableStartPending
+        || requestedOverlay->selectedMapId != request.mapId) {
+        return false;
+    }
+
+    std::unique_ptr<game::GameSystem> candidate;
+    try {
+        candidate = std::make_unique<game::GameSystem>();
+    } catch (const std::exception& error) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Playable session preparation failed: %s",
+            error.what()
+        );
+        return false;
+    } catch (...) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Playable session preparation raised a non-standard exception."
+        );
+        return false;
+    }
+
+    clearMovementActions();
+    static_cast<void>(titleUiController_.handleFocusLost());
+    scheduler_.reset();
+    resetFrameClock();
+    renderedFrameCount_ = 0U;
+    simulationTick_ = 0U;
+    previousFrameCpuSeconds_ = 0.0;
+    framePacket_.clear();
+    titleUiState_ = {};
+    titleUiController_ = {};
+    titleLayout_ = {};
+    titleEntrance_ = {};
+    titleBackdropLayout_ = {};
+    titleBackdropEntrance_ = {};
+    titleBackdropInteraction_ = {};
+    titleBackdropOverlays_.fill({});
+    titleBackdropOverlayCount_ = 0U;
+    titleBackdropRevision_ = 1U;
+    titleBackdropProjectionRevision_ = 0U;
+    titleBackdropSnapshotValid_ = false;
+    titleMissingCapabilitiesReported_ = false;
+    projectionRevision_ = projectionRevision_
+            == std::numeric_limits<std::uint64_t>::max()
+        ? 1U
+        : projectionRevision_ + 1U;
+    redrawPending_ = true;
+    gameSystem_ = std::move(candidate);
+    sceneMode_ = SceneMode::playable;
+    return true;
 }
 
 ApplicationResult Application::iterate() noexcept {
@@ -1293,8 +1457,8 @@ ApplicationResult Application::iterate() noexcept {
     }
     const bool playableSessionActive = sceneMode_ == SceneMode::playable;
     for (std::uint32_t step = 0; step < schedule.fixedStepCount; ++step) {
-        if (playableSessionActive) {
-            static_cast<void>(gameSystem_.fixedUpdate(
+        if (playableSessionActive && gameSystem_ != nullptr) {
+            static_cast<void>(gameSystem_->fixedUpdate(
                 movementInput_.consumeFixedStep()
             ));
         }
@@ -1334,6 +1498,132 @@ ApplicationResult Application::iterate() noexcept {
     }
     ++renderedFrameCount_;
     redrawPending_ = false;
+    if (titleToPlayableSmoke_) {
+        if (titleToPlayableSmokeStage_ == titleToPlayableSmokeTitleStage) {
+            constexpr double titleIntroSeconds =
+                ui::TitleOverlayStateMachine::intro_delay_seconds
+                + ui::TitleOverlayStateMachine::logo_playback_seconds
+                + ui::TitleOverlayStateMachine::scene_transition_seconds;
+            advanceUiStateForSmoke(titleUiState_, titleIntroSeconds);
+            const ui::UiActionOutcome opened = titleUiState_.apply(
+                ui::UiAction::openTitle(ui::OverlayKind::mapSelect)
+            );
+            if (!opened.accepted()) {
+                SDL_LogError(
+                    SDL_LOG_CATEGORY_APPLICATION,
+                    "Title-to-playable smoke could not open map select."
+                );
+                return ApplicationResult::failure;
+            }
+            advanceUiStateForSmoke(
+                titleUiState_,
+                ui::TitleOverlayStateMachine::overlay_transition_seconds
+            );
+            titleToPlayableSmokeStage_ = titleToPlayableSmokeMapStage;
+            redrawPending_ = true;
+            return ApplicationResult::continueRunning;
+        }
+        if (titleToPlayableSmokeStage_ == titleToPlayableSmokeMapStage) {
+            const ui::UiStateSnapshot beforePress = titleUiState_.snapshot();
+            const ui::OverlaySnapshot* mapOverlay = nullptr;
+            for (std::size_t index = 0U; index < beforePress.overlayCount; ++index) {
+                if (beforePress.overlays[index].kind == ui::OverlayKind::mapSelect) {
+                    mapOverlay = &beforePress.overlays[index];
+                    break;
+                }
+            }
+            ui::layout::OverlayDialogRenderMetrics dialog{};
+            if (mapOverlay == nullptr
+                || !titleLayout_.hasSnapshot()
+                || !ui::layout::tryResolveOverlayDialogRenderMetrics(
+                    titleLayout_.snapshot().overlays.mapSelect,
+                    titleLayout_.snapshot().overlayPage,
+                    mapOverlay->contentScale,
+                    dialog
+                )) {
+                SDL_LogError(
+                    SDL_LOG_CATEGORY_APPLICATION,
+                    "Title-to-playable smoke could not resolve the start button."
+                );
+                return ApplicationResult::failure;
+            }
+            const ui::layout::PointD startButtonCenter{
+                dialog.confirmButtonRect.x + (dialog.confirmButtonRect.width * 0.5),
+                dialog.confirmButtonRect.y + (dialog.confirmButtonRect.height * 0.5)
+            };
+            const ui::UiInputResult pressed = titleUiController_.handlePointer(
+                {
+                    ui::UiPointerEventType::down,
+                    ui::UiPointerDevice::mouse,
+                    ui::UiPointerButton::left,
+                    0U,
+                    startButtonCenter
+                },
+                titleLayout_.snapshot(),
+                titleEntrance_,
+                beforePress,
+                titleUiState_
+            );
+            const ui::TitleUiControllerSnapshot captured =
+                titleUiController_.snapshot();
+            if (pressed.status != ui::UiInputStatus::captured
+                || pressed.target != ui::TitleUiTarget::overlayConfirm
+                || pressed.overlaySequence != mapOverlay->sequence
+                || !captured.capture.active
+                || captured.capture.target != ui::TitleUiTarget::overlayConfirm
+                || captured.capture.overlaySequence != mapOverlay->sequence) {
+                SDL_LogError(
+                    SDL_LOG_CATEGORY_APPLICATION,
+                    "Title-to-playable smoke did not capture the start button."
+                );
+                return ApplicationResult::failure;
+            }
+            const ui::UiInputResult released = titleUiController_.handlePointer(
+                {
+                    ui::UiPointerEventType::up,
+                    ui::UiPointerDevice::mouse,
+                    ui::UiPointerButton::left,
+                    0U,
+                    startButtonCenter
+                },
+                titleLayout_.snapshot(),
+                titleEntrance_,
+                titleUiState_.snapshot(),
+                titleUiState_
+            );
+            if (released.status != ui::UiInputStatus::actionApplied
+                || !released.actionAccepted()
+                || released.target != ui::TitleUiTarget::overlayConfirm
+                || released.overlaySequence != mapOverlay->sequence
+                || released.actionOutcome.effect
+                    != ui::UiEffect::startPlayableSession
+                || titleUiController_.snapshot().capture.active) {
+                SDL_LogError(
+                    SDL_LOG_CATEGORY_APPLICATION,
+                    "Title-to-playable smoke did not release the start request."
+                );
+                return ApplicationResult::failure;
+            }
+            handleUiEffect(released.actionOutcome);
+            if (sceneMode_ != SceneMode::playable || gameSystem_ == nullptr) {
+                return ApplicationResult::failure;
+            }
+            titleToPlayableSmokeStage_ = titleToPlayableSmokePlayableStage;
+            return ApplicationResult::continueRunning;
+        }
+        if (titleToPlayableSmokeStage_ == titleToPlayableSmokePlayableStage) {
+            titleToPlayableSmokeStage_ = titleToPlayableSmokeCompleteStage;
+            SDL_LogInfo(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Title, map-select shell, and playable frames rendered successfully."
+            );
+        }
+        return titleToPlayableSmokeStage_ == titleToPlayableSmokeCompleteStage
+                && storageSmokeComplete_
+                && audioSmokeComplete_
+            ? ApplicationResult::success
+            : ApplicationResult::continueRunning;
+    }
     return smokeTest_ && storageSmokeComplete_ && audioSmokeComplete_
             && renderedFrameCount_ > 0U
         ? ApplicationResult::success
@@ -1347,15 +1637,18 @@ void Application::shutdown() noexcept {
     static_cast<void>(storage_.close());
     window_.shutdown();
     lifecycle_.reset();
+    gameSystem_.reset();
     framePacket_.clear();
     previousFrameTicks_ = 0;
     renderedFrameCount_ = 0;
     simulationTick_ = 0;
     projectionRevision_ = 1;
     renderRecoverySmokeStage_ = 0;
+    titleToPlayableSmokeStage_ = 0;
     previousFrameCpuSeconds_ = 0;
     initialized_ = false;
     smokeTest_ = false;
+    titleToPlayableSmoke_ = false;
     sceneMode_ = SceneMode::title;
     titleUiState_ = {};
     titleUiController_ = {};

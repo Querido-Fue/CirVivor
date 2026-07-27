@@ -1224,12 +1224,12 @@ struct VerticalStack final {
 
 [[nodiscard]] RoundedRectD buildDialogRect(
     const ViewportMetrics& viewport,
-    const double heightMultiplier
+    const double widthRatio,
+    const double heightRatio
 ) noexcept {
-    const double width = viewport.uiww * 0.3 * viewport.uiScale;
+    const double width = viewport.uiww * widthRatio * viewport.uiScale;
     const double height = viewport.safeAreaRect.height
-        * 0.2
-        * heightMultiplier
+        * heightRatio
         * viewport.uiScale;
     return {
         viewport.safeAreaRect.x + ((viewport.safeAreaRect.width - width) * 0.5),
@@ -1244,12 +1244,20 @@ struct VerticalStack final {
     const ViewportMetrics& viewport
 ) noexcept {
     OverlayLayoutMetrics result{};
+    result.mapSelect = {
+        buildDialogRect(viewport, 0.52, 0.68),
+        title_overlay_base_dim
+    };
     result.exit = {
-        buildDialogRect(viewport, 1.0),
+        buildDialogRect(viewport, 0.3, 0.2),
         title_overlay_base_dim
     };
     result.externalLinkWarning = {
-        buildDialogRect(viewport, external_link_warning_height_multiplier),
+        buildDialogRect(
+            viewport,
+            0.3,
+            0.2 * external_link_warning_height_multiplier
+        ),
         title_overlay_base_dim
     };
     result.titleBaseDim = title_overlay_base_dim;
@@ -1265,7 +1273,10 @@ struct VerticalStack final {
 [[nodiscard]] bool validOverlayLayoutMetrics(
     const OverlayLayoutMetrics& metrics
 ) noexcept {
-    return finiteRect(metrics.exit.panelRect)
+    return finiteRect(metrics.mapSelect.panelRect)
+        && finiteNonNegative(metrics.mapSelect.baseDim)
+        && metrics.mapSelect.baseDim <= 1.0
+        && finiteRect(metrics.exit.panelRect)
         && finiteNonNegative(metrics.exit.baseDim)
         && metrics.exit.baseDim <= 1.0
         && finiteRect(metrics.externalLinkWarning.panelRect)

@@ -83,6 +83,7 @@ struct TitleSceneCommandStats final {
     std::size_t placeholderGeometryCommands = 0U;
     std::size_t overlayDimCommands = 0U;
     std::size_t overlayPassCommands = 0U;
+    std::size_t mapSelectShellCommands = 0U;
     std::size_t exitShellCommands = 0U;
     std::size_t externalLinkShellCommands = 0U;
     std::size_t titleOverlayContentCommands = 0U;
@@ -137,7 +138,7 @@ struct TitleSceneResult final {
 
 /**
  * 사전 reserve된 packet에 fixed-capacity transaction으로 title shell을 기록합니다.
- * 실제 콘텐츠가 없는 타이틀 overlay는 dim만 기록하고 missingCapabilities로 노출합니다.
+ * 지원되는 dialog shell과 dim을 기록하며, 아직 없는 본문은 missingCapabilities로 노출합니다.
  */
 [[nodiscard]] TitleSceneResult buildTitleScene(
     FramePacket& packet,

@@ -505,6 +505,8 @@ struct LatestOverlay final {
     const OverlayKind kind
 ) noexcept {
     switch (kind) {
+    case OverlayKind::mapSelect:
+        return &layoutSnapshot.overlays.mapSelect;
     case OverlayKind::exitConfirm:
         return &layoutSnapshot.overlays.exit;
     case OverlayKind::externalLinkWarning:

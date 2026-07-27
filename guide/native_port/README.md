@@ -20,6 +20,7 @@
 | --- | --- |
 | `native/src/core/` / `game_core` | 결정적 수학·RNG·EntityId·state hash, 고정 capacity Body SoA·타일 충돌·flow-field/prepared-contact scalar reference 등 플랫폼 독립 기반 |
 | `native/src/engine/` / `game_core` | fixed-step frame scheduling과 공통 runtime 정책 |
+| `native/src/data/` / `game_core` | native 제품이 공유하는 map ID 등 선언형 catalog |
 | `native/src/game/` / `game_core` | 의미 입력을 소비하는 세션 GameSystem과 Core/Tower authoritative snapshot 조립 |
 | `native/src/app/movement_input_buffer.*` / `app_runtime` | 물리 source alias 합성, 짧은 press의 첫 fixed tick 보존, focus/background clear를 담당하는 SDL 비의존 입력 버퍼 |
 | `native/src/ui/` / `ui_runtime` | 가변 시간 Loading/Title·overlay 상태, light/dark 렌더 토큰, responsive/safe-area 레이아웃과 presentation sampler |
@@ -39,7 +40,7 @@
 
 ## 정상 실행과 입력 계약
 
-정상 `game_desktop`은 기본적으로 순수 C++ title runtime과 `title_scene` presenter를 실행한다. 현재 최소 게임 세션은 `--playable-scene`에서 `GameSystem`의 60Hz fixed step과 타일맵·Core·Tower `FramePacket`을 실행하며, synthetic scene은 `--smoke-test`, `--smoke-test-render-recovery`, `--diagnostic-scene`에서만 사용한다. 타이틀 메뉴에서 playable session으로 넘어가는 제품 전환은 아직 구현 중이다.
+정상 `game_desktop`은 기본적으로 순수 C++ title runtime과 `title_scene` presenter를 실행한다. Start 카드는 MapSelect를 열고, 시작 버튼을 놓으면 `data/game_map_catalog.h`의 알려진 map ID를 담은 one-shot effect를 `Application`에 전달한다. Application은 후보 `GameSystem`을 먼저 준비한 뒤 입력·scheduler·title frame/cache를 정리하고 마지막에 playable scene을 commit한다. 후보 생성이나 검증이 실패하면 기존 MapSelect를 유지하고 상호작용을 다시 열어 재시도할 수 있다. `--playable-scene`은 최소 게임 세션의 개발용 직접 진입이며, synthetic scene은 `--smoke-test`, `--smoke-test-render-recovery`, `--diagnostic-scene`에서만 사용한다.
 
 SDL keyboard event는 W/↑, S/↓, A/←, D/→의 물리 source bit를 보존한다. `MovementInputBuffer`는 같은 SDL event batch에서 keydown과 keyup이 모두 도착해도 press를 첫 fixed step까지 latch한다. held action은 모든 fixed step에 유지되고 repeat keydown은 새 pulse를 만들지 않는다. focus/background 전환과 shutdown에서는 source와 pending press를 모두 지워 phantom input을 막는다.
 
@@ -57,7 +58,7 @@ UI 입력용 `PlatformEvent`는 mouse motion/down/up, wheel 방향, touch down/m
 
 현재 `ui_runtime`은 30/60/120/144Hz에서 같은 wall-clock presentation을 만드는 seconds 기반 상태기와 Loading→Title 시간축, title factory 8종 및 Debug/Exit/External keyed overlay stack을 제공한다. Debug pause/focus 특례, 외부 URL 실행의 sequence acknowledge, one-shot 종료 요청, 고정 용량·무할당 snapshot도 계약으로 고정했다. 레이아웃은 논리 safe-area, light/dark title·settings·overlay 렌더 토큰, 타이틀 카드/pane/tile entrance와 exit/external shell geometry를 계산한다.
 
-`Application`은 이 runtime을 기본 실행 경로에서 소유하고 title `FramePacket`을 만든다. title pointer, 창 닫기, exit/external confirmation, 버전 링크의 플랫폼 URL handoff까지 연결했다. 그러나 8개 title overlay와 Debug/Settings control 본문, floating 상태, 실제 문자열·로고·texture, title→playable 전환, shaped-text cache와 atlas upload, GPU 계열 고급 렌더 및 21개 native 시각 회귀가 남아 있으므로 타이틀·오버레이 완료로 판정하지 않는다.
+`Application`은 이 runtime을 기본 실행 경로에서 소유하고 title `FramePacket`을 만든다. title pointer, 창 닫기, exit/external confirmation, 버전 링크의 플랫폼 URL handoff와 Start→MapSelect→playable 전환까지 연결했다. MapSelect에는 responsive panel과 취소/시작 hit geometry가 있으며 mouse/touch pointer release를 소비한다. 그러나 MapSelect preview/text를 포함한 8개 title overlay와 Debug/Settings control 본문, floating 상태, 실제 문자열·로고·texture, shaped-text cache와 atlas upload, GPU 계열 고급 렌더 및 21개 native 시각 회귀가 남아 있으므로 타이틀·오버레이 완료로 판정하지 않는다.
 
 ## 창과 renderer 소유권
 
@@ -142,6 +143,8 @@ ctest --test-dir build/headless --output-on-failure
 .\game_headless.exe --seed 42 --ticks 60
 .\game_desktop.exe --smoke-test
 .\game_desktop.exe --smoke-test-title --renderer software
+.\game_desktop.exe --smoke-test-title-to-playable
+.\game_desktop.exe --smoke-test-title-to-playable --renderer software
 .\game_desktop.exe --playable-scene
 .\game_desktop.exe --smoke-test --renderer sdl-gpu
 .\game_desktop.exe --smoke-test --renderer gles
@@ -168,7 +171,7 @@ seed 42, 60 tick의 현재 headless 기준 hash는 `58e40b4174f11e95`다. 이 �
 
 Release `software_renderer_benchmark --gate`는 960×540 synthetic FramePacket을 60 frame warmup 뒤 180 frame 측정하고 render call nearest-rank p95 `33.33ms`를 강제한다. phase-37 pixel golden, 동적 phase checkpoint, command count와 FramePacket build+render 구간 C++ `new` 0회도 함께 검사한다. 이 실행 파일은 변동성 때문에 일반 CTest에는 넣지 않으며 CPU raster와 현재 placeholder command 성능만 나타낸다.
 
-`--smoke-test`는 선택된 backend가 synthetic `FramePacket`을 처리한 뒤 기본 playback 장치의 open/pause/resume/close와 SDL user storage의 임시 파일 write/read-cap/read/remove/close까지 함께 검증한다. `--smoke-test-render-recovery`는 background/foreground와 deferred metrics, target reset, device reset에 따른 backend/window 전체 재생성 및 최종 present를 추가로 검사한다. storage가 준비될 때까지 main callback에서 block 없이 폴링한다. 제품 실행에서는 audio 장치가 없는 환경을 치명 오류로 취급하지 않지만 smoke에서는 명시적인 실패다. dummy video에서 auto 선택은 SDL_GPU와 GLES 실패 후 Software로 내려가는 계약도 검증한다. 종료 시 renderer를 window보다 먼저 내리고 audio/storage/window를 SDL runtime보다 먼저 정리한다.
+`--smoke-test`는 선택된 backend가 synthetic `FramePacket`을 처리한 뒤 기본 playback 장치의 open/pause/resume/close와 SDL user storage의 임시 파일 write/read-cap/read/remove/close까지 함께 검증한다. `--smoke-test-title-to-playable`은 실제 title frame, 열린 MapSelect shell frame, 새 `GameSystem`의 playable frame이 순서대로 render되는지 확인한다. `--smoke-test-render-recovery`는 background/foreground와 deferred metrics, target reset, device reset에 따른 backend/window 전체 재생성 및 최종 present를 추가로 검사한다. storage가 준비될 때까지 main callback에서 block 없이 폴링한다. 제품 실행에서는 audio 장치가 없는 환경을 치명 오류로 취급하지 않지만 smoke에서는 명시적인 실패다. dummy video에서 auto 선택은 SDL_GPU와 GLES 실패 후 Software로 내려가는 계약도 검증한다. 종료 시 renderer를 window보다 먼저 내리고 audio/storage/window를 SDL runtime보다 먼저 정리한다.
 
 foreground에서는 backend context/device 복구가 resize보다 먼저다. background 중 metrics는 dirty 상태로만 저장하고, 0×0 drawable에서는 FramePacket build/render를 건너뛴다. render-target reset은 backend target 계약으로 처리하며 device reset/lost는 backend와 창을 다시 만든 뒤 실패 시 다음 후보로 내려간다. present 동기화를 보장하지 못하는 backend는 `RenderCapabilities::mainCallbackRateLimitHz`로 callback 상한을 선언한다.
 

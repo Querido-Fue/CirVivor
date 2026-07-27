@@ -23,6 +23,7 @@ constexpr std::size_t dim_session_command_count = 3U;
 constexpr std::size_t glass_pass_command_count = 4U;
 constexpr std::size_t shell_overlay_command_count = 2U;
 constexpr std::size_t shell_clip_command_count = 2U;
+constexpr std::size_t map_select_shell_ui_count = 3U;
 constexpr std::size_t exit_shell_ui_count = 3U;
 constexpr std::size_t external_shell_ui_count = 4U;
 constexpr std::size_t placeholder_geometry_count = 7U;
@@ -393,7 +394,13 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     result.overlayDimCommands = overlayCount * dim_session_command_count;
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         const ui::OverlayKind kind = input.uiState.overlays[index].kind;
-        if (kind == ui::OverlayKind::exitConfirm) {
+        if (kind == ui::OverlayKind::mapSelect) {
+            result.overlayPassCommands += glass_pass_command_count;
+            result.mapSelectShellCommands += glass_pass_command_count
+                + shell_overlay_command_count
+                + shell_clip_command_count
+                + map_select_shell_ui_count;
+        } else if (kind == ui::OverlayKind::exitConfirm) {
             result.overlayPassCommands += glass_pass_command_count;
             result.exitShellCommands += glass_pass_command_count
                 + shell_overlay_command_count
@@ -1035,15 +1042,18 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
             return false;
         }
 
+        const bool isMapSelect = overlay.kind == ui::OverlayKind::mapSelect;
         const bool isExit = overlay.kind == ui::OverlayKind::exitConfirm;
         const bool isExternal = overlay.kind
             == ui::OverlayKind::externalLinkWarning;
-        if (!isExit && !isExternal) {
+        if (!isMapSelect && !isExit && !isExternal) {
             continue;
         }
-        const ui::layout::OverlayDialogMetrics& sourceDialog = isExit
-            ? input.layout.overlays.exit
-            : input.layout.overlays.externalLinkWarning;
+        const ui::layout::OverlayDialogMetrics& sourceDialog = isMapSelect
+            ? input.layout.overlays.mapSelect
+            : isExit
+                ? input.layout.overlays.exit
+                : input.layout.overlays.externalLinkWarning;
         ui::layout::OverlayDialogRenderMetrics dialog{};
         if (!ui::layout::tryResolveOverlayDialogRenderMetrics(
                 sourceDialog,
@@ -1139,7 +1149,12 @@ FramePacketCapacity titleSceneCapacity(const TitleSceneInput& input) noexcept {
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         capacity.overlayCount += dim_session_command_count;
         const ui::OverlayKind kind = input.uiState.overlays[index].kind;
-        if (kind == ui::OverlayKind::exitConfirm) {
+        if (kind == ui::OverlayKind::mapSelect) {
+            capacity.overlayCount += shell_overlay_command_count;
+            capacity.passCount += glass_pass_command_count;
+            capacity.clipCount += shell_clip_command_count;
+            capacity.uiCount += map_select_shell_ui_count;
+        } else if (kind == ui::OverlayKind::exitConfirm) {
             capacity.overlayCount += shell_overlay_command_count;
             capacity.passCount += glass_pass_command_count;
             capacity.clipCount += shell_clip_command_count;

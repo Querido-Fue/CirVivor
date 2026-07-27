@@ -37,6 +37,15 @@ struct PlayableGameSceneResult final {
     const game::GameSystem& gameSystem
 ) noexcept;
 
+/** 현재 단일 맵 카탈로그가 요구하는 playable packet의 고정 상한입니다. */
+[[nodiscard]] constexpr FramePacketCapacity maximumPlayableGameSceneCapacity() noexcept {
+    FramePacketCapacity capacity{};
+    capacity.commandCount = 94U;
+    capacity.shapeCount = 70U;
+    capacity.lineCount = 24U;
+    return capacity;
+}
+
 /**
  * 플랫폼이 전달한 창·drawable·safe-area·DPI와 플레이 월드를 backend 중립
  * ViewportState로 변환합니다. 기본 zoom은 전체 맵 중앙, 더 큰 zoom은 보간된

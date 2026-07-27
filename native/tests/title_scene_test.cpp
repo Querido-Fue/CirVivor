@@ -905,6 +905,98 @@ void testExitShellAndInsufficientFixedCapacityAreTransactional() {
     REQUIRE(failed.requiredCapacity == exact);
 }
 
+void testMapSelectRendersDialogShellWhileQuickStartRemainsDimOnly() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+
+    TitleOverlayStateMachine mapState = interactiveState();
+    REQUIRE(mapState.apply(
+        UiAction::openTitle(OverlayKind::mapSelect)
+    ).accepted());
+    advanceInSteps(mapState, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot mapUiState = mapState.snapshot();
+    const TitleSceneInput mapInput{
+        mapUiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+    const FramePacketCapacity mapCapacity = titleSceneCapacity(mapInput);
+    REQUIRE(mapCapacity.commandCount == 41U);
+    REQUIRE(mapCapacity.uiCount == 19U);
+    REQUIRE(mapCapacity.overlayCount == 5U);
+    REQUIRE(mapCapacity.clipCount == 6U);
+    REQUIRE(mapCapacity.passCount == 4U);
+    FramePacket mapPacket(mapCapacity);
+    const auto mapResult = buildTitleScene(mapPacket, mapInput);
+    REQUIRE(mapResult.success);
+    REQUIRE(mapResult.commandStats.mapSelectShellCommands == 11U);
+    REQUIRE(mapResult.commandStats.exitShellCommands == 0U);
+    REQUIRE(mapResult.commandStats.externalLinkShellCommands == 0U);
+    REQUIRE(titleSceneCapabilityIsMissing(
+        mapResult.missingCapabilities,
+        TitleSceneMissingCapability::mapSelectContent
+    ));
+    REQUIRE(mapPacket.isRenderOrderValid());
+
+    OverlayDialogRenderMetrics dialog{};
+    REQUIRE(tryResolveOverlayDialogRenderMetrics(
+        layout.overlays.mapSelect,
+        layout.overlayPage,
+        mapUiState.overlays[0].contentScale,
+        dialog
+    ));
+    constexpr std::size_t baseUiCount = 16U;
+    REQUIRE(mapPacket.ui()[baseUiCount].bounds == (RectF{
+        static_cast<float>(dialog.panelRect.x),
+        static_cast<float>(dialog.panelRect.y),
+        static_cast<float>(dialog.panelRect.width),
+        static_cast<float>(dialog.panelRect.height)
+    }));
+    REQUIRE(mapPacket.ui()[baseUiCount + 1U].bounds == (RectF{
+        static_cast<float>(dialog.cancelButtonRect.x),
+        static_cast<float>(dialog.cancelButtonRect.y),
+        static_cast<float>(dialog.cancelButtonRect.width),
+        static_cast<float>(dialog.cancelButtonRect.height)
+    }));
+    REQUIRE(mapPacket.ui()[baseUiCount + 2U].bounds == (RectF{
+        static_cast<float>(dialog.confirmButtonRect.x),
+        static_cast<float>(dialog.confirmButtonRect.y),
+        static_cast<float>(dialog.confirmButtonRect.width),
+        static_cast<float>(dialog.confirmButtonRect.height)
+    }));
+
+    TitleOverlayStateMachine quickState = interactiveState();
+    REQUIRE(quickState.apply(
+        UiAction::openTitle(OverlayKind::quickStart)
+    ).accepted());
+    advanceInSteps(quickState, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot quickUiState = quickState.snapshot();
+    const TitleSceneInput quickInput{
+        quickUiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+    const FramePacketCapacity quickCapacity = titleSceneCapacity(quickInput);
+    REQUIRE(quickCapacity.commandCount == 30U);
+    REQUIRE(quickCapacity.uiCount == 16U);
+    REQUIRE(quickCapacity.overlayCount == 3U);
+    REQUIRE(quickCapacity.clipCount == 4U);
+    REQUIRE(quickCapacity.passCount == 0U);
+    FramePacket quickPacket(quickCapacity);
+    const auto quickResult = buildTitleScene(quickPacket, quickInput);
+    REQUIRE(quickResult.success);
+    REQUIRE(quickResult.commandStats.mapSelectShellCommands == 0U);
+    REQUIRE(titleSceneCapabilityIsMissing(
+        quickResult.missingCapabilities,
+        TitleSceneMissingCapability::quickStartContent
+    ));
+}
+
 void testActiveBuilderTransactionIsPreserved() {
     const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
     const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
@@ -1257,6 +1349,10 @@ int main() {
         TestCase{
             "active builder preservation",
             testActiveBuilderTransactionIsPreserved
+        },
+        TestCase{
+            "map select shell and quick start dummy",
+            testMapSelectRendersDialogShellWhileQuickStartRemainsDimOnly
         },
         TestCase{
             "interaction target mapping",

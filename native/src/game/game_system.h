@@ -1,5 +1,6 @@
 #pragma once
 
+#include "data/game_map_catalog.h"
 #include "core/math/vector2.h"
 #include "core/physics/body_soa.h"
 #include "core/physics/tile_collision_solver.h"
@@ -30,7 +31,7 @@ struct FixedUpdateResult final {
 // Construction may allocate fixed-capacity storage; fixedUpdate() does not.
 class GameSystem final {
 public:
-    static constexpr std::string_view map_id = "corridor_eight_01";
+    static constexpr std::string_view map_id = data::default_game_map_id;
     static constexpr std::string_view static_world_hash = "fd31f3c2801962f7";
     static constexpr double fixed_delta_seconds = 1.0 / 60.0;
     static constexpr double tower_radius = 0.5;

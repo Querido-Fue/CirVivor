@@ -58,6 +58,7 @@ using cirvivor::ui::OverlayPhase;
 using cirvivor::ui::TitleOverlayStateMachine;
 using cirvivor::ui::TitlePhase;
 using cirvivor::ui::UiAction;
+using cirvivor::ui::UiActionOutcome;
 using cirvivor::ui::UiActionStatus;
 using cirvivor::ui::UiEffect;
 using cirvivor::ui::UiFrameContext;
@@ -813,6 +814,82 @@ void testFourProductionKeysFitFixedStorageAndRemainUnique() {
     REQUIRE(state.snapshot() == closingSnapshot);
 }
 
+void testMapSelectProducesTypedOneShotStartAndFailureUnlocks() {
+    TitleOverlayStateMachine state;
+    advanceToInteractiveTitle(state);
+
+    const UiStateSnapshot beforeInvalid = state.snapshot();
+    REQUIRE(state.apply(
+        UiAction::openTitle(OverlayKind::mapSelect, "missing_map")
+    ).status == UiActionStatus::rejectedPayload);
+    REQUIRE(state.snapshot() == beforeInvalid);
+
+    const UiActionOutcome opened = state.apply(
+        UiAction::openTitle(OverlayKind::mapSelect)
+    );
+    REQUIRE(opened.status == UiActionStatus::applied);
+    UiStateSnapshot snapshot = state.snapshot();
+    REQUIRE(snapshot.overlayCount == 1U);
+    REQUIRE(
+        snapshot.overlays[0].selectedMapId.view()
+        == cirvivor::data::default_game_map_id
+    );
+
+    const UiActionOutcome confirmed = state.apply(UiAction::confirmTop());
+    REQUIRE(confirmed.status == UiActionStatus::applied);
+    REQUIRE(confirmed.effect == UiEffect::startPlayableSession);
+    REQUIRE(confirmed.overlaySequence == opened.overlaySequence);
+    REQUIRE(
+        confirmed.playableSession.mapId.view()
+        == cirvivor::data::default_game_map_id
+    );
+    snapshot = state.snapshot();
+    REQUIRE(snapshot.overlays[0].interactionsLocked);
+    REQUIRE(!snapshot.overlays[0].acceptsInput);
+    REQUIRE(snapshot.overlays[0].playableStartPending);
+
+    const UiStateSnapshot beforeRepeatedConfirm = snapshot;
+    REQUIRE(state.apply(
+        UiAction::confirmTop()
+    ).status == UiActionStatus::rejectedInteractionLocked);
+    REQUIRE(state.snapshot() == beforeRepeatedConfirm);
+    REQUIRE(state.acknowledgePlayableSession(
+        opened.overlaySequence + 1U,
+        false
+    ).status == UiActionStatus::rejectedStaleSequence);
+    REQUIRE(state.snapshot() == beforeRepeatedConfirm);
+
+    REQUIRE(state.acknowledgePlayableSession(
+        opened.overlaySequence,
+        false
+    ).status == UiActionStatus::applied);
+    snapshot = state.snapshot();
+    REQUIRE(!snapshot.overlays[0].interactionsLocked);
+    REQUIRE(snapshot.overlays[0].acceptsInput);
+    REQUIRE(!snapshot.overlays[0].playableStartPending);
+
+    const UiActionOutcome retried = state.apply(UiAction::confirmTop());
+    REQUIRE(retried.effect == UiEffect::startPlayableSession);
+    REQUIRE(state.acknowledgePlayableSession(
+        opened.overlaySequence,
+        true
+    ).status == UiActionStatus::applied);
+    REQUIRE(state.snapshot().overlays[0].phase == OverlayPhase::closing);
+
+    TitleOverlayStateMachine quickStartState;
+    advanceToInteractiveTitle(quickStartState);
+    REQUIRE(quickStartState.apply(
+        UiAction::openTitle(OverlayKind::quickStart)
+    ).accepted());
+    const UiStateSnapshot quickStartBefore = quickStartState.snapshot();
+    const UiActionOutcome quickStartConfirm = quickStartState.apply(
+        UiAction::confirmTop()
+    );
+    REQUIRE(quickStartConfirm.status == UiActionStatus::rejectedInvalidAction);
+    REQUIRE(quickStartConfirm.effect == UiEffect::none);
+    REQUIRE(quickStartState.snapshot() == quickStartBefore);
+}
+
 void testAdvanceSnapshotAndUrlNormalizationPerformNoHeapAllocation() {
     TitleOverlayStateMachine state;
     advanceToInteractiveTitle(state);
@@ -880,6 +957,7 @@ int main() {
         TestCase{"invalid transition transaction", testInvalidTransitionsPreserveWholeSnapshot},
         TestCase{"direct external URL effect", testDirectExternalUrlEffectRequiresInteractiveOverlayFreeTitle},
         TestCase{"four production overlay keys", testFourProductionKeysFitFixedStorageAndRemainUnique},
+        TestCase{"map select typed start effect", testMapSelectProducesTypedOneShotStartAndFailureUnlocks},
         TestCase{"zero-allocation state paths", testAdvanceSnapshotAndUrlNormalizationPerformNoHeapAllocation}
     };
 

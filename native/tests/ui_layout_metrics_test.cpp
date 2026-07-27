@@ -358,6 +358,11 @@ void testResponsiveViewportAndUltrawideUiArea() {
     REQUIRE_NEAR(snapshot.exitDialog.height, 360.0, 1.0e-12);
     REQUIRE(snapshot.exitDialog == snapshot.overlays.exit.panelRect);
     REQUIRE_NEAR(snapshot.overlays.exit.baseDim, 0.28, 1.0e-15);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.x, 888.0, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.y, 108.0, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.width, 1'664.0, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.height, 1'224.0, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.baseDim, 0.28, 1.0e-15);
     REQUIRE_NEAR(snapshot.overlays.externalLinkWarning.panelRect.x, 1'240.0, 1.0e-12);
     REQUIRE_NEAR(snapshot.overlays.externalLinkWarning.panelRect.y, 513.0, 1.0e-12);
     REQUIRE_NEAR(snapshot.overlays.externalLinkWarning.panelRect.width, 960.0, 1.0e-12);
@@ -618,6 +623,11 @@ void testOverlaySpacingTypographyAndExitRatio() {
     REQUIRE_NEAR(snapshot.exitDialog.width, 384.0, 1.0e-12);
     REQUIRE_NEAR(snapshot.exitDialog.height, 144.0, 1.0e-12);
     REQUIRE_NEAR(snapshot.exitDialog.radius, 7.68, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.x, 307.2, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.y, 115.2, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.width, 665.6, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.height, 489.6, 1.0e-12);
+    REQUIRE_NEAR(snapshot.overlays.mapSelect.panelRect.radius, 7.68, 1.0e-12);
     REQUIRE_NEAR(snapshot.overlays.externalLinkWarning.panelRect.x, 448.0, 1.0e-12);
     REQUIRE_NEAR(snapshot.overlays.externalLinkWarning.panelRect.y, 277.2, 1.0e-12);
     REQUIRE_NEAR(snapshot.overlays.externalLinkWarning.panelRect.width, 384.0, 1.0e-12);

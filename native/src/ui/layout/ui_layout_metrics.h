@@ -298,6 +298,7 @@ struct TitleOverlayIconPlacement final {
 };
 
 struct OverlayLayoutMetrics final {
+    OverlayDialogMetrics mapSelect{};
     OverlayDialogMetrics exit{};
     OverlayDialogMetrics externalLinkWarning{};
     double titleBaseDim = 0.0;
