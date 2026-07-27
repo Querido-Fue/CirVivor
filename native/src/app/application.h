@@ -9,6 +9,9 @@
 #include "platform/sdl/sdl_window.h"
 #include "render/backend/renderer_router.h"
 #include "render/common/frame_packet.h"
+#include "ui/layout/ui_layout_metrics.h"
+#include "ui/title_overlay_state_machine.h"
+#include "ui/title_ui_controller.h"
 
 #include <array>
 #include <cstdint>
@@ -38,6 +41,12 @@ public:
     void shutdown() noexcept;
 
 private:
+    enum class SceneMode : std::uint8_t {
+        title,
+        playable,
+        diagnostic
+    };
+
     [[nodiscard]] std::unique_ptr<render::backend::IRenderBackend> makeRenderBackend(
         render::backend::RenderBackendKind kind
     );
@@ -49,6 +58,16 @@ private:
     [[nodiscard]] bool refreshRendererSize() noexcept;
     [[nodiscard]] bool buildSyntheticFrame(const engine::FrameSchedule& schedule) noexcept;
     [[nodiscard]] bool buildPlayableFrame(const engine::FrameSchedule& schedule) noexcept;
+    [[nodiscard]] bool buildTitleFrame(const engine::FrameSchedule& schedule) noexcept;
+    [[nodiscard]] bool refreshTitleLayout() noexcept;
+    [[nodiscard]] std::uint64_t refreshTitleBackdropRevision(
+        const ui::UiStateSnapshot& state,
+        const ui::TitleUiControllerSnapshot& interaction
+    ) noexcept;
+    [[nodiscard]] ApplicationResult handleTitlePointer(
+        const platform::sdl::PlatformEvent& event
+    ) noexcept;
+    void handleUiEffect(const ui::UiActionOutcome& outcome) noexcept;
     [[nodiscard]] bool updatePlatformServices() noexcept;
     [[nodiscard]] bool runStorageSmokeTest() noexcept;
     [[nodiscard]] bool setExecutionActive(bool active) noexcept;
@@ -65,6 +84,10 @@ private:
     render::backend::RendererRouter renderer_;
     platform::sdl::SdlUserStorage storage_;
     platform::sdl::SdlPlaybackDevice audio_;
+    ui::TitleOverlayStateMachine titleUiState_;
+    ui::TitleUiController titleUiController_;
+    ui::layout::UiLayoutMetrics titleLayout_;
+    ui::layout::TitleEntranceRenderState titleEntrance_;
     render::FramePacket framePacket_;
     render::backend::RendererPreference rendererPreference_ =
         render::backend::RendererPreference::automatic;
@@ -72,12 +95,21 @@ private:
     std::uint64_t renderedFrameCount_ = 0;
     std::uint64_t simulationTick_ = 0;
     std::uint64_t projectionRevision_ = 1;
+    std::uint64_t titleBackdropRevision_ = 1;
+    std::uint64_t titleBackdropProjectionRevision_ = 0;
     MovementInputBuffer movementInput_;
+    ui::layout::UiLayoutSnapshot titleBackdropLayout_{};
+    ui::layout::TitleEntranceRenderState titleBackdropEntrance_{};
+    ui::TitleUiControllerSnapshot titleBackdropInteraction_{};
+    std::array<ui::OverlaySnapshot, ui::maximum_overlay_count> titleBackdropOverlays_{};
+    std::uint8_t titleBackdropOverlayCount_ = 0;
     std::uint8_t renderRecoverySmokeStage_ = 0;
     double previousFrameCpuSeconds_ = 0;
+    SceneMode sceneMode_ = SceneMode::title;
     bool initialized_ = false;
     bool smokeTest_ = false;
-    bool diagnosticScene_ = false;
+    bool titleMissingCapabilitiesReported_ = false;
+    bool titleBackdropSnapshotValid_ = false;
     bool storageReadyReported_ = false;
     bool storageSmokeComplete_ = false;
     bool audioSmokeComplete_ = false;

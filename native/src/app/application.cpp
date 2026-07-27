@@ -3,6 +3,7 @@
 #include "platform/sdl/sdl_platform_event.h"
 #include "render/frontend/playable_game_scene.h"
 #include "render/frontend/synthetic_test_scene.h"
+#include "render/frontend/title_scene.h"
 #include "render/gles/gles_backend.h"
 #include "render/sdl_gpu/sdl_gpu_backend.h"
 #include "render/software/software_backend.h"
@@ -15,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -29,23 +31,6 @@ constexpr std::uint8_t renderRecoverySmokeLifecycleStage = 1;
 constexpr std::uint8_t renderRecoverySmokeTargetsStage = 2;
 constexpr std::uint8_t renderRecoverySmokeDeviceStage = 3;
 constexpr std::uint8_t renderRecoverySmokeCompleteStage = 4;
-
-[[nodiscard]] render::FramePacketCapacity maximumFramePacketCapacity(
-    const render::FramePacketCapacity first,
-    const render::FramePacketCapacity second
-) noexcept {
-    return {
-        std::max(first.commandCount, second.commandCount),
-        std::max(first.spriteCount, second.spriteCount),
-        std::max(first.shapeCount, second.shapeCount),
-        std::max(first.lineCount, second.lineCount),
-        std::max(first.textCount, second.textCount),
-        std::max(first.effectCount, second.effectCount),
-        std::max(first.uiCount, second.uiCount),
-        std::max(first.overlayCount, second.overlayCount),
-        std::max(first.utf8ByteCount, second.utf8ByteCount)
-    };
-}
 
 class GlesWindowBackend final : public render::backend::IRenderBackend {
 public:
@@ -224,6 +209,133 @@ private:
     };
 }
 
+[[nodiscard]] ui::layout::LogicalSafeAreaInsets logicalSafeArea(
+    const platform::sdl::WindowMetrics& metrics
+) noexcept {
+    const std::int64_t windowWidth = std::max(metrics.windowWidth, 0);
+    const std::int64_t windowHeight = std::max(metrics.windowHeight, 0);
+    const std::int64_t safeRight = static_cast<std::int64_t>(metrics.safeAreaX)
+        + static_cast<std::int64_t>(metrics.safeAreaWidth);
+    const std::int64_t safeBottom = static_cast<std::int64_t>(metrics.safeAreaY)
+        + static_cast<std::int64_t>(metrics.safeAreaHeight);
+    return {
+        static_cast<double>(std::clamp<std::int64_t>(
+            metrics.safeAreaX,
+            0,
+            windowWidth
+        )),
+        static_cast<double>(std::clamp<std::int64_t>(
+            metrics.safeAreaY,
+            0,
+            windowHeight
+        )),
+        static_cast<double>(std::clamp<std::int64_t>(
+            windowWidth - safeRight,
+            0,
+            windowWidth
+        )),
+        static_cast<double>(std::clamp<std::int64_t>(
+            windowHeight - safeBottom,
+            0,
+            windowHeight
+        ))
+    };
+}
+
+[[nodiscard]] double titleEntranceElapsedSeconds(
+    const ui::TitleTimelineSnapshot& title
+) noexcept {
+    switch (title.phase) {
+    case ui::TitlePhase::sceneTransition:
+        return title.phaseElapsedSeconds;
+    case ui::TitlePhase::interactive:
+        return ui::TitleOverlayStateMachine::scene_transition_seconds;
+    case ui::TitlePhase::loadingDelay:
+    case ui::TitlePhase::logoPlayback:
+        return 0.0;
+    }
+    return 0.0;
+}
+
+[[nodiscard]] bool tryTranslateTitlePointer(
+    const platform::sdl::PlatformEvent& source,
+    const platform::sdl::WindowMetrics& metrics,
+    ui::UiPointerEvent& output
+) noexcept {
+    if (source.kind != platform::sdl::PlatformEventKind::pointerChanged) {
+        return false;
+    }
+
+    ui::UiPointerDevice device{};
+    switch (source.pointer.device) {
+    case platform::sdl::PlatformPointerDevice::mouse:
+        device = ui::UiPointerDevice::mouse;
+        break;
+    case platform::sdl::PlatformPointerDevice::touch:
+        device = ui::UiPointerDevice::touch;
+        break;
+    case platform::sdl::PlatformPointerDevice::none:
+        return false;
+    }
+
+    ui::UiPointerEventType type{};
+    switch (source.pointer.phase) {
+    case platform::sdl::PlatformPointerPhase::moved:
+        type = ui::UiPointerEventType::move;
+        break;
+    case platform::sdl::PlatformPointerPhase::pressed:
+        type = ui::UiPointerEventType::down;
+        break;
+    case platform::sdl::PlatformPointerPhase::released:
+        type = ui::UiPointerEventType::up;
+        break;
+    case platform::sdl::PlatformPointerPhase::canceled:
+        type = ui::UiPointerEventType::cancel;
+        break;
+    case platform::sdl::PlatformPointerPhase::none:
+        return false;
+    }
+
+    ui::UiPointerButton button = ui::UiPointerButton::none;
+    if (device == ui::UiPointerDevice::mouse
+        && type != ui::UiPointerEventType::move
+        && type != ui::UiPointerEventType::cancel) {
+        switch (source.pointer.button) {
+        case platform::sdl::PlatformPointerButton::primary:
+            button = ui::UiPointerButton::left;
+            break;
+        case platform::sdl::PlatformPointerButton::secondary:
+            button = ui::UiPointerButton::right;
+            break;
+        case platform::sdl::PlatformPointerButton::middle:
+            button = ui::UiPointerButton::middle;
+            break;
+        case platform::sdl::PlatformPointerButton::none:
+        case platform::sdl::PlatformPointerButton::auxiliary1:
+        case platform::sdl::PlatformPointerButton::auxiliary2:
+        case platform::sdl::PlatformPointerButton::other:
+            return false;
+        }
+    }
+
+    double x = source.pointer.x;
+    double y = source.pointer.y;
+    if (source.pointer.coordinatesNormalized) {
+        x *= static_cast<double>(std::max(metrics.windowWidth, 0));
+        y *= static_cast<double>(std::max(metrics.windowHeight, 0));
+    }
+    output = {
+        .type = type,
+        .device = device,
+        .button = button,
+        .pointerId = device == ui::UiPointerDevice::mouse
+            ? 0U
+            : source.pointer.pointerId,
+        .position = {x, y}
+    };
+    return true;
+}
+
 [[nodiscard]] const char* storageResultName(
     const platform::sdl::StorageResult result
 ) noexcept {
@@ -282,9 +394,12 @@ Application::Application()
     : renderer_([this](const render::backend::RenderBackendKind kind) {
           return makeRenderBackend(kind);
       }),
-      framePacket_(maximumFramePacketCapacity(
-          render::frontend::syntheticTestSceneCapacity(),
-          render::frontend::playableGameSceneCapacity(gameSystem_)
+      framePacket_(render::maximumFramePacketCapacity(
+          render::maximumFramePacketCapacity(
+              render::frontend::syntheticTestSceneCapacity(),
+              render::frontend::playableGameSceneCapacity(gameSystem_)
+          ),
+          render::frontend::maximumTitleSceneCapacity()
       )) {}
 
 std::unique_ptr<render::backend::IRenderBackend> Application::makeRenderBackend(
@@ -394,6 +509,8 @@ bool Application::rebuildRenderer(const bool skipCurrentBackend) noexcept {
             : render::backend::RendererPreference::software;
     }
 
+    clearMovementActions();
+    static_cast<void>(titleUiController_.handleFocusLost());
     renderer_.shutdown();
     drawableReady_ = false;
     rendererSizeDirty_ = true;
@@ -479,6 +596,16 @@ bool Application::refreshRendererSize() noexcept {
         return false;
     }
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
+    if (sceneMode_ == SceneMode::title && !refreshTitleLayout()) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Native title layout refresh failed for %dx%d logical units.",
+            metrics.windowWidth,
+            metrics.windowHeight
+        );
+        drawableReady_ = false;
+        return false;
+    }
     ++projectionRevision_;
     if (metrics.pixelWidth <= 0 || metrics.pixelHeight <= 0) {
         drawableReady_ = false;
@@ -492,6 +619,73 @@ bool Application::refreshRendererSize() noexcept {
     drawableReady_ = true;
     rendererSizeDirty_ = false;
     return true;
+}
+
+bool Application::refreshTitleLayout() noexcept {
+    const platform::sdl::WindowMetrics& metrics = window_.metrics();
+    if (metrics.windowWidth <= 0 || metrics.windowHeight <= 0) {
+        return titleLayout_.hasSnapshot();
+    }
+
+    const ui::layout::LayoutInput input{
+        .logicalWidth = static_cast<double>(metrics.windowWidth),
+        .logicalHeight = static_cast<double>(metrics.windowHeight),
+        .uiScale = 1.0,
+        .hasVersionHistoryLink = true,
+        .logicalSafeArea = logicalSafeArea(metrics)
+    };
+    if (!titleLayout_.tryUpdate(input)) {
+        return false;
+    }
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    return ui::layout::trySampleTitleEntrance(
+        titleLayout_.snapshot(),
+        titleEntranceElapsedSeconds(state.title),
+        titleEntrance_
+    );
+}
+
+std::uint64_t Application::refreshTitleBackdropRevision(
+    const ui::UiStateSnapshot& state,
+    const ui::TitleUiControllerSnapshot& interaction
+) noexcept {
+    const std::size_t overlayCount = std::min<std::size_t>(
+        state.overlayCount,
+        state.overlays.size()
+    );
+    const bool overlaysChanged = overlayCount != titleBackdropOverlayCount_
+        || !std::equal(
+            state.overlays.begin(),
+            state.overlays.begin() + overlayCount,
+            titleBackdropOverlays_.begin()
+        );
+    const bool changed = !titleBackdropSnapshotValid_
+        || titleBackdropProjectionRevision_ != projectionRevision_
+        || titleBackdropLayout_ != titleLayout_.snapshot()
+        || titleBackdropEntrance_ != titleEntrance_
+        || titleBackdropInteraction_ != interaction
+        || overlaysChanged;
+    if (!changed) {
+        return titleBackdropRevision_;
+    }
+
+    if (titleBackdropSnapshotValid_
+        && titleBackdropRevision_ < std::numeric_limits<std::uint64_t>::max()) {
+        ++titleBackdropRevision_;
+    }
+    titleBackdropProjectionRevision_ = projectionRevision_;
+    titleBackdropLayout_ = titleLayout_.snapshot();
+    titleBackdropEntrance_ = titleEntrance_;
+    titleBackdropInteraction_ = interaction;
+    titleBackdropOverlays_.fill({});
+    std::copy_n(
+        state.overlays.begin(),
+        overlayCount,
+        titleBackdropOverlays_.begin()
+    );
+    titleBackdropOverlayCount_ = static_cast<std::uint8_t>(overlayCount);
+    titleBackdropSnapshotValid_ = true;
+    return titleBackdropRevision_;
 }
 
 bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noexcept {
@@ -597,13 +791,108 @@ bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noex
     return false;
 }
 
+bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcept {
+    if (!titleLayout_.hasSnapshot()) {
+        return false;
+    }
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    if (!ui::layout::trySampleTitleEntrance(
+            titleLayout_.snapshot(),
+            titleEntranceElapsedSeconds(state.title),
+            titleEntrance_
+        )) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Native title entrance sampling failed."
+        );
+        return false;
+    }
+
+    const platform::sdl::WindowMetrics& metrics = window_.metrics();
+    const ui::TitleUiControllerSnapshot interaction = titleUiController_.snapshot();
+    const std::uint64_t backdropRevision = refreshTitleBackdropRevision(
+        state,
+        interaction
+    );
+    const render::frontend::TitleSceneInput input{
+        state,
+        interaction,
+        titleLayout_.snapshot(),
+        titleEntrance_,
+        ui::layout::darkThemeMetrics()
+    };
+    render::frontend::TitleSceneConfig config{};
+    config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
+    config.physicalWindowBounds = {0, 0, metrics.pixelWidth, metrics.pixelHeight};
+    config.drawableSize = {metrics.pixelWidth, metrics.pixelHeight};
+    config.drawableSafeArea = drawableSafeArea(metrics);
+    config.dpiScale = metrics.pixelDensity;
+    config.projectionRevision = projectionRevision_;
+    config.backdropRevision = backdropRevision;
+    config.frameId = renderedFrameCount_ + 1U;
+    config.simulationTick = simulationTick_;
+    config.presentationTimeSeconds = state.title.elapsedSeconds;
+    config.interpolationAlpha = static_cast<float>(std::clamp(
+        schedule.fixedAlpha,
+        0.0,
+        1.0
+    ));
+
+    try {
+        const render::frontend::TitleSceneResult result =
+            render::frontend::buildTitleScene(framePacket_, input, config);
+        if (!result.success) {
+            SDL_LogError(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Title FramePacket build failed with code %u.",
+                static_cast<unsigned int>(result.error)
+            );
+            return false;
+        }
+        if (!titleMissingCapabilitiesReported_
+            && result.missingCapabilities != 0U) {
+            SDL_LogInfo(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Native title shell active; pending capability mask: 0x%08x.",
+                static_cast<unsigned int>(result.missingCapabilities)
+            );
+            titleMissingCapabilitiesReported_ = true;
+        }
+        return true;
+    } catch (const std::exception& error) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Title FramePacket build raised an exception: %s",
+            error.what()
+        );
+    } catch (...) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Title FramePacket build raised a non-standard exception."
+        );
+    }
+    return false;
+}
+
 bool Application::initialize(const int argc, char* argv[]) noexcept {
     if (initialized_) {
         return false;
     }
     lifecycle_.reset();
     smokeTest_ = false;
-    diagnosticScene_ = false;
+    sceneMode_ = SceneMode::title;
+    titleUiState_ = {};
+    titleUiController_ = {};
+    titleLayout_ = {};
+    titleEntrance_ = {};
+    titleBackdropLayout_ = {};
+    titleBackdropEntrance_ = {};
+    titleBackdropInteraction_ = {};
+    titleBackdropOverlays_.fill({});
+    titleBackdropOverlayCount_ = 0U;
+    titleBackdropRevision_ = 1U;
+    titleBackdropProjectionRevision_ = 0U;
+    titleBackdropSnapshotValid_ = false;
     clearMovementActions();
     storageReadyReported_ = false;
     storageSmokeComplete_ = false;
@@ -619,6 +908,7 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     drawableReady_ = false;
     renderTargetsResetPending_ = false;
     renderDeviceRecoveryPending_ = false;
+    titleMissingCapabilitiesReported_ = false;
     for (int argumentIndex = 1; argumentIndex < argc; ++argumentIndex) {
         if (argv[argumentIndex] == nullptr) {
             continue;
@@ -626,15 +916,26 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
         const std::string_view argument(argv[argumentIndex]);
         if (argument == "--smoke-test") {
             smokeTest_ = true;
+            sceneMode_ = SceneMode::diagnostic;
+            continue;
+        }
+        if (argument == "--smoke-test-title") {
+            smokeTest_ = true;
+            sceneMode_ = SceneMode::title;
             continue;
         }
         if (argument == "--smoke-test-render-recovery") {
             smokeTest_ = true;
+            sceneMode_ = SceneMode::diagnostic;
             renderRecoverySmokeStage_ = renderRecoverySmokeLifecycleStage;
             continue;
         }
         if (argument == "--diagnostic-scene") {
-            diagnosticScene_ = true;
+            sceneMode_ = SceneMode::diagnostic;
+            continue;
+        }
+        if (argument == "--playable-scene") {
+            sceneMode_ = SceneMode::playable;
             continue;
         }
 
@@ -733,13 +1034,19 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     }
 
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
+    const char* sceneName = "title";
+    if (sceneMode_ == SceneMode::playable) {
+        sceneName = "playable";
+    } else if (sceneMode_ == SceneMode::diagnostic) {
+        sceneName = "diagnostic";
+    }
     SDL_LogInfo(
         SDL_LOG_CATEGORY_APPLICATION,
         "SDL shell ready: %dx%d pixels, scale %.3f, scene %s",
         metrics.pixelWidth,
         metrics.pixelHeight,
         static_cast<double>(metrics.displayScale),
-        smokeTest_ || diagnosticScene_ ? "diagnostic" : "playable"
+        sceneName
     );
     return true;
 }
@@ -754,9 +1061,22 @@ ApplicationResult Application::handleEvent(
         return ApplicationResult::continueRunning;
     }
 
+    if (platformEvent.kind == platform::sdl::PlatformEventKind::pointerChanged
+        && sceneMode_ == SceneMode::title) {
+        return handleTitlePointer(platformEvent);
+    }
+
     if (platformEvent.kind == platform::sdl::PlatformEventKind::actionChanged) {
-        applyMovementAction(platformEvent);
+        if (sceneMode_ == SceneMode::playable) {
+            applyMovementAction(platformEvent);
+        }
         return ApplicationResult::continueRunning;
+    }
+
+    if (platformEvent.kind == platform::sdl::PlatformEventKind::focusLost
+        && sceneMode_ == SceneMode::title) {
+        static_cast<void>(titleUiController_.handleFocusLost());
+        redrawPending_ = true;
     }
 
     if (platformEvent.kind == platform::sdl::PlatformEventKind::windowCloseRequested
@@ -819,6 +1139,9 @@ ApplicationResult Application::handleEvent(
     rendererSizeDirty_ = rendererSizeDirty_ || metricsChanged;
     if (update.becameInactive) {
         clearMovementActions();
+        if (sceneMode_ == SceneMode::title) {
+            static_cast<void>(titleUiController_.handleFocusLost());
+        }
         static_cast<void>(setExecutionActive(false));
     }
 
@@ -834,6 +1157,69 @@ ApplicationResult Application::handleEvent(
         }
     }
     return ApplicationResult::continueRunning;
+}
+
+ApplicationResult Application::handleTitlePointer(
+    const platform::sdl::PlatformEvent& event
+) noexcept {
+    if (!lifecycle_.isActive()) {
+        return ApplicationResult::continueRunning;
+    }
+    if (!titleLayout_.hasSnapshot() && !refreshTitleLayout()) {
+        return ApplicationResult::failure;
+    }
+
+    ui::UiPointerEvent pointer{};
+    if (!tryTranslateTitlePointer(event, window_.metrics(), pointer)) {
+        return ApplicationResult::continueRunning;
+    }
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    const ui::UiInputResult result = titleUiController_.handlePointer(
+        pointer,
+        titleLayout_.snapshot(),
+        titleEntrance_,
+        state,
+        titleUiState_
+    );
+    handleUiEffect(result.actionOutcome);
+    redrawPending_ = redrawPending_
+        || result.controllerStateChanged
+        || result.actionAccepted();
+    if (titleUiState_.tryConsumeApplicationExitRequest()) {
+        scheduler_.suspend();
+        return ApplicationResult::success;
+    }
+    return ApplicationResult::continueRunning;
+}
+
+void Application::handleUiEffect(const ui::UiActionOutcome& outcome) noexcept {
+    if (outcome.effect != ui::UiEffect::openExternalUrl
+        || outcome.effectText.empty()) {
+        return;
+    }
+
+    const bool opened = SDL_OpenURL(outcome.effectText.bytes.data());
+    if (outcome.overlaySequence == 0U) {
+        if (!opened) {
+            SDL_LogWarn(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Direct external URL handoff failed: %s",
+                SDL_GetError()
+            );
+        }
+        return;
+    }
+    const ui::UiActionOutcome acknowledged = titleUiState_.acknowledgeExternalUrl(
+        outcome.overlaySequence,
+        opened
+    );
+    if (!opened || !acknowledged.accepted()) {
+        SDL_LogWarn(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "External URL handoff failed or became stale: %s",
+            SDL_GetError()
+        );
+    }
 }
 
 ApplicationResult Application::iterate() noexcept {
@@ -899,10 +1285,13 @@ ApplicationResult Application::iterate() noexcept {
     const engine::FrameSample frameSample = {
         static_cast<double>(elapsedTicks) / nanosecondsPerSecond,
         previousFrameCpuSeconds_,
-        true
+        sceneMode_ != SceneMode::title
     };
     const engine::FrameSchedule schedule = scheduler_.advance(frameSample);
-    const bool playableSessionActive = !smokeTest_ && !diagnosticScene_;
+    if (sceneMode_ == SceneMode::title) {
+        titleUiState_.advance(schedule.frameDeltaSeconds);
+    }
+    const bool playableSessionActive = sceneMode_ == SceneMode::playable;
     for (std::uint32_t step = 0; step < schedule.fixedStepCount; ++step) {
         if (playableSessionActive) {
             static_cast<void>(gameSystem_.fixedUpdate(
@@ -920,9 +1309,18 @@ ApplicationResult Application::iterate() noexcept {
         return ApplicationResult::continueRunning;
     }
 
-    const bool frameBuilt = smokeTest_ || diagnosticScene_
-        ? buildSyntheticFrame(schedule)
-        : buildPlayableFrame(schedule);
+    bool frameBuilt = false;
+    switch (sceneMode_) {
+    case SceneMode::title:
+        frameBuilt = buildTitleFrame(schedule);
+        break;
+    case SceneMode::playable:
+        frameBuilt = buildPlayableFrame(schedule);
+        break;
+    case SceneMode::diagnostic:
+        frameBuilt = buildSyntheticFrame(schedule);
+        break;
+    }
     if (!frameBuilt) {
         return ApplicationResult::failure;
     }
@@ -958,7 +1356,19 @@ void Application::shutdown() noexcept {
     previousFrameCpuSeconds_ = 0;
     initialized_ = false;
     smokeTest_ = false;
-    diagnosticScene_ = false;
+    sceneMode_ = SceneMode::title;
+    titleUiState_ = {};
+    titleUiController_ = {};
+    titleLayout_ = {};
+    titleEntrance_ = {};
+    titleBackdropLayout_ = {};
+    titleBackdropEntrance_ = {};
+    titleBackdropInteraction_ = {};
+    titleBackdropOverlays_.fill({});
+    titleBackdropOverlayCount_ = 0U;
+    titleBackdropRevision_ = 1U;
+    titleBackdropProjectionRevision_ = 0U;
+    titleBackdropSnapshotValid_ = false;
     clearMovementActions();
     rendererPreference_ = render::backend::RendererPreference::automatic;
     storageReadyReported_ = false;
@@ -969,6 +1379,7 @@ void Application::shutdown() noexcept {
     drawableReady_ = false;
     renderTargetsResetPending_ = false;
     renderDeviceRecoveryPending_ = false;
+    titleMissingCapabilitiesReported_ = false;
 }
 
 bool Application::updatePlatformServices() noexcept {
@@ -1090,9 +1501,16 @@ bool Application::setExecutionActive(const bool active) noexcept {
 }
 
 bool Application::tryConsumeWindowCloseRequest() noexcept {
-    // The native UI state machine will open its dismissible exit overlay here.
-    // Until that consumer exists, handleEvent preserves the legacy quit fallback.
-    return false;
+    if (sceneMode_ != SceneMode::title) {
+        return false;
+    }
+    const ui::UiInputResult result = titleUiController_.handleWindowClose(
+        titleUiState_
+    );
+    redrawPending_ = redrawPending_
+        || result.controllerStateChanged
+        || result.actionAccepted();
+    return result.actionAccepted();
 }
 
 void Application::applyMovementAction(

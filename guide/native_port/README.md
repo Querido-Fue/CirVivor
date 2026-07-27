@@ -2,6 +2,8 @@
 
 이 문서는 SDL3 포트의 안정된 구조와 로컬 검증 경로를 설명한다. 단계별 완료 여부와 최신 실패·검증 기록은 [`sdl_progess.md`](C:/CirVivor/sdl_progess.md), 전체 전환 순서와 종료 조건은 [`sdl3_desktop_android_ios_porting_plan.md`](C:/CirVivor/guide/sdl3_desktop_android_ios_porting_plan.md)를 기준으로 한다.
 
+현재 실행 범위는 Windows Desktop뿐이다. Android와 iOS는 사용자 결정으로 제외하며, 플랫폼 중립 경계를 보존하는 것과 모바일 SDK·프로젝트·빌드·실기 지원을 완료하는 것은 구분한다.
+
 ## 전환 원칙
 
 - 기존 `project/`의 JavaScript/NW.js 경로는 native parity가 증명될 때까지 기준 실행기(oracle)로 보존한다.
@@ -33,27 +35,29 @@
 | `native/src/render/software/` / `renderer_software` | SDL_Surface CPU raster와 streaming texture presenter |
 | `native/tests/` | 플랫폼 독립 단위·계약, FramePacket/router, Software golden, JS simulation parity 테스트 |
 
-`native/build/`는 생성물이며 버전 관리하지 않는다. Android target은 아직 추가하지 않았고 iOS는 Mac 부재와 사용자 요청으로 현재 작업 범위에서 제외했으므로 현재 구조를 모바일 지원 완료로 해석하지 않는다.
+`native/build/`는 생성물이며 버전 관리하지 않는다. Android와 iOS target은 현재 작업 범위 밖이므로 이 구조를 모바일 지원 완료로 해석하지 않는다.
 
 ## 정상 실행과 입력 계약
 
-정상 `game_desktop`은 `Application`이 세션 `GameSystem`을 소유하고 scheduler가 산출한 60Hz fixed step마다 의미 입력을 소비한다. 각 표시 프레임은 타일맵·Core·Tower를 `playable_game_scene`의 backend 중립 `FramePacket`으로 변환한다. synthetic scene은 `--smoke-test`, `--smoke-test-render-recovery`, `--diagnostic-scene`에서만 사용한다.
+정상 `game_desktop`은 기본적으로 순수 C++ title runtime과 `title_scene` presenter를 실행한다. 현재 최소 게임 세션은 `--playable-scene`에서 `GameSystem`의 60Hz fixed step과 타일맵·Core·Tower `FramePacket`을 실행하며, synthetic scene은 `--smoke-test`, `--smoke-test-render-recovery`, `--diagnostic-scene`에서만 사용한다. 타이틀 메뉴에서 playable session으로 넘어가는 제품 전환은 아직 구현 중이다.
 
 SDL keyboard event는 W/↑, S/↓, A/←, D/→의 물리 source bit를 보존한다. `MovementInputBuffer`는 같은 SDL event batch에서 keydown과 keyup이 모두 도착해도 press를 첫 fixed step까지 latch한다. held action은 모든 fixed step에 유지되고 repeat keydown은 새 pulse를 만들지 않는다. focus/background 전환과 shutdown에서는 source와 pending press를 모두 지워 phantom input을 막는다.
 
-UI 입력용 `PlatformEvent`는 mouse motion/down/up, wheel 방향, touch down/motion/up/cancel의 pointer identity·정규화 좌표, 256-byte 고정 UTF-8 commit/composition과 focus-loss clear 신호를 SDL 타입 없이 운반한다. 창 닫기는 즉시 quit event로 뭉개지 않고 `windowCloseRequested`로 구분한다. 아직 native exit overlay consumer가 없으므로 `Application::tryConsumeWindowCloseRequest()`가 false인 동안만 기존 정상 종료로 폴백한다.
+UI 입력용 `PlatformEvent`는 mouse motion/down/up, wheel 방향, touch down/motion/up/cancel의 pointer identity·정규화 좌표, 256-byte 고정 UTF-8 commit/composition과 focus-loss clear 신호를 SDL 타입 없이 운반한다. title 모드의 창 닫기는 `windowCloseRequested`를 exit-confirm overlay로 전달하며 취소/확인 입력을 거친다. 개발용 playable/diagnostic 모드에서는 기존 즉시 종료 fallback을 유지한다.
 
-현재 playable presenter는 corridor 맵을 행 run으로 압축해 Shape 70개와 Line 24개, 총 94개 command를 생성한다. 기본 zoom에서는 맵 중심 투영과 Core/Tower 보간을 사용한다. 이 최소 장면은 실행 조립 검증용이며 적·전투·웨이브·타이틀·HUD·오버레이 완성을 의미하지 않는다.
+현재 playable presenter는 corridor 맵을 행 run으로 압축해 Shape 70개와 Line 24개, 총 94개 command를 생성한다. 기본 zoom에서는 맵 중심 투영과 Core/Tower 보간을 사용한다. 이 최소 장면은 실행 조립 검증용이며 적·전투·웨이브·HUD 완성을 의미하지 않는다.
 
 ## 타이틀·UI·오버레이 parity 계약
 
-타이틀 화면과 production에서 도달 가능한 기존 오버레이는 JS/NW.js 경로를 oracle로 삼아 시각과 동작을 동일하게 이식한다. `project/game/test/fixtures/ui_visual/scenarios_v1.json`은 Loading/Title 전환과 hover, title factory 8종, Debug/Exit/ExternalLink manager overlay 3종, 중첩 외부 링크 경고·floating dropdown·불투명 모드를 포함한 21개 상태를 고정한다. `CollectionOverlay`는 구현 파일만 있고 production 진입점이 없는 orphan으로 명시한다.
+타이틀 화면과 production에서 도달 가능한 기존 오버레이는 JS/NW.js 경로를 read-only oracle로 삼아 같은 기능·화면·입력 흐름을 C++로 다시 작성한다. JS의 실행 순서·객체 구조·Promise/microtask를 원자적으로 복제하는 것은 목표가 아니다. `project/game/test/fixtures/ui_visual/scenarios_v1.json`은 Loading/Title 전환과 hover, title factory 8종, Debug/Exit/ExternalLink manager overlay 3종, 중첩 외부 링크 경고·floating dropdown·불투명 모드를 포함한 21개 관찰 상태를 고정한다. `CollectionOverlay`는 구현 파일만 있고 production 진입점이 없는 orphan으로 명시한다.
 
 완료 판정은 화면별 진입 상태와 입력 전이, 레이어 순서, 문구·폰트·색·크기·anchor, 애니메이션 시점과 overlay 합성 결과를 고정한 뒤 native 출력과 비교한다. 단순히 유사한 모양을 만들거나 placeholder text/texture를 표시한 상태는 완료가 아니다. 현재 JS 제품에 없는 일반 플레이 HUD·pause·game-over·tutorial·shop/status 화면은 동일 포팅 항목이 아니라 별도 제품 설계다.
 
-현재 `ui_runtime`은 30/60/120/144Hz에서 같은 wall-clock presentation을 만드는 seconds 기반 상태기와 Loading→Title 시간축, title factory 8종 및 Debug/Exit/External keyed overlay stack을 제공한다. Debug pause/focus 특례, 외부 URL 실행의 sequence acknowledge, one-shot 종료 요청, 고정 용량·무할당 snapshot도 계약으로 고정했다. 레이아웃은 Desktop zero-inset 좌표를 보존하면서 Android용 논리 safe-area, light/dark title·settings·overlay 렌더 토큰, 타이틀 카드/pane/tile entrance와 exit/external shell geometry를 계산한다.
+구현 순서는 breadth-first다. 먼저 Windows에서 title→메뉴/overlay→playable session→종료의 실제 C++ 기능 흐름을 한 번 완성하고, 그 결과물을 실행하면서 21개 oracle 상태를 기준으로 text/logo/glass/blur/간격/애니메이션을 화면별로 보완한다. 이 순서는 JS 내부 구조를 복제하지 않으면서도 기능 없는 버튼이나 영구 placeholder를 최종 결과로 남기지 않기 위한 작업 순서다.
 
-이 기반은 아직 `Application` 정상 경로에서 사용되지 않고 `FramePacket`을 만들지도 않는다. 8개 title overlay와 Debug/Settings control 콘텐츠, hover/floating 상태, shaped-text cache, atlas resource upload, 세 backend의 glyph/gradient/clip/pass 실제 렌더와 21개 native pixel golden 비교가 남아 있으므로 타이틀·오버레이 parity 완료로 판정하지 않는다.
+현재 `ui_runtime`은 30/60/120/144Hz에서 같은 wall-clock presentation을 만드는 seconds 기반 상태기와 Loading→Title 시간축, title factory 8종 및 Debug/Exit/External keyed overlay stack을 제공한다. Debug pause/focus 특례, 외부 URL 실행의 sequence acknowledge, one-shot 종료 요청, 고정 용량·무할당 snapshot도 계약으로 고정했다. 레이아웃은 논리 safe-area, light/dark title·settings·overlay 렌더 토큰, 타이틀 카드/pane/tile entrance와 exit/external shell geometry를 계산한다.
+
+`Application`은 이 runtime을 기본 실행 경로에서 소유하고 title `FramePacket`을 만든다. title pointer, 창 닫기, exit/external confirmation, 버전 링크의 플랫폼 URL handoff까지 연결했다. 그러나 8개 title overlay와 Debug/Settings control 본문, floating 상태, 실제 문자열·로고·texture, title→playable 전환, shaped-text cache와 atlas upload, GPU 계열 고급 렌더 및 21개 native 시각 회귀가 남아 있으므로 타이틀·오버레이 완료로 판정하지 않는다.
 
 ## 창과 renderer 소유권
 
@@ -69,7 +73,7 @@ SDL_WINDOW_OPENGL + ES2 attributes → GLES ES2
 neutral window → Software SDL_Renderer presenter
 ```
 
-Android에서는 OpenGL 창 생성 시 EGL surface가 붙어 Vulkan surface와 충돌할 수 있으므로 GPU와 GLES가 같은 창을 공유해서는 안 된다. GLES context version도 창 생성 뒤 같은 창에서 임의로 낮추지 않는다. 종료 순서는 renderer backend → window이며 둘 다 SDL video 종료보다 먼저 끝나야 한다.
+GLES 호환 경로에서도 OpenGL surface와 SDL_GPU surface가 같은 창을 공유하지 않게 한다. GLES context version도 창 생성 뒤 같은 창에서 임의로 낮추지 않는다. 종료 순서는 renderer backend → window이며 둘 다 SDL video 종료보다 먼저 끝나야 한다.
 
 ## SDL 의존성 고정
 
@@ -108,7 +112,7 @@ WOFF2를 TTF로 변환해 같은 Reserved Font Name으로 재배포하지 않는
 
 canonical codec은 padding과 host endian에 의존하지 않는 little-endian v2만 decode한다. v1 synthetic wire `2,862B / be64e77fc11fc188`은 migration fixture로 보존하고 v2 decoder가 명시적으로 거부한다. 기존 명령만 담은 v2 fixture는 `2,898B / 73c9f4cc45c2d5db`, 모든 신규 명령 fixture는 `1,809B / dc42ba9a8b97777b`다. decode는 count·wire·decoded memory 상한을 allocation 전에 검사하고 실패 시 destination을 변경하지 않는다. UTF-8 저장소는 전체를 한 번 검증하고 각 text slice는 code-point 시작·끝 경계만 O(1)로 확인하므로 겹치는 slice 수에 비례해 같은 문자열을 다시 스캔하지 않는다.
 
-clip/pass stack의 균형, layer·coordinate-space·order 범위, session/destination 중복, capture dependency를 packet validation에서 거부한다. capture source anchor는 참조한 command의 실제 sequence/layer/layer-order tuple과 정확히 일치해야 하며, 다른 offscreen session을 참조할 때는 그 session의 composite가 끝난 뒤여야 한다. SDL_GPU/GLES/Software는 아직 신규 고급 명령을 결정적인 marker geometry로만 처리하며 legacy overlay control을 포함한 미구현 경로를 `placeholderCommands`로 계측한다. 파생 glyph/mesh bounds가 비유한 값이 되면 프레임 전체를 버리지 않고 결정적 진단 marker로 격리한다. 실제 atlas sampling, perspective-correct mesh, gradient, clip, blur/glass pass를 구현해 production UI frame에서 이 값이 0이 되기 전에는 UI 렌더 완료로 보지 않는다.
+clip/pass stack의 균형, layer·coordinate-space·order 범위, session/destination 중복, capture dependency를 packet validation에서 거부한다. capture source anchor는 참조한 command의 실제 sequence/layer/layer-order tuple과 정확히 일치해야 하며, 다른 offscreen session을 참조할 때는 그 session의 composite가 끝난 뒤여야 한다. Software backend는 linear/radial gradient와 중첩 scissor/rounded clip을 실제 raster하고, glyph run·textured mesh·pass는 계속 `placeholderCommands`로 계측한다. SDL_GPU/GLES의 고급 명령과 legacy overlay control도 아직 placeholder다. 파생 glyph/mesh bounds가 비유한 값이 되면 프레임 전체를 버리지 않고 결정적 진단 marker로 격리한다. 실제 atlas sampling, perspective-correct mesh, GPU gradient/clip, blur/glass pass를 구현해 production UI frame에서 이 값이 0이 되기 전에는 UI 렌더 완료로 보지 않는다.
 
 ## Windows 빌드와 검증
 
@@ -137,6 +141,8 @@ ctest --test-dir build/headless --output-on-failure
 ```powershell
 .\game_headless.exe --seed 42 --ticks 60
 .\game_desktop.exe --smoke-test
+.\game_desktop.exe --smoke-test-title --renderer software
+.\game_desktop.exe --playable-scene
 .\game_desktop.exe --smoke-test --renderer sdl-gpu
 .\game_desktop.exe --smoke-test --renderer gles
 .\game_desktop.exe --smoke-test --renderer software

@@ -175,6 +175,12 @@ if(BUILD_TESTING)
     target_link_libraries(frame_packet_tests PRIVATE render_frontend renderer_common)
     cirvivor_configure_target(frame_packet_tests)
 
+    add_executable(gles_backend_tests
+        tests/gles_backend_test.cpp
+    )
+    target_link_libraries(gles_backend_tests PRIVATE render_frontend renderer_common)
+    cirvivor_configure_target(gles_backend_tests)
+
     add_executable(playable_game_scene_tests
         tests/playable_game_scene_test.cpp
     )
@@ -263,6 +269,7 @@ if(BUILD_TESTING)
 
     add_test(NAME game_tests COMMAND game_tests)
     add_test(NAME frame_packet_tests COMMAND frame_packet_tests)
+    add_test(NAME gles_backend_tests COMMAND gles_backend_tests)
     add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
     add_test(NAME title_scene_tests COMMAND title_scene_tests)
     add_test(NAME movement_input_buffer_tests COMMAND movement_input_buffer_tests)
@@ -386,12 +393,17 @@ if(CIRVIVOR_BUILD_SDL_APP)
             COMMAND game_desktop --smoke-test --renderer software
         )
         add_test(
+            NAME game_desktop_title_smoke
+            COMMAND game_desktop --smoke-test-title --renderer software
+        )
+        add_test(
             NAME game_desktop_render_recovery_smoke
             COMMAND game_desktop --smoke-test-render-recovery
         )
         set_tests_properties(
             game_desktop_smoke
             game_desktop_software_smoke
+            game_desktop_title_smoke
             game_desktop_render_recovery_smoke
             PROPERTIES
             ENVIRONMENT "SDL_AUDIODRIVER=dummy;SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"

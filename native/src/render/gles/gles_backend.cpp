@@ -1,5 +1,7 @@
 #include "render/gles/gles_backend.h"
 
+#include "render/gles/gles_ui_placeholder.h"
+
 #include "render/common/frame_packet.h"
 
 #include <SDL3/SDL.h>
@@ -20,6 +22,8 @@
 
 namespace cirvivor::render::gles {
 namespace {
+
+using detail::GeometryOutcome;
 
 constexpr std::int32_t maximum_drawable_dimension = 32'768;
 constexpr std::uint64_t maximum_drawable_pixels = 256ULL * 1'024ULL * 1'024ULL;
@@ -290,11 +294,6 @@ private:
     double outputScaleX_ = 0.0;
     double outputScaleY_ = 0.0;
     bool valid_ = false;
-};
-
-enum class GeometryOutcome : std::uint8_t {
-    drawn = 0,
-    skipped = 1
 };
 
 [[nodiscard]] PremultipliedRgba visibleColorOr(
@@ -1265,17 +1264,12 @@ struct GlesBackend::Impl final {
             const bool placeholder,
             const bool supportedShape
         ) noexcept {
-            if (placeholder) {
-                ++stats.placeholderCommands;
-            }
-            if (supportedShape) {
-                ++stats.supportedShapeCommands;
-            }
-            if (outcome == GeometryOutcome::drawn) {
-                ++stats.renderedCommands;
-            } else {
-                ++stats.skippedCommands;
-            }
+            detail::recordCommandOutcome(
+                stats,
+                outcome,
+                placeholder,
+                supportedShape
+            );
         };
 
         for (const CommandRef reference : frame.commandStream()) {
@@ -1427,25 +1421,19 @@ struct GlesBackend::Impl final {
             }
             case CommandKind::ui: {
                 const UiCommand& command = frame.ui()[index];
-                const PremultipliedRgba selectedColor = visibleColorOr(
-                    command.backgroundColor,
-                    visibleColorOr(
-                        command.accentColor,
-                        visibleColorOr(
-                            command.borderColor,
-                            PremultipliedRgba::fromStraight(0.18F, 0.58F, 0.82F, 0.82F)
-                        )
-                    )
-                );
-                record(
-                    drawRectangle(
-                        command.bounds,
-                        command.header,
-                        selectedColor,
-                        mapper
-                    ),
-                    true,
-                    false
+                detail::dispatchUiPlaceholder(
+                    command,
+                    stats,
+                    [this, &command, &mapper](
+                        const PremultipliedRgba color
+                    ) noexcept {
+                        return drawRectangle(
+                            command.bounds,
+                            command.header,
+                            color,
+                            mapper
+                        );
+                    }
                 );
                 break;
             }

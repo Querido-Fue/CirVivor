@@ -2,25 +2,26 @@
 
 > 마지막 갱신: 2026-07-27
 > 기준 브랜치: `codex/c++`
-> 목표: 기존 NW.js 게임을 기준 실행기로 보존하면서 C++20 Game Core와 SDL3 플랫폼·렌더 계층으로 단계적으로 전환한다.
+> 목표: 기존 NW.js 게임을 read-only 기준 실행기로 보존하면서 Windows Desktop 게임을 C++20/SDL3로 다시 작성한다. Android와 iOS는 현재 범위에서 제외한다.
 
 ## 현재 요약
 
-- 상태: Phase 0~3 완료, Phase 4 simulation parity와 Phase 5 UI oracle 고정을 병행 중
+- 상태: Phase 0~3 완료, Phase 4 simulation 이식과 Phase 5~8 Windows native UI·렌더·세션 연결을 병행 중
 - SDL 기준 버전: 공식 최신 안정 릴리스 `3.4.10`
 - 기존 JS 테스트: 433/433 통과
 - 기존 WAT/WASM 재현성: flow-field 및 collision-contact 통과
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: MSVC Debug·Release CTest 각 19/19, GCC headless 14/14, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
-- Desktop 정상 실행: SDL 의미 입력→짧은 입력 latch→60Hz `GameSystem`→94-command playable `FramePacket` 연결 및 Computer Use 실기 이동 확인
+- 네이티브 검증: MSVC Debug·Release CTest 각 23/23, GCC headless 17/17, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- Desktop 기본 실행: 순수 C++ 타이틀 장면으로 진입한다. 최소 `GameSystem` 장면은 `--playable-scene`, synthetic 장면은 smoke/`--diagnostic-scene`으로 분리했다.
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas 통과
-- 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료, 세 backend 실제 실행은 아직 계측 가능한 placeholder
-- 네이티브 UI runtime 기반: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler와 논리 safe-area 레이아웃 완료. 정상 앱 경로·실제 콘텐츠·FramePacket 생성은 아직 미연결
-- Software 960×540 성능 게이트: 최신 Release 180-frame render p95 24.698ms, 33.33ms 예산 통과
+- 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software의 gradient/clip은 실제 raster이며 glyph/mesh/pass 및 GPU 계열 고급 명령은 아직 계측 가능한 placeholder다.
+- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃, title presenter와 pointer/창 닫기/외부 링크 입력을 기본 앱 경로에 연결했다. 실제 문자열·메뉴별 콘텐츠·플레이 전환은 아직 미완성이다.
+- Software 960×540 성능 게이트: 최신 Release 180-frame render p95 27.167ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
+- 구현 전략: Windows 전체 기능 흐름을 breadth-first로 먼저 연결한 뒤 실제 결과물을 실행하며 화면별 시각·입력 fidelity를 반복 보완한다.
 
 ## 단계별 상태
 
@@ -31,9 +32,9 @@
 | Phase 2 — SDL3 Desktop 셸 | 완료 | callback·창·이벤트·lifecycle·scheduler·storage·audio를 실제/dummy driver에서 검증 |
 | Phase 3 — FramePacket/기본 렌더 백엔드 | 완료 | 세 backend 실제 command drawing·fallback·reset/pacing과 Software 960×540 Release p95 30fps 게이트 통과 |
 | Phase 4 — Simulation parity | 진행 중 | Body SoA·타일 충돌·GameSystem replay, 두 WAT scalar, 첫 solve spatial grid/candidate와 generic narrowphase exact parity 및 Desktop playable session bridge 통과. position solve/projectile 진행 중 |
-| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | playable vertical slice, 기존에 실제 존재하는 타이틀·전체 도달 가능 오버레이의 시각·입력·상태 전이 parity와 세 품질 경로 완료. 기존판 pixel oracle은 고정 완료, native 구현은 진행 중. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분 |
-| Phase 9 — Android | 준비 중 | 사용자 범위 SDK/NDK 설치, ARM64 빌드, Vulkan→GLES→Software 폴백, lifecycle 검증 |
-| Phase 10 — iOS | 현재 범위 제외 | Mac 환경이 없어 사용자 요청에 따라 건너뛴다. 코드 경계는 훼손하지 않되 빌드·서명·실기 완료로 표시하지 않는다. |
+| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | 먼저 title→메뉴/overlay→playable의 전체 C++ 기능 흐름을 연결하고, 이후 기존 제품의 관찰 가능한 시각·입력 fidelity를 화면별로 보완한다. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분한다. |
+| Phase 9 — Android | 현재 범위 제외 | 사용자 요청에 따라 SDK/NDK 설치·프로젝트·ARM64 빌드·실기 검증을 진행하지 않는다. |
+| Phase 10 — iOS | 현재 범위 제외 | Mac 환경이 없고 사용자 요청에 따라 빌드·서명·실기 검증을 진행하지 않는다. |
 | Phase 11~12 — 멀티코어·Cutover | 대기 | worker parity, native-only release candidate, NW.js 제품 경로 제거 |
 
 ## 확정한 기술 결정
@@ -43,8 +44,8 @@
 3. 현재 JavaScript/NW.js 구현은 즉시 제거하지 않고 replay와 렌더 골든의 기준 실행기로 유지한다.
 4. 현재 과부하 시 fixed debt를 버리는 scheduler 계약을 먼저 parity로 고정하고, wall-clock authoritative 60Hz 정책 변경은 별도 승인·측정 단계로 분리한다.
 5. 레거시 전역 `ObjectSystem`을 그대로 C++에 복제하지 않고 세션 `GameSystem` 방향으로 이식한다.
-6. 렌더 API와 품질 프로필을 분리한다. 최종 목표는 SDL_GPU, Android GLES 폴백, CPU Software 백엔드와 Full/Reduced/Software 효과 프로필이다.
-7. iOS 실제 빌드·서명·device 검증은 macOS CI 또는 별도 Mac 환경에서 수행한다.
+6. 렌더 API와 품질 프로필을 분리한다. 현재 Windows 목표는 SDL_GPU 기본 경로, GLES 호환 폴백, CPU Software 백엔드와 Full/Reduced/Software 효과 프로필이다.
+7. Android와 iOS는 현재 실행 범위에서 제외한다. 기존 플랫폼 중립 경계는 유지하지만 SDK 설치·모바일 프로젝트·빌드·서명·실기 완료로 표시하지 않는다.
 8. Desktop metadata와 향후 Android application ID는 Java 식별자에 사용할 수 없는 GitHub 조직명의 하이픈을 제거한 `io.github.queridofue.cirvivor`로 통일한다.
 9. backend 후보마다 숨김 창을 새로 만든다. `neutral → SDL_GPU`, 별도 `SDL_WINDOW_OPENGL → GLES`, 다시 `neutral → Software` 순서로 자원을 독점하고, GLES는 ES3 창 실패 시 ES2 속성으로 창 자체를 재생성한다.
 10. authoritative 지수 적분은 플랫폼 CRT `exp()`를 직접 사용하지 않고 V8 12.4/fdlibm 호환 `deterministicExp()`를 사용한다. Windows CRT와 V8의 1 ULP 차이가 tick hash를 깨뜨리기 때문이다.
@@ -57,16 +58,15 @@
 - 현재 저장은 Node `fs.promises`와 `process.cwd()/save`에 결합돼 있고 journal/checksum/원자 교체가 없다.
 - DOM/Canvas/WebGL/Blob/Image/CSS font 의존성을 native asset·text·render command 계층으로 교체해야 한다.
 - 현재 각 Canvas/WebGL surface와 overlay blur 구조를 SDL에서 그대로 복제하면 context·VRAM·pass 수가 급증한다.
-- Android SDL_GPU는 Vulkan 기기 편차가 있어 GLES와 Software 폴백이 필수다.
-- SDL_GPU의 sprite·text·effect·UI·overlay는 아직 solid geometry placeholder다. 실제 texture/glyph atlas, render graph, overlay composite와 Metal 기기 실행 검증이 필요하다.
-- Android SDK/NDK는 아직 없고 iOS/macOS 빌드 환경도 준비되지 않았다. Android용 JDK 17, 사용자 범위 CMake 4.4.0/Ninja 1.13.2는 설치돼 있지만 현재 기본 Java 25가 Gradle 8.12와 맞지 않아 Gradle JVM을 17로 고정해야 한다. SDK 약관 승인은 사용자 동의가 필요하다.
+- SDL_GPU의 sprite·text·effect·UI·overlay는 아직 solid geometry placeholder다. Windows SDL_GPU에서 실제 texture/glyph atlas, render graph와 overlay composite가 필요하다.
+- Android SDK/NDK와 iOS/macOS 환경은 현재 범위 밖이다. 모바일 준비 여부는 Windows native 완료 조건이나 blocker로 계산하지 않는다.
 - C++ 800-body 이동·타일 충돌, 현재 GameSystem 480-tick replay와 두 WAT scalar reference는 JS/WAT와 완전 일치한다. production legacy spatial grid/contact solve/projectile은 60-tick oracle만 동결됐고 C++ 이식이 Phase 4 종료 조건으로 남아 있다.
-- 2026-07-27 Computer Use 실기 감사에서 발견한 정상 `game_desktop`의 synthetic-only 통합 공백은 playable session bridge와 짧은 입력 latch로 보완했다. 다만 현재 native 장면은 맵·Core·Tower만 표시하며 기존 타이틀 화면, HUD와 각종 오버레이, 적·전투·웨이브·실제 texture/font/effect는 아직 이식되지 않았다.
-- 사용자 요구에 따라 타이틀 화면과 모든 오버레이는 유사 구현이 아니라 기존 JS 기준 실행기의 장면별 시각·텍스트·레이어·입력·상태 전이를 완전히 동일하게 재현해야 한다. 화면 인벤토리와 결정적 골든을 먼저 고정하지 않으면 완료로 표시하지 않는다.
-- Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없어 Windows 시스템 emoji fallback 결과를 Android에서 재현할 수 없으므로 고정 벡터/bitmap asset으로 교체해야 한다.
-- `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. 다만 세 backend의 신규 명령은 아직 marker placeholder이므로 실제 atlas sampling·shader·clip·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
+- 2026-07-27 Computer Use 실기 감사에서 발견한 synthetic-only 통합 공백은 playable session bridge와 짧은 입력 latch로 보완했다. 현재 기본 실행은 native title shell이며 `--playable-scene`은 맵·Core·Tower만 표시한다. 실제 타이틀 text/logo/texture/effect, 메뉴별 오버레이 본문, 적·전투·웨이브는 아직 이식되지 않았다.
+- 타이틀 화면과 모든 도달 가능한 오버레이는 기존 JS 기준 실행기와 같은 기능·문구·레이어·입력·상태 흐름과 충분한 시각 fidelity를 제공해야 한다. C++ 코드는 JS 실행 순서나 내부 객체 구조를 원자적으로 복제하지 않으며, 결정적 골든은 관찰 가능한 회귀 기준으로 사용한다.
+- Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없으므로 OS별 시스템 font fallback 대신 고정 vector/bitmap asset으로 교체해야 한다.
+- `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip은 실제 raster로 전환됐지만 glyph/mesh/pass와 SDL_GPU/GLES 고급 명령은 아직 marker placeholder이므로 실제 atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
 - text foundation은 45~930 variable weight, no-hinting grayscale raster와 고정-capacity glyph atlas까지 완료됐고 FramePacket glyph run 계약도 존재한다. 실제 UI 문자열 shaped cache와 backend atlas upload/draw는 아직 구현해야 한다.
-- `ui_runtime`은 아직 `Application`이 소유하거나 정상 frame branch에서 호출하지 않는다. `game_desktop`은 `render_text`를 링크하지 않고 backend-neutral atlas resource upload seam도 없으며, 8개 title overlay·Debug/Settings control·floating/hover 콘텐츠는 presenter에 구현되지 않았다.
+- `Application`이 `ui_runtime`과 title presenter를 소유하고 기본 frame branch에서 호출한다. 다만 `game_desktop`은 아직 `render_text`를 링크하지 않고 backend-neutral atlas resource upload seam도 없으며, 8개 title overlay·Debug/Settings control·floating 콘텐츠와 title→playable 전환은 구현되지 않았다.
 
 ## 검증 기록
 
@@ -546,6 +546,26 @@ GCC 16.1 headless strict 전체 CTest: 14/14 통과
 - 레이아웃은 light/dark title·settings·overlay 렌더 토큰과 card/pane/utility entrance, 동적 typography, exit/external shell, title icon 계약을 제공한다. L/T/R/B 논리 safe-area를 usable rect로 반영하며 zero-inset Desktop 좌표와 기존 150% UI clip 동작은 oracle 그대로 보존한다.
 - 이 배치는 상태·레이아웃 seam만 완료했다. `Application` 소유/이벤트 소비, title `FramePacket` presenter, 실제 문자열·control 콘텐츠, atlas upload와 세 backend draw, native 21개 pixel golden은 후속 단계다.
 
+### 2026-07-27 — 기본 C++ 타이틀 앱 연결과 Software gradient/clip
+
+```text
+title layout/state/controller/scene: 52/52 통과
+Software renderer: MSVC Debug·Release/GCC strict 각각 11/11 통과
+GLES UI dispatch policy: MSVC/GCC 각각 4/4 통과
+MSVC Debug 전체 CTest: 23/23 통과
+MSVC Release 전체 CTest: 23/23 통과
+GCC 16.1 headless strict 전체 CTest: 17/17 통과
+Software Release gate: p95 27.167ms / 33.330ms, tracked allocation 0 / PASS
+```
+
+- 기본 `game_desktop`은 순수 C++ title 상태기와 presenter로 진입한다. `--playable-scene`은 최소 게임 세션, `--diagnostic-scene`과 기존 smoke는 synthetic 장면으로 분리했다.
+- title display frame은 fixed simulation tick을 진행하지 않고 실제 frame delta로 entrance/overlay 상태를 한 번만 전진시킨다. 논리 mouse·touch와 safe-area를 layout에 전달하고 resize/focus/background/renderer rebuild에서 pointer capture를 정리한다.
+- title menu·utility·version link·overlay cancel/confirm을 포함한 12개 interaction target을 고정했다. 창 닫기는 exit overlay로, 버전 링크는 직접 URL handoff로, external warning은 sequence acknowledge 경로로 전달한다.
+- 현재 일반 title 메뉴 8종은 shell overlay까지만 열리며 본문 입력은 잠겨 있다. 실제 메뉴 콘텐츠와 title→playable 전환이 없으므로 이 상태를 전체 게임 완성으로 판정하지 않는다.
+- Software backend는 linear/radial gradient, clamp/repeat/reflect spread, 중첩 scissor/rounded clip, 4×4 rounded AA를 실제 raster한다. 부분 coverage의 PMA/opaque 합성, hard+AA clip 혼합, homogeneous-scaled transform 경계를 독립 회귀 테스트로 고정했다.
+- GLES는 완전 투명 UI hit shell을 fallback 진단색으로 그리지 않고 no-op으로 분류한다. 실제 backend와 테스트가 같은 dispatch/stat seam을 사용해 submitted/rendered/skipped/no-op invariant를 보존한다.
+- 이후 구현은 세부 픽셀을 화면 하나씩 완성하는 순서보다 Windows의 title→메뉴/overlay→playable→종료 전체 기능 흐름을 먼저 연결한다. 전체 기능판을 직접 실행한 뒤 21개 oracle 화면을 기준으로 text/logo/glass/blur/간격/애니메이션을 반복 보완한다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture
@@ -574,9 +594,11 @@ GCC 16.1 headless strict 전체 CTest: 14/14 통과
 - [ ] shaped-text cache, atlas backend upload와 세 backend text drawing
 - [x] `FramePacket v2` glyph/projective mesh/gradient/clip/render-pass·중첩 capture wire/build/validation 계약
 - [x] 순수 C++ 가변 시간 타이틀·keyed overlay 상태기와 light/dark·safe-area·entrance 레이아웃 기반
-- [ ] 세 backend의 v2 atlas/mesh/gradient/clip/pass 실제 렌더와 production UI `placeholderCommands == 0`
-- [ ] 타이틀 화면과 모든 오버레이의 시각·입력·상태 전이 완전 동일 구현
-- [ ] Android SDK/NDK/Gradle 툴체인 설치와 ARM64 빌드
+- [x] title presenter와 기본 앱 진입, pointer·종료 확인·버전/외부 링크 입력 shell 연결
+- [x] Software backend의 v2 gradient/clip 실제 raster 구현
+- [ ] 세 backend의 v2 atlas/mesh/pass 및 SDL_GPU/GLES gradient/clip 실제 렌더와 production UI `placeholderCommands == 0`
+- [ ] 타이틀 화면과 모든 오버레이의 같은 기능·시각·입력·상태 흐름 구현
+- [x] Android는 사용자 요청으로 현재 범위에서 제외(완료로 가장하지 않음)
 - [x] iOS는 Mac 부재와 사용자 요청으로 현재 범위에서 제외(완료로 가장하지 않음)
 - [x] Windows CI와 네이티브 아키텍처 가이드
 
