@@ -89,6 +89,7 @@ using cirvivor::render::frontend::title_tooltip_surface_layer_order;
 using cirvivor::render::frontend::title_ui_surface_layer_order;
 using cirvivor::render::frontend::tryResolveOverlaySurfaceLayerOrders;
 using cirvivor::ui::OverlayKind;
+using cirvivor::ui::TitleOverlayControlId;
 using cirvivor::ui::TitleOverlayStateMachine;
 using cirvivor::ui::TitleUiControllerSnapshot;
 using cirvivor::ui::TitleUiTarget;
@@ -932,6 +933,93 @@ void testOverlayButtonsUseSharedGeometryInteractionAndBackdropRevision() {
         != hoveredPacket.ui()[confirmIndex].backgroundColor);
 }
 
+void testCreditsInteractionChangesOnlyMatchingStableLink() {
+    const SyntheticTitleTextResources text;
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const auto theme = darkThemeMetrics();
+    TitleOverlayStateMachine state = interactiveState();
+    const auto opened = state.apply(UiAction::openTitle(OverlayKind::credits));
+    REQUIRE(opened.accepted());
+    advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot uiState = state.snapshot();
+
+    cirvivor::ui::TitleOverlayPresentationSet presentations{};
+    REQUIRE(cirvivor::ui::tryBuildTitleOverlayPresentationSet(
+        uiState,
+        layout,
+        presentations
+    ));
+    const auto* const credits = cirvivor::ui::findTitleOverlayPresentation(
+        presentations,
+        opened.overlaySequence
+    );
+    REQUIRE(credits != nullptr);
+    const cirvivor::ui::TitleOverlayControl* selected = nullptr;
+    for (std::size_t index = 0U; index < credits->controlCount; ++index) {
+        if (credits->controls[index].id
+            == TitleOverlayControlId::creditsOutfitGithub) {
+            selected = &credits->controls[index];
+        }
+    }
+    REQUIRE(selected != nullptr);
+
+    TitleUiControllerSnapshot idle = idleInteraction();
+    idle.overlaySequence = opened.overlaySequence;
+    TitleUiControllerSnapshot active = idle;
+    active.hoveredOverlayControlId = selected->id;
+    active.pressedOverlayControlId = selected->id;
+    const TitleSceneInput idleInput{
+        uiState,
+        idle,
+        layout,
+        entrance,
+        theme,
+        text.view(),
+        cirvivor::render::UiTextLocale::korean,
+        &presentations
+    };
+    const TitleSceneInput activeInput{
+        uiState,
+        active,
+        layout,
+        entrance,
+        theme,
+        text.view(),
+        cirvivor::render::UiTextLocale::korean,
+        &presentations
+    };
+    const FramePacketCapacity capacity = titleSceneCapacity(idleInput);
+    REQUIRE(titleSceneCapacity(activeInput) == capacity);
+    FramePacket idlePacket(capacity);
+    FramePacket activePacket(capacity);
+    REQUIRE(buildTitleScene(idlePacket, idleInput).success);
+    REQUIRE(buildTitleScene(activePacket, activeInput).success);
+
+    const RectF selectedBounds{
+        static_cast<float>(selected->rect.x),
+        static_cast<float>(selected->rect.y),
+        static_cast<float>(selected->rect.width),
+        static_cast<float>(selected->rect.height)
+    };
+    std::size_t changedUiCount = 0U;
+    for (std::size_t index = 0U; index < idlePacket.ui().size(); ++index) {
+        if (idlePacket.ui()[index] == activePacket.ui()[index]) {
+            continue;
+        }
+        ++changedUiCount;
+        REQUIRE(activePacket.ui()[index].bounds == selectedBounds);
+        REQUIRE(
+            activePacket.ui()[index].stateFlags
+            == (uiStateBits(UiStateFlag::hovered)
+                | uiStateBits(UiStateFlag::pressed))
+        );
+        REQUIRE(activePacket.ui()[index].backgroundColor
+            != idlePacket.ui()[index].backgroundColor);
+    }
+    REQUIRE(changedUiCount == 1U);
+}
+
 void testExitShellAndInsufficientFixedCapacityAreTransactional() {
     const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
     const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
@@ -1725,6 +1813,10 @@ int main() {
         TestCase{
             "overlay controls and backdrop revision",
             testOverlayButtonsUseSharedGeometryInteractionAndBackdropRevision
+        },
+        TestCase{
+            "credits stable link interaction",
+            testCreditsInteractionChangesOnlyMatchingStableLink
         },
         TestCase{
             "exit fixed transaction",

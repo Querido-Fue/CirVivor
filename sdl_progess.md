@@ -18,7 +18,7 @@
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas와 immutable 고정 UI shaped cache 통과
 - 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software는 gradient/clip과 resource-backed A8 glyph를 실제 raster하며 mesh/pass 및 SDL_GPU/GLES glyph·고급 명령은 아직 계측 가능한 placeholder다.
-- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Settings/Credits/Debug의 실제 control effect와 로고·utility icon·세부 fidelity는 후속이다.
+- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Credits 5개 링크는 External warning 경로에 연결됐고 Settings/Debug의 실제 control effect와 로고·utility icon·세부 fidelity는 후속이다.
 - Software 960×540 성능 게이트: 최신 Release 180-frame render p95 27.259ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 - 구현 전략: Windows 전체 기능 흐름을 breadth-first로 먼저 연결한 뒤 실제 결과물을 실행하며 화면별 시각·입력 fidelity를 반복 보완한다.
@@ -629,9 +629,23 @@ PASS
 
 - `TitleOverlayPresentationSet`은 상태·layout revision, sequence/layer/animation, panel/body/divider와 최대 20개 control rect를 고정 배열에 원자적으로 만든다. `Application`이 같은 snapshot을 title controller와 `title_scene`에 전달하므로 렌더와 pointer hit-test가 서로 다른 geometry를 다시 계산하지 않는다. 입력 대상은 draw 배열의 마지막 항목이 아니라 `acceptsInput`인 최대 sequence다.
 - `title_overlay_presenter`를 `title_scene`에서 분리해 11종 content를 기록한다. MapSelect는 원본 5×9 floor mask, Deck은 두 카드·0%, QuickStart/Records/Research/Achievements는 정확한 준비 중 문구, Settings는 양쪽 열의 정적 항목, Credits는 5개 고유 행, Debug는 4개 표시 toggle·hint·footer를 그린다. Exit/External dialog도 같은 presentation 경계로 통합했다.
-- 버전 링크는 더 이상 브라우저를 즉시 열지 않고 JS 제품처럼 External warning을 연다. 공통 Close/Cancel과 Map 시작은 실제 rounded rect pointer-release를 소비한다. Settings Save/control과 Credits 5개 링크는 이번 breadth 배치에서 disabled/passive라 클릭해도 `actionRejected`를 만들지 않는다. Debug content는 상태 직접 주입 테스트로 렌더되지만 2초 내 middle-release 3회 진입 gesture와 toggle effect는 다음 기능 배치다.
+- 버전 링크는 더 이상 브라우저를 즉시 열지 않고 JS 제품처럼 External warning을 연다. 공통 Close/Cancel과 Map 시작은 실제 rounded rect pointer-release를 소비한다. 이 breadth 커밋 당시 Settings Save/control과 Credits 5개 링크는 disabled/passive였으며, 바로 아래 후속 커밋에서 Credits 링크만 실제 warning flow에 연결했다. Debug content는 상태 직접 주입 테스트로 렌더되지만 2초 내 middle-release 3회 진입 gesture와 toggle effect는 다음 기능 배치다.
 - 모든 고정 문자열은 Pretendard 한·영 shaped catalog에 포함한다. 부분 text resource table은 frame을 절반만 publish하지 않고 실패하며, 4-overlay worst stack도 fixed maximum capacity 안에서 반복 build allocation 0을 유지한다.
 - 일반 Windows Computer Use로 Release 실행본을 열어 Deck·Settings·Credits·QuickStart·MapSelect의 표시와 Close/Cancel, Map 5×9 preview, Map 시작→playable을 직접 확인했다. 실제 기능 흐름은 정상이나 Settings의 작은 설명문·행 간격은 아직 가독성이 낮고 title logo·utility icon은 placeholder 도형이다. 이 항목은 기능 breadth 완료 뒤 21개 native golden을 만들며 보정한다.
+
+### 2026-07-27 — Credits 5-link External warning 연결
+
+```text
+MSVC Debug·Release 전체 CTest: 각각 27/27 통과
+GCC 16.1 headless strict 전체 CTest: 17/17 통과
+title UI controller: 16/16 통과
+title scene: 15/15 통과
+```
+
+- `creditsBlog`, CirVivor/Pretendard/Outfit/React Bits GitHub의 다섯 stable control ID를 byte-exact 고정 HTTPS URL에 명시적으로 매핑했다. enum ordinal이나 배열 위치로 URL을 추론하지 않으며 unknown/non-Credits ID는 상태를 바꾸지 않는다.
+- pointer capture는 device/identity와 overlay sequence뿐 아니라 stable control ID도 보존한다. 같은 링크에서 down/up이 끝날 때만 External warning을 열고, 다른 링크에서 놓기·cancel·focus loss·stale sequence는 effect 없이 capture/hover/pressed ID를 지운다. presenter도 해당 sequence의 단일 ID만 hover/pressed로 강조한다.
+- Warning은 Credits 위에 중첩되어 닫힘 animation이 끝날 때까지 부모 입력을 잠근다. 취소하면 Credits로 복귀하고 확인은 기존 `SDL_OpenURL` effect와 success/failure sequence acknowledge를 그대로 사용한다. 실제 브라우저를 여는 확인은 자동 실기에서 누르지 않았다.
+- 일반 Windows Computer Use로 Release Credits 첫 행을 클릭해 `jukchang.com` warning과 부모 dim/lock을 확인하고 `아니오`로 취소해 Credits로 복귀하는 것까지 검증했다.
 
 ## 현재 작업
 
@@ -666,7 +680,8 @@ PASS
 - [x] title presenter와 기본 앱 진입, pointer·종료 확인·버전/외부 링크 입력 shell 연결
 - [x] Start→MapSelect panel·취소/시작 입력→transactional `GameSystem` playable 전환과 auto/software smoke
 - [x] 렌더·입력 공용 fixed-capacity overlay presentation과 11종 Pretendard content/Map preview/Common Close·Cancel
-- [ ] Settings 저장·적용/control, Credits 링크 effect, Debug 진입 gesture·toggle·pause/step 기능
+- [x] Credits 5개 stable link→External warning→confirm/acknowledge effect 연결
+- [ ] Settings 저장·적용/control과 Debug 진입 gesture·toggle·pause/step 기능
 - [x] Software backend의 v2 gradient/clip 실제 raster 구현
 - [ ] 세 backend의 v2 atlas/mesh/pass 및 SDL_GPU/GLES gradient/clip 실제 렌더와 production UI `placeholderCommands == 0`
 - [ ] 타이틀 화면과 모든 오버레이의 같은 기능·시각·입력·상태 흐름 구현

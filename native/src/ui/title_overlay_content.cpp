@@ -309,7 +309,8 @@ struct PanelRatio final {
                     basePanel.radius * 0.45
                 },
                 center,
-                1.0)) {
+                1.0,
+                TitleOverlayControlAction::openExternalLink)) {
             return false;
         }
     }

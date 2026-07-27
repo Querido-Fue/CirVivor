@@ -205,16 +205,23 @@ enum class VerticalAnchor : std::uint8_t {
 ) {
     const bool isCancel = control.action == ui::TitleOverlayControlAction::cancelTop;
     const bool isConfirm = control.action == ui::TitleOverlayControlAction::confirmTop;
-    const bool interactive = isCancel || isConfirm;
+    const bool isExternalLink =
+        control.action == ui::TitleOverlayControlAction::openExternalLink;
+    const bool interactive = isCancel || isConfirm || isExternalLink;
     const bool matches = input.interaction.overlaySequence
         == input.presentation.sequence;
     const ui::TitleUiTarget target = isConfirm
         ? ui::TitleUiTarget::overlayConfirm
         : ui::TitleUiTarget::overlayCancel;
-    const ui::TitleUiTargetInteraction passiveInteraction{};
-    const ui::TitleUiTargetInteraction& interaction = interactive
-        ? interactionFor(input.interaction, target)
-        : passiveInteraction;
+    ui::TitleUiTargetInteraction interaction{};
+    if (isExternalLink) {
+        interaction.hovered = matches
+            && input.interaction.hoveredOverlayControlId == control.id;
+        interaction.pressed = matches
+            && input.interaction.pressedOverlayControlId == control.id;
+    } else if (interactive) {
+        interaction = interactionFor(input.interaction, target);
+    }
     const bool highlighted = interactive && matches && control.enabled
         && (interaction.hovered || interaction.pressed);
 
@@ -271,6 +278,21 @@ enum class VerticalAnchor : std::uint8_t {
         );
         command.accentColor = renderColor(
             input.theme.cancelText,
+            input.presentation.alpha
+        );
+    } else if (isExternalLink) {
+        command.backgroundColor = renderColor(
+            highlighted
+                ? input.theme.overlayControlHover
+                : input.theme.overlayControlInactive,
+            input.presentation.alpha * (highlighted ? 1.0 : 0.62)
+        );
+        command.borderColor = renderColor(
+            input.theme.linkText,
+            input.presentation.alpha * (highlighted ? 1.0 : 0.5)
+        );
+        command.accentColor = renderColor(
+            input.theme.linkText,
             input.presentation.alpha
         );
     } else {

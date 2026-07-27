@@ -46,7 +46,8 @@ enum class TitleOverlayControlId : std::uint8_t {
 enum class TitleOverlayControlAction : std::uint8_t {
     none,
     cancelTop,
-    confirmTop
+    confirmTop,
+    openExternalLink
 };
 
 struct TitleOverlayControl final {
@@ -62,7 +63,7 @@ struct TitleOverlayControl final {
 
 /**
  * 한 overlay attachment의 표시와 hit-test가 공유하는 고정 geometry입니다.
- * control의 action이 none이면 이번 breadth 배치에서는 표시 전용입니다.
+ * control의 action이 none이면 표시 전용입니다.
  */
 struct TitleOverlayPresentation final {
     OverlayKind kind = OverlayKind::none;

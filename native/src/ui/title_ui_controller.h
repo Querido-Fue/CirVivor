@@ -92,6 +92,7 @@ struct UiPointerCaptureSnapshot final {
     UiPointerDevice device = UiPointerDevice::mouse;
     std::uint64_t pointerId = 0U;
     TitleUiTarget target = TitleUiTarget::none;
+    TitleOverlayControlId overlayControlId = TitleOverlayControlId::none;
     std::uint32_t overlaySequence = 0U;
     layout::PointD lastPosition{};
 
@@ -103,6 +104,8 @@ struct TitleUiControllerSnapshot final {
     UiPointerCaptureSnapshot capture{};
     /** overlay target hover/press가 어느 attachment에 속하는지 식별합니다. */
     std::uint32_t overlaySequence = 0U;
+    TitleOverlayControlId hoveredOverlayControlId = TitleOverlayControlId::none;
+    TitleOverlayControlId pressedOverlayControlId = TitleOverlayControlId::none;
     std::uint64_t revision = 0U;
 
     constexpr bool operator==(const TitleUiControllerSnapshot&) const noexcept = default;
@@ -111,6 +114,7 @@ struct TitleUiControllerSnapshot final {
 struct UiInputResult final {
     UiInputStatus status = UiInputStatus::rejectedInvalidInput;
     TitleUiTarget target = TitleUiTarget::none;
+    TitleOverlayControlId overlayControlId = TitleOverlayControlId::none;
     OverlayKind unsupportedOverlay = OverlayKind::none;
     std::uint32_t overlaySequence = 0U;
     UiActionOutcome actionOutcome{};

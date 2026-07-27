@@ -58,6 +58,7 @@ using cirvivor::ui::OverlayKind;
 using cirvivor::ui::OverlayPhase;
 using cirvivor::ui::OverlaySnapshot;
 using cirvivor::ui::TitleOverlayStateMachine;
+using cirvivor::ui::TitleOverlayControlAction;
 using cirvivor::ui::TitleOverlayControlId;
 using cirvivor::ui::TitleOverlayPresentationSet;
 using cirvivor::ui::TitleUiController;
@@ -1037,39 +1038,244 @@ void testBreadthOverlaysCloseAndPassiveControlsDoNotReject() {
         center(save->rect)
     ) == nullptr);
 
-    TitleOverlayStateMachine creditsState;
-    advanceToInteractiveTitle(creditsState);
-    const UiActionOutcome credits = creditsState.apply(
+}
+
+void testCreditsLinksUseStableIdentityAndExternalWarningFlow() {
+    struct CreditsLinkSpec final {
+        TitleOverlayControlId id;
+        std::string_view url;
+    };
+    constexpr std::array links{
+        CreditsLinkSpec{
+            TitleOverlayControlId::creditsBlog,
+            "https://jukchang.com"
+        },
+        CreditsLinkSpec{
+            TitleOverlayControlId::creditsCirvivorGithub,
+            "https://github.com/Querido-Fue/CirVivor"
+        },
+        CreditsLinkSpec{
+            TitleOverlayControlId::creditsPretendardGithub,
+            "https://github.com/orioncactus/pretendard"
+        },
+        CreditsLinkSpec{
+            TitleOverlayControlId::creditsOutfitGithub,
+            "https://github.com/Outfitio/Outfit-Fonts/tree/main"
+        },
+        CreditsLinkSpec{
+            TitleOverlayControlId::creditsReactBitsGithub,
+            "https://github.com/DavidHDev/react-bits"
+        }
+    };
+    REQUIRE(cirvivor::ui::data::titleCreditsExternalUrl(
+        TitleOverlayControlId::none
+    ).empty());
+    REQUIRE(cirvivor::ui::data::titleCreditsExternalUrl(
+        TitleOverlayControlId::debugOpenDevTools
+    ).empty());
+
+    const Presentation presentation = makePresentation();
+    for (const CreditsLinkSpec& link : links) {
+        REQUIRE(cirvivor::ui::data::titleCreditsExternalUrl(link.id) == link.url);
+        REQUIRE(link.url.starts_with("https://"));
+
+        TitleOverlayStateMachine state;
+        advanceToInteractiveTitle(state);
+        const UiActionOutcome credits = state.apply(
+            UiAction::openTitle(OverlayKind::credits)
+        );
+        REQUIRE(credits.accepted());
+        state.advance(0.5);
+        TitleOverlayPresentationSet presentations{};
+        REQUIRE(tryBuildTitleOverlayPresentationSet(
+            state.snapshot(),
+            presentation.layout,
+            presentations
+        ));
+        const auto* const creditsOverlay =
+            cirvivor::ui::findTitleOverlayPresentation(
+                presentations,
+                credits.overlaySequence
+            );
+        REQUIRE(creditsOverlay != nullptr);
+        const cirvivor::ui::TitleOverlayControl* control = nullptr;
+        for (std::size_t index = 0U;
+             index < creditsOverlay->controlCount;
+             ++index) {
+            if (creditsOverlay->controls[index].id == link.id) {
+                control = &creditsOverlay->controls[index];
+            }
+        }
+        REQUIRE(control != nullptr);
+        REQUIRE(control->enabled);
+        REQUIRE(control->action == TitleOverlayControlAction::openExternalLink);
+        REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+            *creditsOverlay,
+            center(control->rect)
+        ) == control);
+
+        TitleUiController controller;
+        const PointD point = center(control->rect);
+        const UiInputResult moved = controller.handlePointer(
+            mouseEvent(UiPointerEventType::move, point),
+            presentation.layout,
+            presentation.entrance,
+            state.snapshot(),
+            presentations,
+            state
+        );
+        REQUIRE(moved.status == UiInputStatus::moved);
+        REQUIRE(moved.target == TitleUiTarget::none);
+        REQUIRE(moved.overlayControlId == link.id);
+        REQUIRE(controller.snapshot().hoveredOverlayControlId == link.id);
+
+        const UiInputResult down = controller.handlePointer(
+            mouseEvent(UiPointerEventType::down, point, UiPointerButton::left),
+            presentation.layout,
+            presentation.entrance,
+            state.snapshot(),
+            presentations,
+            state
+        );
+        REQUIRE(down.status == UiInputStatus::captured);
+        REQUIRE(down.overlayControlId == link.id);
+        REQUIRE(controller.snapshot().capture.overlayControlId == link.id);
+        REQUIRE(controller.snapshot().pressedOverlayControlId == link.id);
+
+        const UiInputResult up = controller.handlePointer(
+            mouseEvent(UiPointerEventType::up, point, UiPointerButton::left),
+            presentation.layout,
+            presentation.entrance,
+            state.snapshot(),
+            presentations,
+            state
+        );
+        REQUIRE(up.actionAccepted());
+        REQUIRE(up.overlayControlId == link.id);
+        REQUIRE(up.actionOutcome.effect == UiEffect::none);
+        REQUIRE(up.actionOutcome.overlaySequence != 0U);
+        const UiStateSnapshot linkedState = state.snapshot();
+        REQUIRE(linkedState.overlayCount == 2U);
+        REQUIRE(overlayOfKind(
+            linkedState,
+            OverlayKind::credits
+        ).sequence == credits.overlaySequence);
+        const OverlaySnapshot& warning = overlayOfKind(
+            linkedState,
+            OverlayKind::externalLinkWarning
+        );
+        REQUIRE(warning.sequence == up.actionOutcome.overlaySequence);
+        REQUIRE(warning.externalUrl.view() == link.url);
+        REQUIRE(!overlayOfKind(
+            linkedState,
+            OverlayKind::credits
+        ).acceptsInput);
+        REQUIRE(controller.snapshot().hoveredOverlayControlId
+            == TitleOverlayControlId::none);
+        REQUIRE(controller.snapshot().pressedOverlayControlId
+            == TitleOverlayControlId::none);
+    }
+
+    TitleOverlayStateMachine identityState;
+    advanceToInteractiveTitle(identityState);
+    const UiActionOutcome credits = identityState.apply(
         UiAction::openTitle(OverlayKind::credits)
     );
     REQUIRE(credits.accepted());
-    creditsState.advance(0.5);
-    TitleOverlayPresentationSet creditsPresentation{};
+    identityState.advance(0.5);
+    TitleOverlayPresentationSet presentations{};
     REQUIRE(tryBuildTitleOverlayPresentationSet(
-        creditsState.snapshot(),
+        identityState.snapshot(),
         presentation.layout,
-        creditsPresentation
+        presentations
     ));
-    const auto* const creditsOverlay = cirvivor::ui::findTitleOverlayPresentation(
-        creditsPresentation,
+    const auto* creditsOverlay = cirvivor::ui::findTitleOverlayPresentation(
+        presentations,
         credits.overlaySequence
     );
     REQUIRE(creditsOverlay != nullptr);
-    std::size_t passiveLinks = 0U;
-    for (std::size_t index = 0U; index < creditsOverlay->controlCount; ++index) {
-        const auto& control = creditsOverlay->controls[index];
-        if (control.id >= TitleOverlayControlId::creditsBlog
-            && control.id <= TitleOverlayControlId::creditsReactBitsGithub) {
-            ++passiveLinks;
-            REQUIRE(control.action
-                == cirvivor::ui::TitleOverlayControlAction::none);
-            REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
-                *creditsOverlay,
-                center(control.rect)
-            ) == nullptr);
+    const PointD first = overlayControlCenter(
+        presentation,
+        identityState.snapshot(),
+        credits.overlaySequence,
+        links[0].id
+    );
+    const PointD second = overlayControlCenter(
+        presentation,
+        identityState.snapshot(),
+        credits.overlaySequence,
+        links[1].id
+    );
+    TitleUiController identityController;
+    REQUIRE(identityController.handlePointer(
+        mouseEvent(UiPointerEventType::down, first, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        identityState.snapshot(),
+        presentations,
+        identityState
+    ).status == UiInputStatus::captured);
+    const UiInputResult movedToSecond = identityController.handlePointer(
+        mouseEvent(UiPointerEventType::move, second),
+        presentation.layout,
+        presentation.entrance,
+        identityState.snapshot(),
+        presentations,
+        identityState
+    );
+    REQUIRE(movedToSecond.overlayControlId == links[1].id);
+    REQUIRE(identityController.snapshot().hoveredOverlayControlId == links[1].id);
+    REQUIRE(identityController.snapshot().pressedOverlayControlId
+        == TitleOverlayControlId::none);
+    const UiInputResult crossRelease = identityController.handlePointer(
+        mouseEvent(UiPointerEventType::up, second, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        identityState.snapshot(),
+        presentations,
+        identityState
+    );
+    REQUIRE(crossRelease.status == UiInputStatus::released);
+    REQUIRE(crossRelease.overlayControlId == links[0].id);
+    REQUIRE(identityState.snapshot().overlayCount == 1U);
+
+    TitleOverlayPresentationSet unknownPresentation = presentations;
+    cirvivor::ui::TitleOverlayPresentation* unknownOverlay = nullptr;
+    for (std::size_t index = 0U;
+         index < unknownPresentation.overlayCount;
+         ++index) {
+        if (unknownPresentation.overlays[index].sequence
+            == credits.overlaySequence) {
+            unknownOverlay = &unknownPresentation.overlays[index];
         }
     }
-    REQUIRE(passiveLinks == 5U);
+    REQUIRE(unknownOverlay != nullptr);
+    unknownOverlay->controls[0].id = TitleOverlayControlId::debugOpenDevTools;
+    unknownOverlay->controls[0].action =
+        TitleOverlayControlAction::openExternalLink;
+    const PointD unknownPoint = center(unknownOverlay->controls[0].rect);
+    TitleUiController unknownController;
+    REQUIRE(unknownController.handlePointer(
+        mouseEvent(UiPointerEventType::down, unknownPoint, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        identityState.snapshot(),
+        unknownPresentation,
+        identityState
+    ).status == UiInputStatus::captured);
+    const UiStateSnapshot beforeUnknownRelease = identityState.snapshot();
+    const UiInputResult unknownRelease = unknownController.handlePointer(
+        mouseEvent(UiPointerEventType::up, unknownPoint, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        identityState.snapshot(),
+        unknownPresentation,
+        identityState
+    );
+    REQUIRE(unknownRelease.status == UiInputStatus::released);
+    REQUIRE(unknownRelease.overlayControlId
+        == TitleOverlayControlId::debugOpenDevTools);
+    REQUIRE(identityState.snapshot() == beforeUnknownRelease);
 }
 
 void testTouchIdentityMultiPointerAndCancel() {
@@ -1543,6 +1749,10 @@ int main() {
         TestCase{
             "breadth overlay close and passive controls",
             testBreadthOverlaysCloseAndPassiveControlsDoNotReject
+        },
+        TestCase{
+            "credits stable external links",
+            testCreditsLinksUseStableIdentityAndExternalWarningFlow
         },
         TestCase{"touch identity and cancel", testTouchIdentityMultiPointerAndCancel},
         TestCase{"focus loss and mouse buttons", testFocusLossAndUnsupportedMouseButtons},

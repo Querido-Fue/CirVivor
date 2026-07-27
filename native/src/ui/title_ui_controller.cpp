@@ -24,6 +24,19 @@ constexpr std::array canonical_targets{
     TitleUiTarget::overlayConfirm
 };
 
+struct HitTarget final {
+    TitleUiTarget target = TitleUiTarget::none;
+    TitleOverlayControlId overlayControlId = TitleOverlayControlId::none;
+    TitleOverlayControlAction overlayAction = TitleOverlayControlAction::none;
+
+    [[nodiscard]] constexpr bool hasTarget() const noexcept {
+        return target != TitleUiTarget::none
+            || overlayControlId != TitleOverlayControlId::none;
+    }
+
+    constexpr bool operator==(const HitTarget&) const noexcept = default;
+};
+
 [[nodiscard]] bool finiteUnit(const double value) noexcept {
     return std::isfinite(value) && value >= 0.0 && value <= 1.0;
 }
@@ -386,7 +399,7 @@ constexpr std::array canonical_targets{
     return TitleUiTarget::none;
 }
 
-[[nodiscard]] TitleUiTarget hitOverlayTarget(
+[[nodiscard]] HitTarget hitOverlayTarget(
     const TitleOverlayPresentation& presentation,
     const layout::PointD& position
 ) noexcept {
@@ -395,34 +408,55 @@ constexpr std::array canonical_targets{
         position
     );
     if (control == nullptr) {
-        return TitleUiTarget::none;
+        return {};
     }
     if (control->action == TitleOverlayControlAction::confirmTop) {
-        return TitleUiTarget::overlayConfirm;
+        return {
+            TitleUiTarget::overlayConfirm,
+            control->id,
+            control->action
+        };
     }
     if (control->action == TitleOverlayControlAction::cancelTop) {
-        return TitleUiTarget::overlayCancel;
+        return {
+            TitleUiTarget::overlayCancel,
+            control->id,
+            control->action
+        };
     }
-    return TitleUiTarget::none;
+    if (control->action == TitleOverlayControlAction::openExternalLink) {
+        return {
+            TitleUiTarget::none,
+            control->id,
+            control->action
+        };
+    }
+    return {};
 }
 
 void setHovered(
     TitleUiControllerSnapshot& snapshot,
-    const TitleUiTarget target
+    const TitleUiTarget target,
+    const TitleOverlayControlId overlayControlId = TitleOverlayControlId::none
 ) noexcept {
     for (TitleUiTargetInteraction& state : snapshot.targets) {
         state.hovered = state.target == target;
     }
+    snapshot.hoveredOverlayControlId = overlayControlId;
 }
 
 void setPressed(
     TitleUiControllerSnapshot& snapshot,
     const TitleUiTarget target,
-    const bool pressed
+    const bool pressed,
+    const TitleOverlayControlId overlayControlId = TitleOverlayControlId::none
 ) noexcept {
     for (TitleUiTargetInteraction& state : snapshot.targets) {
         state.pressed = pressed && state.target == target;
     }
+    snapshot.pressedOverlayControlId = pressed
+        ? overlayControlId
+        : TitleOverlayControlId::none;
 }
 
 void clearInteraction(TitleUiControllerSnapshot& snapshot) noexcept {
@@ -643,11 +677,14 @@ UiInputResult TitleUiController::handlePointer(
             };
         }
         const TitleUiTarget capturedTarget = candidate.capture.target;
+        const TitleOverlayControlId capturedControlId =
+            candidate.capture.overlayControlId;
         clearInteraction(candidate);
         const bool changed = commit(candidate);
         return {
             .status = UiInputStatus::cancelled,
             .target = capturedTarget,
+            .overlayControlId = capturedControlId,
             .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
@@ -657,12 +694,16 @@ UiInputResult TitleUiController::handlePointer(
         return {.status = UiInputStatus::rejectedInvalidInput};
     }
 
-    TitleUiTarget hit = activeOverlay != nullptr
+    HitTarget hit = activeOverlay != nullptr
         ? hitOverlayTarget(*activePresentation, event.position)
-        : hitTarget(layoutSnapshot, entranceState, event.position);
+        : HitTarget{
+            hitTarget(layoutSnapshot, entranceState, event.position),
+            TitleOverlayControlId::none,
+            TitleOverlayControlAction::none
+        };
     if (event.device == UiPointerDevice::touch
-        && hit == TitleUiTarget::versionHistoryLink) {
-        hit = TitleUiTarget::none;
+        && hit.target == TitleUiTarget::versionHistoryLink) {
+        hit = {};
     }
 
     if (event.type == UiPointerEventType::move) {
@@ -674,11 +715,15 @@ UiInputResult TitleUiController::handlePointer(
                 };
             }
             candidate.capture.lastPosition = event.position;
-            setHovered(candidate, hit);
+            setHovered(candidate, hit.target, hit.overlayControlId);
+            const bool captureStillHit =
+                hit.target == candidate.capture.target
+                && hit.overlayControlId == candidate.capture.overlayControlId;
             setPressed(
                 candidate,
                 candidate.capture.target,
-                hit == candidate.capture.target
+                captureStillHit,
+                candidate.capture.overlayControlId
             );
         } else {
             if (event.device == UiPointerDevice::touch) {
@@ -691,13 +736,14 @@ UiInputResult TitleUiController::handlePointer(
                     .controllerStateChanged = changed
                 };
             }
-            setHovered(candidate, hit);
+            setHovered(candidate, hit.target, hit.overlayControlId);
             setPressed(candidate, TitleUiTarget::none, false);
         }
         const bool changed = commit(candidate);
         return {
             .status = UiInputStatus::moved,
-            .target = hit,
+            .target = hit.target,
+            .overlayControlId = hit.overlayControlId,
             .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
@@ -710,21 +756,22 @@ UiInputResult TitleUiController::handlePointer(
                     ? UiInputStatus::rejectedPointerAlreadyCaptured
                     : UiInputStatus::rejectedAdditionalPointer,
                 .target = candidate.capture.target,
+                .overlayControlId = candidate.capture.overlayControlId,
                 .overlaySequence = activeOverlaySequence
             };
         }
-        if (hit == TitleUiTarget::versionHistoryLink) {
-            setHovered(candidate, hit);
+        if (hit.target == TitleUiTarget::versionHistoryLink) {
+            setHovered(candidate, hit.target, hit.overlayControlId);
             setPressed(candidate, TitleUiTarget::none, false);
             const bool changed = commit(candidate);
             return {
                 .status = UiInputStatus::ignoredNoCapture,
-                .target = hit,
+                .target = hit.target,
                 .controllerStateChanged = changed
             };
         }
-        setHovered(candidate, hit);
-        if (hit == TitleUiTarget::none) {
+        setHovered(candidate, hit.target, hit.overlayControlId);
+        if (!hit.hasTarget()) {
             setPressed(candidate, TitleUiTarget::none, false);
             const bool changed = commit(candidate);
             return {
@@ -737,23 +784,25 @@ UiInputResult TitleUiController::handlePointer(
             .active = true,
             .device = event.device,
             .pointerId = event.pointerId,
-            .target = hit,
+            .target = hit.target,
+            .overlayControlId = hit.overlayControlId,
             .overlaySequence = activeOverlaySequence,
             .lastPosition = event.position
         };
-        setPressed(candidate, hit, true);
+        setPressed(candidate, hit.target, true, hit.overlayControlId);
         const bool changed = commit(candidate);
         return {
             .status = UiInputStatus::captured,
-            .target = hit,
+            .target = hit.target,
+            .overlayControlId = hit.overlayControlId,
             .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
     }
 
     if (!candidate.capture.active
-        && hit == TitleUiTarget::versionHistoryLink) {
-        setHovered(candidate, hit);
+        && hit.target == TitleUiTarget::versionHistoryLink) {
+        setHovered(candidate, hit.target, hit.overlayControlId);
         setPressed(candidate, TitleUiTarget::none, false);
         const UiActionOutcome actionOutcome = stateMachine.apply(
             UiAction::openExternalLink(
@@ -765,7 +814,7 @@ UiInputResult TitleUiController::handlePointer(
             .status = actionOutcome.accepted()
                 ? UiInputStatus::actionApplied
                 : UiInputStatus::actionRejected,
-            .target = hit,
+            .target = hit.target,
             .actionOutcome = actionOutcome,
             .controllerStateChanged = changed
         };
@@ -773,7 +822,7 @@ UiInputResult TitleUiController::handlePointer(
 
     if (!candidate.capture.active) {
         if (event.device == UiPointerDevice::mouse) {
-            setHovered(candidate, hit);
+            setHovered(candidate, hit.target, hit.overlayControlId);
         } else {
             setHovered(candidate, TitleUiTarget::none);
         }
@@ -781,7 +830,8 @@ UiInputResult TitleUiController::handlePointer(
         const bool changed = commit(candidate);
         return {
             .status = UiInputStatus::ignoredNoCapture,
-            .target = hit,
+            .target = hit.target,
+            .overlayControlId = hit.overlayControlId,
             .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
@@ -790,29 +840,54 @@ UiInputResult TitleUiController::handlePointer(
         return {
             .status = UiInputStatus::rejectedAdditionalPointer,
             .target = candidate.capture.target,
+            .overlayControlId = candidate.capture.overlayControlId,
             .overlaySequence = activeOverlaySequence
         };
     }
 
     const TitleUiTarget capturedTarget = candidate.capture.target;
+    const TitleOverlayControlId capturedControlId =
+        candidate.capture.overlayControlId;
     candidate.capture = {};
     setPressed(candidate, TitleUiTarget::none, false);
     setHovered(
         candidate,
-        event.device == UiPointerDevice::mouse ? hit : TitleUiTarget::none
+        event.device == UiPointerDevice::mouse
+            ? hit.target
+            : TitleUiTarget::none,
+        event.device == UiPointerDevice::mouse
+            ? hit.overlayControlId
+            : TitleOverlayControlId::none
     );
-    if (hit != capturedTarget) {
+    if (hit.target != capturedTarget
+        || hit.overlayControlId != capturedControlId) {
         const bool changed = commit(candidate);
         return {
             .status = UiInputStatus::released,
             .target = capturedTarget,
+            .overlayControlId = capturedControlId,
             .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
     }
 
     UiAction action{};
-    if (!actionForTarget(capturedTarget, action)) {
+    if (hit.overlayAction == TitleOverlayControlAction::openExternalLink) {
+        const std::string_view url = data::titleCreditsExternalUrl(
+            capturedControlId
+        );
+        if (url.empty()) {
+            const bool changed = commit(candidate);
+            return {
+                .status = UiInputStatus::released,
+                .target = capturedTarget,
+                .overlayControlId = capturedControlId,
+                .overlaySequence = activeOverlaySequence,
+                .controllerStateChanged = changed
+            };
+        }
+        action = UiAction::openExternalLink(url);
+    } else if (!actionForTarget(capturedTarget, action)) {
         return {.status = UiInputStatus::rejectedInvalidInput};
     }
     const UiActionOutcome actionOutcome = stateMachine.apply(action);
@@ -825,6 +900,7 @@ UiInputResult TitleUiController::handlePointer(
             ? UiInputStatus::actionApplied
             : UiInputStatus::actionRejected,
         .target = capturedTarget,
+        .overlayControlId = capturedControlId,
         .overlaySequence = activeOverlaySequence,
         .actionOutcome = actionOutcome,
         .controllerStateChanged = changed
