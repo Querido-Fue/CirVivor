@@ -614,7 +614,10 @@ bool SdlGpuBackend::resize(
     return true;
 }
 
-bool SdlGpuBackend::render(const FramePacket& frame) noexcept {
+bool SdlGpuBackend::render(
+    const FramePacket& frame,
+    const RenderResourcesView
+) noexcept {
     if (!requireReady()) {
         return false;
     }

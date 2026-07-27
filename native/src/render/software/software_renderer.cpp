@@ -33,6 +33,12 @@ constexpr std::uint64_t maximum_surface_pixels = 64ULL * 1'024ULL * 1'024ULL;
             return SoftwareRenderError::surfaceLockFailed;
         case detail::RasterError::invalidViewport:
             return SoftwareRenderError::invalidViewport;
+        case detail::RasterError::invalidResources:
+            return SoftwareRenderError::invalidResources;
+        case detail::RasterError::missingGlyphAtlas:
+            return SoftwareRenderError::missingGlyphAtlas;
+        case detail::RasterError::invalidGlyphAtlasReference:
+            return SoftwareRenderError::invalidGlyphAtlasReference;
     }
     return SoftwareRenderError::invalidSurfaceFormat;
 }
@@ -102,7 +108,10 @@ bool SoftwareRenderer::clear(const PremultipliedRgba color) noexcept {
     return result == detail::RasterError::none;
 }
 
-bool SoftwareRenderer::render(const FramePacket& frame) noexcept {
+bool SoftwareRenderer::render(
+    const FramePacket& frame,
+    const RenderResourcesView resources
+) noexcept {
     lastStats_ = {};
     lastStats_.submittedCommands = frame.commandStream().size();
     if (surface_ == nullptr) {
@@ -115,7 +124,7 @@ bool SoftwareRenderer::render(const FramePacket& frame) noexcept {
     }
 
     const auto start = std::chrono::steady_clock::now();
-    const detail::RasterResult result = detail::rasterFrame(*surface_, frame);
+    const detail::RasterResult result = detail::rasterFrame(*surface_, frame, resources);
     const auto end = std::chrono::steady_clock::now();
 
     lastStats_.renderedCommands = result.renderedCommands;

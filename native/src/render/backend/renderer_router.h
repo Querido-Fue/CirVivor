@@ -24,12 +24,14 @@ enum class BackendAttemptOutcome : std::uint8_t {
     factoryException = 2,
     backendKindMismatch = 3,
     initializationFailed = 4,
-    initializationException = 5
+    initializationException = 5,
+    unsupportedCapabilities = 6
 };
 
 struct RendererSelection final {
     RendererPreference preference = RendererPreference::automatic;
     bool platformSupportsGles = false;
+    bool requiresGlyphRunAtlas = false;
 
     constexpr bool operator==(const RendererSelection&) const noexcept = default;
 };
@@ -77,7 +79,10 @@ public:
         std::int32_t drawableWidth,
         std::int32_t drawableHeight
     ) noexcept;
-    [[nodiscard]] bool render(const FramePacket& frame) noexcept;
+    [[nodiscard]] bool render(
+        const FramePacket& frame,
+        RenderResourcesView resources = {}
+    ) noexcept;
     [[nodiscard]] bool onBackground() noexcept;
     [[nodiscard]] bool onForeground() noexcept;
     [[nodiscard]] bool purgeTransientResources() noexcept;

@@ -9,13 +9,16 @@
 #include "platform/sdl/sdl_window.h"
 #include "render/backend/renderer_router.h"
 #include "render/common/frame_packet.h"
+#include "render/text/shaped_text_cache.h"
 #include "ui/layout/ui_layout_metrics.h"
 #include "ui/title_overlay_state_machine.h"
 #include "ui/title_ui_controller.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace cirvivor::platform::sdl {
 struct PlatformEvent;
@@ -60,6 +63,8 @@ private:
     [[nodiscard]] bool buildPlayableFrame(const engine::FrameSchedule& schedule) noexcept;
     [[nodiscard]] bool buildTitleFrame(const engine::FrameSchedule& schedule) noexcept;
     [[nodiscard]] bool refreshTitleLayout() noexcept;
+    [[nodiscard]] bool loadTitleTextAssets() noexcept;
+    [[nodiscard]] bool prepareTitleTextResources() noexcept;
     [[nodiscard]] std::uint64_t refreshTitleBackdropRevision(
         const ui::UiStateSnapshot& state,
         const ui::TitleUiControllerSnapshot& interaction
@@ -93,6 +98,8 @@ private:
     ui::layout::UiLayoutMetrics titleLayout_;
     ui::layout::TitleEntranceRenderState titleEntrance_;
     render::FramePacket framePacket_;
+    std::vector<std::byte> titleFontBytes_;
+    std::unique_ptr<render::text::ShapedTextCache> titleTextCache_;
     render::backend::RendererPreference rendererPreference_ =
         render::backend::RendererPreference::automatic;
     std::uint64_t previousFrameTicks_ = 0;
@@ -101,6 +108,7 @@ private:
     std::uint64_t projectionRevision_ = 1;
     std::uint64_t titleBackdropRevision_ = 1;
     std::uint64_t titleBackdropProjectionRevision_ = 0;
+    std::uint64_t titleTextGeneration_ = 0;
     MovementInputBuffer movementInput_;
     ui::layout::UiLayoutSnapshot titleBackdropLayout_{};
     ui::layout::TitleEntranceRenderState titleBackdropEntrance_{};

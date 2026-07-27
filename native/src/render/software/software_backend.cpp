@@ -232,6 +232,7 @@ backend::BackendInitializeResult SoftwareBackend::initialize() {
         "SDL_Renderer streaming presenter"
     };
     capabilities_.mainCallbackRateLimitHz = 30;
+    capabilities_.supportsGlyphRunAtlas = true;
 
     RendererPointer candidateRenderer(SDL_CreateRenderer(window_, nullptr));
     if (candidateRenderer == nullptr) {
@@ -384,7 +385,10 @@ bool SoftwareBackend::resize(
     return true;
 }
 
-bool SoftwareBackend::render(const FramePacket& frame) noexcept {
+bool SoftwareBackend::render(
+    const FramePacket& frame,
+    const RenderResourcesView resources
+) noexcept {
     if (!isInitialized()) {
         return fail(SoftwareBackendError::notInitialized);
     }
@@ -399,7 +403,7 @@ bool SoftwareBackend::render(const FramePacket& frame) noexcept {
     if (!frame.isRenderOrderValid()) {
         return fail(SoftwareBackendError::invalidFrameOrder);
     }
-    if (!softwareRenderer_.render(frame)) {
+    if (!softwareRenderer_.render(frame, resources)) {
         stats_.raster = softwareRenderer_.lastStats();
         return fail(SoftwareBackendError::cpuRasterizationFailed);
     }

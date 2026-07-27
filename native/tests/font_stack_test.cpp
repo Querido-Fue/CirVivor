@@ -1,5 +1,7 @@
 #include "render/text/font_face.h"
 #include "render/text/glyph_atlas.h"
+#include "render/text/shaped_text_cache.h"
+#include "render/text/title_text_catalog.h"
 
 #include <algorithm>
 #include <array>
@@ -441,6 +443,153 @@ void testFixedCapacityGlyphAtlas() {
     ));
 }
 
+[[nodiscard]] std::vector<cirvivor::render::text::TextPreloadSpec>
+makeCompleteTitleTextSpecs() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::text;
+
+    std::vector<TextPreloadSpec> specs;
+    specs.reserve(title_text_catalog.size() * 2U);
+    for (const TitleTextCatalogEntry& entry : title_text_catalog) {
+        specs.push_back({titleTextKey(entry.semantic, UiTextLocale::korean), entry.korean});
+        specs.push_back({titleTextKey(entry.semantic, UiTextLocale::english), entry.english});
+    }
+    return specs;
+}
+
+void testTransactionalShapedTextCache() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::text;
+
+    const std::vector<std::byte> fontBytes = readBytes(CIRVIVOR_PRETENDARD_FONT_PATH);
+    const std::vector<TextPreloadSpec> specs = makeCompleteTitleTextSpecs();
+    ShapedTextCacheBuildError error = ShapedTextCacheBuildError::none;
+    std::unique_ptr<ShapedTextCache> cache = ShapedTextCache::create(
+        fontBytes,
+        specs,
+        7U,
+        error
+    );
+    REQUIRE(error == ShapedTextCacheBuildError::none);
+    REQUIRE(cache != nullptr);
+    REQUIRE(cache->generation() == 7U);
+    REQUIRE(cache->runCount() == specs.size());
+
+    const PreShapedTextResourcesView textResources = cache->textResources();
+    const RenderResourcesView renderResources = cache->renderResources();
+    REQUIRE(textResources.isValid());
+    REQUIRE(renderResources.isValid());
+    REQUIRE(textResources.generation() == 7U);
+    REQUIRE(textResources.runs().size() == specs.size());
+    REQUIRE(renderResources.alpha8Textures().size() == 1U);
+    const Alpha8TextureResourceView& atlas = renderResources.alpha8Textures().front();
+    REQUIRE(atlas.id == pretendard_glyph_atlas_resource_id);
+    REQUIRE(atlas.generation == 7U);
+    REQUIRE(atlas.width == ShapedTextCache::atlas_dimension);
+    REQUIRE(atlas.height == ShapedTextCache::atlas_dimension);
+    REQUIRE(atlas.rowPitch == ShapedTextCache::atlas_dimension);
+    REQUIRE(atlas.pixels.size()
+        == static_cast<std::size_t>(ShapedTextCache::atlas_dimension)
+            * ShapedTextCache::atlas_dimension);
+    REQUIRE(std::any_of(
+        atlas.pixels.begin(),
+        atlas.pixels.end(),
+        [](const std::uint8_t value) { return value != 0U; }
+    ));
+
+    for (const TextPreloadSpec& spec : specs) {
+        const PreShapedTextRunView* const run = textResources.find(spec.key);
+        REQUIRE(run != nullptr);
+        REQUIRE(run->fontId == pretendard_font_resource_id);
+        REQUIRE(run->glyphAtlasId == pretendard_glyph_atlas_resource_id);
+        REQUIRE(run->rasterPixelSize == ShapedTextCache::raster_pixel_size);
+        REQUIRE(run->advance >= 0.0F);
+        REQUIRE(run->ascent > 0.0F);
+        REQUIRE(run->descent >= 0.0F);
+        REQUIRE(!run->glyphs.empty());
+        for (const GlyphInstance& glyph : run->glyphs) {
+            REQUIRE(glyph.atlasPage == 0U);
+            REQUIRE(glyph.uv.x >= 0.0F);
+            REQUIRE(glyph.uv.y >= 0.0F);
+            REQUIRE(glyph.uv.width >= 0.0F);
+            REQUIRE(glyph.uv.height >= 0.0F);
+            REQUIRE(glyph.uv.x + glyph.uv.width <= 1.0F);
+            REQUIRE(glyph.uv.y + glyph.uv.height <= 1.0F);
+        }
+    }
+    REQUIRE(textResources.find({
+        UiTextSemanticId::titleCardStart,
+        UiTextLocale::korean,
+        16'001U,
+        700
+    }) == nullptr);
+
+    const std::uint8_t* const originalAtlasAddress = atlas.pixels.data();
+    const std::uint64_t originalAtlasHash = fnv1a64(atlas.pixels);
+    const std::array duplicateSpecs{
+        TextPreloadSpec{specs[0].key, "A"},
+        TextPreloadSpec{specs[0].key, "B"}
+    };
+    std::unique_ptr<ShapedTextCache> rejected = ShapedTextCache::create(
+        fontBytes,
+        duplicateSpecs,
+        8U,
+        error
+    );
+    REQUIRE(rejected == nullptr);
+    REQUIRE(error == ShapedTextCacheBuildError::duplicateKey);
+    REQUIRE(cache->generation() == 7U);
+    REQUIRE(cache->renderResources().alpha8Textures().front().pixels.data()
+        == originalAtlasAddress);
+    REQUIRE(fnv1a64(cache->renderResources().alpha8Textures().front().pixels)
+        == originalAtlasHash);
+
+    const TextPreloadSpec missingGlyphSpec{
+        titleTextKey(UiTextSemanticId::utilityAchievements, UiTextLocale::korean),
+        "\xF0\x9F\x8F\x86"
+    };
+    rejected = ShapedTextCache::create(fontBytes, {&missingGlyphSpec, 1U}, 8U, error);
+    REQUIRE(rejected == nullptr);
+    REQUIRE(error == ShapedTextCacheBuildError::missingGlyph);
+
+    rejected = ShapedTextCache::create({}, specs, 8U, error);
+    REQUIRE(rejected == nullptr);
+    REQUIRE(error == ShapedTextCacheBuildError::emptyFont);
+    rejected = ShapedTextCache::create(fontBytes, specs, 0U, error);
+    REQUIRE(rejected == nullptr);
+    REQUIRE(error == ShapedTextCacheBuildError::invalidGeneration);
+
+    const std::array<std::uint8_t, 1> pixel{255U};
+    const std::array resource{
+        Alpha8TextureResourceView{
+            pretendard_glyph_atlas_resource_id,
+            9U,
+            1U,
+            1U,
+            1U,
+            pixel
+        }
+    };
+    const std::array run{
+        PreShapedTextRunView{
+            specs[0].key,
+            pretendard_font_resource_id,
+            pretendard_glyph_atlas_resource_id,
+            ShapedTextCache::raster_pixel_size,
+            1.0F,
+            1.0F,
+            0.0F,
+            {}
+        }
+    };
+    const PreShapedTextResourcesView mismatchedGeneration(
+        8U,
+        run,
+        RenderResourcesView(resource)
+    );
+    REQUIRE(!mismatchedGeneration.isValid());
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
@@ -452,7 +601,8 @@ int main() {
     constexpr std::array tests{
         TestCase{"asset integrity, memory face, and shaping", testAssetIntegrityAndMemoryFace},
         TestCase{"variable weight and deterministic raster", testVariableWeightAndDeterministicRaster},
-        TestCase{"fixed-capacity glyph atlas", testFixedCapacityGlyphAtlas}
+        TestCase{"fixed-capacity glyph atlas", testFixedCapacityGlyphAtlas},
+        TestCase{"transactional shaped text cache", testTransactionalShapedTextCache}
     };
 
     std::size_t passed = 0;

@@ -117,6 +117,9 @@ public:
     [[nodiscard]] std::int32_t weightCoordinate() const noexcept;
     [[nodiscard]] std::int32_t minimumWeightCoordinate() const noexcept;
     [[nodiscard]] std::int32_t maximumWeightCoordinate() const noexcept;
+    [[nodiscard]] std::int32_t ascender26Dot6() const noexcept;
+    [[nodiscard]] std::int32_t descender26Dot6() const noexcept;
+    [[nodiscard]] std::int32_t lineHeight26Dot6() const noexcept;
 
 private:
     struct Impl;

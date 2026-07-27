@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/common/frame_packet.h"
+#include "render/common/render_resources.h"
 
 #include <SDL3/SDL_surface.h>
 
@@ -12,7 +13,10 @@ enum class RasterError : std::uint8_t {
     none = 0,
     invalidSurface,
     surfaceLockFailed,
-    invalidViewport
+    invalidViewport,
+    invalidResources,
+    missingGlyphAtlas,
+    invalidGlyphAtlasReference
 };
 
 struct RasterResult final {
@@ -29,7 +33,8 @@ struct RasterResult final {
 
 [[nodiscard]] RasterResult rasterFrame(
     SDL_Surface& surface,
-    const FramePacket& frame
+    const FramePacket& frame,
+    RenderResourcesView resources = {}
 ) noexcept;
 
 [[nodiscard]] std::uint64_t hashSurface(SDL_Surface& surface) noexcept;

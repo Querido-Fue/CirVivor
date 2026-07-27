@@ -13,13 +13,13 @@
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: MSVC Debug·Release CTest 각 27/27, GCC headless 17/17, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- 네이티브 검증: 최신 코드 기준 MSVC Debug·Release CTest 각 27/27, GCC headless 17/17, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 기본 실행: 순수 C++ 타이틀 장면으로 진입하고 Start→MapSelect→새 `GameSystem` playable 세션으로 전환한다. `--playable-scene`은 개발용 직접 진입, synthetic 장면은 smoke/`--diagnostic-scene`으로 분리했다.
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
-- 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas 통과
-- 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software의 gradient/clip은 실제 raster이며 glyph/mesh/pass 및 GPU 계열 고급 명령은 아직 계측 가능한 placeholder다.
-- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃, title presenter와 pointer/창 닫기/외부 링크 입력을 기본 앱 경로에 연결했다. MapSelect panel·취소·시작과 transactional playable 전환까지 동작하며 실제 문자열·메뉴별 콘텐츠는 아직 미완성이다.
-- Software 960×540 성능 게이트: 최신 Release 180-frame render p95 27.167ms, 33.33ms 예산 통과
+- 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas와 immutable 고정 UI shaped cache 통과
+- 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software는 gradient/clip과 resource-backed A8 glyph를 실제 raster하며 mesh/pass 및 SDL_GPU/GLES glyph·고급 명령은 아직 계측 가능한 placeholder다.
+- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃, title presenter와 pointer/창 닫기/외부 링크 입력을 기본 앱 경로에 연결했다. title/card/version과 MapSelect/Exit/External 고정 문자열, MapSelect 취소·시작과 transactional playable 전환까지 동작한다. 나머지 메뉴 본문·아이콘·preview는 아직 미완성이다.
+- Software 960×540 성능 게이트: 최신 Release 180-frame render p95 26.869ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 - 구현 전략: Windows 전체 기능 흐름을 breadth-first로 먼저 연결한 뒤 실제 결과물을 실행하며 화면별 시각·입력 fidelity를 반복 보완한다.
 
@@ -61,12 +61,12 @@
 - SDL_GPU의 sprite·text·effect·UI·overlay는 아직 solid geometry placeholder다. Windows SDL_GPU에서 실제 texture/glyph atlas, render graph와 overlay composite가 필요하다.
 - Android SDK/NDK와 iOS/macOS 환경은 현재 범위 밖이다. 모바일 준비 여부는 Windows native 완료 조건이나 blocker로 계산하지 않는다.
 - C++ 800-body 이동·타일 충돌, 현재 GameSystem 480-tick replay와 두 WAT scalar reference는 JS/WAT와 완전 일치한다. production legacy spatial grid/contact solve/projectile은 60-tick oracle만 동결됐고 C++ 이식이 Phase 4 종료 조건으로 남아 있다.
-- 2026-07-27 Computer Use 실기 감사에서 발견한 synthetic-only 통합 공백은 playable session bridge와 짧은 입력 latch로 보완했다. 현재 기본 실행은 native title shell이고 Start→MapSelect→맵·Core·Tower playable frame까지 이어진다. 실제 타이틀 text/logo/texture/effect, 메뉴별 오버레이 본문, 적·전투·웨이브는 아직 이식되지 않았다.
+- 2026-07-27 Computer Use 실기 감사에서 발견한 synthetic-only 통합 공백은 playable session bridge와 짧은 입력 latch로 보완했다. 현재 기본 실행은 native title이며 Start→MapSelect→맵·Core·Tower playable frame까지 이어진다. Pretendard title/card/MapSelect 고정 문자열은 실제로 표시되지만 logo·utility icon·Map preview·texture/effect, 나머지 메뉴 본문, 적·전투·웨이브는 아직 이식되지 않았다.
 - 타이틀 화면과 모든 도달 가능한 오버레이는 기존 JS 기준 실행기와 같은 기능·문구·레이어·입력·상태 흐름과 충분한 시각 fidelity를 제공해야 한다. C++ 코드는 JS 실행 순서나 내부 객체 구조를 원자적으로 복제하지 않으며, 결정적 골든은 관찰 가능한 회귀 기준으로 사용한다.
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없으므로 OS별 시스템 font fallback 대신 고정 vector/bitmap asset으로 교체해야 한다.
-- `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip은 실제 raster로 전환됐지만 glyph/mesh/pass와 SDL_GPU/GLES 고급 명령은 아직 marker placeholder이므로 실제 atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
-- text foundation은 45~930 variable weight, no-hinting grayscale raster와 고정-capacity glyph atlas까지 완료됐고 FramePacket glyph run 계약도 존재한다. 실제 UI 문자열 shaped cache와 backend atlas upload/draw는 아직 구현해야 한다.
-- `Application`이 `ui_runtime`과 title presenter를 소유하고 기본 frame branch에서 호출한다. Start→MapSelect→playable 전환은 강타입 map ID와 후보 세션 commit으로 연결됐다. 다만 `game_desktop`은 아직 `render_text`를 링크하지 않고 backend-neutral atlas resource upload seam도 없으며, 8개 title overlay·Debug/Settings control·floating 콘텐츠 본문은 구현되지 않았다.
+- `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip/A8 glyph는 실제 raster로 전환됐지만 mesh/pass와 SDL_GPU/GLES glyph·고급 명령은 아직 marker placeholder이므로 GPU atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
+- text foundation은 45~930 variable weight, no-hinting grayscale raster, 고정-capacity glyph atlas와 fixed UI `ShapedTextCache`까지 완료됐다. 64px A8 atlas와 shaped runs는 하나의 immutable generation snapshot이며 resize 때 재생성하지 않는다. 고정 catalog 밖 URL의 동적 preview와 SDL_GPU/GLES atlas upload/draw는 후속이다.
+- `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. Start→MapSelect→playable 전환은 강타입 map ID와 후보 세션 commit으로 연결됐다. `game_desktop`은 `render_text`를 링크하고 실행 파일 옆 원본 WOFF2/OFL을 읽는다. 8개 title overlay 중 Map/Exit/External의 텍스트 셸만 연결됐으며 Deck/Credits/Settings/Debug/dummy 본문·floating 콘텐츠는 구현되지 않았다.
 
 ## 검증 기록
 
@@ -216,7 +216,7 @@ clear-store-submit 2회 + background skip 1회 통과
 - FramePacket은 내부 text storage alias, 동시 builder, 잘못된 overlay session/source mask, 비유한 float, 잘못된 PMA, 비정상 viewport·UTF-8, 과도한 decode memory를 거부한다.
 - FramePacket build가 실패하거나 완료 전에 builder가 소멸하면 부분 명령을 모두 비워, 실패를 놓친 호출자가 불완전한 프레임을 렌더하지 못하게 한다. busy destination decode도 기존 build를 변경하지 않고 거부한다.
 - logical UI는 16:9 content rect에 동일한 X/Y 배율을 사용하고 ultrawide letterbox 밖 safe inset을 제거한다.
-- Software renderer는 `SDL_Surface` ARGB8888에 PMA로 같은 command stream을 실행하며 실제 texture/glyph 대신 결정적인 placeholder를 사용한다. dirty tile, glyph cache, 선택적 CPU blur는 Phase 7 범위다.
+- 당시 Software renderer는 `SDL_Surface` ARGB8888에 PMA로 같은 command stream을 실행하며 실제 texture/glyph 대신 결정적인 placeholder를 사용했다. 이후 A8 glyph만 실제 raster로 전환됐고 dirty tile·선택적 CPU blur는 계속 후속 범위다.
 - backend 중립 router는 auto `SDL_GPU → 선택적 GLES → Software`, 강제 GLES `GLES → Software`, 강제 Software 단독 순서를 고정하고 factory/init 예외와 runtime 실패를 C callback 밖으로 전파하지 않는다.
 - SDL_GPU backend는 bare `SDL_Window`을 독점 claim해 실제 Windows D3D12 swapchain clear/present와 background 제출 중단을 검증했다. 아직 shader pipeline과 command drawing이 없는 skeleton이므로 Phase 3 완료로 간주하지 않는다.
 - 약 25ms는 현재 PC의 최초 Release 프레임 참고치로 33.33ms 단일 프레임 기준은 충족하지만, p95와 모바일 장기 성능 합격을 의미하지 않는다.
@@ -268,7 +268,7 @@ MSVC Release p50/p95/p99: 약 0.071 / 0.079 / 0.085ms
 MSVC Debug·Release 및 GCC strict: 모두 exact parity 통과
 ```
 
-- SDL_GPU는 opaque/PMA/additive pipeline, persistent vertex/transfer buffer, copy/render pass와 실제 draw/submit을 구현했다. 현재 texture·glyph·효과 command는 결정적 solid placeholder로 계측한다.
+- SDL_GPU는 opaque/PMA/additive pipeline, persistent vertex/transfer buffer, copy/render pass와 실제 draw/submit을 구현했다. 해당 배치 시점부터 texture·glyph·효과 command는 결정적 solid placeholder로 계측하며, 이 상태는 아직 유지된다.
 - GLES는 32-segment ellipse, 코너별 6-segment rounded rect, 방향성 두께 line quad와 butt/square/round cap, 회전 pivot을 실제 geometry로 처리한다.
 - C++ `BodySoA`는 setup 때 고정 capacity를 확보하고 fixed tick에서 배열을 성장시키지 않는다. `TileCollisionSolver`는 JS의 row/column 순회, 최대 8회 보정, penetration tie-break와 inward normal velocity 제거 순서를 보존한다.
 - 첫 C++ 실행은 operation count는 같았지만 Windows CRT `exp()`가 V8 `Math.exp()`보다 1 ULP 높아 state hash가 달랐다. V8 12.4.254의 fdlibm 경로를 보존한 `deterministicExp()`로 바꾼 뒤 240개 tick record 전체 digest가 완전 일치했다.
@@ -445,7 +445,7 @@ SHA-256: DBBFD9862CC8513C40D307D892A446B33EF4767E6423A3F74A913B8A210B91FD
 ```
 
 - 실제 로드는 `game/index.html`→`game/style.css`→원본 WOFF2 경로이며, `font/pretendardvariable.css`는 미참조이고 존재하지 않는 하위 경로를 가리키는 중복 파일이다.
-- 감사 시점에는 네이티브 FreeType/HarfBuzz/Brotli와 glyph atlas가 없었으며 세 backend 모두 text/sprite/effect/overlay placeholder를 사용했다. 이후 아래의 text foundation을 추가했지만 실제 atlas/backend drawing은 아직 placeholder다.
+- 감사 시점에는 네이티브 FreeType/HarfBuzz/Brotli와 glyph atlas가 없었으며 세 backend 모두 text/sprite/effect/overlay placeholder를 사용했다. 이후 text foundation을 추가했고, 실제 Software atlas drawing은 아래 후속 배치에서 연결했다.
 - 구현 순서를 원본 asset/hash/license 고정 → 공통 shape/raster/glyph atlas → `FramePacket v2` glyph run/vector/effect 계약 → SDL_GPU render graph → GLES/Software 동등 경로 → scene/UI 상태기로 확정한다.
 
 ### 2026-07-27 — 타이틀·오버레이 parity 계약과 UI 입력 seam
@@ -494,7 +494,7 @@ total advance 26.6: 24388
 - Pretendard에 없는 `🏆`·`📖`는 운영체제 font fallback을 사용하지 않고 고정 asset 대체 정책으로 분류했다. OS별 emoji 차이를 동일 구현으로 오인하지 않는다.
 - 이후 32px·wght 300/700 grayscale raster와 고정-capacity atlas까지 추가했다. Pretendard source FNV-1a는 `3f4eab9610b4cfb3`, 첫 `설` raster는 `a432e67001540319`, 256×256 세 glyph atlas pixel hash는 `ced22a0a2891f249`로 MSVC Debug·Release와 GCC strict에서 일치한다.
 - atlas는 font source fingerprint+glyph index+pixel size+weight를 key로 하고 pixel/entry/open-address lookup 저장소를 생성 때 모두 확보한다. 중복, entry capacity/공간 초과와 clear 재사용은 실패/성공 시 generation과 pixel의 transactional 계약을 지킨다.
-- 실제 UI 문자열 shaped cache와 backend atlas texture upload·draw는 후속 작업이다.
+- 이 foundation 배치 시점에는 실제 UI 문자열 shaped cache와 backend atlas texture upload·draw를 후속 작업으로 남겼다.
 
 ### 2026-07-27 — FramePacket v2 UI 렌더 schema
 
@@ -513,7 +513,7 @@ Software Release gate: p95 24.698ms / tracked allocation 0 / PASS
 - 기존 kind 0~6과 capacity prefix를 보존한 채 `GlyphRun`, `TexturedMesh`, `Gradient`, `Clip`, `Pass` kind 7~11과 glyph/mesh/stop 연속 저장소를 추가했다.
 - fixed-capacity builder는 부속 저장소 부족·입력 alias·32-bit range overflow를 부분 publish 없이 거부한다. decoder는 command/aux/wire/decoded-memory 상한을 allocation 전에 검사하고 모든 실패에서 destination을 보존한다.
 - validation은 UTF-8·PMA·유한값·연속 storage range뿐 아니라 clip stack, pass session/destination, capture dependency/source anchor와 render order를 검사한다.
-- SDL_GPU/GLES/Software가 신규 kind를 누락 없이 dispatch하지만 현재는 결정적 marker geometry이며 `placeholderCommands`로 별도 계측한다. 이는 wire/render seam 완료이지 타이틀 픽셀 parity 완료가 아니다.
+- 이 schema 배치 시점에는 SDL_GPU/GLES/Software가 신규 kind를 결정적 marker geometry와 `placeholderCommands`로 dispatch했다. 이후 Software glyph/gradient/clip만 실제 구현됐으며, wire/render seam 자체를 타이틀 픽셀 parity 완료로 보지 않는다.
 
 ### 2026-07-27 — FramePacket v2 검증 경계 보강
 
@@ -579,7 +579,35 @@ title→map-select→playable auto/software smoke: 통과
 - Start 카드는 responsive MapSelect panel을 열며 취소·시작 버튼은 실제 pointer-release hit geometry를 공유한다. QuickStart는 원본 JS와 같이 준비 중 dummy로 유지한다.
 - 시작 확인은 overlay sequence와 map ID를 담은 one-shot effect다. 중복 확인을 잠그고, 세션 생성이나 검증이 실패하면 같은 overlay의 lock을 풀어 재시도할 수 있다.
 - `Application`은 후보 `GameSystem`을 먼저 만든 뒤 movement input, scheduler clock, frame packet과 title interaction/layout/backdrop cache를 정리하고 `sceneMode`를 마지막에 playable로 commit한다. 실패 전에는 기존 title 상태를 변경하지 않는다.
-- 두 Desktop smoke는 실제 title frame, 열린 MapSelect shell frame, confirm 버튼의 controller pointer down/up, playable frame을 연속으로 검증한다. 상충하는 scene CLI 옵션은 마지막 옵션이 승리하며 별도 정규식 smoke가 실제 선택 로그를 확인한다. MapSelect의 preview·설명·실제 문자열은 아직 missing capability로 남기므로 화면 fidelity 완료를 의미하지 않는다.
+- 두 Desktop smoke는 실제 title frame, 열린 MapSelect shell frame, confirm 버튼의 controller pointer down/up, playable frame을 연속으로 검증한다. 상충하는 scene CLI 옵션은 마지막 옵션이 승리하며 별도 정규식 smoke가 실제 선택 로그를 확인한다. 당시 MapSelect의 preview·설명·실제 문자열은 missing capability였고, 다음 text 배치에서 문자열만 해소했다.
+
+### 2026-07-27 — Pretendard shaped cache와 Software 실제 glyph 렌더
+
+```text
+MSVC Debug 전체 CTest: 27/27 통과
+MSVC Release 전체 CTest: 27/27 통과
+GCC 16.1 headless strict 전체 CTest: 17/17 통과
+
+font stack/cache: 4/4 통과
+Software renderer: 12/12 통과
+title scene: 13/13 통과
+renderer router: 9/9 통과
+title / title→MapSelect→playable Software smoke: 통과
+
+Software Release gate, 960×540
+render() p95: 26.869ms / 33.330ms
+tracked C++ allocations: 0
+PASS
+```
+
+- `ShapedTextCache`는 Pretendard WOFF2로 한국어·영어 고정 UI catalog를 64px에서 shape/raster하고, 2048×2048 A8 atlas와 glyph run view를 하나의 immutable generation snapshot으로 publish한다. 중복 key·누락 glyph·allocation/atlas 실패는 후보만 폐기하며 기존 snapshot을 변경하지 않는다.
+- `RenderResourcesView`는 atlas bytes를 wire packet에 복제하지 않고 동일 frame의 동기 backend 호출에 빌려 준다. snapshot generation과 atlas generation이 일치해야 하며 Router가 resource view를 선택 backend까지 그대로 전달한다.
+- Software rasterizer는 nearest/linear A8 sampling, PMA coverage, projective transform, command-local clip과 중첩 clip stack을 실제 처리한다. missing atlas·invalid resource/page는 명시적 render 실패이며 반복 render heap allocation은 0이다.
+- 타이틀 카드 5종과 설명, 버전/패치 링크, MapSelect·Exit·External 경고의 고정 문자열을 `GlyphRunCommand`로 연결했다. viewport 1280→2560과 UI scale 150%에서 target typography size와 transform이 함께 변하는 것을 검증했다.
+- SDL_GPU/GLES는 아직 glyph atlas를 구현하지 않았으므로 title이 glyph capability를 요구할 때 auto Router는 Software를 선택한다. playable 직접 진입은 기존 GPU 후보를 계속 사용할 수 있다.
+- 원본 WOFF2/OFL은 configure hash 검증 뒤 실행 파일 옆 `runtime_assets`에 복사하고 `SDL_GetBasePath()` 기준으로 읽는다. 작업 디렉터리와 시스템 font에 의존하지 않는다.
+- production에서 도달 가능한 외부 URL 6개는 constexpr mapping과 고정 preview run을 사용한다. 다른 유효 URL은 경고/effect를 유지하고 missing text capability를 보고하지만 preview는 표시하지 않으며, generic transient shaping은 후속 작업이다.
+- 일반 Windows Computer Use로 Release 기본 실행을 직접 열어 title text, MapSelect text/buttons와 Start→playable 전환을 확인했다. logo·utility icon은 여전히 도형 placeholder이고 Map preview는 비어 있으며 작은 본문 glyph의 시각 보정이 필요하다.
 
 ## 현재 작업
 
@@ -606,7 +634,9 @@ title→map-select→playable auto/software smoke: 통과
 - [x] 실제 Loading/Title/overlay 21개 결정적 NW.js pixel golden 캡처·승인 및 exact check
 - [x] 원본 WOFF2/OFL asset 고정과 공통 FreeType/HarfBuzz memory-face/shaping foundation
 - [x] 다중 weight grayscale glyph raster와 고정-capacity source-keyed atlas
-- [ ] shaped-text cache, atlas backend upload와 세 backend text drawing
+- [x] fixed UI shaped-text cache와 immutable A8 atlas resource snapshot
+- [x] Software backend의 실제 A8 glyph sampling/PMA/transform/clip
+- [ ] SDL_GPU/GLES atlas upload와 glyph drawing, generic transient text
 - [x] `FramePacket v2` glyph/projective mesh/gradient/clip/render-pass·중첩 capture wire/build/validation 계약
 - [x] 순수 C++ 가변 시간 타이틀·keyed overlay 상태기와 light/dark·safe-area·entrance 레이아웃 기반
 - [x] title presenter와 기본 앱 진입, pointer·종료 확인·버전/외부 링크 입력 shell 연결

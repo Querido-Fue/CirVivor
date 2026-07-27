@@ -1769,7 +1769,10 @@ bool GlesBackend::resize(
     return true;
 }
 
-bool GlesBackend::render(const FramePacket& frame) noexcept {
+bool GlesBackend::render(
+    const FramePacket& frame,
+    const RenderResourcesView
+) noexcept {
     lastStats_ = {};
     lastStats_.submittedCommands = static_cast<std::uint64_t>(frame.commandStream().size());
     if (implementation_ == nullptr) {

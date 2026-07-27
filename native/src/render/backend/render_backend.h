@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render/common/render_resources.h"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -43,6 +45,8 @@ struct RenderCapabilities final {
     // 0은 present가 callback을 확실히 pace하는 backend만 사용합니다. 그 외에는
     // SDL main callback을 이 상한으로 제한해 VSync 협상 실패 시 busy-loop를 막습니다.
     std::uint16_t mainCallbackRateLimitHz = 60;
+    // true인 backend만 GlyphRunCommand가 참조하는 A8 atlas를 실제로 샘플링합니다.
+    bool supportsGlyphRunAtlas = false;
 
     bool operator==(const RenderCapabilities&) const = default;
 };
@@ -91,7 +95,10 @@ public:
         std::int32_t drawableWidth,
         std::int32_t drawableHeight
     ) noexcept = 0;
-    [[nodiscard]] virtual bool render(const FramePacket& frame) noexcept = 0;
+    [[nodiscard]] virtual bool render(
+        const FramePacket& frame,
+        RenderResourcesView resources = {}
+    ) noexcept = 0;
     [[nodiscard]] virtual bool onBackground() noexcept = 0;
     [[nodiscard]] virtual bool onForeground() noexcept = 0;
     [[nodiscard]] virtual bool purgeTransientResources() noexcept = 0;

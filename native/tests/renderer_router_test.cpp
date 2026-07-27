@@ -70,6 +70,7 @@ struct FakePlanEntry final {
     InitializeMode initializeMode = InitializeMode::succeed;
     RenderBackendKind reportedKind = RenderBackendKind::software;
     bool operationsSucceed = true;
+    bool supportsGlyphRunAtlas = false;
     std::string reason;
 };
 
@@ -86,6 +87,11 @@ struct FakeState final {
     std::int32_t lastWidth = 0;
     std::int32_t lastHeight = 0;
     const FramePacket* lastFrame = nullptr;
+    std::size_t lastAlpha8ResourceCount = 0U;
+    cirvivor::render::ResourceId lastAlpha8ResourceId =
+        cirvivor::render::invalid_resource_id;
+    std::uint64_t lastAlpha8ResourceGeneration = 0U;
+    std::uint8_t lastAlpha8FirstPixel = 0U;
 };
 
 class FakeBackend final : public IRenderBackend {
@@ -101,6 +107,7 @@ public:
         capabilities_.hardwareAccelerated = plan_.reportedKind != RenderBackendKind::software;
         capabilities_.maximumTextureSize = 8'192;
         capabilities_.maximumSampleCount = 4;
+        capabilities_.supportsGlyphRunAtlas = plan_.supportsGlyphRunAtlas;
         capabilities_.backendName = std::string(
             cirvivor::render::backend::renderBackendKindName(plan_.reportedKind)
         );
@@ -145,9 +152,21 @@ public:
         return plan_.operationsSucceed;
     }
 
-    [[nodiscard]] bool render(const FramePacket& frame) noexcept override {
+    [[nodiscard]] bool render(
+        const FramePacket& frame,
+        const cirvivor::render::RenderResourcesView resources = {}
+    ) noexcept override {
         ++state_->renderCalls[backendIndex(requestedKind_)];
         state_->lastFrame = &frame;
+        state_->lastAlpha8ResourceCount = resources.alpha8Textures().size();
+        if (!resources.alpha8Textures().empty()) {
+            const auto& first = resources.alpha8Textures().front();
+            state_->lastAlpha8ResourceId = first.id;
+            state_->lastAlpha8ResourceGeneration = first.generation;
+            state_->lastAlpha8FirstPixel = first.pixels.empty()
+                ? 0U
+                : first.pixels.front();
+        }
         return plan_.operationsSucceed;
     }
 
@@ -419,6 +438,51 @@ void testKindMismatchIsRejectedAndRouterOwnsShutdown() {
     REQUIRE(harness.state->shutdownCalls[softwareIndex] == 1U);
 }
 
+void testGlyphAtlasCapabilityGateAndResourceForwarding() {
+    using cirvivor::render::Alpha8TextureResourceView;
+    using cirvivor::render::RenderResourcesView;
+    using cirvivor::render::stableResourceId;
+
+    FakeHarness harness;
+    harness.entry(RenderBackendKind::software).supportsGlyphRunAtlas = true;
+    RendererRouter router(harness.factory());
+    REQUIRE(router.initialize({RendererPreference::automatic, true, true}));
+    REQUIRE(router.selectedBackend() == RenderBackendKind::software);
+    REQUIRE(harness.state->factoryRequests == std::vector<RenderBackendKind>({
+        RenderBackendKind::sdlGpu,
+        RenderBackendKind::gles,
+        RenderBackendKind::software
+    }));
+    const auto& attempts = router.lastDiagnostics().attempts;
+    REQUIRE(attempts.size() == 3U);
+    REQUIRE(attempts[0].outcome == BackendAttemptOutcome::unsupportedCapabilities);
+    REQUIRE(attempts[1].outcome == BackendAttemptOutcome::unsupportedCapabilities);
+    REQUIRE(attempts[2].outcome == BackendAttemptOutcome::initialized);
+    REQUIRE(harness.state->initializeCalls[backendIndex(RenderBackendKind::sdlGpu)] == 1U);
+    REQUIRE(harness.state->initializeCalls[backendIndex(RenderBackendKind::gles)] == 1U);
+    REQUIRE(harness.state->shutdownCalls[backendIndex(RenderBackendKind::sdlGpu)] == 1U);
+    REQUIRE(harness.state->shutdownCalls[backendIndex(RenderBackendKind::gles)] == 1U);
+    REQUIRE(router.capabilities() != nullptr);
+    REQUIRE(router.capabilities()->supportsGlyphRunAtlas);
+
+    constexpr auto atlasId = stableResourceId("test/router-a8");
+    const std::array<std::uint8_t, 4> pixels{17U, 34U, 51U, 68U};
+    const std::array resources{
+        Alpha8TextureResourceView{atlasId, 23U, 2U, 2U, 2U, pixels}
+    };
+    const RenderResourcesView view(resources);
+    REQUIRE(view.isValid());
+    FramePacket frame;
+    REQUIRE(router.render(frame, view));
+    const std::size_t softwareIndex = backendIndex(RenderBackendKind::software);
+    REQUIRE(harness.state->renderCalls[softwareIndex] == 1U);
+    REQUIRE(harness.state->lastFrame == &frame);
+    REQUIRE(harness.state->lastAlpha8ResourceCount == 1U);
+    REQUIRE(harness.state->lastAlpha8ResourceId == atlasId);
+    REQUIRE(harness.state->lastAlpha8ResourceGeneration == 23U);
+    REQUIRE(harness.state->lastAlpha8FirstPixel == 17U);
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
@@ -435,7 +499,11 @@ int main() {
         TestCase{"all failure null state", testAllFailuresLeaveSafeNullState},
         TestCase{"lifecycle forwarding", testLifecycleForwardingAndReinitializeGuard},
         TestCase{"operation failure propagation", testBackendOperationFailuresPropagate},
-        TestCase{"kind mismatch and RAII", testKindMismatchIsRejectedAndRouterOwnsShutdown}
+        TestCase{"kind mismatch and RAII", testKindMismatchIsRejectedAndRouterOwnsShutdown},
+        TestCase{
+            "glyph atlas capability gate and resource forwarding",
+            testGlyphAtlasCapabilityGateAndResourceForwarding
+        }
     };
 
     std::size_t passed = 0;

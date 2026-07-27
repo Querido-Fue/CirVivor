@@ -9,6 +9,10 @@ option(CIRVIVOR_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehavior
 option(CIRVIVOR_BUILD_SDL_APP "Build the SDL3 desktop application shell." ON)
 option(CIRVIVOR_BUILD_TEXT_STACK "Build the pinned FreeType and HarfBuzz text stack." ON)
 
+if(CIRVIVOR_BUILD_SDL_APP AND NOT CIRVIVOR_BUILD_TEXT_STACK)
+    message(FATAL_ERROR "The SDL desktop application requires CIRVIVOR_BUILD_TEXT_STACK=ON.")
+endif()
+
 function(cirvivor_configure_target target_name)
     target_compile_features(${target_name} PUBLIC cxx_std_20)
     set_target_properties(${target_name} PROPERTIES
@@ -133,6 +137,7 @@ if(CIRVIVOR_BUILD_TEXT_STACK)
     add_library(render_text STATIC
         src/render/text/font_face.cpp
         src/render/text/glyph_atlas.cpp
+        src/render/text/shaped_text_cache.cpp
     )
     target_include_directories(render_text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(render_text PRIVATE freetype harfbuzz)
@@ -333,6 +338,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
         src/platform/sdl/audio/sdl_playback_device.cpp
         src/platform/sdl/sdl_lifecycle.cpp
         src/platform/sdl/sdl_platform_event.cpp
+        src/platform/sdl/sdl_runtime_asset.cpp
         src/platform/sdl/storage/sdl_user_storage.cpp
         src/platform/sdl/sdl_window.cpp
     )
@@ -356,9 +362,24 @@ if(CIRVIVOR_BUILD_SDL_APP)
             renderer_gles
             renderer_sdl_gpu
             renderer_software
+            render_text
             SDL3::SDL3
     )
     cirvivor_configure_target(game_desktop)
+
+    add_custom_command(
+        TARGET game_desktop POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_FILE_DIR:game_desktop>/runtime_assets/font"
+            "$<TARGET_FILE_DIR:game_desktop>/runtime_assets/license"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CIRVIVOR_PRETENDARD_FONT_ASSET}"
+            "$<TARGET_FILE_DIR:game_desktop>/runtime_assets/font/PretendardVariable.woff2"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CIRVIVOR_PRETENDARD_LICENSE_ASSET}"
+            "$<TARGET_FILE_DIR:game_desktop>/runtime_assets/license/pretendard.txt"
+        VERBATIM
+    )
 
     if(BUILD_TESTING)
         add_executable(sdl_platform_event_tests

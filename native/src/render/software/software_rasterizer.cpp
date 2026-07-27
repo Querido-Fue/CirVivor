@@ -2815,11 +2815,211 @@ private:
     );
 }
 
+[[nodiscard]] std::uint8_t sampleAlpha8Nearest(
+    const Alpha8TextureResourceView& atlas,
+    const double u,
+    const double v
+) noexcept {
+    const double sourceX = std::clamp(
+        u * static_cast<double>(atlas.width),
+        0.0,
+        static_cast<double>(atlas.width) - 1.0
+    );
+    const double sourceY = std::clamp(
+        v * static_cast<double>(atlas.height),
+        0.0,
+        static_cast<double>(atlas.height) - 1.0
+    );
+    const auto x = static_cast<std::uint32_t>(std::floor(sourceX));
+    const auto y = static_cast<std::uint32_t>(std::floor(sourceY));
+    return atlas.pixels[static_cast<std::size_t>(y) * atlas.rowPitch + x];
+}
+
+[[nodiscard]] std::uint8_t sampleAlpha8Linear(
+    const Alpha8TextureResourceView& atlas,
+    const double u,
+    const double v
+) noexcept {
+    const double sourceX = std::clamp(
+        u * static_cast<double>(atlas.width) - 0.5,
+        0.0,
+        static_cast<double>(atlas.width) - 1.0
+    );
+    const double sourceY = std::clamp(
+        v * static_cast<double>(atlas.height) - 0.5,
+        0.0,
+        static_cast<double>(atlas.height) - 1.0
+    );
+    const auto x0 = static_cast<std::uint32_t>(std::floor(sourceX));
+    const auto y0 = static_cast<std::uint32_t>(std::floor(sourceY));
+    const std::uint32_t x1 = std::min(x0 + 1U, atlas.width - 1U);
+    const std::uint32_t y1 = std::min(y0 + 1U, atlas.height - 1U);
+    const double amountX = sourceX - static_cast<double>(x0);
+    const double amountY = sourceY - static_cast<double>(y0);
+    const auto sample = [&atlas](
+        const std::uint32_t x,
+        const std::uint32_t y
+    ) noexcept {
+        return static_cast<double>(
+            atlas.pixels[static_cast<std::size_t>(y) * atlas.rowPitch + x]
+        );
+    };
+    const double top = sample(x0, y0) * (1.0 - amountX)
+        + sample(x1, y0) * amountX;
+    const double bottom = sample(x0, y1) * (1.0 - amountX)
+        + sample(x1, y1) * amountX;
+    return static_cast<std::uint8_t>(std::clamp(
+        top * (1.0 - amountY) + bottom * amountY + 0.5,
+        0.0,
+        255.0
+    ));
+}
+
+[[nodiscard]] bool normalizedUvIsValid(const RectF uv) noexcept {
+    return std::isfinite(uv.x)
+        && std::isfinite(uv.y)
+        && std::isfinite(uv.width)
+        && std::isfinite(uv.height)
+        && uv.x >= 0.0F
+        && uv.y >= 0.0F
+        && uv.width >= 0.0F
+        && uv.height >= 0.0F
+        && static_cast<double>(uv.x) + uv.width <= 1.0 + 1.0e-6
+        && static_cast<double>(uv.y) + uv.height <= 1.0 + 1.0e-6;
+}
+
+[[nodiscard]] bool glyphRunReferencesAreValid(
+    const FramePacket& frame,
+    const GlyphRunCommand& command,
+    const Alpha8TextureResourceView& atlas
+) noexcept {
+    if (!(command.pixelsPerEm > 0.0F) || !std::isfinite(command.pixelsPerEm)) {
+        return false;
+    }
+    const std::span<const GlyphInstance> glyphs = frame.glyphInstances().subspan(
+        static_cast<std::size_t>(command.glyphs.offset),
+        static_cast<std::size_t>(command.glyphs.count)
+    );
+    for (const GlyphInstance& glyph : glyphs) {
+        if (glyph.atlasPage != 0U || !normalizedUvIsValid(glyph.uv)
+            || !std::isfinite(glyph.position.x) || !std::isfinite(glyph.position.y)
+            || !std::isfinite(glyph.offset.x) || !std::isfinite(glyph.offset.y)) {
+            return false;
+        }
+        const double glyphWidth = static_cast<double>(glyph.uv.width) * atlas.width;
+        const double glyphHeight = static_cast<double>(glyph.uv.height) * atlas.height;
+        if (!finiteCoordinate(glyphWidth) || !finiteCoordinate(glyphHeight)
+            || glyphWidth < 0.0 || glyphHeight < 0.0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool drawGlyphRun(
+    RasterCanvas& canvas,
+    const FramePacket& frame,
+    const GlyphRunCommand& command,
+    const Alpha8TextureResourceView& atlas
+) noexcept {
+    const std::span<const GlyphInstance> glyphs = frame.glyphInstances().subspan(
+        static_cast<std::size_t>(command.glyphs.offset),
+        static_cast<std::size_t>(command.glyphs.count)
+    );
+    const RectD commandClip{
+        command.clipBounds.x,
+        command.clipBounds.y,
+        static_cast<double>(command.clipBounds.x) + command.clipBounds.width,
+        static_cast<double>(command.clipBounds.y) + command.clipBounds.height
+    };
+    if (command.clipEnabled != 0U
+        && (!finitePoint({commandClip.left, commandClip.top})
+            || !finitePoint({commandClip.right, commandClip.bottom})
+            || commandClip.right < commandClip.left
+            || commandClip.bottom < commandClip.top)) {
+        return false;
+    }
+
+    for (const GlyphInstance& glyph : glyphs) {
+        const double glyphWidth = static_cast<double>(glyph.uv.width) * atlas.width;
+        const double glyphHeight = static_cast<double>(glyph.uv.height) * atlas.height;
+        if (glyphWidth == 0.0 || glyphHeight == 0.0) {
+            continue;
+        }
+        const RectF localBounds{
+            command.origin.x + glyph.position.x + glyph.offset.x,
+            command.origin.y + glyph.position.y + glyph.offset.y,
+            static_cast<float>(glyphWidth),
+            static_cast<float>(glyphHeight)
+        };
+        ProjectiveGeometry geometry;
+        if (!makeProjectiveGeometry(
+                canvas.mapper(),
+                command.header.coordinateSpace,
+                command.transform,
+                localBounds,
+                geometry
+            )) {
+            return false;
+        }
+        const PixelBounds pixels = canvas.rasterBounds(quadBounds(geometry.screenQuad));
+        if (pixels.isEmpty()) {
+            continue;
+        }
+        const RectD localRect{
+            localBounds.x,
+            localBounds.y,
+            static_cast<double>(localBounds.x) + localBounds.width,
+            static_cast<double>(localBounds.y) + localBounds.height
+        };
+        for (int y = pixels.top; y < pixels.bottom; ++y) {
+            for (int x = pixels.left; x < pixels.right; ++x) {
+                PointD local;
+                if (!projectPoint(
+                        geometry.screenToLocal,
+                        static_cast<double>(x) + 0.5,
+                        static_cast<double>(y) + 0.5,
+                        local
+                    )
+                    || !pointInsideRoundedBounds(local, localRect, 0.0)
+                    || (command.clipEnabled != 0U
+                        && !pointInsideRoundedBounds(local, commandClip, 0.0))) {
+                    continue;
+                }
+                const double localU = (local.x - localRect.left) / glyphWidth;
+                const double localV = (local.y - localRect.top) / glyphHeight;
+                const double atlasU = static_cast<double>(glyph.uv.x)
+                    + localU * glyph.uv.width;
+                const double atlasV = static_cast<double>(glyph.uv.y)
+                    + localV * glyph.uv.height;
+                const std::uint8_t coverage = command.sampling == SamplingMode::nearest
+                    ? sampleAlpha8Nearest(atlas, atlasU, atlasV)
+                    : sampleAlpha8Linear(atlas, atlasU, atlasV);
+                if (coverage == 0U) {
+                    continue;
+                }
+                canvas.blendAt(
+                    x,
+                    y,
+                    packColor(withOpacity(
+                        command.color,
+                        static_cast<float>(coverage) / 255.0F
+                    )),
+                    command.header.blendMode
+                );
+            }
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] bool dispatchCommand(
     RasterCanvas& canvas,
     const FramePacket& frame,
+    const RenderResourcesView resources,
     const CommandRef reference,
-    bool& placeholder
+    bool& placeholder,
+    RasterError& resourceError
 ) noexcept {
     const std::size_t index = static_cast<std::size_t>(reference.index);
     switch (reference.kind) {
@@ -2849,22 +3049,24 @@ private:
             return index < frame.overlays().size()
                 && drawOverlay(canvas, frame.overlays()[index]);
         case CommandKind::glyphRun: {
-            placeholder = true;
             if (index >= frame.glyphRuns().size()) {
                 return false;
             }
             const GlyphRunCommand& command = frame.glyphRuns()[index];
-            return drawV2Placeholder(
-                canvas,
-                command.header,
-                {
-                    command.origin.x,
-                    command.origin.y - command.pixelsPerEm,
-                    command.pixelsPerEm * 0.62F * static_cast<float>(command.glyphs.count),
-                    command.pixelsPerEm
-                },
-                command.color
-            );
+            const Alpha8TextureResourceView* const atlas =
+                resources.findAlpha8(command.glyphAtlasId);
+            if (atlas == nullptr) {
+                resourceError = RasterError::missingGlyphAtlas;
+                return false;
+            }
+            if (!glyphRunReferencesAreValid(frame, command, *atlas)) {
+                resourceError = RasterError::invalidGlyphAtlasReference;
+                return false;
+            }
+            if (!drawGlyphRun(canvas, frame, command, *atlas)) {
+                return false;
+            }
+            return true;
         }
         case CommandKind::texturedMesh: {
             placeholder = true;
@@ -2957,7 +3159,8 @@ RasterError clearSurface(
 
 RasterResult rasterFrame(
     SDL_Surface& surface,
-    const FramePacket& frame
+    const FramePacket& frame,
+    const RenderResourcesView resources
 ) noexcept {
     if (!surfaceIsUsable(surface)) {
         return {RasterError::invalidSurface, 0, 0, 0};
@@ -2965,6 +3168,9 @@ RasterResult rasterFrame(
     SurfaceAccess access(surface);
     if (!access.isValid()) {
         return {RasterError::surfaceLockFailed, 0, 0, 0};
+    }
+    if (!resources.isValid()) {
+        return {RasterError::invalidResources, 0, 0, frame.commandStream().size()};
     }
     RasterCanvas canvas(surface, access, frame.viewport());
     if (!canvas.isValid()) {
@@ -2980,7 +3186,15 @@ RasterResult rasterFrame(
     RasterResult result;
     for (const CommandRef reference : frame.commandStream()) {
         bool placeholder = false;
-        if (dispatchCommand(canvas, frame, reference, placeholder)) {
+        RasterError resourceError = RasterError::none;
+        if (dispatchCommand(
+                canvas,
+                frame,
+                resources,
+                reference,
+                placeholder,
+                resourceError
+            )) {
             ++result.renderedCommands;
             if (placeholder) {
                 ++result.placeholderCommands;
@@ -2989,6 +3203,10 @@ RasterResult rasterFrame(
             ++result.skippedCommands;
             if (placeholder) {
                 ++result.placeholderCommands;
+            }
+            if (resourceError != RasterError::none) {
+                result.error = resourceError;
+                break;
             }
         }
     }

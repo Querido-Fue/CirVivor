@@ -144,6 +144,15 @@ bool RendererRouter::initialize(const RendererSelection& selection) {
             continue;
         }
 
+        if (selection.requiresGlyphRunAtlas
+            && !candidate->capabilities().supportsGlyphRunAtlas) {
+            diagnostic.outcome = BackendAttemptOutcome::unsupportedCapabilities;
+            diagnostic.reason = "backend does not support A8 glyph atlas rendering";
+            candidate->shutdown();
+            lastDiagnostics_.attempts.push_back(std::move(diagnostic));
+            continue;
+        }
+
         diagnostic.outcome = BackendAttemptOutcome::initialized;
         diagnostic.reason = "backend initialized";
         lastDiagnostics_.attempts.push_back(std::move(diagnostic));
@@ -173,11 +182,14 @@ bool RendererRouter::resize(
     return activeBackend_->resize(drawableWidth, drawableHeight);
 }
 
-bool RendererRouter::render(const FramePacket& frame) noexcept {
+bool RendererRouter::render(
+    const FramePacket& frame,
+    const RenderResourcesView resources
+) noexcept {
     if (activeBackend_ == nullptr) {
         return false;
     }
-    return activeBackend_->render(frame);
+    return activeBackend_->render(frame, resources);
 }
 
 bool RendererRouter::onBackground() noexcept {

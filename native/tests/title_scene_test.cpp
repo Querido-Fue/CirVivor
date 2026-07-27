@@ -1,4 +1,5 @@
 #include "render/frontend/title_scene.h"
+#include "render/text/title_text_catalog.h"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -214,6 +216,70 @@ void advanceInSteps(
     }
     return result;
 }
+
+struct SyntheticTitleTextResources final {
+    static constexpr std::uint64_t generation = 19U;
+    static constexpr cirvivor::render::ResourceId fontId =
+        cirvivor::render::stableResourceId("test/title-font");
+    static constexpr cirvivor::render::ResourceId atlasId =
+        cirvivor::render::stableResourceId("test/title-a8-atlas");
+
+    std::array<std::uint8_t, 1> atlasPixels{255U};
+    std::array<cirvivor::render::GlyphInstance,
+        cirvivor::render::text::title_text_catalog.size()> glyphs{};
+    std::array<cirvivor::render::PreShapedTextRunView,
+        cirvivor::render::text::title_text_catalog.size()> runs{};
+    std::array<cirvivor::render::Alpha8TextureResourceView, 1> resources{};
+
+    SyntheticTitleTextResources() noexcept {
+        for (std::size_t index = 0U; index < runs.size(); ++index) {
+            const auto& entry = cirvivor::render::text::title_text_catalog[index];
+            glyphs[index] = {
+                static_cast<std::uint32_t>(index + 1U),
+                0U,
+                {0.0F, -48.0F},
+                {32.0F, 0.0F},
+                {},
+                {0.0F, 0.0F, 1.0F, 1.0F}
+            };
+            runs[index] = {
+                cirvivor::render::text::titleTextKey(
+                    entry.semantic,
+                    cirvivor::render::UiTextLocale::korean
+                ),
+                fontId,
+                atlasId,
+                64U,
+                32.0F,
+                48.0F,
+                16.0F,
+                std::span<const cirvivor::render::GlyphInstance>(&glyphs[index], 1U)
+            };
+        }
+        resources[0] = {
+            atlasId,
+            generation,
+            1U,
+            1U,
+            1U,
+            atlasPixels
+        };
+    }
+
+    [[nodiscard]] cirvivor::render::PreShapedTextResourcesView view(
+        const std::size_t runCount = cirvivor::render::text::title_text_catalog.size()
+    ) const noexcept {
+        const std::size_t boundedCount = std::min(runCount, runs.size());
+        return {
+            generation,
+            std::span<const cirvivor::render::PreShapedTextRunView>(
+                runs.data(),
+                boundedCount
+            ),
+            cirvivor::render::RenderResourcesView(resources)
+        };
+    }
+};
 
 [[nodiscard]] bool capacityContains(
     const FramePacketCapacity outer,
@@ -1283,12 +1349,14 @@ void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
     const FramePacketCapacity required = titleSceneCapacity(input);
     const FramePacketCapacity maximum = maximumTitleSceneCapacity();
     REQUIRE(capacityContains(maximum, required));
-    REQUIRE(maximum.commandCount == 87U);
+    REQUIRE(maximum.commandCount == 119U);
     REQUIRE(maximum.lineCount == 3U);
     REQUIRE(maximum.uiCount == 32U);
     REQUIRE(maximum.overlayCount == 20U);
     REQUIRE(maximum.clipCount == 12U);
     REQUIRE(maximum.passCount == 16U);
+    REQUIRE(maximum.glyphRunCount == 32U);
+    REQUIRE(maximum.glyphInstanceCount == 1'024U);
 
     FramePacket packet(maximum);
     allocation_probe::count = 0U;
@@ -1312,6 +1380,248 @@ void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
         TitleSceneMissingCapability::debugOverlayShell
     ));
     REQUIRE(second.commandStats.titleOverlayContentCommands == 0U);
+}
+
+void testResourceBackedTitleOverlayPartialAndResponsiveText() {
+    using cirvivor::render::UiTextLocale;
+    using cirvivor::ui::layout::TypographyRole;
+
+    const SyntheticTitleTextResources text;
+    REQUIRE(text.view().isValid());
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const UiStateSnapshot uiState = interactiveState().snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput baseInput{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics(),
+        text.view(),
+        UiTextLocale::korean
+    };
+    const FramePacketCapacity baseCapacity = titleSceneCapacity(baseInput);
+    REQUIRE(baseCapacity.commandCount == 37U);
+    REQUIRE(baseCapacity.glyphRunCount == 10U);
+    REQUIRE(baseCapacity.glyphInstanceCount == 10U);
+    FramePacket basePacket(baseCapacity);
+    const auto baseResult = buildTitleScene(basePacket, baseInput);
+    REQUIRE(baseResult.success);
+    REQUIRE(!titleSceneCapabilityIsMissing(
+        baseResult.missingCapabilities,
+        TitleSceneMissingCapability::preShapedTextResources
+    ));
+    REQUIRE(baseResult.commandStats.shapedTextCommands == 10U);
+    REQUIRE(baseResult.commandStats.resourceBackedCommands == 10U);
+    REQUIRE(basePacket.glyphRuns().size() == 10U);
+    REQUIRE(basePacket.glyphInstances().size() == 10U);
+    for (const auto& run : basePacket.glyphRuns()) {
+        REQUIRE(run.fontId == SyntheticTitleTextResources::fontId);
+        REQUIRE(run.glyphAtlasId == SyntheticTitleTextResources::atlasId);
+        REQUIRE(run.glyphs.count == 1U);
+        REQUIRE(run.sampling == cirvivor::render::SamplingMode::linear);
+        REQUIRE_NEAR(run.transform.elements[0], run.pixelsPerEm / 64.0F, 1.0e-7);
+        REQUIRE_NEAR(run.transform.elements[4], run.pixelsPerEm / 64.0F, 1.0e-7);
+    }
+    REQUIRE_NEAR(basePacket.glyphRuns()[0].pixelsPerEm, 16.0, 1.0e-6);
+    REQUIRE_NEAR(
+        basePacket.glyphRuns()[0].pixelsPerEm,
+        entrance.cards[0].titleTypography.size,
+        1.0e-6
+    );
+    REQUIRE_NEAR(
+        basePacket.glyphRuns()[2].pixelsPerEm,
+        entrance.cards[1].descriptionTypography.size,
+        1.0e-6
+    );
+    const double versionSize = layout.typography[
+        static_cast<std::size_t>(TypographyRole::h5)
+    ].size;
+    const double labelSize = layout.typography[
+        static_cast<std::size_t>(TypographyRole::label)
+    ].size;
+    REQUIRE_NEAR(basePacket.glyphRuns()[8].pixelsPerEm, versionSize, 1.0e-6);
+    REQUIRE_NEAR(basePacket.glyphRuns()[9].pixelsPerEm, labelSize, 1.0e-6);
+    REQUIRE_NEAR(
+        basePacket.glyphRuns()[8].origin.x,
+        entrance.versionHistoryLink.textAnchor.x - (32.0 * versionSize / 64.0),
+        1.0e-4
+    );
+    REQUIRE_NEAR(
+        basePacket.glyphRuns()[8].origin.y,
+        layout.title.versionLabelTop + (48.0 * versionSize / 64.0),
+        1.0e-4
+    );
+
+    allocation_probe::count = 0U;
+    allocation_probe::enabled = true;
+    const auto repeatedBaseResult = buildTitleScene(basePacket, baseInput);
+    const std::size_t resourceBackedAllocations = allocation_probe::count;
+    allocation_probe::enabled = false;
+    REQUIRE(repeatedBaseResult.success);
+    REQUIRE(resourceBackedAllocations == 0U);
+
+    // prefix 13에는 versionLabel까지 있지만 versionHistoryLink는 없다. 유효한
+    // partial table도 요구 run이 빠지면 packet을 부분 제출하지 않는다.
+    const auto partialView = text.view(13U);
+    REQUIRE(partialView.isValid());
+    const TitleSceneInput partialInput{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics(),
+        partialView,
+        UiTextLocale::korean
+    };
+    const FramePacketCapacity partialCapacity = titleSceneCapacity(partialInput);
+    REQUIRE(partialCapacity.glyphRunCount == 9U);
+    FramePacket partialPacket(partialCapacity);
+    const auto partialResult = buildTitleScene(partialPacket, partialInput);
+    REQUIRE(!partialResult.success);
+    REQUIRE(partialResult.error == FrameBuildError::structurallyInvalid);
+    REQUIRE(titleSceneCapabilityIsMissing(
+        partialResult.missingCapabilities,
+        TitleSceneMissingCapability::preShapedTextResources
+    ));
+    REQUIRE(partialPacket.size() == FramePacketCapacity{});
+
+    const UiLayoutSnapshot responsiveLayout = buildLayout(
+        2'560.0,
+        1'440.0,
+        {},
+        1.5
+    );
+    const TitleEntranceRenderState responsiveEntrance = buildEntrance(
+        responsiveLayout,
+        2.0
+    );
+    const TitleSceneInput responsiveInput{
+        uiState,
+        interaction,
+        responsiveLayout,
+        responsiveEntrance,
+        darkThemeMetrics(),
+        text.view(),
+        UiTextLocale::korean
+    };
+    FramePacket responsivePacket(titleSceneCapacity(responsiveInput));
+    REQUIRE(buildTitleScene(responsivePacket, responsiveInput).success);
+    REQUIRE(responsivePacket.glyphRuns().size() == 10U);
+    REQUIRE_NEAR(
+        responsivePacket.glyphRuns()[0].pixelsPerEm,
+        responsiveEntrance.cards[0].titleTypography.size,
+        1.0e-5
+    );
+    REQUIRE(responsivePacket.glyphRuns()[0].pixelsPerEm
+        > basePacket.glyphRuns()[0].pixelsPerEm);
+    REQUIRE_NEAR(
+        responsivePacket.glyphRuns()[0].transform.elements[0],
+        responsivePacket.glyphRuns()[0].pixelsPerEm / 64.0F,
+        1.0e-7
+    );
+
+    const auto verifyOverlay = [&](TitleOverlayStateMachine& state,
+                                   const std::size_t expectedGlyphRuns,
+                                   const bool expectMapContentMissing) {
+        advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+        const UiStateSnapshot overlayUiState = state.snapshot();
+        const TitleSceneInput overlayInput{
+            overlayUiState,
+            interaction,
+            layout,
+            entrance,
+            darkThemeMetrics(),
+            text.view(),
+            UiTextLocale::korean
+        };
+        FramePacket overlayPacket(titleSceneCapacity(overlayInput));
+        const auto overlayResult = buildTitleScene(overlayPacket, overlayInput);
+        REQUIRE(overlayResult.success);
+        REQUIRE(overlayPacket.glyphRuns().size() == expectedGlyphRuns);
+        REQUIRE(overlayResult.commandStats.shapedTextCommands == expectedGlyphRuns);
+        REQUIRE(overlayResult.commandStats.resourceBackedCommands == expectedGlyphRuns);
+        REQUIRE(!titleSceneCapabilityIsMissing(
+            overlayResult.missingCapabilities,
+            TitleSceneMissingCapability::preShapedTextResources
+        ));
+        REQUIRE(titleSceneCapabilityIsMissing(
+            overlayResult.missingCapabilities,
+            TitleSceneMissingCapability::mapSelectContent
+        ) == expectMapContentMissing);
+        REQUIRE(overlayPacket.isRenderOrderValid());
+        return overlayPacket.glyphRuns().back().pixelsPerEm;
+    };
+
+    TitleOverlayStateMachine mapState = interactiveState();
+    REQUIRE(mapState.apply(UiAction::openTitle(OverlayKind::mapSelect)).accepted());
+    const float mapConfirmSize = verifyOverlay(mapState, 16U, true);
+    REQUIRE_NEAR(mapConfirmSize, labelSize, 1.0e-6);
+
+    TitleOverlayStateMachine exitState = interactiveState();
+    REQUIRE(exitState.apply(UiAction::openExit()).accepted());
+    const float exitConfirmSize = verifyOverlay(exitState, 14U, false);
+    REQUIRE_NEAR(exitConfirmSize, labelSize, 1.0e-6);
+
+    for (const auto& mapping :
+         cirvivor::render::text::title_external_url_text_catalog) {
+        TitleOverlayStateMachine externalState = interactiveState();
+        REQUIRE(externalState.apply(
+            UiAction::openExternalLink(mapping.url)
+        ).accepted());
+        REQUIRE(externalState.snapshot().overlays[0].externalUrl.view() == mapping.url);
+        const float externalConfirmSize = verifyOverlay(externalState, 15U, false);
+        REQUIRE_NEAR(externalConfirmSize, labelSize, 1.0e-6);
+    }
+
+    constexpr std::string_view unknownUrl = "https://example.com/runtime-path";
+    TitleOverlayStateMachine unknownExternalState = interactiveState();
+    REQUIRE(unknownExternalState.apply(
+        UiAction::openExternalLink(unknownUrl)
+    ).accepted());
+    advanceInSteps(
+        unknownExternalState,
+        TitleOverlayStateMachine::overlay_transition_seconds
+    );
+    const UiStateSnapshot unknownExternalUiState = unknownExternalState.snapshot();
+    REQUIRE(unknownExternalUiState.overlays[0].externalUrl.view() == unknownUrl);
+    const TitleSceneInput unknownExternalInput{
+        unknownExternalUiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics(),
+        text.view(),
+        UiTextLocale::korean
+    };
+    const FramePacketCapacity unknownExternalCapacity = titleSceneCapacity(
+        unknownExternalInput
+    );
+    REQUIRE(unknownExternalCapacity.glyphRunCount == 14U);
+    FramePacket unknownExternalPacket(unknownExternalCapacity);
+    const auto unknownExternalResult = buildTitleScene(
+        unknownExternalPacket,
+        unknownExternalInput
+    );
+    REQUIRE(unknownExternalResult.success);
+    REQUIRE(unknownExternalPacket.glyphRuns().size() == 14U);
+    REQUIRE(unknownExternalResult.commandStats.externalLinkShellCommands == 12U);
+    REQUIRE(unknownExternalPacket.ui().size() == 20U);
+    REQUIRE(titleSceneCapabilityIsMissing(
+        unknownExternalResult.missingCapabilities,
+        TitleSceneMissingCapability::preShapedTextResources
+    ));
+    REQUIRE(!titleSceneCapabilityIsMissing(
+        unknownExternalResult.missingCapabilities,
+        TitleSceneMissingCapability::mapSelectContent
+    ));
+    REQUIRE_NEAR(
+        unknownExternalPacket.glyphRuns().back().pixelsPerEm,
+        labelSize,
+        1.0e-6
+    );
+    REQUIRE(unknownExternalPacket.isRenderOrderValid());
 }
 
 struct TestCase final {
@@ -1361,6 +1671,10 @@ int main() {
         TestCase{
             "maximum capacity zero allocation",
             testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing
+        },
+        TestCase{
+            "resource-backed title, overlays, partial, and responsive text",
+            testResourceBackedTitleOverlayPartialAndResponsiveText
         }
     };
 

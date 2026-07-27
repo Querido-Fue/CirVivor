@@ -1,11 +1,14 @@
 #include "render/frontend/title_scene.h"
 
+#include "render/text/title_text_catalog.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 
 namespace cirvivor::render::frontend {
 
@@ -60,6 +63,17 @@ constexpr StableElementId overlay_cancel_id = stableResourceId("title.overlay.ca
 constexpr StableElementId overlay_confirm_id = stableResourceId("title.overlay.confirm");
 constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link");
 
+enum class TextHorizontalAnchor : std::uint8_t {
+    left,
+    center,
+    right
+};
+
+enum class TextVerticalAnchor : std::uint8_t {
+    top,
+    middle
+};
+
 [[nodiscard]] CommandHeader makeHeader(
     const RenderLayer layer,
     const std::int32_t layerOrder,
@@ -93,6 +107,203 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         static_cast<float>(color.blue) * byteScale,
         alpha
     );
+}
+
+[[nodiscard]] bool hasTextResources(const TitleSceneInput& input) noexcept {
+    return input.textResources.isValid();
+}
+
+[[nodiscard]] const PreShapedTextRunView* textRunFor(
+    const TitleSceneInput& input,
+    const UiTextSemanticId semantic
+) noexcept {
+    return input.textResources.find(text::titleTextKey(semantic, input.locale));
+}
+
+[[nodiscard]] float typographySize(
+    const TitleSceneInput& input,
+    const ui::layout::TypographyRole role
+) noexcept {
+    return finiteFloat(input.layout.typography[static_cast<std::size_t>(role)].size);
+}
+
+[[nodiscard]] bool addShapedText(
+    FramePacketBuilder& builder,
+    const TitleSceneInput& input,
+    const UiTextSemanticId semantic,
+    const float targetLogicalPixelSize,
+    const CommandHeader header,
+    const Vec2F anchor,
+    const TextHorizontalAnchor horizontal,
+    const TextVerticalAnchor vertical,
+    const PremultipliedRgba color
+) {
+    const PreShapedTextRunView* const run = textRunFor(input, semantic);
+    if (run == nullptr || !std::isfinite(targetLogicalPixelSize)
+        || !(targetLogicalPixelSize > 0.0F) || run->rasterPixelSize == 0U) {
+        return false;
+    }
+    const float scale = targetLogicalPixelSize
+        / static_cast<float>(run->rasterPixelSize);
+    Vec2F origin = anchor;
+    if (horizontal == TextHorizontalAnchor::center) {
+        origin.x -= run->advance * scale * 0.5F;
+    } else if (horizontal == TextHorizontalAnchor::right) {
+        origin.x -= run->advance * scale;
+    }
+    if (vertical == TextVerticalAnchor::top) {
+        origin.y += run->ascent * scale;
+    } else {
+        origin.y += (run->ascent - run->descent) * scale * 0.5F;
+    }
+
+    GlyphRunCommand command{};
+    command.header = header;
+    command.fontId = run->fontId;
+    command.glyphAtlasId = run->glyphAtlasId;
+    command.origin = origin;
+    command.pixelsPerEm = targetLogicalPixelSize;
+    command.weight = run->key.weight;
+    command.color = color;
+    command.transform.elements = {
+        scale, 0.0F, origin.x * (1.0F - scale),
+        0.0F, scale, origin.y * (1.0F - scale),
+        0.0F, 0.0F, 1.0F
+    };
+    command.sampling = SamplingMode::linear;
+    return builder.addGlyphRun(command, run->glyphs);
+}
+
+[[nodiscard]] constexpr UiTextSemanticId cardTitleSemantic(
+    const ui::layout::TitleCardSlot slot
+) noexcept {
+    switch (slot) {
+    case ui::layout::TitleCardSlot::start:
+        return UiTextSemanticId::titleCardStart;
+    case ui::layout::TitleCardSlot::quickStart:
+        return UiTextSemanticId::titleCardQuickStart;
+    case ui::layout::TitleCardSlot::records:
+        return UiTextSemanticId::titleCardRecords;
+    case ui::layout::TitleCardSlot::deck:
+        return UiTextSemanticId::titleCardDeck;
+    case ui::layout::TitleCardSlot::research:
+        return UiTextSemanticId::titleCardResearch;
+    }
+    return UiTextSemanticId::titleCardStart;
+}
+
+[[nodiscard]] bool cardDescriptionSemantic(
+    const ui::layout::TitleCardSlot slot,
+    UiTextSemanticId& semantic
+) noexcept {
+    switch (slot) {
+    case ui::layout::TitleCardSlot::quickStart:
+        semantic = UiTextSemanticId::titleCardQuickStartDescription;
+        return true;
+    case ui::layout::TitleCardSlot::deck:
+        semantic = UiTextSemanticId::titleCardDeckDescription;
+        return true;
+    case ui::layout::TitleCardSlot::research:
+        semantic = UiTextSemanticId::titleCardResearchDescription;
+        return true;
+    case ui::layout::TitleCardSlot::start:
+    case ui::layout::TitleCardSlot::records:
+        return false;
+    }
+    return false;
+}
+
+[[nodiscard]] bool hasRequiredTextRuns(const TitleSceneInput& input) noexcept {
+    if (!hasTextResources(input)) {
+        return false;
+    }
+    constexpr std::array baseSemantics{
+        UiTextSemanticId::titleCardStart,
+        UiTextSemanticId::titleCardQuickStart,
+        UiTextSemanticId::titleCardQuickStartDescription,
+        UiTextSemanticId::titleCardRecords,
+        UiTextSemanticId::titleCardDeck,
+        UiTextSemanticId::titleCardDeckDescription,
+        UiTextSemanticId::titleCardResearch,
+        UiTextSemanticId::titleCardResearchDescription,
+        UiTextSemanticId::versionLabel,
+        UiTextSemanticId::versionHistoryLink
+    };
+    for (const UiTextSemanticId semantic : baseSemantics) {
+        if (textRunFor(input, semantic) == nullptr) {
+            return false;
+        }
+    }
+    const std::size_t overlayCount = std::min<std::size_t>(
+        input.uiState.overlayCount,
+        input.uiState.overlays.size()
+    );
+    for (std::size_t index = 0U; index < overlayCount; ++index) {
+        const ui::OverlaySnapshot& overlay = input.uiState.overlays[index];
+        std::array<UiTextSemanticId, 6> required{};
+        std::size_t requiredCount = 0U;
+        switch (overlay.kind) {
+        case ui::OverlayKind::mapSelect:
+            required = {
+                UiTextSemanticId::mapSelectTitle,
+                UiTextSemanticId::mapName,
+                UiTextSemanticId::mapSelected,
+                UiTextSemanticId::mapDescription,
+                UiTextSemanticId::mapCancel,
+                UiTextSemanticId::mapStart
+            };
+            requiredCount = required.size();
+            break;
+        case ui::OverlayKind::exitConfirm:
+            required = {
+                UiTextSemanticId::exitTitle,
+                UiTextSemanticId::exitBody,
+                UiTextSemanticId::exitNo,
+                UiTextSemanticId::exitYes,
+                UiTextSemanticId::exitYes,
+                UiTextSemanticId::exitYes
+            };
+            requiredCount = 4U;
+            break;
+        case ui::OverlayKind::externalLinkWarning: {
+            UiTextSemanticId urlSemantic{};
+            if (!text::titleExternalUrlSemantic(
+                    overlay.externalUrl.view(),
+                    urlSemantic
+                )) {
+                return false;
+            }
+            required = {
+                UiTextSemanticId::externalTitle,
+                UiTextSemanticId::externalBody,
+                UiTextSemanticId::externalNo,
+                UiTextSemanticId::externalYes,
+                urlSemantic,
+                urlSemantic
+            };
+            requiredCount = 5U;
+            break;
+        }
+        case ui::OverlayKind::none:
+        case ui::OverlayKind::deck:
+        case ui::OverlayKind::setting:
+        case ui::OverlayKind::credits:
+        case ui::OverlayKind::quickStart:
+        case ui::OverlayKind::records:
+        case ui::OverlayKind::research:
+        case ui::OverlayKind::achievements:
+        case ui::OverlayKind::debug:
+            break;
+        }
+        for (std::size_t requiredIndex = 0U;
+             requiredIndex < requiredCount;
+             ++requiredIndex) {
+            if (textRunFor(input, required[requiredIndex]) == nullptr) {
+                return false;
+            }
+        }
+    }
+    return input.uiState.overlayCount <= input.uiState.overlays.size();
 }
 
 [[nodiscard]] RectF renderRect(const ui::layout::RoundedRectD rect) noexcept {
@@ -361,9 +572,11 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
 [[nodiscard]] TitleSceneMissingCapabilities missingCapabilitiesFor(
     const TitleSceneInput& input
 ) noexcept {
-    TitleSceneMissingCapabilities result = titleSceneCapabilityBit(
-        TitleSceneMissingCapability::preShapedTextResources
-    );
+    TitleSceneMissingCapabilities result = hasRequiredTextRuns(input)
+        ? 0U
+        : titleSceneCapabilityBit(
+              TitleSceneMissingCapability::preShapedTextResources
+          );
     const std::size_t overlayCount = std::min<std::size_t>(
         input.uiState.overlayCount,
         input.uiState.overlays.size()
@@ -372,6 +585,18 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         result |= titleSceneCapabilityBit(
             missingCapabilityFor(input.uiState.overlays[index].kind)
         );
+        if (input.uiState.overlays[index].kind
+                == ui::OverlayKind::externalLinkWarning) {
+            UiTextSemanticId ignored{};
+            if (!text::titleExternalUrlSemantic(
+                    input.uiState.overlays[index].externalUrl.view(),
+                    ignored
+                )) {
+                result |= titleSceneCapabilityBit(
+                    TitleSceneMissingCapability::preShapedTextResources
+                );
+            }
+        }
     }
     return result;
 }
@@ -387,6 +612,8 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         : 0U;
     result.titleShellCommands = base_title_command_count + versionLinkCount;
     result.placeholderGeometryCommands = placeholder_geometry_count;
+    result.shapedTextCommands = capacity.glyphRunCount;
+    result.resourceBackedCommands = capacity.glyphRunCount;
     const std::size_t overlayCount = std::min<std::size_t>(
         input.uiState.overlayCount,
         input.uiState.overlays.size()
@@ -430,7 +657,11 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         || input.uiState.title.elapsedSeconds < 0.0) {
         return false;
     }
-    for (std::size_t index = 0U; index < input.uiState.overlayCount; ++index) {
+    const std::size_t overlayCount = std::min<std::size_t>(
+        input.uiState.overlayCount,
+        input.uiState.overlays.size()
+    );
+    for (std::size_t index = 0U; index < overlayCount; ++index) {
         OverlaySurfaceLayerOrders orders{};
         if (!tryResolveOverlaySurfaceLayerOrders(
                 input.uiState.overlays[index],
@@ -440,6 +671,195 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         }
     }
     return true;
+}
+
+void addTextCapacity(
+    FramePacketCapacity& capacity,
+    const TitleSceneInput& input,
+    const UiTextSemanticId semantic
+) noexcept {
+    const PreShapedTextRunView* const run = textRunFor(input, semantic);
+    if (run == nullptr) {
+        return;
+    }
+    ++capacity.glyphRunCount;
+    capacity.glyphInstanceCount += run->glyphs.size();
+}
+
+void addTitleTextCapacity(
+    FramePacketCapacity& capacity,
+    const TitleSceneInput& input
+) noexcept {
+    if (!hasTextResources(input)) {
+        return;
+    }
+    for (const ui::layout::TitleCardRenderMetrics& card : input.entrance.cards) {
+        addTextCapacity(capacity, input, cardTitleSemantic(card.slot));
+        UiTextSemanticId description{};
+        if (cardDescriptionSemantic(card.slot, description)) {
+            addTextCapacity(capacity, input, description);
+        }
+    }
+    if (hasVersionHistoryLink(input)) {
+        addTextCapacity(capacity, input, UiTextSemanticId::versionLabel);
+        addTextCapacity(capacity, input, UiTextSemanticId::versionHistoryLink);
+    }
+    const std::size_t overlayCount = std::min<std::size_t>(
+        input.uiState.overlayCount,
+        input.uiState.overlays.size()
+    );
+    for (std::size_t index = 0U; index < overlayCount; ++index) {
+        const ui::OverlaySnapshot& overlay = input.uiState.overlays[index];
+        switch (overlay.kind) {
+        case ui::OverlayKind::mapSelect:
+            addTextCapacity(capacity, input, UiTextSemanticId::mapSelectTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::mapName);
+            addTextCapacity(capacity, input, UiTextSemanticId::mapSelected);
+            addTextCapacity(capacity, input, UiTextSemanticId::mapDescription);
+            addTextCapacity(capacity, input, UiTextSemanticId::mapCancel);
+            addTextCapacity(capacity, input, UiTextSemanticId::mapStart);
+            break;
+        case ui::OverlayKind::exitConfirm:
+            addTextCapacity(capacity, input, UiTextSemanticId::exitTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::exitBody);
+            addTextCapacity(capacity, input, UiTextSemanticId::exitNo);
+            addTextCapacity(capacity, input, UiTextSemanticId::exitYes);
+            break;
+        case ui::OverlayKind::externalLinkWarning: {
+            addTextCapacity(capacity, input, UiTextSemanticId::externalTitle);
+            addTextCapacity(capacity, input, UiTextSemanticId::externalBody);
+            addTextCapacity(capacity, input, UiTextSemanticId::externalNo);
+            addTextCapacity(capacity, input, UiTextSemanticId::externalYes);
+            UiTextSemanticId urlSemantic{};
+            if (text::titleExternalUrlSemantic(
+                    overlay.externalUrl.view(),
+                    urlSemantic
+                )) {
+                addTextCapacity(capacity, input, urlSemantic);
+            }
+            break;
+        }
+        case ui::OverlayKind::none:
+        case ui::OverlayKind::deck:
+        case ui::OverlayKind::setting:
+        case ui::OverlayKind::credits:
+        case ui::OverlayKind::quickStart:
+        case ui::OverlayKind::records:
+        case ui::OverlayKind::research:
+        case ui::OverlayKind::achievements:
+        case ui::OverlayKind::debug:
+            break;
+        }
+    }
+}
+
+[[nodiscard]] bool addCardText(
+    FramePacketBuilder& builder,
+    const TitleSceneInput& input,
+    const ui::layout::TitleCardRenderMetrics& card,
+    const CommandHeader header
+) {
+    const double uiScale = std::isfinite(input.layout.viewport.uiScale)
+            && input.layout.viewport.uiScale > 0.0
+        ? input.layout.viewport.uiScale
+        : 1.0;
+    const double inset = std::max(16.0 * uiScale, card.panelRect.width * 0.08);
+    const bool compact = card.slot == ui::layout::TitleCardSlot::records;
+    double titleX = card.panelRect.x + inset;
+    double titleY = 0.0;
+    if (compact) {
+        const double iconSize = std::max(20.0, card.panelRect.width * 0.14);
+        titleX += iconSize + std::max(14.0 * uiScale, card.panelRect.width * 0.06);
+        titleY = card.panelRect.y
+            + (card.panelRect.height - card.titleTypography.lineHeight) * 0.5;
+    } else {
+        const double bottomPadding = inset * 0.8;
+        const double descriptionY = card.panelRect.y + card.panelRect.height
+            - bottomPadding - card.descriptionTypography.lineHeight;
+        titleY = card.hasDescription
+            ? descriptionY
+                - card.descriptionTypography.lineHeight * 0.4928
+                - card.titleTypography.lineHeight
+            : card.panelRect.y + card.panelRect.height
+                - bottomPadding - card.titleTypography.lineHeight;
+    }
+    if (!addShapedText(
+            builder,
+            input,
+            cardTitleSemantic(card.slot),
+            finiteFloat(card.titleTypography.size),
+            header,
+            {finiteFloat(titleX), finiteFloat(titleY)},
+            TextHorizontalAnchor::left,
+            TextVerticalAnchor::top,
+            renderColor(input.theme.titleButtonText, card.alpha)
+        )) {
+        return false;
+    }
+
+    UiTextSemanticId description{};
+    if (!cardDescriptionSemantic(card.slot, description)) {
+        return true;
+    }
+    const double descriptionY = card.panelRect.y + card.panelRect.height
+        - inset * 0.8 - card.descriptionTypography.lineHeight;
+    return addShapedText(
+        builder,
+        input,
+        description,
+        finiteFloat(card.descriptionTypography.size),
+        header,
+        {finiteFloat(card.panelRect.x + inset), finiteFloat(descriptionY)},
+        TextHorizontalAnchor::left,
+        TextVerticalAnchor::top,
+        renderColor(input.theme.overlayItemText, card.alpha)
+    );
+}
+
+[[nodiscard]] bool addVersionText(
+    FramePacketBuilder& builder,
+    const TitleSceneInput& input,
+    const CommandHeader header
+) {
+    if (!hasVersionHistoryLink(input)) {
+        return true;
+    }
+    const ui::layout::TitleVersionHistoryLinkRenderMetrics& metrics =
+        input.entrance.versionHistoryLink;
+    const ui::TitleUiTargetInteraction& interaction = interactionFor(
+        input.interaction,
+        ui::TitleUiTarget::versionHistoryLink
+    );
+    if (!addShapedText(
+            builder,
+            input,
+            UiTextSemanticId::versionLabel,
+            typographySize(input, ui::layout::TypographyRole::h5),
+            header,
+            {
+                finiteFloat(metrics.textAnchor.x),
+                finiteFloat(input.layout.title.versionLabelTop)
+            },
+            TextHorizontalAnchor::right,
+            TextVerticalAnchor::top,
+            renderColor(input.theme.menuForeground, 0.62 * metrics.alpha)
+        )) {
+        return false;
+    }
+    return addShapedText(
+        builder,
+        input,
+        UiTextSemanticId::versionHistoryLink,
+        typographySize(input, ui::layout::TypographyRole::label),
+        header,
+        {finiteFloat(metrics.textAnchor.x), finiteFloat(metrics.textAnchor.y)},
+        TextHorizontalAnchor::right,
+        TextVerticalAnchor::top,
+        renderColor(
+            input.theme.menuForeground,
+            (interaction.hovered ? 1.0 : 0.72) * metrics.alpha
+        )
+    );
 }
 
 [[nodiscard]] bool addBaseTitleShell(
@@ -615,6 +1035,13 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
             return false;
         }
     }
+    if (hasTextResources(input)) {
+        for (const ui::layout::TitleCardRenderMetrics& card : input.entrance.cards) {
+            if (!addCardText(builder, input, card, uiHeader)) {
+                return false;
+            }
+        }
+    }
     ClipCommand cardClipPop = cardClip;
     cardClipPop.operation = ClipOperation::pop;
     if (!builder.addClip(cardClipPop)) {
@@ -758,6 +1185,10 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         if (!builder.addLine(arrow)) {
             return false;
         }
+        if (hasTextResources(input)
+            && !addVersionText(builder, input, uiHeader)) {
+            return false;
+        }
     }
     return true;
 }
@@ -868,6 +1299,219 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     }
     pass.operation = PassOperation::endSession;
     return builder.addPass(pass);
+}
+
+[[nodiscard]] bool addOverlayText(
+    FramePacketBuilder& builder,
+    const TitleSceneInput& input,
+    const ui::OverlaySnapshot& overlay,
+    const ui::layout::OverlayDialogRenderMetrics& dialog,
+    const CommandHeader header
+) {
+    const double scale = std::isfinite(overlay.contentScale)
+            && overlay.contentScale > 0.0
+        ? overlay.contentScale
+        : 1.0;
+    const double paddingX = input.layout.overlayPage.dialogPaddingX * scale;
+    const double left = dialog.panelRect.x + paddingX;
+    const double right = dialog.panelRect.x + dialog.panelRect.width - paddingX;
+    const double titleTop = dialog.panelRect.y
+        + input.layout.overlayPage.titleTop * scale;
+    const double alpha = clampUnit(overlay.alpha);
+    const Vec2F cancelCenter{
+        finiteFloat(dialog.cancelButtonRect.x + dialog.cancelButtonRect.width * 0.5),
+        finiteFloat(dialog.cancelButtonRect.y + dialog.cancelButtonRect.height * 0.5)
+    };
+    const Vec2F confirmCenter{
+        finiteFloat(dialog.confirmButtonRect.x + dialog.confirmButtonRect.width * 0.5),
+        finiteFloat(dialog.confirmButtonRect.y + dialog.confirmButtonRect.height * 0.5)
+    };
+
+    if (overlay.kind == ui::OverlayKind::mapSelect) {
+        const double h1Line = input.layout.typography[
+            static_cast<std::size_t>(ui::layout::TypographyRole::h1)
+        ].lineHeight * scale;
+        const double h3Line = input.layout.typography[
+            static_cast<std::size_t>(ui::layout::TypographyRole::h3)
+        ].lineHeight * scale;
+        const double nameTop = titleTop + h1Line
+            + input.layout.overlayPage.titleDividerGap * scale
+            + scale
+            + input.layout.viewport.wh * 0.024 * scale;
+        const double descriptionTop = nameTop + h3Line
+            + input.layout.viewport.wh * (0.012 + 0.25 + 0.014) * scale;
+        return addShapedText(
+                   builder,
+                   input,
+                   UiTextSemanticId::mapSelectTitle,
+                   typographySize(input, ui::layout::TypographyRole::h1)
+                       * finiteFloat(scale),
+                   header,
+                   {finiteFloat(left), finiteFloat(titleTop)},
+                   TextHorizontalAnchor::left,
+                   TextVerticalAnchor::top,
+                   renderColor(input.theme.titleText, alpha)
+               )
+            && addShapedText(
+                builder,
+                input,
+                UiTextSemanticId::mapName,
+                typographySize(input, ui::layout::TypographyRole::h3)
+                    * finiteFloat(scale),
+                header,
+                {finiteFloat(left), finiteFloat(nameTop)},
+                TextHorizontalAnchor::left,
+                TextVerticalAnchor::top,
+                renderColor(input.theme.titleText, alpha)
+            )
+            && addShapedText(
+                builder,
+                input,
+                UiTextSemanticId::mapSelected,
+                typographySize(input, ui::layout::TypographyRole::h5)
+                    * finiteFloat(scale),
+                header,
+                {finiteFloat(right), finiteFloat(nameTop + h3Line * 0.5)},
+                TextHorizontalAnchor::right,
+                TextVerticalAnchor::middle,
+                renderColor(input.theme.optionActive, alpha)
+            )
+            && addShapedText(
+                builder,
+                input,
+                UiTextSemanticId::mapDescription,
+                typographySize(input, ui::layout::TypographyRole::h5)
+                    * finiteFloat(scale),
+                header,
+                {finiteFloat(left), finiteFloat(descriptionTop)},
+                TextHorizontalAnchor::left,
+                TextVerticalAnchor::top,
+                renderColor(input.theme.overlayItemText, alpha)
+            )
+            && addShapedText(
+                builder,
+                input,
+                UiTextSemanticId::mapCancel,
+                typographySize(input, ui::layout::TypographyRole::buttonPrimary)
+                    * finiteFloat(scale),
+                header,
+                cancelCenter,
+                TextHorizontalAnchor::center,
+                TextVerticalAnchor::middle,
+                renderColor(input.theme.cancelText, alpha)
+            )
+            && addShapedText(
+                builder,
+                input,
+                UiTextSemanticId::mapStart,
+                typographySize(input, ui::layout::TypographyRole::buttonPrimary)
+                    * finiteFloat(scale),
+                header,
+                confirmCenter,
+                TextHorizontalAnchor::center,
+                TextVerticalAnchor::middle,
+                renderColor(input.theme.confirmText, alpha)
+            );
+    }
+
+    const bool isExit = overlay.kind == ui::OverlayKind::exitConfirm;
+    const UiTextSemanticId titleSemantic = isExit
+        ? UiTextSemanticId::exitTitle
+        : UiTextSemanticId::externalTitle;
+    const UiTextSemanticId bodySemantic = isExit
+        ? UiTextSemanticId::exitBody
+        : UiTextSemanticId::externalBody;
+    const UiTextSemanticId cancelSemantic = isExit
+        ? UiTextSemanticId::exitNo
+        : UiTextSemanticId::externalNo;
+    const UiTextSemanticId confirmSemantic = isExit
+        ? UiTextSemanticId::exitYes
+        : UiTextSemanticId::externalYes;
+    const double bodyTop = titleTop + input.layout.typography[
+        static_cast<std::size_t>(ui::layout::TypographyRole::h2)
+    ].lineHeight * scale
+        + input.layout.overlayPage.dialogBodyGap * scale;
+    if (!addShapedText(
+            builder,
+            input,
+            titleSemantic,
+            typographySize(input, ui::layout::TypographyRole::h2)
+                * finiteFloat(scale),
+            header,
+            {finiteFloat(left), finiteFloat(titleTop)},
+            TextHorizontalAnchor::left,
+            TextVerticalAnchor::top,
+            renderColor(input.theme.titleText, alpha)
+        )
+        || !addShapedText(
+            builder,
+            input,
+            bodySemantic,
+            typographySize(input, ui::layout::TypographyRole::h4)
+                * finiteFloat(scale),
+            header,
+            {finiteFloat(left), finiteFloat(bodyTop)},
+            TextHorizontalAnchor::left,
+            TextVerticalAnchor::top,
+            renderColor(input.theme.overlayItemText, alpha)
+        )) {
+        return false;
+    }
+    if (!isExit) {
+        UiTextSemanticId urlSemantic{};
+        // 고정 catalog 밖의 URL도 경고/취소/확인 effect는 그대로 유지한다. 다만
+        // display URL은 frame 중 transient shaping하지 않고 capability missing으로 남긴다.
+        if (text::titleExternalUrlSemantic(
+                overlay.externalUrl.view(),
+                urlSemantic
+            )
+            && !addShapedText(
+                builder,
+                input,
+                urlSemantic,
+                typographySize(input, ui::layout::TypographyRole::linkPreview)
+                    * finiteFloat(scale),
+                header,
+                {
+                    finiteFloat(left),
+                    finiteFloat(
+                        bodyTop + input.layout.typography[
+                            static_cast<std::size_t>(ui::layout::TypographyRole::h4)
+                        ].lineHeight * scale
+                            + input.layout.viewport.wh * 0.008 * scale
+                    )
+                },
+                TextHorizontalAnchor::left,
+                TextVerticalAnchor::top,
+                renderColor(input.theme.linkText, alpha)
+            )) {
+            return false;
+        }
+    }
+    return addShapedText(
+               builder,
+               input,
+               cancelSemantic,
+               typographySize(input, ui::layout::TypographyRole::buttonPrimary)
+                   * finiteFloat(scale),
+               header,
+               cancelCenter,
+               TextHorizontalAnchor::center,
+               TextVerticalAnchor::middle,
+               renderColor(input.theme.cancelText, alpha)
+           )
+        && addShapedText(
+            builder,
+            input,
+            confirmSemantic,
+            typographySize(input, ui::layout::TypographyRole::buttonPrimary)
+                * finiteFloat(scale),
+            header,
+            confirmCenter,
+            TextHorizontalAnchor::center,
+            TextVerticalAnchor::middle,
+            renderColor(input.theme.confirmText, alpha)
+        );
 }
 
 [[nodiscard]] bool addOverlayUiShell(
@@ -1008,6 +1652,11 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         }
     }
 
+    if (hasTextResources(input)
+        && !addOverlayText(builder, input, overlay, dialog, begin.header)) {
+        return false;
+    }
+
     ClipCommand pop = clip;
     pop.operation = ClipOperation::pop;
     if (!builder.addClip(pop)) {
@@ -1024,7 +1673,11 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     const TitleSceneInput& input,
     const TitleSceneConfig& config
 ) {
-    for (std::size_t index = 0U; index < input.uiState.overlayCount; ++index) {
+    const std::size_t overlayCount = std::min<std::size_t>(
+        input.uiState.overlayCount,
+        input.uiState.overlays.size()
+    );
+    for (std::size_t index = 0U; index < overlayCount; ++index) {
         const ui::OverlaySnapshot& overlay = input.uiState.overlays[index];
         OverlaySurfaceLayerOrders orders{};
         if (!tryResolveOverlaySurfaceLayerOrders(overlay, orders)) {
@@ -1166,6 +1819,7 @@ FramePacketCapacity titleSceneCapacity(const TitleSceneInput& input) noexcept {
             capacity.uiCount += external_shell_ui_count;
         }
     }
+    addTitleTextCapacity(capacity, input);
     capacity.commandCount = capacity.spriteCount
         + capacity.shapeCount
         + capacity.lineCount
@@ -1349,8 +2003,18 @@ TitleSceneResult buildTitleScene(
         );
     }
     if (!addBaseTitleShell(builder, input)
-        || !addOverlayShells(builder, input, config)
-        || !builder.finish()) {
+        || !addOverlayShells(builder, input, config)) {
+        const FrameBuildError error = builder.error() == FrameBuildError::none
+            ? FrameBuildError::structurallyInvalid
+            : builder.error();
+        builder.abort();
+        return failedResult(
+            error,
+            missingCapabilities,
+            requiredCapacity
+        );
+    }
+    if (!builder.finish()) {
         return failedResult(
             builder.error(),
             missingCapabilities,

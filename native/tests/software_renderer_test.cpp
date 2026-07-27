@@ -306,14 +306,194 @@ void testImplementedV2CommandsAreNotPlaceholderInstrumented() {
     FramePacket packet(capacity);
     REQUIRE(buildV2PlaceholderPacket(packet));
 
+    std::array<std::uint8_t, 64> atlasPixels{};
+    atlasPixels.fill(255U);
+    const std::array atlasViews{
+        Alpha8TextureResourceView{
+            stableResourceId("placeholder/atlas"),
+            1U,
+            8U,
+            8U,
+            8U,
+            atlasPixels
+        }
+    };
+    const RenderResourcesView resources(atlasViews);
+    REQUIRE(resources.isValid());
+
     SoftwareRenderer renderer;
-    REQUIRE(renderer.render(packet));
+    REQUIRE(!renderer.render(packet));
+    REQUIRE(renderer.lastError() == SoftwareRenderError::missingGlyphAtlas);
+    REQUIRE(renderer.render(packet, resources));
     REQUIRE(renderer.lastStats().submittedCommands == 9U);
     REQUIRE(renderer.lastStats().renderedCommands == 9U);
-    // GlyphRun, TexturedMesh, Pass 4개는 placeholder로 남고 Gradient와 두
-    // clip-stack 명령은 실제 software 명령으로 처리한다.
-    REQUIRE(renderer.lastStats().placeholderCommands == 6U);
+    // TexturedMesh와 Pass 4개만 placeholder이고 GlyphRun/Gradient/clip은
+    // 실제 software 명령으로 처리한다.
+    REQUIRE(renderer.lastStats().placeholderCommands == 5U);
     REQUIRE(renderer.lastStats().skippedCommands == 0U);
+}
+
+[[nodiscard]] bool buildGlyphContractPacket(
+    cirvivor::render::FramePacket& packet,
+    const cirvivor::render::ViewportState& viewport,
+    const cirvivor::render::SamplingMode sampling,
+    const bool applyClips,
+    const std::uint32_t atlasPage = 0U
+) {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    FrameMetadata metadata;
+    metadata.clearColor = PremultipliedRgba::transparent();
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    if (!builder.begin(metadata, viewport)) {
+        return false;
+    }
+    const CommandHeader header = makeHeader(
+        RenderLayer::ui,
+        0,
+        CoordinateSpace::drawablePixels
+    );
+    ClipCommand clip;
+    if (applyClips) {
+        clip.header = header;
+        clip.bounds = {0.0F, 0.0F, 4.0F, 2.0F};
+        if (!builder.addClip(clip)) {
+            return false;
+        }
+    }
+
+    GlyphRunCommand run;
+    run.header = header;
+    run.fontId = stableResourceId("test/font");
+    run.glyphAtlasId = stableResourceId("test/a8-atlas");
+    run.origin = {0.0F, 0.0F};
+    run.pixelsPerEm = 2.0F;
+    run.weight = 400;
+    run.color = applyClips
+        ? PremultipliedRgba::fromStraight(1.0F, 0.5F, 0.25F, 0.5F)
+        : PremultipliedRgba::opaque(1.0F, 0.0F, 0.0F);
+    run.transform.elements = {
+        2.0F, 0.0F, 0.0F,
+        0.0F, 2.0F, 0.0F,
+        0.0F, 0.0F, 1.0F
+    };
+    run.sampling = sampling;
+    if (applyClips) {
+        run.clipEnabled = 1U;
+        run.clipBounds = {1.0F, 0.0F, 1.0F, 2.0F};
+    }
+    const std::array glyphs{
+        GlyphInstance{1U, atlasPage, {}, {}, {}, {0.0F, 0.0F, 1.0F, 1.0F}}
+    };
+    if (!builder.addGlyphRun(run, glyphs)) {
+        return false;
+    }
+    if (applyClips) {
+        clip.operation = ClipOperation::pop;
+        clip.bounds = {};
+        if (!builder.addClip(clip)) {
+            return false;
+        }
+    }
+    return builder.finish();
+}
+
+void testGlyphA8SamplingPmaTransformClipAndResources() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {4, 4};
+    config.physicalWindowBounds = {0, 0, 4, 4};
+    config.drawableSize = {4, 4};
+    const ViewportState viewport = makeSyntheticViewport(config);
+    constexpr ResourceId atlasId = stableResourceId("test/a8-atlas");
+
+    FramePacketCapacity clippedCapacity;
+    clippedCapacity.commandCount = 3U;
+    clippedCapacity.glyphRunCount = 1U;
+    clippedCapacity.glyphInstanceCount = 1U;
+    clippedCapacity.clipCount = 2U;
+    FramePacket clippedPacket(clippedCapacity);
+    REQUIRE(buildGlyphContractPacket(
+        clippedPacket,
+        viewport,
+        SamplingMode::nearest,
+        true
+    ));
+    const std::array<std::uint8_t, 4> clippedAtlasPixels{200U, 64U, 128U, 255U};
+    const std::array clippedAtlasViews{
+        Alpha8TextureResourceView{atlasId, 3U, 2U, 2U, 2U, clippedAtlasPixels}
+    };
+    const RenderResourcesView clippedResources(clippedAtlasViews);
+    REQUIRE(clippedResources.isValid());
+
+    SoftwareRenderer clippedRenderer({4, 4});
+    REQUIRE(clippedRenderer.render(clippedPacket, clippedResources));
+    REQUIRE(clippedRenderer.lastStats().renderedCommands == 3U);
+    REQUIRE(clippedRenderer.lastStats().placeholderCommands == 0U);
+    REQUIRE(clippedRenderer.lastStats().skippedCommands == 0U);
+    // Glyph-local clip은 왼쪽 절반을, clip stack은 아래쪽 절반을 제거한다.
+    REQUIRE(pixelAt(clippedRenderer, 0, 0) == 0x0000'0000U);
+    REQUIRE(pixelAt(clippedRenderer, 2, 0) == 0x2020'1008U);
+    REQUIRE(pixelAt(clippedRenderer, 3, 1) == 0x2020'1008U);
+    REQUIRE(pixelAt(clippedRenderer, 2, 2) == 0x0000'0000U);
+
+    FramePacketCapacity linearCapacity;
+    linearCapacity.commandCount = 1U;
+    linearCapacity.glyphRunCount = 1U;
+    linearCapacity.glyphInstanceCount = 1U;
+    FramePacket linearPacket(linearCapacity);
+    REQUIRE(buildGlyphContractPacket(
+        linearPacket,
+        viewport,
+        SamplingMode::linear,
+        false
+    ));
+    const std::array<std::uint8_t, 4> linearAtlasPixels{0U, 64U, 128U, 255U};
+    const std::array linearAtlasViews{
+        Alpha8TextureResourceView{atlasId, 4U, 2U, 2U, 2U, linearAtlasPixels}
+    };
+    const RenderResourcesView linearResources(linearAtlasViews);
+    SoftwareRenderer linearRenderer({4, 4});
+    REQUIRE(linearRenderer.render(linearPacket, linearResources));
+    REQUIRE(pixelAt(linearRenderer, 0, 0) == 0x0000'0000U);
+    REQUIRE(pixelAt(linearRenderer, 1, 1) == 0x3434'0000U);
+    REQUIRE(pixelAt(linearRenderer, 2, 2) == 0xb3b3'0000U);
+    REQUIRE(pixelAt(linearRenderer, 3, 3) == 0xffff'0000U);
+
+    bool allRendered = true;
+    std::size_t allocations = 0U;
+    {
+        AllocationScope scope;
+        for (std::size_t index = 0U; index < 32U; ++index) {
+            allRendered = linearRenderer.render(linearPacket, linearResources)
+                && allRendered;
+        }
+        allocations = scope.allocationCount();
+    }
+    REQUIRE(allRendered);
+    REQUIRE(allocations == 0U);
+
+    const std::array invalidViews{
+        Alpha8TextureResourceView{atlasId, 4U, 2U, 2U, 1U, linearAtlasPixels}
+    };
+    REQUIRE(!linearRenderer.render(linearPacket, RenderResourcesView(invalidViews)));
+    REQUIRE(linearRenderer.lastError() == SoftwareRenderError::invalidResources);
+
+    FramePacket invalidReferencePacket(linearCapacity);
+    REQUIRE(buildGlyphContractPacket(
+        invalidReferencePacket,
+        viewport,
+        SamplingMode::nearest,
+        false,
+        1U
+    ));
+    REQUIRE(!linearRenderer.render(invalidReferencePacket, linearResources));
+    REQUIRE(linearRenderer.lastError()
+        == SoftwareRenderError::invalidGlyphAtlasReference);
 }
 
 [[nodiscard]] bool buildGradientContractPacket(
@@ -890,6 +1070,10 @@ int main() {
     const std::array tests{
         TestCase{"synthetic software pixel goldens", testSyntheticFramePixelGoldens},
         TestCase{"v2 placeholder instrumentation", testImplementedV2CommandsAreNotPlaceholderInstrumented},
+        TestCase{
+            "glyph A8 sampling, PMA, transform, clip, and resources",
+            testGlyphA8SamplingPmaTransformClipAndResources
+        },
         TestCase{"gradient contracts", testGradientTypesSpreadsTransformAndPma},
         TestCase{"nested clip stack", testNestedClipIntersectionAndPopReset},
         TestCase{"rounded clip antialias", testRoundedClipAntialiasPreservesPmaCoverage},

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/common/frame_packet.h"
+#include "render/common/render_resources.h"
 
 #include <SDL3/SDL_surface.h>
 
@@ -16,7 +17,10 @@ enum class SoftwareRenderError : std::uint8_t {
     invalidSurfaceFormat,
     surfaceLockFailed,
     invalidFramePacket,
-    invalidViewport
+    invalidViewport,
+    invalidResources,
+    missingGlyphAtlas,
+    invalidGlyphAtlasReference
 };
 
 /** placeholderCommands는 rendered/skipped 합계와 겹치는 진단 축입니다. */
@@ -53,7 +57,10 @@ public:
     [[nodiscard]] bool resize(int width, int height) noexcept;
     [[nodiscard]] bool resize(SizeI internalSize) noexcept;
     [[nodiscard]] bool clear(PremultipliedRgba color) noexcept;
-    [[nodiscard]] bool render(const FramePacket& frame) noexcept;
+    [[nodiscard]] bool render(
+        const FramePacket& frame,
+        RenderResourcesView resources = {}
+    ) noexcept;
 
     [[nodiscard]] bool isValid() const noexcept;
     [[nodiscard]] SizeI internalSize() const noexcept;

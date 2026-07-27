@@ -1,12 +1,14 @@
 #include "app/application.h"
 
 #include "platform/sdl/sdl_platform_event.h"
+#include "platform/sdl/sdl_runtime_asset.h"
 #include "render/frontend/playable_game_scene.h"
 #include "render/frontend/synthetic_test_scene.h"
 #include "render/frontend/title_scene.h"
 #include "render/gles/gles_backend.h"
 #include "render/sdl_gpu/sdl_gpu_backend.h"
 #include "render/software/software_backend.h"
+#include "render/text/title_text_catalog.h"
 
 #include <SDL3/SDL.h>
 
@@ -35,6 +37,35 @@ constexpr std::uint8_t titleToPlayableSmokeTitleStage = 1;
 constexpr std::uint8_t titleToPlayableSmokeMapStage = 2;
 constexpr std::uint8_t titleToPlayableSmokePlayableStage = 3;
 constexpr std::uint8_t titleToPlayableSmokeCompleteStage = 4;
+constexpr std::size_t maximumBundledFontBytes = 32U * 1'024U * 1'024U;
+
+using TitlePreloadSpecs = std::array<
+    render::text::TextPreloadSpec,
+    render::text::title_text_catalog.size() * 2U
+>;
+
+[[nodiscard]] TitlePreloadSpecs makeTitlePreloadSpecs() noexcept {
+    TitlePreloadSpecs result{};
+    std::size_t index = 0U;
+    for (const render::text::TitleTextCatalogEntry& entry :
+         render::text::title_text_catalog) {
+        result[index++] = {
+            render::text::titleTextKey(
+                entry.semantic,
+                render::UiTextLocale::korean
+            ),
+            entry.korean
+        };
+        result[index++] = {
+            render::text::titleTextKey(
+                entry.semantic,
+                render::UiTextLocale::english
+            ),
+            entry.english
+        };
+    }
+    return result;
+}
 
 void advanceUiStateForSmoke(
     ui::TitleOverlayStateMachine& state,
@@ -118,8 +149,11 @@ public:
         return active_ != nullptr && active_->resize(drawableWidth, drawableHeight);
     }
 
-    [[nodiscard]] bool render(const render::FramePacket& frame) noexcept override {
-        return active_ != nullptr && active_->render(frame);
+    [[nodiscard]] bool render(
+        const render::FramePacket& frame,
+        const render::RenderResourcesView resources = {}
+    ) noexcept override {
+        return active_ != nullptr && active_->render(frame, resources);
     }
 
     [[nodiscard]] bool onBackground() noexcept override {
@@ -445,7 +479,8 @@ bool Application::initializeRenderer(
 ) noexcept {
     const render::backend::RendererSelection selection{
         preference,
-        true
+        true,
+        sceneMode_ == SceneMode::title
     };
     try {
         if (!renderer_.initialize(selection)) {
@@ -645,7 +680,7 @@ bool Application::refreshTitleLayout() noexcept {
         return titleLayout_.hasSnapshot();
     }
 
-    const ui::layout::LayoutInput input{
+    ui::layout::LayoutInput input{
         .logicalWidth = static_cast<double>(metrics.windowWidth),
         .logicalHeight = static_cast<double>(metrics.windowHeight),
         .uiScale = 1.0,
@@ -655,12 +690,85 @@ bool Application::refreshTitleLayout() noexcept {
     if (!titleLayout_.tryUpdate(input)) {
         return false;
     }
+    if (titleTextCache_ == nullptr && !prepareTitleTextResources()) {
+        return false;
+    }
+    if (titleTextCache_ != nullptr) {
+        const render::PreShapedTextRunView* const versionLink =
+            titleTextCache_->textResources().find(
+                render::text::titleTextKey(
+                    render::UiTextSemanticId::versionHistoryLink,
+                    render::UiTextLocale::korean
+                )
+            );
+        const auto& labelTypography = titleLayout_.snapshot().typography[
+            static_cast<std::size_t>(ui::layout::TypographyRole::label)
+        ];
+        if (versionLink == nullptr || versionLink->rasterPixelSize == 0U) {
+            return false;
+        }
+        input.versionHistoryLinkTextWidth = static_cast<double>(versionLink->advance)
+            * labelTypography.size
+            / static_cast<double>(versionLink->rasterPixelSize);
+        if (!titleLayout_.tryUpdate(input)) {
+            return false;
+        }
+    }
     const ui::UiStateSnapshot state = titleUiState_.snapshot();
     return ui::layout::trySampleTitleEntrance(
         titleLayout_.snapshot(),
         titleEntranceElapsedSeconds(state.title),
         titleEntrance_
     );
+}
+
+bool Application::loadTitleTextAssets() noexcept {
+    platform::sdl::RuntimeAssetReadResult font =
+        platform::sdl::readRuntimeAsset(
+            "font/PretendardVariable.woff2",
+            maximumBundledFontBytes
+        );
+    if (!font.success()) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Pretendard runtime asset load failed with code %u.",
+            static_cast<unsigned int>(font.error)
+        );
+        return false;
+    }
+    titleFontBytes_ = std::move(font.bytes);
+    return true;
+}
+
+bool Application::prepareTitleTextResources() noexcept {
+    if (titleFontBytes_.empty()) {
+        return false;
+    }
+    const std::uint64_t candidateGeneration = titleTextGeneration_
+            == std::numeric_limits<std::uint64_t>::max()
+        ? 1U
+        : titleTextGeneration_ + 1U;
+    const TitlePreloadSpecs specs = makeTitlePreloadSpecs();
+    render::text::ShapedTextCacheBuildError error =
+        render::text::ShapedTextCacheBuildError::none;
+    std::unique_ptr<render::text::ShapedTextCache> candidate =
+        render::text::ShapedTextCache::create(
+            titleFontBytes_,
+            specs,
+            candidateGeneration,
+            error
+        );
+    if (candidate == nullptr) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Pretendard text preload failed with code %u; previous snapshot retained.",
+            static_cast<unsigned int>(error)
+        );
+        return false;
+    }
+    titleTextCache_ = std::move(candidate);
+    titleTextGeneration_ = candidateGeneration;
+    return true;
 }
 
 std::uint64_t Application::refreshTitleBackdropRevision(
@@ -844,7 +952,11 @@ bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcep
         interaction,
         titleLayout_.snapshot(),
         titleEntrance_,
-        ui::layout::darkThemeMetrics()
+        ui::layout::darkThemeMetrics(),
+        titleTextCache_ == nullptr
+            ? render::PreShapedTextResourcesView{}
+            : titleTextCache_->textResources(),
+        render::UiTextLocale::korean
     };
     render::frontend::TitleSceneConfig config{};
     config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
@@ -937,6 +1049,9 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     renderTargetsResetPending_ = false;
     renderDeviceRecoveryPending_ = false;
     titleMissingCapabilitiesReported_ = false;
+    titleFontBytes_.clear();
+    titleTextCache_.reset();
+    titleTextGeneration_ = 0U;
     // Scene choice follows the existing last-option-wins CLI convention.
     // A smoke flag remains sticky for service/one-frame validation, while a
     // staged scene driver belongs only to the most recently selected scene.
@@ -1037,6 +1152,10 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     }
     if (!SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL initialization failed: %s", SDL_GetError());
+        return false;
+    }
+    if (sceneMode_ == SceneMode::title && !loadTitleTextAssets()) {
+        shutdown();
         return false;
     }
     if (!initializeRenderer(rendererPreference_)) {
@@ -1492,7 +1611,11 @@ ApplicationResult Application::iterate() noexcept {
     const std::uint64_t frameCpuEnd = SDL_GetTicksNS();
     previousFrameCpuSeconds_ = static_cast<double>(frameCpuEnd - frameStart)
         / nanosecondsPerSecond;
-    if (!renderer_.render(framePacket_)) {
+    const render::RenderResourcesView resources =
+        sceneMode_ == SceneMode::title && titleTextCache_ != nullptr
+        ? titleTextCache_->renderResources()
+        : render::RenderResourcesView{};
+    if (!renderer_.render(framePacket_, resources)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Renderer frame submission failed.");
         return ApplicationResult::failure;
     }
@@ -1673,6 +1796,9 @@ void Application::shutdown() noexcept {
     renderTargetsResetPending_ = false;
     renderDeviceRecoveryPending_ = false;
     titleMissingCapabilitiesReported_ = false;
+    titleTextCache_.reset();
+    titleFontBytes_.clear();
+    titleTextGeneration_ = 0U;
 }
 
 bool Application::updatePlatformServices() noexcept {

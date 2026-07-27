@@ -88,7 +88,10 @@ public:
         std::int32_t drawableWidth,
         std::int32_t drawableHeight
     ) noexcept override;
-    [[nodiscard]] bool render(const FramePacket& frame) noexcept override;
+    [[nodiscard]] bool render(
+        const FramePacket& frame,
+        RenderResourcesView resources = {}
+    ) noexcept override;
     [[nodiscard]] bool onBackground() noexcept override;
     [[nodiscard]] bool onForeground() noexcept override;
     [[nodiscard]] bool purgeTransientResources() noexcept override;

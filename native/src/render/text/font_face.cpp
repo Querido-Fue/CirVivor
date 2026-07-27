@@ -451,4 +451,22 @@ std::int32_t FontFace::maximumWeightCoordinate() const noexcept {
     return static_cast<std::int32_t>(implementation_->maximumWeight / 65'536);
 }
 
+std::int32_t FontFace::ascender26Dot6() const noexcept {
+    return implementation_->face->size == nullptr
+        ? 0
+        : static_cast<std::int32_t>(implementation_->face->size->metrics.ascender);
+}
+
+std::int32_t FontFace::descender26Dot6() const noexcept {
+    return implementation_->face->size == nullptr
+        ? 0
+        : static_cast<std::int32_t>(implementation_->face->size->metrics.descender);
+}
+
+std::int32_t FontFace::lineHeight26Dot6() const noexcept {
+    return implementation_->face->size == nullptr
+        ? 0
+        : static_cast<std::int32_t>(implementation_->face->size->metrics.height);
+}
+
 } // namespace cirvivor::render::text

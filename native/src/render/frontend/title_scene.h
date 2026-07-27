@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/common/pre_shaped_text.h"
 #include "render/frontend/frame_packet_builder.h"
 #include "ui/layout/ui_layout_metrics.h"
 #include "ui/title_overlay_state_machine.h"
@@ -60,6 +61,8 @@ struct TitleSceneInput final {
     const ui::layout::UiLayoutSnapshot& layout;
     const ui::layout::TitleEntranceRenderState& entrance;
     const ui::layout::ThemeMetrics& theme;
+    PreShapedTextResourcesView textResources{};
+    UiTextLocale locale = UiTextLocale::korean;
 };
 
 struct TitleSceneConfig final {
@@ -118,7 +121,7 @@ struct TitleSceneResult final {
 /** 앱 초기화 시 한 번 reserve할 수 있는 4-overlay supported shell 상한입니다. */
 [[nodiscard]] constexpr FramePacketCapacity maximumTitleSceneCapacity() noexcept {
     FramePacketCapacity capacity{};
-    capacity.commandCount = 87U;
+    capacity.commandCount = 119U;
     capacity.shapeCount = 3U;
     capacity.lineCount = 3U;
     capacity.uiCount = 32U;
@@ -127,6 +130,8 @@ struct TitleSceneResult final {
     capacity.gradientStopCount = ui::layout::title_gradient_color_count;
     capacity.clipCount = 12U;
     capacity.passCount = 16U;
+    capacity.glyphRunCount = 32U;
+    capacity.glyphInstanceCount = 1'024U;
     return capacity;
 }
 

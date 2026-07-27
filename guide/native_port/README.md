@@ -28,7 +28,7 @@
 | `native/src/platform/sdl/` / `platform_sdl` | SDL 창, event 변환, lifecycle, user storage, 기본 audio device 수명 |
 | `native/src/app/` / `game_desktop` | `SDL_MAIN_USE_CALLBACKS` 진입점과 application 조립 |
 | `native/src/render/common/` | backend 중립 render command와 FramePacket 계약 |
-| `native/src/render/text/` / `render_text` | 원본 WOFF2 memory face, variable weight와 HarfBuzz shaping의 third-party 비노출 경계 |
+| `native/src/render/text/` / `render_text` | 원본 WOFF2 memory face, variable weight/HarfBuzz shaping, 고정 UI run과 immutable A8 atlas snapshot의 third-party 비노출 경계 |
 | `native/src/render/frontend/` | simulation/presentation 상태를 FramePacket으로 변환 |
 | `native/src/render/backend/` / `renderer_backend` | SDL 타입을 모르는 backend 수명 인터페이스와 선택/fallback Router |
 | `native/src/render/sdl_gpu/` / `renderer_sdl_gpu` | SDL_GPU device, window claim, swapchain 제출 |
@@ -58,7 +58,7 @@ UI 입력용 `PlatformEvent`는 mouse motion/down/up, wheel 방향, touch down/m
 
 현재 `ui_runtime`은 30/60/120/144Hz에서 같은 wall-clock presentation을 만드는 seconds 기반 상태기와 Loading→Title 시간축, title factory 8종 및 Debug/Exit/External keyed overlay stack을 제공한다. Debug pause/focus 특례, 외부 URL 실행의 sequence acknowledge, one-shot 종료 요청, 고정 용량·무할당 snapshot도 계약으로 고정했다. 레이아웃은 논리 safe-area, light/dark title·settings·overlay 렌더 토큰, 타이틀 카드/pane/tile entrance와 exit/external shell geometry를 계산한다.
 
-`Application`은 이 runtime을 기본 실행 경로에서 소유하고 title `FramePacket`을 만든다. title pointer, 창 닫기, exit/external confirmation, 버전 링크의 플랫폼 URL handoff와 Start→MapSelect→playable 전환까지 연결했다. MapSelect에는 responsive panel과 취소/시작 hit geometry가 있으며 mouse/touch pointer release를 소비한다. 그러나 MapSelect preview/text를 포함한 8개 title overlay와 Debug/Settings control 본문, floating 상태, 실제 문자열·로고·texture, shaped-text cache와 atlas upload, GPU 계열 고급 렌더 및 21개 native 시각 회귀가 남아 있으므로 타이틀·오버레이 완료로 판정하지 않는다.
+`Application`은 이 runtime을 기본 실행 경로에서 소유하고 title `FramePacket`을 만든다. title pointer, 창 닫기, exit/external confirmation, 버전 링크의 플랫폼 URL handoff와 Start→MapSelect→playable 전환까지 연결했다. MapSelect에는 responsive panel과 취소/시작 hit geometry가 있으며 mouse/touch pointer release를 소비한다. 원본 Pretendard로 미리 만든 title/card/version 및 MapSelect/Exit/External 고정 문자열을 Software backend가 실제 A8 glyph로 그린다. 그러나 MapSelect preview, 나머지 title overlay와 Debug/Settings control 본문, floating 상태, 로고·아이콘·texture, GPU 계열 atlas/고급 렌더 및 21개 native 시각 회귀가 남아 있으므로 타이틀·오버레이 완료로 판정하지 않는다.
 
 ## 창과 renderer 소유권
 
@@ -105,7 +105,9 @@ OFL SHA-256 dbbfd9862cc8513c40d307d892a446b33ef4767e6423a3f74a913b8a210b91fd
 
 WOFF2를 TTF로 변환해 같은 Reserved Font Name으로 재배포하지 않는다. `TextAssets.cmake`가 저장소 원본 WOFF2와 OFL hash를 configure 때 검사한 뒤 `runtime_assets`로 무변환 복사한다. `FontFace`는 `FT_New_Memory_Face`, unicode charmap, variable `wght`, `hb-ft`와 no-hinting grayscale raster를 사용하며 public header에는 FreeType/HarfBuzz 타입을 노출하지 않는다. 64px·wght 400 shaping과 32px·wght 300 raster를 canonical hash로 고정한다.
 
-`GlyphAtlas`는 font source FNV-1a fingerprint, glyph index, pixel size, weight를 key로 사용하며 생성 때 pixel/entry/open-address lookup 저장소를 모두 확보한다. 1px padding shelf pack은 중복 조회, entry/공간 초과와 실패 시 pixel·entry·generation 불변을 검사한다. atlas 채우기는 asset/UI preload 단계 작업이며 frame tick에서는 lookup만 사용한다. 실제 shaped-text cache와 backend atlas upload·draw는 후속 단계다.
+`GlyphAtlas`는 font source FNV-1a fingerprint, glyph index, pixel size, weight를 key로 사용하며 생성 때 pixel/entry/open-address lookup 저장소를 모두 확보한다. 1px padding shelf pack은 중복 조회, entry/공간 초과와 실패 시 pixel·entry·generation 불변을 검사한다. `ShapedTextCache`는 한국어·영어 고정 UI catalog를 64px로 shape/raster해 2048×2048 A8 atlas와 run view를 하나의 immutable generation으로 publish한다. 후보 생성이 실패하면 이전 snapshot을 보존하고, viewport resize는 atlas를 다시 만들지 않고 cached advance로 layout만 2-pass 갱신한다. font는 `SDL_GetBasePath()/runtime_assets` 아래 WOFF2를 읽고 OFL은 같은 runtime asset tree에 함께 배포하므로 작업 디렉터리와 시스템 font에 의존하지 않는다.
+
+`RenderResourcesView`는 atlas bytes를 `FramePacket` codec에 넣지 않고 동일 frame의 동기 `render()` 호출에 빌려 주는 backend-neutral table이다. Software는 nearest/linear A8 sampling, PMA coverage, projective transform와 command/stack clip을 실제 처리하며 누락되거나 generation이 맞지 않는 resource를 명시적으로 실패시킨다. SDL_GPU/GLES는 아직 glyph-atlas capability를 선언하지 않으므로 title의 자동 backend 선택은 Software로 내려간다. 고정 catalog 밖의 유효 URL은 상태/effect를 보존하되 URL preview를 생략하고 missing text capability로 보고하며, 동적 URL shaping은 후속 transient-text 경계다.
 
 ## FramePacket v2 UI 렌더 계약
 
@@ -113,7 +115,7 @@ WOFF2를 TTF로 변환해 같은 Reserved Font Name으로 재배포하지 않는
 
 canonical codec은 padding과 host endian에 의존하지 않는 little-endian v2만 decode한다. v1 synthetic wire `2,862B / be64e77fc11fc188`은 migration fixture로 보존하고 v2 decoder가 명시적으로 거부한다. 기존 명령만 담은 v2 fixture는 `2,898B / 73c9f4cc45c2d5db`, 모든 신규 명령 fixture는 `1,809B / dc42ba9a8b97777b`다. decode는 count·wire·decoded memory 상한을 allocation 전에 검사하고 실패 시 destination을 변경하지 않는다. UTF-8 저장소는 전체를 한 번 검증하고 각 text slice는 code-point 시작·끝 경계만 O(1)로 확인하므로 겹치는 slice 수에 비례해 같은 문자열을 다시 스캔하지 않는다.
 
-clip/pass stack의 균형, layer·coordinate-space·order 범위, session/destination 중복, capture dependency를 packet validation에서 거부한다. capture source anchor는 참조한 command의 실제 sequence/layer/layer-order tuple과 정확히 일치해야 하며, 다른 offscreen session을 참조할 때는 그 session의 composite가 끝난 뒤여야 한다. Software backend는 linear/radial gradient와 중첩 scissor/rounded clip을 실제 raster하고, glyph run·textured mesh·pass는 계속 `placeholderCommands`로 계측한다. SDL_GPU/GLES의 고급 명령과 legacy overlay control도 아직 placeholder다. 파생 glyph/mesh bounds가 비유한 값이 되면 프레임 전체를 버리지 않고 결정적 진단 marker로 격리한다. 실제 atlas sampling, perspective-correct mesh, GPU gradient/clip, blur/glass pass를 구현해 production UI frame에서 이 값이 0이 되기 전에는 UI 렌더 완료로 보지 않는다.
+clip/pass stack의 균형, layer·coordinate-space·order 범위, session/destination 중복, capture dependency를 packet validation에서 거부한다. capture source anchor는 참조한 command의 실제 sequence/layer/layer-order tuple과 정확히 일치해야 하며, 다른 offscreen session을 참조할 때는 그 session의 composite가 끝난 뒤여야 한다. Software backend는 linear/radial gradient, 중첩 scissor/rounded clip과 resource-backed glyph run을 실제 raster하고 textured mesh/pass만 계속 `placeholderCommands`로 계측한다. SDL_GPU/GLES의 glyph run과 고급 명령, legacy overlay control도 아직 placeholder다. 파생 mesh bounds가 비유한 값이 되면 프레임 전체를 버리지 않고 결정적 진단 marker로 격리한다. perspective-correct mesh, GPU atlas/gradient/clip, blur/glass pass를 구현해 production UI frame에서 이 값이 0이 되기 전에는 UI 렌더 완료로 보지 않는다.
 
 ## Windows 빌드와 검증
 
@@ -163,9 +165,9 @@ seed 42, 60 tick의 현재 headless 기준 hash는 `58e40b4174f11e95`다. 이 �
 
 `game_replay_parity_tests`는 실제 JS `GameSystem → GameObjectSystem → Tower → PhysicsBody2D → TileMapCollisionResolver` 기준과 같은 480 fixed tick 입력을 C++ 세션에 재생한다. static world `fd31f3c2801962f7`, initial state `9deef2f12bd1257d`, 전체 record digest `11fd486e39710bf6`, final state `748a6b36a9213900`, tile correction `4`, tick heap allocation `0`이 모두 맞아야 한다. 현재 oracle에 없는 RNG·투사체·일반 contact/event는 capability와 `null/0`으로 유지하며 구현된 것처럼 확장하지 않는다.
 
-`movement_input_buffer_tests`는 짧은 down/up pulse, held input, repeat idempotence, 복수 alias source, focus/background에 대응하는 clear 계약을 검사한다. `sdl_platform_event_tests`는 mouse/touch/cancel/wheel, UTF-8 경계 절단, IME composition, focus clear와 dismissible window-close seam을 검사한다. `font_stack_tests`는 WOFF2/OFL hash, memory face, 누락 emoji asset 정책과 canonical 한국어/라틴 shaping을 검사한다. `playable_game_scene_tests`는 94-command 장면, 보간·safe area·DPI·capacity transaction과 반복 build의 무할당을 검사한다.
+`movement_input_buffer_tests`는 짧은 down/up pulse, held input, repeat idempotence, 복수 alias source, focus/background에 대응하는 clear 계약을 검사한다. `sdl_platform_event_tests`는 mouse/touch/cancel/wheel, UTF-8 경계 절단, IME composition, focus clear와 dismissible window-close seam을 검사한다. `font_stack_tests`는 WOFF2/OFL hash, memory face, 누락 emoji asset 정책, canonical 한국어/라틴 shaping과 shaped cache의 generation·원자적 실패를 검사한다. `software_renderer_tests`는 실제 A8 nearest/linear sampling, PMA, transform, 이중 clip, invalid resource와 반복 render 무할당을 검사한다. `playable_game_scene_tests`는 94-command 장면, 보간·safe area·DPI·capacity transaction과 반복 build의 무할당을 검사한다.
 
-`title_overlay_state_machine_tests`는 가변 frame rate, 큰 delta 제한, Loading→Title carry, overlay open/close retarget, Debug pause/focus, UTF-8 URL 경계·scheme/authority와 플랫폼 acknowledge, exactly-once 종료 및 무할당 snapshot을 검사한다. `ui_layout_metrics_tests`는 16:9/ultrawide, zero-inset Desktop과 비대칭 Android safe-area, uiScale, light/dark token, 타이틀 entrance 중간값, exit/external geometry와 transactional invalid input을 검사한다.
+`title_overlay_state_machine_tests`는 가변 frame rate, 큰 delta 제한, Loading→Title carry, overlay open/close retarget, Debug pause/focus, UTF-8 URL 경계·scheme/authority와 플랫폼 acknowledge, exactly-once 종료 및 무할당 snapshot을 검사한다. `ui_layout_metrics_tests`는 16:9/ultrawide, zero-inset Desktop과 비대칭 Android safe-area, uiScale, light/dark token, 타이틀 entrance 중간값, exit/external geometry와 transactional invalid input을 검사한다. `title_scene_tests`는 resource-backed base/Map/Exit/External glyph run 수, partial text table의 transactional rollback, responsive target size/transform와 반복 build 무할당을 검사한다.
 
 `wat_scalar_parity_tests`는 production flow-field와 prepared-hexa-contact WAT의 raw 결과를 C++ scalar reference와 비교한다. flow는 f32 integration/direction bit, 8방향/corner-cut/heap tie와 전수·대형·난수 digest를, contact는 f64 body·f32 part·ordered u8 flag, 반경 배율 `0.765`, epsilon `1e-6`를 보존한다. 두 API 모두 생성 시 capacity를 고정하고 `build()`/`scan()` 중 C++ `new`가 0이어야 한다. 이는 범용 spatial grid·position solve·projectile 구현 완료를 의미하지 않는다.
 
