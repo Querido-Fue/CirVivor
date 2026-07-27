@@ -143,9 +143,10 @@ add_library(render_frontend STATIC
     src/render/frontend/frame_packet_builder.cpp
     src/render/frontend/playable_game_scene.cpp
     src/render/frontend/synthetic_test_scene.cpp
+    src/render/frontend/title_scene.cpp
 )
 target_include_directories(render_frontend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(render_frontend PUBLIC game_core renderer_common)
+target_link_libraries(render_frontend PUBLIC game_core renderer_common ui_runtime)
 cirvivor_configure_target(render_frontend)
 
 add_library(renderer_backend STATIC
@@ -179,6 +180,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(playable_game_scene_tests PRIVATE render_frontend game_core)
     cirvivor_configure_target(playable_game_scene_tests)
+
+    add_executable(title_scene_tests
+        tests/title_scene_test.cpp
+    )
+    target_link_libraries(title_scene_tests PRIVATE render_frontend ui_runtime)
+    cirvivor_configure_target(title_scene_tests)
 
     add_executable(movement_input_buffer_tests
         tests/movement_input_buffer_test.cpp
@@ -257,6 +264,7 @@ if(BUILD_TESTING)
     add_test(NAME game_tests COMMAND game_tests)
     add_test(NAME frame_packet_tests COMMAND frame_packet_tests)
     add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
+    add_test(NAME title_scene_tests COMMAND title_scene_tests)
     add_test(NAME movement_input_buffer_tests COMMAND movement_input_buffer_tests)
     add_test(
         NAME title_overlay_state_machine_tests

@@ -1,0 +1,963 @@
+#include "render/frontend/title_scene.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <exception>
+#include <iostream>
+#include <limits>
+#include <new>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+
+namespace allocation_probe {
+
+thread_local bool enabled = false;
+thread_local std::size_t count = 0U;
+
+} // namespace allocation_probe
+
+void* operator new(const std::size_t size) {
+    if (allocation_probe::enabled) {
+        ++allocation_probe::count;
+    }
+    if (void* const memory = std::malloc(size == 0U ? 1U : size)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](const std::size_t size) {
+    return ::operator new(size);
+}
+
+void operator delete(void* const memory) noexcept {
+    std::free(memory);
+}
+
+void operator delete[](void* const memory) noexcept {
+    ::operator delete(memory);
+}
+
+void operator delete(void* const memory, const std::size_t) noexcept {
+    ::operator delete(memory);
+}
+
+void operator delete[](void* const memory, const std::size_t) noexcept {
+    ::operator delete(memory);
+}
+
+namespace {
+
+using cirvivor::render::CommandHeader;
+using cirvivor::render::CommandKind;
+using cirvivor::render::CommandRef;
+using cirvivor::render::BlendMode;
+using cirvivor::render::CoordinateSpace;
+using cirvivor::render::FrameMetadata;
+using cirvivor::render::FramePacket;
+using cirvivor::render::FramePacketCapacity;
+using cirvivor::render::PassOperation;
+using cirvivor::render::RectF;
+using cirvivor::render::RenderLayer;
+using cirvivor::render::UiStateFlag;
+using cirvivor::render::UiCommand;
+using cirvivor::render::UiPrimitive;
+using cirvivor::render::uiStateBits;
+using cirvivor::render::frontend::FrameBuildError;
+using cirvivor::render::frontend::FramePacketBuilder;
+using cirvivor::render::frontend::OverlaySurfaceLayerOrders;
+using cirvivor::render::frontend::PacketCapacityPolicy;
+using cirvivor::render::frontend::TitleSceneConfig;
+using cirvivor::render::frontend::TitleSceneInput;
+using cirvivor::render::frontend::TitleSceneMissingCapability;
+using cirvivor::render::frontend::buildTitleScene;
+using cirvivor::render::frontend::maximumTitleSceneCapacity;
+using cirvivor::render::frontend::titleSceneCapabilityIsMissing;
+using cirvivor::render::frontend::titleSceneCapacity;
+using cirvivor::render::frontend::title_effect_surface_layer_order;
+using cirvivor::render::frontend::title_tooltip_surface_layer_order;
+using cirvivor::render::frontend::title_ui_surface_layer_order;
+using cirvivor::render::frontend::tryResolveOverlaySurfaceLayerOrders;
+using cirvivor::ui::OverlayKind;
+using cirvivor::ui::TitleOverlayStateMachine;
+using cirvivor::ui::TitleUiControllerSnapshot;
+using cirvivor::ui::TitleUiTarget;
+using cirvivor::ui::UiAction;
+using cirvivor::ui::UiActionStatus;
+using cirvivor::ui::UiStateSnapshot;
+using cirvivor::ui::layout::LayoutInput;
+using cirvivor::ui::layout::LogicalSafeAreaInsets;
+using cirvivor::ui::layout::TitleEntranceRenderState;
+using cirvivor::ui::layout::UiLayoutMetrics;
+using cirvivor::ui::layout::UiLayoutSnapshot;
+using cirvivor::ui::layout::darkThemeMetrics;
+using cirvivor::ui::layout::trySampleTitleEntrance;
+
+class TestFailure final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+void require(
+    const bool condition,
+    const std::string_view expression,
+    const std::string_view file,
+    const int line
+) {
+    if (!condition) {
+        throw TestFailure(
+            std::string(file) + ':' + std::to_string(line)
+            + " requirement failed: " + std::string(expression)
+        );
+    }
+}
+
+void requireNear(
+    const double actual,
+    const double expected,
+    const double tolerance,
+    const std::string_view expression,
+    const std::string_view file,
+    const int line
+) {
+    if (!std::isfinite(actual) || std::abs(actual - expected) > tolerance) {
+        throw TestFailure(
+            std::string(file) + ':' + std::to_string(line)
+            + " requirement failed: " + std::string(expression)
+        );
+    }
+}
+
+#define REQUIRE(expression) require((expression), #expression, __FILE__, __LINE__)
+#define REQUIRE_NEAR(actual, expected, tolerance) \
+    requireNear((actual), (expected), (tolerance), #actual " ~= " #expected, __FILE__, __LINE__)
+
+[[nodiscard]] UiLayoutSnapshot buildLayout(
+    const double width,
+    const double height,
+    const LogicalSafeAreaInsets safeArea = {},
+    const double uiScale = 1.0
+) {
+    UiLayoutMetrics metrics;
+    REQUIRE(metrics.tryUpdate({width, height, uiScale, true, safeArea}));
+    return metrics.snapshot();
+}
+
+[[nodiscard]] TitleEntranceRenderState buildEntrance(
+    const UiLayoutSnapshot& layout,
+    const double elapsedSeconds
+) {
+    TitleEntranceRenderState entrance{};
+    REQUIRE(trySampleTitleEntrance(layout, elapsedSeconds, entrance));
+    return entrance;
+}
+
+void advanceInSteps(
+    TitleOverlayStateMachine& state,
+    const double totalSeconds
+) noexcept {
+    double remaining = totalSeconds;
+    while (remaining > 1.0e-12) {
+        const double step = std::min(remaining, 0.05);
+        state.advance(step);
+        remaining -= step;
+    }
+}
+
+[[nodiscard]] TitleOverlayStateMachine interactiveState() {
+    TitleOverlayStateMachine state;
+    advanceInSteps(
+        state,
+        TitleOverlayStateMachine::intro_delay_seconds
+            + TitleOverlayStateMachine::logo_playback_seconds
+            + TitleOverlayStateMachine::scene_transition_seconds
+    );
+    REQUIRE(state.snapshot().titleInputEnabled);
+    return state;
+}
+
+[[nodiscard]] TitleUiControllerSnapshot idleInteraction() noexcept {
+    constexpr std::array targets{
+        TitleUiTarget::cardStart,
+        TitleUiTarget::cardQuickStart,
+        TitleUiTarget::cardRecords,
+        TitleUiTarget::cardDeck,
+        TitleUiTarget::cardResearch,
+        TitleUiTarget::utilitySetting,
+        TitleUiTarget::utilityCredits,
+        TitleUiTarget::utilityAchievements,
+        TitleUiTarget::utilityExit
+    };
+    TitleUiControllerSnapshot result{};
+    for (std::size_t index = 0U; index < targets.size(); ++index) {
+        result.targets[index].target = targets[index];
+    }
+    return result;
+}
+
+[[nodiscard]] bool capacityContains(
+    const FramePacketCapacity outer,
+    const FramePacketCapacity inner
+) noexcept {
+    return inner.commandCount <= outer.commandCount
+        && inner.spriteCount <= outer.spriteCount
+        && inner.shapeCount <= outer.shapeCount
+        && inner.lineCount <= outer.lineCount
+        && inner.textCount <= outer.textCount
+        && inner.effectCount <= outer.effectCount
+        && inner.uiCount <= outer.uiCount
+        && inner.overlayCount <= outer.overlayCount
+        && inner.utf8ByteCount <= outer.utf8ByteCount
+        && inner.glyphRunCount <= outer.glyphRunCount
+        && inner.glyphInstanceCount <= outer.glyphInstanceCount
+        && inner.texturedMeshCount <= outer.texturedMeshCount
+        && inner.meshVertexCount <= outer.meshVertexCount
+        && inner.meshIndexCount <= outer.meshIndexCount
+        && inner.gradientCount <= outer.gradientCount
+        && inner.gradientStopCount <= outer.gradientStopCount
+        && inner.clipCount <= outer.clipCount
+        && inner.passCount <= outer.passCount;
+}
+
+[[nodiscard]] const CommandHeader* commandHeader(
+    const FramePacket& packet,
+    const CommandRef reference
+) noexcept {
+    const std::size_t index = reference.index;
+    switch (reference.kind) {
+    case CommandKind::sprite:
+        return index < packet.sprites().size() ? &packet.sprites()[index].header : nullptr;
+    case CommandKind::shape:
+        return index < packet.shapes().size() ? &packet.shapes()[index].header : nullptr;
+    case CommandKind::line:
+        return index < packet.lines().size() ? &packet.lines()[index].header : nullptr;
+    case CommandKind::text:
+        return index < packet.textRuns().size() ? &packet.textRuns()[index].header : nullptr;
+    case CommandKind::effect:
+        return index < packet.effects().size() ? &packet.effects()[index].header : nullptr;
+    case CommandKind::ui:
+        return index < packet.ui().size() ? &packet.ui()[index].header : nullptr;
+    case CommandKind::overlay:
+        return index < packet.overlays().size() ? &packet.overlays()[index].header : nullptr;
+    case CommandKind::glyphRun:
+        return index < packet.glyphRuns().size() ? &packet.glyphRuns()[index].header : nullptr;
+    case CommandKind::texturedMesh:
+        return index < packet.texturedMeshes().size()
+            ? &packet.texturedMeshes()[index].header
+            : nullptr;
+    case CommandKind::gradient:
+        return index < packet.gradients().size() ? &packet.gradients()[index].header : nullptr;
+    case CommandKind::clip:
+        return index < packet.clips().size() ? &packet.clips()[index].header : nullptr;
+    case CommandKind::pass:
+        return index < packet.passes().size() ? &packet.passes()[index].header : nullptr;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const CommandHeader* headerAtSequence(
+    const FramePacket& packet,
+    const std::uint32_t sequence
+) noexcept {
+    if (sequence >= packet.commandStream().size()) {
+        return nullptr;
+    }
+    return commandHeader(packet, packet.commandStream()[sequence]);
+}
+
+[[nodiscard]] bool rectInside(
+    const RectF inner,
+    const cirvivor::ui::layout::RoundedRectD outer
+) noexcept {
+    constexpr double epsilon = 1.0e-4;
+    return static_cast<double>(inner.x) + epsilon >= outer.x
+        && static_cast<double>(inner.y) + epsilon >= outer.y
+        && static_cast<double>(inner.x + inner.width) <= outer.x + outer.width + epsilon
+        && static_cast<double>(inner.y + inner.height) <= outer.y + outer.height + epsilon;
+}
+
+void testSurfaceOrderFormulaAndOverflowTransaction() {
+    cirvivor::ui::OverlaySnapshot overlay{};
+    overlay.kind = OverlayKind::externalLinkWarning;
+    overlay.layer = 15;
+    overlay.sequence = 2U;
+    OverlaySurfaceLayerOrders orders{};
+    REQUIRE(tryResolveOverlaySurfaceLayerOrders(overlay, orders));
+    REQUIRE(orders.dim == 15'019);
+    REQUIRE(orders.effect == 15'020);
+    REQUIRE(orders.ui == 15'021);
+    REQUIRE(orders.floatingEffect == 15'022);
+    REQUIRE(orders.floatingUi == 15'023);
+    REQUIRE(title_effect_surface_layer_order == 10'000);
+    REQUIRE(title_ui_surface_layer_order == 10'001);
+    REQUIRE(title_tooltip_surface_layer_order == 190'000);
+
+    const OverlaySurfaceLayerOrders before = orders;
+    overlay.sequence = std::numeric_limits<std::uint32_t>::max();
+    REQUIRE(!tryResolveOverlaySurfaceLayerOrders(overlay, orders));
+    REQUIRE(orders == before);
+}
+
+void testSettledTitleBuildUsesExactV2CapacityAndExplicitPlaceholders() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const UiStateSnapshot uiState = interactiveState().snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput input{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+
+    FramePacketCapacity expected{};
+    expected.commandCount = 23U;
+    expected.shapeCount = 3U;
+    expected.uiCount = 15U;
+    expected.gradientCount = 1U;
+    expected.gradientStopCount = 5U;
+    expected.clipCount = 4U;
+    REQUIRE(titleSceneCapacity(input) == expected);
+    REQUIRE(capacityContains(maximumTitleSceneCapacity(), expected));
+
+    FramePacket packet(expected);
+    const auto result = buildTitleScene(packet, input);
+    REQUIRE(result.success);
+    REQUIRE(result.error == FrameBuildError::none);
+    REQUIRE(result.requiredCapacity == expected);
+    REQUIRE(packet.size() == expected);
+    REQUIRE(packet.isStructurallyValid());
+    REQUIRE(packet.isRenderOrderValid());
+    REQUIRE(titleSceneCapabilityIsMissing(
+        result.missingCapabilities,
+        TitleSceneMissingCapability::preShapedTextResources
+    ));
+    REQUIRE(result.commandStats.totalCommands == 23U);
+    REQUIRE(result.commandStats.titleShellCommands == 23U);
+    REQUIRE(result.commandStats.placeholderGeometryCommands == 7U);
+    REQUIRE(result.commandStats.titleOverlayContentCommands == 0U);
+    REQUIRE(result.commandStats.shapedTextCommands == 0U);
+    REQUIRE(result.commandStats.resourceBackedCommands == 0U);
+    REQUIRE(packet.textRuns().empty());
+    REQUIRE(packet.glyphRuns().empty());
+    REQUIRE(packet.texturedMeshes().empty());
+    REQUIRE(packet.gradients()[0].bounds == (RectF{0.0F, 0.0F, 1'280.0F, 720.0F}));
+    REQUIRE(packet.gradientStops().size() == 5U);
+    REQUIRE_NEAR(packet.gradientStops().front().offset, 0.0, 1.0e-7);
+    REQUIRE_NEAR(packet.gradientStops().back().offset, 1.0, 1.0e-7);
+    for (const auto& shape : packet.shapes()) {
+        REQUIRE(shape.header.layer == RenderLayer::effect);
+        REQUIRE(shape.header.layerOrder == title_effect_surface_layer_order);
+    }
+    for (const auto& command : packet.ui()) {
+        REQUIRE(command.header.layer == RenderLayer::ui);
+        REQUIRE(command.header.layerOrder == title_ui_surface_layer_order);
+    }
+}
+
+void testMidEntranceUsesSampledCardAndLogoGeometry() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState midEntrance = buildEntrance(layout, 0.45);
+    const TitleEntranceRenderState settledEntrance = buildEntrance(layout, 2.0);
+    TitleOverlayStateMachine midState;
+    advanceInSteps(
+        midState,
+        TitleOverlayStateMachine::intro_delay_seconds
+            + TitleOverlayStateMachine::logo_playback_seconds
+            + 0.45
+    );
+    const UiStateSnapshot midUiState = midState.snapshot();
+    const UiStateSnapshot settledUiState = interactiveState().snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput midInput{
+        midUiState,
+        interaction,
+        layout,
+        midEntrance,
+        darkThemeMetrics()
+    };
+    const TitleSceneInput settledInput{
+        settledUiState,
+        interaction,
+        layout,
+        settledEntrance,
+        darkThemeMetrics()
+    };
+    const FramePacketCapacity capacity = titleSceneCapacity(midInput);
+    FramePacket midPacket(capacity);
+    FramePacket settledPacket(capacity);
+    REQUIRE(buildTitleScene(midPacket, midInput).success);
+    REQUIRE(buildTitleScene(settledPacket, settledInput).success);
+
+    const RectF midFirstCard = midPacket.ui()[2].bounds;
+    REQUIRE_NEAR(midFirstCard.x, midEntrance.cards[0].panelRect.x, 1.0e-4);
+    REQUIRE_NEAR(midFirstCard.y, midEntrance.cards[0].panelRect.y, 1.0e-4);
+    REQUIRE_NEAR(midPacket.ui()[2].value, midEntrance.cards[0].revealProgress, 1.0e-6);
+    REQUIRE(
+        std::abs(midFirstCard.x - settledPacket.ui()[2].bounds.x) > 1.0e-3F
+        || std::abs(midPacket.shapes()[1].bounds.x - settledPacket.shapes()[1].bounds.x)
+            > 1.0e-3F
+    );
+    REQUIRE(midPacket.isRenderOrderValid());
+}
+
+void testDpr2ViewportKeepsLogicalLayoutAndDrawableMappingSeparate() {
+    const LogicalSafeAreaInsets logicalSafeArea{20.0, 10.0, 30.0, 15.0};
+    const UiLayoutSnapshot layout = buildLayout(
+        1'280.0,
+        720.0,
+        logicalSafeArea
+    );
+    TitleSceneConfig config{};
+    config.physicalDisplaySize = {2'560, 1'440};
+    config.physicalWindowBounds = {0, 0, 1'280, 720};
+    config.drawableSize = {2'560, 1'440};
+    config.drawableSafeArea = {40, 20, 60, 30};
+    config.dpiScale = 2.0F;
+    config.projectionRevision = 91U;
+    config.frameId = 72U;
+    config.simulationTick = 33U;
+    config.presentationTimeSeconds = 7.25;
+    config.interpolationAlpha = 0.5F;
+
+    const auto viewport = cirvivor::render::frontend::makeTitleViewport(
+        layout,
+        config
+    );
+    REQUIRE(viewport.drawable.size == config.drawableSize);
+    REQUIRE(
+        viewport.drawable.contentRect
+        == (cirvivor::render::RectI{0, 0, 2'560, 1'440})
+    );
+    REQUIRE(viewport.drawable.safeArea == config.drawableSafeArea);
+    REQUIRE_NEAR(viewport.logicalUi.size.width, 1'280.0, 1.0e-6);
+    REQUIRE_NEAR(viewport.logicalUi.size.height, 720.0, 1.0e-6);
+    REQUIRE_NEAR(viewport.logicalUi.drawablePixelsPerLogicalUnitX, 2.0, 1.0e-6);
+    REQUIRE_NEAR(viewport.logicalUi.drawablePixelsPerLogicalUnitY, 2.0, 1.0e-6);
+    REQUIRE_NEAR(viewport.logicalUi.safeArea.left, 20.0, 1.0e-6);
+    REQUIRE_NEAR(viewport.logicalUi.safeArea.bottom, 15.0, 1.0e-6);
+    REQUIRE(viewport.world.projectionRevision == 91U);
+
+    TitleSceneConfig squareConfig{};
+    squareConfig.physicalDisplaySize = {1'000, 1'000};
+    squareConfig.physicalWindowBounds = {0, 0, 1'000, 1'000};
+    squareConfig.drawableSize = {1'000, 1'000};
+    const auto squareViewport = cirvivor::render::frontend::makeTitleViewport(
+        layout,
+        squareConfig
+    );
+    REQUIRE(
+        squareViewport.drawable.contentRect
+        == (cirvivor::render::RectI{0, 219, 1'000, 562})
+    );
+    const double squareScale = static_cast<double>(
+        squareViewport.logicalUi.drawablePixelsPerLogicalUnitX
+    );
+    REQUIRE_NEAR(
+        squareViewport.logicalUi.drawablePixelsPerLogicalUnitY,
+        squareScale,
+        1.0e-7
+    );
+    REQUIRE(squareScale * layout.viewport.ww <= 1'000.0);
+    REQUIRE(squareScale * layout.viewport.wh <= 562.0);
+    REQUIRE(
+        static_cast<double>(squareViewport.world.worldToDrawable.elements[5])
+            + squareScale * layout.viewport.wh
+        <= 781.0
+    );
+
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const UiStateSnapshot uiState = interactiveState().snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput input{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+    FramePacket packet(titleSceneCapacity(input));
+    const auto result = buildTitleScene(packet, input, config);
+    REQUIRE(result.success);
+    REQUIRE(packet.viewport() == viewport);
+    REQUIRE(packet.metadata().frameId == 72U);
+    REQUIRE(packet.metadata().simulationTick == 33U);
+    REQUIRE_NEAR(packet.metadata().presentationTimeSeconds, 7.25, 1.0e-12);
+    REQUIRE_NEAR(packet.metadata().interpolationAlpha, 0.5, 1.0e-7);
+}
+
+void testUltrawideAndSafeAreaKeepShellInsideAuthoritativeLayout() {
+    const LogicalSafeAreaInsets safeArea{120.0, 48.0, 160.0, 64.0};
+    const UiLayoutSnapshot layout = buildLayout(
+        3'440.0,
+        1'440.0,
+        safeArea,
+        1.25
+    );
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const UiStateSnapshot uiState = interactiveState().snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput input{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+    FramePacket packet(titleSceneCapacity(input));
+    TitleSceneConfig config{};
+    config.physicalDisplaySize = {3'440, 1'440};
+    config.physicalWindowBounds = {0, 0, 3'440, 1'440};
+    config.drawableSize = {3'440, 1'440};
+    config.drawableSafeArea = {120, 48, 160, 64};
+    REQUIRE(buildTitleScene(packet, input, config).success);
+    REQUIRE(
+        packet.gradients()[0].bounds
+        == (RectF{0.0F, 0.0F, 3'440.0F, 1'440.0F})
+    );
+    REQUIRE(rectInside(packet.ui()[0].bounds, layout.viewport.safeAreaRect));
+    REQUIRE(rectInside(packet.ui()[1].bounds, layout.viewport.safeAreaRect));
+    REQUIRE(packet.viewport().drawable.safeArea == config.drawableSafeArea);
+    REQUIRE(packet.isRenderOrderValid());
+}
+
+void testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    TitleOverlayStateMachine state = interactiveState();
+    const auto credits = state.apply(UiAction::openTitle(OverlayKind::credits));
+    const auto external = state.apply(
+        UiAction::openExternalLink("https://jukchang.com")
+    );
+    REQUIRE(credits.status == UiActionStatus::applied);
+    REQUIRE(external.status == UiActionStatus::applied);
+    REQUIRE(credits.overlaySequence == 1U);
+    REQUIRE(external.overlaySequence == 2U);
+    advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot uiState = state.snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput input{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+
+    FramePacketCapacity expected{};
+    expected.commandCount = 41U;
+    expected.shapeCount = 3U;
+    expected.uiCount = 19U;
+    expected.overlayCount = 8U;
+    expected.gradientCount = 1U;
+    expected.gradientStopCount = 5U;
+    expected.clipCount = 6U;
+    expected.passCount = 4U;
+    REQUIRE(titleSceneCapacity(input) == expected);
+    FramePacket packet(expected);
+    const auto result = buildTitleScene(packet, input);
+    REQUIRE(result.success);
+    REQUIRE(titleSceneCapabilityIsMissing(
+        result.missingCapabilities,
+        TitleSceneMissingCapability::creditsContent
+    ));
+    REQUIRE(result.commandStats.overlayDimCommands == 6U);
+    REQUIRE(result.commandStats.overlayPassCommands == 4U);
+    REQUIRE(result.commandStats.externalLinkShellCommands == 12U);
+    REQUIRE(result.commandStats.titleOverlayContentCommands == 0U);
+    REQUIRE(packet.ui().size() == 19U);
+    REQUIRE(packet.overlays().size() == 8U);
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        REQUIRE(packet.overlays()[index].header.layerOrder == 10'009);
+    }
+    for (std::size_t index = 3U; index < 6U; ++index) {
+        REQUIRE(packet.overlays()[index].header.layerOrder == 15'019);
+    }
+    REQUIRE(packet.overlays()[6].header.layerOrder == 15'021);
+    REQUIRE(packet.overlays()[7].header.layerOrder == 15'021);
+    REQUIRE(packet.passes().size() == 4U);
+    REQUIRE(packet.passes()[1].operation == PassOperation::capture);
+    const auto& capture = packet.passes()[1];
+    REQUIRE(capture.header.layerOrder == 15'020);
+    REQUIRE(capture.sourceAnchorLayer == RenderLayer::dynamicOverlay);
+    REQUIRE(capture.sourceAnchorLayerOrder == 15'019);
+    const CommandHeader* const anchor = headerAtSequence(
+        packet,
+        capture.sourceAnchorSequence
+    );
+    REQUIRE(anchor != nullptr);
+    REQUIRE(anchor->sequence == capture.sourceAnchorSequence);
+    REQUIRE(anchor->layer == capture.sourceAnchorLayer);
+    REQUIRE(anchor->layerOrder == capture.sourceAnchorLayerOrder);
+    const CommandRef anchorReference = packet.commandStream()[
+        capture.sourceAnchorSequence
+    ];
+    REQUIRE(anchorReference.kind == CommandKind::overlay);
+    REQUIRE(
+        packet.overlays()[anchorReference.index].operation
+        == cirvivor::render::OverlayOperation::endSession
+    );
+    REQUIRE(packet.clips()[4].header.layerOrder == 15'021);
+    REQUIRE(packet.clips()[5].header.layerOrder == 15'021);
+    REQUIRE(packet.isRenderOrderValid());
+}
+
+void testExitShellAndInsufficientFixedCapacityAreTransactional() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    TitleOverlayStateMachine state = interactiveState();
+    REQUIRE(state.apply(UiAction::openExit()).status == UiActionStatus::applied);
+    advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot uiState = state.snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput input{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+    const FramePacketCapacity exact = titleSceneCapacity(input);
+    REQUIRE(exact.commandCount == 37U);
+    REQUIRE(exact.uiCount == 18U);
+    REQUIRE(exact.overlayCount == 5U);
+    REQUIRE(exact.passCount == 4U);
+    REQUIRE(exact.clipCount == 6U);
+
+    FramePacket exactPacket(exact);
+    const auto exactResult = buildTitleScene(exactPacket, input);
+    REQUIRE(exactResult.success);
+    REQUIRE(exactResult.commandStats.exitShellCommands == 11U);
+    REQUIRE(exactPacket.isRenderOrderValid());
+
+    FramePacketCapacity insufficient = exact;
+    --insufficient.gradientStopCount;
+    FramePacket insufficientPacket(insufficient);
+    const auto failed = buildTitleScene(insufficientPacket, input);
+    REQUIRE(!failed.success);
+    REQUIRE(failed.error == FrameBuildError::capacityExceeded);
+    REQUIRE(insufficientPacket.size() == FramePacketCapacity{});
+    REQUIRE(failed.requiredCapacity == exact);
+}
+
+void testActiveBuilderTransactionIsPreserved() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const UiStateSnapshot uiState = interactiveState().snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const auto theme = darkThemeMetrics();
+    const TitleSceneInput input{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        theme
+    };
+    const FramePacketCapacity capacity = titleSceneCapacity(input);
+    FramePacket packet(capacity);
+    FramePacketBuilder owner(packet, PacketCapacityPolicy::fixedCapacity);
+    FrameMetadata metadata{};
+    REQUIRE(owner.begin(
+        metadata,
+        cirvivor::render::frontend::makeTitleViewport(layout)
+    ));
+
+    UiCommand first{};
+    first.header = {
+        RenderLayer::ui,
+        CoordinateSpace::logicalUi,
+        BlendMode::premultipliedAlpha,
+        0U,
+        title_ui_surface_layer_order,
+        0U
+    };
+    first.primitive = UiPrimitive::button;
+    first.elementId = 0x101U;
+    first.bounds = {1.0F, 2.0F, 30.0F, 40.0F};
+    REQUIRE(owner.addUi(first));
+    REQUIRE(owner.nextSequence() == 1U);
+    const FramePacketCapacity beforeSize = packet.size();
+    const UiCommand beforeCommand = packet.ui().front();
+
+    const auto rejected = buildTitleScene(packet, input);
+    REQUIRE(!rejected.success);
+    REQUIRE(rejected.error == FrameBuildError::packetAlreadyHasBuilder);
+    REQUIRE(rejected.requiredCapacity == capacity);
+    REQUIRE(owner.isBuilding());
+    REQUIRE(owner.nextSequence() == 1U);
+    REQUIRE(packet.size() == beforeSize);
+    REQUIRE(packet.ui().front() == beforeCommand);
+
+    UiCommand second = first;
+    second.elementId = 0x102U;
+    second.bounds.x = 40.0F;
+    REQUIRE(owner.addUi(second));
+    REQUIRE(owner.nextSequence() == 2U);
+    REQUIRE(owner.finish());
+    REQUIRE(packet.ui().size() == 2U);
+    REQUIRE(packet.isStructurallyValid());
+    REQUIRE(packet.isRenderOrderValid());
+}
+
+void testInteractionTargetsChangeOnlyTheirShellAndRejectInvalidTables() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const UiStateSnapshot uiState = interactiveState().snapshot();
+    const auto theme = darkThemeMetrics();
+    const TitleUiControllerSnapshot idle = idleInteraction();
+    const TitleSceneInput idleInput{uiState, idle, layout, entrance, theme};
+    const FramePacketCapacity capacity = titleSceneCapacity(idleInput);
+
+    TitleUiControllerSnapshot hovered = idle;
+    std::swap(hovered.targets.front(), hovered.targets.back());
+    for (auto& target : hovered.targets) {
+        if (target.target == TitleUiTarget::cardDeck) {
+            target.hovered = true;
+        }
+    }
+    const TitleSceneInput hoveredInput{
+        uiState,
+        hovered,
+        layout,
+        entrance,
+        theme
+    };
+
+    TitleUiControllerSnapshot pressed = idle;
+    for (auto& target : pressed.targets) {
+        if (target.target == TitleUiTarget::utilityCredits) {
+            target.hovered = true;
+            target.pressed = true;
+        }
+    }
+    const TitleSceneInput pressedInput{
+        uiState,
+        pressed,
+        layout,
+        entrance,
+        theme
+    };
+
+    REQUIRE(titleSceneCapacity(hoveredInput) == capacity);
+    REQUIRE(titleSceneCapacity(pressedInput) == capacity);
+    FramePacket idlePacket(capacity);
+    FramePacket hoveredPacket(capacity);
+    FramePacket pressedPacket(capacity);
+    REQUIRE(buildTitleScene(idlePacket, idleInput).success);
+    const auto hoveredResult = buildTitleScene(hoveredPacket, hoveredInput);
+    const auto pressedResult = buildTitleScene(pressedPacket, pressedInput);
+    REQUIRE(hoveredResult.success);
+    REQUIRE(pressedResult.success);
+    REQUIRE(hoveredPacket.size() == capacity);
+    REQUIRE(pressedPacket.size() == capacity);
+    REQUIRE(hoveredPacket.commandStream().size() == idlePacket.commandStream().size());
+    REQUIRE(pressedPacket.commandStream().size() == idlePacket.commandStream().size());
+    for (std::size_t index = 0U; index < idlePacket.commandStream().size(); ++index) {
+        REQUIRE(hoveredPacket.commandStream()[index] == idlePacket.commandStream()[index]);
+        REQUIRE(pressedPacket.commandStream()[index] == idlePacket.commandStream()[index]);
+    }
+
+    constexpr std::size_t deckCardIndex = 3U;
+    const std::size_t deckUiIndex = 2U + deckCardIndex;
+    std::size_t hoveredChanges = 0U;
+    std::size_t pressedChanges = 0U;
+    std::size_t hoveredChangedIndex = 0U;
+    std::size_t pressedChangedIndex = 0U;
+    for (std::size_t index = 0U; index < idlePacket.ui().size(); ++index) {
+        if (hoveredPacket.ui()[index] != idlePacket.ui()[index]) {
+            ++hoveredChanges;
+            hoveredChangedIndex = index;
+        }
+        if (pressedPacket.ui()[index] != idlePacket.ui()[index]) {
+            ++pressedChanges;
+            pressedChangedIndex = index;
+        }
+    }
+    REQUIRE(hoveredChanges == 1U);
+    REQUIRE(hoveredChangedIndex == deckUiIndex);
+    REQUIRE(
+        hoveredPacket.ui()[deckUiIndex].stateFlags
+        == uiStateBits(UiStateFlag::hovered)
+    );
+    REQUIRE(
+        hoveredPacket.ui()[deckUiIndex].backgroundColor
+        != idlePacket.ui()[deckUiIndex].backgroundColor
+    );
+    REQUIRE_NEAR(
+        hoveredPacket.ui()[deckUiIndex].backgroundColor.alpha,
+        theme.titleButtonHover[0].color.alpha * entrance.cards[deckCardIndex].alpha,
+        1.0e-6
+    );
+
+    constexpr std::size_t creditsTileIndex = 1U;
+    const std::size_t creditsUiIndex = 2U
+        + entrance.cards.size()
+        + creditsTileIndex;
+    REQUIRE(pressedChanges == 1U);
+    REQUIRE(pressedChangedIndex == creditsUiIndex);
+    REQUIRE(
+        pressedPacket.ui()[creditsUiIndex].stateFlags
+        == (uiStateBits(UiStateFlag::hovered) | uiStateBits(UiStateFlag::pressed))
+    );
+    REQUIRE_NEAR(
+        pressedPacket.ui()[creditsUiIndex].backgroundColor.alpha,
+        theme.titleButtonHover[1].color.alpha
+            * entrance.utilityTiles[creditsTileIndex].alpha,
+        1.0e-6
+    );
+    REQUIRE(hoveredResult.commandStats.shapedTextCommands == 0U);
+    REQUIRE(hoveredResult.commandStats.resourceBackedCommands == 0U);
+    REQUIRE(titleSceneCapabilityIsMissing(
+        hoveredResult.missingCapabilities,
+        TitleSceneMissingCapability::preShapedTextResources
+    ));
+
+    TitleUiControllerSnapshot duplicate = idle;
+    duplicate.targets[1].target = duplicate.targets[0].target;
+    const TitleSceneInput duplicateInput{
+        uiState,
+        duplicate,
+        layout,
+        entrance,
+        theme
+    };
+    FramePacket rejectedPacket(capacity);
+    REQUIRE(buildTitleScene(rejectedPacket, idleInput).success);
+    const auto duplicateResult = buildTitleScene(rejectedPacket, duplicateInput);
+    REQUIRE(!duplicateResult.success);
+    REQUIRE(duplicateResult.error == FrameBuildError::structurallyInvalid);
+    REQUIRE(duplicateResult.requiredCapacity == capacity);
+    REQUIRE(rejectedPacket.size() == FramePacketCapacity{});
+
+    TitleUiControllerSnapshot invalid = idle;
+    invalid.targets[0].target = TitleUiTarget::none;
+    const TitleSceneInput invalidInput{
+        uiState,
+        invalid,
+        layout,
+        entrance,
+        theme
+    };
+    const auto invalidResult = buildTitleScene(rejectedPacket, invalidInput);
+    REQUIRE(!invalidResult.success);
+    REQUIRE(invalidResult.error == FrameBuildError::structurallyInvalid);
+    REQUIRE(invalidResult.requiredCapacity == capacity);
+    REQUIRE(rejectedPacket.size() == FramePacketCapacity{});
+}
+
+void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    TitleOverlayStateMachine state = interactiveState();
+    REQUIRE(state.apply(UiAction::openTitle(OverlayKind::records)).accepted());
+    REQUIRE(state.apply(
+        UiAction::openExternalLink("https://jukchang.com")
+    ).accepted());
+    REQUIRE(state.apply(UiAction::openDebug()).accepted());
+    REQUIRE(state.apply(UiAction::openExit()).accepted());
+    advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot uiState = state.snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    const TitleSceneInput input{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        darkThemeMetrics()
+    };
+    const FramePacketCapacity required = titleSceneCapacity(input);
+    const FramePacketCapacity maximum = maximumTitleSceneCapacity();
+    REQUIRE(capacityContains(maximum, required));
+    REQUIRE(maximum.commandCount == 83U);
+    REQUIRE(maximum.uiCount == 31U);
+    REQUIRE(maximum.overlayCount == 20U);
+    REQUIRE(maximum.clipCount == 12U);
+    REQUIRE(maximum.passCount == 16U);
+
+    FramePacket packet(maximum);
+    allocation_probe::count = 0U;
+    allocation_probe::enabled = true;
+    const auto first = buildTitleScene(packet, input);
+    const auto second = buildTitleScene(packet, input);
+    const std::size_t allocations = allocation_probe::count;
+    allocation_probe::enabled = false;
+
+    REQUIRE(first.success);
+    REQUIRE(second.success);
+    REQUIRE(allocations == 0U);
+    REQUIRE(packet.size() == required);
+    REQUIRE(packet.isRenderOrderValid());
+    REQUIRE(titleSceneCapabilityIsMissing(
+        second.missingCapabilities,
+        TitleSceneMissingCapability::recordsContent
+    ));
+    REQUIRE(titleSceneCapabilityIsMissing(
+        second.missingCapabilities,
+        TitleSceneMissingCapability::debugOverlayShell
+    ));
+    REQUIRE(second.commandStats.titleOverlayContentCommands == 0U);
+}
+
+struct TestCase final {
+    std::string_view name;
+    void (*run)();
+};
+
+} // namespace
+
+int main() {
+    const std::array tests{
+        TestCase{"surface order formula", testSurfaceOrderFormulaAndOverflowTransaction},
+        TestCase{
+            "settled exact v2 capacity",
+            testSettledTitleBuildUsesExactV2CapacityAndExplicitPlaceholders
+        },
+        TestCase{"mid entrance geometry", testMidEntranceUsesSampledCardAndLogoGeometry},
+        TestCase{
+            "DPR2 viewport mapping",
+            testDpr2ViewportKeepsLogicalLayoutAndDrawableMappingSeparate
+        },
+        TestCase{"ultrawide safe area", testUltrawideAndSafeAreaKeepShellInsideAuthoritativeLayout},
+        TestCase{
+            "nested external pass anchor",
+            testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent
+        },
+        TestCase{
+            "exit fixed transaction",
+            testExitShellAndInsufficientFixedCapacityAreTransactional
+        },
+        TestCase{
+            "active builder preservation",
+            testActiveBuilderTransactionIsPreserved
+        },
+        TestCase{
+            "interaction target mapping",
+            testInteractionTargetsChangeOnlyTheirShellAndRejectInvalidTables
+        },
+        TestCase{
+            "maximum capacity zero allocation",
+            testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing
+        }
+    };
+
+    std::size_t passed = 0U;
+    for (const TestCase& test : tests) {
+        try {
+            test.run();
+            ++passed;
+            std::cout << "[PASS] " << test.name << '\n';
+        } catch (const std::exception& error) {
+            allocation_probe::enabled = false;
+            std::cerr << "[FAIL] " << test.name << ": " << error.what() << '\n';
+            return 1;
+        }
+    }
+    std::cout << passed << '/' << tests.size() << " tests passed\n";
+    return 0;
+}
