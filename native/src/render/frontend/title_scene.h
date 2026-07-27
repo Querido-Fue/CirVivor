@@ -69,6 +69,8 @@ struct TitleSceneConfig final {
     InsetsI drawableSafeArea{};
     float dpiScale = 1.0F;
     std::uint64_t projectionRevision = 1U;
+    /** backdrop content 자체가 바뀔 때만 증가시키는 glass capture revision입니다. */
+    std::uint64_t backdropRevision = 1U;
     std::uint64_t frameId = 1U;
     std::uint64_t simulationTick = 0U;
     double presentationTimeSeconds = -1.0;
@@ -115,9 +117,10 @@ struct TitleSceneResult final {
 /** 앱 초기화 시 한 번 reserve할 수 있는 4-overlay supported shell 상한입니다. */
 [[nodiscard]] constexpr FramePacketCapacity maximumTitleSceneCapacity() noexcept {
     FramePacketCapacity capacity{};
-    capacity.commandCount = 83U;
+    capacity.commandCount = 87U;
     capacity.shapeCount = 3U;
-    capacity.uiCount = 31U;
+    capacity.lineCount = 3U;
+    capacity.uiCount = 32U;
     capacity.overlayCount = 20U;
     capacity.gradientCount = 1U;
     capacity.gradientStopCount = ui::layout::title_gradient_color_count;

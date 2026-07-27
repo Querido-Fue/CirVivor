@@ -53,6 +53,7 @@ enum class UiActionType : std::uint8_t {
     closeDebugOverlay,
     openExitOverlay,
     openExternalLinkWarningOverlay,
+    openExternalUrlDirect,
     cancelTopOverlay,
     confirmTopOverlay,
     lockTopOverlayInteractions,
@@ -131,6 +132,16 @@ struct UiAction final {
         return {
             UiActionType::openExternalLinkWarningOverlay,
             OverlayKind::externalLinkWarning,
+            url
+        };
+    }
+
+    [[nodiscard]] static constexpr UiAction openExternalDirect(
+        const std::string_view url
+    ) noexcept {
+        return {
+            UiActionType::openExternalUrlDirect,
+            OverlayKind::none,
             url
         };
     }

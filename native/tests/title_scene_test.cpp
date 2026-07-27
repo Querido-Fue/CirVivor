@@ -61,7 +61,10 @@ using cirvivor::render::CoordinateSpace;
 using cirvivor::render::FrameMetadata;
 using cirvivor::render::FramePacket;
 using cirvivor::render::FramePacketCapacity;
+using cirvivor::render::LineCap;
+using cirvivor::render::OverlayOperation;
 using cirvivor::render::PassOperation;
+using cirvivor::render::PremultipliedRgba;
 using cirvivor::render::RectF;
 using cirvivor::render::RenderLayer;
 using cirvivor::render::UiStateFlag;
@@ -92,11 +95,13 @@ using cirvivor::ui::UiActionStatus;
 using cirvivor::ui::UiStateSnapshot;
 using cirvivor::ui::layout::LayoutInput;
 using cirvivor::ui::layout::LogicalSafeAreaInsets;
+using cirvivor::ui::layout::OverlayDialogRenderMetrics;
 using cirvivor::ui::layout::TitleEntranceRenderState;
 using cirvivor::ui::layout::UiLayoutMetrics;
 using cirvivor::ui::layout::UiLayoutSnapshot;
 using cirvivor::ui::layout::darkThemeMetrics;
 using cirvivor::ui::layout::trySampleTitleEntrance;
+using cirvivor::ui::layout::tryResolveOverlayDialogRenderMetrics;
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -141,10 +146,17 @@ void requireNear(
     const double width,
     const double height,
     const LogicalSafeAreaInsets safeArea = {},
-    const double uiScale = 1.0
+    const double uiScale = 1.0,
+    const bool hasVersionHistoryLink = true
 ) {
     UiLayoutMetrics metrics;
-    REQUIRE(metrics.tryUpdate({width, height, uiScale, true, safeArea}));
+    REQUIRE(metrics.tryUpdate({
+        width,
+        height,
+        uiScale,
+        hasVersionHistoryLink,
+        safeArea
+    }));
     return metrics.snapshot();
 }
 
@@ -191,7 +203,10 @@ void advanceInSteps(
         TitleUiTarget::utilitySetting,
         TitleUiTarget::utilityCredits,
         TitleUiTarget::utilityAchievements,
-        TitleUiTarget::utilityExit
+        TitleUiTarget::utilityExit,
+        TitleUiTarget::versionHistoryLink,
+        TitleUiTarget::overlayCancel,
+        TitleUiTarget::overlayConfirm
     };
     TitleUiControllerSnapshot result{};
     for (std::size_t index = 0U; index < targets.size(); ++index) {
@@ -317,9 +332,10 @@ void testSettledTitleBuildUsesExactV2CapacityAndExplicitPlaceholders() {
     };
 
     FramePacketCapacity expected{};
-    expected.commandCount = 23U;
+    expected.commandCount = 27U;
     expected.shapeCount = 3U;
-    expected.uiCount = 15U;
+    expected.lineCount = 3U;
+    expected.uiCount = 16U;
     expected.gradientCount = 1U;
     expected.gradientStopCount = 5U;
     expected.clipCount = 4U;
@@ -338,8 +354,8 @@ void testSettledTitleBuildUsesExactV2CapacityAndExplicitPlaceholders() {
         result.missingCapabilities,
         TitleSceneMissingCapability::preShapedTextResources
     ));
-    REQUIRE(result.commandStats.totalCommands == 23U);
-    REQUIRE(result.commandStats.titleShellCommands == 23U);
+    REQUIRE(result.commandStats.totalCommands == 27U);
+    REQUIRE(result.commandStats.titleShellCommands == 27U);
     REQUIRE(result.commandStats.placeholderGeometryCommands == 7U);
     REQUIRE(result.commandStats.titleOverlayContentCommands == 0U);
     REQUIRE(result.commandStats.shapedTextCommands == 0U);
@@ -359,6 +375,59 @@ void testSettledTitleBuildUsesExactV2CapacityAndExplicitPlaceholders() {
         REQUIRE(command.header.layer == RenderLayer::ui);
         REQUIRE(command.header.layerOrder == title_ui_surface_layer_order);
     }
+    REQUIRE(packet.ui().back().bounds == (RectF{
+        1'174.53888F,
+        158.093305F,
+        80.74112F,
+        20.8F
+    }));
+    REQUIRE(packet.ui().back().backgroundColor
+        == PremultipliedRgba::transparent());
+    REQUIRE(packet.ui().back().borderColor
+        == PremultipliedRgba::transparent());
+    REQUIRE(packet.ui().back().accentColor
+        == PremultipliedRgba::transparent());
+    REQUIRE(packet.lines().size() == 3U);
+    REQUIRE(packet.lines()[0].cap == LineCap::round);
+    REQUIRE_NEAR(packet.lines()[0].start.x, 1'182.87458304, 1.0e-4);
+    REQUIRE_NEAR(packet.lines()[0].start.y, 168.493305263158, 1.0e-4);
+    REQUIRE_NEAR(packet.lines()[0].end.x, 1'190.36829696, 1.0e-4);
+    REQUIRE_NEAR(packet.lines()[0].end.y, 168.493305263158, 1.0e-4);
+    REQUIRE_NEAR(packet.lines()[0].width, 1.216512, 1.0e-6);
+    REQUIRE_NEAR(packet.lines()[0].color.alpha, 0.42, 1.0e-6);
+    REQUIRE_NEAR(packet.lines()[1].start.x, 1'187.0710628352, 1.0e-4);
+    REQUIRE_NEAR(packet.lines()[1].start.y, 165.196071138358, 1.0e-4);
+    REQUIRE_NEAR(packet.lines()[2].start.y, 171.790539387958, 1.0e-4);
+
+    const UiLayoutSnapshot noLinkLayout = buildLayout(
+        1'280.0,
+        720.0,
+        {},
+        1.0,
+        false
+    );
+    const TitleEntranceRenderState noLinkEntrance = buildEntrance(
+        noLinkLayout,
+        2.0
+    );
+    const TitleSceneInput noLinkInput{
+        uiState,
+        interaction,
+        noLinkLayout,
+        noLinkEntrance,
+        darkThemeMetrics()
+    };
+    FramePacketCapacity withoutLink{};
+    withoutLink.commandCount = 23U;
+    withoutLink.shapeCount = 3U;
+    withoutLink.uiCount = 15U;
+    withoutLink.gradientCount = 1U;
+    withoutLink.gradientStopCount = 5U;
+    withoutLink.clipCount = 4U;
+    REQUIRE(titleSceneCapacity(noLinkInput) == withoutLink);
+    FramePacket noLinkPacket(withoutLink);
+    REQUIRE(buildTitleScene(noLinkPacket, noLinkInput).success);
+    REQUIRE(noLinkPacket.lines().empty());
 }
 
 void testMidEntranceUsesSampledCardAndLogoGeometry() {
@@ -551,9 +620,10 @@ void testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent() 
     };
 
     FramePacketCapacity expected{};
-    expected.commandCount = 41U;
+    expected.commandCount = 45U;
     expected.shapeCount = 3U;
-    expected.uiCount = 19U;
+    expected.lineCount = 3U;
+    expected.uiCount = 20U;
     expected.overlayCount = 8U;
     expected.gradientCount = 1U;
     expected.gradientStopCount = 5U;
@@ -571,7 +641,7 @@ void testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent() 
     REQUIRE(result.commandStats.overlayPassCommands == 4U);
     REQUIRE(result.commandStats.externalLinkShellCommands == 12U);
     REQUIRE(result.commandStats.titleOverlayContentCommands == 0U);
-    REQUIRE(packet.ui().size() == 19U);
+    REQUIRE(packet.ui().size() == 20U);
     REQUIRE(packet.overlays().size() == 8U);
     for (std::size_t index = 0U; index < 3U; ++index) {
         REQUIRE(packet.overlays()[index].header.layerOrder == 10'009);
@@ -608,6 +678,194 @@ void testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent() 
     REQUIRE(packet.isRenderOrderValid());
 }
 
+void testOverlayButtonsUseSharedGeometryInteractionAndBackdropRevision() {
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const auto theme = darkThemeMetrics();
+    TitleOverlayStateMachine state = interactiveState();
+    const auto opened = state.apply(
+        UiAction::openExternalLink("https://jukchang.com/history")
+    );
+    REQUIRE(opened.accepted());
+    advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot uiState = state.snapshot();
+    REQUIRE(uiState.overlayCount == 1U);
+    REQUIRE(uiState.overlays[0].acceptsInput);
+
+    const TitleUiControllerSnapshot idle = idleInteraction();
+    TitleUiControllerSnapshot confirmHovered = idle;
+    confirmHovered.overlaySequence = opened.overlaySequence;
+    for (auto& target : confirmHovered.targets) {
+        if (target.target == TitleUiTarget::overlayConfirm) {
+            target.hovered = true;
+        }
+    }
+    const TitleSceneInput idleInput{uiState, idle, layout, entrance, theme};
+    const TitleSceneInput hoveredInput{
+        uiState,
+        confirmHovered,
+        layout,
+        entrance,
+        theme
+    };
+    const FramePacketCapacity capacity = titleSceneCapacity(idleInput);
+    REQUIRE(capacity.commandCount == 42U);
+    REQUIRE(capacity.lineCount == 3U);
+    REQUIRE(capacity.uiCount == 20U);
+    FramePacket idlePacket(capacity);
+    FramePacket hoveredPacket(capacity);
+    TitleSceneConfig config{};
+    config.backdropRevision = 77U;
+    REQUIRE(buildTitleScene(idlePacket, idleInput, config).success);
+    REQUIRE(buildTitleScene(hoveredPacket, hoveredInput, config).success);
+
+    OverlayDialogRenderMetrics dialog{};
+    REQUIRE(tryResolveOverlayDialogRenderMetrics(
+        layout.overlays.externalLinkWarning,
+        layout.overlayPage,
+        uiState.overlays[0].contentScale,
+        dialog
+    ));
+    constexpr std::size_t baseUiCount = 16U;
+    const std::size_t cancelIndex = baseUiCount + 1U;
+    const std::size_t confirmIndex = baseUiCount + 2U;
+    REQUIRE(idlePacket.ui()[cancelIndex].bounds == (RectF{
+        static_cast<float>(dialog.cancelButtonRect.x),
+        static_cast<float>(dialog.cancelButtonRect.y),
+        static_cast<float>(dialog.cancelButtonRect.width),
+        static_cast<float>(dialog.cancelButtonRect.height)
+    }));
+    REQUIRE(idlePacket.ui()[confirmIndex].bounds == (RectF{
+        static_cast<float>(dialog.confirmButtonRect.x),
+        static_cast<float>(dialog.confirmButtonRect.y),
+        static_cast<float>(dialog.confirmButtonRect.width),
+        static_cast<float>(dialog.confirmButtonRect.height)
+    }));
+    std::size_t changedUiCount = 0U;
+    for (std::size_t index = 0U; index < idlePacket.ui().size(); ++index) {
+        if (hoveredPacket.ui()[index] != idlePacket.ui()[index]) {
+            ++changedUiCount;
+            REQUIRE(index == confirmIndex);
+        }
+    }
+    REQUIRE(changedUiCount == 1U);
+    REQUIRE(
+        hoveredPacket.ui()[confirmIndex].stateFlags
+        == uiStateBits(UiStateFlag::hovered)
+    );
+    REQUIRE(hoveredPacket.ui()[confirmIndex].backgroundColor
+        != idlePacket.ui()[confirmIndex].backgroundColor);
+    REQUIRE(hoveredPacket.ui()[cancelIndex] == idlePacket.ui()[cancelIndex]);
+
+    REQUIRE(idlePacket.passes().size() == 4U);
+    for (const auto& pass : idlePacket.passes()) {
+        REQUIRE(pass.sourceRevision == config.backdropRevision);
+    }
+    std::size_t dimCount = 0U;
+    for (const auto& overlay : idlePacket.overlays()) {
+        if (overlay.operation == OverlayOperation::dim) {
+            ++dimCount;
+            REQUIRE(overlay.sourceRevision == config.backdropRevision);
+        }
+    }
+    REQUIRE(dimCount == 1U);
+
+    TitleOverlayStateMachine advancingState = interactiveState();
+    REQUIRE(advancingState.apply(
+        UiAction::openExternalLink("https://jukchang.com/history")
+    ).accepted());
+    const UiStateSnapshot beforeAdvance = advancingState.snapshot();
+    const TitleSceneInput beforeAdvanceInput{
+        beforeAdvance,
+        idle,
+        layout,
+        entrance,
+        theme
+    };
+    FramePacket beforeAdvancePacket(titleSceneCapacity(beforeAdvanceInput));
+    REQUIRE(buildTitleScene(
+        beforeAdvancePacket,
+        beforeAdvanceInput,
+        config
+    ).success);
+    advancingState.advance(0.1);
+    const UiStateSnapshot afterAdvance = advancingState.snapshot();
+    REQUIRE(afterAdvance.revision != beforeAdvance.revision);
+    const TitleSceneInput afterAdvanceInput{
+        afterAdvance,
+        idle,
+        layout,
+        entrance,
+        theme
+    };
+    FramePacket afterAdvancePacket(titleSceneCapacity(afterAdvanceInput));
+    REQUIRE(buildTitleScene(
+        afterAdvancePacket,
+        afterAdvanceInput,
+        config
+    ).success);
+    for (const auto& pass : afterAdvancePacket.passes()) {
+        REQUIRE(pass.sourceRevision == 77U);
+    }
+    for (const auto& overlay : afterAdvancePacket.overlays()) {
+        if (overlay.operation == OverlayOperation::dim) {
+            REQUIRE(overlay.sourceRevision == 77U);
+        }
+    }
+
+    TitleSceneConfig changedConfig = config;
+    changedConfig.backdropRevision = 78U;
+    FramePacket changedPacket(titleSceneCapacity(afterAdvanceInput));
+    REQUIRE(buildTitleScene(
+        changedPacket,
+        afterAdvanceInput,
+        changedConfig
+    ).success);
+    for (const auto& pass : changedPacket.passes()) {
+        REQUIRE(pass.sourceRevision == 78U);
+    }
+    for (const auto& overlay : changedPacket.overlays()) {
+        if (overlay.operation == OverlayOperation::dim) {
+            REQUIRE(overlay.sourceRevision == 78U);
+        }
+    }
+
+    REQUIRE(state.apply(UiAction::lockTop()).accepted());
+    const UiStateSnapshot lockedState = state.snapshot();
+    TitleUiControllerSnapshot staleLockedInteraction = confirmHovered;
+    for (auto& target : staleLockedInteraction.targets) {
+        if (target.target == TitleUiTarget::overlayCancel) {
+            target.hovered = true;
+            target.pressed = true;
+        } else if (target.target == TitleUiTarget::overlayConfirm) {
+            target.pressed = true;
+        }
+    }
+    const TitleSceneInput lockedInput{
+        lockedState,
+        staleLockedInteraction,
+        layout,
+        entrance,
+        theme
+    };
+    FramePacket lockedPacket(titleSceneCapacity(lockedInput));
+    REQUIRE(buildTitleScene(lockedPacket, lockedInput, config).success);
+    REQUIRE(
+        lockedPacket.ui()[cancelIndex].stateFlags
+        == uiStateBits(UiStateFlag::disabled)
+    );
+    REQUIRE(
+        lockedPacket.ui()[confirmIndex].stateFlags
+        == uiStateBits(UiStateFlag::disabled)
+    );
+    REQUIRE(lockedPacket.ui()[cancelIndex].backgroundColor
+        == idlePacket.ui()[cancelIndex].backgroundColor);
+    REQUIRE(lockedPacket.ui()[confirmIndex].backgroundColor
+        == idlePacket.ui()[confirmIndex].backgroundColor);
+    REQUIRE(lockedPacket.ui()[confirmIndex].backgroundColor
+        != hoveredPacket.ui()[confirmIndex].backgroundColor);
+}
+
 void testExitShellAndInsufficientFixedCapacityAreTransactional() {
     const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
     const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
@@ -624,8 +882,9 @@ void testExitShellAndInsufficientFixedCapacityAreTransactional() {
         darkThemeMetrics()
     };
     const FramePacketCapacity exact = titleSceneCapacity(input);
-    REQUIRE(exact.commandCount == 37U);
-    REQUIRE(exact.uiCount == 18U);
+    REQUIRE(exact.commandCount == 41U);
+    REQUIRE(exact.lineCount == 3U);
+    REQUIRE(exact.uiCount == 19U);
     REQUIRE(exact.overlayCount == 5U);
     REQUIRE(exact.passCount == 4U);
     REQUIRE(exact.clipCount == 6U);
@@ -744,23 +1003,47 @@ void testInteractionTargetsChangeOnlyTheirShellAndRejectInvalidTables() {
         theme
     };
 
+    TitleUiControllerSnapshot linkHovered = idle;
+    for (auto& target : linkHovered.targets) {
+        if (target.target == TitleUiTarget::versionHistoryLink) {
+            target.hovered = true;
+        }
+    }
+    const TitleSceneInput linkHoveredInput{
+        uiState,
+        linkHovered,
+        layout,
+        entrance,
+        theme
+    };
+
     REQUIRE(titleSceneCapacity(hoveredInput) == capacity);
     REQUIRE(titleSceneCapacity(pressedInput) == capacity);
+    REQUIRE(titleSceneCapacity(linkHoveredInput) == capacity);
     FramePacket idlePacket(capacity);
     FramePacket hoveredPacket(capacity);
     FramePacket pressedPacket(capacity);
+    FramePacket linkHoveredPacket(capacity);
     REQUIRE(buildTitleScene(idlePacket, idleInput).success);
     const auto hoveredResult = buildTitleScene(hoveredPacket, hoveredInput);
     const auto pressedResult = buildTitleScene(pressedPacket, pressedInput);
+    const auto linkHoveredResult = buildTitleScene(
+        linkHoveredPacket,
+        linkHoveredInput
+    );
     REQUIRE(hoveredResult.success);
     REQUIRE(pressedResult.success);
+    REQUIRE(linkHoveredResult.success);
     REQUIRE(hoveredPacket.size() == capacity);
     REQUIRE(pressedPacket.size() == capacity);
+    REQUIRE(linkHoveredPacket.size() == capacity);
     REQUIRE(hoveredPacket.commandStream().size() == idlePacket.commandStream().size());
     REQUIRE(pressedPacket.commandStream().size() == idlePacket.commandStream().size());
     for (std::size_t index = 0U; index < idlePacket.commandStream().size(); ++index) {
         REQUIRE(hoveredPacket.commandStream()[index] == idlePacket.commandStream()[index]);
         REQUIRE(pressedPacket.commandStream()[index] == idlePacket.commandStream()[index]);
+        REQUIRE(linkHoveredPacket.commandStream()[index]
+            == idlePacket.commandStream()[index]);
     }
 
     constexpr std::size_t deckCardIndex = 3U;
@@ -818,6 +1101,40 @@ void testInteractionTargetsChangeOnlyTheirShellAndRejectInvalidTables() {
         TitleSceneMissingCapability::preShapedTextResources
     ));
 
+    const std::size_t linkUiIndex = idlePacket.ui().size() - 1U;
+    std::size_t linkUiChanges = 0U;
+    for (std::size_t index = 0U; index < idlePacket.ui().size(); ++index) {
+        if (linkHoveredPacket.ui()[index] != idlePacket.ui()[index]) {
+            ++linkUiChanges;
+            REQUIRE(index == linkUiIndex);
+        }
+    }
+    REQUIRE(linkUiChanges == 1U);
+    REQUIRE(
+        linkHoveredPacket.ui()[linkUiIndex].stateFlags
+        == uiStateBits(UiStateFlag::hovered)
+    );
+    REQUIRE(linkHoveredPacket.ui()[linkUiIndex].backgroundColor
+        == PremultipliedRgba::transparent());
+    REQUIRE(linkHoveredPacket.lines().size() == 3U);
+    for (std::size_t index = 0U; index < idlePacket.lines().size(); ++index) {
+        REQUIRE(linkHoveredPacket.lines()[index].start
+            == idlePacket.lines()[index].start);
+        REQUIRE(linkHoveredPacket.lines()[index].end
+            == idlePacket.lines()[index].end);
+        REQUIRE(linkHoveredPacket.lines()[index].width
+            == idlePacket.lines()[index].width);
+        REQUIRE(linkHoveredPacket.lines()[index].cap
+            == idlePacket.lines()[index].cap);
+        REQUIRE(linkHoveredPacket.lines()[index].color
+            != idlePacket.lines()[index].color);
+        REQUIRE_NEAR(
+            linkHoveredPacket.lines()[index].color.alpha,
+            1.0,
+            1.0e-6
+        );
+    }
+
     TitleUiControllerSnapshot duplicate = idle;
     duplicate.targets[1].target = duplicate.targets[0].target;
     const TitleSceneInput duplicateInput{
@@ -874,8 +1191,9 @@ void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
     const FramePacketCapacity required = titleSceneCapacity(input);
     const FramePacketCapacity maximum = maximumTitleSceneCapacity();
     REQUIRE(capacityContains(maximum, required));
-    REQUIRE(maximum.commandCount == 83U);
-    REQUIRE(maximum.uiCount == 31U);
+    REQUIRE(maximum.commandCount == 87U);
+    REQUIRE(maximum.lineCount == 3U);
+    REQUIRE(maximum.uiCount == 32U);
     REQUIRE(maximum.overlayCount == 20U);
     REQUIRE(maximum.clipCount == 12U);
     REQUIRE(maximum.passCount == 16U);
@@ -927,6 +1245,10 @@ int main() {
         TestCase{
             "nested external pass anchor",
             testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent
+        },
+        TestCase{
+            "overlay controls and backdrop revision",
+            testOverlayButtonsUseSharedGeometryInteractionAndBackdropRevision
         },
         TestCase{
             "exit fixed transaction",

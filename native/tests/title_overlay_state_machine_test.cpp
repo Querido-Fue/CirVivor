@@ -742,6 +742,46 @@ void testInvalidTransitionsPreserveWholeSnapshot() {
     REQUIRE(state.snapshot() == closingSnapshot);
 }
 
+void testDirectExternalUrlEffectRequiresInteractiveOverlayFreeTitle() {
+    constexpr std::string_view paddedUrl =
+        "  https://jukchang.com/version-history  ";
+    TitleOverlayStateMachine loadingState;
+    const UiStateSnapshot loadingBefore = loadingState.snapshot();
+    REQUIRE(loadingState.apply(
+        UiAction::openExternalDirect(paddedUrl)
+    ).status == UiActionStatus::rejectedSceneNotInteractive);
+    REQUIRE(loadingState.snapshot() == loadingBefore);
+
+    TitleOverlayStateMachine state;
+    advanceToInteractiveTitle(state);
+    const UiStateSnapshot before = state.snapshot();
+    const auto direct = state.apply(UiAction::openExternalDirect(paddedUrl));
+    REQUIRE(direct.status == UiActionStatus::applied);
+    REQUIRE(direct.effect == UiEffect::openExternalUrl);
+    REQUIRE(direct.overlaySequence == 0U);
+    REQUIRE(direct.effectText.view()
+        == "https://jukchang.com/version-history");
+    REQUIRE(state.snapshot() == before);
+    REQUIRE(state.snapshot().overlayCount == 0U);
+
+    const auto invalid = state.apply(
+        UiAction::openExternalDirect("file:///tmp/not-allowed")
+    );
+    REQUIRE(invalid.status == UiActionStatus::rejectedPayload);
+    REQUIRE(state.snapshot() == before);
+
+    const auto nonexistentAck = state.acknowledgeExternalUrl(0U, false);
+    REQUIRE(!nonexistentAck.accepted());
+    REQUIRE(state.snapshot() == before);
+
+    REQUIRE(state.apply(UiAction::openExit()).accepted());
+    const UiStateSnapshot withOverlay = state.snapshot();
+    REQUIRE(state.apply(
+        UiAction::openExternalDirect("https://jukchang.com")
+    ).status == UiActionStatus::rejectedSceneNotInteractive);
+    REQUIRE(state.snapshot() == withOverlay);
+}
+
 void testFourProductionKeysFitFixedStorageAndRemainUnique() {
     static_assert(maximum_overlay_count == 4U);
     TitleOverlayStateMachine state;
@@ -782,6 +822,8 @@ void testAdvanceSnapshotAndUrlNormalizationPerformNoHeapAllocation() {
     REQUIRE(state.apply(UiAction::openExit()).accepted());
 
     TitleOverlayStateMachine urlState;
+    TitleOverlayStateMachine directState;
+    advanceToInteractiveTitle(directState);
     constexpr std::string_view paddedUrl =
         "\xEF\xBB\xBF\xC2\xA0https://jukchang.com\xE3\x80\x80";
 
@@ -793,6 +835,13 @@ void testAdvanceSnapshotAndUrlNormalizationPerformNoHeapAllocation() {
         state.advance(1.0 / 144.0);
         const UiStateSnapshot snapshot = state.snapshot();
         if (snapshot.overlayCount > maximum_overlay_count) {
+            std::abort();
+        }
+        const auto direct = directState.apply(
+            UiAction::openExternalDirect("https://jukchang.com/history")
+        );
+        if (direct.effect != UiEffect::openExternalUrl
+            || direct.overlaySequence != 0U) {
             std::abort();
         }
     }
@@ -829,6 +878,7 @@ int main() {
         TestCase{"external key before capacity", testExistingExternalKeyPrecedesNewPayloadCapacityCheck},
         TestCase{"exactly-once exit latch", testWindowCloseUsesExactlyOnceExitLatch},
         TestCase{"invalid transition transaction", testInvalidTransitionsPreserveWholeSnapshot},
+        TestCase{"direct external URL effect", testDirectExternalUrlEffectRequiresInteractiveOverlayFreeTitle},
         TestCase{"four production overlay keys", testFourProductionKeysFitFixedStorageAndRemainUnique},
         TestCase{"zero-allocation state paths", testAdvanceSnapshotAndUrlNormalizationPerformNoHeapAllocation}
     };

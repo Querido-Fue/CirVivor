@@ -183,6 +183,8 @@ struct LayoutInput final {
     double uiScale = 1.0;
     bool hasVersionHistoryLink = true;
     LogicalSafeAreaInsets logicalSafeArea{};
+    /** 현재 logical UI 단위의 실측 폭입니다. 0이면 JS headless fallback을 사용합니다. */
+    double versionHistoryLinkTextWidth = 0.0;
 
     constexpr bool operator==(const LayoutInput&) const noexcept = default;
 };
@@ -260,6 +262,14 @@ struct OverlayDialogMetrics final {
     double baseDim = 0.0;
 
     constexpr bool operator==(const OverlayDialogMetrics&) const noexcept = default;
+};
+
+struct OverlayDialogRenderMetrics final {
+    RoundedRectD panelRect{};
+    RoundedRectD cancelButtonRect{};
+    RoundedRectD confirmButtonRect{};
+
+    constexpr bool operator==(const OverlayDialogRenderMetrics&) const noexcept = default;
 };
 
 struct TitleOverlayIconLayoutMetrics final {
@@ -360,6 +370,15 @@ struct UtilityTileMetrics final {
     constexpr bool operator==(const UtilityTileMetrics&) const noexcept = default;
 };
 
+struct TitleVersionHistoryLinkMetrics final {
+    bool available = false;
+    PointD textAnchor{};
+    RoundedRectD iconRect{};
+    RoundedRectD hitRect{};
+
+    constexpr bool operator==(const TitleVersionHistoryLinkMetrics&) const noexcept = default;
+};
+
 struct TitleLayoutMetrics final {
     PointD menuLogoAnchor{};
     CircleD introCircle{};
@@ -371,6 +390,7 @@ struct TitleLayoutMetrics final {
     double versionLabelTop = 0.0;
     double gapBeforeCardPane = 0.0;
     double gapAfterCardPane = 0.0;
+    TitleVersionHistoryLinkMetrics versionHistoryLink{};
     std::array<TitleCardMetrics, title_card_count> cards{};
     std::array<UtilityTileMetrics, utility_tile_count> utilityTiles{};
     TitleTimelineMetrics timeline{};
@@ -436,6 +456,18 @@ struct UtilityTileRenderMetrics final {
     constexpr bool operator==(const UtilityTileRenderMetrics&) const noexcept = default;
 };
 
+struct TitleVersionHistoryLinkRenderMetrics final {
+    bool available = false;
+    double alpha = 0.0;
+    PointD textAnchor{};
+    RoundedRectD iconRect{};
+    RoundedRectD hitRect{};
+
+    constexpr bool operator==(
+        const TitleVersionHistoryLinkRenderMetrics&
+    ) const noexcept = default;
+};
+
 struct TitleEntranceRenderState final {
     double elapsedSeconds = 0.0;
     double transitionProgress = 0.0;
@@ -444,6 +476,7 @@ struct TitleEntranceRenderState final {
     double worldScale = 1.0;
     TitlePaneRenderMetrics cardPane{};
     TitlePaneRenderMetrics utilityPane{};
+    TitleVersionHistoryLinkRenderMetrics versionHistoryLink{};
     std::array<TitleCardRenderMetrics, title_card_count> cards{};
     std::array<UtilityTileRenderMetrics, utility_tile_count> utilityTiles{};
 
@@ -490,6 +523,14 @@ private:
     OverlayPresentationMetrics& out
 ) noexcept;
 
+/** dialog presentation scale을 적용한 panel 및 footer button 공용 geometry입니다. */
+[[nodiscard]] bool tryResolveOverlayDialogRenderMetrics(
+    const OverlayDialogMetrics& dialog,
+    const OverlayPageMetrics& page,
+    double contentScale,
+    OverlayDialogRenderMetrics& out
+) noexcept;
+
 /** 타이틀 전환 시작 뒤의 clean elapsed seconds에서 카드/pane/tile 렌더 상태를 샘플링합니다. */
 [[nodiscard]] bool trySampleTitleEntrance(
     const UiLayoutSnapshot& snapshot,
@@ -510,9 +551,12 @@ static_assert(std::is_trivially_copyable_v<LogicalSafeAreaInsets>);
 static_assert(std::is_trivially_copyable_v<LayoutInput>);
 static_assert(std::is_trivially_copyable_v<ViewportMetrics>);
 static_assert(std::is_trivially_copyable_v<OverlayLayoutMetrics>);
+static_assert(std::is_trivially_copyable_v<OverlayDialogRenderMetrics>);
 static_assert(std::is_trivially_copyable_v<TitleOverlayIconInput>);
 static_assert(std::is_trivially_copyable_v<TitleOverlayIconPlacement>);
 static_assert(std::is_trivially_copyable_v<TitleLayoutMetrics>);
+static_assert(std::is_trivially_copyable_v<TitleVersionHistoryLinkMetrics>);
+static_assert(std::is_trivially_copyable_v<TitleVersionHistoryLinkRenderMetrics>);
 static_assert(std::is_trivially_copyable_v<TitleEntranceRenderState>);
 static_assert(std::is_trivially_copyable_v<UiLayoutSnapshot>);
 static_assert(std::is_standard_layout_v<ThemeColor>);
@@ -521,9 +565,12 @@ static_assert(std::is_standard_layout_v<LogicalSafeAreaInsets>);
 static_assert(std::is_standard_layout_v<LayoutInput>);
 static_assert(std::is_standard_layout_v<ViewportMetrics>);
 static_assert(std::is_standard_layout_v<OverlayLayoutMetrics>);
+static_assert(std::is_standard_layout_v<OverlayDialogRenderMetrics>);
 static_assert(std::is_standard_layout_v<TitleOverlayIconInput>);
 static_assert(std::is_standard_layout_v<TitleOverlayIconPlacement>);
 static_assert(std::is_standard_layout_v<TitleLayoutMetrics>);
+static_assert(std::is_standard_layout_v<TitleVersionHistoryLinkMetrics>);
+static_assert(std::is_standard_layout_v<TitleVersionHistoryLinkRenderMetrics>);
 static_assert(std::is_standard_layout_v<TitleEntranceRenderState>);
 static_assert(std::is_standard_layout_v<UiLayoutSnapshot>);
 

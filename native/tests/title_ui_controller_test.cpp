@@ -1,4 +1,5 @@
 #include "ui/title_ui_controller.h"
+#include "ui/title_link_data.h"
 
 #include <algorithm>
 #include <array>
@@ -55,12 +56,15 @@ namespace {
 
 using cirvivor::ui::OverlayKind;
 using cirvivor::ui::OverlayPhase;
+using cirvivor::ui::OverlaySnapshot;
 using cirvivor::ui::TitleOverlayStateMachine;
 using cirvivor::ui::TitleUiController;
 using cirvivor::ui::TitleUiControllerSnapshot;
 using cirvivor::ui::TitleUiTarget;
 using cirvivor::ui::UiAction;
+using cirvivor::ui::UiActionOutcome;
 using cirvivor::ui::UiActionStatus;
+using cirvivor::ui::UiEffect;
 using cirvivor::ui::UiInputResult;
 using cirvivor::ui::UiInputStatus;
 using cirvivor::ui::UiPointerButton;
@@ -69,6 +73,8 @@ using cirvivor::ui::UiPointerEvent;
 using cirvivor::ui::UiPointerEventType;
 using cirvivor::ui::UiStateSnapshot;
 using cirvivor::ui::layout::PointD;
+using cirvivor::ui::layout::OverlayDialogMetrics;
+using cirvivor::ui::layout::OverlayDialogRenderMetrics;
 using cirvivor::ui::layout::RoundedRectD;
 using cirvivor::ui::layout::TitleCardSlot;
 using cirvivor::ui::layout::TitleEntranceRenderState;
@@ -76,6 +82,7 @@ using cirvivor::ui::layout::UiLayoutMetrics;
 using cirvivor::ui::layout::UiLayoutSnapshot;
 using cirvivor::ui::layout::UtilityTileSlot;
 using cirvivor::ui::layout::trySampleTitleEntrance;
+using cirvivor::ui::layout::tryResolveOverlayDialogRenderMetrics;
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -187,7 +194,28 @@ void advanceToInteractiveTitle(TitleOverlayStateMachine& state) noexcept {
             return presentation.entrance.utilityTiles[index].panelRect;
         }
     }
+    if (target == TitleUiTarget::versionHistoryLink
+        && presentation.entrance.versionHistoryLink.available) {
+        return presentation.entrance.versionHistoryLink.hitRect;
+    }
     return {};
+}
+
+[[nodiscard]] OverlayDialogRenderMetrics dialogFor(
+    const Presentation& presentation,
+    const OverlaySnapshot& overlay
+) {
+    const OverlayDialogMetrics& source = overlay.kind == OverlayKind::exitConfirm
+        ? presentation.layout.overlays.exit
+        : presentation.layout.overlays.externalLinkWarning;
+    OverlayDialogRenderMetrics result{};
+    REQUIRE(tryResolveOverlayDialogRenderMetrics(
+        source,
+        presentation.layout.overlayPage,
+        overlay.contentScale,
+        result
+    ));
+    return result;
 }
 
 [[nodiscard]] PointD center(const RoundedRectD& rect) noexcept {
@@ -216,6 +244,18 @@ void advanceToInteractiveTitle(TitleOverlayStateMachine& state) noexcept {
         }
     }
     return false;
+}
+
+[[nodiscard]] const OverlaySnapshot& overlayOfKind(
+    const UiStateSnapshot& snapshot,
+    const OverlayKind kind
+) {
+    for (std::size_t index = 0U; index < snapshot.overlayCount; ++index) {
+        if (snapshot.overlays[index].kind == kind) {
+            return snapshot.overlays[index];
+        }
+    }
+    throw TestFailure("missing overlay kind");
 }
 
 void testAllTitleTargetsDispatchExactActions() {
@@ -283,6 +323,119 @@ void testAllTitleTargetsDispatchExactActions() {
             REQUIRE(!targetState.pressed);
         }
     }
+}
+
+void testVersionHistoryLinkUsesMouseReleaseDirectEffectWithoutCapture() {
+    const Presentation presentation = makePresentation();
+    const PointD linkCenter = center(rectForTarget(
+        presentation,
+        TitleUiTarget::versionHistoryLink
+    ));
+    TitleOverlayStateMachine state;
+    advanceToInteractiveTitle(state);
+    TitleUiController controller;
+
+    const TitleUiControllerSnapshot initial = controller.snapshot();
+    REQUIRE(initial.targets.size() == 12U);
+    for (std::size_t index = 0U; index < initial.targets.size(); ++index) {
+        REQUIRE(initial.targets[index].target != TitleUiTarget::none);
+        for (std::size_t previous = 0U; previous < index; ++previous) {
+            REQUIRE(initial.targets[previous].target != initial.targets[index].target);
+        }
+    }
+
+    const UiInputResult moved = controller.handlePointer(
+        mouseEvent(UiPointerEventType::move, linkCenter),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    );
+    REQUIRE(moved.status == UiInputStatus::moved);
+    REQUIRE(moved.target == TitleUiTarget::versionHistoryLink);
+    REQUIRE(interaction(
+        controller.snapshot(),
+        TitleUiTarget::versionHistoryLink
+    ).hovered);
+
+    const UiInputResult down = controller.handlePointer(
+        mouseEvent(UiPointerEventType::down, linkCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    );
+    REQUIRE(down.status == UiInputStatus::ignoredNoCapture);
+    REQUIRE(down.target == TitleUiTarget::versionHistoryLink);
+    REQUIRE(!controller.snapshot().capture.active);
+    REQUIRE(!interaction(
+        controller.snapshot(),
+        TitleUiTarget::versionHistoryLink
+    ).pressed);
+
+    const UiStateSnapshot beforeDirect = state.snapshot();
+    const UiInputResult direct = controller.handlePointer(
+        mouseEvent(UiPointerEventType::up, linkCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        beforeDirect,
+        state
+    );
+    REQUIRE(direct.status == UiInputStatus::actionApplied);
+    REQUIRE(direct.actionOutcome.effect == UiEffect::openExternalUrl);
+    REQUIRE(direct.actionOutcome.overlaySequence == 0U);
+    REQUIRE(direct.actionOutcome.effectText.view()
+        == cirvivor::ui::data::title_version_history_url);
+    REQUIRE(state.snapshot() == beforeDirect);
+    REQUIRE(state.snapshot().overlayCount == 0U);
+    REQUIRE(!controller.snapshot().capture.active);
+    REQUIRE(interaction(
+        controller.snapshot(),
+        TitleUiTarget::versionHistoryLink
+    ).hovered);
+
+    const UiStateSnapshot beforeInvalidAck = state.snapshot();
+    REQUIRE(!state.acknowledgeExternalUrl(0U, false).accepted());
+    REQUIRE(state.snapshot() == beforeInvalidAck);
+
+    TitleOverlayStateMachine edgeState;
+    advanceToInteractiveTitle(edgeState);
+    TitleUiController edgeController;
+    REQUIRE(edgeController.handlePointer(
+        mouseEvent(UiPointerEventType::down, {1.0, 1.0}, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        edgeState.snapshot(),
+        edgeState
+    ).status == UiInputStatus::ignoredNoTarget);
+    const UiInputResult releaseEdge = edgeController.handlePointer(
+        mouseEvent(UiPointerEventType::up, linkCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        edgeState.snapshot(),
+        edgeState
+    );
+    REQUIRE(releaseEdge.actionAccepted());
+    REQUIRE(releaseEdge.actionOutcome.effect == UiEffect::openExternalUrl);
+
+    TitleOverlayStateMachine touchState;
+    advanceToInteractiveTitle(touchState);
+    TitleUiController touchController;
+    REQUIRE(touchController.handlePointer(
+        touchEvent(UiPointerEventType::down, 91U, linkCenter),
+        presentation.layout,
+        presentation.entrance,
+        touchState.snapshot(),
+        touchState
+    ).status == UiInputStatus::ignoredNoTarget);
+    REQUIRE(touchController.handlePointer(
+        touchEvent(UiPointerEventType::up, 91U, linkCenter),
+        presentation.layout,
+        presentation.entrance,
+        touchState.snapshot(),
+        touchState
+    ).status == UiInputStatus::ignoredNoCapture);
+    REQUIRE(touchState.snapshot().overlayCount == 0U);
 }
 
 void testMouseHoverPressedRoundedHitAndReleaseRule() {
@@ -376,14 +529,12 @@ void testTitleGateAndExplicitUnsupportedOverlayResult() {
     TitleOverlayStateMachine nestedState;
     advanceToInteractiveTitle(nestedState);
     const auto exit = nestedState.apply(UiAction::openExit());
-    const auto external = nestedState.apply(
-        UiAction::openExternalLink("https://jukchang.com")
-    );
+    const auto debug = nestedState.apply(UiAction::openDebug());
     REQUIRE(exit.accepted());
-    REQUIRE(external.accepted());
+    REQUIRE(debug.accepted());
     const UiStateSnapshot nestedSnapshot = nestedState.snapshot();
-    REQUIRE(nestedSnapshot.overlays[0].kind == OverlayKind::externalLinkWarning);
-    REQUIRE(nestedSnapshot.overlays[1].kind == OverlayKind::exitConfirm);
+    REQUIRE(hasOverlayKind(nestedSnapshot, OverlayKind::debug));
+    REQUIRE(hasOverlayKind(nestedSnapshot, OverlayKind::exitConfirm));
 
     TitleUiController nestedController;
     const UiInputResult unsupported = nestedController.handlePointer(
@@ -394,8 +545,8 @@ void testTitleGateAndExplicitUnsupportedOverlayResult() {
         nestedState
     );
     REQUIRE(unsupported.status == UiInputStatus::unsupportedOverlayInput);
-    REQUIRE(unsupported.unsupportedOverlay == OverlayKind::externalLinkWarning);
-    REQUIRE(unsupported.overlaySequence == external.overlaySequence);
+    REQUIRE(unsupported.unsupportedOverlay == OverlayKind::debug);
+    REQUIRE(unsupported.overlaySequence == debug.overlaySequence);
     REQUIRE(!nestedController.snapshot().capture.active);
 
     TitleOverlayStateMachine closingState;
@@ -411,6 +562,198 @@ void testTitleGateAndExplicitUnsupportedOverlayResult() {
         closingState.snapshot(),
         closingState
     ).status == UiInputStatus::unsupportedOverlayInput);
+}
+
+void testExitOverlayCancelConfirmAndSequenceBoundCapture() {
+    const Presentation presentation = makePresentation();
+
+    TitleOverlayStateMachine cancelState;
+    advanceToInteractiveTitle(cancelState);
+    const UiActionOutcome cancelOpened = cancelState.apply(UiAction::openExit());
+    REQUIRE(cancelOpened.accepted());
+    cancelState.advance(0.5);
+    const UiStateSnapshot cancelOpenState = cancelState.snapshot();
+    const OverlaySnapshot& cancelOverlay = overlayOfKind(
+        cancelOpenState,
+        OverlayKind::exitConfirm
+    );
+    REQUIRE(cancelOverlay.acceptsInput);
+    const OverlayDialogRenderMetrics cancelDialog = dialogFor(
+        presentation,
+        cancelOverlay
+    );
+    const PointD cancelCenter = center(cancelDialog.cancelButtonRect);
+    TitleUiController cancelController;
+    const UiInputResult cancelMove = cancelController.handlePointer(
+        mouseEvent(UiPointerEventType::move, cancelCenter),
+        presentation.layout,
+        presentation.entrance,
+        cancelOpenState,
+        cancelState
+    );
+    REQUIRE(cancelMove.status == UiInputStatus::moved);
+    REQUIRE(cancelMove.target == TitleUiTarget::overlayCancel);
+    REQUIRE(cancelMove.overlaySequence == cancelOverlay.sequence);
+    REQUIRE(cancelController.snapshot().overlaySequence == cancelOverlay.sequence);
+    REQUIRE(interaction(
+        cancelController.snapshot(),
+        TitleUiTarget::overlayCancel
+    ).hovered);
+    REQUIRE(cancelController.handlePointer(
+        mouseEvent(UiPointerEventType::down, cancelCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        cancelState.snapshot(),
+        cancelState
+    ).status == UiInputStatus::captured);
+    REQUIRE(cancelController.snapshot().capture.overlaySequence
+        == cancelOverlay.sequence);
+    const UiInputResult cancelled = cancelController.handlePointer(
+        mouseEvent(UiPointerEventType::up, cancelCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        cancelState.snapshot(),
+        cancelState
+    );
+    REQUIRE(cancelled.actionAccepted());
+    REQUIRE(cancelled.target == TitleUiTarget::overlayCancel);
+    REQUIRE(overlayOfKind(
+        cancelState.snapshot(),
+        OverlayKind::exitConfirm
+    ).phase == OverlayPhase::closing);
+
+    TitleOverlayStateMachine confirmState;
+    advanceToInteractiveTitle(confirmState);
+    REQUIRE(confirmState.apply(UiAction::openExit()).accepted());
+    confirmState.advance(0.5);
+    const OverlaySnapshot confirmOverlay = overlayOfKind(
+        confirmState.snapshot(),
+        OverlayKind::exitConfirm
+    );
+    const PointD confirmCenter = center(dialogFor(
+        presentation,
+        confirmOverlay
+    ).confirmButtonRect);
+    TitleUiController confirmController;
+    REQUIRE(confirmController.handlePointer(
+        mouseEvent(UiPointerEventType::down, confirmCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        confirmState.snapshot(),
+        confirmState
+    ).status == UiInputStatus::captured);
+    const UiInputResult confirmed = confirmController.handlePointer(
+        mouseEvent(UiPointerEventType::up, confirmCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        confirmState.snapshot(),
+        confirmState
+    );
+    REQUIRE(confirmed.actionAccepted());
+    REQUIRE(confirmed.target == TitleUiTarget::overlayConfirm);
+    REQUIRE(confirmState.snapshot().applicationExitRequested);
+    REQUIRE(confirmState.tryConsumeApplicationExitRequest());
+    REQUIRE(!confirmState.tryConsumeApplicationExitRequest());
+
+    TitleOverlayStateMachine sequenceState;
+    advanceToInteractiveTitle(sequenceState);
+    REQUIRE(sequenceState.apply(UiAction::openExit()).accepted());
+    sequenceState.advance(0.5);
+    const OverlaySnapshot firstOverlay = overlayOfKind(
+        sequenceState.snapshot(),
+        OverlayKind::exitConfirm
+    );
+    const PointD firstCancel = center(dialogFor(
+        presentation,
+        firstOverlay
+    ).cancelButtonRect);
+    TitleUiController sequenceController;
+    REQUIRE(sequenceController.handlePointer(
+        mouseEvent(UiPointerEventType::down, firstCancel, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        sequenceState.snapshot(),
+        sequenceState
+    ).status == UiInputStatus::captured);
+    const UiActionOutcome debug = sequenceState.apply(UiAction::openDebug());
+    REQUIRE(debug.accepted());
+    const UiInputResult staleRelease = sequenceController.handlePointer(
+        mouseEvent(UiPointerEventType::up, firstCancel, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        sequenceState.snapshot(),
+        sequenceState
+    );
+    REQUIRE(staleRelease.status == UiInputStatus::unsupportedOverlayInput);
+    REQUIRE(staleRelease.unsupportedOverlay == OverlayKind::debug);
+    REQUIRE(staleRelease.overlaySequence == debug.overlaySequence);
+    REQUIRE(!sequenceController.snapshot().capture.active);
+    REQUIRE(overlayOfKind(
+        sequenceState.snapshot(),
+        OverlayKind::exitConfirm
+    ).phase != OverlayPhase::closing);
+}
+
+void testExternalWarningConfirmEffectLockAndAcknowledgement() {
+    const Presentation presentation = makePresentation();
+    constexpr std::string_view url = "https://jukchang.com/history";
+    TitleOverlayStateMachine state;
+    advanceToInteractiveTitle(state);
+    const UiActionOutcome opened = state.apply(UiAction::openExternalLink(url));
+    REQUIRE(opened.accepted());
+    state.advance(0.5);
+    const OverlaySnapshot overlay = overlayOfKind(
+        state.snapshot(),
+        OverlayKind::externalLinkWarning
+    );
+    const PointD confirmCenter = center(dialogFor(
+        presentation,
+        overlay
+    ).confirmButtonRect);
+    TitleUiController controller;
+    REQUIRE(controller.handlePointer(
+        mouseEvent(UiPointerEventType::down, confirmCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    ).status == UiInputStatus::captured);
+    const UiInputResult confirmed = controller.handlePointer(
+        mouseEvent(UiPointerEventType::up, confirmCenter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    );
+    REQUIRE(confirmed.actionAccepted());
+    REQUIRE(confirmed.actionOutcome.effect == UiEffect::openExternalUrl);
+    REQUIRE(confirmed.actionOutcome.overlaySequence == opened.overlaySequence);
+    REQUIRE(confirmed.actionOutcome.effectText.view() == url);
+    const OverlaySnapshot locked = overlayOfKind(
+        state.snapshot(),
+        OverlayKind::externalLinkWarning
+    );
+    REQUIRE(locked.interactionsLocked);
+    REQUIRE(!locked.acceptsInput);
+    const UiInputResult lockedInput = controller.handlePointer(
+        mouseEvent(UiPointerEventType::move, confirmCenter),
+        presentation.layout,
+        presentation.entrance,
+        state.snapshot(),
+        state
+    );
+    REQUIRE(lockedInput.status == UiInputStatus::overlayInputLocked);
+    REQUIRE(lockedInput.overlaySequence == opened.overlaySequence);
+
+    const UiActionOutcome acknowledged = state.acknowledgeExternalUrl(
+        opened.overlaySequence,
+        true
+    );
+    REQUIRE(acknowledged.accepted());
+    REQUIRE(overlayOfKind(
+        state.snapshot(),
+        OverlayKind::externalLinkWarning
+    ).phase == OverlayPhase::closing);
 }
 
 void testOverlayAppearanceCancelsExistingBaseCapture() {
@@ -777,6 +1120,26 @@ void testControllerPathsPerformNoHeapAllocation() {
         presentation,
         TitleUiTarget::utilitySetting
     ));
+    TitleOverlayStateMachine overlayState;
+    advanceToInteractiveTitle(overlayState);
+    REQUIRE(overlayState.apply(UiAction::openExit()).accepted());
+    overlayState.advance(0.5);
+    const OverlaySnapshot overlay = overlayOfKind(
+        overlayState.snapshot(),
+        OverlayKind::exitConfirm
+    );
+    const PointD overlayCancel = center(dialogFor(
+        presentation,
+        overlay
+    ).cancelButtonRect);
+    TitleUiController overlayController;
+    TitleOverlayStateMachine directState;
+    advanceToInteractiveTitle(directState);
+    TitleUiController directController;
+    const PointD versionLink = center(rectForTarget(
+        presentation,
+        TitleUiTarget::versionHistoryLink
+    ));
     constexpr std::uint64_t touchId = std::numeric_limits<std::uint64_t>::max();
 
     allocation_probe::count = 0U;
@@ -795,8 +1158,44 @@ void testControllerPathsPerformNoHeapAllocation() {
         actionState.snapshot(),
         actionState
     );
+    const UiInputResult overlayDown = overlayController.handlePointer(
+        mouseEvent(
+            UiPointerEventType::down,
+            overlayCancel,
+            UiPointerButton::left
+        ),
+        presentation.layout,
+        presentation.entrance,
+        overlayState.snapshot(),
+        overlayState
+    );
+    const UiInputResult overlayUp = overlayController.handlePointer(
+        mouseEvent(
+            UiPointerEventType::up,
+            overlayCancel,
+            UiPointerButton::left
+        ),
+        presentation.layout,
+        presentation.entrance,
+        overlayState.snapshot(),
+        overlayState
+    );
+    const UiInputResult direct = directController.handlePointer(
+        mouseEvent(
+            UiPointerEventType::up,
+            versionLink,
+            UiPointerButton::left
+        ),
+        presentation.layout,
+        presentation.entrance,
+        directState.snapshot(),
+        directState
+    );
     if (actionDown.status != UiInputStatus::captured
-        || !actionUp.actionAccepted()) {
+        || !actionUp.actionAccepted()
+        || overlayDown.status != UiInputStatus::captured
+        || !overlayUp.actionAccepted()
+        || direct.actionOutcome.effect != UiEffect::openExternalUrl) {
         std::abort();
     }
     for (std::size_t index = 0U; index < 2'000U; ++index) {
@@ -844,8 +1243,11 @@ struct TestCase final {
 int main() {
     const std::array tests{
         TestCase{"exact title target actions", testAllTitleTargetsDispatchExactActions},
+        TestCase{"version link direct release", testVersionHistoryLinkUsesMouseReleaseDirectEffectWithoutCapture},
         TestCase{"mouse hover pressed release", testMouseHoverPressedRoundedHitAndReleaseRule},
         TestCase{"title gate and overlay unsupported", testTitleGateAndExplicitUnsupportedOverlayResult},
+        TestCase{"exit dialog controls", testExitOverlayCancelConfirmAndSequenceBoundCapture},
+        TestCase{"external dialog effect ack", testExternalWarningConfirmEffectLockAndAcknowledgement},
         TestCase{"overlay cancels base capture", testOverlayAppearanceCancelsExistingBaseCapture},
         TestCase{"touch identity and cancel", testTouchIdentityMultiPointerAndCancel},
         TestCase{"focus loss and mouse buttons", testFocusLossAndUnsupportedMouseButtons},

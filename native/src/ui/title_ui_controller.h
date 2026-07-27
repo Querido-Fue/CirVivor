@@ -10,7 +10,7 @@
 
 namespace cirvivor::ui {
 
-inline constexpr std::size_t title_ui_target_count = 9U;
+inline constexpr std::size_t title_ui_target_count = 12U;
 
 enum class UiPointerDevice : std::uint8_t {
     mouse,
@@ -41,7 +41,10 @@ enum class TitleUiTarget : std::uint8_t {
     utilitySetting,
     utilityCredits,
     utilityAchievements,
-    utilityExit
+    utilityExit,
+    versionHistoryLink,
+    overlayCancel,
+    overlayConfirm
 };
 
 enum class UiInputStatus : std::uint8_t {
@@ -56,6 +59,7 @@ enum class UiInputStatus : std::uint8_t {
     ignoredNoCapture,
     ignoredUnsupportedButton,
     titleInputDisabled,
+    overlayInputLocked,
     unsupportedOverlayInput,
     rejectedInvalidInput,
     rejectedStaleState,
@@ -87,6 +91,7 @@ struct UiPointerCaptureSnapshot final {
     UiPointerDevice device = UiPointerDevice::mouse;
     std::uint64_t pointerId = 0U;
     TitleUiTarget target = TitleUiTarget::none;
+    std::uint32_t overlaySequence = 0U;
     layout::PointD lastPosition{};
 
     constexpr bool operator==(const UiPointerCaptureSnapshot&) const noexcept = default;
@@ -95,6 +100,8 @@ struct UiPointerCaptureSnapshot final {
 struct TitleUiControllerSnapshot final {
     std::array<TitleUiTargetInteraction, title_ui_target_count> targets{};
     UiPointerCaptureSnapshot capture{};
+    /** overlay target hover/press가 어느 attachment에 속하는지 식별합니다. */
+    std::uint32_t overlaySequence = 0U;
     std::uint64_t revision = 0U;
 
     constexpr bool operator==(const TitleUiControllerSnapshot&) const noexcept = default;
@@ -116,7 +123,8 @@ struct UiInputResult final {
 
 /**
  * Title layout/render snapshot을 hit-test하고 state machine에 action만 적용하는
- * SDL 비의존 controller입니다. Overlay content hit-test는 소유하지 않습니다.
+ * SDL 비의존 controller입니다. 공통 confirm dialog footer와 title target만
+ * hit-test하며 overlay 본문 상호작용은 소유하지 않습니다.
  */
 class TitleUiController final {
 public:

@@ -1,4 +1,5 @@
 #include "ui/title_ui_controller.h"
+#include "ui/title_link_data.h"
 
 #include <algorithm>
 #include <array>
@@ -17,7 +18,10 @@ constexpr std::array canonical_targets{
     TitleUiTarget::utilitySetting,
     TitleUiTarget::utilityCredits,
     TitleUiTarget::utilityAchievements,
-    TitleUiTarget::utilityExit
+    TitleUiTarget::utilityExit,
+    TitleUiTarget::versionHistoryLink,
+    TitleUiTarget::overlayCancel,
+    TitleUiTarget::overlayConfirm
 };
 
 [[nodiscard]] bool finiteUnit(const double value) noexcept {
@@ -265,6 +269,23 @@ constexpr std::array canonical_targets{
         }
         seenTiles[slotIndex] = true;
     }
+    const layout::TitleVersionHistoryLinkMetrics& sourceLink =
+        layoutSnapshot.title.versionHistoryLink;
+    const layout::TitleVersionHistoryLinkRenderMetrics& renderedLink =
+        entranceState.versionHistoryLink;
+    if (sourceLink.available != renderedLink.available) {
+        return false;
+    }
+    if (sourceLink.available
+        && (!finitePoint(sourceLink.textAnchor)
+            || !finiteRect(sourceLink.iconRect)
+            || !finiteRect(sourceLink.hitRect)
+            || !finiteUnit(renderedLink.alpha)
+            || !finitePoint(renderedLink.textAnchor)
+            || !finiteRect(renderedLink.iconRect)
+            || !finiteRect(renderedLink.hitRect))) {
+        return false;
+    }
     return true;
 }
 
@@ -354,6 +375,27 @@ constexpr std::array canonical_targets{
             );
         }
     }
+    if (entranceState.versionHistoryLink.available
+        && entranceState.versionHistoryLink.alpha > 0.75
+        && pointInsideRoundedRect(
+            position,
+            entranceState.versionHistoryLink.hitRect
+        )) {
+        return TitleUiTarget::versionHistoryLink;
+    }
+    return TitleUiTarget::none;
+}
+
+[[nodiscard]] TitleUiTarget hitOverlayTarget(
+    const layout::OverlayDialogRenderMetrics& dialog,
+    const layout::PointD& position
+) noexcept {
+    if (pointInsideRoundedRect(position, dialog.confirmButtonRect)) {
+        return TitleUiTarget::overlayConfirm;
+    }
+    if (pointInsideRoundedRect(position, dialog.cancelButtonRect)) {
+        return TitleUiTarget::overlayCancel;
+    }
     return TitleUiTarget::none;
 }
 
@@ -380,6 +422,7 @@ void clearInteraction(TitleUiControllerSnapshot& snapshot) noexcept {
     setHovered(snapshot, TitleUiTarget::none);
     setPressed(snapshot, TitleUiTarget::none, false);
     snapshot.capture = {};
+    snapshot.overlaySequence = 0U;
 }
 
 [[nodiscard]] bool pointerMatches(
@@ -423,6 +466,17 @@ void clearInteraction(TitleUiControllerSnapshot& snapshot) noexcept {
     case TitleUiTarget::utilityExit:
         action = UiAction::openExit();
         return true;
+    case TitleUiTarget::versionHistoryLink:
+        action = UiAction::openExternalDirect(
+            cirvivor::ui::data::title_version_history_url
+        );
+        return true;
+    case TitleUiTarget::overlayCancel:
+        action = UiAction::cancelTop();
+        return true;
+    case TitleUiTarget::overlayConfirm:
+        action = UiAction::confirmTop();
+        return true;
     case TitleUiTarget::none:
         return false;
     }
@@ -430,8 +484,7 @@ void clearInteraction(TitleUiControllerSnapshot& snapshot) noexcept {
 }
 
 struct LatestOverlay final {
-    OverlayKind kind = OverlayKind::none;
-    std::uint32_t sequence = 0U;
+    const OverlaySnapshot* snapshot = nullptr;
 };
 
 [[nodiscard]] LatestOverlay latestOverlay(
@@ -439,12 +492,26 @@ struct LatestOverlay final {
 ) noexcept {
     LatestOverlay result{};
     for (std::size_t index = 0U; index < state.overlayCount; ++index) {
-        if (state.overlays[index].sequence > result.sequence) {
-            result.kind = state.overlays[index].kind;
-            result.sequence = state.overlays[index].sequence;
+        if (result.snapshot == nullptr
+            || state.overlays[index].sequence > result.snapshot->sequence) {
+            result.snapshot = &state.overlays[index];
         }
     }
     return result;
+}
+
+[[nodiscard]] const layout::OverlayDialogMetrics* dialogForOverlay(
+    const layout::UiLayoutSnapshot& layoutSnapshot,
+    const OverlayKind kind
+) noexcept {
+    switch (kind) {
+    case OverlayKind::exitConfirm:
+        return &layoutSnapshot.overlays.exit;
+    case OverlayKind::externalLinkWarning:
+        return &layoutSnapshot.overlays.externalLinkWarning;
+    default:
+        return nullptr;
+    }
 }
 
 } // namespace
@@ -470,42 +537,91 @@ UiInputResult TitleUiController::handlePointer(
     }
 
     TitleUiControllerSnapshot candidate = snapshot_;
+    const OverlaySnapshot* activeOverlay = nullptr;
+    layout::OverlayDialogRenderMetrics activeDialog{};
+    std::uint32_t activeOverlaySequence = 0U;
     if (uiState.overlayCount > 0U) {
         const LatestOverlay overlay = latestOverlay(uiState);
-        clearInteraction(candidate);
-        const bool changed = commit(candidate);
-        return {
-            .status = UiInputStatus::unsupportedOverlayInput,
-            .unsupportedOverlay = overlay.kind,
-            .overlaySequence = overlay.sequence,
-            .controllerStateChanged = changed
-        };
-    }
-    if (!uiState.titleInputEnabled) {
+        if (overlay.snapshot == nullptr) {
+            return {.status = UiInputStatus::rejectedInvalidInput};
+        }
+        activeOverlay = overlay.snapshot;
+        activeOverlaySequence = activeOverlay->sequence;
+        const layout::OverlayDialogMetrics* dialog = dialogForOverlay(
+            layoutSnapshot,
+            activeOverlay->kind
+        );
+        if (dialog == nullptr) {
+            clearInteraction(candidate);
+            const bool changed = commit(candidate);
+            return {
+                .status = UiInputStatus::unsupportedOverlayInput,
+                .unsupportedOverlay = activeOverlay->kind,
+                .overlaySequence = activeOverlaySequence,
+                .controllerStateChanged = changed
+            };
+        }
+        if (!activeOverlay->acceptsInput || activeOverlay->interactionsLocked) {
+            clearInteraction(candidate);
+            const bool changed = commit(candidate);
+            return {
+                .status = UiInputStatus::overlayInputLocked,
+                .overlaySequence = activeOverlaySequence,
+                .controllerStateChanged = changed
+            };
+        }
+        if (layoutSnapshot.revision == 0U
+            || !layout::tryResolveOverlayDialogRenderMetrics(
+                *dialog,
+                layoutSnapshot.overlayPage,
+                activeOverlay->contentScale,
+                activeDialog
+            )) {
+            return {.status = UiInputStatus::rejectedInvalidInput};
+        }
+        if (candidate.capture.active
+            && candidate.capture.overlaySequence != activeOverlaySequence) {
+            clearInteraction(candidate);
+        }
+        candidate.overlaySequence = activeOverlaySequence;
+    } else if (!uiState.titleInputEnabled) {
         clearInteraction(candidate);
         const bool changed = commit(candidate);
         return {
             .status = UiInputStatus::titleInputDisabled,
             .controllerStateChanged = changed
         };
+    } else {
+        if (candidate.capture.active && candidate.capture.overlaySequence != 0U) {
+            clearInteraction(candidate);
+        }
+        candidate.overlaySequence = 0U;
     }
     if (event.device == UiPointerDevice::mouse
         && (event.button == UiPointerButton::right
             || event.button == UiPointerButton::middle)) {
-        return {.status = UiInputStatus::ignoredUnsupportedButton};
+        return {
+            .status = UiInputStatus::ignoredUnsupportedButton,
+            .overlaySequence = activeOverlaySequence
+        };
     }
 
     if (event.type == UiPointerEventType::cancel) {
         if (!candidate.capture.active) {
-            clearInteraction(candidate);
+            setHovered(candidate, TitleUiTarget::none);
+            setPressed(candidate, TitleUiTarget::none, false);
             const bool changed = commit(candidate);
             return {
                 .status = UiInputStatus::ignoredNoCapture,
+                .overlaySequence = activeOverlaySequence,
                 .controllerStateChanged = changed
             };
         }
         if (!pointerMatches(candidate.capture, event)) {
-            return {.status = UiInputStatus::rejectedAdditionalPointer};
+            return {
+                .status = UiInputStatus::rejectedAdditionalPointer,
+                .overlaySequence = activeOverlaySequence
+            };
         }
         const TitleUiTarget capturedTarget = candidate.capture.target;
         clearInteraction(candidate);
@@ -513,23 +629,30 @@ UiInputResult TitleUiController::handlePointer(
         return {
             .status = UiInputStatus::cancelled,
             .target = capturedTarget,
+            .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
     }
-    if (!validGeometry(layoutSnapshot, entranceState)) {
+    if (activeOverlay == nullptr
+        && !validGeometry(layoutSnapshot, entranceState)) {
         return {.status = UiInputStatus::rejectedInvalidInput};
     }
 
-    const TitleUiTarget hit = hitTarget(
-        layoutSnapshot,
-        entranceState,
-        event.position
-    );
+    TitleUiTarget hit = activeOverlay != nullptr
+        ? hitOverlayTarget(activeDialog, event.position)
+        : hitTarget(layoutSnapshot, entranceState, event.position);
+    if (event.device == UiPointerDevice::touch
+        && hit == TitleUiTarget::versionHistoryLink) {
+        hit = TitleUiTarget::none;
+    }
 
     if (event.type == UiPointerEventType::move) {
         if (candidate.capture.active) {
             if (!pointerMatches(candidate.capture, event)) {
-                return {.status = UiInputStatus::rejectedAdditionalPointer};
+                return {
+                    .status = UiInputStatus::rejectedAdditionalPointer,
+                    .overlaySequence = activeOverlaySequence
+                };
             }
             candidate.capture.lastPosition = event.position;
             setHovered(candidate, hit);
@@ -540,7 +663,14 @@ UiInputResult TitleUiController::handlePointer(
             );
         } else {
             if (event.device == UiPointerDevice::touch) {
-                return {.status = UiInputStatus::ignoredNoCapture};
+                setHovered(candidate, TitleUiTarget::none);
+                setPressed(candidate, TitleUiTarget::none, false);
+                const bool changed = commit(candidate);
+                return {
+                    .status = UiInputStatus::ignoredNoCapture,
+                    .overlaySequence = activeOverlaySequence,
+                    .controllerStateChanged = changed
+                };
             }
             setHovered(candidate, hit);
             setPressed(candidate, TitleUiTarget::none, false);
@@ -549,6 +679,7 @@ UiInputResult TitleUiController::handlePointer(
         return {
             .status = UiInputStatus::moved,
             .target = hit,
+            .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
     }
@@ -559,7 +690,18 @@ UiInputResult TitleUiController::handlePointer(
                 .status = pointerMatches(candidate.capture, event)
                     ? UiInputStatus::rejectedPointerAlreadyCaptured
                     : UiInputStatus::rejectedAdditionalPointer,
-                .target = candidate.capture.target
+                .target = candidate.capture.target,
+                .overlaySequence = activeOverlaySequence
+            };
+        }
+        if (hit == TitleUiTarget::versionHistoryLink) {
+            setHovered(candidate, hit);
+            setPressed(candidate, TitleUiTarget::none, false);
+            const bool changed = commit(candidate);
+            return {
+                .status = UiInputStatus::ignoredNoCapture,
+                .target = hit,
+                .controllerStateChanged = changed
             };
         }
         setHovered(candidate, hit);
@@ -568,6 +710,7 @@ UiInputResult TitleUiController::handlePointer(
             const bool changed = commit(candidate);
             return {
                 .status = UiInputStatus::ignoredNoTarget,
+                .overlaySequence = activeOverlaySequence,
                 .controllerStateChanged = changed
             };
         }
@@ -576,6 +719,7 @@ UiInputResult TitleUiController::handlePointer(
             .device = event.device,
             .pointerId = event.pointerId,
             .target = hit,
+            .overlaySequence = activeOverlaySequence,
             .lastPosition = event.position
         };
         setPressed(candidate, hit, true);
@@ -583,6 +727,27 @@ UiInputResult TitleUiController::handlePointer(
         return {
             .status = UiInputStatus::captured,
             .target = hit,
+            .overlaySequence = activeOverlaySequence,
+            .controllerStateChanged = changed
+        };
+    }
+
+    if (!candidate.capture.active
+        && hit == TitleUiTarget::versionHistoryLink) {
+        setHovered(candidate, hit);
+        setPressed(candidate, TitleUiTarget::none, false);
+        const UiActionOutcome actionOutcome = stateMachine.apply(
+            UiAction::openExternalDirect(
+                cirvivor::ui::data::title_version_history_url
+            )
+        );
+        const bool changed = commit(candidate);
+        return {
+            .status = actionOutcome.accepted()
+                ? UiInputStatus::actionApplied
+                : UiInputStatus::actionRejected,
+            .target = hit,
+            .actionOutcome = actionOutcome,
             .controllerStateChanged = changed
         };
     }
@@ -598,13 +763,15 @@ UiInputResult TitleUiController::handlePointer(
         return {
             .status = UiInputStatus::ignoredNoCapture,
             .target = hit,
+            .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
     }
     if (!pointerMatches(candidate.capture, event)) {
         return {
             .status = UiInputStatus::rejectedAdditionalPointer,
-            .target = candidate.capture.target
+            .target = candidate.capture.target,
+            .overlaySequence = activeOverlaySequence
         };
     }
 
@@ -620,6 +787,7 @@ UiInputResult TitleUiController::handlePointer(
         return {
             .status = UiInputStatus::released,
             .target = capturedTarget,
+            .overlaySequence = activeOverlaySequence,
             .controllerStateChanged = changed
         };
     }
@@ -638,6 +806,7 @@ UiInputResult TitleUiController::handlePointer(
             ? UiInputStatus::actionApplied
             : UiInputStatus::actionRejected,
         .target = capturedTarget,
+        .overlaySequence = activeOverlaySequence,
         .actionOutcome = actionOutcome,
         .controllerStateChanged = changed
     };

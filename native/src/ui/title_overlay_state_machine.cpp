@@ -394,6 +394,27 @@ UiActionOutcome TitleOverlayStateMachine::apply(
             false,
             context
         );
+    case UiActionType::openExternalUrlDirect: {
+        if (overlayCount_ != 0U || !titleInputEnabled()) {
+            return {.status = UiActionStatus::rejectedSceneNotInteractive};
+        }
+        const NormalizedBoundaryText normalized = normalizeUtf8Boundary(
+            action.text
+        );
+        FixedUiText effectText{};
+        if (!normalized.valid
+            || normalized.value.empty()
+            || !hasAllowedExternalUrl(normalized.value)
+            || !copyFixedText(normalized.value, effectText)) {
+            return {.status = UiActionStatus::rejectedPayload};
+        }
+        return {
+            .status = UiActionStatus::applied,
+            .effect = UiEffect::openExternalUrl,
+            .overlaySequence = 0U,
+            .effectText = effectText
+        };
+    }
     case UiActionType::cancelTopOverlay:
         if (overlayCount_ == 0U) {
             return {.status = UiActionStatus::rejectedMissingOverlay};

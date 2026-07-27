@@ -1,4 +1,5 @@
 #include "ui/layout/ui_layout_metrics.h"
+#include "ui/title_link_data.h"
 
 #include <algorithm>
 #include <array>
@@ -478,6 +479,16 @@ constexpr TitleTimelineMetrics title_timeline_metrics = makeTitleTimelineMetrics
             return false;
         }
     }
+    if (title.versionHistoryLink.available
+        && (!finitePoint(title.versionHistoryLink.textAnchor)
+            || !finiteRect(title.versionHistoryLink.iconRect)
+            || !finitePositive(title.versionHistoryLink.iconRect.width)
+            || !finitePositive(title.versionHistoryLink.iconRect.height)
+            || !finiteRect(title.versionHistoryLink.hitRect)
+            || !finitePositive(title.versionHistoryLink.hitRect.width)
+            || !finitePositive(title.versionHistoryLink.hitRect.height))) {
+        return false;
+    }
     return true;
 }
 
@@ -529,6 +540,18 @@ constexpr TitleTimelineMetrics title_timeline_metrics = makeTitleTimelineMetrics
             return false;
         }
     }
+    if (state.versionHistoryLink.available
+        && (!finiteNonNegative(state.versionHistoryLink.alpha)
+            || state.versionHistoryLink.alpha > 1.0
+            || !finitePoint(state.versionHistoryLink.textAnchor)
+            || !finiteRect(state.versionHistoryLink.iconRect)
+            || !finitePositive(state.versionHistoryLink.iconRect.width)
+            || !finitePositive(state.versionHistoryLink.iconRect.height)
+            || !finiteRect(state.versionHistoryLink.hitRect)
+            || !finitePositive(state.versionHistoryLink.hitRect.width)
+            || !finitePositive(state.versionHistoryLink.hitRect.height))) {
+        return false;
+    }
     return true;
 }
 
@@ -542,6 +565,7 @@ constexpr TitleTimelineMetrics title_timeline_metrics = makeTitleTimelineMetrics
         || input.logicalWidth < 1.0
         || input.logicalHeight < 1.0
         || !finitePositive(input.uiScale)
+        || !finiteNonNegative(input.versionHistoryLinkTextWidth)
         || !finiteNonNegative(safeArea.left)
         || !finiteNonNegative(safeArea.top)
         || !finiteNonNegative(safeArea.right)
@@ -817,9 +841,100 @@ struct VerticalStack final {
     const double linkSize = viewport.uiww * 0.01 * uiScale;
     const double lineGap = std::max(
         4.0 * uiScale,
-        viewport.safeAreaRect.height * 0.005 * uiScale
+        viewport.wh * 0.005 * uiScale
     );
     return versionSize + linkSize + lineGap;
+}
+
+[[nodiscard]] bool buildVersionHistoryLinkMetrics(
+    const ViewportMetrics& viewport,
+    const TitleLayoutMetrics& title,
+    const bool hasVersionHistoryLink,
+    const double measuredTextWidth,
+    TitleVersionHistoryLinkMetrics& out
+) noexcept {
+    out = {};
+    if (!hasVersionHistoryLink) {
+        return true;
+    }
+
+    TypographyMetrics versionTypography{};
+    TypographyMetrics linkTypography{};
+    TypographyMetrics fallbackTypography{};
+    if (!tryResolveTypography(
+            TypographyRole::h5,
+            viewport,
+            versionTypography
+        )
+        || !tryResolveTypography(
+            TypographyRole::label,
+            viewport,
+            linkTypography
+        )
+        || !tryResolveTypography(
+            TypographyRole::h6,
+            viewport,
+            fallbackTypography
+        )) {
+        return false;
+    }
+
+    const double uiScale = viewport.uiScale;
+    const double textWidth = measuredTextWidth > 0.0
+        ? measuredTextWidth
+        : static_cast<double>(
+            cirvivor::ui::data::title_version_history_fallback_text_units
+        ) * fallbackTypography.size * 0.6;
+    const double lineGap = std::max(
+        4.0 * uiScale,
+        viewport.wh * 0.005 * uiScale
+    );
+    const double linkY = title.versionLabelTop
+        + versionTypography.size
+        + lineGap;
+    const double iconSize = std::max(
+        10.0 * uiScale,
+        linkTypography.size * 0.9504
+    );
+    const double iconGap = std::max(
+        4.0 * uiScale,
+        viewport.uiww * 0.0034 * uiScale
+    );
+    const double right = title.utilityPane.x + title.utilityPane.width;
+    const double iconX = right - textWidth - iconGap - iconSize;
+    const double iconY = linkY + ((linkTypography.size - iconSize) * 0.5);
+    const double horizontalPadding = std::max(
+        6.0 * uiScale,
+        viewport.uiww * 0.004 * uiScale
+    );
+    const double verticalPadding = std::max(
+        4.0 * uiScale,
+        viewport.wh * 0.004 * uiScale
+    );
+    const double blockWidth = iconSize + iconGap + textWidth;
+    const TitleVersionHistoryLinkMetrics candidate{
+        true,
+        {right, linkY},
+        {iconX, iconY, iconSize, iconSize, 0.0},
+        {
+            right - blockWidth - horizontalPadding,
+            linkY - verticalPadding,
+            blockWidth + (horizontalPadding * 2.0),
+            linkTypography.size + (verticalPadding * 2.0),
+            0.0
+        }
+    };
+    if (!finitePoint(candidate.textAnchor)
+        || !finiteRect(candidate.iconRect)
+        || !finitePositive(candidate.iconRect.width)
+        || !finitePositive(candidate.iconRect.height)
+        || !finiteRect(candidate.hitRect)
+        || !finitePositive(candidate.hitRect.width)
+        || !finitePositive(candidate.hitRect.height)) {
+        return false;
+    }
+    out = candidate;
+    return true;
 }
 
 [[nodiscard]] RoundedRectD buildLoadingLogoRect(
@@ -865,6 +980,7 @@ struct VerticalStack final {
 [[nodiscard]] bool buildTitleLayout(
     const ViewportMetrics& viewport,
     const bool hasVersionHistoryLink,
+    const double versionHistoryLinkTextWidth,
     TitleLayoutMetrics& title
 ) noexcept {
     const double uiScale = viewport.uiScale;
@@ -1036,6 +1152,15 @@ struct VerticalStack final {
     title.versionLabelTop = stack.versionTop;
     title.gapBeforeCardPane = stack.gapBeforeCard;
     title.gapAfterCardPane = stack.gapAfterCard;
+    if (!buildVersionHistoryLinkMetrics(
+            viewport,
+            title,
+            hasVersionHistoryLink,
+            versionHistoryLinkTextWidth,
+            title.versionHistoryLink
+        )) {
+        return false;
+    }
 
     const double cardOffsetX = (paneLeft + sidePadding) - groupMinX;
     const double cardOffsetY = (stack.cardPaneTop + verticalPadding) - groupMinY;
@@ -1188,6 +1313,7 @@ bool UiLayoutMetrics::tryUpdate(const LayoutInput& input) noexcept {
     if (!buildTitleLayout(
             candidate.viewport,
             input.hasVersionHistoryLink,
+            input.versionHistoryLinkTextWidth,
             candidate.title
         )) {
         return false;
@@ -1292,6 +1418,76 @@ bool trySampleOverlayClose(
         lerp(start.contentScale, 0.9, eased),
         lerp(start.contentBlur, 10.0, eased)
     };
+    return true;
+}
+
+bool tryResolveOverlayDialogRenderMetrics(
+    const OverlayDialogMetrics& dialog,
+    const OverlayPageMetrics& page,
+    const double contentScale,
+    OverlayDialogRenderMetrics& out
+) noexcept {
+    if (!finiteRect(dialog.panelRect)
+        || !finitePositive(dialog.panelRect.width)
+        || !finitePositive(dialog.panelRect.height)
+        || !finiteNonNegative(page.footerBottom)
+        || !finiteNonNegative(page.interactButtonWidth)
+        || !finiteNonNegative(page.interactButtonHeight)
+        || !finiteNonNegative(page.interactButtonMargin)
+        || !finiteNonNegative(page.interactButtonRadius)
+        || !finitePositive(contentScale)) {
+        return false;
+    }
+
+    const double panelWidth = dialog.panelRect.width * contentScale;
+    const double panelHeight = dialog.panelRect.height * contentScale;
+    const RoundedRectD panelRect{
+        dialog.panelRect.x + ((dialog.panelRect.width - panelWidth) * 0.5),
+        dialog.panelRect.y + ((dialog.panelRect.height - panelHeight) * 0.5),
+        panelWidth,
+        panelHeight,
+        dialog.panelRect.radius * contentScale
+    };
+    const double margin = std::min(
+        page.interactButtonMargin * contentScale,
+        panelRect.width / 6.0
+    );
+    const double availableWidth = std::max(
+        0.0,
+        (panelRect.width - (margin * 3.0)) / 2.0
+    );
+    const double buttonWidth = std::min(
+        page.interactButtonWidth * contentScale,
+        availableWidth
+    );
+    const double buttonHeight = std::min(
+        page.interactButtonHeight * contentScale,
+        panelRect.height * 0.32
+    );
+    const double buttonY = panelRect.y
+        + panelRect.height
+        - (page.footerBottom * contentScale)
+        - buttonHeight;
+    const double confirmX = panelRect.x + panelRect.width - margin - buttonWidth;
+    const double cancelX = confirmX - margin - buttonWidth;
+    const double buttonRadius = page.interactButtonRadius * contentScale;
+    const OverlayDialogRenderMetrics candidate{
+        panelRect,
+        {cancelX, buttonY, buttonWidth, buttonHeight, buttonRadius},
+        {confirmX, buttonY, buttonWidth, buttonHeight, buttonRadius}
+    };
+    if (!finiteRect(candidate.panelRect)
+        || !finitePositive(candidate.panelRect.width)
+        || !finitePositive(candidate.panelRect.height)
+        || !finiteRect(candidate.cancelButtonRect)
+        || !finitePositive(candidate.cancelButtonRect.width)
+        || !finitePositive(candidate.cancelButtonRect.height)
+        || !finiteRect(candidate.confirmButtonRect)
+        || !finitePositive(candidate.confirmButtonRect.width)
+        || !finitePositive(candidate.confirmButtonRect.height)) {
+        return false;
+    }
+    out = candidate;
     return true;
 }
 
@@ -1431,6 +1627,22 @@ bool trySampleTitleEntrance(
         scaledUiww * 0.026,
         0.0
     );
+    if (title.versionHistoryLink.available) {
+        const double linkTranslateX = (1.0 - utilityPaneEase)
+            * (scaledUiww * 0.026);
+        candidate.versionHistoryLink = {
+            true,
+            utilityPaneEase,
+            {
+                title.versionHistoryLink.textAnchor.x + linkTranslateX,
+                title.versionHistoryLink.textAnchor.y
+            },
+            title.versionHistoryLink.iconRect,
+            title.versionHistoryLink.hitRect
+        };
+        candidate.versionHistoryLink.iconRect.x += linkTranslateX;
+        candidate.versionHistoryLink.hitRect.x += linkTranslateX;
+    }
 
     const double tileBaseDelay = std::min(
         0.24,

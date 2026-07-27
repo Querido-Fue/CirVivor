@@ -26,6 +26,10 @@ constexpr std::size_t shell_clip_command_count = 2U;
 constexpr std::size_t exit_shell_ui_count = 3U;
 constexpr std::size_t external_shell_ui_count = 4U;
 constexpr std::size_t placeholder_geometry_count = 7U;
+constexpr std::size_t version_history_link_ui_count = 1U;
+constexpr std::size_t version_history_link_line_count = 3U;
+constexpr std::size_t version_history_link_command_count =
+    version_history_link_ui_count + version_history_link_line_count;
 
 constexpr RenderLayerMask backdrop_source_layers = static_cast<RenderLayerMask>(
     renderLayerMask(RenderLayer::background)
@@ -41,6 +45,9 @@ constexpr StableElementId utility_pane_id = stableResourceId("title.shell.utilit
 constexpr StableElementId card_id_base = stableResourceId("title.shell.card");
 constexpr StableElementId utility_id_base = stableResourceId("title.shell.utility");
 constexpr StableElementId utility_icon_id_base = stableResourceId("title.shell.utility-icon");
+constexpr StableElementId version_history_link_id = stableResourceId(
+    "title.shell.version-history-link"
+);
 constexpr StableElementId overlay_dim_session_id = stableResourceId("title.overlay.dim");
 constexpr StableElementId overlay_effect_session_id = stableResourceId("title.overlay.effect");
 constexpr StableElementId overlay_effect_destination_id = stableResourceId(
@@ -93,23 +100,6 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         finiteFloat(rect.y),
         finiteFloat(rect.width),
         finiteFloat(rect.height)
-    };
-}
-
-[[nodiscard]] RectF scaledAroundCenter(
-    const ui::layout::RoundedRectD rect,
-    const double scaleValue
-) noexcept {
-    const double scale = std::isfinite(scaleValue) && scaleValue > 0.0
-        ? scaleValue
-        : 1.0;
-    const double width = rect.width * scale;
-    const double height = rect.height * scale;
-    return {
-        finiteFloat(rect.x + (rect.width - width) * 0.5),
-        finiteFloat(rect.y + (rect.height - height) * 0.5),
-        finiteFloat(width),
-        finiteFloat(height)
     };
 }
 
@@ -261,6 +251,9 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     case ui::TitleUiTarget::utilityCredits:
     case ui::TitleUiTarget::utilityAchievements:
     case ui::TitleUiTarget::utilityExit:
+    case ui::TitleUiTarget::versionHistoryLink:
+    case ui::TitleUiTarget::overlayCancel:
+    case ui::TitleUiTarget::overlayConfirm:
         return true;
     case ui::TitleUiTarget::none:
         return false;
@@ -357,6 +350,13 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     return theme.titleButtonNormal;
 }
 
+[[nodiscard]] bool hasVersionHistoryLink(
+    const TitleSceneInput& input
+) noexcept {
+    return input.layout.title.versionHistoryLink.available
+        && input.entrance.versionHistoryLink.available;
+}
+
 [[nodiscard]] TitleSceneMissingCapabilities missingCapabilitiesFor(
     const TitleSceneInput& input
 ) noexcept {
@@ -381,7 +381,10 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
 ) noexcept {
     TitleSceneCommandStats result{};
     result.totalCommands = capacity.commandCount;
-    result.titleShellCommands = base_title_command_count;
+    const std::size_t versionLinkCount = hasVersionHistoryLink(input)
+        ? version_history_link_command_count
+        : 0U;
+    result.titleShellCommands = base_title_command_count + versionLinkCount;
     result.placeholderGeometryCommands = placeholder_geometry_count;
     const std::size_t overlayCount = std::min<std::size_t>(
         input.uiState.overlayCount,
@@ -410,6 +413,8 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
 [[nodiscard]] bool inputCanBuild(const TitleSceneInput& input) noexcept {
     if (input.uiState.overlayCount > input.uiState.overlays.size()
         || !hasValidInteractionTargetTable(input.interaction)
+        || input.layout.title.versionHistoryLink.available
+            != input.entrance.versionHistoryLink.available
         || !std::isfinite(input.layout.viewport.ww)
         || !std::isfinite(input.layout.viewport.wh)
         || input.layout.viewport.ww <= 0.0
@@ -685,7 +690,69 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     }
     ClipCommand utilityClipPop = utilityClip;
     utilityClipPop.operation = ClipOperation::pop;
-    return builder.addClip(utilityClipPop);
+    if (!builder.addClip(utilityClipPop)) {
+        return false;
+    }
+
+    if (hasVersionHistoryLink(input)) {
+        const ui::layout::TitleVersionHistoryLinkRenderMetrics& metrics =
+            input.entrance.versionHistoryLink;
+        const ui::TitleUiTargetInteraction& interaction = interactionFor(
+            input.interaction,
+            ui::TitleUiTarget::versionHistoryLink
+        );
+        UiCommand link{};
+        link.header = uiHeader;
+        link.primitive = UiPrimitive::custom;
+        link.stateFlags = stateFlagsFor(interaction);
+        link.elementId = version_history_link_id;
+        link.bounds = renderRect(metrics.hitRect);
+        link.backgroundColor = PremultipliedRgba::transparent();
+        link.borderColor = PremultipliedRgba::transparent();
+        link.accentColor = PremultipliedRgba::transparent();
+        if (!builder.addUi(link)) {
+            return false;
+        }
+
+        const ui::layout::RoundedRectD& icon = metrics.iconRect;
+        const double centerX = icon.x + (icon.width * 0.5);
+        const double centerY = icon.y + (icon.height * 0.5);
+        const double iconSize = std::min(icon.width, icon.height);
+        const double halfSpan = iconSize * 0.308;
+        const double headLength = halfSpan * 0.88;
+        const double hoverAlpha = interaction.hovered ? 1.0 : 0.42;
+        LineCommand arrow{};
+        arrow.header = uiHeader;
+        arrow.width = finiteFloat(std::max(iconSize * 0.1, 1.0));
+        arrow.color = renderColor(
+            input.theme.menuForeground,
+            hoverAlpha * metrics.alpha
+        );
+        arrow.cap = LineCap::round;
+        arrow.start = {
+            finiteFloat(centerX - halfSpan),
+            finiteFloat(centerY)
+        };
+        arrow.end = {
+            finiteFloat(centerX + halfSpan),
+            finiteFloat(centerY)
+        };
+        if (!builder.addLine(arrow)) {
+            return false;
+        }
+        arrow.start = {
+            finiteFloat(centerX + halfSpan - headLength),
+            finiteFloat(centerY - headLength)
+        };
+        if (!builder.addLine(arrow)) {
+            return false;
+        }
+        arrow.start.y = finiteFloat(centerY + headLength);
+        if (!builder.addLine(arrow)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 [[nodiscard]] double baseDimFor(
@@ -709,7 +776,8 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     const TitleSceneInput& input,
     const ui::OverlaySnapshot& overlay,
     const OverlaySurfaceLayerOrders orders,
-    std::uint32_t& anchorSequence
+    std::uint32_t& anchorSequence,
+    const std::uint64_t backdropRevision
 ) {
     OverlayCommand begin{};
     begin.header = makeHeader(RenderLayer::dynamicOverlay, orders.dim);
@@ -722,7 +790,7 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     OverlayCommand dim = begin;
     dim.operation = OverlayOperation::dim;
     dim.sourceLayers = backdrop_source_layers;
-    dim.sourceRevision = input.uiState.revision;
+    dim.sourceRevision = backdropRevision;
     dim.sourceBounds = fullLogicalBounds(input.layout);
     dim.destinationBounds = dim.sourceBounds;
     dim.opacity = static_cast<float>(clampUnit(
@@ -745,7 +813,8 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     const ui::OverlaySnapshot& overlay,
     const OverlaySurfaceLayerOrders orders,
     const RectF panelBounds,
-    const std::uint32_t anchorSequence
+    const std::uint32_t anchorSequence,
+    const std::uint64_t backdropRevision
 ) {
     PassCommand pass{};
     pass.header = makeHeader(RenderLayer::dynamicOverlay, orders.effect);
@@ -754,7 +823,7 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         overlay_effect_destination_id,
         overlay.sequence
     );
-    pass.sourceRevision = input.uiState.revision;
+    pass.sourceRevision = backdropRevision;
     pass.sourceAnchorLayer = RenderLayer::dynamicOverlay;
     pass.sourceAnchorLayerOrder = orders.dim;
     pass.sourceAnchorSequence = anchorSequence;
@@ -799,7 +868,7 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     const TitleSceneInput& input,
     const ui::OverlaySnapshot& overlay,
     const OverlaySurfaceLayerOrders orders,
-    const RectF panelBounds,
+    const ui::layout::OverlayDialogRenderMetrics& dialog,
     const bool includeLinkPreview
 ) {
     OverlayCommand begin{};
@@ -810,13 +879,12 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         return false;
     }
 
+    const RectF panelBounds = renderRect(dialog.panelRect);
+    const float panelRadius = finiteFloat(dialog.panelRect.radius);
     const double scale = std::isfinite(overlay.contentScale)
             && overlay.contentScale > 0.0
         ? overlay.contentScale
         : 1.0;
-    const float panelRadius = finiteFloat(
-        input.layout.overlayPage.panelRadius * scale
-    );
     ClipCommand clip{};
     clip.header = begin.header;
     clip.operation = ClipOperation::pushRoundedRect;
@@ -842,50 +910,50 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         return false;
     }
 
-    const float margin = std::max(
-        0.0F,
-        std::min(
-            finiteFloat(input.layout.overlayPage.interactButtonMargin * scale),
-            panelBounds.width / 6.0F
-        )
+    const RectF cancelBounds = renderRect(dialog.cancelButtonRect);
+    const RectF confirmBounds = renderRect(dialog.confirmButtonRect);
+    const bool buttonsDisabled = !overlay.acceptsInput
+        || overlay.interactionsLocked;
+    const bool interactionMatchesOverlay = input.interaction.overlaySequence
+        == overlay.sequence;
+    const ui::TitleUiTargetInteraction& cancelInteraction = interactionFor(
+        input.interaction,
+        ui::TitleUiTarget::overlayCancel
     );
-    const float availableButtonWidth = std::max(
-        0.0F,
-        (panelBounds.width - margin * 3.0F) * 0.5F
+    const ui::TitleUiTargetInteraction& confirmInteraction = interactionFor(
+        input.interaction,
+        ui::TitleUiTarget::overlayConfirm
     );
-    const float buttonWidth = std::max(
-        0.0F,
-        std::min(
-            finiteFloat(input.layout.overlayPage.interactButtonWidth * scale),
-            availableButtonWidth
-        )
-    );
-    const float buttonHeight = std::max(
-        0.0F,
-        std::min(
-            finiteFloat(input.layout.overlayPage.interactButtonHeight * scale),
-            panelBounds.height * 0.32F
-        )
-    );
-    const float buttonY = panelBounds.y + panelBounds.height
-        - finiteFloat(input.layout.overlayPage.footerBottom * scale)
-        - buttonHeight;
-    const float confirmX = panelBounds.x + panelBounds.width - margin - buttonWidth;
-    const float cancelX = confirmX - margin - buttonWidth;
-    const std::uint16_t buttonState = overlay.interactionsLocked
+    const std::uint16_t cancelState = buttonsDisabled
         ? uiStateBits(UiStateFlag::disabled)
-        : uiStateBits(UiStateFlag::none);
+        : interactionMatchesOverlay
+            ? stateFlagsFor(cancelInteraction)
+            : uiStateBits(UiStateFlag::none);
+    const std::uint16_t confirmState = buttonsDisabled
+        ? uiStateBits(UiStateFlag::disabled)
+        : interactionMatchesOverlay
+            ? stateFlagsFor(confirmInteraction)
+            : uiStateBits(UiStateFlag::none);
+    const bool cancelHighlighted = !buttonsDisabled
+        && interactionMatchesOverlay
+        && (cancelInteraction.hovered || cancelInteraction.pressed);
+    const bool confirmHighlighted = !buttonsDisabled
+        && interactionMatchesOverlay
+        && (confirmInteraction.hovered || confirmInteraction.pressed);
 
     UiCommand cancel{};
     cancel.header = begin.header;
     cancel.primitive = UiPrimitive::button;
-    cancel.stateFlags = buttonState;
+    cancel.stateFlags = cancelState;
     cancel.elementId = instanceId(overlay_cancel_id, overlay.sequence);
-    cancel.bounds = {cancelX, buttonY, buttonWidth, buttonHeight};
-    cancel.cornerRadius = finiteFloat(
-        input.layout.overlayPage.interactButtonRadius * scale
+    cancel.bounds = cancelBounds;
+    cancel.cornerRadius = finiteFloat(dialog.cancelButtonRect.radius);
+    cancel.backgroundColor = renderColor(
+        cancelHighlighted
+            ? input.theme.cancelHover
+            : input.theme.cancelIdle,
+        alpha
     );
-    cancel.backgroundColor = renderColor(input.theme.cancelIdle, alpha);
     cancel.borderColor = renderColor(input.theme.cancelHover, alpha);
     cancel.accentColor = renderColor(input.theme.cancelText, alpha);
     if (!builder.addUi(cancel)) {
@@ -893,9 +961,16 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
     }
 
     UiCommand confirm = cancel;
+    confirm.stateFlags = confirmState;
     confirm.elementId = instanceId(overlay_confirm_id, overlay.sequence);
-    confirm.bounds.x = confirmX;
-    confirm.backgroundColor = renderColor(input.theme.confirmIdle, alpha);
+    confirm.bounds = confirmBounds;
+    confirm.cornerRadius = finiteFloat(dialog.confirmButtonRect.radius);
+    confirm.backgroundColor = renderColor(
+        confirmHighlighted
+            ? input.theme.confirmHover
+            : input.theme.confirmIdle,
+        alpha
+    );
     confirm.borderColor = renderColor(input.theme.confirmHover, alpha);
     confirm.accentColor = renderColor(input.theme.confirmText, alpha);
     if (!builder.addUi(confirm)) {
@@ -915,7 +990,7 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
             panelBounds.x + horizontalPadding,
             panelBounds.y + panelBounds.height * 0.48F,
             std::max(0.0F, panelBounds.width - horizontalPadding * 2.0F),
-            std::max(0.0F, buttonHeight * 0.62F)
+            std::max(0.0F, cancelBounds.height * 0.62F)
         };
         link.cornerRadius = cancel.cornerRadius;
         link.backgroundColor = renderColor(input.theme.linkIdle, alpha);
@@ -939,7 +1014,8 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
 
 [[nodiscard]] bool addOverlayShells(
     FramePacketBuilder& builder,
-    const TitleSceneInput& input
+    const TitleSceneInput& input,
+    const TitleSceneConfig& config
 ) {
     for (std::size_t index = 0U; index < input.uiState.overlayCount; ++index) {
         const ui::OverlaySnapshot& overlay = input.uiState.overlays[index];
@@ -953,7 +1029,8 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
                 input,
                 overlay,
                 orders,
-                anchorSequence
+                anchorSequence,
+                config.backdropRevision
             )) {
             return false;
         }
@@ -964,27 +1041,34 @@ constexpr StableElementId overlay_link_id = stableResourceId("title.overlay.link
         if (!isExit && !isExternal) {
             continue;
         }
-        const ui::layout::RoundedRectD sourcePanel = isExit
-            ? input.layout.overlays.exit.panelRect
-            : input.layout.overlays.externalLinkWarning.panelRect;
-        const RectF panelBounds = scaledAroundCenter(
-            sourcePanel,
-            overlay.contentScale
-        );
+        const ui::layout::OverlayDialogMetrics& sourceDialog = isExit
+            ? input.layout.overlays.exit
+            : input.layout.overlays.externalLinkWarning;
+        ui::layout::OverlayDialogRenderMetrics dialog{};
+        if (!ui::layout::tryResolveOverlayDialogRenderMetrics(
+                sourceDialog,
+                input.layout.overlayPage,
+                overlay.contentScale,
+                dialog
+            )) {
+            return false;
+        }
+        const RectF panelBounds = renderRect(dialog.panelRect);
         if (!addGlassPass(
                 builder,
                 input,
                 overlay,
                 orders,
                 panelBounds,
-                anchorSequence
+                anchorSequence,
+                config.backdropRevision
             )
             || !addOverlayUiShell(
                 builder,
                 input,
                 overlay,
                 orders,
-                panelBounds,
+                dialog,
                 isExternal
             )) {
             return false;
@@ -1039,7 +1123,11 @@ bool tryResolveOverlaySurfaceLayerOrders(
 FramePacketCapacity titleSceneCapacity(const TitleSceneInput& input) noexcept {
     FramePacketCapacity capacity{};
     capacity.shapeCount = base_title_shape_count;
-    capacity.uiCount = base_title_ui_count;
+    capacity.uiCount = base_title_ui_count
+        + (hasVersionHistoryLink(input) ? version_history_link_ui_count : 0U);
+    capacity.lineCount = hasVersionHistoryLink(input)
+        ? version_history_link_line_count
+        : 0U;
     capacity.gradientCount = base_title_gradient_count;
     capacity.gradientStopCount = ui::layout::title_gradient_color_count;
     capacity.clipCount = base_title_clip_count;
@@ -1246,7 +1334,7 @@ TitleSceneResult buildTitleScene(
         );
     }
     if (!addBaseTitleShell(builder, input)
-        || !addOverlayShells(builder, input)
+        || !addOverlayShells(builder, input, config)
         || !builder.finish()) {
         return failedResult(
             builder.error(),

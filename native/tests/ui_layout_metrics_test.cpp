@@ -53,6 +53,7 @@ namespace {
 
 using cirvivor::ui::layout::LayoutInput;
 using cirvivor::ui::layout::LogicalSafeAreaInsets;
+using cirvivor::ui::layout::OverlayDialogRenderMetrics;
 using cirvivor::ui::layout::OverlayPresentationMetrics;
 using cirvivor::ui::layout::ThemeColor;
 using cirvivor::ui::layout::ThemeVariant;
@@ -60,6 +61,7 @@ using cirvivor::ui::layout::TitleCardSlot;
 using cirvivor::ui::layout::TitleEntranceRenderState;
 using cirvivor::ui::layout::TitleOverlayIconInput;
 using cirvivor::ui::layout::TitleOverlayIconPlacement;
+using cirvivor::ui::layout::TitleVersionHistoryLinkMetrics;
 using cirvivor::ui::layout::TypographyMetrics;
 using cirvivor::ui::layout::TypographyRole;
 using cirvivor::ui::layout::UiLayoutMetrics;
@@ -69,6 +71,7 @@ using cirvivor::ui::layout::lightThemeMetrics;
 using cirvivor::ui::layout::themeMetrics;
 using cirvivor::ui::layout::tryResolveTypography;
 using cirvivor::ui::layout::tryResolveTitleOverlayIconPlacement;
+using cirvivor::ui::layout::tryResolveOverlayDialogRenderMetrics;
 using cirvivor::ui::layout::trySampleOverlayClose;
 using cirvivor::ui::layout::trySampleOverlayOpen;
 using cirvivor::ui::layout::trySampleTitleEntrance;
@@ -497,6 +500,88 @@ void testTitleSettledGoldenAnchorsAndRects() {
     }
 }
 
+void testVersionHistoryLinkAndDialogRenderGeometry() {
+    const UiLayoutSnapshot snapshot = buildGoldenSnapshot();
+    const TitleVersionHistoryLinkMetrics& link =
+        snapshot.title.versionHistoryLink;
+    REQUIRE(link.available);
+    REQUIRE_NEAR(link.textAnchor.x, 1'249.28, 1.0e-10);
+    REQUIRE_NEAR(link.textAnchor.y, 162.09330526315795, 1.0e-10);
+    REQUIRE_NEAR(link.iconRect.x, 1'180.53888, 1.0e-10);
+    REQUIRE_NEAR(link.iconRect.y, 162.41074526315794, 1.0e-10);
+    REQUIRE_NEAR(link.iconRect.width, 12.16512, 1.0e-10);
+    REQUIRE_NEAR(link.hitRect.x, 1'174.53888, 1.0e-10);
+    REQUIRE_NEAR(link.hitRect.y, 158.09330526315795, 1.0e-10);
+    REQUIRE_NEAR(link.hitRect.width, 80.74112, 1.0e-10);
+    REQUIRE_NEAR(link.hitRect.height, 20.8, 1.0e-10);
+
+    UiLayoutMetrics measuredMetrics;
+    REQUIRE(measuredMetrics.tryUpdate({
+        1'280.0,
+        720.0,
+        1.0,
+        true,
+        {},
+        64.0
+    }));
+    const TitleVersionHistoryLinkMetrics& measured =
+        measuredMetrics.snapshot().title.versionHistoryLink;
+    REQUIRE_NEAR(measured.textAnchor.x, link.textAnchor.x, 1.0e-12);
+    REQUIRE_NEAR(measured.hitRect.x, 1'162.76288, 1.0e-10);
+    REQUIRE_NEAR(measured.hitRect.width, 92.51712, 1.0e-10);
+
+    TitleEntranceRenderState entrance{};
+    REQUIRE(trySampleTitleEntrance(snapshot, 0.0, entrance));
+    REQUIRE(entrance.versionHistoryLink.available);
+    REQUIRE_NEAR(entrance.versionHistoryLink.alpha, 0.0, 1.0e-15);
+    REQUIRE_NEAR(
+        entrance.versionHistoryLink.hitRect.x,
+        link.hitRect.x + 33.28,
+        1.0e-10
+    );
+    REQUIRE(trySampleTitleEntrance(snapshot, 2.0, entrance));
+    REQUIRE_NEAR(entrance.versionHistoryLink.alpha, 1.0, 1.0e-15);
+    REQUIRE(entrance.versionHistoryLink.hitRect == link.hitRect);
+
+    UiLayoutMetrics noLinkMetrics;
+    REQUIRE(noLinkMetrics.tryUpdate({1'280.0, 720.0, 1.0, false}));
+    REQUIRE(!noLinkMetrics.snapshot().title.versionHistoryLink.available);
+    REQUIRE(trySampleTitleEntrance(noLinkMetrics.snapshot(), 2.0, entrance));
+    REQUIRE(!entrance.versionHistoryLink.available);
+
+    OverlayDialogRenderMetrics dialog{};
+    REQUIRE(tryResolveOverlayDialogRenderMetrics(
+        snapshot.overlays.exit,
+        snapshot.overlayPage,
+        1.0,
+        dialog
+    ));
+    REQUIRE(dialog.panelRect == snapshot.overlays.exit.panelRect);
+    REQUIRE_NEAR(dialog.cancelButtonRect.x, 632.32, 1.0e-10);
+    REQUIRE_NEAR(dialog.cancelButtonRect.y, 388.8, 1.0e-10);
+    REQUIRE_NEAR(dialog.cancelButtonRect.width, 89.6, 1.0e-10);
+    REQUIRE_NEAR(dialog.cancelButtonRect.height, 25.2, 1.0e-10);
+    REQUIRE_NEAR(dialog.confirmButtonRect.x, 732.16, 1.0e-10);
+    REQUIRE_NEAR(dialog.confirmButtonRect.radius, 3.84, 1.0e-10);
+
+    REQUIRE(tryResolveOverlayDialogRenderMetrics(
+        snapshot.overlays.exit,
+        snapshot.overlayPage,
+        0.9,
+        dialog
+    ));
+    REQUIRE_NEAR(dialog.panelRect.x, 467.2, 1.0e-10);
+    REQUIRE_NEAR(dialog.panelRect.y, 295.2, 1.0e-10);
+    REQUIRE_NEAR(dialog.panelRect.width, 345.6, 1.0e-10);
+    REQUIRE_NEAR(dialog.panelRect.height, 129.6, 1.0e-10);
+    REQUIRE_NEAR(dialog.cancelButtonRect.x, 633.088, 1.0e-10);
+    REQUIRE_NEAR(dialog.cancelButtonRect.y, 385.92, 1.0e-10);
+    REQUIRE_NEAR(dialog.confirmButtonRect.x, 722.944, 1.0e-10);
+    REQUIRE_NEAR(dialog.confirmButtonRect.width, 80.64, 1.0e-10);
+    REQUIRE_NEAR(dialog.confirmButtonRect.height, 22.68, 1.0e-10);
+    REQUIRE_NEAR(dialog.confirmButtonRect.radius, 3.456, 1.0e-10);
+}
+
 void testOverlaySpacingTypographyAndExitRatio() {
     const UiLayoutSnapshot snapshot = buildGoldenSnapshot();
     const auto& spacing = snapshot.overlayPage;
@@ -734,6 +819,8 @@ void testInvalidInputsPreservePreviousState() {
         LayoutInput{1'280.0, -720.0, 1.0, true},
         LayoutInput{1'280.0, 720.0, 0.0, true},
         LayoutInput{1'280.0, 720.0, nan, true},
+        LayoutInput{1'280.0, 720.0, 1.0, true, {}, -1.0},
+        LayoutInput{1'280.0, 720.0, 1.0, true, {}, nan},
         LayoutInput{
             1'280.0,
             720.0,
@@ -795,6 +882,20 @@ void testInvalidInputsPreservePreviousState() {
     REQUIRE(!trySampleOverlayClose(0.1, invalidStart, presentation));
     REQUIRE(presentation == presentationBefore);
 
+    OverlayDialogRenderMetrics dialog{
+        {1.0, 2.0, 3.0, 4.0, 5.0},
+        {6.0, 7.0, 8.0, 9.0, 10.0},
+        {11.0, 12.0, 13.0, 14.0, 15.0}
+    };
+    const OverlayDialogRenderMetrics dialogBefore = dialog;
+    REQUIRE(!tryResolveOverlayDialogRenderMetrics(
+        before.overlays.exit,
+        before.overlayPage,
+        0.0,
+        dialog
+    ));
+    REQUIRE(dialog == dialogBefore);
+
     TitleEntranceRenderState entrance{};
     REQUIRE(trySampleTitleEntrance(before, 0.75, entrance));
     const TitleEntranceRenderState entranceBefore = entrance;
@@ -833,6 +934,7 @@ void testUpdateAndSamplingPerformNoHeapAllocation() {
     OverlayPresentationMetrics presentation{};
     TitleEntranceRenderState entrance{};
     TitleOverlayIconPlacement iconPlacement{};
+    OverlayDialogRenderMetrics dialog{};
 
     allocation_probe::count = 0U;
     allocation_probe::enabled = true;
@@ -862,6 +964,14 @@ void testUpdateAndSamplingPerformNoHeapAllocation() {
             )) {
             std::abort();
         }
+        if (!tryResolveOverlayDialogRenderMetrics(
+                metrics.snapshot().overlays.exit,
+                metrics.snapshot().overlayPage,
+                0.95,
+                dialog
+            )) {
+            std::abort();
+        }
     }
     allocation_probe::enabled = false;
     REQUIRE(allocation_probe::count == 0U);
@@ -881,6 +991,7 @@ int main() {
         TestCase{"responsive viewport and ultrawide", testResponsiveViewportAndUltrawideUiArea},
         TestCase{"android logical safe area", testAndroidLogicalSafeAreaUsesUsableRect},
         TestCase{"title settled golden anchors", testTitleSettledGoldenAnchorsAndRects},
+        TestCase{"version link and dialog geometry", testVersionHistoryLinkAndDialogRenderGeometry},
         TestCase{"overlay spacing typography exit", testOverlaySpacingTypographyAndExitRatio},
         TestCase{"title entrance sampler", testTitleEntranceSamplerBoundariesAndMidpoints},
         TestCase{"title reveal and overlay motion", testRevealAndCommonOverlayPresentationContract},
