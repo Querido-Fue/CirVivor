@@ -184,6 +184,14 @@ struct RectD final {
     double bottom = 0.0;
 };
 
+[[nodiscard]] bool finiteCoordinate(const double value) noexcept {
+    return std::isfinite(value) && std::abs(value) <= geometry_limit;
+}
+
+[[nodiscard]] bool finitePoint(const PointD point) noexcept {
+    return finiteCoordinate(point.x) && finiteCoordinate(point.y);
+}
+
 struct PixelBounds final {
     int left = 0;
     int top = 0;
@@ -195,12 +203,122 @@ struct PixelBounds final {
     }
 };
 
-[[nodiscard]] bool finiteCoordinate(const double value) noexcept {
-    return std::isfinite(value) && std::abs(value) <= geometry_limit;
+[[nodiscard]] PixelBounds intersectBounds(
+    const PixelBounds first,
+    const PixelBounds second
+) noexcept {
+    return {
+        std::max(first.left, second.left),
+        std::max(first.top, second.top),
+        std::min(first.right, second.right),
+        std::min(first.bottom, second.bottom)
+    };
 }
 
-[[nodiscard]] bool finitePoint(const PointD point) noexcept {
-    return finiteCoordinate(point.x) && finiteCoordinate(point.y);
+struct Matrix3D final {
+    std::array<double, 9> elements{
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
+    };
+};
+
+[[nodiscard]] bool matrixIsFinite(const Matrix3D& matrix) noexcept {
+    return std::all_of(
+        matrix.elements.begin(),
+        matrix.elements.end(),
+        [](const double value) noexcept { return std::isfinite(value); }
+    );
+}
+
+[[nodiscard]] Matrix3D multiplyMatrices(
+    const Matrix3D& first,
+    const Matrix3D& second
+) noexcept {
+    Matrix3D result;
+    for (std::size_t row = 0U; row < 3U; ++row) {
+        for (std::size_t column = 0U; column < 3U; ++column) {
+            result.elements[row * 3U + column] =
+                first.elements[row * 3U] * second.elements[column]
+                + first.elements[row * 3U + 1U] * second.elements[3U + column]
+                + first.elements[row * 3U + 2U] * second.elements[6U + column];
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] Matrix3D matrixFrom(const Mat3F& source) noexcept {
+    Matrix3D result;
+    for (std::size_t index = 0U; index < result.elements.size(); ++index) {
+        result.elements[index] = static_cast<double>(source.elements[index]);
+    }
+    return result;
+}
+
+[[nodiscard]] bool invertMatrix(
+    const Matrix3D& source,
+    Matrix3D& inverse
+) noexcept {
+    const auto& m = source.elements;
+    const double cofactor00 = m[4] * m[8] - m[5] * m[7];
+    const double cofactor01 = m[5] * m[6] - m[3] * m[8];
+    const double cofactor02 = m[3] * m[7] - m[4] * m[6];
+    const double determinant = m[0] * cofactor00
+        + m[1] * cofactor01
+        + m[2] * cofactor02;
+    const double determinantScale =
+        std::abs(m[0] * m[4] * m[8])
+        + std::abs(m[1] * m[5] * m[6])
+        + std::abs(m[2] * m[3] * m[7])
+        + std::abs(m[2] * m[4] * m[6])
+        + std::abs(m[1] * m[3] * m[8])
+        + std::abs(m[0] * m[5] * m[7]);
+    const double determinantTolerance =
+        std::numeric_limits<double>::epsilon() * 64.0 * determinantScale;
+    if (!std::isfinite(determinant)
+        || !std::isfinite(determinantScale)
+        || determinantScale == 0.0
+        || std::abs(determinant) <= determinantTolerance) {
+        return false;
+    }
+
+    const double reciprocal = 1.0 / determinant;
+    inverse.elements = {
+        cofactor00 * reciprocal,
+        (m[2] * m[7] - m[1] * m[8]) * reciprocal,
+        (m[1] * m[5] - m[2] * m[4]) * reciprocal,
+        cofactor01 * reciprocal,
+        (m[0] * m[8] - m[2] * m[6]) * reciprocal,
+        (m[2] * m[3] - m[0] * m[5]) * reciprocal,
+        cofactor02 * reciprocal,
+        (m[1] * m[6] - m[0] * m[7]) * reciprocal,
+        (m[0] * m[4] - m[1] * m[3]) * reciprocal
+    };
+    return matrixIsFinite(inverse);
+}
+
+[[nodiscard]] bool projectPoint(
+    const Matrix3D& matrix,
+    const double inputX,
+    const double inputY,
+    PointD& output,
+    double* const homogeneousW = nullptr
+) noexcept {
+    const auto& m = matrix.elements;
+    const double x = m[0] * inputX + m[1] * inputY + m[2];
+    const double y = m[3] * inputX + m[4] * inputY + m[5];
+    const double w = m[6] * inputX + m[7] * inputY + m[8];
+    if (homogeneousW != nullptr) {
+        *homogeneousW = w;
+    }
+    if (!std::isfinite(x)
+        || !std::isfinite(y)
+        || !std::isfinite(w)
+        || w == 0.0) {
+        return false;
+    }
+    output = {x / w, y / w};
+    return finitePoint(output);
 }
 
 [[nodiscard]] double distance(const PointD first, const PointD second) noexcept {
@@ -324,6 +442,73 @@ public:
         }
         const double result = (distance(origin, horizontal) + distance(origin, vertical)) * 0.5;
         return std::isfinite(result) && result <= geometry_limit ? result : 0.0;
+    }
+
+    [[nodiscard]] bool makeScreenTransform(
+        const CoordinateSpace coordinateSpace,
+        Matrix3D& output
+    ) const noexcept {
+        if (!valid_) {
+            return false;
+        }
+
+        Matrix3D drawableTransform;
+        switch (coordinateSpace) {
+            case CoordinateSpace::physicalPixels: {
+                const RectI bounds = viewport_.physical.windowBounds;
+                if (bounds.width > 0 && bounds.height > 0) {
+                    const double drawableScaleX = static_cast<double>(
+                        viewport_.drawable.size.width
+                    ) / static_cast<double>(bounds.width);
+                    const double drawableScaleY = static_cast<double>(
+                        viewport_.drawable.size.height
+                    ) / static_cast<double>(bounds.height);
+                    drawableTransform.elements = {
+                        drawableScaleX, 0.0,
+                        -static_cast<double>(bounds.x) * drawableScaleX,
+                        0.0, drawableScaleY,
+                        -static_cast<double>(bounds.y) * drawableScaleY,
+                        0.0, 0.0, 1.0
+                    };
+                }
+                break;
+            }
+            case CoordinateSpace::drawablePixels:
+                break;
+            case CoordinateSpace::logicalUi: {
+                const double scaleX = logicalScaleX();
+                const double scaleY = logicalScaleY();
+                if (!(scaleX > 0.0) || !(scaleY > 0.0)) {
+                    return false;
+                }
+                drawableTransform.elements = {
+                    scaleX,
+                    0.0,
+                    static_cast<double>(viewport_.drawable.contentRect.x)
+                        - static_cast<double>(viewport_.logicalUi.contentRect.x) * scaleX,
+                    0.0,
+                    scaleY,
+                    static_cast<double>(viewport_.drawable.contentRect.y)
+                        - static_cast<double>(viewport_.logicalUi.contentRect.y) * scaleY,
+                    0.0,
+                    0.0,
+                    1.0
+                };
+                break;
+            }
+            case CoordinateSpace::world:
+                drawableTransform = matrixFrom(viewport_.world.worldToDrawable);
+                break;
+        }
+
+        Matrix3D surfaceTransform;
+        surfaceTransform.elements = {
+            surfaceScaleX_, 0.0, 0.0,
+            0.0, surfaceScaleY_, 0.0,
+            0.0, 0.0, 1.0
+        };
+        output = multiplyMatrices(surfaceTransform, drawableTransform);
+        return matrixIsFinite(output);
     }
 
 private:
@@ -480,6 +665,67 @@ private:
     };
 }
 
+struct ProjectiveGeometry final {
+    Matrix3D screenToLocal;
+    QuadD screenQuad;
+};
+
+/** command local 좌표에서 CPU surface까지의 투영과 역투영을 함께 만든다. */
+[[nodiscard]] bool makeProjectiveGeometry(
+    const CoordinateMapper& mapper,
+    const CoordinateSpace coordinateSpace,
+    const Mat3F& localTransform,
+    const RectF localBounds,
+    ProjectiveGeometry& output
+) noexcept {
+    Matrix3D coordinateTransform;
+    if (!mapper.makeScreenTransform(coordinateSpace, coordinateTransform)) {
+        return false;
+    }
+    const Matrix3D localToScreen = multiplyMatrices(
+        coordinateTransform,
+        matrixFrom(localTransform)
+    );
+    if (!matrixIsFinite(localToScreen)
+        || !invertMatrix(localToScreen, output.screenToLocal)) {
+        return false;
+    }
+
+    const std::array<PointD, 4> corners{
+        PointD{localBounds.x, localBounds.y},
+        PointD{
+            static_cast<double>(localBounds.x) + localBounds.width,
+            localBounds.y
+        },
+        PointD{
+            static_cast<double>(localBounds.x) + localBounds.width,
+            static_cast<double>(localBounds.y) + localBounds.height
+        },
+        PointD{
+            localBounds.x,
+            static_cast<double>(localBounds.y) + localBounds.height
+        }
+    };
+    std::array<double, 4> homogeneousWeights{};
+    for (std::size_t index = 0U; index < corners.size(); ++index) {
+        if (!projectPoint(
+                localToScreen,
+                corners[index].x,
+                corners[index].y,
+                output.screenQuad.points[index],
+                &homogeneousWeights[index]
+            )) {
+            return false;
+        }
+    }
+
+    const auto [minimumWeight, maximumWeight] = std::minmax_element(
+        homogeneousWeights.begin(),
+        homogeneousWeights.end()
+    );
+    return !(*minimumWeight < 0.0 && *maximumWeight > 0.0);
+}
+
 class QuadCoordinateMap final {
 public:
     explicit QuadCoordinateMap(const QuadD& quad) noexcept
@@ -536,6 +782,85 @@ private:
         && std::abs(quad.points[3].x - quad.points[0].x) <= epsilon;
 }
 
+[[nodiscard]] bool pointInsideRoundedBounds(
+    const PointD point,
+    const RectD bounds,
+    const double radius
+) noexcept {
+    if (point.x < bounds.left
+        || point.x > bounds.right
+        || point.y < bounds.top
+        || point.y > bounds.bottom) {
+        return false;
+    }
+    const double clampedRadius = std::clamp(
+        radius,
+        0.0,
+        std::min(bounds.right - bounds.left, bounds.bottom - bounds.top) * 0.5
+    );
+    if (clampedRadius <= 0.0) {
+        return true;
+    }
+    const double nearestX = std::clamp(
+        point.x,
+        bounds.left + clampedRadius,
+        bounds.right - clampedRadius
+    );
+    const double nearestY = std::clamp(
+        point.y,
+        bounds.top + clampedRadius,
+        bounds.bottom - clampedRadius
+    );
+    const double deltaX = point.x - nearestX;
+    const double deltaY = point.y - nearestY;
+    return deltaX * deltaX + deltaY * deltaY
+        <= clampedRadius * clampedRadius;
+}
+
+[[nodiscard]] std::uint32_t mixPackedColor(
+    const std::uint32_t first,
+    const std::uint32_t second,
+    const std::uint32_t numerator,
+    const std::uint32_t denominator
+) noexcept {
+    const auto mixChannel = [numerator, denominator](
+        const std::uint32_t firstChannel,
+        const std::uint32_t secondChannel
+    ) noexcept {
+        return (
+            firstChannel * (denominator - numerator)
+            + secondChannel * numerator
+            + denominator / 2U
+        ) / denominator;
+    };
+    const std::uint32_t alpha = mixChannel(first >> 24U, second >> 24U);
+    const std::uint32_t red = mixChannel(
+        (first >> 16U) & 0xffU,
+        (second >> 16U) & 0xffU
+    );
+    const std::uint32_t green = mixChannel(
+        (first >> 8U) & 0xffU,
+        (second >> 8U) & 0xffU
+    );
+    const std::uint32_t blue = mixChannel(
+        first & 0xffU,
+        second & 0xffU
+    );
+    return (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
+}
+
+struct ClipEntry final {
+    Matrix3D screenToLocal;
+    RectD localBounds;
+    PixelBounds effectiveBounds;
+    double cornerRadius = 0.0;
+    bool antialias = false;
+    bool valid = false;
+};
+
+constexpr std::uint32_t clip_axis_samples = 4U;
+constexpr std::uint32_t clip_sample_count = clip_axis_samples * clip_axis_samples;
+
 class RasterCanvas final {
 public:
     RasterCanvas(
@@ -554,14 +879,111 @@ public:
         return mapper_;
     }
 
+    [[nodiscard]] PixelBounds rasterBounds(const RectD bounds) const noexcept {
+        PixelBounds pixels = clippedBounds(bounds, surface_.w, surface_.h);
+        if (clipDepth_ > 0U) {
+            pixels = intersectBounds(
+                pixels,
+                clipStack_[clipDepth_ - 1U].effectiveBounds
+            );
+        }
+        return pixels;
+    }
+
+    [[nodiscard]] bool hasActiveClip() const noexcept {
+        return clipDepth_ > 0U;
+    }
+
+    /** 고정 깊이 clip stack에 push/pop을 적용하고 누적 dirty bounds를 갱신한다. */
+    [[nodiscard]] bool applyClip(const ClipCommand& command) noexcept {
+        if (command.operation == ClipOperation::pop) {
+            if (clipDepth_ == 0U) {
+                return false;
+            }
+            --clipDepth_;
+            return true;
+        }
+        if (clipDepth_ >= clipStack_.size()) {
+            return false;
+        }
+
+        ClipEntry& entry = clipStack_[clipDepth_];
+        entry = {};
+        entry.antialias = command.antialias != 0U;
+        entry.cornerRadius = command.operation == ClipOperation::pushRoundedRect
+            ? static_cast<double>(command.cornerRadius)
+            : 0.0;
+        entry.localBounds = {
+            command.bounds.x,
+            command.bounds.y,
+            static_cast<double>(command.bounds.x) + command.bounds.width,
+            static_cast<double>(command.bounds.y) + command.bounds.height
+        };
+
+        bool geometryValid = command.bounds.width > 0.0F
+            && command.bounds.height > 0.0F;
+        ProjectiveGeometry geometry;
+        if (geometryValid) {
+            geometryValid = makeProjectiveGeometry(
+                mapper_,
+                command.header.coordinateSpace,
+                command.transform,
+                command.bounds,
+                geometry
+            );
+        }
+        if (geometryValid) {
+            entry.screenToLocal = geometry.screenToLocal;
+            entry.effectiveBounds = clippedBounds(
+                quadBounds(geometry.screenQuad),
+                surface_.w,
+                surface_.h
+            );
+            entry.valid = true;
+        }
+        if (clipDepth_ > 0U) {
+            entry.effectiveBounds = intersectBounds(
+                entry.effectiveBounds,
+                clipStack_[clipDepth_ - 1U].effectiveBounds
+            );
+        }
+        ++clipDepth_;
+        // 면적 0 clip은 정상적인 빈 교집합이다. 역변환할 수 없는 투영은 빈
+        // clip으로 격리하되 해당 명령은 skipped로 계측한다.
+        return geometryValid
+            || command.bounds.width == 0.0F
+            || command.bounds.height == 0.0F;
+    }
+
     void blendAt(
         const int x,
         const int y,
         const std::uint32_t source,
         const BlendMode blendMode
     ) noexcept {
+        if (x < 0 || y < 0 || x >= surface_.w || y >= surface_.h) {
+            return;
+        }
+        const std::uint32_t coverage = clipCoverage(x, y);
+        if (coverage == 0U) {
+            return;
+        }
         std::uint32_t* const destination = access_.row(y) + x;
-        *destination = blendPixel(*destination, source, blendMode);
+        if (coverage == clip_sample_count) {
+            *destination = blendPixel(*destination, source, blendMode);
+            return;
+        }
+        const std::uint32_t fullyBlended = blendPixel(
+            *destination,
+            source,
+            blendMode
+        );
+        *destination = mixPackedColor(
+            *destination,
+            fullyBlended,
+            coverage,
+            clip_sample_count
+        );
     }
 
     [[nodiscard]] bool drawSolidQuad(
@@ -569,7 +991,7 @@ public:
         const PremultipliedRgba color,
         const BlendMode blendMode
     ) noexcept {
-        const PixelBounds bounds = clippedBounds(quadBounds(quad), surface_.w, surface_.h);
+        const PixelBounds bounds = rasterBounds(quadBounds(quad));
         if (bounds.isEmpty()) {
             return false;
         }
@@ -578,7 +1000,7 @@ public:
             return true;
         }
 
-        if (isAxisAligned(quad)) {
+        if (isAxisAligned(quad) && !hasActiveClip()) {
             for (int y = bounds.top; y < bounds.bottom; ++y) {
                 std::uint32_t* const row = access_.row(y);
                 if (blendMode == BlendMode::opaque) {
@@ -633,7 +1055,7 @@ public:
             || !std::isfinite(command.uv.height)) {
             return false;
         }
-        const PixelBounds bounds = clippedBounds(quadBounds(quad), surface_.w, surface_.h);
+        const PixelBounds bounds = rasterBounds(quadBounds(quad));
         if (bounds.isEmpty()) {
             return false;
         }
@@ -648,7 +1070,6 @@ public:
         const std::uint32_t dark = packColor(withBrightness(command.tint, 0.58F));
         const std::uint32_t light = packColor(withBrightness(command.tint, 0.94F));
         for (int y = bounds.top; y < bounds.bottom; ++y) {
-            std::uint32_t* const row = access_.row(y);
             for (int x = bounds.left; x < bounds.right; ++x) {
                 double u = 0.0;
                 double v = 0.0;
@@ -683,7 +1104,16 @@ public:
                     ^ static_cast<std::uint64_t>(cellY)
                     ^ resourcePattern;
                 const std::uint32_t source = (checker & 1U) == 0U ? dark : light;
-                row[x] = blendPixel(row[x], source, command.header.blendMode);
+                if (hasActiveClip()) {
+                    blendAt(x, y, source, command.header.blendMode);
+                } else {
+                    std::uint32_t* const destination = access_.row(y) + x;
+                    *destination = blendPixel(
+                        *destination,
+                        source,
+                        command.header.blendMode
+                    );
+                }
             }
         }
         return true;
@@ -727,15 +1157,13 @@ public:
             lengthSquared = deltaX * deltaX + deltaY * deltaY;
         }
 
-        const PixelBounds bounds = clippedBounds(
+        const PixelBounds bounds = rasterBounds(
             {
                 std::min(start.x, end.x) - halfWidth,
                 std::min(start.y, end.y) - halfWidth,
                 std::max(start.x, end.x) + halfWidth,
                 std::max(start.y, end.y) + halfWidth
-            },
-            surface_.w,
-            surface_.h
+            }
         );
         if (bounds.isEmpty()) {
             return false;
@@ -792,16 +1220,101 @@ public:
     }
 
 private:
+    [[nodiscard]] bool clipContains(
+        const ClipEntry& entry,
+        const double screenX,
+        const double screenY
+    ) const noexcept {
+        if (!entry.valid) {
+            return false;
+        }
+        PointD local;
+        if (!projectPoint(entry.screenToLocal, screenX, screenY, local)) {
+            return false;
+        }
+        return pointInsideRoundedBounds(
+            local,
+            entry.localBounds,
+            entry.cornerRadius
+        );
+    }
+
+    [[nodiscard]] bool clipsContain(
+        const double screenX,
+        const double screenY,
+        const bool antialias
+    ) const noexcept {
+        for (std::size_t index = 0U; index < clipDepth_; ++index) {
+            if (clipStack_[index].antialias == antialias
+                && !clipContains(clipStack_[index], screenX, screenY)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] std::uint32_t clipCoverage(
+        const int x,
+        const int y
+    ) const noexcept {
+        if (clipDepth_ == 0U) {
+            return clip_sample_count;
+        }
+        const PixelBounds effective = clipStack_[clipDepth_ - 1U].effectiveBounds;
+        if (x < effective.left
+            || x >= effective.right
+            || y < effective.top
+            || y >= effective.bottom) {
+            return 0U;
+        }
+
+        const double centerX = static_cast<double>(x) + 0.5;
+        const double centerY = static_cast<double>(y) + 0.5;
+        if (!clipsContain(centerX, centerY, false)) {
+            return 0U;
+        }
+
+        bool hasAntialiasClip = false;
+        for (std::size_t index = 0U; index < clipDepth_; ++index) {
+            hasAntialiasClip = hasAntialiasClip || clipStack_[index].antialias;
+        }
+        if (!hasAntialiasClip) {
+            return clip_sample_count;
+        }
+
+        std::uint32_t coverage = 0U;
+        for (std::uint32_t sampleY = 0U;
+             sampleY < clip_axis_samples;
+             ++sampleY) {
+            for (std::uint32_t sampleX = 0U;
+                 sampleX < clip_axis_samples;
+                 ++sampleX) {
+                const double offsetX = (
+                    static_cast<double>(sampleX) + 0.5
+                ) / static_cast<double>(clip_axis_samples);
+                const double offsetY = (
+                    static_cast<double>(sampleY) + 0.5
+                ) / static_cast<double>(clip_axis_samples);
+                if (clipsContain(
+                        static_cast<double>(x) + offsetX,
+                        static_cast<double>(y) + offsetY,
+                        true
+                    )) {
+                    ++coverage;
+                }
+            }
+        }
+        return coverage;
+    }
+
     [[nodiscard]] bool drawDisc(
         const PointD center,
         const double radius,
         const PremultipliedRgba color,
         const BlendMode blendMode
     ) noexcept {
-        const PixelBounds bounds = clippedBounds(
-            {center.x - radius, center.y - radius, center.x + radius, center.y + radius},
-            surface_.w,
-            surface_.h
+        const PixelBounds bounds = rasterBounds(
+            {center.x - radius, center.y - radius, center.x + radius, center.y + radius}
         );
         if (bounds.isEmpty()) {
             return false;
@@ -824,6 +1337,11 @@ public:
     SDL_Surface& surface_;
     SurfaceAccess& access_;
     CoordinateMapper mapper_;
+
+private:
+    static constexpr std::size_t maximum_clip_depth = 64U;
+    std::array<ClipEntry, maximum_clip_depth> clipStack_{};
+    std::size_t clipDepth_ = 0U;
 };
 
 [[nodiscard]] bool insideRoundedRectangle(
@@ -879,7 +1397,7 @@ public:
     if (rect.top > rect.bottom) {
         std::swap(rect.top, rect.bottom);
     }
-    const PixelBounds bounds = clippedBounds(rect, canvas.surface_.w, canvas.surface_.h);
+    const PixelBounds bounds = canvas.rasterBounds(rect);
     if (bounds.isEmpty()) {
         return false;
     }
@@ -943,7 +1461,7 @@ public:
         || radiusY <= 0.0) {
         return false;
     }
-    const PixelBounds bounds = clippedBounds(rect, canvas.surface_.w, canvas.surface_.h);
+    const PixelBounds bounds = canvas.rasterBounds(rect);
     if (bounds.isEmpty()) {
         return false;
     }
@@ -1036,7 +1554,7 @@ public:
         bounds.right = std::max(bounds.right, vertex.x);
         bounds.bottom = std::max(bounds.bottom, vertex.y);
     }
-    const PixelBounds pixels = clippedBounds(bounds, canvas.surface_.w, canvas.surface_.h);
+    const PixelBounds pixels = canvas.rasterBounds(bounds);
     if (pixels.isEmpty()) {
         return false;
     }
@@ -1654,7 +2172,7 @@ public:
         || sweepAngle <= 0.0) {
         return false;
     }
-    const PixelBounds pixels = clippedBounds(bounds, canvas.surface_.w, canvas.surface_.h);
+    const PixelBounds pixels = canvas.rasterBounds(bounds);
     if (pixels.isEmpty()) {
         return false;
     }
@@ -1710,7 +2228,7 @@ public:
     if (bounds.top > bounds.bottom) {
         std::swap(bounds.top, bounds.bottom);
     }
-    const PixelBounds pixels = clippedBounds(bounds, canvas.surface_.w, canvas.surface_.h);
+    const PixelBounds pixels = canvas.rasterBounds(bounds);
     if (pixels.isEmpty()) {
         return false;
     }
@@ -1738,7 +2256,6 @@ public:
         ));
     }
     for (int y = pixels.top; y < pixels.bottom; ++y) {
-        std::uint32_t* const row = canvas.access_.row(y);
         const double normalizedY = (static_cast<double>(y) + 0.5 - centerY)
             * inverseRadiusY;
         const double verticalDistanceSquared = normalizedY * normalizedY;
@@ -1751,11 +2268,20 @@ public:
             intensity = intensity * intensity * (3.0 - 2.0 * intensity);
             if (intensity > 0.0) {
                 const auto opacityIndex = static_cast<std::size_t>(intensity * 255.0 + 0.5);
-                row[x] = blendPixel(
-                    row[x],
-                    opacityTable[std::min(opacityIndex, opacityTable.size() - 1U)],
-                    command.header.blendMode
-                );
+                const std::uint32_t source = opacityTable[std::min(
+                    opacityIndex,
+                    opacityTable.size() - 1U
+                )];
+                if (canvas.hasActiveClip()) {
+                    canvas.blendAt(x, y, source, command.header.blendMode);
+                } else {
+                    std::uint32_t* const destination = canvas.access_.row(y) + x;
+                    *destination = blendPixel(
+                        *destination,
+                        source,
+                        command.header.blendMode
+                    );
+                }
             }
         }
     }
@@ -2001,6 +2527,247 @@ public:
     return false;
 }
 
+/** clamp/repeat/reflect를 공통 0..1 gradient parameter로 정규화한다. */
+[[nodiscard]] double applyGradientSpread(
+    const double parameter,
+    const GradientSpread spread
+) noexcept {
+    if (!std::isfinite(parameter)) {
+        return 0.0;
+    }
+    switch (spread) {
+        case GradientSpread::clamp:
+            return std::clamp(parameter, 0.0, 1.0);
+        case GradientSpread::repeat:
+            return parameter - std::floor(parameter);
+        case GradientSpread::reflect: {
+            double phase = parameter - std::floor(parameter * 0.5) * 2.0;
+            if (phase > 1.0) {
+                phase = 2.0 - phase;
+            }
+            return std::clamp(phase, 0.0, 1.0);
+        }
+    }
+    return 0.0;
+}
+
+/** 정렬된 PMA stop을 보간하며 같은 offset은 hard-stop으로 해석한다. */
+[[nodiscard]] PremultipliedRgba interpolateGradientStops(
+    const std::span<const GradientStop> stops,
+    const double parameter
+) noexcept {
+    if (parameter < static_cast<double>(stops.front().offset)) {
+        return stops.front().color;
+    }
+
+    // 같은 offset을 모두 지난 뒤 구간을 고르면 불연속점의 정확한 위치에서는
+    // 마지막 stop을, 그 직전에서는 첫 stop을 사용한다.
+    std::size_t upper = 0U;
+    while (upper < stops.size()
+        && parameter >= static_cast<double>(stops[upper].offset)) {
+        ++upper;
+    }
+    if (upper == 0U) {
+        return stops.front().color;
+    }
+    if (upper == stops.size()) {
+        return stops.back().color;
+    }
+
+    const GradientStop& first = stops[upper - 1U];
+    const GradientStop& second = stops[upper];
+    const double firstOffset = static_cast<double>(first.offset);
+    const double secondOffset = static_cast<double>(second.offset);
+    const double denominator = secondOffset - firstOffset;
+    const double amount = denominator > 0.0
+        ? std::clamp((parameter - firstOffset) / denominator, 0.0, 1.0)
+        : 1.0;
+    const auto interpolate = [amount](const float from, const float to) noexcept {
+        return static_cast<float>(
+            static_cast<double>(from)
+            + (static_cast<double>(to) - static_cast<double>(from)) * amount
+        );
+    };
+    return {
+        interpolate(first.color.red, second.color.red),
+        interpolate(first.color.green, second.color.green),
+        interpolate(first.color.blue, second.color.blue),
+        interpolate(first.color.alpha, second.color.alpha)
+    };
+}
+
+/** 두 원으로 정의된 radial gradient의 원뿔 parameter를 계산한다. */
+[[nodiscard]] bool radialGradientParameter(
+    const GradientCommand& command,
+    const PointD point,
+    double& parameter
+) noexcept {
+    const double startX = static_cast<double>(command.start.x);
+    const double startY = static_cast<double>(command.start.y);
+    const double deltaX = static_cast<double>(command.end.x) - startX;
+    const double deltaY = static_cast<double>(command.end.y) - startY;
+    const double startRadius = static_cast<double>(command.startRadius);
+    const double deltaRadius = static_cast<double>(command.endRadius)
+        - startRadius;
+    const double relativeX = point.x - startX;
+    const double relativeY = point.y - startY;
+
+    const double a = deltaX * deltaX + deltaY * deltaY
+        - deltaRadius * deltaRadius;
+    const double b = -2.0 * (
+        relativeX * deltaX
+        + relativeY * deltaY
+        + startRadius * deltaRadius
+    );
+    const double c = relativeX * relativeX + relativeY * relativeY
+        - startRadius * startRadius;
+    if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c)) {
+        return false;
+    }
+
+    const auto radiusIsValid = [startRadius, deltaRadius](
+        const double candidate
+    ) noexcept {
+        return std::isfinite(candidate)
+            && startRadius + candidate * deltaRadius >= -minimum_denominator;
+    };
+    if (std::abs(a) <= minimum_denominator) {
+        if (std::abs(b) <= minimum_denominator) {
+            parameter = 0.0;
+            return true;
+        }
+        const double candidate = -c / b;
+        if (!radiusIsValid(candidate)) {
+            return false;
+        }
+        parameter = candidate;
+        return true;
+    }
+
+    double discriminant = b * b - 4.0 * a * c;
+    if (!std::isfinite(discriminant)) {
+        return false;
+    }
+    const double discriminantTolerance = minimum_denominator
+        * std::max({1.0, std::abs(b * b), std::abs(4.0 * a * c)});
+    if (discriminant < -discriminantTolerance) {
+        return false;
+    }
+    discriminant = std::max(discriminant, 0.0);
+    const double root = std::sqrt(discriminant);
+    const double first = (-b - root) / (2.0 * a);
+    const double second = (-b + root) / (2.0 * a);
+    const bool firstValid = radiusIsValid(first);
+    const bool secondValid = radiusIsValid(second);
+    if (!firstValid && !secondValid) {
+        return false;
+    }
+    if (firstValid && secondValid) {
+        // 두 원뿔형 gradient는 sample을 지나는 유효 원 중 바깥쪽 해를 사용한다.
+        // 따라서 동심원에서는 +distance/r 해가 선택된다.
+        parameter = std::max(first, second);
+    } else {
+        parameter = firstValid ? first : second;
+    }
+    return true;
+}
+
+/** gradient 종류에 따라 sample의 보간 parameter를 계산한다. */
+[[nodiscard]] bool gradientParameter(
+    const GradientCommand& command,
+    const PointD point,
+    double& parameter
+) noexcept {
+    if (command.type == GradientType::radial) {
+        return radialGradientParameter(command, point, parameter);
+    }
+
+    const double deltaX = static_cast<double>(command.end.x)
+        - static_cast<double>(command.start.x);
+    const double deltaY = static_cast<double>(command.end.y)
+        - static_cast<double>(command.start.y);
+    const double denominator = deltaX * deltaX + deltaY * deltaY;
+    if (!std::isfinite(denominator)) {
+        return false;
+    }
+    if (denominator <= minimum_denominator) {
+        parameter = 0.0;
+        return true;
+    }
+    parameter = (
+        (point.x - static_cast<double>(command.start.x)) * deltaX
+        + (point.y - static_cast<double>(command.start.y)) * deltaY
+    ) / denominator;
+    return std::isfinite(parameter);
+}
+
+/** transform과 viewport를 역투영해 GradientCommand를 PMA pixel로 래스터한다. */
+[[nodiscard]] bool drawGradient(
+    RasterCanvas& canvas,
+    const FramePacket& frame,
+    const GradientCommand& command
+) noexcept {
+    if (command.bounds.width == 0.0F || command.bounds.height == 0.0F) {
+        return true;
+    }
+    ProjectiveGeometry geometry;
+    if (!makeProjectiveGeometry(
+            canvas.mapper(),
+            command.header.coordinateSpace,
+            command.transform,
+            command.bounds,
+            geometry
+        )) {
+        return false;
+    }
+    const PixelBounds pixels = canvas.rasterBounds(
+        quadBounds(geometry.screenQuad)
+    );
+    if (pixels.isEmpty()) {
+        return true;
+    }
+
+    const std::span<const GradientStop> stops = frame.gradientStops().subspan(
+        static_cast<std::size_t>(command.stops.offset),
+        static_cast<std::size_t>(command.stops.count)
+    );
+    const RectD localBounds{
+        command.bounds.x,
+        command.bounds.y,
+        static_cast<double>(command.bounds.x) + command.bounds.width,
+        static_cast<double>(command.bounds.y) + command.bounds.height
+    };
+    for (int y = pixels.top; y < pixels.bottom; ++y) {
+        for (int x = pixels.left; x < pixels.right; ++x) {
+            PointD local;
+            if (!projectPoint(
+                    geometry.screenToLocal,
+                    static_cast<double>(x) + 0.5,
+                    static_cast<double>(y) + 0.5,
+                    local
+                )
+                || !pointInsideRoundedBounds(local, localBounds, 0.0)) {
+                continue;
+            }
+            double parameter = 0.0;
+            if (!gradientParameter(command, local, parameter)) {
+                continue;
+            }
+            const PremultipliedRgba color = interpolateGradientStops(
+                stops,
+                applyGradientSpread(parameter, command.spread)
+            );
+            canvas.blendAt(
+                x,
+                y,
+                packColor(color),
+                command.header.blendMode
+            );
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] RectF meshPlaceholderBounds(
     const FramePacket& frame,
     const TexturedMeshCommand& command
@@ -2113,30 +2880,16 @@ public:
             );
         }
         case CommandKind::gradient: {
-            placeholder = true;
             if (index >= frame.gradients().size()) {
                 return false;
             }
-            const GradientCommand& command = frame.gradients()[index];
-            return drawV2Placeholder(
-                canvas,
-                command.header,
-                command.bounds,
-                frame.gradientStops()[command.stops.offset].color
-            );
+            return drawGradient(canvas, frame, frame.gradients()[index]);
         }
         case CommandKind::clip: {
-            placeholder = true;
             if (index >= frame.clips().size()) {
                 return false;
             }
-            const ClipCommand& command = frame.clips()[index];
-            return drawV2Placeholder(
-                canvas,
-                command.header,
-                command.operation == ClipOperation::pop ? RectF{} : command.bounds,
-                PremultipliedRgba::fromStraight(0.96F, 0.62F, 0.12F, 0.72F)
-            );
+            return canvas.applyClip(frame.clips()[index]);
         }
         case CommandKind::pass: {
             placeholder = true;

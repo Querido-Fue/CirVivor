@@ -2,14 +2,82 @@
 #include "render/software/software_renderer.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
+namespace allocation_tracking {
+
+thread_local bool enabled = false;
+thread_local std::size_t allocationCount = 0U;
+
+void recordAllocation() noexcept {
+    if (enabled) {
+        ++allocationCount;
+    }
+}
+
+} // namespace allocation_tracking
+
+void* operator new(const std::size_t size) {
+    if (void* const memory = std::malloc(size == 0U ? 1U : size)) {
+        allocation_tracking::recordAllocation();
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](const std::size_t size) {
+    return ::operator new(size);
+}
+
+void operator delete(void* const memory) noexcept {
+    std::free(memory);
+}
+
+void operator delete[](void* const memory) noexcept {
+    ::operator delete(memory);
+}
+
+void operator delete(void* const memory, const std::size_t) noexcept {
+    ::operator delete(memory);
+}
+
+void operator delete[](void* const memory, const std::size_t) noexcept {
+    ::operator delete(memory);
+}
+
 namespace {
+
+class AllocationScope final {
+public:
+    AllocationScope() noexcept
+        : previousEnabled_(allocation_tracking::enabled),
+          startCount_(allocation_tracking::allocationCount) {
+        allocation_tracking::enabled = true;
+    }
+
+    AllocationScope(const AllocationScope&) = delete;
+    AllocationScope& operator=(const AllocationScope&) = delete;
+
+    ~AllocationScope() {
+        allocation_tracking::enabled = previousEnabled_;
+    }
+
+    [[nodiscard]] std::size_t allocationCount() const noexcept {
+        return allocation_tracking::allocationCount - startCount_;
+    }
+
+private:
+    bool previousEnabled_ = false;
+    std::size_t startCount_ = 0U;
+};
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -53,16 +121,45 @@ void requireEqualU64(
 
 [[nodiscard]] cirvivor::render::CommandHeader makeHeader(
     const cirvivor::render::RenderLayer layer,
-    const std::int32_t layerOrder = 0
+    const std::int32_t layerOrder = 0,
+    const cirvivor::render::CoordinateSpace coordinateSpace =
+        cirvivor::render::CoordinateSpace::logicalUi
 ) noexcept {
     return {
         layer,
-        cirvivor::render::CoordinateSpace::logicalUi,
+        coordinateSpace,
         cirvivor::render::BlendMode::premultipliedAlpha,
         0,
         layerOrder,
         0
     };
+}
+
+[[nodiscard]] std::uint32_t pixelAt(
+    const cirvivor::render::software::SoftwareRenderer& renderer,
+    const int x,
+    const int y
+) {
+    const SDL_Surface* const surface = renderer.surface();
+    REQUIRE(surface != nullptr);
+    REQUIRE(surface->format == SDL_PIXELFORMAT_ARGB8888);
+    REQUIRE(x >= 0 && x < surface->w);
+    REQUIRE(y >= 0 && y < surface->h);
+    const auto* const bytes = static_cast<const std::byte*>(surface->pixels);
+    const auto* const row = reinterpret_cast<const std::uint32_t*>(
+        bytes + static_cast<std::ptrdiff_t>(y) * surface->pitch
+    );
+    return row[x];
+}
+
+[[nodiscard]] cirvivor::render::FrameMetadata blackFrameMetadata() noexcept {
+    cirvivor::render::FrameMetadata metadata;
+    metadata.clearColor = cirvivor::render::PremultipliedRgba::opaque(
+        0.0F,
+        0.0F,
+        0.0F
+    );
+    return metadata;
 }
 
 [[nodiscard]] bool buildV2PlaceholderPacket(cirvivor::render::FramePacket& packet) {
@@ -191,7 +288,7 @@ void testSyntheticFramePixelGoldens() {
     REQUIRE_U64(reducedHash, 0xe297'e690'c6d9'1e76ULL);
 }
 
-void testV2UnsupportedCommandsAreExplicitlyInstrumented() {
+void testImplementedV2CommandsAreNotPlaceholderInstrumented() {
     using namespace cirvivor::render;
     using namespace cirvivor::render::software;
 
@@ -213,8 +310,532 @@ void testV2UnsupportedCommandsAreExplicitlyInstrumented() {
     REQUIRE(renderer.render(packet));
     REQUIRE(renderer.lastStats().submittedCommands == 9U);
     REQUIRE(renderer.lastStats().renderedCommands == 9U);
-    REQUIRE(renderer.lastStats().placeholderCommands == 9U);
+    // GlyphRun, TexturedMesh, Pass 4개는 placeholder로 남고 Gradient와 두
+    // clip-stack 명령은 실제 software 명령으로 처리한다.
+    REQUIRE(renderer.lastStats().placeholderCommands == 6U);
     REQUIRE(renderer.lastStats().skippedCommands == 0U);
+}
+
+[[nodiscard]] bool buildGradientContractPacket(
+    cirvivor::render::FramePacket& packet,
+    const cirvivor::render::ViewportState& viewport
+) {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    if (!builder.begin(blackFrameMetadata(), viewport)) {
+        return false;
+    }
+    const std::array stops{
+        GradientStop{0.0F, PremultipliedRgba::opaque(1.0F, 0.0F, 0.0F)},
+        GradientStop{1.0F, PremultipliedRgba::opaque(0.0F, 0.0F, 1.0F)}
+    };
+    for (std::uint32_t row = 0U; row < 3U; ++row) {
+        GradientCommand gradient;
+        gradient.header = makeHeader(
+            RenderLayer::background,
+            0,
+            CoordinateSpace::drawablePixels
+        );
+        gradient.spread = static_cast<GradientSpread>(row);
+        gradient.bounds = {0.0F, static_cast<float>(row), 12.0F, 1.0F};
+        gradient.start = {4.0F, 0.0F};
+        gradient.end = {8.0F, 0.0F};
+        if (!builder.addGradient(gradient, stops)) {
+            return false;
+        }
+    }
+
+    GradientCommand radial;
+    radial.header = makeHeader(
+        RenderLayer::background,
+        0,
+        CoordinateSpace::drawablePixels
+    );
+    radial.type = GradientType::radial;
+    radial.bounds = {0.0F, 3.0F, 8.0F, 8.0F};
+    radial.start = {4.0F, 7.0F};
+    radial.end = radial.start;
+    radial.endRadius = 4.0F;
+    if (!builder.addGradient(radial, stops)) {
+        return false;
+    }
+
+    GradientCommand transformed;
+    transformed.header = makeHeader(
+        RenderLayer::background,
+        0,
+        CoordinateSpace::drawablePixels
+    );
+    transformed.bounds = {0.0F, 0.0F, 4.0F, 2.0F};
+    transformed.start = {0.0F, 0.0F};
+    transformed.end = {4.0F, 0.0F};
+    transformed.transform.elements = {
+        1.0F, 0.0F, 8.0F,
+        0.0F, 1.0F, 3.0F,
+        0.0F, 0.0F, 1.0F
+    };
+    const std::array translucentStops{
+        GradientStop{
+            0.0F,
+            PremultipliedRgba::fromStraight(1.0F, 0.0F, 0.0F, 0.5F)
+        },
+        GradientStop{
+            1.0F,
+            PremultipliedRgba::fromStraight(0.0F, 0.0F, 1.0F, 0.5F)
+        }
+    };
+    if (!builder.addGradient(transformed, translucentStops)) {
+        return false;
+    }
+
+    GradientCommand hardStop;
+    hardStop.header = transformed.header;
+    hardStop.bounds = {8.0F, 5.0F, 3.0F, 1.0F};
+    hardStop.start = {8.0F, 5.0F};
+    hardStop.end = {11.0F, 5.0F};
+    const std::array hardStops{
+        GradientStop{0.0F, PremultipliedRgba::opaque(1.0F, 0.0F, 0.0F)},
+        GradientStop{0.5F, PremultipliedRgba::opaque(1.0F, 0.0F, 0.0F)},
+        GradientStop{0.5F, PremultipliedRgba::opaque(0.0F, 0.0F, 1.0F)},
+        GradientStop{1.0F, PremultipliedRgba::opaque(0.0F, 1.0F, 0.0F)}
+    };
+    return builder.addGradient(hardStop, hardStops) && builder.finish();
+}
+
+void testGradientTypesSpreadsTransformAndPma() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {12, 11};
+    config.physicalWindowBounds = {0, 0, 12, 11};
+    config.drawableSize = {12, 11};
+
+    FramePacketCapacity capacity;
+    capacity.commandCount = 6U;
+    capacity.gradientCount = 6U;
+    capacity.gradientStopCount = 14U;
+    FramePacket packet(capacity);
+    REQUIRE(buildGradientContractPacket(packet, makeSyntheticViewport(config)));
+
+    SoftwareRenderer renderer({12, 11});
+    REQUIRE(renderer.render(packet));
+    REQUIRE(renderer.lastStats().submittedCommands == 6U);
+    REQUIRE(renderer.lastStats().renderedCommands == 6U);
+    REQUIRE(renderer.lastStats().placeholderCommands == 0U);
+    REQUIRE(renderer.lastStats().skippedCommands == 0U);
+
+    REQUIRE(pixelAt(renderer, 0, 0) == 0xffff'0000U);
+    REQUIRE(pixelAt(renderer, 10, 0) == 0xff00'00ffU);
+    REQUIRE(pixelAt(renderer, 0, 1) == 0xffdf'0020U);
+    REQUIRE(pixelAt(renderer, 10, 1) == 0xff60'009fU);
+    REQUIRE(pixelAt(renderer, 0, 2) == 0xff20'00dfU);
+    REQUIRE(pixelAt(renderer, 10, 2) == 0xff9f'0060U);
+    REQUIRE(pixelAt(renderer, 3, 6) == 0xffd2'002dU);
+    REQUIRE(pixelAt(renderer, 3, 6) == pixelAt(renderer, 4, 6));
+    REQUIRE(pixelAt(renderer, 0, 3) == 0xff00'00ffU);
+    REQUIRE(pixelAt(renderer, 8, 3) == 0xff70'0010U);
+    REQUIRE(pixelAt(renderer, 7, 3) != pixelAt(renderer, 8, 3));
+    REQUIRE(pixelAt(renderer, 8, 5) == 0xffff'0000U);
+    REQUIRE(pixelAt(renderer, 9, 5) == 0xff00'00ffU);
+    REQUIRE_U64(renderer.pixelHash(), 0x6e75'2eb9'ea99'e6d9ULL);
+}
+
+[[nodiscard]] bool buildNestedClipPacket(
+    cirvivor::render::FramePacket& packet,
+    const cirvivor::render::ViewportState& viewport
+) {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    if (!builder.begin(blackFrameMetadata(), viewport)) {
+        return false;
+    }
+    const CommandHeader header = makeHeader(
+        RenderLayer::ui,
+        0,
+        CoordinateSpace::drawablePixels
+    );
+    ClipCommand outer;
+    outer.header = header;
+    outer.bounds = {1.0F, 1.0F, 8.0F, 6.0F};
+    if (!builder.addClip(outer)) {
+        return false;
+    }
+    ShapeCommand red;
+    red.header = header;
+    red.bounds = {0.0F, 0.0F, 10.0F, 8.0F};
+    red.fill = PremultipliedRgba::opaque(1.0F, 0.0F, 0.0F);
+    if (!builder.addShape(red)) {
+        return false;
+    }
+
+    ClipCommand inner = outer;
+    inner.operation = ClipOperation::pushRoundedRect;
+    inner.bounds = {0.0F, 0.0F, 4.0F, 4.0F};
+    inner.cornerRadius = 2.0F;
+    inner.transform.elements = {
+        1.0F, 0.0F, 3.0F,
+        0.0F, 1.0F, 2.0F,
+        0.0F, 0.0F, 1.0F
+    };
+    if (!builder.addClip(inner)) {
+        return false;
+    }
+    ShapeCommand green = red;
+    green.fill = PremultipliedRgba::opaque(0.0F, 1.0F, 0.0F);
+    if (!builder.addShape(green)) {
+        return false;
+    }
+    ClipCommand pop = inner;
+    pop.operation = ClipOperation::pop;
+    pop.antialias = 0U;
+    pop.bounds = {};
+    pop.cornerRadius = 0.0F;
+    if (!builder.addClip(pop)) {
+        return false;
+    }
+    ShapeCommand blue = red;
+    blue.bounds = {1.0F, 1.0F, 2.0F, 2.0F};
+    blue.fill = PremultipliedRgba::opaque(0.0F, 0.0F, 1.0F);
+    if (!builder.addShape(blue) || !builder.addClip(pop)) {
+        return false;
+    }
+    ShapeCommand yellow = red;
+    yellow.bounds = {0.0F, 0.0F, 1.0F, 1.0F};
+    yellow.fill = PremultipliedRgba::opaque(1.0F, 1.0F, 0.0F);
+    return builder.addShape(yellow) && builder.finish();
+}
+
+void testNestedClipIntersectionAndPopReset() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {10, 8};
+    config.physicalWindowBounds = {0, 0, 10, 8};
+    config.drawableSize = {10, 8};
+    FramePacketCapacity capacity;
+    capacity.commandCount = 8U;
+    capacity.shapeCount = 4U;
+    capacity.clipCount = 4U;
+    FramePacket packet(capacity);
+    REQUIRE(buildNestedClipPacket(packet, makeSyntheticViewport(config)));
+
+    SoftwareRenderer renderer({10, 8});
+    REQUIRE(renderer.render(packet));
+    REQUIRE(renderer.lastStats().placeholderCommands == 0U);
+    REQUIRE(renderer.lastStats().renderedCommands == 8U);
+    REQUIRE(pixelAt(renderer, 0, 0) == 0xffff'ff00U);
+    REQUIRE(pixelAt(renderer, 1, 1) == 0xff00'00ffU);
+    REQUIRE(pixelAt(renderer, 2, 5) == 0xffff'0000U);
+    REQUIRE(pixelAt(renderer, 3, 2) == 0xffff'0000U);
+    REQUIRE(pixelAt(renderer, 4, 3) == 0xff00'ff00U);
+    REQUIRE(pixelAt(renderer, 9, 7) == 0xff00'0000U);
+    REQUIRE_U64(renderer.pixelHash(), 0xfb99'ad6b'7d61'08d1ULL);
+}
+
+void testRoundedClipAntialiasPreservesPmaCoverage() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {4, 4};
+    config.physicalWindowBounds = {0, 0, 4, 4};
+    config.drawableSize = {4, 4};
+    FramePacketCapacity capacity;
+    capacity.commandCount = 3U;
+    capacity.shapeCount = 1U;
+    capacity.clipCount = 2U;
+    FramePacket packet(capacity);
+    FrameMetadata metadata;
+    metadata.clearColor = PremultipliedRgba::transparent();
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    REQUIRE(builder.begin(metadata, makeSyntheticViewport(config)));
+    const CommandHeader header = makeHeader(
+        RenderLayer::ui,
+        0,
+        CoordinateSpace::drawablePixels
+    );
+    ClipCommand clip;
+    clip.header = header;
+    clip.operation = ClipOperation::pushRoundedRect;
+    clip.antialias = 1U;
+    clip.bounds = {0.0F, 0.0F, 4.0F, 4.0F};
+    clip.cornerRadius = 2.0F;
+    REQUIRE(builder.addClip(clip));
+    ShapeCommand shape;
+    shape.header = header;
+    shape.header.blendMode = BlendMode::opaque;
+    shape.bounds = clip.bounds;
+    shape.fill = PremultipliedRgba::opaque(1.0F, 1.0F, 1.0F);
+    REQUIRE(builder.addShape(shape));
+    clip.operation = ClipOperation::pop;
+    clip.antialias = 0U;
+    clip.bounds = {};
+    clip.cornerRadius = 0.0F;
+    REQUIRE(builder.addClip(clip));
+    REQUIRE(builder.finish());
+
+    SoftwareRenderer renderer({4, 4});
+    REQUIRE(renderer.render(packet));
+    const std::uint32_t corner = pixelAt(renderer, 0, 0);
+    const std::uint32_t cornerAlpha = corner >> 24U;
+    REQUIRE(cornerAlpha == 96U);
+    REQUIRE(((corner >> 16U) & 0xffU) == cornerAlpha);
+    REQUIRE(((corner >> 8U) & 0xffU) == cornerAlpha);
+    REQUIRE((corner & 0xffU) == cornerAlpha);
+    REQUIRE(pixelAt(renderer, 1, 1) == 0xffff'ffffU);
+    REQUIRE_U64(renderer.pixelHash(), 0xa9b3'66a3'1f51'9175ULL);
+}
+
+void testPartialClipCoverageInterpolatesOpaqueBlendResult() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {4, 4};
+    config.physicalWindowBounds = {0, 0, 4, 4};
+    config.drawableSize = {4, 4};
+    FramePacketCapacity capacity;
+    capacity.commandCount = 3U;
+    capacity.shapeCount = 1U;
+    capacity.clipCount = 2U;
+    FramePacket packet(capacity);
+    FrameMetadata metadata;
+    metadata.clearColor = PremultipliedRgba::opaque(
+        32.0F / 255.0F,
+        64.0F / 255.0F,
+        96.0F / 255.0F
+    );
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    REQUIRE(builder.begin(metadata, makeSyntheticViewport(config)));
+    const CommandHeader header = makeHeader(
+        RenderLayer::ui,
+        0,
+        CoordinateSpace::drawablePixels
+    );
+    ClipCommand clip;
+    clip.header = header;
+    clip.operation = ClipOperation::pushRoundedRect;
+    clip.antialias = 1U;
+    clip.bounds = {0.0F, 0.0F, 4.0F, 4.0F};
+    clip.cornerRadius = 2.0F;
+    REQUIRE(builder.addClip(clip));
+    ShapeCommand shape;
+    shape.header = header;
+    shape.header.blendMode = BlendMode::opaque;
+    shape.bounds = clip.bounds;
+    shape.fill = PremultipliedRgba::fromStraight(1.0F, 0.0F, 0.0F, 0.5F);
+    REQUIRE(builder.addShape(shape));
+    clip.operation = ClipOperation::pop;
+    clip.antialias = 0U;
+    clip.bounds = {};
+    clip.cornerRadius = 0.0F;
+    REQUIRE(builder.addClip(clip));
+    REQUIRE(builder.finish());
+
+    SoftwareRenderer renderer({4, 4});
+    REQUIRE(renderer.render(packet));
+    REQUIRE(pixelAt(renderer, 0, 0) == 0xcf44'283cU);
+    REQUIRE(pixelAt(renderer, 1, 1) == 0x8080'0000U);
+}
+
+void testHardClipRemainsCenterSampledInsideAaClip() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {4, 4};
+    config.physicalWindowBounds = {0, 0, 4, 4};
+    config.drawableSize = {4, 4};
+    FramePacketCapacity capacity;
+    capacity.commandCount = 5U;
+    capacity.shapeCount = 1U;
+    capacity.clipCount = 4U;
+    FramePacket packet(capacity);
+    FrameMetadata metadata;
+    metadata.clearColor = PremultipliedRgba::transparent();
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    REQUIRE(builder.begin(metadata, makeSyntheticViewport(config)));
+    const CommandHeader header = makeHeader(
+        RenderLayer::ui,
+        0,
+        CoordinateSpace::drawablePixels
+    );
+    ClipCommand antialiasedClip;
+    antialiasedClip.header = header;
+    antialiasedClip.operation = ClipOperation::pushRoundedRect;
+    antialiasedClip.antialias = 1U;
+    antialiasedClip.bounds = {0.0F, 0.0F, 4.0F, 4.0F};
+    antialiasedClip.cornerRadius = 0.0F;
+    REQUIRE(builder.addClip(antialiasedClip));
+    ClipCommand hardClip;
+    hardClip.header = header;
+    hardClip.operation = ClipOperation::pushScissor;
+    hardClip.antialias = 0U;
+    hardClip.bounds = {0.4F, 0.0F, 3.6F, 4.0F};
+    REQUIRE(builder.addClip(hardClip));
+    ShapeCommand shape;
+    shape.header = header;
+    shape.header.blendMode = BlendMode::opaque;
+    shape.bounds = antialiasedClip.bounds;
+    shape.fill = PremultipliedRgba::opaque(1.0F, 1.0F, 1.0F);
+    REQUIRE(builder.addShape(shape));
+    hardClip.operation = ClipOperation::pop;
+    hardClip.bounds = {};
+    REQUIRE(builder.addClip(hardClip));
+    REQUIRE(builder.addClip(hardClip));
+    REQUIRE(builder.finish());
+
+    SoftwareRenderer renderer({4, 4});
+    REQUIRE(renderer.render(packet));
+    REQUIRE(pixelAt(renderer, 0, 1) == 0xffff'ffffU);
+    REQUIRE(pixelAt(renderer, 3, 1) == 0xffff'ffffU);
+}
+
+void testHomogeneousScaleEquivalentGradientTransform() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {4, 1};
+    config.physicalWindowBounds = {0, 0, 4, 1};
+    config.drawableSize = {4, 1};
+    const ViewportState viewport = makeSyntheticViewport(config);
+    FramePacketCapacity capacity;
+    capacity.commandCount = 1U;
+    capacity.gradientCount = 1U;
+    capacity.gradientStopCount = 2U;
+    FramePacket identityPacket(capacity);
+    FramePacket scaledPacket(capacity);
+    const auto buildPacket = [&viewport](
+        FramePacket& packet,
+        const Mat3F transform
+    ) {
+        FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+        if (!builder.begin(blackFrameMetadata(), viewport)) {
+            return false;
+        }
+        GradientCommand gradient;
+        gradient.header = makeHeader(
+            RenderLayer::ui,
+            0,
+            CoordinateSpace::drawablePixels
+        );
+        gradient.bounds = {0.0F, 0.0F, 4.0F, 1.0F};
+        gradient.start = {0.0F, 0.0F};
+        gradient.end = {4.0F, 0.0F};
+        gradient.transform = transform;
+        const std::array stops{
+            GradientStop{0.0F, PremultipliedRgba::opaque(1.0F, 0.0F, 0.0F)},
+            GradientStop{1.0F, PremultipliedRgba::opaque(0.0F, 0.0F, 1.0F)}
+        };
+        return builder.addGradient(gradient, stops) && builder.finish();
+    };
+    Mat3F scaledTransform;
+    scaledTransform.elements = {
+        1.0e-5F, 0.0F, 0.0F,
+        0.0F, 1.0e-5F, 0.0F,
+        0.0F, 0.0F, 1.0e-5F
+    };
+    REQUIRE(buildPacket(identityPacket, Mat3F{}));
+    REQUIRE(buildPacket(scaledPacket, scaledTransform));
+
+    SoftwareRenderer identityRenderer({4, 1});
+    SoftwareRenderer scaledRenderer({4, 1});
+    REQUIRE(identityRenderer.render(identityPacket));
+    REQUIRE(scaledRenderer.render(scaledPacket));
+    REQUIRE(scaledRenderer.lastStats().skippedCommands == 0U);
+    REQUIRE(pixelAt(scaledRenderer, 0, 0) == 0xffdf'0020U);
+    REQUIRE(pixelAt(scaledRenderer, 3, 0) == 0xff20'00dfU);
+    REQUIRE(scaledRenderer.pixelHash() == identityRenderer.pixelHash());
+}
+
+[[nodiscard]] bool buildDprLetterboxClipPacket(
+    cirvivor::render::FramePacket& packet,
+    const cirvivor::render::ViewportState& viewport
+) {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
+    if (!builder.begin(blackFrameMetadata(), viewport)) {
+        return false;
+    }
+    const CommandHeader header = makeHeader(RenderLayer::background);
+    ClipCommand clip;
+    clip.header = header;
+    clip.bounds = {0.0F, 0.0F, 960.0F, 1'080.0F};
+    if (!builder.addClip(clip)) {
+        return false;
+    }
+    GradientCommand gradient;
+    gradient.header = header;
+    gradient.bounds = {0.0F, 0.0F, 1'920.0F, 1'080.0F};
+    gradient.start = {0.0F, 0.0F};
+    gradient.end = {1'920.0F, 0.0F};
+    const std::array stops{
+        GradientStop{0.0F, PremultipliedRgba::opaque(1.0F, 0.0F, 0.0F)},
+        GradientStop{1.0F, PremultipliedRgba::opaque(0.0F, 0.0F, 1.0F)}
+    };
+    if (!builder.addGradient(gradient, stops)) {
+        return false;
+    }
+    clip.operation = ClipOperation::pop;
+    clip.bounds = {};
+    return builder.addClip(clip) && builder.finish();
+}
+
+void testLogicalClipDprLetterboxAndNoHeapRender() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+    using namespace cirvivor::render::software;
+
+    SyntheticSceneConfig config;
+    config.physicalDisplaySize = {80, 36};
+    config.physicalWindowBounds = {100, 50, 20, 9};
+    config.drawableSize = {40, 18};
+    config.dpiScale = 2.0F;
+    const ViewportState viewport = makeSyntheticViewport(config);
+    REQUIRE((viewport.drawable.contentRect == RectI{4, 0, 32, 18}));
+
+    FramePacketCapacity capacity;
+    capacity.commandCount = 3U;
+    capacity.gradientCount = 1U;
+    capacity.gradientStopCount = 2U;
+    capacity.clipCount = 2U;
+    FramePacket packet(capacity);
+    REQUIRE(buildDprLetterboxClipPacket(packet, viewport));
+    SoftwareRenderer renderer({20, 9});
+    REQUIRE(renderer.render(packet));
+    REQUIRE(pixelAt(renderer, 1, 4) == 0xff00'0000U);
+    REQUIRE(pixelAt(renderer, 2, 4) == 0xfff7'0008U);
+    REQUIRE(pixelAt(renderer, 9, 4) == 0xff87'0078U);
+    REQUIRE(pixelAt(renderer, 10, 4) == 0xff00'0000U);
+    REQUIRE(pixelAt(renderer, 18, 4) == 0xff00'0000U);
+
+    bool allRendered = true;
+    std::size_t allocations = 0U;
+    {
+        AllocationScope scope;
+        for (std::size_t index = 0U; index < 32U; ++index) {
+            allRendered = renderer.render(packet) && allRendered;
+        }
+        allocations = scope.allocationCount();
+    }
+    REQUIRE(allRendered);
+    REQUIRE(allocations == 0U);
+    REQUIRE_U64(renderer.pixelHash(), 0xdf05'eeb5'7217'8598ULL);
 }
 
 void testUltrawideViewportGolden() {
@@ -268,7 +889,23 @@ struct TestCase final {
 int main() {
     const std::array tests{
         TestCase{"synthetic software pixel goldens", testSyntheticFramePixelGoldens},
-        TestCase{"v2 placeholder instrumentation", testV2UnsupportedCommandsAreExplicitlyInstrumented},
+        TestCase{"v2 placeholder instrumentation", testImplementedV2CommandsAreNotPlaceholderInstrumented},
+        TestCase{"gradient contracts", testGradientTypesSpreadsTransformAndPma},
+        TestCase{"nested clip stack", testNestedClipIntersectionAndPopReset},
+        TestCase{"rounded clip antialias", testRoundedClipAntialiasPreservesPmaCoverage},
+        TestCase{
+            "partial clip opaque blend coverage",
+            testPartialClipCoverageInterpolatesOpaqueBlendResult
+        },
+        TestCase{
+            "hard clip nested in antialias clip",
+            testHardClipRemainsCenterSampledInsideAaClip
+        },
+        TestCase{
+            "homogeneous-scale gradient transform",
+            testHomogeneousScaleEquivalentGradientTransform
+        },
+        TestCase{"DPR letterbox clip and allocation", testLogicalClipDprLetterboxAndNoHeapRender},
         TestCase{"ultrawide software golden", testUltrawideViewportGolden},
         TestCase{"software input validation", testInvalidInputsPreserveOwnedSurface}
     };
