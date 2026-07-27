@@ -13,12 +13,12 @@
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: 최신 코드 기준 MSVC Debug·Release CTest 각 27/27, GCC headless 17/17, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- 네이티브 검증: 최신 코드 기준 MSVC Debug·Release CTest 각 28/28, GCC headless strict 18/18, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 기본 실행: 순수 C++ 타이틀 장면으로 진입하고 Start→MapSelect→새 `GameSystem` playable 세션으로 전환한다. `--playable-scene`은 개발용 직접 진입, synthetic 장면은 smoke/`--diagnostic-scene`으로 분리했다.
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas와 immutable 고정 UI shaped cache 통과
 - 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software는 gradient/clip과 resource-backed A8 glyph를 실제 raster하며 mesh/pass 및 SDL_GPU/GLES glyph·고급 명령은 아직 계측 가능한 placeholder다.
-- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Credits 5개 링크는 External warning 경로에 연결됐고 Settings/Debug의 실제 control effect와 로고·utility icon·세부 fidelity는 후속이다.
+- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Credits 5개 링크는 External warning 경로에 연결됐고 Settings의 15-key 강타입 schema/strict canonical codec 기반도 추가됐다. 실제 Settings 저장·control effect, Debug 동작과 로고·utility icon·세부 fidelity는 후속이다.
 - Software 960×540 성능 게이트: 최신 Release 180-frame render p95 27.259ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 - 구현 전략: Windows 전체 기능 흐름을 breadth-first로 먼저 연결한 뒤 실제 결과물을 실행하며 화면별 시각·입력 fidelity를 반복 보완한다.
@@ -32,7 +32,7 @@
 | Phase 2 — SDL3 Desktop 셸 | 완료 | callback·창·이벤트·lifecycle·scheduler·storage·audio를 실제/dummy driver에서 검증 |
 | Phase 3 — FramePacket/기본 렌더 백엔드 | 완료 | 세 backend 실제 command drawing·fallback·reset/pacing과 Software 960×540 Release p95 30fps 게이트 통과 |
 | Phase 4 — Simulation parity | 진행 중 | Body SoA·타일 충돌·GameSystem replay, 두 WAT scalar, 첫 solve spatial grid/candidate와 generic narrowphase exact parity 및 Desktop playable session bridge 통과. position solve/projectile 진행 중 |
-| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | 먼저 title→메뉴/overlay→playable의 전체 C++ 기능 흐름을 연결하고, 이후 기존 제품의 관찰 가능한 시각·입력 fidelity를 화면별로 보완한다. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분한다. |
+| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | title→메뉴/overlay→playable과 Credits 링크를 연결했고 Settings schema/codec 기반을 완료했다. Settings 저장·적용, Debug 동작과 나머지 기능 흐름을 먼저 연결한 뒤 관찰 가능한 시각·입력 fidelity를 화면별로 보완한다. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분한다. |
 | Phase 9 — Android | 현재 범위 제외 | 사용자 요청에 따라 SDK/NDK 설치·프로젝트·ARM64 빌드·실기 검증을 진행하지 않는다. |
 | Phase 10 — iOS | 현재 범위 제외 | Mac 환경이 없고 사용자 요청에 따라 빌드·서명·실기 검증을 진행하지 않는다. |
 | Phase 11~12 — 멀티코어·Cutover | 대기 | worker parity, native-only release candidate, NW.js 제품 경로 제거 |
@@ -66,7 +66,7 @@
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없으므로 OS별 시스템 font fallback 대신 고정 vector/bitmap asset으로 교체해야 한다.
 - `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip/A8 glyph는 실제 raster로 전환됐지만 mesh/pass와 SDL_GPU/GLES glyph·고급 명령은 아직 marker placeholder이므로 GPU atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
 - text foundation은 45~930 variable weight, no-hinting grayscale raster, 고정-capacity glyph atlas와 fixed UI `ShapedTextCache`까지 완료됐다. 64px A8 atlas와 shaped runs는 하나의 immutable generation snapshot이며 resize 때 재생성하지 않는다. 고정 catalog 밖 URL의 동적 preview와 SDL_GPU/GLES atlas upload/draw는 후속이다.
-- `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. 상태/layout revision에 결합된 `TitleOverlayPresentationSet`도 controller와 renderer가 공유한다. Start→MapSelect→playable 전환은 강타입 map ID와 후보 세션 commit으로 연결됐고 `game_desktop`은 실행 파일 옆 원본 WOFF2/OFL을 읽는다. 11종 overlay 본문 renderer와 일반 입력 10종은 연결됐지만 Settings Save/control, Credits 링크, Debug 진입 gesture/toggle과 floating 콘텐츠는 후속이다.
+- `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. 상태/layout revision에 결합된 `TitleOverlayPresentationSet`도 controller와 renderer가 공유한다. Start→MapSelect→playable 전환과 Credits 5-link warning은 연결됐고 `game_desktop`은 실행 파일 옆 원본 WOFF2/OFL을 읽는다. 11종 overlay 본문 renderer와 일반 입력 10종은 연결됐지만 Settings SDL 저장·Save/control, Debug 진입 gesture/toggle과 floating 콘텐츠는 후속이다.
 
 ## 검증 기록
 
@@ -647,6 +647,20 @@ title scene: 15/15 통과
 - Warning은 Credits 위에 중첩되어 닫힘 animation이 끝날 때까지 부모 입력을 잠근다. 취소하면 Credits로 복귀하고 확인은 기존 `SDL_OpenURL` effect와 success/failure sequence acknowledge를 그대로 사용한다. 실제 브라우저를 여는 확인은 자동 실기에서 누르지 않았다.
 - 일반 Windows Computer Use로 Release Credits 첫 행을 클릭해 `jukchang.com` warning과 부모 dim/lock을 확인하고 `아니오`로 취소해 Credits로 복귀하는 것까지 검증했다.
 
+### 2026-07-27 — native Settings schema와 strict canonical codec
+
+```text
+MSVC Debug 전체 CTest: 28/28 통과
+MSVC Release 전체 CTest: 28/28 통과
+GCC 16.1 headless strict 전체 CTest: 18/18 통과
+settings model/codec: 9/9 통과
+```
+
+- `native/src/settings/`에 SDL/UI 비의존 `settings_runtime`을 추가했다. 기존 15개 설정 키, `userLanguage`, 숨김 상태 2개와 9-action·action당 최대 4개 `KeyboardEvent.code` override를 강타입·고정 용량 모델로 다시 작성했다.
+- decoder는 64KiB 입력 상한, raw UTF-8와 Unicode surrogate, decoded duplicate key, trailing/content type, 중첩·멤버·문자열 상한을 검사한다. 누락 값은 기본값으로 채우고 legacy `darkMode`/`borderless`/제거 키를 migration하며 수치·binding을 결정적으로 normalize한 뒤 canonical rewrite 필요 여부를 반환한다.
+- encoder는 runtime validation을 통과한 완전한 모델만 고정 key 순서·숫자 형식으로 직렬화한다. 손상 후보는 destination을 바꾸지 않고 거부하며, 손상된 public keyboard-code 크기도 배열 밖 `string_view`를 만들지 않는다.
+- 이 배치는 schema/codec과 CMake/CTest 통합만 완료했다. 실제 SDL user storage의 `settings.json` load/save·손상 복구·원자 교체, 창/오디오/테마/input runtime 적용과 Settings control effect는 다음 기능 배치다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture
@@ -681,7 +695,8 @@ title scene: 15/15 통과
 - [x] Start→MapSelect panel·취소/시작 입력→transactional `GameSystem` playable 전환과 auto/software smoke
 - [x] 렌더·입력 공용 fixed-capacity overlay presentation과 11종 Pretendard content/Map preview/Common Close·Cancel
 - [x] Credits 5개 stable link→External warning→confirm/acknowledge effect 연결
-- [ ] Settings 저장·적용/control과 Debug 진입 gesture·toggle·pause/step 기능
+- [x] Settings 15-key 강타입 모델·strict canonical JSON codec·legacy migration/validation 기반
+- [ ] Settings SDL user storage 저장·로드·적용/control과 Debug 진입 gesture·toggle·pause/step 기능
 - [x] Software backend의 v2 gradient/clip 실제 raster 구현
 - [ ] 세 backend의 v2 atlas/mesh/pass 및 SDL_GPU/GLES gradient/clip 실제 렌더와 production UI `placeholderCommands == 0`
 - [ ] 타이틀 화면과 모든 오버레이의 같은 기능·시각·입력·상태 흐름 구현

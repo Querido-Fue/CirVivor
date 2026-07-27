@@ -98,6 +98,13 @@ add_library(ui_runtime STATIC
 target_include_directories(ui_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 cirvivor_configure_target(ui_runtime)
 
+add_library(settings_runtime STATIC
+    src/settings/settings_codec.cpp
+    src/settings/settings_model.cpp
+)
+target_include_directories(settings_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+cirvivor_configure_target(settings_runtime)
+
 if(MSVC)
     set_source_files_properties(
         src/core/math/deterministic_math.cpp
@@ -224,6 +231,12 @@ if(BUILD_TESTING)
     target_link_libraries(title_ui_controller_tests PRIVATE ui_runtime)
     cirvivor_configure_target(title_ui_controller_tests)
 
+    add_executable(settings_codec_tests
+        tests/settings_codec_test.cpp
+    )
+    target_link_libraries(settings_codec_tests PRIVATE settings_runtime)
+    cirvivor_configure_target(settings_codec_tests)
+
     add_executable(renderer_router_tests
         tests/renderer_router_test.cpp
     )
@@ -286,6 +299,7 @@ if(BUILD_TESTING)
     )
     add_test(NAME ui_layout_metrics_tests COMMAND ui_layout_metrics_tests)
     add_test(NAME title_ui_controller_tests COMMAND title_ui_controller_tests)
+    add_test(NAME settings_codec_tests COMMAND settings_codec_tests)
     add_test(NAME renderer_router_tests COMMAND renderer_router_tests)
     add_test(NAME simulation_parity_tests COMMAND simulation_parity_tests)
     add_test(NAME game_replay_parity_tests COMMAND game_replay_parity_tests)
@@ -357,6 +371,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
         PRIVATE
             game_core
             app_runtime
+            settings_runtime
             ui_runtime
             platform_sdl
             render_frontend
