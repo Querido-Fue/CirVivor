@@ -1020,6 +1020,108 @@ void testCreditsInteractionChangesOnlyMatchingStableLink() {
     REQUIRE(changedUiCount == 1U);
 }
 
+void testApplicationControlInteractionChangesOnlyMatchingStableId() {
+    const SyntheticTitleTextResources text;
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const auto theme = darkThemeMetrics();
+    TitleOverlayStateMachine state = interactiveState();
+    const auto opened = state.apply(UiAction::openTitle(OverlayKind::setting));
+    REQUIRE(opened.accepted());
+    advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot uiState = state.snapshot();
+
+    cirvivor::ui::TitleOverlayControlStateOverrides overrides{};
+    overrides.revision = 9U;
+    overrides.controlCount = 1U;
+    overrides.controls[0] = {
+        opened.overlaySequence,
+        TitleOverlayControlId::settingRenderScale,
+        0.42,
+        true,
+        true
+    };
+    cirvivor::ui::TitleOverlayPresentationSet presentations{};
+    REQUIRE(cirvivor::ui::tryBuildTitleOverlayPresentationSet(
+        uiState,
+        layout,
+        presentations,
+        &overrides
+    ));
+    const auto* const settings = cirvivor::ui::findTitleOverlayPresentation(
+        presentations,
+        opened.overlaySequence
+    );
+    REQUIRE(settings != nullptr);
+    const cirvivor::ui::TitleOverlayControl* selected = nullptr;
+    for (std::size_t index = 0U; index < settings->controlCount; ++index) {
+        if (settings->controls[index].id
+            == TitleOverlayControlId::settingRenderScale) {
+            selected = &settings->controls[index];
+        }
+    }
+    REQUIRE(selected != nullptr);
+
+    TitleUiControllerSnapshot idle = idleInteraction();
+    idle.overlaySequence = opened.overlaySequence;
+    idle.overlayControlStateRevision = overrides.revision;
+    TitleUiControllerSnapshot active = idle;
+    active.hoveredOverlayControlId = selected->id;
+    active.pressedOverlayControlId = selected->id;
+    const TitleSceneInput idleInput{
+        uiState,
+        idle,
+        layout,
+        entrance,
+        theme,
+        text.view(),
+        cirvivor::render::UiTextLocale::korean,
+        &presentations
+    };
+    const TitleSceneInput activeInput{
+        uiState,
+        active,
+        layout,
+        entrance,
+        theme,
+        text.view(),
+        cirvivor::render::UiTextLocale::korean,
+        &presentations
+    };
+    const FramePacketCapacity capacity = titleSceneCapacity(idleInput);
+    REQUIRE(titleSceneCapacity(activeInput) == capacity);
+    FramePacket idlePacket(capacity);
+    FramePacket activePacket(capacity);
+    REQUIRE(buildTitleScene(idlePacket, idleInput).success);
+    REQUIRE(buildTitleScene(activePacket, activeInput).success);
+
+    const RectF selectedBounds{
+        static_cast<float>(selected->rect.x),
+        static_cast<float>(selected->rect.y),
+        static_cast<float>(selected->rect.width),
+        static_cast<float>(selected->rect.height)
+    };
+    std::size_t changedUiCount = 0U;
+    for (std::size_t index = 0U; index < idlePacket.ui().size(); ++index) {
+        if (idlePacket.ui()[index] == activePacket.ui()[index]) {
+            continue;
+        }
+        ++changedUiCount;
+        REQUIRE(activePacket.ui()[index].bounds == selectedBounds);
+        REQUIRE(activePacket.ui()[index].primitive == UiPrimitive::button);
+        REQUIRE(
+            activePacket.ui()[index].stateFlags
+            == (uiStateBits(UiStateFlag::hovered)
+                | uiStateBits(UiStateFlag::pressed)
+                | uiStateBits(UiStateFlag::selected))
+        );
+        REQUIRE_NEAR(activePacket.ui()[index].value, 0.42, 1.0e-6);
+        REQUIRE(activePacket.ui()[index].backgroundColor
+            != idlePacket.ui()[index].backgroundColor);
+    }
+    REQUIRE(changedUiCount == 1U);
+}
+
 void testExitShellAndInsufficientFixedCapacityAreTransactional() {
     const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
     const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
@@ -1817,6 +1919,10 @@ int main() {
         TestCase{
             "credits stable link interaction",
             testCreditsInteractionChangesOnlyMatchingStableLink
+        },
+        TestCase{
+            "application control stable interaction",
+            testApplicationControlInteractionChangesOnlyMatchingStableId
         },
         TestCase{
             "exit fixed transaction",

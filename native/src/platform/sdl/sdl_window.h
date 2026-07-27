@@ -12,6 +12,16 @@ enum class WindowGraphicsProfile : std::uint8_t {
     gles2 = 2
 };
 
+struct WindowDisplayConfiguration final {
+    bool fullscreen = false;
+    int width = 1'280;
+    int height = 720;
+
+    constexpr bool operator==(
+        const WindowDisplayConfiguration&
+    ) const noexcept = default;
+};
+
 struct WindowMetrics final {
     int windowWidth = 0;
     int windowHeight = 0;
@@ -46,6 +56,9 @@ public:
     ) noexcept;
     void shutdown() noexcept;
 
+    [[nodiscard]] bool applyDisplayConfiguration(
+        const WindowDisplayConfiguration& configuration
+    ) noexcept;
     [[nodiscard]] bool refreshMetrics() noexcept;
     [[nodiscard]] bool show() noexcept;
 
@@ -54,11 +67,16 @@ public:
     [[nodiscard]] bool isFocused() const noexcept;
     [[nodiscard]] bool isVisible() const noexcept;
     [[nodiscard]] WindowGraphicsProfile graphicsProfile() const noexcept;
+    [[nodiscard]] const WindowDisplayConfiguration& displayConfiguration()
+        const noexcept;
     [[nodiscard]] const WindowMetrics& metrics() const noexcept;
 
 private:
+    void destroyNativeWindow() noexcept;
+
     SDL_Window* window_ = nullptr;
     WindowGraphicsProfile graphicsProfile_ = WindowGraphicsProfile::neutral;
+    WindowDisplayConfiguration displayConfiguration_{};
     WindowMetrics metrics_;
 };
 

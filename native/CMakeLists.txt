@@ -101,6 +101,7 @@ cirvivor_configure_target(ui_runtime)
 add_library(settings_runtime STATIC
     src/settings/settings_codec.cpp
     src/settings/settings_model.cpp
+    src/settings/settings_overlay_session.cpp
     src/settings/settings_repository.cpp
 )
 target_include_directories(settings_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -250,6 +251,12 @@ if(BUILD_TESTING)
     target_link_libraries(settings_repository_tests PRIVATE settings_runtime)
     cirvivor_configure_target(settings_repository_tests)
 
+    add_executable(settings_overlay_session_tests
+        tests/settings_overlay_session_test.cpp
+    )
+    target_link_libraries(settings_overlay_session_tests PRIVATE settings_runtime)
+    cirvivor_configure_target(settings_overlay_session_tests)
+
     add_executable(debug_runtime_controller_tests
         tests/debug_runtime_controller_test.cpp
     )
@@ -320,6 +327,7 @@ if(BUILD_TESTING)
     add_test(NAME title_ui_controller_tests COMMAND title_ui_controller_tests)
     add_test(NAME settings_codec_tests COMMAND settings_codec_tests)
     add_test(NAME settings_repository_tests COMMAND settings_repository_tests)
+    add_test(NAME settings_overlay_session_tests COMMAND settings_overlay_session_tests)
     add_test(
         NAME debug_runtime_controller_tests
         COMMAND debug_runtime_controller_tests

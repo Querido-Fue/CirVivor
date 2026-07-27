@@ -13,12 +13,12 @@
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: 최신 코드 기준 MSVC Debug·Release CTest 각 31/31, GCC headless strict 20/20, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- 네이티브 검증: 최신 코드 기준 MSVC Debug·Release CTest 각 32/32, GCC headless strict 21/21, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 기본 실행: 순수 C++ 타이틀 장면으로 진입하고 Start→MapSelect→새 `GameSystem` playable 세션으로 전환한다. `--playable-scene`은 개발용 직접 진입, synthetic 장면은 smoke/`--diagnostic-scene`으로 분리했다.
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas와 immutable 고정 UI shaped cache 통과
 - 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software는 gradient/clip과 resource-backed A8 glyph를 실제 raster하며 mesh/pass 및 SDL_GPU/GLES glyph·고급 명령은 아직 계측 가능한 placeholder다.
-- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Credits 5개 링크는 External warning 경로에 연결됐고 Settings schema/codec·SDL user storage repository 및 Debug gesture/toggle/pause/step의 SDL 비의존 기반도 추가됐다. 실제 Settings의 Application load/apply·control effect, Debug의 `PlatformEvent`/overlay/app 연결과 로고·utility icon·세부 fidelity는 후속이다.
+- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Credits 5개 링크는 External warning 경로에 연결됐다. Settings는 10개 노출 필드의 baseline/draft/dirty/Save/Cancel 세션과 공용 application-control/valueRect/revision 계약까지, Debug는 SDL timestamp·middle pointer·`/`·`.` event와 scheduler pause/single-step, 같은 창 fullscreen 전환 API까지 준비됐다. 실제 `Application` load/apply·control effect와 Debug overlay/persist 조립은 다음 블록이다.
 - Software 960×540 성능 게이트: 최신 Release 180-frame render p95 27.259ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 - 구현 전략: Windows 전체 기능 흐름을 breadth-first로 먼저 연결한 뒤 실제 결과물을 실행하며 화면별 시각·입력 fidelity를 반복 보완한다.
@@ -32,7 +32,7 @@
 | Phase 2 — SDL3 Desktop 셸 | 완료 | callback·창·이벤트·lifecycle·scheduler·storage·audio를 실제/dummy driver에서 검증 |
 | Phase 3 — FramePacket/기본 렌더 백엔드 | 완료 | 세 backend 실제 command drawing·fallback·reset/pacing과 Software 960×540 Release p95 30fps 게이트 통과 |
 | Phase 4 — Simulation parity | 진행 중 | Body SoA·타일 충돌·GameSystem replay, 두 WAT scalar, 첫 solve spatial grid/candidate와 generic narrowphase exact parity 및 Desktop playable session bridge 통과. position solve/projectile 진행 중 |
-| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | title→메뉴/overlay→playable과 Credits 링크, Settings schema/codec·SDL 저장 repository를 연결했다. Settings 앱 적용·control, Debug 통합과 나머지 기능 흐름을 먼저 연결한 뒤 관찰 가능한 시각·입력 fidelity를 화면별로 보완한다. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분한다. |
+| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | title→메뉴/overlay→playable과 Credits 링크, Settings schema/codec·SDL 저장 repository·draft/control seam, Debug SDL event/scheduler seam을 연결했다. 다음 블록에서 `Application` load/apply/save/cancel 및 Debug overlay/persist를 조립한 뒤 관찰 가능한 시각·입력 fidelity를 화면별로 보완한다. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분한다. |
 | Phase 9 — Android | 현재 범위 제외 | 사용자 요청에 따라 SDK/NDK 설치·프로젝트·ARM64 빌드·실기 검증을 진행하지 않는다. |
 | Phase 10 — iOS | 현재 범위 제외 | Mac 환경이 없고 사용자 요청에 따라 빌드·서명·실기 검증을 진행하지 않는다. |
 | Phase 11~12 — 멀티코어·Cutover | 대기 | worker parity, native-only release candidate, NW.js 제품 경로 제거 |
@@ -66,7 +66,7 @@
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없으므로 OS별 시스템 font fallback 대신 고정 vector/bitmap asset으로 교체해야 한다.
 - `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip/A8 glyph는 실제 raster로 전환됐지만 mesh/pass와 SDL_GPU/GLES glyph·고급 명령은 아직 marker placeholder이므로 GPU atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
 - text foundation은 45~930 variable weight, no-hinting grayscale raster, 고정-capacity glyph atlas와 fixed UI `ShapedTextCache`까지 완료됐다. 64px A8 atlas와 shaped runs는 하나의 immutable generation snapshot이며 resize 때 재생성하지 않는다. 고정 catalog 밖 URL의 동적 preview와 SDL_GPU/GLES atlas upload/draw는 후속이다.
-- `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. 상태/layout revision에 결합된 `TitleOverlayPresentationSet`도 controller와 renderer가 공유한다. Start→MapSelect→playable 전환과 Credits 5-link warning은 연결됐고 `game_desktop`은 실행 파일 옆 원본 WOFF2/OFL을 읽는다. 11종 overlay 본문 renderer와 일반 입력 10종은 연결됐지만 Settings SDL 저장·Save/control, Debug 진입 gesture/toggle과 floating 콘텐츠는 후속이다.
+- `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. 상태/layout/control revision에 결합 가능한 `TitleOverlayPresentationSet`도 controller와 renderer가 공유한다. Start→MapSelect→playable 전환과 Credits 5-link warning은 연결됐고 `game_desktop`은 실행 파일 옆 원본 WOFF2/OFL을 읽는다. Settings/Debug application-control과 SDL event·scheduler·window 전환 seam은 준비됐지만, 제품 `Application`의 설정 load/apply/save/cancel 및 Debug overlay/persist 조립은 아직 시작하지 않았다.
 
 ## 검증 기록
 
@@ -690,6 +690,23 @@ settings repository: 12/12 통과
 - `SdlUserStorage`에 존재 확인과 Windows SDL backend의 replace rename 경계를 추가하고 `SdlSettingsStorage` adapter로 repository 상태를 매핑했다. 분리된 테스트 namespace에서 실제 SDL user storage save→reload→손상 복구와 정리까지 검증했다.
 - 이 배치는 저장 경계까지만 완료했다. 제품 `Application`이 storage ready 뒤 한 번 load하고 창·테마·UI scale·언어·오디오·입력에 적용하는 흐름, Settings overlay의 draft/Save/Cancel control은 다음 배치다.
 
+### 2026-07-27 — Settings/Debug Application 연결 seam
+
+```text
+MSVC Debug 전체 CTest: 32/32 통과
+MSVC Release 전체 CTest: 32/32 통과
+GCC 16.1 headless strict 전체 CTest: 21/21 통과
+Settings overlay session: 6/6 통과
+FrameScheduler: 12/12 통과
+SDL platform event: 14/14 통과
+```
+
+- `SettingsOverlaySession`은 열린 Settings overlay sequence별로 저장소와 분리된 baseline/draft를 소유한다. Window mode, widescreen, render/UI scale, 불투명 UI, language/theme, tooltip delay, BGM/SFX의 10개 노출 필드만 병합하며 숨김 설정과 input binding은 현재 repository authority에서 보존한다. stale sequence와 invalid 값은 output을 바꾸지 않고, Save 성공 전에는 세션을 확정하지 않으며 Cancel은 정확한 changed-field mask와 baseline을 반환한다.
+- Settings와 Debug control은 공용 stable control ID, overlay sequence, control-state revision, enabled/selected/value override를 사용한다. pointer down/up은 같은 sequence·ID·revision이어야 하며 slider/dropdown normalized X는 전체 행이 아니라 별도 오른쪽 `valueRect`에서 계산한다. Settings의 10개 persisted control과 benchmark/Save/Cancel, Debug 네 toggle이 application-control event를 만들고 Keybindings/DevTools는 기존 제품 동작처럼 passive다.
+- `PlatformEvent`는 SDL nanosecond timestamp를 millisecond로 고정 변환하고 middle pointer identity와 `/`·`.` key edge/repeat를 운반한다. `FrameScheduler`는 scheduled/disabled/single-step을 명시해 pause에서 simulation debt를 지우고 UI delta를 유지하며, one-shot은 누적 debt 없이 정확히 한 fixed tick과 alpha 1을 만든다.
+- `SdlWindow`는 renderer가 참조하는 native handle을 파괴하지 않고 같은 창에 fullscreen/windowed를 적용한다. 실패 시 직전 실제 상태와 windowed 크기로 best-effort rollback하고, renderer fallback용 window recreate에는 마지막 성공 configuration을 보존한다.
+- 이 블록은 연결 seam까지만 완료했다. storage ready 이후 exactly-once load gate, Settings control의 live preview/Save/Cancel, locale/theme/uiScale 동적 text, Debug gesture/overlay/persist와 gameplay pause/step을 `Application`에 조립하는 작업은 다음 블록의 재개 지점이다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture
@@ -727,6 +744,9 @@ settings repository: 12/12 통과
 - [x] Settings 15-key 강타입 모델·strict canonical JSON codec·legacy migration/validation 기반
 - [x] Settings repository의 SDL user storage load/save·canonical 손상 복구·tmp replace 기반
 - [x] Debug middle gesture·4개 toggle·pause/one-step의 SDL 비의존 runtime 기반
+- [x] Settings 10-field overlay draft/dirty/Save/Cancel 세션과 공용 application-control/valueRect/revision seam
+- [x] Debug SDL timestamp·middle pointer·slash/period event 및 scheduled/disabled/single-step scheduler seam
+- [x] 동일 SDL window handle의 fullscreen/windowed 적용·rollback·renderer recreate 설정 보존 API
 - [ ] Settings Application load/runtime 적용·control과 Debug event/overlay/Application 연결
 - [x] Software backend의 v2 gradient/clip 실제 raster 구현
 - [ ] 세 backend의 v2 atlas/mesh/pass 및 SDL_GPU/GLES gradient/clip 실제 렌더와 production UI `placeholderCommands == 0`

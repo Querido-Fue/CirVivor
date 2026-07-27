@@ -56,6 +56,7 @@ enum class UiInputStatus : std::uint8_t {
     focusCancelled,
     actionApplied,
     actionRejected,
+    applicationControlActivated,
     ignoredNoTarget,
     ignoredNoCapture,
     ignoredUnsupportedButton,
@@ -94,6 +95,7 @@ struct UiPointerCaptureSnapshot final {
     TitleUiTarget target = TitleUiTarget::none;
     TitleOverlayControlId overlayControlId = TitleOverlayControlId::none;
     std::uint32_t overlaySequence = 0U;
+    std::uint64_t controlStateRevision = 0U;
     layout::PointD lastPosition{};
 
     constexpr bool operator==(const UiPointerCaptureSnapshot&) const noexcept = default;
@@ -104,6 +106,7 @@ struct TitleUiControllerSnapshot final {
     UiPointerCaptureSnapshot capture{};
     /** overlay target hover/press가 어느 attachment에 속하는지 식별합니다. */
     std::uint32_t overlaySequence = 0U;
+    std::uint64_t overlayControlStateRevision = 0U;
     TitleOverlayControlId hoveredOverlayControlId = TitleOverlayControlId::none;
     TitleOverlayControlId pressedOverlayControlId = TitleOverlayControlId::none;
     std::uint64_t revision = 0U;
@@ -117,6 +120,8 @@ struct UiInputResult final {
     TitleOverlayControlId overlayControlId = TitleOverlayControlId::none;
     OverlayKind unsupportedOverlay = OverlayKind::none;
     std::uint32_t overlaySequence = 0U;
+    double normalizedValue = 0.0;
+    bool normalizedValueValid = false;
     UiActionOutcome actionOutcome{};
     bool controllerStateChanged = false;
 
@@ -124,12 +129,16 @@ struct UiInputResult final {
         return status == UiInputStatus::actionApplied
             && actionOutcome.accepted();
     }
+
+    [[nodiscard]] bool applicationControlActivated() const noexcept {
+        return status == UiInputStatus::applicationControlActivated;
+    }
 };
 
 /**
  * Title layout/render snapshot을 hit-test하고 state machine에 action만 적용하는
- * SDL 비의존 controller입니다. 공통 confirm dialog footer와 title target만
- * hit-test하며 overlay 본문 상호작용은 소유하지 않습니다.
+ * SDL 비의존 controller입니다. title target과 presentation이 노출한 안정적인
+ * overlay control을 hit-test하고 domain action은 호출자에게 돌려줍니다.
  */
 class TitleUiController final {
 public:
@@ -140,7 +149,8 @@ public:
         const layout::UiLayoutSnapshot& layoutSnapshot,
         const layout::TitleEntranceRenderState& entranceState,
         const UiStateSnapshot& uiState,
-        TitleOverlayStateMachine& stateMachine
+        TitleOverlayStateMachine& stateMachine,
+        UiFrameContext context = {}
     ) noexcept;
 
     /** renderer와 동일한 최종 contentScale 적용 rect snapshot을 소비합니다. */
@@ -150,7 +160,8 @@ public:
         const layout::TitleEntranceRenderState& entranceState,
         const UiStateSnapshot& uiState,
         const TitleOverlayPresentationSet& overlayPresentations,
-        TitleOverlayStateMachine& stateMachine
+        TitleOverlayStateMachine& stateMachine,
+        UiFrameContext context = {}
     ) noexcept;
 
     /** OS window-close를 exit overlay action seam으로 전달합니다. */

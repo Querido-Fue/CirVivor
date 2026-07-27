@@ -14,10 +14,16 @@ struct FrameSchedulerConfig final {
     std::uint32_t recoveryFrames = 3;
 };
 
+enum class FixedStepMode : std::uint8_t {
+    scheduled,
+    disabled,
+    singleStep
+};
+
 struct FrameSample final {
     double rawFrameDeltaSeconds = 0;
     double previousFrameCpuSeconds = 0;
-    bool fixedStepEnabled = true;
+    FixedStepMode fixedStepMode = FixedStepMode::scheduled;
 };
 
 struct FrameSchedule final {

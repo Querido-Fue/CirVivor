@@ -90,7 +90,18 @@ FrameSchedule FrameScheduler::advance(const FrameSample& sample) noexcept {
         schedule.frameDeltaClampLossSeconds = sample.rawFrameDeltaSeconds - frameDeltaSeconds;
     }
 
-    if (!sample.fixedStepEnabled) {
+    if (sample.fixedStepMode == FixedStepMode::disabled) {
+        reset();
+        return schedule;
+    }
+    if (sample.fixedStepMode == FixedStepMode::singleStep) {
+        reset();
+        schedule.frameDeltaSeconds = config_.fixedStepSeconds;
+        schedule.fixedStepCount = 1U;
+        schedule.fixedAlpha = 1.0;
+        return schedule;
+    }
+    if (sample.fixedStepMode != FixedStepMode::scheduled) {
         reset();
         return schedule;
     }

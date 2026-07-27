@@ -40,7 +40,9 @@ enum class PlatformAction : std::uint8_t {
     moveUp,
     moveDown,
     moveLeft,
-    moveRight
+    moveRight,
+    debugPause,
+    debugStep
 };
 
 enum class PlatformPointerDevice : std::uint8_t {
@@ -137,6 +139,8 @@ struct PlatformEvent final {
     PlatformWheelData wheel;
     PlatformTextData text;
     bool clearInputStateRequested = false;
+    std::uint64_t timestampMilliseconds = 0U;
+    bool repeated = false;
 };
 
 [[nodiscard]] PlatformEvent translateEvent(const SDL_Event& event) noexcept;

@@ -7,10 +7,106 @@
 namespace cirvivor::platform::sdl {
 namespace {
 
-constexpr int initialWindowWidth = 1280;
-constexpr int initialWindowHeight = 720;
 constexpr int minimumWindowWidth = 640;
 constexpr int minimumWindowHeight = 360;
+
+[[nodiscard]] constexpr bool validDisplayConfiguration(
+    const WindowDisplayConfiguration& configuration
+) noexcept {
+    return configuration.width >= minimumWindowWidth
+        && configuration.height >= minimumWindowHeight;
+}
+
+[[nodiscard]] bool fullscreenMatches(
+    SDL_Window* const window,
+    const bool expectedFullscreen
+) noexcept {
+    const bool fullscreen = (
+        SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN
+    ) != 0U;
+    return fullscreen == expectedFullscreen;
+}
+
+[[nodiscard]] WindowDisplayConfiguration captureRollbackConfiguration(
+    SDL_Window* const window,
+    const WindowDisplayConfiguration& desiredConfiguration
+) noexcept {
+    WindowDisplayConfiguration captured = desiredConfiguration;
+    captured.fullscreen = (
+        SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN
+    ) != 0U;
+    if (captured.fullscreen) {
+        return captured;
+    }
+
+    int width = 0;
+    int height = 0;
+    if (SDL_GetWindowSize(window, &width, &height)
+        && width >= minimumWindowWidth
+        && height >= minimumWindowHeight) {
+        captured.width = width;
+        captured.height = height;
+    }
+    return captured;
+}
+
+[[nodiscard]] bool requestDisplayConfiguration(
+    SDL_Window* const window,
+    const WindowDisplayConfiguration& configuration
+) noexcept {
+    const bool fullscreenRequested = SDL_SetWindowFullscreen(
+        window,
+        configuration.fullscreen
+    );
+    const bool fullscreenSynchronized = fullscreenRequested
+        && SDL_SyncWindow(window);
+
+    if (configuration.fullscreen) {
+        return fullscreenRequested
+            && fullscreenSynchronized
+            && fullscreenMatches(window, true);
+    }
+
+    const bool sizeRequested = SDL_SetWindowSize(
+        window,
+        configuration.width,
+        configuration.height
+    );
+    const bool sizeSynchronized = sizeRequested && SDL_SyncWindow(window);
+    return fullscreenRequested
+        && fullscreenSynchronized
+        && sizeRequested
+        && sizeSynchronized
+        && fullscreenMatches(window, false);
+}
+
+[[nodiscard]] bool restoreDisplayConfiguration(
+    SDL_Window* const window,
+    const WindowDisplayConfiguration& configuration
+) noexcept {
+    bool restored = SDL_SetWindowFullscreen(window, false);
+    if (restored) {
+        restored = SDL_SyncWindow(window);
+    }
+
+    const bool sizeRequested = SDL_SetWindowSize(
+        window,
+        configuration.width,
+        configuration.height
+    );
+    const bool sizeSynchronized = sizeRequested && SDL_SyncWindow(window);
+    restored = sizeRequested && sizeSynchronized && restored;
+
+    if (configuration.fullscreen) {
+        const bool fullscreenRequested = SDL_SetWindowFullscreen(window, true);
+        const bool fullscreenSynchronized = fullscreenRequested
+            && SDL_SyncWindow(window);
+        restored = fullscreenRequested
+            && fullscreenSynchronized
+            && restored;
+    }
+    return restored && fullscreenMatches(window, configuration.fullscreen);
+}
 
 } // namespace
 
@@ -23,6 +119,15 @@ bool SdlWindow::initialize(
     const bool hidden
 ) noexcept {
     if (window_ != nullptr) {
+        return false;
+    }
+    if (!validDisplayConfiguration(displayConfiguration_)) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Window display configuration is invalid: %dx%d.",
+            displayConfiguration_.width,
+            displayConfiguration_.height
+        );
         return false;
     }
 
@@ -62,15 +167,18 @@ bool SdlWindow::initialize(
     if (hidden) {
         windowFlags |= SDL_WINDOW_HIDDEN;
     }
+    if (displayConfiguration_.fullscreen) {
+        windowFlags |= SDL_WINDOW_FULLSCREEN;
+    }
     window_ = SDL_CreateWindow(
         "Lonely Tower",
-        initialWindowWidth,
-        initialWindowHeight,
+        displayConfiguration_.width,
+        displayConfiguration_.height,
         windowFlags
     );
     if (window_ == nullptr) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Window creation failed: %s", SDL_GetError());
-        shutdown();
+        destroyNativeWindow();
         return false;
     }
 
@@ -81,8 +189,15 @@ bool SdlWindow::initialize(
             SDL_GetError()
         );
     }
-    if (!refreshMetrics()) {
-        shutdown();
+    if (!SDL_SyncWindow(window_)
+        || !fullscreenMatches(window_, displayConfiguration_.fullscreen)
+        || !refreshMetrics()) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Window creation did not reach its requested display state: %s",
+            SDL_GetError()
+        );
+        destroyNativeWindow();
         return false;
     }
     graphicsProfile_ = profile;
@@ -93,17 +208,63 @@ bool SdlWindow::recreate(
     const WindowGraphicsProfile profile,
     const bool hidden
 ) noexcept {
-    shutdown();
+    destroyNativeWindow();
     return initialize(profile, hidden);
 }
 
 void SdlWindow::shutdown() noexcept {
+    destroyNativeWindow();
+    displayConfiguration_ = {};
+}
+
+void SdlWindow::destroyNativeWindow() noexcept {
     if (window_ != nullptr) {
         SDL_DestroyWindow(window_);
         window_ = nullptr;
     }
     graphicsProfile_ = WindowGraphicsProfile::neutral;
     metrics_ = {};
+}
+
+bool SdlWindow::applyDisplayConfiguration(
+    const WindowDisplayConfiguration& configuration
+) noexcept {
+    if (window_ == nullptr || !validDisplayConfiguration(configuration)) {
+        return false;
+    }
+
+    const WindowDisplayConfiguration previousConfiguration =
+        displayConfiguration_;
+    const WindowDisplayConfiguration rollbackConfiguration =
+        captureRollbackConfiguration(window_, previousConfiguration);
+    const WindowMetrics previousMetrics = metrics_;
+    if (requestDisplayConfiguration(window_, configuration)
+        && refreshMetrics()) {
+        displayConfiguration_ = configuration;
+        return true;
+    }
+
+    SDL_LogError(
+        SDL_LOG_CATEGORY_APPLICATION,
+        "Window display configuration failed; restoring the previous state: %s",
+        SDL_GetError()
+    );
+    const bool restored = restoreDisplayConfiguration(
+        window_,
+        rollbackConfiguration
+    );
+    displayConfiguration_ = previousConfiguration;
+    if (!refreshMetrics()) {
+        metrics_ = previousMetrics;
+    }
+    if (!restored) {
+        SDL_LogWarn(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Window display configuration rollback was incomplete: %s",
+            SDL_GetError()
+        );
+    }
+    return false;
 }
 
 bool SdlWindow::refreshMetrics() noexcept {
@@ -186,6 +347,11 @@ bool SdlWindow::isVisible() const noexcept {
 
 WindowGraphicsProfile SdlWindow::graphicsProfile() const noexcept {
     return graphicsProfile_;
+}
+
+const WindowDisplayConfiguration& SdlWindow::displayConfiguration()
+    const noexcept {
+    return displayConfiguration_;
 }
 
 const WindowMetrics& SdlWindow::metrics() const noexcept {

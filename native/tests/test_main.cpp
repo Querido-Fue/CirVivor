@@ -19,6 +19,8 @@
 
 namespace {
 
+using cirvivor::engine::FixedStepMode;
+
 class TestFailure final : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -229,7 +231,7 @@ void testSchedulerNormalCatchUpAndInterpolation() {
     const auto schedule = scheduler.advance({
         .rawFrameDeltaSeconds = fixedStep * 2.5,
         .previousFrameCpuSeconds = 0,
-        .fixedStepEnabled = true
+        .fixedStepMode = FixedStepMode::scheduled
     });
 
     REQUIRE(schedule.fixedStepCount == 2U);
@@ -243,7 +245,7 @@ void testSchedulerClampAndDropsWholeDebt() {
     const auto schedule = scheduler.advance({
         .rawFrameDeltaSeconds = 0.25,
         .previousFrameCpuSeconds = 0,
-        .fixedStepEnabled = true
+        .fixedStepMode = FixedStepMode::scheduled
     });
 
     REQUIRE_NEAR(schedule.frameDeltaSeconds, 0.1, 1.0e-12);
@@ -260,7 +262,7 @@ void testSchedulerCpuBoundLimitAndRecoveryHysteresis() {
     const auto entered = scheduler.advance({
         .rawFrameDeltaSeconds = fixedStep,
         .previousFrameCpuSeconds = 0.016,
-        .fixedStepEnabled = true
+        .fixedStepMode = FixedStepMode::scheduled
     });
     REQUIRE(entered.fixedStepCount == 1U);
     REQUIRE(entered.cpuBound);
@@ -268,24 +270,44 @@ void testSchedulerCpuBoundLimitAndRecoveryHysteresis() {
     const auto limited = scheduler.advance({
         .rawFrameDeltaSeconds = fixedStep * 2.5,
         .previousFrameCpuSeconds = 0.04,
-        .fixedStepEnabled = true
+        .fixedStepMode = FixedStepMode::scheduled
     });
     REQUIRE(limited.fixedStepCount == 1U);
     REQUIRE(limited.droppedFixedStepCount == 1U);
     REQUIRE(limited.cpuBound);
 
-    const auto notHeadroom = scheduler.advance({fixedStep, 0.012, true});
+    const auto notHeadroom = scheduler.advance({
+        fixedStep,
+        0.012,
+        FixedStepMode::scheduled
+    });
     REQUIRE(notHeadroom.cpuBound);
-    REQUIRE(scheduler.advance({fixedStep, 0.010, true}).cpuBound);
-    REQUIRE(scheduler.advance({fixedStep, 0.010, true}).cpuBound);
-    REQUIRE(!scheduler.advance({fixedStep, 0.010, true}).cpuBound);
+    REQUIRE(scheduler.advance({
+        fixedStep,
+        0.010,
+        FixedStepMode::scheduled
+    }).cpuBound);
+    REQUIRE(scheduler.advance({
+        fixedStep,
+        0.010,
+        FixedStepMode::scheduled
+    }).cpuBound);
+    REQUIRE(!scheduler.advance({
+        fixedStep,
+        0.010,
+        FixedStepMode::scheduled
+    }).cpuBound);
 }
 
-void testSchedulerPauseAndDisabledStepResetState() {
+void testSchedulerDisabledAndSingleStepResetState() {
     cirvivor::engine::FrameScheduler scheduler;
     const double fixedStep = scheduler.config().fixedStepSeconds;
 
-    static_cast<void>(scheduler.advance({fixedStep * 1.5, fixedStep * 1.5, true}));
+    static_cast<void>(scheduler.advance({
+        fixedStep * 1.5,
+        fixedStep * 1.5,
+        FixedStepMode::scheduled
+    }));
     REQUIRE(scheduler.accumulatorSeconds() > 0);
     REQUIRE(scheduler.isCpuBound());
 
@@ -293,20 +315,61 @@ void testSchedulerPauseAndDisabledStepResetState() {
     REQUIRE(scheduler.isSuspended());
     REQUIRE_NEAR(scheduler.accumulatorSeconds(), 0, 0);
     REQUIRE(!scheduler.isCpuBound());
-    const auto suspended = scheduler.advance({0.1, 0, true});
+    const auto suspended = scheduler.advance({
+        0.1,
+        0,
+        FixedStepMode::singleStep
+    });
     REQUIRE(suspended.suspended);
     REQUIRE(suspended.fixedStepCount == 0U);
 
     scheduler.resume();
-    const auto resumed = scheduler.advance({fixedStep * 0.5, 0, true});
+    const auto resumed = scheduler.advance({
+        fixedStep * 0.5,
+        0,
+        FixedStepMode::scheduled
+    });
     REQUIRE(!resumed.suspended);
     REQUIRE(resumed.fixedStepCount == 0U);
     REQUIRE_NEAR(resumed.fixedAlpha, 0.5, 1.0e-12);
 
-    const auto disabled = scheduler.advance({fixedStep, 0.016, false});
+    const auto disabled = scheduler.advance({
+        fixedStep,
+        0.016,
+        FixedStepMode::disabled
+    });
     REQUIRE(disabled.fixedStepCount == 0U);
+    REQUIRE_NEAR(disabled.frameDeltaSeconds, fixedStep, 1.0e-12);
     REQUIRE_NEAR(scheduler.accumulatorSeconds(), 0, 0);
     REQUIRE(!scheduler.isCpuBound());
+
+    static_cast<void>(scheduler.advance({
+        fixedStep * 1.5,
+        fixedStep * 1.5,
+        FixedStepMode::scheduled
+    }));
+    REQUIRE(scheduler.accumulatorSeconds() > 0);
+    REQUIRE(scheduler.isCpuBound());
+
+    const auto singleStep = scheduler.advance({
+        fixedStep * 0.1,
+        fixedStep * 4.0,
+        FixedStepMode::singleStep
+    });
+    REQUIRE(singleStep.fixedStepCount == 1U);
+    REQUIRE(singleStep.droppedFixedStepCount == 0U);
+    REQUIRE_NEAR(singleStep.frameDeltaSeconds, fixedStep, 1.0e-12);
+    REQUIRE_NEAR(singleStep.fixedAlpha, 1.0, 1.0e-12);
+    REQUIRE_NEAR(scheduler.accumulatorSeconds(), 0, 0);
+    REQUIRE(!scheduler.isCpuBound());
+
+    const auto afterSingleStep = scheduler.advance({
+        fixedStep * 0.5,
+        0,
+        FixedStepMode::scheduled
+    });
+    REQUIRE(afterSingleStep.fixedStepCount == 0U);
+    REQUIRE_NEAR(afterSingleStep.fixedAlpha, 0.5, 1.0e-12);
 }
 
 void testSchedulerNormalizesInvalidDeltaAndConfig() {
@@ -328,7 +391,7 @@ void testSchedulerNormalizesInvalidDeltaAndConfig() {
     const auto schedule = scheduler.advance({
         .rawFrameDeltaSeconds = std::numeric_limits<double>::quiet_NaN(),
         .previousFrameCpuSeconds = std::numeric_limits<double>::quiet_NaN(),
-        .fixedStepEnabled = true
+        .fixedStepMode = FixedStepMode::scheduled
     });
     REQUIRE_NEAR(schedule.frameDeltaSeconds, 1.0 / 60.0, 1.0e-15);
     REQUIRE(schedule.fixedStepCount == 1U);
@@ -353,7 +416,7 @@ int main() {
         TestCase{"scheduler normal catch-up", testSchedulerNormalCatchUpAndInterpolation},
         TestCase{"scheduler clamp and debt drop", testSchedulerClampAndDropsWholeDebt},
         TestCase{"scheduler CPU-bound hysteresis", testSchedulerCpuBoundLimitAndRecoveryHysteresis},
-        TestCase{"scheduler pause reset", testSchedulerPauseAndDisabledStepResetState},
+        TestCase{"scheduler disabled and single-step reset", testSchedulerDisabledAndSingleStepResetState},
         TestCase{"scheduler input normalization", testSchedulerNormalizesInvalidDeltaAndConfig}
     };
 

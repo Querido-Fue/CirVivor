@@ -53,10 +53,12 @@ void require(
     const SDL_EventType type,
     const SDL_Scancode scancode,
     const std::uint32_t windowId,
-    const bool repeat = false
+    const bool repeat = false,
+    const std::uint64_t timestampNanoseconds = 0U
 ) noexcept {
     SDL_Event event{};
     event.type = type;
+    event.key.timestamp = timestampNanoseconds;
     event.key.windowID = windowId;
     event.key.scancode = scancode;
     event.key.down = type == SDL_EVENT_KEY_DOWN;
@@ -90,6 +92,7 @@ void testMovementKeysTranslateToSemanticActions() {
         REQUIRE(pressed.action == testCase.action);
         REQUIRE(pressed.pressed);
         REQUIRE(std::has_single_bit(pressed.sourceMask));
+        REQUIRE(!pressed.repeated);
 
         const PlatformEvent released = translateEvent(
             keyEvent(SDL_EVENT_KEY_UP, testCase.scancode, windowId)
@@ -99,6 +102,7 @@ void testMovementKeysTranslateToSemanticActions() {
         REQUIRE(released.action == testCase.action);
         REQUIRE(!released.pressed);
         REQUIRE(released.sourceMask == pressed.sourceMask);
+        REQUIRE(!released.repeated);
     }
 }
 
@@ -144,6 +148,64 @@ void testRepeatedKeyDownRemainsAnIdempotentStateEvent() {
     REQUIRE(event.action == PlatformAction::moveUp);
     REQUIRE(event.pressed);
     REQUIRE(event.sourceMask == initial.sourceMask);
+    REQUIRE(!initial.repeated);
+    REQUIRE(event.repeated);
+}
+
+void testDebugKeysPreserveEdgesRepeatAndTimestamp() {
+    struct KeyCase final {
+        SDL_Scancode scancode;
+        PlatformAction action;
+    };
+    constexpr std::array cases{
+        KeyCase{SDL_SCANCODE_SLASH, PlatformAction::debugPause},
+        KeyCase{SDL_SCANCODE_PERIOD, PlatformAction::debugStep}
+    };
+    constexpr std::uint64_t pressTimestampNs = 9'876'543'210ULL;
+    constexpr std::uint64_t repeatTimestampNs = 9'877'543'210ULL;
+    constexpr std::uint64_t releaseTimestampNs = 9'878'543'210ULL;
+
+    for (const KeyCase& testCase : cases) {
+        const PlatformEvent pressed = translateEvent(keyEvent(
+            SDL_EVENT_KEY_DOWN,
+            testCase.scancode,
+            92U,
+            false,
+            pressTimestampNs
+        ));
+        REQUIRE(pressed.kind == PlatformEventKind::actionChanged);
+        REQUIRE(pressed.action == testCase.action);
+        REQUIRE(pressed.pressed);
+        REQUIRE(std::has_single_bit(pressed.sourceMask));
+        REQUIRE(!pressed.repeated);
+        REQUIRE(pressed.timestampMilliseconds == 9'876U);
+
+        const PlatformEvent repeated = translateEvent(keyEvent(
+            SDL_EVENT_KEY_DOWN,
+            testCase.scancode,
+            92U,
+            true,
+            repeatTimestampNs
+        ));
+        REQUIRE(repeated.action == testCase.action);
+        REQUIRE(repeated.pressed);
+        REQUIRE(repeated.sourceMask == pressed.sourceMask);
+        REQUIRE(repeated.repeated);
+        REQUIRE(repeated.timestampMilliseconds == 9'877U);
+
+        const PlatformEvent released = translateEvent(keyEvent(
+            SDL_EVENT_KEY_UP,
+            testCase.scancode,
+            92U,
+            false,
+            releaseTimestampNs
+        ));
+        REQUIRE(released.action == testCase.action);
+        REQUIRE(!released.pressed);
+        REQUIRE(released.sourceMask == pressed.sourceMask);
+        REQUIRE(!released.repeated);
+        REQUIRE(released.timestampMilliseconds == 9'878U);
+    }
 }
 
 void testUnboundKeyboardInputIsIgnored() {
@@ -217,6 +279,36 @@ void testMouseButtonsPreservePhasePositionAndClickCount() {
     REQUIRE(released.pointer.phase == PlatformPointerPhase::released);
     REQUIRE(released.pointer.button == PlatformPointerButton::auxiliary2);
     REQUIRE(released.pointer.buttons == 0U);
+}
+
+void testMiddleButtonPreservesMatchedPointerAndTimestamp() {
+    SDL_Event source{};
+    source.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    source.button.timestamp = 4'567'890'123ULL;
+    source.button.windowID = 42U;
+    source.button.which = 19U;
+    source.button.button = SDL_BUTTON_MIDDLE;
+    source.button.down = true;
+    source.button.clicks = 1U;
+    source.button.x = 30.0F;
+    source.button.y = 40.0F;
+
+    const PlatformEvent pressed = translateEvent(source);
+    REQUIRE(pressed.kind == PlatformEventKind::pointerChanged);
+    REQUIRE(pressed.pointer.device == PlatformPointerDevice::mouse);
+    REQUIRE(pressed.pointer.phase == PlatformPointerPhase::pressed);
+    REQUIRE(pressed.pointer.button == PlatformPointerButton::middle);
+    REQUIRE(pressed.pointer.pointerId == 19U);
+    REQUIRE(pressed.timestampMilliseconds == 4'567U);
+
+    source.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    source.button.timestamp = 6'567'999'999ULL;
+    source.button.down = false;
+    const PlatformEvent released = translateEvent(source);
+    REQUIRE(released.pointer.phase == PlatformPointerPhase::released);
+    REQUIRE(released.pointer.button == PlatformPointerButton::middle);
+    REQUIRE(released.pointer.pointerId == pressed.pointer.pointerId);
+    REQUIRE(released.timestampMilliseconds == 6'567U);
 }
 
 void testWheelDeltasHaveBackendNeutralDirection() {
@@ -428,9 +520,11 @@ int main() {
         TestCase{"movement key translation", testMovementKeysTranslateToSemanticActions},
         TestCase{"distinct alias sources", testAliasesUseDistinctSourcesForTheSameAction},
         TestCase{"repeat keydown state", testRepeatedKeyDownRemainsAnIdempotentStateEvent},
+        TestCase{"debug key edges and timestamp", testDebugKeysPreserveEdgesRepeatAndTimestamp},
         TestCase{"unbound key filtering", testUnboundKeyboardInputIsIgnored},
         TestCase{"mouse motion payload", testMouseMotionUsesNeutralPointerPayload},
         TestCase{"mouse button payload", testMouseButtonsPreservePhasePositionAndClickCount},
+        TestCase{"middle button timestamp", testMiddleButtonPreservesMatchedPointerAndTimestamp},
         TestCase{"wheel direction normalization", testWheelDeltasHaveBackendNeutralDirection},
         TestCase{"touch pointer payload", testTouchEventsPreserveNormalizedCoordinatesAndPointerIdentity},
         TestCase{"fixed UTF-8 text payload", testTextInputAndCompositionUseFixedUtf8Storage},

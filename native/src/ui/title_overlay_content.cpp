@@ -99,15 +99,36 @@ struct PanelRatio final {
     if (presentation.controlCount >= presentation.controls.size()) {
         return false;
     }
+    const layout::RoundedRectD scaledRect = scaleRectAround(
+        baseRect,
+        center,
+        scale
+    );
     presentation.controls[presentation.controlCount++] = {
         id,
         action,
-        scaleRectAround(baseRect, center, scale),
+        scaledRect,
+        scaledRect,
         value,
         enabled,
         selected
     };
     return true;
+}
+
+void setLatestSettingsValueRect(
+    TitleOverlayPresentation& presentation
+) noexcept {
+    // JS oracle: field row 94%, label 35%, then a 65% control wrap whose
+    // control is capped at 66.66%. Native rows already represent the field
+    // row, so the value/control surface is the right-most product of those
+    // two control ratios.
+    constexpr double controlWidthRatio = 0.65 * 0.6666;
+    TitleOverlayControl& control =
+        presentation.controls[presentation.controlCount - 1U];
+    control.valueRect.x = control.rect.x
+        + (control.rect.width * (1.0 - controlWidthRatio));
+    control.valueRect.width = control.rect.width * controlWidthRatio;
 }
 
 [[nodiscard]] layout::RoundedRectD footerButton(
@@ -236,11 +257,12 @@ struct PanelRatio final {
                 {result.bodyRect.x, y, columnWidth, rowHeight, basePanel.radius * 0.45},
                 center,
                 1.0,
-                TitleOverlayControlAction::none,
+                TitleOverlayControlAction::activateApplicationControl,
                 leftValues[index],
                 leftValues[index] > 0.5)) {
             return false;
         }
+        setLatestSettingsValueRect(result);
         if (!appendControl(
                 result,
                 rightIds[index],
@@ -253,11 +275,14 @@ struct PanelRatio final {
                 },
                 center,
                 1.0,
-                TitleOverlayControlAction::none,
+                rightIds[index] == TitleOverlayControlId::settingKeybindings
+                    ? TitleOverlayControlAction::none
+                    : TitleOverlayControlAction::activateApplicationControl,
                 rightValues[index],
                 rightValues[index] > 0.5)) {
             return false;
         }
+        setLatestSettingsValueRect(result);
     }
     return appendControl(
             result,
@@ -265,7 +290,7 @@ struct PanelRatio final {
             footerButton(basePanel, page, 1U),
             center,
             scale,
-            TitleOverlayControlAction::cancelTop
+            TitleOverlayControlAction::activateApplicationControl
         )
         && appendControl(
             result,
@@ -273,7 +298,7 @@ struct PanelRatio final {
             footerButton(basePanel, page, 0U),
             center,
             scale,
-            TitleOverlayControlAction::none,
+            TitleOverlayControlAction::activateApplicationControl,
             0.0,
             false,
             false
@@ -346,7 +371,7 @@ struct PanelRatio final {
                 },
                 center,
                 1.0,
-                TitleOverlayControlAction::none,
+                TitleOverlayControlAction::activateApplicationControl,
                 index == 3U ? 0.0 : 1.0,
                 index != 3U)) {
             return false;
@@ -476,6 +501,84 @@ struct PanelRatio final {
     return false;
 }
 
+[[nodiscard]] bool validControlStateOverrides(
+    const TitleOverlayControlStateOverrides* const overrides
+) noexcept {
+    if (overrides == nullptr) {
+        return true;
+    }
+    if (overrides->revision == 0U
+        || overrides->controlCount > overrides->controls.size()) {
+        return false;
+    }
+    for (std::size_t index = 0U; index < overrides->controlCount; ++index) {
+        const TitleOverlayControlStateOverride& entry =
+            overrides->controls[index];
+        if (entry.overlaySequence == 0U
+            || entry.id <= TitleOverlayControlId::none
+            || entry.id > TitleOverlayControlId::debugOpenDevTools
+            || !std::isfinite(entry.value)
+            || entry.value < 0.0
+            || entry.value > 1.0) {
+            return false;
+        }
+        for (std::size_t previous = 0U; previous < index; ++previous) {
+            const TitleOverlayControlStateOverride& seen =
+                overrides->controls[previous];
+            if (seen.overlaySequence == entry.overlaySequence
+                && seen.id == entry.id) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool applyControlStateOverrides(
+    TitleOverlayPresentationSet& presentations,
+    const TitleOverlayControlStateOverrides* const overrides
+) noexcept {
+    if (overrides == nullptr) {
+        return true;
+    }
+    for (std::size_t overrideIndex = 0U;
+         overrideIndex < overrides->controlCount;
+         ++overrideIndex) {
+        const TitleOverlayControlStateOverride& entry =
+            overrides->controls[overrideIndex];
+        TitleOverlayControl* matched = nullptr;
+        for (std::size_t overlayIndex = 0U;
+             overlayIndex < presentations.overlayCount;
+             ++overlayIndex) {
+            TitleOverlayPresentation& presentation =
+                presentations.overlays[overlayIndex];
+            if (presentation.sequence != entry.overlaySequence) {
+                continue;
+            }
+            for (std::size_t controlIndex = 0U;
+                 controlIndex < presentation.controlCount;
+                 ++controlIndex) {
+                TitleOverlayControl& control =
+                    presentation.controls[controlIndex];
+                if (control.id != entry.id) {
+                    continue;
+                }
+                if (matched != nullptr) {
+                    return false;
+                }
+                matched = &control;
+            }
+        }
+        if (matched == nullptr) {
+            return false;
+        }
+        matched->value = entry.value;
+        matched->selected = entry.selected;
+        matched->enabled = entry.enabled;
+    }
+    return true;
+}
+
 [[nodiscard]] bool pointInside(
     const layout::PointD& point,
     const layout::RoundedRectD& rect
@@ -508,19 +611,24 @@ struct PanelRatio final {
 bool tryBuildTitleOverlayPresentationSet(
     const UiStateSnapshot& state,
     const layout::UiLayoutSnapshot& layoutSnapshot,
-    TitleOverlayPresentationSet& out
+    TitleOverlayPresentationSet& out,
+    const TitleOverlayControlStateOverrides* const controlStateOverrides
 ) noexcept {
     if (state.overlayCount > maximum_overlay_count
         || layoutSnapshot.revision == 0U
         || !finiteRect(layoutSnapshot.viewport.safeAreaRect)
         || !finitePositive(layoutSnapshot.viewport.uiww)
-        || !finitePositive(layoutSnapshot.viewport.uiScale)) {
+        || !finitePositive(layoutSnapshot.viewport.uiScale)
+        || !validControlStateOverrides(controlStateOverrides)) {
         return false;
     }
     TitleOverlayPresentationSet candidate{};
     candidate.overlayCount = state.overlayCount;
     candidate.stateRevision = state.revision;
     candidate.layoutRevision = layoutSnapshot.revision;
+    candidate.controlStateRevision = controlStateOverrides == nullptr
+        ? 0U
+        : controlStateOverrides->revision;
     for (std::size_t index = 0U; index < state.overlayCount; ++index) {
         if (!buildPresentation(
                 state.overlays[index],
@@ -528,6 +636,9 @@ bool tryBuildTitleOverlayPresentationSet(
                 candidate.overlays[index])) {
             return false;
         }
+    }
+    if (!applyControlStateOverrides(candidate, controlStateOverrides)) {
+        return false;
     }
     out = candidate;
     return true;

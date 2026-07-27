@@ -60,6 +60,9 @@ using cirvivor::ui::OverlaySnapshot;
 using cirvivor::ui::TitleOverlayStateMachine;
 using cirvivor::ui::TitleOverlayControlAction;
 using cirvivor::ui::TitleOverlayControlId;
+using cirvivor::ui::TitleOverlayControlStateOverride;
+using cirvivor::ui::TitleOverlayControlStateOverrides;
+using cirvivor::ui::TitleOverlayPresentation;
 using cirvivor::ui::TitleOverlayPresentationSet;
 using cirvivor::ui::TitleUiController;
 using cirvivor::ui::TitleUiControllerSnapshot;
@@ -68,6 +71,7 @@ using cirvivor::ui::UiAction;
 using cirvivor::ui::UiActionOutcome;
 using cirvivor::ui::UiActionStatus;
 using cirvivor::ui::UiEffect;
+using cirvivor::ui::UiFrameContext;
 using cirvivor::ui::UiInputResult;
 using cirvivor::ui::UiInputStatus;
 using cirvivor::ui::UiPointerButton;
@@ -248,6 +252,20 @@ void advanceToInteractiveTitle(TitleOverlayStateMachine& state) noexcept {
     for (std::size_t index = 0U; index < overlay->controlCount; ++index) {
         if (overlay->controls[index].id == id) {
             return center(overlay->controls[index].rect);
+        }
+    }
+    throw TestFailure("missing overlay control");
+}
+
+[[nodiscard]] const cirvivor::ui::TitleOverlayControl& overlayControl(
+    const TitleOverlayPresentation& presentation,
+    const TitleOverlayControlId id
+) {
+    for (std::size_t index = 0U;
+         index < presentation.controlCount;
+         ++index) {
+        if (presentation.controls[index].id == id) {
+            return presentation.controls[index];
         }
     }
     throw TestFailure("missing overlay control");
@@ -961,7 +979,6 @@ void testBreadthOverlaysCloseAndPassiveControlsDoNotReject() {
     const Presentation presentation = makePresentation();
     constexpr std::array kinds{
         OverlayKind::deck,
-        OverlayKind::setting,
         OverlayKind::credits,
         OverlayKind::quickStart,
         OverlayKind::records,
@@ -977,9 +994,7 @@ void testBreadthOverlaysCloseAndPassiveControlsDoNotReject() {
             : state.apply(UiAction::openTitle(kind));
         REQUIRE(opened.accepted());
         state.advance(0.5);
-        const TitleOverlayControlId closeId = kind == OverlayKind::setting
-            ? TitleOverlayControlId::cancel
-            : TitleOverlayControlId::close;
+        const TitleOverlayControlId closeId = TitleOverlayControlId::close;
         const PointD closePoint = overlayControlCenter(
             presentation,
             state.snapshot(),
@@ -1032,12 +1047,485 @@ void testBreadthOverlaysCloseAndPassiveControlsDoNotReject() {
     }
     REQUIRE(save != nullptr);
     REQUIRE(!save->enabled);
-    REQUIRE(save->action == cirvivor::ui::TitleOverlayControlAction::none);
+    REQUIRE(save->action
+        == TitleOverlayControlAction::activateApplicationControl);
     REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
         *settings,
         center(save->rect)
     ) == nullptr);
 
+}
+
+void testApplicationControlsUseOverridesAndStableReleaseIdentity() {
+    constexpr std::array settingApplicationControls{
+        TitleOverlayControlId::settingWindowMode,
+        TitleOverlayControlId::settingUltrawide,
+        TitleOverlayControlId::settingRenderScale,
+        TitleOverlayControlId::settingUiScale,
+        TitleOverlayControlId::settingOpaqueUi,
+        TitleOverlayControlId::settingBenchmark,
+        TitleOverlayControlId::settingLanguage,
+        TitleOverlayControlId::settingTheme,
+        TitleOverlayControlId::settingTooltipDelay,
+        TitleOverlayControlId::settingBgm,
+        TitleOverlayControlId::settingSfx
+    };
+    constexpr std::array debugApplicationControls{
+        TitleOverlayControlId::debugFrameTime,
+        TitleOverlayControlId::debugPoolInfo,
+        TitleOverlayControlId::debugHitboxes,
+        TitleOverlayControlId::debugAnimation
+    };
+    const Presentation presentation = makePresentation();
+    TitleOverlayStateMachine state;
+    advanceToInteractiveTitle(state);
+    const UiActionOutcome opened = state.apply(
+        UiAction::openTitle(OverlayKind::setting)
+    );
+    REQUIRE(opened.accepted());
+    state.advance(0.5);
+    const UiStateSnapshot settingState = state.snapshot();
+
+    TitleOverlayPresentationSet defaults{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        settingState,
+        presentation.layout,
+        defaults
+    ));
+    REQUIRE(defaults.controlStateRevision == 0U);
+    const TitleOverlayPresentation* settings =
+        cirvivor::ui::findTitleOverlayPresentation(
+            defaults,
+            opened.overlaySequence
+        );
+    REQUIRE(settings != nullptr);
+    for (const TitleOverlayControlId id : settingApplicationControls) {
+        const auto& control = overlayControl(*settings, id);
+        REQUIRE(control.enabled);
+        REQUIRE(control.action
+            == TitleOverlayControlAction::activateApplicationControl);
+        REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+            *settings,
+            center(control.rect)
+        ) == &control);
+    }
+    const auto& keybindings = overlayControl(
+        *settings,
+        TitleOverlayControlId::settingKeybindings
+    );
+    REQUIRE(keybindings.action == TitleOverlayControlAction::none);
+    REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+        *settings,
+        center(keybindings.rect)
+    ) == nullptr);
+    const auto& defaultSave = overlayControl(
+        *settings,
+        TitleOverlayControlId::confirm
+    );
+    REQUIRE(defaultSave.action
+        == TitleOverlayControlAction::activateApplicationControl);
+    REQUIRE(!defaultSave.enabled);
+    REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+        *settings,
+        center(defaultSave.rect)
+    ) == nullptr);
+    REQUIRE(overlayControl(
+        *settings,
+        TitleOverlayControlId::cancel
+    ).action == TitleOverlayControlAction::activateApplicationControl);
+
+    TitleOverlayControlStateOverrides overrides{};
+    overrides.revision = 41U;
+    overrides.controlCount = 3U;
+    overrides.controls[0] = TitleOverlayControlStateOverride{
+        opened.overlaySequence,
+        TitleOverlayControlId::settingRenderScale,
+        0.37,
+        true,
+        true
+    };
+    overrides.controls[1] = TitleOverlayControlStateOverride{
+        opened.overlaySequence,
+        TitleOverlayControlId::confirm,
+        0.0,
+        false,
+        true
+    };
+    overrides.controls[2] = TitleOverlayControlStateOverride{
+        opened.overlaySequence,
+        TitleOverlayControlId::settingBgm,
+        0.18,
+        false,
+        false
+    };
+    TitleOverlayPresentationSet overridden{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        settingState,
+        presentation.layout,
+        overridden,
+        &overrides
+    ));
+    REQUIRE(overridden.controlStateRevision == overrides.revision);
+    settings = cirvivor::ui::findTitleOverlayPresentation(
+        overridden,
+        opened.overlaySequence
+    );
+    REQUIRE(settings != nullptr);
+    const auto& slider = overlayControl(
+        *settings,
+        TitleOverlayControlId::settingRenderScale
+    );
+    REQUIRE(slider.value == 0.37);
+    REQUIRE(slider.selected);
+    REQUIRE(slider.enabled);
+    REQUIRE(slider.valueRect.x > slider.rect.x);
+    REQUIRE(slider.valueRect.y == slider.rect.y);
+    REQUIRE(slider.valueRect.width < slider.rect.width);
+    REQUIRE(slider.valueRect.height == slider.rect.height);
+    REQUIRE(std::abs(
+        (slider.valueRect.x + slider.valueRect.width)
+        - (slider.rect.x + slider.rect.width)
+    ) < 1.0e-12);
+    REQUIRE(overlayControl(
+        *settings,
+        TitleOverlayControlId::confirm
+    ).enabled);
+    const auto& disabledBgm = overlayControl(
+        *settings,
+        TitleOverlayControlId::settingBgm
+    );
+    REQUIRE(!disabledBgm.enabled);
+    REQUIRE(disabledBgm.value == 0.18);
+
+    TitleOverlayControlStateOverrides staleOverrides = overrides;
+    ++staleOverrides.revision;
+    ++staleOverrides.controls[0].overlaySequence;
+    TitleOverlayPresentationSet transactional = overridden;
+    REQUIRE(!tryBuildTitleOverlayPresentationSet(
+        settingState,
+        presentation.layout,
+        transactional,
+        &staleOverrides
+    ));
+    REQUIRE(transactional == overridden);
+
+    const PointD quarter{
+        slider.valueRect.x + (slider.valueRect.width * 0.25),
+        slider.valueRect.y + (slider.valueRect.height * 0.5)
+    };
+    TitleUiController controller;
+    const UiInputResult down = controller.handlePointer(
+        mouseEvent(UiPointerEventType::down, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    );
+    REQUIRE(down.status == UiInputStatus::captured);
+    REQUIRE(down.overlaySequence == opened.overlaySequence);
+    REQUIRE(down.overlayControlId
+        == TitleOverlayControlId::settingRenderScale);
+    REQUIRE(controller.snapshot().capture.controlStateRevision
+        == overrides.revision);
+    const UiStateSnapshot beforeActivation = state.snapshot();
+    const UiInputResult activated = controller.handlePointer(
+        mouseEvent(UiPointerEventType::up, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    );
+    REQUIRE(activated.applicationControlActivated());
+    REQUIRE(activated.overlaySequence == opened.overlaySequence);
+    REQUIRE(activated.overlayControlId
+        == TitleOverlayControlId::settingRenderScale);
+    REQUIRE(activated.normalizedValueValid);
+    REQUIRE(std::abs(activated.normalizedValue - 0.25) < 1.0e-12);
+    REQUIRE(state.snapshot() == beforeActivation);
+    REQUIRE(!controller.snapshot().capture.active);
+
+    constexpr std::array normalizedBoundaries{0.0, 0.5, 1.0};
+    for (const double expected : normalizedBoundaries) {
+        const double valueRight = slider.valueRect.x + slider.valueRect.width;
+        const PointD point{
+            expected == 1.0
+                ? std::nextafter(valueRight, slider.valueRect.x)
+                : slider.valueRect.x + (slider.valueRect.width * expected),
+            slider.valueRect.y + (slider.valueRect.height * 0.5)
+        };
+        TitleUiController boundaryController;
+        REQUIRE(boundaryController.handlePointer(
+            mouseEvent(
+                UiPointerEventType::down,
+                point,
+                UiPointerButton::left
+            ),
+            presentation.layout,
+            presentation.entrance,
+            settingState,
+            overridden,
+            state
+        ).status == UiInputStatus::captured);
+        const UiInputResult boundary = boundaryController.handlePointer(
+            mouseEvent(UiPointerEventType::up, point, UiPointerButton::left),
+            presentation.layout,
+            presentation.entrance,
+            settingState,
+            overridden,
+            state
+        );
+        REQUIRE(boundary.applicationControlActivated());
+        REQUIRE(boundary.normalizedValueValid);
+        REQUIRE(std::abs(boundary.normalizedValue - expected) < 1.0e-12);
+    }
+
+    TitleUiController dragController;
+    REQUIRE(dragController.handlePointer(
+        mouseEvent(UiPointerEventType::down, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    ).status == UiInputStatus::captured);
+    const PointD outside{slider.rect.x - 1.0, quarter.y};
+    const UiInputResult draggedOut = dragController.handlePointer(
+        mouseEvent(UiPointerEventType::up, outside, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    );
+    REQUIRE(draggedOut.status == UiInputStatus::released);
+    REQUIRE(!draggedOut.applicationControlActivated());
+    REQUIRE(!draggedOut.normalizedValueValid);
+
+    TitleUiController focusController;
+    REQUIRE(focusController.handlePointer(
+        mouseEvent(UiPointerEventType::down, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    ).status == UiInputStatus::captured);
+    const UiInputResult focusLost = focusController.handleFocusLost();
+    REQUIRE(focusLost.status == UiInputStatus::focusCancelled);
+    REQUIRE(focusLost.overlaySequence == opened.overlaySequence);
+    REQUIRE(focusLost.overlayControlId
+        == TitleOverlayControlId::settingRenderScale);
+    REQUIRE(!focusLost.normalizedValueValid);
+    REQUIRE(focusController.handlePointer(
+        mouseEvent(UiPointerEventType::up, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    ).status == UiInputStatus::ignoredNoCapture);
+
+    TitleUiController disabledController;
+    REQUIRE(disabledController.handlePointer(
+        mouseEvent(
+            UiPointerEventType::down,
+            center(disabledBgm.rect),
+            UiPointerButton::left
+        ),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    ).status == UiInputStatus::ignoredNoTarget);
+    TitleUiController passiveController;
+    REQUIRE(passiveController.handlePointer(
+        mouseEvent(
+            UiPointerEventType::down,
+            center(keybindings.rect),
+            UiPointerButton::left
+        ),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    ).status == UiInputStatus::ignoredNoTarget);
+
+    const auto requireFooterActivation = [&](const TitleOverlayControlId id) {
+        const auto& control = overlayControl(*settings, id);
+        TitleUiController footerController;
+        const PointD point = center(control.rect);
+        REQUIRE(footerController.handlePointer(
+            mouseEvent(UiPointerEventType::down, point, UiPointerButton::left),
+            presentation.layout,
+            presentation.entrance,
+            settingState,
+            overridden,
+            state
+        ).status == UiInputStatus::captured);
+        const UiInputResult result = footerController.handlePointer(
+            mouseEvent(UiPointerEventType::up, point, UiPointerButton::left),
+            presentation.layout,
+            presentation.entrance,
+            settingState,
+            overridden,
+            state
+        );
+        REQUIRE(result.applicationControlActivated());
+        REQUIRE(result.overlaySequence == opened.overlaySequence);
+        REQUIRE(result.overlayControlId == id);
+        REQUIRE(result.normalizedValueValid);
+    };
+    requireFooterActivation(TitleOverlayControlId::confirm);
+    requireFooterActivation(TitleOverlayControlId::cancel);
+
+    TitleUiController revisionController;
+    REQUIRE(revisionController.handlePointer(
+        mouseEvent(UiPointerEventType::down, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    ).status == UiInputStatus::captured);
+    TitleOverlayControlStateOverrides newerOverrides = overrides;
+    ++newerOverrides.revision;
+    TitleOverlayPresentationSet newerPresentation{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        settingState,
+        presentation.layout,
+        newerPresentation,
+        &newerOverrides
+    ));
+    const UiInputResult staleRevision = revisionController.handlePointer(
+        mouseEvent(UiPointerEventType::up, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        newerPresentation,
+        state
+    );
+    REQUIRE(staleRevision.status == UiInputStatus::ignoredNoCapture);
+    REQUIRE(!staleRevision.applicationControlActivated());
+
+    TitleUiController sequenceController;
+    REQUIRE(sequenceController.handlePointer(
+        mouseEvent(UiPointerEventType::down, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        settingState,
+        overridden,
+        state
+    ).status == UiInputStatus::captured);
+    const UiActionOutcome debugOpened = state.apply(UiAction::openDebug());
+    REQUIRE(debugOpened.accepted());
+    state.advance(0.5);
+    const UiStateSnapshot nestedState = state.snapshot();
+    TitleOverlayPresentationSet nestedPresentation{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        nestedState,
+        presentation.layout,
+        nestedPresentation,
+        &overrides
+    ));
+    const UiInputResult staleSequence = sequenceController.handlePointer(
+        mouseEvent(UiPointerEventType::up, quarter, UiPointerButton::left),
+        presentation.layout,
+        presentation.entrance,
+        nestedState,
+        nestedPresentation,
+        state
+    );
+    REQUIRE(staleSequence.status == UiInputStatus::ignoredNoCapture);
+    REQUIRE(staleSequence.overlaySequence == debugOpened.overlaySequence);
+    REQUIRE(!staleSequence.applicationControlActivated());
+
+    const TitleOverlayPresentation* debug =
+        cirvivor::ui::findTitleOverlayPresentation(
+            nestedPresentation,
+            debugOpened.overlaySequence
+        );
+    REQUIRE(debug != nullptr);
+    for (const TitleOverlayControlId id : debugApplicationControls) {
+        const auto& control = overlayControl(*debug, id);
+        REQUIRE(control.action
+            == TitleOverlayControlAction::activateApplicationControl);
+        REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+            *debug,
+            center(control.rect)
+        ) == &control);
+    }
+    const auto& devTools = overlayControl(
+        *debug,
+        TitleOverlayControlId::debugOpenDevTools
+    );
+    REQUIRE(devTools.action == TitleOverlayControlAction::none);
+    REQUIRE(cirvivor::ui::hitTestTitleOverlayControl(
+        *debug,
+        center(devTools.rect)
+    ) == nullptr);
+    REQUIRE(overlayControl(
+        *debug,
+        TitleOverlayControlId::close
+    ).action == TitleOverlayControlAction::cancelTop);
+
+    constexpr UiFrameContext paused{.animationPaused = true};
+    TitleOverlayStateMachine pausedState;
+    const UiActionOutcome pausedDebug = pausedState.apply(
+        UiAction::openDebug(),
+        paused
+    );
+    REQUIRE(pausedDebug.accepted());
+    const UiStateSnapshot pausedSnapshot = pausedState.snapshot();
+    REQUIRE(pausedSnapshot.overlayCount == 1U);
+    REQUIRE(pausedSnapshot.overlays[0].phase == OverlayPhase::open);
+    TitleOverlayPresentationSet pausedPresentations{};
+    REQUIRE(tryBuildTitleOverlayPresentationSet(
+        pausedSnapshot,
+        presentation.layout,
+        pausedPresentations
+    ));
+    const TitleOverlayPresentation* pausedDebugPresentation =
+        cirvivor::ui::findTitleOverlayPresentation(
+            pausedPresentations,
+            pausedDebug.overlaySequence
+        );
+    REQUIRE(pausedDebugPresentation != nullptr);
+    const PointD pausedClose = center(overlayControl(
+        *pausedDebugPresentation,
+        TitleOverlayControlId::close
+    ).rect);
+    TitleUiController pausedController;
+    REQUIRE(pausedController.handlePointer(
+        mouseEvent(
+            UiPointerEventType::down,
+            pausedClose,
+            UiPointerButton::left
+        ),
+        presentation.layout,
+        presentation.entrance,
+        pausedSnapshot,
+        pausedState,
+        paused
+    ).status == UiInputStatus::captured);
+    const UiInputResult pausedClosed = pausedController.handlePointer(
+        mouseEvent(
+            UiPointerEventType::up,
+            pausedClose,
+            UiPointerButton::left
+        ),
+        presentation.layout,
+        presentation.entrance,
+        pausedSnapshot,
+        pausedState,
+        paused
+    );
+    REQUIRE(pausedClosed.actionAccepted());
+    REQUIRE(pausedClosed.overlayControlId == TitleOverlayControlId::close);
+    REQUIRE(pausedState.snapshot().overlayCount == 0U);
 }
 
 void testCreditsLinksUseStableIdentityAndExternalWarningFlow() {
@@ -1749,6 +2237,10 @@ int main() {
         TestCase{
             "breadth overlay close and passive controls",
             testBreadthOverlaysCloseAndPassiveControlsDoNotReject
+        },
+        TestCase{
+            "application controls and overrides",
+            testApplicationControlsUseOverridesAndStableReleaseIdentity
         },
         TestCase{
             "credits stable external links",

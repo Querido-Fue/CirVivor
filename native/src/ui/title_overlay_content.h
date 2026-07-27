@@ -11,6 +11,7 @@
 namespace cirvivor::ui {
 
 inline constexpr std::size_t maximum_title_overlay_controls = 20U;
+inline constexpr std::size_t maximum_title_overlay_control_state_overrides = 20U;
 
 enum class TitleOverlayControlId : std::uint8_t {
     none,
@@ -47,13 +48,41 @@ enum class TitleOverlayControlAction : std::uint8_t {
     none,
     cancelTop,
     confirmTop,
-    openExternalLink
+    openExternalLink,
+    activateApplicationControl
+};
+
+struct TitleOverlayControlStateOverride final {
+    std::uint32_t overlaySequence = 0U;
+    TitleOverlayControlId id = TitleOverlayControlId::none;
+    double value = 0.0;
+    bool selected = false;
+    bool enabled = true;
+
+    constexpr bool operator==(
+        const TitleOverlayControlStateOverride&
+    ) const noexcept = default;
+};
+
+/** Application domain을 모르는 fixed-capacity control 표시 상태입니다. */
+struct TitleOverlayControlStateOverrides final {
+    std::array<
+        TitleOverlayControlStateOverride,
+        maximum_title_overlay_control_state_overrides
+    > controls{};
+    std::uint8_t controlCount = 0U;
+    std::uint64_t revision = 0U;
+
+    constexpr bool operator==(
+        const TitleOverlayControlStateOverrides&
+    ) const noexcept = default;
 };
 
 struct TitleOverlayControl final {
     TitleOverlayControlId id = TitleOverlayControlId::none;
     TitleOverlayControlAction action = TitleOverlayControlAction::none;
     layout::RoundedRectD rect{};
+    layout::RoundedRectD valueRect{};
     double value = 0.0;
     bool enabled = true;
     bool selected = false;
@@ -90,6 +119,7 @@ struct TitleOverlayPresentationSet final {
     std::uint8_t overlayCount = 0U;
     std::uint64_t stateRevision = 0U;
     std::uint64_t layoutRevision = 0U;
+    std::uint64_t controlStateRevision = 0U;
 
     constexpr bool operator==(const TitleOverlayPresentationSet&) const noexcept = default;
 };
@@ -98,7 +128,8 @@ struct TitleOverlayPresentationSet final {
 [[nodiscard]] bool tryBuildTitleOverlayPresentationSet(
     const UiStateSnapshot& state,
     const layout::UiLayoutSnapshot& layoutSnapshot,
-    TitleOverlayPresentationSet& out
+    TitleOverlayPresentationSet& out,
+    const TitleOverlayControlStateOverrides* controlStateOverrides = nullptr
 ) noexcept;
 
 [[nodiscard]] const TitleOverlayPresentation* findTitleOverlayPresentation(
@@ -117,9 +148,13 @@ struct TitleOverlayPresentationSet final {
 ) noexcept;
 
 static_assert(std::is_trivially_copyable_v<TitleOverlayControl>);
+static_assert(std::is_trivially_copyable_v<TitleOverlayControlStateOverride>);
+static_assert(std::is_trivially_copyable_v<TitleOverlayControlStateOverrides>);
 static_assert(std::is_trivially_copyable_v<TitleOverlayPresentation>);
 static_assert(std::is_trivially_copyable_v<TitleOverlayPresentationSet>);
 static_assert(std::is_standard_layout_v<TitleOverlayControl>);
+static_assert(std::is_standard_layout_v<TitleOverlayControlStateOverride>);
+static_assert(std::is_standard_layout_v<TitleOverlayControlStateOverrides>);
 static_assert(std::is_standard_layout_v<TitleOverlayPresentation>);
 static_assert(std::is_standard_layout_v<TitleOverlayPresentationSet>);
 

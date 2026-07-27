@@ -1588,7 +1588,9 @@ ApplicationResult Application::iterate() noexcept {
     const engine::FrameSample frameSample = {
         static_cast<double>(elapsedTicks) / nanosecondsPerSecond,
         previousFrameCpuSeconds_,
-        sceneMode_ != SceneMode::title
+        sceneMode_ == SceneMode::title
+            ? engine::FixedStepMode::disabled
+            : engine::FixedStepMode::scheduled
     };
     const engine::FrameSchedule schedule = scheduler_.advance(frameSample);
     if (sceneMode_ == SceneMode::title) {

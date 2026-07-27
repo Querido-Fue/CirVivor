@@ -5,12 +5,14 @@
 namespace cirvivor::platform::sdl {
 namespace {
 
-struct MovementBinding final {
+constexpr std::uint64_t nanoseconds_per_millisecond = 1'000'000U;
+
+struct ActionBinding final {
     PlatformAction action = PlatformAction::none;
     std::uint32_t sourceMask = 0;
 };
 
-[[nodiscard]] constexpr MovementBinding movementBinding(
+[[nodiscard]] constexpr ActionBinding actionBinding(
     const SDL_Scancode scancode
 ) noexcept {
     switch (scancode) {
@@ -30,9 +32,31 @@ struct MovementBinding final {
         return {PlatformAction::moveRight, 1U << 6U};
     case SDL_SCANCODE_RIGHT:
         return {PlatformAction::moveRight, 1U << 7U};
+    case SDL_SCANCODE_SLASH:
+        return {PlatformAction::debugPause, 1U << 8U};
+    case SDL_SCANCODE_PERIOD:
+        return {PlatformAction::debugStep, 1U << 9U};
     default:
         return {};
     }
+}
+
+[[nodiscard]] constexpr std::uint64_t eventTimestampMilliseconds(
+    const SDL_Event& event
+) noexcept {
+    return event.common.timestamp / nanoseconds_per_millisecond;
+}
+
+[[nodiscard]] constexpr PlatformEvent makePlatformEvent(
+    const PlatformEventKind kind,
+    const std::uint32_t windowId,
+    const SDL_Event& event
+) noexcept {
+    PlatformEvent translated;
+    translated.kind = kind;
+    translated.windowId = windowId;
+    translated.timestampMilliseconds = eventTimestampMilliseconds(event);
+    return translated;
 }
 
 [[nodiscard]] constexpr PlatformPointerButton pointerButton(
@@ -177,54 +201,112 @@ struct MovementBinding final {
 PlatformEvent translateEvent(const SDL_Event& event) noexcept {
     switch (event.type) {
     case SDL_EVENT_QUIT:
-        return {PlatformEventKind::quitRequested, 0};
+        return makePlatformEvent(PlatformEventKind::quitRequested, 0U, event);
     case SDL_EVENT_TERMINATING:
-        return {PlatformEventKind::terminating, 0};
+        return makePlatformEvent(PlatformEventKind::terminating, 0U, event);
     case SDL_EVENT_LOW_MEMORY:
-        return {PlatformEventKind::lowMemory, 0};
+        return makePlatformEvent(PlatformEventKind::lowMemory, 0U, event);
     case SDL_EVENT_WILL_ENTER_BACKGROUND:
-        return {PlatformEventKind::willEnterBackground, 0};
+        return makePlatformEvent(
+            PlatformEventKind::willEnterBackground,
+            0U,
+            event
+        );
     case SDL_EVENT_DID_ENTER_BACKGROUND:
-        return {PlatformEventKind::didEnterBackground, 0};
+        return makePlatformEvent(
+            PlatformEventKind::didEnterBackground,
+            0U,
+            event
+        );
     case SDL_EVENT_WILL_ENTER_FOREGROUND:
-        return {PlatformEventKind::willEnterForeground, 0};
+        return makePlatformEvent(
+            PlatformEventKind::willEnterForeground,
+            0U,
+            event
+        );
     case SDL_EVENT_DID_ENTER_FOREGROUND:
-        return {PlatformEventKind::didEnterForeground, 0};
+        return makePlatformEvent(
+            PlatformEventKind::didEnterForeground,
+            0U,
+            event
+        );
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-        return {PlatformEventKind::windowCloseRequested, event.window.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::windowCloseRequested,
+            event.window.windowID,
+            event
+        );
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
-        return {PlatformEventKind::focusGained, event.window.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::focusGained,
+            event.window.windowID,
+            event
+        );
     case SDL_EVENT_WINDOW_FOCUS_LOST: {
-        PlatformEvent translated;
-        translated.kind = PlatformEventKind::focusLost;
-        translated.windowId = event.window.windowID;
+        PlatformEvent translated = makePlatformEvent(
+            PlatformEventKind::focusLost,
+            event.window.windowID,
+            event
+        );
         translated.clearInputStateRequested = true;
         return translated;
     }
     case SDL_EVENT_WINDOW_SHOWN:
     case SDL_EVENT_WINDOW_RESTORED:
-        return {PlatformEventKind::windowShown, event.window.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::windowShown,
+            event.window.windowID,
+            event
+        );
     case SDL_EVENT_WINDOW_HIDDEN:
     case SDL_EVENT_WINDOW_MINIMIZED:
-        return {PlatformEventKind::windowHidden, event.window.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::windowHidden,
+            event.window.windowID,
+            event
+        );
     case SDL_EVENT_WINDOW_EXPOSED:
-        return {PlatformEventKind::windowExposed, event.window.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::windowExposed,
+            event.window.windowID,
+            event
+        );
     case SDL_EVENT_WINDOW_RESIZED:
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
     case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
     case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
     case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED:
-        return {PlatformEventKind::windowMetricsChanged, event.window.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::windowMetricsChanged,
+            event.window.windowID,
+            event
+        );
     case SDL_EVENT_DISPLAY_ORIENTATION:
     case SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED:
     case SDL_EVENT_DISPLAY_USABLE_BOUNDS_CHANGED:
-        return {PlatformEventKind::windowMetricsChanged, 0};
+        return makePlatformEvent(
+            PlatformEventKind::windowMetricsChanged,
+            0U,
+            event
+        );
     case SDL_EVENT_RENDER_TARGETS_RESET:
-        return {PlatformEventKind::renderTargetsReset, event.render.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::renderTargetsReset,
+            event.render.windowID,
+            event
+        );
     case SDL_EVENT_RENDER_DEVICE_RESET:
-        return {PlatformEventKind::renderDeviceReset, event.render.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::renderDeviceReset,
+            event.render.windowID,
+            event
+        );
     case SDL_EVENT_RENDER_DEVICE_LOST:
-        return {PlatformEventKind::renderDeviceLost, event.render.windowID};
+        return makePlatformEvent(
+            PlatformEventKind::renderDeviceLost,
+            event.render.windowID,
+            event
+        );
     case SDL_EVENT_MOUSE_MOTION: {
         PlatformEvent translated;
         translated.kind = PlatformEventKind::pointerChanged;
@@ -238,6 +320,7 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
         translated.pointer.deltaX = event.motion.xrel;
         translated.pointer.deltaY = event.motion.yrel;
         translated.pointer.buttons = pointerButtonState(event.motion.state);
+        translated.timestampMilliseconds = eventTimestampMilliseconds(event);
         return translated;
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -260,6 +343,7 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
                 translated.pointer.button
             );
         }
+        translated.timestampMilliseconds = eventTimestampMilliseconds(event);
         return translated;
     }
     case SDL_EVENT_MOUSE_WHEEL: {
@@ -274,6 +358,7 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
         translated.wheel.deltaY = event.wheel.y * direction;
         translated.wheel.pointerX = event.wheel.mouse_x;
         translated.wheel.pointerY = event.wheel.mouse_y;
+        translated.timestampMilliseconds = eventTimestampMilliseconds(event);
         return translated;
     }
     case SDL_EVENT_FINGER_DOWN:
@@ -310,6 +395,7 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
                 PlatformPointerButton::primary
             );
         }
+        translated.timestampMilliseconds = eventTimestampMilliseconds(event);
         return translated;
     }
     case SDL_EVENT_TEXT_INPUT: {
@@ -317,6 +403,7 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
         translated.kind = PlatformEventKind::textCommitted;
         translated.windowId = event.text.windowID;
         translated.text = copyUtf8Text(event.text.text);
+        translated.timestampMilliseconds = eventTimestampMilliseconds(event);
         return translated;
     }
     case SDL_EVENT_TEXT_EDITING: {
@@ -328,21 +415,25 @@ PlatformEvent translateEvent(const SDL_Event& event) noexcept {
             event.edit.start,
             event.edit.length
         );
+        translated.timestampMilliseconds = eventTimestampMilliseconds(event);
         return translated;
     }
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
-        const MovementBinding binding = movementBinding(event.key.scancode);
+        const ActionBinding binding = actionBinding(event.key.scancode);
         if (binding.action == PlatformAction::none) {
             return {};
         }
-        return {
+        PlatformEvent translated = makePlatformEvent(
             PlatformEventKind::actionChanged,
             event.key.windowID,
-            binding.action,
-            event.type == SDL_EVENT_KEY_DOWN,
-            binding.sourceMask
-        };
+            event
+        );
+        translated.action = binding.action;
+        translated.pressed = event.type == SDL_EVENT_KEY_DOWN;
+        translated.sourceMask = binding.sourceMask;
+        translated.repeated = event.key.repeat;
+        return translated;
     }
     default:
         return {};

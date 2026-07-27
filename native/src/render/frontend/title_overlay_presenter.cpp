@@ -203,18 +203,32 @@ enum class VerticalAnchor : std::uint8_t {
     const ui::TitleOverlayControl& control,
     const std::size_t index
 ) {
-    const bool isCancel = control.action == ui::TitleOverlayControlAction::cancelTop;
-    const bool isConfirm = control.action == ui::TitleOverlayControlAction::confirmTop;
+    const bool isCancelAction =
+        control.action == ui::TitleOverlayControlAction::cancelTop;
+    const bool isConfirmAction =
+        control.action == ui::TitleOverlayControlAction::confirmTop;
     const bool isExternalLink =
         control.action == ui::TitleOverlayControlAction::openExternalLink;
-    const bool interactive = isCancel || isConfirm || isExternalLink;
+    const bool isApplicationControl = control.action
+        == ui::TitleOverlayControlAction::activateApplicationControl;
+    const bool usesStableControlInteraction =
+        isExternalLink || isApplicationControl;
+    const bool interactive = isCancelAction
+        || isConfirmAction
+        || usesStableControlInteraction;
+    const bool usesConfirmStyle = isConfirmAction
+        || (isApplicationControl
+            && control.id == ui::TitleOverlayControlId::confirm);
+    const bool usesCancelStyle = isCancelAction
+        || (isApplicationControl
+            && control.id == ui::TitleOverlayControlId::cancel);
     const bool matches = input.interaction.overlaySequence
         == input.presentation.sequence;
-    const ui::TitleUiTarget target = isConfirm
+    const ui::TitleUiTarget target = isConfirmAction
         ? ui::TitleUiTarget::overlayConfirm
         : ui::TitleUiTarget::overlayCancel;
     ui::TitleUiTargetInteraction interaction{};
-    if (isExternalLink) {
+    if (usesStableControlInteraction) {
         interaction.hovered = matches
             && input.interaction.hoveredOverlayControlId == control.id;
         interaction.pressed = matches
@@ -254,7 +268,7 @@ enum class VerticalAnchor : std::uint8_t {
     command.cornerRadius = finiteFloat(control.rect.radius);
     command.borderWidth = interactive ? 1.0F : 0.5F;
     command.value = finiteFloat(clampUnit(control.value));
-    if (isConfirm) {
+    if (usesConfirmStyle) {
         command.backgroundColor = renderColor(
             highlighted ? input.theme.confirmHover : input.theme.confirmIdle,
             input.presentation.alpha
@@ -267,7 +281,7 @@ enum class VerticalAnchor : std::uint8_t {
             input.theme.confirmText,
             input.presentation.alpha
         );
-    } else if (isCancel) {
+    } else if (usesCancelStyle) {
         command.backgroundColor = renderColor(
             highlighted ? input.theme.cancelHover : input.theme.cancelIdle,
             input.presentation.alpha
@@ -293,6 +307,23 @@ enum class VerticalAnchor : std::uint8_t {
         );
         command.accentColor = renderColor(
             input.theme.linkText,
+            input.presentation.alpha
+        );
+    } else if (isApplicationControl) {
+        command.backgroundColor = renderColor(
+            highlighted
+                ? input.theme.overlayControlHover
+                : input.theme.overlayControlInactive,
+            input.presentation.alpha * (highlighted ? 1.0 : 0.62)
+        );
+        command.borderColor = renderColor(
+            input.theme.overlayControlHover,
+            input.presentation.alpha * (highlighted ? 1.0 : 0.5)
+        );
+        command.accentColor = renderColor(
+            control.selected
+                ? input.theme.toggleActive
+                : input.theme.sliderValueActive,
             input.presentation.alpha
         );
     } else {
@@ -392,10 +423,16 @@ enum class VerticalAnchor : std::uint8_t {
         } else {
             footer = false;
         }
+        const bool applicationControl = control.action
+            == ui::TitleOverlayControlAction::activateApplicationControl;
         const ui::layout::ThemeColor textColor =
             control.action == ui::TitleOverlayControlAction::confirmTop
+                || (applicationControl
+                    && control.id == ui::TitleOverlayControlId::confirm)
             ? input.theme.confirmText
             : control.action == ui::TitleOverlayControlAction::cancelTop
+                    || (applicationControl
+                        && control.id == ui::TitleOverlayControlId::cancel)
                 ? input.theme.cancelText
                 : input.theme.overlayControlText;
         if (footer && !addText(
