@@ -30,19 +30,21 @@ struct PlayableGameSceneResult final {
 };
 
 /**
- * 현재 GameSystem 맵의 연속된 walkable 행 구간과 경로, Core/Tower를 모두 담는
- * 정확한 권장 capacity를 계산합니다. 반환값으로 packet을 한 번 reserve한 뒤
- * fixedCapacity 정책을 사용하면 반복 프레임 빌드에서 heap 할당이 없습니다.
+ * 현재 GameSystem 맵의 연속된 walkable 행 구간과 경로, Core/Tower 및 config가
+ * 요구하는 letterbox mask를 모두 담는 정확한 capacity를 계산합니다. 반환값으로
+ * packet을 한 번 reserve한 뒤 fixedCapacity 정책을 사용하면 반복 프레임 빌드에서
+ * heap 할당이 없습니다.
  */
 [[nodiscard]] FramePacketCapacity playableGameSceneCapacity(
-    const game::GameSystem& gameSystem
+    const game::GameSystem& gameSystem,
+    const PlayableGameSceneConfig& config = {}
 ) noexcept;
 
 /** 현재 단일 맵 카탈로그가 요구하는 playable packet의 고정 상한입니다. */
 [[nodiscard]] constexpr FramePacketCapacity maximumPlayableGameSceneCapacity() noexcept {
     FramePacketCapacity capacity{};
-    capacity.commandCount = 94U;
-    capacity.shapeCount = 70U;
+    capacity.commandCount = 96U;
+    capacity.shapeCount = 72U;
     capacity.lineCount = 24U;
     return capacity;
 }

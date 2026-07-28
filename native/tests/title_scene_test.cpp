@@ -658,6 +658,70 @@ void testDpr2ViewportKeepsLogicalLayoutAndDrawableMappingSeparate() {
     REQUIRE_NEAR(packet.metadata().interpolationAlpha, 0.5, 1.0e-7);
 }
 
+void testTitleDisplayPolicyUsesFixedLetterboxClearAndLayoutAspect() {
+    const UiStateSnapshot uiState = interactiveState().snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    TitleSceneConfig config{};
+    config.physicalDisplaySize = {3'440, 1'440};
+    config.physicalWindowBounds = {0, 0, 3'440, 1'440};
+    config.drawableSize = {3'440, 1'440};
+
+    const UiLayoutSnapshot widescreenLayout = buildLayout(3'440.0, 1'440.0);
+    const TitleEntranceRenderState widescreenEntrance = buildEntrance(
+        widescreenLayout,
+        2.0
+    );
+    const TitleSceneInput widescreenInput{
+        uiState,
+        interaction,
+        widescreenLayout,
+        widescreenEntrance,
+        darkThemeMetrics()
+    };
+    FramePacket widescreenPacket(titleSceneCapacity(widescreenInput));
+    REQUIRE(buildTitleScene(
+        widescreenPacket,
+        widescreenInput,
+        config
+    ).success);
+
+    const UiLayoutSnapshot containedLayout = buildLayout(2'560.0, 1'440.0);
+    const TitleEntranceRenderState containedEntrance = buildEntrance(
+        containedLayout,
+        2.0
+    );
+    const TitleSceneInput containedInput{
+        uiState,
+        interaction,
+        containedLayout,
+        containedEntrance,
+        darkThemeMetrics()
+    };
+    FramePacket containedPacket(titleSceneCapacity(containedInput));
+    REQUIRE(buildTitleScene(
+        containedPacket,
+        containedInput,
+        config
+    ).success);
+
+    constexpr float letterboxComponent = 0x20U / 255.0F;
+    constexpr PremultipliedRgba expectedClear = PremultipliedRgba::opaque(
+        letterboxComponent,
+        letterboxComponent,
+        letterboxComponent
+    );
+    REQUIRE(widescreenPacket.metadata().clearColor == expectedClear);
+    REQUIRE(containedPacket.metadata().clearColor == expectedClear);
+    REQUIRE(
+        widescreenPacket.viewport().drawable.contentRect
+        == (cirvivor::render::RectI{0, 0, 3'440, 1'440})
+    );
+    REQUIRE(
+        containedPacket.viewport().drawable.contentRect
+        == (cirvivor::render::RectI{440, 0, 2'560, 1'440})
+    );
+}
+
 void testUltrawideAndSafeAreaKeepShellInsideAuthoritativeLayout() {
     const LogicalSafeAreaInsets safeArea{120.0, 48.0, 160.0, 64.0};
     const UiLayoutSnapshot layout = buildLayout(
@@ -2088,6 +2152,10 @@ int main() {
         TestCase{
             "DPR2 viewport mapping",
             testDpr2ViewportKeepsLogicalLayoutAndDrawableMappingSeparate
+        },
+        TestCase{
+            "title display policy",
+            testTitleDisplayPolicyUsesFixedLetterboxClearAndLayoutAspect
         },
         TestCase{"ultrawide safe area", testUltrawideAndSafeAreaKeepShellInsideAuthoritativeLayout},
         TestCase{

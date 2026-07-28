@@ -151,6 +151,24 @@ void requireProjectedWorldBounds(
     REQUIRE_NEAR(actual.height, expected.height, 1.0e-3F);
 }
 
+void requireLetterboxMask(
+    const cirvivor::render::ShapeCommand& shape,
+    const cirvivor::render::RectF expectedBounds,
+    const cirvivor::render::PremultipliedRgba expectedColor
+) {
+    using namespace cirvivor::render;
+
+    REQUIRE(shape.header.layer == RenderLayer::ui);
+    REQUIRE(shape.header.coordinateSpace == CoordinateSpace::drawablePixels);
+    REQUIRE(shape.header.blendMode == BlendMode::opaque);
+    REQUIRE(shape.header.layerOrder == std::numeric_limits<std::int32_t>::min());
+    REQUIRE(shape.shape == ShapeType::rectangle);
+    REQUIRE(shape.bounds == expectedBounds);
+    REQUIRE(shape.fill == expectedColor);
+    REQUIRE(shape.fillEnabled == 1U);
+    REQUIRE(shape.strokeEnabled == 0U);
+}
+
 void testCompactPlayableCommandContract() {
     using namespace cirvivor::render;
     using namespace cirvivor::render::frontend;
@@ -167,9 +185,20 @@ void testCompactPlayableCommandContract() {
         0,
         0
     };
+    constexpr FramePacketCapacity expectedMaximumCapacity{
+        96,
+        0,
+        72,
+        24,
+        0,
+        0,
+        0,
+        0,
+        0
+    };
     const FramePacketCapacity capacity = playableGameSceneCapacity(gameSystem);
     REQUIRE(capacity == expectedCapacity);
-    REQUIRE(maximumPlayableGameSceneCapacity() == expectedCapacity);
+    REQUIRE(maximumPlayableGameSceneCapacity() == expectedMaximumCapacity);
     REQUIRE(capacity.commandCount <= 150U);
 
     FramePacket packet(capacity);
@@ -209,8 +238,13 @@ void testStableFixedCapacityBuildHasNoAllocations() {
     config.presentationTimeSeconds = 1.25;
     config.interpolationAlpha = 0.375F;
     config.safeArea = {12, 18, 24, 30};
+    config.physicalDisplaySize = {3'440, 1'440};
+    config.physicalWindowBounds = {0, 0, 3'440, 1'440};
+    config.drawableSize = {3'440, 1'440};
+    config.widescreenSupport = false;
+    config.cameraZoom = 1.2F;
 
-    FramePacket packet(playableGameSceneCapacity(gameSystem));
+    FramePacket packet(playableGameSceneCapacity(gameSystem, config));
     REQUIRE(buildPlayableGameScene(
         packet,
         gameSystem,
@@ -249,13 +283,19 @@ void testFixedCapacityFailureClearsPartialPacket() {
     using namespace cirvivor::render::frontend;
 
     cirvivor::game::GameSystem gameSystem;
-    FramePacketCapacity insufficient = playableGameSceneCapacity(gameSystem);
+    PlayableGameSceneConfig config;
+    config.physicalDisplaySize = {3'440, 1'440};
+    config.physicalWindowBounds = {0, 0, 3'440, 1'440};
+    config.drawableSize = {3'440, 1'440};
+    config.widescreenSupport = false;
+    config.cameraZoom = 1.2F;
+    FramePacketCapacity insufficient = playableGameSceneCapacity(gameSystem, config);
     --insufficient.shapeCount;
     FramePacket packet(insufficient);
     const PlayableGameSceneResult result = buildPlayableGameScene(
         packet,
         gameSystem,
-        {},
+        config,
         PacketCapacityPolicy::fixedCapacity
     );
     REQUIRE(!result.success);
@@ -266,7 +306,7 @@ void testFixedCapacityFailureClearsPartialPacket() {
     const PlayableGameSceneResult emptyResult = buildPlayableGameScene(
         empty,
         gameSystem,
-        {},
+        config,
         PacketCapacityPolicy::fixedCapacity
     );
     REQUIRE(!emptyResult.success);
@@ -460,6 +500,117 @@ void testWidescreenSupportSelectsOnlyTheWorldViewport() {
     );
 }
 
+void testLetterboxMasksCoverOnlyConstrainedWorldRegions() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    cirvivor::game::GameSystem gameSystem;
+    const FramePacketCapacity compactCapacity = playableGameSceneCapacity(gameSystem);
+
+    PlayableGameSceneConfig wideDisabled;
+    wideDisabled.physicalDisplaySize = {3'440, 1'440};
+    wideDisabled.physicalWindowBounds = {0, 0, 3'440, 1'440};
+    wideDisabled.drawableSize = {3'440, 1'440};
+    wideDisabled.widescreenSupport = false;
+    wideDisabled.cameraZoom = 1.2F;
+    const FramePacketCapacity wideDisabledCapacity = playableGameSceneCapacity(
+        gameSystem,
+        wideDisabled
+    );
+    REQUIRE(wideDisabledCapacity == maximumPlayableGameSceneCapacity());
+
+    FramePacket wideDisabledPacket(wideDisabledCapacity);
+    REQUIRE(buildPlayableGameScene(
+        wideDisabledPacket,
+        gameSystem,
+        wideDisabled,
+        PacketCapacityPolicy::fixedCapacity
+    ).success);
+    REQUIRE(wideDisabledPacket.size() == wideDisabledCapacity);
+    REQUIRE(wideDisabledPacket.isRenderOrderValid());
+    REQUIRE(wideDisabledPacket.clips().empty());
+    const std::span<const ShapeCommand> wideDisabledShapes = wideDisabledPacket.shapes();
+    requireLetterboxMask(
+        wideDisabledShapes[wideDisabledShapes.size() - 2U],
+        RectF{0.0F, 0.0F, 440.0F, 1'440.0F},
+        wideDisabledPacket.metadata().clearColor
+    );
+    requireLetterboxMask(
+        wideDisabledShapes.back(),
+        RectF{3'000.0F, 0.0F, 440.0F, 1'440.0F},
+        wideDisabledPacket.metadata().clearColor
+    );
+    const std::span<const CommandRef> wideDisabledCommands =
+        wideDisabledPacket.commandStream();
+    REQUIRE(wideDisabledCommands[wideDisabledCommands.size() - 2U].kind
+        == CommandKind::shape);
+    REQUIRE(wideDisabledCommands[wideDisabledCommands.size() - 2U].index
+        == static_cast<std::uint32_t>(wideDisabledShapes.size() - 2U));
+    REQUIRE(wideDisabledCommands.back().kind == CommandKind::shape);
+    REQUIRE(wideDisabledCommands.back().index
+        == static_cast<std::uint32_t>(wideDisabledShapes.size() - 1U));
+
+    PlayableGameSceneConfig wideEnabled = wideDisabled;
+    wideEnabled.widescreenSupport = true;
+    const FramePacketCapacity wideEnabledCapacity = playableGameSceneCapacity(
+        gameSystem,
+        wideEnabled
+    );
+    REQUIRE(wideEnabledCapacity == compactCapacity);
+    FramePacket wideEnabledPacket(wideEnabledCapacity);
+    REQUIRE(buildPlayableGameScene(
+        wideEnabledPacket,
+        gameSystem,
+        wideEnabled,
+        PacketCapacityPolicy::fixedCapacity
+    ).success);
+    REQUIRE(wideEnabledPacket.size() == compactCapacity);
+    REQUIRE(wideEnabledPacket.shapes().back().header.layer == RenderLayer::object);
+
+    PlayableGameSceneConfig tall;
+    tall.physicalDisplaySize = {1'200, 1'000};
+    tall.physicalWindowBounds = {0, 0, 1'200, 1'000};
+    tall.drawableSize = {1'200, 1'000};
+    tall.widescreenSupport = true;
+    tall.cameraZoom = 1.2F;
+    const FramePacketCapacity tallCapacity = playableGameSceneCapacity(gameSystem, tall);
+    REQUIRE(tallCapacity == maximumPlayableGameSceneCapacity());
+    FramePacket tallPacket(tallCapacity);
+    REQUIRE(buildPlayableGameScene(
+        tallPacket,
+        gameSystem,
+        tall,
+        PacketCapacityPolicy::fixedCapacity
+    ).success);
+    const std::span<const ShapeCommand> tallShapes = tallPacket.shapes();
+    requireLetterboxMask(
+        tallShapes[tallShapes.size() - 2U],
+        RectF{0.0F, 0.0F, 1'200.0F, 162.0F},
+        tallPacket.metadata().clearColor
+    );
+    requireLetterboxMask(
+        tallShapes.back(),
+        RectF{0.0F, 837.0F, 1'200.0F, 163.0F},
+        tallPacket.metadata().clearColor
+    );
+
+    PlayableGameSceneConfig exact = wideDisabled;
+    exact.physicalDisplaySize = {1'920, 1'080};
+    exact.physicalWindowBounds = {0, 0, 1'920, 1'080};
+    exact.drawableSize = {1'920, 1'080};
+    const FramePacketCapacity exactCapacity = playableGameSceneCapacity(gameSystem, exact);
+    REQUIRE(exactCapacity == compactCapacity);
+    FramePacket exactPacket(exactCapacity);
+    REQUIRE(buildPlayableGameScene(
+        exactPacket,
+        gameSystem,
+        exact,
+        PacketCapacityPolicy::fixedCapacity
+    ).success);
+    REQUIRE(exactPacket.size() == compactCapacity);
+    REQUIRE(exactPacket.shapes().back().header.layer == RenderLayer::object);
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
@@ -476,6 +627,10 @@ int main() {
         TestCase{
             "widescreen support selects only world viewport",
             testWidescreenSupportSelectsOnlyTheWorldViewport
+        },
+        TestCase{
+            "letterbox masks cover constrained world regions",
+            testLetterboxMasksCoverOnlyConstrainedWorldRegions
         }
     };
 

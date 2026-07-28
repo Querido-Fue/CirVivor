@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/movement_input_buffer.h"
+#include "app/title_display_policy.h"
 #include "debug/debug_runtime_controller.h"
 #include "engine/frame_scheduler.h"
 #include "game/game_system.h"
@@ -143,6 +144,7 @@ private:
     ui::TitleOverlayStateMachine titleUiState_;
     ui::TitleUiController titleUiController_;
     ui::layout::UiLayoutMetrics titleLayout_;
+    TitleDisplayArea titleDisplayArea_{};
     ui::layout::ThemeMetrics titleTheme_;
     ui::layout::TitleEntranceRenderState titleEntrance_;
     ui::TitleOverlayPresentationSet titleOverlayPresentations_{};

@@ -84,6 +84,7 @@ cirvivor_configure_target(game_core)
 
 add_library(app_runtime STATIC
     src/app/movement_input_buffer.cpp
+    src/app/title_display_policy.cpp
 )
 target_include_directories(app_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(app_runtime PUBLIC game_core)
@@ -221,6 +222,12 @@ if(BUILD_TESTING)
     target_link_libraries(movement_input_buffer_tests PRIVATE app_runtime)
     cirvivor_configure_target(movement_input_buffer_tests)
 
+    add_executable(title_display_policy_tests
+        tests/title_display_policy_test.cpp
+    )
+    target_link_libraries(title_display_policy_tests PRIVATE app_runtime)
+    cirvivor_configure_target(title_display_policy_tests)
+
     add_executable(title_overlay_state_machine_tests
         tests/title_overlay_state_machine_test.cpp
     )
@@ -319,6 +326,7 @@ if(BUILD_TESTING)
     add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
     add_test(NAME title_scene_tests COMMAND title_scene_tests)
     add_test(NAME movement_input_buffer_tests COMMAND movement_input_buffer_tests)
+    add_test(NAME title_display_policy_tests COMMAND title_display_policy_tests)
     add_test(
         NAME title_overlay_state_machine_tests
         COMMAND title_overlay_state_machine_tests

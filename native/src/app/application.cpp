@@ -533,6 +533,7 @@ private:
 [[nodiscard]] bool tryTranslateTitlePointer(
     const platform::sdl::PlatformEvent& source,
     const platform::sdl::WindowMetrics& metrics,
+    const TitleDisplayArea& displayArea,
     ui::UiPointerEvent& output
 ) noexcept {
     if (source.kind != platform::sdl::PlatformEventKind::pointerChanged) {
@@ -597,6 +598,7 @@ private:
         x *= static_cast<double>(std::max(metrics.windowWidth, 0));
         y *= static_cast<double>(std::max(metrics.windowHeight, 0));
     }
+    const ui::layout::PointD localPosition = titleLocalPoint({x, y}, displayArea);
     output = {
         .type = type,
         .device = device,
@@ -604,7 +606,7 @@ private:
         .pointerId = device == ui::UiPointerDevice::mouse
             ? 0U
             : source.pointer.pointerId,
-        .position = {x, y}
+        .position = localPosition
     };
     return true;
 }
@@ -914,14 +916,25 @@ bool Application::refreshTitleLayout(
         return titleLayout_.hasSnapshot();
     }
 
+    TitleDisplayArea candidateDisplayArea{};
+    if (!tryResolveTitleDisplayArea(
+            static_cast<double>(metrics.windowWidth),
+            static_cast<double>(metrics.windowHeight),
+            logicalSafeArea(metrics),
+            runtimeSettings.widescreenSupport,
+            candidateDisplayArea)) {
+        return false;
+    }
+
+    ui::layout::UiLayoutMetrics candidateLayout = titleLayout_;
     ui::layout::LayoutInput input{
-        .logicalWidth = static_cast<double>(metrics.windowWidth),
-        .logicalHeight = static_cast<double>(metrics.windowHeight),
+        .logicalWidth = candidateDisplayArea.logicalWidth,
+        .logicalHeight = candidateDisplayArea.logicalHeight,
         .uiScale = static_cast<double>(runtimeSettings.uiScalePercent) / 100.0,
         .hasVersionHistoryLink = true,
-        .logicalSafeArea = logicalSafeArea(metrics)
+        .logicalSafeArea = candidateDisplayArea.logicalSafeArea
     };
-    if (!titleLayout_.tryUpdate(input)) {
+    if (!candidateLayout.tryUpdate(input)) {
         return false;
     }
     if (titleTextCache_ == nullptr
@@ -936,7 +949,7 @@ bool Application::refreshTitleLayout(
                     titleLocaleFor(runtimeSettings.language)
                 )
             );
-        const auto& labelTypography = titleLayout_.snapshot().typography[
+        const auto& labelTypography = candidateLayout.snapshot().typography[
             static_cast<std::size_t>(ui::layout::TypographyRole::label)
         ];
         if (versionLink == nullptr || versionLink->rasterPixelSize == 0U) {
@@ -945,16 +958,32 @@ bool Application::refreshTitleLayout(
         input.versionHistoryLinkTextWidth = static_cast<double>(versionLink->advance)
             * labelTypography.size
             / static_cast<double>(versionLink->rasterPixelSize);
-        if (!titleLayout_.tryUpdate(input)) {
+        if (!candidateLayout.tryUpdate(input)) {
             return false;
         }
     }
     const ui::UiStateSnapshot state = titleUiState_.snapshot();
-    return ui::layout::trySampleTitleEntrance(
-        titleLayout_.snapshot(),
-        titleEntranceElapsedSeconds(state.title),
-        titleEntrance_
-    );
+    ui::layout::TitleEntranceRenderState candidateEntrance{};
+    if (!ui::layout::trySampleTitleEntrance(
+            candidateLayout.snapshot(),
+            titleEntranceElapsedSeconds(state.title),
+            candidateEntrance
+        )) {
+        return false;
+    }
+
+    const bool displayAreaChanged = candidateDisplayArea != titleDisplayArea_;
+    titleLayout_ = candidateLayout;
+    titleEntrance_ = candidateEntrance;
+    titleDisplayArea_ = candidateDisplayArea;
+    if (displayAreaChanged) {
+        static_cast<void>(titleUiController_.handleFocusLost());
+        projectionRevision_ = projectionRevision_
+                == std::numeric_limits<std::uint64_t>::max()
+            ? 1U
+            : projectionRevision_ + 1U;
+    }
+    return true;
 }
 
 bool Application::loadTitleTextAssets() noexcept {
@@ -1884,6 +1913,7 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     settingsOverlaySession_ = {};
     debugRuntime_ = debug::DebugRuntimeController{};
     titleLayout_ = {};
+    titleDisplayArea_ = {};
     titleTheme_ = ui::layout::darkThemeMetrics();
     titleEntrance_ = {};
     titleOverlayPresentations_ = {};
@@ -2290,7 +2320,11 @@ ApplicationResult Application::handleTitlePointer(
     }
 
     ui::UiPointerEvent pointer{};
-    if (!tryTranslateTitlePointer(event, window_.metrics(), pointer)) {
+    if (!tryTranslateTitlePointer(
+            event,
+            window_.metrics(),
+            titleDisplayArea_,
+            pointer)) {
         return ApplicationResult::continueRunning;
     }
     const ui::UiStateSnapshot state = titleUiState_.snapshot();
@@ -2470,6 +2504,7 @@ bool Application::startPlayableSession(
     titleUiState_ = {};
     titleUiController_ = {};
     titleLayout_ = {};
+    titleDisplayArea_ = {};
     titleEntrance_ = {};
     titleOverlayPresentations_ = {};
     titleBackdropLayout_ = {};
@@ -2806,6 +2841,7 @@ void Application::shutdown() noexcept {
     settingsOverlaySession_ = {};
     debugRuntime_ = debug::DebugRuntimeController{};
     titleLayout_ = {};
+    titleDisplayArea_ = {};
     titleTheme_ = ui::layout::darkThemeMetrics();
     titleEntrance_ = {};
     titleOverlayPresentations_ = {};

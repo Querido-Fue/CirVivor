@@ -1,6 +1,7 @@
 #include "render/frontend/playable_game_scene.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,95 @@ namespace {
 constexpr float logicalWidth = 1'920.0F;
 constexpr float logicalHeight = 1'080.0F;
 constexpr float defaultCameraZoom = 0.7F;
+constexpr std::int32_t letterboxMaskLayerOrder =
+    std::numeric_limits<std::int32_t>::min();
+
+struct PlayableDisplayRegions final {
+    SizeI drawableSize;
+    RectI contentRect;
+    RectI worldRect;
+};
+
+struct LetterboxMasks final {
+    std::array<RectI, 2> bounds{};
+    std::size_t count = 0;
+};
+
+[[nodiscard]] PlayableDisplayRegions makePlayableDisplayRegions(
+    const PlayableGameSceneConfig& config
+) noexcept {
+    const std::int32_t drawableWidth = std::max(config.drawableSize.width, 1);
+    const std::int32_t drawableHeight = std::max(config.drawableSize.height, 1);
+    const bool widthLimited = static_cast<std::int64_t>(drawableWidth) * 1'080
+        <= static_cast<std::int64_t>(drawableHeight) * 1'920;
+    const std::int32_t contentWidth = widthLimited
+        ? drawableWidth
+        : std::max(
+            static_cast<std::int32_t>(
+                static_cast<std::int64_t>(drawableHeight) * 1'920 / 1'080
+            ),
+            1
+        );
+    const std::int32_t contentHeight = widthLimited
+        ? std::max(
+            static_cast<std::int32_t>(
+                static_cast<std::int64_t>(drawableWidth) * 1'080 / 1'920
+            ),
+            1
+        )
+        : drawableHeight;
+    const RectI contentRect{
+        (drawableWidth - contentWidth) / 2,
+        (drawableHeight - contentHeight) / 2,
+        contentWidth,
+        contentHeight
+    };
+    const bool useFullDrawableForWorld = config.widescreenSupport && !widthLimited;
+    return {
+        {drawableWidth, drawableHeight},
+        contentRect,
+        useFullDrawableForWorld
+            ? RectI{0, 0, drawableWidth, drawableHeight}
+            : contentRect
+    };
+}
+
+[[nodiscard]] LetterboxMasks makeLetterboxMasks(
+    const PlayableDisplayRegions& regions
+) noexcept {
+    LetterboxMasks result;
+    const std::int32_t left = regions.worldRect.x;
+    const std::int32_t right = regions.drawableSize.width
+        - regions.worldRect.x - regions.worldRect.width;
+    const std::int32_t top = regions.worldRect.y;
+    const std::int32_t bottom = regions.drawableSize.height
+        - regions.worldRect.y - regions.worldRect.height;
+
+    const auto append = [&result](const RectI bounds) noexcept {
+        if (bounds.width > 0 && bounds.height > 0) {
+            result.bounds[result.count] = bounds;
+            ++result.count;
+        }
+    };
+    if (left > 0 || right > 0) {
+        append({0, 0, left, regions.drawableSize.height});
+        append({
+            regions.worldRect.x + regions.worldRect.width,
+            0,
+            right,
+            regions.drawableSize.height
+        });
+    } else {
+        append({0, 0, regions.drawableSize.width, top});
+        append({
+            0,
+            regions.worldRect.y + regions.worldRect.height,
+            regions.drawableSize.width,
+            bottom
+        });
+    }
+    return result;
+}
 
 [[nodiscard]] CommandHeader makeHeader(
     const RenderLayer layer,
@@ -131,13 +221,17 @@ constexpr float defaultCameraZoom = 0.7F;
 } // namespace
 
 FramePacketCapacity playableGameSceneCapacity(
-    const game::GameSystem& gameSystem
+    const game::GameSystem& gameSystem,
+    const PlayableGameSceneConfig& config
 ) noexcept {
     const core::TileMap& tileMap = gameSystem.tileMap();
     const std::size_t walkableRuns = walkableRunCount(tileMap);
     const std::span<const core::Vector2> waypoints = tileMap.spawnRouteWaypoints();
     const std::size_t routeSegments = waypoints.size() > 1U ? waypoints.size() - 1U : 0U;
-    const std::size_t shapeCount = walkableRuns + 4U;
+    const std::size_t letterboxMaskCount = makeLetterboxMasks(
+        makePlayableDisplayRegions(config)
+    ).count;
+    const std::size_t shapeCount = walkableRuns + 4U + letterboxMaskCount;
     return {
         shapeCount + routeSegments,
         0,
@@ -155,36 +249,13 @@ ViewportState makePlayableGameViewport(
     const game::GameSystem& gameSystem,
     const PlayableGameSceneConfig& config
 ) noexcept {
-    const std::int32_t drawableWidth = std::max(config.drawableSize.width, 1);
-    const std::int32_t drawableHeight = std::max(config.drawableSize.height, 1);
-    const bool widthLimited = static_cast<std::int64_t>(drawableWidth) * 1'080
-        <= static_cast<std::int64_t>(drawableHeight) * 1'920;
-    const std::int32_t contentWidth = widthLimited
-        ? drawableWidth
-        : std::max(
-            static_cast<std::int32_t>(
-                static_cast<std::int64_t>(drawableHeight) * 1'920 / 1'080
-            ),
-            1
-        );
-    const std::int32_t contentHeight = widthLimited
-        ? std::max(
-            static_cast<std::int32_t>(
-                static_cast<std::int64_t>(drawableWidth) * 1'080 / 1'920
-            ),
-            1
-        )
-        : drawableHeight;
-    const RectI contentRect{
-        (drawableWidth - contentWidth) / 2,
-        (drawableHeight - contentHeight) / 2,
-        contentWidth,
-        contentHeight
-    };
-    const bool useFullDrawableForWorld = config.widescreenSupport && !widthLimited;
-    const RectI worldRect = useFullDrawableForWorld
-        ? RectI{0, 0, drawableWidth, drawableHeight}
-        : contentRect;
+    const PlayableDisplayRegions regions = makePlayableDisplayRegions(config);
+    const std::int32_t drawableWidth = regions.drawableSize.width;
+    const std::int32_t drawableHeight = regions.drawableSize.height;
+    const RectI contentRect = regions.contentRect;
+    const RectI worldRect = regions.worldRect;
+    const std::int32_t contentWidth = contentRect.width;
+    const std::int32_t contentHeight = contentRect.height;
     const InsetsI contentSafeArea = mapSafeAreaToContent(
         config.safeArea,
         {drawableWidth, drawableHeight},
@@ -462,6 +533,30 @@ PlayableGameSceneResult buildPlayableGameScene(
     towerShape.stroke = PremultipliedRgba::opaque(0.72F, 0.96F, 1.0F);
     if (!builder.addShape(towerShape)) {
         return resultFrom(builder);
+    }
+
+    const LetterboxMasks letterboxMasks = makeLetterboxMasks(
+        makePlayableDisplayRegions(config)
+    );
+    for (std::size_t index = 0; index < letterboxMasks.count; ++index) {
+        const RectI bounds = letterboxMasks.bounds[index];
+        ShapeCommand mask;
+        mask.header = makeHeader(
+            RenderLayer::ui,
+            CoordinateSpace::drawablePixels,
+            BlendMode::opaque,
+            letterboxMaskLayerOrder
+        );
+        mask.bounds = {
+            static_cast<float>(bounds.x),
+            static_cast<float>(bounds.y),
+            static_cast<float>(bounds.width),
+            static_cast<float>(bounds.height)
+        };
+        mask.fill = metadata.clearColor;
+        if (!builder.addShape(mask)) {
+            return resultFrom(builder);
+        }
     }
 
     if (!builder.finish()) {

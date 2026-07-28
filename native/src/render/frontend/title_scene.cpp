@@ -35,6 +35,12 @@ constexpr std::size_t version_history_link_ui_count = 1U;
 constexpr std::size_t version_history_link_line_count = 3U;
 constexpr std::size_t version_history_link_command_count =
     version_history_link_ui_count + version_history_link_line_count;
+constexpr ui::layout::ThemeColor title_letterbox_clear_color{
+    0x20U,
+    0x20U,
+    0x20U,
+    1.0
+};
 
 constexpr RenderLayerMask backdrop_source_layers = static_cast<RenderLayerMask>(
     renderLayerMask(RenderLayer::background)
@@ -2160,7 +2166,7 @@ TitleSceneResult buildTitleScene(
     metadata.interpolationAlpha = static_cast<float>(clampUnit(
         config.interpolationAlpha
     ));
-    metadata.clearColor = renderColor(input.theme.titleBackground);
+    metadata.clearColor = renderColor(title_letterbox_clear_color);
 
     FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
     if (!builder.begin(metadata, makeTitleViewport(input.layout, config))) {
