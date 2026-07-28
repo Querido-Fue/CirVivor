@@ -223,7 +223,8 @@ struct LetterboxMasks final {
 FramePacketCapacity playableGameSceneCapacity(
     const game::GameSystem& gameSystem,
     const PlayableGameSceneConfig& config,
-    const GlobalDebugOverlayInput* const globalDebugOverlay
+    const GlobalDebugOverlayInput* const globalDebugOverlay,
+    const DebugTelemetryHudInput* const debugTelemetry
 ) noexcept {
     const core::TileMap& tileMap = gameSystem.tileMap();
     const std::size_t walkableRuns = walkableRunCount(tileMap);
@@ -244,12 +245,23 @@ FramePacketCapacity playableGameSceneCapacity(
         0,
         0
     };
-    return globalDebugOverlay == nullptr
-        ? sceneCapacity
-        : additiveFramePacketCapacity(
-            sceneCapacity,
+    FramePacketCapacity result = sceneCapacity;
+    if (globalDebugOverlay != nullptr) {
+        result = additiveFramePacketCapacity(
+            result,
             globalDebugOverlayCapacity(*globalDebugOverlay)
         );
+    }
+    if (debugTelemetry != nullptr) {
+        result = additiveFramePacketCapacity(
+            result,
+            additiveFramePacketCapacity(
+                debugPoolHudCapacity(*debugTelemetry),
+                debugTopHudCapacity(*debugTelemetry)
+            )
+        );
+    }
+    return result;
 }
 
 ViewportState makePlayableGameViewport(
@@ -371,7 +383,8 @@ PlayableGameSceneResult buildPlayableGameScene(
     const game::GameSystem& gameSystem,
     const PlayableGameSceneConfig& config,
     const PacketCapacityPolicy capacityPolicy,
-    const GlobalDebugOverlayInput* const globalDebugOverlay
+    const GlobalDebugOverlayInput* const globalDebugOverlay,
+    const DebugTelemetryHudInput* const debugTelemetry
 ) {
     const float alpha = normalizedAlpha(config.interpolationAlpha);
     FrameMetadata metadata;
@@ -385,6 +398,11 @@ PlayableGameSceneResult buildPlayableGameScene(
     metadata.interpolationAlpha = alpha;
     metadata.alphaEncoding = AlphaEncoding::premultiplied;
     metadata.clearColor = PremultipliedRgba::opaque(0.018F, 0.024F, 0.034F);
+
+    if (debugTelemetry != nullptr
+        && !debugTelemetryHudInputIsValid(*debugTelemetry)) {
+        return {false, FrameBuildError::structurallyInvalid};
+    }
 
     FramePacketBuilder builder(packet, capacityPolicy);
     if (!builder.begin(metadata, makePlayableGameViewport(gameSystem, config))) {
@@ -567,8 +585,26 @@ PlayableGameSceneResult buildPlayableGameScene(
         }
     }
 
+    if (debugTelemetry != nullptr
+        && !addDebugPoolHud(builder, *debugTelemetry)) {
+        const FrameBuildError error = builder.error() == FrameBuildError::none
+            ? FrameBuildError::structurallyInvalid
+            : builder.error();
+        builder.abort();
+        return {false, error};
+    }
+
     if (globalDebugOverlay != nullptr
         && !addGlobalDebugOverlay(builder, *globalDebugOverlay)) {
+        const FrameBuildError error = builder.error() == FrameBuildError::none
+            ? FrameBuildError::structurallyInvalid
+            : builder.error();
+        builder.abort();
+        return {false, error};
+    }
+
+    if (debugTelemetry != nullptr
+        && !addDebugTopHud(builder, *debugTelemetry)) {
         const FrameBuildError error = builder.error() == FrameBuildError::none
             ? FrameBuildError::structurallyInvalid
             : builder.error();

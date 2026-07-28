@@ -239,4 +239,12 @@ std::size_t ShapedTextCache::runCount() const noexcept {
     return implementation_->runViews.size();
 }
 
+std::uint32_t ShapedTextCache::glyphEntryCount() const noexcept {
+    return implementation_->atlas->entryCount();
+}
+
+std::uint32_t ShapedTextCache::glyphEntryCapacity() const noexcept {
+    return implementation_->atlas->entryCapacity();
+}
+
 } // namespace cirvivor::render::text

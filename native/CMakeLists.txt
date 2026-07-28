@@ -110,6 +110,7 @@ target_include_directories(settings_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/
 cirvivor_configure_target(settings_runtime)
 
 add_library(debug_runtime STATIC
+    src/debug/debug_performance_tracker.cpp
     src/debug/debug_runtime_controller.cpp
 )
 target_include_directories(debug_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -163,6 +164,7 @@ if(CIRVIVOR_BUILD_TEXT_STACK)
 endif()
 
 add_library(render_frontend STATIC
+    src/render/frontend/debug_telemetry_hud.cpp
     src/render/frontend/frame_packet_builder.cpp
     src/render/frontend/global_debug_overlay.cpp
     src/render/frontend/playable_game_scene.cpp
@@ -171,7 +173,7 @@ add_library(render_frontend STATIC
     src/render/frontend/title_scene.cpp
 )
 target_include_directories(render_frontend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(render_frontend PUBLIC game_core renderer_common ui_runtime)
+target_link_libraries(render_frontend PUBLIC debug_runtime game_core renderer_common ui_runtime)
 cirvivor_configure_target(render_frontend)
 
 add_library(renderer_backend STATIC
@@ -223,6 +225,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(global_debug_overlay_tests PRIVATE render_frontend ui_runtime)
     cirvivor_configure_target(global_debug_overlay_tests)
+
+    add_executable(debug_telemetry_hud_tests
+        tests/debug_telemetry_hud_test.cpp
+    )
+    target_link_libraries(debug_telemetry_hud_tests PRIVATE render_frontend)
+    cirvivor_configure_target(debug_telemetry_hud_tests)
 
     add_executable(movement_input_buffer_tests
         tests/movement_input_buffer_test.cpp
@@ -284,6 +292,12 @@ if(BUILD_TESTING)
     target_link_libraries(debug_runtime_controller_tests PRIVATE debug_runtime)
     cirvivor_configure_target(debug_runtime_controller_tests)
 
+    add_executable(debug_performance_tracker_tests
+        tests/debug_performance_tracker_test.cpp
+    )
+    target_link_libraries(debug_performance_tracker_tests PRIVATE debug_runtime)
+    cirvivor_configure_target(debug_performance_tracker_tests)
+
     add_executable(renderer_router_tests
         tests/renderer_router_test.cpp
     )
@@ -340,6 +354,7 @@ if(BUILD_TESTING)
     add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
     add_test(NAME title_scene_tests COMMAND title_scene_tests)
     add_test(NAME global_debug_overlay_tests COMMAND global_debug_overlay_tests)
+    add_test(NAME debug_telemetry_hud_tests COMMAND debug_telemetry_hud_tests)
     add_test(NAME movement_input_buffer_tests COMMAND movement_input_buffer_tests)
     add_test(NAME logical_ui_projection_tests COMMAND logical_ui_projection_tests)
     add_test(NAME title_display_policy_tests COMMAND title_display_policy_tests)
@@ -355,6 +370,10 @@ if(BUILD_TESTING)
     add_test(
         NAME debug_runtime_controller_tests
         COMMAND debug_runtime_controller_tests
+    )
+    add_test(
+        NAME debug_performance_tracker_tests
+        COMMAND debug_performance_tracker_tests
     )
     add_test(NAME renderer_router_tests COMMAND renderer_router_tests)
     add_test(NAME simulation_parity_tests COMMAND simulation_parity_tests)

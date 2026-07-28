@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/common/pre_shaped_text.h"
+#include "render/frontend/debug_telemetry_hud.h"
 #include "render/frontend/frame_packet_builder.h"
 #include "ui/layout/ui_layout_metrics.h"
 #include "ui/title_overlay_content.h"
@@ -67,6 +68,8 @@ struct TitleSceneInput final {
     /** null이면 build 함수가 동일 DTO를 stack-local로 구성하는 test 호환 경로입니다. */
     const ui::TitleOverlayPresentationSet* overlayPresentations = nullptr;
     bool disableTransparency = false;
+    /** Debug panel open/close와 독립적인 profiler/pool/hitbox 표시 snapshot입니다. */
+    const DebugTelemetryHudInput* debugTelemetry = nullptr;
 };
 
 struct TitleSceneConfig final {
@@ -136,7 +139,13 @@ struct TitleSceneResult final {
     capacity.passCount = 16U;
     capacity.glyphRunCount = 128U;
     capacity.glyphInstanceCount = 8'192U;
-    return capacity;
+    return additiveFramePacketCapacity(
+        capacity,
+        additiveFramePacketCapacity(
+            maximumDebugPoolHudCapacity(),
+            maximumDebugTopHudCapacity()
+        )
+    );
 }
 
 /** logical layout과 physical/drawable/DPI 정보를 분리해 title viewport를 만듭니다. */

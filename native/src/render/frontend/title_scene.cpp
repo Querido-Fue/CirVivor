@@ -543,6 +543,13 @@ enum class TextVerticalAnchor : std::uint8_t {
     result.placeholderGeometryCommands = placeholder_geometry_count;
     result.shapedTextCommands = capacity.glyphRunCount;
     result.resourceBackedCommands = capacity.glyphRunCount;
+    FramePacketCapacity telemetryCapacity{};
+    if (input.debugTelemetry != nullptr) {
+        telemetryCapacity = additiveFramePacketCapacity(
+            debugPoolHudCapacity(*input.debugTelemetry),
+            debugTopHudCapacity(*input.debugTelemetry)
+        );
+    }
     const std::size_t overlayCount = std::min<std::size_t>(
         input.uiState.overlayCount,
         input.uiState.overlays.size()
@@ -554,7 +561,8 @@ enum class TextVerticalAnchor : std::uint8_t {
     if (hasRequiredTextRuns(input)) {
         result.titleOverlayContentCommands = capacity.commandCount
             - result.titleShellCommands
-            - result.overlayDimCommands;
+            - result.overlayDimCommands
+            - telemetryCapacity.commandCount;
     }
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         const ui::OverlayKind kind = input.uiState.overlays[index].kind;
@@ -602,6 +610,10 @@ enum class TextVerticalAnchor : std::uint8_t {
             || input.overlayPresentations->layoutRevision != input.layout.revision
             || input.overlayPresentations->overlayCount
                 != input.uiState.overlayCount)) {
+        return false;
+    }
+    if (input.debugTelemetry != nullptr
+        && !debugTelemetryHudInputIsValid(*input.debugTelemetry)) {
         return false;
     }
     const std::size_t overlayCount = std::min<std::size_t>(
@@ -2022,6 +2034,15 @@ FramePacketCapacity titleSceneCapacity(const TitleSceneInput& input) noexcept {
         + capacity.gradientCount
         + capacity.clipCount
         + capacity.passCount;
+    if (input.debugTelemetry != nullptr) {
+        capacity = additiveFramePacketCapacity(
+            capacity,
+            additiveFramePacketCapacity(
+                debugPoolHudCapacity(*input.debugTelemetry),
+                debugTopHudCapacity(*input.debugTelemetry)
+            )
+        );
+    }
     return capacity;
 }
 
@@ -2168,6 +2189,15 @@ TitleSceneResult buildTitleScene(
     ));
     metadata.clearColor = renderColor(title_letterbox_clear_color);
 
+    if (input.debugTelemetry != nullptr
+        && !debugTelemetryHudInputIsValid(*input.debugTelemetry)) {
+        return failedResult(
+            FrameBuildError::structurallyInvalid,
+            missingCapabilities,
+            requiredCapacity
+        );
+    }
+
     FramePacketBuilder builder(packet, PacketCapacityPolicy::fixedCapacity);
     if (!builder.begin(metadata, makeTitleViewport(input.layout, config))) {
         return failedResult(
@@ -2193,7 +2223,11 @@ TitleSceneResult buildTitleScene(
         );
     }
     if (!addBaseTitleShell(builder, input)
-        || !addOverlayShells(builder, input, config)) {
+        || (input.debugTelemetry != nullptr
+            && !addDebugPoolHud(builder, *input.debugTelemetry))
+        || !addOverlayShells(builder, input, config)
+        || (input.debugTelemetry != nullptr
+            && !addDebugTopHud(builder, *input.debugTelemetry))) {
         const FrameBuildError error = builder.error() == FrameBuildError::none
             ? FrameBuildError::structurallyInvalid
             : builder.error();

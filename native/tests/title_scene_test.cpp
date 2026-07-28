@@ -1788,15 +1788,15 @@ void testMaximumCapacityContainsFourKeyStateAndRepeatedBuildAllocatesNothing() {
     const FramePacketCapacity required = titleSceneCapacity(input);
     const FramePacketCapacity maximum = maximumTitleSceneCapacity();
     REQUIRE(capacityContains(maximum, required));
-    REQUIRE(maximum.commandCount == 512U);
-    REQUIRE(maximum.shapeCount == 128U);
+    REQUIRE(maximum.commandCount == 563U);
+    REQUIRE(maximum.shapeCount == 160U);
     REQUIRE(maximum.lineCount == 64U);
-    REQUIRE(maximum.uiCount == 128U);
+    REQUIRE(maximum.uiCount == 130U);
     REQUIRE(maximum.overlayCount == 20U);
     REQUIRE(maximum.clipCount == 12U);
     REQUIRE(maximum.passCount == 16U);
-    REQUIRE(maximum.glyphRunCount == 128U);
-    REQUIRE(maximum.glyphInstanceCount == 8'192U);
+    REQUIRE(maximum.glyphRunCount == 145U);
+    REQUIRE(maximum.glyphInstanceCount == 11'264U);
 
     FramePacket packet(maximum);
     allocation_probe::count = 0U;

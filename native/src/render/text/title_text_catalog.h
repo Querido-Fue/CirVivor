@@ -110,7 +110,29 @@ inline constexpr std::array title_text_catalog{
     TitleTextCatalogEntry{UiTextSemanticId::debugAnimation, "애니메이션 디버그", "애니메이션 디버그", 12'800U, 400},
     TitleTextCatalogEntry{UiTextSemanticId::debugHint, "/ : 업데이트 정지·재개   . : 정지 상태에서 1프레임 실행", "/ : 업데이트 정지·재개   . : 정지 상태에서 1프레임 실행", 9'600U, 300},
     TitleTextCatalogEntry{UiTextSemanticId::debugDevTools, "DevTools 열기", "DevTools 열기", 12'800U, 600},
-    TitleTextCatalogEntry{UiTextSemanticId::debugClose, "닫기", "닫기", 12'800U, 600}
+    TitleTextCatalogEntry{UiTextSemanticId::debugClose, "닫기", "닫기", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugProfilerHeader, "CPU 프로파일러(1초 평균 / avg | last | max)", "CPU 프로파일러(1초 평균 / avg | last | max)", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugProfilerFrameCpu, "frame.cpu", "frame.cpu", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugProfilerUpdateBuild, "frame.update+build", "frame.update+build", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugProfilerFixedUpdate, "frame.fixed.total", "frame.fixed.total", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugProfilerSceneBuild, "frame.scene.build", "frame.scene.build", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugProfilerRenderCall, "frame.render.call", "frame.render.call", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugPoolPhysicsBodies, "PhysicsBodies:", "PhysicsBodies:", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugPoolFrameCommands, "FrameCommands:", "FrameCommands:", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugPoolGlyphAtlas, "GlyphAtlas:", "GlyphAtlas:", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit0, "0", "0", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit1, "1", "1", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit2, "2", "2", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit3, "3", "3", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit4, "4", "4", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit5, "5", "5", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit6, "6", "6", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit7, "7", "7", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit8, "8", "8", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDigit9, "9", "9", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDecimalPoint, ".", ".", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetrySlash, "/", "/", 12'800U, 600},
+    TitleTextCatalogEntry{UiTextSemanticId::debugTelemetryDash, "-", "-", 12'800U, 600}
 };
 
 inline constexpr std::array title_external_url_text_catalog{

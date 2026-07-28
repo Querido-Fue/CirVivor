@@ -107,12 +107,23 @@ inline constexpr StableElementId overlay_button_id = stableResourceId("synthetic
 } // namespace
 
 FramePacketCapacity syntheticTestSceneCapacity(
-    const GlobalDebugOverlayInput& globalDebugOverlay
+    const GlobalDebugOverlayInput& globalDebugOverlay,
+    const DebugTelemetryHudInput* const debugTelemetry
 ) noexcept {
-    return additiveFramePacketCapacity(
+    FramePacketCapacity result = additiveFramePacketCapacity(
         syntheticTestSceneCapacity(),
         globalDebugOverlayCapacity(globalDebugOverlay)
     );
+    if (debugTelemetry != nullptr) {
+        result = additiveFramePacketCapacity(
+            result,
+            additiveFramePacketCapacity(
+                debugPoolHudCapacity(*debugTelemetry),
+                debugTopHudCapacity(*debugTelemetry)
+            )
+        );
+    }
+    return result;
 }
 
 ViewportState makeSyntheticViewport(const SyntheticSceneConfig& config) noexcept {
@@ -222,7 +233,8 @@ SyntheticSceneResult buildSyntheticTestScene(
     FramePacket& packet,
     const SyntheticSceneConfig& config,
     const PacketCapacityPolicy capacityPolicy,
-    const GlobalDebugOverlayInput* const globalDebugOverlay
+    const GlobalDebugOverlayInput* const globalDebugOverlay,
+    const DebugTelemetryHudInput* const debugTelemetry
 ) {
     FrameMetadata metadata;
     metadata.frameId = config.frameId;
@@ -231,6 +243,11 @@ SyntheticSceneResult buildSyntheticTestScene(
     metadata.interpolationAlpha = static_cast<float>(config.phaseStep % 60U) / 60.0F;
     metadata.alphaEncoding = AlphaEncoding::premultiplied;
     metadata.clearColor = PremultipliedRgba::opaque(0.035F, 0.045F, 0.065F);
+
+    if (debugTelemetry != nullptr
+        && !debugTelemetryHudInputIsValid(*debugTelemetry)) {
+        return {false, FrameBuildError::structurallyInvalid};
+    }
 
     FramePacketBuilder builder(packet, capacityPolicy);
     if (!builder.begin(metadata, makeSyntheticViewport(config))) {
@@ -394,6 +411,15 @@ SyntheticSceneResult buildSyntheticTestScene(
         return resultFrom(builder);
     }
 
+    if (debugTelemetry != nullptr
+        && !addDebugPoolHud(builder, *debugTelemetry)) {
+        const FrameBuildError error = builder.error() == FrameBuildError::none
+            ? FrameBuildError::structurallyInvalid
+            : builder.error();
+        builder.abort();
+        return {false, error};
+    }
+
     EffectCommand vignette;
     vignette.header = makeHeader(RenderLayer::vignette, CoordinateSpace::drawablePixels);
     vignette.effect = EffectType::vignette;
@@ -512,6 +538,15 @@ SyntheticSceneResult buildSyntheticTestScene(
 
     if (globalDebugOverlay != nullptr
         && !addGlobalDebugOverlay(builder, *globalDebugOverlay)) {
+        const FrameBuildError error = builder.error() == FrameBuildError::none
+            ? FrameBuildError::structurallyInvalid
+            : builder.error();
+        builder.abort();
+        return {false, error};
+    }
+
+    if (debugTelemetry != nullptr
+        && !addDebugTopHud(builder, *debugTelemetry)) {
         const FrameBuildError error = builder.error() == FrameBuildError::none
             ? FrameBuildError::structurallyInvalid
             : builder.error();

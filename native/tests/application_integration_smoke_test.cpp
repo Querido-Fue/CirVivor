@@ -716,6 +716,16 @@ void runGlobalDebugEnableCycle(const SmokeScene scene) {
     );
     REQUIRE(selectedDigest != unselectedDigest);
 
+    // 성능 숫자는 pause 중에도 실제 display frame마다 갱신된다. 아래의
+    // simulation 안정성 검증은 그 동적 HUD를 실제 control 경로로 끈 뒤 수행한다.
+    clickGlobalDebugControl(
+        application.application(),
+        ui::TitleOverlayControlId::debugFrameTime,
+        450U
+    );
+    sendMouseMoveAway(application.application());
+    iterateAfterDelay(application.application());
+
     sendDebugKey(
         application.application(),
         platform::sdl::PlatformAction::debugPause
@@ -729,6 +739,9 @@ void runGlobalDebugEnableCycle(const SmokeScene scene) {
         ui::TitleOverlayControlId::close,
         500U
     );
+    // FrameCommands 사용량은 성공한 직전 packet을 표시하므로 panel 제거 뒤
+    // 한 frame을 더 제출해 one-frame-delayed telemetry도 안정화한다.
+    iterateAfterDelay(application.application());
     iterateAfterDelay(application.application());
     const std::uint64_t pausedDigest = applicationFrameContentDigest(
         application.application()

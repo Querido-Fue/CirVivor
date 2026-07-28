@@ -1,6 +1,7 @@
 #pragma once
 
 #include "game/game_system.h"
+#include "render/frontend/debug_telemetry_hud.h"
 #include "render/frontend/frame_packet_builder.h"
 #include "render/frontend/global_debug_overlay.h"
 
@@ -39,7 +40,8 @@ struct PlayableGameSceneResult final {
 [[nodiscard]] FramePacketCapacity playableGameSceneCapacity(
     const game::GameSystem& gameSystem,
     const PlayableGameSceneConfig& config = {},
-    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr
+    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr,
+    const DebugTelemetryHudInput* debugTelemetry = nullptr
 ) noexcept;
 
 /** 현재 단일 맵 카탈로그가 요구하는 playable packet의 고정 상한입니다. */
@@ -51,12 +53,18 @@ struct PlayableGameSceneResult final {
     return capacity;
 }
 
-/** playable base와 전역 Debug 한 장을 함께 담는 고정 상한입니다. */
+/** playable base와 Debug panel·telemetry HUD를 함께 담는 고정 상한입니다. */
 [[nodiscard]] constexpr FramePacketCapacity
-maximumPlayableGameSceneWithGlobalDebugCapacity() noexcept {
+maximumPlayableGameSceneWithDebugUiCapacity() noexcept {
     return additiveFramePacketCapacity(
-        maximumPlayableGameSceneCapacity(),
-        maximumGlobalDebugOverlayCapacity()
+        additiveFramePacketCapacity(
+            maximumPlayableGameSceneCapacity(),
+            maximumGlobalDebugOverlayCapacity()
+        ),
+        additiveFramePacketCapacity(
+            maximumDebugPoolHudCapacity(),
+            maximumDebugTopHudCapacity()
+        )
     );
 }
 
@@ -79,7 +87,8 @@ maximumPlayableGameSceneWithGlobalDebugCapacity() noexcept {
     const game::GameSystem& gameSystem,
     const PlayableGameSceneConfig& config = {},
     PacketCapacityPolicy capacityPolicy = PacketCapacityPolicy::growAsNeeded,
-    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr
+    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr,
+    const DebugTelemetryHudInput* debugTelemetry = nullptr
 );
 
 } // namespace cirvivor::render::frontend

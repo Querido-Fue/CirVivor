@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/frontend/debug_telemetry_hud.h"
 #include "render/frontend/frame_packet_builder.h"
 #include "render/frontend/global_debug_overlay.h"
 
@@ -45,13 +46,20 @@ struct SyntheticSceneResult final {
 
 /** 기존 synthetic 장면과 선택적 Debug overlay를 함께 담는 exact capacity입니다. */
 [[nodiscard]] FramePacketCapacity syntheticTestSceneCapacity(
-    const GlobalDebugOverlayInput& globalDebugOverlay
+    const GlobalDebugOverlayInput& globalDebugOverlay,
+    const DebugTelemetryHudInput* debugTelemetry = nullptr
 ) noexcept;
 
 [[nodiscard]] constexpr FramePacketCapacity maximumSyntheticTestSceneCapacity() noexcept {
     return additiveFramePacketCapacity(
-        syntheticTestSceneCapacity(),
-        maximumGlobalDebugOverlayCapacity()
+        additiveFramePacketCapacity(
+            syntheticTestSceneCapacity(),
+            maximumGlobalDebugOverlayCapacity()
+        ),
+        additiveFramePacketCapacity(
+            maximumDebugPoolHudCapacity(),
+            maximumDebugTopHudCapacity()
+        )
     );
 }
 
@@ -65,7 +73,8 @@ struct SyntheticSceneResult final {
     FramePacket& packet,
     const SyntheticSceneConfig& config = {},
     PacketCapacityPolicy capacityPolicy = PacketCapacityPolicy::growAsNeeded,
-    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr
+    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr,
+    const DebugTelemetryHudInput* debugTelemetry = nullptr
 );
 
 } // namespace cirvivor::render::frontend

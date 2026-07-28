@@ -798,7 +798,7 @@ Application::Application()
       framePacket_(render::maximumFramePacketCapacity(
           render::maximumFramePacketCapacity(
               render::frontend::maximumSyntheticTestSceneCapacity(),
-              render::frontend::maximumPlayableGameSceneWithGlobalDebugCapacity()
+              render::frontend::maximumPlayableGameSceneWithDebugUiCapacity()
           ),
           render::frontend::maximumTitleSceneCapacity()
       )) {}
@@ -1898,6 +1898,80 @@ std::uint64_t Application::refreshTitleBackdropRevision(
     return titleBackdropRevision_;
 }
 
+render::frontend::DebugTelemetryHudInput
+Application::makeDebugTelemetryHudInput(
+    const std::uint64_t timestampNanoseconds
+) const noexcept {
+    render::frontend::DebugTelemetryHudInput result{};
+    result.showFrameTime = debugRuntime_.displayOptionActive(
+        debug::DebugDisplayOption::frameTime
+    );
+    result.showPoolInfo = debugRuntime_.displayOptionActive(
+        debug::DebugDisplayOption::poolInfo
+    );
+    result.showHitboxes = debugRuntime_.displayOptionActive(
+        debug::DebugDisplayOption::hitboxes
+    );
+    result.performance = debugPerformance_.snapshot(timestampNanoseconds);
+    result.textResources = titleTextCache_ == nullptr
+        ? render::PreShapedTextResourcesView{}
+        : titleTextCache_->textResources();
+    result.locale = activeTitleLocale();
+
+    if (!result.showPoolInfo) {
+        return result;
+    }
+
+    const auto appendPool = [&result](
+        const render::frontend::DebugPoolKind kind,
+        const std::uint64_t active,
+        const std::uint64_t allocated,
+        const std::uint64_t capacity
+    ) noexcept {
+        if (result.poolCount >= result.pools.size()) {
+            return;
+        }
+        result.pools[result.poolCount] = {
+            kind,
+            active,
+            allocated,
+            capacity
+        };
+        ++result.poolCount;
+    };
+
+    if (gameSystem_ != nullptr) {
+        const core::BodySoA& bodies = gameSystem_->bodies();
+        std::size_t enabledBodyCount = 0U;
+        for (std::size_t index = 0U; index < bodies.size(); ++index) {
+            enabledBodyCount += bodies.isEnabled(index) ? 1U : 0U;
+        }
+        appendPool(
+            render::frontend::DebugPoolKind::physicsBodies,
+            static_cast<std::uint64_t>(enabledBodyCount),
+            static_cast<std::uint64_t>(bodies.size()),
+            static_cast<std::uint64_t>(bodies.capacity())
+        );
+    }
+
+    const render::FramePacketCapacity packetCapacity = framePacket_.capacity();
+    appendPool(
+        render::frontend::DebugPoolKind::frameCommands,
+        static_cast<std::uint64_t>(lastCompletedFramePacketSize_.commandCount),
+        static_cast<std::uint64_t>(lastCompletedFramePacketSize_.commandCount),
+        static_cast<std::uint64_t>(packetCapacity.commandCount)
+    );
+    if (titleTextCache_ != nullptr) {
+        appendPool(
+            render::frontend::DebugPoolKind::glyphAtlas,
+            static_cast<std::uint64_t>(titleTextCache_->glyphEntryCount()),
+            static_cast<std::uint64_t>(titleTextCache_->glyphEntryCount()),
+            static_cast<std::uint64_t>(titleTextCache_->glyphEntryCapacity())
+        );
+    }
+    return result;
+}
+
 bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noexcept {
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
     const settings::GameSettings& runtimeSettings = activeSettings();
@@ -1940,8 +2014,13 @@ bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noe
         runtimeSettings.disableTransparency,
         config.frameId
     };
+    const render::frontend::DebugTelemetryHudInput debugTelemetry =
+        makeDebugTelemetryHudInput(SDL_GetTicksNS());
     const render::FramePacketCapacity requiredCapacity =
-        render::frontend::syntheticTestSceneCapacity(debugOverlayInput);
+        render::frontend::syntheticTestSceneCapacity(
+            debugOverlayInput,
+            &debugTelemetry
+        );
     if (!framePacket_.hasCapacityFor(requiredCapacity)) {
         SDL_LogError(
             SDL_LOG_CATEGORY_APPLICATION,
@@ -1956,7 +2035,8 @@ bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noe
                 framePacket_,
                 config,
                 render::frontend::PacketCapacityPolicy::fixedCapacity,
-                &debugOverlayInput
+                &debugOverlayInput,
+                &debugTelemetry
             );
         if (!result.success) {
             SDL_LogError(
@@ -2026,11 +2106,67 @@ bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noex
         runtimeSettings.disableTransparency,
         config.frameId
     };
+    render::frontend::DebugTelemetryHudInput debugTelemetry =
+        makeDebugTelemetryHudInput(SDL_GetTicksNS());
+    if (debugTelemetry.showHitboxes) {
+        const render::ViewportState viewport =
+            render::frontend::makePlayableGameViewport(*gameSystem_, config);
+        const float pixelsPerWorldUnit =
+            viewport.world.drawablePixelsPerWorldUnit;
+        const float strokeWidth = std::isfinite(pixelsPerWorldUnit)
+                && pixelsPerWorldUnit > 0.0F
+            ? 2.0F / pixelsPerWorldUnit
+            : 0.04F;
+        const core::BodySoA& bodies = gameSystem_->bodies();
+        const auto appendHitbox = [
+            &debugTelemetry,
+            &bodies,
+            interpolationAlpha = config.interpolationAlpha,
+            strokeWidth
+        ](
+            const core::BodySoA::Index bodyIndex,
+            const double radius,
+            const render::PremultipliedRgba color
+        ) {
+            if (debugTelemetry.hitboxCount >= debugTelemetry.hitboxes.size()
+                || !bodies.isEnabled(bodyIndex)) {
+                return;
+            }
+            const core::Vector2 previous = bodies.previousPosition(bodyIndex);
+            const core::Vector2 current = bodies.position(bodyIndex);
+            const double interpolation = static_cast<double>(interpolationAlpha);
+            debugTelemetry.hitboxes[debugTelemetry.hitboxCount] = {
+                {
+                    static_cast<float>(
+                        previous.x + (current.x - previous.x) * interpolation
+                    ),
+                    static_cast<float>(
+                        previous.y + (current.y - previous.y) * interpolation
+                    )
+                },
+                static_cast<float>(radius),
+                strokeWidth,
+                color
+            };
+            ++debugTelemetry.hitboxCount;
+        };
+        appendHitbox(
+            gameSystem_->towerBodyIndex(),
+            game::GameSystem::tower_radius,
+            render::PremultipliedRgba::fromStraight(
+                0.25F,
+                0.95F,
+                1.0F,
+                0.95F
+            )
+        );
+    }
     const render::FramePacketCapacity requiredCapacity =
         render::frontend::playableGameSceneCapacity(
             *gameSystem_,
             config,
-            &debugOverlayInput
+            &debugOverlayInput,
+            &debugTelemetry
         );
     if (!framePacket_.hasCapacityFor(requiredCapacity)) {
         SDL_LogError(
@@ -2047,7 +2183,8 @@ bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noex
                 *gameSystem_,
                 config,
                 render::frontend::PacketCapacityPolicy::fixedCapacity,
-                &debugOverlayInput
+                &debugOverlayInput,
+                &debugTelemetry
             );
         if (!result.success) {
             SDL_LogError(
@@ -2115,6 +2252,8 @@ bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcep
         interaction,
         controlOverrides.revision
     );
+    const render::frontend::DebugTelemetryHudInput debugTelemetry =
+        makeDebugTelemetryHudInput(SDL_GetTicksNS());
     const render::frontend::TitleSceneInput input{
         state,
         interaction,
@@ -2126,7 +2265,8 @@ bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcep
             : titleTextCache_->textResources(),
         activeTitleLocale(),
         &titleOverlayPresentations_,
-        activeSettings().disableTransparency
+        activeSettings().disableTransparency,
+        &debugTelemetry
     };
     render::frontend::TitleSceneConfig config{};
     config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
@@ -2768,7 +2908,7 @@ bool Application::startPlayableSession(
         || !::cirvivor::data::isKnownGameMapId(request.mapId.view())
         || request.mapId.view() != game::GameSystem::map_id
         || !framePacket_.hasCapacityFor(
-            render::frontend::maximumPlayableGameSceneWithGlobalDebugCapacity()
+            render::frontend::maximumPlayableGameSceneWithDebugUiCapacity()
         )) {
         return false;
     }
@@ -2921,6 +3061,9 @@ ApplicationResult Application::iterate() noexcept {
     }
 
     const std::uint64_t frameStart = SDL_GetTicksNS();
+    static_cast<void>(debugPerformance_.setEnabled(
+        debugRuntime_.displayOptionActive(debug::DebugDisplayOption::frameTime)
+    ));
     if (previousFrameTicks_ == 0) {
         previousFrameTicks_ = frameStart;
     }
@@ -2964,6 +3107,7 @@ ApplicationResult Application::iterate() noexcept {
         return ApplicationResult::failure;
     }
     const bool playableSessionActive = sceneMode_ == SceneMode::playable;
+    const std::uint64_t fixedUpdateStart = SDL_GetTicksNS();
     for (std::uint32_t step = 0; step < schedule.fixedStepCount; ++step) {
         if (playableSessionActive && gameSystem_ != nullptr) {
             static_cast<void>(gameSystem_->fixedUpdate(
@@ -2972,8 +3116,10 @@ ApplicationResult Application::iterate() noexcept {
         }
         ++simulationTick_;
     }
+    const std::uint64_t fixedUpdateEnd = SDL_GetTicksNS();
 
     bool frameBuilt = false;
+    const std::uint64_t sceneBuildStart = SDL_GetTicksNS();
     switch (sceneMode_) {
     case SceneMode::title:
         frameBuilt = buildTitleFrame(schedule);
@@ -2985,6 +3131,7 @@ ApplicationResult Application::iterate() noexcept {
         frameBuilt = buildSyntheticFrame(schedule);
         break;
     }
+    const std::uint64_t sceneBuildEnd = SDL_GetTicksNS();
     if (!frameBuilt) {
         return ApplicationResult::failure;
     }
@@ -2997,10 +3144,51 @@ ApplicationResult Application::iterate() noexcept {
         titleTextCache_ != nullptr
         ? titleTextCache_->renderResources()
         : render::RenderResourcesView{};
+    const std::uint64_t renderStart = SDL_GetTicksNS();
     if (!renderer_.render(framePacket_, resources)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Renderer frame submission failed.");
         return ApplicationResult::failure;
     }
+    const std::uint64_t renderEnd = SDL_GetTicksNS();
+    if (debugPerformance_.isEnabled()) {
+        // Scheduler authority stays at frameCpuEnd above. The diagnostic
+        // frame.cpu sample is the observable active display-frame wall and
+        // intentionally includes the backend render() call.
+        const auto duration = [](
+            const std::uint64_t start,
+            const std::uint64_t end
+        ) noexcept {
+            return end >= start ? end - start : 0U;
+        };
+        static_cast<void>(debugPerformance_.record(
+            debug::DebugPerformanceSection::frameCpu,
+            renderEnd,
+            duration(frameStart, renderEnd)
+        ));
+        static_cast<void>(debugPerformance_.record(
+            debug::DebugPerformanceSection::updateBuild,
+            renderEnd,
+            duration(frameStart, frameCpuEnd)
+        ));
+        if (schedule.fixedStepCount > 0U) {
+            static_cast<void>(debugPerformance_.record(
+                debug::DebugPerformanceSection::fixedUpdate,
+                renderEnd,
+                duration(fixedUpdateStart, fixedUpdateEnd)
+            ));
+        }
+        static_cast<void>(debugPerformance_.record(
+            debug::DebugPerformanceSection::sceneBuild,
+            renderEnd,
+            duration(sceneBuildStart, sceneBuildEnd)
+        ));
+        static_cast<void>(debugPerformance_.record(
+            debug::DebugPerformanceSection::renderCall,
+            renderEnd,
+            duration(renderStart, renderEnd)
+        ));
+    }
+    lastCompletedFramePacketSize_ = framePacket_.size();
     ++renderedFrameCount_;
     redrawPending_ = false;
     if (titleToPlayableSmoke_) {
@@ -3180,6 +3368,7 @@ void Application::shutdown() noexcept {
     titleUiController_ = {};
     settingsOverlaySession_ = {};
     debugRuntime_ = debug::DebugRuntimeController{};
+    debugPerformance_ = debug::DebugPerformanceTracker{};
     titleLayout_ = {};
     titleDisplayArea_ = {};
     titleTheme_ = ui::layout::darkThemeMetrics();
@@ -3218,6 +3407,7 @@ void Application::shutdown() noexcept {
     titleTextCache_.reset();
     titleFontBytes_.clear();
     titleTextGeneration_ = 0U;
+    lastCompletedFramePacketSize_ = {};
 }
 
 bool Application::updatePlatformServices() noexcept {
@@ -3493,6 +3683,8 @@ void Application::configureActiveCallbackRate() noexcept {
 void Application::resetFrameClock() noexcept {
     previousFrameTicks_ = SDL_GetTicksNS();
     previousFrameCpuSeconds_ = 0;
+    debugPerformance_.reset();
+    lastCompletedFramePacketSize_ = {};
 }
 
 } // namespace cirvivor::app

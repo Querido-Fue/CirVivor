@@ -2,6 +2,7 @@
 
 #include "app/movement_input_buffer.h"
 #include "app/title_display_policy.h"
+#include "debug/debug_performance_tracker.h"
 #include "debug/debug_runtime_controller.h"
 #include "engine/frame_scheduler.h"
 #include "game/game_system.h"
@@ -12,6 +13,7 @@
 #include "platform/sdl/sdl_window.h"
 #include "render/backend/renderer_router.h"
 #include "render/common/frame_packet.h"
+#include "render/frontend/debug_telemetry_hud.h"
 #include "render/text/shaped_text_cache.h"
 #include "settings/settings_overlay_session.h"
 #include "settings/settings_repository.h"
@@ -75,6 +77,8 @@ private:
     [[nodiscard]] bool buildSyntheticFrame(const engine::FrameSchedule& schedule) noexcept;
     [[nodiscard]] bool buildPlayableFrame(const engine::FrameSchedule& schedule) noexcept;
     [[nodiscard]] bool buildTitleFrame(const engine::FrameSchedule& schedule) noexcept;
+    [[nodiscard]] render::frontend::DebugTelemetryHudInput
+    makeDebugTelemetryHudInput(std::uint64_t timestampNanoseconds) const noexcept;
     [[nodiscard]] bool refreshTitleLayout() noexcept;
     [[nodiscard]] bool refreshTitleLayout(
         const settings::GameSettings& settings
@@ -156,6 +160,7 @@ private:
     settings::SettingsRepository settingsRepository_;
     settings::SettingsOverlaySession settingsOverlaySession_;
     debug::DebugRuntimeController debugRuntime_;
+    debug::DebugPerformanceTracker debugPerformance_;
     platform::sdl::SdlPlaybackDevice audio_;
     ui::TitleOverlayStateMachine titleUiState_;
     ui::TitleUiController titleUiController_;
@@ -165,6 +170,7 @@ private:
     ui::layout::TitleEntranceRenderState titleEntrance_;
     ui::TitleOverlayPresentationSet titleOverlayPresentations_{};
     render::FramePacket framePacket_;
+    render::FramePacketCapacity lastCompletedFramePacketSize_{};
     std::vector<std::byte> titleFontBytes_;
     std::unique_ptr<render::text::ShapedTextCache> titleTextCache_;
     render::backend::RendererPreference rendererPreference_ =

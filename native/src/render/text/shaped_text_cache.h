@@ -68,6 +68,8 @@ public:
     [[nodiscard]] RenderResourcesView renderResources() const noexcept;
     [[nodiscard]] std::uint64_t generation() const noexcept;
     [[nodiscard]] std::size_t runCount() const noexcept;
+    [[nodiscard]] std::uint32_t glyphEntryCount() const noexcept;
+    [[nodiscard]] std::uint32_t glyphEntryCapacity() const noexcept;
 
 private:
     explicit ShapedTextCache(std::unique_ptr<Impl> implementation) noexcept;

@@ -101,7 +101,29 @@ enum class UiTextSemanticId : std::uint16_t {
     debugAnimation,
     debugHint,
     debugDevTools,
-    debugClose
+    debugClose,
+    debugProfilerHeader,
+    debugProfilerFrameCpu,
+    debugProfilerUpdateBuild,
+    debugProfilerFixedUpdate,
+    debugProfilerSceneBuild,
+    debugProfilerRenderCall,
+    debugPoolPhysicsBodies,
+    debugPoolFrameCommands,
+    debugPoolGlyphAtlas,
+    debugTelemetryDigit0,
+    debugTelemetryDigit1,
+    debugTelemetryDigit2,
+    debugTelemetryDigit3,
+    debugTelemetryDigit4,
+    debugTelemetryDigit5,
+    debugTelemetryDigit6,
+    debugTelemetryDigit7,
+    debugTelemetryDigit8,
+    debugTelemetryDigit9,
+    debugTelemetryDecimalPoint,
+    debugTelemetrySlash,
+    debugTelemetryDash
 };
 
 /** logicalPixelSizeMilli는 layout px를 1/1000 단위로 보존합니다. */
