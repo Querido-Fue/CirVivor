@@ -635,6 +635,12 @@ bool FramePacketBuilder::isBuilding() const noexcept {
     return building_;
 }
 
+const ViewportState* FramePacketBuilder::activeViewport() const noexcept {
+    return building_ && packet_.activeBuilder_ == this
+        ? &packet_.viewport_
+        : nullptr;
+}
+
 std::uint32_t FramePacketBuilder::nextSequence() const noexcept {
     return nextSequence_;
 }

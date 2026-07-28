@@ -235,6 +235,12 @@ const RenderCapabilities* RendererRouter::capabilities() const noexcept {
     return activeBackend_ == nullptr ? nullptr : &activeBackend_->capabilities();
 }
 
+std::uint64_t RendererRouter::lastFrameContentHash() const noexcept {
+    return activeBackend_ == nullptr
+        ? 0U
+        : activeBackend_->lastFrameContentHash();
+}
+
 const RendererSelectionDiagnostics& RendererRouter::lastDiagnostics() const noexcept {
     return lastDiagnostics_;
 }

@@ -1,5 +1,7 @@
 #include "app/application.h"
 
+#include "app/logical_ui_projection.h"
+
 #include "platform/sdl/sdl_platform_event.h"
 #include "platform/sdl/sdl_runtime_asset.h"
 #include "render/frontend/playable_game_scene.h"
@@ -515,6 +517,43 @@ private:
     };
 }
 
+[[nodiscard]] render::frontend::SyntheticSceneConfig makeSyntheticSceneConfig(
+    const platform::sdl::WindowMetrics& metrics,
+    const settings::GameSettings& runtimeSettings,
+    const std::uint64_t projectionRevision
+) noexcept {
+    render::frontend::SyntheticSceneConfig config;
+    config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
+    config.physicalWindowBounds = {0, 0, metrics.pixelWidth, metrics.pixelHeight};
+    config.drawableSize = {metrics.pixelWidth, metrics.pixelHeight};
+    config.safeArea = drawableSafeArea(metrics);
+    config.dpiScale = metrics.pixelDensity;
+    config.uiScale = static_cast<float>(runtimeSettings.uiScalePercent) / 100.0F;
+    config.worldRenderScale =
+        static_cast<float>(runtimeSettings.renderScalePercent) / 100.0F;
+    config.projectionRevision = projectionRevision;
+    return config;
+}
+
+[[nodiscard]] render::frontend::PlayableGameSceneConfig makePlayableSceneConfig(
+    const platform::sdl::WindowMetrics& metrics,
+    const settings::GameSettings& runtimeSettings,
+    const std::uint64_t projectionRevision
+) noexcept {
+    render::frontend::PlayableGameSceneConfig config;
+    config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
+    config.physicalWindowBounds = {0, 0, metrics.pixelWidth, metrics.pixelHeight};
+    config.drawableSize = {metrics.pixelWidth, metrics.pixelHeight};
+    config.safeArea = drawableSafeArea(metrics);
+    config.dpiScale = metrics.pixelDensity;
+    config.uiScale = static_cast<float>(runtimeSettings.uiScalePercent) / 100.0F;
+    config.worldRenderScale =
+        static_cast<float>(runtimeSettings.renderScalePercent) / 100.0F;
+    config.widescreenSupport = runtimeSettings.widescreenSupport;
+    config.projectionRevision = projectionRevision;
+    return config;
+}
+
 [[nodiscard]] double titleEntranceElapsedSeconds(
     const ui::TitleTimelineSnapshot& title
 ) noexcept {
@@ -530,10 +569,31 @@ private:
     return 0.0;
 }
 
-[[nodiscard]] bool tryTranslateTitlePointer(
+[[nodiscard]] bool tryResolveWindowPointerPosition(
     const platform::sdl::PlatformEvent& source,
     const platform::sdl::WindowMetrics& metrics,
-    const TitleDisplayArea& displayArea,
+    ui::layout::PointD& output
+) noexcept {
+    if (source.kind != platform::sdl::PlatformEventKind::pointerChanged) {
+        return false;
+    }
+
+    double x = source.pointer.x;
+    double y = source.pointer.y;
+    if (source.pointer.coordinatesNormalized) {
+        x *= static_cast<double>(std::max(metrics.windowWidth, 0));
+        y *= static_cast<double>(std::max(metrics.windowHeight, 0));
+    }
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        return false;
+    }
+    output = {x, y};
+    return true;
+}
+
+[[nodiscard]] bool tryBuildUiPointerEvent(
+    const platform::sdl::PlatformEvent& source,
+    const ui::layout::PointD position,
     ui::UiPointerEvent& output
 ) noexcept {
     if (source.kind != platform::sdl::PlatformEventKind::pointerChanged) {
@@ -592,13 +652,6 @@ private:
         }
     }
 
-    double x = source.pointer.x;
-    double y = source.pointer.y;
-    if (source.pointer.coordinatesNormalized) {
-        x *= static_cast<double>(std::max(metrics.windowWidth, 0));
-        y *= static_cast<double>(std::max(metrics.windowHeight, 0));
-    }
-    const ui::layout::PointD localPosition = titleLocalPoint({x, y}, displayArea);
     output = {
         .type = type,
         .device = device,
@@ -606,9 +659,76 @@ private:
         .pointerId = device == ui::UiPointerDevice::mouse
             ? 0U
             : source.pointer.pointerId,
-        .position = localPosition
+        .position = position
     };
     return true;
+}
+
+[[nodiscard]] bool tryTranslateTitlePointer(
+    const platform::sdl::PlatformEvent& source,
+    const platform::sdl::WindowMetrics& metrics,
+    const TitleDisplayArea& displayArea,
+    ui::UiPointerEvent& output
+) noexcept {
+    ui::layout::PointD windowPosition{};
+    if (!tryResolveWindowPointerPosition(source, metrics, windowPosition)) {
+        return false;
+    }
+    return tryBuildUiPointerEvent(
+        source,
+        titleLocalPoint(windowPosition, displayArea),
+        output
+    );
+}
+
+[[nodiscard]] bool tryTranslateGlobalDebugPointer(
+    const platform::sdl::PlatformEvent& source,
+    const platform::sdl::WindowMetrics& metrics,
+    const render::ViewportState& viewport,
+    ui::UiPointerEvent& output
+) noexcept {
+    ui::layout::PointD windowPosition{};
+    if (!tryResolveWindowPointerPosition(source, metrics, windowPosition)) {
+        return false;
+    }
+
+    const LogicalUiProjection projection{
+        {static_cast<double>(metrics.windowWidth),
+            static_cast<double>(metrics.windowHeight)},
+        {static_cast<double>(viewport.drawable.size.width),
+            static_cast<double>(viewport.drawable.size.height)},
+        {static_cast<double>(viewport.drawable.contentRect.x),
+            static_cast<double>(viewport.drawable.contentRect.y),
+            static_cast<double>(viewport.drawable.contentRect.width),
+            static_cast<double>(viewport.drawable.contentRect.height)},
+        {static_cast<double>(viewport.logicalUi.contentRect.x),
+            static_cast<double>(viewport.logicalUi.contentRect.y),
+            static_cast<double>(viewport.logicalUi.contentRect.width),
+            static_cast<double>(viewport.logicalUi.contentRect.height)},
+        static_cast<double>(
+            viewport.logicalUi.drawablePixelsPerLogicalUnitX
+        ),
+        static_cast<double>(
+            viewport.logicalUi.drawablePixelsPerLogicalUnitY
+        )
+    };
+    LogicalUiProjectionPoint logicalPosition{};
+    if (!tryProjectWindowPointToLogicalUi(
+            {windowPosition.x, windowPosition.y},
+            projection,
+            logicalPosition)) {
+        return false;
+    }
+    return tryBuildUiPointerEvent(
+        source,
+        {
+            logicalPosition.x
+                - static_cast<double>(viewport.logicalUi.contentRect.x),
+            logicalPosition.y
+                - static_cast<double>(viewport.logicalUi.contentRect.y)
+        },
+        output
+    );
 }
 
 [[nodiscard]] const char* storageResultName(
@@ -677,11 +797,15 @@ Application::Application()
       titleTheme_(ui::layout::darkThemeMetrics()),
       framePacket_(render::maximumFramePacketCapacity(
           render::maximumFramePacketCapacity(
-              render::frontend::syntheticTestSceneCapacity(),
-              render::frontend::maximumPlayableGameSceneCapacity()
+              render::frontend::maximumSyntheticTestSceneCapacity(),
+              render::frontend::maximumPlayableGameSceneWithGlobalDebugCapacity()
           ),
           render::frontend::maximumTitleSceneCapacity()
       )) {}
+
+std::uint64_t Application::lastRenderedFrameContentHash() const noexcept {
+    return renderer_.lastFrameContentHash();
+}
 
 std::unique_ptr<render::backend::IRenderBackend> Application::makeRenderBackend(
     const render::backend::RenderBackendKind kind
@@ -709,7 +833,7 @@ bool Application::initializeRenderer(
     const render::backend::RendererSelection selection{
         preference,
         true,
-        sceneMode_ == SceneMode::title
+        true
     };
     try {
         if (!renderer_.initialize(selection)) {
@@ -879,21 +1003,24 @@ bool Application::refreshRendererSize() noexcept {
         return false;
     }
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
-    if (sceneMode_ == SceneMode::title && !refreshTitleLayout()) {
-        SDL_LogError(
-            SDL_LOG_CATEGORY_APPLICATION,
-            "Native title layout refresh failed for %dx%d logical units.",
-            metrics.windowWidth,
-            metrics.windowHeight
-        );
-        drawableReady_ = false;
-        return false;
-    }
     ++projectionRevision_;
     if (metrics.pixelWidth <= 0 || metrics.pixelHeight <= 0) {
         drawableReady_ = false;
         rendererSizeDirty_ = false;
         return true;
+    }
+    const bool layoutReady = sceneMode_ == SceneMode::title
+        ? refreshTitleLayout()
+        : refreshGlobalDebugLayout();
+    if (!layoutReady) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Native UI layout refresh failed for %dx%d logical units.",
+            metrics.windowWidth,
+            metrics.windowHeight
+        );
+        drawableReady_ = false;
+        return false;
     }
     if (!renderer_.resize(metrics.pixelWidth, metrics.pixelHeight)) {
         drawableReady_ = false;
@@ -983,6 +1110,81 @@ bool Application::refreshTitleLayout(
             ? 1U
             : projectionRevision_ + 1U;
     }
+    return true;
+}
+
+bool Application::refreshGlobalDebugLayout() noexcept {
+    return refreshGlobalDebugLayout(activeSettings());
+}
+
+bool Application::tryResolveGlobalDebugViewport(
+    const settings::GameSettings& runtimeSettings,
+    render::ViewportState& output
+) const noexcept {
+    const platform::sdl::WindowMetrics& metrics = window_.metrics();
+    if (metrics.pixelWidth <= 0 || metrics.pixelHeight <= 0) {
+        return false;
+    }
+
+    switch (sceneMode_) {
+    case SceneMode::playable:
+        if (gameSystem_ == nullptr) {
+            return false;
+        }
+        output = render::frontend::makePlayableGameViewport(
+            *gameSystem_,
+            makePlayableSceneConfig(metrics, runtimeSettings, projectionRevision_)
+        );
+        return true;
+    case SceneMode::diagnostic:
+        output = render::frontend::makeSyntheticViewport(
+            makeSyntheticSceneConfig(metrics, runtimeSettings, projectionRevision_)
+        );
+        return true;
+    case SceneMode::title:
+        return false;
+    }
+    return false;
+}
+
+bool Application::refreshGlobalDebugLayout(
+    const settings::GameSettings& runtimeSettings
+) noexcept {
+    const platform::sdl::WindowMetrics& metrics = window_.metrics();
+    if (metrics.pixelWidth <= 0 || metrics.pixelHeight <= 0) {
+        return titleLayout_.hasSnapshot();
+    }
+    render::ViewportState viewport{};
+    if (!tryResolveGlobalDebugViewport(runtimeSettings, viewport)) {
+        return false;
+    }
+
+    ui::layout::UiLayoutMetrics candidateLayout = titleLayout_;
+    const ui::layout::LayoutInput input{
+        .logicalWidth = static_cast<double>(viewport.logicalUi.contentRect.width),
+        .logicalHeight = static_cast<double>(viewport.logicalUi.contentRect.height),
+        .uiScale = static_cast<double>(runtimeSettings.uiScalePercent) / 100.0,
+        .hasVersionHistoryLink = false,
+        .logicalSafeArea = {
+            static_cast<double>(viewport.logicalUi.safeArea.left),
+            static_cast<double>(viewport.logicalUi.safeArea.top),
+            static_cast<double>(viewport.logicalUi.safeArea.right),
+            static_cast<double>(viewport.logicalUi.safeArea.bottom)
+        }
+    };
+    if (!candidateLayout.tryUpdate(input)) {
+        return false;
+    }
+    if (titleTextCache_ == nullptr
+        && !prepareTitleTextResources(runtimeSettings)) {
+        return false;
+    }
+
+    static_cast<void>(titleUiController_.handleFocusLost());
+    titleLayout_ = candidateLayout;
+    titleEntrance_ = {};
+    titleDisplayArea_ = {};
+    titleOverlayPresentations_ = {};
     return true;
 }
 
@@ -1205,6 +1407,22 @@ bool Application::buildTitleControlStateOverrides(
     return true;
 }
 
+bool Application::prepareGlobalDebugOverlayPresentation(
+    const ui::UiStateSnapshot& state
+) noexcept {
+    if (!titleLayout_.hasSnapshot() || titleTextCache_ == nullptr) {
+        return false;
+    }
+    ui::TitleOverlayControlStateOverrides controlOverrides{};
+    return buildTitleControlStateOverrides(state, controlOverrides)
+        && ui::tryBuildTitleOverlayPresentationSet(
+            state,
+            titleLayout_.snapshot(),
+            titleOverlayPresentations_,
+            &controlOverrides
+        );
+}
+
 bool Application::applyRuntimeSettings(
     const settings::GameSettings& candidate,
     const settings::SettingsOverlayFieldMask changedFields,
@@ -1229,17 +1447,27 @@ bool Application::applyRuntimeSettings(
             & ~settings::settingsOverlayFieldBit(
                 settings::SettingsOverlayField::disableTransparency)
         );
-    if (sceneMode_ == SceneMode::title
-        && !titleFontBytes_.empty()
+    if (!titleFontBytes_.empty()
         && (changedFields & textFields) != 0U
         && !prepareTitleTextResources(candidate)) {
         return false;
     }
-    if (sceneMode_ == SceneMode::title
-        && titleLayout_.hasSnapshot()
-        && (changedFields != 0U)
-        && !refreshTitleLayout(candidate)) {
-        return false;
+    if (titleLayout_.hasSnapshot() && changedFields != 0U) {
+        const bool layoutReady = sceneMode_ == SceneMode::title
+            ? refreshTitleLayout(candidate)
+            : refreshGlobalDebugLayout(candidate);
+        if (!layoutReady) {
+            return false;
+        }
+    }
+    if (sceneMode_ != SceneMode::title
+        && includesSettingsField(
+            changedFields,
+            settings::SettingsOverlayField::widescreenSupport)) {
+        projectionRevision_ = projectionRevision_
+                == std::numeric_limits<std::uint64_t>::max()
+            ? 1U
+            : projectionRevision_ + 1U;
     }
     if (applyWindow
         && includesSettingsField(
@@ -1448,9 +1676,6 @@ void Application::handleDebugEffect(
 ) noexcept {
     if (effect.persistDebugMode) {
         static_cast<void>(persistDebugMode(effect.debugModeEnabled));
-    }
-    if (sceneMode_ != SceneMode::title) {
-        return;
     }
     ui::UiActionOutcome outcome{};
     switch (effect.overlayIntent) {
@@ -1675,16 +1900,12 @@ std::uint64_t Application::refreshTitleBackdropRevision(
 
 bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noexcept {
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
-    render::frontend::SyntheticSceneConfig config;
-    config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
-    config.physicalWindowBounds = {0, 0, metrics.pixelWidth, metrics.pixelHeight};
-    config.drawableSize = {metrics.pixelWidth, metrics.pixelHeight};
-    config.safeArea = drawableSafeArea(metrics);
-    config.dpiScale = metrics.pixelDensity;
-    config.uiScale = static_cast<float>(activeSettings().uiScalePercent) / 100.0F;
-    config.worldRenderScale =
-        static_cast<float>(activeSettings().renderScalePercent) / 100.0F;
-    config.projectionRevision = projectionRevision_;
+    const settings::GameSettings& runtimeSettings = activeSettings();
+    render::frontend::SyntheticSceneConfig config = makeSyntheticSceneConfig(
+        metrics,
+        runtimeSettings,
+        projectionRevision_
+    );
     config.frameId = renderedFrameCount_ + 1U;
     config.simulationTick = simulationTick_;
     const double alpha = std::isfinite(schedule.fixedAlpha)
@@ -1699,12 +1920,43 @@ bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noe
         ? render::EffectQuality::softwareReplacement
         : render::EffectQuality::full;
 
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    if (!prepareGlobalDebugOverlayPresentation(state)) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Diagnostic Debug overlay presentation refresh failed."
+        );
+        return false;
+    }
+    const ui::TitleUiControllerSnapshot interaction = titleUiController_.snapshot();
+    const render::frontend::GlobalDebugOverlayInput debugOverlayInput{
+        state,
+        interaction,
+        titleLayout_.snapshot(),
+        titleTheme_,
+        titleOverlayPresentations_,
+        titleTextCache_->textResources(),
+        activeTitleLocale(),
+        runtimeSettings.disableTransparency,
+        config.frameId
+    };
+    const render::FramePacketCapacity requiredCapacity =
+        render::frontend::syntheticTestSceneCapacity(debugOverlayInput);
+    if (!framePacket_.hasCapacityFor(requiredCapacity)) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Diagnostic scene plus Debug overlay exceeds reserved FramePacket capacity."
+        );
+        return false;
+    }
+
     try {
         const render::frontend::SyntheticSceneResult result =
             render::frontend::buildSyntheticTestScene(
                 framePacket_,
                 config,
-                render::frontend::PacketCapacityPolicy::fixedCapacity
+                render::frontend::PacketCapacityPolicy::fixedCapacity,
+                &debugOverlayInput
             );
         if (!result.success) {
             SDL_LogError(
@@ -1738,17 +1990,12 @@ bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noex
         return false;
     }
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
-    render::frontend::PlayableGameSceneConfig config;
-    config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
-    config.physicalWindowBounds = {0, 0, metrics.pixelWidth, metrics.pixelHeight};
-    config.drawableSize = {metrics.pixelWidth, metrics.pixelHeight};
-    config.safeArea = drawableSafeArea(metrics);
-    config.dpiScale = metrics.pixelDensity;
-    config.uiScale = static_cast<float>(activeSettings().uiScalePercent) / 100.0F;
-    config.worldRenderScale =
-        static_cast<float>(activeSettings().renderScalePercent) / 100.0F;
-    config.widescreenSupport = activeSettings().widescreenSupport;
-    config.projectionRevision = projectionRevision_;
+    const settings::GameSettings& runtimeSettings = activeSettings();
+    render::frontend::PlayableGameSceneConfig config = makePlayableSceneConfig(
+        metrics,
+        runtimeSettings,
+        projectionRevision_
+    );
     config.frameId = renderedFrameCount_ + 1U;
     config.simulationTick = simulationTick_;
     const double alpha = std::isfinite(schedule.fixedAlpha)
@@ -1759,13 +2006,48 @@ bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noex
         static_cast<double>(simulationTick_) + alpha
     ) * game::GameSystem::fixed_delta_seconds;
 
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    if (!prepareGlobalDebugOverlayPresentation(state)) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Playable Debug overlay presentation refresh failed."
+        );
+        return false;
+    }
+    const ui::TitleUiControllerSnapshot interaction = titleUiController_.snapshot();
+    const render::frontend::GlobalDebugOverlayInput debugOverlayInput{
+        state,
+        interaction,
+        titleLayout_.snapshot(),
+        titleTheme_,
+        titleOverlayPresentations_,
+        titleTextCache_->textResources(),
+        activeTitleLocale(),
+        runtimeSettings.disableTransparency,
+        config.frameId
+    };
+    const render::FramePacketCapacity requiredCapacity =
+        render::frontend::playableGameSceneCapacity(
+            *gameSystem_,
+            config,
+            &debugOverlayInput
+        );
+    if (!framePacket_.hasCapacityFor(requiredCapacity)) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Playable scene plus Debug overlay exceeds reserved FramePacket capacity."
+        );
+        return false;
+    }
+
     try {
         const render::frontend::PlayableGameSceneResult result =
             render::frontend::buildPlayableGameScene(
                 framePacket_,
                 *gameSystem_,
                 config,
-                render::frontend::PacketCapacityPolicy::fixedCapacity
+                render::frontend::PacketCapacityPolicy::fixedCapacity,
+                &debugOverlayInput
             );
         if (!result.success) {
             SDL_LogError(
@@ -2058,7 +2340,7 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL initialization failed: %s", SDL_GetError());
         return false;
     }
-    if (sceneMode_ == SceneMode::title && !loadTitleTextAssets()) {
+    if (!loadTitleTextAssets()) {
         shutdown();
         return false;
     }
@@ -2149,10 +2431,11 @@ ApplicationResult Application::handleEvent(
     if (platformEvent.kind == platform::sdl::PlatformEventKind::focusLost
         || platformEvent.clearInputStateRequested) {
         static_cast<void>(debugRuntime_.handleFocusLost());
+        static_cast<void>(titleUiController_.handleFocusLost());
+        redrawPending_ = true;
     }
 
-    if (settingsBootState_ != SettingsBootState::waiting
-        && platformEvent.kind
+    if (platformEvent.kind
             == platform::sdl::PlatformEventKind::pointerChanged
         && platformEvent.pointer.device
             == platform::sdl::PlatformPointerDevice::mouse) {
@@ -2192,20 +2475,18 @@ ApplicationResult Application::handleEvent(
         && (platformEvent.action == platform::sdl::PlatformAction::debugPause
             || platformEvent.action
                 == platform::sdl::PlatformAction::debugStep)) {
-        if (settingsBootState_ != SettingsBootState::waiting) {
-            const debug::DebugKeyResult result = debugRuntime_.handleKey(
-                platformEvent.action == platform::sdl::PlatformAction::debugPause
-                    ? debug::DebugKey::pauseSlash
-                    : debug::DebugKey::stepPeriod,
-                platformEvent.pressed
-                    ? debug::DebugKeyPhase::pressed
-                    : debug::DebugKeyPhase::released,
-                platformEvent.repeated
-            );
-            redrawPending_ = redrawPending_ || result.stateChanged;
-            if (result.stateChanged) {
-                incrementTitleControlStateRevision();
-            }
+        const debug::DebugKeyResult result = debugRuntime_.handleKey(
+            platformEvent.action == platform::sdl::PlatformAction::debugPause
+                ? debug::DebugKey::pauseSlash
+                : debug::DebugKey::stepPeriod,
+            platformEvent.pressed
+                ? debug::DebugKeyPhase::pressed
+                : debug::DebugKeyPhase::released,
+            platformEvent.repeated
+        );
+        redrawPending_ = redrawPending_ || result.stateChanged;
+        if (result.stateChanged) {
+            incrementTitleControlStateRevision();
         }
         return ApplicationResult::continueRunning;
     }
@@ -2214,18 +2495,18 @@ ApplicationResult Application::handleEvent(
         && sceneMode_ == SceneMode::title) {
         return handleTitlePointer(platformEvent);
     }
+    if (platformEvent.kind == platform::sdl::PlatformEventKind::pointerChanged
+        && findLatestOverlay(
+            titleUiState_.snapshot(),
+            ui::OverlayKind::debug) != nullptr) {
+        return handleGlobalDebugPointer(platformEvent);
+    }
 
     if (platformEvent.kind == platform::sdl::PlatformEventKind::actionChanged) {
         if (sceneMode_ == SceneMode::playable) {
             applyMovementAction(platformEvent);
         }
         return ApplicationResult::continueRunning;
-    }
-
-    if (platformEvent.kind == platform::sdl::PlatformEventKind::focusLost
-        && sceneMode_ == SceneMode::title) {
-        static_cast<void>(titleUiController_.handleFocusLost());
-        redrawPending_ = true;
     }
 
     if (platformEvent.kind == platform::sdl::PlatformEventKind::windowCloseRequested
@@ -2289,9 +2570,7 @@ ApplicationResult Application::handleEvent(
     if (update.becameInactive) {
         clearMovementActions();
         static_cast<void>(debugRuntime_.handleFocusLost());
-        if (sceneMode_ == SceneMode::title) {
-            static_cast<void>(titleUiController_.handleFocusLost());
-        }
+        static_cast<void>(titleUiController_.handleFocusLost());
         static_cast<void>(setExecutionActive(false));
     }
 
@@ -2370,6 +2649,67 @@ ApplicationResult Application::handleTitlePointer(
     return ApplicationResult::continueRunning;
 }
 
+ApplicationResult Application::handleGlobalDebugPointer(
+    const platform::sdl::PlatformEvent& event
+) noexcept {
+    if (!lifecycle_.isActive()) {
+        return ApplicationResult::continueRunning;
+    }
+
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    if (findLatestOverlay(state, ui::OverlayKind::debug) == nullptr) {
+        return ApplicationResult::continueRunning;
+    }
+    const platform::sdl::WindowMetrics& metrics = window_.metrics();
+    if (!drawableReady_
+        || metrics.windowWidth <= 0
+        || metrics.windowHeight <= 0
+        || metrics.pixelWidth <= 0
+        || metrics.pixelHeight <= 0) {
+        const ui::UiInputResult cleared = titleUiController_.handleFocusLost();
+        redrawPending_ = redrawPending_ || cleared.controllerStateChanged;
+        return ApplicationResult::continueRunning;
+    }
+    if (!titleLayout_.hasSnapshot() && !refreshGlobalDebugLayout()) {
+        return ApplicationResult::failure;
+    }
+
+    render::ViewportState viewport{};
+    if (!tryResolveGlobalDebugViewport(activeSettings(), viewport)) {
+        return ApplicationResult::failure;
+    }
+    ui::UiPointerEvent pointer{};
+    if (!tryTranslateGlobalDebugPointer(
+            event,
+            window_.metrics(),
+            viewport,
+            pointer)) {
+        return ApplicationResult::continueRunning;
+    }
+
+    if (!prepareGlobalDebugOverlayPresentation(state)) {
+        return ApplicationResult::failure;
+    }
+    const ui::UiInputResult result = titleUiController_.handlePointer(
+        pointer,
+        titleLayout_.snapshot(),
+        titleEntrance_,
+        state,
+        titleOverlayPresentations_,
+        titleUiState_,
+        currentUiFrameContext()
+    );
+    if (!handleApplicationControl(result)) {
+        return ApplicationResult::failure;
+    }
+    handleUiEffect(result.actionOutcome);
+    redrawPending_ = redrawPending_
+        || result.controllerStateChanged
+        || result.actionAccepted()
+        || result.applicationControlActivated();
+    return ApplicationResult::continueRunning;
+}
+
 void Application::handleUiEffect(const ui::UiActionOutcome& outcome) noexcept {
     if (outcome.effect == ui::UiEffect::startPlayableSession) {
         if (!startPlayableSession(
@@ -2428,7 +2768,7 @@ bool Application::startPlayableSession(
         || !::cirvivor::data::isKnownGameMapId(request.mapId.view())
         || request.mapId.view() != game::GameSystem::map_id
         || !framePacket_.hasCapacityFor(
-            render::frontend::maximumPlayableGameSceneCapacity()
+            render::frontend::maximumPlayableGameSceneWithGlobalDebugCapacity()
         )) {
         return false;
     }
@@ -2523,6 +2863,7 @@ bool Application::startPlayableSession(
     redrawPending_ = true;
     gameSystem_ = std::move(candidate);
     sceneMode_ = SceneMode::playable;
+    rendererSizeDirty_ = true;
     return true;
 }
 
@@ -2611,17 +2952,16 @@ ApplicationResult Application::iterate() noexcept {
     if (debugFrame.mode != debug::DebugFrameMode::running) {
         schedule.fixedAlpha = 1.0;
     }
-    if (sceneMode_ == SceneMode::title) {
-        double uiDeltaSeconds = schedule.frameDeltaSeconds;
-        if (debugFrame.mode == debug::DebugFrameMode::paused) {
-            uiDeltaSeconds = 0.0;
-        } else if (debugFrame.mode == debug::DebugFrameMode::singleStep) {
-            uiDeltaSeconds = game::GameSystem::fixed_delta_seconds;
-        }
-        titleUiState_.advance(uiDeltaSeconds);
-        if (!synchronizeSettingsOverlaySession()) {
-            return ApplicationResult::failure;
-        }
+    double uiDeltaSeconds = schedule.frameDeltaSeconds;
+    if (debugFrame.mode == debug::DebugFrameMode::paused) {
+        uiDeltaSeconds = 0.0;
+    } else if (debugFrame.mode == debug::DebugFrameMode::singleStep) {
+        uiDeltaSeconds = game::GameSystem::fixed_delta_seconds;
+    }
+    titleUiState_.advance(uiDeltaSeconds);
+    if (sceneMode_ == SceneMode::title
+        && !synchronizeSettingsOverlaySession()) {
+        return ApplicationResult::failure;
     }
     const bool playableSessionActive = sceneMode_ == SceneMode::playable;
     for (std::uint32_t step = 0; step < schedule.fixedStepCount; ++step) {
@@ -2654,7 +2994,7 @@ ApplicationResult Application::iterate() noexcept {
         ? static_cast<double>(frameCpuEnd - frameStart) / nanosecondsPerSecond
         : 0.0;
     const render::RenderResourcesView resources =
-        sceneMode_ == SceneMode::title && titleTextCache_ != nullptr
+        titleTextCache_ != nullptr
         ? titleTextCache_->renderResources()
         : render::RenderResourcesView{};
     if (!renderer_.render(framePacket_, resources)) {

@@ -487,6 +487,10 @@ SoftwarePresentationRect SoftwareBackend::presentationRect() const noexcept {
 }
 
 std::uint64_t SoftwareBackend::pixelHash() const noexcept {
+    return lastFrameContentHash();
+}
+
+std::uint64_t SoftwareBackend::lastFrameContentHash() const noexcept {
     return stats_.pixelHash;
 }
 

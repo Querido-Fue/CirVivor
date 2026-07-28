@@ -1,6 +1,7 @@
 #pragma once
 
 #include "render/frontend/frame_packet_builder.h"
+#include "render/frontend/global_debug_overlay.h"
 
 #include <cstdint>
 
@@ -42,6 +43,18 @@ struct SyntheticSceneResult final {
     };
 }
 
+/** 기존 synthetic 장면과 선택적 Debug overlay를 함께 담는 exact capacity입니다. */
+[[nodiscard]] FramePacketCapacity syntheticTestSceneCapacity(
+    const GlobalDebugOverlayInput& globalDebugOverlay
+) noexcept;
+
+[[nodiscard]] constexpr FramePacketCapacity maximumSyntheticTestSceneCapacity() noexcept {
+    return additiveFramePacketCapacity(
+        syntheticTestSceneCapacity(),
+        maximumGlobalDebugOverlayCapacity()
+    );
+}
+
 [[nodiscard]] ViewportState makeSyntheticViewport(const SyntheticSceneConfig& config) noexcept;
 
 /**
@@ -51,7 +64,8 @@ struct SyntheticSceneResult final {
 [[nodiscard]] SyntheticSceneResult buildSyntheticTestScene(
     FramePacket& packet,
     const SyntheticSceneConfig& config = {},
-    PacketCapacityPolicy capacityPolicy = PacketCapacityPolicy::growAsNeeded
+    PacketCapacityPolicy capacityPolicy = PacketCapacityPolicy::growAsNeeded,
+    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr
 );
 
 } // namespace cirvivor::render::frontend

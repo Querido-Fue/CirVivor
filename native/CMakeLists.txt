@@ -83,6 +83,7 @@ target_include_directories(game_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 cirvivor_configure_target(game_core)
 
 add_library(app_runtime STATIC
+    src/app/logical_ui_projection.cpp
     src/app/movement_input_buffer.cpp
     src/app/title_display_policy.cpp
 )
@@ -163,6 +164,7 @@ endif()
 
 add_library(render_frontend STATIC
     src/render/frontend/frame_packet_builder.cpp
+    src/render/frontend/global_debug_overlay.cpp
     src/render/frontend/playable_game_scene.cpp
     src/render/frontend/synthetic_test_scene.cpp
     src/render/frontend/title_overlay_presenter.cpp
@@ -216,11 +218,23 @@ if(BUILD_TESTING)
     target_link_libraries(title_scene_tests PRIVATE render_frontend ui_runtime)
     cirvivor_configure_target(title_scene_tests)
 
+    add_executable(global_debug_overlay_tests
+        tests/global_debug_overlay_test.cpp
+    )
+    target_link_libraries(global_debug_overlay_tests PRIVATE render_frontend ui_runtime)
+    cirvivor_configure_target(global_debug_overlay_tests)
+
     add_executable(movement_input_buffer_tests
         tests/movement_input_buffer_test.cpp
     )
     target_link_libraries(movement_input_buffer_tests PRIVATE app_runtime)
     cirvivor_configure_target(movement_input_buffer_tests)
+
+    add_executable(logical_ui_projection_tests
+        tests/logical_ui_projection_test.cpp
+    )
+    target_link_libraries(logical_ui_projection_tests PRIVATE app_runtime)
+    cirvivor_configure_target(logical_ui_projection_tests)
 
     add_executable(title_display_policy_tests
         tests/title_display_policy_test.cpp
@@ -325,7 +339,9 @@ if(BUILD_TESTING)
     add_test(NAME gles_backend_tests COMMAND gles_backend_tests)
     add_test(NAME playable_game_scene_tests COMMAND playable_game_scene_tests)
     add_test(NAME title_scene_tests COMMAND title_scene_tests)
+    add_test(NAME global_debug_overlay_tests COMMAND global_debug_overlay_tests)
     add_test(NAME movement_input_buffer_tests COMMAND movement_input_buffer_tests)
+    add_test(NAME logical_ui_projection_tests COMMAND logical_ui_projection_tests)
     add_test(NAME title_display_policy_tests COMMAND title_display_policy_tests)
     add_test(
         NAME title_overlay_state_machine_tests
@@ -567,11 +583,17 @@ if(CIRVIVOR_BUILD_SDL_APP)
             game_desktop_cli_last_playable_scene_smoke
             game_desktop_cli_last_title_transition_smoke
             game_desktop_render_recovery_smoke
-            application_integration_smoke_tests
             PROPERTIES
             ENVIRONMENT "SDL_AUDIODRIVER=dummy;SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"
             RESOURCE_LOCK cirvivor_user_storage_smoke
             TIMEOUT 15
+        )
+        set_tests_properties(
+            application_integration_smoke_tests
+            PROPERTIES
+            ENVIRONMENT "SDL_AUDIODRIVER=dummy;SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"
+            RESOURCE_LOCK cirvivor_user_storage_smoke
+            TIMEOUT 60
         )
         set_tests_properties(
             game_desktop_cli_last_playable_scene_smoke

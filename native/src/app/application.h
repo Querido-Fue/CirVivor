@@ -46,6 +46,8 @@ public:
         const platform::sdl::PlatformEvent& event
     ) noexcept;
     [[nodiscard]] ApplicationResult iterate() noexcept;
+    /** Software smoke와 향후 Debug 계측이 읽는 backend 중립 진단 hash입니다. */
+    [[nodiscard]] std::uint64_t lastRenderedFrameContentHash() const noexcept;
     void shutdown() noexcept;
 
 private:
@@ -77,6 +79,14 @@ private:
     [[nodiscard]] bool refreshTitleLayout(
         const settings::GameSettings& settings
     ) noexcept;
+    [[nodiscard]] bool refreshGlobalDebugLayout() noexcept;
+    [[nodiscard]] bool refreshGlobalDebugLayout(
+        const settings::GameSettings& settings
+    ) noexcept;
+    [[nodiscard]] bool tryResolveGlobalDebugViewport(
+        const settings::GameSettings& settings,
+        render::ViewportState& output
+    ) const noexcept;
     [[nodiscard]] bool loadTitleTextAssets() noexcept;
     [[nodiscard]] bool prepareTitleTextResources() noexcept;
     [[nodiscard]] bool prepareTitleTextResources(
@@ -94,6 +104,9 @@ private:
         const ui::UiStateSnapshot& state,
         ui::TitleOverlayControlStateOverrides& output
     ) const noexcept;
+    [[nodiscard]] bool prepareGlobalDebugOverlayPresentation(
+        const ui::UiStateSnapshot& state
+    ) noexcept;
     [[nodiscard]] bool synchronizeSettingsOverlaySession() noexcept;
     [[nodiscard]] bool applyRuntimeSettings(
         const settings::GameSettings& settings,
@@ -114,6 +127,9 @@ private:
     void retryPendingDebugPersistence() noexcept;
     void incrementTitleControlStateRevision() noexcept;
     [[nodiscard]] ApplicationResult handleTitlePointer(
+        const platform::sdl::PlatformEvent& event
+    ) noexcept;
+    [[nodiscard]] ApplicationResult handleGlobalDebugPointer(
         const platform::sdl::PlatformEvent& event
     ) noexcept;
     void handleUiEffect(const ui::UiActionOutcome& outcome) noexcept;

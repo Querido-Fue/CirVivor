@@ -91,6 +91,7 @@ public:
     [[nodiscard]] bool hasActiveBackend() const noexcept;
     [[nodiscard]] std::optional<RenderBackendKind> selectedBackend() const noexcept;
     [[nodiscard]] const RenderCapabilities* capabilities() const noexcept;
+    [[nodiscard]] std::uint64_t lastFrameContentHash() const noexcept;
     [[nodiscard]] const RendererSelectionDiagnostics& lastDiagnostics() const noexcept;
 
 private:

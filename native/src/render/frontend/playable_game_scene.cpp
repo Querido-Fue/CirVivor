@@ -222,7 +222,8 @@ struct LetterboxMasks final {
 
 FramePacketCapacity playableGameSceneCapacity(
     const game::GameSystem& gameSystem,
-    const PlayableGameSceneConfig& config
+    const PlayableGameSceneConfig& config,
+    const GlobalDebugOverlayInput* const globalDebugOverlay
 ) noexcept {
     const core::TileMap& tileMap = gameSystem.tileMap();
     const std::size_t walkableRuns = walkableRunCount(tileMap);
@@ -232,7 +233,7 @@ FramePacketCapacity playableGameSceneCapacity(
         makePlayableDisplayRegions(config)
     ).count;
     const std::size_t shapeCount = walkableRuns + 4U + letterboxMaskCount;
-    return {
+    const FramePacketCapacity sceneCapacity{
         shapeCount + routeSegments,
         0,
         shapeCount,
@@ -243,6 +244,12 @@ FramePacketCapacity playableGameSceneCapacity(
         0,
         0
     };
+    return globalDebugOverlay == nullptr
+        ? sceneCapacity
+        : additiveFramePacketCapacity(
+            sceneCapacity,
+            globalDebugOverlayCapacity(*globalDebugOverlay)
+        );
 }
 
 ViewportState makePlayableGameViewport(
@@ -363,7 +370,8 @@ PlayableGameSceneResult buildPlayableGameScene(
     FramePacket& packet,
     const game::GameSystem& gameSystem,
     const PlayableGameSceneConfig& config,
-    const PacketCapacityPolicy capacityPolicy
+    const PacketCapacityPolicy capacityPolicy,
+    const GlobalDebugOverlayInput* const globalDebugOverlay
 ) {
     const float alpha = normalizedAlpha(config.interpolationAlpha);
     FrameMetadata metadata;
@@ -557,6 +565,15 @@ PlayableGameSceneResult buildPlayableGameScene(
         if (!builder.addShape(mask)) {
             return resultFrom(builder);
         }
+    }
+
+    if (globalDebugOverlay != nullptr
+        && !addGlobalDebugOverlay(builder, *globalDebugOverlay)) {
+        const FrameBuildError error = builder.error() == FrameBuildError::none
+            ? FrameBuildError::structurallyInvalid
+            : builder.error();
+        builder.abort();
+        return {false, error};
     }
 
     if (!builder.finish()) {

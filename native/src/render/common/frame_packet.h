@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -79,6 +80,39 @@ struct FramePacketCapacity final {
         std::max(first.gradientStopCount, second.gradientStopCount),
         std::max(first.clipCount, second.clipCount),
         std::max(first.passCount, second.passCount)
+    };
+}
+
+/** 같은 frame에 함께 기록되는 두 command 집합의 예약 용량을 필드별로 더합니다. */
+[[nodiscard]] constexpr FramePacketCapacity additiveFramePacketCapacity(
+    const FramePacketCapacity& first,
+    const FramePacketCapacity& second
+) noexcept {
+    const auto add = [](const std::size_t firstValue, const std::size_t secondValue) {
+        constexpr std::size_t maximum = std::numeric_limits<std::size_t>::max();
+        return secondValue > maximum - firstValue
+            ? maximum
+            : firstValue + secondValue;
+    };
+    return {
+        add(first.commandCount, second.commandCount),
+        add(first.spriteCount, second.spriteCount),
+        add(first.shapeCount, second.shapeCount),
+        add(first.lineCount, second.lineCount),
+        add(first.textCount, second.textCount),
+        add(first.effectCount, second.effectCount),
+        add(first.uiCount, second.uiCount),
+        add(first.overlayCount, second.overlayCount),
+        add(first.utf8ByteCount, second.utf8ByteCount),
+        add(first.glyphRunCount, second.glyphRunCount),
+        add(first.glyphInstanceCount, second.glyphInstanceCount),
+        add(first.texturedMeshCount, second.texturedMeshCount),
+        add(first.meshVertexCount, second.meshVertexCount),
+        add(first.meshIndexCount, second.meshIndexCount),
+        add(first.gradientCount, second.gradientCount),
+        add(first.gradientStopCount, second.gradientStopCount),
+        add(first.clipCount, second.clipCount),
+        add(first.passCount, second.passCount)
     };
 }
 

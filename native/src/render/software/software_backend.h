@@ -95,6 +95,7 @@ public:
     [[nodiscard]] bool onBackground() noexcept override;
     [[nodiscard]] bool onForeground() noexcept override;
     [[nodiscard]] bool purgeTransientResources() noexcept override;
+    [[nodiscard]] std::uint64_t lastFrameContentHash() const noexcept override;
 
     [[nodiscard]] bool isInitialized() const noexcept;
     [[nodiscard]] bool isBackgrounded() const noexcept;

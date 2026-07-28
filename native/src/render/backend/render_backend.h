@@ -105,6 +105,13 @@ public:
     [[nodiscard]] virtual bool onRenderTargetsReset() noexcept {
         return purgeTransientResources();
     }
+    /**
+     * 가장 최근 backend frame content의 진단용 결정적 hash입니다. 지원하지 않거나
+     * 아직 성공한 frame이 없으면 0이며 제품 렌더 정책의 권위로 사용하지 않습니다.
+     */
+    [[nodiscard]] virtual std::uint64_t lastFrameContentHash() const noexcept {
+        return 0U;
+    }
 };
 
 } // namespace backend

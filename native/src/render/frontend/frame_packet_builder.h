@@ -79,6 +79,8 @@ public:
 
     [[nodiscard]] FrameBuildError error() const noexcept;
     [[nodiscard]] bool isBuilding() const noexcept;
+    /** 현재 build가 소유한 immutable viewport입니다. build 밖에서는 nullptr입니다. */
+    [[nodiscard]] const ViewportState* activeViewport() const noexcept;
     [[nodiscard]] std::uint32_t nextSequence() const noexcept;
 
 private:

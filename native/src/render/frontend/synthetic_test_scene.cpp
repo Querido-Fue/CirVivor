@@ -106,6 +106,15 @@ inline constexpr StableElementId overlay_button_id = stableResourceId("synthetic
 
 } // namespace
 
+FramePacketCapacity syntheticTestSceneCapacity(
+    const GlobalDebugOverlayInput& globalDebugOverlay
+) noexcept {
+    return additiveFramePacketCapacity(
+        syntheticTestSceneCapacity(),
+        globalDebugOverlayCapacity(globalDebugOverlay)
+    );
+}
+
 ViewportState makeSyntheticViewport(const SyntheticSceneConfig& config) noexcept {
     const std::int32_t drawableWidth = std::max(config.drawableSize.width, 1);
     const std::int32_t drawableHeight = std::max(config.drawableSize.height, 1);
@@ -212,7 +221,8 @@ ViewportState makeSyntheticViewport(const SyntheticSceneConfig& config) noexcept
 SyntheticSceneResult buildSyntheticTestScene(
     FramePacket& packet,
     const SyntheticSceneConfig& config,
-    const PacketCapacityPolicy capacityPolicy
+    const PacketCapacityPolicy capacityPolicy,
+    const GlobalDebugOverlayInput* const globalDebugOverlay
 ) {
     FrameMetadata metadata;
     metadata.frameId = config.frameId;
@@ -498,6 +508,15 @@ SyntheticSceneResult buildSyntheticTestScene(
     endOverlay.operation = OverlayOperation::endSession;
     if (!builder.addOverlay(endOverlay)) {
         return resultFrom(builder);
+    }
+
+    if (globalDebugOverlay != nullptr
+        && !addGlobalDebugOverlay(builder, *globalDebugOverlay)) {
+        const FrameBuildError error = builder.error() == FrameBuildError::none
+            ? FrameBuildError::structurallyInvalid
+            : builder.error();
+        builder.abort();
+        return {false, error};
     }
 
     LineCommand topBorder;

@@ -2,6 +2,7 @@
 
 #include "game/game_system.h"
 #include "render/frontend/frame_packet_builder.h"
+#include "render/frontend/global_debug_overlay.h"
 
 #include <cstdint>
 
@@ -37,7 +38,8 @@ struct PlayableGameSceneResult final {
  */
 [[nodiscard]] FramePacketCapacity playableGameSceneCapacity(
     const game::GameSystem& gameSystem,
-    const PlayableGameSceneConfig& config = {}
+    const PlayableGameSceneConfig& config = {},
+    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr
 ) noexcept;
 
 /** 현재 단일 맵 카탈로그가 요구하는 playable packet의 고정 상한입니다. */
@@ -47,6 +49,15 @@ struct PlayableGameSceneResult final {
     capacity.shapeCount = 72U;
     capacity.lineCount = 24U;
     return capacity;
+}
+
+/** playable base와 전역 Debug 한 장을 함께 담는 고정 상한입니다. */
+[[nodiscard]] constexpr FramePacketCapacity
+maximumPlayableGameSceneWithGlobalDebugCapacity() noexcept {
+    return additiveFramePacketCapacity(
+        maximumPlayableGameSceneCapacity(),
+        maximumGlobalDebugOverlayCapacity()
+    );
 }
 
 /**
@@ -67,7 +78,8 @@ struct PlayableGameSceneResult final {
     FramePacket& packet,
     const game::GameSystem& gameSystem,
     const PlayableGameSceneConfig& config = {},
-    PacketCapacityPolicy capacityPolicy = PacketCapacityPolicy::growAsNeeded
+    PacketCapacityPolicy capacityPolicy = PacketCapacityPolicy::growAsNeeded,
+    const GlobalDebugOverlayInput* globalDebugOverlay = nullptr
 );
 
 } // namespace cirvivor::render::frontend
