@@ -1,15 +1,19 @@
 #pragma once
 
 #include "app/movement_input_buffer.h"
+#include "debug/debug_runtime_controller.h"
 #include "engine/frame_scheduler.h"
 #include "game/game_system.h"
 #include "platform/sdl/audio/sdl_playback_device.h"
 #include "platform/sdl/sdl_lifecycle.h"
+#include "platform/sdl/storage/sdl_settings_storage.h"
 #include "platform/sdl/storage/sdl_user_storage.h"
 #include "platform/sdl/sdl_window.h"
 #include "render/backend/renderer_router.h"
 #include "render/common/frame_packet.h"
 #include "render/text/shaped_text_cache.h"
+#include "settings/settings_overlay_session.h"
+#include "settings/settings_repository.h"
 #include "ui/layout/ui_layout_metrics.h"
 #include "ui/title_overlay_state_machine.h"
 #include "ui/title_ui_controller.h"
@@ -50,6 +54,12 @@ private:
         diagnostic
     };
 
+    enum class SettingsBootState : std::uint8_t {
+        waiting,
+        loaded,
+        unavailable
+    };
+
     [[nodiscard]] std::unique_ptr<render::backend::IRenderBackend> makeRenderBackend(
         render::backend::RenderBackendKind kind
     );
@@ -63,12 +73,45 @@ private:
     [[nodiscard]] bool buildPlayableFrame(const engine::FrameSchedule& schedule) noexcept;
     [[nodiscard]] bool buildTitleFrame(const engine::FrameSchedule& schedule) noexcept;
     [[nodiscard]] bool refreshTitleLayout() noexcept;
+    [[nodiscard]] bool refreshTitleLayout(
+        const settings::GameSettings& settings
+    ) noexcept;
     [[nodiscard]] bool loadTitleTextAssets() noexcept;
     [[nodiscard]] bool prepareTitleTextResources() noexcept;
+    [[nodiscard]] bool prepareTitleTextResources(
+        const settings::GameSettings& settings
+    ) noexcept;
     [[nodiscard]] std::uint64_t refreshTitleBackdropRevision(
         const ui::UiStateSnapshot& state,
-        const ui::TitleUiControllerSnapshot& interaction
+        const ui::TitleUiControllerSnapshot& interaction,
+        std::uint64_t controlStateRevision
     ) noexcept;
+    [[nodiscard]] const settings::GameSettings& activeSettings() const noexcept;
+    [[nodiscard]] render::UiTextLocale activeTitleLocale() const noexcept;
+    [[nodiscard]] ui::UiFrameContext currentUiFrameContext() const noexcept;
+    [[nodiscard]] bool buildTitleControlStateOverrides(
+        const ui::UiStateSnapshot& state,
+        ui::TitleOverlayControlStateOverrides& output
+    ) const noexcept;
+    [[nodiscard]] bool synchronizeSettingsOverlaySession() noexcept;
+    [[nodiscard]] bool applyRuntimeSettings(
+        const settings::GameSettings& settings,
+        settings::SettingsOverlayFieldMask changedFields,
+        bool applyWindow
+    ) noexcept;
+    [[nodiscard]] bool applyWindowSettings(
+        const settings::GameSettings& settings
+    ) noexcept;
+    [[nodiscard]] bool applyWindowDisplayConfiguration(
+        const platform::sdl::WindowDisplayConfiguration& configuration
+    ) noexcept;
+    [[nodiscard]] bool handleApplicationControl(
+        const ui::UiInputResult& result
+    ) noexcept;
+    void handleDebugEffect(const debug::DebugRuntimeEffect& effect) noexcept;
+    [[nodiscard]] bool persistDebugMode(bool enabled) noexcept;
+    void retryPendingDebugPersistence() noexcept;
+    void incrementTitleControlStateRevision() noexcept;
     [[nodiscard]] ApplicationResult handleTitlePointer(
         const platform::sdl::PlatformEvent& event
     ) noexcept;
@@ -92,10 +135,15 @@ private:
     platform::sdl::SdlWindow window_;
     render::backend::RendererRouter renderer_;
     platform::sdl::SdlUserStorage storage_;
+    platform::sdl::SdlSettingsStorage settingsStorage_;
+    settings::SettingsRepository settingsRepository_;
+    settings::SettingsOverlaySession settingsOverlaySession_;
+    debug::DebugRuntimeController debugRuntime_;
     platform::sdl::SdlPlaybackDevice audio_;
     ui::TitleOverlayStateMachine titleUiState_;
     ui::TitleUiController titleUiController_;
     ui::layout::UiLayoutMetrics titleLayout_;
+    ui::layout::ThemeMetrics titleTheme_;
     ui::layout::TitleEntranceRenderState titleEntrance_;
     ui::TitleOverlayPresentationSet titleOverlayPresentations_{};
     render::FramePacket framePacket_;
@@ -109,22 +157,33 @@ private:
     std::uint64_t projectionRevision_ = 1;
     std::uint64_t titleBackdropRevision_ = 1;
     std::uint64_t titleBackdropProjectionRevision_ = 0;
+    std::uint64_t titleBackdropControlStateRevision_ = 0;
+    std::uint64_t titleControlStateRevision_ = 1;
     std::uint64_t titleTextGeneration_ = 0;
+    std::uint64_t debugPersistenceRetryAtMilliseconds_ = 0;
     MovementInputBuffer movementInput_;
+    platform::sdl::WindowDisplayConfiguration settingsWindowBaseline_{};
     ui::layout::UiLayoutSnapshot titleBackdropLayout_{};
     ui::layout::TitleEntranceRenderState titleBackdropEntrance_{};
     ui::TitleUiControllerSnapshot titleBackdropInteraction_{};
     std::array<ui::OverlaySnapshot, ui::maximum_overlay_count> titleBackdropOverlays_{};
     std::uint8_t titleBackdropOverlayCount_ = 0;
+    std::uint32_t settingsDismissedSequence_ = 0;
+    std::uint32_t settingsWindowBaselineSequence_ = 0;
+    std::uint32_t settingsWindowPreviewSequence_ = 0;
     std::uint8_t renderRecoverySmokeStage_ = 0;
     std::uint8_t titleToPlayableSmokeStage_ = 0;
+    std::uint8_t debugPersistenceAttemptCount_ = 0;
     double previousFrameCpuSeconds_ = 0;
     SceneMode sceneMode_ = SceneMode::title;
+    SettingsBootState settingsBootState_ = SettingsBootState::waiting;
     bool initialized_ = false;
     bool smokeTest_ = false;
     bool titleToPlayableSmoke_ = false;
     bool titleMissingCapabilitiesReported_ = false;
     bool titleBackdropSnapshotValid_ = false;
+    bool debugPersistencePending_ = false;
+    bool pendingDebugMode_ = false;
     bool storageReadyReported_ = false;
     bool storageSmokeComplete_ = false;
     bool audioSmokeComplete_ = false;

@@ -15,6 +15,7 @@ struct PlayableGameSceneConfig final {
     float dpiScale = 1.0F;
     float uiScale = 1.0F;
     float worldRenderScale = 1.0F;
+    bool widescreenSupport = true;
     float cameraZoom = 0.7F;
     std::uint64_t projectionRevision = 1;
     std::uint64_t frameId = 1;

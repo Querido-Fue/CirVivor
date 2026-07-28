@@ -448,6 +448,42 @@ if(CIRVIVOR_BUILD_SDL_APP)
         )
         cirvivor_configure_target(sdl_settings_storage_tests)
 
+        add_executable(application_integration_smoke_tests
+            tests/application_integration_smoke_test.cpp
+            src/app/application.cpp
+        )
+        target_link_libraries(
+            application_integration_smoke_tests
+            PRIVATE
+                game_core
+                app_runtime
+                debug_runtime
+                settings_runtime
+                ui_runtime
+                platform_sdl
+                render_frontend
+                renderer_backend
+                renderer_gles
+                renderer_sdl_gpu
+                renderer_software
+                render_text
+                SDL3::SDL3
+        )
+        cirvivor_configure_target(application_integration_smoke_tests)
+        add_custom_command(
+            TARGET application_integration_smoke_tests POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "$<TARGET_FILE_DIR:application_integration_smoke_tests>/runtime_assets/font"
+                "$<TARGET_FILE_DIR:application_integration_smoke_tests>/runtime_assets/license"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CIRVIVOR_PRETENDARD_FONT_ASSET}"
+                "$<TARGET_FILE_DIR:application_integration_smoke_tests>/runtime_assets/font/PretendardVariable.woff2"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CIRVIVOR_PRETENDARD_LICENSE_ASSET}"
+                "$<TARGET_FILE_DIR:application_integration_smoke_tests>/runtime_assets/license/pretendard.txt"
+            VERBATIM
+        )
+
         add_executable(software_renderer_tests
             tests/software_renderer_test.cpp
         )
@@ -468,6 +504,10 @@ if(CIRVIVOR_BUILD_SDL_APP)
 
         add_test(NAME sdl_platform_event_tests COMMAND sdl_platform_event_tests)
         add_test(NAME sdl_settings_storage_tests COMMAND sdl_settings_storage_tests)
+        add_test(
+            NAME application_integration_smoke_tests
+            COMMAND application_integration_smoke_tests
+        )
         add_test(NAME software_renderer_tests COMMAND software_renderer_tests)
         add_test(NAME game_desktop_smoke COMMAND game_desktop --smoke-test)
         add_test(
@@ -519,6 +559,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
             game_desktop_cli_last_playable_scene_smoke
             game_desktop_cli_last_title_transition_smoke
             game_desktop_render_recovery_smoke
+            application_integration_smoke_tests
             PROPERTIES
             ENVIRONMENT "SDL_AUDIODRIVER=dummy;SDL_VIDEODRIVER=dummy;SDL_RENDER_DRIVER=software"
             RESOURCE_LOCK cirvivor_user_storage_smoke

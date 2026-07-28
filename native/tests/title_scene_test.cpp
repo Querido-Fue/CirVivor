@@ -363,6 +363,36 @@ struct SyntheticTitleTextResources final {
         && static_cast<double>(inner.y + inner.height) <= outer.y + outer.height + epsilon;
 }
 
+[[nodiscard]] PremultipliedRgba renderThemeColor(
+    const cirvivor::ui::layout::ThemeColor color,
+    const double alphaScale
+) noexcept {
+    constexpr float byteScale = 1.0F / 255.0F;
+    const float alpha = static_cast<float>(std::clamp(
+        color.alpha * alphaScale,
+        0.0,
+        1.0
+    ));
+    return PremultipliedRgba::fromStraight(
+        static_cast<float>(color.red) * byteScale,
+        static_cast<float>(color.green) * byteScale,
+        static_cast<float>(color.blue) * byteScale,
+        alpha
+    );
+}
+
+[[nodiscard]] const UiCommand* dynamicOverlayPanel(
+    const FramePacket& packet
+) noexcept {
+    for (const UiCommand& command : packet.ui()) {
+        if (command.header.layer == RenderLayer::dynamicOverlay
+            && command.primitive == UiPrimitive::panel) {
+            return &command;
+        }
+    }
+    return nullptr;
+}
+
 void testSurfaceOrderFormulaAndOverflowTransaction() {
     cirvivor::ui::OverlaySnapshot overlay{};
     overlay.kind = OverlayKind::externalLinkWarning;
@@ -743,6 +773,158 @@ void testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent() 
     REQUIRE(packet.clips()[4].header.layerOrder == 15'021);
     REQUIRE(packet.clips()[5].header.layerOrder == 15'021);
     REQUIRE(packet.isRenderOrderValid());
+}
+
+void testDisableTransparencyRemovesGlassPassAndUsesOpaquePanelTokens() {
+    const SyntheticTitleTextResources text;
+    const UiLayoutSnapshot layout = buildLayout(1'280.0, 720.0);
+    const TitleEntranceRenderState entrance = buildEntrance(layout, 2.0);
+    const auto theme = darkThemeMetrics();
+    TitleOverlayStateMachine state = interactiveState();
+    const auto opened = state.apply(
+        UiAction::openExternalLink("https://jukchang.com")
+    );
+    REQUIRE(opened.accepted());
+    advanceInSteps(state, TitleOverlayStateMachine::overlay_transition_seconds);
+    const UiStateSnapshot uiState = state.snapshot();
+    const TitleUiControllerSnapshot interaction = idleInteraction();
+    REQUIRE(uiState.overlayCount == 1U);
+
+    const TitleSceneInput fallbackGlassInput{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        theme
+    };
+    TitleSceneInput fallbackOpaqueInput = fallbackGlassInput;
+    fallbackOpaqueInput.disableTransparency = true;
+    const FramePacketCapacity fallbackGlassCapacity = titleSceneCapacity(
+        fallbackGlassInput
+    );
+    const FramePacketCapacity fallbackOpaqueCapacity = titleSceneCapacity(
+        fallbackOpaqueInput
+    );
+    REQUIRE(fallbackGlassCapacity.passCount == 4U);
+    REQUIRE(fallbackOpaqueCapacity.passCount == 0U);
+    REQUIRE(fallbackGlassCapacity.commandCount
+        == fallbackOpaqueCapacity.commandCount + 4U);
+
+    FramePacket fallbackGlassPacket(fallbackGlassCapacity);
+    FramePacket fallbackOpaquePacket(fallbackOpaqueCapacity);
+    const auto fallbackGlassResult = buildTitleScene(
+        fallbackGlassPacket,
+        fallbackGlassInput
+    );
+    const auto fallbackOpaqueResult = buildTitleScene(
+        fallbackOpaquePacket,
+        fallbackOpaqueInput
+    );
+    REQUIRE(fallbackGlassResult.success);
+    REQUIRE(fallbackOpaqueResult.success);
+    REQUIRE(fallbackGlassResult.commandStats.overlayPassCommands == 4U);
+    REQUIRE(fallbackOpaqueResult.commandStats.overlayPassCommands == 0U);
+    REQUIRE(fallbackGlassResult.commandStats.externalLinkShellCommands == 12U);
+    REQUIRE(fallbackOpaqueResult.commandStats.externalLinkShellCommands == 8U);
+    REQUIRE(fallbackGlassPacket.passes().size() == 4U);
+    REQUIRE(fallbackOpaquePacket.passes().empty());
+    const UiCommand* const fallbackGlassPanel = dynamicOverlayPanel(
+        fallbackGlassPacket
+    );
+    const UiCommand* const fallbackOpaquePanel = dynamicOverlayPanel(
+        fallbackOpaquePacket
+    );
+    REQUIRE(fallbackGlassPanel != nullptr);
+    REQUIRE(fallbackOpaquePanel != nullptr);
+    REQUIRE(fallbackGlassPanel->backgroundColor == renderThemeColor(
+        theme.overlayGlassBackground,
+        uiState.overlays[0].alpha
+    ));
+    REQUIRE(fallbackGlassPanel->borderColor == renderThemeColor(
+        theme.overlayGlassBorder,
+        uiState.overlays[0].alpha
+    ));
+    REQUIRE(fallbackOpaquePanel->backgroundColor == renderThemeColor(
+        theme.overlayPanelBackground,
+        uiState.overlays[0].alpha
+    ));
+    REQUIRE(fallbackOpaquePanel->borderColor == renderThemeColor(
+        theme.overlayPanelBorder,
+        uiState.overlays[0].alpha
+    ));
+    REQUIRE(fallbackGlassPanel->backgroundColor
+        != fallbackOpaquePanel->backgroundColor);
+    REQUIRE(fallbackGlassPacket.isRenderOrderValid());
+    REQUIRE(fallbackOpaquePacket.isRenderOrderValid());
+
+    cirvivor::ui::TitleOverlayPresentationSet presentations{};
+    REQUIRE(cirvivor::ui::tryBuildTitleOverlayPresentationSet(
+        uiState,
+        layout,
+        presentations
+    ));
+    const auto* const presentation = cirvivor::ui::findTitleOverlayPresentation(
+        presentations,
+        opened.overlaySequence
+    );
+    REQUIRE(presentation != nullptr);
+    const TitleSceneInput presentedGlassInput{
+        uiState,
+        interaction,
+        layout,
+        entrance,
+        theme,
+        text.view(),
+        cirvivor::render::UiTextLocale::korean,
+        &presentations
+    };
+    TitleSceneInput presentedOpaqueInput = presentedGlassInput;
+    presentedOpaqueInput.disableTransparency = true;
+    const FramePacketCapacity presentedGlassCapacity = titleSceneCapacity(
+        presentedGlassInput
+    );
+    const FramePacketCapacity presentedOpaqueCapacity = titleSceneCapacity(
+        presentedOpaqueInput
+    );
+    REQUIRE(presentedGlassCapacity.passCount == 4U);
+    REQUIRE(presentedOpaqueCapacity.passCount == 0U);
+    REQUIRE(presentedGlassCapacity.commandCount
+        == presentedOpaqueCapacity.commandCount + 4U);
+
+    FramePacket presentedGlassPacket(presentedGlassCapacity);
+    FramePacket presentedOpaquePacket(presentedOpaqueCapacity);
+    REQUIRE(buildTitleScene(presentedGlassPacket, presentedGlassInput).success);
+    REQUIRE(buildTitleScene(presentedOpaquePacket, presentedOpaqueInput).success);
+    REQUIRE(presentedGlassPacket.passes().size() == 4U);
+    REQUIRE(presentedOpaquePacket.passes().empty());
+    const UiCommand* const presentedGlassPanel = dynamicOverlayPanel(
+        presentedGlassPacket
+    );
+    const UiCommand* const presentedOpaquePanel = dynamicOverlayPanel(
+        presentedOpaquePacket
+    );
+    REQUIRE(presentedGlassPanel != nullptr);
+    REQUIRE(presentedOpaquePanel != nullptr);
+    REQUIRE(presentedGlassPanel->backgroundColor == renderThemeColor(
+        theme.overlayGlassBackground,
+        presentation->alpha
+    ));
+    REQUIRE(presentedGlassPanel->borderColor == renderThemeColor(
+        theme.overlayGlassBorder,
+        presentation->alpha
+    ));
+    REQUIRE(presentedOpaquePanel->backgroundColor == renderThemeColor(
+        theme.overlayPanelBackground,
+        presentation->alpha
+    ));
+    REQUIRE(presentedOpaquePanel->borderColor == renderThemeColor(
+        theme.overlayPanelBorder,
+        presentation->alpha
+    ));
+    REQUIRE(presentedGlassPanel->backgroundColor
+        != presentedOpaquePanel->backgroundColor);
+    REQUIRE(presentedGlassPacket.isRenderOrderValid());
+    REQUIRE(presentedOpaquePacket.isRenderOrderValid());
 }
 
 void testOverlayButtonsUseSharedGeometryInteractionAndBackdropRevision() {
@@ -1911,6 +2093,10 @@ int main() {
         TestCase{
             "nested external pass anchor",
             testNestedExternalSequenceTwoUsesExactPassAnchorAndNoGenericTitleContent
+        },
+        TestCase{
+            "opaque UI glass contract",
+            testDisableTransparencyRemovesGlassPassAndUsesOpaquePanelTokens
         },
         TestCase{
             "overlay controls and backdrop revision",

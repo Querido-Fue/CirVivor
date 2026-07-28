@@ -66,6 +66,7 @@ struct TitleSceneInput final {
     UiTextLocale locale = UiTextLocale::korean;
     /** null이면 build 함수가 동일 DTO를 stack-local로 구성하는 test 호환 경로입니다. */
     const ui::TitleOverlayPresentationSet* overlayPresentations = nullptr;
+    bool disableTransparency = false;
 };
 
 struct TitleSceneConfig final {

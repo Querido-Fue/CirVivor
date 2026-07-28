@@ -1,6 +1,6 @@
 # SDL3 전환 진행 상황
 
-> 마지막 갱신: 2026-07-27
+> 마지막 갱신: 2026-07-28
 > 기준 브랜치: `codex/c++`
 > 목표: 기존 NW.js 게임을 read-only 기준 실행기로 보존하면서 Windows Desktop 게임을 C++20/SDL3로 다시 작성한다. Android와 iOS는 현재 범위에서 제외한다.
 
@@ -13,15 +13,30 @@
 - 기존 Windows NW.js 렌더 골든: 10개 surface, 3개 case 통과
 - 기존 Windows NW.js UI 골든: Loading/Title/overlay 21/21, raw surface hash 282개와 최종 PNG exact 검증 통과
 - 네이티브 빌드 도구: Visual Studio 2026 C++ workload/MSVC 19.51/Windows SDK/CMake/Ninja 및 사용자 범위 GCC 16.1.0 설치 완료
-- 네이티브 검증: 최신 코드 기준 MSVC Debug·Release CTest 각 32/32, GCC headless strict 21/21, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
+- 네이티브 검증: 최신 코드 기준 MSVC Debug·Release CTest 각 33/33, GCC headless strict 21/21, 실제 Windows 세 backend·복구와 dummy 자동 폴백/재복구 통과
 - Desktop 기본 실행: 순수 C++ 타이틀 장면으로 진입하고 Start→MapSelect→새 `GameSystem` playable 세션으로 전환한다. `--playable-scene`은 개발용 직접 진입, synthetic 장면은 smoke/`--diagnostic-scene`으로 분리했다.
 - 기존판 UI oracle: Computer Use 실기 감사와 production `SystemHandler` 기반 21개 결정적 시나리오 pixel golden 고정 완료
 - 네이티브 text 기반: 고정 Brotli→FreeType WOFF2→HarfBuzz hb-ft 그래프, 원본 Pretendard/OFL hash 검증, 다중 weight shaping·grayscale raster·고정-capacity glyph atlas와 immutable 고정 UI shaped cache 통과
 - 네이티브 UI 렌더 계약: `FramePacket v2` glyph/projective mesh/gradient/clip/pass와 bounded canonical codec 완료. Software는 gradient/clip과 resource-backed A8 glyph를 실제 raster하며 mesh/pass 및 SDL_GPU/GLES glyph·고급 명령은 아직 계측 가능한 placeholder다.
-- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Credits 5개 링크는 External warning 경로에 연결됐다. Settings는 10개 노출 필드의 baseline/draft/dirty/Save/Cancel 세션과 공용 application-control/valueRect/revision 계약까지, Debug는 SDL timestamp·middle pointer·`/`·`.` event와 scheduler pause/single-step, 같은 창 fullscreen 전환 API까지 준비됐다. 실제 `Application` load/apply·control effect와 Debug overlay/persist 조립은 다음 블록이다.
+- 네이티브 UI runtime: 순수 C++ 가변 시간 Loading/Title·keyed overlay 상태기, light/dark token, entrance sampler, safe-area 레이아웃과 렌더·입력 공용 fixed-capacity overlay presentation을 기본 앱 경로에 연결했다. 11종 overlay의 Pretendard 본문, Map 5×9 preview와 공통 Close/Cancel이 표시되며 Start→playable도 동작한다. Credits 5개 링크는 External warning 경로에 연결됐다. Settings는 storage-ready exactly-once load, 10개 노출 필드의 draft/live preview/Save/Cancel, 동적 현재값 문자열과 창 rollback을 제품 `Application`에서 소비한다. Debug도 middle gesture, title panel·4개 toggle, 저장/재시도, `/` pause·`.` step까지 조립했다. BGM/SFX·tooltip·input binding/benchmark 소비자, playable/diagnostic 공용 Debug panel·계측, 세부 시각 fidelity는 남아 있다.
 - Software 960×540 성능 게이트: 최신 Release 180-frame render p95 27.259ms, 33.33ms 예산 통과
 - 기존 NW.js 실행 경로: 포팅 parity를 위한 read-only oracle로 유지
 - 구현 전략: Windows 전체 기능 흐름을 breadth-first로 먼저 연결한 뒤 실제 결과물을 실행하며 화면별 시각·입력 fidelity를 반복 보완한다.
+
+### 파트별 진행 추정
+
+아래 수치는 현재 Windows rewrite의 체감 진척이며 완료 판정이나 테스트 통과율을 뜻하지 않는다.
+
+| 파트 | 진행 | 현재 경계 |
+| --- | ---: | --- |
+| Windows SDL3 platform/build | 92% | 창·lifecycle·storage·audio device 수명·세 backend·복구 완료, 최종 패키징/실기 장기 검증 남음 |
+| Core/simulation parity | 58% | 이동·타일·GameSystem replay·broad/narrow 기반 완료, 3-pass solve·projectile·전투/웨이브 남음 |
+| Playable 게임 기능 | 28% | map/Core/Tower 이동 세션은 실행, 적·전투·웨이브·진행 저장은 미구현 |
+| Title/overlay 기능 breadth | 72% | 11종 content·Credits·Settings·title Debug 연결, floating control·global Debug와 일부 실제 effect 남음 |
+| Render/시각 fidelity | 50% | Software text/gradient/clip 완료, GPU atlas·glass/blur·texture/icon·21개 native golden 남음 |
+| Settings/Debug/system | 76% | repository·live preview·Save/Cancel·persist·pause/step 완료, audio/tooltip/input/telemetry consumer 남음 |
+| 검증/cutover | 45% | 33개 Desktop CTest와 21개 headless 통과, native pixel parity·완성 플레이·NW.js cutover 남음 |
+| Windows rewrite 전체 | 52% | 기능 breadth를 먼저 연결 중이며 gameplay 내용과 시각 보정 비중이 큼 |
 
 ## 단계별 상태
 
@@ -32,7 +47,7 @@
 | Phase 2 — SDL3 Desktop 셸 | 완료 | callback·창·이벤트·lifecycle·scheduler·storage·audio를 실제/dummy driver에서 검증 |
 | Phase 3 — FramePacket/기본 렌더 백엔드 | 완료 | 세 backend 실제 command drawing·fallback·reset/pacing과 Software 960×540 Release p95 30fps 게이트 통과 |
 | Phase 4 — Simulation parity | 진행 중 | Body SoA·타일 충돌·GameSystem replay, 두 WAT scalar, 첫 solve spatial grid/candidate와 generic narrowphase exact parity 및 Desktop playable session bridge 통과. position solve/projectile 진행 중 |
-| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | title→메뉴/overlay→playable과 Credits 링크, Settings schema/codec·SDL 저장 repository·draft/control seam, Debug SDL event/scheduler seam을 연결했다. 다음 블록에서 `Application` load/apply/save/cancel 및 Debug overlay/persist를 조립한 뒤 관찰 가능한 시각·입력 fidelity를 화면별로 보완한다. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분한다. |
+| Phase 5~8 — 효과·세션·UI·저장 | 진행 중(UI native 기반) | title→메뉴/overlay→playable과 Credits, Settings load/live preview/Save/Cancel 및 title Debug/persist/pause-step을 제품 `Application`에 조립했다. 다음은 global Debug·실제 audio/input/tooltip consumer, display policy와 21개 시각 상태 보완이다. 기존판에 없는 HUD·일시정지·게임오버는 별도 설계로 구분한다. |
 | Phase 9 — Android | 현재 범위 제외 | 사용자 요청에 따라 SDK/NDK 설치·프로젝트·ARM64 빌드·실기 검증을 진행하지 않는다. |
 | Phase 10 — iOS | 현재 범위 제외 | Mac 환경이 없고 사용자 요청에 따라 빌드·서명·실기 검증을 진행하지 않는다. |
 | Phase 11~12 — 멀티코어·Cutover | 대기 | worker parity, native-only release candidate, NW.js 제품 경로 제거 |
@@ -66,7 +81,10 @@
 - Pretendard 원본은 WOFF2이며 OFL 1.1의 Reserved Font Name을 포함한다. 변환 TTF를 같은 이름으로 재배포하지 않고 원본 WOFF2를 그대로 패키징해 고정 Brotli+FreeType+HarfBuzz로 읽어야 한다. `🏆`·`📖`는 Pretendard에 없으므로 OS별 시스템 font fallback 대신 고정 vector/bitmap asset으로 교체해야 한다.
 - `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip/A8 glyph는 실제 raster로 전환됐지만 mesh/pass와 SDL_GPU/GLES glyph·고급 명령은 아직 marker placeholder이므로 GPU atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
 - text foundation은 45~930 variable weight, no-hinting grayscale raster, 고정-capacity glyph atlas와 fixed UI `ShapedTextCache`까지 완료됐다. 64px A8 atlas와 shaped runs는 하나의 immutable generation snapshot이며 resize 때 재생성하지 않는다. 고정 catalog 밖 URL의 동적 preview와 SDL_GPU/GLES atlas upload/draw는 후속이다.
-- `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. 상태/layout/control revision에 결합 가능한 `TitleOverlayPresentationSet`도 controller와 renderer가 공유한다. Start→MapSelect→playable 전환과 Credits 5-link warning은 연결됐고 `game_desktop`은 실행 파일 옆 원본 WOFF2/OFL을 읽는다. Settings/Debug application-control과 SDL event·scheduler·window 전환 seam은 준비됐지만, 제품 `Application`의 설정 load/apply/save/cancel 및 Debug overlay/persist 조립은 아직 시작하지 않았다.
+- `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. 상태/layout/control revision에 결합 가능한 `TitleOverlayPresentationSet`도 controller와 renderer가 공유한다. Start→MapSelect→playable 전환, Credits 5-link warning, Settings load/live preview/Save/Cancel과 title Debug gesture/persist/pause-step까지 연결됐다. 다만 playable/diagnostic 전환 뒤에는 Debug panel 합성이 없어서 gesture와 pause는 동작해도 네 toggle에 다시 접근할 수 없다.
+- `widescreenSupport`는 playable 월드 투영에 소비되지만 title layout/pointer에는 아직 공통 display-policy로 연결되지 않았다. playable OFF의 16:9 world rect도 실제 backend clip이 아니라 투영 bounds만 제한하므로 확대 카메라에서 bar 영역 침범을 막는 후속 command가 필요하다.
+- `disableTransparency`는 opaque panel token과 glass pass 생략을 실제 소비하지만 JS의 0.4초 `glassMix` 전환과 light opaque shadow는 아직 없다. 현재 on/off 기능 연결을 시각 parity 완료로 해석하지 않는다.
+- Settings의 BGM/SFX·tooltip delay·input binding은 저장·표시 authority만 있고 실제 audio/input/tooltip consumer가 없다. benchmark와 Keybindings/DevTools도 의도적으로 비활성/passive 상태다.
 
 ## 검증 기록
 
@@ -707,6 +725,25 @@ SDL platform event: 14/14 통과
 - `SdlWindow`는 renderer가 참조하는 native handle을 파괴하지 않고 같은 창에 fullscreen/windowed를 적용한다. 실패 시 직전 실제 상태와 windowed 크기로 best-effort rollback하고, renderer fallback용 window recreate에는 마지막 성공 configuration을 보존한다.
 - 이 블록은 연결 seam까지만 완료했다. storage ready 이후 exactly-once load gate, Settings control의 live preview/Save/Cancel, locale/theme/uiScale 동적 text, Debug gesture/overlay/persist와 gameplay pause/step을 `Application`에 조립하는 작업은 다음 블록의 재개 지점이다.
 
+### 2026-07-28 — Settings/Debug 제품 Application 조립과 실제 설정 consumer
+
+```text
+MSVC Debug 전체 빌드 + CTest: 33/33 통과
+MSVC Release 전체 빌드 + CTest: 33/33 통과
+GCC 16.1 headless strict 전체 빌드 + CTest: 21/21 통과
+Application settings/debug integration smoke: 1/1 통과
+title scene opaque/glass 회귀: 17/17 통과
+```
+
+- `Application`은 SDL user storage가 ready가 된 뒤 `SettingsRepository`를 정확히 한 번 load한다. storage open/load 실패에서도 in-memory 기본값을 theme/text/layout/window runtime에 한 번 적용하고 저장 control만 비활성화해 UI authority와 실제 창 상태가 초기값부터 갈라지지 않게 했다.
+- Settings overlay sequence마다 repository baseline과 draft를 소유한다. window mode, widescreen, render/UI scale, opaque UI, language/theme, tooltip delay, BGM/SFX의 10개 control이 현재값 문자열과 selected/value 상태를 갱신하며, Save 성공 전에는 repository authority를 바꾸지 않는다. Save 실패는 draft를 열린 채 보존하고 Cancel은 closing presentation이 제거된 뒤 preview를 baseline으로 되돌린다.
+- window preview는 renderer가 참조하는 같은 `SDL_Window` handle에 적용한다. 일반 OS resize가 발생하면 `SdlWindow`가 실제 windowed size를 갱신하고, Settings open 시 별도 실제 display configuration을 캡처한다. fullscreen preview 뒤 Cancel은 이 실제 크기를 복원하며 Save는 유효한 실제 windowed size를 repository에 합친다.
+- theme/language/UI scale/render scale은 title text/layout과 frame config에 연결했다. `widescreenSupport`는 playable 월드가 초광폭 drawable을 사용할지 선택하고 UI는 중앙 16:9를 유지한다. `disableTransparency`는 title fallback/presenter 양쪽에서 glass pass 4개를 생략하고 opaque panel token을 사용하며 capacity/stat도 같은 분기를 따른다.
+- Debug middle press/release 3회 gesture와 `/`·`.` key edge를 scene dispatch보다 먼저 처리한다. title Debug panel의 네 display toggle, `debugMode` repository 저장, 저장 실패 후 최대 3회 지연 재시도, Settings Save 수렴, animation pause와 정확히 한 fixed tick step을 제품 frame loop에 연결했다. drawable이 없을 때는 예약 step을 소비하지 않는다.
+- 새 통합 smoke는 격리 user-storage에 비기본 theme/language/UI scale/volume을 seed하고 실제 title/Software `Application`을 실행한다. Debug enable→panel control→pause/step→재시작 복원→disable 저장을 공개 event API로 통과시키며 나머지 설정이 보존되는지 확인한다. 같은 테스트에서 외부 windowed resize가 `SdlWindow` display configuration에 반영되는 것도 검증한다.
+- 이 배치 전에 일반 Windows 실행본의 title과 Settings open/표시는 확인했다. 이후 사용자가 Computer Use 중단을 요청했으므로 이번 최종 코드의 실제 창 육안 검증은 수행하지 않았고, dummy driver 자동 smoke와 통합 CTest만 갱신했다.
+- 남은 범위는 title/overlay 공통 widescreen display policy와 실제 letterbox clip, opaque 0.4초 transition/shadow, playable/diagnostic 위 global Debug panel, frame/pool/hitbox 계측, BGM/SFX·tooltip·input binding/benchmark consumer와 21개 native 시각 회귀다.
+
 ## 현재 작업
 
 - [x] SDL 포팅용 JS replay/state-hash exporter와 fixture
@@ -747,7 +784,12 @@ SDL platform event: 14/14 통과
 - [x] Settings 10-field overlay draft/dirty/Save/Cancel 세션과 공용 application-control/valueRect/revision seam
 - [x] Debug SDL timestamp·middle pointer·slash/period event 및 scheduled/disabled/single-step scheduler seam
 - [x] 동일 SDL window handle의 fullscreen/windowed 적용·rollback·renderer recreate 설정 보존 API
-- [ ] Settings Application load/runtime 적용·control과 Debug event/overlay/Application 연결
+- [x] Settings exactly-once load, 10-field live preview·동적 text·Save/Cancel과 실제 창 baseline rollback
+- [x] playable widescreen world consumer와 title opaque/glass pass consumer
+- [x] Debug global gesture·title overlay toggle·repository persist/retry·Application pause/one-step 연결
+- [ ] BGM/SFX·tooltip·input binding/benchmark 실제 runtime consumer
+- [ ] playable/diagnostic 위 global Debug panel과 frame-time/pool/hitbox 실제 계측
+- [ ] title/overlay widescreen display policy, playable letterbox 실클립, opaque transition/shadow parity
 - [x] Software backend의 v2 gradient/clip 실제 raster 구현
 - [ ] 세 backend의 v2 atlas/mesh/pass 및 SDL_GPU/GLES gradient/clip 실제 렌더와 production UI `placeholderCommands == 0`
 - [ ] 타이틀 화면과 모든 오버레이의 같은 기능·시각·입력·상태 흐름 구현

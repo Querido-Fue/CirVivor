@@ -240,7 +240,11 @@ bool SdlWindow::applyDisplayConfiguration(
     const WindowMetrics previousMetrics = metrics_;
     if (requestDisplayConfiguration(window_, configuration)
         && refreshMetrics()) {
-        displayConfiguration_ = configuration;
+        if (configuration.fullscreen) {
+            displayConfiguration_.fullscreen = true;
+            displayConfiguration_.width = configuration.width;
+            displayConfiguration_.height = configuration.height;
+        }
         return true;
     }
 
@@ -313,6 +317,15 @@ bool SdlWindow::refreshMetrics() noexcept {
         std::isfinite(pixelDensity) && pixelDensity > 0.0F ? pixelDensity : 1.0F,
         std::isfinite(displayScale) && displayScale > 0.0F ? displayScale : 1.0F
     };
+    displayConfiguration_.fullscreen = (
+        SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN
+    ) != 0U;
+    if (!displayConfiguration_.fullscreen
+        && windowWidth >= minimumWindowWidth
+        && windowHeight >= minimumWindowHeight) {
+        displayConfiguration_.width = windowWidth;
+        displayConfiguration_.height = windowHeight;
+    }
     return true;
 }
 

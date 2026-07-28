@@ -181,6 +181,10 @@ ViewportState makePlayableGameViewport(
         contentWidth,
         contentHeight
     };
+    const bool useFullDrawableForWorld = config.widescreenSupport && !widthLimited;
+    const RectI worldRect = useFullDrawableForWorld
+        ? RectI{0, 0, drawableWidth, drawableHeight}
+        : contentRect;
     const InsetsI contentSafeArea = mapSafeAreaToContent(
         config.safeArea,
         {drawableWidth, drawableHeight},
@@ -197,8 +201,8 @@ ViewportState makePlayableGameViewport(
     const float worldHeight = static_cast<float>(tileMap.rows()) * tileSize;
     const float zoom = positiveFiniteOr(config.cameraZoom, defaultCameraZoom, 4.0F);
     const float baseWorldScale = std::min(
-        static_cast<float>(drawableWidth) / worldWidth,
-        static_cast<float>(drawableHeight) / worldHeight
+        static_cast<float>(worldRect.width) / worldWidth,
+        static_cast<float>(worldRect.height) / worldHeight
     );
     const float worldScale = baseWorldScale * zoom;
     const float alpha = normalizedAlpha(config.interpolationAlpha);
@@ -210,9 +214,11 @@ ViewportState makePlayableGameViewport(
     const Vec2F cameraCenter = zoom > defaultCameraZoom
         ? towerPosition
         : Vec2F{worldWidth * 0.5F, worldHeight * 0.5F};
-    const float worldOffsetX = static_cast<float>(drawableWidth) * 0.5F
+    const float worldOffsetX = static_cast<float>(worldRect.x)
+        + static_cast<float>(worldRect.width) * 0.5F
         - cameraCenter.x * worldScale;
-    const float worldOffsetY = static_cast<float>(drawableHeight) * 0.5F
+    const float worldOffsetY = static_cast<float>(worldRect.y)
+        + static_cast<float>(worldRect.height) * 0.5F
         - cameraCenter.y * worldScale;
     const float inverseWorldScale = 1.0F / worldScale;
     const float renderScale = positiveFiniteOr(config.worldRenderScale, 1.0F, 4.0F);
@@ -262,10 +268,10 @@ ViewportState makePlayableGameViewport(
     );
 
     viewport.world.visibleBounds = {
-        -worldOffsetX * inverseWorldScale,
-        -worldOffsetY * inverseWorldScale,
-        static_cast<float>(drawableWidth) * inverseWorldScale,
-        static_cast<float>(drawableHeight) * inverseWorldScale
+        (static_cast<float>(worldRect.x) - worldOffsetX) * inverseWorldScale,
+        (static_cast<float>(worldRect.y) - worldOffsetY) * inverseWorldScale,
+        static_cast<float>(worldRect.width) * inverseWorldScale,
+        static_cast<float>(worldRect.height) * inverseWorldScale
     };
     viewport.world.drawablePixelsPerWorldUnit = worldScale;
     viewport.world.worldToDrawable.elements = {

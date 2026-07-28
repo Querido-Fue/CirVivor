@@ -16,6 +16,7 @@ struct TitleOverlayPresenterInput final {
     PreShapedTextResourcesView textResources{};
     UiTextLocale locale = UiTextLocale::korean;
     CommandHeader header{};
+    bool disableTransparency = false;
 };
 
 /**

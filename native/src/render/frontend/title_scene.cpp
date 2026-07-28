@@ -542,6 +542,9 @@ enum class TextVerticalAnchor : std::uint8_t {
         input.uiState.overlays.size()
     );
     result.overlayDimCommands = overlayCount * dim_session_command_count;
+    const std::size_t glassPassCommands = input.disableTransparency
+        ? 0U
+        : glass_pass_command_count;
     if (hasRequiredTextRuns(input)) {
         result.titleOverlayContentCommands = capacity.commandCount
             - result.titleShellCommands
@@ -550,20 +553,20 @@ enum class TextVerticalAnchor : std::uint8_t {
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         const ui::OverlayKind kind = input.uiState.overlays[index].kind;
         if (kind == ui::OverlayKind::mapSelect) {
-            result.overlayPassCommands += glass_pass_command_count;
-            result.mapSelectShellCommands += glass_pass_command_count
+            result.overlayPassCommands += glassPassCommands;
+            result.mapSelectShellCommands += glassPassCommands
                 + shell_overlay_command_count
                 + shell_clip_command_count
                 + map_select_shell_ui_count;
         } else if (kind == ui::OverlayKind::exitConfirm) {
-            result.overlayPassCommands += glass_pass_command_count;
-            result.exitShellCommands += glass_pass_command_count
+            result.overlayPassCommands += glassPassCommands;
+            result.exitShellCommands += glassPassCommands
                 + shell_overlay_command_count
                 + shell_clip_command_count
                 + exit_shell_ui_count;
         } else if (kind == ui::OverlayKind::externalLinkWarning) {
-            result.overlayPassCommands += glass_pass_command_count;
-            result.externalLinkShellCommands += glass_pass_command_count
+            result.overlayPassCommands += glassPassCommands;
+            result.externalLinkShellCommands += glassPassCommands
                 + shell_overlay_command_count
                 + shell_clip_command_count
                 + external_shell_ui_count;
@@ -1589,8 +1592,18 @@ void addTitleTextCapacity(
     panel.bounds = panelBounds;
     panel.cornerRadius = panelRadius;
     panel.borderWidth = 1.0F;
-    panel.backgroundColor = renderColor(input.theme.overlayPanelBackground, alpha);
-    panel.borderColor = renderColor(input.theme.overlayPanelBorder, alpha);
+    panel.backgroundColor = renderColor(
+        input.disableTransparency
+            ? input.theme.overlayPanelBackground
+            : input.theme.overlayGlassBackground,
+        alpha
+    );
+    panel.borderColor = renderColor(
+        input.disableTransparency
+            ? input.theme.overlayPanelBorder
+            : input.theme.overlayGlassBorder,
+        alpha
+    );
     panel.accentColor = renderColor(input.theme.overlayGlassEdge, alpha);
     if (!builder.addUi(panel)) {
         return false;
@@ -1735,7 +1748,8 @@ void addTitleTextCapacity(
                 input.theme,
                 input.textResources,
                 input.locale,
-                begin.header
+                begin.header,
+                input.disableTransparency
             })) {
         return false;
     }
@@ -1814,15 +1828,16 @@ void addTitleTextCapacity(
                     overlay.contentScale,
                     dialog
                 )
-                || !addGlassPass(
-                    builder,
-                    input,
-                    overlay,
-                    orders,
-                    renderRect(dialog.panelRect),
-                    anchorSequence,
-                    config.backdropRevision
-                )
+                || (!input.disableTransparency
+                    && !addGlassPass(
+                        builder,
+                        input,
+                        overlay,
+                        orders,
+                        renderRect(dialog.panelRect),
+                        anchorSequence,
+                        config.backdropRevision
+                    ))
                 || !addOverlayUiShell(
                     builder,
                     input,
@@ -1842,15 +1857,16 @@ void addTitleTextCapacity(
             return false;
         }
         const RectF panelBounds = renderRect(presentation->panelRect);
-        if (!addGlassPass(
-                builder,
-                input,
-                overlay,
-                orders,
-                panelBounds,
-                anchorSequence,
-                config.backdropRevision
-            )
+        if ((!input.disableTransparency
+                && !addGlassPass(
+                    builder,
+                    input,
+                    overlay,
+                    orders,
+                    panelBounds,
+                    anchorSequence,
+                    config.backdropRevision
+                ))
             || !addPresentationUiShell(
                 builder,
                 input,
@@ -1924,30 +1940,33 @@ FramePacketCapacity titleSceneCapacity(const TitleSceneInput& input) noexcept {
         input.uiState.overlays.size()
     );
     const bool fullOverlayContent = hasRequiredTextRuns(input);
+    const std::size_t glassPassCount = input.disableTransparency
+        ? 0U
+        : glass_pass_command_count;
     for (std::size_t index = 0U; index < overlayCount; ++index) {
         capacity.overlayCount += dim_session_command_count;
         const ui::OverlayKind kind = input.uiState.overlays[index].kind;
         if (!fullOverlayContent) {
             if (kind == ui::OverlayKind::mapSelect) {
                 capacity.overlayCount += shell_overlay_command_count;
-                capacity.passCount += glass_pass_command_count;
+                capacity.passCount += glassPassCount;
                 capacity.clipCount += shell_clip_command_count;
                 capacity.uiCount += map_select_shell_ui_count;
             } else if (kind == ui::OverlayKind::exitConfirm) {
                 capacity.overlayCount += shell_overlay_command_count;
-                capacity.passCount += glass_pass_command_count;
+                capacity.passCount += glassPassCount;
                 capacity.clipCount += shell_clip_command_count;
                 capacity.uiCount += exit_shell_ui_count;
             } else if (kind == ui::OverlayKind::externalLinkWarning) {
                 capacity.overlayCount += shell_overlay_command_count;
-                capacity.passCount += glass_pass_command_count;
+                capacity.passCount += glassPassCount;
                 capacity.clipCount += shell_clip_command_count;
                 capacity.uiCount += external_shell_ui_count;
             }
             continue;
         }
         capacity.overlayCount += shell_overlay_command_count;
-        capacity.passCount += glass_pass_command_count;
+        capacity.passCount += glassPassCount;
         capacity.clipCount += shell_clip_command_count;
         capacity.shapeCount += 1U; // header divider
         capacity.uiCount += 1U; // panel

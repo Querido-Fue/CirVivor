@@ -127,6 +127,30 @@ template<typename T>
     return shape.bounds.x + shape.bounds.width * 0.5F;
 }
 
+[[nodiscard]] cirvivor::render::RectF projectedWorldVisibleBounds(
+    const cirvivor::render::ViewportState& viewport
+) noexcept {
+    const cirvivor::render::RectF& bounds = viewport.world.visibleBounds;
+    const std::array<float, 9>& transform = viewport.world.worldToDrawable.elements;
+    return {
+        bounds.x * transform[0] + transform[2],
+        bounds.y * transform[4] + transform[5],
+        bounds.width * transform[0],
+        bounds.height * transform[4]
+    };
+}
+
+void requireProjectedWorldBounds(
+    const cirvivor::render::ViewportState& viewport,
+    const cirvivor::render::RectF expected
+) {
+    const cirvivor::render::RectF actual = projectedWorldVisibleBounds(viewport);
+    REQUIRE_NEAR(actual.x, expected.x, 1.0e-3F);
+    REQUIRE_NEAR(actual.y, expected.y, 1.0e-3F);
+    REQUIRE_NEAR(actual.width, expected.width, 1.0e-3F);
+    REQUIRE_NEAR(actual.height, expected.height, 1.0e-3F);
+}
+
 void testCompactPlayableCommandContract() {
     using namespace cirvivor::render;
     using namespace cirvivor::render::frontend;
@@ -339,6 +363,103 @@ void testViewportAndInterpolatedTowerCoordinates() {
     REQUIRE(clampedPacket.metadata().presentationTimeSeconds > 0.0);
 }
 
+void testWidescreenSupportSelectsOnlyTheWorldViewport() {
+    using namespace cirvivor::render;
+    using namespace cirvivor::render::frontend;
+
+    cirvivor::game::GameSystem gameSystem;
+
+    PlayableGameSceneConfig wideEnabled;
+    wideEnabled.drawableSize = {3'440, 1'440};
+    wideEnabled.physicalDisplaySize = wideEnabled.drawableSize;
+    wideEnabled.physicalWindowBounds = {0, 0, 3'440, 1'440};
+    wideEnabled.widescreenSupport = true;
+    const ViewportState enabledWideViewport = makePlayableGameViewport(
+        gameSystem,
+        wideEnabled
+    );
+
+    PlayableGameSceneConfig wideDisabled = wideEnabled;
+    wideDisabled.widescreenSupport = false;
+    const ViewportState disabledWideViewport = makePlayableGameViewport(
+        gameSystem,
+        wideDisabled
+    );
+
+    const RectI wideUiRect{440, 0, 2'560, 1'440};
+    REQUIRE(enabledWideViewport.drawable.contentRect == wideUiRect);
+    REQUIRE(disabledWideViewport.drawable.contentRect == wideUiRect);
+    REQUIRE_NEAR(
+        enabledWideViewport.logicalUi.drawablePixelsPerLogicalUnitX,
+        disabledWideViewport.logicalUi.drawablePixelsPerLogicalUnitX,
+        1.0e-5F
+    );
+    REQUIRE_NEAR(
+        enabledWideViewport.logicalUi.drawablePixelsPerLogicalUnitY,
+        disabledWideViewport.logicalUi.drawablePixelsPerLogicalUnitY,
+        1.0e-5F
+    );
+    requireProjectedWorldBounds(
+        enabledWideViewport,
+        RectF{0.0F, 0.0F, 3'440.0F, 1'440.0F}
+    );
+    requireProjectedWorldBounds(
+        disabledWideViewport,
+        RectF{440.0F, 0.0F, 2'560.0F, 1'440.0F}
+    );
+
+    PlayableGameSceneConfig tallEnabled;
+    tallEnabled.drawableSize = {1'200, 1'000};
+    tallEnabled.physicalDisplaySize = tallEnabled.drawableSize;
+    tallEnabled.physicalWindowBounds = {0, 0, 1'200, 1'000};
+    tallEnabled.widescreenSupport = true;
+    const ViewportState enabledTallViewport = makePlayableGameViewport(
+        gameSystem,
+        tallEnabled
+    );
+    PlayableGameSceneConfig tallDisabled = tallEnabled;
+    tallDisabled.widescreenSupport = false;
+    const ViewportState disabledTallViewport = makePlayableGameViewport(
+        gameSystem,
+        tallDisabled
+    );
+    const RectI tallUiRect{0, 162, 1'200, 675};
+    REQUIRE(enabledTallViewport.drawable.contentRect == tallUiRect);
+    REQUIRE(disabledTallViewport.drawable.contentRect == tallUiRect);
+    requireProjectedWorldBounds(
+        enabledTallViewport,
+        RectF{0.0F, 162.0F, 1'200.0F, 675.0F}
+    );
+    requireProjectedWorldBounds(
+        disabledTallViewport,
+        RectF{0.0F, 162.0F, 1'200.0F, 675.0F}
+    );
+
+    PlayableGameSceneConfig exactEnabled;
+    exactEnabled.drawableSize = {1'920, 1'080};
+    exactEnabled.physicalDisplaySize = exactEnabled.drawableSize;
+    exactEnabled.physicalWindowBounds = {0, 0, 1'920, 1'080};
+    exactEnabled.widescreenSupport = true;
+    const ViewportState enabledExactViewport = makePlayableGameViewport(
+        gameSystem,
+        exactEnabled
+    );
+    PlayableGameSceneConfig exactDisabled = exactEnabled;
+    exactDisabled.widescreenSupport = false;
+    const ViewportState disabledExactViewport = makePlayableGameViewport(
+        gameSystem,
+        exactDisabled
+    );
+    requireProjectedWorldBounds(
+        enabledExactViewport,
+        RectF{0.0F, 0.0F, 1'920.0F, 1'080.0F}
+    );
+    requireProjectedWorldBounds(
+        disabledExactViewport,
+        RectF{0.0F, 0.0F, 1'920.0F, 1'080.0F}
+    );
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
@@ -351,7 +472,11 @@ int main() {
         TestCase{"compact playable command contract", testCompactPlayableCommandContract},
         TestCase{"stable fixed-capacity build", testStableFixedCapacityBuildHasNoAllocations},
         TestCase{"capacity failure transaction", testFixedCapacityFailureClearsPartialPacket},
-        TestCase{"viewport and interpolation", testViewportAndInterpolatedTowerCoordinates}
+        TestCase{"viewport and interpolation", testViewportAndInterpolatedTowerCoordinates},
+        TestCase{
+            "widescreen support selects only world viewport",
+            testWidescreenSupportSelectsOnlyTheWorldViewport
+        }
     };
 
     std::size_t passed = 0;

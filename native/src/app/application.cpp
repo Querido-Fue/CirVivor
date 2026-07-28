@@ -37,34 +37,255 @@ constexpr std::uint8_t titleToPlayableSmokeTitleStage = 1;
 constexpr std::uint8_t titleToPlayableSmokeMapStage = 2;
 constexpr std::uint8_t titleToPlayableSmokePlayableStage = 3;
 constexpr std::uint8_t titleToPlayableSmokeCompleteStage = 4;
+constexpr std::uint64_t debugPersistenceRetryDelayMilliseconds = 1'000U;
+constexpr std::uint8_t maximumDebugPersistenceRetryCount = 3U;
 constexpr std::size_t maximumBundledFontBytes = 32U * 1'024U * 1'024U;
 
 using TitlePreloadSpecs = std::array<
     render::text::TextPreloadSpec,
     render::text::title_text_catalog.size() * 2U
 >;
+using DynamicTitleTextBuffers = std::array<
+    std::array<char, 96U>,
+    render::text::title_text_catalog.size() * 2U
+>;
 
-[[nodiscard]] TitlePreloadSpecs makeTitlePreloadSpecs() noexcept {
+constexpr settings::SettingsOverlayFieldMask allSettingsOverlayFields =
+    static_cast<settings::SettingsOverlayFieldMask>(
+        (settings::SettingsOverlayFieldMask{1U}
+            << static_cast<std::uint8_t>(settings::SettingsOverlayField::count))
+        - 1U
+    );
+
+[[nodiscard]] constexpr bool includesSettingsField(
+    const settings::SettingsOverlayFieldMask fields,
+    const settings::SettingsOverlayField field
+) noexcept {
+    return (fields & settings::settingsOverlayFieldBit(field)) != 0U;
+}
+
+[[nodiscard]] render::UiTextLocale titleLocaleFor(
+    const settings::Language language
+) noexcept {
+    return language == settings::Language::english
+        ? render::UiTextLocale::english
+        : render::UiTextLocale::korean;
+}
+
+[[nodiscard]] bool tryFormatDynamicTitleText(
+    const render::UiTextSemanticId semantic,
+    const render::UiTextLocale locale,
+    const settings::GameSettings& settings,
+    std::array<char, 96U>& storage,
+    std::string_view& output
+) noexcept {
+    const bool korean = locale == render::UiTextLocale::korean;
+    int length = -1;
+    switch (semantic) {
+    case render::UiTextSemanticId::settingWindowMode:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "화면 모드   %s" : "Window Mode   %s",
+            settings.windowMode == settings::WindowMode::fullscreen
+                ? (korean ? "전체화면" : "FullScreen")
+                : (korean ? "창모드" : "Windowed")
+        );
+        break;
+    case render::UiTextSemanticId::settingRenderScale:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "렌더링 해상도   %u%%" : "Render Scale   %u%%",
+            static_cast<unsigned int>(settings.renderScalePercent)
+        );
+        break;
+    case render::UiTextSemanticId::settingUiScale:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "UI 크기   %u%%" : "UI Scale   %u%%",
+            static_cast<unsigned int>(settings.uiScalePercent)
+        );
+        break;
+    case render::UiTextSemanticId::settingLanguage:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "언어 (Language)   %s" : "Language   %s",
+            settings.language == settings::Language::english
+                ? "English"
+                : (korean ? "한국어" : "Korean")
+        );
+        break;
+    case render::UiTextSemanticId::settingTheme:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "테마   %s" : "Theme   %s",
+            settings.theme == settings::Theme::dark
+                ? (korean ? "어둡게" : "Dark")
+                : (korean ? "밝게" : "Light")
+        );
+        break;
+    case render::UiTextSemanticId::settingTooltipDelay:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "툴팁 표시 시간   %u.%u초" : "Tooltip Delay   %u.%us",
+            static_cast<unsigned int>(settings.tooltipDelayTenths / 10U),
+            static_cast<unsigned int>(settings.tooltipDelayTenths % 10U)
+        );
+        break;
+    case render::UiTextSemanticId::settingBgm:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "배경음악   %u" : "Music   %u",
+            static_cast<unsigned int>(settings.bgmVolumePercent)
+        );
+        break;
+    case render::UiTextSemanticId::settingSfx:
+        length = SDL_snprintf(
+            storage.data(),
+            storage.size(),
+            korean ? "효과음   %u" : "Effects   %u",
+            static_cast<unsigned int>(settings.sfxVolumePercent)
+        );
+        break;
+    default:
+        return false;
+    }
+    if (length < 0) {
+        return false;
+    }
+    output = {
+        storage.data(),
+        std::min<std::size_t>(
+            static_cast<std::size_t>(length),
+            storage.size() - 1U
+        )
+    };
+    return true;
+}
+
+[[nodiscard]] TitlePreloadSpecs makeTitlePreloadSpecs(
+    const settings::GameSettings& settings,
+    DynamicTitleTextBuffers& dynamicText
+) noexcept {
     TitlePreloadSpecs result{};
     std::size_t index = 0U;
     for (const render::text::TitleTextCatalogEntry& entry :
          render::text::title_text_catalog) {
+        std::string_view korean = entry.korean;
+        std::string_view english = entry.english;
+        static_cast<void>(tryFormatDynamicTitleText(
+            entry.semantic,
+            render::UiTextLocale::korean,
+            settings,
+            dynamicText[index],
+            korean
+        ));
         result[index++] = {
             render::text::titleTextKey(
                 entry.semantic,
                 render::UiTextLocale::korean
             ),
-            entry.korean
+            korean
         };
+        static_cast<void>(tryFormatDynamicTitleText(
+            entry.semantic,
+            render::UiTextLocale::english,
+            settings,
+            dynamicText[index],
+            english
+        ));
         result[index++] = {
             render::text::titleTextKey(
                 entry.semantic,
                 render::UiTextLocale::english
             ),
-            entry.english
+            english
         };
     }
     return result;
+}
+
+[[nodiscard]] const ui::OverlaySnapshot* findLatestOverlay(
+    const ui::UiStateSnapshot& state,
+    const ui::OverlayKind kind
+) noexcept {
+    const ui::OverlaySnapshot* result = nullptr;
+    for (std::size_t index = 0U; index < state.overlayCount; ++index) {
+        if (state.overlays[index].kind == kind
+            && (result == nullptr
+                || state.overlays[index].sequence > result->sequence)) {
+            result = &state.overlays[index];
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] bool settingsFieldForControl(
+    const ui::TitleOverlayControlId id,
+    settings::SettingsOverlayField& output
+) noexcept {
+    switch (id) {
+    case ui::TitleOverlayControlId::settingWindowMode:
+        output = settings::SettingsOverlayField::windowMode;
+        return true;
+    case ui::TitleOverlayControlId::settingUltrawide:
+        output = settings::SettingsOverlayField::widescreenSupport;
+        return true;
+    case ui::TitleOverlayControlId::settingRenderScale:
+        output = settings::SettingsOverlayField::renderScale;
+        return true;
+    case ui::TitleOverlayControlId::settingUiScale:
+        output = settings::SettingsOverlayField::uiScale;
+        return true;
+    case ui::TitleOverlayControlId::settingOpaqueUi:
+        output = settings::SettingsOverlayField::disableTransparency;
+        return true;
+    case ui::TitleOverlayControlId::settingLanguage:
+        output = settings::SettingsOverlayField::language;
+        return true;
+    case ui::TitleOverlayControlId::settingTheme:
+        output = settings::SettingsOverlayField::theme;
+        return true;
+    case ui::TitleOverlayControlId::settingTooltipDelay:
+        output = settings::SettingsOverlayField::tooltipDelay;
+        return true;
+    case ui::TitleOverlayControlId::settingBgm:
+        output = settings::SettingsOverlayField::bgmVolume;
+        return true;
+    case ui::TitleOverlayControlId::settingSfx:
+        output = settings::SettingsOverlayField::sfxVolume;
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] bool debugOptionForControl(
+    const ui::TitleOverlayControlId id,
+    debug::DebugDisplayOption& output
+) noexcept {
+    switch (id) {
+    case ui::TitleOverlayControlId::debugFrameTime:
+        output = debug::DebugDisplayOption::frameTime;
+        return true;
+    case ui::TitleOverlayControlId::debugPoolInfo:
+        output = debug::DebugDisplayOption::poolInfo;
+        return true;
+    case ui::TitleOverlayControlId::debugHitboxes:
+        output = debug::DebugDisplayOption::hitboxes;
+        return true;
+    case ui::TitleOverlayControlId::debugAnimation:
+        output = debug::DebugDisplayOption::animationDebug;
+        return true;
+    default:
+        return false;
+    }
 }
 
 void advanceUiStateForSmoke(
@@ -446,6 +667,12 @@ Application::Application()
     : renderer_([this](const render::backend::RenderBackendKind kind) {
           return makeRenderBackend(kind);
       }),
+      settingsStorage_(storage_),
+      settingsRepository_(
+          settingsStorage_,
+          {settings::Language::userLanguage}
+      ),
+      titleTheme_(ui::layout::darkThemeMetrics()),
       framePacket_(render::maximumFramePacketCapacity(
           render::maximumFramePacketCapacity(
               render::frontend::syntheticTestSceneCapacity(),
@@ -564,6 +791,7 @@ bool Application::rebuildRenderer(const bool skipCurrentBackend) noexcept {
 
     clearMovementActions();
     static_cast<void>(titleUiController_.handleFocusLost());
+    static_cast<void>(debugRuntime_.handleFocusLost());
     renderer_.shutdown();
     drawableReady_ = false;
     rendererSizeDirty_ = true;
@@ -675,6 +903,12 @@ bool Application::refreshRendererSize() noexcept {
 }
 
 bool Application::refreshTitleLayout() noexcept {
+    return refreshTitleLayout(activeSettings());
+}
+
+bool Application::refreshTitleLayout(
+    const settings::GameSettings& runtimeSettings
+) noexcept {
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
     if (metrics.windowWidth <= 0 || metrics.windowHeight <= 0) {
         return titleLayout_.hasSnapshot();
@@ -683,14 +917,15 @@ bool Application::refreshTitleLayout() noexcept {
     ui::layout::LayoutInput input{
         .logicalWidth = static_cast<double>(metrics.windowWidth),
         .logicalHeight = static_cast<double>(metrics.windowHeight),
-        .uiScale = 1.0,
+        .uiScale = static_cast<double>(runtimeSettings.uiScalePercent) / 100.0,
         .hasVersionHistoryLink = true,
         .logicalSafeArea = logicalSafeArea(metrics)
     };
     if (!titleLayout_.tryUpdate(input)) {
         return false;
     }
-    if (titleTextCache_ == nullptr && !prepareTitleTextResources()) {
+    if (titleTextCache_ == nullptr
+        && !prepareTitleTextResources(runtimeSettings)) {
         return false;
     }
     if (titleTextCache_ != nullptr) {
@@ -698,7 +933,7 @@ bool Application::refreshTitleLayout() noexcept {
             titleTextCache_->textResources().find(
                 render::text::titleTextKey(
                     render::UiTextSemanticId::versionHistoryLink,
-                    render::UiTextLocale::korean
+                    titleLocaleFor(runtimeSettings.language)
                 )
             );
         const auto& labelTypography = titleLayout_.snapshot().typography[
@@ -741,6 +976,12 @@ bool Application::loadTitleTextAssets() noexcept {
 }
 
 bool Application::prepareTitleTextResources() noexcept {
+    return prepareTitleTextResources(activeSettings());
+}
+
+bool Application::prepareTitleTextResources(
+    const settings::GameSettings& runtimeSettings
+) noexcept {
     if (titleFontBytes_.empty()) {
         return false;
     }
@@ -748,7 +989,11 @@ bool Application::prepareTitleTextResources() noexcept {
             == std::numeric_limits<std::uint64_t>::max()
         ? 1U
         : titleTextGeneration_ + 1U;
-    const TitlePreloadSpecs specs = makeTitlePreloadSpecs();
+    DynamicTitleTextBuffers dynamicText{};
+    const TitlePreloadSpecs specs = makeTitlePreloadSpecs(
+        runtimeSettings,
+        dynamicText
+    );
     render::text::ShapedTextCacheBuildError error =
         render::text::ShapedTextCacheBuildError::none;
     std::unique_ptr<render::text::ShapedTextCache> candidate =
@@ -771,9 +1016,592 @@ bool Application::prepareTitleTextResources() noexcept {
     return true;
 }
 
+const settings::GameSettings& Application::activeSettings() const noexcept {
+    const settings::SettingsOverlaySessionSnapshot session =
+        settingsOverlaySession_.snapshot();
+    return session.active ? settingsOverlaySession_.draft() : settingsRepository_.current();
+}
+
+render::UiTextLocale Application::activeTitleLocale() const noexcept {
+    return titleLocaleFor(activeSettings().language);
+}
+
+ui::UiFrameContext Application::currentUiFrameContext() const noexcept {
+    return {.animationPaused = debugRuntime_.snapshot().animationPaused};
+}
+
+bool Application::buildTitleControlStateOverrides(
+    const ui::UiStateSnapshot& state,
+    ui::TitleOverlayControlStateOverrides& output
+) const noexcept {
+    ui::TitleOverlayControlStateOverrides candidate{};
+    candidate.revision = std::max<std::uint64_t>(titleControlStateRevision_, 1U);
+    const auto append = [&candidate](
+        const std::uint32_t sequence,
+        const ui::TitleOverlayControlId id,
+        const double value,
+        const bool selected,
+        const bool enabled
+    ) noexcept {
+        if (sequence == 0U
+            || candidate.controlCount >= candidate.controls.size()) {
+            return false;
+        }
+        candidate.controls[candidate.controlCount++] = {
+            sequence,
+            id,
+            std::clamp(value, 0.0, 1.0),
+            selected,
+            enabled
+        };
+        return true;
+    };
+
+    const settings::SettingsOverlaySessionSnapshot session =
+        settingsOverlaySession_.snapshot();
+    const settings::GameSettings& settings = activeSettings();
+    const bool settingsReady = settingsBootState_ == SettingsBootState::loaded;
+    for (std::size_t index = 0U; index < state.overlayCount; ++index) {
+        const ui::OverlaySnapshot& overlay = state.overlays[index];
+        if (overlay.kind == ui::OverlayKind::setting) {
+            const bool controlsEnabled = settingsReady
+                && session.active
+                && session.overlaySequence == overlay.sequence
+                && overlay.phase != ui::OverlayPhase::closing;
+            const double renderScale = static_cast<double>(
+                settings.renderScalePercent - settings::minimum_render_scale_percent
+            ) / static_cast<double>(
+                settings::maximum_render_scale_percent
+                    - settings::minimum_render_scale_percent
+            );
+            const double uiScale = static_cast<double>(
+                settings.uiScalePercent - settings::minimum_ui_scale_percent
+            ) / static_cast<double>(
+                settings::maximum_ui_scale_percent - settings::minimum_ui_scale_percent
+            );
+            if (!append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingWindowMode,
+                    settings.windowMode == settings::WindowMode::fullscreen ? 1.0 : 0.0,
+                    settings.windowMode == settings::WindowMode::fullscreen,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingUltrawide,
+                    settings.widescreenSupport ? 1.0 : 0.0,
+                    settings.widescreenSupport,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingRenderScale,
+                    renderScale,
+                    false,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingUiScale,
+                    uiScale,
+                    false,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingOpaqueUi,
+                    settings.disableTransparency ? 1.0 : 0.0,
+                    settings.disableTransparency,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingBenchmark,
+                    0.0,
+                    false,
+                    false)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingLanguage,
+                    settings.language == settings::Language::english ? 1.0 : 0.0,
+                    settings.language == settings::Language::english,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingTheme,
+                    settings.theme == settings::Theme::dark ? 1.0 : 0.0,
+                    settings.theme == settings::Theme::dark,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingTooltipDelay,
+                    static_cast<double>(settings.tooltipDelayTenths)
+                        / static_cast<double>(settings::maximum_tooltip_delay_tenths),
+                    false,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingBgm,
+                    static_cast<double>(settings.bgmVolumePercent)
+                        / static_cast<double>(settings::maximum_volume_percent),
+                    false,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::settingSfx,
+                    static_cast<double>(settings.sfxVolumePercent)
+                        / static_cast<double>(settings::maximum_volume_percent),
+                    false,
+                    controlsEnabled)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::cancel,
+                    0.0,
+                    false,
+                    true)
+                || !append(overlay.sequence,
+                    ui::TitleOverlayControlId::confirm,
+                    0.0,
+                    false,
+                    controlsEnabled)) {
+                return false;
+            }
+        } else if (overlay.kind == ui::OverlayKind::debug) {
+            const debug::DebugRuntimeSnapshot debug = debugRuntime_.snapshot();
+            constexpr std::array ids{
+                ui::TitleOverlayControlId::debugFrameTime,
+                ui::TitleOverlayControlId::debugPoolInfo,
+                ui::TitleOverlayControlId::debugHitboxes,
+                ui::TitleOverlayControlId::debugAnimation
+            };
+            for (std::size_t optionIndex = 0U;
+                 optionIndex < ids.size();
+                 ++optionIndex) {
+                const bool selected = debug.displayOptions[optionIndex];
+                if (!append(
+                        overlay.sequence,
+                        ids[optionIndex],
+                        selected ? 1.0 : 0.0,
+                        selected,
+                        debug.debugModeEnabled)) {
+                    return false;
+                }
+            }
+        }
+    }
+    output = candidate;
+    return true;
+}
+
+bool Application::applyRuntimeSettings(
+    const settings::GameSettings& candidate,
+    const settings::SettingsOverlayFieldMask changedFields,
+    const bool applyWindow
+) noexcept {
+    if (includesSettingsField(changedFields, settings::SettingsOverlayField::theme)
+        || includesSettingsField(
+            changedFields,
+            settings::SettingsOverlayField::disableTransparency)) {
+        titleTheme_ = ui::layout::themeMetrics(
+            candidate.theme == settings::Theme::dark
+                ? ui::layout::ThemeVariant::dark
+                : ui::layout::ThemeVariant::light
+        );
+    }
+
+    const settings::SettingsOverlayFieldMask textFields =
+        static_cast<settings::SettingsOverlayFieldMask>(
+            allSettingsOverlayFields
+            & ~settings::settingsOverlayFieldBit(
+                settings::SettingsOverlayField::widescreenSupport)
+            & ~settings::settingsOverlayFieldBit(
+                settings::SettingsOverlayField::disableTransparency)
+        );
+    if (sceneMode_ == SceneMode::title
+        && !titleFontBytes_.empty()
+        && (changedFields & textFields) != 0U
+        && !prepareTitleTextResources(candidate)) {
+        return false;
+    }
+    if (sceneMode_ == SceneMode::title
+        && titleLayout_.hasSnapshot()
+        && (changedFields != 0U)
+        && !refreshTitleLayout(candidate)) {
+        return false;
+    }
+    if (applyWindow
+        && includesSettingsField(
+            changedFields,
+            settings::SettingsOverlayField::windowMode)
+        && !applyWindowSettings(candidate)) {
+        return false;
+    }
+    redrawPending_ = true;
+    return true;
+}
+
+bool Application::applyWindowSettings(
+    const settings::GameSettings& candidate
+) noexcept {
+    const platform::sdl::WindowDisplayConfiguration display{
+        .fullscreen = candidate.windowMode == settings::WindowMode::fullscreen,
+        .width = candidate.width,
+        .height = candidate.height
+    };
+    return applyWindowDisplayConfiguration(display);
+}
+
+bool Application::applyWindowDisplayConfiguration(
+    const platform::sdl::WindowDisplayConfiguration& display
+) noexcept {
+    if (display == window_.displayConfiguration()) {
+        return true;
+    }
+    if (!window_.applyDisplayConfiguration(display)) {
+        SDL_LogWarn(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Runtime window-mode preview failed and the previous mode was retained: %s",
+            SDL_GetError()
+        );
+        return false;
+    }
+    rendererSizeDirty_ = true;
+    redrawPending_ = true;
+    return true;
+}
+
+bool Application::synchronizeSettingsOverlaySession() noexcept {
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    const ui::OverlaySnapshot* const setting = findLatestOverlay(
+        state,
+        ui::OverlayKind::setting
+    );
+    settings::SettingsOverlaySessionSnapshot session =
+        settingsOverlaySession_.snapshot();
+
+    if (settingsDismissedSequence_ != 0U
+        && (setting == nullptr || setting->sequence != settingsDismissedSequence_)) {
+        settingsDismissedSequence_ = 0U;
+    }
+
+    if (session.active
+        && (setting == nullptr || setting->sequence != session.overlaySequence)) {
+        if (settingsWindowPreviewSequence_ == session.overlaySequence
+            && !smokeTest_
+            && !(settingsWindowBaselineSequence_ == session.overlaySequence
+                ? applyWindowDisplayConfiguration(settingsWindowBaseline_)
+                : applyWindowSettings(session.baseline))) {
+            // 같은 창 handle의 SDL rollback이 실패한 동안 draft authority를
+            // 유지하고 다음 frame에 다시 시도한다.
+            return true;
+        }
+        settings::GameSettings baseline{};
+        settings::SettingsOverlayFieldMask changedFields = 0U;
+        if (!settingsOverlaySession_.discard(
+                session.overlaySequence,
+                baseline,
+                changedFields)) {
+            return false;
+        }
+        if (changedFields != 0U
+            && !applyRuntimeSettings(baseline, changedFields, false)) {
+            return false;
+        }
+        settingsWindowBaselineSequence_ = 0U;
+        settingsWindowPreviewSequence_ = 0U;
+        incrementTitleControlStateRevision();
+        session = settingsOverlaySession_.snapshot();
+    }
+
+    if (!session.active
+        && setting != nullptr
+        && setting->phase != ui::OverlayPhase::closing
+        && setting->sequence != settingsDismissedSequence_
+        && settingsBootState_ == SettingsBootState::loaded) {
+        if (!settingsOverlaySession_.begin(
+                setting->sequence,
+                settingsRepository_.current())) {
+            return false;
+        }
+        settingsWindowBaseline_ = window_.displayConfiguration();
+        settingsWindowBaselineSequence_ = setting->sequence;
+        settingsWindowPreviewSequence_ = 0U;
+        incrementTitleControlStateRevision();
+    }
+    return true;
+}
+
+bool Application::persistDebugMode(const bool enabled) noexcept {
+    if (settingsBootState_ == SettingsBootState::unavailable) {
+        debugPersistencePending_ = false;
+        debugPersistenceAttemptCount_ = 0U;
+        debugPersistenceRetryAtMilliseconds_ = 0U;
+        return true;
+    }
+    if (settingsBootState_ != SettingsBootState::loaded) {
+        pendingDebugMode_ = enabled;
+        debugPersistencePending_ = true;
+        debugPersistenceAttemptCount_ = 0U;
+        debugPersistenceRetryAtMilliseconds_ = 0U;
+        return false;
+    }
+    settings::GameSettings candidate = settingsRepository_.current();
+    candidate.debugMode = enabled;
+    if (candidate == settingsRepository_.current()) {
+        debugPersistencePending_ = false;
+        debugPersistenceAttemptCount_ = 0U;
+        debugPersistenceRetryAtMilliseconds_ = 0U;
+        return true;
+    }
+    const settings::SettingsSaveResult saved = settingsRepository_.save(candidate);
+    if (!saved.succeeded()) {
+        pendingDebugMode_ = enabled;
+        debugPersistencePending_ = true;
+        debugPersistenceAttemptCount_ = 0U;
+        debugPersistenceRetryAtMilliseconds_ =
+            SDL_GetTicks() + debugPersistenceRetryDelayMilliseconds;
+        SDL_LogWarn(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Debug-mode persistence failed with save error %u; runtime state retained for retry.",
+            static_cast<unsigned int>(saved.error)
+        );
+        return false;
+    }
+    debugPersistencePending_ = false;
+    debugPersistenceAttemptCount_ = 0U;
+    debugPersistenceRetryAtMilliseconds_ = 0U;
+    return true;
+}
+
+void Application::retryPendingDebugPersistence() noexcept {
+    if (!debugPersistencePending_) {
+        return;
+    }
+    if (settingsBootState_ == SettingsBootState::unavailable) {
+        debugPersistencePending_ = false;
+        debugPersistenceAttemptCount_ = 0U;
+        debugPersistenceRetryAtMilliseconds_ = 0U;
+        return;
+    }
+    if (settingsBootState_ != SettingsBootState::loaded) {
+        return;
+    }
+
+    const std::uint64_t now = SDL_GetTicks();
+    if (now < debugPersistenceRetryAtMilliseconds_
+        || debugPersistenceAttemptCount_
+            >= maximumDebugPersistenceRetryCount) {
+        return;
+    }
+
+    settings::GameSettings candidate = settingsRepository_.current();
+    candidate.debugMode = pendingDebugMode_;
+    if (candidate == settingsRepository_.current()) {
+        debugPersistencePending_ = false;
+        debugPersistenceAttemptCount_ = 0U;
+        debugPersistenceRetryAtMilliseconds_ = 0U;
+        return;
+    }
+
+    const settings::SettingsSaveResult saved = settingsRepository_.save(candidate);
+    if (saved.succeeded()) {
+        debugPersistencePending_ = false;
+        debugPersistenceAttemptCount_ = 0U;
+        debugPersistenceRetryAtMilliseconds_ = 0U;
+        SDL_LogInfo(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Debug-mode persistence recovered on retry."
+        );
+        return;
+    }
+
+    ++debugPersistenceAttemptCount_;
+    if (debugPersistenceAttemptCount_
+        < maximumDebugPersistenceRetryCount) {
+        debugPersistenceRetryAtMilliseconds_ =
+            now + debugPersistenceRetryDelayMilliseconds;
+        return;
+    }
+    debugPersistenceRetryAtMilliseconds_ =
+        std::numeric_limits<std::uint64_t>::max();
+    SDL_LogWarn(
+        SDL_LOG_CATEGORY_APPLICATION,
+        "Debug-mode persistence retry limit reached with save error %u; runtime state remains active and the next explicit settings save can reconcile it.",
+        static_cast<unsigned int>(saved.error)
+    );
+}
+
+void Application::handleDebugEffect(
+    const debug::DebugRuntimeEffect& effect
+) noexcept {
+    if (effect.persistDebugMode) {
+        static_cast<void>(persistDebugMode(effect.debugModeEnabled));
+    }
+    if (sceneMode_ != SceneMode::title) {
+        return;
+    }
+    ui::UiActionOutcome outcome{};
+    switch (effect.overlayIntent) {
+    case debug::DebugOverlayIntent::open:
+        outcome = titleUiState_.apply(
+            ui::UiAction::openDebug(),
+            currentUiFrameContext()
+        );
+        break;
+    case debug::DebugOverlayIntent::close:
+        outcome = titleUiState_.apply(
+            ui::UiAction::closeDebug(),
+            currentUiFrameContext()
+        );
+        break;
+    case debug::DebugOverlayIntent::none:
+        break;
+    }
+    redrawPending_ = redrawPending_ || outcome.accepted();
+    if (effect.stateRevision != 0U || outcome.accepted()) {
+        incrementTitleControlStateRevision();
+    }
+}
+
+bool Application::handleApplicationControl(
+    const ui::UiInputResult& result
+) noexcept {
+    if (!result.applicationControlActivated() || result.overlaySequence == 0U) {
+        return true;
+    }
+    const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    const ui::OverlaySnapshot* setting = findLatestOverlay(
+        state,
+        ui::OverlayKind::setting
+    );
+    if (setting != nullptr && setting->sequence == result.overlaySequence) {
+        if (result.overlayControlId == ui::TitleOverlayControlId::cancel) {
+            const ui::UiActionOutcome closed = titleUiState_.apply(
+                ui::UiAction::cancelTop(),
+                currentUiFrameContext()
+            );
+            redrawPending_ = redrawPending_ || closed.accepted();
+            return true;
+        }
+        if (result.overlayControlId == ui::TitleOverlayControlId::confirm) {
+            const settings::SettingsOverlaySessionSnapshot session =
+                settingsOverlaySession_.snapshot();
+            if (settingsBootState_ != SettingsBootState::loaded
+                || !session.active
+                || session.overlaySequence != result.overlaySequence) {
+                return true;
+            }
+            settings::GameSettings candidate{};
+            if (!settingsOverlaySession_.tryBuildSaveCandidate(
+                    result.overlaySequence,
+                    settingsRepository_.current(),
+                    candidate)) {
+                return false;
+            }
+            candidate.debugMode = debugRuntime_.snapshot().debugModeEnabled;
+            const platform::sdl::WindowDisplayConfiguration& windowAuthority =
+                candidate.windowMode == settings::WindowMode::fullscreen
+                    && settingsWindowBaselineSequence_
+                        == result.overlaySequence
+                ? settingsWindowBaseline_
+                : window_.displayConfiguration();
+            if (windowAuthority.width >= settings::minimum_window_width
+                && windowAuthority.height >= settings::minimum_window_height) {
+                candidate.width = windowAuthority.width;
+                candidate.height = windowAuthority.height;
+            }
+            if (candidate != settingsRepository_.current()) {
+                const settings::SettingsSaveResult saved =
+                    settingsRepository_.save(candidate);
+                if (!saved.succeeded()) {
+                    SDL_LogWarn(
+                        SDL_LOG_CATEGORY_APPLICATION,
+                        "Settings save failed with error %u; draft remains open.",
+                        static_cast<unsigned int>(saved.error)
+                    );
+                    return true;
+                }
+            }
+            debugPersistencePending_ = false;
+            debugPersistenceAttemptCount_ = 0U;
+            debugPersistenceRetryAtMilliseconds_ = 0U;
+            if (!settingsOverlaySession_.acceptSaved(
+                    result.overlaySequence,
+                    settingsRepository_.current())) {
+                return false;
+            }
+            settingsWindowBaselineSequence_ = 0U;
+            settingsWindowPreviewSequence_ = 0U;
+            settingsDismissedSequence_ = result.overlaySequence;
+            incrementTitleControlStateRevision();
+            const ui::UiActionOutcome closed = titleUiState_.apply(
+                ui::UiAction::cancelTop(),
+                currentUiFrameContext()
+            );
+            redrawPending_ = redrawPending_ || closed.accepted();
+            return true;
+        }
+
+        settings::SettingsOverlayField field{};
+        if (!result.normalizedValueValid
+            || !settingsFieldForControl(result.overlayControlId, field)) {
+            return true;
+        }
+        const settings::GameSettings previousDraft =
+            settingsOverlaySession_.draft();
+        const settings::SettingsOverlayUpdate update =
+            settingsOverlaySession_.activate(
+                result.overlaySequence,
+                field,
+                result.normalizedValue
+            );
+        if (!update.accepted() || !update.changed) {
+            return true;
+        }
+        if (!applyRuntimeSettings(
+                settingsOverlaySession_.draft(),
+                settings::settingsOverlayFieldBit(field),
+                !smokeTest_)) {
+            if (field == settings::SettingsOverlayField::windowMode) {
+                const settings::SettingsOverlayUpdate restored =
+                    settingsOverlaySession_.activate(
+                        result.overlaySequence,
+                        field,
+                        previousDraft.windowMode == settings::WindowMode::fullscreen
+                            ? 1.0
+                            : 0.0
+                    );
+                if (!restored.accepted()
+                    || !applyRuntimeSettings(
+                        previousDraft,
+                        settings::settingsOverlayFieldBit(field),
+                        false)) {
+                    return false;
+                }
+                incrementTitleControlStateRevision();
+                return true;
+            }
+            return false;
+        }
+        if (field == settings::SettingsOverlayField::windowMode) {
+            settingsWindowPreviewSequence_ = result.overlaySequence;
+        }
+        incrementTitleControlStateRevision();
+        return true;
+    }
+
+    const ui::OverlaySnapshot* const debugOverlay = findLatestOverlay(
+        state,
+        ui::OverlayKind::debug
+    );
+    if (debugOverlay == nullptr
+        || debugOverlay->sequence != result.overlaySequence
+        || !debugRuntime_.snapshot().debugModeEnabled) {
+        return true;
+    }
+    debug::DebugDisplayOption option{};
+    if (debugOptionForControl(result.overlayControlId, option)
+        && debugRuntime_.toggleDisplayOption(option)) {
+        incrementTitleControlStateRevision();
+        redrawPending_ = true;
+    }
+    return true;
+}
+
+void Application::incrementTitleControlStateRevision() noexcept {
+    titleControlStateRevision_ = titleControlStateRevision_
+            == std::numeric_limits<std::uint64_t>::max()
+        ? 1U
+        : titleControlStateRevision_ + 1U;
+}
+
 std::uint64_t Application::refreshTitleBackdropRevision(
     const ui::UiStateSnapshot& state,
-    const ui::TitleUiControllerSnapshot& interaction
+    const ui::TitleUiControllerSnapshot& interaction,
+    const std::uint64_t controlStateRevision
 ) noexcept {
     const std::size_t overlayCount = std::min<std::size_t>(
         state.overlayCount,
@@ -787,6 +1615,7 @@ std::uint64_t Application::refreshTitleBackdropRevision(
         );
     const bool changed = !titleBackdropSnapshotValid_
         || titleBackdropProjectionRevision_ != projectionRevision_
+        || titleBackdropControlStateRevision_ != controlStateRevision
         || titleBackdropLayout_ != titleLayout_.snapshot()
         || titleBackdropEntrance_ != titleEntrance_
         || titleBackdropInteraction_ != interaction
@@ -800,6 +1629,7 @@ std::uint64_t Application::refreshTitleBackdropRevision(
         ++titleBackdropRevision_;
     }
     titleBackdropProjectionRevision_ = projectionRevision_;
+    titleBackdropControlStateRevision_ = controlStateRevision;
     titleBackdropLayout_ = titleLayout_.snapshot();
     titleBackdropEntrance_ = titleEntrance_;
     titleBackdropInteraction_ = interaction;
@@ -822,6 +1652,9 @@ bool Application::buildSyntheticFrame(const engine::FrameSchedule& schedule) noe
     config.drawableSize = {metrics.pixelWidth, metrics.pixelHeight};
     config.safeArea = drawableSafeArea(metrics);
     config.dpiScale = metrics.pixelDensity;
+    config.uiScale = static_cast<float>(activeSettings().uiScalePercent) / 100.0F;
+    config.worldRenderScale =
+        static_cast<float>(activeSettings().renderScalePercent) / 100.0F;
     config.projectionRevision = projectionRevision_;
     config.frameId = renderedFrameCount_ + 1U;
     config.simulationTick = simulationTick_;
@@ -882,6 +1715,10 @@ bool Application::buildPlayableFrame(const engine::FrameSchedule& schedule) noex
     config.drawableSize = {metrics.pixelWidth, metrics.pixelHeight};
     config.safeArea = drawableSafeArea(metrics);
     config.dpiScale = metrics.pixelDensity;
+    config.uiScale = static_cast<float>(activeSettings().uiScalePercent) / 100.0F;
+    config.worldRenderScale =
+        static_cast<float>(activeSettings().renderScalePercent) / 100.0F;
+    config.widescreenSupport = activeSettings().widescreenSupport;
     config.projectionRevision = projectionRevision_;
     config.frameId = renderedFrameCount_ + 1U;
     config.simulationTick = simulationTick_;
@@ -943,10 +1780,19 @@ bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcep
 
     const platform::sdl::WindowMetrics& metrics = window_.metrics();
     const ui::TitleUiControllerSnapshot interaction = titleUiController_.snapshot();
+    ui::TitleOverlayControlStateOverrides controlOverrides{};
+    if (!buildTitleControlStateOverrides(state, controlOverrides)) {
+        SDL_LogError(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Native title control-state override capacity was exhausted."
+        );
+        return false;
+    }
     if (!ui::tryBuildTitleOverlayPresentationSet(
             state,
             titleLayout_.snapshot(),
-            titleOverlayPresentations_)) {
+            titleOverlayPresentations_,
+            &controlOverrides)) {
         SDL_LogError(
             SDL_LOG_CATEGORY_APPLICATION,
             "Native title overlay presentation refresh failed."
@@ -955,19 +1801,21 @@ bool Application::buildTitleFrame(const engine::FrameSchedule& schedule) noexcep
     }
     const std::uint64_t backdropRevision = refreshTitleBackdropRevision(
         state,
-        interaction
+        interaction,
+        controlOverrides.revision
     );
     const render::frontend::TitleSceneInput input{
         state,
         interaction,
         titleLayout_.snapshot(),
         titleEntrance_,
-        ui::layout::darkThemeMetrics(),
+        titleTheme_,
         titleTextCache_ == nullptr
             ? render::PreShapedTextResourcesView{}
             : titleTextCache_->textResources(),
-        render::UiTextLocale::korean,
-        &titleOverlayPresentations_
+        activeTitleLocale(),
+        &titleOverlayPresentations_,
+        activeSettings().disableTransparency
     };
     render::frontend::TitleSceneConfig config{};
     config.physicalDisplaySize = {metrics.pixelWidth, metrics.pixelHeight};
@@ -1033,7 +1881,10 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     gameSystem_.reset();
     titleUiState_ = {};
     titleUiController_ = {};
+    settingsOverlaySession_ = {};
+    debugRuntime_ = debug::DebugRuntimeController{};
     titleLayout_ = {};
+    titleTheme_ = ui::layout::darkThemeMetrics();
     titleEntrance_ = {};
     titleOverlayPresentations_ = {};
     titleBackdropLayout_ = {};
@@ -1043,7 +1894,18 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     titleBackdropOverlayCount_ = 0U;
     titleBackdropRevision_ = 1U;
     titleBackdropProjectionRevision_ = 0U;
+    titleBackdropControlStateRevision_ = 0U;
+    titleControlStateRevision_ = 1U;
     titleBackdropSnapshotValid_ = false;
+    settingsDismissedSequence_ = 0U;
+    settingsWindowBaseline_ = {};
+    settingsWindowBaselineSequence_ = 0U;
+    settingsWindowPreviewSequence_ = 0U;
+    settingsBootState_ = SettingsBootState::waiting;
+    debugPersistenceRetryAtMilliseconds_ = 0U;
+    debugPersistenceAttemptCount_ = 0U;
+    debugPersistencePending_ = false;
+    pendingDebugMode_ = false;
     clearMovementActions();
     storageReadyReported_ = false;
     storageSmokeComplete_ = false;
@@ -1176,8 +2038,8 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     }
 
     const platform::sdl::StorageResult storageOpen = storage_.open(
-        "io.github.queridofue",
-        "cirvivor"
+        smokeTest_ ? "CirVivorTests" : "io.github.queridofue",
+        smokeTest_ ? "CirVivorNativeSmoke" : "cirvivor"
     );
     if (storageOpen != platform::sdl::StorageResult::success) {
         SDL_LogWarn(
@@ -1251,6 +2113,70 @@ ApplicationResult Application::handleEvent(
         return ApplicationResult::continueRunning;
     }
     if (platformEvent.windowId != 0 && platformEvent.windowId != window_.id()) {
+        return ApplicationResult::continueRunning;
+    }
+
+    if (platformEvent.kind == platform::sdl::PlatformEventKind::focusLost
+        || platformEvent.clearInputStateRequested) {
+        static_cast<void>(debugRuntime_.handleFocusLost());
+    }
+
+    if (settingsBootState_ != SettingsBootState::waiting
+        && platformEvent.kind
+            == platform::sdl::PlatformEventKind::pointerChanged
+        && platformEvent.pointer.device
+            == platform::sdl::PlatformPointerDevice::mouse) {
+        debug::DebugPointerPhase phase{};
+        bool debugPointer = false;
+        if (platformEvent.pointer.button
+                == platform::sdl::PlatformPointerButton::middle
+            && platformEvent.pointer.phase
+                == platform::sdl::PlatformPointerPhase::pressed) {
+            phase = debug::DebugPointerPhase::middlePressed;
+            debugPointer = true;
+        } else if (platformEvent.pointer.button
+                == platform::sdl::PlatformPointerButton::middle
+            && platformEvent.pointer.phase
+                == platform::sdl::PlatformPointerPhase::released) {
+            phase = debug::DebugPointerPhase::middleReleased;
+            debugPointer = true;
+        } else if (platformEvent.pointer.phase
+                == platform::sdl::PlatformPointerPhase::canceled
+            && debugRuntime_.snapshot().middlePressCaptured) {
+            phase = debug::DebugPointerPhase::cancelled;
+            debugPointer = true;
+        }
+        if (debugPointer) {
+            const debug::DebugPointerResult result =
+                debugRuntime_.handleMiddlePointer(
+                    phase,
+                    platformEvent.pointer.pointerId,
+                    platformEvent.timestampMilliseconds
+                );
+            handleDebugEffect(result.effect);
+            return ApplicationResult::continueRunning;
+        }
+    }
+
+    if (platformEvent.kind == platform::sdl::PlatformEventKind::actionChanged
+        && (platformEvent.action == platform::sdl::PlatformAction::debugPause
+            || platformEvent.action
+                == platform::sdl::PlatformAction::debugStep)) {
+        if (settingsBootState_ != SettingsBootState::waiting) {
+            const debug::DebugKeyResult result = debugRuntime_.handleKey(
+                platformEvent.action == platform::sdl::PlatformAction::debugPause
+                    ? debug::DebugKey::pauseSlash
+                    : debug::DebugKey::stepPeriod,
+                platformEvent.pressed
+                    ? debug::DebugKeyPhase::pressed
+                    : debug::DebugKeyPhase::released,
+                platformEvent.repeated
+            );
+            redrawPending_ = redrawPending_ || result.stateChanged;
+            if (result.stateChanged) {
+                incrementTitleControlStateRevision();
+            }
+        }
         return ApplicationResult::continueRunning;
     }
 
@@ -1332,6 +2258,7 @@ ApplicationResult Application::handleEvent(
     rendererSizeDirty_ = rendererSizeDirty_ || metricsChanged;
     if (update.becameInactive) {
         clearMovementActions();
+        static_cast<void>(debugRuntime_.handleFocusLost());
         if (sceneMode_ == SceneMode::title) {
             static_cast<void>(titleUiController_.handleFocusLost());
         }
@@ -1367,10 +2294,15 @@ ApplicationResult Application::handleTitlePointer(
         return ApplicationResult::continueRunning;
     }
     const ui::UiStateSnapshot state = titleUiState_.snapshot();
+    ui::TitleOverlayControlStateOverrides controlOverrides{};
+    if (!buildTitleControlStateOverrides(state, controlOverrides)) {
+        return ApplicationResult::failure;
+    }
     if (!ui::tryBuildTitleOverlayPresentationSet(
             state,
             titleLayout_.snapshot(),
-            titleOverlayPresentations_)) {
+            titleOverlayPresentations_,
+            &controlOverrides)) {
         return ApplicationResult::failure;
     }
     const ui::UiInputResult result = titleUiController_.handlePointer(
@@ -1379,13 +2311,21 @@ ApplicationResult Application::handleTitlePointer(
         titleEntrance_,
         state,
         titleOverlayPresentations_,
-        titleUiState_
+        titleUiState_,
+        currentUiFrameContext()
     );
+    if (!handleApplicationControl(result)) {
+        return ApplicationResult::failure;
+    }
     const SceneMode sceneBeforeEffect = sceneMode_;
     handleUiEffect(result.actionOutcome);
+    if (!synchronizeSettingsOverlaySession()) {
+        return ApplicationResult::failure;
+    }
     redrawPending_ = redrawPending_
         || result.controllerStateChanged
-        || result.actionAccepted();
+        || result.actionAccepted()
+        || result.applicationControlActivated();
     if (sceneMode_ != sceneBeforeEffect) {
         return ApplicationResult::continueRunning;
     }
@@ -1493,6 +2433,32 @@ bool Application::startPlayableSession(
         return false;
     }
 
+    const settings::SettingsOverlaySessionSnapshot settingsSession =
+        settingsOverlaySession_.snapshot();
+    if (settingsSession.active) {
+        if (settingsWindowPreviewSequence_ == settingsSession.overlaySequence
+            && !smokeTest_
+            && !(settingsWindowBaselineSequence_
+                    == settingsSession.overlaySequence
+                ? applyWindowDisplayConfiguration(settingsWindowBaseline_)
+                : applyWindowSettings(settingsSession.baseline))) {
+            return false;
+        }
+        settings::GameSettings baseline{};
+        settings::SettingsOverlayFieldMask changedFields = 0U;
+        if (!settingsOverlaySession_.discard(
+                settingsSession.overlaySequence,
+                baseline,
+                changedFields)
+            || !applyRuntimeSettings(baseline, changedFields, false)) {
+            return false;
+        }
+        settingsWindowBaselineSequence_ = 0U;
+        settingsWindowPreviewSequence_ = 0U;
+        incrementTitleControlStateRevision();
+    }
+    settingsDismissedSequence_ = 0U;
+
     clearMovementActions();
     static_cast<void>(titleUiController_.handleFocusLost());
     scheduler_.reset();
@@ -1585,16 +2551,42 @@ ApplicationResult Application::iterate() noexcept {
     const std::uint64_t elapsedTicks = frameStart - previousFrameTicks_;
     previousFrameTicks_ = frameStart;
 
+    if (!drawableReady_) {
+        const std::uint64_t frameCpuEnd = SDL_GetTicksNS();
+        previousFrameCpuSeconds_ = static_cast<double>(frameCpuEnd - frameStart)
+            / nanosecondsPerSecond;
+        redrawPending_ = true;
+        return ApplicationResult::continueRunning;
+    }
+
+    const debug::DebugFrameEffect debugFrame = debugRuntime_.prepareFrame();
+    engine::FixedStepMode fixedStepMode = engine::FixedStepMode::scheduled;
+    if (sceneMode_ == SceneMode::title
+        || debugFrame.mode == debug::DebugFrameMode::paused) {
+        fixedStepMode = engine::FixedStepMode::disabled;
+    } else if (debugFrame.mode == debug::DebugFrameMode::singleStep) {
+        fixedStepMode = engine::FixedStepMode::singleStep;
+    }
     const engine::FrameSample frameSample = {
         static_cast<double>(elapsedTicks) / nanosecondsPerSecond,
         previousFrameCpuSeconds_,
-        sceneMode_ == SceneMode::title
-            ? engine::FixedStepMode::disabled
-            : engine::FixedStepMode::scheduled
+        fixedStepMode
     };
-    const engine::FrameSchedule schedule = scheduler_.advance(frameSample);
+    engine::FrameSchedule schedule = scheduler_.advance(frameSample);
+    if (debugFrame.mode != debug::DebugFrameMode::running) {
+        schedule.fixedAlpha = 1.0;
+    }
     if (sceneMode_ == SceneMode::title) {
-        titleUiState_.advance(schedule.frameDeltaSeconds);
+        double uiDeltaSeconds = schedule.frameDeltaSeconds;
+        if (debugFrame.mode == debug::DebugFrameMode::paused) {
+            uiDeltaSeconds = 0.0;
+        } else if (debugFrame.mode == debug::DebugFrameMode::singleStep) {
+            uiDeltaSeconds = game::GameSystem::fixed_delta_seconds;
+        }
+        titleUiState_.advance(uiDeltaSeconds);
+        if (!synchronizeSettingsOverlaySession()) {
+            return ApplicationResult::failure;
+        }
     }
     const bool playableSessionActive = sceneMode_ == SceneMode::playable;
     for (std::uint32_t step = 0; step < schedule.fixedStepCount; ++step) {
@@ -1604,14 +2596,6 @@ ApplicationResult Application::iterate() noexcept {
             ));
         }
         ++simulationTick_;
-    }
-
-    if (!drawableReady_) {
-        const std::uint64_t frameCpuEnd = SDL_GetTicksNS();
-        previousFrameCpuSeconds_ = static_cast<double>(frameCpuEnd - frameStart)
-            / nanosecondsPerSecond;
-        redrawPending_ = true;
-        return ApplicationResult::continueRunning;
     }
 
     bool frameBuilt = false;
@@ -1631,8 +2615,9 @@ ApplicationResult Application::iterate() noexcept {
     }
 
     const std::uint64_t frameCpuEnd = SDL_GetTicksNS();
-    previousFrameCpuSeconds_ = static_cast<double>(frameCpuEnd - frameStart)
-        / nanosecondsPerSecond;
+    previousFrameCpuSeconds_ = debugFrame.mode == debug::DebugFrameMode::running
+        ? static_cast<double>(frameCpuEnd - frameStart) / nanosecondsPerSecond
+        : 0.0;
     const render::RenderResourcesView resources =
         sceneMode_ == SceneMode::title && titleTextCache_ != nullptr
         ? titleTextCache_->renderResources()
@@ -1818,7 +2803,10 @@ void Application::shutdown() noexcept {
     sceneMode_ = SceneMode::title;
     titleUiState_ = {};
     titleUiController_ = {};
+    settingsOverlaySession_ = {};
+    debugRuntime_ = debug::DebugRuntimeController{};
     titleLayout_ = {};
+    titleTheme_ = ui::layout::darkThemeMetrics();
     titleEntrance_ = {};
     titleOverlayPresentations_ = {};
     titleBackdropLayout_ = {};
@@ -1828,7 +2816,18 @@ void Application::shutdown() noexcept {
     titleBackdropOverlayCount_ = 0U;
     titleBackdropRevision_ = 1U;
     titleBackdropProjectionRevision_ = 0U;
+    titleBackdropControlStateRevision_ = 0U;
+    titleControlStateRevision_ = 1U;
     titleBackdropSnapshotValid_ = false;
+    settingsDismissedSequence_ = 0U;
+    settingsWindowBaseline_ = {};
+    settingsWindowBaselineSequence_ = 0U;
+    settingsWindowPreviewSequence_ = 0U;
+    settingsBootState_ = SettingsBootState::waiting;
+    debugPersistenceRetryAtMilliseconds_ = 0U;
+    debugPersistenceAttemptCount_ = 0U;
+    debugPersistencePending_ = false;
+    pendingDebugMode_ = false;
     clearMovementActions();
     rendererPreference_ = render::backend::RendererPreference::automatic;
     storageReadyReported_ = false;
@@ -1846,7 +2845,35 @@ void Application::shutdown() noexcept {
 }
 
 bool Application::updatePlatformServices() noexcept {
+    const auto applyCurrentSettingsAuthority = [this]() noexcept {
+        if (applyRuntimeSettings(
+                settingsRepository_.current(),
+                allSettingsOverlayFields,
+                !smokeTest_)) {
+            return true;
+        }
+        SDL_LogWarn(
+            SDL_LOG_CATEGORY_APPLICATION,
+            "Requested settings window mode could not be applied; continuing with the current OS mode."
+        );
+        return applyRuntimeSettings(
+            settingsRepository_.current(),
+            allSettingsOverlayFields,
+            false
+        );
+    };
+
     if (!storage_.isOpen()) {
+        if (settingsBootState_ == SettingsBootState::waiting) {
+            settingsBootState_ = SettingsBootState::unavailable;
+            debugPersistencePending_ = false;
+            debugPersistenceAttemptCount_ = 0U;
+            debugPersistenceRetryAtMilliseconds_ = 0U;
+            incrementTitleControlStateRevision();
+            if (!applyCurrentSettingsAuthority()) {
+                return false;
+            }
+        }
         return !smokeTest_;
     }
     if (storage_.readyState() != platform::sdl::StorageReadyState::ready) {
@@ -1856,6 +2883,40 @@ bool Application::updatePlatformServices() noexcept {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL user storage is ready.");
         storageReadyReported_ = true;
     }
+    if (settingsBootState_ == SettingsBootState::waiting) {
+        settingsBootState_ = SettingsBootState::unavailable;
+        const settings::SettingsLoadResult loaded = settingsRepository_.load();
+        if (!loaded.succeeded()) {
+            SDL_LogWarn(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Native settings load failed with storage status %u; saving is disabled.",
+                static_cast<unsigned int>(loaded.storageStatus)
+            );
+            if (!applyCurrentSettingsAuthority()) {
+                return false;
+            }
+        } else {
+            settingsBootState_ = SettingsBootState::loaded;
+            static_cast<void>(debugRuntime_.applyDebugMode(
+                debugPersistencePending_
+                    ? pendingDebugMode_
+                    : settingsRepository_.current().debugMode
+            ));
+            if (!applyCurrentSettingsAuthority()) {
+                return false;
+            }
+            SDL_LogInfo(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "Native settings authority loaded with status %u.",
+                static_cast<unsigned int>(loaded.status)
+            );
+        }
+        incrementTitleControlStateRevision();
+        if (!synchronizeSettingsOverlaySession()) {
+            return false;
+        }
+    }
+    retryPendingDebugPersistence();
     return !smokeTest_ || storageSmokeComplete_ || runStorageSmokeTest();
 }
 
@@ -1968,7 +3029,8 @@ bool Application::tryConsumeWindowCloseRequest() noexcept {
         return false;
     }
     const ui::UiInputResult result = titleUiController_.handleWindowClose(
-        titleUiState_
+        titleUiState_,
+        currentUiFrameContext()
     );
     redrawPending_ = redrawPending_
         || result.controllerStateChanged

@@ -168,11 +168,15 @@ enum class VerticalAnchor : std::uint8_t {
     panel.cornerRadius = finiteFloat(input.presentation.panelRect.radius);
     panel.borderWidth = 1.0F;
     panel.backgroundColor = renderColor(
-        input.theme.overlayPanelBackground,
+        input.disableTransparency
+            ? input.theme.overlayPanelBackground
+            : input.theme.overlayGlassBackground,
         input.presentation.alpha
     );
     panel.borderColor = renderColor(
-        input.theme.overlayPanelBorder,
+        input.disableTransparency
+            ? input.theme.overlayPanelBorder
+            : input.theme.overlayGlassBorder,
         input.presentation.alpha
     );
     panel.accentColor = renderColor(
