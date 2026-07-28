@@ -6,6 +6,7 @@
 #include "debug/debug_runtime_controller.h"
 #include "engine/frame_scheduler.h"
 #include "game/game_system.h"
+#include "input/input_binding_map.h"
 #include "platform/sdl/audio/sdl_playback_device.h"
 #include "platform/sdl/sdl_lifecycle.h"
 #include "platform/sdl/storage/sdl_settings_storage.h"
@@ -145,8 +146,10 @@ private:
     [[nodiscard]] bool runStorageSmokeTest() noexcept;
     [[nodiscard]] bool setExecutionActive(bool active) noexcept;
     [[nodiscard]] bool tryConsumeWindowCloseRequest() noexcept;
-    void applyMovementAction(const platform::sdl::PlatformEvent& event) noexcept;
-    void clearMovementActions() noexcept;
+    void applyInputActionTransition(
+        const input::InputActionTransition& transition
+    ) noexcept;
+    void clearBoundKeyboardState() noexcept;
     void configureActiveCallbackRate() noexcept;
     void resetFrameClock() noexcept;
 
@@ -161,6 +164,7 @@ private:
     settings::SettingsOverlaySession settingsOverlaySession_;
     debug::DebugRuntimeController debugRuntime_;
     debug::DebugPerformanceTracker debugPerformance_;
+    input::InputBindingMap inputBindings_;
     platform::sdl::SdlPlaybackDevice audio_;
     ui::TitleOverlayStateMachine titleUiState_;
     ui::TitleUiController titleUiController_;

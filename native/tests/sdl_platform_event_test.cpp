@@ -15,7 +15,6 @@
 
 namespace {
 
-using cirvivor::platform::sdl::PlatformAction;
 using cirvivor::platform::sdl::PlatformEvent;
 using cirvivor::platform::sdl::PlatformEventKind;
 using cirvivor::platform::sdl::PlatformPointerButton;
@@ -66,20 +65,43 @@ void require(
     return event;
 }
 
-void testMovementKeysTranslateToSemanticActions() {
+void testKeyboardKeysTranslateToDomStyleRawCodes() {
     struct KeyCase final {
         SDL_Scancode scancode;
-        PlatformAction action;
+        std::string_view code;
     };
     constexpr std::array cases{
-        KeyCase{SDL_SCANCODE_W, PlatformAction::moveUp},
-        KeyCase{SDL_SCANCODE_UP, PlatformAction::moveUp},
-        KeyCase{SDL_SCANCODE_S, PlatformAction::moveDown},
-        KeyCase{SDL_SCANCODE_DOWN, PlatformAction::moveDown},
-        KeyCase{SDL_SCANCODE_A, PlatformAction::moveLeft},
-        KeyCase{SDL_SCANCODE_LEFT, PlatformAction::moveLeft},
-        KeyCase{SDL_SCANCODE_D, PlatformAction::moveRight},
-        KeyCase{SDL_SCANCODE_RIGHT, PlatformAction::moveRight}
+        KeyCase{SDL_SCANCODE_A, "KeyA"},
+        KeyCase{SDL_SCANCODE_Z, "KeyZ"},
+        KeyCase{SDL_SCANCODE_W, "KeyW"},
+        KeyCase{SDL_SCANCODE_L, "KeyL"},
+        KeyCase{SDL_SCANCODE_1, "Digit1"},
+        KeyCase{SDL_SCANCODE_0, "Digit0"},
+        KeyCase{SDL_SCANCODE_UP, "ArrowUp"},
+        KeyCase{SDL_SCANCODE_SPACE, "Space"},
+        KeyCase{SDL_SCANCODE_SLASH, "Slash"},
+        KeyCase{SDL_SCANCODE_PERIOD, "Period"},
+        KeyCase{SDL_SCANCODE_LEFTBRACKET, "BracketLeft"},
+        KeyCase{SDL_SCANCODE_NONUSHASH, "Backslash"},
+        KeyCase{SDL_SCANCODE_F1, "F1"},
+        KeyCase{SDL_SCANCODE_F12, "F12"},
+        KeyCase{SDL_SCANCODE_F13, "F13"},
+        KeyCase{SDL_SCANCODE_F24, "F24"},
+        KeyCase{SDL_SCANCODE_KP_1, "Numpad1"},
+        KeyCase{SDL_SCANCODE_KP_0, "Numpad0"},
+        KeyCase{SDL_SCANCODE_KP_7, "Numpad7"},
+        KeyCase{SDL_SCANCODE_KP_EQUALSAS400, "NumpadEqual"},
+        KeyCase{SDL_SCANCODE_KP_BACKSPACE, "NumpadBackspace"},
+        KeyCase{SDL_SCANCODE_KP_CLEAR, "NumpadClear"},
+        KeyCase{SDL_SCANCODE_KP_CLEARENTRY, "NumpadClearEntry"},
+        KeyCase{SDL_SCANCODE_KP_HASH, "NumpadHash"},
+        KeyCase{SDL_SCANCODE_KP_MEMADD, "NumpadMemoryAdd"},
+        KeyCase{SDL_SCANCODE_KP_MEMSUBTRACT, "NumpadMemorySubtract"},
+        KeyCase{SDL_SCANCODE_LCTRL, "ControlLeft"},
+        KeyCase{SDL_SCANCODE_MEDIA_NEXT_TRACK, "MediaTrackNext"},
+        KeyCase{SDL_SCANCODE_MEDIA_PLAY, "MediaPlayPause"},
+        KeyCase{SDL_SCANCODE_MEDIA_PAUSE, "MediaPlayPause"},
+        KeyCase{SDL_SCANCODE_MEDIA_SELECT, "MediaSelect"}
     };
 
     constexpr std::uint32_t windowId = 73;
@@ -87,52 +109,35 @@ void testMovementKeysTranslateToSemanticActions() {
         const PlatformEvent pressed = translateEvent(
             keyEvent(SDL_EVENT_KEY_DOWN, testCase.scancode, windowId)
         );
-        REQUIRE(pressed.kind == PlatformEventKind::actionChanged);
+        REQUIRE(pressed.kind == PlatformEventKind::keyboardChanged);
         REQUIRE(pressed.windowId == windowId);
-        REQUIRE(pressed.action == testCase.action);
-        REQUIRE(pressed.pressed);
-        REQUIRE(std::has_single_bit(pressed.sourceMask));
-        REQUIRE(!pressed.repeated);
+        REQUIRE(pressed.keyboard.view() == testCase.code);
+        REQUIRE(pressed.keyboard.pressed);
+        REQUIRE(!pressed.keyboard.repeated);
 
         const PlatformEvent released = translateEvent(
             keyEvent(SDL_EVENT_KEY_UP, testCase.scancode, windowId)
         );
-        REQUIRE(released.kind == PlatformEventKind::actionChanged);
+        REQUIRE(released.kind == PlatformEventKind::keyboardChanged);
         REQUIRE(released.windowId == windowId);
-        REQUIRE(released.action == testCase.action);
-        REQUIRE(!released.pressed);
-        REQUIRE(released.sourceMask == pressed.sourceMask);
-        REQUIRE(!released.repeated);
+        REQUIRE(released.keyboard.view() == pressed.keyboard.view());
+        REQUIRE(!released.keyboard.pressed);
+        REQUIRE(!released.keyboard.repeated);
     }
 }
 
-void testAliasesUseDistinctSourcesForTheSameAction() {
-    struct AliasCase final {
-        SDL_Scancode first;
-        SDL_Scancode second;
-        PlatformAction action;
-    };
-    constexpr std::array aliases{
-        AliasCase{SDL_SCANCODE_W, SDL_SCANCODE_UP, PlatformAction::moveUp},
-        AliasCase{SDL_SCANCODE_S, SDL_SCANCODE_DOWN, PlatformAction::moveDown},
-        AliasCase{SDL_SCANCODE_A, SDL_SCANCODE_LEFT, PlatformAction::moveLeft},
-        AliasCase{SDL_SCANCODE_D, SDL_SCANCODE_RIGHT, PlatformAction::moveRight}
-    };
-
-    for (const AliasCase& alias : aliases) {
-        const PlatformEvent first = translateEvent(
-            keyEvent(SDL_EVENT_KEY_DOWN, alias.first, 1)
-        );
-        const PlatformEvent second = translateEvent(
-            keyEvent(SDL_EVENT_KEY_DOWN, alias.second, 1)
-        );
-        REQUIRE(first.action == alias.action);
-        REQUIRE(second.action == alias.action);
-        REQUIRE(first.sourceMask != 0U);
-        REQUIRE(second.sourceMask != 0U);
-        REQUIRE(first.sourceMask != second.sourceMask);
-        REQUIRE((first.sourceMask & second.sourceMask) == 0U);
-    }
+void testPhysicalAliasesRemainDistinctAtPlatformBoundary() {
+    const PlatformEvent keyW = translateEvent(
+        keyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_W, 1U)
+    );
+    const PlatformEvent arrowUp = translateEvent(
+        keyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_UP, 1U)
+    );
+    REQUIRE(keyW.kind == PlatformEventKind::keyboardChanged);
+    REQUIRE(arrowUp.kind == PlatformEventKind::keyboardChanged);
+    REQUIRE(keyW.keyboard.view() == "KeyW");
+    REQUIRE(arrowUp.keyboard.view() == "ArrowUp");
+    REQUIRE(keyW.keyboard.view() != arrowUp.keyboard.view());
 }
 
 void testRepeatedKeyDownRemainsAnIdempotentStateEvent() {
@@ -143,23 +148,23 @@ void testRepeatedKeyDownRemainsAnIdempotentStateEvent() {
     const PlatformEvent event = translateEvent(
         keyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_W, windowId, true)
     );
-    REQUIRE(event.kind == PlatformEventKind::actionChanged);
+    REQUIRE(event.kind == PlatformEventKind::keyboardChanged);
     REQUIRE(event.windowId == windowId);
-    REQUIRE(event.action == PlatformAction::moveUp);
-    REQUIRE(event.pressed);
-    REQUIRE(event.sourceMask == initial.sourceMask);
-    REQUIRE(!initial.repeated);
-    REQUIRE(event.repeated);
+    REQUIRE(event.keyboard.view() == "KeyW");
+    REQUIRE(event.keyboard.pressed);
+    REQUIRE(initial.keyboard.view() == event.keyboard.view());
+    REQUIRE(!initial.keyboard.repeated);
+    REQUIRE(event.keyboard.repeated);
 }
 
 void testDebugKeysPreserveEdgesRepeatAndTimestamp() {
     struct KeyCase final {
         SDL_Scancode scancode;
-        PlatformAction action;
+        std::string_view code;
     };
     constexpr std::array cases{
-        KeyCase{SDL_SCANCODE_SLASH, PlatformAction::debugPause},
-        KeyCase{SDL_SCANCODE_PERIOD, PlatformAction::debugStep}
+        KeyCase{SDL_SCANCODE_SLASH, "Slash"},
+        KeyCase{SDL_SCANCODE_PERIOD, "Period"}
     };
     constexpr std::uint64_t pressTimestampNs = 9'876'543'210ULL;
     constexpr std::uint64_t repeatTimestampNs = 9'877'543'210ULL;
@@ -173,11 +178,10 @@ void testDebugKeysPreserveEdgesRepeatAndTimestamp() {
             false,
             pressTimestampNs
         ));
-        REQUIRE(pressed.kind == PlatformEventKind::actionChanged);
-        REQUIRE(pressed.action == testCase.action);
-        REQUIRE(pressed.pressed);
-        REQUIRE(std::has_single_bit(pressed.sourceMask));
-        REQUIRE(!pressed.repeated);
+        REQUIRE(pressed.kind == PlatformEventKind::keyboardChanged);
+        REQUIRE(pressed.keyboard.view() == testCase.code);
+        REQUIRE(pressed.keyboard.pressed);
+        REQUIRE(!pressed.keyboard.repeated);
         REQUIRE(pressed.timestampMilliseconds == 9'876U);
 
         const PlatformEvent repeated = translateEvent(keyEvent(
@@ -187,10 +191,9 @@ void testDebugKeysPreserveEdgesRepeatAndTimestamp() {
             true,
             repeatTimestampNs
         ));
-        REQUIRE(repeated.action == testCase.action);
-        REQUIRE(repeated.pressed);
-        REQUIRE(repeated.sourceMask == pressed.sourceMask);
-        REQUIRE(repeated.repeated);
+        REQUIRE(repeated.keyboard.view() == testCase.code);
+        REQUIRE(repeated.keyboard.pressed);
+        REQUIRE(repeated.keyboard.repeated);
         REQUIRE(repeated.timestampMilliseconds == 9'877U);
 
         const PlatformEvent released = translateEvent(keyEvent(
@@ -200,23 +203,29 @@ void testDebugKeysPreserveEdgesRepeatAndTimestamp() {
             false,
             releaseTimestampNs
         ));
-        REQUIRE(released.action == testCase.action);
-        REQUIRE(!released.pressed);
-        REQUIRE(released.sourceMask == pressed.sourceMask);
-        REQUIRE(!released.repeated);
+        REQUIRE(released.keyboard.view() == testCase.code);
+        REQUIRE(!released.keyboard.pressed);
+        REQUIRE(!released.keyboard.repeated);
         REQUIRE(released.timestampMilliseconds == 9'878U);
     }
 }
 
 void testUnboundKeyboardInputIsIgnored() {
-    const PlatformEvent event = translateEvent(
-        keyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_SPACE, 11)
-    );
-    REQUIRE(event.kind == PlatformEventKind::none);
-    REQUIRE(event.windowId == 0U);
-    REQUIRE(event.action == PlatformAction::none);
-    REQUIRE(!event.pressed);
-    REQUIRE(event.sourceMask == 0U);
+    constexpr std::array ignored{
+        SDL_SCANCODE_UNKNOWN,
+        SDL_SCANCODE_MEDIA_RECORD,
+        SDL_SCANCODE_MEDIA_FAST_FORWARD,
+        SDL_SCANCODE_MEDIA_REWIND
+    };
+    for (const SDL_Scancode scancode : ignored) {
+        const PlatformEvent event = translateEvent(
+            keyEvent(SDL_EVENT_KEY_DOWN, scancode, 11)
+        );
+        REQUIRE(event.kind == PlatformEventKind::none);
+        REQUIRE(event.windowId == 0U);
+        REQUIRE(event.keyboard.view().empty());
+        REQUIRE(!event.keyboard.pressed);
+    }
 }
 
 void testMouseMotionUsesNeutralPointerPayload() {
@@ -478,9 +487,8 @@ void testLifecycleAndRenderTranslationRemainStable() {
     const PlatformEvent close = translateEvent(closeEvent);
     REQUIRE(close.kind == PlatformEventKind::windowCloseRequested);
     REQUIRE(close.windowId == 17U);
-    REQUIRE(close.action == PlatformAction::none);
-    REQUIRE(!close.pressed);
-    REQUIRE(close.sourceMask == 0U);
+    REQUIRE(close.keyboard.view().empty());
+    REQUIRE(!close.keyboard.pressed);
 
     SDL_Event quitEvent{};
     quitEvent.type = SDL_EVENT_QUIT;
@@ -494,18 +502,16 @@ void testLifecycleAndRenderTranslationRemainStable() {
     const PlatformEvent reset = translateEvent(resetEvent);
     REQUIRE(reset.kind == PlatformEventKind::renderDeviceLost);
     REQUIRE(reset.windowId == 29U);
-    REQUIRE(reset.action == PlatformAction::none);
-    REQUIRE(!reset.pressed);
-    REQUIRE(reset.sourceMask == 0U);
+    REQUIRE(reset.keyboard.view().empty());
+    REQUIRE(!reset.keyboard.pressed);
 
     SDL_Event orientationEvent{};
     orientationEvent.type = SDL_EVENT_DISPLAY_ORIENTATION;
     const PlatformEvent orientation = translateEvent(orientationEvent);
     REQUIRE(orientation.kind == PlatformEventKind::windowMetricsChanged);
     REQUIRE(orientation.windowId == 0U);
-    REQUIRE(orientation.action == PlatformAction::none);
-    REQUIRE(!orientation.pressed);
-    REQUIRE(orientation.sourceMask == 0U);
+    REQUIRE(orientation.keyboard.view().empty());
+    REQUIRE(!orientation.keyboard.pressed);
 }
 
 struct TestCase final {
@@ -517,8 +523,8 @@ struct TestCase final {
 
 int main() {
     const std::array tests{
-        TestCase{"movement key translation", testMovementKeysTranslateToSemanticActions},
-        TestCase{"distinct alias sources", testAliasesUseDistinctSourcesForTheSameAction},
+        TestCase{"raw keyboard code translation", testKeyboardKeysTranslateToDomStyleRawCodes},
+        TestCase{"raw physical aliases", testPhysicalAliasesRemainDistinctAtPlatformBoundary},
         TestCase{"repeat keydown state", testRepeatedKeyDownRemainsAnIdempotentStateEvent},
         TestCase{"debug key edges and timestamp", testDebugKeysPreserveEdgesRepeatAndTimestamp},
         TestCase{"unbound key filtering", testUnboundKeyboardInputIsIgnored},

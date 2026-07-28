@@ -27,22 +27,12 @@ enum class PlatformEventKind : std::uint8_t {
     renderTargetsReset,
     renderDeviceReset,
     renderDeviceLost,
-    actionChanged,
+    keyboardChanged,
     windowCloseRequested,
     pointerChanged,
     wheelChanged,
     textCommitted,
     textComposing
-};
-
-enum class PlatformAction : std::uint8_t {
-    none,
-    moveUp,
-    moveDown,
-    moveLeft,
-    moveRight,
-    debugPause,
-    debugStep
 };
 
 enum class PlatformPointerDevice : std::uint8_t {
@@ -129,18 +119,31 @@ struct PlatformTextData final {
     }
 };
 
+struct PlatformKeyboardData final {
+    static constexpr std::size_t storageCapacity = 64U;
+
+    std::array<char, storageCapacity> code{};
+    std::uint8_t byteCount = 0U;
+    bool pressed = false;
+    bool repeated = false;
+
+    [[nodiscard]] constexpr std::string_view view() const noexcept {
+        const std::size_t boundedSize = byteCount <= code.size()
+            ? static_cast<std::size_t>(byteCount)
+            : code.size();
+        return {code.data(), boundedSize};
+    }
+};
+
 struct PlatformEvent final {
     PlatformEventKind kind = PlatformEventKind::none;
     std::uint32_t windowId = 0;
-    PlatformAction action = PlatformAction::none;
-    bool pressed = false;
-    std::uint32_t sourceMask = 0;
+    PlatformKeyboardData keyboard;
     PlatformPointerData pointer;
     PlatformWheelData wheel;
     PlatformTextData text;
     bool clearInputStateRequested = false;
     std::uint64_t timestampMilliseconds = 0U;
-    bool repeated = false;
 };
 
 [[nodiscard]] PlatformEvent translateEvent(const SDL_Event& event) noexcept;

@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <initializer_list>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -188,6 +189,28 @@ settings::GameSettings seedSmokeSettings() {
     seed.bgmVolumePercent = 37U;
     seed.sfxVolumePercent = 63U;
     seed.debugMode = false;
+    const auto setBinding = [&seed](
+        const settings::InputAction action,
+        const std::initializer_list<std::string_view> codes
+    ) {
+        settings::InputBindingOverride* const overrideValue =
+            seed.inputBindings.tryForAction(action);
+        REQUIRE(overrideValue != nullptr);
+        REQUIRE(codes.size() <= overrideValue->codes.size());
+        overrideValue->present = true;
+        overrideValue->count = static_cast<std::uint8_t>(codes.size());
+        std::size_t index = 0U;
+        for (const std::string_view code : codes) {
+            REQUIRE(settings::tryMakeKeyboardCode(
+                code,
+                overrideValue->codes[index]
+            ));
+            ++index;
+        }
+    };
+    setBinding(settings::InputAction::moveRight, {"KeyL", "KeyM"});
+    setBinding(settings::InputAction::debugPause, {"KeyO", "KeyM"});
+    setBinding(settings::InputAction::debugStep, {"KeyN"});
     REQUIRE(repository.save(seed).succeeded());
     REQUIRE(storage.close() == platform::sdl::StorageResult::success);
     return seed;
@@ -286,26 +309,46 @@ void sendMiddleClick(
     )));
 }
 
-void sendDebugKey(
-    app::Application& application,
-    const platform::sdl::PlatformAction action
+platform::sdl::PlatformEvent keyboardEvent(
+    const std::string_view code,
+    const bool pressed,
+    const bool repeated = false
 ) {
     platform::sdl::PlatformEvent event;
-    event.kind = platform::sdl::PlatformEventKind::actionChanged;
-    event.action = action;
-    event.pressed = true;
-    event.sourceMask = 1U;
+    event.kind = platform::sdl::PlatformEventKind::keyboardChanged;
+    REQUIRE(!code.empty());
+    REQUIRE(code.size() <= event.keyboard.code.size());
+    std::copy(code.begin(), code.end(), event.keyboard.code.begin());
+    event.keyboard.byteCount = static_cast<std::uint8_t>(code.size());
+    event.keyboard.pressed = pressed;
+    event.keyboard.repeated = repeated;
+    return event;
+}
+
+platform::sdl::PlatformEvent focusEvent(
+    const platform::sdl::PlatformEventKind kind
+) {
+    REQUIRE(kind == platform::sdl::PlatformEventKind::focusLost
+        || kind == platform::sdl::PlatformEventKind::focusGained);
+    platform::sdl::PlatformEvent event;
+    event.kind = kind;
+    event.clearInputStateRequested =
+        kind == platform::sdl::PlatformEventKind::focusLost;
+    return event;
+}
+
+void sendDebugKey(
+    app::Application& application,
+    const std::string_view code
+) {
+    platform::sdl::PlatformEvent event = keyboardEvent(code, true);
     requireApplicationContinues(application.handleEvent(event));
-    event.pressed = false;
+    event.keyboard.pressed = false;
     requireApplicationContinues(application.handleEvent(event));
 }
 
 void sendMoveRight(app::Application& application, const bool pressed) {
-    platform::sdl::PlatformEvent event;
-    event.kind = platform::sdl::PlatformEventKind::actionChanged;
-    event.action = platform::sdl::PlatformAction::moveRight;
-    event.pressed = pressed;
-    event.sourceMask = 1U;
+    const platform::sdl::PlatformEvent event = keyboardEvent("KeyL", pressed);
     requireApplicationContinues(application.handleEvent(event));
 }
 
@@ -639,17 +682,17 @@ void runEnableCycle() {
 
     sendDebugKey(
         application.application(),
-        platform::sdl::PlatformAction::debugPause
+        "KeyO"
     );
     requireApplicationContinues(application.application().iterate());
     sendDebugKey(
         application.application(),
-        platform::sdl::PlatformAction::debugStep
+        "KeyN"
     );
     requireApplicationContinues(application.application().iterate());
     sendDebugKey(
         application.application(),
-        platform::sdl::PlatformAction::debugPause
+        "KeyO"
     );
     requireApplicationContinues(application.application().iterate());
 }
@@ -696,6 +739,7 @@ void runGlobalDebugEnableCycle(const SmokeScene scene) {
         sendMoveRight(application.application(), true);
         // single-step 한 번도 raster 차이로 관측되도록 Tower에 먼저 속도를 준다.
         advanceApplicationFrames(application.application(), 2U, 100U);
+        sendMoveRight(application.application(), false);
     }
 
     sendMouseMoveAway(application.application());
@@ -726,9 +770,11 @@ void runGlobalDebugEnableCycle(const SmokeScene scene) {
     sendMouseMoveAway(application.application());
     iterateAfterDelay(application.application());
 
+    // playable에서는 KeyM 하나가 moveRight와 debugPause 두 action을 함께
+    // 발생시킨다. 전체 batch가 처리돼야 아래 pause/step 계약이 성립한다.
     sendDebugKey(
         application.application(),
-        platform::sdl::PlatformAction::debugPause
+        scene == SmokeScene::playable ? "KeyM" : "KeyO"
     );
     iterateAfterDelay(application.application());
 
@@ -751,7 +797,7 @@ void runGlobalDebugEnableCycle(const SmokeScene scene) {
 
     sendDebugKey(
         application.application(),
-        platform::sdl::PlatformAction::debugStep
+        "KeyN"
     );
     iterateAfterDelay(application.application());
     const std::uint64_t steppedDigest = applicationFrameContentDigest(
@@ -762,7 +808,26 @@ void runGlobalDebugEnableCycle(const SmokeScene scene) {
     REQUIRE(applicationFrameContentDigest(application.application()) == steppedDigest);
 
     if (scene == SmokeScene::playable) {
-        sendMoveRight(application.application(), false);
+        // release 없이 resume한 뒤 focus/background 공용 clear 신호를 보낸다.
+        // mapper와 Debug held edge가 모두 비워져야 같은 KeyO press가 다시
+        // pause로 받아들여지고 이후 frame이 안정된다.
+        requireApplicationContinues(application.application().handleEvent(
+            keyboardEvent("KeyO", true)
+        ));
+        requireApplicationContinues(application.application().handleEvent(
+            focusEvent(platform::sdl::PlatformEventKind::focusLost)
+        ));
+        requireApplicationContinues(application.application().handleEvent(
+            focusEvent(platform::sdl::PlatformEventKind::focusGained)
+        ));
+        sendDebugKey(application.application(), "KeyO");
+        iterateAfterDelay(application.application());
+        iterateAfterDelay(application.application());
+        const std::uint64_t clearedAndPausedDigest =
+            applicationFrameContentDigest(application.application());
+        iterateAfterDelay(application.application());
+        REQUIRE(applicationFrameContentDigest(application.application())
+            == clearedAndPausedDigest);
     }
 }
 

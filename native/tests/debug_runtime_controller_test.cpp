@@ -426,6 +426,38 @@ void testFocusLossCancelsPendingSingleStep() {
     REQUIRE(nextFrame.maximumGameplayFixedSteps == 0U);
 }
 
+void testBindingResetClearsOnlyHeldKeys() {
+    DebugRuntimeController controller{true};
+    REQUIRE(controller.setDisplayOption(DebugDisplayOption::animationDebug, true));
+    middleClick(controller, 8U, 100U);
+    REQUIRE(controller.handleKey(
+        DebugKey::pauseSlash,
+        DebugKeyPhase::pressed,
+        false
+    ).status == DebugKeyStatus::pauseToggled);
+    REQUIRE(controller.handleKey(
+        DebugKey::pauseSlash,
+        DebugKeyPhase::released,
+        false
+    ).status == DebugKeyStatus::released);
+    REQUIRE(controller.handleKey(
+        DebugKey::stepPeriod,
+        DebugKeyPhase::pressed,
+        false
+    ).status == DebugKeyStatus::stepQueued);
+
+    REQUIRE(controller.clearKeyState());
+    const auto snapshot = controller.snapshot();
+    REQUIRE(snapshot.animationPaused);
+    REQUIRE(snapshot.singleStepPending);
+    REQUIRE(snapshot.recentMiddleReleaseCount == 1U);
+    REQUIRE(controller.handleKey(
+        DebugKey::stepPeriod,
+        DebugKeyPhase::pressed,
+        false
+    ).status == DebugKeyStatus::ignoredStepAlreadyPending);
+}
+
 struct TestCase final {
     std::string_view name;
     void (*run)();
@@ -445,7 +477,8 @@ int main() {
         TestCase{"inactive step", testInactiveAndUnpausedStepDoNotQueue},
         TestCase{"disable clears animation", testDisablingDebugClearsAnimationControl},
         TestCase{"focus clears held key", testFocusLossClearsHeldKeyEdge},
-        TestCase{"focus cancels pending step", testFocusLossCancelsPendingSingleStep}
+        TestCase{"focus cancels pending step", testFocusLossCancelsPendingSingleStep},
+        TestCase{"binding reset clears held keys", testBindingResetClearsOnlyHeldKeys}
     };
 
     for (const TestCase& test : tests) {

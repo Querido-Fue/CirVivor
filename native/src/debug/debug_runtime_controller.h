@@ -149,6 +149,9 @@ public:
     /** focus loss는 gesture와 눌린 debug key edge를 함께 지웁니다. */
     [[nodiscard]] bool handleFocusLost() noexcept;
 
+    /** binding 교체 시 gesture·pause 상태를 보존하고 held key만 지웁니다. */
+    [[nodiscard]] bool clearKeyState() noexcept;
+
     /** 외부 설정 변경을 적용하되 다시 저장하라는 effect는 만들지 않습니다. */
     [[nodiscard]] DebugRuntimeEffect applyDebugMode(bool enabled) noexcept;
 

@@ -915,7 +915,7 @@ bool Application::rebuildRenderer(const bool skipCurrentBackend) noexcept {
             : render::backend::RendererPreference::software;
     }
 
-    clearMovementActions();
+    clearBoundKeyboardState();
     static_cast<void>(titleUiController_.handleFocusLost());
     static_cast<void>(debugRuntime_.handleFocusLost());
     renderer_.shutdown();
@@ -1475,6 +1475,15 @@ bool Application::applyRuntimeSettings(
             settings::SettingsOverlayField::windowMode)
         && !applyWindowSettings(candidate)) {
         return false;
+    }
+    const input::InputBindingReplaceStatus bindingStatus =
+        inputBindings_.replace(candidate.inputBindings);
+    if (bindingStatus == input::InputBindingReplaceStatus::rejectedInvalid) {
+        return false;
+    }
+    if (bindingStatus == input::InputBindingReplaceStatus::replaced) {
+        movementInput_.clear();
+        static_cast<void>(debugRuntime_.clearKeyState());
     }
     redrawPending_ = true;
     return true;
@@ -2358,7 +2367,7 @@ bool Application::initialize(const int argc, char* argv[]) noexcept {
     debugPersistenceAttemptCount_ = 0U;
     debugPersistencePending_ = false;
     pendingDebugMode_ = false;
-    clearMovementActions();
+    clearBoundKeyboardState();
     storageReadyReported_ = false;
     storageSmokeComplete_ = false;
     audioSmokeComplete_ = false;
@@ -2570,6 +2579,8 @@ ApplicationResult Application::handleEvent(
 
     if (platformEvent.kind == platform::sdl::PlatformEventKind::focusLost
         || platformEvent.clearInputStateRequested) {
+        static_cast<void>(inputBindings_.clearPressed());
+        movementInput_.clear();
         static_cast<void>(debugRuntime_.handleFocusLost());
         static_cast<void>(titleUiController_.handleFocusLost());
         redrawPending_ = true;
@@ -2611,22 +2622,14 @@ ApplicationResult Application::handleEvent(
         }
     }
 
-    if (platformEvent.kind == platform::sdl::PlatformEventKind::actionChanged
-        && (platformEvent.action == platform::sdl::PlatformAction::debugPause
-            || platformEvent.action
-                == platform::sdl::PlatformAction::debugStep)) {
-        const debug::DebugKeyResult result = debugRuntime_.handleKey(
-            platformEvent.action == platform::sdl::PlatformAction::debugPause
-                ? debug::DebugKey::pauseSlash
-                : debug::DebugKey::stepPeriod,
-            platformEvent.pressed
-                ? debug::DebugKeyPhase::pressed
-                : debug::DebugKeyPhase::released,
-            platformEvent.repeated
+    if (platformEvent.kind == platform::sdl::PlatformEventKind::keyboardChanged) {
+        const input::InputActionTransitionBatch transitions = inputBindings_.apply(
+            platformEvent.keyboard.view(),
+            platformEvent.keyboard.pressed,
+            platformEvent.keyboard.repeated
         );
-        redrawPending_ = redrawPending_ || result.stateChanged;
-        if (result.stateChanged) {
-            incrementTitleControlStateRevision();
+        for (const input::InputActionTransition& transition : transitions) {
+            applyInputActionTransition(transition);
         }
         return ApplicationResult::continueRunning;
     }
@@ -2640,13 +2643,6 @@ ApplicationResult Application::handleEvent(
             titleUiState_.snapshot(),
             ui::OverlayKind::debug) != nullptr) {
         return handleGlobalDebugPointer(platformEvent);
-    }
-
-    if (platformEvent.kind == platform::sdl::PlatformEventKind::actionChanged) {
-        if (sceneMode_ == SceneMode::playable) {
-            applyMovementAction(platformEvent);
-        }
-        return ApplicationResult::continueRunning;
     }
 
     if (platformEvent.kind == platform::sdl::PlatformEventKind::windowCloseRequested
@@ -2708,7 +2704,7 @@ ApplicationResult Application::handleEvent(
         == platform::sdl::PlatformEventKind::windowMetricsChanged;
     rendererSizeDirty_ = rendererSizeDirty_ || metricsChanged;
     if (update.becameInactive) {
-        clearMovementActions();
+        clearBoundKeyboardState();
         static_cast<void>(debugRuntime_.handleFocusLost());
         static_cast<void>(titleUiController_.handleFocusLost());
         static_cast<void>(setExecutionActive(false));
@@ -2973,7 +2969,7 @@ bool Application::startPlayableSession(
     }
     settingsDismissedSequence_ = 0U;
 
-    clearMovementActions();
+    clearBoundKeyboardState();
     static_cast<void>(titleUiController_.handleFocusLost());
     scheduler_.reset();
     resetFrameClock();
@@ -3369,6 +3365,7 @@ void Application::shutdown() noexcept {
     settingsOverlaySession_ = {};
     debugRuntime_ = debug::DebugRuntimeController{};
     debugPerformance_ = debug::DebugPerformanceTracker{};
+    inputBindings_ = input::InputBindingMap{};
     titleLayout_ = {};
     titleDisplayArea_ = {};
     titleTheme_ = ui::layout::darkThemeMetrics();
@@ -3393,7 +3390,7 @@ void Application::shutdown() noexcept {
     debugPersistenceAttemptCount_ = 0U;
     debugPersistencePending_ = false;
     pendingDebugMode_ = false;
-    clearMovementActions();
+    clearBoundKeyboardState();
     rendererPreference_ = render::backend::RendererPreference::automatic;
     storageReadyReported_ = false;
     storageSmokeComplete_ = false;
@@ -3604,44 +3601,71 @@ bool Application::tryConsumeWindowCloseRequest() noexcept {
     return result.actionAccepted();
 }
 
-void Application::applyMovementAction(
-    const platform::sdl::PlatformEvent& event
+void Application::applyInputActionTransition(
+    const input::InputActionTransition& transition
 ) noexcept {
-    if (event.kind != platform::sdl::PlatformEventKind::actionChanged
-        || event.sourceMask == 0U) {
-        return;
-    }
-
-    switch (event.action) {
-    case platform::sdl::PlatformAction::moveUp:
+    switch (transition.action) {
+    case settings::InputAction::moveUp:
+        if (sceneMode_ != SceneMode::playable) {
+            return;
+        }
         movementInput_.apply(
             MovementInputChannel::up,
-            event.sourceMask,
-            event.pressed
+            1U,
+            transition.pressed
         );
         break;
-    case platform::sdl::PlatformAction::moveDown:
+    case settings::InputAction::moveDown:
+        if (sceneMode_ != SceneMode::playable) {
+            return;
+        }
         movementInput_.apply(
             MovementInputChannel::down,
-            event.sourceMask,
-            event.pressed
+            1U,
+            transition.pressed
         );
         break;
-    case platform::sdl::PlatformAction::moveLeft:
+    case settings::InputAction::moveLeft:
+        if (sceneMode_ != SceneMode::playable) {
+            return;
+        }
         movementInput_.apply(
             MovementInputChannel::left,
-            event.sourceMask,
-            event.pressed
+            1U,
+            transition.pressed
         );
         break;
-    case platform::sdl::PlatformAction::moveRight:
+    case settings::InputAction::moveRight:
+        if (sceneMode_ != SceneMode::playable) {
+            return;
+        }
         movementInput_.apply(
             MovementInputChannel::right,
-            event.sourceMask,
-            event.pressed
+            1U,
+            transition.pressed
         );
         break;
-    case platform::sdl::PlatformAction::none:
+    case settings::InputAction::debugPause:
+    case settings::InputAction::debugStep: {
+        const debug::DebugKeyResult result = debugRuntime_.handleKey(
+            transition.action == settings::InputAction::debugPause
+                ? debug::DebugKey::pauseSlash
+                : debug::DebugKey::stepPeriod,
+            transition.pressed
+                ? debug::DebugKeyPhase::pressed
+                : debug::DebugKeyPhase::released,
+            transition.repeated
+        );
+        redrawPending_ = redrawPending_ || result.stateChanged;
+        if (result.stateChanged) {
+            incrementTitleControlStateRevision();
+        }
+        return;
+    }
+    case settings::InputAction::primaryAction:
+    case settings::InputAction::pause:
+    case settings::InputAction::reload:
+    case settings::InputAction::count:
     default:
         return;
     }
@@ -3649,8 +3673,10 @@ void Application::applyMovementAction(
     redrawPending_ = true;
 }
 
-void Application::clearMovementActions() noexcept {
+void Application::clearBoundKeyboardState() noexcept {
+    static_cast<void>(inputBindings_.clearPressed());
     movementInput_.clear();
+    static_cast<void>(debugRuntime_.clearKeyState());
 }
 
 void Application::configureActiveCallbackRate() noexcept {

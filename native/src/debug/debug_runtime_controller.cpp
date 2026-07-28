@@ -108,6 +108,19 @@ bool DebugRuntimeController::handleFocusLost() noexcept {
     return false;
 }
 
+bool DebugRuntimeController::clearKeyState() noexcept {
+    const bool changed = std::any_of(
+        keyDown_.begin(),
+        keyDown_.end(),
+        [](const bool down) noexcept { return down; }
+    );
+    keyDown_.fill(false);
+    if (changed) {
+        incrementRevision();
+    }
+    return changed;
+}
+
 DebugRuntimeEffect DebugRuntimeController::applyDebugMode(
     const bool enabled
 ) noexcept {

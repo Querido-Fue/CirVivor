@@ -109,6 +109,13 @@ add_library(settings_runtime STATIC
 target_include_directories(settings_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 cirvivor_configure_target(settings_runtime)
 
+add_library(input_runtime STATIC
+    src/input/input_binding_map.cpp
+)
+target_include_directories(input_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(input_runtime PUBLIC settings_runtime)
+cirvivor_configure_target(input_runtime)
+
 add_library(debug_runtime STATIC
     src/debug/debug_performance_tracker.cpp
     src/debug/debug_runtime_controller.cpp
@@ -286,6 +293,12 @@ if(BUILD_TESTING)
     target_link_libraries(settings_overlay_session_tests PRIVATE settings_runtime)
     cirvivor_configure_target(settings_overlay_session_tests)
 
+    add_executable(input_binding_map_tests
+        tests/input_binding_map_test.cpp
+    )
+    target_link_libraries(input_binding_map_tests PRIVATE input_runtime)
+    cirvivor_configure_target(input_binding_map_tests)
+
     add_executable(debug_runtime_controller_tests
         tests/debug_runtime_controller_test.cpp
     )
@@ -367,6 +380,7 @@ if(BUILD_TESTING)
     add_test(NAME settings_codec_tests COMMAND settings_codec_tests)
     add_test(NAME settings_repository_tests COMMAND settings_repository_tests)
     add_test(NAME settings_overlay_session_tests COMMAND settings_overlay_session_tests)
+    add_test(NAME input_binding_map_tests COMMAND input_binding_map_tests)
     add_test(
         NAME debug_runtime_controller_tests
         COMMAND debug_runtime_controller_tests
@@ -448,6 +462,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
             game_core
             app_runtime
             debug_runtime
+            input_runtime
             settings_runtime
             ui_runtime
             platform_sdl
@@ -501,6 +516,7 @@ if(CIRVIVOR_BUILD_SDL_APP)
                 game_core
                 app_runtime
                 debug_runtime
+                input_runtime
                 settings_runtime
                 ui_runtime
                 platform_sdl
