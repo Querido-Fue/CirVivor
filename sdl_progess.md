@@ -1,6 +1,6 @@
 # SDL3 전환 진행 상황
 
-> 마지막 갱신: 2026-07-28
+> 마지막 갱신: 2026-07-29
 > 기준 브랜치: `codex/c++`
 > 목표: 기존 NW.js 게임을 read-only 기준 실행기로 보존하면서 Windows Desktop 게임을 C++20/SDL3로 다시 작성한다. Android와 iOS는 현재 범위에서 제외한다.
 
@@ -35,7 +35,7 @@
 | Title/overlay 기능 breadth | 81% | 11종 content·Credits·Settings·세 scene 공용 Debug·display policy 연결, floating control과 일부 실제 effect 남음 |
 | Render/시각 fidelity | 57% | Software text/gradient/clip·letterbox·modal dim·telemetry HUD 완료, GPU atlas·glass/blur·texture/icon·21개 native golden 남음 |
 | Settings/Debug/system | 93% | repository·live preview·Save/Cancel·persist·input override·global panel·pause/step·현재 native telemetry 완료, audio/tooltip과 enemy hitbox source 남음 |
-| 검증/cutover | 55% | 39개 Desktop CTest와 27개 headless, scene별 Software raster hash 통과, native golden·완성 플레이·NW.js cutover 남음 |
+| 검증/cutover | 56% | 39개 Desktop CTest와 27개 headless, scene별 Software raster hash와 Release 실기 흐름 통과, native golden·완성 플레이·NW.js cutover 남음 |
 | Windows rewrite 전체 | 57% | 기능 breadth를 먼저 연결 중이며 gameplay 내용과 시각 보정 비중이 큼 |
 
 ## 단계별 상태
@@ -82,7 +82,7 @@
 - `FramePacket v2`가 shaped glyph, gradient, clip, projective geometry, render-pass barrier와 중첩 capture anchor를 표현하고 bounded codec/validation까지 제공한다. Software gradient/clip/A8 glyph는 실제 raster로 전환됐지만 mesh/pass와 SDL_GPU/GLES glyph·고급 명령은 아직 marker placeholder이므로 GPU atlas sampling·shader·blur/glass pass와 production frame의 `placeholderCommands == 0` 게이트가 남아 있다.
 - text foundation은 45~930 variable weight, no-hinting grayscale raster, 고정-capacity glyph atlas와 fixed UI `ShapedTextCache`까지 완료됐다. 64px A8 atlas와 shaped runs는 하나의 immutable generation snapshot이며 resize 때 재생성하지 않는다. 고정 catalog 밖 URL의 동적 preview와 SDL_GPU/GLES atlas upload/draw는 후속이다.
 - `Application`이 `ui_runtime`, title presenter와 text snapshot을 소유하고 같은 frame build/render에 동일 resource view를 전달한다. 상태/layout/control revision에 결합 가능한 `TitleOverlayPresentationSet`도 controller와 renderer가 공유한다. Start→MapSelect→playable 전환, Credits 5-link warning, Settings load/live preview/Save/Cancel과 title/playable/diagnostic 공용 Debug gesture/panel/control/persist/pause-step/telemetry까지 연결됐다. profiler는 성공한 직전 display frame, pool은 실제 native 저장소, 현재 hitbox는 tile solver에 참여하는 Tower 원을 렌더 보간 위치로 표시한다. JS enemy-pair/projectile dual-radius geometry는 enemy gameplay가 아직 없으므로 후속 source로 남긴다.
-- `widescreenSupport`는 `TitleDisplayArea` 한 곳에서 title/overlay layout·safe-area·pointer 원점을 함께 해석하고, playable은 동일 설정의 world rect 밖을 backend 공통 opaque drawable mask로 차폐한다. global Debug dim은 active frame viewport의 실제 renderer scale을 역산해 1×/2× DPI ultrawide drawable 전체를 덮는다. 앞선 구현 배치의 최종 육안 검증은 당시 Computer Use 중단 요청으로 보류됐고, 2026-07-28 사용 허용이 복구되어 후속 실기 점검 대상으로 전환됐다.
+- `widescreenSupport`는 `TitleDisplayArea` 한 곳에서 title/overlay layout·safe-area·pointer 원점을 함께 해석하고, playable은 동일 설정의 world rect 밖을 backend 공통 opaque drawable mask로 차폐한다. global Debug dim은 active frame viewport의 실제 renderer scale을 역산해 1×/2× DPI ultrawide drawable 전체를 덮는다. 2026-07-29 Release 실기에서 title→MapSelect→playable과 global Debug panel을 다시 확인했다. 기능 흐름·pointer·이동은 정상이나 title logo·utility icon은 placeholder이고 작은 한글의 raster/scale 품질과 gameplay 콘텐츠 밀도는 원본에 못 미친다.
 - `disableTransparency`는 opaque panel token과 glass pass 생략을 실제 소비하지만 JS의 0.4초 `glassMix` 전환과 light opaque shadow는 아직 없다. 현재 on/off 기능 연결을 시각 parity 완료로 해석하지 않는다.
 - Settings의 input binding은 SDL raw code→의미 action→movement/debug 실제 소비자까지 연결됐다. BGM/SFX·tooltip delay는 저장·표시 authority만 있고 실제 audio/tooltip consumer가 없다. benchmark와 Keybindings/DevTools UI도 의도적으로 비활성/passive 상태다.
 
@@ -816,6 +816,26 @@ Application custom movement/debug binding integration smoke: 1/1 통과
 - `Application`은 설정 load/apply가 성공한 뒤 map을 교체하고 movement 네 action을 기존 짧은 입력 latch에, debug pause/step을 `DebugRuntimeController`에 연결한다. focus/background, scene 전환, 설정 변경과 shutdown에서는 mapper·movement·debug held key를 함께 정리하되 Debug pause 상태나 이미 예약된 step 같은 의미 상태는 설정 교체만으로 지우지 않는다. primary/pause/reload는 binding 계약에 포함되지만 현재 gameplay 소비자가 아직 없다.
 - 통합 테스트는 기본 W/A/S/D와 `/`·`.`가 아닌 `KeyL`/`KeyM`, `KeyO`/`KeyM`, `KeyN` override를 실제 SDL user-storage 설정에 seed한다. `KeyM` 하나가 movement와 debug pause 두 action을 모두 전달하는지, focus lost/gained가 mapper·movement·debug held edge를 함께 지워 같은 키를 다시 받을 수 있는지, pause/정확한 one-step과 재시작 뒤 설정 보존까지 공개 Application event로 검증한다.
 - 이번 배치의 코드·자동 회귀 검증 중에는 Computer Use를 사용하지 않았다. 사용자가 일반 Computer Use를 다시 허용했으므로 커밋 뒤 실제 Release 창에서 화면과 입력을 후속 점검한다. Orca 계열은 사용하지 않는다.
+
+### 2026-07-29 — Release 실제 실행·입력·Debug 육안 재검증
+
+```text
+일반 Computer Use / 2560×1440 / MSVC Release
+title → MapSelect → playable: 통과
+playable KeyD 이동: 통과
+middle-click 3회 → global Debug panel: 통과
+Debug display toggle·Close: 통과
+
+순차 자동 회귀
+MSVC Debug 전체 CTest: 39/39 통과
+MSVC Release 전체 CTest: 39/39 통과
+GCC 16.1 headless strict 전체 CTest: 27/27 통과
+```
+
+- `native/build/windows-msvc-release/Release/game_desktop.exe`를 일반 Computer Use로 직접 실행했다. 타이틀의 Start, MapSelect의 시작 control, playable 전환, 실제 `D` 이동과 playable 위 global Debug panel의 열기·toggle·닫기가 모두 제품 입력 경로에서 동작했다.
+- 최소 게임 루프는 정상 실행되지만 원본과 같은 완성 화면은 아직 아니다. 타이틀 중앙 logo·shield/circle 및 하단 utility icon은 임시 도형이고, 2560×1440에서 작은 한글 glyph가 거칠고 일부 획이 뭉친다. playable도 현재 map/Core/Tower만 있어 적·전투·웨이브·HUD가 없는 상태가 육안으로 명확하다.
+- 최초 회귀 실행은 Debug와 Release CTest 프로세스를 동시에 시작해 `application_integration_smoke_tests`가 실패했다. 두 구성의 smoke가 같은 `CirVivorTests/CirVivorNativeSmoke` SDL user-storage namespace를 공유하고 CTest `RESOURCE_LOCK`은 서로 다른 CTest 프로세스 사이를 잠그지 못한 것이 원인이다. 단독 재현과 소스 감사에서 repository/codec 결함은 없었고, 세 suite를 순차 실행하자 전부 통과했다. 해당 Desktop suite들은 test storage 격리를 보강하기 전까지 최상위 실행끼리 병렬화하지 않는다.
+- 이 검증으로 과거의 “정상 게임 실행 불가” 문제는 현재 최소 slice 기준 해소된 것으로 판정한다. 남은 우선순위는 실제 gameplay breadth, 3-pass solve/projectile, title asset·text fidelity와 native 21-state golden이다.
 
 ## 현재 작업
 
