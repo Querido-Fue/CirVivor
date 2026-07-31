@@ -137,6 +137,9 @@ const dependencies = new Map([
     ['util/number_util.js', createSyntheticModule(context, {
         clamp01: (value) => Math.min(1, Math.max(0, value))
     })],
+    ['util/font_util.js', createSyntheticModule(context, {
+        createFontString: ({ weight, sizePx }) => `${weight} ${sizePx}px "SUIT Variable", arial`
+    })],
     ['./_dropdown.js', createSyntheticModule(context, {
         DropdownElement: class DropdownElementStub {
             static isPointerBlockedFor() {

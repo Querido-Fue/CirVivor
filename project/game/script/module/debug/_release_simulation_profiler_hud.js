@@ -69,8 +69,7 @@ function updateHudCommands(snapshot, ww, wh) {
     const y = wh * HUD_CONSTANTS.Y_WH_RATIO;
     const font = createFontString({
         weight: HUD_CONSTANTS.FONT_WEIGHT,
-        sizePx: fontSize,
-        family: 'Pretendard Variable'
+        sizePx: fontSize
     });
 
     hudLines[0] = `FPS ${format1(snapshot.frameRate)} | FIXED ${format1(snapshot.actualFixedTicksPerSecond)}/s | SIM ${format1(snapshot.simulationProgressRatio * 100)}%`;

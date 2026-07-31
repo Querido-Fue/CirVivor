@@ -1,7 +1,7 @@
 import { createFontString } from 'util/font_util.js';
 
 /** 2D 레이어 텍스트 렌더링의 기본 Canvas font 문자열입니다. */
-const DEFAULT_DRAW_TEXT_FONT = createFontString({ sizePx: 10, family: 'sans-serif' });
+const DEFAULT_DRAW_TEXT_FONT = createFontString({ sizePx: 10 });
 
 /**
  * 기본 지속 그림자 상태를 생성합니다.

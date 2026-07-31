@@ -1,5 +1,6 @@
 import { clampNumber } from 'util/number_util.js';
 import { toRadians } from 'util/math_util.js';
+import { getCanvasTextVerticalMetricOffset } from 'util/font_util.js';
 
 /** 원형 경로를 닫는 라디안 값입니다. */
 const FULL_CIRCLE_RADIANS = Math.PI * 2;
@@ -130,16 +131,18 @@ export function renderDrawImage(context, options) {
  * @returns {void}
  */
 export function renderDrawText(context, options) {
+    const drawY = options.y + getCanvasTextVerticalMetricOffset(context, options.baseline);
+
     if (options.rotation) {
         context.save();
-        context.translate(options.x, options.y);
+        context.translate(options.x, drawY);
         context.rotate(toRadians(options.rotation));
         context.fillText(options.text, 0, 0);
         context.restore();
         return;
     }
 
-    context.fillText(options.text, options.x, options.y);
+    context.fillText(options.text, options.x, drawY);
 }
 
 /**

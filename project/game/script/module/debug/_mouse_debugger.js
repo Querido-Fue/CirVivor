@@ -41,8 +41,7 @@ export class MouseDebugger {
         const fontSize = WW * 0.008;
         const font = createFontString({
             weight: 300,
-            sizePx: fontSize,
-            family: 'Pretendard Variable'
+            sizePx: fontSize
         });
 
         lines.forEach((text, i) => {

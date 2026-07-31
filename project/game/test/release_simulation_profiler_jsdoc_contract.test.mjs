@@ -13,7 +13,7 @@ const [hudSource, profilerSource] = await Promise.all([
     readFile(PROFILER_PATH, 'utf8')
 ]);
 
-const HUD_EXECUTABLE_SOURCE_HASH = '66289414ea265d70fdda7bf78da1d84d7c7a19436d7c1188fc3b0a230648c3cb';
+const HUD_EXECUTABLE_SOURCE_HASH = '2c54ec9d3834e6be8f01219f2a9e0d433253e40fba8ecb664fd21eae17ed3c38';
 const PROFILER_EXECUTABLE_SOURCE_HASH = '2851f8a00e77906269ec67d3bce7f268de65af0f00b15af934d18887b82f3a4e';
 
 /**

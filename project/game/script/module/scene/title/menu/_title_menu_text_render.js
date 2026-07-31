@@ -1,4 +1,7 @@
-import { wrapTextByWords } from 'util/font_util.js';
+import {
+    getCanvasTextVerticalMetricOffset,
+    wrapTextByWords
+} from 'util/font_util.js';
 
 /** @type {WeakMap<CanvasRenderingContext2D, Map<string, Array<{font:string, maxWidth:number, lines:string[]}>>>} */
 let wrappedTextCacheByContext = new WeakMap();
@@ -25,7 +28,7 @@ export function drawTitleMenuWrappedText(context, options) {
     context.textBaseline = 'top';
 
     const lines = _getWrappedTitleMenuTextLines(context, text, options.font, options.maxWidth);
-    let currentY = options.y;
+    let currentY = options.y + getCanvasTextVerticalMetricOffset(context, 'top');
 
     for (const line of lines) {
         if (line) {

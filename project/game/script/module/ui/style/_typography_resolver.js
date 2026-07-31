@@ -1,11 +1,10 @@
-import { createFontString } from 'util/font_util.js';
+import { createFontString, DEFAULT_FONT_FAMILY } from 'util/font_util.js';
 import {
     TYPOGRAPHY,
     getTypographyTokenName,
     isTypographyToken
 } from './typography.js';
 
-const DEFAULT_FONT_FAMILY = 'Pretendard Variable, arial';
 const TITLE_CARD_FLUID_POLICY = 'title-card-fluid';
 const DEFAULT_UI_SCALE = 1;
 

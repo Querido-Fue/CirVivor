@@ -75,10 +75,10 @@ export class CreditsOverlay extends TitleOverlay {
             .space("OH", 4);
 
         handler.group().justifyContent("space-between", "WW", 1).width("parent", 95).align("center")
-            .item("text").text('pretendard').textStyle(TYPOGRAPHY.H4).fill(ColorSchemes.Overlay.Text.Item).vAlign("center")
+            .item("text").text('SUIT Variable').textStyle(TYPOGRAPHY.H4).fill(ColorSchemes.Overlay.Text.Item).vAlign("center")
             .spacer()
             .item("button", `btn_2`).buttonStyle(BUTTON_STYLE.OVERLAY_LINK).buttonText(getLangString('title_credits_link_github'))
-            .onClick(() => runtimeTool().openURL('https://github.com/orioncactus/pretendard')).align("right").vAlign("center")
+            .onClick(() => runtimeTool().openURL('https://github.com/sun-typeface/SUIT')).align("right").vAlign("center")
             .buttonColor(ColorSchemes.Overlay.Button.Link).icon("arrow")
             .endGroup()
             .space("OH", 3);
@@ -95,7 +95,7 @@ export class CreditsOverlay extends TitleOverlay {
         handler.group().justifyContent("space-between", "WW", 1).width("parent", 95).align("center")
             .item("text").text('react bits').textStyle(TYPOGRAPHY.H4).fill(ColorSchemes.Overlay.Text.Item).vAlign("center")
             .spacer()
-            .item("button", `btn_3`).buttonStyle(BUTTON_STYLE.OVERLAY_LINK).buttonText(getLangString('title_credits_link_github'))
+            .item("button", `btn_4`).buttonStyle(BUTTON_STYLE.OVERLAY_LINK).buttonText(getLangString('title_credits_link_github'))
             .onClick(() => runtimeTool().openURL('https://github.com/DavidHDev/react-bits')).align("right").vAlign("center")
             .buttonColor(ColorSchemes.Overlay.Button.Link).icon("arrow")
             .endGroup()
@@ -103,7 +103,7 @@ export class CreditsOverlay extends TitleOverlay {
 
         addOverlayCloseFooter(handler, {
             id: 'close_btn',
-            text: getLangString('title_deck_close'),
+            text: getLangString('title_credits_close'),
             onClick: this.close.bind(this)
         });
         applyOverlayConfirmButtonIcon(handler);

@@ -10,7 +10,7 @@
         "theme": "dark",
         "renderScale": 100,
         "uiScale": 100,
-        "font": "400 18px \"Pretendard Variable\""
+        "font": "400 18px \"SUIT Variable\""
     },
     "profile": {
         "id": "win32-x64-nw0.108.0-dpr1-7eb3079ce6d3",
@@ -97,7 +97,7 @@
                 "width": 640,
                 "height": 360,
                 "byteLength": 921600,
-                "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35",
+                "sha256": "e3c421fce3d2d05b00c9e1254dffe70b1aafc13d744cf4194c9b7ea8cb081b63",
                 "file": "canonical.texteffect.rgba"
             },
             {
@@ -108,7 +108,7 @@
                 "width": 640,
                 "height": 360,
                 "byteLength": 921600,
-                "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c",
+                "sha256": "bfce1e8ad5016594d3aacba8804474eb2f2b14d9f6d7135a0d15c02d894e387e",
                 "file": "canonical.ui.rgba"
             },
             {
@@ -141,7 +141,7 @@
                 "width": 640,
                 "height": 360,
                 "byteLength": 921600,
-                "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1",
+                "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020",
                 "file": "canonical.overlay.effect.rgba"
             },
             {
@@ -152,7 +152,7 @@
                 "width": 640,
                 "height": 360,
                 "byteLength": 921600,
-                "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d",
+                "sha256": "e2f138a9d652e4fec65d4790f0f3fe8f5e5b2734a08b68038f99227d4002e5bc",
                 "file": "canonical.overlay.ui.rgba"
             },
             {
@@ -171,10 +171,10 @@
             "width": 640,
             "height": 360,
             "byteLength": 921600,
-            "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e",
+            "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0",
             "file": "canonical.final.rgba",
             "reviewPng": "canonical.final.png",
-            "reviewPngSha256": "9963c329773a51f082c6fbe2798c28b30159dbb2653df716e601f144a91f6202"
+            "reviewPngSha256": "5c8f46b9c05813e5f47d419d513eb2236981047458994a66c066050677bb8ff0"
         }
     },
     "cases": {
@@ -202,13 +202,13 @@
                     "role": "texteffect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35"
+                    "sha256": "e3c421fce3d2d05b00c9e1254dffe70b1aafc13d744cf4194c9b7ea8cb081b63"
                 },
                 {
                     "role": "ui",
                     "width": 640,
                     "height": 360,
-                    "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c"
+                    "sha256": "bfce1e8ad5016594d3aacba8804474eb2f2b14d9f6d7135a0d15c02d894e387e"
                 },
                 {
                     "role": "vignette",
@@ -226,13 +226,13 @@
                     "role": "overlay.effect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1"
+                    "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020"
                 },
                 {
                     "role": "overlay.ui",
                     "width": 640,
                     "height": 360,
-                    "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d"
+                    "sha256": "e2f138a9d652e4fec65d4790f0f3fe8f5e5b2734a08b68038f99227d4002e5bc"
                 },
                 {
                     "role": "top",
@@ -244,7 +244,7 @@
             "final": {
                 "width": 640,
                 "height": 360,
-                "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e"
+                "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0"
             }
         },
         "contextRestore": {
@@ -271,13 +271,13 @@
                     "role": "texteffect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35"
+                    "sha256": "e3c421fce3d2d05b00c9e1254dffe70b1aafc13d744cf4194c9b7ea8cb081b63"
                 },
                 {
                     "role": "ui",
                     "width": 640,
                     "height": 360,
-                    "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c"
+                    "sha256": "bfce1e8ad5016594d3aacba8804474eb2f2b14d9f6d7135a0d15c02d894e387e"
                 },
                 {
                     "role": "vignette",
@@ -295,13 +295,13 @@
                     "role": "overlay.effect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1"
+                    "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020"
                 },
                 {
                     "role": "overlay.ui",
                     "width": 640,
                     "height": 360,
-                    "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d"
+                    "sha256": "e2f138a9d652e4fec65d4790f0f3fe8f5e5b2734a08b68038f99227d4002e5bc"
                 },
                 {
                     "role": "top",
@@ -313,7 +313,7 @@
             "final": {
                 "width": 640,
                 "height": 360,
-                "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e"
+                "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0"
             }
         },
         "releaseReacquire": {
@@ -340,13 +340,13 @@
                     "role": "texteffect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "56cc44dae4af6dd16b41b2f1347629a99d07e1fbbf23a41f38d4408bcbfe3e35"
+                    "sha256": "e3c421fce3d2d05b00c9e1254dffe70b1aafc13d744cf4194c9b7ea8cb081b63"
                 },
                 {
                     "role": "ui",
                     "width": 640,
                     "height": 360,
-                    "sha256": "813b5c2f2863cfe3477d5ddc0cea31bafe144bbaa4a5d5b3b2384f8fb13a280c"
+                    "sha256": "bfce1e8ad5016594d3aacba8804474eb2f2b14d9f6d7135a0d15c02d894e387e"
                 },
                 {
                     "role": "vignette",
@@ -364,13 +364,13 @@
                     "role": "overlay.effect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "51926750d00d9ac24ca76bd7a6c0636cb58d5ef62accfb174e0b3b36bae708b1"
+                    "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020"
                 },
                 {
                     "role": "overlay.ui",
                     "width": 640,
                     "height": 360,
-                    "sha256": "e2e7282ab80a13d933eeb97b16dbe5087b13abf443e01c066bf209eb192a207d"
+                    "sha256": "e2f138a9d652e4fec65d4790f0f3fe8f5e5b2734a08b68038f99227d4002e5bc"
                 },
                 {
                     "role": "top",
@@ -382,7 +382,7 @@
             "final": {
                 "width": 640,
                 "height": 360,
-                "sha256": "936ef079e7280008a1ce80eee924d927271755b978cdd61747bd2d7ef554db8e"
+                "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0"
             }
         }
     },

@@ -140,13 +140,11 @@ function createHudMetrics(ww, wh) {
         statsFont,
         titleFontString: createFontString({
             weight: 500,
-            sizePx: titleFont,
-            family: 'Pretendard Variable'
+            sizePx: titleFont
         }),
         statsFontString: createFontString({
             weight: 400,
-            sizePx: statsFont,
-            family: 'Pretendard Variable'
+            sizePx: statsFont
         }),
         statsX: ww * 0.985,
         statsY: wh * 0.96

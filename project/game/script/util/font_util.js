@@ -1,5 +1,11 @@
-const DEFAULT_FONT_FAMILY = 'Pretendard Variable, arial';
+export const DEFAULT_FONT_FAMILY = 'SUIT Variable, arial';
 const DEFAULT_FONT_SIZE_PX = 12;
+const VERTICAL_METRIC_BASELINES = Object.freeze(new Set(['top', 'middle']));
+const FONT_SIZE_PATTERN = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|\/)/;
+const FONT_METRIC_SAMPLE_TEXT = '가';
+let verticalMetricOffsetCacheByContext = new WeakMap();
+let observedFontSet = null;
+let observedFontSetStatus = '';
 
 /**
  * 줄바꿈 최대 줄 수 옵션을 안전한 정수로 정규화합니다.
@@ -58,6 +64,85 @@ export function createFontString(options = {}) {
         ? `${weight} `
         : '';
     return `${weightPrefix}${sizePx}px ${normalizeFontFamily(options.family || DEFAULT_FONT_FAMILY)}`;
+}
+
+/**
+ * Canvas 기준선을 폰트가 제공하는 세로 메트릭 중심에 맞춥니다.
+ * SUIT처럼 글리프 위아래 여백이 같은 폰트는 별도 픽셀 보정 없이
+ * 버튼·아이콘과 같은 시각 중심에 놓입니다.
+ * @param {CanvasRenderingContext2D} context - 대상 컨텍스트입니다.
+ * @param {string|undefined} requestedBaseline - 렌더 명령이 요청한 기준선입니다.
+ * @returns {number} 기존 y 좌표에 더할 메트릭 기반 오프셋입니다.
+ */
+export function getCanvasTextVerticalMetricOffset(context, requestedBaseline) {
+    const baseline = requestedBaseline || context.textBaseline || 'alphabetic';
+    if (!VERTICAL_METRIC_BASELINES.has(baseline) || typeof context.measureText !== 'function') {
+        return 0;
+    }
+
+    const font = String(context.font || '');
+    const cacheKey = `${font}\u0000${baseline}`;
+    const canCache = canCacheVerticalMetricOffset();
+    let contextCache = verticalMetricOffsetCacheByContext.get(context);
+    if (canCache && contextCache?.has(cacheKey)) {
+        return contextCache.get(cacheKey);
+    }
+
+    const offset = measureTextVerticalMetricOffset(context, baseline, font);
+    if (canCache) {
+        if (!contextCache) {
+            contextCache = new Map();
+            verticalMetricOffsetCacheByContext.set(context, contextCache);
+        }
+        contextCache.set(cacheKey, offset);
+    }
+    return offset;
+}
+
+/**
+ * 현재 font와 기준선에서 폰트 박스 중심 오프셋을 측정합니다.
+ * @param {CanvasRenderingContext2D} context - 측정 컨텍스트입니다.
+ * @param {'top'|'middle'} baseline - 계산할 기준선입니다.
+ * @param {string} font - 현재 Canvas font 문자열입니다.
+ * @returns {number} 측정된 y 오프셋입니다.
+ */
+function measureTextVerticalMetricOffset(context, baseline, font) {
+    const metrics = context.measureText(FONT_METRIC_SAMPLE_TEXT);
+    const ascent = Number(metrics?.fontBoundingBoxAscent);
+    const descent = Number(metrics?.fontBoundingBoxDescent);
+    if (!Number.isFinite(ascent) || !Number.isFinite(descent)) {
+        return 0;
+    }
+
+    if (baseline === 'middle') {
+        return (ascent - descent) * 0.5;
+    }
+
+    const fontSizeMatch = font.match(FONT_SIZE_PATTERN);
+    const fontSize = Number(fontSizeMatch?.[1]);
+    if (!Number.isFinite(fontSize)) {
+        return 0;
+    }
+    return (fontSize + ascent - descent) * 0.5;
+}
+
+/**
+ * 웹폰트 로딩 상태가 바뀌면 fallback 폰트로 측정된 캐시를 폐기합니다.
+ * @returns {boolean} 현재 측정값을 캐시해도 되는지 여부입니다.
+ */
+function canCacheVerticalMetricOffset() {
+    const fontSet = typeof document === 'object' ? document.fonts : null;
+    if (!fontSet) {
+        return true;
+    }
+
+    const fontSetStatus = fontSet.status;
+    if (fontSet !== observedFontSet || fontSetStatus !== observedFontSetStatus) {
+        verticalMetricOffsetCacheByContext = new WeakMap();
+        observedFontSet = fontSet;
+        observedFontSetStatus = fontSetStatus;
+    }
+    return fontSetStatus === 'loaded';
 }
 
 /**

@@ -8,8 +8,7 @@ import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
 const BUTTON_RADIUS = 10;
 const BUTTON_FONT_MIN_SIZE = 11;
 const BUTTON_FONT_WW_RATIO = 0.0092;
-const BUTTON_TEXT_X_RATIO = 0.5;
-const BUTTON_TEXT_Y_RATIO = 0.54;
+const BUTTON_CENTER_RATIO = 0.5;
 const BUTTON_BORDER_LINE_WIDTH = 1;
 const BUTTON_MOUSE_POSITION_SCRATCH = { x: 0, y: 0 };
 const BUTTON_BACKGROUND_RENDER_OPTIONS = {
@@ -55,8 +54,7 @@ function getGameSceneButtonFont(fontSize) {
         cachedButtonFontSize = fontSize;
         cachedButtonFont = createFontString({
             weight: 500,
-            sizePx: fontSize,
-            family: 'Pretendard Variable'
+            sizePx: fontSize
         });
     }
 
@@ -104,8 +102,8 @@ export function drawGameSceneButtons(buttons = [], options = {}) {
 
         const textOptions = BUTTON_TEXT_RENDER_OPTIONS;
         textOptions.text = button.label;
-        textOptions.x = button.x + (button.w * BUTTON_TEXT_X_RATIO);
-        textOptions.y = button.y + (button.h * BUTTON_TEXT_Y_RATIO);
+        textOptions.x = button.x + (button.w * BUTTON_CENTER_RATIO);
+        textOptions.y = button.y + (button.h * BUTTON_CENTER_RATIO);
         textOptions.font = font;
         textOptions.fill = getBenchmarkColor('ButtonText');
         render('ui', textOptions);

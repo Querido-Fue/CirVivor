@@ -58,7 +58,11 @@ async function loadDrawTitleMenuWrappedText(wrapTextByWords, globals = {}) {
         context,
         identifier: TEXT_RENDER_PATH.href
     });
-    const fontUtilModule = new vm.SyntheticModule(['wrapTextByWords'], function initialize() {
+    const fontUtilModule = new vm.SyntheticModule([
+        'getCanvasTextVerticalMetricOffset',
+        'wrapTextByWords'
+    ], function initialize() {
+        this.setExport('getCanvasTextVerticalMetricOffset', () => 0);
         this.setExport('wrapTextByWords', wrapTextByWords);
     }, { context, identifier: 'synthetic:util/font_util.js' });
 

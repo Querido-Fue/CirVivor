@@ -1,6 +1,6 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render } from "display/display_system.js";
-import { createFontString } from "util/font_util.js";
+import { createFontString, DEFAULT_FONT_FAMILY } from "util/font_util.js";
 
 /**
  * @class TextElement
@@ -35,7 +35,7 @@ export class TextElement extends BaseUIElement {
         if (!properties) return;
         this.text = properties.text || '';
         this.align = properties.align || 'center';
-        this.font = properties.font || 'arial';
+        this.font = properties.font || DEFAULT_FONT_FAMILY;
         this.fontWeight = properties.fontWeight || "";
         this.size = properties.size || 12;
         this.color = properties.color;

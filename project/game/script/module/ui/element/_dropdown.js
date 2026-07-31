@@ -94,8 +94,7 @@ export class DropdownElement extends BaseUIElement {
 
         this.font = properties.font || createFontString({
             weight: 600,
-            sizePx: this.height * 0.5,
-            family: "Pretendard Variable, arial"
+            sizePx: this.height * 0.5
         });
 
         this.hoverScaleMultiplier = 1.03;

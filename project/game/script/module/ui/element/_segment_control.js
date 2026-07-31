@@ -43,8 +43,7 @@ export class SegmentControlElement extends BaseUIElement {
 
         this.font = properties.font || createFontString({
             weight: 600,
-            sizePx: this.height * 0.55,
-            family: "Pretendard Variable, arial"
+            sizePx: this.height * 0.55
         });
 
 
@@ -210,8 +209,7 @@ export class SegmentControlElement extends BaseUIElement {
 
             const fontToUse = this.font || createFontString({
                 weight: 600,
-                sizePx: this.height * 0.55,
-                family: "Pretendard Variable, arial"
+                sizePx: this.height * 0.55
             });
 
             render(this.layer, {
