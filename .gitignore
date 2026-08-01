@@ -8,8 +8,6 @@
 !project/license
 !project/license/**
 !package.json
-!guide/
-!guide/domain/
 
 project/game/save/
 project/game/script/lib/
@@ -18,7 +16,7 @@ project/game/script/lib/
 *.[mM][dD]
 ![Rr][Ee][Aa][Dd][Mm][Ee].[mM][dD]
 
-# Keep the agent entry guide and authoritative ingame plan in version control.
-!AGENT_GUIDE.md
-!guide/ingame_plan/
-!guide/ingame_plan/**
+# Agent documentation is local and intentionally not versioned.
+/AGENT_GUIDE.md
+/guide/
+/delete/
