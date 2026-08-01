@@ -581,6 +581,7 @@ export class GpuCircleBodySimulation {
         this.lastDeathEventCount = 0;
         this.lastDeathEventOverflowCount = 0;
         this.canvasHasDrawnBodies = false;
+        this.pendingComposerCanvasTransition = null;
         this.lastFixedDelta = 1 / 60;
         this.renderOriginScratch = { x: 0, y: 0 };
         this.shaderStateScratch = {};
@@ -1260,9 +1261,17 @@ export class GpuCircleBodySimulation {
      * @returns {boolean} draw 또는 clear 제출 여부입니다.
      */
     draw(camera) {
+        const frameComposer = this.#getActiveFrameComposer();
         if (this.requiresAuthoritativeRebuild && !this.#isOverflowDegradedState()) {
             if (!this.canvasHasDrawnBodies) {
                 return false;
+            }
+            if (frameComposer) {
+                return this.#encodeComposerCanvasTransition(
+                    frameComposer,
+                    false,
+                    () => frameComposer.clearCanvas({ r: 0, g: 0, b: 0, a: 0 })
+                );
             }
             const cleared = this.platform.clearCanvas({ r: 0, g: 0, b: 0, a: 0 });
             if (cleared) {
@@ -1273,6 +1282,13 @@ export class GpuCircleBodySimulation {
         if (this.activeBodyCount === 0) {
             if (!this.canvasHasDrawnBodies) {
                 return false;
+            }
+            if (frameComposer) {
+                return this.#encodeComposerCanvasTransition(
+                    frameComposer,
+                    false,
+                    () => frameComposer.clearCanvas({ r: 0, g: 0, b: 0, a: 0 })
+                );
             }
             const cleared = this.platform.clearCanvas({ r: 0, g: 0, b: 0, a: 0 });
             if (cleared) {
@@ -1288,6 +1304,28 @@ export class GpuCircleBodySimulation {
             || typeof camera.worldToViewport !== 'function'
             || typeof camera.getScale !== 'function') {
             throw new TypeError('GPU circle body draw에는 WorldCamera2D projection이 필요합니다.');
+        }
+
+        if (frameComposer) {
+            camera.worldToViewport(0, 0, this.renderOriginScratch);
+            return this.#encodeComposerCanvasTransition(
+                frameComposer,
+                true,
+                () => frameComposer.encodeCanvasPass((pass, context) => {
+                    if (!this.#isCurrentComposerContext(context)) {
+                        throw new Error('GPU circle composer frame context가 현재 자원과 다릅니다.');
+                    }
+                    this.#writeRenderParams(camera, {
+                        width: context.width,
+                        height: context.height,
+                        format: context.format
+                    });
+                    pass.setPipeline(this.pipelines.render);
+                    pass.setBindGroup(0, this.bindGroups.renderBodies);
+                    pass.setBindGroup(1, this.bindGroups.renderParams);
+                    pass.drawIndirect(this.buffers.drawIndirect, 0);
+                })
+            );
         }
 
         let target = this.platform.acquireFrameTarget();
@@ -1329,6 +1367,82 @@ export class GpuCircleBodySimulation {
         this.platform.markCanvasDrawn();
         this.canvasHasDrawnBodies = true;
         return true;
+    }
+
+    #getActiveFrameComposer() {
+        const frameComposer = this.platform.getFrameComposer?.();
+        return frameComposer?.isFrameActive?.() === true ? frameComposer : null;
+    }
+
+    #isCurrentComposerContext(context) {
+        return Boolean(
+            context
+            && context.device === this.device
+            && context.deviceGeneration === this.deviceGeneration
+            && context.format === this.canvasFormat
+            && Number.isFinite(context.width)
+            && context.width > 0
+            && Number.isFinite(context.height)
+            && context.height > 0
+            && context.encoder
+            && context.target
+            && context.target.device === context.device
+            && context.target.deviceGeneration === context.deviceGeneration
+            && context.target.format === context.format
+        );
+    }
+
+    #encodeComposerCanvasTransition(frameComposer, nextValue, encode) {
+        const pending = this.pendingComposerCanvasTransition;
+        if (pending) {
+            return pending.frameComposer === frameComposer
+                && pending.nextValue === nextValue;
+        }
+
+        if (typeof frameComposer.deferFrameCallbacks !== 'function'
+            || typeof encode !== 'function') {
+            return false;
+        }
+        const transition = { frameComposer, nextValue };
+        this.pendingComposerCanvasTransition = transition;
+        let registered = false;
+        try {
+            registered = frameComposer.deferFrameCallbacks({
+                committed: () => {
+                    if (this.pendingComposerCanvasTransition !== transition) {
+                        return;
+                    }
+                    this.pendingComposerCanvasTransition = null;
+                    if (!this.destroyed) {
+                        this.canvasHasDrawnBodies = nextValue;
+                    }
+                },
+                aborted: () => {
+                    if (this.pendingComposerCanvasTransition === transition) {
+                        this.pendingComposerCanvasTransition = null;
+                    }
+                }
+            }) === true;
+        } catch {
+            registered = false;
+        }
+        if (!registered) {
+            if (this.pendingComposerCanvasTransition === transition) {
+                this.pendingComposerCanvasTransition = null;
+            }
+            return false;
+        }
+
+        let encoded = false;
+        try {
+            encoded = encode() === true;
+        } catch {
+            encoded = false;
+        }
+        if (!encoded && this.pendingComposerCanvasTransition === transition) {
+            this.pendingComposerCanvasTransition = null;
+        }
+        return encoded;
     }
 
     /**
@@ -1525,6 +1639,7 @@ export class GpuCircleBodySimulation {
         this.slotHandles.fill(null);
         this.handleToSlot.clear();
         this.freeSlots.length = 0;
+        this.pendingComposerCanvasTransition = null;
         this.canvasHasDrawnBodies = false;
         this.state = 'destroyed';
     }

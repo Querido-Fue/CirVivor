@@ -387,6 +387,84 @@ test('READY 서비스는 premultiplied context, limits, frame target, clear/draw
     assert.equal(harness.records.deviceDestroyCount, 1);
 });
 
+test('frame composer attachment는 stable identity를 노출하고 detach와 service destroy에서 참조만 끊는다', async () => {
+    const namespace = await loadServiceModule();
+    let composerDestroyCount = 0;
+    const composerPort = Object.freeze({
+        id: 'frame-composer-port',
+        destroy() {
+            composerDestroyCount += 1;
+        }
+    });
+    const service = new namespace.WebGpuPlatformService({
+        canvas: null,
+        navigatorObject: {},
+        secureContext: false
+    });
+    const port = service.getPort();
+
+    assert.strictEqual(service.getPort(), port);
+    assert.equal(port.getFrameComposer(), null);
+    assert.strictEqual(service.attachFrameComposer(composerPort), composerPort);
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.strictEqual(service.attachFrameComposer(composerPort), composerPort);
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.equal(service.attachFrameComposer(null), null);
+    assert.equal(port.getFrameComposer(), null);
+    assert.throws(
+        () => service.attachFrameComposer('invalid-port'),
+        /객체, 함수 또는 null/
+    );
+
+    assert.strictEqual(service.attachFrameComposer(composerPort), composerPort);
+    service.destroy();
+    assert.equal(port.getFrameComposer(), null);
+    assert.equal(composerDestroyCount, 0);
+    assert.equal(service.attachFrameComposer(composerPort), null);
+    assert.equal(port.getFrameComposer(), null);
+    assert.equal(composerDestroyCount, 0);
+});
+
+test('frame composer attachment는 reinitialize와 device loss 복구에서 유지되고 자원을 직접 파괴하지 않는다', async () => {
+    const harness = createReadyHarness(3);
+    const namespace = await loadServiceModule();
+    let composerDestroyCount = 0;
+    const composerPort = {
+        destroy() {
+            composerDestroyCount += 1;
+        }
+    };
+    const service = new namespace.WebGpuPlatformService({
+        canvas: harness.canvas,
+        navigatorObject: { gpu: harness.gpu },
+        secureContext: true
+    });
+    const port = service.getPort();
+
+    assert.strictEqual(service.attachFrameComposer(composerPort), composerPort);
+    assert.equal((await service.init()).deviceGeneration, 1);
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+
+    const reinitialized = await service.reinitialize();
+    assert.equal(reinitialized.status, 'ready');
+    assert.equal(reinitialized.deviceGeneration, 2);
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.equal(composerDestroyCount, 0);
+
+    harness.devices[1].resolveLoss({ reason: 'unknown', message: 'composer recovery' });
+    await flushUntil(
+        () => service.getState().status === 'ready'
+            && service.getState().deviceGeneration === 3,
+        'composer attachment device generation 3 복구'
+    );
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.equal(composerDestroyCount, 0);
+
+    service.destroy();
+    assert.equal(port.getFrameComposer(), null);
+    assert.equal(composerDestroyCount, 0);
+});
+
 test('canvas signal은 snapshot 없이 clear→draw 순서로 매 프레임 surface revision을 재무장한다', async () => {
     const harness = createReadyHarness();
     const namespace = await loadServiceModule();

@@ -413,13 +413,22 @@ export class SystemHandler {
         endPerformanceSection('frame.update.total', updateStart);
 
         if (executionPolicy.renderFrame) {
-            const drawStart = beginPerformanceSection();
-            this.draw(executionPolicy);
-            endPerformanceSection('frame.draw.total', drawStart);
-            if (this.displaySystem.webGLHandler) {
-                const flushStart = beginPerformanceSection();
-                this.displaySystem.webGLHandler.flushAll();
-                endPerformanceSection('frame.flush.final', flushStart);
+            const webGpuFrameStarted = this.displaySystem.beginWebGpuFrame?.() === true;
+            let presentationCompleted = false;
+            try {
+                const drawStart = beginPerformanceSection();
+                this.draw(executionPolicy);
+                endPerformanceSection('frame.draw.total', drawStart);
+                if (this.displaySystem.webGLHandler) {
+                    const flushStart = beginPerformanceSection();
+                    this.displaySystem.webGLHandler.flushAll();
+                    endPerformanceSection('frame.flush.final', flushStart);
+                }
+                presentationCompleted = true;
+            } finally {
+                if (webGpuFrameStarted) {
+                    this.displaySystem.endWebGpuFrame?.(presentationCompleted);
+                }
             }
         }
     }

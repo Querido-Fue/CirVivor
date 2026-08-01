@@ -77,6 +77,7 @@ export class WebGpuPlatformService {
         this.recoveryScheduled = false;
         this.destroyed = false;
         this.stateListeners = new Set();
+        this.frameComposerPort = null;
 
         const service = this;
         this.port = Object.freeze({
@@ -94,6 +95,9 @@ export class WebGpuPlatformService {
             },
             getDeviceGeneration() {
                 return service.deviceGeneration;
+            },
+            getFrameComposer() {
+                return service.frameComposerPort;
             },
             acquireFrameTarget() {
                 return service.acquireFrameTarget();
@@ -167,6 +171,26 @@ export class WebGpuPlatformService {
      */
     getPort() {
         return this.port;
+    }
+
+    /**
+     * Display owner가 관리하는 frame composer port를 연결하거나 분리합니다.
+     * device 재초기화와 loss 복구는 연결 identity를 유지하고, service destroy는 참조만 분리합니다.
+     * @param {object|Function|null} frameComposerPort - 연결할 composer port 또는 분리용 null입니다.
+     * @returns {object|Function|null} 연결된 동일 port이거나, service가 destroyed 상태면 null입니다.
+     */
+    attachFrameComposer(frameComposerPort) {
+        if (this.destroyed) {
+            this.frameComposerPort = null;
+            return null;
+        }
+        if (frameComposerPort !== null
+            && typeof frameComposerPort !== 'object'
+            && typeof frameComposerPort !== 'function') {
+            throw new TypeError('WebGPU frame composer port는 객체, 함수 또는 null이어야 합니다.');
+        }
+        this.frameComposerPort = frameComposerPort;
+        return frameComposerPort;
     }
 
     /**
@@ -377,6 +401,7 @@ export class WebGpuPlatformService {
         }
 
         this.destroyed = true;
+        this.frameComposerPort = null;
         this.probeSerial += 1;
         this.recoveryScheduled = false;
         this.initPromise = null;
