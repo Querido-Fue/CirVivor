@@ -1,4 +1,6 @@
 const UINT8_MAX = 0xff;
+const INT32_MIN = -0x80000000;
+const INT32_MAX = 0x7fffffff;
 const UINT32_MAX = 0xffffffff;
 const LITTLE_ENDIAN = true;
 
@@ -34,7 +36,9 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         FLOW_FIELD_INDEX: 16,
         FLOW_SPEED: 20,
         ENTITY_ID: 24,
-        INCARNATION: 28
+        // 원본 simulation record의 마지막 reserved word를 stable incarnation으로 사용합니다.
+        INCARNATION: 28,
+        RESERVED_INCARNATION: 28
     }),
     TEMPORARY: Object.freeze({
         STRIDE: 32,
@@ -57,27 +61,77 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         RADIUS: 20,
         BODY_ID: 24,
         RESERVED: 28
+    }),
+    CONTACT_HANDLER: Object.freeze({
+        STRIDE: 32,
+        DAMAGE_SELF: 0,
+        DAMAGE_OTHER: 4,
+        DAMAGE_FALLOFF: 8,
+        FIRE_TIMER: 12,
+        FLAGS: 16,
+        CHAINING: 20,
+        DAMAGE_REPORT_ID: 24,
+        SLOW_TIMER: 28
     })
+});
+
+export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
+    ALIVE: 1 << 0,
+    USE_FLOW: 1 << 1,
+    COUNT_AS_KILL: 1 << 2,
+    EXPLODE_ON_DEATH: 1 << 3,
+    GOLDEN: 1 << 4
 });
 
 export const GPU_CIRCLE_BODY_META = Object.freeze({
     BYTE_MASK: UINT8_MAX,
     LAYER_SHIFT: 0,
     COLLISION_MASK_SHIFT: 8,
+    SENSOR_MASK_SHIFT: 16,
     SIMULATION_FLAGS_SHIFT: 8,
-    ALIVE_FLAG: 1,
-    USE_FLOW_FLAG: 2,
-    ALIVE_BIT: 1 << 8,
-    USE_FLOW_BIT: 2 << 8
+    ALIVE_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE,
+    USE_FLOW_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.USE_FLOW,
+    COUNT_AS_KILL_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL,
+    EXPLODE_ON_DEATH_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH,
+    GOLDEN_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN,
+    IS_GOLDEN_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN,
+    ALIVE_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE << 8,
+    USE_FLOW_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.USE_FLOW << 8,
+    COUNT_AS_KILL_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL << 8,
+    EXPLODE_ON_DEATH_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH << 8,
+    GOLDEN_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN << 8
 });
 
 /**
  * 추출한 GPU collision protocol의 layer bit입니다.
  * legacy CPU CollisionHandler의 숫자와 호환되는 값이 아니므로 서로 섞지 않습니다.
  */
-export const GPU_CIRCLE_BODY_COLLISION_LAYER = Object.freeze({
+export const GPU_CIRCLE_BODY_LAYER = Object.freeze({
     ENEMY: 1 << 0,
+    PROJECTILE: 1 << 1,
+    EXPLOSION: 1 << 2,
+    EFFECT: 1 << 3,
+    FLAME: 1 << 4,
+    GRENADE: 1 << 5,
+    LAYER_7: 1 << 6,
     TERRAIN: 1 << 7
+});
+
+/** 기존 enemy-only import 이름을 유지하는 호환 alias입니다. */
+export const GPU_CIRCLE_BODY_COLLISION_LAYER = GPU_CIRCLE_BODY_LAYER;
+
+export const GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG = Object.freeze({
+    KILL_IF_OTHER_TERRAIN: 1 << 0,
+    CLOSEST_ONLY: 1 << 1,
+    SLOW: 1 << 2
+});
+
+export const GPU_CIRCLE_BODY_FIXED_POINT = Object.freeze({
+    HEALTH_SCALE: 100
+});
+
+export const GPU_CIRCLE_BODY_LIFETIME = Object.freeze({
+    IMMORTAL: -1
 });
 
 export const GPU_CIRCLE_BODY_FLOW = Object.freeze({
@@ -147,6 +201,83 @@ function requireNonNegativeFloat32(value, fieldName) {
 }
 
 /**
+ * 유한 수명을 Float32로 정규화합니다. -1은 immortal sentinel이고 그 외 값은 0 이상입니다.
+ * @param {*} value - 초 단위 수명입니다.
+ * @param {string} [fieldName='lifetime'] - 오류에 표시할 필드명입니다.
+ * @returns {number} -1 또는 0 이상 Float32 값입니다.
+ */
+export function normalizeGpuCircleBodyLifetime(
+    value = GPU_CIRCLE_BODY_LIFETIME.IMMORTAL,
+    fieldName = 'lifetime'
+) {
+    const lifetime = requireFloat32(value, fieldName);
+    if (lifetime !== GPU_CIRCLE_BODY_LIFETIME.IMMORTAL && lifetime < 0) {
+        throw new RangeError(`${fieldName}은(는) -1(immortal) 또는 0 이상이어야 합니다.`);
+    }
+    return lifetime;
+}
+
+/**
+ * signed int32 값을 검증합니다.
+ * @param {*} value - 검사할 값입니다.
+ * @param {string} fieldName - 오류에 표시할 필드명입니다.
+ * @returns {number} int32 값입니다.
+ */
+function requireInt32(value, fieldName) {
+    const numberValue = Number(value);
+    if (!Number.isSafeInteger(numberValue)
+        || numberValue < INT32_MIN
+        || numberValue > INT32_MAX) {
+        throw new RangeError(`${fieldName}은(는) int32 범위의 정수여야 합니다.`);
+    }
+    return numberValue;
+}
+
+/**
+ * gameplay health/damage 값을 shader atomic용 signed fixed-point int32로 변환합니다.
+ * WGSL의 `i32(f32(value) * f32(scale))`와 동일하게 입력과 곱셈 결과를 각각
+ * Float32로 반올림한 뒤 0 방향으로 절삭합니다.
+ * @param {*} value - 변환할 gameplay 값입니다.
+ * @param {*} [scale=100] - 양의 정수 scale입니다.
+ * @returns {number} int32 fixed-point 값입니다.
+ */
+export function encodeGpuCircleBodyFixedPoint(
+    value,
+    scale = GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE
+) {
+    const numberValue = Number(value);
+    const scaleValue = Number(scale);
+    if (!Number.isFinite(numberValue)) {
+        throw new TypeError('fixed-point value는 유한한 숫자여야 합니다.');
+    }
+    if (!Number.isSafeInteger(scaleValue) || scaleValue <= 0) {
+        throw new RangeError('fixed-point scale은 양의 안전한 정수여야 합니다.');
+    }
+    const floatValue = Math.fround(numberValue);
+    const floatScale = Math.fround(scaleValue);
+    const scaledFloat = Math.fround(floatValue * floatScale);
+    return requireInt32(Math.trunc(scaledFloat), 'fixedPoint');
+}
+
+/**
+ * shader atomic fixed-point int32를 gameplay 숫자로 복원합니다.
+ * @param {*} value - int32 fixed-point 값입니다.
+ * @param {*} [scale=100] - encode에 사용한 scale입니다.
+ * @returns {number} gameplay 값입니다.
+ */
+export function decodeGpuCircleBodyFixedPoint(
+    value,
+    scale = GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE
+) {
+    const fixedPoint = requireInt32(value, 'fixedPoint');
+    const scaleValue = Number(scale);
+    if (!Number.isSafeInteger(scaleValue) || scaleValue <= 0) {
+        throw new RangeError('fixed-point scale은 양의 안전한 정수여야 합니다.');
+    }
+    return fixedPoint / scaleValue;
+}
+
+/**
  * uint8 값을 검증합니다.
  * @param {*} value - 검사할 값입니다.
  * @param {string} fieldName - 오류에 표시할 필드명입니다.
@@ -173,27 +304,34 @@ function requireUint32(value, fieldName) {
 }
 
 /**
- * physics meta의 layer/collision mask를 pack합니다.
+ * physics meta의 layer/collision/sensor mask를 pack합니다.
  * @param {*} layerMask - low 8-bit layer mask입니다.
  * @param {*} collisionMask - 다음 8-bit collision mask입니다.
+ * @param {*} [sensorMask=0] - 그 다음 8-bit gameplay sensor mask입니다.
  * @returns {number} packed uint32 meta입니다.
  */
-export function packGpuCirclePhysicsMeta(layerMask, collisionMask) {
+export function packGpuCirclePhysicsMeta(layerMask, collisionMask, sensorMask = 0) {
     const layer = requireUint8(layerMask, 'layerMask');
     const collision = requireUint8(collisionMask, 'collisionMask');
-    return (layer | (collision << GPU_CIRCLE_BODY_META.COLLISION_MASK_SHIFT)) >>> 0;
+    const sensor = requireUint8(sensorMask, 'sensorMask');
+    return (
+        layer
+        | (collision << GPU_CIRCLE_BODY_META.COLLISION_MASK_SHIFT)
+        | (sensor << GPU_CIRCLE_BODY_META.SENSOR_MASK_SHIFT)
+    ) >>> 0;
 }
 
 /**
  * physics meta를 collision-only 필드로 unpack합니다.
  * @param {*} meta - packed uint32 meta입니다.
- * @returns {{layerMask:number,collisionMask:number}} unpack 결과입니다.
+ * @returns {{layerMask:number,collisionMask:number,sensorMask:number}} unpack 결과입니다.
  */
 export function unpackGpuCirclePhysicsMeta(meta) {
     const packed = requireUint32(meta, 'physicsMeta');
     return {
         layerMask: packed & UINT8_MAX,
-        collisionMask: (packed >>> GPU_CIRCLE_BODY_META.COLLISION_MASK_SHIFT) & UINT8_MAX
+        collisionMask: (packed >>> GPU_CIRCLE_BODY_META.COLLISION_MASK_SHIFT) & UINT8_MAX,
+        sensorMask: (packed >>> GPU_CIRCLE_BODY_META.SENSOR_MASK_SHIFT) & UINT8_MAX
     };
 }
 
@@ -215,7 +353,7 @@ export function packGpuCircleSimulationMeta(
 /**
  * simulation meta를 collision-only 필드로 unpack합니다.
  * @param {*} meta - packed uint32 meta입니다.
- * @returns {{layerMask:number,flags:number,alive:boolean}} unpack 결과입니다.
+ * @returns {{layerMask:number,flags:number,alive:boolean,useFlow:boolean,countAsKill:boolean,explodeOnDeath:boolean,golden:boolean}} unpack 결과입니다.
  */
 export function unpackGpuCircleSimulationMeta(meta) {
     const packed = requireUint32(meta, 'simulationMeta');
@@ -223,15 +361,24 @@ export function unpackGpuCircleSimulationMeta(meta) {
     return {
         layerMask: packed & UINT8_MAX,
         flags,
-        alive: (flags & GPU_CIRCLE_BODY_META.ALIVE_FLAG) === GPU_CIRCLE_BODY_META.ALIVE_FLAG
+        alive: (flags & GPU_CIRCLE_BODY_META.ALIVE_FLAG) === GPU_CIRCLE_BODY_META.ALIVE_FLAG,
+        useFlow: (flags & GPU_CIRCLE_BODY_META.USE_FLOW_FLAG)
+            === GPU_CIRCLE_BODY_META.USE_FLOW_FLAG,
+        countAsKill: (flags & GPU_CIRCLE_BODY_META.COUNT_AS_KILL_FLAG)
+            === GPU_CIRCLE_BODY_META.COUNT_AS_KILL_FLAG,
+        explodeOnDeath: (flags & GPU_CIRCLE_BODY_META.EXPLODE_ON_DEATH_FLAG)
+            === GPU_CIRCLE_BODY_META.EXPLODE_ON_DEATH_FLAG,
+        golden: (flags & GPU_CIRCLE_BODY_META.GOLDEN_FLAG)
+            === GPU_CIRCLE_BODY_META.GOLDEN_FLAG
     };
 }
 
 /**
  * collision-only ABI storage를 생성합니다.
  * @param {*} capacity - 최대 body 수입니다.
- * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer}}
- * 생성된 storage입니다.
+ * 반환 buffer들은 GPU 업로드 전 CPU 권위 mirror입니다.
+ * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer}}
+ * 생성된 CPU mirror storage입니다.
  */
 export function createGpuCircleBodyAbiStorage(capacity) {
     const safeCapacity = requireCapacity(capacity);
@@ -242,7 +389,12 @@ export function createGpuCircleBodyAbiStorage(capacity) {
         simulationBuffer: new ArrayBuffer(
             GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE * safeCapacity
         ),
-        temporaryBuffer: new ArrayBuffer(GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * safeCapacity)
+        temporaryBuffer: new ArrayBuffer(
+            GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * safeCapacity
+        ),
+        contactHandlerBuffer: new ArrayBuffer(
+            GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * safeCapacity
+        )
     };
 }
 
@@ -265,7 +417,10 @@ function requireStorage(storage) {
             !== GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE * capacity
         || !(storage.temporaryBuffer instanceof ArrayBuffer)
         || storage.temporaryBuffer.byteLength
-            !== GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * capacity) {
+            !== GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * capacity
+        || !(storage.contactHandlerBuffer instanceof ArrayBuffer)
+        || storage.contactHandlerBuffer.byteLength
+            !== GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * capacity) {
         throw new TypeError('GPU circle body storage의 buffer 크기 또는 타입이 ABI와 다릅니다.');
     }
     return capacity;
@@ -340,6 +495,43 @@ function readSpawnVelocity(spawn, axis) {
     return requireFloat32(value, `velocity.${axis}`);
 }
 
+function resolveSpawnSimulationFlags(spawn, useFlow) {
+    if (spawn.simulationFlags !== undefined) {
+        return requireUint8(spawn.simulationFlags, 'simulationFlags');
+    }
+    let flags = spawn.alive === false ? 0 : GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE;
+    if (useFlow) {
+        flags |= GPU_CIRCLE_BODY_SIMULATION_FLAG.USE_FLOW;
+    }
+    if (spawn.countAsKill === true) {
+        flags |= GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL;
+    }
+    if (spawn.explodeOnDeath === true) {
+        flags |= GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH;
+    }
+    if (spawn.golden === true || spawn.isGolden === true) {
+        flags |= GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN;
+    }
+    return flags;
+}
+
+function assertOptionalFlagMatches(spawn, fieldNames, flags, flag, label) {
+    let expected;
+    for (const fieldName of fieldNames) {
+        if (typeof spawn[fieldName] === 'boolean') {
+            expected = spawn[fieldName];
+            break;
+        }
+    }
+    if (expected === undefined) {
+        return;
+    }
+    const enabled = (flags & flag) === flag;
+    if (enabled !== expected) {
+        throw new RangeError(`simulationMeta의 ${label} flag와 입력이 일치해야 합니다.`);
+    }
+}
+
 /**
  * spawn meta를 검증하고 physics/simulation meta의 layer 동기화를 보장합니다.
  * @param {*} spawn - spawn 입력입니다.
@@ -347,13 +539,16 @@ function readSpawnVelocity(spawn, axis) {
  */
 function resolveSpawnMeta(spawn, useFlow) {
     const physicsMeta = spawn.physicsMeta === undefined
-        ? packGpuCirclePhysicsMeta(spawn.layerMask ?? 0, spawn.collisionMask ?? 0)
+        ? packGpuCirclePhysicsMeta(
+            spawn.layerMask ?? 0,
+            spawn.collisionMask ?? 0,
+            spawn.sensorMask ?? 0
+        )
         : requireUint32(spawn.physicsMeta, 'physicsMeta');
     const simulationMeta = spawn.simulationMeta === undefined
         ? packGpuCircleSimulationMeta(
             spawn.layerMask ?? unpackGpuCirclePhysicsMeta(physicsMeta).layerMask,
-            (spawn.alive === false ? 0 : GPU_CIRCLE_BODY_META.ALIVE_FLAG)
-                | (useFlow ? GPU_CIRCLE_BODY_META.USE_FLOW_FLAG : 0)
+            resolveSpawnSimulationFlags(spawn, useFlow)
         )
         : requireUint32(spawn.simulationMeta, 'simulationMeta');
     const physicsLayer = unpackGpuCirclePhysicsMeta(physicsMeta).layerMask;
@@ -372,6 +567,32 @@ function resolveSpawnMeta(spawn, useFlow) {
     const metaUsesFlow = (simulationFlags & GPU_CIRCLE_BODY_META.USE_FLOW_FLAG) !== 0;
     if (metaUsesFlow !== useFlow) {
         throw new RangeError('simulationMeta의 USE_FLOW flag와 flow 입력이 일치해야 합니다.');
+    }
+    assertOptionalFlagMatches(
+        spawn,
+        ['countAsKill'],
+        simulationFlags,
+        GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL,
+        'COUNT_AS_KILL'
+    );
+    assertOptionalFlagMatches(
+        spawn,
+        ['explodeOnDeath'],
+        simulationFlags,
+        GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH,
+        'EXPLODE_ON_DEATH'
+    );
+    assertOptionalFlagMatches(
+        spawn,
+        ['golden', 'isGolden'],
+        simulationFlags,
+        GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN,
+        'GOLDEN'
+    );
+    if (spawn.sensorMask !== undefined
+        && unpackGpuCirclePhysicsMeta(physicsMeta).sensorMask
+            !== requireUint8(spawn.sensorMask, 'sensorMask')) {
+        throw new RangeError('physicsMeta의 sensor mask와 sensorMask 입력이 일치해야 합니다.');
     }
     return { physicsMeta, simulationMeta };
 }
@@ -429,6 +650,159 @@ function resolveSpawnIdentity(spawn) {
     return { entityId, incarnation };
 }
 
+function resolveSpawnHealthFixedPoint(spawn) {
+    if (spawn.healthFixedPoint !== undefined) {
+        const healthFixedPoint = requireInt32(
+            spawn.healthFixedPoint,
+            'healthFixedPoint'
+        );
+        if (healthFixedPoint < 0) {
+            throw new RangeError('spawn healthFixedPoint는 0 이상이어야 합니다.');
+        }
+        return healthFixedPoint;
+    }
+    const health = requireNonNegativeFloat32(
+        spawn.health ?? (spawn.alive === false ? 0 : 1),
+        'health'
+    );
+    return encodeGpuCircleBodyFixedPoint(health);
+}
+
+function readContactHandlerValue(handler, camelName, sourceName, fallback = 0) {
+    return handler?.[camelName] ?? handler?.[sourceName] ?? fallback;
+}
+
+function requireNonNegativeContactDamage(value, fieldName) {
+    const damage = requireNonNegativeFloat32(value, fieldName);
+    // WGSL은 contact damage를 atomic health와 같은 ×100 i32 단위로 변환합니다.
+    // shader 변환 범위를 넘는 authored 값은 GPU에 보내기 전에 거부합니다.
+    encodeGpuCircleBodyFixedPoint(damage);
+    return damage;
+}
+
+/**
+ * contact handler 한 slot을 원본 32-byte layout으로 완전히 씁니다.
+ * @param {*} storage - ABI CPU mirror storage입니다.
+ * @param {*} index - 쓸 body slot입니다.
+ * @param {*} [handler={}] - damage/status/contact 정책입니다.
+ * @returns {number} 쓴 slot index입니다.
+ */
+export function writeGpuCircleContactHandler(storage, index, handler = {}) {
+    const capacity = requireStorage(storage);
+    const slot = requireSlotIndex(index, capacity);
+    if (!handler || typeof handler !== 'object') {
+        throw new TypeError('contactHandler는 객체여야 합니다.');
+    }
+    const offset = slot * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE;
+    const view = new DataView(storage.contactHandlerBuffer);
+    view.setFloat32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_SELF,
+        requireNonNegativeContactDamage(
+            readContactHandlerValue(handler, 'damageSelf', 'damage_self'),
+            'contactHandler.damageSelf'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_OTHER,
+        requireNonNegativeContactDamage(
+            readContactHandlerValue(handler, 'damageOther', 'damage_other'),
+            'contactHandler.damageOther'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_FALLOFF,
+        requireNonNegativeFloat32(
+            readContactHandlerValue(handler, 'damageFalloff', 'damage_falloff'),
+            'contactHandler.damageFalloff'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FIRE_TIMER,
+        requireNonNegativeFloat32(
+            readContactHandlerValue(handler, 'fireTimer', 'fire_timer'),
+            'contactHandler.fireTimer'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FLAGS,
+        requireUint32(handler.flags ?? 0, 'contactHandler.flags'),
+        LITTLE_ENDIAN
+    );
+    view.setInt32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.CHAINING,
+        requireInt32(handler.chaining ?? 0, 'contactHandler.chaining'),
+        LITTLE_ENDIAN
+    );
+    view.setInt32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_REPORT_ID,
+        requireInt32(
+            readContactHandlerValue(handler, 'damageReportId', 'damage_report_id', -1),
+            'contactHandler.damageReportId'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.SLOW_TIMER,
+        requireNonNegativeFloat32(
+            readContactHandlerValue(handler, 'slowTimer', 'slow_timer'),
+            'contactHandler.slowTimer'
+        ),
+        LITTLE_ENDIAN
+    );
+    return slot;
+}
+
+/**
+ * contact handler 한 slot을 읽습니다.
+ * @param {*} storage - ABI CPU mirror storage입니다.
+ * @param {*} index - 읽을 body slot입니다.
+ * @returns {object} contact handler snapshot입니다.
+ */
+export function readGpuCircleContactHandler(storage, index) {
+    const capacity = requireStorage(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const offset = slot * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE;
+    const view = new DataView(storage.contactHandlerBuffer);
+    return {
+        damageSelf: view.getFloat32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_SELF,
+            LITTLE_ENDIAN
+        ),
+        damageOther: view.getFloat32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_OTHER,
+            LITTLE_ENDIAN
+        ),
+        damageFalloff: view.getFloat32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_FALLOFF,
+            LITTLE_ENDIAN
+        ),
+        fireTimer: view.getFloat32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FIRE_TIMER,
+            LITTLE_ENDIAN
+        ),
+        flags: view.getUint32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FLAGS,
+            LITTLE_ENDIAN
+        ),
+        chaining: view.getInt32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.CHAINING,
+            LITTLE_ENDIAN
+        ),
+        damageReportId: view.getInt32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_REPORT_ID,
+            LITTLE_ENDIAN
+        ),
+        slowTimer: view.getFloat32(
+            offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.SLOW_TIMER,
+            LITTLE_ENDIAN
+        )
+    };
+}
+
 /**
  * spawn을 지정 slot에 완전히 씁니다. 재사용 slot의 임시 상태도 모두 초기화합니다.
  * @param {*} storage - ABI storage입니다.
@@ -455,6 +829,11 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
     const { useFlow, flowFieldIndex, flowSpeed } = resolveSpawnFlow(spawn);
     const { entityId, incarnation } = resolveSpawnIdentity(spawn);
     const { physicsMeta, simulationMeta } = resolveSpawnMeta(spawn, useFlow);
+    const lifetime = normalizeGpuCircleBodyLifetime(
+        spawn.lifetime ?? GPU_CIRCLE_BODY_LIFETIME.IMMORTAL
+    );
+    const healthFixedPoint = resolveSpawnHealthFixedPoint(spawn);
+    const timer = requireUint32(spawn.timer ?? 0, 'timer');
     const physicsOffset = slot * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
     const simulationOffset = slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
     const temporaryOffset = slot * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE;
@@ -505,17 +884,17 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
 
     simulationView.setFloat32(
         simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.LIFETIME,
-        0,
+        lifetime,
         LITTLE_ENDIAN
     );
     simulationView.setInt32(
         simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH,
-        0,
+        healthFixedPoint,
         LITTLE_ENDIAN
     );
     simulationView.setUint32(
         simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.TIMER,
-        0,
+        timer,
         LITTLE_ENDIAN
     );
     simulationView.setUint32(
@@ -584,6 +963,7 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
         flowFieldIndex,
         LITTLE_ENDIAN
     );
+    writeGpuCircleContactHandler(storage, slot, spawn.contactHandler ?? {});
     return slot;
 }
 
@@ -656,6 +1036,22 @@ export function readGpuCircleBody(storage, index) {
             physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.META,
             LITTLE_ENDIAN
         ),
+        lifetime: simulationView.getFloat32(
+            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.LIFETIME,
+            LITTLE_ENDIAN
+        ),
+        healthFixedPoint: simulationView.getInt32(
+            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH,
+            LITTLE_ENDIAN
+        ),
+        health: decodeGpuCircleBodyFixedPoint(simulationView.getInt32(
+            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH,
+            LITTLE_ENDIAN
+        )),
+        timer: simulationView.getUint32(
+            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.TIMER,
+            LITTLE_ENDIAN
+        ),
         simulationMeta: simulationView.getUint32(
             simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.META,
             LITTLE_ENDIAN
@@ -713,7 +1109,8 @@ export function readGpuCircleBody(storage, index) {
         previousFlowFieldIndex: temporaryView.getUint32(
             temporaryOffset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_FLOW_FIELD_INDEX,
             LITTLE_ENDIAN
-        )
+        ),
+        contactHandler: readGpuCircleContactHandler(storage, slot)
     };
 }
 

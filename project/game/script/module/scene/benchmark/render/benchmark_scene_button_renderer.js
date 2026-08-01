@@ -3,7 +3,7 @@ import { copySimulationMousePositionInto } from 'simulation/simulation_runtime.j
 import { isPointInRect } from 'util/geometry_util.js';
 import { createFontString } from 'util/font_util.js';
 import { clamp01 } from 'util/number_util.js';
-import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
+import { getBenchmarkColor } from './benchmark_scene_palette.js';
 
 const BUTTON_RADIUS = 10;
 const BUTTON_FONT_MIN_SIZE = 11;

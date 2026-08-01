@@ -42,6 +42,33 @@ function createSpawnIntent(spawnSequence = 0) {
     });
 }
 
+function createProjectileIntent(overrides = {}) {
+    return {
+        kindId: 'projectile',
+        definitionId: 'benchmark_round_01',
+        spawnSequence: 7,
+        sourceEntityId: 31,
+        sourceIncarnation: 4,
+        position: { x: 1, y: 2 },
+        velocity: { x: 30, y: -2 },
+        radius: 0.25,
+        inverseMass: 10,
+        bodyLayer: 2,
+        layerMask: 2,
+        collisionMask: 0,
+        sensorMask: 129,
+        health: 3,
+        lifetime: 2,
+        contactHandler: {
+            damageSelf: 1,
+            damageOther: 2.5,
+            flags: 1
+        },
+        alive: true,
+        ...overrides
+    };
+}
+
 function createFakeBackend(options = {}) {
     const bodies = new Map();
     const events = [];
@@ -151,6 +178,105 @@ test('request는 fixed 경계 전 backend를 호출하지 않고 due command를 
     assert.equal(registry.getActiveCount(), 1);
     assert.equal(registry.getReservedCount(), 0);
     assert.equal(backend.bodies.size, 1);
+    assert.equal(backend.events[1].bodies[0].definitionId, 'basic_circle_01');
+    assert.equal(backend.events[1].bodies[0].enemyDefinitionId, 'basic_circle_01');
+    assert.equal(backend.events[1].bodies[0].bodyLayer, 1);
+    assert.equal(backend.events[1].bodies[0].layerMask, 1);
+});
+
+test('generic projectile intent는 route 없이 canonical definition/layer와 nested gameplay 데이터를 보존한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 2 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+    const intent = createProjectileIntent();
+
+    assert.equal(owner.requestSpawn(intent, 3, 'projectile:7').accepted, true);
+    intent.position.x = 999;
+    intent.velocity.y = 999;
+    intent.contactHandler.damageOther = 999;
+
+    const committed = owner.commitAtFixedBoundary(3);
+    assert.equal(committed.state, 'committed');
+    assert.equal(committed.spawned.length, 1);
+    const body = backend.events[0].bodies[0];
+    assert.equal(body.kindId, 'projectile');
+    assert.equal(body.definitionId, 'benchmark_round_01');
+    assert.equal(body.enemyDefinitionId, undefined);
+    assert.equal(body.bodyLayer, 2);
+    assert.equal(body.layerMask, 2);
+    assert.deepEqual(JSON.parse(JSON.stringify(body.position)), { x: 1, y: 2 });
+    assert.deepEqual(JSON.parse(JSON.stringify(body.velocity)), { x: 30, y: -2 });
+    assert.deepEqual(JSON.parse(JSON.stringify(body.contactHandler)), {
+        damageSelf: 1,
+        damageOther: 2.5,
+        flags: 1
+    });
+    assert.equal(Object.isFrozen(body.position), true);
+    assert.equal(Object.isFrozen(body.contactHandler), true);
+    assert.equal(Number.isSafeInteger(body.entityId), true);
+    assert.equal(Number.isSafeInteger(body.incarnation), true);
+
+    const handle = committed.spawned[0].handle;
+    const view = registry.copyEntityView(handle, {});
+    assert.equal(view.kindId, 'projectile');
+    assert.equal(view.definitionId, 'benchmark_round_01');
+    assert.equal(view.metadata.definitionId, 'benchmark_round_01');
+    assert.equal(view.metadata.spawnSequence, 7);
+    assert.equal(view.metadata.sourceEntityId, 31);
+    assert.equal(view.metadata.sourceIncarnation, 4);
+});
+
+test('layer alias 불일치는 fail-fast하고 같은 command ID 재요청을 막지 않는다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 1 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+
+    assert.throws(
+        () => owner.requestSpawn(
+            createProjectileIntent({ layerMask: 4 }),
+            1,
+            'projectile:retry-layer'
+        ),
+        /bodyLayer.*layerMask/
+    );
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent(),
+            1,
+            'projectile:retry-layer'
+        ).accepted,
+        true
+    );
+});
+
+test('enemy intent만 gate/path/flow를 요구하고 projectile identity 주입은 거부한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 2 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+
+    assert.throws(
+        () => owner.requestSpawn({
+            kindId: 'enemy',
+            definitionId: 'enemy_without_route',
+            bodyLayer: 1
+        }, 1, 'enemy:missing-route'),
+        /gateId/
+    );
+    assert.throws(
+        () => owner.requestSpawn({
+            ...createProjectileIntent(),
+            incarnation: 99
+        }, 1, 'projectile:forged-identity'),
+        /WorldRegistry/
+    );
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent(),
+            1,
+            'projectile:no-route-required'
+        ).accepted,
+        true
+    );
 });
 
 test('일시 unavailable spawn은 예약을 정리하되 command를 보존해 같은 tick에 재시도한다', () => {

@@ -15,6 +15,17 @@ const { CoreIntegrity } = await loadGameModule(
 const { GameObjectSystem } = await loadGameModule(
     'ingame/object/game_object_system.js'
 );
+const { GameSystem } = await loadGameModule('ingame/game_system.js');
+const {
+    requestGpuBenchmarkEnemyBatch
+} = await loadGameModule(
+    'scene/benchmark/gpu_benchmark_enemy_spawn_adapter.js'
+);
+const {
+    requestGpuBenchmarkProjectileBatch
+} = await loadGameModule(
+    'scene/benchmark/gpu_benchmark_projectile_spawn_adapter.js'
+);
 const {
     GPU_CIRCLE_BODY_COLLISION_LAYER
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
@@ -31,6 +42,9 @@ class FakeEnemySimulationBackend {
         this.initialized = false;
         this.destroyed = false;
         this.spawnMode = 'accept';
+        this.fixedUpdateMode = 'accept';
+        this.runtimeState = 'gpu-ready';
+        this.recovering = false;
         this.replaceBodiesCallCount = 0;
         this.readbackBodiesCallCount = 0;
     }
@@ -95,8 +109,23 @@ class FakeEnemySimulationBackend {
         return this.bodiesByHandle.size > 0;
     }
 
-    fixedUpdate(delta) {
-        this.calls.push({ type: 'fixedUpdate', delta });
+    setFixedUpdateMode(mode) {
+        this.fixedUpdateMode = mode;
+    }
+
+    fixedUpdate(delta, sourceTick) {
+        this.calls.push({ type: 'fixedUpdate', delta, sourceTick });
+        if (this.fixedUpdateMode === 'backpressure-once') {
+            this.fixedUpdateMode = 'resume-after-backpressure';
+            this.runtimeState = 'gpu-backpressure';
+            this.recovering = true;
+            return false;
+        }
+        if (this.fixedUpdateMode === 'resume-after-backpressure') {
+            this.fixedUpdateMode = 'accept';
+            this.runtimeState = 'gpu-ready';
+            this.recovering = false;
+        }
         return true;
     }
 
@@ -122,11 +151,11 @@ class FakeEnemySimulationBackend {
     }
 
     getRuntimeState() {
-        return this.destroyed ? 'destroyed' : 'gpu-ready';
+        return this.destroyed ? 'destroyed' : this.runtimeState;
     }
 
     requiresRecovery() {
-        return false;
+        return this.recovering;
     }
 
     replaceBodies() {
@@ -150,6 +179,64 @@ class FakeEnemySimulationBackend {
     }
 }
 
+function createGameSceneDependencies(backend) {
+    return {
+        inputActionSource: {
+            isPressed() {
+                return false;
+            },
+            getWheelTotals(out) {
+                out.x = 0;
+                out.y = 0;
+                return out;
+            }
+        },
+        animationPort: {
+            animate() {
+                let active = true;
+                return {
+                    id: 1,
+                    promise: Promise.resolve(),
+                    retarget() {
+                        return active;
+                    },
+                    remove() {
+                        active = false;
+                    },
+                    isActive() {
+                        return active;
+                    }
+                };
+            }
+        },
+        timePort: {
+            getDelta: () => 1 / 120,
+            getFixedDelta: () => 1 / 60,
+            getFixedInterpolationAlpha: () => 0.5
+        },
+        viewportPort: {
+            getSnapshot(out) {
+                out.ww = 1920;
+                out.wh = 1080;
+                return out;
+            }
+        },
+        worldRenderPort: {
+            drawCircle() {},
+            drawSquareInstances() {}
+        },
+        webGpuPlatformPort: {
+            getState() {
+                return { ready: true };
+            }
+        },
+        enemySimulationBackend: backend,
+        legacyWorldPort: {
+            clear() {}
+        }
+    };
+}
+
 test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU backend에 진입한다', () => {
     const backend = new FakeEnemySimulationBackend();
     const objectSystem = new GameObjectSystem({
@@ -169,10 +256,18 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
 
     objectSystem.init({ ww: 1920, wh: 1080 });
     const tileMap = objectSystem.getTileMap();
+    const endpoint = objectSystem.getEnemySimulationEndpoint();
+    assert.strictEqual(objectSystem.getGpuSimulationEndpoint(), endpoint);
     const [route] = tileMap.getSpawnRoutes();
     const waveGroup = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0].spawnGroups[0];
 
     assert.equal(backend.initialized, true);
+    assert.strictEqual(endpoint.getBackend(), backend);
+    assert.strictEqual(endpoint.getRegistry(), objectSystem.getWorldRegistry());
+    assert.strictEqual(
+        endpoint.getLifecycleCommandOwner(),
+        objectSystem.getEnemyLifecycleCommandOwner()
+    );
     assert.strictEqual(backend.tileMap, tileMap);
     assert.equal(backend.bodiesByHandle.size, 0);
     assert.equal(objectSystem.getWorldRegistry().getActiveCount(), 0);
@@ -201,6 +296,7 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.ok(Number.isSafeInteger(body.entityId) && body.entityId > 0);
     assert.equal(body.incarnation, 1);
     assert.equal(body.kindId, 'enemy');
+    assert.equal(body.definitionId, BASIC_CIRCLE_ENEMY_DATA.id);
     assert.equal(body.enemyDefinitionId, BASIC_CIRCLE_ENEMY_DATA.id);
     assert.equal(body.gateId, route.gateId);
     assert.equal(body.pathId, route.pathId);
@@ -223,11 +319,16 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(body.inverseMass, 1 / BASIC_CIRCLE_ENEMY_DATA.collisionWeight);
     assert.equal(body.flowSpeed, BASIC_CIRCLE_ENEMY_DATA.moveSpeedTilesPerSecond);
     assert.equal(body.layerMask, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
+    assert.equal(body.bodyLayer, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
     assert.equal(
         body.collisionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
     );
+    assert.equal(body.sensorMask, 0);
+    assert.equal(body.health, BASIC_CIRCLE_ENEMY_DATA.maxHealth);
+    assert.equal(body.lifetime, -1);
     assert.equal(body.alive, true);
     assert.deepEqual(Array.from(body.renderStyle.color), Array.from(BASIC_CIRCLE_ENEMY_DATA.colorRgba));
     assert.equal(body.renderStyle.radiusScale, BASIC_CIRCLE_ENEMY_DATA.radiusScale);
@@ -241,6 +342,7 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(backend.hasBody(handle), true);
     assert.equal(registry.has(handle), true);
     assert.equal(registry.getActiveCount('enemy'), 1);
+    assert.equal(endpoint.getStatus().activeCount, 1);
     const entityView = registry.copyEntityView(handle, {});
     assert.equal(entityView.definitionId, BASIC_CIRCLE_ENEMY_DATA.id);
     assert.equal(entityView.createdAtTick, 1);
@@ -312,6 +414,11 @@ test('일시 unavailable인 첫 spawn은 wave cursor를 잃지 않고 같은 fix
 
     assert.equal(objectSystem.fixedUpdate(1 / 60, 1), false);
     assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 0);
+    assert.equal(
+        objectSystem.getNextGpuLifecycleFixedTick(),
+        1,
+        'lifecycle commit 자체가 stalled면 N+1 경계는 아직 열려 있어야 합니다.'
+    );
     assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), false);
     assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 1);
     assert.equal(objectSystem.getEnemyLifecycleCommandOwner().getPendingCount(), 1);
@@ -328,6 +435,80 @@ test('일시 unavailable인 첫 spawn은 wave cursor를 잃지 않고 같은 fix
     );
 
     objectSystem.destroy();
+});
+
+test('pending N+1 GPU submit 중 새 mixed-body batch는 열린 N+2 lifecycle 경계에 통합 예약된다', () => {
+    const backend = new FakeEnemySimulationBackend();
+    const gameSystem = new GameSystem(createGameSceneDependencies(backend));
+    gameSystem.enter();
+    const objectSystem = gameSystem.getObjectSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const gameScene = {
+        getGameSystem() {
+            return gameSystem;
+        },
+        getGpuSimulationEndpoint() {
+            return endpoint;
+        },
+        getNextGpuLifecycleFixedTick() {
+            return gameSystem.getNextGpuLifecycleFixedTick();
+        },
+        getNextEnemyLifecycleFixedTick() {
+            return this.getNextGpuLifecycleFixedTick();
+        }
+    };
+
+    assert.equal(gameSystem.getFixedTick(), 0);
+    assert.equal(objectSystem.getNextGpuLifecycleFixedTick(), 1);
+    assert.equal(objectSystem.getNextEnemyLifecycleFixedTick(), 1);
+    assert.equal(gameSystem.getNextGpuLifecycleFixedTick(), 1);
+    assert.equal(gameSystem.getNextEnemyLifecycleFixedTick(), 1);
+    assert.equal(gameScene.getNextGpuLifecycleFixedTick(), 1);
+    assert.equal(gameScene.getNextEnemyLifecycleFixedTick(), 1);
+
+    backend.setFixedUpdateMode('backpressure-once');
+    assert.equal(gameSystem.fixedUpdate(), false);
+
+    assert.equal(gameSystem.getFixedTick(), 0);
+    assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 0);
+    assert.equal(endpoint.getRuntimeState(), 'gpu-backpressure');
+    assert.equal(gameScene.getNextGpuLifecycleFixedTick(), 2);
+
+    const enemyBatch = requestGpuBenchmarkEnemyBatch({
+        gameScene,
+        count: 1,
+        sessionGeneration: 11,
+        batchSequence: 0,
+        spawnSequence: 100
+    });
+    const projectileBatch = requestGpuBenchmarkProjectileBatch({
+        gameScene,
+        count: 1,
+        sessionGeneration: 11,
+        batchSequence: 0,
+        spawnSequence: 200
+    });
+
+    assert.equal(enemyBatch.accepted, true);
+    assert.equal(projectileBatch.accepted, true);
+    assert.equal(enemyBatch.targetFixedTick, 2);
+    assert.equal(projectileBatch.targetFixedTick, 2);
+    assert.equal(endpoint.getPendingCommandCount(), 2);
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 1);
+    assert.equal(endpoint.getRuntimeState(), 'gpu-ready');
+    assert.equal(endpoint.getPendingCommandCount(), 2);
+    assert.equal(gameScene.getNextGpuLifecycleFixedTick(), 2);
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 2);
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(endpoint.getRegistry().getActiveCount('enemy'), 2);
+    assert.equal(endpoint.getRegistry().getActiveCount('projectile'), 1);
+    assert.equal(gameScene.getNextGpuLifecycleFixedTick(), 3);
+
+    gameSystem.destroy();
 });
 
 test('terminal unsupported 플랫폼은 spawn command를 무기한 soft-stall하지 않고 hard recovery로 승격한다', () => {

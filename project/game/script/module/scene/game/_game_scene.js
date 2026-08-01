@@ -19,13 +19,19 @@ export const GAME_SCENE_MODES = Object.freeze({
 export class GameScene extends BaseScene {
     /**
      * @param {object} sceneHandler - 상위 SceneSystem입니다.
-     * @param {{mapId?:string,dependencies?:object}} [options={}] - 플레이 진입 옵션입니다.
+     * @param {{mapId?:string,dependencies?:object,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,enemyRecoveryEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 플레이 진입 옵션입니다.
      */
     constructor(sceneHandler, options = {}) {
         super(sceneHandler);
         this.mode = GAME_SCENE_MODES.PLAY;
         this.mapId = typeof options.mapId === 'string' ? options.mapId : null;
         this.dependencies = options.dependencies || createGameSceneDependencies();
+        this.tileNavigationSource = options.tileNavigationSource ?? null;
+        this.enemyWaveEnabled = options.enemyWaveEnabled;
+        this.enemyRecoveryEnabled = options.enemyRecoveryEnabled !== false;
+        this.waveDefinition = options.waveDefinition;
+        this.enemyPresentationProfile = options.enemyPresentationProfile;
+        this.initialCameraZoom = options.initialCameraZoom;
         this.recoveryRestartGeneration = null;
         this.recoveryRestartCount = 0;
         this.destroyed = false;
@@ -44,7 +50,8 @@ export class GameScene extends BaseScene {
             this.recoveryRestartGeneration = null;
             return;
         }
-        if (this.gameSystem.isEnemySimulationRecoveryRequired()) {
+        if (this.enemyRecoveryEnabled
+            && this.gameSystem.isEnemySimulationRecoveryRequired()) {
             this.#restartAtSafeWaveBoundary();
         }
     }
@@ -63,6 +70,14 @@ export class GameScene extends BaseScene {
      */
     draw() {
         this.gameSystem.draw();
+    }
+
+    /**
+     * benchmark/tool이 Level map·Core·Tower 없이 GPU 적만 그릴 때 사용하는 owner-preserving 경계입니다.
+     * @returns {boolean} GPU draw 제출 여부입니다.
+     */
+    drawEnemySimulation() {
+        return this.gameSystem.drawEnemySimulation();
     }
 
     /**
@@ -117,9 +132,46 @@ export class GameScene extends BaseScene {
         });
     }
 
+    /**
+     * 실제 게임 씬에서 mixed-body spawn/despawn request와 GPU 상태를 연결할 공개 endpoint입니다.
+     * commit/tick/presentation/draw는 내부 GameSystem이 소유합니다.
+     * @returns {import('../../ingame/object/enemy/gpu_enemy_simulation_endpoint.js').GpuSimulationEndpoint}
+     */
+    getGpuSimulationEndpoint() {
+        return this.gameSystem.getGpuSimulationEndpoint();
+    }
+
+    /** @returns {import('../../ingame/object/enemy/gpu_enemy_simulation_endpoint.js').GpuSimulationEndpoint} 기존 enemy API 호환 alias입니다. */
+    getEnemySimulationEndpoint() {
+        return this.getGpuSimulationEndpoint();
+    }
+
+    /**
+     * gameplay adapter가 mixed-body lifecycle request를 예약할 가장 이른 fixed tick입니다.
+     * @returns {number} 현재 열린 다음 GPU lifecycle 경계입니다.
+     */
+    getNextGpuLifecycleFixedTick() {
+        return this.gameSystem.getNextGpuLifecycleFixedTick();
+    }
+
+    /** @returns {number} 기존 enemy lifecycle tick API 호환 alias입니다. */
+    getNextEnemyLifecycleFixedTick() {
+        return this.getNextGpuLifecycleFixedTick();
+    }
+
+    /** @returns {GameSystem} 벤치마크·진단용 현재 session system입니다. */
+    getGameSystem() {
+        return this.gameSystem;
+    }
+
     #createGameSystem() {
         const gameSystem = new GameSystem(this.dependencies, {
-            mapId: this.mapId
+            mapId: this.mapId,
+            tileNavigationSource: this.tileNavigationSource,
+            enemyWaveEnabled: this.enemyWaveEnabled,
+            waveDefinition: this.waveDefinition,
+            enemyPresentationProfile: this.enemyPresentationProfile,
+            initialCameraZoom: this.initialCameraZoom
         });
         gameSystem.enter();
         return gameSystem;

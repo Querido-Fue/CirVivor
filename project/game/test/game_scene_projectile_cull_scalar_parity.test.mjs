@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const { cullLocalGameSceneProjectiles } = await loadGameModule(
-    'scene/game/update/game_scene_update_helpers.js'
+    'scene/benchmark/update/benchmark_scene_update_helpers.js'
 );
 
 const PROJECTILE_CULL_MARGIN_RATIO = 0.2;
@@ -794,7 +794,7 @@ assert.deepEqual(
 );
 
 const helperPath = fileURLToPath(new URL(
-    '../script/module/scene/game/update/game_scene_update_helpers.js',
+    '../script/module/scene/benchmark/update/benchmark_scene_update_helpers.js',
     import.meta.url
 ));
 const helperSource = await readFile(helperPath, 'utf8');

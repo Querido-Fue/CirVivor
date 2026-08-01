@@ -43,6 +43,7 @@ function createReadyHarness(deviceCount = 1) {
     const records = {
         adapterRequests: [],
         deviceRequests: 0,
+        deviceRequestOptions: [],
         contextTypes: [],
         configurations: [],
         unconfigureCount: 0,
@@ -65,7 +66,7 @@ function createReadyHarness(deviceCount = 1) {
             limits: {
                 maxBufferSize: 268_435_456,
                 maxStorageBufferBindingSize: 134_217_728,
-                maxStorageBuffersPerShaderStage: 8,
+                maxStorageBuffersPerShaderStage: 10,
                 maxStorageTexturesPerShaderStage: 4,
                 maxBindGroups: 4,
                 maxBindingsPerBindGroup: 1000,
@@ -118,8 +119,9 @@ function createReadyHarness(deviceCount = 1) {
             },
             limits: device.limits,
             features: device.features,
-            async requestDevice() {
+            async requestDevice(options) {
                 records.deviceRequests += 1;
+                records.deviceRequestOptions.push(options);
                 return device;
             }
         };
@@ -231,6 +233,23 @@ test('capability probe 실패는 reject하지 않고 구체적인 unsupported �
             }
         },
         {
+            reason: 'adapter-limit-insufficient:maxStorageBuffersPerShaderStage:8<9',
+            options: {
+                canvas,
+                secureContext: true,
+                navigatorObject: {
+                    gpu: {
+                        requestAdapter: async () => ({
+                            limits: { maxStorageBuffersPerShaderStage: 8 },
+                            requestDevice: async () => {
+                                throw new Error('한도 확인 실패 뒤 device를 요청하면 안 됩니다.');
+                            }
+                        })
+                    }
+                }
+            }
+        },
+        {
             reason: 'device-request-failed:device denied',
             options: {
                 canvas,
@@ -238,6 +257,7 @@ test('capability probe 실패는 reject하지 않고 구체적인 unsupported �
                 navigatorObject: {
                     gpu: {
                         requestAdapter: async () => ({
+                            limits: { maxStorageBuffersPerShaderStage: 9 },
                             requestDevice: async () => {
                                 throw new Error('device denied');
                             }
@@ -254,6 +274,7 @@ test('capability probe 실패는 reject하지 않고 구체적인 unsupported �
                 navigatorObject: {
                     gpu: {
                         requestAdapter: async () => ({
+                            limits: { maxStorageBuffersPerShaderStage: 9 },
                             requestDevice: async () => ({ destroy() {} })
                         }),
                         getPreferredCanvasFormat: () => 'bgra8unorm'
@@ -301,6 +322,12 @@ test('READY 서비스는 premultiplied context, limits, frame target, clear/draw
     assert.equal(state.adapterInfo.vendor, 'test-vendor');
     assert.equal(harness.records.adapterRequests.length, 1);
     assert.equal(harness.records.adapterRequests[0].powerPreference, 'high-performance');
+    assert.equal(harness.records.deviceRequestOptions.length, 1);
+    assert.equal(
+        harness.records.deviceRequestOptions[0]
+            .requiredLimits.maxStorageBuffersPerShaderStage,
+        9
+    );
     assert.deepEqual(harness.records.contextTypes, ['webgpu']);
     assert.equal(harness.records.configurations.length, 1);
     assert.equal(harness.records.configurations[0].device, harness.devices[0]);

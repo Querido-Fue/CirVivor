@@ -50,6 +50,10 @@ window.onload = async () => {
         Game = new App(systemHandler);
         window.Game = Game;
 
+        // 비동기 시스템 초기화 중 발생해 전달되지 못한 전체화면/zoom resize를
+        // 첫 프레임 전에 현재 window metrics로 한 번 수렴시킵니다.
+        Game.resize();
+
         // 단일 프레임 루프 시작 (고정 스텝 + 렌더 순차 처리)
         Game.start();
     } catch (e) {

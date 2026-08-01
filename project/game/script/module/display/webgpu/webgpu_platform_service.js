@@ -25,6 +25,7 @@ const WEBGPU_LIMIT_KEYS = Object.freeze([
     'minStorageBufferOffsetAlignment',
     'minUniformBufferOffsetAlignment'
 ]);
+const REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 9;
 const TRANSPARENT_CLEAR_VALUE = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 
 /**
@@ -422,9 +423,27 @@ export class WebGpuPlatformService {
             return this.#setUnsupported('adapter-unavailable');
         }
 
+        const maxStorageBuffersPerShaderStage = Number(
+            adapter.limits?.maxStorageBuffersPerShaderStage ?? 0
+        );
+        if (maxStorageBuffersPerShaderStage
+            < REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) {
+            return this.#setUnsupported(
+                'adapter-limit-insufficient:'
+                + 'maxStorageBuffersPerShaderStage:'
+                + `${maxStorageBuffersPerShaderStage}`
+                + `<${REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE}`
+            );
+        }
+
         let device;
         try {
-            device = await adapter.requestDevice();
+            device = await adapter.requestDevice({
+                requiredLimits: {
+                    maxStorageBuffersPerShaderStage:
+                        REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+                }
+            });
         } catch (error) {
             return this.#setUnsupported('device-request-failed', error);
         }

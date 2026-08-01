@@ -18,10 +18,20 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/enemy_catalog_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'module/ingame/contract/tile_navigation_contract.js',
+    'module/ingame/gpu_simulation_endpoint.js',
     'module/ingame/map/tile_map.js',
     'module/ingame/navigation/route_flow_field_atlas.js',
+    'module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
+    'module/ingame/object/enemy/enemy_simulation_backend.js',
     'module/ingame/object/enemy/gpu_enemy_spawn_adapter.js',
+    'module/ingame/object/enemy/gpu_enemy_simulation_endpoint.js',
+    'module/ingame/object/projectile/gpu_projectile_spawn_adapter.js',
+    'module/ingame/object/world_registry.js',
+    'module/ingame/physics/gpu/gpu_body_presentation_clock.js',
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
+    'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
+    'module/ingame/physics/gpu/gpu_collision_shaders.js',
+    'module/ingame/physics/gpu/gpu_signed_distance_field.js',
     'module/object/enemy/_hexa_hive_layout.js',
     'module/object/enemy/_hexa_hive_layout_accessors.js',
     'module/object/enemy/_hexa_hive_layout_constants.js',
@@ -33,6 +43,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/object/enemy/ai/wasm/_enemy_ai_flow_field_backend.js',
     'module/object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_bytes.js',
     'module/object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js',
+    'module/scene/benchmark/gpu_benchmark_enemy_spawn_adapter.js',
+    'module/scene/benchmark/gpu_benchmark_navigation_source.js',
     'util/math_util.js',
     'util/number_util.js'
 ]);
@@ -142,6 +154,7 @@ async function prepareHarnessApp(
     const importMap = {
         imports: {
             'data/': './production/script/data/',
+            'ingame/': './production/script/module/ingame/',
             'object/': './production/script/module/object/',
             'util/': './production/script/util/'
         }

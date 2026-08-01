@@ -1,7 +1,7 @@
 import { TitleScene } from './title/_title_scene.js';
 import { LoadingScene } from './loading/_loading_scene.js';
 import { GAME_SCENE_MODES, GameScene } from './game/_game_scene.js';
-import { BenchmarkScene } from './game/_benchmark_scene.js';
+import { BenchmarkScene } from './benchmark/_benchmark_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
 
 const SCENE_STATES = Object.freeze({

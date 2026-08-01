@@ -93,6 +93,7 @@ export function createGpuEnemySpawnIntent(options) {
 
     return Object.freeze({
         kindId: GPU_ENEMY_WORLD_KIND_ID,
+        definitionId: enemyDefinitionId,
         enemyDefinitionId,
         gateId,
         pathId,
@@ -110,9 +111,14 @@ export function createGpuEnemySpawnIntent(options) {
             'collisionRadiusTiles'
         ),
         inverseMass: 1 / collisionWeight,
+        bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        sensorMask: 0,
+        health: requirePositiveFinite(definition.maxHealth ?? 1, 'maxHealth'),
+        lifetime: -1,
         alive: true,
         flowSpeed: requirePositiveFinite(
             definition.moveSpeedTilesPerSecond,

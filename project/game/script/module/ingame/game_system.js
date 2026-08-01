@@ -17,7 +17,7 @@ export class GameSystem {
      * @param {{getDelta?:()=>number,getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
-     * @param {{mapId?:string|null,enemyWaveEnabled?:boolean,waveDefinition?:object}} [options={}] - 세션 시작 옵션입니다.
+     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 세션 시작 옵션입니다.
      */
     constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
@@ -38,11 +38,14 @@ export class GameSystem {
         this.coreIntegrity = new CoreIntegrity({
             maxIntegrity: THE_CORE_DATA.MAX_INTEGRITY
         });
+        this.initialCameraZoom = options.initialCameraZoom;
         this.objectSystem = new GameObjectSystem(dependencies, {
             mapId: options.mapId,
+            tileNavigationSource: options.tileNavigationSource,
             coreIntegrity: this.coreIntegrity,
             enemyWaveEnabled: options.enemyWaveEnabled,
-            waveDefinition: options.waveDefinition
+            waveDefinition: options.waveDefinition,
+            enemyPresentationProfile: options.enemyPresentationProfile
         });
         this.cameraZoomController = null;
         this.registrationTokens = [];
@@ -62,6 +65,10 @@ export class GameSystem {
         }
         this.#syncViewportSnapshot();
         this.objectSystem.init(this.viewportSnapshot);
+        if (this.initialCameraZoom !== undefined) {
+            this.objectSystem.getWorldViewProjection().zoom
+                = this.initialCameraZoom;
+        }
         this.cameraZoomController = new CameraZoomController(
             this.objectSystem.getWorldViewProjection(),
             this.dependencies.animationPort,
@@ -142,6 +149,17 @@ export class GameSystem {
     }
 
     /**
+     * map·Core·Tower 합성 없이 GPU 적 layer만 오브젝트 소유자에게 위임합니다.
+     * @returns {boolean} GPU draw 제출 여부입니다.
+     */
+    drawEnemySimulation() {
+        if (!this.entered || this.destroyed) {
+            return false;
+        }
+        return this.objectSystem.drawEnemySimulation();
+    }
+
+    /**
      * 현재 월드를 초기화하지 않고 뷰포트 경계만 동기화합니다.
      * @returns {void}
      */
@@ -172,6 +190,20 @@ export class GameSystem {
     }
 
     /**
+     * gameplay adapter가 mixed-body GPU lifecycle request와 상태를 연결할 공개 endpoint입니다.
+     * commit/tick/presentation/draw는 이 GameSystem의 실행 경로가 소유합니다.
+     * @returns {import('./object/enemy/gpu_enemy_simulation_endpoint.js').GpuSimulationEndpoint}
+     */
+    getGpuSimulationEndpoint() {
+        return this.objectSystem.getGpuSimulationEndpoint();
+    }
+
+    /** @returns {import('./object/enemy/gpu_enemy_simulation_endpoint.js').GpuSimulationEndpoint} 기존 enemy API 호환 alias입니다. */
+    getEnemySimulationEndpoint() {
+        return this.getGpuSimulationEndpoint();
+    }
+
+    /**
      * 세션 생존 자원인 ICoreIntegrity를 반환합니다.
      * @returns {CoreIntegrity} Core Integrity component입니다.
      */
@@ -182,6 +214,19 @@ export class GameSystem {
     /** @returns {number} 세션 전체가 완료한 fixed tick입니다. */
     getFixedTick() {
         return this.fixedTick;
+    }
+
+    /**
+     * gameplay adapter가 새 GPU spawn/despawn을 예약할 수 있는 가장 이른 fixed tick입니다.
+     * @returns {number} 현재 열린 다음 GPU lifecycle 경계입니다.
+     */
+    getNextGpuLifecycleFixedTick() {
+        return this.objectSystem.getNextGpuLifecycleFixedTick();
+    }
+
+    /** @returns {number} 기존 enemy lifecycle tick API 호환 alias입니다. */
+    getNextEnemyLifecycleFixedTick() {
+        return this.getNextGpuLifecycleFixedTick();
     }
 
     /**

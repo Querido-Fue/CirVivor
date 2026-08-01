@@ -4,7 +4,7 @@
  * @param {Record<string, Function>} commandHandlers - 명령 타입별 handler입니다.
  * @returns {boolean}
  */
-function dispatchGameSceneCommand(command, commandHandlers) {
+function dispatchBenchmarkSceneCommand(command, commandHandlers) {
     if (!command || typeof command.type !== 'string') {
         return false;
     }
@@ -24,12 +24,12 @@ function dispatchGameSceneCommand(command, commandHandlers) {
  * @param {Record<string, Function>} commandHandlers - 명령 타입별 handler입니다.
  * @returns {void}
  */
-export function applyGameSceneSimulationCommands(commands = [], commandHandlers = {}) {
+export function applyBenchmarkSceneCommands(commands = [], commandHandlers = {}) {
     if (!Array.isArray(commands) || commands.length === 0) {
         return;
     }
 
     for (let i = 0; i < commands.length; i++) {
-        dispatchGameSceneCommand(commands[i], commandHandlers);
+        dispatchBenchmarkSceneCommand(commands[i], commandHandlers);
     }
 }

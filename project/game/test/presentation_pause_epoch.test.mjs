@@ -96,7 +96,7 @@ async function loadSceneSystem() {
             GAME_SCENE_MODES: { PLAY: 'play', BENCHMARK: 'benchmark' },
             GameScene: EmptyScene
         })],
-        ['./game/_benchmark_scene.js', createSyntheticModule(context, { BenchmarkScene: EmptyScene })],
+        ['./benchmark/_benchmark_scene.js', createSyntheticModule(context, { BenchmarkScene: EmptyScene })],
         ['simulation/simulation_command_queue.js', createSyntheticModule(context, {
             clearSimulationCommands: () => {}
         })]

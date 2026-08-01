@@ -237,7 +237,8 @@ assert.deepEqual({ ...enemySimulationBackend.getStatus() }, {
     initialized: true,
     navigationSize: 1620,
     flowFieldCount: 24,
-    gpu: null
+    gpu: null,
+    events: null
 });
 assert.equal(enemySimulationBackend.getSignedDistanceField().values.length, 1620);
 assert.equal(enemySimulationBackend.getFlowFieldAtlas().fieldCount, 24);

@@ -184,14 +184,34 @@ export class EnemySimulationBackend {
         return this.simulation?.hasBody(handle) ?? false;
     }
 
-    /** @param {number} delta - 초 단위 fixed delta입니다. */
-    fixedUpdate(delta) {
+    /**
+     * @param {number} delta - 초 단위 fixed delta입니다.
+     * @param {number} [sourceTick] - 이 submit을 소유하는 권위 fixed tick입니다.
+     */
+    fixedUpdate(delta, sourceTick) {
         if (!this.simulation) {
             return false;
         }
-        const submitted = this.simulation.fixedUpdate(delta);
+        const submitted = this.simulation.fixedUpdate(delta, sourceTick);
         this.#syncState();
         return submitted;
+    }
+
+    /**
+     * 완료된 GPU event readback batch를 제출 순서대로 caller 배열에 이동합니다.
+     * 구형 injected simulation에는 event API가 없을 수 있으므로 빈 결과로 호환합니다.
+     * @param {object[]} [out=[]] - batch 출력 배열입니다.
+     * @returns {object[]} 동일 out입니다.
+     */
+    drainCompletedEventBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('GPU 완료 event batch 출력은 배열이어야 합니다.');
+        }
+        if (typeof this.simulation?.drainCompletedEventBatches !== 'function') {
+            return out;
+        }
+        const drained = this.simulation.drainCompletedEventBatches(out);
+        return Array.isArray(drained) ? drained : out;
     }
 
     /** @param {object} frame - frame delta/fixed alpha 표현 입력입니다. */
@@ -226,17 +246,25 @@ export class EnemySimulationBackend {
 
     /** @returns {object} backend 진단 snapshot입니다. */
     getStatus() {
+        if (!this.destroyed) {
+            this.#syncState();
+        }
+        const gpu = this.simulation?.getStatus() ?? null;
         return Object.freeze({
             state: this.state,
             initialized: this.initialized,
             navigationSize: this.navigationGrid?.size ?? 0,
             flowFieldCount: this.flowFieldAtlas?.fieldCount ?? 0,
-            gpu: this.simulation?.getStatus() ?? null
+            events: gpu?.events ?? null,
+            gpu
         });
     }
 
     /** @returns {string} 할당 없는 backend runtime state입니다. */
     getRuntimeState() {
+        if (!this.destroyed) {
+            this.#syncState();
+        }
         return this.state;
     }
 
@@ -252,6 +280,9 @@ export class EnemySimulationBackend {
 
     /** @returns {boolean} 상위 session이 spawn/진행을 멈추고 복구해야 하는 상태입니다. */
     requiresRecovery() {
+        if (!this.destroyed) {
+            this.#syncState();
+        }
         return this.state === 'gpu-requires-rebuild'
             || this.state === 'gpu-overflow-degraded'
             || this.state === 'gpu-backpressure'
@@ -291,10 +322,15 @@ export class EnemySimulationBackend {
                 this.state = 'gpu-overflow-degraded';
                 break;
             case 'telemetry-backpressure':
+            case 'event-backpressure':
                 this.state = 'gpu-backpressure';
                 break;
+            case 'event-overflow-degraded':
+            case 'contact-overflow-degraded':
             case 'failed':
-                this.state = 'gpu-failed';
+                this.state = gpuState === 'failed'
+                    ? 'gpu-failed'
+                    : 'gpu-overflow-degraded';
                 break;
             default:
                 this.state = classifyUnavailablePlatformState(this.webGpuPlatformPort);

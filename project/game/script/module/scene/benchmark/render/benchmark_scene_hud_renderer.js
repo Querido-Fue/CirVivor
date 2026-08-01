@@ -1,7 +1,7 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { render } from 'display/display_system.js';
 import { createFontString } from 'util/font_util.js';
-import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
+import { normalizeSnapshotNumber } from '../benchmark_scene_snapshot_utils.js';
 
 /** @type {{ww: number, wh: number, titleFont: number, statsFont: number, titleFontString: string, statsFontString: string, statsX: number, statsY: number}|null} */
 let cachedHudMetrics = null;

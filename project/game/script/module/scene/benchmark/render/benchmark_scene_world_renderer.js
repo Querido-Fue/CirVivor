@@ -1,8 +1,8 @@
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { renderGL, renderGLShapeInstances } from 'display/display_system.js';
 import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
-import { normalizeSnapshotNumber } from '../game_scene_snapshot_utils.js';
-import { getBenchmarkColor } from './game_scene_benchmark_palette.js';
+import { normalizeSnapshotNumber } from '../benchmark_scene_snapshot_utils.js';
+import { getBenchmarkColor } from './benchmark_scene_palette.js';
 
 const WORLD_OBJECT_LAYER = 'object';
 const WORLD_BACKGROUND_LAYER = 'background';
@@ -51,11 +51,11 @@ const WORLD_CIRCLE_RENDER_OPTIONS = {
 const WORLD_PROJECTILE_RENDER_FRAMES = [];
 let worldProjectileRenderDepth = 0;
 const WORLD_RENDER_SECTIONS = Object.freeze({
-    MAP: 'scene.game.world.map',
-    STATIC_WALLS: 'scene.game.world.staticWalls',
-    BOX_WALLS: 'scene.game.world.boxWalls',
-    PLAYER: 'scene.game.world.player',
-    PROJECTILES: 'scene.game.world.projectiles'
+    MAP: 'scene.benchmark.world.map',
+    STATIC_WALLS: 'scene.benchmark.world.staticWalls',
+    BOX_WALLS: 'scene.benchmark.world.boxWalls',
+    PLAYER: 'scene.benchmark.world.player',
+    PROJECTILES: 'scene.benchmark.world.projectiles'
 });
 
 /**

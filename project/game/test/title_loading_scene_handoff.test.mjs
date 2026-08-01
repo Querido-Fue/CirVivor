@@ -15,7 +15,7 @@ const loadingSceneSource = await readFile(
     'utf8'
 );
 const benchmarkSceneSource = await readFile(
-    new URL('../script/module/scene/game/_benchmark_scene.js', import.meta.url),
+    new URL('../script/module/scene/benchmark/_benchmark_scene.js', import.meta.url),
     'utf8'
 );
 
@@ -26,7 +26,7 @@ assert.match(sceneSystemSource, /new BenchmarkScene\(this\)/);
 assert.doesNotMatch(benchmarkSceneSource, /data\/data_handler\.js/);
 assert.match(
     benchmarkSceneSource,
-    /data\/object\/enemy\/enemy_catalog_data\.js/
+    /ingame\/gpu_simulation_endpoint\.js/
 );
 assert.doesNotMatch(titleSceneSource, /TitleLoadingSequence|new TitleGradientBackground|new TitleBackGround/);
 assert.match(titleSceneSource, /beginTitleScenePhase/);
@@ -144,7 +144,7 @@ const dependencyModules = new Map([
         this.setExport('GAME_SCENE_MODES', { PLAY: 'play', BENCHMARK: 'benchmark' });
         this.setExport('GameScene', GameSceneStub);
     }, { context })],
-    ['./game/_benchmark_scene.js', new vm.SyntheticModule(['BenchmarkScene'], function init() {
+    ['./benchmark/_benchmark_scene.js', new vm.SyntheticModule(['BenchmarkScene'], function init() {
         this.setExport('BenchmarkScene', BenchmarkSceneStub);
     }, { context })],
     ['simulation/simulation_command_queue.js', new vm.SyntheticModule(['clearSimulationCommands'], function init() {

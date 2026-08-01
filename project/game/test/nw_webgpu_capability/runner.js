@@ -3,6 +3,10 @@ import {
     GPU_COLLISION_INDIRECT_WGSL,
     GPU_COLLISION_RENDER_WGSL
 } from './production/gpu_collision_shaders.js';
+import {
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
+} from './production/gpu_circle_body_abi.js';
 import { GpuCircleBodySimulation } from './production/gpu_circle_body_simulation.js';
 import {
     BASIC_CIRCLE_ENEMY_DATA
@@ -14,9 +18,20 @@ import {
 import {
     createGpuEnemySpawnIntent
 } from './production/script/module/ingame/object/enemy/gpu_enemy_spawn_adapter.js';
+import {
+    createGpuEnemySimulationEndpoint,
+    createGpuProjectileSpawnIntent
+} from './production/script/module/ingame/gpu_simulation_endpoint.js';
+import {
+    requestGpuBenchmarkEnemyBatch
+} from './production/script/module/scene/benchmark/gpu_benchmark_enemy_spawn_adapter.js';
+import {
+    createGpuBenchmarkNavigationSource
+} from './production/script/module/scene/benchmark/gpu_benchmark_navigation_source.js';
 
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const canvas = document.getElementById('gpu');
+const REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 9;
 
 function assert(condition, message) {
     if (!condition) {
@@ -212,6 +227,11 @@ async function runProductionShaderSmoke(device, format) {
         'prepare_bodies',
         'clear_grid',
         'build_grid',
+        'clear_contact_state',
+        'generate_body_contacts',
+        'generate_world_contacts',
+        'handle_contacts',
+        'mark_dead',
         'clear_position_deltas',
         'solve_body_body',
         'solve_body_world',
@@ -1256,6 +1276,699 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
     }
 }
 
+async function runProductionMixedBodyContactEventSmoke(device) {
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    const platformPort = {
+        getState: () => 'ready',
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget: () => null,
+        clearCanvas: () => false,
+        markCanvasDrawn: () => false,
+        markCanvasCleared: () => false
+    };
+    const simulation = new GpuCircleBodySimulation(platformPort, {
+        capacity: 4,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 2, y: 2 },
+        sdf: {
+            cols: 4,
+            rows: 4,
+            values: new Float32Array(16).fill(100)
+        }
+    });
+    const fixedDelta = 1 / 60;
+    const sourceTick = 37;
+    const enemyHandle = Object.freeze({ entityId: 8101, incarnation: 3 });
+    const projectileHandle = Object.freeze({ entityId: 8102, incarnation: 5 });
+    const enemy = {
+        ...enemyHandle,
+        position: { x: 4, y: 4 },
+        velocity: { x: 0, y: 0 },
+        radius: 0.25,
+        inverseMass: 1,
+        layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        sensorMask: 0,
+        health: 0.57,
+        lifetime: -1,
+        alive: true
+    };
+    const projectile = {
+        ...projectileHandle,
+        position: { x: 3.25, y: 4 },
+        velocity: { x: 24, y: 0 },
+        radius: 0.2,
+        inverseMass: 1,
+        layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+        collisionMask: 0,
+        sensorMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        health: 0.29,
+        lifetime: 2,
+        contactHandler: {
+            damageSelf: 0.29,
+            damageOther: 0.57,
+            flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+        },
+        alive: true
+    };
+    const minimumDistance = enemy.radius + projectile.radius;
+    const distanceBefore = Math.hypot(
+        enemy.position.x - projectile.position.x,
+        enemy.position.y - projectile.position.y
+    );
+    const predictedProjectilePosition = Object.freeze({
+        x: projectile.position.x + (projectile.velocity.x * fixedDelta),
+        y: projectile.position.y + (projectile.velocity.y * fixedDelta)
+    });
+    const predictedDistance = Math.hypot(
+        enemy.position.x - predictedProjectilePosition.x,
+        enemy.position.y - predictedProjectilePosition.y
+    );
+    assert(
+        distanceBefore > minimumDistance && predictedDistance < minimumDistance,
+        `mixed-body contact fixture가 새 overlap을 만들지 않습니다: before=${distanceBefore}, predicted=${predictedDistance}, minimum=${minimumDistance}`
+    );
+
+    try {
+        assert(simulation.init(), 'mixed-body contact/event simulation init 실패');
+        const replaceResult = simulation.replaceBodies([enemy, projectile]);
+        assert(
+            replaceResult.accepted === 2
+                && replaceResult.rejected === 0
+                && replaceResult.capacity === 4,
+            `mixed-body contact/event body 교체 실패: ${JSON.stringify(replaceResult)}`
+        );
+        const beforeTickStatus = simulation.getStatus();
+        assert(
+            beforeTickStatus.events.eventProducingBodyCount === 1,
+            `mixed-body event-producing body 수 불일치: ${JSON.stringify(beforeTickStatus.events)}`
+        );
+        assert(
+            simulation.fixedUpdate(fixedDelta, sourceTick),
+            `mixed-body contact/event fixed tick 제출 실패: ${JSON.stringify(simulation.getStatus())}`
+        );
+        const aliveBodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const aliveBodies = await aliveBodiesPromise;
+        assert(
+            aliveBodies.length === 0,
+            `contact damage 뒤 GPU ALIVE body가 남았습니다: ${JSON.stringify(aliveBodies)}`
+        );
+
+        const completedStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.events.pendingReadbacks === 0
+                && status.events.queuedBatches >= 1
+                && status.events.completedThroughTick >= sourceTick,
+            'mixed-body contact/event readback completion'
+        );
+        const batches = simulation.drainCompletedEventBatches([]);
+        assert(
+            batches.length === 1,
+            `mixed-body 완료 event batch 수 불일치: ${JSON.stringify(batches)}`
+        );
+        const [batch] = batches;
+        assert(
+            batch.sourceTick === sourceTick
+                && batch.submittedTick === 1
+                && batch.completedThroughTick === sourceTick
+                && batch.deviceGeneration === 1,
+            `mixed-body event tick/watermark 불일치: ${JSON.stringify(batch)}`
+        );
+        const contactEvents = batch.events.filter(({ type }) => type === 'contact');
+        const deathEvents = batch.events.filter(({ type }) => type === 'death');
+        const appliedContact = contactEvents.find((event) => (
+            event.entityId === projectileHandle.entityId
+            && event.incarnation === projectileHandle.incarnation
+            && event.otherEntityId === enemyHandle.entityId
+            && event.otherIncarnation === enemyHandle.incarnation
+        ));
+        assert(
+            contactEvents.length >= 1 && appliedContact,
+            `projectile→enemy applied contact가 없습니다: ${JSON.stringify(contactEvents)}`
+        );
+        assert(
+            appliedContact.damageFixedPoint === 57,
+            `applied contact damage 단위가 다릅니다: ${JSON.stringify(appliedContact)}`
+        );
+        assertNear(
+            appliedContact.damage,
+            0.57,
+            0.000001,
+            'applied contact fractional damage가 다릅니다'
+        );
+        const expectedDeathKeys = new Set([
+            `${enemyHandle.entityId}:${enemyHandle.incarnation}`,
+            `${projectileHandle.entityId}:${projectileHandle.incarnation}`
+        ]);
+        const deathKeys = new Set(deathEvents.map((event) => (
+            `${event.entityId}:${event.incarnation}`
+        )));
+        assert(
+            deathEvents.length === 2
+                && deathKeys.size === expectedDeathKeys.size
+                && [...expectedDeathKeys].every((key) => deathKeys.has(key)),
+            `mixed-body death identity 불일치: ${JSON.stringify(deathEvents)}`
+        );
+        assert(
+            completedStatus.contact.lastCount >= 1
+                && completedStatus.contact.lastOverflowCount === 0
+                && completedStatus.events.lastAppliedCount >= 1
+                && completedStatus.events.lastAppliedOverflowCount === 0
+                && completedStatus.events.lastDeathCount === 2
+                && completedStatus.events.lastDeathOverflowCount === 0
+                && completedStatus.events.lastSubmittedTick === 1
+                && completedStatus.events.lastCompletedTick === 1
+                && completedStatus.events.completedThroughTick === sourceTick,
+            `mixed-body contact/event telemetry 불일치: ${JSON.stringify(completedStatus)}`
+        );
+
+        return {
+            fixedDelta,
+            sourceTick,
+            fixture: {
+                distanceBefore,
+                predictedDistance,
+                minimumDistance,
+                predictedProjectilePosition,
+                authored: {
+                    enemyHealth: enemy.health,
+                    projectileHealth: projectile.health,
+                    projectileDamageSelf: projectile.contactHandler.damageSelf,
+                    projectileDamageOther: projectile.contactHandler.damageOther
+                },
+                expectedAppliedDamageFixedPoint: 57
+            },
+            aliveBodyCountAfterTick: aliveBodies.length,
+            batch: {
+                sourceTick: batch.sourceTick,
+                submittedTick: batch.submittedTick,
+                completedThroughTick: batch.completedThroughTick,
+                deviceGeneration: batch.deviceGeneration
+            },
+            appliedContact,
+            deaths: deathEvents,
+            contact: completedStatus.contact,
+            events: completedStatus.events
+        };
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionBenchmarkEndpointSmoke(device) {
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    const platformState = Object.freeze({
+        ready: true,
+        status: 'ready',
+        deviceGeneration: 1
+    });
+    const platformPort = {
+        getState: () => platformState,
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => platformState.deviceGeneration,
+        acquireFrameTarget: () => null,
+        clearCanvas: () => false,
+        markCanvasDrawn: () => false,
+        markCanvasCleared: () => false
+    };
+    const navigationSource = createGpuBenchmarkNavigationSource();
+    const endpoint = createGpuEnemySimulationEndpoint({
+        webGpuPlatformPort: platformPort
+    }, {
+        capacity: 256
+    });
+    const endpointIdentity = endpoint;
+    const registryIdentity = endpoint.getRegistry();
+    const backendIdentity = endpoint.getBackend();
+    let fixedTick = 0;
+    const gameObjectSystem = Object.freeze({
+        getEnemySpawnRoutes: () => navigationSource.getSpawnRoutes()
+    });
+    const gameSystem = Object.freeze({
+        getFixedTick: () => fixedTick,
+        getObjectSystem: () => gameObjectSystem
+    });
+    const gameScene = Object.freeze({
+        getGameSystem: () => gameSystem,
+        getNextGpuLifecycleFixedTick: () => fixedTick + 1,
+        getGpuSimulationEndpoint: () => endpoint,
+        getEnemySimulationEndpoint: () => endpoint
+    });
+    const fixedDelta = 1 / 60;
+    const requestedCount = 100;
+    // overflow telemetry는 tick 1 이후 4-tick 간격이므로 tick 5까지 제출해
+    // 첫 세 tick뿐 아니라 후속 sticky overflow도 실제 readback으로 확인합니다.
+    const fixedTickTarget = 5;
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'GPU benchmark endpoint는 첫 spawn 전 deferred 상태여야 합니다.'
+        );
+        const initializedStatus = endpoint.getStatus();
+        assert(
+            initializedStatus.state === 'gpu-deferred'
+                && initializedStatus.initialized
+                && initializedStatus.activeCount === 0
+                && initializedStatus.pendingCommandCount === 0
+                && !initializedStatus.recoveryRequired,
+            `GPU benchmark endpoint 초기 상태 불일치: ${JSON.stringify(initializedStatus)}`
+        );
+
+        const batchResult = requestGpuBenchmarkEnemyBatch({
+            gameScene,
+            count: requestedCount,
+            sessionGeneration: 1,
+            batchSequence: 0,
+            spawnSequence: 0
+        });
+        assert(
+            batchResult.accepted
+                && batchResult.requestedCount === requestedCount
+                && batchResult.queuedCount === requestedCount
+                && batchResult.targetFixedTick === 1
+                && batchResult.nextSpawnSequence === requestedCount,
+            `GPU benchmark batch 예약 실패: ${JSON.stringify(batchResult)}`
+        );
+        const queuedStatus = endpoint.getStatus();
+        assert(
+            queuedStatus.activeCount === 0
+                && queuedStatus.reservedCount === 0
+                && queuedStatus.pendingCommandCount === requestedCount
+                && !queuedStatus.recoveryRequired,
+            `GPU benchmark batch next-fixed 대기 상태 불일치: ${JSON.stringify(queuedStatus)}`
+        );
+
+        const commitSummaries = [];
+        for (let tick = 1; tick <= fixedTickTarget; tick++) {
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            assert(
+                commit.state === 'committed'
+                    && !commit.recoveryRequired
+                    && commit.rejected.length === 0
+                    && commit.spawned.length === (tick === 1 ? requestedCount : 0),
+                `GPU benchmark endpoint lifecycle commit 실패: tick=${tick}, result=${JSON.stringify(commit)}`
+            );
+            assert(
+                endpoint.fixedUpdate(fixedDelta),
+                `GPU benchmark endpoint fixed tick 제출 실패: tick=${tick}, status=${JSON.stringify(endpoint.getStatus())}`
+            );
+            fixedTick = tick;
+            commitSummaries.push(Object.freeze({
+                fixedTick: tick,
+                spawnedCount: commit.spawned.length,
+                rejectedCount: commit.rejected.length,
+                state: commit.state
+            }));
+        }
+
+        const simulation = endpoint.getBackend().simulation;
+        assert(
+            simulation && typeof simulation.readbackBodies === 'function',
+            'GPU benchmark endpoint 진단용 simulation readback 경계가 없습니다.'
+        );
+        const bodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const bodies = await bodiesPromise;
+        const gpuStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.submittedTickCount >= fixedTickTarget
+                && status.overflow.pendingReadbacks === 0,
+            'GPU benchmark endpoint multi-tick overflow telemetry'
+        );
+        const endpointStatus = endpoint.getStatus();
+        assert(
+            endpoint === endpointIdentity
+                && endpoint.getRegistry() === registryIdentity
+                && endpoint.getBackend() === backendIdentity,
+            'GPU benchmark endpoint session identity가 fixed tick 중 교체되었습니다.'
+        );
+        assert(
+            endpointStatus.state === 'gpu-ready'
+                && endpointStatus.initialized
+                && !endpointStatus.destroyed
+                && endpointStatus.activeCount === requestedCount
+                && endpointStatus.reservedCount === 0
+                && endpointStatus.pendingCommandCount === 0
+                && !endpointStatus.recoveryRequired
+                && endpoint.hasActiveBodies()
+                && !endpoint.requiresRecovery(),
+            `GPU benchmark endpoint session 상태 불일치: ${JSON.stringify(endpointStatus)}`
+        );
+        assert(
+            gpuStatus.state === 'ready'
+                && gpuStatus.failure === null
+                && gpuStatus.bodyCount === requestedCount
+                && gpuStatus.activeBodyCount === requestedCount
+                && gpuStatus.submittedTickCount === fixedTickTarget
+                && gpuStatus.hasGpuAuthoritativeState
+                && !gpuStatus.requiresAuthoritativeRebuild
+                && gpuStatus.overflow.lastSmallCount === 0
+                && gpuStatus.overflow.lastBigCount === 0
+                && gpuStatus.overflow.totalSmallCount === 0
+                && gpuStatus.overflow.totalBigCount === 0,
+            `GPU benchmark endpoint overflow/recovery 상태 불일치: ${JSON.stringify(gpuStatus)}`
+        );
+        assert(
+            bodies.length === requestedCount,
+            `GPU benchmark endpoint readback body 수 불일치: ${bodies.length}`
+        );
+
+        const bounds = navigationSource.getWorldBounds();
+        const handleKeys = new Set();
+        const observedBounds = {
+            minX: Number.POSITIVE_INFINITY,
+            minY: Number.POSITIVE_INFINITY,
+            maxX: Number.NEGATIVE_INFINITY,
+            maxY: Number.NEGATIVE_INFINITY
+        };
+        const assertFiniteVector = (value, label, index) => {
+            assert(
+                Number.isFinite(value?.x) && Number.isFinite(value?.y),
+                `GPU benchmark ${label}가 finite가 아닙니다: index=${index}, value=${JSON.stringify(value)}`
+            );
+        };
+        const assertInsideWorld = (value, label, index) => {
+            assert(
+                value.x >= bounds.minX
+                    && value.x < bounds.maxX
+                    && value.y >= bounds.minY
+                    && value.y < bounds.maxY,
+                `GPU benchmark ${label}가 world 밖입니다: index=${index}, value=${JSON.stringify(value)}`
+            );
+        };
+        for (let index = 0; index < bodies.length; index++) {
+            const body = bodies[index];
+            assertFiniteVector(body.position, 'position', index);
+            assertFiniteVector(body.previousPosition, 'previousPosition', index);
+            assertFiniteVector(body.predictedPosition, 'predictedPosition', index);
+            assertFiniteVector(body.velocity, 'velocity', index);
+            assertFiniteVector(body.positionDelta, 'positionDelta', index);
+            assertInsideWorld(body.position, 'position', index);
+            assertInsideWorld(body.previousPosition, 'previousPosition', index);
+            assertInsideWorld(body.predictedPosition, 'predictedPosition', index);
+            assert(
+                Number.isFinite(body.radius)
+                    && body.radius > 0
+                    && Number.isFinite(body.inverseMass)
+                    && body.inverseMass > 0
+                    && Number.isSafeInteger(body.flowFieldIndex)
+                    && Number.isSafeInteger(body.previousFlowFieldIndex),
+                `GPU benchmark body scalar 상태가 유효하지 않습니다: index=${index}, body=${JSON.stringify(body)}`
+            );
+            const handle = body.handle;
+            assert(
+                Number.isSafeInteger(handle?.entityId)
+                    && Number.isSafeInteger(handle?.incarnation),
+                `GPU benchmark body handle이 유효하지 않습니다: index=${index}`
+            );
+            handleKeys.add(`${handle.entityId}:${handle.incarnation}`);
+            observedBounds.minX = Math.min(observedBounds.minX, body.position.x);
+            observedBounds.minY = Math.min(observedBounds.minY, body.position.y);
+            observedBounds.maxX = Math.max(observedBounds.maxX, body.position.x);
+            observedBounds.maxY = Math.max(observedBounds.maxY, body.position.y);
+        }
+        assert(
+            handleKeys.size === requestedCount,
+            `GPU benchmark stable handle 중복이 있습니다: unique=${handleKeys.size}`
+        );
+
+        return {
+            arenaId: navigationSource.mapId,
+            routeCount: navigationSource.getSpawnRoutes().length,
+            requestedCount,
+            batch: batchResult,
+            fixedTickCount: fixedTick,
+            commitSummaries,
+            sessionPreserved: true,
+            status: {
+                state: endpointStatus.state,
+                activeCount: endpointStatus.activeCount,
+                reservedCount: endpointStatus.reservedCount,
+                pendingCommandCount: endpointStatus.pendingCommandCount,
+                recoveryRequired: endpointStatus.recoveryRequired,
+                backendState: endpointStatus.backend.state,
+                submittedTickCount: gpuStatus.submittedTickCount,
+                overflow: gpuStatus.overflow
+            },
+            readback: {
+                bodyCount: bodies.length,
+                uniqueHandleCount: handleKeys.size,
+                allFiniteAndInsideWorld: true,
+                observedBounds
+            }
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionEndpointDeathLifecycleSmoke(device) {
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    const platformState = Object.freeze({
+        ready: true,
+        status: 'ready',
+        deviceGeneration: 1
+    });
+    const platformPort = {
+        getState: () => platformState,
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => platformState.deviceGeneration,
+        acquireFrameTarget: () => null,
+        clearCanvas: () => false,
+        markCanvasDrawn: () => false,
+        markCanvasCleared: () => false
+    };
+    const navigationSource = createGpuBenchmarkNavigationSource();
+    const endpoint = createGpuEnemySimulationEndpoint({
+        webGpuPlatformPort: platformPort
+    }, {
+        capacity: 4
+    });
+    const fixedDelta = 1 / 60;
+    const sourceTick = 1;
+    const spawnFixedTick = 1;
+    const deathCommitFixedTick = 2;
+    const enemyCommandId = 'nw-contact-lifecycle-enemy';
+    const projectileCommandId = 'nw-contact-lifecycle-projectile';
+    const route = navigationSource.getSpawnRoutes()[0];
+    const baseEnemyIntent = createGpuEnemySpawnIntent({
+        definition: BASIC_CIRCLE_ENEMY_DATA,
+        route,
+        spawnSequence: 0,
+        waveId: 'nw-contact-lifecycle',
+        policyId: 'fixed-fixture'
+    });
+    const enemyIntent = Object.freeze({
+        ...baseEnemyIntent,
+        position: Object.freeze({ x: 32, y: 10 }),
+        velocity: Object.freeze({ x: 0, y: 0 }),
+        health: 1,
+        lifetime: -1
+    });
+    const projectileIntent = createGpuProjectileSpawnIntent({
+        definition: Object.freeze({
+            id: 'nw_contact_projectile_01',
+            collisionRadius: 0.2,
+            inverseMass: 1,
+            damage: 1,
+            damageSelf: 1,
+            penetration: 1,
+            lifetimeSeconds: 2,
+            closestOnly: true,
+            killOnTerrain: true
+        }),
+        position: { x: 31, y: 10 },
+        velocity: { x: 24, y: 0 },
+        spawnSequence: 1
+    });
+    const minimumDistance = enemyIntent.radius + projectileIntent.radius;
+    const distanceBefore = Math.hypot(
+        enemyIntent.position.x - projectileIntent.position.x,
+        enemyIntent.position.y - projectileIntent.position.y
+    );
+    const projectilePredictedX = projectileIntent.position.x
+        + (projectileIntent.velocity.x * fixedDelta);
+    assert(
+        distanceBefore > minimumDistance
+            && Math.abs(enemyIntent.position.x - projectilePredictedX) < minimumDistance,
+        `endpoint death lifecycle fixture가 새 overlap을 만들지 않습니다: before=${distanceBefore}, predictedX=${projectilePredictedX}, minimum=${minimumDistance}`
+    );
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'endpoint death lifecycle은 첫 spawn 전 deferred 상태여야 합니다.'
+        );
+        const enemyRequest = endpoint.requestSpawn(
+            enemyIntent,
+            spawnFixedTick,
+            enemyCommandId
+        );
+        const projectileRequest = endpoint.requestSpawn(
+            projectileIntent,
+            spawnFixedTick,
+            projectileCommandId
+        );
+        assert(
+            enemyRequest.accepted && projectileRequest.accepted,
+            `endpoint mixed-body spawn 예약 실패: enemy=${JSON.stringify(enemyRequest)}, projectile=${JSON.stringify(projectileRequest)}`
+        );
+        const spawnCommit = endpoint.commitAtFixedBoundary(spawnFixedTick);
+        assert(
+            spawnCommit.state === 'committed'
+                && spawnCommit.spawned.length === 2
+                && spawnCommit.rejected.length === 0,
+            `endpoint mixed-body spawn commit 실패: ${JSON.stringify(spawnCommit)}`
+        );
+        const enemyHandle = spawnCommit.spawned.find(
+            ({ commandId }) => commandId === enemyCommandId
+        )?.handle;
+        const projectileHandle = spawnCommit.spawned.find(
+            ({ commandId }) => commandId === projectileCommandId
+        )?.handle;
+        assert(
+            enemyHandle && projectileHandle,
+            `endpoint mixed-body handle을 찾지 못했습니다: ${JSON.stringify(spawnCommit.spawned)}`
+        );
+        const spawnedStatus = endpoint.getStatus();
+        assert(
+            spawnedStatus.activeCount === 2
+                && spawnedStatus.activeEnemyCount === 1
+                && spawnedStatus.activeProjectileCount === 1
+                && spawnedStatus.pendingCommandCount === 0,
+            `endpoint mixed-body registry kind count 불일치: ${JSON.stringify(spawnedStatus)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, sourceTick),
+            `endpoint mixed-body fixed tick 제출 실패: ${JSON.stringify(endpoint.getStatus())}`
+        );
+        const simulation = endpoint.getBackend().simulation;
+        assert(
+            simulation && typeof simulation.readbackBodies === 'function',
+            'endpoint death lifecycle 진단용 simulation readback 경계가 없습니다.'
+        );
+        const aliveBodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const aliveBodies = await aliveBodiesPromise;
+        assert(
+            aliveBodies.length === 0,
+            `endpoint contact 뒤 GPU ALIVE body가 남았습니다: ${JSON.stringify(aliveBodies)}`
+        );
+        const completedGpuStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.events.pendingReadbacks === 0
+                && status.events.queuedBatches >= 1
+                && status.events.completedThroughTick >= sourceTick,
+            'endpoint death lifecycle event completion'
+        );
+        assert(
+            completedGpuStatus.events.completedThroughTick === sourceTick,
+            `endpoint GPU gameplay watermark 불일치: ${JSON.stringify(completedGpuStatus.events)}`
+        );
+
+        const completedEvents = endpoint.commitCompletedEventsAtFixedBoundary(
+            deathCommitFixedTick
+        );
+        const deathEvents = completedEvents.deathEvents;
+        const expectedDeathKeys = new Set([
+            `${enemyHandle.entityId}:${enemyHandle.incarnation}`,
+            `${projectileHandle.entityId}:${projectileHandle.incarnation}`
+        ]);
+        const observedDeathKeys = new Set(deathEvents.map((event) => (
+            `${event.entityId}:${event.incarnation}`
+        )));
+        assert(
+            completedEvents.batchCount === 1
+                && completedEvents.completedThroughTick === sourceTick
+                && completedEvents.contactEvents.length >= 1
+                && deathEvents.length === 2
+                && observedDeathKeys.size === expectedDeathKeys.size
+                && [...expectedDeathKeys].every((key) => observedDeathKeys.has(key))
+                && deathEvents.every(({ disposition }) => disposition === 'despawn-requested'),
+            `endpoint 완료 event snapshot 불일치: ${JSON.stringify(completedEvents)}`
+        );
+        const scheduledStatus = endpoint.getStatus();
+        assert(
+            scheduledStatus.activeCount === 2
+                && scheduledStatus.activeEnemyCount === 1
+                && scheduledStatus.activeProjectileCount === 1
+                && scheduledStatus.pendingCommandCount === 2
+                && scheduledStatus.events.applied >= 1
+                && scheduledStatus.events.death === 2
+                && endpoint.getRegistry().has(enemyHandle)
+                && endpoint.getRegistry().has(projectileHandle)
+                && endpoint.hasBody(enemyHandle)
+                && endpoint.hasBody(projectileHandle),
+            `GPU death는 예약만 하고 fixed commit 전 registry를 보존해야 합니다: ${JSON.stringify(scheduledStatus)}`
+        );
+
+        const deathCommit = endpoint.commitAtFixedBoundary(deathCommitFixedTick);
+        assert(
+            deathCommit.state === 'committed'
+                && deathCommit.despawned.length === 2
+                && deathCommit.rejected.length === 0,
+            `endpoint GPU death despawn commit 실패: ${JSON.stringify(deathCommit)}`
+        );
+        const reclaimedStatus = endpoint.getStatus();
+        assert(
+            reclaimedStatus.activeCount === 0
+                && reclaimedStatus.activeEnemyCount === 0
+                && reclaimedStatus.activeProjectileCount === 0
+                && reclaimedStatus.pendingCommandCount === 0
+                && !endpoint.getRegistry().has(enemyHandle)
+                && !endpoint.getRegistry().has(projectileHandle)
+                && !endpoint.hasBody(enemyHandle)
+                && !endpoint.hasBody(projectileHandle),
+            `endpoint death fixed commit 뒤 registry kind count가 회수되지 않았습니다: ${JSON.stringify(reclaimedStatus)}`
+        );
+
+        return {
+            fixedDelta,
+            sourceTick,
+            spawnFixedTick,
+            deathCommitFixedTick,
+            handles: {
+                enemy: enemyHandle,
+                projectile: projectileHandle
+            },
+            fixture: {
+                distanceBefore,
+                minimumDistance,
+                projectilePredictedX
+            },
+            aliveBodyCountAfterTick: aliveBodies.length,
+            completedEvents,
+            scheduled: {
+                activeCount: scheduledStatus.activeCount,
+                activeEnemyCount: scheduledStatus.activeEnemyCount,
+                activeProjectileCount: scheduledStatus.activeProjectileCount,
+                pendingCommandCount: scheduledStatus.pendingCommandCount
+            },
+            deathCommit,
+            reclaimed: {
+                activeCount: reclaimedStatus.activeCount,
+                activeEnemyCount: reclaimedStatus.activeEnemyCount,
+                activeProjectileCount: reclaimedStatus.activeProjectileCount,
+                pendingCommandCount: reclaimedStatus.pendingCommandCount
+            }
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
 async function runProductionStableSlotLifecycleSmoke(device) {
     const format = navigator.gpu.getPreferredCanvasFormat();
     let lifecycleDeviceGeneration = 1;
@@ -1535,7 +2248,7 @@ async function runProductionStableSlotLifecycleSmoke(device) {
         );
         const drainedStatus = simulation.getStatus();
         assert(
-            drainedStatus.state === 'ready'
+            drainedStatus.state === 'idle'
                 && drainedStatus.bodyCount === 0
                 && drainedStatus.activeBodyCount === 0
                 && drainedStatus.freeSlotCount === 0
@@ -2386,7 +3099,17 @@ async function run() {
         assert(navigator.gpu, 'navigator.gpu가 없습니다.');
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
         assert(adapter, 'WebGPU adapter를 얻지 못했습니다.');
-        const device = await adapter.requestDevice();
+        assert(
+            adapter.limits.maxStorageBuffersPerShaderStage
+                >= REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `production WebGPU storage buffer limit이 부족합니다: required=${REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE}, adapter=${adapter.limits.maxStorageBuffersPerShaderStage}`
+        );
+        const device = await adapter.requestDevice({
+            requiredLimits: {
+                maxStorageBuffersPerShaderStage:
+                    REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+            }
+        });
         const uncapturedErrors = [];
         device.addEventListener('uncapturederror', (event) => {
             uncapturedErrors.push(event.error?.message || String(event.error));
@@ -2406,6 +3129,9 @@ async function run() {
         result.productionFlowAtlas = await runProductionFlowAtlasSmoke(device);
         result.productionShapeFlowAtlas = await runProductionShapeFlowAtlasSmoke(device);
         result.productionEnemyAdapter = await runProductionEnemyAdapterGpuSmoke(device);
+        result.productionMixedBodyContactEvent = await runProductionMixedBodyContactEventSmoke(device);
+        result.productionBenchmarkEndpoint = await runProductionBenchmarkEndpointSmoke(device);
+        result.productionEndpointDeathLifecycle = await runProductionEndpointDeathLifecycleSmoke(device);
         result.productionStableSlotLifecycle = await runProductionStableSlotLifecycleSmoke(device);
         result.productionFixedSubmitFailure = await runProductionFixedSubmitFailureSmoke(device);
         result.productionSparseCollisionHole = await runProductionSparseCollisionHoleSmoke(device);

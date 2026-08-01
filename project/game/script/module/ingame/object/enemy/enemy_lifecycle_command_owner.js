@@ -9,6 +9,30 @@ function requirePositiveSafeInteger(value, label) {
     return number;
 }
 
+function requireNonNegativeSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) {
+        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
+function requirePositiveFinite(value, label) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) {
+        throw new RangeError(`${label}은 양의 유한 숫자여야 합니다.`);
+    }
+    return number;
+}
+
+function requireUint8(value, label) {
+    const number = Number(value);
+    if (!Number.isInteger(number) || number < 0 || number > 0xff) {
+        throw new RangeError(`${label}은 uint8 범위의 정수여야 합니다.`);
+    }
+    return number;
+}
+
 function requireNonEmptyString(value, label) {
     if (typeof value !== 'string' || value.length === 0) {
         throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
@@ -69,7 +93,9 @@ function cloneAndFreezeValue(source, label, ancestors = new Set()) {
         ));
     } else {
         const prototype = Object.getPrototypeOf(source);
-        if (prototype !== Object.prototype && prototype !== null) {
+        const isPlainObject = prototype === null
+            || Object.getPrototypeOf(prototype) === null;
+        if (!isPlainObject) {
             ancestors.delete(source);
             throw new TypeError(`${label}은 plain object여야 합니다.`);
         }
@@ -84,16 +110,87 @@ function cloneAndFreezeValue(source, label, ancestors = new Set()) {
 
 function normalizeSpawnIntent(source) {
     if (!source || typeof source !== 'object') {
-        throw new TypeError('enemy spawn intent가 필요합니다.');
+        throw new TypeError('GPU body spawn intent가 필요합니다.');
     }
     if (Object.prototype.hasOwnProperty.call(source, 'entityId')
-        || Object.prototype.hasOwnProperty.call(source, 'incarnation')) {
+        || Object.prototype.hasOwnProperty.call(source, 'incarnation')
+        || Object.prototype.hasOwnProperty.call(source, 'handle')) {
         throw new TypeError('spawn identity는 WorldRegistry만 발급할 수 있습니다.');
     }
     const snapshot = cloneAndFreezeValue(source, 'spawnIntent');
-    requireNonEmptyString(snapshot.kindId, 'spawnIntent.kindId');
-    requireNonEmptyString(snapshot.enemyDefinitionId, 'spawnIntent.enemyDefinitionId');
-    return snapshot;
+    const kindId = requireNonEmptyString(snapshot.kindId, 'spawnIntent.kindId');
+    const legacyEnemyDefinitionId = snapshot.enemyDefinitionId;
+    const definitionId = requireNonEmptyString(
+        snapshot.definitionId ?? legacyEnemyDefinitionId,
+        'spawnIntent.definitionId'
+    );
+    if (snapshot.definitionId !== undefined
+        && legacyEnemyDefinitionId !== undefined
+        && snapshot.definitionId !== legacyEnemyDefinitionId) {
+        throw new RangeError(
+            'spawnIntent.definitionId와 enemyDefinitionId alias가 일치해야 합니다.'
+        );
+    }
+
+    const bodyLayer = requireUint8(
+        snapshot.bodyLayer ?? snapshot.layerMask,
+        'spawnIntent.bodyLayer'
+    );
+    if (snapshot.bodyLayer !== undefined
+        && snapshot.layerMask !== undefined
+        && snapshot.bodyLayer !== snapshot.layerMask) {
+        throw new RangeError(
+            'spawnIntent.bodyLayer와 layerMask alias가 일치해야 합니다.'
+        );
+    }
+    if (bodyLayer === 0) {
+        throw new RangeError('spawnIntent.bodyLayer는 하나 이상의 layer bit가 필요합니다.');
+    }
+
+    if (snapshot.spawnSequence !== undefined && snapshot.spawnSequence !== null) {
+        requireNonNegativeSafeInteger(
+            snapshot.spawnSequence,
+            'spawnIntent.spawnSequence'
+        );
+    }
+    if (kindId === 'enemy') {
+        requireNonEmptyString(snapshot.gateId, 'spawnIntent.gateId');
+        requireNonEmptyString(snapshot.pathId, 'spawnIntent.pathId');
+        requireNonNegativeSafeInteger(
+            snapshot.waypointIndex,
+            'spawnIntent.waypointIndex'
+        );
+        requirePositiveFinite(snapshot.flowSpeed, 'spawnIntent.flowSpeed');
+    }
+
+    return Object.freeze({
+        ...snapshot,
+        definitionId,
+        ...(kindId === 'enemy' ? { enemyDefinitionId: definitionId } : {}),
+        bodyLayer,
+        layerMask: bodyLayer
+    });
+}
+
+function createRegistryMetadata(intent) {
+    if (intent.kindId === 'enemy') {
+        return {
+            definitionId: intent.definitionId,
+            enemyDefinitionId: intent.enemyDefinitionId,
+            gateId: intent.gateId,
+            pathId: intent.pathId,
+            initialWaypointIndex: intent.waypointIndex,
+            spawnSequence: intent.spawnSequence,
+            waveId: intent.waveId,
+            policyId: intent.policyId
+        };
+    }
+    return {
+        definitionId: intent.definitionId,
+        spawnSequence: intent.spawnSequence,
+        sourceEntityId: intent.sourceEntityId,
+        sourceIncarnation: intent.sourceIncarnation
+    };
 }
 
 function freezeCommitResult(result) {
@@ -144,7 +241,7 @@ function assertRegistry(registry) {
 
 /**
  * @class EnemyLifecycleCommandOwner
- * @description enemy identity와 GPU stable-slot spawn/despawn을 fixed tick 경계에서만 commit합니다.
+ * @description mixed GPU body identity와 stable-slot spawn/despawn을 fixed tick 경계에서만 commit합니다.
  * despawn batch와 spawn batch는 각각이 원자적이며 두 batch 전체는 하나의 transaction이 아닙니다.
  */
 export class EnemyLifecycleCommandOwner {
@@ -438,7 +535,7 @@ export class EnemyLifecycleCommandOwner {
         for (const command of commands) {
             const handle = this.registry.reserveEntity({
                 kindId: command.intent.kindId,
-                definitionId: command.intent.enemyDefinitionId,
+                definitionId: command.intent.definitionId,
                 createdAtTick: command.targetFixedTick
             });
             if (!handle) {
@@ -565,15 +662,10 @@ export class EnemyLifecycleCommandOwner {
 
     #activateReservation(reservation, result, consumedCommandIds) {
         const { command, handle } = reservation;
-        const activated = this.registry.activateReserved(handle, {
-            enemyDefinitionId: command.intent.enemyDefinitionId,
-            gateId: command.intent.gateId,
-            pathId: command.intent.pathId,
-            initialWaypointIndex: command.intent.waypointIndex,
-            spawnSequence: command.intent.spawnSequence,
-            waveId: command.intent.waveId,
-            policyId: command.intent.policyId
-        });
+        const activated = this.registry.activateReserved(
+            handle,
+            createRegistryMetadata(command.intent)
+        );
         if (!activated) {
             result.state = 'failed';
             result.recoveryRequired = true;

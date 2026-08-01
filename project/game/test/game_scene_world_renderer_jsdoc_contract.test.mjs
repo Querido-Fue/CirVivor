@@ -6,18 +6,18 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const SOURCE_PATH = fileURLToPath(new URL(
-    '../script/module/scene/game/render/game_scene_world_renderer.js',
+    '../script/module/scene/benchmark/render/benchmark_scene_world_renderer.js',
     import.meta.url
 ));
 const SNAPSHOT_UTILS_PATH = fileURLToPath(new URL(
-    '../script/module/scene/game/game_scene_snapshot_utils.js',
+    '../script/module/scene/benchmark/benchmark_scene_snapshot_utils.js',
     import.meta.url
 ));
 const [source, snapshotUtilsSource] = await Promise.all([
     readFile(SOURCE_PATH, 'utf8'),
     readFile(SNAPSHOT_UTILS_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = 'bb131ee4a378951a333f8d7df83f5d412f1cb108f33f2e56a0faa79c51f05e08';
+const EXECUTABLE_SOURCE_HASH = 'bdd27b0fb9e27387d76e1db563663b78f83bb98f88833b0f43013e93709df9b7';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
@@ -93,12 +93,12 @@ async function loadWorldRenderStateResolver() {
             }
         }
     ));
-    modules.set('../game_scene_snapshot_utils.js', new vm.SourceTextModule(
+    modules.set('../benchmark_scene_snapshot_utils.js', new vm.SourceTextModule(
         snapshotUtilsSource,
         { context, identifier: SNAPSHOT_UTILS_PATH }
     ));
-    modules.set('./game_scene_benchmark_palette.js', createSyntheticModule(
-        './game_scene_benchmark_palette.js',
+    modules.set('./benchmark_scene_palette.js', createSyntheticModule(
+        './benchmark_scene_palette.js',
         { getBenchmarkColor: () => '#000' }
     ));
 

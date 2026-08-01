@@ -5,26 +5,43 @@ const abi = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
 const {
     GPU_CIRCLE_BODY_ABI,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_CIRCLE_BODY_FIXED_POINT,
     GPU_CIRCLE_BODY_FLOW,
     GPU_CIRCLE_BODY_IDENTITY,
+    GPU_CIRCLE_BODY_LAYER,
+    GPU_CIRCLE_BODY_LIFETIME,
     GPU_CIRCLE_BODY_META,
+    GPU_CIRCLE_BODY_SIMULATION_FLAG,
     appendGpuCircleBodySpawn,
     createGpuCircleBodyAbiStorage,
     createGpuCircleGridBodyBuffer,
+    decodeGpuCircleBodyFixedPoint,
+    encodeGpuCircleBodyFixedPoint,
+    normalizeGpuCircleBodyLifetime,
     packGpuCirclePhysicsMeta,
     packGpuCircleSimulationMeta,
     readGpuCircleBody,
     readGpuCircleBodyCounts,
+    readGpuCircleContactHandler,
     readGpuCircleGridBody,
     unpackGpuCirclePhysicsMeta,
     unpackGpuCircleSimulationMeta,
     writeGpuCircleBodyCounts,
     writeGpuCircleBodySpawn,
+    writeGpuCircleContactHandler,
     writeGpuCircleGridBody
 } = abi;
 
 assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY, 1);
+assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER, GPU_CIRCLE_BODY_LAYER);
+assert.equal(GPU_CIRCLE_BODY_LAYER.PROJECTILE, 2);
+assert.equal(GPU_CIRCLE_BODY_LAYER.EXPLOSION, 4);
+assert.equal(GPU_CIRCLE_BODY_LAYER.EFFECT, 8);
+assert.equal(GPU_CIRCLE_BODY_LAYER.FLAME, 16);
+assert.equal(GPU_CIRCLE_BODY_LAYER.GRENADE, 32);
+assert.equal(GPU_CIRCLE_BODY_LAYER.LAYER_7, 64);
 assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN, 128);
 assert.equal(
     GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
@@ -79,6 +96,7 @@ assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.FLOW_FIELD_INDEX, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.FLOW_SPEED, 20);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.ENTITY_ID, 24);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.INCARNATION, 28);
+assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.RESERVED_INCARNATION, 28);
 assert.equal(GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE, 32);
 assert.equal(GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_X, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_Y, 4);
@@ -97,31 +115,66 @@ assert.equal(GPU_CIRCLE_BODY_ABI.GRID_BODY.INVERSE_MASS, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.GRID_BODY.RADIUS, 20);
 assert.equal(GPU_CIRCLE_BODY_ABI.GRID_BODY.BODY_ID, 24);
 assert.equal(GPU_CIRCLE_BODY_ABI.GRID_BODY.RESERVED, 28);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE, 32);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_SELF, 0);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_OTHER, 4);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_FALLOFF, 8);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FIRE_TIMER, 12);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FLAGS, 16);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.CHAINING, 20);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_REPORT_ID, 24);
+assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.SLOW_TIMER, 28);
 
-// physics/simulation meta는 low8 layer를 공유하고 그 다음 byte를 독립 mask/flags로 사용합니다.
+// physics/simulation meta는 low8 layer를 공유하고 collision/sensor/flags byte를 분리합니다.
 const physicsMeta = packGpuCirclePhysicsMeta(0xa5, 0x81);
+const sensorPhysicsMeta = packGpuCirclePhysicsMeta(0xa5, 0x81, 0x42);
 const simulationMeta = packGpuCircleSimulationMeta(0xa5, 0x05);
 assert.equal(physicsMeta, 0x81a5);
+assert.equal(sensorPhysicsMeta, 0x4281a5);
 assert.equal(simulationMeta, 0x05a5);
 assert.equal(GPU_CIRCLE_BODY_META.ALIVE_BIT, 0x0100);
 assert.equal(GPU_CIRCLE_BODY_META.USE_FLOW_BIT, 0x0200);
+assert.equal(GPU_CIRCLE_BODY_META.COUNT_AS_KILL_BIT, 0x0400);
+assert.equal(GPU_CIRCLE_BODY_META.EXPLODE_ON_DEATH_BIT, 0x0800);
+assert.equal(GPU_CIRCLE_BODY_META.GOLDEN_BIT, 0x1000);
+assert.equal(GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE, 1);
+assert.equal(GPU_CIRCLE_BODY_SIMULATION_FLAG.USE_FLOW, 2);
+assert.equal(GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL, 4);
+assert.equal(GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH, 8);
+assert.equal(GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN, 16);
+assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.KILL_IF_OTHER_TERRAIN, 1);
+assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY, 2);
+assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.SLOW, 4);
+assert.equal(GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE, 100);
+assert.equal(GPU_CIRCLE_BODY_LIFETIME.IMMORTAL, -1);
 assert.equal(GPU_CIRCLE_BODY_FLOW.INVALID_FIELD_INDEX, 0xffffffff);
 assert.equal(GPU_CIRCLE_BODY_FLOW.MAX_FIELD_COUNT, 256);
 assert.equal(GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT, 0xffffffff);
 const unpackedPhysics = unpackGpuCirclePhysicsMeta(physicsMeta);
 assert.equal(unpackedPhysics.layerMask, 0xa5);
 assert.equal(unpackedPhysics.collisionMask, 0x81);
+assert.equal(unpackedPhysics.sensorMask, 0);
+assert.equal(unpackGpuCirclePhysicsMeta(sensorPhysicsMeta).sensorMask, 0x42);
 const unpackedSimulation = unpackGpuCircleSimulationMeta(simulationMeta);
 assert.equal(unpackedSimulation.layerMask, 0xa5);
 assert.equal(unpackedSimulation.flags, 0x05);
 assert.equal(unpackedSimulation.alive, true);
+assert.equal(unpackedSimulation.useFlow, false);
+assert.equal(unpackedSimulation.countAsKill, true);
+assert.equal(unpackedSimulation.explodeOnDeath, false);
+assert.equal(unpackedSimulation.golden, false);
 assert.equal(unpackGpuCircleSimulationMeta(packGpuCircleSimulationMeta(1, 0)).alive, false);
 
 // 재사용 slot을 오염시킨 뒤 spawn하면 current/previous/predicted와 모든 tmp sentinel이 초기화됩니다.
 const storage = createGpuCircleBodyAbiStorage(2);
+assert.equal(
+    storage.contactHandlerBuffer.byteLength,
+    GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * storage.capacity
+);
 new Uint8Array(storage.physicsBuffer).fill(0xff);
 new Uint8Array(storage.simulationBuffer).fill(0xff);
 new Uint8Array(storage.temporaryBuffer).fill(0xff);
+new Uint8Array(storage.contactHandlerBuffer).fill(0xff);
 writeGpuCircleBodyCounts(storage, {
     bodyCount: 1,
     additionCount: 2,
@@ -152,6 +205,10 @@ assert.equal(packedBody.positionDelta.y, 0);
 assert.equal(packedBody.gridIndex, -1);
 assert.equal(packedBody.physicsMeta, packGpuCirclePhysicsMeta(1, 0x81));
 assert.equal(packedBody.simulationMeta, packGpuCircleSimulationMeta(1, 1));
+assert.equal(packedBody.lifetime, GPU_CIRCLE_BODY_LIFETIME.IMMORTAL);
+assert.equal(packedBody.healthFixedPoint, GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE);
+assert.equal(packedBody.health, 1);
+assert.equal(packedBody.timer, 0);
 assert.equal(packedBody.flowFieldIndex, GPU_CIRCLE_BODY_FLOW.INVALID_FIELD_INDEX);
 assert.equal(packedBody.flowSpeed, 0);
 assert.equal(packedBody.entityId, GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT);
@@ -160,6 +217,14 @@ assert.equal(
     packedBody.previousFlowFieldIndex,
     GPU_CIRCLE_BODY_FLOW.INVALID_FIELD_INDEX
 );
+assert.equal(packedBody.contactHandler.damageSelf, 0);
+assert.equal(packedBody.contactHandler.damageOther, 0);
+assert.equal(packedBody.contactHandler.damageFalloff, 0);
+assert.equal(packedBody.contactHandler.fireTimer, 0);
+assert.equal(packedBody.contactHandler.flags, 0);
+assert.equal(packedBody.contactHandler.chaining, 0);
+assert.equal(packedBody.contactHandler.damageReportId, -1);
+assert.equal(packedBody.contactHandler.slowTimer, 0);
 const physicsView = new DataView(storage.physicsBuffer);
 const simulationView = new DataView(storage.simulationBuffer);
 const temporaryView = new DataView(storage.temporaryBuffer);
@@ -176,14 +241,14 @@ assert.equal(
         simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.LIFETIME,
         true
     ),
-    0
+    GPU_CIRCLE_BODY_LIFETIME.IMMORTAL
 );
 assert.equal(
     simulationView.getInt32(
         simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH,
         true
     ),
-    0
+    GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE
 );
 assert.equal(
     simulationView.getUint32(
@@ -258,6 +323,146 @@ assert.equal(
     ),
     GPU_CIRCLE_BODY_FLOW.INVALID_FIELD_INDEX
 );
+
+// 적과 투사체가 한 storage를 공유해도 sensor/수명/체력/충돌 핸들러가 독립적으로 보존됩니다.
+const projectileSimulationFlags = GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE
+    | GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL
+    | GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH
+    | GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN;
+writeGpuCircleBodySpawn(storage, 1, {
+    position: { x: -5, y: 8 },
+    velocity: { x: 9, y: -1 },
+    radius: 0.125,
+    inverseMass: 1,
+    layerMask: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
+    collisionMask: 0,
+    sensorMask: GPU_CIRCLE_BODY_LAYER.ENEMY | GPU_CIRCLE_BODY_LAYER.TERRAIN,
+    health: 2,
+    lifetime: 3.5,
+    timer: 11,
+    entityId: 77,
+    incarnation: 4,
+    countAsKill: true,
+    explodeOnDeath: true,
+    golden: true,
+    contactHandler: {
+        damageSelf: 1,
+        damageOther: 2.25,
+        damageFalloff: 0.5,
+        fireTimer: 1.5,
+        flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.KILL_IF_OTHER_TERRAIN
+            | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY,
+        chaining: 3,
+        damageReportId: 7,
+        slowTimer: 0.75
+    }
+});
+const projectileBody = readGpuCircleBody(storage, 1);
+const projectilePhysics = unpackGpuCirclePhysicsMeta(projectileBody.physicsMeta);
+const projectileSimulation = unpackGpuCircleSimulationMeta(projectileBody.simulationMeta);
+assert.equal(projectilePhysics.layerMask, GPU_CIRCLE_BODY_LAYER.PROJECTILE);
+assert.equal(projectilePhysics.collisionMask, 0);
+assert.equal(
+    projectilePhysics.sensorMask,
+    GPU_CIRCLE_BODY_LAYER.ENEMY | GPU_CIRCLE_BODY_LAYER.TERRAIN
+);
+assert.equal(projectileSimulation.layerMask, GPU_CIRCLE_BODY_LAYER.PROJECTILE);
+assert.equal(projectileSimulation.flags, projectileSimulationFlags);
+assert.equal(projectileSimulation.alive, true);
+assert.equal(projectileSimulation.useFlow, false);
+assert.equal(projectileSimulation.countAsKill, true);
+assert.equal(projectileSimulation.explodeOnDeath, true);
+assert.equal(projectileSimulation.golden, true);
+assertNear(projectileBody.lifetime, 3.5, 'projectile lifetime');
+assert.equal(projectileBody.healthFixedPoint, 200);
+assert.equal(projectileBody.health, 2);
+assert.equal(projectileBody.timer, 11);
+assert.equal(projectileBody.entityId, 77);
+assert.equal(projectileBody.incarnation, 4);
+assertNear(projectileBody.contactHandler.damageSelf, 1, 'projectile self damage');
+assertNear(projectileBody.contactHandler.damageOther, 2.25, 'projectile other damage');
+assertNear(projectileBody.contactHandler.damageFalloff, 0.5, 'projectile falloff');
+assertNear(projectileBody.contactHandler.fireTimer, 1.5, 'projectile fire timer');
+assert.equal(
+    projectileBody.contactHandler.flags,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.KILL_IF_OTHER_TERRAIN
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+);
+assert.equal(projectileBody.contactHandler.chaining, 3);
+assert.equal(projectileBody.contactHandler.damageReportId, 7);
+assertNear(projectileBody.contactHandler.slowTimer, 0.75, 'projectile slow timer');
+
+// 원본 추출 코드의 snake_case 입력도 받되 빈 핸들러로 덮으면 stale 값이 모두 사라집니다.
+writeGpuCircleContactHandler(storage, 0, {
+    damage_self: 0.25,
+    damage_other: 4,
+    damage_falloff: 1,
+    fire_timer: 2,
+    flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.SLOW,
+    chaining: -2,
+    damage_report_id: 13,
+    slow_timer: 5
+});
+const sourceNamedHandler = readGpuCircleContactHandler(storage, 0);
+assertNear(sourceNamedHandler.damageSelf, 0.25, 'source damage_self alias');
+assertNear(sourceNamedHandler.damageOther, 4, 'source damage_other alias');
+assertNear(sourceNamedHandler.damageFalloff, 1, 'source damage_falloff alias');
+assertNear(sourceNamedHandler.fireTimer, 2, 'source fire_timer alias');
+assert.equal(sourceNamedHandler.flags, GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.SLOW);
+assert.equal(sourceNamedHandler.chaining, -2);
+assert.equal(sourceNamedHandler.damageReportId, 13);
+assertNear(sourceNamedHandler.slowTimer, 5, 'source slow_timer alias');
+writeGpuCircleContactHandler(storage, 0);
+const resetHandler = readGpuCircleContactHandler(storage, 0);
+assert.equal(resetHandler.damageSelf, 0);
+assert.equal(resetHandler.damageOther, 0);
+assert.equal(resetHandler.damageFalloff, 0);
+assert.equal(resetHandler.fireTimer, 0);
+assert.equal(resetHandler.flags, 0);
+assert.equal(resetHandler.chaining, 0);
+assert.equal(resetHandler.damageReportId, -1);
+assert.equal(resetHandler.slowTimer, 0);
+
+// host encoder는 WGSL의 f32 곱셈과 같은 단계에서 반올림한 뒤 0 방향으로 절삭합니다.
+assert.equal(encodeGpuCircleBodyFixedPoint(0.29), 29);
+assert.equal(encodeGpuCircleBodyFixedPoint(0.57), 57);
+assert.equal(encodeGpuCircleBodyFixedPoint(1.15), 115);
+assert.equal(encodeGpuCircleBodyFixedPoint(-0.29), -29);
+assert.equal(encodeGpuCircleBodyFixedPoint(-0.57), -57);
+assert.equal(encodeGpuCircleBodyFixedPoint(-1.15), -115);
+assert.equal(encodeGpuCircleBodyFixedPoint(1.239), 123);
+assert.equal(encodeGpuCircleBodyFixedPoint(21_474_834), 2_147_483_392);
+assert.equal(encodeGpuCircleBodyFixedPoint(-21_474_837), -2_147_483_648);
+assertThrowsNamed(() => encodeGpuCircleBodyFixedPoint(21_474_835), 'RangeError');
+assertThrowsNamed(() => encodeGpuCircleBodyFixedPoint(-21_474_838), 'RangeError');
+
+const fractionalFixedPointStorage = createGpuCircleBodyAbiStorage(1);
+writeGpuCircleBodySpawn(fractionalFixedPointStorage, 0, {
+    position: { x: 0, y: 0 },
+    radius: 1,
+    inverseMass: 1,
+    layerMask: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
+    collisionMask: 0,
+    health: 0.29,
+    contactHandler: {
+        damageSelf: 0.29,
+        damageOther: 0.57
+    }
+});
+const fractionalFixedPointBody = readGpuCircleBody(fractionalFixedPointStorage, 0);
+assert.equal(fractionalFixedPointBody.healthFixedPoint, 29);
+assert.equal(
+    encodeGpuCircleBodyFixedPoint(fractionalFixedPointBody.contactHandler.damageSelf),
+    fractionalFixedPointBody.healthFixedPoint
+);
+assert.equal(
+    encodeGpuCircleBodyFixedPoint(fractionalFixedPointBody.contactHandler.damageOther),
+    57
+);
+assert.equal(decodeGpuCircleBodyFixedPoint(125), 1.25);
+assert.equal(normalizeGpuCircleBodyLifetime(-1), GPU_CIRCLE_BODY_LIFETIME.IMMORTAL);
+assertNear(normalizeGpuCircleBodyLifetime(2.5), 2.5, 'finite lifetime');
+
 const counts = readGpuCircleBodyCounts(storage);
 assert.equal(counts.bodyCount, 1);
 assert.equal(counts.additionCount, 2);
@@ -344,7 +549,41 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
     inverseMass: -0.1
 }), 'RangeError');
 assertThrowsNamed(() => packGpuCirclePhysicsMeta(256, 1), 'RangeError');
+assertThrowsNamed(() => packGpuCirclePhysicsMeta(1, 1, 256), 'RangeError');
 assertThrowsNamed(() => packGpuCircleSimulationMeta(1, 256), 'RangeError');
+assertThrowsNamed(() => normalizeGpuCircleBodyLifetime(-2), 'RangeError');
+assertThrowsNamed(
+    () => normalizeGpuCircleBodyLifetime(Number.POSITIVE_INFINITY),
+    'TypeError'
+);
+assertThrowsNamed(() => encodeGpuCircleBodyFixedPoint(Number.NaN), 'TypeError');
+assertThrowsNamed(() => encodeGpuCircleBodyFixedPoint(1, 0), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    lifetime: -2
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    health: -0.01
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    healthFixedPoint: 0x80000000
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    timer: -1
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
+    damageOther: -0.01
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
+    flags: -1
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
+    chaining: 0x80000000
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, null), 'TypeError');
 assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
     ...spawn,
     physicsMeta: packGpuCirclePhysicsMeta(1, 1),
@@ -358,6 +597,20 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
     ...spawn,
     alive: false,
     simulationMeta: packGpuCircleSimulationMeta(1, GPU_CIRCLE_BODY_META.ALIVE_FLAG)
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    sensorMask: GPU_CIRCLE_BODY_LAYER.TERRAIN,
+    physicsMeta: packGpuCirclePhysicsMeta(1, 1, GPU_CIRCLE_BODY_LAYER.ENEMY)
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    countAsKill: false,
+    simulationMeta: packGpuCircleSimulationMeta(
+        1,
+        GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE
+            | GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL
+    )
 }), 'RangeError');
 
 console.log('gpu circle body ABI contract: ok');

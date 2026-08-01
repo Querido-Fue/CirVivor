@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const SOURCE_PATH = fileURLToPath(new URL(
-    '../script/module/scene/game/render/game_scene_world_renderer.js',
+    '../script/module/scene/benchmark/render/benchmark_scene_world_renderer.js',
     import.meta.url
 ));
 const source = await readFile(SOURCE_PATH, 'utf8');
@@ -101,16 +101,16 @@ async function loadWorldRenderer() {
             'debug/debug_system.js',
             { beginPerformanceSection: () => 0, endPerformanceSection() {} }
         )],
-        ['../game_scene_snapshot_utils.js', createSyntheticModule(
-            '../game_scene_snapshot_utils.js',
+        ['../benchmark_scene_snapshot_utils.js', createSyntheticModule(
+            '../benchmark_scene_snapshot_utils.js',
             {
                 normalizeSnapshotNumber(value, fallback = 0) {
                     return Number.isFinite(value) ? value : fallback;
                 }
             }
         )],
-        ['./game_scene_benchmark_palette.js', createSyntheticModule(
-            './game_scene_benchmark_palette.js',
+        ['./benchmark_scene_palette.js', createSyntheticModule(
+            './benchmark_scene_palette.js',
             { getBenchmarkColor: (key) => `color:${key}` }
         )]
     ]);

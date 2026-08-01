@@ -4,7 +4,9 @@ import {
     GPU_CIRCLE_BODY_IDENTITY,
     GPU_CIRCLE_BODY_META,
     createGpuCircleBodyAbiStorage,
+    decodeGpuCircleBodyFixedPoint,
     readGpuCircleBody,
+    unpackGpuCirclePhysicsMeta,
     writeGpuCircleBodyCounts,
     writeGpuCircleBodySpawn
 } from './gpu_circle_body_abi.js';
@@ -25,14 +27,28 @@ const SOURCE_MAX_BODIES_PER_CELL = 64;
 const SOURCE_SOLVER_ITERATIONS = 6;
 const BODY_WORKGROUP_SIZE = 256;
 const OVERFLOW_READBACK_SLOT_COUNT = 4;
+const EVENT_READBACK_SLOT_COUNT = 8;
 const OVERFLOW_READBACK_INTERVAL_TICKS = 4;
 const OVERFLOW_TELEMETRY_MAX_AGE_TICKS = 60;
+const DEFAULT_MIN_CONTACT_CAPACITY = 1024;
+const DEFAULT_MAX_CONTACT_CAPACITY = 65536;
+const DEFAULT_MAX_EVENT_CAPACITY = 8192;
 const COMPUTE_PARAMS_FLOW_STAGE_OFFSET = 96;
 const COMPUTE_PARAMS_FLOW_STAGE_STRIDE = 16;
-const COMPUTE_PARAMS_BYTE_SIZE = COMPUTE_PARAMS_FLOW_STAGE_OFFSET
+const COMPUTE_PARAMS_MAX_CONTACTS_OFFSET = COMPUTE_PARAMS_FLOW_STAGE_OFFSET
     + (GPU_CIRCLE_BODY_FLOW.MAX_FIELD_COUNT * COMPUTE_PARAMS_FLOW_STAGE_STRIDE);
+const COMPUTE_PARAMS_MAX_EVENTS_OFFSET = COMPUTE_PARAMS_MAX_CONTACTS_OFFSET + 4;
+const COMPUTE_PARAMS_MAX_DEATH_EVENTS_OFFSET = COMPUTE_PARAMS_MAX_EVENTS_OFFSET + 4;
+const COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFSET
+    = COMPUTE_PARAMS_MAX_DEATH_EVENTS_OFFSET + 4;
+const COMPUTE_PARAMS_BYTE_SIZE = COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFSET + 4;
 const RENDER_PARAMS_BYTE_SIZE = 32;
 const GRID_OVERFLOW_BYTE_SIZE = 16;
+const CONTACT_STATE_BYTE_SIZE = 32;
+const CONTACT_RECORD_BYTE_SIZE = 32;
+const APPLIED_EVENT_BYTE_SIZE = 32;
+const DEATH_EVENT_BYTE_SIZE = 16;
+const EVENT_READBACK_HEADER_BYTE_SIZE = 256;
 const DISPATCH_INDIRECT_BYTE_SIZE = 12;
 const DRAW_INDIRECT_BYTE_SIZE = 16;
 const BODY_RENDER_STYLE_STRIDE = 32;
@@ -40,11 +56,20 @@ const FLOAT32_BYTES = 4;
 const MASS_EPSILON = 0.000001;
 const UINT32_MAX = 0xffffffff;
 const LITTLE_ENDIAN = true;
+const APPLIED_EVENT_FLAG_TARGET_DIED = 1 << 0;
+const APPLIED_EVENT_FLAG_TERRAIN_KILL = 1 << 1;
+const DEATH_EVENT_FLAG_HEALTH = 1 << 0;
+const DEATH_EVENT_FLAG_LIFETIME = 1 << 1;
 
 const COMPUTE_ENTRY_POINTS = Object.freeze([
     'prepare_bodies',
     'clear_grid',
     'build_grid',
+    'clear_contact_state',
+    'generate_body_contacts',
+    'generate_world_contacts',
+    'handle_contacts',
+    'mark_dead',
     'clear_position_deltas',
     'solve_body_body',
     'solve_body_world',
@@ -52,6 +77,29 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'rebuild_velocities',
     'finalize_velocities'
 ]);
+const COMPUTE_PIPELINE_PROFILE = Object.freeze({
+    PHYSICS: 'physics',
+    BODY_CONTACTS: 'body-contacts',
+    WORLD_CONTACTS: 'world-contacts',
+    CONTACT_HANDLING: 'contact-handling'
+});
+const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
+    prepare_bodies: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    clear_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    build_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    clear_contact_state: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
+    generate_body_contacts: COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS,
+    generate_world_contacts: COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS,
+    handle_contacts: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
+    mark_dead: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
+    clear_position_deltas: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    solve_body_body: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    solve_body_world: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    apply_position_deltas: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    rebuild_velocities: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    finalize_velocities: COMPUTE_PIPELINE_PROFILE.PHYSICS
+});
+const REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE = 9;
 
 function requirePositiveInteger(value, label) {
     const number = Number(value);
@@ -59,6 +107,29 @@ function requirePositiveInteger(value, label) {
         throw new RangeError(`${label}은(는) 양의 정수여야 합니다.`);
     }
     return number;
+}
+
+function requireNonNegativeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) {
+        throw new RangeError(`${label}은(는) 0 이상의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
+function resolveCapacityOption(options, names, fallback, maximum, label) {
+    let value = fallback;
+    for (const name of names) {
+        if (options[name] !== undefined) {
+            value = options[name];
+            break;
+        }
+    }
+    const capacity = requirePositiveInteger(value, label);
+    if (capacity > maximum) {
+        throw new RangeError(`${label}은(는) ${maximum} 이하여야 합니다.`);
+    }
+    return capacity;
 }
 
 function requirePositiveFinite(value, label) {
@@ -98,6 +169,80 @@ function captureFailure(stage, error) {
         // hostile diagnostics are reduced to stable fallback text
     }
     return Object.freeze({ stage, name, message });
+}
+
+function appliedEventReason(flags) {
+    if ((flags & APPLIED_EVENT_FLAG_TERRAIN_KILL) !== 0) {
+        return 'terrain-kill';
+    }
+    if ((flags & APPLIED_EVENT_FLAG_TARGET_DIED) !== 0) {
+        return 'target-died';
+    }
+    return 'damage';
+}
+
+function deathEventReason(flags) {
+    const health = (flags & DEATH_EVENT_FLAG_HEALTH) !== 0;
+    const lifetime = (flags & DEATH_EVENT_FLAG_LIFETIME) !== 0;
+    if (health && lifetime) {
+        return 'health-and-lifetime';
+    }
+    if (health) {
+        return 'health';
+    }
+    if (lifetime) {
+        return 'lifetime';
+    }
+    return 'unknown';
+}
+
+function decodeAppliedEvent(view, offset, sequence) {
+    const entityId = view.getUint32(offset, LITTLE_ENDIAN);
+    const incarnation = view.getUint32(offset + 4, LITTLE_ENDIAN);
+    const otherEntityId = view.getUint32(offset + 8, LITTLE_ENDIAN);
+    const otherIncarnation = view.getUint32(offset + 12, LITTLE_ENDIAN);
+    const damageFixedPoint = view.getInt32(offset + 16, LITTLE_ENDIAN);
+    const flags = view.getUint32(offset + 20, LITTLE_ENDIAN);
+    const terrain = (flags & APPLIED_EVENT_FLAG_TERRAIN_KILL) !== 0;
+    const other = terrain
+        ? null
+        : Object.freeze({ entityId: otherEntityId, incarnation: otherIncarnation });
+    return Object.freeze({
+        type: 'contact',
+        sequence,
+        entityId,
+        incarnation,
+        other,
+        otherEntityId: terrain ? null : otherEntityId,
+        otherIncarnation: terrain ? null : otherIncarnation,
+        position: Object.freeze({
+            x: view.getFloat32(offset + 24, LITTLE_ENDIAN),
+            y: view.getFloat32(offset + 28, LITTLE_ENDIAN)
+        }),
+        damageFixedPoint,
+        damage: decodeGpuCircleBodyFixedPoint(damageFixedPoint),
+        flags,
+        reason: appliedEventReason(flags)
+    });
+}
+
+function decodeDeathEvent(view, offset, sequence) {
+    const flags = view.getUint32(offset + 12, LITTLE_ENDIAN);
+    return Object.freeze({
+        type: 'death',
+        sequence,
+        entityId: view.getUint32(offset, LITTLE_ENDIAN),
+        incarnation: view.getUint32(offset + 4, LITTLE_ENDIAN),
+        bodyId: view.getUint32(offset + 8, LITTLE_ENDIAN),
+        other: null,
+        otherEntityId: null,
+        otherIncarnation: null,
+        position: null,
+        damageFixedPoint: 0,
+        damage: 0,
+        flags,
+        reason: deathEventReason(flags)
+    });
 }
 
 function requirePlatformPort(port) {
@@ -285,7 +430,8 @@ function copyBodySlot(sourceStorage, sourceIndex, targetStorage, targetIndex) {
     for (const [bufferName, stride] of [
         ['physicsBuffer', GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE],
         ['simulationBuffer', GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE],
-        ['temporaryBuffer', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE]
+        ['temporaryBuffer', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE],
+        ['contactHandlerBuffer', GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE]
     ]) {
         new Uint8Array(targetStorage[bufferName], targetIndex * stride, stride).set(
             new Uint8Array(sourceStorage[bufferName], sourceIndex * stride, stride)
@@ -311,6 +457,31 @@ export class GpuCircleBodySimulation {
     constructor(webGpuPlatformPort, options = {}) {
         this.platform = requirePlatformPort(webGpuPlatformPort);
         this.capacity = requirePositiveInteger(options.capacity ?? 16384, 'capacity');
+        const defaultContactCapacity = Math.min(
+            Math.max(this.capacity * 4, DEFAULT_MIN_CONTACT_CAPACITY),
+            DEFAULT_MAX_CONTACT_CAPACITY
+        );
+        this.contactCapacity = resolveCapacityOption(
+            options,
+            ['contactCapacity', 'maxContacts'],
+            defaultContactCapacity,
+            DEFAULT_MAX_CONTACT_CAPACITY,
+            'contactCapacity'
+        );
+        this.eventCapacity = resolveCapacityOption(
+            options,
+            ['eventCapacity', 'maxEvents'],
+            Math.min(this.contactCapacity, DEFAULT_MAX_EVENT_CAPACITY),
+            this.contactCapacity,
+            'eventCapacity'
+        );
+        this.deathEventCapacity = resolveCapacityOption(
+            options,
+            ['deathEventCapacity', 'maxDeathEvents'],
+            this.capacity,
+            this.capacity,
+            'deathEventCapacity'
+        );
         this.worldSize = normalizeSize2(options.worldSize, 'worldSize');
         this.gridCellSize = normalizeSize2(options.gridCellSize ?? 1, 'gridCellSize');
         this.maxBodiesPerCell = requirePositiveInteger(
@@ -359,6 +530,7 @@ export class GpuCircleBodySimulation {
         this.bodyCount = 0;
         this.activeBodyCount = 0;
         this.slotActive = new Uint8Array(this.capacity);
+        this.slotEventProducing = new Uint8Array(this.capacity);
         this.slotHandles = new Array(this.capacity).fill(null);
         this.handleToSlot = new Map();
         this.freeSlots = [];
@@ -389,6 +561,25 @@ export class GpuCircleBodySimulation {
         this.lastOverflowSampleSubmittedTick = 0;
         this.lastOverflowSampleCompletedTick = 0;
         this.overflowSampleOverdue = false;
+        this.eventProducingBodyCount = 0;
+        this.maximumBodyRadius = 0;
+        this.eventReadbackSlots = [];
+        this.eventReadbackLease = 0;
+        this.eventReadbackCursor = 0;
+        this.pendingEventReadbacks = 0;
+        this.eventBatchQueue = [];
+        this.eventCompletedThroughTick = 0;
+        this.idleReleasePending = false;
+        this.eventBackpressureCount = 0;
+        this.lastEventReadbackSubmittedTick = 0;
+        this.lastEventReadbackCompletedTick = 0;
+        this.lastEventStatsTick = 0;
+        this.lastContactCount = 0;
+        this.lastContactOverflowCount = 0;
+        this.lastAppliedEventCount = 0;
+        this.lastAppliedEventOverflowCount = 0;
+        this.lastDeathEventCount = 0;
+        this.lastDeathEventOverflowCount = 0;
         this.canvasHasDrawnBodies = false;
         this.lastFixedDelta = 1 / 60;
         this.renderOriginScratch = { x: 0, y: 0 };
@@ -407,6 +598,7 @@ export class GpuCircleBodySimulation {
         this.drawIndirectArgs = new Uint32Array(4);
         this.overflowResetData = new Uint32Array(4);
         this.uploadedComputeFixedDelta = NaN;
+        this.uploadedMaximumBodyRadius = NaN;
     }
 
     /**
@@ -416,7 +608,7 @@ export class GpuCircleBodySimulation {
     init() {
         if (this.destroyed
             || this.requiresAuthoritativeRebuild
-            || this.state === 'overflow-degraded') {
+            || this.#isOverflowDegradedState()) {
             return false;
         }
         const device = this.platform.getDevice();
@@ -428,7 +620,9 @@ export class GpuCircleBodySimulation {
         }
         if (this.device === device
             && this.deviceGeneration === generation
-            && (this.state === 'ready' || this.state === 'telemetry-backpressure')) {
+            && (this.state === 'ready'
+                || this.state === 'telemetry-backpressure'
+                || this.state === 'event-backpressure')) {
             return true;
         }
 
@@ -519,6 +713,8 @@ export class GpuCircleBodySimulation {
 
         const replacingSubmittedState = this.submittedTickCount > 0
             || this.pendingOverflowReadbacks > 0
+            || this.pendingEventReadbacks > 0
+            || this.eventBatchQueue.length > 0
             || this.requiresAuthoritativeRebuild;
         this.hostStorage = nextStorage;
         this.hostRenderStyles = nextStyles;
@@ -529,17 +725,20 @@ export class GpuCircleBodySimulation {
         this.slotHandles = nextSlotHandles;
         this.handleToSlot = nextHandleToSlot;
         this.freeSlots.length = 0;
+        this.#refreshHostBodyDerivedState();
         this.submittedTickCount = 0;
         this.hasGpuAuthoritativeState = false;
         this.authoritativeEpoch++;
         this.requiresAuthoritativeRebuild = false;
         this.#resetOverflowTelemetry();
+        this.#resetContactEventTelemetry();
         if (replacingSubmittedState && this.device) {
             this.#releaseGpuResources();
         }
         if (this.state === 'requires-rebuild'
-            || this.state === 'overflow-degraded'
+            || this.#isOverflowDegradedState()
             || this.state === 'telemetry-backpressure'
+            || this.state === 'event-backpressure'
             || replacingSubmittedState) {
             this.state = 'idle';
         }
@@ -558,6 +757,7 @@ export class GpuCircleBodySimulation {
             this.handleToSlot.clear();
             this.freeSlots.length = 0;
             writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: 0 });
+            this.#refreshHostBodyDerivedState();
             return Object.freeze({
                 accepted: 0,
                 rejected: bodies.length,
@@ -624,6 +824,8 @@ export class GpuCircleBodySimulation {
             });
         }
 
+        const continuesDeferredAuthoritativeEpoch = startsNewAuthoritativeEpoch
+            && this.idleReleasePending;
         const reusedCount = Math.min(this.freeSlots.length, bodies.length);
         const selectedSlots = new Array(bodies.length);
         for (let index = 0; index < reusedCount; index++) {
@@ -645,14 +847,25 @@ export class GpuCircleBodySimulation {
         this.bodyCount += bodies.length - reusedCount;
         this.activeBodyCount += bodies.length;
         if (startsNewAuthoritativeEpoch) {
-            this.authoritativeEpoch++;
+            if (continuesDeferredAuthoritativeEpoch) {
+                this.idleReleasePending = false;
+            } else {
+                this.authoritativeEpoch++;
+                this.#resetContactEventTelemetry();
+            }
         }
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
+        this.#refreshHostBodyDerivedState();
 
         try {
             this.#uploadSlotRanges(selectedSlots);
             this.#uploadBodyCountState();
         } catch (error) {
+            if (continuesDeferredAuthoritativeEpoch) {
+                this.authoritativeEpoch++;
+                this.#resetContactEventTelemetry();
+            }
+            this.idleReleasePending = false;
             this.requiresAuthoritativeRebuild = true;
             this.failure = captureFailure('spawn-upload', error);
             this.state = 'requires-rebuild';
@@ -744,7 +957,7 @@ export class GpuCircleBodySimulation {
         this.activeBodyCount -= selectedSlots.length;
         if (this.activeBodyCount === 0) {
             this.hasGpuAuthoritativeState = false;
-            this.authoritativeEpoch++;
+            this.idleReleasePending = true;
         }
         while (this.bodyCount > 0 && this.slotActive[this.bodyCount - 1] === 0) {
             this.bodyCount--;
@@ -753,14 +966,19 @@ export class GpuCircleBodySimulation {
             this.freeSlots = this.freeSlots.filter((slot) => slot < this.bodyCount);
         }
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
+        this.#refreshHostBodyDerivedState();
 
         try {
             this.#uploadSlotRanges(selectedSlots);
             this.#uploadBodyCountState();
         } catch (error) {
-            this.requiresAuthoritativeRebuild = true;
+            if (this.idleReleasePending) {
+                this.idleReleasePending = false;
+                this.authoritativeEpoch++;
+            }
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
             this.failure = captureFailure('despawn-upload', error);
-            this.state = 'requires-rebuild';
+            this.state = this.requiresAuthoritativeRebuild ? 'requires-rebuild' : 'failed';
             return Object.freeze({
                 removed: selectedSlots.length,
                 rejected,
@@ -768,6 +986,9 @@ export class GpuCircleBodySimulation {
                 reason: this.state,
                 requiresRecovery: true
             });
+        }
+        if (this.activeBodyCount === 0) {
+            this.#completeDeferredIdleRelease();
         }
         return Object.freeze({
             removed: selectedSlots.length,
@@ -783,12 +1004,16 @@ export class GpuCircleBodySimulation {
     }
 
     /**
-     * 원본 순서의 collision-only fixed tick을 GPU에 제출합니다.
+     * contact/event 생성과 6회 위치 solver를 포함한 fixed tick을 GPU에 제출합니다.
      * @param {number} fixedDelta - 초 단위 fixed delta입니다.
+     * @param {number} [sourceTick] - 상위 fixed-step source tick입니다.
      * @returns {boolean} command 제출 여부입니다.
      */
-    fixedUpdate(fixedDelta) {
+    fixedUpdate(fixedDelta, sourceTick) {
         const delta = requirePositiveFinite(fixedDelta, 'fixedDelta');
+        const requestedSourceTick = sourceTick === undefined
+            ? null
+            : requireNonNegativeInteger(sourceTick, 'sourceTick');
         this.lastFixedDelta = delta;
         if (this.activeBodyCount === 0) {
             return false;
@@ -803,7 +1028,31 @@ export class GpuCircleBodySimulation {
         if (!this.#ensureReady()) {
             return false;
         }
+
+        const needsEventReadback = this.eventProducingBodyCount > 0;
+        if (this.state === 'event-backpressure') {
+            if (needsEventReadback && !this.#hasFreeEventReadbackSlot()) {
+                return false;
+            }
+            this.state = 'ready';
+            this.failure = null;
+        }
+        const eventSlot = needsEventReadback
+            ? this.#claimEventReadbackSlot()
+            : null;
+        if (needsEventReadback && !eventSlot) {
+            this.eventBackpressureCount++;
+            this.state = 'event-backpressure';
+            this.failure = Object.freeze({
+                stage: 'event-readback-backpressure',
+                name: 'EventBackpressure',
+                message: 'GPU contact event staging ring에 빈 slot이 없습니다.'
+            });
+            return false;
+        }
+
         const tick = this.submittedTickCount + 1;
+        const resolvedSourceTick = requestedSourceTick ?? tick;
         const shouldSampleOverflow = this.overflowSampleOverdue
             || tick === 1
             || (tick - this.lastOverflowSampleSubmittedTick)
@@ -816,6 +1065,7 @@ export class GpuCircleBodySimulation {
             this.overflowSampleOverdue = true;
             if ((tick - this.lastOverflowSampleCompletedTick)
                 >= OVERFLOW_TELEMETRY_MAX_AGE_TICKS) {
+                this.#releaseClaimedEventReadbackSlot(eventSlot);
                 this.state = 'telemetry-backpressure';
                 this.failure = Object.freeze({
                     stage: 'overflow-readback-backpressure',
@@ -826,52 +1076,91 @@ export class GpuCircleBodySimulation {
             }
         }
 
-        this.#writeComputeParams(delta);
         const device = this.device;
-        const encoder = device.createCommandEncoder({
-            label: 'cirvivor-gpu-circle-fixed-step'
-        });
-
-        const pass = encoder.beginComputePass({
-            label: 'cirvivor-gpu-circle-collision'
-        });
-        pass.setBindGroup(0, this.bindGroups.computeBodies);
-        pass.setBindGroup(1, this.bindGroups.computeWorld);
-        pass.setBindGroup(2, this.bindGroups.computeParams);
-
-        this.#dispatchBodies(pass, 'prepare_bodies');
-        pass.setPipeline(this.pipelines.compute.clear_grid);
-        pass.dispatchWorkgroups(Math.ceil(
-            (this.gridCellTotal * GRID_BUCKET_COUNT) / BODY_WORKGROUP_SIZE
-        ));
-        this.#dispatchBodies(pass, 'build_grid');
-
-        for (let iteration = 0; iteration < this.solverIterations; iteration++) {
-            this.#dispatchBodies(pass, 'clear_position_deltas');
-            pass.setPipeline(this.pipelines.compute.solve_body_body);
-            pass.dispatchWorkgroups(this.gridCellTotal);
-            this.#dispatchBodies(pass, 'solve_body_world');
-            this.#dispatchBodies(pass, 'apply_position_deltas');
-        }
-        this.#dispatchBodies(pass, 'rebuild_velocities');
-        this.#dispatchBodies(pass, 'finalize_velocities');
-        pass.end();
-
-        if (overflowSlot) {
-            encoder.copyBufferToBuffer(
-                this.buffers.gridOverflow,
-                0,
-                overflowSlot.buffer,
-                0,
-                GRID_OVERFLOW_BYTE_SIZE
-            );
-        }
         const generation = this.deviceGeneration;
-        const lease = this.overflowReadbackLease;
+        const authoritativeEpoch = this.authoritativeEpoch;
+        const overflowLease = this.overflowReadbackLease;
+        const eventLease = this.eventReadbackLease;
+        let encoder;
         try {
+            this.#writeComputeParams(delta);
+            encoder = device.createCommandEncoder({
+                label: 'cirvivor-gpu-circle-fixed-step'
+            });
+            const pass = encoder.beginComputePass({
+                label: 'cirvivor-gpu-circle-collision-contact'
+            });
+
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
+            this.#dispatchBodies(pass, 'prepare_bodies');
+            pass.setPipeline(this.pipelines.compute.clear_grid);
+            pass.dispatchWorkgroups(Math.ceil(
+                (this.gridCellTotal * GRID_BUCKET_COUNT) / BODY_WORKGROUP_SIZE
+            ));
+            this.#dispatchBodies(pass, 'build_grid');
+
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING);
+            pass.setPipeline(this.pipelines.compute.clear_contact_state);
+            pass.dispatchWorkgroups(1);
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS);
+            this.#dispatchBodies(pass, 'generate_body_contacts');
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS);
+            this.#dispatchBodies(pass, 'generate_world_contacts');
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING);
+            pass.setPipeline(this.pipelines.compute.handle_contacts);
+            pass.dispatchWorkgroups(Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE));
+            this.#dispatchBodies(pass, 'mark_dead');
+
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
+            for (let iteration = 0; iteration < this.solverIterations; iteration++) {
+                this.#dispatchBodies(pass, 'clear_position_deltas');
+                pass.setPipeline(this.pipelines.compute.solve_body_body);
+                pass.dispatchWorkgroups(this.gridCellTotal);
+                this.#dispatchBodies(pass, 'solve_body_world');
+                this.#dispatchBodies(pass, 'apply_position_deltas');
+            }
+            this.#dispatchBodies(pass, 'rebuild_velocities');
+            this.#dispatchBodies(pass, 'finalize_velocities');
+            pass.end();
+
+            if (overflowSlot) {
+                encoder.copyBufferToBuffer(
+                    this.buffers.gridOverflow,
+                    0,
+                    overflowSlot.buffer,
+                    0,
+                    GRID_OVERFLOW_BYTE_SIZE
+                );
+            }
+            if (eventSlot) {
+                const deathOffset = EVENT_READBACK_HEADER_BYTE_SIZE
+                    + (this.eventCapacity * APPLIED_EVENT_BYTE_SIZE);
+                encoder.copyBufferToBuffer(
+                    this.buffers.contactState,
+                    0,
+                    eventSlot.buffer,
+                    0,
+                    CONTACT_STATE_BYTE_SIZE
+                );
+                encoder.copyBufferToBuffer(
+                    this.buffers.appliedEvents,
+                    0,
+                    eventSlot.buffer,
+                    EVENT_READBACK_HEADER_BYTE_SIZE,
+                    this.eventCapacity * APPLIED_EVENT_BYTE_SIZE
+                );
+                encoder.copyBufferToBuffer(
+                    this.buffers.deathEvents,
+                    0,
+                    eventSlot.buffer,
+                    deathOffset,
+                    this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE
+                );
+            }
             device.queue.submit([encoder.finish()]);
         } catch (error) {
             this.#releaseClaimedOverflowReadbackSlot(overflowSlot);
+            this.#releaseClaimedEventReadbackSlot(eventSlot);
             this.failure = captureFailure('fixed-submit', error);
             this.requiresAuthoritativeRebuild = this.hasGpuAuthoritativeState
                 && this.activeBodyCount > 0;
@@ -884,6 +1173,7 @@ export class GpuCircleBodySimulation {
             }
             return false;
         }
+
         this.submittedTickCount = tick;
         this.hasGpuAuthoritativeState = true;
         this.presentationClock.advancePhysics(delta);
@@ -894,11 +1184,48 @@ export class GpuCircleBodySimulation {
                 overflowSlot,
                 tick,
                 generation,
-                lease,
-                this.authoritativeEpoch
+                overflowLease,
+                authoritativeEpoch
             );
         }
+        if (eventSlot) {
+            const queueEntry = {
+                sourceTick: resolvedSourceTick,
+                submittedTick: tick,
+                deviceGeneration: generation,
+                authoritativeEpoch,
+                completed: false,
+                events: null
+            };
+            this.eventBatchQueue.push(queueEntry);
+            this.lastEventReadbackSubmittedTick = tick;
+            this.#beginEventReadback(eventSlot, queueEntry, eventLease);
+        }
         return true;
+    }
+
+    /**
+     * 제출 순서상 선두부터 연속 완료된 contact/death batch만 방출합니다.
+     * @param {object[]} [out=[]] - batch를 추가할 호출자 소유 배열입니다.
+     * @returns {object[]} 전달받은 out입니다.
+     */
+    drainCompletedEventBatches(out = []) {
+        if (!out || typeof out.push !== 'function') {
+            throw new TypeError('event batch 출력 대상은 push 가능한 배열이어야 합니다.');
+        }
+        while (this.eventBatchQueue[0]?.completed === true) {
+            const entry = this.eventBatchQueue.shift();
+            out.push(Object.freeze({
+                sourceTick: entry.sourceTick,
+                submittedTick: entry.submittedTick,
+                deviceGeneration: entry.deviceGeneration,
+                authoritativeEpoch: entry.authoritativeEpoch,
+                completedThroughTick: this.eventCompletedThroughTick,
+                events: entry.events
+            }));
+        }
+        this.#completeDeferredIdleRelease();
+        return out;
     }
 
     /**
@@ -933,7 +1260,7 @@ export class GpuCircleBodySimulation {
      * @returns {boolean} draw 또는 clear 제출 여부입니다.
      */
     draw(camera) {
-        if (this.requiresAuthoritativeRebuild && this.state !== 'overflow-degraded') {
+        if (this.requiresAuthoritativeRebuild && !this.#isOverflowDegradedState()) {
             if (!this.canvasHasDrawnBodies) {
                 return false;
             }
@@ -953,7 +1280,7 @@ export class GpuCircleBodySimulation {
             }
             return cleared;
         }
-        if (!(this.state === 'overflow-degraded' && this.#hasCurrentGpuResources())
+        if (!(this.#isOverflowDegradedState() && this.#hasCurrentGpuResources())
             && !this.#ensureReady()) {
             return false;
         }
@@ -1012,7 +1339,7 @@ export class GpuCircleBodySimulation {
         if (this.activeBodyCount === 0) {
             return [];
         }
-        if (!(this.state === 'overflow-degraded' && this.#hasCurrentGpuResources())
+        if (!(this.#isOverflowDegradedState() && this.#hasCurrentGpuResources())
             && !this.#ensureReady()) {
             return [];
         }
@@ -1054,6 +1381,17 @@ export class GpuCircleBodySimulation {
             await Promise.all(planes.map((plane) => plane.buffer.mapAsync(mapMode.READ)));
             const storage = createGpuCircleBodyAbiStorage(this.capacity);
             writeGpuCircleBodyCounts(storage, { bodyCount });
+            const contactHandlerByteSize = bodyCount
+                * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE;
+            new Uint8Array(
+                storage.contactHandlerBuffer,
+                0,
+                contactHandlerByteSize
+            ).set(new Uint8Array(
+                this.hostStorage.contactHandlerBuffer,
+                0,
+                contactHandlerByteSize
+            ));
             for (const plane of planes) {
                 new Uint8Array(storage[plane.hostKey], 0, plane.byteSize).set(
                     new Uint8Array(plane.buffer.getMappedRange())
@@ -1108,10 +1446,33 @@ export class GpuCircleBodySimulation {
             flowFieldEnabled: this.flowFieldAtlas.enabled,
             flowFieldCount: this.flowFieldAtlas.fieldCount,
             sourceWorldUnitScale: this.sourceWorldUnitScale,
+            maximumBodyRadius: this.maximumBodyRadius,
+            uploadedMaximumBodyRadius: this.uploadedMaximumBodyRadius,
             submittedTickCount: this.submittedTickCount,
             hasGpuAuthoritativeState: this.hasGpuAuthoritativeState,
             authoritativeEpoch: this.authoritativeEpoch,
             requiresAuthoritativeRebuild: this.requiresAuthoritativeRebuild,
+            contact: Object.freeze({
+                capacity: this.contactCapacity,
+                lastCount: this.lastContactCount,
+                lastOverflowCount: this.lastContactOverflowCount
+            }),
+            events: Object.freeze({
+                capacity: this.eventCapacity,
+                deathCapacity: this.deathEventCapacity,
+                eventProducingBodyCount: this.eventProducingBodyCount,
+                pendingReadbacks: this.pendingEventReadbacks,
+                queuedBatches: this.eventBatchQueue.length,
+                completedThroughTick: this.eventCompletedThroughTick,
+                backpressureCount: this.eventBackpressureCount,
+                lastSubmittedTick: this.lastEventReadbackSubmittedTick,
+                lastCompletedTick: this.lastEventReadbackCompletedTick,
+                lastStatsTick: this.lastEventStatsTick,
+                lastAppliedCount: this.lastAppliedEventCount,
+                lastAppliedOverflowCount: this.lastAppliedEventOverflowCount,
+                lastDeathCount: this.lastDeathEventCount,
+                lastDeathOverflowCount: this.lastDeathEventOverflowCount
+            }),
             overflow: Object.freeze({
                 pendingReadbacks: this.pendingOverflowReadbacks,
                 lastTick: this.lastOverflowTick,
@@ -1158,6 +1519,9 @@ export class GpuCircleBodySimulation {
         this.activeBodyCount = 0;
         this.hasGpuAuthoritativeState = false;
         this.slotActive.fill(0);
+        this.slotEventProducing.fill(0);
+        this.eventProducingBodyCount = 0;
+        this.maximumBodyRadius = 0;
         this.slotHandles.fill(null);
         this.handleToSlot.clear();
         this.freeSlots.length = 0;
@@ -1210,6 +1574,45 @@ export class GpuCircleBodySimulation {
         }
     }
 
+    #refreshHostBodyDerivedState() {
+        const physicsView = new DataView(this.hostStorage.physicsBuffer);
+        const simulationView = new DataView(this.hostStorage.simulationBuffer);
+        let eventProducingBodyCount = 0;
+        let maximumBodyRadius = 0;
+        this.slotEventProducing.fill(0);
+        for (let slot = 0; slot < this.bodyCount; slot++) {
+            if (this.slotActive[slot] === 0) {
+                continue;
+            }
+            const physicsOffset = slot * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
+            const simulationOffset = slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
+            const physicsMeta = physicsView.getUint32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.META,
+                LITTLE_ENDIAN
+            );
+            const lifetime = simulationView.getFloat32(
+                simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.LIFETIME,
+                LITTLE_ENDIAN
+            );
+            const eventProducing = unpackGpuCirclePhysicsMeta(physicsMeta).sensorMask !== 0
+                || lifetime >= 0;
+            if (eventProducing) {
+                this.slotEventProducing[slot] = 1;
+                eventProducingBodyCount++;
+            }
+            maximumBodyRadius = Math.max(
+                maximumBodyRadius,
+                physicsView.getFloat32(
+                    physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.RADIUS,
+                    LITTLE_ENDIAN
+                )
+            );
+        }
+        this.eventProducingBodyCount = eventProducingBodyCount;
+        this.maximumBodyRadius = maximumBodyRadius;
+        this.uploadedComputeFixedDelta = NaN;
+    }
+
     #uploadSlotRanges(slots) {
         const ordered = [...slots].sort((left, right) => left - right);
         let rangeStart = ordered[0];
@@ -1219,7 +1622,12 @@ export class GpuCircleBodySimulation {
             for (const [gpuKey, hostKey, stride] of [
                 ['physics', 'physicsBuffer', GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE],
                 ['simulation', 'simulationBuffer', GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE],
-                ['temporary', 'temporaryBuffer', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE]
+                ['temporary', 'temporaryBuffer', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE],
+                [
+                    'contactHandlers',
+                    'contactHandlerBuffer',
+                    GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE
+                ]
             ]) {
                 this.device.queue.writeBuffer(
                     this.buffers[gpuKey],
@@ -1264,13 +1672,21 @@ export class GpuCircleBodySimulation {
         queue.writeBuffer(this.buffers.drawIndirect, 0, this.drawIndirectArgs);
     }
 
+    #isOverflowDegradedState() {
+        return this.state === 'overflow-degraded'
+            || this.state === 'contact-overflow-degraded'
+            || this.state === 'event-overflow-degraded';
+    }
+
     #ensureReady() {
         if (this.destroyed
             || this.requiresAuthoritativeRebuild
-            || this.state === 'overflow-degraded') {
+            || this.#isOverflowDegradedState()) {
             return false;
         }
-        return (this.state === 'ready' || this.state === 'telemetry-backpressure')
+        return (this.state === 'ready'
+            || this.state === 'telemetry-backpressure'
+            || this.state === 'event-backpressure')
             && this.#hasCurrentGpuResources()
             ? true
             : this.init();
@@ -1286,6 +1702,238 @@ export class GpuCircleBodySimulation {
             && this.device === this.platform.getDevice()
             && this.deviceGeneration === this.platform.getDeviceGeneration()
         );
+    }
+
+    #hasFreeEventReadbackSlot() {
+        return this.eventReadbackSlots.some((slot) => !slot.inFlight);
+    }
+
+    #claimEventReadbackSlot() {
+        const slotCount = this.eventReadbackSlots.length;
+        for (let offset = 0; offset < slotCount; offset++) {
+            const index = (this.eventReadbackCursor + offset) % slotCount;
+            const slot = this.eventReadbackSlots[index];
+            if (slot.inFlight) {
+                continue;
+            }
+            slot.inFlight = true;
+            this.pendingEventReadbacks++;
+            this.eventReadbackCursor = (index + 1) % slotCount;
+            return slot;
+        }
+        return null;
+    }
+
+    #releaseClaimedEventReadbackSlot(slot) {
+        if (!slot?.inFlight) {
+            return;
+        }
+        slot.inFlight = false;
+        this.pendingEventReadbacks = Math.max(0, this.pendingEventReadbacks - 1);
+    }
+
+    #recoverEventBackpressureIfPossible() {
+        if (this.state !== 'event-backpressure'
+            || !this.#hasFreeEventReadbackSlot()) {
+            return;
+        }
+        this.state = 'ready';
+        this.failure = null;
+    }
+
+    #removeEventQueueEntry(entry) {
+        const index = this.eventBatchQueue.indexOf(entry);
+        if (index >= 0) {
+            this.eventBatchQueue.splice(index, 1);
+        }
+    }
+
+    #advanceEventCompletionWatermark() {
+        let completedThroughTick = this.eventCompletedThroughTick;
+        for (const entry of this.eventBatchQueue) {
+            if (!entry.completed) {
+                break;
+            }
+            completedThroughTick = Math.max(completedThroughTick, entry.sourceTick);
+        }
+        this.eventCompletedThroughTick = completedThroughTick;
+    }
+
+    #completeDeferredIdleRelease() {
+        if (!this.idleReleasePending
+            || this.activeBodyCount !== 0
+            || this.pendingEventReadbacks !== 0
+            || this.eventBatchQueue.length !== 0
+            || (this.state !== 'ready'
+                && this.state !== 'telemetry-backpressure'
+                && this.state !== 'event-backpressure')) {
+            return false;
+        }
+        this.authoritativeEpoch++;
+        this.#releaseGpuResources();
+        this.state = 'idle';
+        this.failure = null;
+        return true;
+    }
+
+    #beginEventReadback(slot, queueEntry, lease) {
+        slot.tick = queueEntry.submittedTick;
+        slot.generation = queueEntry.deviceGeneration;
+        slot.authoritativeEpoch = queueEntry.authoritativeEpoch;
+        slot.lease = lease;
+        slot.buffer.mapAsync(this.mapReadMode).then(() => {
+            const leaseMatches = !this.destroyed
+                && lease === this.eventReadbackLease
+                && slot.lease === lease;
+            const generationMatches = queueEntry.deviceGeneration === this.deviceGeneration
+                && slot.generation === this.deviceGeneration;
+            const epochMatches = queueEntry.authoritativeEpoch === this.authoritativeEpoch
+                && slot.authoritativeEpoch === this.authoritativeEpoch;
+            if (!leaseMatches || !generationMatches || !epochMatches) {
+                try {
+                    slot.buffer.unmap();
+                } catch {
+                    // cancelled/destroyed staging buffer may already be unmapped
+                }
+                if (leaseMatches) {
+                    this.#releaseClaimedEventReadbackSlot(slot);
+                    this.#removeEventQueueEntry(queueEntry);
+                    this.#advanceEventCompletionWatermark();
+                } else {
+                    slot.inFlight = false;
+                }
+                return;
+            }
+
+            let rawContactCount = 0;
+            let contactOverflow = 0;
+            let rawAppliedCount = 0;
+            let appliedOverflow = 0;
+            let rawDeathCount = 0;
+            let deathOverflow = 0;
+            let events;
+            try {
+                const view = new DataView(slot.buffer.getMappedRange());
+                rawContactCount = view.getUint32(0, LITTLE_ENDIAN);
+                contactOverflow = view.getUint32(4, LITTLE_ENDIAN);
+                rawAppliedCount = view.getUint32(8, LITTLE_ENDIAN);
+                appliedOverflow = view.getUint32(12, LITTLE_ENDIAN);
+                rawDeathCount = view.getUint32(16, LITTLE_ENDIAN);
+                deathOverflow = view.getUint32(20, LITTLE_ENDIAN);
+                const appliedCount = Math.min(rawAppliedCount, this.eventCapacity);
+                const deathCount = Math.min(rawDeathCount, this.deathEventCapacity);
+                events = new Array(appliedCount + deathCount);
+                for (let index = 0; index < appliedCount; index++) {
+                    events[index] = decodeAppliedEvent(
+                        view,
+                        EVENT_READBACK_HEADER_BYTE_SIZE
+                            + (index * APPLIED_EVENT_BYTE_SIZE),
+                        index
+                    );
+                }
+                const deathOffset = EVENT_READBACK_HEADER_BYTE_SIZE
+                    + (this.eventCapacity * APPLIED_EVENT_BYTE_SIZE);
+                for (let index = 0; index < deathCount; index++) {
+                    events[appliedCount + index] = decodeDeathEvent(
+                        view,
+                        deathOffset + (index * DEATH_EVENT_BYTE_SIZE),
+                        appliedCount + index
+                    );
+                }
+                events = Object.freeze(events);
+            } finally {
+                slot.buffer.unmap();
+            }
+
+            this.#releaseClaimedEventReadbackSlot(slot);
+            this.lastEventReadbackCompletedTick = Math.max(
+                this.lastEventReadbackCompletedTick,
+                queueEntry.submittedTick
+            );
+            if (queueEntry.submittedTick >= this.lastEventStatsTick) {
+                this.lastEventStatsTick = queueEntry.submittedTick;
+                this.lastContactCount = Math.min(rawContactCount, this.contactCapacity);
+                this.lastContactOverflowCount = contactOverflow;
+                this.lastAppliedEventCount = Math.min(rawAppliedCount, this.eventCapacity);
+                this.lastAppliedEventOverflowCount = appliedOverflow;
+                this.lastDeathEventCount = Math.min(rawDeathCount, this.deathEventCapacity);
+                this.lastDeathEventOverflowCount = deathOverflow;
+            }
+
+            const contactCapacityExceeded = rawContactCount > this.contactCapacity
+                || contactOverflow > 0;
+            const eventCapacityExceeded = rawAppliedCount > this.eventCapacity
+                || rawDeathCount > this.deathEventCapacity
+                || appliedOverflow > 0
+                || deathOverflow > 0;
+            if (contactCapacityExceeded || eventCapacityExceeded) {
+                this.#degradeForContactEventOverflow(
+                    contactCapacityExceeded ? 'contact' : 'event',
+                    queueEntry.submittedTick,
+                    {
+                        rawContactCount,
+                        contactOverflow,
+                        rawAppliedCount,
+                        appliedOverflow,
+                        rawDeathCount,
+                        deathOverflow
+                    }
+                );
+                return;
+            }
+
+            queueEntry.events = events;
+            queueEntry.completed = true;
+            this.#advanceEventCompletionWatermark();
+            this.#recoverEventBackpressureIfPossible();
+        }).catch((error) => {
+            if (this.destroyed
+                || lease !== this.eventReadbackLease
+                || queueEntry.deviceGeneration !== this.deviceGeneration
+                || slot.lease !== lease) {
+                slot.inFlight = false;
+                return;
+            }
+            this.#releaseClaimedEventReadbackSlot(slot);
+            this.#removeEventQueueEntry(queueEntry);
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            this.failure = captureFailure('event-readback', error);
+            this.state = this.requiresAuthoritativeRebuild
+                ? 'requires-rebuild'
+                : 'failed';
+            if (this.requiresAuthoritativeRebuild) {
+                this.presentationClock.synchronize();
+                this.#releaseGpuResources();
+            }
+        });
+    }
+
+    #degradeForContactEventOverflow(kind, tick, counts) {
+        this.requiresAuthoritativeRebuild = true;
+        this.state = `${kind}-overflow-degraded`;
+        this.presentationClock.synchronize();
+        this.failure = Object.freeze({
+            stage: `${kind}-overflow`,
+            name: kind === 'contact' ? 'ContactCapacityExceeded' : 'EventCapacityExceeded',
+            message: `GPU ${kind} overflow가 감지되었습니다: tick=${tick}, contact=${counts.rawContactCount}/${this.contactCapacity}, contactOverflow=${counts.contactOverflow}, applied=${counts.rawAppliedCount}/${this.eventCapacity}, appliedOverflow=${counts.appliedOverflow}, death=${counts.rawDeathCount}/${this.deathEventCapacity}, deathOverflow=${counts.deathOverflow}`
+        });
+        this.#cancelEventReadbacks();
+    }
+
+    #cancelEventReadbacks() {
+        this.eventReadbackLease++;
+        for (const slot of this.eventReadbackSlots) {
+            slot.inFlight = false;
+            try {
+                slot.buffer?.destroy?.();
+            } catch {
+                // mapping/device loss 중인 staging buffer는 best-effort로 정리합니다.
+            }
+        }
+        this.eventReadbackSlots = [];
+        this.pendingEventReadbacks = 0;
+        this.eventReadbackCursor = 0;
+        this.eventBatchQueue.length = 0;
     }
 
     #hasFreeOverflowReadbackSlot() {
@@ -1314,6 +1962,15 @@ export class GpuCircleBodySimulation {
         }
         slot.inFlight = false;
         this.pendingOverflowReadbacks = Math.max(0, this.pendingOverflowReadbacks - 1);
+    }
+
+    #recoverTelemetryBackpressureIfPossible() {
+        if (this.state !== 'telemetry-backpressure'
+            || !this.#hasFreeOverflowReadbackSlot()) {
+            return;
+        }
+        this.state = 'ready';
+        this.failure = null;
     }
 
     #beginOverflowReadback(slot, tick, generation, lease, authoritativeEpoch) {
@@ -1346,6 +2003,10 @@ export class GpuCircleBodySimulation {
                 return;
             }
             this.#releaseClaimedOverflowReadbackSlot(slot);
+            if (this.state === 'contact-overflow-degraded'
+                || this.state === 'event-overflow-degraded') {
+                return;
+            }
             this.lastOverflowSampleCompletedTick = Math.max(
                 this.lastOverflowSampleCompletedTick,
                 tick
@@ -1364,11 +2025,13 @@ export class GpuCircleBodySimulation {
                 totalBigCount
             );
             if (totalSmallCount === 0 && totalBigCount === 0) {
+                this.#recoverTelemetryBackpressureIfPossible();
                 return;
             }
             this.requiresAuthoritativeRebuild = true;
             this.state = 'overflow-degraded';
             this.presentationClock.synchronize();
+            this.#cancelEventReadbacks();
             this.failure = Object.freeze({
                 stage: 'grid-overflow',
                 name: 'GridCapacityExceeded',
@@ -1387,6 +2050,10 @@ export class GpuCircleBodySimulation {
                 return;
             }
             this.#releaseClaimedOverflowReadbackSlot(slot);
+            if (this.state === 'contact-overflow-degraded'
+                || this.state === 'event-overflow-degraded') {
+                return;
+            }
             this.requiresAuthoritativeRebuild = this.bodyCount > 0;
             this.failure = captureFailure('overflow-readback', error);
             this.state = this.requiresAuthoritativeRebuild
@@ -1407,22 +2074,58 @@ export class GpuCircleBodySimulation {
         this.overflowSampleOverdue = false;
     }
 
+    #resetContactEventTelemetry() {
+        this.eventBatchQueue.length = 0;
+        this.eventCompletedThroughTick = 0;
+        this.eventBackpressureCount = 0;
+        this.lastEventReadbackSubmittedTick = 0;
+        this.lastEventReadbackCompletedTick = 0;
+        this.lastEventStatsTick = 0;
+        this.lastContactCount = 0;
+        this.lastContactOverflowCount = 0;
+        this.lastAppliedEventCount = 0;
+        this.lastAppliedEventOverflowCount = 0;
+        this.lastDeathEventCount = 0;
+        this.lastDeathEventOverflowCount = 0;
+    }
+
     #validateDeviceLimits(device) {
+        const storageBuffersPerStage = Number(
+            device.limits.maxStorageBuffersPerShaderStage
+        );
+        if (!Number.isFinite(storageBuffersPerStage)
+            || storageBuffersPerStage < REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE) {
+            throw new RangeError(
+                `GPU circle compute storage buffer limit가 부족합니다: required=${REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE}, device=${storageBuffersPerStage}`
+            );
+        }
         const gridBodyBytes = this.gridEntryCapacity * GPU_CIRCLE_BODY_ABI.GRID_BODY.STRIDE;
+        const eventReadbackBytes = EVENT_READBACK_HEADER_BYTE_SIZE
+            + (this.eventCapacity * APPLIED_EVENT_BYTE_SIZE)
+            + (this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE);
         const largestStorageBinding = Math.max(
             gridBodyBytes,
             this.capacity * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE,
+            this.capacity * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE,
+            this.contactCapacity * CONTACT_RECORD_BYTE_SIZE,
+            this.eventCapacity * APPLIED_EVENT_BYTE_SIZE,
+            this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE,
             this.sdf.values.byteLength
         );
         if (largestStorageBinding > Number(device.limits.maxStorageBufferBindingSize)
-            || largestStorageBinding > Number(device.limits.maxBufferSize)) {
+            || Math.max(largestStorageBinding, eventReadbackBytes)
+                > Number(device.limits.maxBufferSize)) {
             throw new RangeError(
                 `GPU circle buffer가 adapter limit를 초과합니다: ${largestStorageBinding}`
             );
         }
-        if (this.gridCellTotal > Number(device.limits.maxComputeWorkgroupsPerDimension)) {
+        const largestDirectDispatch = Math.max(
+            this.gridCellTotal,
+            Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE)
+        );
+        if (largestDirectDispatch > Number(device.limits.maxComputeWorkgroupsPerDimension)) {
             throw new RangeError(
-                `grid workgroup 수가 adapter limit를 초과합니다: ${this.gridCellTotal}`
+                `compute workgroup 수가 adapter limit를 초과합니다: ${largestDirectDispatch}`
             );
         }
         if (COMPUTE_PARAMS_BYTE_SIZE > Number(device.limits.maxUniformBufferBindingSize)) {
@@ -1473,6 +2176,12 @@ export class GpuCircleBodySimulation {
                 GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * this.capacity,
                 storageUsage
             ),
+            contactHandlers: createBuffer(
+                device,
+                'cirvivor-gpu-circle-contact-handlers',
+                GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * this.capacity,
+                storageUsage
+            ),
             gridCounts: createBuffer(
                 device,
                 'cirvivor-gpu-circle-grid-counts',
@@ -1495,6 +2204,30 @@ export class GpuCircleBodySimulation {
                 device,
                 'cirvivor-gpu-circle-grid-overflow',
                 GRID_OVERFLOW_BYTE_SIZE,
+                storageUsage
+            ),
+            contactState: createBuffer(
+                device,
+                'cirvivor-gpu-circle-contact-state',
+                CONTACT_STATE_BYTE_SIZE,
+                storageUsage
+            ),
+            contacts: createBuffer(
+                device,
+                'cirvivor-gpu-circle-contacts',
+                CONTACT_RECORD_BYTE_SIZE * this.contactCapacity,
+                storageUsage
+            ),
+            appliedEvents: createBuffer(
+                device,
+                'cirvivor-gpu-circle-applied-events',
+                APPLIED_EVENT_BYTE_SIZE * this.eventCapacity,
+                storageUsage
+            ),
+            deathEvents: createBuffer(
+                device,
+                'cirvivor-gpu-circle-death-events',
+                DEATH_EVENT_BYTE_SIZE * this.deathEventCapacity,
                 storageUsage
             ),
             computeParams: createBuffer(
@@ -1556,28 +2289,70 @@ export class GpuCircleBodySimulation {
         );
         this.overflowReadbackCursor = 0;
         this.pendingOverflowReadbacks = 0;
+        const eventReadbackLease = ++this.eventReadbackLease;
+        const eventReadbackByteSize = EVENT_READBACK_HEADER_BYTE_SIZE
+            + (this.eventCapacity * APPLIED_EVENT_BYTE_SIZE)
+            + (this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE);
+        this.eventReadbackSlots = Array.from(
+            { length: EVENT_READBACK_SLOT_COUNT },
+            (_, index) => ({
+                buffer: createBuffer(
+                    device,
+                    `cirvivor-gpu-circle-event-readback-${index}`,
+                    eventReadbackByteSize,
+                    usage.COPY_DST | usage.MAP_READ
+                ),
+                inFlight: false,
+                tick: 0,
+                generation: this.deviceGeneration,
+                authoritativeEpoch: this.authoritativeEpoch,
+                lease: eventReadbackLease
+            })
+        );
+        this.eventReadbackCursor = 0;
+        this.pendingEventReadbacks = 0;
 
-        const computeBodiesLayout = device.createBindGroupLayout({
-            label: 'cirvivor-gpu-circle-compute-bodies-layout',
-            entries: [0, 1, 2, 3].map((binding) => ({
-                binding,
-                visibility: stage.COMPUTE,
-                buffer: { type: 'storage' }
-            }))
+        const storageLayoutEntry = (binding, type = 'storage') => ({
+            binding,
+            visibility: stage.COMPUTE,
+            buffer: { type }
         });
-        const computeWorldLayout = device.createBindGroupLayout({
-            label: 'cirvivor-gpu-circle-compute-world-layout',
+        const computeBodiesBaseLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-bodies-base-layout',
+            entries: [0, 1, 2, 3].map((binding) => storageLayoutEntry(binding))
+        });
+        const computeBodiesWithHandlersLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-bodies-with-handlers-layout',
             entries: [
-                { binding: 0, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 1, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 2, visibility: stage.COMPUTE, buffer: { type: 'read-only-storage' } },
-                { binding: 3, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+                ...[0, 1, 2, 3].map((binding) => storageLayoutEntry(binding)),
+                storageLayoutEntry(4, 'read-only-storage')
+            ]
+        });
+        const computeWorldFullLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-world-full-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2, 'read-only-storage'),
+                storageLayoutEntry(3),
                 {
                     binding: 4,
                     visibility: stage.COMPUTE,
                     texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' }
                 }
             ]
+        });
+        const computeWorldGridLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-world-grid-layout',
+            entries: [storageLayoutEntry(0), storageLayoutEntry(1)]
+        });
+        const computeWorldSdfLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-world-sdf-layout',
+            entries: [storageLayoutEntry(2, 'read-only-storage')]
+        });
+        const computeEmptyLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-empty-layout',
+            entries: []
         });
         const computeParamsLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-params-layout',
@@ -1586,6 +2361,14 @@ export class GpuCircleBodySimulation {
                 visibility: stage.COMPUTE,
                 buffer: { type: 'uniform' }
             }]
+        });
+        const computeContactEventsLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-contact-events-layout',
+            entries: [storageLayoutEntry(0), storageLayoutEntry(1)]
+        });
+        const computeAllEventsLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-all-events-layout',
+            entries: [0, 1, 2, 3].map((binding) => storageLayoutEntry(binding))
         });
         const indirectLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-indirect-layout',
@@ -1597,7 +2380,7 @@ export class GpuCircleBodySimulation {
         });
         const renderBodiesLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-render-bodies-layout',
-            entries: [0, 1, 2, 3].map((binding) => ({
+            entries: [0, 1, 2, 3, 4].map((binding) => ({
                 binding,
                 visibility: stage.VERTEX,
                 buffer: { type: 'read-only-storage' }
@@ -1611,10 +2394,40 @@ export class GpuCircleBodySimulation {
                 buffer: { type: 'uniform' }
             }]
         });
-        const computePipelineLayout = device.createPipelineLayout({
-            label: 'cirvivor-gpu-circle-compute-pipeline-layout',
-            bindGroupLayouts: [computeBodiesLayout, computeWorldLayout, computeParamsLayout]
-        });
+        const computeProfileLayouts = {
+            [COMPUTE_PIPELINE_PROFILE.PHYSICS]: [
+                computeBodiesBaseLayout,
+                computeWorldFullLayout,
+                computeParamsLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS]: [
+                computeBodiesWithHandlersLayout,
+                computeWorldGridLayout,
+                computeParamsLayout,
+                computeContactEventsLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS]: [
+                computeBodiesBaseLayout,
+                computeWorldSdfLayout,
+                computeParamsLayout,
+                computeContactEventsLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING]: [
+                computeBodiesWithHandlersLayout,
+                computeEmptyLayout,
+                computeParamsLayout,
+                computeAllEventsLayout
+            ]
+        };
+        const computePipelineLayouts = Object.fromEntries(
+            Object.entries(computeProfileLayouts).map(([profile, bindGroupLayouts]) => [
+                profile,
+                device.createPipelineLayout({
+                    label: `cirvivor-gpu-circle-compute-${profile}-pipeline-layout`,
+                    bindGroupLayouts
+                })
+            ])
+        );
         const indirectPipelineLayout = device.createPipelineLayout({
             label: 'cirvivor-gpu-circle-indirect-pipeline-layout',
             bindGroupLayouts: [indirectLayout]
@@ -1636,14 +2449,17 @@ export class GpuCircleBodySimulation {
             label: 'cirvivor-gpu-circle-render-shader',
             code: GPU_COLLISION_RENDER_WGSL
         });
-        const compute = Object.fromEntries(COMPUTE_ENTRY_POINTS.map((entryPoint) => [
-            entryPoint,
-            device.createComputePipeline({
-                label: `cirvivor-gpu-circle-${entryPoint}`,
-                layout: computePipelineLayout,
-                compute: { module: computeModule, entryPoint }
-            })
-        ]));
+        const compute = Object.fromEntries(COMPUTE_ENTRY_POINTS.map((entryPoint) => {
+            const profile = COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT[entryPoint];
+            return [
+                entryPoint,
+                device.createComputePipeline({
+                    label: `cirvivor-gpu-circle-${entryPoint}`,
+                    layout: computePipelineLayouts[profile],
+                    compute: { module: computeModule, entryPoint }
+                })
+            ];
+        }));
         this.pipelines = {
             compute,
             updateIndirectArgs: device.createComputePipeline({
@@ -1679,36 +2495,108 @@ export class GpuCircleBodySimulation {
         };
 
         const resource = (buffer) => ({ buffer });
+        const computeBodiesBase = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-bodies-base',
+            layout: computeBodiesBaseLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 3, resource: resource(this.buffers.temporary) }
+            ]
+        });
+        const computeBodiesWithHandlers = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-bodies-with-handlers',
+            layout: computeBodiesWithHandlersLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 3, resource: resource(this.buffers.temporary) },
+                { binding: 4, resource: resource(this.buffers.contactHandlers) }
+            ]
+        });
+        const computeWorldFull = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-world-full',
+            layout: computeWorldFullLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.gridCounts) },
+                { binding: 1, resource: resource(this.buffers.gridBodies) },
+                { binding: 2, resource: resource(this.buffers.sdf) },
+                { binding: 3, resource: resource(this.buffers.gridOverflow) },
+                {
+                    binding: 4,
+                    resource: this.flowTexture.createView({ dimension: '2d-array' })
+                }
+            ]
+        });
+        const computeWorldGrid = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-world-grid',
+            layout: computeWorldGridLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.gridCounts) },
+                { binding: 1, resource: resource(this.buffers.gridBodies) }
+            ]
+        });
+        const computeWorldSdf = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-world-sdf',
+            layout: computeWorldSdfLayout,
+            entries: [{ binding: 2, resource: resource(this.buffers.sdf) }]
+        });
+        const computeEmpty = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-empty',
+            layout: computeEmptyLayout,
+            entries: []
+        });
+        const computeParams = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-params',
+            layout: computeParamsLayout,
+            entries: [{ binding: 0, resource: resource(this.buffers.computeParams) }]
+        });
+        const computeContactEvents = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-contact-events',
+            layout: computeContactEventsLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.contactState) },
+                { binding: 1, resource: resource(this.buffers.contacts) }
+            ]
+        });
+        const computeAllEvents = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-all-events',
+            layout: computeAllEventsLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.contactState) },
+                { binding: 1, resource: resource(this.buffers.contacts) },
+                { binding: 2, resource: resource(this.buffers.appliedEvents) },
+                { binding: 3, resource: resource(this.buffers.deathEvents) }
+            ]
+        });
         this.bindGroups = {
-            computeBodies: device.createBindGroup({
-                label: 'cirvivor-gpu-circle-compute-bodies',
-                layout: computeBodiesLayout,
-                entries: [
-                    { binding: 0, resource: resource(this.buffers.counts) },
-                    { binding: 1, resource: resource(this.buffers.physics) },
-                    { binding: 2, resource: resource(this.buffers.simulation) },
-                    { binding: 3, resource: resource(this.buffers.temporary) }
+            computeProfiles: {
+                [COMPUTE_PIPELINE_PROFILE.PHYSICS]: [
+                    computeBodiesBase,
+                    computeWorldFull,
+                    computeParams
+                ],
+                [COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS]: [
+                    computeBodiesWithHandlers,
+                    computeWorldGrid,
+                    computeParams,
+                    computeContactEvents
+                ],
+                [COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS]: [
+                    computeBodiesBase,
+                    computeWorldSdf,
+                    computeParams,
+                    computeContactEvents
+                ],
+                [COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING]: [
+                    computeBodiesWithHandlers,
+                    computeEmpty,
+                    computeParams,
+                    computeAllEvents
                 ]
-            }),
-            computeWorld: device.createBindGroup({
-                label: 'cirvivor-gpu-circle-compute-world',
-                layout: computeWorldLayout,
-                entries: [
-                    { binding: 0, resource: resource(this.buffers.gridCounts) },
-                    { binding: 1, resource: resource(this.buffers.gridBodies) },
-                    { binding: 2, resource: resource(this.buffers.sdf) },
-                    { binding: 3, resource: resource(this.buffers.gridOverflow) },
-                    {
-                        binding: 4,
-                        resource: this.flowTexture.createView({ dimension: '2d-array' })
-                    }
-                ]
-            }),
-            computeParams: device.createBindGroup({
-                label: 'cirvivor-gpu-circle-compute-params',
-                layout: computeParamsLayout,
-                entries: [{ binding: 0, resource: resource(this.buffers.computeParams) }]
-            }),
+            },
             indirect: device.createBindGroup({
                 label: 'cirvivor-gpu-circle-indirect',
                 layout: indirectLayout,
@@ -1725,7 +2613,8 @@ export class GpuCircleBodySimulation {
                     { binding: 0, resource: resource(this.buffers.counts) },
                     { binding: 1, resource: resource(this.buffers.physics) },
                     { binding: 2, resource: resource(this.buffers.temporary) },
-                    { binding: 3, resource: resource(this.buffers.renderStyles) }
+                    { binding: 3, resource: resource(this.buffers.renderStyles) },
+                    { binding: 4, resource: resource(this.buffers.simulation) }
                 ]
             }),
             renderParams: device.createBindGroup({
@@ -1764,6 +2653,13 @@ export class GpuCircleBodySimulation {
                 bodyCount * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE
             );
             queue.writeBuffer(
+                this.buffers.contactHandlers,
+                0,
+                this.hostStorage.contactHandlerBuffer,
+                0,
+                bodyCount * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE
+            );
+            queue.writeBuffer(
                 this.buffers.renderStyles,
                 0,
                 this.hostRenderStyles,
@@ -1800,7 +2696,9 @@ export class GpuCircleBodySimulation {
 
     #writeComputeParams(fixedDelta) {
         const uploadedDelta = Math.fround(fixedDelta);
-        if (Object.is(uploadedDelta, this.uploadedComputeFixedDelta)) {
+        const uploadedMaximumBodyRadius = Math.fround(this.maximumBodyRadius);
+        if (Object.is(uploadedDelta, this.uploadedComputeFixedDelta)
+            && Object.is(uploadedMaximumBodyRadius, this.uploadedMaximumBodyRadius)) {
             return;
         }
         const view = this.computeParamsView;
@@ -1837,8 +2735,29 @@ export class GpuCircleBodySimulation {
             view.setInt32(offset + 8, stage?.nextFieldIndex ?? -1, LITTLE_ENDIAN);
             view.setUint32(offset + 12, 0, LITTLE_ENDIAN);
         }
+        view.setUint32(
+            COMPUTE_PARAMS_MAX_CONTACTS_OFFSET,
+            this.contactCapacity,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            COMPUTE_PARAMS_MAX_EVENTS_OFFSET,
+            this.eventCapacity,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            COMPUTE_PARAMS_MAX_DEATH_EVENTS_OFFSET,
+            this.deathEventCapacity,
+            LITTLE_ENDIAN
+        );
+        view.setFloat32(
+            COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFSET,
+            uploadedMaximumBodyRadius,
+            LITTLE_ENDIAN
+        );
         this.device.queue.writeBuffer(this.buffers.computeParams, 0, this.computeParamsBytes);
         this.uploadedComputeFixedDelta = uploadedDelta;
+        this.uploadedMaximumBodyRadius = uploadedMaximumBodyRadius;
     }
 
     #writeRenderParams(camera, target) {
@@ -1855,13 +2774,25 @@ export class GpuCircleBodySimulation {
         this.device.queue.writeBuffer(this.buffers.renderParams, 0, this.renderParamsBytes);
     }
 
+    #setComputeProfile(pass, profile) {
+        const bindGroups = this.bindGroups.computeProfiles[profile];
+        if (!bindGroups) {
+            throw new RangeError(`등록되지 않은 compute pipeline profile입니다: ${profile}`);
+        }
+        for (let groupIndex = 0; groupIndex < bindGroups.length; groupIndex++) {
+            pass.setBindGroup(groupIndex, bindGroups[groupIndex]);
+        }
+    }
+
     #dispatchBodies(pass, entryPoint) {
         pass.setPipeline(this.pipelines.compute[entryPoint]);
         pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
     }
 
     #releaseGpuResources() {
+        this.idleReleasePending = false;
         this.overflowReadbackLease++;
+        this.#cancelEventReadbacks();
         for (const slot of this.overflowReadbackSlots) {
             slot.inFlight = false;
             try {
@@ -1896,5 +2827,6 @@ export class GpuCircleBodySimulation {
         this.canvasFormat = null;
         this.mapReadMode = null;
         this.uploadedComputeFixedDelta = NaN;
+        this.uploadedMaximumBodyRadius = NaN;
     }
 }

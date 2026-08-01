@@ -5,7 +5,8 @@
  * 환산한 2.5 cells/s입니다. 반경은 1타일 square의 legacy 충돌 벡터
  * (0.42, 0.42)를 감싸는 원이며, weight와 색상도 같은 square 적을 기준으로
  * 타일/선형 RGBA 단위에 명시적으로 옮겼습니다.
- * HP·공격·사망 값은 별도 gameplay owner가 정해질 범위이므로 포함하지 않습니다.
+ * 피격 처리를 GPU contact 경계에서 바로 검증할 수 있도록 기본 HP만 선언합니다.
+ * 무기별 피해·속성·특수 효과는 projectile definition이 별도로 소유합니다.
  */
 export const BASIC_CIRCLE_ENEMY_DATA = Object.freeze({
     id: 'basic_circle_01',
@@ -13,6 +14,7 @@ export const BASIC_CIRCLE_ENEMY_DATA = Object.freeze({
     moveSpeedTilesPerSecond: 2.5,
     collisionRadiusTiles: 0.5939696961966999,
     collisionWeight: 1,
+    maxHealth: 1,
     colorRgba: Object.freeze([
         1,
         0.4235294117647059,
