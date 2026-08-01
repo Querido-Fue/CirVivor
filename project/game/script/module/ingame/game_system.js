@@ -14,10 +14,10 @@ export class GameSystem {
      * @param {object} dependencies - 엔진 adapter로부터 주입된 의존성입니다.
      * @param {{isPressed:(actionId:string)=>boolean,getWheelTotals:(out:object)=>object}} dependencies.inputActionSource - 의미 입력 소스입니다.
      * @param {{animate:(owner:object,properties:object)=>object}} dependencies.animationPort - 표현 애니메이션 포트입니다.
-     * @param {{getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
+     * @param {{getDelta?:()=>number,getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
-     * @param {{mapId?:string|null}} [options={}] - 세션 시작 옵션입니다.
+     * @param {{mapId?:string|null,enemyWaveEnabled?:boolean,waveDefinition?:object}} [options={}] - 세션 시작 옵션입니다.
      */
     constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
@@ -40,11 +40,14 @@ export class GameSystem {
         });
         this.objectSystem = new GameObjectSystem(dependencies, {
             mapId: options.mapId,
-            coreIntegrity: this.coreIntegrity
+            coreIntegrity: this.coreIntegrity,
+            enemyWaveEnabled: options.enemyWaveEnabled,
+            waveDefinition: options.waveDefinition
         });
         this.cameraZoomController = null;
         this.registrationTokens = [];
         this.viewportSnapshot = { ww: 0, wh: 0 };
+        this.fixedTick = 0;
         this.entered = false;
         this.destroyed = false;
     }
@@ -81,17 +84,25 @@ export class GameSystem {
 
     /**
      * 이동 의미 입력을 MOVE_VECTOR로 변환·전달한 뒤 오브젝트 fixed-step을 실행합니다.
-     * @returns {void}
+     * @returns {boolean} GPU 적과 플레이어가 같은 fixed tick을 완료했는지 여부입니다.
      */
     fixedUpdate() {
         if (!this.entered || this.destroyed) {
-            return;
+            return false;
         }
         const moveAction = this.inputActionMapper.mapMoveAction(
             this.dependencies.inputActionSource
         );
         this.playerControlRouter.dispatch(moveAction);
-        this.objectSystem.fixedUpdate(this.dependencies.timePort.getFixedDelta());
+        const proposedFixedTick = this.fixedTick + 1;
+        const advanced = this.objectSystem.fixedUpdate(
+            this.dependencies.timePort.getFixedDelta(),
+            proposedFixedTick
+        );
+        if (advanced) {
+            this.fixedTick = proposedFixedTick;
+        }
+        return advanced;
     }
 
     /**
@@ -108,7 +119,14 @@ export class GameSystem {
         if (cameraZoomAction) {
             this.playerControlRouter.dispatch(cameraZoomAction);
         }
-        this.objectSystem.update(this.dependencies.timePort.getFixedInterpolationAlpha());
+        const frameDelta = typeof this.dependencies.timePort.getDelta === 'function'
+            ? this.dependencies.timePort.getDelta()
+            : 0;
+        this.objectSystem.update(
+            this.dependencies.timePort.getFixedInterpolationAlpha(),
+            frameDelta,
+            this.dependencies.timePort.getFixedDelta()
+        );
         this.cameraZoomController.updateFollowTarget();
     }
 
@@ -161,12 +179,27 @@ export class GameSystem {
         return this.coreIntegrity;
     }
 
+    /** @returns {number} 세션 전체가 완료한 fixed tick입니다. */
+    getFixedTick() {
+        return this.fixedTick;
+    }
+
     /**
      * 테스트·디버그용으로 카메라 의미 입력 제어기를 반환합니다.
      * @returns {CameraZoomController|null} 진입 후 생성된 카메라 zoom 제어기입니다.
      */
     getCameraZoomController() {
         return this.cameraZoomController;
+    }
+
+    /** pause/resume 경계에서 GPU 적 표현 clock의 남은 예측 시간을 제거합니다. */
+    synchronizePresentation() {
+        this.objectSystem.synchronizeEnemyPresentation();
+    }
+
+    /** @returns {boolean} 현재 wave를 안전 경계에서 재시작해야 하는 hard GPU failure 여부입니다. */
+    isEnemySimulationRecoveryRequired() {
+        return this.objectSystem.isEnemySimulationRecoveryRequired();
     }
 
     /**
@@ -187,6 +220,7 @@ export class GameSystem {
         this.cameraZoomController?.destroy();
         this.cameraZoomController = null;
         this.objectSystem.destroy();
+        this.fixedTick = 0;
         this.entered = false;
     }
 

@@ -1,4 +1,8 @@
-import { renderGL, renderGLShapeInstances } from 'display/display_system.js';
+import {
+    getWebGpuPlatformPort,
+    renderGL,
+    renderGLShapeInstances
+} from 'display/display_system.js';
 import { getObjectSystem } from 'object/object_system.js';
 import {
     copySimulationMousePositionInto,
@@ -7,7 +11,11 @@ import {
     getSimulationWW,
     isSimulationInputActionPressed
 } from 'simulation/simulation_runtime.js';
-import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
+import {
+    getDelta,
+    getFixedDelta,
+    getFixedInterpolationAlpha
+} from 'game/time_handler.js';
 import { animate } from 'animation/animation_system.js';
 
 /**
@@ -71,9 +79,11 @@ export function createGameSceneDependencies() {
             animate
         },
         timePort: {
+            getDelta,
             getFixedDelta,
             getFixedInterpolationAlpha
         },
+        webGpuPlatformPort: getWebGpuPlatformPort(),
         viewportPort: {
             getSnapshot: getGameViewportSnapshot
         },

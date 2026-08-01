@@ -26,13 +26,12 @@ export class GameScene extends BaseScene {
         this.mode = GAME_SCENE_MODES.PLAY;
         this.mapId = typeof options.mapId === 'string' ? options.mapId : null;
         this.dependencies = options.dependencies || createGameSceneDependencies();
+        this.recoveryRestartGeneration = null;
+        this.recoveryRestartCount = 0;
         this.destroyed = false;
 
         this.dependencies.legacyWorldPort?.clear?.();
-        this.gameSystem = new GameSystem(this.dependencies, {
-            mapId: this.mapId
-        });
-        this.gameSystem.enter();
+        this.gameSystem = this.#createGameSystem();
     }
 
     /**
@@ -40,7 +39,14 @@ export class GameScene extends BaseScene {
      * @returns {void}
      */
     fixedUpdate() {
-        this.gameSystem.fixedUpdate();
+        const advanced = this.gameSystem.fixedUpdate();
+        if (advanced) {
+            this.recoveryRestartGeneration = null;
+            return;
+        }
+        if (this.gameSystem.isEnemySimulationRecoveryRequired()) {
+            this.#restartAtSafeWaveBoundary();
+        }
     }
 
     /**
@@ -78,6 +84,15 @@ export class GameScene extends BaseScene {
     }
 
     /**
+     * @override
+     * pause/resume 경계에서 세션의 GPU 적 presentation clock을 즉시 동기화합니다.
+     * @returns {void}
+     */
+    synchronizePresentation() {
+        this.gameSystem.synchronizePresentation();
+    }
+
+    /**
      * 세션 리소스와 임시 legacy world를 정리합니다.
      * @returns {void}
      */
@@ -87,6 +102,50 @@ export class GameScene extends BaseScene {
         }
         this.destroyed = true;
         this.gameSystem.destroy();
+        this.recoveryRestartGeneration = null;
         this.dependencies.legacyWorldPort?.clear?.();
+    }
+
+    /**
+     * 테스트·진단용 safe-boundary recovery snapshot입니다.
+     * @returns {{restartCount:number,restartGeneration:number|null}}
+     */
+    getEnemyRecoveryStatus() {
+        return Object.freeze({
+            restartCount: this.recoveryRestartCount,
+            restartGeneration: this.recoveryRestartGeneration
+        });
+    }
+
+    #createGameSystem() {
+        const gameSystem = new GameSystem(this.dependencies, {
+            mapId: this.mapId
+        });
+        gameSystem.enter();
+        return gameSystem;
+    }
+
+    /**
+     * GPU 권위 상태를 spawn snapshot으로 되감지 않고 현재 wave session 전체를 재시작합니다.
+     * 같은 device generation에서 새 session이 한 tick도 성공하지 못하면 재시작을 반복하지 않습니다.
+     * @returns {boolean} 새 session으로 교체했는지 여부입니다.
+     */
+    #restartAtSafeWaveBoundary() {
+        const platformState = this.dependencies.webGpuPlatformPort?.getState?.();
+        if (!platformState?.ready) {
+            return false;
+        }
+        const deviceGeneration = Number.isSafeInteger(platformState.deviceGeneration)
+            ? platformState.deviceGeneration
+            : 0;
+        if (this.recoveryRestartGeneration === deviceGeneration) {
+            return false;
+        }
+        this.recoveryRestartGeneration = deviceGeneration;
+        this.gameSystem.destroy();
+        this.dependencies.legacyWorldPort?.clear?.();
+        this.gameSystem = this.#createGameSystem();
+        this.recoveryRestartCount++;
+        return true;
     }
 }

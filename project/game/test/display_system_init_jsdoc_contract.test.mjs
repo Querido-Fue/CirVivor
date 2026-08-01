@@ -26,9 +26,10 @@ const [
     readFile(DISPLAY_DESCRIPTOR_PATH, 'utf8'),
     readFile(SYSTEM_HANDLER_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = '28b321f32dfc146636dddb06d887d057fb00e7dbb9f2463d92fed3795d530992';
+const EXECUTABLE_SOURCE_HASH = 'a9a1bcac008295959841faba73df9ae2c69c59ab1e1d0a90fce5550fa97e8520';
 const STATIC_SURFACE_IDS = Object.freeze([
     'background',
+    'gpu-object',
     'object',
     'effect',
     'texteffect',
@@ -177,7 +178,8 @@ async function loadDisplaySystem(options = {}) {
         screenResizeCalls: [],
         webGLResizeCalls: [],
         vignetteResizeCalls: [],
-        elementIds: []
+        elementIds: [],
+        webGpuServices: []
     };
     const controls = {
         themeInit: options.themeInit ?? (() => undefined),
@@ -192,7 +194,13 @@ async function loadDisplaySystem(options = {}) {
         })),
         drawRegister: options.drawRegister ?? (() => undefined),
         webGLRegister: options.webGLRegister ?? (() => undefined),
-        setBackgroundColor: options.setBackgroundColor ?? (() => undefined)
+        setBackgroundColor: options.setBackgroundColor ?? (() => undefined),
+        webGpuInit: options.webGpuInit ?? (() => ({
+            status: 'ready',
+            reason: null,
+            ready: true,
+            deviceGeneration: 1
+        }))
     };
     const colorSchemes = options.colorSchemes ?? { Background: null };
     const overlayHost = {
@@ -346,6 +354,47 @@ async function loadDisplaySystem(options = {}) {
         return instance;
     }
 
+    function WebGpuPlatformService(serviceOptions) {
+        const webGpuContext = { id: 'gpu-object:webgpu' };
+        const port = { id: 'webgpu-port' };
+        const instance = {
+            options: serviceOptions,
+            state: {
+                status: 'idle',
+                reason: 'not-initialized',
+                ready: false,
+                deviceGeneration: 0
+            },
+            init() {
+                assert.equal(this, instance, 'WebGpuPlatformService.init receiver');
+                records.events.push('webgpu.init');
+                return Promise.resolve(controls.webGpuInit(instance)).then((state) => {
+                    instance.state = state;
+                    serviceOptions.onCanvasCleared?.();
+                    serviceOptions.onStateChange?.(state);
+                    return state;
+                });
+            },
+            getCanvasContext() {
+                return instance.state.ready ? webGpuContext : null;
+            },
+            getPort() {
+                return port;
+            },
+            getState() {
+                return instance.state;
+            },
+            resize(width, height) {
+                records.events.push(`webgpu.resize:${width}:${height}`);
+                return true;
+            },
+            destroy() {}
+        };
+        records.events.push('webgpu.construct');
+        records.webGpuServices.push(instance);
+        return instance;
+    }
+
     const dependencies = new Map();
     const addDependency = (specifier, exports) => {
         dependencies.set(specifier, createSyntheticModule(context, specifier, exports));
@@ -384,9 +433,22 @@ async function loadDisplaySystem(options = {}) {
         identifier: DISPLAY_DESCRIPTOR_PATH
     });
     dependencies.set('./display_surface_descriptor.js', descriptorModule);
+    const webGpuPlatformModule = createSyntheticModule(
+        context,
+        './webgpu/webgpu_platform_service.js',
+        { WebGpuPlatformService }
+    );
+    await webGpuPlatformModule.link(() => {
+        throw new Error('WebGPU synthetic module에는 import가 없어야 합니다.');
+    });
+    await webGpuPlatformModule.evaluate();
     const module = new vm.SourceTextModule(displaySystemSource, {
         context,
-        identifier: DISPLAY_SYSTEM_PATH
+        identifier: DISPLAY_SYSTEM_PATH,
+        importModuleDynamically(specifier) {
+            assert.equal(specifier, './webgpu/webgpu_platform_service.js');
+            return webGpuPlatformModule;
+        }
     });
     await module.link((specifier) => {
         const dependency = dependencies.get(specifier);
@@ -518,7 +580,7 @@ async function loadSystemHandler(displayGate, events) {
 }
 
 test('DisplaySystem은 코드-local descriptor 상수를 사용하고 중앙 data registry에 의존하지 않는다', () => {
-    assert.equal(hashExecutableSource(displaySystemSource, 58), EXECUTABLE_SOURCE_HASH);
+    assert.equal(hashExecutableSource(displaySystemSource, 63), EXECUTABLE_SOURCE_HASH);
     assert.doesNotMatch(displaySystemSource, /data\/data_handler\.js/);
     assert.doesNotMatch(displayDescriptorSource, /data\/data_handler\.js/);
     assert.match(displaySystemSource, /DISPLAY_WEBGL_RENDER_MODES/);
@@ -531,10 +593,11 @@ test('DisplaySystem은 코드-local descriptor 상수를 사용하고 중앙 dat
 test('init JSDoc은 순서·live·Promise·부분 상태 계약을 정확히 명시한다', () => {
     const initDoc = findLeadingJsDoc('async init\\(\\) \\{');
     assert.match(initDoc, /themeHandler\.init\(\).*이행.*테마.*surface/s);
-    assert.match(initDoc, /background.*object.*effect.*texteffect.*ui.*vignette.*top.*순서/s);
+    assert.match(initDoc, /background.*gpu-object.*object.*effect.*texteffect.*ui.*vignette.*top.*순서/s);
     assert.match(initDoc, /ColorSchemes\.Background.*첫.*truthy.*다시.*두 번.*r.*g.*b.*clamp.*않/s);
     assert.match(initDoc, /screenHandler\.init\(\).*이행.*surfaceMap\.values\(\).*live/s);
     assert.match(initDoc, /resize\(\).*live receiver.*반환값.*기다리지.*버리/s);
+    assert.match(initDoc, /WebGPU.*한 번.*동적 로드.*non-fatal.*unsupported.*기존 초기화.*거부하지 않/s);
     assert.match(initDoc, /매 호출.*새 Promise.*중복.*재진입.*guard.*없/s);
     assert.match(initDoc, /rollback.*않.*부분 상태.*유지/s);
     assert.match(initDoc, /접근·호출.*하위 Promise 거부.*thenable.*첫 reject 사유.*첫 resolve\/reject.*호출 전.*throw.*동기 throw.*아니.*같은.*identity/s);
@@ -572,6 +635,7 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
         'element:background',
         'context:background:webgl',
         'webgl.register:background',
+        'element:gpu-object',
         'element:object',
         'context:object:webgl',
         'webgl.register:object',
@@ -617,8 +681,9 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
 
     const descriptors = [...display.surfaceMap.values()];
     assert.deepEqual(descriptors.map(({ id }) => id), STATIC_SURFACE_IDS);
-    assert.deepEqual(descriptors.map(({ order }) => order), [0, 10, 20, 30, 40, 50, 1000]);
+    assert.deepEqual(descriptors.map(({ order }) => order), [0, 5, 10, 20, 30, 40, 50, 1000]);
     assert.deepEqual(descriptors.map(({ mode }) => mode), [
+        'batch',
         'batch',
         'batch',
         'effect',
@@ -633,11 +698,13 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
         false,
         false,
         false,
+        false,
         true,
         false
     ]);
     assert.deepEqual(descriptors.map(({ includeInComposite }) => includeInComposite), [
         true,
+        false,
         true,
         true,
         true,
@@ -645,7 +712,7 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
         false,
         false
     ]);
-    assert.deepEqual(descriptors.map(({ contentRevision }) => contentRevision), [1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(descriptors.map(({ contentRevision }) => contentRevision), [1, 2, 3, 4, 5, 6, 7, 8]);
 
     assert.deepEqual(runtime.records.contexts, [
         {
@@ -673,6 +740,14 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
         assert.equal(runtime.canvases.get(id).width, 640, `${id}.width`);
         assert.equal(runtime.canvases.get(id).height, 360, `${id}.height`);
     }
+    assert.equal(runtime.canvases.get('gpu-object').width, 640);
+    assert.equal(runtime.canvases.get('gpu-object').height, 360);
+    assert.equal(display.getSurface('gpu-object').type, 'webgpu');
+    assert.equal(display.getSurface('gpu-object').context.id, 'gpu-object:webgpu');
+    assert.equal(display.getWebGpuPlatformPort().id, 'webgpu-port');
+    assert.strictEqual(runtime.namespace.getWebGpuPlatformPort(), display.getWebGpuPlatformPort());
+    assert.equal(display.getWebGpuPlatformState().ready, true);
+    assert.deepEqual([...display.getAllCanvases()].map(({ id }) => id), STATIC_SURFACE_IDS);
     for (const id of ['texteffect', 'ui', 'vignette', 'top']) {
         assert.equal(runtime.canvases.get(id).width, 1280, `${id}.width`);
         assert.equal(runtime.canvases.get(id).height, 720, `${id}.height`);
@@ -699,8 +774,41 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
         'draw.transform:top',
         'screen.resize',
         'webgl.resize',
-        'vignette.resize'
+        'vignette.resize',
+        'webgpu.construct',
+        'webgpu.init'
     ]);
+});
+
+test('WebGPU canvas가 없는 harness에서도 기존 Display 초기화는 unsupported 상태로 완료된다', async () => {
+    const runtime = await loadDisplaySystem({
+        getElementById(id, fallback) {
+            return id === 'gpu-object' ? null : fallback(id);
+        },
+        webGpuInit(instance) {
+            assert.equal(instance.options.canvas, null);
+            return {
+                status: 'unsupported',
+                reason: 'canvas-unavailable',
+                ready: false,
+                deviceGeneration: 0
+            };
+        }
+    });
+    const display = new runtime.namespace.DisplaySystem();
+
+    assert.equal(await display.init(), undefined);
+    assert.equal(display.getSurface('gpu-object'), null);
+    assert.deepEqual([...display.surfaceMap.keys()], STATIC_SURFACE_IDS.filter(
+        (surfaceId) => surfaceId !== 'gpu-object'
+    ));
+    assert.deepEqual(runtime.records.webGLLayers.map(({ id }) => id), [
+        'background',
+        'object',
+        'effect'
+    ]);
+    assert.equal(display.getWebGpuPlatformState().status, 'unsupported');
+    assert.equal(display.getWebGpuPlatformState().reason, 'canvas-unavailable');
 });
 
 test('Background 이중 조회와 RGB coercion·callee 캡처 순서를 보존한다', async () => {
@@ -1198,13 +1306,14 @@ test('등록·backing·resize 오류는 이미 반영된 부분 상태를 rollba
         await assertAsyncSameError(() => display.init(), error);
         assert.deepEqual([...display.staticSurfaceIds], [
             'background',
+            'gpu-object',
             'object',
             'effect',
             'texteffect',
             'ui'
         ]);
         assert.deepEqual([...display.surfaceMap.keys()], [...display.staticSurfaceIds]);
-        assert.equal(display.contentRevisionSerial, 5);
+        assert.equal(display.contentRevisionSerial, 6);
         assert.equal(runtime.records.events.includes('screen.init'), false);
     }
 
@@ -1260,12 +1369,12 @@ test('동시 init은 등록을 중복하고 두 Promise가 같은 최종 Map을 
         '둘째 screen init'
     );
     assert.notStrictEqual(first, second);
-    assert.equal(display.surfaceMap.size, 7);
-    assert.equal(display.staticSurfaceIds.length, 14);
-    assert.equal(display.contentRevisionSerial, 14);
+    assert.equal(display.surfaceMap.size, 8);
+    assert.equal(display.staticSurfaceIds.length, 16);
+    assert.equal(display.contentRevisionSerial, 16);
     assert.deepEqual(
         [...display.surfaceMap.values()].map(({ contentRevision }) => contentRevision),
-        [8, 9, 10, 11, 12, 13, 14]
+        [9, 10, 11, 12, 13, 14, 15, 16]
     );
     assert.equal(runtime.records.webGLLayers.length, 6);
     assert.equal(runtime.records.drawLayers.length, 8);
@@ -1289,13 +1398,14 @@ test('동시 init은 등록을 중복하고 두 Promise가 같은 최종 Map을 
     screenGate.resolve();
     assert.deepEqual(await Promise.all([first, second]), [undefined, undefined]);
     const finalDescriptorMarkers = [
-        'background:8',
-        'object:9',
-        'effect:10',
-        'texteffect:11',
-        'ui:12',
-        'vignette:13',
-        'top:14'
+        'background:9',
+        'gpu-object:10',
+        'object:11',
+        'effect:12',
+        'texteffect:13',
+        'ui:14',
+        'vignette:15',
+        'top:16'
     ];
     assert.deepEqual(finalDescriptorSyncReads, [
         ...finalDescriptorMarkers,
@@ -1309,6 +1419,7 @@ test('동시 init은 등록을 중복하고 두 Promise가 같은 최종 Map을 
     assert.equal(runtime.records.screenResizeCalls.length, 2);
     assert.equal(runtime.records.webGLResizeCalls.length, 2);
     assert.equal(runtime.records.vignetteResizeCalls.length, 2);
+    assert.equal(runtime.records.webGpuServices.length, 1);
 });
 
 test('SystemHandler는 Display init 정착 전 로그와 AnimationSystem 단계로 진행하지 않는다', async () => {

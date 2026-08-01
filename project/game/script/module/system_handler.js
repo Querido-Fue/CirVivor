@@ -100,6 +100,7 @@ export class SystemHandler {
         this.pauseReasons = new Map();
         this.frameExecutionPolicy = this.createPausePolicy();
         this.debugPausedFrameExecutionPolicy = { ...this.frameExecutionPolicy };
+        this.debugPresentationPaused = false;
         this.simulationRuntimeSnapshot = {
             viewport: {
                 ww: 0,
@@ -253,7 +254,11 @@ export class SystemHandler {
 
         this.frameExecutionPolicy = this.#buildFrameExecutionPolicy();
         this.#applyPauseSideEffects();
-        return hadReason !== isActive;
+        const didChange = hadReason !== this.pauseReasons.has(reasonKey);
+        if (didChange) {
+            this.sceneSystem?.synchronizePresentation?.();
+        }
+        return didChange;
     }
 
     /**
@@ -325,6 +330,7 @@ export class SystemHandler {
         const debugFrameMode = DEBUG_FRAME_MODES.has(frameContext.debugFrameMode)
             ? frameContext.debugFrameMode
             : 'running';
+        this.#synchronizeDebugPresentationPauseState(debugFrameMode);
         const executionPolicy = this.#resolveFrameExecutionPolicy(debugFrameMode);
         const timeHandler = getTimeHandler();
         if (debugFrameMode === 'paused' && typeof timeHandler?.freezeFrameDelta === 'function') {
@@ -667,6 +673,23 @@ export class SystemHandler {
             this.debugPausedFrameExecutionPolicy[key] = false;
         }
         return this.debugPausedFrameExecutionPolicy;
+    }
+
+    /**
+     * 디버그 정지 진입·해제 경계에서만 활성 씬의 presentation clock을 동기화합니다.
+     * scene update 실행 여부와 무관하게 tick 초입에서 호출됩니다.
+     * @param {'running'|'paused'|'step'} debugFrameMode - 정규화된 디버그 프레임 제어 상태입니다.
+     * @returns {void}
+     * @private
+     */
+    #synchronizeDebugPresentationPauseState(debugFrameMode) {
+        const isPaused = debugFrameMode === 'paused';
+        if (isPaused === this.debugPresentationPaused) {
+            return;
+        }
+
+        this.debugPresentationPaused = isPaused;
+        this.sceneSystem?.synchronizePresentation?.();
     }
 
     /**

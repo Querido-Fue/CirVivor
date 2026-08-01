@@ -53,6 +53,12 @@ export class BaseScene {
     }
 
     /**
+     * pause/resume 경계에서 presentation 전용 시간 상태를 현재 시뮬레이션에 맞춥니다. (오버라이드 선택)
+     */
+    synchronizePresentation() {
+    }
+
+    /**
      * 씬이 보유한 리소스를 정리합니다. (오버라이드 선택)
      */
     destroy() {

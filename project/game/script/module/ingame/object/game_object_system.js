@@ -7,11 +7,19 @@ import { TileMapCollisionResolver } from '../map/tile_map_collision_resolver.js'
 import { TileMapRenderer } from '../map/tile_map_renderer.js';
 import { createTileMap } from '../map/tile_map.js';
 import { WorldCamera2D } from '../map/world_camera_2d.js';
+import { WaveDirector } from '../flow/wave_director.js';
+import {
+    EnemyLifecycleCommandOwner
+} from './enemy/enemy_lifecycle_command_owner.js';
+import { EnemySimulationBackend } from './enemy/enemy_simulation_backend.js';
 import { TheCore } from './the_core.js';
 import { TheCoreRenderer } from './the_core_renderer.js';
 import { TheTower } from './the_tower.js';
 import { TheTowerRenderer } from './the_tower_renderer.js';
 import { TowerPlayerController } from './tower_player_controller.js';
+import { WorldRegistry } from './world_registry.js';
+
+const DEFAULT_ENEMY_CAPACITY = 16384;
 
 /**
  * 뷰포트 값을 재사용 대상에 정규화해 기록합니다.
@@ -27,6 +35,36 @@ function syncWorldViewport(target, source = {}) {
     return target;
 }
 
+function assertEnemySimulationBackend(backend) {
+    const requiredMethods = [
+        'init',
+        'spawnBodies',
+        'despawnBodies',
+        'hasBody',
+        'hasActiveBodies',
+        'fixedUpdate',
+        'updatePresentation',
+        'synchronizePresentation',
+        'draw',
+        'getRuntimeState',
+        'requiresRecovery',
+        'destroy'
+    ];
+    for (const methodName of requiredMethods) {
+        if (typeof backend?.[methodName] !== 'function') {
+            throw new TypeError(`enemySimulationBackend.${methodName}()가 필요합니다.`);
+        }
+    }
+    return backend;
+}
+
+function resolveEnemyWaveEnabled(dependencies, options) {
+    if (typeof options?.enemyWaveEnabled === 'boolean') {
+        return options.enemyWaveEnabled;
+    }
+    return dependencies?.webGpuPlatformPort?.getState?.().ready === true;
+}
+
 /**
  * @class GameObjectSystem
  * @description 타일 맵, The Tower, The Core와 물리·충돌·렌더 capability를 소유합니다.
@@ -34,7 +72,7 @@ function syncWorldViewport(target, source = {}) {
 export class GameObjectSystem {
     /**
      * @param {{worldRenderPort:{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}}} dependencies - 오브젝트 의존성입니다.
-     * @param {{mapId?:string|null,coreIntegrity:object}} options - 세션 오브젝트 옵션입니다.
+     * @param {{mapId?:string|null,coreIntegrity:object,enemyWaveEnabled?:boolean,waveDefinition?:object}} options - 세션 오브젝트 옵션입니다.
      */
     constructor(dependencies, options) {
         this.viewport = { ww: 0, wh: 0 };
@@ -50,6 +88,37 @@ export class GameObjectSystem {
         this.playerControllables = [];
         this.physicsBodies = [];
         this.collidables = [];
+        const injectedEnemyBackend = typeof dependencies?.enemySimulationBackendFactory
+            === 'function'
+            ? dependencies.enemySimulationBackendFactory()
+            : dependencies?.enemySimulationBackend;
+        this.enemySimulationBackend = assertEnemySimulationBackend(
+            injectedEnemyBackend
+                ?? new EnemySimulationBackend({
+                    webGpuPlatformPort: dependencies?.webGpuPlatformPort ?? null
+                })
+        );
+        const enemyCapacity = typeof this.enemySimulationBackend.getCapacity === 'function'
+            ? this.enemySimulationBackend.getCapacity()
+            : DEFAULT_ENEMY_CAPACITY;
+        this.worldRegistry = new WorldRegistry({ capacity: enemyCapacity });
+        this.enemyLifecycleCommandOwner = new EnemyLifecycleCommandOwner(
+            this.enemySimulationBackend,
+            this.worldRegistry
+        );
+        this.enemyWaveEnabled = resolveEnemyWaveEnabled(dependencies, options);
+        this.waveDirector = this.enemyWaveEnabled
+            ? new WaveDirector({ waveDefinition: options?.waveDefinition })
+            : null;
+        this.lastCompletedEnemyFixedTick = 0;
+        this.pendingEnemyFixedTick = 0;
+        this.enemySimulationRecoveryRequired = false;
+        this.enemySimulationPaused = false;
+        this.enemyPresentationFrame = {
+            frameDelta: 0,
+            fixedDelta: 0,
+            fixedAlpha: 0
+        };
         this.tileMapRenderer = new TileMapRenderer(dependencies?.worldRenderPort);
         this.coreRenderer = new TheCoreRenderer(dependencies?.worldRenderPort);
         this.towerRenderer = new TheTowerRenderer(dependencies?.worldRenderPort);
@@ -71,6 +140,8 @@ export class GameObjectSystem {
             createTileMap(this.requestedMapId)
         );
         this.tileCollisionResolver = new TileMapCollisionResolver(this.tileMap);
+        this.enemySimulationBackend.init(this.tileMap);
+        this.waveDirector?.init(this.tileMap);
 
         const towerSpawn = this.tileMap.getTowerSpawnPosition();
         const coreSpawn = this.tileMap.getCorePosition();
@@ -161,24 +232,137 @@ export class GameObjectSystem {
     }
 
     /**
-     * Tower 운동을 적분하고 막힌 타일과의 침투를 해소합니다.
-     * @param {number} delta - 초 단위 fixed delta입니다.
-     * @returns {void}
+     * 향후 enemy spawn/flow-field lifecycle이 사용할 session simulation 경계를 반환합니다.
+     * @returns {EnemySimulationBackend} 현재 enemy simulation backend입니다.
      */
-    fixedUpdate(delta) {
+    getEnemySimulationBackend() {
+        return this.enemySimulationBackend;
+    }
+
+    /** @returns {WorldRegistry} 테스트·진단용 session entity registry입니다. */
+    getWorldRegistry() {
+        return this.worldRegistry;
+    }
+
+    /** @returns {EnemyLifecycleCommandOwner} 테스트·향후 gameplay command adapter용 경계입니다. */
+    getEnemyLifecycleCommandOwner() {
+        return this.enemyLifecycleCommandOwner;
+    }
+
+    /** @returns {object|null} 현재 spawn-only wave 진행 snapshot입니다. */
+    getEnemyWaveStatus() {
+        return this.waveDirector?.getStatus() ?? null;
+    }
+
+    /** @returns {number} 마지막으로 전체 세션이 완료한 fixed tick입니다. */
+    getLastCompletedEnemyFixedTick() {
+        return this.lastCompletedEnemyFixedTick;
+    }
+
+    /** @returns {boolean} 현재 wave를 안전 경계에서 재시작해야 하는 hard GPU failure 여부입니다. */
+    isEnemySimulationRecoveryRequired() {
+        return this.enemySimulationRecoveryRequired;
+    }
+
+    /** pause/resume 경계에서 적 render prediction clock을 물리 clock에 맞춥니다. */
+    synchronizeEnemyPresentation() {
+        this.enemySimulationBackend.synchronizePresentation();
+    }
+
+    /**
+     * 적 GPU tick 제출을 먼저 확인한 뒤 Tower 운동과 tile 침투를 같은 fixed 경계에서 진행합니다.
+     * @param {number} delta - 초 단위 fixed delta입니다.
+     * @param {number} [proposedFixedTick] - GameSystem이 아직 확정하지 않은 다음 tick입니다.
+     * @returns {boolean} 적과 Tower가 같은 tick을 모두 전진했는지 여부입니다.
+     */
+    fixedUpdate(delta, proposedFixedTick = this.lastCompletedEnemyFixedTick + 1) {
+        if (!this.initialized || this.destroyed) {
+            return false;
+        }
+        if (!Number.isSafeInteger(proposedFixedTick) || proposedFixedTick <= 0) {
+            throw new RangeError('proposedFixedTick은 양의 안전한 정수여야 합니다.');
+        }
+        if (this.pendingEnemyFixedTick !== 0
+            && this.pendingEnemyFixedTick !== proposedFixedTick) {
+            throw new RangeError(
+                `미완료 enemy fixed tick이 있습니다: ${this.pendingEnemyFixedTick}`
+            );
+        }
+        const enemyState = this.enemySimulationBackend.getRuntimeState();
+        const enemyGpuRequired = this.enemyWaveEnabled
+            || this.enemyLifecycleCommandOwner.getPendingCount() > 0
+            || this.enemySimulationBackend.hasActiveBodies();
+        if (enemyGpuRequired
+            && this.enemySimulationBackend.requiresRecovery()
+            && enemyState !== 'gpu-backpressure') {
+            this.enemySimulationRecoveryRequired = true;
+            if (!this.enemySimulationPaused) {
+                this.enemySimulationBackend.synchronizePresentation();
+            }
+            this.enemySimulationPaused = true;
+            return false;
+        }
+
+        if (this.pendingEnemyFixedTick === 0) {
+            this.waveDirector?.queueSpawnsForFixedTick(
+                proposedFixedTick,
+                this.enemyLifecycleCommandOwner
+            );
+            const lifecycleResult = this.enemyLifecycleCommandOwner
+                .commitAtFixedBoundary(proposedFixedTick);
+            if (lifecycleResult.recoveryRequired) {
+                this.enemySimulationRecoveryRequired
+                    = lifecycleResult.state !== 'stalled';
+                if (!this.enemySimulationPaused) {
+                    this.enemySimulationBackend.synchronizePresentation();
+                }
+                this.enemySimulationPaused = true;
+                return false;
+            }
+            this.pendingEnemyFixedTick = proposedFixedTick;
+        }
+
+        const hasActiveEnemies = this.enemySimulationBackend.hasActiveBodies();
+        const enemySubmitted = this.enemySimulationBackend.fixedUpdate(delta);
+        const postSubmitState = this.enemySimulationBackend.getRuntimeState();
+        const enemyGpuStillRequired = this.enemyWaveEnabled
+            || hasActiveEnemies
+            || this.enemyLifecycleCommandOwner.getPendingCount() > 0;
+        this.enemySimulationRecoveryRequired
+            = enemyGpuStillRequired
+                && this.enemySimulationBackend.requiresRecovery()
+                && postSubmitState !== 'gpu-backpressure';
+        if (hasActiveEnemies && !enemySubmitted) {
+            if (!this.enemySimulationPaused) {
+                this.enemySimulationBackend.synchronizePresentation();
+            }
+            this.enemySimulationPaused = true;
+            return false;
+        }
+        this.enemySimulationPaused = false;
+        this.enemySimulationRecoveryRequired = false;
+        this.lastCompletedEnemyFixedTick = proposedFixedTick;
+        this.pendingEnemyFixedTick = 0;
         this.tower?.fixedUpdate(delta);
         if (this.tower && this.tileCollisionResolver) {
             this.tileCollisionResolver.resolve(this.tower.getCollider());
         }
+        return true;
     }
 
     /**
-     * Tower 렌더 보간 상태를 갱신합니다.
+     * Tower 보간과 적 GPU presentation clock을 갱신합니다.
      * @param {number} alpha - 0~1 fixed interpolation alpha입니다.
+     * @param {number} [frameDelta=0] - 초 단위 가변 렌더 delta입니다.
+     * @param {number} [fixedDelta=0] - 초 단위 fixed delta입니다.
      * @returns {void}
      */
-    update(alpha) {
+    update(alpha, frameDelta = 0, fixedDelta = 0) {
         this.tower?.updateRenderPosition(alpha);
+        this.enemyPresentationFrame.frameDelta = this.enemySimulationPaused ? 0 : frameDelta;
+        this.enemyPresentationFrame.fixedDelta = fixedDelta;
+        this.enemyPresentationFrame.fixedAlpha = alpha;
+        this.enemySimulationBackend.updatePresentation(this.enemyPresentationFrame);
     }
 
     /**
@@ -193,6 +377,15 @@ export class GameObjectSystem {
             this.tileMap,
             this.camera
         );
+        this.enemySimulationBackend.draw(this.camera);
+        const enemyState = this.enemySimulationBackend.getRuntimeState();
+        const enemyGpuRequired = this.enemyWaveEnabled
+            || this.enemyLifecycleCommandOwner.getPendingCount() > 0
+            || this.enemySimulationBackend.hasActiveBodies();
+        this.enemySimulationRecoveryRequired
+            = enemyGpuRequired
+                && this.enemySimulationBackend.requiresRecovery()
+                && enemyState !== 'gpu-backpressure';
         this.coreRenderer.draw(
             this.core,
             this.camera
@@ -228,6 +421,15 @@ export class GameObjectSystem {
         this.physicsBodies.length = 0;
         this.towerController?.destroy();
         this.towerController = null;
+        this.waveDirector?.destroy();
+        this.waveDirector = null;
+        this.enemyLifecycleCommandOwner.destroy();
+        this.worldRegistry.destroy();
+        this.enemySimulationBackend.destroy();
+        this.lastCompletedEnemyFixedTick = 0;
+        this.pendingEnemyFixedTick = 0;
+        this.enemySimulationRecoveryRequired = false;
+        this.enemySimulationPaused = false;
         this.tower?.destroy();
         this.tower = null;
         this.cameraFollowTarget = null;

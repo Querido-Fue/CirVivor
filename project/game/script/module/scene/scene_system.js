@@ -116,6 +116,14 @@ export class SceneSystem {
     }
 
     /**
+     * 현재 활성 씬의 presentation 전용 시간 상태를 시뮬레이션 경계에 맞춥니다.
+     * scene update가 정지된 pause/resume 전환에서도 SystemHandler가 직접 호출합니다.
+     */
+    synchronizePresentation() {
+        this.#callActiveScene('synchronizePresentation');
+    }
+
+    /**
      * 게임을 시작합니다.
      * 타이틀 씬에서 게임 씬으로 전환합니다.
      * @param {string} [mapId] - 시작할 맵 ID입니다.

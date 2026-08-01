@@ -1,0 +1,15 @@
+{
+    "name": "lonely-tower-webgpu-capability",
+    "version": "1.0.0",
+    "main": "index.html",
+    "window": {
+        "title": "WebGPU capability",
+        "show": false,
+        "toolbar": false,
+        "frame": false,
+        "resizable": false,
+        "width": 96,
+        "height": 96,
+        "position": "center"
+    }
+}

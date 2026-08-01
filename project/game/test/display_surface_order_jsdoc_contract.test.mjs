@@ -11,7 +11,7 @@ const DESCRIPTOR_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const descriptorSource = await readFile(DESCRIPTOR_SOURCE_PATH, 'utf8');
 const productionDescriptorModule = await loadGameModule('display/display_surface_descriptor.js');
-const EXECUTABLE_SOURCE_HASH = '14896625bfa4afffcfc99baee78361948cb53c5a180fcbebc3e37d790c8a9f2d';
+const EXECUTABLE_SOURCE_HASH = '13a1171c8b39ca9bee5840ccb4b133d3a266b2cb36c41b30cb841bd84ab3cc58';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
@@ -123,10 +123,11 @@ test('실제 frozen order 맵은 own 숫자와 ordinary prototype의 상속 값�
     assert.equal(Object.getPrototypeOf(mapPrototype), null);
     assert.deepEqual(
         Reflect.ownKeys(productionStaticOrderMap),
-        ['background', 'object', 'effect', 'texteffect', 'ui', 'top']
+        ['background', 'gpu-object', 'object', 'effect', 'texteffect', 'ui', 'top']
     );
     for (const [surfaceId, order] of [
         ['background', 0],
+        ['gpu-object', 5],
         ['object', 10],
         ['effect', 20],
         ['texteffect', 30],
@@ -401,6 +402,8 @@ test('actual descriptor 생성의 기본 order 경로는 resolver 결과와 변�
     const inheritedOrder = { source: 'caller-inherited-order' };
 
     assert.equal(createDescriptor({ id: 'background' }).order, 0);
+    assert.equal(createDescriptor({ id: 'gpu-object', type: 'webgpu' }).type, 'webgpu');
+    assert.equal(createDescriptor({ id: 'gpu-object', type: 'webgpu' }).order, 5);
     assert.equal(createDescriptor({ id: 'top' }).order, 1000);
     assert.equal(createDescriptor({ id: 'toString' }).order, mapPrototype.toString);
 

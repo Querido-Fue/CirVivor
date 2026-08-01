@@ -110,6 +110,7 @@ const viewport = {
     wh: 1440
 };
 const time = {
+    frameDelta: 1 / 120,
     fixedDelta: 1 / 60,
     alpha: 0.5
 };
@@ -158,6 +159,9 @@ const gameSystem = new GameSystem({
         }
     },
     timePort: {
+        getDelta() {
+            return time.frameDelta;
+        },
         getFixedDelta() {
             return time.fixedDelta;
         },
@@ -198,6 +202,7 @@ const towerCollider = tower.getCollider();
 const coreIntegrity = gameSystem.getCoreIntegrity();
 const cameraZoomController = gameSystem.getCameraZoomController();
 const worldProjection = gameObjectSystem.getWorldViewProjection();
+const enemySimulationBackend = gameObjectSystem.getEnemySimulationBackend();
 assert.ok(isPlayerControllable(towerController));
 assert.ok(isPlayerControllerable(towerController));
 assert.ok(isPlayerControllable(cameraZoomController));
@@ -227,10 +232,58 @@ assert.equal(tileMap.getNavigationGrid().cellSize, TILE_WORLD_SIZE);
 assert.equal(tileMap.getNavigationGrid().cols, 54);
 assert.equal(tileMap.getNavigationGrid().rows, 30);
 assert.equal(gameObjectSystem.getEnemySpawnRoutes().length, 1);
+assert.deepEqual({ ...enemySimulationBackend.getStatus() }, {
+    state: 'gpu-terminal-unavailable',
+    initialized: true,
+    navigationSize: 1620,
+    flowFieldCount: 24,
+    gpu: null
+});
+assert.equal(enemySimulationBackend.getSignedDistanceField().values.length, 1620);
+assert.equal(enemySimulationBackend.getFlowFieldAtlas().fieldCount, 24);
 assert.equal(tower.position.x, tileMap.getTowerSpawnPosition().x);
 assert.equal(tower.position.y, tileMap.getTowerSpawnPosition().y);
 assert.equal(core.position.x, tileMap.getCorePosition().x);
 assert.equal(core.position.y, tileMap.getCorePosition().y);
+
+const originalEnemyMethods = {
+    getRuntimeState: enemySimulationBackend.getRuntimeState,
+    requiresRecovery: enemySimulationBackend.requiresRecovery,
+    hasActiveBodies: enemySimulationBackend.hasActiveBodies,
+    fixedUpdate: enemySimulationBackend.fixedUpdate,
+    synchronizePresentation: enemySimulationBackend.synchronizePresentation,
+    updatePresentation: enemySimulationBackend.updatePresentation
+};
+let enemyPresentationSyncCount = 0;
+let capturedEnemyPresentationFrame = null;
+enemySimulationBackend.getRuntimeState = () => 'gpu-backpressure';
+enemySimulationBackend.requiresRecovery = () => true;
+enemySimulationBackend.hasActiveBodies = () => true;
+enemySimulationBackend.fixedUpdate = () => false;
+enemySimulationBackend.synchronizePresentation = () => {
+    enemyPresentationSyncCount++;
+};
+enemySimulationBackend.updatePresentation = (frame) => {
+    capturedEnemyPresentationFrame = { ...frame };
+};
+const backpressureTowerX = tower.position.x;
+gameSystem.fixedUpdate();
+gameSystem.update();
+assert.equal(tower.position.x, backpressureTowerX);
+assert.equal(gameSystem.getFixedTick(), 0);
+assert.equal(enemyPresentationSyncCount, 1);
+assert.equal(capturedEnemyPresentationFrame.frameDelta, 0);
+gameSystem.fixedUpdate();
+assert.equal(gameSystem.getFixedTick(), 0);
+assert.equal(enemyPresentationSyncCount, 1);
+enemySimulationBackend.getRuntimeState = () => 'gpu-ready';
+enemySimulationBackend.requiresRecovery = () => false;
+enemySimulationBackend.fixedUpdate = () => true;
+gameSystem.fixedUpdate();
+assert.equal(gameSystem.getFixedTick(), 1);
+gameSystem.update();
+assert.equal(capturedEnemyPresentationFrame.frameDelta, time.frameDelta);
+Object.assign(enemySimulationBackend, originalEnemyMethods);
 
 keys[INPUT_ACTION_IDS.MOVE_RIGHT] = true;
 const initialTowerX = tower.position.x;
@@ -244,7 +297,10 @@ const expectedVelocity = (
     / THE_TOWER_DATA.LINEAR_FRICTION_PER_SECOND
 ) * (1 - frictionDecay);
 const expectedStep = expectedVelocity * time.fixedDelta;
-assert.ok(Math.abs(towerPhysicsBody.getVelocity().x - expectedVelocity) < 1e-9);
+assert.ok(
+    Math.abs(towerPhysicsBody.getVelocity().x - expectedVelocity) < 1e-9,
+    `tower velocity mismatch: actual=${towerPhysicsBody.getVelocity().x}, expected=${expectedVelocity}`
+);
 assert.ok(Math.abs(tower.position.x - (initialTowerX + expectedStep)) < 1e-9);
 assert.equal(tower.position.y, initialTowerY);
 
@@ -452,6 +508,7 @@ assert.equal(
 );
 gameSystem.destroy();
 gameSystem.destroy();
+assert.equal(enemySimulationBackend.getStatus().state, 'destroyed');
 assert.equal(tower.active, false);
 assert.equal(core.active, false);
 assert.equal(towerController.isControlEnabled(), false);

@@ -16,6 +16,7 @@ const DISPLAY_WEBGL_LAYER_NAME_MAP = Object.freeze({
 const DISPLAY_NATIVE_2D_SURFACE_IDS = Object.freeze(['texteffect', 'ui', 'vignette', 'top']);
 const DISPLAY_STATIC_SURFACE_ORDER_MAP = Object.freeze({
     background: 0,
+    'gpu-object': 5,
     object: 10,
     effect: 20,
     texteffect: 30,
@@ -30,7 +31,9 @@ const DISPLAY_NATIVE_2D_SURFACE_ID_SET = new Set(DISPLAY_NATIVE_2D_SURFACE_IDS);
  * @returns {object} 생성된 surface descriptor입니다.
  */
 export function createDisplaySurfaceDescriptor(options) {
-    const type = options?.type === 'webgl' ? 'webgl' : '2d';
+    const type = options?.type === 'webgl' || options?.type === 'webgpu'
+        ? options.type
+        : '2d';
     const compositeKind = options.compositeKind === 'solid' || options.compositeKind === 'skip'
         ? options.compositeKind
         : 'canvas';

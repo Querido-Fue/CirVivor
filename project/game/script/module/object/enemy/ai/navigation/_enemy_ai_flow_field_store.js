@@ -619,3 +619,32 @@ export const getSharedFlowFieldForTargetCoords = (
     sharedFlowFieldByKey.set(decisionKey, flow ?? null);
     return flow;
 };
+
+/**
+ * 이미 컴파일된 navigation grid와 명시적 goal cell로 기존 JS/WASM flow-field를 생성합니다.
+ * 신규 플레이의 route-stage atlas가 레거시 AI의 검증된 커널만 재사용할 수 있게 하는
+ * setup 전용 경계이며, cache와 per-enemy decision state는 만들지 않습니다.
+ * @param {EnemyAIFlowFieldGrid} grid - 고정 navigation grid입니다.
+ * @param {EnemyAIFlowFieldGoalCell} goalCell - grid 안의 목표 셀입니다.
+ * @returns {EnemyAIFlowFieldResult} 호출자가 소유하는 방향·integration plane입니다.
+ */
+export const buildEnemyAIFlowFieldForGridGoal = (grid, goalCell) => {
+    if (!Number.isInteger(grid?.cols)
+        || !Number.isInteger(grid?.rows)
+        || grid.cols <= 0
+        || grid.rows <= 0
+        || grid.size !== grid.cols * grid.rows
+        || !(grid.blocked instanceof Uint8Array)
+        || grid.blocked.length !== grid.size) {
+        throw new TypeError('flow-field grid는 유효한 cols/rows/size/blocked 계약이어야 합니다.');
+    }
+    if (!Number.isInteger(goalCell?.cx)
+        || !Number.isInteger(goalCell?.cy)
+        || goalCell.cx < 0
+        || goalCell.cy < 0
+        || goalCell.cx >= grid.cols
+        || goalCell.cy >= grid.rows) {
+        throw new RangeError('flow-field goalCell은 grid 범위 안의 정수 좌표여야 합니다.');
+    }
+    return buildEnemyAIFlowField(grid, goalCell, buildFlowField);
+};

@@ -24,6 +24,12 @@ html {
     background-color: rgba(0, 0, 0, 0);
 }
 
+#gpu-object {
+    z-index: 5;
+    background-color: rgba(0, 0, 0, 0);
+    pointer-events: none;
+}
+
 #object {
     z-index: 10;
     background-color: rgba(0, 0, 0, 0);

@@ -21,7 +21,7 @@ const [descriptorSource, displaySystemSource] = await Promise.all([
 const productionDescriptorModule = await loadGameModule(
     'display/display_surface_descriptor.js'
 );
-const EXECUTABLE_SOURCE_HASH = '14896625bfa4afffcfc99baee78361948cb53c5a180fcbebc3e37d790c8a9f2d';
+const EXECUTABLE_SOURCE_HASH = '13a1171c8b39ca9bee5840ccb4b133d3a266b2cb36c41b30cb841bd84ab3cc58';
 
 /**
  * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.

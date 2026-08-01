@@ -7,6 +7,7 @@ export {
 } from './navigation/_enemy_ai_line_of_sight.js';
 
 export {
+    buildEnemyAIFlowFieldForGridGoal,
     findNearestWalkableCellInto,
     getNavGrid,
     getSharedFlowFieldForTargetCoords,

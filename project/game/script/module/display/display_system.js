@@ -21,10 +21,10 @@ let displaySystemInstance = null;
 /**
  * @typedef {object} DisplaySurfaceDescriptor
  * @property {string} id - surface 식별자입니다.
- * @property {'2d'|'webgl'} type - surface 타입입니다.
+ * @property {'2d'|'webgl'|'webgpu'} type - surface 타입입니다.
  * @property {'batch'|'overlay-effect'|'effect'} mode - WebGL 모드 또는 기본 모드입니다.
  * @property {HTMLCanvasElement} canvas - DOM 캔버스입니다.
- * @property {CanvasRenderingContext2D|WebGLRenderingContext|null} context - 연결된 컨텍스트입니다.
+ * @property {CanvasRenderingContext2D|WebGLRenderingContext|GPUCanvasContext|null} context - 연결된 컨텍스트입니다.
  * @property {number} order - 표시 순서입니다.
  * @property {boolean} dynamic - 동적 surface 여부입니다.
  * @property {boolean} persistent - 프레임 초기화에서 제외할 정적 surface 여부입니다.
@@ -61,16 +61,21 @@ export class DisplaySystem {
         this.dynamicWebGLPool = new CanvasSurfacePool('webgl');
         this.vignetteRenderer = new VignetteRenderer();
         this.themeTransitionController = null;
+        this.webGpuPlatformService = null;
+        this.webGpuPlatformInitializationPromise = null;
+        this.webGpuPlatformFailureReason = null;
+        this.webGpuSurfaceGeneration = 0;
     }
 
     /**
      * `themeHandler.init()` Promise가 이행된 뒤 저장 테마를 적용하고 overlay host를 조회한 다음
-     * `background`, `object`, `effect`, `texteffect`, `ui`, `vignette`, `top` surface를 해당 순서로 등록합니다.
+     * `background`, `gpu-object`, `object`, `effect`, `texteffect`, `ui`, `vignette`, `top` surface를 해당 순서로 등록합니다.
      * `ColorSchemes.Background`의 첫 조건 조회가 truthy이면 변환 인수로 다시 live 조회해 총 두 번
      * 읽으며, 변환 결과의 `r`, `g`, `b`를 차례로 숫자 변환해 255로 나눌 뿐 clamp하지 않습니다.
      * `screenHandler.init()` Promise가 이행된 뒤 그 시점의 `surfaceMap.values()` live iterator로
      * backing store를 동기화합니다. 마지막 `resize()`는 live receiver로 동기 호출하고 그 반환값은
-     * 기다리지 않고 그대로 버리는 방식입니다.
+     * 기다리지 않고 그대로 버리는 방식입니다. resize 뒤 WebGPU 플랫폼 모듈을 한 번만 동적 로드해
+     * non-fatal capability probe를 기다리며, unsupported 또는 probe 실패는 기존 초기화를 거부하지 않습니다.
      *
      * 매 호출마다 새 Promise와 초기화 순회를 만들며, 중복 실행을 막는 재진입 guard가 없습니다.
      * 실패 시 rollback하지 않으므로 이미 적용된 등록·동기화 등의 부분 상태는 유지됩니다.
@@ -90,6 +95,10 @@ export class DisplaySystem {
         this.#registerStaticSurface('background', 'background', 'webgl', {
             alpha: false,
             mode: DISPLAY_WEBGL_RENDER_MODES.BATCH
+        });
+        this.#registerStaticSurface('gpu-object', 'gpu-object', 'webgpu', {
+            order: 5,
+            includeInComposite: false
         });
         this.#registerStaticSurface('object', 'object', 'webgl', {
             alpha: true,
@@ -120,6 +129,7 @@ export class DisplaySystem {
         }
 
         this.resize();
+        await this.#initializeWebGpuPlatform();
     }
 
     /**
@@ -218,6 +228,38 @@ export class DisplaySystem {
      */
     getSurface(surfaceId) {
         return this.surfaceMap.get(surfaceId) || null;
+    }
+
+    /**
+     * 게임 세션에 주입할 app-lifetime WebGPU 플랫폼 port를 반환합니다.
+     * @returns {object|null} 준비 상태와 device/canvas frame API를 제공하는 port입니다.
+     */
+    getWebGpuPlatformPort() {
+        return this.webGpuPlatformService?.getPort?.() ?? null;
+    }
+
+    /**
+     * 현재 WebGPU 플랫폼 상태를 반환합니다.
+     * @returns {object} capability와 device generation을 포함한 상태입니다.
+     */
+    getWebGpuPlatformState() {
+        if (this.webGpuPlatformService?.getState) {
+            return this.webGpuPlatformService.getState();
+        }
+        return Object.freeze({
+            status: 'unsupported',
+            reason: this.webGpuPlatformFailureReason || 'not-initialized',
+            ready: false,
+            secureContext: globalThis.isSecureContext === true,
+            deviceGeneration: 0,
+            format: null,
+            limits: Object.freeze({}),
+            features: Object.freeze([]),
+            adapterInfo: null,
+            lostInfo: null,
+            width: this.getSurface('gpu-object')?.canvas?.width ?? 0,
+            height: this.getSurface('gpu-object')?.canvas?.height ?? 0
+        });
     }
 
     /**
@@ -440,6 +482,13 @@ export class DisplaySystem {
             this.#applyCanvasStyle(descriptor);
         }
 
+        if (this.webGpuPlatformService) {
+            this.webGpuPlatformService.resize(
+                this.screenHandler.width,
+                this.screenHandler.height
+            );
+        }
+
         if (this.overlayLayerHost) {
             Object.assign(this.overlayLayerHost.style, {
                 left: `${this.screenHandler.cssLeft}px`,
@@ -485,14 +534,17 @@ export class DisplaySystem {
      * 정적 surface를 등록합니다.
      * @param {string} surfaceId - 등록할 식별자입니다.
      * @param {string} domId - 연결할 DOM id입니다.
-     * @param {'2d'|'webgl'} type - surface 타입입니다.
+     * @param {'2d'|'webgl'|'webgpu'} type - surface 타입입니다.
      * @param {{alpha?: boolean, mode?: 'batch'|'overlay-effect'|'effect', includeInComposite?: boolean, compositeOpacityFactor?: number, order?: number, persistent?: boolean}} [options] - 옵션입니다.
      */
     #registerStaticSurface(surfaceId, domId, type, options = {}) {
         const canvas = document.getElementById(domId);
+        if (!canvas && type === 'webgpu') {
+            return;
+        }
         const context = type === 'webgl'
             ? canvas.getContext('webgl', { alpha: options.alpha !== false, preserveDrawingBuffer: false })
-            : canvas.getContext('2d');
+            : (type === '2d' ? canvas.getContext('2d') : null);
 
         const descriptor = createDisplaySurfaceDescriptor({
             id: surfaceId,
@@ -526,6 +578,10 @@ export class DisplaySystem {
                 onDraw: () => this.#markSurfaceDrawn(descriptor),
                 onFrameClear: () => this.#beginSurfaceFrame(descriptor, false)
             });
+            return;
+        }
+
+        if (descriptor.type === 'webgpu') {
             return;
         }
 
@@ -602,7 +658,81 @@ export class DisplaySystem {
             return;
         }
 
+        if (descriptor.type === 'webgpu') {
+            return;
+        }
+
         this.webGLHandler.unregisterLayer(descriptor.id);
+    }
+
+    /**
+     * @private
+     * 선택 기능인 WebGPU 플랫폼 모듈을 한 번만 로드하고 probe 실패를 unsupported 상태로 격리합니다.
+     * @returns {Promise<object>} 최종 WebGPU 플랫폼 상태입니다.
+     */
+    #initializeWebGpuPlatform() {
+        if (this.webGpuPlatformService) {
+            return this.webGpuPlatformService.init();
+        }
+        if (this.webGpuPlatformInitializationPromise) {
+            return this.webGpuPlatformInitializationPromise;
+        }
+
+        const initializationPromise = import('./webgpu/webgpu_platform_service.js')
+            .then(async ({ WebGpuPlatformService }) => {
+                const descriptor = this.surfaceMap.get('gpu-object');
+                const service = new WebGpuPlatformService({
+                    canvas: descriptor?.canvas ?? null,
+                    onStateChange: (state) => this.#handleWebGpuPlatformState(state),
+                    onCanvasDrawn: () => this.markSurfaceDirectDraw('gpu-object'),
+                    onCanvasCleared: () => this.markSurfaceDirectClear('gpu-object', false)
+                });
+                this.webGpuPlatformService = service;
+                const state = await service.init();
+                if (descriptor) {
+                    descriptor.context = service.getCanvasContext();
+                }
+                return state;
+            })
+            .catch((error) => {
+                this.webGpuPlatformFailureReason = `platform-init-failed:${error?.message || String(error)}`;
+                return this.getWebGpuPlatformState();
+            })
+            .finally(() => {
+                if (this.webGpuPlatformInitializationPromise === initializationPromise) {
+                    this.webGpuPlatformInitializationPromise = null;
+                }
+            });
+        this.webGpuPlatformInitializationPromise = initializationPromise;
+        return initializationPromise;
+    }
+
+    /**
+     * @private
+     * WebGPU device 상태 전환을 surface context/revision 메타데이터에 반영합니다.
+     * @param {object} state - WebGPU 플랫폼 상태입니다.
+     * @returns {void}
+     */
+    #handleWebGpuPlatformState(state) {
+        const descriptor = this.surfaceMap.get('gpu-object');
+        if (!descriptor) {
+            return;
+        }
+
+        descriptor.context = state?.ready
+            ? this.webGpuPlatformService?.getCanvasContext?.() ?? null
+            : null;
+        if (state?.status === 'lost') {
+            this.#handleSurfaceContextLost(descriptor);
+            return;
+        }
+        if (state?.ready && state.deviceGeneration !== this.webGpuSurfaceGeneration) {
+            const restoring = this.webGpuSurfaceGeneration > 0;
+            this.webGpuSurfaceGeneration = state.deviceGeneration;
+            if (restoring) {
+                this.#handleSurfaceContextRestored(descriptor);
+            }
+        }
     }
 
     /**
@@ -744,6 +874,12 @@ DisplaySystem.EMPTY_COMPOSITE_SNAPSHOT = Object.freeze({
  * @returns {DisplaySystem|null} DisplaySystem 인스턴스입니다.
  */
 export const getDisplaySystem = () => displaySystemInstance;
+
+/**
+ * 현재 DisplaySystem이 소유한 WebGPU 플랫폼 port를 반환합니다.
+ * @returns {object|null} 세션 의존성으로 전달할 플랫폼 port입니다.
+ */
+export const getWebGpuPlatformPort = () => displaySystemInstance?.getWebGpuPlatformPort() ?? null;
 
 /**
  * 화면 너비를 반환합니다.
