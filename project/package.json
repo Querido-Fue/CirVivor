@@ -13,6 +13,9 @@
         "test:render:golden": "node game/test/support/run_nw_render_pipeline_golden.mjs --check",
         "update:render:golden": "node game/test/support/run_nw_render_pipeline_golden.mjs --update",
         "test:webgpu:capability": "node game/test/support/run_nw_webgpu_capability.mjs",
+        "test:title-gpu:smoke": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile smoke",
+        "test:title-gpu:qa": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile qa --keep-run-directory",
+        "benchmark:title-gpu": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile full",
         "test": "node --experimental-vm-modules --test game/test/*.test.mjs"
     },
     "js-flags": "",
