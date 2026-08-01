@@ -63,9 +63,11 @@ export class DisplaySystem {
         this.themeTransitionController = null;
         this.webGpuPlatformService = null;
         this.webGpuFrameComposer = null;
+        this.webGpuFrameContributorPort = null;
         this.webGpuBlurService = null;
         this.webGpuPlatformInitializationPromise = null;
         this.webGpuPlatformFailureReason = null;
+        this.webGpuOptionalGaussianFailureReason = null;
         this.webGpuSurfaceGeneration = 0;
         this.webGpuFrameSerial = 0;
     }
@@ -239,6 +241,14 @@ export class DisplaySystem {
      */
     getWebGpuPlatformPort() {
         return this.webGpuPlatformService?.getPort?.() ?? null;
+    }
+
+    /**
+     * 타이틀 render graph 등에 주입할 immutable WebGPU frame contributor port를 반환합니다.
+     * @returns {Readonly<object>|null} Display 수명 동안 identity가 안정적인 contribution port입니다.
+     */
+    getWebGpuFrameContributorPort() {
+        return this.webGpuFrameContributorPort;
     }
 
     /**
@@ -735,6 +745,13 @@ export class DisplaySystem {
             return this.webGpuPlatformInitializationPromise;
         }
 
+        this.webGpuOptionalGaussianFailureReason = null;
+        const gaussianModulePromise = import('./webgpu/webgpu_gaussian_blur_algorithm.js')
+            .catch((error) => {
+                this.webGpuOptionalGaussianFailureReason =
+                    `gaussian-module-unavailable:${error?.message || String(error)}`;
+                return null;
+            });
         const initializationPromise = Promise.all([
             import('./webgpu/webgpu_platform_service.js'),
             import('./webgpu/webgpu_frame_composer.js'),
@@ -760,15 +777,29 @@ export class DisplaySystem {
                 const composer = new WebGpuFrameComposer(service.getPort());
                 const composerPort = composer.getPort();
                 service.attachFrameComposer(composerPort);
+                const algorithmFactories = new Map([[
+                    WEBGPU_KAWASE_BLUR_ALGORITHM_ID,
+                    createWebGpuKawaseBlurAlgorithmFactory({ composerPort })
+                ]]);
+                const gaussianModule = await gaussianModulePromise;
+                if (gaussianModule) {
+                    try {
+                        algorithmFactories.set(
+                            gaussianModule.WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID,
+                            gaussianModule.createWebGpuGaussianBlurAlgorithmFactory({ composerPort })
+                        );
+                    } catch (error) {
+                        this.webGpuOptionalGaussianFailureReason =
+                            `gaussian-factory-unavailable:${error?.message || String(error)}`;
+                    }
+                }
                 const blurService = new WebGpuBlurService({
                     composerPort,
-                    algorithmFactories: new Map([[
-                        WEBGPU_KAWASE_BLUR_ALGORITHM_ID,
-                        createWebGpuKawaseBlurAlgorithmFactory({ composerPort })
-                    ]])
+                    algorithmFactories
                 });
                 this.webGpuPlatformService = service;
                 this.webGpuFrameComposer = composer;
+                this.webGpuFrameContributorPort = composerPort;
                 this.webGpuBlurService = blurService;
                 const state = await service.init();
                 if (descriptor) {
@@ -962,6 +993,14 @@ export const getDisplaySystem = () => displaySystemInstance;
  * @returns {object|null} 세션 의존성으로 전달할 플랫폼 port입니다.
  */
 export const getWebGpuPlatformPort = () => displaySystemInstance?.getWebGpuPlatformPort() ?? null;
+
+/**
+ * 현재 Display가 소유한 immutable WebGPU frame contributor port를 반환합니다.
+ * @returns {Readonly<object>|null} render graph 의존성으로 전달할 contribution port입니다.
+ */
+export const getWebGpuFrameContributorPort = () => (
+    displaySystemInstance?.getWebGpuFrameContributorPort() ?? null
+);
 
 /**
  * 현재 Display가 소유한 공유 WebGPU blur service port를 반환합니다.

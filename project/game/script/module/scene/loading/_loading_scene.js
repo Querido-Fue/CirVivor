@@ -13,7 +13,9 @@ export class LoadingScene extends BaseScene {
         super(sceneSystem);
         this.titleGpuRolloutProfile = createTitleGpuRolloutProfile();
         this.titleController = new TitleSceneController(sceneSystem);
-        this.presentation = new TitleScenePresentation(this.titleController);
+        this.presentation = new TitleScenePresentation(this.titleController, {
+            titleGpuRolloutProfile: this.titleGpuRolloutProfile
+        });
     }
 
     /** 로딩 인트로를 갱신하고 이동 시작 경계에서 단 한 번 TitleScene handoff를 요청합니다. */

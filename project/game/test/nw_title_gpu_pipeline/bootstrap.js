@@ -3,6 +3,7 @@ import {
     resetWebGLGpuTelemetryFrameId,
     setWebGLGpuTelemetryEnabled
 } from 'display/webgl/_webgl_gpu_telemetry_state.js';
+import { setTitleGpuRolloutTestOverride } from 'scene/title/_title_gpu_rollout.js';
 
 const DEFAULT_SEED = 0x719;
 const DEFAULT_CLOCK_STEP_MS = 1000 / 60;
@@ -125,12 +126,20 @@ const clockStepMs = Number.isFinite(config.clockStepMs) && config.clockStepMs > 
 resetRetiredWebGLGpuTelemetry();
 resetWebGLGpuTelemetryFrameId();
 setWebGLGpuTelemetryEnabled(config.timing === true);
+const rolloutProfile = typeof config.pipelineMode === 'string'
+    && typeof config.simulationMode === 'string'
+    ? setTitleGpuRolloutTestOverride({
+        pipelineMode: config.pipelineMode,
+        simulationMode: config.simulationMode
+    })
+    : setTitleGpuRolloutTestOverride(null);
 installSeededRandom(seed);
 const bridge = installGameAssignmentBridge();
 installSyntheticRafClock(clockStepMs, bridge);
 
 globalThis.__CIRVIVOR_TITLE_GPU_HARNESS__ = Object.freeze({
     config: Object.freeze({ ...config, seed, clockStepMs, rngAlgorithm: 'mulberry32-v1' }),
+    rolloutProfile,
     getGame: bridge.getGame,
     onGameAssigned: bridge.onGameAssigned
 });

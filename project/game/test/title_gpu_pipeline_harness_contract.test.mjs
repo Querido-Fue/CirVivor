@@ -23,6 +23,7 @@ async function readHarnessFile(fileName) {
 async function executeBootstrap(config) {
     const source = await readHarnessFile('bootstrap.js');
     const telemetryEvents = [];
+    const rolloutEvents = [];
     const context = vm.createContext({
         console,
         process: {
@@ -57,11 +58,22 @@ async function executeBootstrap(config) {
         identifier: 'nw_title_gpu_pipeline/bootstrap.js'
     });
     await bootstrapModule.link((specifier) => {
-        assert.equal(specifier, 'display/webgl/_webgl_gpu_telemetry_state.js');
-        return telemetryModule;
+        if (specifier === 'display/webgl/_webgl_gpu_telemetry_state.js') {
+            return telemetryModule;
+        }
+        assert.equal(specifier, 'scene/title/_title_gpu_rollout.js');
+        return new vm.SyntheticModule(['setTitleGpuRolloutTestOverride'], function initialize() {
+            this.setExport('setTitleGpuRolloutTestOverride', (profile) => {
+                rolloutEvents.push(profile === null ? null : {
+                    pipelineMode: profile.pipelineMode,
+                    simulationMode: profile.simulationMode
+                });
+                return profile;
+            });
+        }, { context });
     });
     await bootstrapModule.evaluate();
-    return telemetryEvents;
+    return { telemetryEvents, rolloutEvents };
 }
 
 test('smoke CLI는 T0~T5와 bounded 1회 profile을 정규화한다', () => {
@@ -73,12 +85,16 @@ test('smoke CLI는 T0~T5와 bounded 1회 profile을 정규화한다', () => {
     assert.equal(config.cycles, 4);
     assert.equal(config.capture, false);
     assert.equal(config.timing, true);
+    assert.equal(config.pipelineMode, 'webgpu-kawase');
+    assert.equal(config.simulationMode, 'cpu');
 
     const selected = parseArguments([
         '--profile=smoke',
         '--scenarios=T5,T2,T4',
         '--samples=12',
         '--cycles=2',
+        '--pipeline-mode=webgpu-gaussian',
+        '--simulation-mode=cpu',
         '--capture'
     ]);
     assert.deepEqual(selected.scenarios, ['T2', 'T4', 'T5']);
@@ -86,9 +102,17 @@ test('smoke CLI는 T0~T5와 bounded 1회 profile을 정규화한다', () => {
     assert.equal(selected.cycles, 2);
     assert.equal(selected.capture, true);
     assert.equal(selected.timing, false, 'capture와 timing은 같은 run에서 섞지 않습니다.');
+    assert.equal(selected.pipelineMode, 'webgpu-gaussian');
+    assert.equal(selected.simulationMode, 'cpu');
     assert.throws(() => parseArguments(['--scenarios', 'T9']), /지원하지 않는 scenario/);
     assert.throws(() => parseArguments(['--samples', '0']), /양의 정수/);
     assert.throws(() => parseArguments(['--clock-step-ms', '0']), /0보다 큰/);
+    assert.throws(() => parseArguments(['--pipeline-mode', 'unknown']), /pipeline mode/);
+    assert.throws(() => parseArguments(['--simulation-mode', 'unknown']), /simulation mode/);
+    assert.throws(
+        () => parseArguments(['--pipeline-mode', 'legacy-webgl', '--simulation-mode', 'gpu']),
+        /WebGPU title pipeline/
+    );
 });
 
 test('nearest-rank와 cold trial aggregate는 raw trial p99를 임의 제거하지 않는다', () => {
@@ -211,16 +235,21 @@ test('bootstrap은 production main 전 telemetry state와 deterministic clock을
         bootstrapSource.indexOf('resetWebGLGpuTelemetryFrameId();')
             < bootstrapSource.indexOf('setWebGLGpuTelemetryEnabled(config.timing === true);')
     );
-    assert.deepEqual(
-        await executeBootstrap({ timing: true }),
-        ['reset-retired', 'reset-frame-id', 'enabled:true']
-    );
-    assert.deepEqual(
-        await executeBootstrap({ timing: false, capture: true }),
-        ['reset-retired', 'reset-frame-id', 'enabled:false']
-    );
+    assert.deepEqual(await executeBootstrap({
+        timing: true,
+        pipelineMode: 'webgpu-kawase',
+        simulationMode: 'cpu'
+    }), {
+        telemetryEvents: ['reset-retired', 'reset-frame-id', 'enabled:true'],
+        rolloutEvents: [{ pipelineMode: 'webgpu-kawase', simulationMode: 'cpu' }]
+    });
+    assert.deepEqual(await executeBootstrap({ timing: false, capture: true }), {
+        telemetryEvents: ['reset-retired', 'reset-frame-id', 'enabled:false'],
+        rolloutEvents: [null]
+    });
     assert.match(bootstrapSource, /createMulberry32/);
     assert.match(bootstrapSource, /installSyntheticRafClock/);
+    assert.match(bootstrapSource, /setTitleGpuRolloutTestOverride/);
     assert.match(launcherSource, /bootstrap\.js[^]*script\/main\.js/);
     await assert.rejects(
         fs.access(path.join(harnessDirectory, 'index.html')),
@@ -242,6 +271,9 @@ test('runner는 live renderer를 열거하고 rendererId를 붙여 비동기 tel
     assert.match(runnerSource, /trialGeneration/);
     assert.match(runnerSource, /rendererId: sample\.rendererId \|\| rendererId/);
     assert.match(runnerSource, /QUERY_DRAIN_FRAME_LIMIT/);
+    assert.match(runnerSource, /getTitleWebGpuShadowDiagnostics/);
+    assert.match(runnerSource, /encodeSuccessCount/);
+    assert.match(runnerSource, /config\.pipelineMode !== 'legacy-webgl'/);
     for (const scenarioId of ['T0', 'T1', 'T2', 'T3', 'T4', 'T5']) {
         assert.match(scenarioSource, new RegExp(`run${scenarioId}`));
     }

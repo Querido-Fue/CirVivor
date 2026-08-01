@@ -126,19 +126,23 @@ function createAlgorithmRegistry(composerRecords) {
             const preparedResources = [];
             records.factories.push({ algorithmId, device, deviceGeneration, instanceId });
             return {
-                prepare({ context, request, key }) {
+                prepare({ context, request, key, preparationKey }) {
                     assert.equal(composerRecords.insideEncodeCommands, true);
+                    assert.equal(key, preparationKey);
                     const prepared = {
                         instanceId,
                         preparedId: `${instanceId}:prepared:${preparedResources.length + 1}`,
+                        key,
                         destroyed: false
                     };
                     preparedResources.push(prepared);
                     records.prepares.push({ algorithmId, context, request, key, prepared });
                     return prepared;
                 },
-                encode({ context, request, key, prepared }) {
+                encode({ context, request, key, outputKey, preparationKey, prepared }) {
                     assert.equal(composerRecords.insideEncodeCommands, true);
+                    assert.equal(key, outputKey);
+                    assert.equal(prepared.key, preparationKey);
                     assert.equal(prepared.instanceId, instanceId);
                     const output = Object.freeze({
                         algorithmId,
@@ -256,12 +260,17 @@ test('blur service는 composer callback 안에서만 선택한 algorithm prepare
     });
     assert.equal(Object.isFrozen(normalized), true);
     assert.equal(Object.isFrozen(service.getPort()), true);
+    assert.equal(service.hasAlgorithm('kawase'), true);
+    assert.equal(service.getPort().hasAlgorithm('kawase'), true);
+    assert.equal(service.getPort().hasAlgorithm('gaussian-quality'), false);
+    assert.equal(service.getPort().hasAlgorithm('  '), false);
     assert.equal(service.getSnapshot().maxPreparedEntries, 256);
     assertNoForbiddenOwnership(composer.records);
     service.destroy();
+    assert.equal(service.getPort().hasAlgorithm('kawase'), false);
 });
 
-test('동일 frame+key는 output을 공유하고 checkpoint, source revision, texture, profile은 분리한다', () => {
+test('output identity는 checkpoint/revision을 분리하고 prepare topology는 안전하게 공유한다', () => {
     const composer = createComposerHarness();
     const registry = createAlgorithmRegistry(composer.records);
     const service = new WebGpuBlurService({
@@ -289,6 +298,10 @@ test('동일 frame+key는 output을 공유하고 checkpoint, source revision, te
         sourceTexture,
         sourceRevision: 5
     }));
+    const movedBounds = service.encode(createRequest({
+        sourceTexture,
+        bounds: { x: 90, y: 120, width: 300, height: 180 }
+    }));
     const texture = service.encode(createRequest({
         sourceTexture: {},
         sourceRevision: 4
@@ -302,22 +315,31 @@ test('동일 frame+key는 output을 공유하고 checkpoint, source revision, te
     }));
     assert.notStrictEqual(checkpoint, first);
     assert.notStrictEqual(revision, first);
+    assert.notStrictEqual(movedBounds, first);
     assert.notStrictEqual(texture, first);
     assert.notStrictEqual(profile, first);
-    assert.equal(registry.records.prepares.length, 5);
-    assert.equal(registry.records.encodes.length, 5);
+    assert.notEqual(checkpoint.key, first.key);
+    assert.notEqual(revision.key, first.key);
+    assert.notEqual(movedBounds.key, first.key);
+    assert.equal(checkpoint.preparedId, first.preparedId);
+    assert.equal(revision.preparedId, first.preparedId);
+    assert.equal(movedBounds.preparedId, first.preparedId);
+    assert.notEqual(texture.preparedId, first.preparedId);
+    assert.notEqual(profile.preparedId, first.preparedId);
+    assert.equal(registry.records.prepares.length, 3);
+    assert.equal(registry.records.encodes.length, 6);
 
     composer.setContext(1, 2, 'device-1');
     const nextFrame = service.encode(base);
     assert.notStrictEqual(nextFrame, first);
-    assert.equal(registry.records.prepares.length, 5, 'prepare cache는 generation 동안 유지됩니다.');
-    assert.equal(registry.records.encodes.length, 6);
+    assert.equal(registry.records.prepares.length, 3, 'prepare cache는 generation 동안 유지됩니다.');
+    assert.equal(registry.records.encodes.length, 7);
 
     const snapshot = service.getSnapshot();
     assert.equal(snapshot.sharedOutputHitCount, 1);
-    assert.equal(snapshot.prepareCount, 5);
-    assert.equal(snapshot.prepareCacheHitCount, 1);
-    assert.equal(snapshot.encodedOutputCount, 6);
+    assert.equal(snapshot.prepareCount, 3);
+    assert.equal(snapshot.prepareCacheHitCount, 4);
+    assert.equal(snapshot.encodedOutputCount, 7);
     assert.equal(snapshot.algorithmInstanceCount, 1);
     assertNoForbiddenOwnership(composer.records);
     service.destroy();
@@ -492,20 +514,20 @@ test('prepare cache LRU는 hit를 갱신하고 eviction 시 algorithm resource�
 
     const service = createService(3);
     const sourceTexture = {};
-    const encodeRevision = (sourceRevision, frameId) => {
+    const encodeSigma = (sigma, frameId) => {
         composer.setContext(1, frameId, 'device-1');
-        return service.encode(createRequest({ sourceTexture, sourceRevision }));
+        return service.encode(createRequest({ sourceTexture, sigma }));
     };
 
-    encodeRevision(1, 1);
-    encodeRevision(2, 2);
-    encodeRevision(3, 3);
-    encodeRevision(1, 4); // revision 1을 MRU로 갱신합니다.
-    encodeRevision(4, 5); // revision 2가 eviction됩니다.
-    encodeRevision(2, 6); // evicted revision 2는 다시 prepare됩니다.
+    encodeSigma(1, 1);
+    encodeSigma(2, 2);
+    encodeSigma(3, 3);
+    encodeSigma(1, 4); // sigma 1 topology를 MRU로 갱신합니다.
+    encodeSigma(4, 5); // sigma 2 topology가 eviction됩니다.
+    encodeSigma(2, 6); // evicted sigma 2 topology는 다시 prepare됩니다.
 
     assert.deepEqual(
-        registry.records.prepares.map((entry) => entry.request.sourceRevision),
+        registry.records.prepares.map((entry) => entry.request.sigma),
         [1, 2, 3, 4, 2]
     );
     const snapshot = service.getSnapshot();
@@ -527,7 +549,7 @@ test('prepare cache LRU는 hit를 갱신하고 eviction 시 algorithm resource�
     assertNoForbiddenOwnership(composer.records);
 });
 
-test('1000개 animated request에서도 generation prepare cache는 상한을 넘지 않는다', () => {
+test('1000개 animated revision/checkpoint는 동일 topology prepare cache를 재사용한다', () => {
     const composer = createComposerHarness();
     const registry = createAlgorithmRegistry(composer.records);
     const maxPreparedEntries = 17;
@@ -540,14 +562,19 @@ test('1000개 animated request에서도 generation prepare cache는 상한을 �
 
     for (let index = 0; index < 1000; index += 1) {
         composer.setContext(1, index + 1, 'device-1');
-        service.encode(createRequest({ sourceTexture, sourceRevision: index }));
+        service.encode(createRequest({
+            sourceTexture,
+            sourceRevision: index,
+            checkpointId: `animated-depth-${index}`
+        }));
         assert.ok(service.getSnapshot().preparedCacheEntryCount <= maxPreparedEntries);
     }
 
     const snapshot = service.getSnapshot();
-    assert.equal(snapshot.preparedCacheEntryCount, maxPreparedEntries);
-    assert.equal(snapshot.preparedCacheEvictionCount, 1000 - maxPreparedEntries);
-    assert.equal(snapshot.prepareCount, 1000);
+    assert.equal(snapshot.preparedCacheEntryCount, 1);
+    assert.equal(snapshot.preparedCacheEvictionCount, 0);
+    assert.equal(snapshot.prepareCount, 1);
+    assert.equal(snapshot.prepareCacheHitCount, 999);
     assert.equal(snapshot.frameOutputCount, 1);
     assert.equal(registry.records.destroys.length, 0);
     assertNoForbiddenOwnership(composer.records);

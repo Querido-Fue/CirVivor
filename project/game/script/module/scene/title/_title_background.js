@@ -326,6 +326,19 @@ export class TitleBackGround {
     }
 
     /**
+     * 현재 CPU 적 presentation과 module-private 페럴랙스 계층을 WebGPU adapter에 기록합니다.
+     * 배열을 노출하거나 프레임별 wrapper를 만들지 않고 adapter의 고정 packet identity를 그대로 반환합니다.
+     * @param {{writePacket:Function}} adapter - CPU 적 presentation adapter입니다.
+     * @returns {object} adapter가 갱신한 typed presentation packet입니다.
+     */
+    getWebGpuEnemyPresentationPacket(adapter) {
+        if (!adapter || typeof adapter.writePacket !== 'function') {
+            throw new TypeError('타이틀 WebGPU 적 presentation adapter가 필요합니다.');
+        }
+        return adapter.writePacket(this.titleEnemies, TITLE_PARALLAX_LAYERS);
+    }
+
+    /**
      * 현재 테마와 각 적의 페럴랙스 계층 프로필을 다시 적용해 색상·투명도 등 시각 속성을 동기화합니다.
      * @returns {void}
      */

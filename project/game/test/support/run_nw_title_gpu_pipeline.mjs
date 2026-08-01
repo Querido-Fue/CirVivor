@@ -7,6 +7,12 @@ import { fileURLToPath } from 'node:url';
 const RUN_DIRECTORY_PREFIX = 'cirvivor-title-gpu-';
 const EXPECTED_PLATFORM = 'win32';
 const TITLE_SCENARIOS = Object.freeze(['T0', 'T1', 'T2', 'T3', 'T4', 'T5']);
+const TITLE_PIPELINE_MODES = Object.freeze([
+    'legacy-webgl',
+    'webgpu-kawase',
+    'webgpu-gaussian'
+]);
+const TITLE_SIMULATION_MODES = Object.freeze(['cpu', 'gpu']);
 const NW_RUNTIME_ROOT_FILES = Object.freeze([
     'd3dcompiler_47.dll',
     'dxcompiler.dll',
@@ -46,7 +52,9 @@ const PROFILE_DEFAULTS = Object.freeze({
         timeoutMs: 300_000,
         capture: false,
         timing: true,
-        requireGpuTimestamps: false
+        requireGpuTimestamps: false,
+        pipelineMode: 'webgpu-kawase',
+        simulationMode: 'cpu'
     }),
     qa: Object.freeze({
         scenarios: TITLE_SCENARIOS,
@@ -57,7 +65,9 @@ const PROFILE_DEFAULTS = Object.freeze({
         timeoutMs: 300_000,
         capture: true,
         timing: false,
-        requireGpuTimestamps: false
+        requireGpuTimestamps: false,
+        pipelineMode: 'webgpu-kawase',
+        simulationMode: 'cpu'
     }),
     full: Object.freeze({
         scenarios: Object.freeze(['T4', 'T5']),
@@ -68,7 +78,9 @@ const PROFILE_DEFAULTS = Object.freeze({
         timeoutMs: 1_200_000,
         capture: false,
         timing: true,
-        requireGpuTimestamps: true
+        requireGpuTimestamps: true,
+        pipelineMode: 'webgpu-kawase',
+        simulationMode: 'cpu'
     })
 });
 
@@ -88,6 +100,8 @@ function printHelp() {
         '  --cycles N              T3/T4 transition cycle',
         '  --seed N                deterministic RNG seed',
         '  --clock-step-ms N       synthetic rAF timestamp 간격',
+        '  --pipeline-mode MODE    legacy-webgl | webgpu-kawase | webgpu-gaussian',
+        '  --simulation-mode MODE  cpu | gpu',
         '  --capture               timing을 끄고 compositor PNG 저장',
         '  --output PATH           aggregate JSON 저장 경로',
         '  --keep-run-directory    성공한 임시 실행 디렉터리도 보존'
@@ -137,7 +151,8 @@ export function parseArguments(args) {
     const raw = { profile: 'smoke' };
     const valueOptions = new Set([
         '--profile', '--scenarios', '--cold-starts', '--warmup-ms', '--samples',
-        '--cycles', '--seed', '--clock-step-ms', '--output', '--nw-exe'
+        '--cycles', '--seed', '--clock-step-ms', '--pipeline-mode',
+        '--simulation-mode', '--output', '--nw-exe'
     ]);
     for (let index = 0; index < args.length; index++) {
         const [name, inlineValue] = splitArgument(args[index]);
@@ -173,6 +188,17 @@ export function parseArguments(args) {
     }
 
     const capture = raw.capture === true || defaults.capture;
+    const pipelineMode = raw['pipeline-mode'] ?? defaults.pipelineMode;
+    const simulationMode = raw['simulation-mode'] ?? defaults.simulationMode;
+    if (!TITLE_PIPELINE_MODES.includes(pipelineMode)) {
+        throw new Error(`지원하지 않는 title pipeline mode입니다: ${pipelineMode}`);
+    }
+    if (!TITLE_SIMULATION_MODES.includes(simulationMode)) {
+        throw new Error(`지원하지 않는 title simulation mode입니다: ${simulationMode}`);
+    }
+    if (pipelineMode === 'legacy-webgl' && simulationMode === 'gpu') {
+        throw new Error('GPU title simulation에는 WebGPU title pipeline이 필요합니다.');
+    }
     return {
         help: false,
         profile: raw.profile,
@@ -196,6 +222,8 @@ export function parseArguments(args) {
         capture,
         timing: capture ? false : defaults.timing,
         requireGpuTimestamps: capture ? false : defaults.requireGpuTimestamps,
+        pipelineMode,
+        simulationMode,
         timeoutMs: defaults.timeoutMs,
         output: raw.output ? path.resolve(raw.output) : null,
         nwExecutable: raw['nw-exe'] ? path.resolve(raw['nw-exe']) : null,

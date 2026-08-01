@@ -14,6 +14,12 @@ export class TitleScene extends BaseScene {
      */
     constructor(sceneSystem, { presentation, titleController, titleGpuRolloutProfile = null }) {
         super(sceneSystem);
+        const presentationRolloutProfile = presentation?.getTitleGpuRolloutProfile?.()
+            ?? presentation?.titleGpuRolloutProfile
+            ?? null;
+        if (presentationRolloutProfile !== titleGpuRolloutProfile) {
+            throw new Error('TitleScene requires the exact loading rollout profile identity.');
+        }
         this.presentation = presentation;
         this.titleController = titleController;
         this.titleGpuRolloutProfile = titleGpuRolloutProfile;

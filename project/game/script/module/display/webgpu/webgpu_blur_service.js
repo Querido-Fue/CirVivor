@@ -60,6 +60,9 @@ export class WebGpuBlurService {
             encode(request) {
                 return service.encode(request);
             },
+            hasAlgorithm(algorithmId) {
+                return service.hasAlgorithm(algorithmId);
+            },
             getSnapshot() {
                 return service.getSnapshot();
             }
@@ -80,8 +83,13 @@ export class WebGpuBlurService {
         }
 
         const normalizedRequest = this.#normalizeRequest(request);
-        const key = this.#createRequestKey(normalizedRequest);
-        this.lastRequestKey = key;
+        const sourceTextureId = this.#getSourceTextureId(normalizedRequest.sourceTexture);
+        const outputKey = this.#createOutputKey(normalizedRequest, sourceTextureId);
+        const preparationKey = this.#createPreparationKey(
+            normalizedRequest,
+            sourceTextureId
+        );
+        this.lastRequestKey = outputKey;
 
         let callbackInvoked = false;
         let callbackResult = null;
@@ -94,7 +102,8 @@ export class WebGpuBlurService {
                     callbackResult = this.#encodeInComposerContext(
                         context,
                         normalizedRequest,
-                        key
+                        outputKey,
+                        preparationKey
                     );
                     return callbackResult;
                 } catch (error) {
@@ -126,6 +135,18 @@ export class WebGpuBlurService {
      */
     getPort() {
         return this.port;
+    }
+
+    /**
+     * 초기 instance 생성 여부와 무관하게 registry에 algorithm이 등록되어 있는지 반환합니다.
+     * @param {string} algorithmId - 확인할 blur algorithm ID입니다.
+     * @returns {boolean} 현재 service registry 등록 여부입니다.
+     */
+    hasAlgorithm(algorithmId) {
+        if (this.destroyed || typeof algorithmId !== 'string' || !algorithmId.trim()) {
+            return false;
+        }
+        return this.algorithmFactories.has(algorithmId.trim());
     }
 
     /**
@@ -225,12 +246,17 @@ export class WebGpuBlurService {
         });
     }
 
-    #createRequestKey(request) {
-        let sourceTextureId = this.sourceTextureIds.get(request.sourceTexture);
+    #getSourceTextureId(sourceTexture) {
+        let sourceTextureId = this.sourceTextureIds.get(sourceTexture);
         if (sourceTextureId === undefined) {
             sourceTextureId = this.nextSourceTextureId++;
-            this.sourceTextureIds.set(request.sourceTexture, sourceTextureId);
+            this.sourceTextureIds.set(sourceTexture, sourceTextureId);
         }
+        return sourceTextureId;
+    }
+
+    #createOutputKey(request, sourceTextureId) {
+        // 같은 frame에서 실제 pixel 결과를 공유할 수 있는 경우만 합칩니다.
         return JSON.stringify([
             1,
             request.algorithmId,
@@ -252,13 +278,33 @@ export class WebGpuBlurService {
         ]);
     }
 
-    #encodeInComposerContext(context, request, key) {
+    #createPreparationKey(request, sourceTextureId) {
+        // Pipeline/kernel topology는 frame-local content identity와 screen-space
+        // origin에 의존하지 않습니다. 크기/halo/profile은 보수적으로 분리합니다.
+        return JSON.stringify([
+            1,
+            request.algorithmId,
+            sourceTextureId,
+            request.bounds.width,
+            request.bounds.height,
+            request.halo.left,
+            request.halo.top,
+            request.halo.right,
+            request.halo.bottom,
+            request.sigma,
+            request.edgeMode,
+            request.colorSpace,
+            request.format
+        ]);
+    }
+
+    #encodeInComposerContext(context, request, outputKey, preparationKey) {
         if (!this.#acceptComposerContext(context)) {
             return null;
         }
 
-        if (this.frameOutputs.has(key)) {
-            const cachedOutput = this.frameOutputs.get(key);
+        if (this.frameOutputs.has(outputKey)) {
+            const cachedOutput = this.frameOutputs.get(outputKey);
             this.sharedOutputHitCount += 1;
             this.#getAlgorithmDiagnostics(request.algorithmId).sharedOutputHitCount += 1;
             return cachedOutput;
@@ -266,22 +312,27 @@ export class WebGpuBlurService {
 
         const algorithm = this.#getOrCreateAlgorithm(request.algorithmId, context);
         let prepared;
-        if (this.preparedCache.has(key)) {
-            prepared = this.preparedCache.get(key);
+        if (this.preparedCache.has(preparationKey)) {
+            prepared = this.preparedCache.get(preparationKey);
             // Map insertion order를 recency로 사용해 deterministic LRU를 유지합니다.
-            this.preparedCache.delete(key);
-            this.preparedCache.set(key, prepared);
+            this.preparedCache.delete(preparationKey);
+            this.preparedCache.set(preparationKey, prepared);
             this.prepareCacheHitCount += 1;
             this.#getAlgorithmDiagnostics(request.algorithmId).prepareCacheHitCount += 1;
         } else {
             try {
-                prepared = algorithm.prepare(Object.freeze({ context, request, key }));
+                prepared = algorithm.prepare(Object.freeze({
+                    context,
+                    request,
+                    key: preparationKey,
+                    preparationKey
+                }));
                 assertSynchronousValue(prepared, 'algorithm.prepare');
             } catch (error) {
                 this.#recordAlgorithmFailure(request.algorithmId, 'algorithm-prepare', error);
                 throw error;
             }
-            this.#cachePreparedValue(key, prepared);
+            this.#cachePreparedValue(preparationKey, prepared);
             this.prepareCount += 1;
             this.#getAlgorithmDiagnostics(request.algorithmId).prepareCount += 1;
         }
@@ -291,7 +342,9 @@ export class WebGpuBlurService {
             output = algorithm.encode(Object.freeze({
                 context,
                 request,
-                key,
+                key: outputKey,
+                outputKey,
+                preparationKey,
                 prepared
             }));
             assertSynchronousValue(output, 'algorithm.encode');
@@ -299,7 +352,7 @@ export class WebGpuBlurService {
             this.#recordAlgorithmFailure(request.algorithmId, 'algorithm-encode', error);
             throw error;
         }
-        this.frameOutputs.set(key, output);
+        this.frameOutputs.set(outputKey, output);
         this.encodedOutputCount += 1;
         this.#getAlgorithmDiagnostics(request.algorithmId).encodeCount += 1;
         this.lastRejectReason = null;

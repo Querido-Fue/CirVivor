@@ -57,6 +57,7 @@ export class TitleShieldEffect {
         this.enemyStateMap = new WeakMap();
         this.visualLayoutInitialized = false;
         this.config = new TitleShieldConfig();
+        this.presentationCommand = null;
     }
 
     /**
@@ -141,11 +142,25 @@ export class TitleShieldEffect {
      * 현재 실드 상태를 effect 레이어에 렌더 명령으로 전달합니다.
      */
     draw() {
-        if (this.radius <= 0) {
+        const command = this.getPresentationCommand();
+        if (!command) {
             return;
         }
 
-        renderGL('effect', buildTitleShieldRenderCommand({
+        renderGL('effect', command);
+    }
+
+    /**
+     * WebGL과 WebGPU title presentation이 공유할 현재 magnetic shield 명령을 반환합니다.
+     * 명령, impact 배열, dent 배열과 각 항목 identity를 재사용하며 상태 authority는 이 effect에 남깁니다.
+     * @returns {object|null} 반경이 유효하면 재사용된 presentation 명령, 아니면 null입니다.
+     */
+    getPresentationCommand() {
+        if (this.radius <= 0) {
+            return null;
+        }
+
+        this.presentationCommand = buildTitleShieldRenderCommand({
             centerX: this.centerX,
             centerY: this.centerY,
             radius: this.radius,
@@ -153,7 +168,8 @@ export class TitleShieldEffect {
             impacts: this.impacts,
             dents: this.dents,
             config: this.config
-        }));
+        }, this.presentationCommand);
+        return this.presentationCommand;
     }
 
     /**
@@ -181,6 +197,7 @@ export class TitleShieldEffect {
         this.dentRenderStateMap.clear();
         this.enemyStateMap = new WeakMap();
         this.visualLayoutInitialized = false;
+        this.presentationCommand = null;
     }
 
     /**

@@ -540,6 +540,7 @@ async function captureScenarioCheckpoint(game, scenarioId) {
 
 function collectRuntimeProfile(game) {
     const displaySystem = game?.systemHandler?.displaySystem;
+    const titleRuntimeState = getTitleRuntimeState(game);
     const webglContexts = [];
     for (const [layerId, gl] of displaySystem?.webGLHandler?.glContexts?.entries?.() || []) {
         const debugInfo = gl.getExtension?.('WEBGL_debug_renderer_info');
@@ -562,7 +563,10 @@ function collectRuntimeProfile(game) {
         secureContext: globalThis.isSecureContext === true,
         viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
         webgpuPlatformState: displaySystem?.getWebGpuPlatformState?.() || null,
-        titleGpuRolloutProfile: getTitleRuntimeState(game).scene?.titleGpuRolloutProfile || null,
+        webgpuBlurState: displaySystem?.getWebGpuBlurPort?.()?.getSnapshot?.() || null,
+        titleGpuRolloutProfile: titleRuntimeState.scene?.titleGpuRolloutProfile || null,
+        titleWebGpuShadowDiagnostics:
+            titleRuntimeState.presentation?.getTitleWebGpuShadowDiagnostics?.() || null,
         webglContexts
     };
 }
@@ -686,6 +690,10 @@ async function runHarness() {
         requestedSamples: config.requestedSamples,
         required: config.requireGpuTimestamps === true
     });
+    const titleWebGpuShadowDiagnostics =
+        getTitleRuntimeState(game).presentation?.getTitleWebGpuShadowDiagnostics?.() || null;
+    const webGpuFrameComposerDiagnostics =
+        game?.systemHandler?.displaySystem?.webGpuFrameComposer?.getDiagnostics?.() || null;
     const validation = {
         percentileDefinition: 'nearest-rank',
         queryDrainFrames,
@@ -697,8 +705,22 @@ async function runHarness() {
         invalid,
         rendererSnapshots,
         retiredTelemetry: retiredDiagnostics,
+        webGpuFrameComposerDiagnostics,
+        titleWebGpuShadowDiagnostics,
         overlayStack: snapshotOverlayStack(game)
     };
+    if (config.pipelineMode !== 'legacy-webgl') {
+        const graphDiagnostics = titleWebGpuShadowDiagnostics?.graph;
+        if (titleWebGpuShadowDiagnostics?.status !== 'shadow-ready'
+            || !graphDiagnostics
+            || (graphDiagnostics.encodeSuccessCount || 0) <= 0
+            || (titleWebGpuShadowDiagnostics.failureCount || 0) > 0) {
+            throw createHarnessValidationError(
+                `요청한 ${String(config.pipelineMode)} shadow graph가 정상 인코딩되지 않았습니다.`,
+                validation
+            );
+        }
+    }
     if (config.requireGpuTimestamps === true
         && (!allGpuSupported || invalid.rejectedBegin > 0)) {
         throw createHarnessValidationError(

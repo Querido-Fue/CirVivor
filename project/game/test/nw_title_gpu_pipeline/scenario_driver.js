@@ -23,18 +23,23 @@ function isOverlayFullyOpen(entry) {
 
 async function waitFor(context, predicate, label, options = {}) {
     const maxFrames = options.maxFrames || 1800;
+    let lastMetadata = null;
     for (let frame = 0; frame < maxFrames; frame++) {
         const value = predicate();
         if (value) {
             return value;
         }
+        lastMetadata = options.metadata?.() ?? null;
         await context.nextFrame({
             collect: options.collect === true,
             phase: label,
-            ...options.metadata?.()
+            ...lastMetadata
         });
     }
-    throw new Error(`${label} 상태 대기 frame 한도를 초과했습니다: ${maxFrames}`);
+    const lastState = lastMetadata === null
+        ? ''
+        : `; 마지막 상태=${JSON.stringify(lastMetadata)}`;
+    throw new Error(`${label} 상태 대기 frame 한도를 초과했습니다: ${maxFrames}${lastState}`);
 }
 
 async function collectSteadyFrames(context, phase) {
