@@ -32,6 +32,8 @@ assert.doesNotMatch(titleSceneSource, /TitleLoadingSequence|new TitleGradientBac
 assert.match(titleSceneSource, /beginTitleScenePhase/);
 assert.match(titleSceneSource, /promoteCompletedTitleIntro/);
 assert.match(loadingSceneSource, /new TitleScenePresentation\(this\.titleController\)/);
+assert.match(loadingSceneSource, /createTitleGpuRolloutProfile\(\)/);
+assert.match(loadingSceneSource, /titleGpuRolloutProfile: this\.titleGpuRolloutProfile/);
 assert.match(loadingSceneSource, /releaseTitlePresentation\(\)/);
 assert.match(loadingSceneSource, /isTitleSceneHandoffReady/);
 assert.doesNotMatch(loadingSceneSource, /promoteCompletedLoadingContent|isLoadingComplete/);
@@ -63,12 +65,18 @@ const titlePresentation = {
         titleLifecycleTrace.push('promote');
     }
 };
+const rolloutProfile = Object.freeze({
+    pipelineMode: 'legacy-webgl',
+    simulationMode: 'cpu'
+});
 const TitleSceneRuntime = titleRuntimeModule.namespace.TitleScene;
 const titleRuntime = new TitleSceneRuntime({}, {
     presentation: titlePresentation,
-    titleController: { id: 'controller' }
+    titleController: { id: 'controller' },
+    titleGpuRolloutProfile: rolloutProfile
 });
 assert.deepEqual(titleLifecycleTrace, ['begin']);
+assert.strictEqual(titleRuntime.titleGpuRolloutProfile, rolloutProfile);
 titleRuntime.update();
 assert.deepEqual(titleLifecycleTrace, ['begin', 'update', 'promote']);
 

@@ -10,11 +10,13 @@ export class TitleScene extends BaseScene {
      * @param {object} handoff - LoadingScene이 넘긴 동일 identity 상태입니다.
      * @param {import('./_title_scene_presentation.js').TitleScenePresentation} handoff.presentation - 이동 직전 타이틀 presentation입니다.
      * @param {import('./_title_scene_controller.js').TitleSceneController} handoff.titleController - 안정적인 타이틀 action controller입니다.
+     * @param {Readonly<object>} [handoff.titleGpuRolloutProfile=null] - Loading에서 고정한 rollout profile입니다.
      */
-    constructor(sceneSystem, { presentation, titleController }) {
+    constructor(sceneSystem, { presentation, titleController, titleGpuRolloutProfile = null }) {
         super(sceneSystem);
         this.presentation = presentation;
         this.titleController = titleController;
+        this.titleGpuRolloutProfile = titleGpuRolloutProfile;
         if (this.presentation?.beginTitleScenePhase?.() !== true) {
             throw new Error('TitleScene requires a ready loading presentation.');
         }
@@ -54,6 +56,7 @@ export class TitleScene extends BaseScene {
         this.presentation?.destroy();
         this.presentation = null;
         this.titleController = null;
+        this.titleGpuRolloutProfile = null;
         this.closeTitleOverlay();
     }
 

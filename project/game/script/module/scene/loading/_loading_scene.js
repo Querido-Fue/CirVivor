@@ -1,5 +1,6 @@
 import { BaseScene } from 'scene/_base_scene.js';
 import { TitleSceneController } from '../title/_title_scene_controller.js';
+import { createTitleGpuRolloutProfile } from '../title/_title_gpu_rollout.js';
 import { TitleScenePresentation } from '../title/_title_scene_presentation.js';
 
 /**
@@ -10,6 +11,7 @@ export class LoadingScene extends BaseScene {
     /** @param {object} sceneSystem - 상위 씬 시스템입니다. */
     constructor(sceneSystem) {
         super(sceneSystem);
+        this.titleGpuRolloutProfile = createTitleGpuRolloutProfile();
         this.titleController = new TitleSceneController(sceneSystem);
         this.presentation = new TitleScenePresentation(this.titleController);
     }
@@ -44,7 +46,7 @@ export class LoadingScene extends BaseScene {
 
     /**
      * 이동 직전 presentation과 안정적인 controller identity를 TitleScene에 한 번만 넘깁니다.
-     * @returns {{presentation:TitleScenePresentation,titleController:TitleSceneController}|null} handoff 상태입니다.
+     * @returns {{presentation:TitleScenePresentation,titleController:TitleSceneController,titleGpuRolloutProfile:Readonly<object>}|null} handoff 상태입니다.
      */
     releaseTitlePresentation() {
         if (this.presentation?.isTitleSceneHandoffReady?.() !== true) {
@@ -52,10 +54,12 @@ export class LoadingScene extends BaseScene {
         }
         const handoff = {
             presentation: this.presentation,
-            titleController: this.titleController
+            titleController: this.titleController,
+            titleGpuRolloutProfile: this.titleGpuRolloutProfile
         };
         this.presentation = null;
         this.titleController = null;
+        this.titleGpuRolloutProfile = null;
         return handoff;
     }
 
@@ -64,5 +68,6 @@ export class LoadingScene extends BaseScene {
         this.presentation?.destroy();
         this.presentation = null;
         this.titleController = null;
+        this.titleGpuRolloutProfile = null;
     }
 }

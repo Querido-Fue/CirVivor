@@ -173,6 +173,9 @@ async function loadMainHarness() {
             resumeReleaseSimulationProfiler: () => trace.push('profiler.resume'),
             shouldRecordReleaseSimulationForFrameMode: () => false,
             suspendReleaseSimulationProfiler: () => trace.push('profiler.suspend')
+        }],
+        ['display/webgl/_webgl_gpu_telemetry_state.js', {
+            advanceWebGLGpuTelemetryFrame: () => 0
         }]
     ]);
 

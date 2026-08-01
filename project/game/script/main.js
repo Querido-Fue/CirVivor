@@ -15,6 +15,7 @@ import {
     shouldRecordReleaseSimulationForFrameMode,
     suspendReleaseSimulationProfiler
 } from 'simulation/release_simulation_profiler.js';
+import { advanceWebGLGpuTelemetryFrame } from 'display/webgl/_webgl_gpu_telemetry_state.js';
 
 let systemHandler;
 let Game;
@@ -122,6 +123,7 @@ class App {
      */
     loop(now) {
         if (!this.running) return;
+        advanceWebGLGpuTelemetryFrame();
         this.loopRequestId = requestAnimationFrame(this._boundLoop);
         const shouldMeasurePerformance = this.systemHandler?.debugSystem?.shouldTrackPerformance?.() === true;
         const shouldMeasureReleaseSimulation = isReleaseSimulationProfilerCollecting();
