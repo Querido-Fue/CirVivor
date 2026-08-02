@@ -16,7 +16,7 @@ const LIGHT_OVERLAY_THEME = Object.freeze({
         GlassBackground: 'rgba(236, 237, 239, 0.92)',
         GlassBorder: 'rgba(222, 224, 228, 0.56)',
         GlassTint: 'rgba(236, 236, 236, 1)',
-        GlassTintStrength: 0.22,
+        GlassTintStrength: 0.36,
         GlassEdge: 'rgba(207, 213, 222, 1)',
         GlassEdgeStrength: 0.1,
         Divider: 'rgba(70, 70, 70, 0.08)',

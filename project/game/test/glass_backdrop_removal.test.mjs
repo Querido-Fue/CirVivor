@@ -134,7 +134,7 @@ assert.match(baseOverlaySource, /const opaqueAlpha = typeof this\.session\?\.get
 assert.match(baseOverlaySource, /glassOptions\.alpha = glassAlpha/);
 assert.match(baseOverlaySource, /flatOptions\.alpha = opaqueAlpha/);
 assert.match(lightThemeSource, /GlassBackground:\s*'rgba\(236, 237, 239, 0\.92\)'/);
-assert.match(lightThemeSource, /GlassTintStrength:\s*0\.22/);
+assert.match(lightThemeSource, /GlassTintStrength:\s*0\.36/);
 assert.match(lightThemeSource, /ValueInactive:\s*'#666666'/);
 
 console.log('glass transparency option contract: ok');
