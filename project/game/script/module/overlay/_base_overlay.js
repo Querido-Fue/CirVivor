@@ -726,7 +726,8 @@ export class BaseOverlay {
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
-        let shouldResize = false;
+        let shouldResize = changedSettings.theme !== undefined
+            || changedSettings.language !== undefined;
 
         if (changedSettings.uiScale !== undefined) {
             const runtimeUiScale = Number(changedSettings.uiScale) / 100;

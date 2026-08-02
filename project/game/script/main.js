@@ -299,8 +299,8 @@ class App {
 
     /**
      * 게임 종료를 시도합니다.
-     * 현재 씬에 exit 메서드가 있으면 호출하고, 없으면 바로 종료합니다.
-     * @returns {boolean} 종료 요청을 확인 오버레이로 전환했는지 여부입니다.
+     * 종료 확인 오버레이를 열고, 생성할 수 없으면 저장 후 강제 종료 경로로 전환합니다.
+     * @returns {boolean} 현재 창 닫기 요청을 애플리케이션이 처리했는지 여부입니다.
      */
     tryClose() {
         if (this.forceCloseRequested) {
@@ -309,16 +309,21 @@ class App {
 
         const overlayManager = this.systemHandler?.overlayManager;
         if (!overlayManager || typeof overlayManager.openExitOverlay !== 'function') {
-            return false;
+            this.close();
+            return true;
         }
 
         try {
-            overlayManager.openExitOverlay();
-            return true;
+            const overlayId = overlayManager.openExitOverlay();
+            if (overlayId !== null && overlayId !== undefined) {
+                return true;
+            }
         } catch (e) {
             console.warn("종료 확인 오버레이를 여는 중 오류가 발생했습니다\n", e);
-            return true;
         }
+
+        this.close();
+        return true;
     }
 
     /**
@@ -331,7 +336,7 @@ class App {
 
     /**
      * 게임을 종료합니다.
-     * 모든 데이터를 저장한 후 창을 닫습니다.
+     * 모든 데이터 저장을 시도한 뒤 성공 여부와 관계없이 창을 닫습니다.
      */
     close() {
         if (this.forceCloseRequested) {
@@ -340,9 +345,24 @@ class App {
 
         this.forceCloseRequested = true;
         this.stop();
-        this.systemHandler.saveSystem.saveAll().then(() => {
+        const closeWindow = () => {
             setTimeout(() => runtimeTool().closeWindow(), 100);
-        });
+        };
+
+        let savePromise;
+        try {
+            savePromise = this.systemHandler.saveSystem.saveAll();
+        } catch (error) {
+            console.warn('게임 종료 전 저장을 시작하지 못했습니다.', error);
+            closeWindow();
+            return;
+        }
+
+        Promise.resolve(savePromise)
+            .catch((error) => {
+                console.warn('게임 종료 전 저장에 실패했습니다.', error);
+            })
+            .finally(closeWindow);
     }
 
     /**

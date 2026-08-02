@@ -23,7 +23,7 @@ export class CanvasSurfacePool {
 
     /**
      * freeList의 마지막 엔트리를 가져오며, 비어 있을 때만 새 canvas/context를 만들고 생성 수를 늘립니다.
-     * 획득 시 display 스타일만 복원하고 나머지 canvas/context 상태와 엔트리 identity는 유지합니다.
+     * 획득 시 표시 스타일을 복원하고 나머지 canvas/context 상태와 엔트리 identity는 유지합니다.
      * @returns {{canvas: HTMLCanvasElement, context: CanvasRenderingContext2D|WebGLRenderingContext|null}} 획득한 엔트리입니다.
      */
     acquire() {
@@ -33,6 +33,7 @@ export class CanvasSurfacePool {
             this.createdCount += 1;
         }
         entry.canvas.style.display = '';
+        entry.canvas.style.visibility = '';
         return entry;
     }
 
@@ -100,6 +101,7 @@ export class CanvasSurfacePool {
     #resetEntry(entry) {
         const { canvas } = entry;
         canvas.style.display = 'none';
+        canvas.style.visibility = '';
         canvas.style.opacity = '1';
         canvas.style.transform = 'none';
         canvas.style.transformOrigin = '';

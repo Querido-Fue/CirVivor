@@ -581,6 +581,7 @@ export class GpuCircleBodySimulation {
         this.lastDeathEventCount = 0;
         this.lastDeathEventOverflowCount = 0;
         this.canvasHasDrawnBodies = false;
+        this.canvasNeedsInitialClear = true;
         this.pendingComposerCanvasTransition = null;
         this.lastFixedDelta = 1 / 60;
         this.renderOriginScratch = { x: 0, y: 0 };
@@ -1263,7 +1264,7 @@ export class GpuCircleBodySimulation {
     draw(camera) {
         const frameComposer = this.#getActiveFrameComposer();
         if (this.requiresAuthoritativeRebuild && !this.#isOverflowDegradedState()) {
-            if (!this.canvasHasDrawnBodies) {
+            if (!this.canvasHasDrawnBodies && !this.canvasNeedsInitialClear) {
                 return false;
             }
             if (frameComposer) {
@@ -1276,11 +1277,12 @@ export class GpuCircleBodySimulation {
             const cleared = this.platform.clearCanvas({ r: 0, g: 0, b: 0, a: 0 });
             if (cleared) {
                 this.canvasHasDrawnBodies = false;
+                this.canvasNeedsInitialClear = false;
             }
             return cleared;
         }
         if (this.activeBodyCount === 0) {
-            if (!this.canvasHasDrawnBodies) {
+            if (!this.canvasHasDrawnBodies && !this.canvasNeedsInitialClear) {
                 return false;
             }
             if (frameComposer) {
@@ -1293,6 +1295,7 @@ export class GpuCircleBodySimulation {
             const cleared = this.platform.clearCanvas({ r: 0, g: 0, b: 0, a: 0 });
             if (cleared) {
                 this.canvasHasDrawnBodies = false;
+                this.canvasNeedsInitialClear = false;
             }
             return cleared;
         }
@@ -1366,6 +1369,7 @@ export class GpuCircleBodySimulation {
         this.device.queue.submit([encoder.finish()]);
         this.platform.markCanvasDrawn();
         this.canvasHasDrawnBodies = true;
+        this.canvasNeedsInitialClear = false;
         return true;
     }
 
@@ -1415,6 +1419,7 @@ export class GpuCircleBodySimulation {
                     this.pendingComposerCanvasTransition = null;
                     if (!this.destroyed) {
                         this.canvasHasDrawnBodies = nextValue;
+                        this.canvasNeedsInitialClear = false;
                     }
                 },
                 aborted: () => {
@@ -1641,6 +1646,7 @@ export class GpuCircleBodySimulation {
         this.freeSlots.length = 0;
         this.pendingComposerCanvasTransition = null;
         this.canvasHasDrawnBodies = false;
+        this.canvasNeedsInitialClear = false;
         this.state = 'destroyed';
     }
 

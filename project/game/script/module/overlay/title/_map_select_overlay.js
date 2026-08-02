@@ -270,18 +270,4 @@ export class MapSelectOverlay extends TitleOverlay {
         this.titleScene.gameStart(selectedMap.id);
     }
 
-    /**
-     * @override
-     * 언어·테마 변경 시 텍스트와 미리보기 스타일을 다시 생성합니다.
-     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
-     */
-    applyRuntimeSettings(changedSettings = {}) {
-        super.applyRuntimeSettings(changedSettings);
-        const baseAlreadyResized = changedSettings.uiScale !== undefined
-            || changedSettings.disableTransparency !== undefined;
-        if (!baseAlreadyResized
-            && (changedSettings.language !== undefined || changedSettings.theme !== undefined)) {
-            this.resize();
-        }
-    }
 }

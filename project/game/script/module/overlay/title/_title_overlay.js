@@ -257,11 +257,11 @@ export class TitleOverlay extends BaseOverlay {
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      */
     applyRuntimeSettings(changedSettings = {}) {
-        super.applyRuntimeSettings(changedSettings);
-
         if (changedSettings.theme !== undefined) {
             this._refreshTitleIconSource();
         }
+
+        super.applyRuntimeSettings(changedSettings);
     }
 
     /**

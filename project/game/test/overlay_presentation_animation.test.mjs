@@ -70,5 +70,6 @@ const surfacePoolSource = await readFile(
     'utf8'
 );
 assert.match(surfacePoolSource, /canvas\.style\.filter = 'none'/);
+assert.match(surfacePoolSource, /canvas\.style\.visibility = ''/);
 
 console.log('overlay presentation animation contract: ok');
