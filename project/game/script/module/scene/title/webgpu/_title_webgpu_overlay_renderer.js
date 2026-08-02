@@ -62,6 +62,8 @@ export class TitleWebGpuOverlayRenderer {
         this.roiMaterializeCount = 0;
         this.fullScreenMaterializeFallbackCount = 0;
         this.stageTextureCount = 0;
+        this.stageRoiCropCount = 0;
+        this.stageRoiCroppedPixelCount = 0;
         this.analyticPassthroughStageCount = 0;
         this.analyticPassthroughNodeCount = 0;
         this.emptyAnalyticBasePassElisionCount = 0;
@@ -193,6 +195,8 @@ export class TitleWebGpuOverlayRenderer {
             fullScreenMaterializeFallbackCount:
                 this.fullScreenMaterializeFallbackCount,
             stageTextureCount: this.stageTextureCount,
+            stageRoiCropCount: this.stageRoiCropCount,
+            stageRoiCroppedPixelCount: this.stageRoiCroppedPixelCount,
             analyticPassthroughStageCount: this.analyticPassthroughStageCount,
             analyticPassthroughNodeCount: this.analyticPassthroughNodeCount,
             emptyAnalyticBasePassElisionCount:
@@ -333,6 +337,20 @@ export class TitleWebGpuOverlayRenderer {
             'payload.contentScale'
         );
         const stageContentOrigin = normalizeContentOrigin(payload.contentOrigin);
+        const stageLogicalBounds = resolveStageRenderBounds({
+            requestedBounds: payload.renderBounds,
+            contentBlurs: record.contentBlurs,
+            contentScale: stageContentScale,
+            width: context.width,
+            height: context.height
+        });
+        const stageIsCropped = !isFullScreenBounds(
+            stageLogicalBounds,
+            context.width,
+            context.height
+        );
+        const stageWidth = stageLogicalBounds.width;
+        const stageHeight = stageLogicalBounds.height;
 
         if (isPureAnalyticStage({
             record,
@@ -352,17 +370,24 @@ export class TitleWebGpuOverlayRenderer {
         }
 
         const lease = this.#acquireTexture(frame, {
-            width: context.width,
-            height: context.height,
+            width: stageWidth,
+            height: stageHeight,
             format: context.format
         });
         let stageTargetWritten = false;
         if (analyticNodes.length > 0) {
             this.#getLayerPass(context.format).encodeOffscreen(context, {
                 targetView: lease.view,
-                width: context.width,
-                height: context.height,
-                nodes: analyticNodes,
+                width: stageWidth,
+                height: stageHeight,
+                nodes: stageIsCropped
+                    ? adaptNodesForCrop(
+                        analyticNodes,
+                        stageLogicalBounds,
+                        context.width,
+                        context.height
+                    )
+                    : analyticNodes,
                 clear: TRANSPARENT_CLEAR,
                 label: `title-overlay-stage-base:${context.frameId}:${record.id}`
             });
@@ -444,8 +469,12 @@ export class TitleWebGpuOverlayRenderer {
             const glassWasFirstWriter = !stageTargetWritten;
             const glassDrawCount = this.#getGlassPass(context).encodeBatch(context, {
                 targetView: lease.view,
-                targetWidth: context.width,
-                targetHeight: context.height,
+                targetWidth: stageWidth,
+                targetHeight: stageHeight,
+                targetOriginX: stageLogicalBounds.x,
+                targetOriginY: stageLogicalBounds.y,
+                logicalTargetWidth: context.width,
+                logicalTargetHeight: context.height,
                 entries: glassBatchEntries,
                 clear: glassWasFirstWriter
             });
@@ -469,9 +498,16 @@ export class TitleWebGpuOverlayRenderer {
             const uiWasFirstWriter = !stageTargetWritten;
             this.#getLayerPass(context.format).encodeOffscreen(context, {
                 targetView: lease.view,
-                width: context.width,
-                height: context.height,
-                nodes: uiNodes,
+                width: stageWidth,
+                height: stageHeight,
+                nodes: stageIsCropped
+                    ? adaptNodesForCrop(
+                        uiNodes,
+                        stageLogicalBounds,
+                        context.width,
+                        context.height
+                    )
+                    : uiNodes,
                 clear: uiWasFirstWriter ? TRANSPARENT_CLEAR : false,
                 label: `title-overlay-stage-ui:${context.frameId}:${record.id}`
             });
@@ -482,8 +518,8 @@ export class TitleWebGpuOverlayRenderer {
         if (!stageTargetWritten) {
             this.#getLayerPass(context.format).encodeOffscreen(context, {
                 targetView: lease.view,
-                width: context.width,
-                height: context.height,
+                width: stageWidth,
+                height: stageHeight,
                 nodes: [],
                 clear: TRANSPARENT_CLEAR,
                 label: `title-overlay-stage-empty:${context.frameId}:${record.id}`
@@ -493,16 +529,11 @@ export class TitleWebGpuOverlayRenderer {
 
         const resource = this.#createTrackedResource(frame, {
             lease,
-            width: context.width,
-            height: context.height,
+            width: stageWidth,
+            height: stageHeight,
             format: context.format,
             context,
-            logicalBounds: Object.freeze({
-                x: 0,
-                y: 0,
-                width: context.width,
-                height: context.height
-            }),
+            logicalBounds: stageLogicalBounds,
             colorSpace: sourceCheckpoint.colorSpace
         });
         const node = Object.freeze({
@@ -510,16 +541,14 @@ export class TitleWebGpuOverlayRenderer {
             texture: resource.texture,
             view: resource.view,
             resource,
-            screenBounds: Object.freeze({
-                x: 0,
-                y: 0,
-                width: context.width,
-                height: context.height
+            screenBounds: stageLogicalBounds,
+            sourceLogicalOrigin: Object.freeze({
+                x: stageLogicalBounds.x,
+                y: stageLogicalBounds.y
             }),
-            sourceLogicalOrigin: Object.freeze({ x: 0, y: 0 }),
             sourceLogicalSize: Object.freeze({
-                width: context.width,
-                height: context.height
+                width: stageWidth,
+                height: stageHeight
             }),
             opacity: stageOpacity,
             contentScale: stageContentScale,
@@ -527,6 +556,10 @@ export class TitleWebGpuOverlayRenderer {
         });
         this.stageCount += 1;
         this.stageTextureCount += 1;
+        if (stageIsCropped) {
+            this.stageRoiCropCount += 1;
+            this.stageRoiCroppedPixelCount += stageWidth * stageHeight;
+        }
         const contentSource = this.#encodeContentSourceCrop(
             context,
             frame,
@@ -1283,6 +1316,21 @@ function requiresFullScreenCropFallback(nodes, crop, fullWidth, fullHeight) {
         if (localX < 0 || localX > 1 || localY < 0 || localY > 1) return true;
     }
     return false;
+}
+
+function resolveStageRenderBounds({
+    requestedBounds,
+    contentBlurs,
+    contentScale,
+    width,
+    height
+}) {
+    if (!requestedBounds
+        || (Array.isArray(contentBlurs) && contentBlurs.length > 0)
+        || contentScale !== 1) {
+        return Object.freeze({ x: 0, y: 0, width, height });
+    }
+    return calculateAlignedRoi(requestedBounds, 0, width, height);
 }
 
 function calculateAlignedRoi(boundsValue, haloValue, fullWidth, fullHeight) {

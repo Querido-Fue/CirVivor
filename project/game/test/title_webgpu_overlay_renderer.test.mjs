@@ -305,6 +305,90 @@ test('stage는 analytic → glass → UI 순서를 유지하고 flat/effect text
     fixture.framePort.abort('stage-complete');
 });
 
+test('explicit renderBounds stage는 cropped texture에서 global glass/UI 좌표를 보존한다', () => {
+    const fixture = createFixture({ width: 160, height: 96 });
+    const backdrop = fixture.resource('cropped-stage-backdrop', 96, 64, {
+        logicalBounds: { x: 32, y: 16, width: 96, height: 64 }
+    });
+    const record = createRecord({
+        id: 'cropped-stage',
+        bounds: { x: 0, y: 0, width: 160, height: 96 },
+        backdropBlurs: [{
+            bounds: { x: 48, y: 32, width: 64, height: 32 },
+            halo: 16
+        }],
+        payload: {
+            renderBounds: { x: 32, y: 16, width: 96, height: 64 },
+            glassPanels: [{
+                panel: {
+                    x: 48,
+                    y: 32,
+                    w: 64,
+                    h: 32,
+                    radius: 6,
+                    fill: '#ffffff18'
+                }
+            }],
+            uiSurfaces: [{
+                canvas: { width: 160, height: 96 },
+                revision: 1,
+                width: 160,
+                height: 96,
+                bounds: { x: 0, y: 0, width: 160, height: 96 },
+                opacity: 1,
+                contentScale: 1
+            }]
+        }
+    });
+
+    fixture.renderer.beginFrame(1);
+    const result = fixture.renderer.getPorts().stagePass.encode(fixture.context, {
+        record,
+        sourceCheckpoint: createCheckpoint({ width: 160, height: 96 }),
+        backdropOutputs: [backdrop]
+    });
+
+    assert.equal(result.contentSource.width, 96);
+    assert.equal(result.contentSource.height, 64);
+    assert.deepEqual({ ...result.contentSource.logicalBounds }, {
+        x: 32,
+        y: 16,
+        width: 96,
+        height: 64
+    });
+    assert.deepEqual({ ...result.node.screenBounds }, {
+        x: 32,
+        y: 16,
+        width: 96,
+        height: 64
+    });
+    assert.deepEqual({ ...result.node.sourceLogicalOrigin }, { x: 32, y: 16 });
+    const stageTexture = fixture.gpu.records.textures.find(
+        (entry) => entry.label === undefined && entry.width === 96 && entry.height === 64
+    );
+    assert.ok(stageTexture);
+    const glassPass = fixture.gpu.records.renderPasses.find(
+        ({ label }) => label.startsWith('title-overlay-glass-pass:')
+    );
+    assert.deepEqual(glassPass.drawRecords[0].scissor, {
+        x: 14,
+        y: 14,
+        width: 68,
+        height: 36
+    });
+    const glassWrite = fixture.gpu.records.bufferWrites.find(
+        (entry) => entry.buffer.descriptor?.label?.startsWith(
+            'title-overlay-glass-uniform:'
+        )
+    );
+    assert.equal(readFloat32(glassWrite.bytes, 8), 32);
+    assert.equal(readFloat32(glassWrite.bytes, 9), 16);
+    const diagnostics = fixture.renderer.getDiagnostics();
+    assert.equal(diagnostics.stageRoiCropCount, 1);
+    assert.equal(diagnostics.stageRoiCroppedPixelCount, 96 * 64);
+    fixture.framePort.abort('cropped-stage-complete');
+});
+
 test('순수 dim/vignette stage는 중간 texture 없이 final logical stack으로 직결한다', () => {
     const fixture = createFixture({ width: 160, height: 96 });
     const analyticNodes = Object.freeze([Object.freeze({

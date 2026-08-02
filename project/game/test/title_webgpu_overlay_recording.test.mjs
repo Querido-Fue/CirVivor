@@ -44,6 +44,7 @@ function sessionSnapshot({
     rootContentBounds = null,
     floatingContentBounds = null,
     contentBlur = 0,
+    contentScale = 0.9,
     withDim = true
 } = {}) {
     const rootEffect = surface(`${identity}:root-effect`, baseOrder);
@@ -62,7 +63,7 @@ function sessionSnapshot({
             effectiveDim: 0.5,
             dimAlpha: 0.6,
             contentBlur,
-            contentScale: 0.9,
+            contentScale,
             contentOrigin: { x: 0.25, y: 0.75 }
         },
         dim: withDim ? {
@@ -460,6 +461,119 @@ test('동일 sigma의 가까운 panel ROI만 1.35x 정책으로 합치고 halo�
     assert.equal(root.payload.glassPanels[2].backdropIndex, 1);
     assert.equal(root.payload.glassPanels[3].backdropIndex, null);
     assert.equal(haloCalls.every(({ algorithmId }) => algorithmId === 'kawase-optimized'), true);
+});
+
+test('legacy panel blur strength를 visual sigma 경로에서만 가시적인 sigma로 변환한다', () => {
+    for (const [blurAlgorithmId, expectedSigma] of [
+        ['gaussian-quality', 9],
+        ['kawase-optimized', 9],
+        ['kawase-compatibility', 0.1]
+    ]) {
+        const fixture = createGraph();
+        const haloCalls = [];
+        const snapshot = sessionSnapshot({
+            identity: `legacy-panel-${blurAlgorithmId}`,
+            withDim: false,
+            rootCommands: [
+                { x: 30, y: 40, w: 80, h: 60, blur: 0.1 },
+                { x: 140, y: 40, w: 80, h: 60, blur: 0 },
+                { x: 250, y: 40, w: 80, h: 60, blur: 4 }
+            ]
+        });
+        recordTitleWebGpuOverlayFrame({
+            graph: fixture.graph,
+            frameId: 9,
+            width: 400,
+            height: 240,
+            blurAlgorithmId,
+            blurPort: {
+                getRequiredHalo(input) {
+                    haloCalls.push(input);
+                    return Math.ceil(input.sigma * 3);
+                }
+            },
+            vignettePacket: { visible: false, color: [0, 0, 0, 0] },
+            mainSnapshot: snapshot,
+            managerSnapshots: []
+        });
+
+        const root = fixture.calls.find(
+            ({ input }) => input.id === `legacy-panel-${blurAlgorithmId}:root`
+        ).input;
+        assert.deepEqual(
+            Array.from(root.backdropBlurs, ({ sigma }) => sigma),
+            [expectedSigma, 0, 4]
+        );
+        assert.deepEqual(
+            haloCalls.map(({ sigma }) => sigma),
+            [expectedSigma, 0, 4]
+        );
+    }
+});
+
+test('steady floating stage만 glass visual envelope의 16px aligned render ROI를 기록한다', () => {
+    const fixture = createGraph();
+    const snapshot = sessionSnapshot({
+        identity: 'floating-stage-roi',
+        withDim: false,
+        contentScale: 1,
+        floatingCommands: [{
+            x: 250,
+            y: 70,
+            w: 80,
+            h: 50,
+            blur: 0.1,
+            lineWidth: 1,
+            sampleBackdrop: true
+        }]
+    });
+    recordTitleWebGpuOverlayFrame({
+        graph: fixture.graph,
+        frameId: 9,
+        width: 400,
+        height: 240,
+        blurAlgorithmId: 'gaussian-quality',
+        blurPort: { getRequiredHalo: () => 24 },
+        vignettePacket: { visible: false, color: [0, 0, 0, 0] },
+        mainSnapshot: snapshot,
+        managerSnapshots: []
+    });
+
+    const root = fixture.calls.find(
+        ({ input }) => input.id === 'floating-stage-roi:root'
+    ).input;
+    const floating = fixture.calls.find(
+        ({ input }) => input.id === 'floating-stage-roi:floating'
+    ).input;
+    assert.equal(root.payload.renderBounds, undefined);
+    assert.deepEqual({ ...floating.payload.renderBounds }, {
+        x: 240,
+        y: 64,
+        width: 96,
+        height: 64
+    });
+
+    const transitioningFixture = createGraph();
+    recordTitleWebGpuOverlayFrame({
+        graph: transitioningFixture.graph,
+        frameId: 9,
+        width: 400,
+        height: 240,
+        blurAlgorithmId: 'gaussian-quality',
+        blurPort: { getRequiredHalo: () => 24 },
+        vignettePacket: { visible: false, color: [0, 0, 0, 0] },
+        mainSnapshot: sessionSnapshot({
+            identity: 'floating-stage-full',
+            withDim: false,
+            contentScale: 0.9,
+            floatingCommands: snapshot.floating.glassCommands
+        }),
+        managerSnapshots: []
+    });
+    const transitioningFloating = transitioningFixture.calls.find(
+        ({ input }) => input.id === 'floating-stage-full:floating'
+    ).input;
+    assert.equal(transitioningFloating.payload.renderBounds, undefined);
 });
 
 test('numeric projectedQuad와 transform/perspective가 glass pass와 동일한 ROI를 만든다', () => {

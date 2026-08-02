@@ -249,6 +249,7 @@ test('uniform ABI와 WGSL은 ROI origin, rounded AA, explicit LOD, premultiplied
     assert.match(SHADER, /backdropLogicalBounds\.xy/);
     assert.match(SHADER, /backdropLogicalBounds\.zw/);
     assert.match(SHADER, /targetBackdropResolution\.zw/);
+    assert.match(SHADER, /targetPosition \+ parameters\.panelRect\.xy/);
     assert.match(SHADER, /textureSampleLevel\([\s\S]*?0\.0\s*\)/);
     assert.match(SHADER, /@group\(0\) @binding\(3\) var effectTexture/);
     assert.match(SHADER, /effectTextureParameters\.w > 0\.5/);
@@ -282,7 +283,7 @@ test('encode는 logical ROI와 다운샘플 extent를 분리하고 premultiplied
     const floats = getWrittenFloats(deviceRecords);
     assert.deepEqual(Array.from(floats.slice(0, 4)), [800, 600, 200, 100]);
     assert.deepEqual(Array.from(floats.slice(4, 8)), [100, 50, 400, 200]);
-    assert.deepEqual(Array.from(floats.slice(8, 12)), [120, 80, 240, 120]);
+    assert.deepEqual(Array.from(floats.slice(8, 12)), [0, 0, 240, 120]);
     assert.deepEqual(Array.from(floats.slice(12, 15)), [1, 0, -120]);
     assert.deepEqual(Array.from(floats.slice(16, 19)), [0, 1, -80]);
     assert.deepEqual(Array.from(floats.slice(20, 23)), [0, 0, 1]);
@@ -352,6 +353,42 @@ test('encode는 logical ROI와 다운샘플 extent를 분리하고 premultiplied
     assert.equal(diagnostics.clearBatchCount, 0);
     assert.equal(diagnostics.loadBatchCount, 1);
     assert.equal(diagnostics.lastBatchLoadOp, 'load');
+});
+
+test('cropped target은 global homography/backdrop 좌표를 유지하고 scissor만 localize한다', () => {
+    const { device, records: deviceRecords } = createDevice();
+    const { encoder, records: encoderRecords } = createEncoder();
+    const pass = new TitleWebGpuOverlayGlassPass({ device, format: 'rgba8unorm' });
+    const input = createInput({
+        targetWidth: 128,
+        targetHeight: 64,
+        targetOriginX: 224,
+        targetOriginY: 64,
+        logicalTargetWidth: 400,
+        logicalTargetHeight: 240,
+        panel: {
+            ...createInput().panel,
+            x: 250,
+            y: 70,
+            w: 80,
+            h: 50,
+            lineWidth: 1,
+            refractionStrength: 0
+        }
+    });
+
+    assert.equal(pass.encode(createContext(device, encoder), input), true);
+    const floats = getWrittenFloats(deviceRecords);
+    assert.deepEqual(Array.from(floats.slice(8, 12)), [224, 64, 80, 50]);
+    const centerLocal = mapWithInverseUniform(floats, 290, 95);
+    assertApproximately(centerLocal.x, 40);
+    assertApproximately(centerLocal.y, 25);
+    assert.deepEqual(encoderRecords.renderPasses[0].scissor, {
+        x: 24,
+        y: 4,
+        width: 84,
+        height: 54
+    });
 });
 
 test('first-writer glass batch는 caller 요청으로 target을 투명 clear한다', () => {

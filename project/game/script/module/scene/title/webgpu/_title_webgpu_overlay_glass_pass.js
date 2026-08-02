@@ -114,7 +114,8 @@ export const TITLE_WEBGPU_OVERLAY_GLASS_SHADER = `
     fn glass_panel_fragment(input: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let targetResolution = max(parameters.targetBackdropResolution.xy, vec2<f32>(1.0));
         let backdropResolution = max(parameters.targetBackdropResolution.zw, vec2<f32>(1.0));
-        let screenPosition = clamp(input.position.xy, vec2<f32>(0.0), targetResolution);
+        let targetPosition = clamp(input.position.xy, vec2<f32>(0.0), targetResolution);
+        let screenPosition = targetPosition + parameters.panelRect.xy;
         let screenPoint = vec3<f32>(screenPosition, 1.0);
         let homographyDenominator = dot(parameters.inverseHomographyRow2.xyz, screenPoint);
         if (abs(homographyDenominator) <= 0.00001) {
@@ -337,6 +338,10 @@ export class TitleWebGpuOverlayGlassPass {
      * glass panel을 caller 소유 target에 기록합니다.
      * @param {object} context - device/deviceGeneration/frameId/encoder를 가진 frame context입니다.
      * @param {object} input - caller 소유 texture view와 패널 파라미터입니다.
+     * @param {number} [input.targetOriginX] - cropped target의 logical screen X입니다.
+     * @param {number} [input.targetOriginY] - cropped target의 logical screen Y입니다.
+     * @param {number} [input.logicalTargetWidth] - 원래 logical viewport 너비입니다.
+     * @param {number} [input.logicalTargetHeight] - 원래 logical viewport 높이입니다.
      * @param {GPUTextureView} [input.effectTextureView] - 선택적 premultiplied panel effect view입니다.
      * @param {number} [input.effectTextureWidth] - effect texture 실제 너비입니다.
      * @param {number} [input.effectTextureHeight] - effect texture 실제 높이입니다.
@@ -348,6 +353,10 @@ export class TitleWebGpuOverlayGlassPass {
             targetView: input.targetView,
             targetWidth: input.targetWidth,
             targetHeight: input.targetHeight,
+            targetOriginX: input.targetOriginX,
+            targetOriginY: input.targetOriginY,
+            logicalTargetWidth: input.logicalTargetWidth,
+            logicalTargetHeight: input.logicalTargetHeight,
             clear: input.clear,
             entries: [Object.freeze({
                 backdropView: input.backdropView,
@@ -376,6 +385,10 @@ export class TitleWebGpuOverlayGlassPass {
         targetView,
         targetWidth,
         targetHeight,
+        targetOriginX = 0,
+        targetOriginY = 0,
+        logicalTargetWidth,
+        logicalTargetHeight,
         clear = false,
         entries = []
     } = {}) {
@@ -413,6 +426,28 @@ export class TitleWebGpuOverlayGlassPass {
         const resolvedTargetView = requireTextureView(targetView, 'targetView');
         const resolvedTargetWidth = normalizeTextureExtent(targetWidth, 'targetWidth');
         const resolvedTargetHeight = normalizeTextureExtent(targetHeight, 'targetHeight');
+        const resolvedTargetOriginX = normalizeTargetOrigin(
+            targetOriginX,
+            'targetOriginX'
+        );
+        const resolvedTargetOriginY = normalizeTargetOrigin(
+            targetOriginY,
+            'targetOriginY'
+        );
+        const resolvedLogicalTargetWidth = normalizeTextureExtent(
+            logicalTargetWidth ?? resolvedTargetWidth,
+            'logicalTargetWidth'
+        );
+        const resolvedLogicalTargetHeight = normalizeTextureExtent(
+            logicalTargetHeight ?? resolvedTargetHeight,
+            'logicalTargetHeight'
+        );
+        if (resolvedTargetOriginX + resolvedTargetWidth > resolvedLogicalTargetWidth
+            || resolvedTargetOriginY + resolvedTargetHeight > resolvedLogicalTargetHeight) {
+            throw new RangeError(
+                'title WebGPU glass cropped target이 logical viewport를 벗어났습니다.'
+            );
+        }
         const commands = [];
         for (const candidate of candidates) {
             const { entry, panel, finalOpacity } = candidate;
@@ -496,11 +531,18 @@ export class TitleWebGpuOverlayGlassPass {
                 shadowVisible: hasShadow,
                 aaWidth: DEFAULT_AA_WIDTH
             });
-            const scissor = resolveTitleWebGpuOverlayProjectedScissor(
+            const projectedScissor = resolveTitleWebGpuOverlayProjectedScissor(
                 this.homographyScratch,
                 panelWidth,
                 panelHeight,
                 halo,
+                resolvedLogicalTargetWidth,
+                resolvedLogicalTargetHeight
+            );
+            const scissor = localizeProjectedScissor(
+                projectedScissor,
+                resolvedTargetOriginX,
+                resolvedTargetOriginY,
                 resolvedTargetWidth,
                 resolvedTargetHeight
             );
@@ -513,8 +555,6 @@ export class TitleWebGpuOverlayGlassPass {
             const uniformBuffer = this.#getUniformBuffer(uniformIndex);
             this.#stageUniforms({
                 panel,
-                panelX,
-                panelY,
                 panelWidth,
                 panelHeight,
                 radius,
@@ -525,6 +565,8 @@ export class TitleWebGpuOverlayGlassPass {
                 shadowOffsetX,
                 shadowOffsetY,
                 halo,
+                targetOriginX: resolvedTargetOriginX,
+                targetOriginY: resolvedTargetOriginY,
                 targetWidth: resolvedTargetWidth,
                 targetHeight: resolvedTargetHeight,
                 backdropWidth: resolvedBackdropWidth,
@@ -795,8 +837,6 @@ export class TitleWebGpuOverlayGlassPass {
 
     #stageUniforms({
         panel,
-        panelX,
-        panelY,
         panelWidth,
         panelHeight,
         radius,
@@ -807,6 +847,8 @@ export class TitleWebGpuOverlayGlassPass {
         shadowOffsetX,
         shadowOffsetY,
         halo,
+        targetOriginX,
+        targetOriginY,
         targetWidth,
         targetHeight,
         backdropWidth,
@@ -829,8 +871,10 @@ export class TitleWebGpuOverlayGlassPass {
         floats[BACKDROP_LOGICAL_BOUNDS_OFFSET + 1] = logicalBounds.y;
         floats[BACKDROP_LOGICAL_BOUNDS_OFFSET + 2] = logicalBounds.w;
         floats[BACKDROP_LOGICAL_BOUNDS_OFFSET + 3] = logicalBounds.h;
-        floats[PANEL_RECT_OFFSET] = panelX;
-        floats[PANEL_RECT_OFFSET + 1] = panelY;
+        // xy는 cropped render target의 logical screen origin이며, panel local
+        // 크기는 zw에 유지합니다. panel 위치는 inverse homography가 소유합니다.
+        floats[PANEL_RECT_OFFSET] = targetOriginX;
+        floats[PANEL_RECT_OFFSET + 1] = targetOriginY;
         floats[PANEL_RECT_OFFSET + 2] = panelWidth;
         floats[PANEL_RECT_OFFSET + 3] = panelHeight;
         floats[INVERSE_HOMOGRAPHY_ROW_0_OFFSET] = inverse[0];
@@ -965,6 +1009,40 @@ function normalizeTextureExtent(value, name) {
         throw new RangeError(`title WebGPU glass ${name}는 양수여야 합니다.`);
     }
     return Math.max(1, Math.floor(value));
+}
+
+function normalizeTargetOrigin(value, name) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new RangeError(`title WebGPU glass ${name}은 0 이상의 안전한 정수여야 합니다.`);
+    }
+    return value;
+}
+
+function localizeProjectedScissor(
+    scissor,
+    targetOriginX,
+    targetOriginY,
+    targetWidth,
+    targetHeight
+) {
+    if (!scissor) return null;
+    const left = Math.max(scissor.x, targetOriginX);
+    const top = Math.max(scissor.y, targetOriginY);
+    const right = Math.min(
+        scissor.x + scissor.width,
+        targetOriginX + targetWidth
+    );
+    const bottom = Math.min(
+        scissor.y + scissor.height,
+        targetOriginY + targetHeight
+    );
+    if (right <= left || bottom <= top) return null;
+    return Object.freeze({
+        x: left - targetOriginX,
+        y: top - targetOriginY,
+        width: right - left,
+        height: bottom - top
+    });
 }
 
 function normalizeLogicalBounds(bounds) {

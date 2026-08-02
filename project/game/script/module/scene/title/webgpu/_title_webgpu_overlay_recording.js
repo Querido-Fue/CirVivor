@@ -10,6 +10,12 @@ const HALO_BUCKET = 8;
 const ROI_UNION_AREA_RATIO = 1.35;
 const DEFAULT_SIGMA_HALO_MULTIPLIER = 3;
 const DEFAULT_SIGMA_HALO_PADDING = 2;
+const WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID = 'gaussian-quality';
+const WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID = 'kawase-optimized';
+const LEGACY_PANEL_BLUR_STRENGTH_MAX = 1;
+// 9px는 Gaussian quarter-scale bucket에 들어가 6.5px half-scale보다 샘플 면적이
+// 작으면서도 glass backdrop에는 더 부드러운 시각 반경을 제공합니다.
+const PANEL_VISUAL_SIGMA_FALLBACK = 9;
 
 /**
  * OverlaySession 의미 snapshot과 analytic vignette를 overlay graph record로 변환합니다.
@@ -196,7 +202,8 @@ function recordSessionSnapshot(options) {
             height,
             blurAlgorithmId,
             blurPort,
-            allowPanelContentRoi
+            allowPanelContentRoi,
+            preferPanelStageRoi: suffix === 'floating'
         });
         if (!stageResult) continue;
         const stageId = `${sessionId}:${suffix}`;
@@ -247,7 +254,8 @@ function buildSurfaceStage({
     height,
     blurAlgorithmId,
     blurPort,
-    allowPanelContentRoi
+    allowPanelContentRoi,
+    preferPanelStageRoi
 }) {
     if (!stage) return null;
     const commands = Array.isArray(stage.glassCommands) ? stage.glassCommands : [];
@@ -297,13 +305,20 @@ function buildSurfaceStage({
     const contentBlurs = contentBlurRequest
         ? Object.freeze([contentBlurRequest])
         : Object.freeze([]);
+    const presentationScale = positiveFiniteOr(presentation?.contentScale, 1);
+    const renderBounds = preferPanelStageRoi === true
+        && contentBlurRequest === null
+        && Math.abs(presentationScale - 1) <= 0.000001
+        ? buildPanelStageRenderBounds(commands, width, height)
+        : null;
     return {
         backdropBlurs: requests,
         contentBlurs,
         payload: Object.freeze({
             glassPanels: panelEntries,
             uiSurfaces: Object.freeze(uiSurfaces),
-            bounds: Object.freeze({ x: 0, y: 0, width, height })
+            bounds: Object.freeze({ x: 0, y: 0, width, height }),
+            ...(renderBounds ? { renderBounds } : {})
         }),
         glassPanelCount: panelEntries.length,
         uiSurfaceCount: uiSurfaces.length
@@ -531,7 +546,7 @@ function buildBackdropGroups({
         if (panel?.sampleBackdrop !== false) {
             const bounds = getPanelBounds(panel, width, height, projectedQuadScratch);
             if (bounds) {
-                const sigma = nonNegativeFiniteOr(panel.blur, 0);
+                const sigma = resolvePanelBackdropSigma(panel.blur, blurAlgorithmId);
                 const requiredHalo = resolveRequiredHalo({
                     blurPort,
                     blurAlgorithmId,
@@ -561,6 +576,23 @@ function buildBackdropGroups({
         requests: Object.freeze(requests),
         panelEntries: Object.freeze(entries)
     };
+}
+
+/**
+ * 기존 overlay panel의 `blur`는 WebGL Kawase strength 단위입니다. 그 경로는
+ * 0 < blur <= 1도 최소 0.5 tap offset의 다중 pyramid blur로 렌더링했으므로,
+ * visual-sigma 알고리즘에 같은 숫자를 전달하면 subpixel identity가 되어 버립니다.
+ * 양수 legacy strength만 중앙 glass와 같은 시각 sigma로 승격하고, 0과 이미 px sigma로
+ * 지정된 값 및 compatibility 알고리즘은 그대로 보존합니다.
+ */
+function resolvePanelBackdropSigma(value, blurAlgorithmId) {
+    const sigma = nonNegativeFiniteOr(value, 0);
+    if (sigma <= 0 || sigma > LEGACY_PANEL_BLUR_STRENGTH_MAX) return sigma;
+    if (blurAlgorithmId !== WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID
+        && blurAlgorithmId !== WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID) {
+        return sigma;
+    }
+    return PANEL_VISUAL_SIGMA_FALLBACK;
 }
 
 function findOrCreateBackdropGroup(groups, bounds, sigma, requiredHalo) {
@@ -640,6 +672,69 @@ function getPanelBounds(panel, width, height, projectedQuadScratch) {
     bottom = Math.min(height, Math.ceil(bottom));
     if (right <= left || bottom <= top) return null;
     return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/**
+ * floating UI가 glass panel 안에만 존재하는 steady frame은 panel visual envelope만
+ * 렌더링합니다. projection/shadow/refraction 규칙은 실제 glass pass와 공유하며,
+ * 하나라도 증명할 수 없으면 null로 닫아 full-screen stage를 유지합니다.
+ */
+function buildPanelStageRenderBounds(commands, width, height) {
+    if (!Array.isArray(commands) || commands.length === 0) return null;
+    const quadScratch = new Float64Array(8);
+    const homographyScratch = new Float64Array(9);
+    let result = null;
+    for (const panel of commands) {
+        const panelX = finiteOr(panel?.x, 0);
+        const panelY = finiteOr(panel?.y, 0);
+        const panelWidth = positiveFiniteOr(panel?.w, 0);
+        const panelHeight = positiveFiniteOr(panel?.h, 0);
+        if (!resolveTitleWebGpuOverlayProjectedQuad(
+            panel,
+            panelX,
+            panelY,
+            panelWidth,
+            panelHeight,
+            quadScratch
+        ) || !createTitleWebGpuOverlayRectToQuadHomography(
+            panelWidth,
+            panelHeight,
+            quadScratch,
+            homographyScratch
+        )) {
+            return null;
+        }
+        const visualHalo = resolveTitleWebGpuOverlayGlassVisualHalo(panel, {
+            shadowVisible: true
+        });
+        const bounds = resolveTitleWebGpuOverlayProjectedScissor(
+            homographyScratch,
+            panelWidth,
+            panelHeight,
+            visualHalo,
+            width,
+            height
+        );
+        if (!bounds) return null;
+        result = result ? unionBounds(result, bounds) : bounds;
+    }
+    const left = Math.max(0, Math.floor(result.x / ROI_ALIGNMENT) * ROI_ALIGNMENT);
+    const top = Math.max(0, Math.floor(result.y / ROI_ALIGNMENT) * ROI_ALIGNMENT);
+    const right = Math.min(
+        width,
+        Math.ceil((result.x + result.width) / ROI_ALIGNMENT) * ROI_ALIGNMENT
+    );
+    const bottom = Math.min(
+        height,
+        Math.ceil((result.y + result.height) / ROI_ALIGNMENT) * ROI_ALIGNMENT
+    );
+    if (right <= left || bottom <= top) return null;
+    return Object.freeze({
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top
+    });
 }
 
 function buildAlignedHalo(bounds, requiredHalo, width, height) {
