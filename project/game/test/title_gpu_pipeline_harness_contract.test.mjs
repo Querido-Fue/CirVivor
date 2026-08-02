@@ -210,6 +210,143 @@ test('strict aggregate는 충분한 count라도 invalid p99와 비정수 count�
     assert.equal(aggregate.status, 'fail');
 });
 
+test('WebGPU pipeline aggregate는 WebGL scope와 섞지 않고 composer graph metric만 사용한다', () => {
+    const webGpuMetric = 'title.webgpu_graph.gpu_ms';
+    const aggregate = aggregateTrials([{
+        status: 'pass',
+        profile: 'full',
+        coldStartIndex: 0,
+        config: {
+            profile: 'full',
+            pipelineMode: 'webgpu-gaussian',
+            requireGpuTimestamps: true,
+            requestedSamples: 2000,
+            scenarios: ['T5']
+        },
+        scenarios: [{
+            id: 'T5',
+            gpu: {
+                scopes: {
+                    'title.overlay_blur_composite.gpu_ms': {
+                        frameTotal: { count: 2000, p99: 0.01 }
+                    }
+                }
+            },
+            webgpu: {
+                scopes: {
+                    [webGpuMetric]: {
+                        frameTotal: { count: 2000, p99: 0.94 }
+                    }
+                }
+            }
+        }]
+    }]);
+
+    assert.equal(aggregate.status, 'pass');
+    assert.equal(aggregate.scenarios[0].metric, webGpuMetric);
+    assert.deepEqual(aggregate.scenarios[0].trialP99, [0.94]);
+    assert.equal(aggregate.scenarios[0].worstP99, 0.94);
+    assert.deepEqual(aggregate.measurement, {
+        metric: webGpuMetric,
+        scope: 'title-webgpu-base-shadow-graph',
+        provisional: true,
+        finalOverlayIncluded: false,
+        qualification: 'base-shadow-only'
+    });
+    assert.deepEqual(aggregate.budget, {
+        percentile: 'p99',
+        limitMs: 1,
+        required: true,
+        policy: 'every-required-cold-trial-p99-lte-limit',
+        passed: true,
+        provisional: true,
+        finalOverlayIncluded: false
+    });
+    assert.equal(aggregate.scenarios[0].budgetRequiredTrialCount, 1);
+    assert.equal(aggregate.scenarios[0].budgetEvidenceTrialCount, 1);
+    assert.equal(aggregate.scenarios[0].budgetMissingEvidenceTrialCount, 0);
+    assert.equal(aggregate.scenarios[0].overBudgetTrialCount, 0);
+    assert.equal(aggregate.scenarios[0].budgetPassed, true);
+});
+
+test('nonlegacy full aggregate는 cold trial p99 1.0ms 초과와 근거를 명시적으로 실패 처리한다', () => {
+    const metric = 'title.webgpu_graph.gpu_ms';
+    const makeTrial = (coldStartIndex, p99) => ({
+        status: 'pass',
+        profile: 'full',
+        coldStartIndex,
+        config: {
+            profile: 'full',
+            pipelineMode: 'webgpu-kawase',
+            requireGpuTimestamps: true,
+            requestedSamples: 12,
+            scenarios: ['T4']
+        },
+        scenarios: [{
+            id: 'T4',
+            gpu: {
+                scopes: {
+                    'title.overlay_blur_composite.gpu_ms': {
+                        frameTotal: { count: 12, p99: 0.01 }
+                    }
+                }
+            },
+            webgpu: {
+                scopes: {
+                    [metric]: { frameTotal: { count: 12, p99 } }
+                }
+            }
+        }]
+    });
+    const aggregate = aggregateTrials([
+        makeTrial(0, 1.0),
+        makeTrial(1, 1.000001)
+    ]);
+    const scenario = aggregate.scenarios[0];
+
+    assert.equal(aggregate.status, 'fail');
+    assert.equal(aggregate.budget.required, true);
+    assert.equal(aggregate.budget.passed, false);
+    assert.equal(scenario.worstP99, 1.000001);
+    assert.equal(scenario.budgetLimitMs, 1);
+    assert.equal(scenario.budgetRequiredTrialCount, 2);
+    assert.equal(scenario.budgetEvidenceTrialCount, 2);
+    assert.equal(scenario.budgetMissingEvidenceTrialCount, 0);
+    assert.equal(scenario.overBudgetTrialCount, 1);
+    assert.equal(scenario.budgetPassed, false);
+    assert.equal(scenario.overBudgetTrials[0].trialIndex, 1);
+    assert.equal(scenario.overBudgetTrials[0].coldStartIndex, 1);
+    assert.equal(scenario.overBudgetTrials[0].p99, 1.000001);
+    assert.equal(scenario.overBudgetTrials[0].limitMs, 1);
+    assert.ok(Math.abs(scenario.overBudgetTrials[0].overByMs - 0.000001) < 1e-12);
+});
+
+test('nonlegacy full budget evidence 결측은 timestamp strict flag와 무관하게 fail-closed다', () => {
+    const aggregate = aggregateTrials([{
+        status: 'pass',
+        profile: 'full',
+        coldStartIndex: 2,
+        config: {
+            profile: 'full',
+            pipelineMode: 'webgpu-gaussian',
+            requireGpuTimestamps: false,
+            requestedSamples: 12,
+            scenarios: ['T5']
+        },
+        scenarios: [{ id: 'T5', gpu: { scopes: {} }, webgpu: { scopes: {} } }]
+    }]);
+    const scenario = aggregate.scenarios[0];
+
+    assert.equal(aggregate.status, 'fail');
+    assert.equal(aggregate.budget.required, true);
+    assert.equal(aggregate.budget.passed, false);
+    assert.equal(scenario.budgetRequiredTrialCount, 1);
+    assert.equal(scenario.budgetEvidenceTrialCount, 0);
+    assert.equal(scenario.budgetMissingEvidenceTrialCount, 1);
+    assert.equal(scenario.overBudgetTrialCount, 0);
+    assert.equal(scenario.budgetPassed, false);
+});
+
 test('recursive cleanup 대상은 os temp 바로 아래의 전용 prefix로 제한한다', () => {
     assert.equal(
         isSafeRunDirectory(path.join(os.tmpdir(), 'cirvivor-title-gpu-contract')),
@@ -274,6 +411,18 @@ test('runner는 live renderer를 열거하고 rendererId를 붙여 비동기 tel
     assert.match(runnerSource, /getTitleWebGpuShadowDiagnostics/);
     assert.match(runnerSource, /encodeSuccessCount/);
     assert.match(runnerSource, /config\.pipelineMode !== 'legacy-webgl'/);
+    assert.match(runnerSource, /getWebGpuFrameTelemetryPort/);
+    assert.match(runnerSource, /webGpuTelemetryPort\?\.setEnabled/);
+    assert.match(runnerSource, /webGpuTelemetryPort\?\.drainSamples/);
+    assert.match(runnerSource, /title\.webgpu_graph\.gpu_ms/);
+    assert.match(runnerSource, /webGpuSamples/);
+    assert.match(
+        runnerSource,
+        /const timingFrameId = collectWebGpu \? webGpuFrameId : frameId;/,
+        'nonlegacy timing window는 비활성 WebGL counter가 아니라 composer frame identity를 사용합니다.'
+    );
+    assert.match(runnerSource, /record\.firstFrameId \?\?= timingFrameId;/);
+    assert.match(runnerSource, /record\.lastFrameId = timingFrameId;/);
     for (const scenarioId of ['T0', 'T1', 'T2', 'T3', 'T4', 'T5']) {
         assert.match(scenarioSource, new RegExp(`run${scenarioId}`));
     }

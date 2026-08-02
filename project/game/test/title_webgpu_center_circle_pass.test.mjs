@@ -226,6 +226,18 @@ function createInput(command, backdropView, targetView, overrides = {}) {
         targetHeight: overrides.targetHeight ?? 300,
         originX: overrides.originX ?? 350,
         originY: overrides.originY ?? 150,
+        ...(overrides.backdropLogicalWidth !== undefined
+            ? { backdropLogicalWidth: overrides.backdropLogicalWidth }
+            : {}),
+        ...(overrides.backdropLogicalHeight !== undefined
+            ? { backdropLogicalHeight: overrides.backdropLogicalHeight }
+            : {}),
+        ...(overrides.backdropOriginX !== undefined
+            ? { backdropOriginX: overrides.backdropOriginX }
+            : {}),
+        ...(overrides.backdropOriginY !== undefined
+            ? { backdropOriginY: overrides.backdropOriginY }
+            : {}),
         ...(overrides.loadOp ? { loadOp: overrides.loadOp } : {}),
         ...(overrides.format ? { format: overrides.format } : {})
     };
@@ -244,15 +256,16 @@ function assertClose(actual, expected, epsilon = 1e-6) {
 
 test('WGSL은 legacy glass/glow 상수와 screen-to-ROI backdrop sample transform을 보존한다', () => {
     const shader = namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER;
-    assert.equal(namespace.TITLE_WEBGPU_CENTER_CIRCLE_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 128);
+    assert.equal(namespace.TITLE_WEBGPU_CENTER_CIRCLE_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 144);
     assert.match(shader, /let local = fragCoord - parameters\.center/);
     assert.match(shader, /let edgeSoftness = 1\.35/);
     assert.match(shader, /vec3<f32>\(-0\.45, -0\.68, 0\.58\)/);
     assert.match(shader, /vec2<f32>\(-0\.25, -0\.56\)/);
     assert.match(shader, /vec2<f32>\(0\.42, 0\.095\)/);
-    assert.match(shader, /let roiUv = fragCoord \/ max\(parameters\.targetResolution/);
+    assert.match(shader, /let backdropLocal = fragCoord \+ parameters\.targetToBackdropOffset/);
+    assert.match(shader, /parameters\.backdropLogicalSize/);
     assert.match(shader, /let halfBackdropTexel = vec2<f32>\(0\.5\)[\s\S]*parameters\.backdropResolution/);
-    assert.match(shader, /roiUv \+ refractionOffset/);
+    assert.match(shader, /backdropLocal \+ refractionOffset/);
     assert.match(shader, /textureSample\([\s\S]*backdropUv/);
     assert.match(shader, /let outlineAlpha = outlineCore \* 0\.36/);
     assert.match(shader, /let glowPulse = 0\.94 \+ \(sin\(parameters\.time\) \* 0\.06\)/);
@@ -321,21 +334,21 @@ test('screen-space center를 target local로 바꾸고 legacy scissor bounds 안
     assert.strictEqual(entries[2].resource, backdropView);
 
     const floats = getWrittenFloats(deviceHarness.records.writes[0]);
-    assert.deepEqual(Array.from(floats.slice(0, 9)), [
-        400, 300, 150, 150, 64, 32, 50, 2, 1.25
+    assert.deepEqual(Array.from(floats.slice(0, 13)), [
+        400, 300, 150, 150, 64, 32, 400, 300, 0, 0, 50, 2, 1.25
     ]);
-    assertClose(floats[9], 0.8);
-    assertClose(floats[10], 0.12);
-    assertClose(floats[11], 0.62);
-    assertClose(floats[12], 0.08);
-    assertClose(floats[13], 0.58);
-    assertClose(floats[14], 0.36);
-    assertClose(floats[15], 5.2);
+    assertClose(floats[13], 0.8);
+    assertClose(floats[14], 0.12);
+    assertClose(floats[15], 0.62);
+    assertClose(floats[16], 0.08);
+    assertClose(floats[17], 0.58);
+    assertClose(floats[18], 0.36);
+    assertClose(floats[19], 5.2);
     for (const [offset, expected] of [
-        [16, [0.1, 0.2, 0.3, 0]],
-        [20, [0.2, 0.3, 0.4, 0]],
-        [24, [0.3, 0.4, 0.5, 0]],
-        [28, [0.8, 0.9, 1, 0]]
+        [20, [0.1, 0.2, 0.3, 0]],
+        [24, [0.2, 0.3, 0.4, 0]],
+        [28, [0.3, 0.4, 0.5, 0]],
+        [32, [0.8, 0.9, 1, 0]]
     ]) {
         expected.forEach((value, index) => assertClose(floats[offset + index], value));
     }
@@ -343,6 +356,41 @@ test('screen-space center를 target local로 바꾸고 legacy scissor bounds 안
     assert.equal(deviceHarness.records.forbiddenTextureCreateCount, 0);
     assert.equal(deviceHarness.records.forbiddenExternalCopyCount, 0);
     assert.equal(frame.records.forbiddenFinishCount, 0);
+});
+
+test('full-scene target은 저해상도 backdrop의 screen-space 논리 ROI를 독립 매핑한다', () => {
+    const { TitleWebGpuCenterCirclePass } = namespace;
+    const deviceHarness = createDevice('direct-scene');
+    const frame = createContext(deviceHarness.device, 1, 1);
+    const centerPass = new TitleWebGpuCenterCirclePass();
+
+    assert.equal(centerPass.encode(frame.context, createInput(
+        createCommand(),
+        { id: 'downsampled-backdrop' },
+        { id: 'full-scene' },
+        {
+            targetWidth: 1280,
+            targetHeight: 720,
+            originX: 0,
+            originY: 0,
+            backdropWidth: 64,
+            backdropHeight: 64,
+            backdropLogicalWidth: 400,
+            backdropLogicalHeight: 400,
+            backdropOriginX: 300,
+            backdropOriginY: 100
+        }
+    )), true);
+
+    const floats = getWrittenFloats(deviceHarness.records.writes[0]);
+    assert.deepEqual(Array.from(floats.slice(0, 12)), [
+        1280, 720,
+        500, 300,
+        64, 64,
+        400, 400,
+        -300, -100,
+        50, 2
+    ]);
 });
 
 test('같은 generation/format/frame high-water를 재사용하고 format·generation 변경을 격리한다', () => {

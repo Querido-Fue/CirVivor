@@ -345,6 +345,44 @@ test('output identity는 checkpoint/revision을 분리하고 prepare topology는
     service.destroy();
 });
 
+test('factory preflight는 crop halo를 GPU 생성 없이 제공하고 quantized sigma prepare만 공유한다', () => {
+    const composer = createComposerHarness();
+    const registry = createAlgorithmRegistry(composer.records);
+    const factory = registry.factories.get('kawase');
+    factory.getRequiredHalo = ({ algorithmId, sigma }) => {
+        assert.equal(algorithmId, 'kawase');
+        return sigma * 3 + 2;
+    };
+    factory.getPreparationSigma = (sigma) => Math.round(sigma * 16) / 16;
+    const service = new WebGpuBlurService({
+        composerPort: composer.composerPort,
+        algorithmFactories: registry.factories
+    });
+
+    assert.equal(service.getPort().getRequiredHalo({
+        algorithmId: 'kawase',
+        sigma: 6.01
+    }), 21);
+    assert.equal(registry.records.factories.length, 0, 'preflight는 GPU instance를 만들지 않음');
+    const sourceTexture = {};
+    const first = service.encode(createRequest({
+        algorithmId: 'kawase',
+        sourceTexture,
+        sigma: 6.01
+    }));
+    const second = service.encode(createRequest({
+        algorithmId: 'kawase',
+        sourceTexture,
+        checkpointId: 'modal-depth-2',
+        sigma: 6.02
+    }));
+    assert.notStrictEqual(first, second, 'raw sigma output identity는 합치지 않음');
+    assert.equal(registry.records.prepares.length, 1, '같은 1/16 sigma bucket은 prepare 공유');
+    assert.equal(registry.records.encodes.length, 2);
+    service.destroy();
+    assert.equal(service.getPort().getRequiredHalo({ algorithmId: 'kawase', sigma: 1 }), null);
+});
+
 test('algorithmId routing은 generation마다 algorithm instance 하나만 만들고 진단을 분리한다', () => {
     const composer = createComposerHarness();
     const registry = createAlgorithmRegistry(composer.records);

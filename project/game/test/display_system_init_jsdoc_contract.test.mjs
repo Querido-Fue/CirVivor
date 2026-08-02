@@ -26,7 +26,7 @@ const [
     readFile(DISPLAY_DESCRIPTOR_PATH, 'utf8'),
     readFile(SYSTEM_HANDLER_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = 'aeb6f61d55a30370b9212def0d88f4881d4ef38846589718ace1bc89541a01d7';
+const EXECUTABLE_SOURCE_HASH = '9a7a66f5e69e5978352d6ddbb585273909d13749d3cdb7308fd13255954fbfdf';
 const STATIC_SURFACE_IDS = Object.freeze([
     'background',
     'gpu-object',
@@ -183,6 +183,7 @@ async function loadDisplaySystem(options = {}) {
         webGpuComposers: [],
         webGpuBlurServices: [],
         webGpuKawaseFactories: [],
+        webGpuOptimizedKawaseFactories: [],
         webGpuGaussianFactories: []
     };
     const controls = {
@@ -388,8 +389,9 @@ async function loadDisplaySystem(options = {}) {
             getState() {
                 return instance.state;
             },
-            attachFrameComposer(composerPort) {
+            attachFrameComposer(composerPort, lifecycleOwner) {
                 instance.frameComposerPort = composerPort;
+                instance.frameComposerLifecycleOwner = lifecycleOwner;
                 records.events.push('webgpu.composer.attach');
                 return true;
             },
@@ -406,10 +408,13 @@ async function loadDisplaySystem(options = {}) {
 
     function WebGpuFrameComposer(platformPort) {
         const contributorPort = Object.freeze({ id: 'webgpu-frame-composer-port' });
+        const telemetryPort = Object.freeze({ id: 'webgpu-frame-telemetry-port' });
         const instance = {
             platformPort,
             contributorPort,
+            telemetryPort,
             getPortCallCount: 0,
+            getTelemetryPortCallCount: 0,
             active: false,
             beginFrameIds: [],
             commitCount: 0,
@@ -417,6 +422,10 @@ async function loadDisplaySystem(options = {}) {
             getPort() {
                 instance.getPortCallCount += 1;
                 return contributorPort;
+            },
+            getGpuTelemetryPort() {
+                instance.getTelemetryPortCallCount += 1;
+                return telemetryPort;
             },
             beginFrame(frameId) {
                 instance.beginFrameIds.push(frameId);
@@ -470,6 +479,20 @@ async function loadDisplaySystem(options = {}) {
         });
         records.events.push('webgpu.kawase.factory');
         records.webGpuKawaseFactories.push({ options: factoryOptions, factory });
+        return factory;
+    }
+
+    const WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID = 'kawase-optimized';
+    function createWebGpuOptimizedKawaseBlurAlgorithmFactory(factoryOptions) {
+        const factory = ({ device, deviceGeneration }) => ({
+            device,
+            deviceGeneration,
+            prepare() {},
+            encode() {},
+            destroy() {}
+        });
+        records.events.push('webgpu.optimized-kawase.factory');
+        records.webGpuOptimizedKawaseFactories.push({ options: factoryOptions, factory });
         return factory;
     }
 
@@ -564,6 +587,18 @@ async function loadDisplaySystem(options = {}) {
         throw new Error('WebGPU Kawase synthetic module에는 import가 없어야 합니다.');
     });
     await webGpuKawaseModule.evaluate();
+    const webGpuOptimizedKawaseModule = createSyntheticModule(
+        context,
+        './webgpu/webgpu_optimized_kawase_blur_algorithm.js',
+        {
+            WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID,
+            createWebGpuOptimizedKawaseBlurAlgorithmFactory
+        }
+    );
+    await webGpuOptimizedKawaseModule.link(() => {
+        throw new Error('WebGPU optimized Kawase synthetic module에는 import가 없어야 합니다.');
+    });
+    await webGpuOptimizedKawaseModule.evaluate();
     const webGpuGaussianModule = createSyntheticModule(
         context,
         './webgpu/webgpu_gaussian_blur_algorithm.js',
@@ -581,6 +616,7 @@ async function loadDisplaySystem(options = {}) {
         ['./webgpu/webgpu_frame_composer.js', webGpuFrameComposerModule],
         ['./webgpu/webgpu_blur_service.js', webGpuBlurServiceModule],
         ['./webgpu/webgpu_kawase_blur_algorithm.js', webGpuKawaseModule],
+        ['./webgpu/webgpu_optimized_kawase_blur_algorithm.js', webGpuOptimizedKawaseModule],
         ['./webgpu/webgpu_gaussian_blur_algorithm.js', webGpuGaussianModule]
     ]);
     const module = new vm.SourceTextModule(displaySystemSource, {
@@ -590,6 +626,10 @@ async function loadDisplaySystem(options = {}) {
             if (specifier === './webgpu/webgpu_gaussian_blur_algorithm.js'
                 && options.rejectGaussianImport === true) {
                 return Promise.reject(new Error('forced-gaussian-import-failure'));
+            }
+            if (specifier === './webgpu/webgpu_optimized_kawase_blur_algorithm.js'
+                && options.rejectOptimizedKawaseImport === true) {
+                return Promise.reject(new Error('forced-optimized-kawase-import-failure'));
             }
             const dynamicModule = dynamicModules.get(specifier);
             assert.ok(dynamicModule, `지원하지 않는 DisplaySystem dynamic import입니다: ${specifier}`);
@@ -726,7 +766,7 @@ async function loadSystemHandler(displayGate, events) {
 }
 
 test('DisplaySystem은 코드-local descriptor 상수를 사용하고 중앙 data registry에 의존하지 않는다', () => {
-    assert.equal(hashExecutableSource(displaySystemSource, 69), EXECUTABLE_SOURCE_HASH);
+    assert.equal(hashExecutableSource(displaySystemSource, 71), EXECUTABLE_SOURCE_HASH);
     assert.doesNotMatch(displaySystemSource, /data\/data_handler\.js/);
     assert.doesNotMatch(displayDescriptorSource, /data\/data_handler\.js/);
     assert.match(displaySystemSource, /DISPLAY_WEBGL_RENDER_MODES/);
@@ -761,6 +801,7 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
     });
     const display = new runtime.namespace.DisplaySystem();
     assert.equal(display.getWebGpuFrameContributorPort(), null);
+    assert.equal(display.getWebGpuFrameTelemetryPort(), null);
     runtime.records.events.length = 0;
 
     const result = display.init();
@@ -926,6 +967,7 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
         'webgpu.composer.construct',
         'webgpu.composer.attach',
         'webgpu.kawase.factory',
+        'webgpu.optimized-kawase.factory',
         'webgpu.gaussian.factory',
         'webgpu.blur.construct',
         'webgpu.init'
@@ -935,16 +977,26 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
     const [webGpuComposer] = runtime.records.webGpuComposers;
     const [webGpuBlurService] = runtime.records.webGpuBlurServices;
     const [webGpuKawaseFactory] = runtime.records.webGpuKawaseFactories;
+    const [webGpuOptimizedKawaseFactory] = runtime.records.webGpuOptimizedKawaseFactories;
     const [webGpuGaussianFactory] = runtime.records.webGpuGaussianFactories;
     assert.strictEqual(webGpuComposer.platformPort, webGpuService.getPort());
     assert.equal(webGpuComposer.getPortCallCount, 1);
     assert.strictEqual(webGpuService.frameComposerPort, webGpuComposer.contributorPort);
+    assert.strictEqual(webGpuService.frameComposerLifecycleOwner, webGpuComposer);
     assert.strictEqual(webGpuKawaseFactory.options.composerPort, webGpuComposer.contributorPort);
+    assert.strictEqual(
+        webGpuOptimizedKawaseFactory.options.composerPort,
+        webGpuComposer.contributorPort
+    );
     assert.strictEqual(webGpuGaussianFactory.options.composerPort, webGpuComposer.contributorPort);
     assert.strictEqual(webGpuBlurService.options.composerPort, webGpuComposer.contributorPort);
     assert.strictEqual(
         webGpuBlurService.options.algorithmFactories.get('kawase-compatibility'),
         webGpuKawaseFactory.factory
+    );
+    assert.strictEqual(
+        webGpuBlurService.options.algorithmFactories.get('kawase-optimized'),
+        webGpuOptimizedKawaseFactory.factory
     );
     assert.strictEqual(
         webGpuBlurService.options.algorithmFactories.get('gaussian-quality'),
@@ -958,6 +1010,12 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
     assert.strictEqual(display.getWebGpuFrameContributorPort(), frameContributorPort);
     assert.strictEqual(runtime.namespace.getWebGpuFrameContributorPort(), frameContributorPort);
     assert.equal(webGpuComposer.getPortCallCount, 1);
+    const frameTelemetryPort = display.getWebGpuFrameTelemetryPort();
+    assert.strictEqual(frameTelemetryPort, webGpuComposer.telemetryPort);
+    assert.equal(Object.isFrozen(frameTelemetryPort), true);
+    assert.strictEqual(display.getWebGpuFrameTelemetryPort(), frameTelemetryPort);
+    assert.strictEqual(runtime.namespace.getWebGpuFrameTelemetryPort(), frameTelemetryPort);
+    assert.equal(webGpuComposer.getTelemetryPortCallCount, 1);
     assert.equal(display.beginWebGpuFrame(), true);
     assert.equal(display.endWebGpuFrame(true), true);
     assert.equal(display.beginWebGpuFrame(), true);
@@ -975,13 +1033,37 @@ test('선택 Gaussian module 실패는 core/Kawase WebGPU 초기화와 진입점
     assert.equal(display.getWebGpuPlatformState().ready, true);
     assert.equal(runtime.records.webGpuBlurServices.length, 1);
     assert.equal(runtime.records.webGpuKawaseFactories.length, 1);
+    assert.equal(runtime.records.webGpuOptimizedKawaseFactories.length, 1);
     assert.equal(runtime.records.webGpuGaussianFactories.length, 0);
     const factories = runtime.records.webGpuBlurServices[0].options.algorithmFactories;
     assert.equal(factories.has('kawase-compatibility'), true);
+    assert.equal(factories.has('kawase-optimized'), true);
     assert.equal(factories.has('gaussian-quality'), false);
     assert.match(
         display.webGpuOptionalGaussianFailureReason,
         /gaussian-module-unavailable:forced-gaussian-import-failure/
+    );
+    assert.equal(display.beginWebGpuFrame(), true);
+    assert.equal(display.endWebGpuFrame(false), true);
+});
+
+test('선택 optimized Kawase module 실패는 compatibility/Gaussian 진입점을 내리지 않는다', async () => {
+    const runtime = await loadDisplaySystem({ rejectOptimizedKawaseImport: true });
+    const display = new runtime.namespace.DisplaySystem();
+
+    assert.equal(await display.init(), undefined);
+    assert.equal(display.getWebGpuPlatformState().ready, true);
+    assert.equal(runtime.records.webGpuBlurServices.length, 1);
+    assert.equal(runtime.records.webGpuKawaseFactories.length, 1);
+    assert.equal(runtime.records.webGpuOptimizedKawaseFactories.length, 0);
+    assert.equal(runtime.records.webGpuGaussianFactories.length, 1);
+    const factories = runtime.records.webGpuBlurServices[0].options.algorithmFactories;
+    assert.equal(factories.has('kawase-compatibility'), true);
+    assert.equal(factories.has('kawase-optimized'), false);
+    assert.equal(factories.has('gaussian-quality'), true);
+    assert.match(
+        display.webGpuOptionalOptimizedKawaseFailureReason,
+        /optimized-kawase-module-unavailable:forced-optimized-kawase-import-failure/
     );
     assert.equal(display.beginWebGpuFrame(), true);
     assert.equal(display.endWebGpuFrame(false), true);
@@ -1635,6 +1717,7 @@ test('동시 init은 등록을 중복하고 두 Promise가 같은 최종 Map을 
     assert.equal(runtime.records.webGpuComposers.length, 1);
     assert.equal(runtime.records.webGpuBlurServices.length, 1);
     assert.equal(runtime.records.webGpuKawaseFactories.length, 1);
+    assert.equal(runtime.records.webGpuOptimizedKawaseFactories.length, 1);
     assert.equal(runtime.records.webGpuGaussianFactories.length, 1);
 });
 

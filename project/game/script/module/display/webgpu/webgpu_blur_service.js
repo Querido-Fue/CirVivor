@@ -63,6 +63,9 @@ export class WebGpuBlurService {
             hasAlgorithm(algorithmId) {
                 return service.hasAlgorithm(algorithmId);
             },
+            getRequiredHalo(request) {
+                return service.getRequiredHalo(request);
+            },
             getSnapshot() {
                 return service.getSnapshot();
             }
@@ -147,6 +150,34 @@ export class WebGpuBlurService {
             return false;
         }
         return this.algorithmFactories.has(algorithmId.trim());
+    }
+
+    /**
+     * source crop 전에 선택 algorithm의 순수 halo preflight를 실행합니다.
+     * @param {{algorithmId:string,sigma:number}} request - algorithm과 시각 sigma입니다.
+     * @returns {number|null} 필요한 정수 halo이며 resolver가 없으면 null입니다.
+     */
+    getRequiredHalo(request) {
+        if (this.destroyed || !request || typeof request !== 'object') {
+            return null;
+        }
+        const algorithmId = normalizeRequiredId(request.algorithmId, 'algorithmId');
+        const factory = this.algorithmFactories.get(algorithmId);
+        if (!factory) {
+            throw new Error(`등록되지 않은 WebGPU blur algorithm입니다: ${algorithmId}`);
+        }
+        if (typeof factory.getRequiredHalo !== 'function') {
+            return null;
+        }
+        const sigma = normalizeNonNegativeNumber(request.sigma);
+        const requiredHalo = factory.getRequiredHalo(Object.freeze({
+            algorithmId,
+            sigma
+        }));
+        if (!Number.isFinite(requiredHalo) || requiredHalo < 0) {
+            throw new TypeError(`WebGPU blur required halo가 유효하지 않습니다: ${requiredHalo}`);
+        }
+        return Math.ceil(requiredHalo);
     }
 
     /**
@@ -281,6 +312,15 @@ export class WebGpuBlurService {
     #createPreparationKey(request, sourceTextureId) {
         // Pipeline/kernel topology는 frame-local content identity와 screen-space
         // origin에 의존하지 않습니다. 크기/halo/profile은 보수적으로 분리합니다.
+        const factory = this.algorithmFactories.get(request.algorithmId);
+        const preparationSigma = typeof factory?.getPreparationSigma === 'function'
+            ? factory.getPreparationSigma(request.sigma)
+            : request.sigma;
+        if (!Number.isFinite(preparationSigma) || preparationSigma < 0) {
+            throw new TypeError(
+                `WebGPU blur preparation sigma가 유효하지 않습니다: ${preparationSigma}`
+            );
+        }
         return JSON.stringify([
             1,
             request.algorithmId,
@@ -291,7 +331,7 @@ export class WebGpuBlurService {
             request.halo.top,
             request.halo.right,
             request.halo.bottom,
-            request.sigma,
+            preparationSigma,
             request.edgeMode,
             request.colorSpace,
             request.format

@@ -22,7 +22,7 @@ export class TitleScenePresentation {
      * @param {Readonly<object>|null} [options.titleGpuRolloutProfile=null] - Loading이 만든 동일 identity rollout profile입니다.
      * @param {object|null} [options.webGpuFramePort] - 테스트 또는 Display 주입 frame port입니다.
      * @param {object|null} [options.webGpuBlurPort] - 테스트 또는 Display 주입 blur port입니다.
-     * @param {Set<string>|null} [options.availableBlurAlgorithmIds] - Kawase 외 등록 완료 algorithm ID입니다.
+     * @param {Set<string>|null} [options.availableBlurAlgorithmIds] - 등록 완료 blur algorithm ID입니다.
      * @param {Function|null} [options.titleWebGpuBaseGraphFactory] - 테스트 graph factory입니다.
      */
     constructor(controller, {
@@ -197,16 +197,20 @@ export class TitleScenePresentation {
                 blurAlgorithmId
             });
         }
-        let blurAlgorithmRegistered = false;
-        try {
-            blurAlgorithmRegistered = blurPort.hasAlgorithm?.(blurAlgorithmId) === true;
-        } catch {
-            blurAlgorithmRegistered = false;
+        const configuredAlgorithmIds = config?.availableBlurAlgorithmIds;
+        const hasConfiguredRegistry = typeof configuredAlgorithmIds?.has === 'function';
+        const hasPortRegistry = typeof blurPort.hasAlgorithm === 'function';
+        let blurAlgorithmRegistered = hasConfiguredRegistry
+            && configuredAlgorithmIds.has(blurAlgorithmId) === true;
+        if (hasPortRegistry) {
+            try {
+                blurAlgorithmRegistered = blurAlgorithmRegistered
+                    || blurPort.hasAlgorithm(blurAlgorithmId) === true;
+            } catch {
+                // authoritative port probe 실패는 미등록으로 처리합니다.
+            }
         }
-        const gaussianAvailable = pipelineMode !== TITLE_PIPELINE_MODE.WEBGPU_GAUSSIAN
-            || config?.availableBlurAlgorithmIds?.has?.(blurAlgorithmId) === true
-            || blurAlgorithmRegistered;
-        if (!gaussianAvailable) {
+        if ((hasConfiguredRegistry || hasPortRegistry) && !blurAlgorithmRegistered) {
             this.titleWebGpuShadowRetryEnabled = false;
             return Object.freeze({
                 status: 'shadow-unavailable',

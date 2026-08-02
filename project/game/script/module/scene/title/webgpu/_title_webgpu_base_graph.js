@@ -26,9 +26,12 @@ const GRAPH_TEXTURE_USAGE = TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_RENDER
 const GRAPH_TEXTURE_POOL_CAPACITY = 24;
 const GRAPH_TEXTURE_MAX_IDLE_FRAMES = 2;
 const WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID = 'gaussian-quality';
+const WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID = 'kawase-optimized';
 const CENTER_BLUR_SIGMA_FALLBACK = 6.5;
 const CENTER_KAWASE_BLUR_FALLBACK = 0.1;
 const BLUR_HALO_SIGMA_MULTIPLIER = 3;
+const QUALITY_BLUR_HALO_SAFETY_PADDING = 2;
+const QUALITY_BLUR_MIN_POSITIVE_HALO = 6;
 const ENEMY_PALETTE_ENTRY_COUNT = TITLE_CPU_ENEMY_PRESENTATION_LAYER_CAPACITY * 2;
 const TRANSPARENT = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 const OPAQUE_BLACK_RGB = Object.freeze({ r: 0, g: 0, b: 0, a: 1 });
@@ -44,7 +47,7 @@ export const TITLE_WEBGPU_BASE_GRAPH_DEFAULT_BLUR_ALGORITHM_ID
 
 /** pipeline rollout mode를 등록될 blur algorithm ID에 명시적으로 연결합니다. */
 export const TITLE_WEBGPU_BASE_GRAPH_BLUR_ALGORITHM_BY_PIPELINE = Object.freeze({
-    'webgpu-kawase': WEBGPU_KAWASE_BLUR_ALGORITHM_ID,
+    'webgpu-kawase': WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID,
     'webgpu-gaussian': WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID
 });
 
@@ -191,8 +194,8 @@ export class TitleWebGpuBaseGraph {
                     sourceTexture: frame.centerCheckpoint.texture,
                     sourceRevision: frame.centerCheckpoint.revision,
                     checkpointId: TITLE_WEBGPU_CENTER_BACKDROP_ID,
-                    bounds: frame.blurBounds,
-                    halo: frame.blurHalo,
+                    bounds: frame.centerBlurBounds,
+                    halo: frame.centerBlurHalo,
                     sigma: frame.centerBlurSigma,
                     edgeMode: 'clamp',
                     colorSpace: 'srgb',
@@ -206,7 +209,7 @@ export class TitleWebGpuBaseGraph {
                 }
             }
 
-            frame.effectOutput = frame.effectLease;
+            frame.effectOutput = frame.groupBlurActive ? frame.effectLease : null;
             if (frame.effectLease && frame.introBlur > 0.001) {
                 frame.effectOutput = this.blurPort.encode({
                     algorithmId: this.blurAlgorithmId,
@@ -339,6 +342,13 @@ export class TitleWebGpuBaseGraph {
         frame.effectOutput = null;
         frame.outputCheckpoint = null;
         frame.introBlur = this.pendingInput.introBlur;
+        frame.groupBlurActive = frame.introBlur > 0.001;
+        resetRect(frame.centerRoi);
+        resetRect(frame.centerBlurBounds);
+        resetHalo(frame.centerBlurHalo);
+        resetRect(frame.effectRoi);
+        resetRect(frame.blurBounds);
+        resetHalo(frame.blurHalo);
         this.lastRoi = null;
         this.activeFrame = frame;
 
@@ -369,27 +379,63 @@ export class TitleWebGpuBaseGraph {
             loadOp: 'load'
         });
 
-        const roiState = this.#calculateEffectRoi(
+        const centerRoiState = this.#calculateEffectRoi(
             this.pendingInput.centerCommand,
-            this.pendingInput.shieldActive ? this.pendingInput.shieldCommand : null,
-            frame.introBlur,
+            null,
+            0,
             context.width,
             context.height
         );
-        if (!roiState) {
+        if (centerRoiState) {
+            copyRect(centerRoiState.roi, frame.centerRoi);
+            copyRect(centerRoiState.bounds, frame.centerBlurBounds);
+            copyHalo(centerRoiState.halo, frame.centerBlurHalo);
+            frame.centerBlurSigma = centerRoiState.centerBlurSigma;
+        }
+
+        if (frame.groupBlurActive) {
+            const effectRoiState = this.#calculateEffectRoi(
+                this.pendingInput.centerCommand,
+                this.pendingInput.shieldActive ? this.pendingInput.shieldCommand : null,
+                frame.introBlur,
+                context.width,
+                context.height
+            );
+            if (effectRoiState) {
+                copyRect(effectRoiState.roi, frame.effectRoi);
+                copyRect(effectRoiState.bounds, frame.blurBounds);
+                copyHalo(effectRoiState.halo, frame.blurHalo);
+            }
+        } else if (centerRoiState) {
+            copyRect(frame.centerRoi, frame.effectRoi);
+            copyRect(frame.centerBlurBounds, frame.blurBounds);
+            copyHalo(frame.centerBlurHalo, frame.blurHalo);
+        }
+
+        if ((!centerRoiState && !frame.groupBlurActive)
+            || (frame.effectRoi.width <= 0 || frame.effectRoi.height <= 0)) {
+            if (this.pendingInput.shieldActive) {
+                this.checkpoints.assertWritable(frame.sceneLease.texture);
+                this.shieldPass.encode(context, {
+                    command: this.pendingInput.shieldCommand,
+                    targetView: frame.sceneLease.view,
+                    targetWidth: frame.width,
+                    targetHeight: frame.height,
+                    originX: 0,
+                    originY: 0,
+                    loadOp: 'load',
+                    format: frame.format
+                });
+            }
             return;
         }
-        copyRect(roiState.roi, frame.effectRoi);
-        copyRect(roiState.bounds, frame.blurBounds);
-        copyHalo(roiState.halo, frame.blurHalo);
-        frame.centerBlurSigma = roiState.centerBlurSigma;
         this.lastRoi = frame.effectRoi;
 
-        if (this.pendingInput.centerCommand) {
+        if (this.pendingInput.centerCommand && centerRoiState) {
             frame.centerLease = this.texturePool.acquire(setTextureDescriptor(
                 this.textureDescriptorScratch[1],
-                frame.effectRoi.width,
-                frame.effectRoi.height,
+                frame.centerRoi.width,
+                frame.centerRoi.height,
                 frame.format
             ));
             this.checkpoints.assertWritable(frame.centerLease.texture);
@@ -398,17 +444,17 @@ export class TitleWebGpuBaseGraph {
                 view: frame.sceneLease.view,
                 destX: 0,
                 destY: 0,
-                destWidth: frame.effectRoi.width,
-                destHeight: frame.effectRoi.height,
-                uvX: frame.effectRoi.x / frame.width,
-                uvY: frame.effectRoi.y / frame.height,
-                uvWidth: frame.effectRoi.width / frame.width,
-                uvHeight: frame.effectRoi.height / frame.height
+                destWidth: frame.centerRoi.width,
+                destHeight: frame.centerRoi.height,
+                uvX: frame.centerRoi.x / frame.width,
+                uvY: frame.centerRoi.y / frame.height,
+                uvWidth: frame.centerRoi.width / frame.width,
+                uvHeight: frame.centerRoi.height / frame.height
             });
             this.compositePass.encode(context, {
                 targetView: frame.centerLease.view,
-                targetWidth: frame.effectRoi.width,
-                targetHeight: frame.effectRoi.height,
+                targetWidth: frame.centerRoi.width,
+                targetHeight: frame.centerRoi.height,
                 format: frame.format,
                 loadOp: 'clear',
                 layers: this.cropLayers,
@@ -419,13 +465,31 @@ export class TitleWebGpuBaseGraph {
                 {
                     texture: frame.centerLease.texture,
                     view: frame.centerLease.view,
-                    width: frame.effectRoi.width,
-                    height: frame.effectRoi.height,
+                    width: frame.centerRoi.width,
+                    height: frame.centerRoi.height,
                     format: frame.format,
                     colorSpace: 'srgb',
                     alphaMode: 'premultiplied'
                 }
             );
+        }
+
+        if (!frame.groupBlurActive && this.pendingInput.shieldActive) {
+            this.checkpoints.assertWritable(frame.sceneLease.texture);
+            this.shieldPass.encode(context, {
+                command: this.pendingInput.shieldCommand,
+                targetView: frame.sceneLease.view,
+                targetWidth: frame.width,
+                targetHeight: frame.height,
+                originX: 0,
+                originY: 0,
+                loadOp: 'load',
+                format: frame.format
+            });
+        }
+
+        if (!frame.groupBlurActive) {
+            return;
         }
 
         frame.effectLease = this.texturePool.acquire(setTextureDescriptor(
@@ -435,7 +499,7 @@ export class TitleWebGpuBaseGraph {
             frame.format
         ));
         this.checkpoints.assertWritable(frame.effectLease.texture);
-        const shieldEncoded = this.pendingInput.shieldActive
+        const shieldEncoded = frame.groupBlurActive && this.pendingInput.shieldActive
             ? this.shieldPass.encode(context, {
                 command: this.pendingInput.shieldCommand,
                 targetView: frame.effectLease.view,
@@ -447,7 +511,7 @@ export class TitleWebGpuBaseGraph {
                 format: frame.format
             })
             : false;
-        if (!shieldEncoded) {
+        if (frame.groupBlurActive && !shieldEncoded) {
             this.compositePass.encode(context, {
                 targetView: frame.effectLease.view,
                 targetWidth: frame.effectRoi.width,
@@ -463,20 +527,30 @@ export class TitleWebGpuBaseGraph {
 
     #encodeCenter(context) {
         const frame = this.#requireMatchingFrame(context);
-        if (!frame.centerCheckpoint || !frame.centerBlurOutput || !frame.effectLease) {
+        if (!frame.centerCheckpoint || !frame.centerBlurOutput) {
             return;
         }
-        this.checkpoints.assertWritable(frame.effectLease.texture);
+        const targetLease = frame.groupBlurActive
+            ? frame.effectLease
+            : frame.sceneLease;
+        if (!targetLease) {
+            return;
+        }
+        this.checkpoints.assertWritable(targetLease.texture);
         this.centerPass.encode(context, {
             command: this.pendingInput.centerCommand,
             backdropView: frame.centerBlurOutput.view,
             backdropWidth: frame.centerBlurOutput.width,
             backdropHeight: frame.centerBlurOutput.height,
-            targetView: frame.effectLease.view,
-            targetWidth: frame.effectRoi.width,
-            targetHeight: frame.effectRoi.height,
-            originX: frame.effectRoi.x,
-            originY: frame.effectRoi.y,
+            backdropLogicalWidth: frame.centerRoi.width,
+            backdropLogicalHeight: frame.centerRoi.height,
+            backdropOriginX: frame.centerRoi.x,
+            backdropOriginY: frame.centerRoi.y,
+            targetView: targetLease.view,
+            targetWidth: frame.groupBlurActive ? frame.effectRoi.width : frame.width,
+            targetHeight: frame.groupBlurActive ? frame.effectRoi.height : frame.height,
+            originX: frame.groupBlurActive ? frame.effectRoi.x : 0,
+            originY: frame.groupBlurActive ? frame.effectRoi.y : 0,
             loadOp: 'load',
             format: frame.format
         });
@@ -570,11 +644,31 @@ export class TitleWebGpuBaseGraph {
         const refraction = centerCommand
             ? Math.max(0, Number(centerCommand.backdropRefractionStrength) || 0)
             : 0;
+        const blurHaloSafetyPadding = getBlurHaloSafetyPadding(this.blurAlgorithmId);
+        const centerFallbackHalo = centerCommand
+            ? Math.ceil(Math.max(
+                2,
+                (centerBlurSigma * BLUR_HALO_SIGMA_MULTIPLIER) + blurHaloSafetyPadding
+            ))
+            : 0;
         const centerHalo = centerCommand
-            ? Math.ceil(Math.max(2, centerBlurSigma * BLUR_HALO_SIGMA_MULTIPLIER, refraction + 2))
+            ? Math.max(
+                this.#resolveRequiredBlurHalo(centerBlurSigma, centerFallbackHalo),
+                Math.ceil(refraction + 2)
+            )
+            : 0;
+        const introFallbackHalo = introBlur > 0.001
+            ? Math.max(
+                isVisualSigmaBlurAlgorithm(this.blurAlgorithmId)
+                    ? QUALITY_BLUR_MIN_POSITIVE_HALO
+                    : 0,
+                Math.ceil(
+                    (introBlur * BLUR_HALO_SIGMA_MULTIPLIER) + blurHaloSafetyPadding
+                )
+            )
             : 0;
         const introHalo = introBlur > 0.001
-            ? Math.ceil(introBlur * BLUR_HALO_SIGMA_MULTIPLIER)
+            ? this.#resolveRequiredBlurHalo(introBlur, introFallbackHalo)
             : 0;
         const haloSize = Math.max(centerHalo, introHalo);
         const roi = expandRect(contentBounds, haloSize, width, height, this.effectRoiScratch);
@@ -592,6 +686,19 @@ export class TitleWebGpuBaseGraph {
         state.halo.right = (roi.x + roi.width) - (contentBounds.x + contentBounds.width);
         state.halo.bottom = (roi.y + roi.height) - (contentBounds.y + contentBounds.height);
         return state;
+    }
+
+    #resolveRequiredBlurHalo(sigma, fallback) {
+        if (typeof this.blurPort.getRequiredHalo !== 'function') {
+            return fallback;
+        }
+        const requiredHalo = this.blurPort.getRequiredHalo({
+            algorithmId: this.blurAlgorithmId,
+            sigma
+        });
+        return requiredHalo === null || requiredHalo === undefined
+            ? fallback
+            : Math.max(fallback, requiredHalo);
     }
 
     #writeEnemyPalette(enemies) {
@@ -911,11 +1018,15 @@ function createReusableFrameState() {
         effectLease: null,
         effectOutput: null,
         outputCheckpoint: null,
+        centerRoi: createRect(),
+        centerBlurBounds: createRect(),
+        centerBlurHalo: { left: 0, top: 0, right: 0, bottom: 0 },
         effectRoi: createRect(),
         blurBounds: createRect(),
         blurHalo: { left: 0, top: 0, right: 0, bottom: 0 },
         centerBlurSigma: 0,
-        introBlur: 0
+        introBlur: 0,
+        groupBlurActive: false
     };
 }
 
@@ -927,16 +1038,42 @@ function copyHalo(source, target) {
     return target;
 }
 
+function resetRect(rect) {
+    rect.x = 0;
+    rect.y = 0;
+    rect.width = 0;
+    rect.height = 0;
+}
+
+function resetHalo(halo) {
+    halo.left = 0;
+    halo.top = 0;
+    halo.right = 0;
+    halo.bottom = 0;
+}
+
 function resolveCenterBlurSigma(value, algorithmId) {
+    const usesVisualSigma = isVisualSigmaBlurAlgorithm(algorithmId);
     const rawValue = Number.isFinite(value)
         ? Math.max(0, Number(value))
-        : (algorithmId === WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID
+        : (usesVisualSigma
             ? CENTER_BLUR_SIGMA_FALLBACK
             : CENTER_KAWASE_BLUR_FALLBACK);
-    if (algorithmId === WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID) {
+    if (usesVisualSigma) {
         return rawValue > 1 ? rawValue : CENTER_BLUR_SIGMA_FALLBACK;
     }
     return rawValue;
+}
+
+function getBlurHaloSafetyPadding(algorithmId) {
+    return isVisualSigmaBlurAlgorithm(algorithmId)
+        ? QUALITY_BLUR_HALO_SAFETY_PADDING
+        : 0;
+}
+
+function isVisualSigmaBlurAlgorithm(algorithmId) {
+    return algorithmId === WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID
+        || algorithmId === WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID;
 }
 
 function hasRenderableShieldActivity(command) {

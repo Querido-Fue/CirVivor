@@ -21,6 +21,8 @@ const FRAME_WAIT_TIMEOUT_MS = 10_000;
 const GAME_ASSIGNMENT_TIMEOUT_MS = 30_000;
 const QUERY_DRAIN_FRAME_LIMIT = 120;
 const RESULT_SCHEMA_VERSION = 1;
+const TITLE_WEBGPU_GRAPH_METRIC = 'title.webgpu_graph.gpu_ms';
+const TITLE_WEBGL_OVERLAY_METRIC = 'title.overlay_blur_composite.gpu_ms';
 const { Buffer } = window.require('buffer');
 
 const harnessBridge = globalThis.__CIRVIVOR_TITLE_GPU_HARNESS__;
@@ -86,6 +88,7 @@ function createScenarioRecord(id) {
         cpuFrameMs: [],
         rafIntervalMs: [],
         gpuSamples: [],
+        webGpuSamples: [],
         frameSamples: [],
         state: null,
         artifact: null
@@ -153,13 +156,24 @@ function getTelemetryRenderers(game) {
 
 function createCollector(game, scenarioRecords) {
     const frameRoutes = new Map();
+    const webGpuFrameRoutes = new Map();
     const globalFrameSamples = [];
     const latestRendererSnapshots = new Map();
     const retiredCollectorSnapshots = new Map();
+    const displaySystem = game?.systemHandler?.displaySystem;
+    const webGpuTelemetryPort = displaySystem?.getWebGpuFrameTelemetryPort?.() || null;
     let latestRetiredState = getRetiredWebGLGpuTelemetrySnapshot();
+    let latestWebGpuSnapshot = webGpuTelemetryPort?.getSnapshot?.() || null;
     let activeScenarioId = null;
     let lastWallFrameTime = null;
     let invalidGpuSampleIdentityCount = 0;
+    let invalidWebGpuSampleIdentityCount = 0;
+
+    const collectWebGpu = config.pipelineMode !== 'legacy-webgl';
+    webGpuTelemetryPort?.setEnabled?.(config.timing === true && collectWebGpu);
+    if (collectWebGpu) {
+        setWebGLGpuTelemetryEnabled(false);
+    }
 
     function createRouteKey(trialGeneration, frameId) {
         return `${trialGeneration}:${frameId}`;
@@ -189,6 +203,32 @@ function createCollector(game, scenarioRecords) {
         scenarioRecords.get(route.scenarioId)?.gpuSamples.push({
             rendererId: sample.rendererId,
             trialGeneration,
+            frameId: sample.frameId,
+            scope: sample.scope,
+            gpuMs: sample.gpuMs,
+            phase: route.phase,
+            metadata: route.metadata
+        });
+    }
+
+    function routeWebGpuSample(sample) {
+        if (!Number.isSafeInteger(sample?.frameId) || sample.frameId < 0
+            || !Number.isSafeInteger(sample?.deviceGeneration)
+            || sample.deviceGeneration < 0
+            || sample.scope !== TITLE_WEBGPU_GRAPH_METRIC
+            || !Number.isFinite(sample.gpuMs)
+            || sample.gpuMs < 0) {
+            invalidWebGpuSampleIdentityCount += 1;
+            return;
+        }
+        const route = webGpuFrameRoutes.get(sample.frameId);
+        if (!route?.collect || !route.scenarioId) {
+            return;
+        }
+        scenarioRecords.get(route.scenarioId)?.webGpuSamples.push({
+            source: sample.source,
+            deviceGeneration: sample.deviceGeneration,
+            trialGeneration: route.trialGeneration,
             frameId: sample.frameId,
             scope: sample.scope,
             gpuMs: sample.gpuMs,
@@ -255,6 +295,10 @@ function createCollector(game, scenarioRecords) {
             });
         }
         drainRetiredCollectors();
+        for (const sample of webGpuTelemetryPort?.drainSamples?.() || []) {
+            routeWebGpuSample(sample);
+        }
+        latestWebGpuSnapshot = webGpuTelemetryPort?.getSnapshot?.() || null;
     }
 
     async function nextFrame(metadata = {}) {
@@ -262,6 +306,9 @@ function createCollector(game, scenarioRecords) {
         const wallTime = performance.now();
         const frameId = getWebGLGpuTelemetryFrameId();
         const trialGeneration = getWebGLGpuTelemetryTrialGeneration();
+        const webGpuFrameId = displaySystem?.webGpuFrameComposer
+            ?.getDiagnostics?.().frameId;
+        const timingFrameId = collectWebGpu ? webGpuFrameId : frameId;
         const collect = config.timing !== false
             && metadata.collect === true
             && Boolean(activeScenarioId);
@@ -275,18 +322,33 @@ function createCollector(game, scenarioRecords) {
                 phase: metadata.phase || null,
                 metadata: routeMetadata
             });
+            if (Number.isSafeInteger(webGpuFrameId) && webGpuFrameId >= 0) {
+                webGpuFrameRoutes.set(webGpuFrameId, {
+                    scenarioId: activeScenarioId,
+                    collect,
+                    trialGeneration,
+                    phase: metadata.phase || null,
+                    metadata: routeMetadata
+                });
+            }
         }
         if (frameRoutes.size > 8192) {
             const oldestRouteKey = frameRoutes.keys().next().value;
             frameRoutes.delete(oldestRouteKey);
+        }
+        if (webGpuFrameRoutes.size > 8192) {
+            const oldestWebGpuFrameId = webGpuFrameRoutes.keys().next().value;
+            webGpuFrameRoutes.delete(oldestWebGpuFrameId);
         }
 
         if (collect) {
             const record = scenarioRecords.get(activeScenarioId);
             record.firstTrialGeneration ??= trialGeneration;
             record.lastTrialGeneration = trialGeneration;
-            record.firstFrameId ??= frameId;
-            record.lastFrameId = frameId;
+            if (Number.isSafeInteger(timingFrameId) && timingFrameId >= 0) {
+                record.firstFrameId ??= timingFrameId;
+                record.lastFrameId = timingFrameId;
+            }
             record.cpuFrameMs.push(Math.max(0, Number(game.lastFrameCpuSeconds) * 1000 || 0));
             if (lastWallFrameTime !== null) {
                 record.rafIntervalMs.push(Math.max(0, wallTime - lastWallFrameTime));
@@ -299,6 +361,7 @@ function createCollector(game, scenarioRecords) {
 
     async function drainAllPendingQueries() {
         setWebGLGpuTelemetryEnabled(false);
+        webGpuTelemetryPort?.setEnabled?.(false);
         for (let frame = 0; frame < QUERY_DRAIN_FRAME_LIMIT; frame++) {
             await nextFrame({
                 collect: false,
@@ -317,7 +380,13 @@ function createCollector(game, scenarioRecords) {
                 || (retiredState.pendingQueryCount || 0) > 0
                 || (retiredState.bufferedGpuSampleCount || 0) > 0
                 || (retiredState.bufferedFrameSampleCount || 0) > 0;
-            if (!livePending && !retiredPending) {
+            const webGpuSnapshot = latestWebGpuSnapshot
+                || webGpuTelemetryPort?.getSnapshot?.()
+                || {};
+            const webGpuPending = (webGpuSnapshot.pendingCount || 0) > 0
+                || (webGpuSnapshot.encodingCount || 0) > 0
+                || (webGpuSnapshot.bufferedSampleCount || 0) > 0;
+            if (!livePending && !retiredPending && !webGpuPending) {
                 drainRenderers();
                 return frame + 1;
             }
@@ -342,9 +411,14 @@ function createCollector(game, scenarioRecords) {
                 collectorSnapshots: [...retiredCollectorSnapshots.values()]
             };
         },
+        getWebGpuDiagnostics() {
+            drainRenderers();
+            return latestWebGpuSnapshot;
+        },
         getDiagnostics() {
             return {
                 invalidGpuSampleIdentityCount,
+                invalidWebGpuSampleIdentityCount,
                 globalFrame: buildGlobalFrameDiagnostics(globalFrameSamples)
             };
         }
@@ -503,6 +577,37 @@ function collectInvalidDiagnostics(rendererSnapshots, retiredDiagnostics, collec
     return invalid;
 }
 
+function collectWebGpuInvalidDiagnostics(snapshot, collectorDiagnostics) {
+    const counters = snapshot?.counters || {};
+    return {
+        unsupported: snapshot?.supported !== true ? 1 : 0,
+        apiFailure: counters.apiFailureCount || 0,
+        mapFailure: counters.mapFailureCount || 0,
+        invalidTimestamp: counters.invalidTimestampCount || 0,
+        uncapturedError: counters.uncapturedErrorCount || 0,
+        droppedSlot: counters.droppedSlotCount || 0,
+        bufferedSampleDrop: counters.bufferedSampleDropCount || 0,
+        unresolvedPending: snapshot?.pendingCount || 0,
+        unresolvedEncoding: snapshot?.encodingCount || 0,
+        bufferedSample: snapshot?.bufferedSampleCount || 0,
+        invalidSampleIdentity:
+            collectorDiagnostics.invalidWebGpuSampleIdentityCount || 0
+    };
+}
+
+function hasWebGpuOperationalFailure(invalid) {
+    return invalid.apiFailure > 0
+        || invalid.mapFailure > 0
+        || invalid.invalidTimestamp > 0
+        || invalid.uncapturedError > 0
+        || invalid.droppedSlot > 0
+        || invalid.bufferedSampleDrop > 0
+        || invalid.unresolvedPending > 0
+        || invalid.unresolvedEncoding > 0
+        || invalid.bufferedSample > 0
+        || invalid.invalidSampleIdentity > 0;
+}
+
 function calculateQueryResolveRate(rendererSnapshots, retiredCollectorSnapshots) {
     let ended = 0;
     let resolved = 0;
@@ -563,6 +668,8 @@ function collectRuntimeProfile(game) {
         secureContext: globalThis.isSecureContext === true,
         viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
         webgpuPlatformState: displaySystem?.getWebGpuPlatformState?.() || null,
+        webgpuFrameTelemetry:
+            displaySystem?.getWebGpuFrameTelemetryPort?.()?.getSnapshot?.() || null,
         webgpuBlurState: displaySystem?.getWebGpuBlurPort?.()?.getSnapshot?.() || null,
         titleGpuRolloutProfile: titleRuntimeState.scene?.titleGpuRolloutProfile || null,
         titleWebGpuShadowDiagnostics:
@@ -633,12 +740,18 @@ async function runHarness() {
     const queryDrainFrames = await collector.drainAllPendingQueries();
     const rendererSnapshots = collector.getRendererSnapshots();
     const retiredDiagnostics = collector.getRetiredDiagnostics();
+    const webGpuTelemetryDiagnostics = collector.getWebGpuDiagnostics();
     const collectorDiagnostics = collector.getDiagnostics();
     const invalid = collectInvalidDiagnostics(
         rendererSnapshots,
         retiredDiagnostics,
         collectorDiagnostics
     );
+    const webGpuInvalid = collectWebGpuInvalidDiagnostics(
+        webGpuTelemetryDiagnostics,
+        collectorDiagnostics
+    );
+    const usesWebGpuPipeline = config.pipelineMode !== 'legacy-webgl';
     const unexpectedRejectedBegin = Math.max(0, invalid.rejectedBegin - invalid.disabledBegin);
     const hasOperationalFailure = invalid.timerFault > 0
         || unexpectedRejectedBegin > 0
@@ -685,10 +798,21 @@ async function runHarness() {
         rendererSnapshots,
         retiredDiagnostics.collectorSnapshots
     );
+    const targetMetric = usesWebGpuPipeline
+        ? TITLE_WEBGPU_GRAPH_METRIC
+        : TITLE_WEBGL_OVERLAY_METRIC;
+    const coverageRecords = usesWebGpuPipeline
+        ? [...scenarioRecords.values()].map((record) => ({
+            id: record.id,
+            gpuSamples: record.webGpuSamples,
+            frameSamples: []
+        }))
+        : scenarioRecords.values();
     const coverage = buildGpuCoverageDiagnostics({
-        scenarioRecords: scenarioRecords.values(),
+        scenarioRecords: coverageRecords,
         requestedSamples: config.requestedSamples,
-        required: config.requireGpuTimestamps === true
+        required: config.requireGpuTimestamps === true,
+        targetMetric
     });
     const titleWebGpuShadowDiagnostics =
         getTitleRuntimeState(game).presentation?.getTitleWebGpuShadowDiagnostics?.() || null;
@@ -705,11 +829,13 @@ async function runHarness() {
         invalid,
         rendererSnapshots,
         retiredTelemetry: retiredDiagnostics,
+        webGpuTelemetry: webGpuTelemetryDiagnostics,
+        webGpuInvalid,
         webGpuFrameComposerDiagnostics,
         titleWebGpuShadowDiagnostics,
         overlayStack: snapshotOverlayStack(game)
     };
-    if (config.pipelineMode !== 'legacy-webgl') {
+    if (usesWebGpuPipeline) {
         const graphDiagnostics = titleWebGpuShadowDiagnostics?.graph;
         if (titleWebGpuShadowDiagnostics?.status !== 'shadow-ready'
             || !graphDiagnostics
@@ -722,21 +848,35 @@ async function runHarness() {
         }
     }
     if (config.requireGpuTimestamps === true
+        && !usesWebGpuPipeline
         && (!allGpuSupported || invalid.rejectedBegin > 0)) {
         throw createHarnessValidationError(
             'full profile의 모든 참여 renderer가 누락 없이 GPU timestamp를 지원해야 합니다.',
             validation
         );
     }
-    if (config.requireGpuTimestamps === true && queryResolveRate !== 1) {
+    if (config.requireGpuTimestamps === true
+        && !usesWebGpuPipeline
+        && queryResolveRate !== 1) {
         throw createHarnessValidationError(
             `full profile GPU query resolve rate가 1이 아닙니다: ${queryResolveRate}`,
             validation
         );
     }
-    if (hasOperationalFailure) {
+    if (config.requireGpuTimestamps === true
+        && usesWebGpuPipeline
+        && webGpuTelemetryDiagnostics?.supported !== true) {
         throw createHarnessValidationError(
-            `GPU telemetry operational failure: ${JSON.stringify(invalid)}`,
+            `WebGPU timestamp-query가 지원되지 않습니다: ${webGpuTelemetryDiagnostics?.reason || 'unknown'}`,
+            validation
+        );
+    }
+    if ((usesWebGpuPipeline && hasWebGpuOperationalFailure(webGpuInvalid))
+        || (!usesWebGpuPipeline && hasOperationalFailure)) {
+        throw createHarnessValidationError(
+            usesWebGpuPipeline
+                ? `WebGPU telemetry operational failure: ${JSON.stringify(webGpuInvalid)}`
+                : `GPU telemetry operational failure: ${JSON.stringify(invalid)}`,
             validation
         );
     }
@@ -764,6 +904,7 @@ async function runHarness() {
                 rawRafIntervalMs: record.rafIntervalMs
             },
             gpu: buildGpuSummary(record.gpuSamples),
+            webgpu: buildGpuSummary(record.webGpuSamples),
             counters: {
                 sums: sumFrameCounters(record.frameSamples),
                 rawFrames: record.frameSamples

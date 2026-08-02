@@ -91,7 +91,7 @@ const presentationDependencyModules = new Map([
         'TitleWebGpuBaseGraph'
     ], function init() {
         this.setExport('getTitleWebGpuBaseGraphBlurAlgorithmId', (pipelineMode) => (
-            pipelineMode === 'webgpu-kawase' ? 'kawase-compatibility' : null
+            pipelineMode === 'webgpu-kawase' ? 'kawase-optimized' : null
         ));
         this.setExport('TitleWebGpuBaseGraph', class TitleWebGpuBaseGraph {});
     }, { context: loadingRuntimeContext })]

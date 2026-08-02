@@ -28,7 +28,7 @@ test('legacy profile은 graph를 만들지 않고 기존 visible draw 순서만 
     assert.equal(presentation.getTitleWebGpuShadowDiagnostics().status, 'legacy-visible');
 });
 
-test('Kawase shadow graph는 session에 한 번 고정되고 visible draw 뒤 encode되며 실패를 격리한다', async () => {
+test('optimized Kawase shadow graph는 session에 한 번 고정되고 visible draw 뒤 encode되며 실패를 격리한다', async () => {
     const fixture = await createPresentationFixture();
     const graph = createFakeGraph(fixture.trace);
     let factoryCount = 0;
@@ -53,7 +53,7 @@ test('Kawase shadow graph는 session에 한 번 고정되고 visible draw 뒤 en
     assert.equal(factoryCount, 1);
     assert.strictEqual(dependencies.framePort, framePort);
     assert.strictEqual(dependencies.blurPort, blurPort);
-    assert.equal(dependencies.blurAlgorithmId, 'kawase-compatibility');
+    assert.equal(dependencies.blurAlgorithmId, 'kawase-optimized');
     assert.strictEqual(presentation.getTitleGpuRolloutProfile(), profile);
 
     presentation.draw();
@@ -131,6 +131,44 @@ test('Gaussian은 등록 ID가 명시되지 않으면 shadow-unavailable이고 l
     });
     available.draw();
     assert.deepEqual(fixture.trace, ['gradient', 'background', 'content', 'shadow']);
+});
+
+test('optimized Kawase 미등록은 compatibility로 숨기지 않고 session에 unavailable로 고정한다', async () => {
+    const fixture = await createPresentationFixture();
+    let factoryCount = 0;
+    let registrationCheckCount = 0;
+    const presentation = new fixture.TitleScenePresentation(fixture.controller, {
+        titleGpuRolloutProfile: Object.freeze({
+            pipelineMode: 'webgpu-kawase',
+            simulationMode: 'cpu'
+        }),
+        webGpuFramePort: {},
+        webGpuBlurPort: {
+            hasAlgorithm(algorithmId) {
+                registrationCheckCount += 1;
+                assert.equal(algorithmId, 'kawase-optimized');
+                return algorithmId === 'kawase-compatibility';
+            }
+        },
+        titleWebGpuBaseGraphFactory() {
+            factoryCount += 1;
+            return createFakeGraph(fixture.trace);
+        }
+    });
+
+    presentation.draw();
+    presentation.draw();
+    assert.equal(factoryCount, 0);
+    assert.equal(registrationCheckCount, 1);
+    assert.equal(presentation.getTitleWebGpuShadowDiagnostics().status, 'shadow-unavailable');
+    assert.equal(
+        presentation.getTitleWebGpuShadowDiagnostics().reason,
+        'blur-algorithm-not-registered'
+    );
+    assert.deepEqual(fixture.trace, [
+        'gradient', 'background', 'content',
+        'gradient', 'background', 'content'
+    ]);
 });
 
 test('Display port가 늦게 준비되면 같은 session profile로 graph를 한 번만 lazy 생성한다', async () => {
@@ -263,7 +301,7 @@ async function createPresentationFixture({ displayPortsReady = true } = {}) {
             'TitleWebGpuBaseGraph'
         ], function init() {
             this.setExport('getTitleWebGpuBaseGraphBlurAlgorithmId', (pipelineMode) => ({
-                'webgpu-kawase': 'kawase-compatibility',
+                'webgpu-kawase': 'kawase-optimized',
                 'webgpu-gaussian': 'gaussian-quality'
             })[pipelineMode] ?? null);
             this.setExport('TitleWebGpuBaseGraph', class TitleWebGpuBaseGraph {});

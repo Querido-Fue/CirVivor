@@ -328,10 +328,20 @@ test('quality ID/상한/shader는 paired separable Gaussian이고 presentation �
     assert.equal(constants.MAX_EFFECTIVE_SIGMA, 4);
     assert.equal(constants.MIN_DOWNSAMPLE_SCALE, 1 / 4);
     assert.equal(constants.MAX_SOURCE_SIGMA, 16);
+    assert.equal(constants.MAX_UNDOWNSAMPLED_SIGMA, 13 / 4);
     assert.equal(constants.MAX_KERNEL_RADIUS, 12);
     assert.equal(constants.MAX_PAIRED_TAP_COUNT, 6);
     assert.equal(constants.MAX_PASS_COUNT, 3);
     assert.equal(constants.DOWNSAMPLE_SAMPLE_COUNT, 4);
+    assert.deepEqual(
+        Array.from(constants.DOWNSAMPLE_SCALE_BUCKETS, (bucket) => bucket.scale),
+        [1, 3 / 4, 1 / 2, 3 / 8, 1 / 4]
+    );
+    assert.equal(
+        constants.DOWNSAMPLE_SCALE_BUCKETS.every((bucket) => Object.isFrozen(bucket)),
+        true
+    );
+    assert.equal(Object.isFrozen(constants.DOWNSAMPLE_SCALE_BUCKETS), true);
     assert.deepEqual(
         Array.from(constants.SUPPORTED_TEXTURE_FORMATS),
         ['rgba8unorm', 'bgra8unorm']
@@ -380,7 +390,9 @@ test('prepare는 3-sigma 정규화/대칭 kernel과 bilinear paired tap을 한 �
         'vertical'
     ]);
     assert.equal(kernel.radius, 9);
+    assert.equal(kernel.dispatchRadius, 9);
     assert.equal(kernel.logicalTapCount, 19);
+    assert.equal(kernel.dispatchTapCount, 19);
     assert.equal(kernel.pairCount, 5);
     assert.equal(kernel.hardwareSampleCount, 11);
     assert.equal(Object.isFrozen(kernel), true);
@@ -395,6 +407,8 @@ test('prepare는 3-sigma 정규화/대칭 kernel과 bilinear paired tap을 한 �
     }
     assertClose(logicalSum, 1, 2e-7);
     assertClose(kernel.normalizedWeightSum, 1, 2e-7);
+    assertClose(kernel.variance, 9, 2e-6);
+    assert.ok(kernel.weightSigma > kernel.sigma, '3-sigma truncation variance를 보정해야 합니다.');
 
     for (const tap of kernel.pairedTaps) {
         const firstWeight = kernel.logicalWeights[tap.firstIndex];
@@ -419,7 +433,7 @@ test('prepare는 3-sigma 정규화/대칭 kernel과 bilinear paired tap을 한 �
     algorithm.destroy();
 });
 
-test('scale policy는 유효 sigma<=4, scale>=1/4, source sigma<=16 계약을 지킨다', async () => {
+test('scale policy는 고정 5-bucket으로 4/8 절벽을 피하고 variance/상한 계약을 지킨다', async () => {
     const { createWebGpuGaussianBlurAlgorithmFactory } = await loadAlgorithmModule();
     const deviceHarness = createDevice('scale');
     const composer = createComposerHarness();
@@ -430,16 +444,22 @@ test('scale policy는 유효 sigma<=4, scale>=1/4, source sigma<=16 계약을 �
     const source = createSourceTexture('scale-source', 1001, 501);
     const frame = createContext(deviceHarness.device, 1, 1, 1001, 501);
     const cases = [
-        [0, 1, 0, 0],
-        [0.5, 1, 0.5, 2],
-        [4, 1, 4, 2],
-        [4.0001, 0.5, 2.00005, 3],
-        [8, 0.5, 4, 3],
-        [8.0001, 0.25, 2.000025, 3],
-        [16, 0.25, 4, 3]
+        [0, 1, 0],
+        [0.5, 1, 2],
+        [13 / 4, 1, 2],
+        [13 / 4 + 0.0001, 3 / 4, 3],
+        [4, 3 / 4, 3],
+        [13 / 3, 3 / 4, 3],
+        [13 / 3 + 0.0001, 1 / 2, 3],
+        [13 / 2, 1 / 2, 3],
+        [13 / 2 + 0.0001, 3 / 8, 3],
+        [8, 3 / 8, 3],
+        [26 / 3, 3 / 8, 3],
+        [26 / 3 + 0.0001, 1 / 4, 3],
+        [16, 1 / 4, 3]
     ];
 
-    for (const [sigma, scale, effectiveSigma, passCount] of cases) {
+    for (const [sigma, scale, passCount] of cases) {
         const request = createRequest(source.texture, sigma);
         const prepared = algorithm.prepare({
             context: frame.context,
@@ -447,14 +467,14 @@ test('scale policy는 유효 sigma<=4, scale>=1/4, source sigma<=16 계약을 �
             key: `scale:${sigma}`
         });
         assert.equal(prepared.downsampleScale, scale);
-        assert.equal(prepared.downsampleFactor, 1 / scale);
-        assertClose(prepared.effectiveSigma, effectiveSigma, 2e-6);
+        assertClose(prepared.downsampleFactor, 1 / scale);
         assert.equal(prepared.passes.length, passCount);
-        assert.ok(Number.isInteger(Math.log2(prepared.downsampleFactor)));
         assert.ok(prepared.downsampleScale >= 1 / 4);
         assert.ok(prepared.downsampleFactor <= 4);
         if (sigma > 0) {
             assert.ok(prepared.effectiveSigma <= 4);
+            assertClose(prepared.reconstructedSourceSigma, sigma, 3e-5);
+            assertClose(prepared.sourcePsfVariance, sigma * sigma, 7e-4);
         }
         assert.equal(prepared.finalWidth, Math.ceil(1001 * scale));
         assert.equal(prepared.finalHeight, Math.ceil(501 * scale));
@@ -469,6 +489,68 @@ test('scale policy는 유효 sigma<=4, scale>=1/4, source sigma<=16 계약을 �
         /sigma는 16 이하/
     );
     assert.equal(deviceHarness.records.textures.length, 0);
+    algorithm.destroy();
+});
+
+test('scale 경계 PSF variance/source offset은 연속이고 fetch/pixel 절벽은 제거된다', async () => {
+    const { createWebGpuGaussianBlurAlgorithmFactory } = await loadAlgorithmModule();
+    const deviceHarness = createDevice('boundary-continuity');
+    const composer = createComposerHarness();
+    const algorithm = createWebGpuGaussianBlurAlgorithmFactory({ composerPort: composer.port })({
+        device: deviceHarness.device,
+        deviceGeneration: 1
+    });
+    const source = createSourceTexture('boundary-source', 1600, 900);
+    const frame = createContext(deviceHarness.device, 1, 1, 1600, 900);
+    const prepare = (sigma) => algorithm.prepare({
+        context: frame.context,
+        request: createRequest(source.texture, sigma),
+        key: `boundary:${sigma}`
+    });
+    const epsilon = 1e-6;
+    const boundaries = [13 / 4, 13 / 3, 13 / 2, 26 / 3];
+    const expectedFetchCounts = [22, 26, 26, 26];
+
+    for (let index = 0; index < boundaries.length; index++) {
+        const boundary = boundaries[index];
+        const before = prepare(boundary - epsilon);
+        const exact = prepare(boundary);
+        const after = prepare(boundary + epsilon);
+
+        assert.ok(before.downsampleScale > after.downsampleScale);
+        assertClose(before.reconstructedSourceSigma, boundary - epsilon, 3e-5);
+        assertClose(exact.reconstructedSourceSigma, boundary, 3e-5);
+        assertClose(after.reconstructedSourceSigma, boundary + epsilon, 3e-5);
+        assert.ok(before.sourcePsfVariance < exact.sourcePsfVariance);
+        assert.ok(exact.sourcePsfVariance < after.sourcePsfVariance);
+        assertClose(
+            before.downsampleSourceOffset,
+            after.downsampleSourceOffset,
+            2e-6
+        );
+        assert.equal(before.fetchCountPerOutputPixel, expectedFetchCounts[index]);
+        assert.equal(after.fetchCountPerOutputPixel, expectedFetchCounts[index]);
+        assert.ok(
+            Math.abs(before.sourcePsfExcessKurtosis - after.sourcePsfExcessKurtosis) < 0.065,
+            '중간 scale bucket은 PSF shape 변화도 기존 2x 절벽보다 작게 제한해야 합니다.'
+        );
+        assert.ok(
+            after.normalizedFetchWork / before.normalizedFetchWork >= 0.4,
+            '해상도 전환의 면적 가중 workload 하락은 기존 1/4 절벽보다 완만해야 합니다.'
+        );
+    }
+
+    for (const formerBoundary of [4, 8]) {
+        const before = prepare(formerBoundary - epsilon);
+        const after = prepare(formerBoundary + epsilon);
+        assert.equal(before.downsampleScale, after.downsampleScale);
+        assert.equal(before.passes.length, after.passes.length);
+        assert.equal(before.fetchCountPerOutputPixel, after.fetchCountPerOutputPixel);
+    }
+
+    const fullResolutionWorst = prepare(13 / 4);
+    assert.equal(fullResolutionWorst.fetchCountPerOutputPixel, 22);
+    assert.ok(fullResolutionWorst.fetchCountPerOutputPixel < 26);
     algorithm.destroy();
 });
 
@@ -532,7 +614,7 @@ test('prepare는 rgba8unorm/bgra8unorm만 허용하고 source/output format을 f
     algorithm.destroy();
 });
 
-test('sigma 10은 1 downsample + H/V, paired 9-fetch kernel, 저해상도 최종 출력을 encode하고 warm 재사용한다', async () => {
+test('sigma 10은 1 downsample + H/V, variance 보정/padded fetch kernel을 encode하고 warm 재사용한다', async () => {
     const { createWebGpuGaussianBlurAlgorithmFactory } = await loadAlgorithmModule();
     const deviceHarness = createDevice('encode');
     const composer = createComposerHarness();
@@ -558,10 +640,15 @@ test('sigma 10은 1 downsample + H/V, paired 9-fetch kernel, 저해상도 최종
     assert.equal(output.height, 100);
     assert.equal(output.downsampleScale, 0.25);
     assert.equal(output.downsampleFactor, 4);
-    assert.equal(output.effectiveSigma, 2.5);
+    assertClose(output.effectiveSigma, Math.sqrt(99) / 4, 2e-6);
+    assertClose(output.residualSourceSigma, Math.sqrt(99), 1e-9);
+    assertClose(output.reconstructedSourceSigma, 10, 3e-5);
+    assert.equal(output.downsampleSourceOffset, 1);
     assert.equal(output.kernelRadius, 8);
-    assert.equal(output.pairedTapCount, 4);
-    assert.equal(output.samplesPerGaussianPass, 9);
+    assert.equal(output.kernelDispatchRadius, 10);
+    assert.equal(output.pairedTapCount, 5);
+    assert.equal(output.samplesPerGaussianPass, 11);
+    assert.equal(output.fetchCountPerOutputPixel, 26);
     assert.deepEqual(frame.records.passes.map((pass) => pass.pipeline.entryPoint), [
         'gaussian_downsample',
         'gaussian_directional',
@@ -604,6 +691,7 @@ test('sigma 10은 1 downsample + H/V, paired 9-fetch kernel, 저해상도 최종
         assert.equal(verticalUniform[uniformOffset], prepared.kernel.pairedTaps[index].offset);
         assert.equal(verticalUniform[uniformOffset + 1], prepared.kernel.pairedTaps[index].weight);
     }
+    assert.equal(prepared.kernel.pairedTaps.at(-1).weight, 0, 'padding fetch는 PSF를 바꾸지 않습니다.');
 
     assert.deepEqual(deviceHarness.records.samplers[0].descriptor, {
         label: 'title-gaussian-linear-clamp-sampler',
@@ -901,8 +989,9 @@ test('callback 등록 실패, profile/range 오류, extent fallback은 fail-clos
     });
     assert.equal(fallbackPrepared.sourceWidth, 100);
     assert.equal(fallbackPrepared.sourceHeight, 50);
-    assert.equal(fallbackPrepared.finalWidth, 50);
-    assert.equal(fallbackPrepared.finalHeight, 25);
+    assert.equal(fallbackPrepared.downsampleScale, 3 / 8);
+    assert.equal(fallbackPrepared.finalWidth, 38);
+    assert.equal(fallbackPrepared.finalHeight, 19);
     const fallbackOutput = algorithm.encode({
         context: frame.context,
         request: fallbackRequest,

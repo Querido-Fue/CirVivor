@@ -10,14 +10,60 @@ const GAUSSIAN_TRUNCATION_SIGMA = 3;
 const MAX_EFFECTIVE_SIGMA = 4;
 const MIN_DOWNSAMPLE_SCALE = 1 / 4;
 const MAX_SOURCE_SIGMA = MAX_EFFECTIVE_SIGMA / MIN_DOWNSAMPLE_SCALE;
+const MAX_UNDOWNSAMPLED_SIGMA = 13 / 4;
 const MAX_KERNEL_RADIUS = Math.ceil(GAUSSIAN_TRUNCATION_SIGMA * MAX_EFFECTIVE_SIGMA);
 const MAX_PAIRED_TAP_COUNT = Math.ceil(MAX_KERNEL_RADIUS / 2);
 const MAX_PASS_COUNT = 3;
+const GAUSSIAN_VARIANCE_SOLVE_ITERATIONS = 24;
 const GAUSSIAN_UNIFORM_SIZE = (1 + MAX_PAIRED_TAP_COUNT) * 16;
 const TRANSPARENT_CLEAR_VALUE = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 const SUPPORTED_TEXTURE_FORMATS = Object.freeze([
     'rgba8unorm',
     'bgra8unorm'
+]);
+// 3.25에서 full-resolution 6번째 paired fetch를 피하고, 중간 scale로 면적 절벽을 분산합니다.
+// source offset 끝값은 다음 bucket 시작값과 같아 downsample PSF가 경계에서 튀지 않습니다.
+const DOWNSAMPLE_SCALE_BUCKETS = Object.freeze([
+    Object.freeze({
+        minSourceSigma: 0,
+        maxSourceSigma: MAX_UNDOWNSAMPLED_SIGMA,
+        scale: 1,
+        minDispatchRadius: 1,
+        startSourceOffset: 0,
+        endSourceOffset: 0
+    }),
+    Object.freeze({
+        minSourceSigma: MAX_UNDOWNSAMPLED_SIGMA,
+        maxSourceSigma: 13 / 3,
+        scale: 3 / 4,
+        minDispatchRadius: 8,
+        startSourceOffset: 0,
+        endSourceOffset: 1 / 2
+    }),
+    Object.freeze({
+        minSourceSigma: 13 / 3,
+        maxSourceSigma: 13 / 2,
+        scale: 1 / 2,
+        minDispatchRadius: 10,
+        startSourceOffset: 1 / 2,
+        endSourceOffset: 2 / 3
+    }),
+    Object.freeze({
+        minSourceSigma: 13 / 2,
+        maxSourceSigma: 26 / 3,
+        scale: 3 / 8,
+        minDispatchRadius: 10,
+        startSourceOffset: 2 / 3,
+        endSourceOffset: 1
+    }),
+    Object.freeze({
+        minSourceSigma: 26 / 3,
+        maxSourceSigma: MAX_SOURCE_SIGMA,
+        scale: MIN_DOWNSAMPLE_SCALE,
+        minDispatchRadius: 10,
+        startSourceOffset: 1,
+        endSourceOffset: 1
+    })
 ]);
 
 /** WebGpuBlurService registry에서 사용하는 고품질 Gaussian algorithm ID입니다. */
@@ -25,17 +71,19 @@ export const WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID = 'gaussian-quality';
 
 /**
  * Gaussian quality profile의 format, scale, kernel, pass 상한입니다.
- * 단일 4-tap 축소의 재구성 품질을 보장하기 위해 source sigma를 16 이하,
- * 축소율을 1/4 이상으로 제한하고 유효 sigma를 4 이하로 유지합니다.
+ * 고정된 다섯 scale bucket이 4/8 경계의 급격한 해상도 변화를 분산합니다.
+ * source sigma는 16 이하, 축소율은 1/4 이상, 유효 sigma는 4 이하입니다.
  */
 export const WEBGPU_GAUSSIAN_BLUR_CONSTANTS = Object.freeze({
     GAUSSIAN_TRUNCATION_SIGMA,
     MAX_EFFECTIVE_SIGMA,
     MIN_DOWNSAMPLE_SCALE,
     MAX_SOURCE_SIGMA,
+    MAX_UNDOWNSAMPLED_SIGMA,
     MAX_KERNEL_RADIUS,
     MAX_PAIRED_TAP_COUNT,
     MAX_PASS_COUNT,
+    DOWNSAMPLE_SCALE_BUCKETS,
     DOWNSAMPLE_SAMPLE_COUNT: 4,
     SUPPORTED_TEXTURE_FORMATS,
     TEXTURE_USAGE: TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_RENDER_ATTACHMENT
@@ -173,7 +221,7 @@ export function createWebGpuGaussianBlurAlgorithmFactory(options = {}) {
 }
 
 /**
- * 최대 4배 power-of-two 축소와 bilinear-paired separable Gaussian을 제공하는 adapter입니다.
+ * 최대 4배 고정 quantized 축소와 bilinear-paired separable Gaussian을 제공하는 adapter입니다.
  * presentation target이나 command 제출을 소유하지 않고 composer encoder에만 pass를 기록합니다.
  */
 export class WebGpuGaussianBlurAlgorithm {
@@ -247,8 +295,16 @@ export class WebGpuGaussianBlurAlgorithm {
             sourceHeight,
             sourceSigma,
             effectiveSigma: plan.effectiveSigma,
+            residualSourceSigma: plan.residualSourceSigma,
+            reconstructedSourceSigma: plan.reconstructedSourceSigma,
             downsampleScale: plan.downsampleScale,
             downsampleFactor: plan.downsampleFactor,
+            downsampleSourceOffset: plan.downsampleSourceOffset,
+            scaleBucketIndex: plan.scaleBucketIndex,
+            sourcePsfVariance: plan.sourcePsfVariance,
+            sourcePsfExcessKurtosis: plan.sourcePsfExcessKurtosis,
+            fetchCountPerOutputPixel: plan.fetchCountPerOutputPixel,
+            normalizedFetchWork: plan.normalizedFetchWork,
             format,
             kernel: plan.kernel,
             passes: plan.passes,
@@ -285,11 +341,20 @@ export class WebGpuGaussianBlurAlgorithm {
                 passCount: 0,
                 sourceSigma: 0,
                 effectiveSigma: 0,
+                residualSourceSigma: 0,
+                reconstructedSourceSigma: 0,
                 downsampleScale: 1,
                 downsampleFactor: 1,
+                downsampleSourceOffset: 0,
+                scaleBucketIndex: 0,
                 kernelRadius: 0,
+                kernelDispatchRadius: 0,
                 pairedTapCount: 0,
                 samplesPerGaussianPass: 0,
+                sourcePsfVariance: 0,
+                sourcePsfExcessKurtosis: 0,
+                fetchCountPerOutputPixel: 0,
+                normalizedFetchWork: 0,
                 bounds: request.bounds,
                 halo: request.halo,
                 edgeMode: 'clamp',
@@ -351,11 +416,20 @@ export class WebGpuGaussianBlurAlgorithm {
             passCount: prepared.passes.length,
             sourceSigma: prepared.sourceSigma,
             effectiveSigma: prepared.effectiveSigma,
+            residualSourceSigma: prepared.residualSourceSigma,
+            reconstructedSourceSigma: prepared.reconstructedSourceSigma,
             downsampleScale: prepared.downsampleScale,
             downsampleFactor: prepared.downsampleFactor,
+            downsampleSourceOffset: prepared.downsampleSourceOffset,
+            scaleBucketIndex: prepared.scaleBucketIndex,
             kernelRadius: prepared.kernel.radius,
+            kernelDispatchRadius: prepared.kernel.dispatchRadius,
             pairedTapCount: prepared.kernel.pairCount,
             samplesPerGaussianPass: prepared.kernel.hardwareSampleCount,
+            sourcePsfVariance: prepared.sourcePsfVariance,
+            sourcePsfExcessKurtosis: prepared.sourcePsfExcessKurtosis,
+            fetchCountPerOutputPixel: prepared.fetchCountPerOutputPixel,
+            normalizedFetchWork: prepared.normalizedFetchWork,
             bounds: request.bounds,
             halo: request.halo,
             edgeMode: 'clamp',
@@ -698,8 +772,16 @@ function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
     if (sourceSigma <= 0) {
         return Object.freeze({
             effectiveSigma: 0,
+            residualSourceSigma: 0,
+            reconstructedSourceSigma: 0,
             downsampleScale: 1,
             downsampleFactor: 1,
+            downsampleSourceOffset: 0,
+            scaleBucketIndex: 0,
+            sourcePsfVariance: 0,
+            sourcePsfExcessKurtosis: 0,
+            fetchCountPerOutputPixel: 0,
+            normalizedFetchWork: 0,
             kernel: null,
             passes: Object.freeze([]),
             finalWidth: sourceWidth,
@@ -707,12 +789,26 @@ function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
         });
     }
 
-    const downsampleScale = selectDownsampleScale(sourceSigma);
-    const downsampleFactor = Math.round(1 / downsampleScale);
-    const effectiveSigma = Math.fround(sourceSigma * downsampleScale);
+    const scaleSelection = selectDownsampleScaleBucket(sourceSigma);
+    const downsampleScale = scaleSelection.bucket.scale;
+    const downsampleFactor = 1 / downsampleScale;
+    const downsampleSourceOffset = resolveDownsampleSourceOffset(
+        sourceSigma,
+        scaleSelection.bucket
+    );
+    const residualSourceVariance = Math.max(
+        0,
+        sourceSigma * sourceSigma
+            - downsampleSourceOffset * downsampleSourceOffset
+    );
+    const residualSourceSigma = Math.sqrt(residualSourceVariance);
+    const effectiveSigma = Math.fround(residualSourceSigma * downsampleScale);
     const finalWidth = Math.max(1, Math.ceil(sourceWidth * downsampleScale));
     const finalHeight = Math.max(1, Math.ceil(sourceHeight * downsampleScale));
-    const kernel = createGaussianKernel(effectiveSigma);
+    const kernel = createGaussianKernel(
+        effectiveSigma,
+        scaleSelection.bucket.minDispatchRadius
+    );
     const poolDescriptor = createPoolDescriptor(finalWidth, finalHeight, format);
     const passes = [];
 
@@ -723,8 +819,9 @@ function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
             sourceHeight,
             targetWidth: finalWidth,
             targetHeight: finalHeight,
-            sampleStepX: Math.fround(0.25 / finalWidth),
-            sampleStepY: Math.fround(0.25 / finalHeight),
+            sampleStepX: Math.fround(downsampleSourceOffset / sourceWidth),
+            sampleStepY: Math.fround(downsampleSourceOffset / sourceHeight),
+            sourceOffsetPixels: downsampleSourceOffset,
             sampleCount: WEBGPU_GAUSSIAN_BLUR_CONSTANTS.DOWNSAMPLE_SAMPLE_COUNT,
             poolDescriptor
         }));
@@ -752,10 +849,36 @@ function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
         poolDescriptor
     }));
 
+    const sourceKernelVariance = kernel.variance
+        / (downsampleScale * downsampleScale);
+    const sourcePsfVariance = sourceKernelVariance
+        + downsampleSourceOffset * downsampleSourceOffset;
+    const sourcePsfFourthMoment = kernel.fourthMoment
+        / Math.pow(downsampleScale, 4)
+        + 6 * sourceKernelVariance
+            * downsampleSourceOffset * downsampleSourceOffset
+        + Math.pow(downsampleSourceOffset, 4);
+    const sourcePsfExcessKurtosis = sourcePsfVariance > 0
+        ? sourcePsfFourthMoment / (sourcePsfVariance * sourcePsfVariance) - 3
+        : 0;
+    const fetchCountPerOutputPixel = passes.reduce(
+        (sum, pass) => sum + pass.sampleCount,
+        0
+    );
+    const normalizedPixelArea = (finalWidth * finalHeight) / (sourceWidth * sourceHeight);
+
     return Object.freeze({
         effectiveSigma,
+        residualSourceSigma,
+        reconstructedSourceSigma: Math.sqrt(sourcePsfVariance),
         downsampleScale,
         downsampleFactor,
+        downsampleSourceOffset,
+        scaleBucketIndex: scaleSelection.index,
+        sourcePsfVariance,
+        sourcePsfExcessKurtosis,
+        fetchCountPerOutputPixel,
+        normalizedFetchWork: fetchCountPerOutputPixel * normalizedPixelArea,
         kernel,
         passes: Object.freeze(passes),
         finalWidth,
@@ -763,24 +886,46 @@ function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
     });
 }
 
-function selectDownsampleScale(sourceSigma) {
-    let scale = 1;
-    while (sourceSigma * scale > MAX_EFFECTIVE_SIGMA
-        && scale > MIN_DOWNSAMPLE_SCALE) {
-        scale *= 0.5;
+function selectDownsampleScaleBucket(sourceSigma) {
+    for (let index = 0; index < DOWNSAMPLE_SCALE_BUCKETS.length; index++) {
+        const bucket = DOWNSAMPLE_SCALE_BUCKETS[index];
+        if (sourceSigma <= bucket.maxSourceSigma) {
+            return Object.freeze({ index, bucket });
+        }
     }
-    return scale;
+    return Object.freeze({
+        index: DOWNSAMPLE_SCALE_BUCKETS.length - 1,
+        bucket: DOWNSAMPLE_SCALE_BUCKETS[DOWNSAMPLE_SCALE_BUCKETS.length - 1]
+    });
 }
 
-function createGaussianKernel(sigma) {
+function resolveDownsampleSourceOffset(sourceSigma, bucket) {
+    if (bucket.scale >= 1) {
+        return 0;
+    }
+    const range = bucket.maxSourceSigma - bucket.minSourceSigma;
+    const progress = range > 0
+        ? Math.max(0, Math.min(1, (sourceSigma - bucket.minSourceSigma) / range))
+        : 1;
+    return bucket.startSourceOffset
+        + (bucket.endSourceOffset - bucket.startSourceOffset) * progress;
+}
+
+function createGaussianKernel(sigma, minDispatchRadius = 1) {
     const radius = Math.min(
         MAX_KERNEL_RADIUS,
         Math.max(1, Math.ceil(GAUSSIAN_TRUNCATION_SIGMA * sigma))
     );
-    const logicalWeights = new Array(radius + 1);
+    const dispatchRadius = Math.min(
+        MAX_KERNEL_RADIUS,
+        Math.max(radius, minDispatchRadius)
+    );
+    const weightSigma = solveGaussianWeightSigma(sigma, radius);
+    // 저해상도 pass의 0-weight padding은 PSF를 바꾸지 않으면서 경계 fetch 수를 고정합니다.
+    const logicalWeights = new Array(dispatchRadius + 1).fill(0);
     logicalWeights[0] = 1;
     let normalization = 1;
-    const inverseTwoSigmaSquared = 1 / (2 * sigma * sigma);
+    const inverseTwoSigmaSquared = 1 / (2 * weightSigma * weightSigma);
     for (let index = 1; index <= radius; index++) {
         const weight = Math.exp(-(index * index) * inverseTwoSigmaSquared);
         logicalWeights[index] = weight;
@@ -792,9 +937,11 @@ function createGaussianKernel(sigma) {
 
     const pairedTaps = [];
     let pairedTailWeight = 0;
-    for (let index = 1; index <= radius; index += 2) {
+    for (let index = 1; index <= dispatchRadius; index += 2) {
         const firstWeight = logicalWeights[index];
-        const secondWeight = index + 1 <= radius ? logicalWeights[index + 1] : 0;
+        const secondWeight = index + 1 <= dispatchRadius
+            ? logicalWeights[index + 1]
+            : 0;
         const combinedWeight = Math.fround(firstWeight + secondWeight);
         const offset = Math.fround(
             combinedWeight > 0
@@ -803,7 +950,7 @@ function createGaussianKernel(sigma) {
         );
         pairedTaps.push(Object.freeze({
             firstIndex: index,
-            secondIndex: index + 1 <= radius ? index + 1 : null,
+            secondIndex: index + 1 <= dispatchRadius ? index + 1 : null,
             offset,
             weight: combinedWeight
         }));
@@ -813,17 +960,76 @@ function createGaussianKernel(sigma) {
     const centerWeight = Math.fround(Math.max(0, 1 - pairedTailWeight * 2));
     logicalWeights[0] = centerWeight;
     const normalizedWeightSum = centerWeight + pairedTailWeight * 2;
+    let variance = 0;
+    let fourthMoment = 0;
+    for (let index = 1; index <= radius; index++) {
+        const symmetricWeight = logicalWeights[index] * 2;
+        variance += index * index * symmetricWeight;
+        fourthMoment += Math.pow(index, 4) * symmetricWeight;
+    }
     return Object.freeze({
         sigma,
+        weightSigma,
         radius,
+        dispatchRadius,
         logicalTapCount: radius * 2 + 1,
+        dispatchTapCount: dispatchRadius * 2 + 1,
         pairCount: pairedTaps.length,
         hardwareSampleCount: pairedTaps.length * 2 + 1,
         centerWeight,
         normalizedWeightSum,
+        variance,
+        fourthMoment,
         logicalWeights: Object.freeze(logicalWeights),
         pairedTaps: Object.freeze(pairedTaps)
     });
+}
+
+function solveGaussianWeightSigma(targetSigma, radius) {
+    const targetVariance = targetSigma * targetSigma;
+    if (!(targetVariance > Number.MIN_VALUE)) {
+        return Math.max(targetSigma, Number.MIN_VALUE);
+    }
+
+    let lower = Number.MIN_VALUE;
+    let upper = Math.max(0.5, targetSigma);
+    let upperVariance = calculateGaussianVariance(upper, radius);
+    while (upperVariance < targetVariance && upper < MAX_EFFECTIVE_SIGMA * 4) {
+        upper *= 2;
+        upperVariance = calculateGaussianVariance(upper, radius);
+    }
+    if (upperVariance < targetVariance) {
+        return upper;
+    }
+
+    // 3-sigma truncation 뒤의 실제 discrete variance가 요청 variance와 같아지도록 보정합니다.
+    for (let iteration = 0;
+        iteration < GAUSSIAN_VARIANCE_SOLVE_ITERATIONS;
+        iteration++) {
+        const midpoint = (lower + upper) * 0.5;
+        const variance = calculateGaussianVariance(midpoint, radius);
+        if (variance < targetVariance) {
+            lower = midpoint;
+        } else {
+            upper = midpoint;
+        }
+    }
+    return (lower + upper) * 0.5;
+}
+
+function calculateGaussianVariance(sigma, radius) {
+    if (!(sigma > 0)) {
+        return 0;
+    }
+    const inverseTwoSigmaSquared = 1 / (2 * sigma * sigma);
+    let normalization = 1;
+    let weightedVariance = 0;
+    for (let index = 1; index <= radius; index++) {
+        const weight = Math.exp(-(index * index) * inverseTwoSigmaSquared);
+        normalization += weight * 2;
+        weightedVariance += index * index * weight * 2;
+    }
+    return weightedVariance / normalization;
 }
 
 function createPoolDescriptor(width, height, format) {

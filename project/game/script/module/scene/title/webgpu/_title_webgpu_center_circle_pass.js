@@ -1,7 +1,7 @@
 const BUFFER_USAGE_COPY_DST = 0x08;
 const BUFFER_USAGE_UNIFORM = 0x40;
 const COLOR_WRITE_ALL = 0x0F;
-const UNIFORM_FLOAT_COUNT = 32;
+const UNIFORM_FLOAT_COUNT = 36;
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * Float32Array.BYTES_PER_ELEMENT;
 const TRANSPARENT_CLEAR_VALUE = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 const DEFAULT_BASE_COLOR = Object.freeze([0.086, 0.435, 0.984]);
@@ -16,13 +16,16 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_PASS_CONSTANTS = Object.freeze({
 
 /**
  * 기존 TITLE_LOADING_CIRCLE GLSL의 glass, refraction, rim, glow 수식을 WebGPU로 옮긴 WGSL입니다.
- * target은 screen-space ROI를 나타내며 backdrop texture의 0..1 UV가 ROI 전체에 대응합니다.
+ * target과 backdrop의 screen-space origin/논리 크기를 분리해 저해상도 blur 결과도
+ * 원래 backdrop ROI에 정확히 대응시킵니다.
  */
 export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
     struct CenterCircleParameters {
         targetResolution: vec2<f32>,
         center: vec2<f32>,
         backdropResolution: vec2<f32>,
+        backdropLogicalSize: vec2<f32>,
+        targetToBackdropOffset: vec2<f32>,
         radius: f32,
         outlineWidth: f32,
         time: f32,
@@ -130,15 +133,14 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
                 + (parameters.highlightColor.xyz * saturate(parameters.brightnessBoost) * 0.18)
         );
 
-        let roiUv = fragCoord / max(parameters.targetResolution, vec2<f32>(1.0));
-        let refractionOffset = normalized * (
-            vec2<f32>(parameters.backdropRefractionStrength)
-                / max(parameters.targetResolution, vec2<f32>(1.0))
-        );
+        let backdropLocal = fragCoord + parameters.targetToBackdropOffset;
+        let refractionOffset = normalized * parameters.backdropRefractionStrength;
+        let roiUv = (backdropLocal + refractionOffset)
+            / max(parameters.backdropLogicalSize, vec2<f32>(1.0));
         let halfBackdropTexel = vec2<f32>(0.5)
             / max(parameters.backdropResolution, vec2<f32>(1.0));
         let backdropUv = clamp(
-            roiUv + refractionOffset,
+            roiUv,
             halfBackdropTexel,
             vec2<f32>(1.0) - halfBackdropTexel
         );
@@ -227,6 +229,10 @@ export class TitleWebGpuCenterCirclePass {
      * @param {GPUTextureView} input.backdropView - blur service가 만든 backdrop texture view입니다.
      * @param {number} input.backdropWidth - backdrop texture 너비입니다.
      * @param {number} input.backdropHeight - backdrop texture 높이입니다.
+     * @param {number} [input.backdropLogicalWidth=input.targetWidth] - backdrop가 나타내는 screen-space 너비입니다.
+     * @param {number} [input.backdropLogicalHeight=input.targetHeight] - backdrop가 나타내는 screen-space 높이입니다.
+     * @param {number} [input.backdropOriginX=input.originX] - backdrop 논리 영역 좌상단의 screen-space X입니다.
+     * @param {number} [input.backdropOriginY=input.originY] - backdrop 논리 영역 좌상단의 screen-space Y입니다.
      * @param {GPUTextureView} input.targetView - caller 소유 transparent effect target view입니다.
      * @param {number} input.targetWidth - effect target 너비입니다.
      * @param {number} input.targetHeight - effect target 높이입니다.
@@ -262,6 +268,20 @@ export class TitleWebGpuCenterCirclePass {
         const backdropHeight = normalizeExtent(input.backdropHeight, 'backdropHeight');
         const originX = Number.isFinite(input.originX) ? input.originX : 0;
         const originY = Number.isFinite(input.originY) ? input.originY : 0;
+        const backdropLogicalWidth = normalizeExtent(
+            input.backdropLogicalWidth ?? targetWidth,
+            'backdropLogicalWidth'
+        );
+        const backdropLogicalHeight = normalizeExtent(
+            input.backdropLogicalHeight ?? targetHeight,
+            'backdropLogicalHeight'
+        );
+        const backdropOriginX = Number.isFinite(input.backdropOriginX)
+            ? input.backdropOriginX
+            : originX;
+        const backdropOriginY = Number.isFinite(input.backdropOriginY)
+            ? input.backdropOriginY
+            : originY;
         const loadOp = normalizeLoadOp(input.loadOp);
         const format = resolveTargetFormat(input.format, context.format);
         const centerX = Number.isFinite(command.x) ? command.x : 0;
@@ -302,6 +322,10 @@ export class TitleWebGpuCenterCirclePass {
             targetHeight,
             backdropWidth,
             backdropHeight,
+            backdropLogicalWidth,
+            backdropLogicalHeight,
+            targetToBackdropOffsetX: originX - backdropOriginX,
+            targetToBackdropOffsetY: originY - backdropOriginY,
             centerX: centerX - originX,
             centerY: centerY - originY,
             radius,
@@ -526,6 +550,10 @@ export class TitleWebGpuCenterCirclePass {
         targetHeight,
         backdropWidth,
         backdropHeight,
+        backdropLogicalWidth,
+        backdropLogicalHeight,
+        targetToBackdropOffsetX,
+        targetToBackdropOffsetY,
         centerX,
         centerY,
         radius,
@@ -540,26 +568,30 @@ export class TitleWebGpuCenterCirclePass {
         floats[3] = centerY;
         floats[4] = backdropWidth;
         floats[5] = backdropHeight;
-        floats[6] = radius;
-        floats[7] = outlineWidth;
-        floats[8] = Number.isFinite(command.time) ? command.time : 0;
-        floats[9] = alpha;
-        floats[10] = Number.isFinite(command.glowStrength) ? Math.max(0, command.glowStrength) : 0.24;
-        floats[11] = Number.isFinite(command.glassStrength) ? Math.max(0, command.glassStrength) : 0.72;
-        floats[12] = Number.isFinite(command.brightnessBoost) ? Math.max(0, command.brightnessBoost) : 0.08;
-        floats[13] = Number.isFinite(command.bodyRadiusExpandOutlineRatio)
+        floats[6] = backdropLogicalWidth;
+        floats[7] = backdropLogicalHeight;
+        floats[8] = targetToBackdropOffsetX;
+        floats[9] = targetToBackdropOffsetY;
+        floats[10] = radius;
+        floats[11] = outlineWidth;
+        floats[12] = Number.isFinite(command.time) ? command.time : 0;
+        floats[13] = alpha;
+        floats[14] = Number.isFinite(command.glowStrength) ? Math.max(0, command.glowStrength) : 0.24;
+        floats[15] = Number.isFinite(command.glassStrength) ? Math.max(0, command.glassStrength) : 0.72;
+        floats[16] = Number.isFinite(command.brightnessBoost) ? Math.max(0, command.brightnessBoost) : 0.08;
+        floats[17] = Number.isFinite(command.bodyRadiusExpandOutlineRatio)
             ? Math.max(0, command.bodyRadiusExpandOutlineRatio)
             : 0.38;
-        floats[14] = Number.isFinite(command.backdropBlurStrength)
+        floats[18] = Number.isFinite(command.backdropBlurStrength)
             ? Math.max(0, command.backdropBlurStrength)
             : 0.16;
-        floats[15] = Number.isFinite(command.backdropRefractionStrength)
+        floats[19] = Number.isFinite(command.backdropRefractionStrength)
             ? Math.max(0, command.backdropRefractionStrength)
             : 4.5;
-        writeColor(floats, 16, command.colors?.base, DEFAULT_BASE_COLOR);
-        writeColor(floats, 20, command.colors?.deep, DEFAULT_DEEP_COLOR);
-        writeColor(floats, 24, command.colors?.rim, DEFAULT_RIM_COLOR);
-        writeColor(floats, 28, command.colors?.highlight, DEFAULT_HIGHLIGHT_COLOR);
+        writeColor(floats, 20, command.colors?.base, DEFAULT_BASE_COLOR);
+        writeColor(floats, 24, command.colors?.deep, DEFAULT_DEEP_COLOR);
+        writeColor(floats, 28, command.colors?.rim, DEFAULT_RIM_COLOR);
+        writeColor(floats, 32, command.colors?.highlight, DEFAULT_HIGHLIGHT_COLOR);
     }
 
     #releaseGenerationResources() {

@@ -17,15 +17,20 @@ const {
     getTitleWebGpuBaseGraphBlurAlgorithmId
 } = module;
 
-test('pipeline mode는 등록될 Kawase/Gaussian ID에 명시적으로 매핑된다', () => {
+test('pipeline mode는 optimized Kawase/Gaussian ID에 명시적으로 매핑된다', () => {
     assert.doesNotMatch(
         source,
         /from\s+['"]display\/webgpu\/webgpu_gaussian_blur_algorithm\.js/u,
         'Gaussian 구현 parse/import 실패가 Kawase graph 로드를 막으면 안 됨'
     );
+    assert.doesNotMatch(
+        source,
+        /from\s+['"]display\/webgpu\/webgpu_optimized_kawase_blur_algorithm\.js/u,
+        'optimized Kawase 구현 parse/import 실패가 compatibility graph 로드를 막으면 안 됨'
+    );
     assert.equal(
         getTitleWebGpuBaseGraphBlurAlgorithmId('webgpu-kawase'),
-        'kawase-compatibility'
+        'kawase-optimized'
     );
     assert.equal(
         getTitleWebGpuBaseGraphBlurAlgorithmId('webgpu-gaussian'),
@@ -34,7 +39,7 @@ test('pipeline mode는 등록될 Kawase/Gaussian ID에 명시적으로 매핑된
     assert.equal(getTitleWebGpuBaseGraphBlurAlgorithmId('legacy-webgl'), null);
 });
 
-test('legacy center Kawase offset은 Gaussian에서 시각 sigma로 변환되고 halo도 변환값을 따른다', () => {
+test('legacy center Kawase offset은 quality 경로에서 시각 sigma로 변환되고 halo도 변환값을 따른다', () => {
     const kawase = createFixture({ blurAlgorithmId: 'kawase-compatibility' });
     const kawaseInput = createInput({ introBlur: 0 });
     kawaseInput.centerCommand.backdropBlur = 0.1;
@@ -54,8 +59,32 @@ test('legacy center Kawase offset은 Gaussian에서 시각 sigma로 변환되고
     gaussianInput.centerCommand.backdropBlur = 0.1;
     assert.equal(gaussian.graph.encode(gaussianInput), true);
     assert.equal(gaussian.blurRequests[0].sigma, 6.5);
-    assert.ok(gaussian.blurRequests[0].halo.left >= 20);
+    assert.equal(gaussian.blurRequests[0].halo.left, 22);
     gaussian.framePort.abort();
+
+    const optimizedKawase = createFixture({ blurAlgorithmId: 'kawase-optimized' });
+    const optimizedInput = createInput({ introBlur: 0 });
+    optimizedInput.centerCommand.backdropBlur = 0.1;
+    assert.equal(optimizedKawase.graph.encode(optimizedInput), true);
+    assert.equal(optimizedKawase.blurRequests[0].sigma, 6.5);
+    assert.equal(optimizedKawase.blurRequests[0].halo.left, 22);
+    optimizedKawase.framePort.abort();
+});
+
+test('algorithm halo preflight가 fallback보다 크면 crop 전에 ROI에 반영한다', () => {
+    const fixture = createFixture({
+        blurAlgorithmId: 'kawase-optimized',
+        requiredHaloResolver({ algorithmId, sigma }) {
+            assert.equal(algorithmId, 'kawase-optimized');
+            return sigma === 7.5625 ? 32 : null;
+        }
+    });
+    const input = createInput({ introBlur: 7.5625 });
+    assert.equal(fixture.graph.encode(input), true);
+    assert.equal(fixture.blurRequests[1].sigma, 7.5625);
+    assert.equal(fixture.blurRequests[1].halo.left, 32);
+    assert.ok(fixture.graph.getDiagnostics().lastRoi.width >= 424);
+    fixture.framePort.abort();
 });
 
 test('base graph는 A→center snapshot→shield→center→intro blur→A in-place overlay:0 순서를 shadow-only로 기록한다', () => {
@@ -107,8 +136,16 @@ test('base graph는 A→center snapshot→shield→center→intro blur→A in-pl
     assert.strictEqual(centerBlur.sourceTexture, centerCheckpoint.texture);
     assert.equal(centerBlur.checkpointId, 'title:center-backdrop');
     assert.equal(centerBlur.sigma, 6.5);
+    assert.equal(centerCheckpoint.width, 400);
+    assert.equal(centerCheckpoint.height, 400);
+    assert.equal(centerBlur.bounds.width, 360);
+    assert.ok(
+        fixture.poolAcquireDescriptors[2].width > centerCheckpoint.width,
+        'intro effect ROI와 center backdrop ROI를 독립 크기로 유지'
+    );
     assert.equal(fixture.blurRequests[1].checkpointId, 'title:intro-effect');
     assert.equal(fixture.blurRequests[1].sigma, 10);
+    assert.ok(fixture.blurRequests[1].bounds.width > centerBlur.bounds.width);
 
     fixture.framePort.commit();
     assert.equal(fixture.trace.at(-1), 'pool:end');
@@ -118,14 +155,55 @@ test('base graph는 A→center snapshot→shield→center→intro blur→A in-pl
     assert.equal(diagnostics.abortCount, 0);
 });
 
-test('intro blur가 0이면 shield→center 원본 effect를 최종 합성하고 logo revision만 업로드한다', () => {
+test('intro blur가 0이면 shield는 scene에 직접 그리고 center만 작은 ROI에서 합성한다', () => {
     const fixture = createFixture();
     const first = createInput({ introBlur: 0, logoRevision: 8 });
 
     assert.equal(fixture.graph.encode(first), true);
     assert.equal(fixture.blurRequests.length, 1);
     assert.equal(fixture.blurRequests[0].checkpointId, 'title:center-backdrop');
-    assert.match(fixture.trace.at(-1), />logo:8$/);
+    assert.deepEqual({ ...fixture.graph.getDiagnostics().lastRoi }, {
+        x: 440,
+        y: 160,
+        width: 400,
+        height: 400
+    });
+    assert.equal(fixture.graph.getDiagnostics().texturePool.textureCount, 2);
+    assert.deepEqual(fixture.trace.slice(0, -1), [
+        'pool:begin:1:1:1280x720',
+        'gradient:clear',
+        'enemy:load',
+        'composite:title-center-backdrop-crop:1:clear:scene',
+        'shield:load',
+        'blur:title:center-backdrop',
+        'center:load',
+        'atlas:upload:8'
+    ]);
+    assert.match(
+        fixture.trace.at(-1),
+        /^composite:title-base-checkpoint:1:load:logo:8$/u
+    );
+    assert.equal(fixture.shieldInputs.length, 1);
+    assert.strictEqual(fixture.shieldInputs[0].targetView, fixture.sceneView());
+    assert.deepEqual({
+        targetWidth: fixture.shieldInputs[0].targetWidth,
+        targetHeight: fixture.shieldInputs[0].targetHeight,
+        originX: fixture.shieldInputs[0].originX,
+        originY: fixture.shieldInputs[0].originY,
+        loadOp: fixture.shieldInputs[0].loadOp
+    }, {
+        targetWidth: 1280,
+        targetHeight: 720,
+        originX: 0,
+        originY: 0,
+        loadOp: 'load'
+    });
+    assert.deepEqual(fixture.finalCompositeSafety[0], {
+        targetIsScene: true,
+        sourceAliasesTarget: false,
+        layerCount: 1
+    });
+    assert.match(fixture.trace.at(-1), /:logo:8$/);
     fixture.framePort.commit();
 
     fixture.framePort.nextFrame({ frameId: 2 });
@@ -136,8 +214,11 @@ test('intro blur가 0이면 shield→center 원본 effect를 최종 합성하고
     assert.equal(fixture.uiAtlas.uploadCount, 1);
     assert.equal(fixture.uiAtlas.cacheHitCount, 1);
     assert.equal(fixture.graph.getDiagnostics().texturePool.allocationCount, 0);
-    assert.equal(fixture.graph.getDiagnostics().texturePool.reuseCount, 3);
-    assert.equal(fixture.poolAcquireDescriptors.length, 3);
+    assert.equal(fixture.graph.getDiagnostics().texturePool.reuseCount, 2);
+    assert.equal(fixture.poolAcquireDescriptors.length, 2);
+    assert.equal(fixture.poolAcquireDescriptors.filter(
+        (descriptor) => descriptor.width === 400 && descriptor.height === 400
+    ).length, 1, 'center snapshot만 center ROI 크기로 유지');
     assert.equal(fixture.poolAcquireDescriptors.filter(
         (descriptor) => descriptor.width === 1280 && descriptor.height === 720
     ).length, 1, 'warm frame에서도 scene A 외 전해상도 lease 금지');
@@ -232,7 +313,7 @@ test('same-generation device drift는 pool을 건드리기 전에 거부하고 �
         fixture.graph.texturePool.entries,
         (entry) => entry.texture
     );
-    assert.equal(cachedTextures.length, 3);
+    assert.equal(cachedTextures.length, 2);
 
     const driftDevice = createDevice();
     fixture.framePort.nextFrame({ frameId: 2, device: driftDevice });
@@ -243,7 +324,7 @@ test('same-generation device drift는 pool을 건드리기 전에 거부하고 �
     );
     assert.equal(driftDevice.createdDescriptors.length, 0);
     assert.equal(cachedTextures.every((texture) => texture.destroyed === false), true);
-    assert.equal(fixture.graph.texturePool.entries.size, 3);
+    assert.equal(fixture.graph.texturePool.entries.size, 2);
 
     fixture.framePort.nextFrame({ frameId: 3, device: originalDevice });
     assert.equal(fixture.graph.encode(input), true);
@@ -263,12 +344,16 @@ test('destroy는 active frame callback 뒤 graph-owned 리소스를 정확히 �
     assert.equal(fixture.graph.getDiagnostics().status, 'destroyed');
 });
 
-function createFixture({ blurAlgorithmId = 'kawase-compatibility' } = {}) {
+function createFixture({
+    blurAlgorithmId = 'kawase-compatibility',
+    requiredHaloResolver = null
+} = {}) {
     const trace = [];
     const blurRequests = [];
     const finalLayerArrays = [];
     const finalCompositeSafety = [];
     const poolAcquireDescriptors = [];
+    const shieldInputs = [];
     const framePort = new FakeFramePort(createContext());
     const uiAtlas = new FakeUiAtlas(trace);
     const destroyCounts = { total: 0 };
@@ -277,6 +362,9 @@ function createFixture({ blurAlgorithmId = 'kawase-compatibility' } = {}) {
         framePort,
         blurAlgorithmId,
         blurPort: {
+            getRequiredHalo(request) {
+                return requiredHaloResolver?.(request) ?? null;
+            },
             encode(request) {
                 blurRequests.push(request);
                 trace.push(`blur:${request.checkpointId}`);
@@ -306,6 +394,7 @@ function createFixture({ blurAlgorithmId = 'kawase-compatibility' } = {}) {
         }),
         shieldPass: createPass(destroyCounts, {
             encode(context, input) {
+                shieldInputs.push(input);
                 trace.push(`shield:${input.loadOp}`);
                 return true;
             }
@@ -371,6 +460,8 @@ function createFixture({ blurAlgorithmId = 'kawase-compatibility' } = {}) {
         finalLayerArrays,
         finalCompositeSafety,
         poolAcquireDescriptors,
+        shieldInputs,
+        sceneView: () => sceneView,
         destroyCounts
     };
 }

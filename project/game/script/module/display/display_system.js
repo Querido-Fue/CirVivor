@@ -64,9 +64,11 @@ export class DisplaySystem {
         this.webGpuPlatformService = null;
         this.webGpuFrameComposer = null;
         this.webGpuFrameContributorPort = null;
+        this.webGpuFrameTelemetryPort = null;
         this.webGpuBlurService = null;
         this.webGpuPlatformInitializationPromise = null;
         this.webGpuPlatformFailureReason = null;
+        this.webGpuOptionalOptimizedKawaseFailureReason = null;
         this.webGpuOptionalGaussianFailureReason = null;
         this.webGpuSurfaceGeneration = 0;
         this.webGpuFrameSerial = 0;
@@ -249,6 +251,14 @@ export class DisplaySystem {
      */
     getWebGpuFrameContributorPort() {
         return this.webGpuFrameContributorPort;
+    }
+
+    /**
+     * WebGL timer와 분리된 Display-owned WebGPU frame timestamp port를 반환합니다.
+     * @returns {Readonly<object>|null} enable/drain/snapshot API를 제공하는 진단 port입니다.
+     */
+    getWebGpuFrameTelemetryPort() {
+        return this.webGpuFrameTelemetryPort;
     }
 
     /**
@@ -745,7 +755,16 @@ export class DisplaySystem {
             return this.webGpuPlatformInitializationPromise;
         }
 
+        this.webGpuOptionalOptimizedKawaseFailureReason = null;
         this.webGpuOptionalGaussianFailureReason = null;
+        const optimizedKawaseModulePromise = import(
+            './webgpu/webgpu_optimized_kawase_blur_algorithm.js'
+        )
+            .catch((error) => {
+                this.webGpuOptionalOptimizedKawaseFailureReason =
+                    `optimized-kawase-module-unavailable:${error?.message || String(error)}`;
+                return null;
+            });
         const gaussianModulePromise = import('./webgpu/webgpu_gaussian_blur_algorithm.js')
             .catch((error) => {
                 this.webGpuOptionalGaussianFailureReason =
@@ -776,12 +795,27 @@ export class DisplaySystem {
                 });
                 const composer = new WebGpuFrameComposer(service.getPort());
                 const composerPort = composer.getPort();
-                service.attachFrameComposer(composerPort);
+                service.attachFrameComposer(composerPort, composer);
                 const algorithmFactories = new Map([[
                     WEBGPU_KAWASE_BLUR_ALGORITHM_ID,
                     createWebGpuKawaseBlurAlgorithmFactory({ composerPort })
                 ]]);
-                const gaussianModule = await gaussianModulePromise;
+                const [optimizedKawaseModule, gaussianModule] = await Promise.all([
+                    optimizedKawaseModulePromise,
+                    gaussianModulePromise
+                ]);
+                if (optimizedKawaseModule) {
+                    try {
+                        algorithmFactories.set(
+                            optimizedKawaseModule.WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID,
+                            optimizedKawaseModule
+                                .createWebGpuOptimizedKawaseBlurAlgorithmFactory({ composerPort })
+                        );
+                    } catch (error) {
+                        this.webGpuOptionalOptimizedKawaseFailureReason =
+                            `optimized-kawase-factory-unavailable:${error?.message || String(error)}`;
+                    }
+                }
                 if (gaussianModule) {
                     try {
                         algorithmFactories.set(
@@ -800,6 +834,7 @@ export class DisplaySystem {
                 this.webGpuPlatformService = service;
                 this.webGpuFrameComposer = composer;
                 this.webGpuFrameContributorPort = composerPort;
+                this.webGpuFrameTelemetryPort = composer.getGpuTelemetryPort?.() ?? null;
                 this.webGpuBlurService = blurService;
                 const state = await service.init();
                 if (descriptor) {
@@ -1000,6 +1035,14 @@ export const getWebGpuPlatformPort = () => displaySystemInstance?.getWebGpuPlatf
  */
 export const getWebGpuFrameContributorPort = () => (
     displaySystemInstance?.getWebGpuFrameContributorPort() ?? null
+);
+
+/**
+ * 현재 Display가 소유한 WebGPU frame timestamp telemetry port를 반환합니다.
+ * @returns {Readonly<object>|null} WebGL telemetry와 분리된 진단 port입니다.
+ */
+export const getWebGpuFrameTelemetryPort = () => (
+    displaySystemInstance?.getWebGpuFrameTelemetryPort() ?? null
 );
 
 /**

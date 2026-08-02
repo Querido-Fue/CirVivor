@@ -23,7 +23,27 @@ async function loadComposerModule() {
     return module.namespace;
 }
 
-function createPlatformHarness() {
+function createDeferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
+async function flushUntil(predicate, label) {
+    for (let index = 0; index < 32; index += 1) {
+        if (predicate()) return;
+        await Promise.resolve();
+    }
+    assert.fail(`${label} 조건이 Promise queue 안에서 충족되지 않았습니다.`);
+}
+
+function createPlatformHarness(options = {}) {
+    const timestampSupported = options.timestampSupported !== false;
+    const timestampDurationNanoseconds = BigInt(options.timestampDurationNanoseconds ?? 750_000);
     const records = {
         acquireCount: 0,
         encoders: [],
@@ -33,7 +53,19 @@ function createPlatformHarness() {
         submissionAttempts: 0,
         submissions: [],
         drawnMarks: 0,
-        clearedMarks: 0
+        clearedMarks: 0,
+        querySets: [],
+        buffers: [],
+        timestampWrites: [],
+        queryResolveCount: 0,
+        bufferCopyCount: 0,
+        mapAsyncCount: 0,
+        unmapCount: 0,
+        queryDestroyCount: 0,
+        bufferDestroyCount: 0,
+        listenerAddCount: 0,
+        listenerRemoveCount: 0,
+        mapDeferreds: []
     };
     let ready = true;
     let generation = 1;
@@ -45,8 +77,63 @@ function createPlatformHarness() {
 
     function createDevice() {
         const deviceId = ++deviceSerial;
+        let timestampBase = 1_000_000n;
+        const uncapturedErrorListeners = new Set();
         return {
             id: `device:${deviceId}`,
+            addEventListener(type, listener) {
+                if (type === 'uncapturederror') {
+                    uncapturedErrorListeners.add(listener);
+                    records.listenerAddCount += 1;
+                }
+            },
+            removeEventListener(type, listener) {
+                if (type === 'uncapturederror' && uncapturedErrorListeners.delete(listener)) {
+                    records.listenerRemoveCount += 1;
+                }
+            },
+            emitUncapturedError(error) {
+                for (const listener of uncapturedErrorListeners) {
+                    listener({ error });
+                }
+            },
+            createQuerySet(descriptor) {
+                const querySet = {
+                    descriptor,
+                    values: new BigUint64Array(descriptor.count),
+                    destroy() {
+                        records.queryDestroyCount += 1;
+                    }
+                };
+                records.querySets.push(querySet);
+                return querySet;
+            },
+            createBuffer(descriptor) {
+                const storage = new ArrayBuffer(descriptor.size);
+                const buffer = {
+                    descriptor,
+                    storage,
+                    async mapAsync() {
+                        records.mapAsyncCount += 1;
+                        if (options.deferTimestampMap === true) {
+                            const deferred = createDeferred();
+                            records.mapDeferreds.push(deferred);
+                            return deferred.promise;
+                        }
+                    },
+                    getMappedRange() {
+                        return storage;
+                    },
+                    unmap() {
+                        records.unmapCount += 1;
+                    },
+                    destroy() {
+                        records.bufferDestroyCount += 1;
+                    }
+                };
+                records.buffers.push(buffer);
+                return buffer;
+            },
             queue: {
                 submit(commandBuffers) {
                     records.submissionAttempts += 1;
@@ -61,11 +148,13 @@ function createPlatformHarness() {
                     deviceId,
                     options,
                     passes: [],
+                    commands: [],
                     finished: false
                 };
                 records.encoders.push(encoderRecord);
                 return {
                     beginRenderPass(descriptor) {
+                        encoderRecord.commands.push('render-pass');
                         const passRecord = { descriptor, drawCount: 0 };
                         encoderRecord.passes.push(passRecord);
                         records.renderPasses.push(passRecord);
@@ -77,6 +166,59 @@ function createPlatformHarness() {
                                 records.passEndCount += 1;
                             }
                         };
+                    },
+                    beginComputePass(descriptor) {
+                        const timestampWrites = descriptor.timestampWrites;
+                        const beginIndex = timestampWrites?.beginningOfPassWriteIndex;
+                        const endIndex = timestampWrites?.endOfPassWriteIndex;
+                        if (Number.isInteger(beginIndex)) {
+                            timestampWrites.querySet.values[beginIndex] = timestampBase;
+                            records.timestampWrites.push({
+                                querySet: timestampWrites.querySet,
+                                queryIndex: beginIndex,
+                                value: timestampBase
+                            });
+                            encoderRecord.commands.push(`timestamp:${beginIndex}`);
+                        }
+                        return {
+                            end() {
+                                if (!Number.isInteger(endIndex)) {
+                                    return;
+                                }
+                                const value = timestampBase + timestampDurationNanoseconds;
+                                timestampWrites.querySet.values[endIndex] = value;
+                                records.timestampWrites.push({
+                                    querySet: timestampWrites.querySet,
+                                    queryIndex: endIndex,
+                                    value
+                                });
+                                encoderRecord.commands.push(`timestamp:${endIndex}`);
+                                timestampBase += 10_000_000n;
+                            }
+                        };
+                    },
+                    writeTimestamp(querySet, queryIndex) {
+                        const value = queryIndex === 0
+                            ? timestampBase
+                            : timestampBase + timestampDurationNanoseconds;
+                        querySet.values[queryIndex] = value;
+                        records.timestampWrites.push({ querySet, queryIndex, value });
+                        encoderRecord.commands.push(`timestamp:${queryIndex}`);
+                        if (queryIndex === 1) {
+                            timestampBase += 10_000_000n;
+                        }
+                    },
+                    resolveQuerySet(querySet, firstQuery, queryCount, destination) {
+                        const target = new BigUint64Array(destination.storage);
+                        target.set(querySet.values.subarray(firstQuery, firstQuery + queryCount));
+                        records.queryResolveCount += 1;
+                        encoderRecord.commands.push('resolve');
+                    },
+                    copyBufferToBuffer(source, sourceOffset, destination, destinationOffset, size) {
+                        const sourceBytes = new Uint8Array(source.storage, sourceOffset, size);
+                        new Uint8Array(destination.storage, destinationOffset, size).set(sourceBytes);
+                        records.bufferCopyCount += 1;
+                        encoderRecord.commands.push('copy');
                     },
                     finish() {
                         encoderRecord.finished = true;
@@ -91,7 +233,14 @@ function createPlatformHarness() {
     let device = createDevice();
     const port = {
         getState() {
-            return { ready, deviceGeneration: generation, format, width, height };
+            return {
+                ready,
+                deviceGeneration: generation,
+                format,
+                width,
+                height,
+                features: timestampSupported ? ['timestamp-query'] : []
+            };
         },
         getDevice() {
             return ready ? device : null;
@@ -135,6 +284,9 @@ function createPlatformHarness() {
         },
         setReady(value) {
             ready = value;
+        },
+        getDevice() {
+            return device;
         }
     };
 }
@@ -431,4 +583,195 @@ test('명시 abort는 deferred aborted를 한 번 호출하고 command를 제출
     assert.equal(harness.records.finishCount, 0);
     assert.equal(harness.records.submissionAttempts, 0);
     assert.equal(composer.getDiagnostics().lastFailure.reason, 'presentation-interrupted');
+});
+
+test('composer-owned timestamp는 모든 contribution을 한 scope로 감싸고 비동기 sample을 분리 drain한다', async () => {
+    const {
+        WebGpuFrameComposer,
+        WEBGPU_FRAME_GPU_TELEMETRY_SCOPE
+    } = await loadComposerModule();
+    const harness = createPlatformHarness({ timestampDurationNanoseconds: 750_000 });
+    const composer = new WebGpuFrameComposer(harness.port);
+    const telemetryPort = composer.getGpuTelemetryPort();
+
+    assert.strictEqual(composer.getGpuTelemetryPort(), telemetryPort);
+    assert.equal(Object.isFrozen(telemetryPort), true);
+    assert.equal(telemetryPort.setEnabled(true), true);
+    assert.equal(telemetryPort.getSnapshot().status, 'armed');
+
+    assert.equal(composer.beginFrame(101), true);
+    assert.equal(composer.getPort().encodeCanvasPass((pass) => pass.draw()), true);
+    assert.equal(composer.getPort().encodeCommands(() => {}), true);
+    assert.equal(composer.commit(), true);
+    assert.deepEqual(
+        harness.records.encoders[0].commands,
+        ['timestamp:0', 'render-pass', 'timestamp:1', 'resolve', 'copy']
+    );
+    assert.equal(harness.records.querySets.length, 1);
+    assert.equal(harness.records.queryResolveCount, 1);
+    assert.equal(harness.records.bufferCopyCount, 1);
+    assert.equal(harness.records.mapAsyncCount, 1);
+
+    await flushUntil(
+        () => telemetryPort.getSnapshot().counters.sampleCount === 1,
+        'timestamp sample 완료'
+    );
+    const samples = telemetryPort.drainSamples();
+    assert.equal(samples.length, 1);
+    assert.deepEqual({ ...samples[0] }, {
+        source: 'webgpu-frame-composer',
+        scope: WEBGPU_FRAME_GPU_TELEMETRY_SCOPE,
+        deviceGeneration: 1,
+        frameId: 101,
+        gpuMs: 0.75
+    });
+    assert.equal(Object.isFrozen(samples[0]), true);
+    assert.deepEqual(Array.from(telemetryPort.drainSamples()), []);
+
+    const snapshot = telemetryPort.getSnapshot();
+    assert.equal(snapshot.supported, true);
+    assert.equal(snapshot.status, 'active');
+    assert.equal(snapshot.pendingCount, 0);
+    assert.equal(snapshot.bufferedSampleCount, 0);
+    assert.equal(snapshot.counters.scopeBeginCount, 1);
+    assert.equal(snapshot.counters.scopeEndCount, 1);
+    assert.equal(snapshot.counters.timestampSubmitCount, 1);
+    assert.equal(snapshot.counters.sampleCount, 1);
+    assert.equal(snapshot.counters.apiFailureCount, 0);
+    assert.equal(snapshot.counters.mapFailureCount, 0);
+    assert.equal(snapshot.counters.uncapturedErrorCount, 0);
+    assert.deepEqual(Array.from(snapshot.uncapturedErrorMessages), []);
+});
+
+test('timestamp-query 미지원은 presentation을 유지하고 telemetry만 fail-closed한다', async () => {
+    const { WebGpuFrameComposer } = await loadComposerModule();
+    const harness = createPlatformHarness({ timestampSupported: false });
+    const composer = new WebGpuFrameComposer(harness.port);
+    const telemetryPort = composer.getGpuTelemetryPort();
+
+    telemetryPort.setEnabled(true);
+    assert.equal(composer.beginFrame(102), true);
+    assert.equal(composer.getPort().encodeCanvasPass((pass) => pass.draw()), true);
+    assert.equal(composer.commit(), true);
+    assert.equal(harness.records.submissions.length, 1);
+    assert.equal(harness.records.drawnMarks, 1);
+    assert.equal(harness.records.querySets.length, 0);
+    assert.deepEqual(Array.from(telemetryPort.drainSamples()), []);
+
+    const snapshot = telemetryPort.getSnapshot();
+    assert.equal(snapshot.enabled, true);
+    assert.equal(snapshot.status, 'unsupported');
+    assert.equal(snapshot.supported, false);
+    assert.equal(snapshot.reason, 'timestamp-query-unavailable');
+    assert.equal(snapshot.counters.scopeBeginCount, 0);
+    assert.equal(composer.getDiagnostics().counters.framesCommitted, 1);
+});
+
+test('abort된 timestamp scope는 map을 시작하지 않고 같은 slot을 다음 submit에서 재사용한다', async () => {
+    const { WebGpuFrameComposer } = await loadComposerModule();
+    const harness = createPlatformHarness();
+    const composer = new WebGpuFrameComposer(harness.port);
+    const telemetryPort = composer.getGpuTelemetryPort();
+    telemetryPort.setEnabled(true);
+
+    composer.beginFrame(103);
+    assert.equal(composer.getPort().encodeCommands(() => {}), true);
+    assert.equal(composer.abort('test-abort'), true);
+    assert.equal(harness.records.mapAsyncCount, 0);
+    assert.equal(telemetryPort.getSnapshot().encodingCount, 0);
+
+    composer.beginFrame(104);
+    assert.equal(composer.getPort().encodeCommands(() => {}), true);
+    assert.equal(composer.commit(), true);
+    await flushUntil(
+        () => telemetryPort.getSnapshot().counters.sampleCount === 1,
+        'abort 뒤 timestamp sample 완료'
+    );
+    assert.equal(telemetryPort.drainSamples()[0].frameId, 104);
+    assert.equal(harness.records.querySets.length, 2,
+        'ring은 다음 idle slot을 사용하되 abort slot도 안전하게 재사용 가능한 상태로 남깁니다.');
+});
+
+test('destroy는 active frame을 한 번 abort하고 timestamp 자원과 device listener를 idempotent하게 해제한다', async () => {
+    const { WebGpuFrameComposer } = await loadComposerModule();
+    const harness = createPlatformHarness();
+    const composer = new WebGpuFrameComposer(harness.port);
+    const port = composer.getPort();
+    const telemetryPort = composer.getGpuTelemetryPort();
+    let abortedCount = 0;
+    let abortedReason = null;
+
+    telemetryPort.setEnabled(true);
+    assert.equal(composer.beginFrame(105), true);
+    assert.equal(port.deferFrameCallbacks({
+        aborted(event) {
+            abortedCount += 1;
+            abortedReason = event.reason;
+        }
+    }), true);
+    assert.equal(port.encodeCommands(() => {}), true);
+    assert.equal(harness.records.listenerAddCount, 1);
+    assert.equal(harness.records.querySets.length, 1);
+
+    composer.destroy();
+    assert.equal(composer.isFrameActive(), false);
+    assert.equal(composer.getDiagnostics().status, 'destroyed');
+    assert.equal(composer.getDiagnostics().counters.destroyCount, 1);
+    assert.equal(composer.getDiagnostics().counters.framesAborted, 1);
+    assert.equal(abortedCount, 1);
+    assert.equal(abortedReason, 'composer-destroyed');
+    assert.equal(harness.records.finishCount, 0);
+    assert.equal(harness.records.submissionAttempts, 0);
+    assert.equal(harness.records.queryDestroyCount, 1);
+    assert.equal(harness.records.bufferDestroyCount, 2);
+    assert.equal(harness.records.listenerRemoveCount, 1);
+    assert.equal('destroy' in port, false, 'contributor port는 display lifecycle 권한을 노출하지 않습니다.');
+
+    const telemetry = telemetryPort.getSnapshot();
+    assert.equal(telemetry.enabled, false);
+    assert.equal(telemetry.status, 'destroyed');
+    assert.equal(telemetry.reason, 'composer-destroyed');
+    assert.equal(telemetry.pendingCount, 0);
+    assert.equal(telemetry.encodingCount, 0);
+    assert.equal(telemetry.counters.resourceDestroyCount, 1);
+    assert.equal(telemetryPort.setEnabled(true), false);
+    assert.equal(composer.beginFrame(106), false);
+
+    composer.destroy();
+    assert.equal(composer.getDiagnostics().counters.destroyCount, 1);
+    assert.equal(abortedCount, 1);
+    assert.equal(harness.records.queryDestroyCount, 1);
+    assert.equal(harness.records.bufferDestroyCount, 2);
+    assert.equal(harness.records.listenerRemoveCount, 1);
+});
+
+test('destroy 뒤 늦게 완료된 timestamp map은 lifecycle generation으로 무효화된다', async () => {
+    const { WebGpuFrameComposer } = await loadComposerModule();
+    const harness = createPlatformHarness({ deferTimestampMap: true });
+    const composer = new WebGpuFrameComposer(harness.port);
+    const telemetryPort = composer.getGpuTelemetryPort();
+
+    telemetryPort.setEnabled(true);
+    assert.equal(composer.beginFrame(107), true);
+    assert.equal(composer.getPort().encodeCommands(() => {}), true);
+    assert.equal(composer.commit(), true);
+    assert.equal(telemetryPort.getSnapshot().pendingCount, 1);
+    assert.equal(harness.records.mapDeferreds.length, 1);
+
+    composer.destroy();
+    assert.equal(telemetryPort.getSnapshot().pendingCount, 0);
+    assert.equal(harness.records.queryDestroyCount, 1);
+    assert.equal(harness.records.bufferDestroyCount, 2);
+    harness.records.mapDeferreds[0].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const snapshot = telemetryPort.getSnapshot();
+    assert.equal(snapshot.status, 'destroyed');
+    assert.equal(snapshot.counters.sampleCount, 0);
+    assert.equal(snapshot.counters.mapFailureCount, 0);
+    assert.deepEqual(Array.from(telemetryPort.drainSamples()), []);
+    harness.getDevice().emitUncapturedError(new Error('late device event'));
+    assert.equal(telemetryPort.getSnapshot().counters.uncapturedErrorCount, 0);
 });

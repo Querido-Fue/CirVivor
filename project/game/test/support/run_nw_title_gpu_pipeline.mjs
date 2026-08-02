@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 
 const RUN_DIRECTORY_PREFIX = 'cirvivor-title-gpu-';
 const EXPECTED_PLATFORM = 'win32';
+const DEFAULT_TITLE_WEBGPU_GPU_BUDGET_MS = 1.0;
+const TITLE_WEBGPU_PROVISIONAL_SCOPE = 'title-webgpu-base-shadow-graph';
+const TITLE_WEBGL_OVERLAY_SCOPE = 'legacy-overlay-blur-composite';
 const TITLE_SCENARIOS = Object.freeze(['T0', 'T1', 'T2', 'T3', 'T4', 'T5']);
 const TITLE_PIPELINE_MODES = Object.freeze([
     'legacy-webgl',
@@ -460,7 +463,13 @@ async function runColdTrial(options, projectDirectory, harnessDirectory, coldSta
  * @returns {object} aggregate result입니다.
  */
 export function aggregateTrials(trials) {
-    const metric = 'title.overlay_blur_composite.gpu_ms';
+    const pipelineMode = trials.find((trial) => (
+        typeof trial.config?.pipelineMode === 'string'
+    ))?.config.pipelineMode ?? 'legacy-webgl';
+    const usesWebGpuPipeline = pipelineMode !== 'legacy-webgl';
+    const metric = usesWebGpuPipeline
+        ? 'title.webgpu_graph.gpu_ms'
+        : 'title.overlay_blur_composite.gpu_ms';
     const scenarioIds = new Set();
     for (const trial of trials) {
         for (const scenarioId of trial.config?.scenarios || []) {
@@ -477,17 +486,48 @@ export function aggregateTrials(trials) {
         let missingTrialCount = 0;
         let invalidTrialCount = 0;
         let insufficientSampleTrialCount = 0;
-        for (const trial of trials) {
+        let budgetRequiredTrialCount = 0;
+        let budgetEvidenceTrialCount = 0;
+        let budgetMissingEvidenceTrialCount = 0;
+        const overBudgetTrials = [];
+        for (let trialIndex = 0; trialIndex < trials.length; trialIndex++) {
+            const trial = trials[trialIndex];
             const scenario = (trial.scenarios || []).find((entry) => entry.id === scenarioId);
-            const metricResult = scenario?.gpu?.scopes?.[metric];
+            const metricResult = usesWebGpuPipeline
+                ? scenario?.webgpu?.scopes?.[metric]
+                : scenario?.gpu?.scopes?.[metric];
             const frameTotal = metricResult?.frameTotal;
             const sampleCount = Number.isFinite(frameTotal?.count) ? frameTotal.count : null;
             const p99 = Number.isFinite(frameTotal?.p99) ? frameTotal.p99 : null;
             trialP99.push(p99);
             trialSampleCounts.push(sampleCount);
 
-            const strict = trial.config?.requireGpuTimestamps === true;
             const expectedScenarios = trial.config?.scenarios || [];
+            const trialProfile = trial.profile ?? trial.config?.profile;
+            const budgetRequiredForTrial = usesWebGpuPipeline
+                && trialProfile === 'full'
+                && expectedScenarios.includes(scenarioId);
+            if (budgetRequiredForTrial) {
+                budgetRequiredTrialCount += 1;
+                if (p99 === null) {
+                    budgetMissingEvidenceTrialCount += 1;
+                } else {
+                    budgetEvidenceTrialCount += 1;
+                    if (p99 > DEFAULT_TITLE_WEBGPU_GPU_BUDGET_MS) {
+                        overBudgetTrials.push({
+                            trialIndex,
+                            coldStartIndex: Number.isSafeInteger(trial.coldStartIndex)
+                                ? trial.coldStartIndex
+                                : null,
+                            p99,
+                            limitMs: DEFAULT_TITLE_WEBGPU_GPU_BUDGET_MS,
+                            overByMs: p99 - DEFAULT_TITLE_WEBGPU_GPU_BUDGET_MS
+                        });
+                    }
+                }
+            }
+
+            const strict = trial.config?.requireGpuTimestamps === true;
             if (!strict || !expectedScenarios.includes(scenarioId)) {
                 continue;
             }
@@ -509,6 +549,9 @@ export function aggregateTrials(trials) {
             }
         }
         const validP99 = trialP99.filter(Number.isFinite);
+        const budgetRequired = budgetRequiredTrialCount > 0;
+        const budgetPassed = !budgetRequired
+            || (budgetMissingEvidenceTrialCount === 0 && overBudgetTrials.length === 0);
         scenarios.push({
             id: scenarioId,
             metric,
@@ -518,7 +561,17 @@ export function aggregateTrials(trials) {
             invalidTrialCount,
             insufficientSampleTrialCount,
             medianP99: nearestRank(validP99, 0.5),
-            worstP99: validP99.length > 0 ? Math.max(...validP99) : null
+            worstP99: validP99.length > 0 ? Math.max(...validP99) : null,
+            budgetRequired,
+            budgetLimitMs: usesWebGpuPipeline
+                ? DEFAULT_TITLE_WEBGPU_GPU_BUDGET_MS
+                : null,
+            budgetRequiredTrialCount,
+            budgetEvidenceTrialCount,
+            budgetMissingEvidenceTrialCount,
+            overBudgetTrialCount: overBudgetTrials.length,
+            overBudgetTrials,
+            budgetPassed
         });
     }
     const strictCoveragePassed = scenarios.every((scenario) => (
@@ -526,13 +579,46 @@ export function aggregateTrials(trials) {
         && scenario.invalidTrialCount === 0
         && scenario.insufficientSampleTrialCount === 0
     ));
+    const budgetRequired = scenarios.some((scenario) => scenario.budgetRequired);
+    const budgetPassed = scenarios.every((scenario) => scenario.budgetPassed);
+    const measurement = usesWebGpuPipeline
+        ? {
+            metric,
+            scope: TITLE_WEBGPU_PROVISIONAL_SCOPE,
+            provisional: true,
+            finalOverlayIncluded: false,
+            qualification: 'base-shadow-only'
+        }
+        : {
+            metric,
+            scope: TITLE_WEBGL_OVERLAY_SCOPE,
+            provisional: false,
+            finalOverlayIncluded: true,
+            qualification: 'legacy-overlay'
+        };
     return {
         schemaVersion: 1,
-        status: trials.every((trial) => trial.status === 'pass') && strictCoveragePassed
+        status: trials.every((trial) => trial.status === 'pass')
+            && strictCoveragePassed
+            && budgetPassed
             ? 'pass'
             : 'fail',
         percentileDefinition: 'nearest-rank',
         trialCount: trials.length,
+        measurement,
+        budget: {
+            percentile: 'p99',
+            limitMs: usesWebGpuPipeline
+                ? DEFAULT_TITLE_WEBGPU_GPU_BUDGET_MS
+                : null,
+            required: budgetRequired,
+            policy: usesWebGpuPipeline
+                ? 'every-required-cold-trial-p99-lte-limit'
+                : 'not-applied',
+            passed: budgetPassed,
+            provisional: measurement.provisional,
+            finalOverlayIncluded: measurement.finalOverlayIncluded
+        },
         scenarios,
         trials
     };

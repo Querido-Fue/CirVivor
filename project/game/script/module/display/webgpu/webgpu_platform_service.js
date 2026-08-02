@@ -26,6 +26,7 @@ const WEBGPU_LIMIT_KEYS = Object.freeze([
     'minUniformBufferOffsetAlignment'
 ]);
 const REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 9;
+const OPTIONAL_TIMESTAMP_QUERY_FEATURE = 'timestamp-query';
 const TRANSPARENT_CLEAR_VALUE = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 
 /**
@@ -78,6 +79,7 @@ export class WebGpuPlatformService {
         this.destroyed = false;
         this.stateListeners = new Set();
         this.frameComposerPort = null;
+        this.frameComposerLifecycleOwner = null;
 
         const service = this;
         this.port = Object.freeze({
@@ -175,13 +177,16 @@ export class WebGpuPlatformService {
 
     /**
      * Display owner가 관리하는 frame composer port를 연결하거나 분리합니다.
-     * device 재초기화와 loss 복구는 연결 identity를 유지하고, service destroy는 참조만 분리합니다.
+     * device 재초기화와 loss 복구는 연결 identity를 유지하고, service destroy는 lifecycle owner를
+     * 정확히 한 번 폐기합니다. contributor에게는 lifecycle owner를 노출하지 않습니다.
      * @param {object|Function|null} frameComposerPort - 연결할 composer port 또는 분리용 null입니다.
+     * @param {object|Function|null} [lifecycleOwner] - destroy() owner 또는 destroy callback입니다.
      * @returns {object|Function|null} 연결된 동일 port이거나, service가 destroyed 상태면 null입니다.
      */
-    attachFrameComposer(frameComposerPort) {
+    attachFrameComposer(frameComposerPort, lifecycleOwner = null) {
         if (this.destroyed) {
             this.frameComposerPort = null;
+            this.frameComposerLifecycleOwner = null;
             return null;
         }
         if (frameComposerPort !== null
@@ -189,7 +194,18 @@ export class WebGpuPlatformService {
             && typeof frameComposerPort !== 'function') {
             throw new TypeError('WebGPU frame composer port는 객체, 함수 또는 null이어야 합니다.');
         }
+        if (frameComposerPort === null) {
+            this.frameComposerPort = null;
+            this.frameComposerLifecycleOwner = null;
+            return null;
+        }
+        if (lifecycleOwner !== null
+            && typeof lifecycleOwner !== 'function'
+            && typeof lifecycleOwner?.destroy !== 'function') {
+            throw new TypeError('WebGPU frame composer lifecycle owner에는 destroy()가 필요합니다.');
+        }
         this.frameComposerPort = frameComposerPort;
+        this.frameComposerLifecycleOwner = lifecycleOwner;
         return frameComposerPort;
     }
 
@@ -401,22 +417,41 @@ export class WebGpuPlatformService {
         }
 
         this.destroyed = true;
-        this.frameComposerPort = null;
         this.probeSerial += 1;
         this.recoveryScheduled = false;
         this.initPromise = null;
-        this.#releaseCurrentDevice(true);
-        this.context = null;
-        this.format = null;
         this.status = WEBGPU_PLATFORM_STATUS.DESTROYED;
         this.reason = 'destroyed';
         this.lostInfo = null;
+        this.#destroyAttachedFrameComposer();
+        this.#releaseCurrentDevice(true);
+        this.context = null;
+        this.format = null;
         this.#notifyCanvasCleared();
         this.#notifyStateChange();
         this.stateListeners.clear();
         this.onStateChange = null;
         this.onCanvasDrawn = null;
         this.onCanvasCleared = null;
+    }
+
+    /** @private */
+    #destroyAttachedFrameComposer() {
+        const lifecycleOwner = this.frameComposerLifecycleOwner;
+        this.frameComposerPort = null;
+        this.frameComposerLifecycleOwner = null;
+        if (!lifecycleOwner) {
+            return;
+        }
+        try {
+            if (typeof lifecycleOwner === 'function') {
+                lifecycleOwner();
+            } else {
+                lifecycleOwner.destroy();
+            }
+        } catch (error) {
+            console.warn('WebGPU frame composer destroy failed.', error);
+        }
     }
 
     async #probe(probeSerial) {
@@ -462,15 +497,32 @@ export class WebGpuPlatformService {
         }
 
         let device;
+        const coreDeviceDescriptor = {
+            requiredLimits: {
+                maxStorageBuffersPerShaderStage:
+                    REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+            }
+        };
+        const timestampQueryAdvertised = hasWebGpuFeature(
+            adapter.features,
+            OPTIONAL_TIMESTAMP_QUERY_FEATURE
+        );
         try {
-            device = await adapter.requestDevice({
-                requiredLimits: {
-                    maxStorageBuffersPerShaderStage:
-                        REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+            device = await adapter.requestDevice(timestampQueryAdvertised
+                ? {
+                    ...coreDeviceDescriptor,
+                    requiredFeatures: [OPTIONAL_TIMESTAMP_QUERY_FEATURE]
                 }
-            });
+                : coreDeviceDescriptor);
         } catch (error) {
-            return this.#setUnsupported('device-request-failed', error);
+            if (!timestampQueryAdvertised) {
+                return this.#setUnsupported('device-request-failed', error);
+            }
+            try {
+                device = await adapter.requestDevice(coreDeviceDescriptor);
+            } catch (fallbackError) {
+                return this.#setUnsupported('device-request-failed', fallbackError);
+            }
         }
         if (!this.#isProbeCurrent(probeSerial)) {
             device?.destroy?.();
@@ -708,6 +760,20 @@ function serializeWebGpuFeatures(features) {
         return Array.from(features.values ? features.values() : features).sort();
     } catch {
         return [];
+    }
+}
+
+function hasWebGpuFeature(features, featureName) {
+    if (!features || typeof featureName !== 'string') {
+        return false;
+    }
+    try {
+        if (typeof features.has === 'function') {
+            return features.has(featureName);
+        }
+        return Array.from(features.values ? features.values() : features).includes(featureName);
+    } catch {
+        return false;
     }
 }
 
