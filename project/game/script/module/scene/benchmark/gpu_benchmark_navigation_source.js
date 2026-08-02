@@ -1,6 +1,7 @@
 const GPU_BENCHMARK_ARENA_COLUMNS = 64;
 const GPU_BENCHMARK_ARENA_ROWS = 36;
 const GPU_BENCHMARK_ARENA_CELL_SIZE = 1;
+const GPU_BENCHMARK_SDF_SUBDIVISIONS = 8;
 
 function freezeRectangle(id, x, y, w, h) {
     return Object.freeze({ id, x, y, w, h, origin: 'center' });
@@ -11,6 +12,10 @@ const GPU_BENCHMARK_TARGET_POSITION = Object.freeze({
     y: 18,
     row: 18,
     column: 32
+});
+const GPU_BENCHMARK_PLAYER_COLLIDER = Object.freeze({
+    position: GPU_BENCHMARK_TARGET_POSITION,
+    radius: GPU_BENCHMARK_ARENA_ROWS * 0.02
 });
 const GPU_BENCHMARK_WORLD_BOUNDS = Object.freeze({
     minX: 0,
@@ -39,8 +44,10 @@ export const GPU_BENCHMARK_ARENA_LAYOUT = Object.freeze({
     cols: GPU_BENCHMARK_ARENA_COLUMNS,
     rows: GPU_BENCHMARK_ARENA_ROWS,
     cellSize: GPU_BENCHMARK_ARENA_CELL_SIZE,
+    sdfSubdivisions: GPU_BENCHMARK_SDF_SUBDIVISIONS,
     worldBounds: GPU_BENCHMARK_WORLD_BOUNDS,
     targetPosition: GPU_BENCHMARK_TARGET_POSITION,
+    playerCollider: GPU_BENCHMARK_PLAYER_COLLIDER,
     towerSpawnPosition: GPU_BENCHMARK_TARGET_POSITION,
     staticWalls: GPU_BENCHMARK_STATIC_WALLS,
     initialBoxes: GPU_BENCHMARK_INITIAL_BOXES
@@ -155,6 +162,7 @@ export class GpuBenchmarkNavigationSource {
             rows: this.rows,
             size: this.columns * this.rows,
             cellSize: this.tileSize,
+            sdfSubdivisions: GPU_BENCHMARK_SDF_SUBDIVISIONS,
             blocked
         });
         this.spawnRoutes = createSpawnRoutes();

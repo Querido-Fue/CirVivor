@@ -76,6 +76,12 @@ assert.match(compute, /APPLIED_EVENT_FLAG_TERRAIN_KILL,[\s\S]*?append_death_even
 // gameplay sensor는 broad phase는 공유하지만 적을 물리적으로 밀지 않습니다.
 assert.match(compute, /body_sensor_mask\(self_body\.physics_meta\) != 0u[\s\S]*?body_sensor_mask\(other_body\.physics_meta\) != 0u[\s\S]*?return vec2f\(0\.0\);/);
 
+// 같은 iteration의 body-body delta까지 terrain constraint가 평가해 마지막 Jacobi 침투를 막습니다.
+assert.match(
+    compute,
+    /let candidate = predicted \+ temporaries\.values\[body_id\]\.position_delta;[\s\S]*?sample_world_sdf\(candidate\)/
+);
+
 // finite lifetime만 prepare에서 줄이고 mark_dead가 alive를 한 번 내린 뒤 death event를 냅니다.
 assert.match(compute, /if \(lifetime >= 0\.0\) \{\s*simulations\.values\[body_id\]\.lifetime = lifetime - params\.dt;/);
 assert.match(compute, /if \(lifetime >= 0\.0 && lifetime <= 0\.0\)/);

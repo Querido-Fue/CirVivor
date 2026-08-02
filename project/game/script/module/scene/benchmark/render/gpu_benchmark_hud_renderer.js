@@ -102,7 +102,7 @@ export function drawGpuBenchmarkHud(status, viewport = {}) {
     );
     drawStatusLine(
         metrics,
-        `GPU active: ${normalizeCount(status?.enemyActiveCount)} enemy + ${normalizeCount(status?.projectileActiveCount)} projectile = ${activeCount} mixed bodies`,
+        `GPU active: ${normalizeCount(status?.enemyActiveCount)} enemy + ${normalizeCount(status?.projectileActiveCount)} projectile + ${normalizeCount(status?.playerProxyActiveCount)} player proxy = ${activeCount} backend bodies`,
         1
     );
     drawStatusLine(
@@ -112,7 +112,7 @@ export function drawGpuBenchmarkHud(status, viewport = {}) {
     );
     drawStatusLine(
         metrics,
-        `last batch: enemy ${String(status?.lastEnemySpawnBatchReason ?? 'not-requested')} | projectile ${String(status?.lastProjectileSpawnBatchReason ?? 'not-requested')}`,
+        `last batch: enemy ${String(status?.lastEnemySpawnBatchReason ?? 'not-requested')} | projectile ${String(status?.lastProjectileSpawnBatchReason ?? 'not-requested')} | proxy ${String(status?.lastPlayerProxyReason ?? 'not-requested')}`,
         3
     );
     drawStatusLine(
@@ -157,7 +157,7 @@ export function drawGpuBenchmarkHud(status, viewport = {}) {
     );
     drawStatusLine(
         metrics,
-        'arena walls/initial boxes are in GPU SDF; dynamic Spawn Box remains CPU-only',
+        'arena walls/initial boxes use GPU SDF; blue player uses a hidden GPU proxy; Spawn Box is CPU-only',
         12
     );
     drawStatusLine(

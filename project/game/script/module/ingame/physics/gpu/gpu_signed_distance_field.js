@@ -18,6 +18,8 @@ const JUMP_FLOOD_NEIGHBOR_OFFSETS = Object.freeze([
 ]);
 
 const INVALID_SEED_COORDINATE = -1;
+const AUTHORED_SURFACE_BIAS_CELLS = Math.fround(0.5);
+const MAX_SDF_SUBDIVISIONS = 8;
 
 /**
  * VM 경계를 포함해 Uint8Array인지 확인합니다.
@@ -51,6 +53,7 @@ function assertNavigationGrid(navigationGrid) {
     const rows = navigationGrid?.rows;
     const size = navigationGrid?.size;
     const cellSize = navigationGrid?.cellSize;
+    const subdivisions = navigationGrid?.sdfSubdivisions ?? 1;
     if (!Number.isInteger(columns)
         || columns <= 0
         || !Number.isInteger(rows)
@@ -59,10 +62,46 @@ function assertNavigationGrid(navigationGrid) {
         || size !== columns * rows
         || !Number.isFinite(cellSize)
         || cellSize <= 0
+        || !Number.isSafeInteger(subdivisions)
+        || subdivisions <= 0
+        || subdivisions > MAX_SDF_SUBDIVISIONS
         || !isUint8Array(navigationGrid.blocked)
         || navigationGrid.blocked.length !== size) {
         throw new TypeError('SDF 입력은 유효한 TileMap navigation grid여야 합니다.');
     }
+}
+
+/**
+ * 선택한 SDF 해상도만큼 source occupancy를 nearest 방식으로 세분화합니다.
+ * source tile 경계는 그대로 유지되며 frame 경로에서는 이 작업을 수행하지 않습니다.
+ * @param {Uint8Array} sourceBlocked - source row-major blocked plane입니다.
+ * @param {number} sourceColumns - source 열 수입니다.
+ * @param {number} sourceRows - source 행 수입니다.
+ * @param {number} subdivisions - 축별 세분화 배수입니다.
+ * @returns {Uint8Array} 세분화된 row-major blocked plane입니다.
+ */
+function createSubdividedBlockedPlane(
+    sourceBlocked,
+    sourceColumns,
+    sourceRows,
+    subdivisions
+) {
+    if (subdivisions === 1) {
+        return new Uint8Array(sourceBlocked);
+    }
+    const columns = sourceColumns * subdivisions;
+    const rows = sourceRows * subdivisions;
+    const blocked = new Uint8Array(columns * rows);
+    for (let row = 0; row < rows; row++) {
+        const sourceRowOffset = Math.floor(row / subdivisions) * sourceColumns;
+        const rowOffset = row * columns;
+        for (let column = 0; column < columns; column++) {
+            blocked[rowOffset + column] = sourceBlocked[
+                sourceRowOffset + Math.floor(column / subdivisions)
+            ];
+        }
+    }
+    return blocked;
 }
 
 /**
@@ -242,6 +281,130 @@ function runJumpFloodPass(source, target, columns, rows, step) {
 }
 
 /**
+ * Felzenszwalb/Huttenlocher 1D squared-distance transform입니다.
+ * 고해상도 setup에서 JFA의 O(N log N) 비용을 피하기 위한 build-time 경로입니다.
+ * @param {Float64Array} source - 0 또는 충분히 큰 유한 거리 입력입니다.
+ * @param {number} length - 사용할 원소 수입니다.
+ * @param {Float64Array} target - squared-distance 출력입니다.
+ * @param {Int32Array} sites - 재사용하는 lower-envelope site scratch입니다.
+ * @param {Float64Array} separators - 재사용하는 parabola 경계 scratch입니다.
+ * @returns {void}
+ */
+function runSquaredDistanceTransform1d(
+    source,
+    length,
+    target,
+    sites,
+    separators
+) {
+    let envelopeIndex = 0;
+    sites[0] = 0;
+    separators[0] = Number.NEGATIVE_INFINITY;
+    separators[1] = Number.POSITIVE_INFINITY;
+
+    for (let point = 1; point < length; point++) {
+        let separation;
+        while (true) {
+            const site = sites[envelopeIndex];
+            separation = (
+                (source[point] + (point * point))
+                    - (source[site] + (site * site))
+            ) / (2 * (point - site));
+            if (separation > separators[envelopeIndex]) {
+                break;
+            }
+            envelopeIndex--;
+        }
+        envelopeIndex++;
+        sites[envelopeIndex] = point;
+        separators[envelopeIndex] = separation;
+        separators[envelopeIndex + 1] = Number.POSITIVE_INFINITY;
+    }
+
+    envelopeIndex = 0;
+    for (let point = 0; point < length; point++) {
+        while (separators[envelopeIndex + 1] < point) {
+            envelopeIndex++;
+        }
+        const site = sites[envelopeIndex];
+        const delta = point - site;
+        target[point] = (delta * delta) + source[site];
+    }
+}
+
+/**
+ * 세분화 snapshot의 boundary-center 거리를 exact O(N) EDT로 생성합니다.
+ * 최종 half-cell bias는 JFA 호환 경로와 동일하게 적용합니다.
+ * @param {Uint8Array} blocked - 세분화된 blocked plane입니다.
+ * @param {number} columns - 열 수입니다.
+ * @param {number} rows - 행 수입니다.
+ * @param {number} cellSize - 세분화된 world cell 크기입니다.
+ * @param {number} surfaceBiasWorld - authored face bias입니다.
+ * @returns {Float32Array} world-unit signed distance plane입니다.
+ */
+function createExactBoundaryDistanceValues(
+    blocked,
+    columns,
+    rows,
+    cellSize,
+    surfaceBiasWorld
+) {
+    const maximumDistanceSquared = (columns * columns)
+        + (rows * rows)
+        + 1;
+    const maximumDimension = Math.max(columns, rows);
+    const sourceLine = new Float64Array(maximumDimension);
+    const targetLine = new Float64Array(maximumDimension);
+    const sites = new Int32Array(maximumDimension);
+    const separators = new Float64Array(maximumDimension + 1);
+    const rowDistances = new Float64Array(blocked.length);
+
+    for (let row = 0; row < rows; row++) {
+        const rowOffset = row * columns;
+        for (let column = 0; column < columns; column++) {
+            sourceLine[column] = isBlockedBoundary(
+                blocked,
+                columns,
+                rows,
+                row,
+                column
+            ) ? 0 : maximumDistanceSquared;
+        }
+        runSquaredDistanceTransform1d(
+            sourceLine,
+            columns,
+            targetLine,
+            sites,
+            separators
+        );
+        rowDistances.set(targetLine.subarray(0, columns), rowOffset);
+    }
+
+    const values = new Float32Array(blocked.length);
+    for (let column = 0; column < columns; column++) {
+        for (let row = 0; row < rows; row++) {
+            sourceLine[row] = rowDistances[(row * columns) + column];
+        }
+        runSquaredDistanceTransform1d(
+            sourceLine,
+            rows,
+            targetLine,
+            sites,
+            separators
+        );
+        for (let row = 0; row < rows; row++) {
+            const cellIndex = (row * columns) + column;
+            const distanceCells = Math.fround(Math.sqrt(targetLine[row]));
+            const distanceWorld = Math.fround(distanceCells * cellSize);
+            values[cellIndex] = blocked[cellIndex] !== 0
+                ? Math.fround(-Math.fround(distanceWorld + surfaceBiasWorld))
+                : Math.fround(distanceWorld - surfaceBiasWorld);
+        }
+    }
+    return values;
+}
+
+/**
  * 원본 SDF seed → jump flood → finalize를 CPU에서 재현합니다.
  *
  * `blocked`는 row-major이고 row가 증가할수록 월드 +Y(화면 아래)입니다.
@@ -253,49 +416,74 @@ function runJumpFloodPass(source, target, columns, rows, step) {
 export function createGpuSignedDistanceField(navigationGrid) {
     assertNavigationGrid(navigationGrid);
 
-    const columns = navigationGrid.cols;
-    const rows = navigationGrid.rows;
-    const size = navigationGrid.size;
-    const cellSize = Math.fround(navigationGrid.cellSize);
-    const worldWidth = Math.fround(columns * cellSize);
-    const worldHeight = Math.fround(rows * cellSize);
+    const sourceColumns = navigationGrid.cols;
+    const sourceRows = navigationGrid.rows;
+    const sourceCellSize = Math.fround(navigationGrid.cellSize);
+    const subdivisions = navigationGrid.sdfSubdivisions ?? 1;
+    const columns = sourceColumns * subdivisions;
+    const rows = sourceRows * subdivisions;
+    const size = columns * rows;
+    const cellSize = Math.fround(sourceCellSize / subdivisions);
+    const surfaceBiasWorld = Math.fround(
+        cellSize * AUTHORED_SURFACE_BIAS_CELLS
+    );
+    const worldWidth = Math.fround(sourceColumns * sourceCellSize);
+    const worldHeight = Math.fround(sourceRows * sourceCellSize);
     if (!Number.isFinite(cellSize)
         || cellSize <= 0
         || !Number.isFinite(worldWidth)
         || !Number.isFinite(worldHeight)) {
         throw new RangeError('SDF grid의 Float32 월드 크기가 유효해야 합니다.');
     }
-    const blocked = new Uint8Array(navigationGrid.blocked);
-    let source = createBoundarySeeds(blocked, columns, rows);
-    let target = new Float32Array(source.length);
+    const blocked = createSubdividedBlockedPlane(
+        navigationGrid.blocked,
+        sourceColumns,
+        sourceRows,
+        subdivisions
+    );
+    let values;
+    if (subdivisions > 1) {
+        values = createExactBoundaryDistanceValues(
+            blocked,
+            columns,
+            rows,
+            cellSize,
+            surfaceBiasWorld
+        );
+    } else {
+        let source = createBoundarySeeds(blocked, columns, rows);
+        let target = new Float32Array(source.length);
 
-    let step = Math.floor(Math.max(columns, rows) / 2);
-    while (step >= 1) {
-        runJumpFloodPass(source, target, columns, rows, step);
-        const previousSource = source;
-        source = target;
-        target = previousSource;
-        step = Math.floor(step / 2);
-    }
+        let step = Math.floor(Math.max(columns, rows) / 2);
+        while (step >= 1) {
+            runJumpFloodPass(source, target, columns, rows, step);
+            const previousSource = source;
+            source = target;
+            target = previousSource;
+            step = Math.floor(step / 2);
+        }
 
-    const values = new Float32Array(size);
-    for (let row = 0; row < rows; row++) {
-        const pointY = Math.fround(row + 0.5);
-        for (let column = 0; column < columns; column++) {
-            const pointX = Math.fround(column + 0.5);
-            const cellIndex = (row * columns) + column;
-            const seedOffset = cellIndex * 2;
-            const distanceSquared = distanceSquaredFloat32(
-                source[seedOffset],
-                source[seedOffset + 1],
-                pointX,
-                pointY
-            );
-            const distanceCells = Math.fround(Math.sqrt(distanceSquared));
-            const distanceWorld = Math.fround(distanceCells * cellSize);
-            values[cellIndex] = blocked[cellIndex] !== 0
-                ? Math.fround(-distanceWorld)
-                : distanceWorld;
+        values = new Float32Array(size);
+        for (let row = 0; row < rows; row++) {
+            const pointY = Math.fround(row + 0.5);
+            for (let column = 0; column < columns; column++) {
+                const pointX = Math.fround(column + 0.5);
+                const cellIndex = (row * columns) + column;
+                const seedOffset = cellIndex * 2;
+                const distanceSquared = distanceSquaredFloat32(
+                    source[seedOffset],
+                    source[seedOffset + 1],
+                    pointX,
+                    pointY
+                );
+                const distanceCells = Math.fround(Math.sqrt(distanceSquared));
+                const distanceWorld = Math.fround(distanceCells * cellSize);
+                // Boundary seed는 blocked cell 중심에 있으므로, half-cell만큼
+                // 바깥으로 옮겨 authored cell face를 실제 zero contour로 맞춥니다.
+                values[cellIndex] = blocked[cellIndex] !== 0
+                    ? Math.fround(-Math.fround(distanceWorld + surfaceBiasWorld))
+                    : Math.fround(distanceWorld - surfaceBiasWorld);
+            }
         }
     }
 
@@ -304,6 +492,10 @@ export function createGpuSignedDistanceField(navigationGrid) {
         rows,
         size,
         cellSize,
+        subdivisions,
+        sourceCols: sourceColumns,
+        sourceRows,
+        sourceCellSize,
         worldWidth,
         worldHeight,
         blocked,

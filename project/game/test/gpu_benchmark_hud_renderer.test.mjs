@@ -69,15 +69,17 @@ test('HUD는 mixed-body kind/event telemetry와 dynamic box SDF 제한을 표시
         presentationProfile: 'strict-interpolation',
         backendState: 'gpu-ready',
         platformStatus: 'ready',
-        activeCount: 23,
+        activeCount: 24,
         enemyActiveCount: 19,
         projectileActiveCount: 4,
+        playerProxyActiveCount: 1,
         reservedCount: 2,
         pendingCommandCount: 3,
         totalQueuedEnemySpawnCount: 100,
         totalQueuedProjectileSpawnCount: 10,
         lastEnemySpawnBatchReason: 'queued',
         lastProjectileSpawnBatchReason: 'queued',
+        lastPlayerProxyReason: 'queued',
         gpuContactCount: 8,
         gpuAppliedEventCount: 6,
         gpuDeathEventCount: 2,
@@ -99,7 +101,7 @@ test('HUD는 mixed-body kind/event telemetry와 dynamic box SDF 제한을 표시
     const texts = harness.calls.map(({ options }) => options.text);
     assert.match(texts[0], /GPU Mixed Bodies/);
     assert.ok(texts.some((text) => (
-        text.includes('19 enemy + 4 projectile = 23 mixed bodies')
+        text.includes('19 enemy + 4 projectile + 1 player proxy = 24 backend bodies')
     )));
     assert.ok(texts.some((text) => (
         text.includes('8 contact | 6 applied | 2 death')
@@ -111,6 +113,6 @@ test('HUD는 mixed-body kind/event telemetry와 dynamic box SDF 제한을 표시
         text.includes('CPU tools: 0 projectiles + 4 boxes')
     )));
     assert.ok(texts.some((text) => (
-        text.includes('dynamic Spawn Box remains CPU-only')
+        text.includes('blue player uses a hidden GPU proxy; Spawn Box is CPU-only')
     )));
 });

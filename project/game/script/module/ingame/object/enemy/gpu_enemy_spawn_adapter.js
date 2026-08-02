@@ -115,6 +115,7 @@ export function createGpuEnemySpawnIntent(options) {
         layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         sensorMask: 0,
         health: requirePositiveFinite(definition.maxHealth ?? 1, 'maxHealth'),

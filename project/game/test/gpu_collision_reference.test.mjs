@@ -6,6 +6,7 @@ const abi = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const reference = await loadGameModule('ingame/physics/gpu/gpu_collision_reference.js');
 
 const {
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
     packGpuCirclePhysicsMeta,
     packGpuCircleSimulationMeta
 } = abi;
@@ -140,6 +141,41 @@ const staticResult = solveGpuCollisionReference([
 assertNear(staticResult.bodies[0].position.x, 39, 'dynamic against static x');
 assert.equal(staticResult.bodies[1].position.x, 41);
 assert.equal(staticResult.bodies[1].velocity.x, 0);
+
+// benchmark player proxy는 기존 small-grid solver에서 enemy만 밀고 자신은 고정됩니다.
+const benchmarkEnemyRadius = 0.5939696961966999 * 0.5;
+const benchmarkPlayerRadius = 0.72;
+const benchmarkProxyResult = solveGpuCollisionReference([
+    makeBody({
+        position: { x: 32.2, y: 18 },
+        radius: benchmarkEnemyRadius,
+        layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
+    }),
+    makeBody({
+        position: { x: 32, y: 18 },
+        radius: benchmarkPlayerRadius,
+        inverseMass: 0,
+        layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+    })
+], {
+    worldSize: { x: 64, y: 36 },
+    gridCellSize: { x: 1.5, y: 1.5 },
+    dt: 1 / 60
+});
+assert.ok(
+    Math.hypot(
+        benchmarkProxyResult.bodies[0].position.x
+            - benchmarkProxyResult.bodies[1].position.x,
+        benchmarkProxyResult.bodies[0].position.y
+            - benchmarkProxyResult.bodies[1].position.y
+    ) >= benchmarkEnemyRadius + benchmarkPlayerRadius - NUMERIC_EPSILON
+);
+assert.equal(benchmarkProxyResult.bodies[1].position.x, 32);
+assert.equal(benchmarkProxyResult.bodies[1].position.y, 18);
+assert.equal(benchmarkProxyResult.stats.smallOverflowCount, 0);
+assert.equal(benchmarkProxyResult.stats.bigOverflowCount, 0);
 
 // 원본의 동일위치 epsilon branch는 두 primary 모두 기본 normal +X를 선택합니다.
 const coincidentResult = solveGpuCollisionReference([
@@ -322,6 +358,31 @@ assertNear(sdfResult.bodies[0].position.x, 1, 'SDF world correction x');
 assert.equal(sdfResult.bodies[0].position.y, 50);
 assert.equal(sdfResult.bodies[0].previousPosition.x, 0.5);
 assertNear(sdfResult.bodies[0].velocity.x, 30, 'SDF velocity rebuild');
+
+// terrain pass는 같은 iteration에서 먼저 누적된 body-body delta까지 평가합니다.
+const combinedConstraintResult = solveGpuCollisionReference([
+    makeBody({
+        position: { x: 1.1, y: 50 },
+        radius: 1,
+        collisionMask: 1 | GPU_COLLISION_REFERENCE.TERRAIN_LAYER_MASK
+    }),
+    makeBody({
+        position: { x: 2.5, y: 50 },
+        radius: 1,
+        inverseMass: 0
+    })
+], {
+    ...DEFAULT_OPTIONS,
+    sdfSample(x) {
+        return { distance: x, gradientX: 1, gradientY: 0 };
+    }
+});
+assertNear(
+    combinedConstraintResult.bodies[0].position.x,
+    1,
+    'body delta and terrain constraint compose in one iteration'
+);
+assert.equal(combinedConstraintResult.bodies[1].position.x, 2.5);
 
 // tombstone은 SDF, delta apply, velocity rebuild/final output 어느 단계에서도 변경되지 않습니다.
 let inactiveSdfSampleCount = 0;

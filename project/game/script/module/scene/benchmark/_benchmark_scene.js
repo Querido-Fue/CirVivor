@@ -23,6 +23,10 @@ import {
     requestGpuBenchmarkEnemyBatch
 } from './gpu_benchmark_enemy_spawn_adapter.js';
 import {
+    GPU_BENCHMARK_PLAYER_PROXY_KIND_ID,
+    requestGpuBenchmarkPlayerProxy
+} from './gpu_benchmark_player_proxy_spawn_adapter.js';
+import {
     requestGpuBenchmarkProjectileBatch
 } from './gpu_benchmark_projectile_spawn_adapter.js';
 import {
@@ -248,7 +252,8 @@ function resolveRegistryKindCounts(endpoint, endpointStatus) {
             return {
                 totalActiveCount: fallbackTotal,
                 enemyActiveCount: fallbackTotal,
-                projectileActiveCount: 0
+                projectileActiveCount: 0,
+                playerProxyActiveCount: 0
             };
         }
         return {
@@ -258,13 +263,17 @@ function resolveRegistryKindCounts(endpoint, endpointStatus) {
             ),
             projectileActiveCount: normalizeTelemetryCount(
                 registry.getActiveCount('projectile')
+            ),
+            playerProxyActiveCount: normalizeTelemetryCount(
+                registry.getActiveCount(GPU_BENCHMARK_PLAYER_PROXY_KIND_ID)
             )
         };
     } catch {
         return {
             totalActiveCount: fallbackTotal,
             enemyActiveCount: fallbackTotal,
-            projectileActiveCount: 0
+            projectileActiveCount: 0,
+            playerProxyActiveCount: 0
         };
     }
 }
@@ -358,6 +367,7 @@ export class BenchmarkScene extends BaseScene {
         this.gpuSpawnSequence = 0;
         this.totalQueuedGpuSpawnCount = 0;
         this.lastGpuSpawnBatchResult = createEmptySpawnBatchResult();
+        this.lastGpuPlayerProxyResult = createEmptySpawnBatchResult();
         this.gpuProjectileSpawnBatchSequence = 0;
         this.gpuProjectileSpawnSequence = 0;
         this.totalQueuedGpuProjectileSpawnCount = 0;
@@ -456,6 +466,10 @@ export class BenchmarkScene extends BaseScene {
         this.lastGpuProjectileSpawnBatchResult = createEmptySpawnBatchResult(
             'session-reset'
         );
+        this.lastGpuPlayerProxyResult = requestGpuBenchmarkPlayerProxy({
+            gameScene,
+            sessionGeneration: this.gpuSessionGeneration
+        });
     }
 
     #destroyGpuGameScene() {
@@ -536,6 +550,11 @@ export class BenchmarkScene extends BaseScene {
     spawnGpuEnemyBatch(count) {
         if (this.destroyed) {
             return createEmptySpawnBatchResult('scene-destroyed');
+        }
+        if (this.lastGpuPlayerProxyResult?.accepted !== true) {
+            return createEmptySpawnBatchResult(
+                `player-proxy-${this.lastGpuPlayerProxyResult?.reason ?? 'unavailable'}`
+            );
         }
         const result = requestGpuBenchmarkEnemyBatch({
             gameScene: this.gpuGameScene,
@@ -666,6 +685,7 @@ export class BenchmarkScene extends BaseScene {
             activeCount: kindCounts.totalActiveCount,
             enemyActiveCount: kindCounts.enemyActiveCount,
             projectileActiveCount: kindCounts.projectileActiveCount,
+            playerProxyActiveCount: kindCounts.playerProxyActiveCount,
             reservedCount: endpointStatus?.reservedCount ?? 0,
             pendingCommandCount: endpointStatus?.pendingCommandCount ?? 0,
             totalQueuedEnemySpawnCount: this.totalQueuedGpuSpawnCount,
@@ -702,6 +722,8 @@ export class BenchmarkScene extends BaseScene {
             cpuPartChecks: this.collisionStats?.partChecks ?? 0,
             lastSpawnBatchReason: this.lastGpuSpawnBatchResult.reason,
             lastEnemySpawnBatchReason: this.lastGpuSpawnBatchResult.reason,
+            lastPlayerProxyReason:
+                this.lastGpuPlayerProxyResult?.reason ?? 'not-requested',
             lastProjectileSpawnBatchReason:
                 this.lastGpuProjectileSpawnBatchResult.reason
         });
