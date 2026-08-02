@@ -332,6 +332,10 @@ test('quality ID/상한/shader는 paired separable Gaussian이고 presentation �
     assert.equal(constants.MAX_KERNEL_RADIUS, 12);
     assert.equal(constants.MAX_PAIRED_TAP_COUNT, 6);
     assert.equal(constants.MAX_PASS_COUNT, 3);
+    assert.equal(namespace.WEBGPU_GAUSSIAN_SUBPIXEL_IDENTITY_SIGMA_CUTOFF, 1 / 8);
+    assert.equal(namespace.WEBGPU_GAUSSIAN_SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE, 1 / 64);
+    assert.equal(constants.SUBPIXEL_IDENTITY_SIGMA_CUTOFF, 1 / 8);
+    assert.equal(constants.SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE, 1 / 64);
     assert.equal(constants.DOWNSAMPLE_SAMPLE_COUNT, 4);
     assert.deepEqual(
         Array.from(constants.DOWNSAMPLE_SCALE_BUCKETS, (bucket) => bucket.scale),
@@ -361,6 +365,30 @@ test('quality ID/상한/shader는 paired separable Gaussian이고 presentation �
     ]) {
         assert.equal(algorithmSource.includes(forbiddenCall), false, `${forbiddenCall} 호출 금지`);
     }
+});
+
+test('factory halo preflight는 GPU 생성 없이 exact support를 제공하고 subpixel identity를 0으로 보존한다', async () => {
+    const {
+        createWebGpuGaussianBlurAlgorithmFactory,
+        getWebGpuGaussianRequiredHalo,
+        WEBGPU_GAUSSIAN_SUBPIXEL_IDENTITY_SIGMA_CUTOFF: cutoff
+    } = await loadAlgorithmModule();
+    const composer = createComposerHarness();
+    const factory = createWebGpuGaussianBlurAlgorithmFactory({
+        composerPort: composer.port
+    });
+
+    assert.equal(typeof factory.getRequiredHalo, 'function');
+    for (const sigma of [0, 0.1, cutoff]) {
+        assert.equal(getWebGpuGaussianRequiredHalo(sigma), 0);
+        assert.equal(factory.getRequiredHalo({ sigma }), 0);
+    }
+    assert.equal(getWebGpuGaussianRequiredHalo(cutoff + Number.EPSILON), 3);
+    assert.equal(factory.getRequiredHalo({ sigma: 3 }), 11);
+    assert.equal(factory.getRequiredHalo({ sigma: 10 }), 35);
+    assert.equal(factory.getRequiredHalo({ sigma: 16 }), 51);
+    assert.throws(() => factory.getRequiredHalo({ sigma: 16.001 }), /sigma는 16 이하/);
+    assert.equal(composer.deferred.length, 0, 'preflight는 frame callback/GPU instance를 만들지 않음');
 });
 
 test('prepare는 3-sigma 정규화/대칭 kernel과 bilinear paired tap을 한 번만 계산한다', async () => {
@@ -749,8 +777,11 @@ test('sigma 10은 1 downsample + H/V, variance 보정/padded fetch kernel을 enc
     assert.equal(deviceHarness.records.textures.every((record) => record.destroyCount === 1), true);
 });
 
-test('sigma 0은 source identity/view를 그대로 반환하고 frame lease나 pass를 만들지 않는다', async () => {
-    const { createWebGpuGaussianBlurAlgorithmFactory } = await loadAlgorithmModule();
+test('sigma 1/8 이하는 무할당 identity이고 경계 바로 위는 기존 normalized H/V Gaussian이다', async () => {
+    const {
+        createWebGpuGaussianBlurAlgorithmFactory,
+        WEBGPU_GAUSSIAN_SUBPIXEL_IDENTITY_SIGMA_CUTOFF: cutoff
+    } = await loadAlgorithmModule();
     const deviceHarness = createDevice('identity');
     const composer = createComposerHarness();
     const algorithm = createWebGpuGaussianBlurAlgorithmFactory({ composerPort: composer.port })({
@@ -758,24 +789,126 @@ test('sigma 0은 source identity/view를 그대로 반환하고 frame lease나 p
         deviceGeneration: 1
     });
     const source = createSourceTexture('identity-source', 321, 181);
-    const request = createRequest(source.texture, 0);
     const frame = createContext(deviceHarness.device, 1, 1, 321, 181);
-    const prepared = algorithm.prepare({ context: frame.context, request, key: 'identity' });
-    const output = algorithm.encode({ context: frame.context, request, key: 'identity', prepared });
+    const identityCases = [0, 0.1, cutoff];
+    let cutoffPrepared = null;
 
-    assert.strictEqual(output.texture, source.texture);
-    assert.equal(output.width, 321);
-    assert.equal(output.height, 181);
-    assert.equal(output.passCount, 0);
-    assert.equal(output.frameLifetime, 'source-owned');
-    assert.equal(output.downsampleScale, 1);
-    assert.equal(output.samplesPerGaussianPass, 0);
+    for (const sigma of identityCases) {
+        const request = createRequest(source.texture, sigma);
+        const prepared = algorithm.prepare({
+            context: frame.context,
+            request,
+            key: `identity:${sigma}`
+        });
+        const output = algorithm.encode({
+            context: frame.context,
+            request,
+            key: `identity:${sigma}`,
+            prepared
+        });
+
+        assert.equal(prepared.identity, true);
+        assert.equal(prepared.subpixelIdentity, sigma > 0);
+        assert.equal(prepared.sourceSigma, sigma);
+        assert.equal(prepared.reconstructedSourceSigma, 0);
+        assert.equal(prepared.passes.length, 0);
+        assert.strictEqual(output.texture, source.texture);
+        assert.equal(output.width, 321);
+        assert.equal(output.height, 181);
+        assert.equal(output.passCount, 0);
+        assert.equal(output.identity, true);
+        assert.equal(output.subpixelIdentity, sigma > 0);
+        assert.equal(output.sourceSigma, sigma);
+        assert.equal(output.reconstructedSourceSigma, 0);
+        assert.equal(output.frameLifetime, 'source-owned');
+        assert.equal(output.downsampleScale, 1);
+        assert.equal(output.samplesPerGaussianPass, 0);
+        if (sigma === cutoff) {
+            cutoffPrepared = prepared;
+        }
+    }
+
     assert.equal(frame.records.passes.length, 0);
     assert.equal(deviceHarness.records.textures.length, 0);
     assert.equal(deviceHarness.records.buffers.length, 0);
     assert.equal(deviceHarness.records.pipelines.length, 0);
     assert.equal(source.record.viewCount, 1);
     assert.equal(composer.deferred.length, 0);
+    assert.deepEqual({
+        encodeCount: algorithm.getDiagnostics().encodeCount,
+        identityEncodeCount: algorithm.getDiagnostics().identityEncodeCount,
+        subpixelIdentityEncodeCount: algorithm.getDiagnostics().subpixelIdentityEncodeCount,
+        passCount: algorithm.getDiagnostics().passCount,
+        activeFrameId: algorithm.getDiagnostics().activeFrameId,
+        frameActive: algorithm.getDiagnostics().pool.frameActive
+    }, {
+        encodeCount: 3,
+        identityEncodeCount: 3,
+        subpixelIdentityEncodeCount: 2,
+        passCount: 0,
+        activeFrameId: null,
+        frameActive: false
+    });
+    assert.equal(algorithm.getDiagnostics().subpixelIdentitySigmaCutoff, cutoff);
+    assert.equal(algorithm.getDiagnostics().subpixelIdentityMaxPsfVariance, 1 / 64);
+
+    const aboveCutoff = cutoff + Number.EPSILON;
+    assert.ok(aboveCutoff > cutoff);
+    const blurRequest = createRequest(source.texture, aboveCutoff);
+    assert.throws(
+        () => algorithm.encode({
+            context: frame.context,
+            request: blurRequest,
+            key: 'cutoff-prepared-reuse',
+            prepared: cutoffPrepared
+        }),
+        /sigma가 prepare 이후 변경/
+    );
+    const blurPrepared = algorithm.prepare({
+        context: frame.context,
+        request: blurRequest,
+        key: 'above-cutoff'
+    });
+    assert.equal(blurPrepared.identity, false);
+    assert.equal(blurPrepared.subpixelIdentity, false);
+    assert.deepEqual(Array.from(blurPrepared.passes, (pass) => pass.kind), [
+        'horizontal',
+        'vertical'
+    ]);
+    assert.ok(blurPrepared.kernel.normalizedWeightSum > 0.999999);
+    assert.ok(blurPrepared.kernel.normalizedWeightSum < 1.000001);
+    assert.throws(
+        () => algorithm.encode({
+            context: frame.context,
+            request: blurRequest,
+            key: 'forged-cutoff-topology',
+            prepared: Object.freeze({
+                ...blurPrepared,
+                identity: true,
+                subpixelIdentity: true,
+                passes: Object.freeze([])
+            })
+        }),
+        /identity cutoff prepared state가 일치하지 않습니다/
+    );
+    const blurOutput = algorithm.encode({
+        context: frame.context,
+        request: blurRequest,
+        key: 'above-cutoff',
+        prepared: blurPrepared
+    });
+    assert.equal(blurOutput.identity, false);
+    assert.equal(blurOutput.sourceSigma, aboveCutoff);
+    assert.equal(blurOutput.passCount, 2);
+    assert.equal(frame.records.passes.length, 2);
+    assert.equal(deviceHarness.records.textures.length, 2);
+    assert.equal(deviceHarness.records.buffers.length, 1);
+    assert.equal(deviceHarness.records.pipelines.length, 2);
+    assert.equal(composer.deferred.length, 1);
+    assert.equal(algorithm.getDiagnostics().encodeCount, 4);
+    assert.equal(algorithm.getDiagnostics().identityEncodeCount, 3);
+    assert.equal(algorithm.getDiagnostics().subpixelIdentityEncodeCount, 2);
+    composer.settle('committed', 1);
     algorithm.destroy();
 });
 

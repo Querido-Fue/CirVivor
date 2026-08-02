@@ -45,6 +45,16 @@ export class TitleScene extends BaseScene {
         this.presentation?.draw();
     }
 
+    /** @override 최종 overlay snapshot을 같은 title presentation frame에 합성합니다. */
+    finalizeWebGpuPresentation(options = {}) {
+        return this.presentation?.finalizeWebGpuPresentation?.(options);
+    }
+
+    /** @override composer abort 전에 title capture/cutover를 복구합니다. */
+    abortWebGpuPresentation(reason) {
+        return this.presentation?.abortWebGpuPresentation?.(reason);
+    }
+
     /**
      * @override
      * 화면 크기 변경 시 완료된 presentation 배치를 다시 계산합니다.

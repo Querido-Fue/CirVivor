@@ -277,6 +277,48 @@ test('maxTextures는 LRU idle texture를 먼저 trim하고 leased capacity 초�
     saturated.destroy();
 });
 
+test('opt-in frame overflow는 현재 frame idle을 exact 재사용하되 endFrame 전에는 폐기하지 않는다', async () => {
+    const { WebGpuTransientTexturePool } = await loadPoolModule();
+    const harness = createDevice('device-frame-overflow');
+    const pool = new WebGpuTransientTexturePool({
+        maxTextures: 2,
+        maxIdleFrames: 2,
+        allowFrameOverflow: true
+    });
+
+    pool.beginFrame({ device: harness.device, deviceGeneration: 1, frameId: 1 });
+    const first = pool.acquire(createDescriptor({ width: 16 }));
+    assert.equal(pool.release(first), true);
+    const second = pool.acquire(createDescriptor({ width: 32 }));
+    assert.equal(pool.release(second), true);
+
+    const reused = pool.acquire(createDescriptor({ width: 16 }));
+    assert.strictEqual(reused.texture, first.texture);
+    assert.equal(pool.release(reused), true);
+    const overflow = pool.acquire(createDescriptor({ width: 48 }));
+    assert.equal(pool.release(overflow), true);
+
+    const beforeOutcome = pool.getDiagnostics();
+    assert.equal(beforeOutcome.allowFrameOverflow, true);
+    assert.equal(beforeOutcome.textureCount, 3);
+    assert.equal(beforeOutcome.overflowAllocationCount, 1);
+    assert.equal(beforeOutcome.reuseCount, 1);
+    assert.equal(beforeOutcome.destroyCount, 0);
+    assert.equal(harness.records.textures.reduce(
+        (sum, texture) => sum + texture.destroyCount,
+        0
+    ), 0);
+
+    const afterOutcome = pool.endFrame();
+    assert.equal(afterOutcome.textureCount, 2);
+    assert.equal(afterOutcome.destroyCount, 1);
+    assert.equal(harness.records.textures.reduce(
+        (sum, texture) => sum + texture.destroyCount,
+        0
+    ), 1);
+    pool.destroy();
+});
+
 test('destroy는 active texture를 정확히 한 번 폐기하고 stale lease와 이후 사용을 막는다', async () => {
     const { WebGpuTransientTexturePool } = await loadPoolModule();
     const harness = createDevice('device-destroy');

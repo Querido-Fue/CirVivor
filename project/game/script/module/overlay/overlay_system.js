@@ -1,6 +1,7 @@
 import { getDisplaySystem } from 'display/display_system.js';
 import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { getSetting } from 'save/save_system.js';
+import { getTitleWebGpuOverlayCaptureToken } from 'scene/title/webgpu/_title_webgpu_overlay_capture_gate.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { OverlaySession } from './_overlay_session.js';
 import { DebugOverlay } from './_debug_overlay.js';
@@ -142,6 +143,36 @@ export class OverlayManager {
             }
         }
         return false;
+    }
+
+    /**
+     * 현재 DisplaySystem WebGPU frame에 대응하는 manager 소유 overlay snapshot을
+     * 표시 순서대로 반환합니다. 타이틀 메인 메뉴처럼 manager 밖의 session은 포함하지 않습니다.
+     * capture가 inactive이거나 한 session이라도 안전한 snapshot을 제공하지 못하면
+     * 일부 overlay만 합성하지 않도록 null을 반환합니다.
+     * @returns {ReadonlyArray<object>|null} 정렬된 title WebGPU presentation snapshot입니다.
+     */
+    getTitleWebGpuPresentationSnapshots() {
+        const captureToken = getTitleWebGpuOverlayCaptureToken(this.displaySystem);
+        if (!captureToken) {
+            return null;
+        }
+
+        const snapshots = [];
+        const sortedEntries = this.#getSortedEntries();
+        for (const entry of sortedEntries) {
+            let snapshot = null;
+            try {
+                snapshot = entry.session?.getTitleWebGpuPresentationSnapshot?.() ?? null;
+            } catch {
+                return null;
+            }
+            if (!snapshot || snapshot.frameId !== captureToken.frameId) {
+                return null;
+            }
+            snapshots.push(snapshot);
+        }
+        return Object.freeze(snapshots);
     }
 
     /**

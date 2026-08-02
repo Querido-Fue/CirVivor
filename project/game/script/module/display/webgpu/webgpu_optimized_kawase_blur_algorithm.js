@@ -21,6 +21,10 @@ const BASE_PYRAMID_EXACT_SUPPORT = 5;
 const MIN_FILTER_OFFSET = 0.5;
 const FILTER_CENTER_MIX_CAP = 0.625;
 const SIGMA_QUANTIZATION_STEP = 1 / 16;
+const SUBPIXEL_IDENTITY_REQUEST_SIGMA_CUTOFF = 0.1;
+const SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA = 1 / 8;
+const SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE = SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA
+    * SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA;
 const MAX_SOURCE_SIGMA = 16;
 const HALO_SIGMA_MULTIPLIER = 3;
 const HALO_SAFETY_PADDING = 2;
@@ -48,6 +52,9 @@ export const WEBGPU_OPTIMIZED_KAWASE_BLUR_CONSTANTS = Object.freeze({
     BASE_PYRAMID_AXIS_VARIANCE,
     MIN_FILTER_OFFSET,
     FILTER_CENTER_MIX_CAP,
+    SUBPIXEL_IDENTITY_REQUEST_SIGMA_CUTOFF,
+    SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA,
+    SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE,
     HALO_SIGMA_MULTIPLIER,
     HALO_SAFETY_PADDING,
     SUPPORTED_TEXTURE_FORMATS,
@@ -56,8 +63,8 @@ export const WEBGPU_OPTIMIZED_KAWASE_BLUR_CONSTANTS = Object.freeze({
 
 /**
  * downsample은 normalized 5-tap dual filter, filter는 네 대각선 bilinear tap을 사용합니다.
- * 작은 sigma에서는 filter residual을 0으로 두고 reconstruction blurWeight를 0으로
- * 수렴시켜 sigma 0 identity와 연속으로 연결합니다.
+ * 요청 0.1px 이하 sigma는 source identity로 접고, 그 위의 작은 sigma에서는 filter residual을
+ * 0으로 두고 reconstruction blurWeight를 0으로 수렴시켜 identity와 연속으로 연결합니다.
  * 모든 가중치는 양수이고 합이 1이라 premultiplied RGBA를 그대로 보존합니다.
  */
 export const WEBGPU_OPTIMIZED_KAWASE_BLUR_SHADER = `
@@ -197,10 +204,22 @@ export const WEBGPU_OPTIMIZED_KAWASE_BLUR_SHADER = `
     }
 `;
 
-/** 양수 sigma를 1/16px bucket으로 정규화하고 0은 정확히 보존합니다. */
+/** source 픽셀 공간에서 identity로 접는 requested sigma의 inclusive 상한입니다. */
+export const WEBGPU_OPTIMIZED_KAWASE_SUBPIXEL_IDENTITY_SIGMA_CUTOFF
+    = SUBPIXEL_IDENTITY_REQUEST_SIGMA_CUTOFF;
+
+/** identity로 접히는 요청이 기존 1/16px bucket에서 나타내던 최대 sigma입니다. */
+export const WEBGPU_OPTIMIZED_KAWASE_SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA
+    = SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA;
+
+/** identity cutoff가 허용하는 최대 소스-space PSF 분산(px²)입니다. */
+export const WEBGPU_OPTIMIZED_KAWASE_SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE
+    = SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE;
+
+/** 요청 0.1px 이하를 identity로 접고 나머지 sigma를 1/16px bucket으로 정규화합니다. */
 export function quantizeWebGpuOptimizedKawaseSigma(value) {
     const sigma = normalizeSourceSigma(value);
-    if (sigma <= 0) {
+    if (sigma <= SUBPIXEL_IDENTITY_REQUEST_SIGMA_CUTOFF) {
         return 0;
     }
     return Math.fround(Math.max(
@@ -601,6 +620,9 @@ export class WebGpuOptimizedKawaseBlurAlgorithm {
             destroyed: this.destroyed,
             deviceGeneration: this.deviceGeneration,
             sigmaQuantizationStep: SIGMA_QUANTIZATION_STEP,
+            subpixelIdentitySigmaCutoff: SUBPIXEL_IDENTITY_REQUEST_SIGMA_CUTOFF,
+            subpixelIdentityMaxFoldedSigma: SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA,
+            subpixelIdentityMaxPsfVariance: SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE,
             lastRequestedSigma: this.lastRequestedSigma,
             lastQuantizedSigma: this.lastQuantizedSigma,
             lastTopology: this.lastTopology,

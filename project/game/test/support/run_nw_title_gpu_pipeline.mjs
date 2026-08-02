@@ -8,6 +8,7 @@ const RUN_DIRECTORY_PREFIX = 'cirvivor-title-gpu-';
 const EXPECTED_PLATFORM = 'win32';
 const DEFAULT_TITLE_WEBGPU_GPU_BUDGET_MS = 1.0;
 const TITLE_WEBGPU_PROVISIONAL_SCOPE = 'title-webgpu-base-shadow-graph';
+const TITLE_WEBGPU_UNIFIED_SCOPE = 'title-webgpu-unified-full-scene';
 const TITLE_WEBGL_OVERLAY_SCOPE = 'legacy-overlay-blur-composite';
 const TITLE_SCENARIOS = Object.freeze(['T0', 'T1', 'T2', 'T3', 'T4', 'T5']);
 const TITLE_PIPELINE_MODES = Object.freeze([
@@ -457,6 +458,87 @@ async function runColdTrial(options, projectDirectory, harnessDirectory, coldSta
     }
 }
 
+function isFullyCutOver(status) {
+    return Boolean(status
+        && typeof status === 'object'
+        && status.fullCutoverActive === true
+        && status.legacyVisibleSurfaceCount === 0
+        && status.webGpuSurfaceVisible === true
+        && status.topControlSurfacePreserved === true
+        && status.cssPresentationNeutralized === true
+        && status.fallbackPending !== true
+        && status.destroyed !== true);
+}
+
+function validateTitleWebGpuFullOverlayReceipt(trial, trialIndex) {
+    const coordinator = trial?.validation?.titleWebGpuShadowDiagnostics
+        ?.overlay?.coordinator;
+    const receipt = coordinator?.lastGraphReceipt;
+    const cutover = coordinator?.cutover;
+    const failures = [];
+
+    if (!coordinator || typeof coordinator !== 'object') {
+        failures.push('missing-coordinator-diagnostics');
+    }
+    if (!receipt || typeof receipt !== 'object') {
+        failures.push('missing-last-graph-receipt');
+    } else {
+        if (receipt.status !== 'committed' || receipt.committed !== true) {
+            failures.push('receipt-not-committed');
+        }
+        if (receipt.submitted !== true) failures.push('receipt-not-submitted');
+        if (!Number.isSafeInteger(receipt.frameId) || receipt.frameId < 0
+            || !Number.isSafeInteger(receipt.deviceGeneration)
+            || receipt.deviceGeneration < 0) {
+            failures.push('receipt-identity-invalid');
+        }
+        if (receipt.finalOverlayIncluded !== true) {
+            failures.push('final-overlay-not-included');
+        }
+        if (receipt.baseCheckpointConsumed !== true) {
+            failures.push('base-checkpoint-not-consumed');
+        }
+        if (receipt.vignetteIncluded !== true) failures.push('vignette-not-included');
+        if (receipt.fullScenePresented !== true) failures.push('full-scene-not-presented');
+        if (receipt.finalCanvasPassCount !== 1) {
+            failures.push('final-canvas-pass-count-not-one');
+        }
+        if (receipt.presentPassCount !== 1) failures.push('present-pass-count-not-one');
+        if (receipt.failure !== null) failures.push('receipt-failure-present');
+        if (receipt.abortReason !== null) failures.push('receipt-abort-reason-present');
+        if (!isFullyCutOver(receipt.cutoverStatus)) {
+            failures.push('receipt-cutover-not-qualified');
+        }
+    }
+
+    if (!isFullyCutOver(cutover)) {
+        failures.push('coordinator-cutover-not-qualified');
+    }
+    const committedFrameId = cutover?.lastCommittedFrameId;
+    const committedDeviceGeneration = cutover?.lastCommittedDeviceGeneration;
+    if (!Number.isSafeInteger(committedFrameId) || committedFrameId < 0
+        || !Number.isSafeInteger(committedDeviceGeneration)
+        || committedDeviceGeneration < 0) {
+        failures.push('cutover-commit-identity-invalid');
+    } else if (receipt?.frameId !== committedFrameId
+        || receipt?.deviceGeneration !== committedDeviceGeneration) {
+        failures.push('stale-cutover-commit-identity');
+    }
+
+    return Object.freeze({
+        trialIndex,
+        coldStartIndex: Number.isSafeInteger(trial?.coldStartIndex)
+            ? trial.coldStartIndex
+            : null,
+        qualified: failures.length === 0,
+        frameId: Number.isSafeInteger(receipt?.frameId) ? receipt.frameId : null,
+        deviceGeneration: Number.isSafeInteger(receipt?.deviceGeneration)
+            ? receipt.deviceGeneration
+            : null,
+        failures: Object.freeze(failures)
+    });
+}
+
 /**
  * cold trial 결과를 median/worst p99로 집계합니다.
  * @param {object[]} trials - trial results입니다.
@@ -470,6 +552,11 @@ export function aggregateTrials(trials) {
     const metric = usesWebGpuPipeline
         ? 'title.webgpu_graph.gpu_ms'
         : 'title.overlay_blur_composite.gpu_ms';
+    const receiptTrials = usesWebGpuPipeline
+        ? trials.map(validateTitleWebGpuFullOverlayReceipt)
+        : [];
+    const allReceiptsQualified = !usesWebGpuPipeline
+        || receiptTrials.every((entry) => entry.qualified);
     const scenarioIds = new Set();
     for (const trial of trials) {
         for (const scenarioId of trial.config?.scenarios || []) {
@@ -489,6 +576,7 @@ export function aggregateTrials(trials) {
         let budgetRequiredTrialCount = 0;
         let budgetEvidenceTrialCount = 0;
         let budgetMissingEvidenceTrialCount = 0;
+        let budgetUnqualifiedReceiptTrialCount = 0;
         const overBudgetTrials = [];
         for (let trialIndex = 0; trialIndex < trials.length; trialIndex++) {
             const trial = trials[trialIndex];
@@ -509,7 +597,11 @@ export function aggregateTrials(trials) {
                 && expectedScenarios.includes(scenarioId);
             if (budgetRequiredForTrial) {
                 budgetRequiredTrialCount += 1;
-                if (p99 === null) {
+                const receiptQualified = receiptTrials[trialIndex]?.qualified === true;
+                if (!receiptQualified) {
+                    budgetMissingEvidenceTrialCount += 1;
+                    budgetUnqualifiedReceiptTrialCount += 1;
+                } else if (p99 === null) {
                     budgetMissingEvidenceTrialCount += 1;
                 } else {
                     budgetEvidenceTrialCount += 1;
@@ -569,6 +661,7 @@ export function aggregateTrials(trials) {
             budgetRequiredTrialCount,
             budgetEvidenceTrialCount,
             budgetMissingEvidenceTrialCount,
+            budgetUnqualifiedReceiptTrialCount,
             overBudgetTrialCount: overBudgetTrials.length,
             overBudgetTrials,
             budgetPassed
@@ -582,13 +675,33 @@ export function aggregateTrials(trials) {
     const budgetRequired = scenarios.some((scenario) => scenario.budgetRequired);
     const budgetPassed = scenarios.every((scenario) => scenario.budgetPassed);
     const measurement = usesWebGpuPipeline
-        ? {
+        ? (allReceiptsQualified ? {
+            metric,
+            scope: TITLE_WEBGPU_UNIFIED_SCOPE,
+            provisional: false,
+            finalOverlayIncluded: true,
+            qualification: 'unified-full-scene',
+            receiptValidation: {
+                required: true,
+                passed: true,
+                qualifiedTrialCount: receiptTrials.length,
+                unqualifiedTrialCount: 0,
+                trials: receiptTrials
+            }
+        } : {
             metric,
             scope: TITLE_WEBGPU_PROVISIONAL_SCOPE,
             provisional: true,
             finalOverlayIncluded: false,
-            qualification: 'base-shadow-only'
-        }
+            qualification: 'full-overlay-receipt-unqualified',
+            receiptValidation: {
+                required: true,
+                passed: false,
+                qualifiedTrialCount: receiptTrials.filter((entry) => entry.qualified).length,
+                unqualifiedTrialCount: receiptTrials.filter((entry) => !entry.qualified).length,
+                trials: receiptTrials
+            }
+        })
         : {
             metric,
             scope: TITLE_WEBGL_OVERLAY_SCOPE,
@@ -600,6 +713,7 @@ export function aggregateTrials(trials) {
         schemaVersion: 1,
         status: trials.every((trial) => trial.status === 'pass')
             && strictCoveragePassed
+            && allReceiptsQualified
             && budgetPassed
             ? 'pass'
             : 'fail',

@@ -15,7 +15,8 @@ function createComposerHarness() {
         finishCount: 0,
         submitCount: 0,
         markDrawnCount: 0,
-        markClearedCount: 0
+        markClearedCount: 0,
+        deferredCallbacks: []
     };
     const devices = new Map();
     const getDevice = (deviceLabel) => {
@@ -52,6 +53,22 @@ function createComposerHarness() {
         isFrameActive() {
             return records.active;
         },
+        deferFrameCallbacks(callbacks = {}) {
+            if (!records.active) {
+                return false;
+            }
+            const committed = typeof callbacks.committed === 'function'
+                ? callbacks.committed
+                : null;
+            const aborted = typeof callbacks.aborted === 'function'
+                ? callbacks.aborted
+                : null;
+            if (!committed && !aborted) {
+                return false;
+            }
+            records.deferredCallbacks.push({ committed, aborted });
+            return true;
+        },
         acquireFrameTarget() {
             records.acquireCount += 1;
         },
@@ -74,6 +91,23 @@ function createComposerHarness() {
                 getDevice(deviceLabel),
                 records
             );
+        },
+        settle(outcome = 'committed') {
+            assert.ok(outcome === 'committed' || outcome === 'aborted');
+            if (!records.active) {
+                return false;
+            }
+            records.active = false;
+            const event = Object.freeze({
+                frameId: contexts.current.frameId,
+                submitted: outcome === 'committed',
+                reason: outcome === 'aborted' ? 'test-abort' : null
+            });
+            const callbacks = records.deferredCallbacks.splice(0);
+            for (const pair of callbacks) {
+                pair[outcome]?.(event);
+            }
+            return true;
         }
     };
 }
@@ -124,7 +158,16 @@ function createAlgorithmRegistry(composerRecords) {
             );
             const instanceId = `${algorithmId}@${deviceGeneration}`;
             const preparedResources = [];
-            records.factories.push({ algorithmId, device, deviceGeneration, instanceId });
+            const ownedBuffer = createDestroyableResource('buffer');
+            const ownedTexture = createDestroyableResource('texture');
+            records.factories.push({
+                algorithmId,
+                device,
+                deviceGeneration,
+                instanceId,
+                ownedBuffer,
+                ownedTexture
+            });
             return {
                 prepare({ context, request, key, preparationKey }) {
                     assert.equal(composerRecords.insideEncodeCommands, true);
@@ -156,6 +199,8 @@ function createAlgorithmRegistry(composerRecords) {
                     return output;
                 },
                 destroy() {
+                    ownedBuffer.destroy();
+                    ownedTexture.destroy();
                     for (const prepared of preparedResources) {
                         prepared.destroyed = true;
                     }
@@ -176,6 +221,16 @@ function createAlgorithmRegistry(composerRecords) {
             ['kawase', createFactory('kawase')]
         ]),
         records
+    };
+}
+
+function createDestroyableResource(kind) {
+    return {
+        kind,
+        destroyCount: 0,
+        destroy() {
+            this.destroyCount += 1;
+        }
     };
 }
 
@@ -208,6 +263,76 @@ function assertNoForbiddenOwnership(records) {
         submitCount: 0,
         markDrawnCount: 0,
         markClearedCount: 0
+    });
+}
+
+for (const algorithmId of ['gaussian', 'kawase']) {
+    for (const outcome of ['committed', 'aborted']) {
+        test(`active frame ${outcome} 전 ${algorithmId} destroy는 GPU resource 폐기를 지연한다`, () => {
+            const composer = createComposerHarness();
+            const registry = createAlgorithmRegistry(composer.records);
+            const service = new WebGpuBlurService({
+                composerPort: composer.composerPort,
+                algorithmFactories: registry.factories
+            });
+
+            assert.ok(service.encode(createRequest({ algorithmId })));
+            const instance = registry.records.factories[0];
+            const prepared = registry.records.prepares[0].prepared;
+
+            service.destroy();
+            service.destroy();
+
+            const pendingSnapshot = service.getSnapshot();
+            assert.equal(pendingSnapshot.status, 'destroyed');
+            assert.equal(pendingSnapshot.destroyPending, true);
+            assert.equal(pendingSnapshot.algorithmInstanceCount, 1);
+            assert.equal(registry.records.destroys.length, 0);
+            assert.equal(instance.ownedBuffer.destroyCount, 0);
+            assert.equal(instance.ownedTexture.destroyCount, 0);
+            assert.equal(prepared.destroyed, false);
+            assert.equal(composer.records.deferredCallbacks.length, 1);
+            assert.equal(service.encode(createRequest({ algorithmId })), null);
+
+            assert.equal(composer.settle(outcome), true);
+
+            const settledSnapshot = service.getSnapshot();
+            assert.equal(settledSnapshot.destroyPending, false);
+            assert.equal(settledSnapshot.algorithmInstanceCount, 0);
+            assert.equal(registry.records.destroys.length, 1);
+            assert.equal(instance.ownedBuffer.destroyCount, 1);
+            assert.equal(instance.ownedTexture.destroyCount, 1);
+            assert.equal(prepared.destroyed, true);
+
+            service.destroy();
+            assert.equal(composer.settle(outcome), false);
+            assert.equal(registry.records.destroys.length, 1);
+            assertNoForbiddenOwnership(composer.records);
+        });
+    }
+
+    test(`inactive frame의 ${algorithmId} destroy는 GPU resource를 즉시 폐기한다`, () => {
+        const composer = createComposerHarness();
+        const registry = createAlgorithmRegistry(composer.records);
+        const service = new WebGpuBlurService({
+            composerPort: composer.composerPort,
+            algorithmFactories: registry.factories
+        });
+
+        assert.ok(service.encode(createRequest({ algorithmId })));
+        const instance = registry.records.factories[0];
+        assert.equal(composer.settle('committed'), true);
+
+        service.destroy();
+
+        const snapshot = service.getSnapshot();
+        assert.equal(snapshot.status, 'destroyed');
+        assert.equal(snapshot.destroyPending, false);
+        assert.equal(snapshot.algorithmInstanceCount, 0);
+        assert.equal(registry.records.destroys.length, 1);
+        assert.equal(instance.ownedBuffer.destroyCount, 1);
+        assert.equal(instance.ownedTexture.destroyCount, 1);
+        assertNoForbiddenOwnership(composer.records);
     });
 }
 
@@ -454,9 +579,16 @@ test('device generation 증가 시 이전 algorithm/resource cache를 destroy하
     service.destroy();
     assert.deepEqual(
         registry.records.destroys.map((entry) => entry.deviceGeneration),
+        [1]
+    );
+    assert.equal(service.getSnapshot().destroyPending, true);
+    composer.settle('aborted');
+    assert.deepEqual(
+        registry.records.destroys.map((entry) => entry.deviceGeneration),
         [1, 2]
     );
     assert.equal(service.getSnapshot().status, 'destroyed');
+    assert.equal(service.getSnapshot().destroyPending, false);
     assertNoForbiddenOwnership(composer.records);
 });
 
@@ -582,8 +714,15 @@ test('prepare cache LRU는 hit를 갱신하고 eviction 시 algorithm resource�
     service.destroy();
     assert.equal(
         registry.records.prepares.every((entry) => entry.prepared.destroyed === true),
+        false
+    );
+    assert.equal(service.getSnapshot().destroyPending, true);
+    composer.settle('committed');
+    assert.equal(
+        registry.records.prepares.every((entry) => entry.prepared.destroyed === true),
         true
     );
+    assert.equal(service.getSnapshot().destroyPending, false);
     assertNoForbiddenOwnership(composer.records);
 });
 

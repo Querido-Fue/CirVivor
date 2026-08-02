@@ -31,6 +31,16 @@ export class LoadingScene extends BaseScene {
         this.presentation?.draw();
     }
 
+    /** 최종 overlay snapshot을 loading과 공유하는 title presentation에 합성합니다. */
+    finalizeWebGpuPresentation(options = {}) {
+        return this.presentation?.finalizeWebGpuPresentation?.(options);
+    }
+
+    /** composer abort 전에 공유 title capture/cutover를 복구합니다. */
+    abortWebGpuPresentation(reason) {
+        return this.presentation?.abortWebGpuPresentation?.(reason);
+    }
+
     /** 타이틀 배경 적의 fixed tick을 갱신합니다. */
     fixedUpdate() {
         this.presentation?.fixedUpdate();

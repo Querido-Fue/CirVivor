@@ -7,6 +7,7 @@ const BUFFER_USAGE_UNIFORM = 0x40;
 const UNIFORM_SLOT_ALIGNMENT = 256;
 const UNIFORM_FLOATS_PER_SLOT = UNIFORM_SLOT_ALIGNMENT / Float32Array.BYTES_PER_ELEMENT;
 const GAUSSIAN_TRUNCATION_SIGMA = 3;
+const GAUSSIAN_HALO_SAFETY_PADDING = 2;
 const MAX_EFFECTIVE_SIGMA = 4;
 const MIN_DOWNSAMPLE_SCALE = 1 / 4;
 const MAX_SOURCE_SIGMA = MAX_EFFECTIVE_SIGMA / MIN_DOWNSAMPLE_SCALE;
@@ -16,6 +17,9 @@ const MAX_PAIRED_TAP_COUNT = Math.ceil(MAX_KERNEL_RADIUS / 2);
 const MAX_PASS_COUNT = 3;
 const GAUSSIAN_VARIANCE_SOLVE_ITERATIONS = 24;
 const GAUSSIAN_UNIFORM_SIZE = (1 + MAX_PAIRED_TAP_COUNT) * 16;
+const SUBPIXEL_IDENTITY_SIGMA_CUTOFF = 1 / 8;
+const SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE = SUBPIXEL_IDENTITY_SIGMA_CUTOFF
+    * SUBPIXEL_IDENTITY_SIGMA_CUTOFF;
 const TRANSPARENT_CLEAR_VALUE = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 const SUPPORTED_TEXTURE_FORMATS = Object.freeze([
     'rgba8unorm',
@@ -70,12 +74,25 @@ const DOWNSAMPLE_SCALE_BUCKETS = Object.freeze([
 export const WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID = 'gaussian-quality';
 
 /**
+ * 소스 픽셀 공간에서 Gaussian convolution을 identity로 접는 inclusive sigma 상한입니다.
+ * 이 범위의 연속 Gaussian PSF는 축별 RMS가 최대 1/8 px이고 분산은 최대 1/64 px²라서,
+ * 화면 샘플 격자에서 구분하기 어려운 효과에 H/V pass를 지불하지 않습니다.
+ */
+export const WEBGPU_GAUSSIAN_SUBPIXEL_IDENTITY_SIGMA_CUTOFF
+    = SUBPIXEL_IDENTITY_SIGMA_CUTOFF;
+
+/** identity cutoff가 허용하는 최대 소스-space PSF 분산(px²)입니다. */
+export const WEBGPU_GAUSSIAN_SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE
+    = SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE;
+
+/**
  * Gaussian quality profile의 format, scale, kernel, pass 상한입니다.
  * 고정된 다섯 scale bucket이 4/8 경계의 급격한 해상도 변화를 분산합니다.
  * source sigma는 16 이하, 축소율은 1/4 이상, 유효 sigma는 4 이하입니다.
  */
 export const WEBGPU_GAUSSIAN_BLUR_CONSTANTS = Object.freeze({
     GAUSSIAN_TRUNCATION_SIGMA,
+    GAUSSIAN_HALO_SAFETY_PADDING,
     MAX_EFFECTIVE_SIGMA,
     MIN_DOWNSAMPLE_SCALE,
     MAX_SOURCE_SIGMA,
@@ -83,6 +100,8 @@ export const WEBGPU_GAUSSIAN_BLUR_CONSTANTS = Object.freeze({
     MAX_KERNEL_RADIUS,
     MAX_PAIRED_TAP_COUNT,
     MAX_PASS_COUNT,
+    SUBPIXEL_IDENTITY_SIGMA_CUTOFF,
+    SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE,
     DOWNSAMPLE_SCALE_BUCKETS,
     DOWNSAMPLE_SAMPLE_COUNT: 4,
     SUPPORTED_TEXTURE_FORMATS,
@@ -171,6 +190,45 @@ export const WEBGPU_GAUSSIAN_BLUR_SHADER = `
 `;
 
 /**
+ * source crop 전에 Gaussian topology의 유한 support를 보수적으로 계산합니다.
+ * 3-sigma 시각 반경과 실제 quantized kernel/downsample support 중 큰 값에
+ * bilinear/downsample 경계 안전 여유를 더합니다. identity cutoff는 정확히 0입니다.
+ * @param {number} value - source-space sigma입니다.
+ * @returns {number} source 픽셀 단위 정수 halo입니다.
+ */
+export function getWebGpuGaussianRequiredHalo(value) {
+    const sourceSigma = normalizeSourceSigma(value);
+    if (isIdentitySigma(sourceSigma)) {
+        return 0;
+    }
+
+    const scaleSelection = selectDownsampleScaleBucket(sourceSigma);
+    const downsampleScale = scaleSelection.bucket.scale;
+    const downsampleSourceOffset = resolveDownsampleSourceOffset(
+        sourceSigma,
+        scaleSelection.bucket
+    );
+    const residualSourceVariance = Math.max(
+        0,
+        sourceSigma * sourceSigma
+            - downsampleSourceOffset * downsampleSourceOffset
+    );
+    const effectiveSigma = Math.fround(
+        Math.sqrt(residualSourceVariance) * downsampleScale
+    );
+    const kernelRadius = Math.min(
+        MAX_KERNEL_RADIUS,
+        Math.max(1, Math.ceil(GAUSSIAN_TRUNCATION_SIGMA * effectiveSigma))
+    );
+    const exactSourceSupport = downsampleSourceOffset
+        + (kernelRadius / downsampleScale);
+    return Math.ceil(Math.max(
+        sourceSigma * GAUSSIAN_TRUNCATION_SIGMA,
+        exactSourceSupport
+    ) + GAUSSIAN_HALO_SAFETY_PADDING);
+}
+
+/**
  * WebGpuBlurService에 등록할 generation factory를 생성합니다.
  * 외부 pool을 주입하면 해당 pool은 이 factory의 알고리즘에서 독점 사용해야 합니다.
  * @param {object} options - composer와 texture pool 설정입니다.
@@ -200,7 +258,7 @@ export function createWebGpuGaussianBlurAlgorithmFactory(options = {}) {
         ? Object.freeze({ ...options.texturePoolOptions })
         : undefined;
 
-    return ({ device, deviceGeneration }) => {
+    const factory = ({ device, deviceGeneration }) => {
         let texturePool = sharedTexturePool;
         let ownsTexturePool = false;
         if (!texturePool) {
@@ -218,6 +276,10 @@ export function createWebGpuGaussianBlurAlgorithmFactory(options = {}) {
             ownsTexturePool
         });
     };
+    Object.defineProperty(factory, 'getRequiredHalo', {
+        value: ({ sigma }) => getWebGpuGaussianRequiredHalo(sigma)
+    });
+    return factory;
 }
 
 /**
@@ -257,6 +319,8 @@ export class WebGpuGaussianBlurAlgorithm {
         this.uniformScratch = new Float32Array(MAX_PASS_COUNT * UNIFORM_FLOATS_PER_SLOT);
         this.activeFrameState = null;
         this.encodeCount = 0;
+        this.identityEncodeCount = 0;
+        this.subpixelIdentityEncodeCount = 0;
         this.passCount = 0;
         this.completedFrameCount = 0;
         this.abortedFrameCount = 0;
@@ -294,6 +358,8 @@ export class WebGpuGaussianBlurAlgorithm {
             sourceWidth,
             sourceHeight,
             sourceSigma,
+            identity: plan.identity,
+            subpixelIdentity: plan.subpixelIdentity,
             effectiveSigma: plan.effectiveSigma,
             residualSourceSigma: plan.residualSourceSigma,
             reconstructedSourceSigma: plan.reconstructedSourceSigma,
@@ -328,6 +394,11 @@ export class WebGpuGaussianBlurAlgorithm {
         this.#validatePrepared(prepared, sourceTexture, request);
 
         if (prepared.passes.length === 0) {
+            this.encodeCount += 1;
+            this.identityEncodeCount += 1;
+            if (prepared.subpixelIdentity) {
+                this.subpixelIdentityEncodeCount += 1;
+            }
             return Object.freeze({
                 algorithmId: WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID,
                 texture: sourceTexture,
@@ -339,7 +410,9 @@ export class WebGpuGaussianBlurAlgorithm {
                 deviceGeneration: this.deviceGeneration,
                 frameLifetime: 'source-owned',
                 passCount: 0,
-                sourceSigma: 0,
+                identity: true,
+                subpixelIdentity: prepared.subpixelIdentity,
+                sourceSigma: prepared.sourceSigma,
                 effectiveSigma: 0,
                 residualSourceSigma: 0,
                 reconstructedSourceSigma: 0,
@@ -414,6 +487,8 @@ export class WebGpuGaussianBlurAlgorithm {
             deviceGeneration: this.deviceGeneration,
             frameLifetime: 'until-frame-complete',
             passCount: prepared.passes.length,
+            identity: false,
+            subpixelIdentity: false,
             sourceSigma: prepared.sourceSigma,
             effectiveSigma: prepared.effectiveSigma,
             residualSourceSigma: prepared.residualSourceSigma,
@@ -478,6 +553,10 @@ export class WebGpuGaussianBlurAlgorithm {
             uniformBufferCount: this.uniformBuffers.length,
             activeFrameId: this.activeFrameState?.frameId ?? null,
             encodeCount: this.encodeCount,
+            identityEncodeCount: this.identityEncodeCount,
+            subpixelIdentityEncodeCount: this.subpixelIdentityEncodeCount,
+            subpixelIdentitySigmaCutoff: SUBPIXEL_IDENTITY_SIGMA_CUTOFF,
+            subpixelIdentityMaxPsfVariance: SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE,
             passCount: this.passCount,
             completedFrameCount: this.completedFrameCount,
             abortedFrameCount: this.abortedFrameCount,
@@ -522,6 +601,13 @@ export class WebGpuGaussianBlurAlgorithm {
         const sourceSigma = normalizeSourceSigma(request?.sigma);
         if (prepared.sourceSigma !== sourceSigma) {
             throw new Error('WebGPU Gaussian blur sigma가 prepare 이후 변경되었습니다.');
+        }
+        const identity = isIdentitySigma(sourceSigma);
+        const subpixelIdentity = identity && sourceSigma > 0;
+        if (prepared.identity !== identity
+            || prepared.subpixelIdentity !== subpixelIdentity
+            || (prepared.passes.length === 0) !== identity) {
+            throw new Error('WebGPU Gaussian blur identity cutoff prepared state가 일치하지 않습니다.');
         }
         const format = resolveTextureFormat(request?.format, sourceFormat);
         if (prepared.format !== format) {
@@ -769,8 +855,10 @@ export class WebGpuGaussianBlurAlgorithm {
 }
 
 function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
-    if (sourceSigma <= 0) {
+    if (isIdentitySigma(sourceSigma)) {
         return Object.freeze({
+            identity: true,
+            subpixelIdentity: sourceSigma > 0,
             effectiveSigma: 0,
             residualSourceSigma: 0,
             reconstructedSourceSigma: 0,
@@ -868,6 +956,8 @@ function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
     const normalizedPixelArea = (finalWidth * finalHeight) / (sourceWidth * sourceHeight);
 
     return Object.freeze({
+        identity: false,
+        subpixelIdentity: false,
         effectiveSigma,
         residualSourceSigma,
         reconstructedSourceSigma: Math.sqrt(sourcePsfVariance),
@@ -884,6 +974,10 @@ function createGaussianPlan(sourceWidth, sourceHeight, sourceSigma, format) {
         finalWidth,
         finalHeight
     });
+}
+
+function isIdentitySigma(sourceSigma) {
+    return sourceSigma <= SUBPIXEL_IDENTITY_SIGMA_CUTOFF;
 }
 
 function selectDownsampleScaleBucket(sourceSigma) {

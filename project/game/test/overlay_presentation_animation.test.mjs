@@ -44,7 +44,20 @@ assert.match(
     /Promise\.all\(\[[\s\S]*?blurAnimation\.promise[\s\S]*?\]\)\.then\(\(\) => \{[\s\S]*?options\.onComplete\(\)/
 );
 assert.match(baseOverlaySource, /this\.session\.setContentBlur\(this\.contentBlur\)/);
+assert.match(
+    baseOverlaySource,
+    /titleWebGpuContentBoundsAuthority === 'panels'[\s\S]*?recordTitleWebGpuPanelContentBounds/
+);
 assert.doesNotMatch(baseOverlaySource, /ConnectedOpen|setContentTransform/);
+
+const externalLinkOverlaySource = await readFile(
+    new URL('../script/module/overlay/_external_link_warning_overlay.js', import.meta.url),
+    'utf8'
+);
+assert.match(
+    externalLinkOverlaySource,
+    /titleWebGpuContentBoundsAuthority: 'panels'/
+);
 
 const titleCardRegistrySource = await readFile(
     new URL('../script/module/scene/title/menu/_title_menu_card_registry.js', import.meta.url),

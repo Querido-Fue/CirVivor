@@ -424,9 +424,25 @@ export class SystemHandler {
                     this.displaySystem.webGLHandler.flushAll();
                     endPerformanceSection('frame.flush.final', flushStart);
                 }
+                if (webGpuFrameStarted) {
+                    const webGpuFinalizeStart = beginPerformanceSection();
+                    this.sceneSystem?.finalizeWebGpuPresentation?.({
+                        overlaySnapshots: this.overlayManager
+                            ?.getTitleWebGpuPresentationSnapshots?.()
+                    });
+                    endPerformanceSection(
+                        'frame.draw.webgpuPresentationFinalize',
+                        webGpuFinalizeStart
+                    );
+                }
                 presentationCompleted = true;
             } finally {
                 if (webGpuFrameStarted) {
+                    if (!presentationCompleted) {
+                        this.sceneSystem?.abortWebGpuPresentation?.(
+                            'presentation-incomplete'
+                        );
+                    }
                     this.displaySystem.endWebGpuFrame?.(presentationCompleted);
                 }
             }

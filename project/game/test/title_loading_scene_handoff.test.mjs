@@ -53,9 +53,11 @@ const loadingRolloutProfile = Object.freeze({
 });
 const presentationDependencyModules = new Map([
     ['display/display_system.js', new vm.SyntheticModule([
+        'getDisplaySystem',
         'getWebGpuBlurPort',
         'getWebGpuFrameContributorPort'
     ], function init() {
+        this.setExport('getDisplaySystem', () => null);
         this.setExport('getWebGpuBlurPort', () => null);
         this.setExport('getWebGpuFrameContributorPort', () => null);
     }, { context: loadingRuntimeContext })],
@@ -94,6 +96,18 @@ const presentationDependencyModules = new Map([
             pipelineMode === 'webgpu-kawase' ? 'kawase-optimized' : null
         ));
         this.setExport('TitleWebGpuBaseGraph', class TitleWebGpuBaseGraph {});
+    }, { context: loadingRuntimeContext })],
+    ['./webgpu/_title_webgpu_overlay_capture_gate.js', new vm.SyntheticModule([
+        'beginTitleWebGpuOverlayCapture',
+        'endTitleWebGpuOverlayCapture'
+    ], function init() {
+        this.setExport('beginTitleWebGpuOverlayCapture', () => null);
+        this.setExport('endTitleWebGpuOverlayCapture', () => false);
+    }, { context: loadingRuntimeContext })],
+    ['./webgpu/_title_webgpu_overlay_pipeline.js', new vm.SyntheticModule([
+        'createTitleWebGpuOverlayPipeline'
+    ], function init() {
+        this.setExport('createTitleWebGpuOverlayPipeline', () => null);
     }, { context: loadingRuntimeContext })]
 ]);
 const titlePresentationRuntimeModule = new vm.SourceTextModule(titlePresentationSource, {

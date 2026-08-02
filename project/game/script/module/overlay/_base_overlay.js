@@ -71,6 +71,7 @@ export class BaseOverlay {
      * @param {string} [options.blurUpdateMode='dirty'] - blur 갱신 정책입니다.
      * @param {object} [options.effects={}] - effect registry 옵션입니다.
      * @param {string} [options.animationPreset] - overlay presentation 프리셋 이름입니다.
+     * @param {'panels'} [options.titleWebGpuContentBoundsAuthority] - 모든 root UI가 panel bounds 안에 있음을 명시하는 title WebGPU 전용 authority입니다.
      */
     constructor(options = {}) {
         this.overlayOptions = {
@@ -79,7 +80,11 @@ export class BaseOverlay {
             transparent: options.transparent !== false,
             glOverlay: options.glOverlay === true,
             blurUpdateMode: options.blurUpdateMode || 'dirty',
-            effects: options.effects || {}
+            effects: options.effects || {},
+            titleWebGpuContentBoundsAuthority:
+                options.titleWebGpuContentBoundsAuthority === 'panels'
+                    ? 'panels'
+                    : null
         };
 
         this.layer = 'ui';
@@ -772,8 +777,12 @@ export class BaseOverlay {
 
             const interactionState = this.#panelInteractionMap.get(panel.id);
             const canUseEffectPipeline = Boolean(this.session.effectLayerId);
+            const contentBoundsPanel = getOverlayPresentedPanelRegion(panel, this);
+            if (this.overlayOptions.titleWebGpuContentBoundsAuthority === 'panels') {
+                this.session.recordTitleWebGpuPanelContentBounds?.(contentBoundsPanel);
+            }
             const effectPanel = canUseEffectPipeline
-                ? getOverlayPresentedPanelRegion(panel, this)
+                ? contentBoundsPanel
                 : panel;
             let effectTextureCanvas = null;
             if (interactionState) {

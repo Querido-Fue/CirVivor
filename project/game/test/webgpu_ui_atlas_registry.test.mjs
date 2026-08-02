@@ -70,15 +70,23 @@ test('같은 source/revision은 upload와 packet allocation 없이 exact slot을
         destroyed: false,
         deviceGeneration: 1,
         lastFrameId: 2,
+        activeFrameId: null,
+        frameActive: false,
         entryCount: 1,
+        retiredEntryCount: 0,
+        textureCount: 1,
         maxEntries: 8,
+        allowFrameOverflow: false,
         allocationCount: 1,
         uploadCount: 1,
         uploadedPixelCount: 4800,
         cacheHitCount: 1,
         evictionCount: 0,
         destroyCount: 0,
-        generationChangeCount: 0
+        generationChangeCount: 0,
+        overflowAllocationCount: 0,
+        deferredDestroyCount: 0,
+        peakTextureCount: 1
     });
 });
 
@@ -152,6 +160,47 @@ test('bounded LRU eviction과 destroy는 source texture를 정확히 한 번 폐
     assert.equal(registry.destroy(), true);
     assert.equal(registry.destroy(), false);
     assert.equal(gpu.calls.destroy, 3);
+});
+
+test('opt-in frame pin은 같은 source를 재사용하고 overflow/resize 폐기를 endFrame까지 미룬다', () => {
+    const gpu = createGpu('frame-safe');
+    const registry = new WebGpuUiAtlasRegistry({
+        maxEntries: 2,
+        allowFrameOverflow: true
+    });
+    const context = frame(gpu.device, 1, 10);
+    const a = { width: 1, height: 1 };
+    const b = { width: 1, height: 1 };
+    const c = { width: 1, height: 1 };
+
+    registry.beginFrame(context);
+    const firstA = registry.getOrUpload({ context, source: a, revision: 0 });
+    const reusedA = registry.getOrUpload({ context, source: a, revision: 0 });
+    registry.getOrUpload({ context, source: b, revision: 0 });
+    registry.getOrUpload({ context, source: c, revision: 0 });
+    a.width = 2;
+    registry.getOrUpload({ context, source: a, revision: 1 });
+
+    assert.strictEqual(reusedA, firstA);
+    const beforeOutcome = registry.getDiagnostics();
+    assert.equal(beforeOutcome.entryCount, 3);
+    assert.equal(beforeOutcome.retiredEntryCount, 1);
+    assert.equal(beforeOutcome.textureCount, 4);
+    assert.equal(beforeOutcome.overflowAllocationCount, 2);
+    assert.equal(beforeOutcome.deferredDestroyCount, 1);
+    assert.equal(beforeOutcome.evictionCount, 0);
+    assert.equal(beforeOutcome.destroyCount, 0);
+    assert.equal(gpu.calls.destroy, 0);
+
+    const afterOutcome = registry.endFrame();
+    assert.equal(afterOutcome.frameActive, false);
+    assert.equal(afterOutcome.entryCount, 2);
+    assert.equal(afterOutcome.retiredEntryCount, 0);
+    assert.equal(afterOutcome.textureCount, 2);
+    assert.equal(afterOutcome.evictionCount, 1);
+    assert.equal(afterOutcome.destroyCount, 2);
+    assert.equal(gpu.calls.destroy, 2);
+    registry.destroy();
 });
 
 test('stale generation/frame와 same-generation device drift는 upload 전에 거부한다', () => {

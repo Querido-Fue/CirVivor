@@ -11,14 +11,18 @@ const DEFAULT_MAX_PREPARED_ENTRIES = 256;
 export class WebGpuBlurService {
     /**
      * @param {object} options - service 의존성입니다.
-     * @param {{encodeCommands:Function}} options.composerPort - composer contributor port입니다.
+     * @param {{encodeCommands:Function,isFrameActive:Function,deferFrameCallbacks:Function}} options.composerPort - composer contributor port입니다.
      * @param {Map<string,Function>|Object.<string,Function>} options.algorithmFactories - algorithm factory registry입니다.
      * @param {number} [options.maxPreparedEntries=256] - generation-local prepare LRU 상한입니다.
      */
     constructor(options = {}) {
         if (!options.composerPort
-            || typeof options.composerPort.encodeCommands !== 'function') {
-            throw new TypeError('WebGpuBlurService composerPort.encodeCommands가 필요합니다.');
+            || typeof options.composerPort.encodeCommands !== 'function'
+            || typeof options.composerPort.isFrameActive !== 'function'
+            || typeof options.composerPort.deferFrameCallbacks !== 'function') {
+            throw new TypeError(
+                'WebGpuBlurService composerPort encode/deferred-frame 계약이 필요합니다.'
+            );
         }
 
         this.composerPort = options.composerPort;
@@ -34,6 +38,7 @@ export class WebGpuBlurService {
         this.deviceGeneration = null;
         this.currentFrameId = null;
         this.destroyed = false;
+        this.destroyPending = false;
 
         this.requestCount = 0;
         this.encodedOutputCount = 0;
@@ -202,6 +207,7 @@ export class WebGpuBlurService {
 
         return Object.freeze({
             status: this.destroyed ? 'destroyed' : 'ready',
+            destroyPending: this.destroyPending,
             registeredAlgorithmCount: this.algorithmFactories.size,
             algorithmInstanceCount: this.algorithmInstances.size,
             maxPreparedEntries: this.maxPreparedEntries,
@@ -234,19 +240,73 @@ export class WebGpuBlurService {
 
     /**
      * 모든 generation-owned algorithm/resource cache를 idempotent하게 폐기합니다.
+     * active composer frame의 resource는 commit/abort 결과가 확정된 뒤 폐기합니다.
      * @returns {void}
      */
     destroy() {
         if (this.destroyed) {
             return;
         }
+
+        if (this.algorithmInstances.size > 0 && this.#isComposerFrameActive()) {
+            this.destroyed = true;
+            this.destroyPending = true;
+            const finalizeCommittedDestroy = () => {
+                this.#finalizeDestroy('service-destroyed-after-frame-committed');
+            };
+            const finalizeAbortedDestroy = () => {
+                this.#finalizeDestroy('service-destroyed-after-frame-aborted');
+            };
+            let registered = false;
+            try {
+                registered = this.composerPort.deferFrameCallbacks({
+                    committed: finalizeCommittedDestroy,
+                    aborted: finalizeAbortedDestroy
+                }) === true;
+            } catch (error) {
+                this.destroyed = false;
+                this.destroyPending = false;
+                this.#recordFailure('service-destroy-defer', error);
+                throw error;
+            }
+            if (!registered) {
+                const error = new Error(
+                    'active WebGPU frame의 blur destroy callback 등록에 실패했습니다.'
+                );
+                this.destroyed = false;
+                this.destroyPending = false;
+                this.#recordFailure('service-destroy-defer', error);
+                throw error;
+            }
+            this.#clearServiceState();
+            return;
+        }
+
         this.destroyed = true;
-        this.#destroyGenerationAlgorithms('service-destroyed');
+        this.#finalizeDestroy('service-destroyed');
+        this.#clearServiceState();
+    }
+
+    #isComposerFrameActive() {
+        try {
+            return this.composerPort.isFrameActive() === true;
+        } catch (error) {
+            this.#recordFailure('service-destroy-frame-state', error);
+            throw error;
+        }
+    }
+
+    #clearServiceState() {
         this.preparedCache.clear();
         this.frameOutputs.clear();
         this.device = null;
         this.deviceGeneration = null;
         this.currentFrameId = null;
+    }
+
+    #finalizeDestroy(reason) {
+        this.#destroyGenerationAlgorithms(reason);
+        this.destroyPending = false;
     }
 
     #normalizeRequest(request) {

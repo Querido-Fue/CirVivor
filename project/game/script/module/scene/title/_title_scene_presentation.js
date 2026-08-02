@@ -1,4 +1,5 @@
 import {
+    getDisplaySystem,
     getWebGpuBlurPort,
     getWebGpuFrameContributorPort
 } from 'display/display_system.js';
@@ -11,6 +12,11 @@ import {
     getTitleWebGpuBaseGraphBlurAlgorithmId,
     TitleWebGpuBaseGraph
 } from './webgpu/_title_webgpu_base_graph.js';
+import {
+    beginTitleWebGpuOverlayCapture,
+    endTitleWebGpuOverlayCapture
+} from './webgpu/_title_webgpu_overlay_capture_gate.js';
+import { createTitleWebGpuOverlayPipeline } from './webgpu/_title_webgpu_overlay_pipeline.js';
 
 /**
  * 타이틀 배경과 현재 foreground content를 한 수명 주기로 묶어 LoadingScene→TitleScene에 넘깁니다.
@@ -24,13 +30,17 @@ export class TitleScenePresentation {
      * @param {object|null} [options.webGpuBlurPort] - 테스트 또는 Display 주입 blur port입니다.
      * @param {Set<string>|null} [options.availableBlurAlgorithmIds] - 등록 완료 blur algorithm ID입니다.
      * @param {Function|null} [options.titleWebGpuBaseGraphFactory] - 테스트 graph factory입니다.
+     * @param {Function|null} [options.titleWebGpuOverlayPipelineFactory] - 테스트 overlay pipeline factory입니다.
+     * @param {object|null} [options.displaySystem] - 테스트 또는 현재 DisplaySystem identity입니다.
      */
     constructor(controller, {
         titleGpuRolloutProfile = null,
         webGpuFramePort = undefined,
         webGpuBlurPort = undefined,
         availableBlurAlgorithmIds = null,
-        titleWebGpuBaseGraphFactory = null
+        titleWebGpuBaseGraphFactory = null,
+        titleWebGpuOverlayPipelineFactory = null,
+        displaySystem = undefined
     } = {}) {
         this.controller = controller;
         this.titleGpuRolloutProfile = titleGpuRolloutProfile;
@@ -38,6 +48,16 @@ export class TitleScenePresentation {
         this.titleBackground = new TitleBackGround(controller, { drawBackgroundFill: false });
         this.content = new TitleLoadingSequence(controller);
         this.titleWebGpuBaseGraph = null;
+        this.titleWebGpuOverlayCoordinator = null;
+        this.titleWebGpuOverlayFrame = null;
+        this.titleWebGpuSurfaceBuffer = [];
+        this.titleWebGpuDynamicSurfaceBuffer = [];
+        this.titleWebGpuOverlayFailureCount = 0;
+        this.titleWebGpuOverlayLastFailure = null;
+        this.titleWebGpuOverlayState = Object.freeze({
+            status: 'overlay-not-initialized',
+            reason: null
+        });
         this.titleWebGpuShadowFailureCount = 0;
         this.titleWebGpuShadowLastFailure = null;
         this.titleWebGpuShadowRetryEnabled = true;
@@ -45,7 +65,9 @@ export class TitleScenePresentation {
             webGpuFramePort,
             webGpuBlurPort,
             availableBlurAlgorithmIds,
-            titleWebGpuBaseGraphFactory
+            titleWebGpuBaseGraphFactory,
+            titleWebGpuOverlayPipelineFactory,
+            displaySystem
         });
         this.titleWebGpuShadowInput = Object.seal({
             presentationSeconds: 0,
@@ -71,10 +93,19 @@ export class TitleScenePresentation {
 
     /** 기존 gradient→enemy background→foreground 렌더 순서를 보존합니다. */
     draw() {
-        this.titleGradientBackground?.draw();
-        this.titleBackground?.draw();
-        this.content?.draw();
-        this.#encodeWebGpuShadowGraph();
+        this.#beginWebGpuOverlayPresentation();
+        try {
+            this.titleGradientBackground?.draw();
+            this.titleBackground?.draw();
+            this.content?.draw();
+            if (this.#encodeWebGpuShadowGraph() !== true
+                && this.titleWebGpuOverlayFrame) {
+                this.abortWebGpuPresentation('base-graph-encode-failed');
+            }
+        } catch (error) {
+            this.abortWebGpuPresentation('title-draw-threw');
+            throw error;
+        }
     }
 
     /** 타이틀 배경 적의 fixed tick을 갱신합니다. */
@@ -84,6 +115,8 @@ export class TitleScenePresentation {
 
     /** viewport와 모든 타이틀 시각 컴포넌트 배치를 갱신합니다. */
     resize() {
+        this.abortWebGpuPresentation('title-resize');
+        this.titleWebGpuOverlayCoordinator?.restoreNow?.('title-resize');
         this.controller.syncViewportMetrics();
         this.titleGradientBackground?.resize();
         this.titleBackground?.resize();
@@ -122,8 +155,76 @@ export class TitleScenePresentation {
             ...this.titleWebGpuShadowState,
             failureCount: this.titleWebGpuShadowFailureCount,
             lastFailure: this.titleWebGpuShadowLastFailure,
-            graph: this.titleWebGpuBaseGraph?.getDiagnostics?.() ?? null
+            graph: this.titleWebGpuBaseGraph?.getDiagnostics?.() ?? null,
+            overlay: Object.freeze({
+                ...this.titleWebGpuOverlayState,
+                failureCount: this.titleWebGpuOverlayFailureCount,
+                lastFailure: this.titleWebGpuOverlayLastFailure,
+                coordinator: this.titleWebGpuOverlayCoordinator
+                    ?.getDiagnostics?.() ?? null
+            })
         });
+    }
+
+    /** UI/overlay draw와 최종 WebGL flush 뒤 같은 composer frame의 단일 canvas pass를 완성합니다. */
+    finalizeWebGpuPresentation({ overlaySnapshots = null } = {}) {
+        const frame = this.titleWebGpuOverlayFrame;
+        const coordinator = this.titleWebGpuOverlayCoordinator;
+        if (!frame || !coordinator) return false;
+
+        try {
+            if (!Array.isArray(overlaySnapshots)) {
+                throw new Error('manager overlay snapshot capture가 불완전합니다.');
+            }
+            const titleMenuSession = this.content?.titleMenu?.session ?? null;
+            const mainSnapshot = titleMenuSession
+                ?.getTitleWebGpuPresentationSnapshot?.() ?? null;
+            if (titleMenuSession && !mainSnapshot) {
+                throw new Error('main title-menu snapshot capture가 불완전합니다.');
+            }
+            const result = coordinator.finalizeFrame({
+                frameId: frame.frameId,
+                vignettePacket: frame.displaySystem.vignetteRenderer
+                    ?.getWebGpuPresentationPacket?.() ?? null,
+                mainSnapshot,
+                managerSnapshots: overlaySnapshots,
+                dynamicSurfaces: this.#collectDynamicSurfaces(frame.displaySystem)
+            });
+            if (result?.accepted !== true) {
+                this.titleWebGpuOverlayFailureCount += 1;
+                this.titleWebGpuOverlayLastFailure = Object.freeze({
+                    reason: result?.reason ?? 'overlay-finalize-rejected',
+                    message: result?.message ?? null
+                });
+                return false;
+            }
+            this.titleWebGpuOverlayLastFailure = null;
+            return true;
+        } catch (error) {
+            coordinator.abortFrame?.('overlay-finalize-threw');
+            this.titleWebGpuOverlayFailureCount += 1;
+            this.titleWebGpuOverlayLastFailure = Object.freeze({
+                reason: 'overlay-finalize-threw',
+                message: error?.message ?? String(error)
+            });
+            return false;
+        } finally {
+            endTitleWebGpuOverlayCapture(
+                frame.displaySystem,
+                frame.captureToken
+            );
+            this.titleWebGpuOverlayFrame = null;
+        }
+    }
+
+    /** composer abort/scene 경계에서 semantic capture와 logical overlay frame을 함께 닫습니다. */
+    abortWebGpuPresentation(reason = 'title-presentation-aborted') {
+        const frame = this.titleWebGpuOverlayFrame;
+        if (!frame) return false;
+        this.titleWebGpuOverlayCoordinator?.abortFrame?.(reason);
+        endTitleWebGpuOverlayCapture(frame.displaySystem, frame.captureToken);
+        this.titleWebGpuOverlayFrame = null;
+        return true;
     }
 
     /**
@@ -153,10 +254,15 @@ export class TitleScenePresentation {
 
     /** 모든 타이틀 시각 리소스를 기존 소유 순서로 정리합니다. */
     destroy() {
+        this.abortWebGpuPresentation('title-destroy');
+        this.titleWebGpuOverlayCoordinator?.destroy?.();
+        this.titleWebGpuOverlayCoordinator = null;
         this.titleWebGpuBaseGraph?.destroy?.();
         this.titleWebGpuBaseGraph = null;
         this.titleWebGpuShadowInput = null;
         this.titleWebGpuShadowConfig = null;
+        this.titleWebGpuSurfaceBuffer = null;
+        this.titleWebGpuDynamicSurfaceBuffer = null;
         this.titleWebGpuShadowRetryEnabled = false;
         this.titleGradientBackground?.destroy();
         this.titleGradientBackground = null;
@@ -233,6 +339,11 @@ export class TitleScenePresentation {
                 || typeof this.titleWebGpuBaseGraph.encode !== 'function') {
                 throw new TypeError('title WebGPU base graph factory 결과가 유효하지 않습니다.');
             }
+            this.titleWebGpuOverlayState = this.#initializeWebGpuOverlayPipeline({
+                framePort,
+                blurPort,
+                blurAlgorithmId
+            });
             this.titleWebGpuShadowRetryEnabled = false;
             return Object.freeze({
                 status: 'shadow-ready',
@@ -285,5 +396,115 @@ export class TitleScenePresentation {
             });
             return false;
         }
+    }
+
+    #initializeWebGpuOverlayPipeline({ framePort, blurPort, blurAlgorithmId }) {
+        const config = this.titleWebGpuShadowConfig;
+        const displaySystem = config?.displaySystem === undefined
+            ? getDisplaySystem()
+            : config.displaySystem;
+        if (!displaySystem?.surfaceMap || typeof displaySystem.surfaceMap.values !== 'function') {
+            return Object.freeze({
+                status: 'overlay-unavailable',
+                reason: 'display-surface-registry-unavailable',
+                blurAlgorithmId
+            });
+        }
+
+        try {
+            const factory = typeof config?.titleWebGpuOverlayPipelineFactory === 'function'
+                ? config.titleWebGpuOverlayPipelineFactory
+                : createTitleWebGpuOverlayPipeline;
+            this.titleWebGpuOverlayCoordinator = factory({
+                baseGraph: this.titleWebGpuBaseGraph,
+                framePort,
+                blurPort,
+                blurAlgorithmId,
+                surfaceProvider: () => this.#collectSurfaces(displaySystem)
+            });
+            if (!this.titleWebGpuOverlayCoordinator
+                || typeof this.titleWebGpuOverlayCoordinator.beginFrame !== 'function'
+                || typeof this.titleWebGpuOverlayCoordinator.finalizeFrame !== 'function') {
+                throw new TypeError('title WebGPU overlay pipeline 결과가 유효하지 않습니다.');
+            }
+            return Object.freeze({
+                status: 'overlay-ready',
+                reason: null,
+                blurAlgorithmId
+            });
+        } catch (error) {
+            this.titleWebGpuOverlayCoordinator?.destroy?.();
+            this.titleWebGpuOverlayCoordinator = null;
+            return Object.freeze({
+                status: 'overlay-unavailable',
+                reason: `overlay-init-failed:${error?.message ?? String(error)}`,
+                blurAlgorithmId
+            });
+        }
+    }
+
+    #beginWebGpuOverlayPresentation() {
+        const coordinator = this.titleWebGpuOverlayCoordinator;
+        const config = this.titleWebGpuShadowConfig;
+        const displaySystem = config?.displaySystem === undefined
+            ? getDisplaySystem()
+            : config?.displaySystem;
+        if (!coordinator || !displaySystem || this.titleWebGpuOverlayFrame) {
+            return false;
+        }
+        const frameId = displaySystem.webGpuFrameSerial;
+        const targetCanvas = displaySystem.getSurface?.('gpu-object')?.canvas ?? null;
+        const width = targetCanvas?.width;
+        const height = targetCanvas?.height;
+        if (!Number.isSafeInteger(frameId)
+            || frameId < 0
+            || !Number.isSafeInteger(width)
+            || width <= 0
+            || !Number.isSafeInteger(height)
+            || height <= 0) {
+            return false;
+        }
+
+        try {
+            const begin = coordinator.beginFrame({ frameId, width, height });
+            if (begin?.accepted !== true) return false;
+            const captureToken = beginTitleWebGpuOverlayCapture(displaySystem, frameId);
+            if (!captureToken) {
+                coordinator.abortFrame?.('overlay-capture-token-unavailable');
+                return false;
+            }
+            this.titleWebGpuOverlayFrame = Object.seal({
+                frameId,
+                displaySystem,
+                captureToken
+            });
+            return true;
+        } catch (error) {
+            coordinator.restoreNow?.('overlay-begin-threw');
+            this.titleWebGpuOverlayFailureCount += 1;
+            this.titleWebGpuOverlayLastFailure = Object.freeze({
+                reason: 'overlay-begin-threw',
+                message: error?.message ?? String(error)
+            });
+            return false;
+        }
+    }
+
+    #collectSurfaces(displaySystem) {
+        const surfaces = this.titleWebGpuSurfaceBuffer;
+        surfaces.length = 0;
+        for (const surface of displaySystem.surfaceMap.values()) {
+            surfaces.push(surface);
+        }
+        return surfaces;
+    }
+
+    #collectDynamicSurfaces(displaySystem) {
+        const surfaces = this.titleWebGpuDynamicSurfaceBuffer;
+        surfaces.length = 0;
+        for (const surface of displaySystem.surfaceMap.values()) {
+            if (surface?.dynamic === true) surfaces.push(surface);
+        }
+        return surfaces;
     }
 }

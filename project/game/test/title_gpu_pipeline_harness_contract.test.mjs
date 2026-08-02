@@ -76,6 +76,54 @@ async function executeBootstrap(config) {
     return { telemetryEvents, rolloutEvents };
 }
 
+function createFullOverlayValidation({
+    frameId = 41,
+    deviceGeneration = 3,
+    receiptOverrides = {},
+    cutoverOverrides = {}
+} = {}) {
+    const fullCutover = {
+        fullCutoverActive: true,
+        legacyVisibleSurfaceCount: 0,
+        webGpuSurfaceVisible: true,
+        topControlSurfacePreserved: true,
+        cssPresentationNeutralized: true,
+        fallbackPending: false,
+        destroyed: false
+    };
+    return {
+        titleWebGpuShadowDiagnostics: {
+            overlay: {
+                coordinator: {
+                    lastGraphReceipt: {
+                        status: 'committed',
+                        committed: true,
+                        submitted: true,
+                        frameId,
+                        deviceGeneration,
+                        finalOverlayIncluded: true,
+                        baseCheckpointConsumed: true,
+                        vignetteIncluded: true,
+                        fullScenePresented: true,
+                        finalCanvasPassCount: 1,
+                        presentPassCount: 1,
+                        failure: null,
+                        abortReason: null,
+                        cutoverStatus: { ...fullCutover },
+                        ...receiptOverrides
+                    },
+                    cutover: {
+                        ...fullCutover,
+                        lastCommittedFrameId: frameId,
+                        lastCommittedDeviceGeneration: deviceGeneration,
+                        ...cutoverOverrides
+                    }
+                }
+            }
+        }
+    };
+}
+
 test('smoke CLI는 T0~T5와 bounded 1회 profile을 정규화한다', () => {
     const config = parseArguments(['--profile', 'smoke']);
     assert.deepEqual(config.scenarios, ['T0', 'T1', 'T2', 'T3', 'T4', 'T5']);
@@ -223,6 +271,7 @@ test('WebGPU pipeline aggregate는 WebGL scope와 섞지 않고 composer graph m
             requestedSamples: 2000,
             scenarios: ['T5']
         },
+        validation: createFullOverlayValidation(),
         scenarios: [{
             id: 'T5',
             gpu: {
@@ -248,10 +297,24 @@ test('WebGPU pipeline aggregate는 WebGL scope와 섞지 않고 composer graph m
     assert.equal(aggregate.scenarios[0].worstP99, 0.94);
     assert.deepEqual(aggregate.measurement, {
         metric: webGpuMetric,
-        scope: 'title-webgpu-base-shadow-graph',
-        provisional: true,
-        finalOverlayIncluded: false,
-        qualification: 'base-shadow-only'
+        scope: 'title-webgpu-unified-full-scene',
+        provisional: false,
+        finalOverlayIncluded: true,
+        qualification: 'unified-full-scene',
+        receiptValidation: {
+            required: true,
+            passed: true,
+            qualifiedTrialCount: 1,
+            unqualifiedTrialCount: 0,
+            trials: [{
+                trialIndex: 0,
+                coldStartIndex: 0,
+                qualified: true,
+                frameId: 41,
+                deviceGeneration: 3,
+                failures: []
+            }]
+        }
     });
     assert.deepEqual(aggregate.budget, {
         percentile: 'p99',
@@ -259,8 +322,8 @@ test('WebGPU pipeline aggregate는 WebGL scope와 섞지 않고 composer graph m
         required: true,
         policy: 'every-required-cold-trial-p99-lte-limit',
         passed: true,
-        provisional: true,
-        finalOverlayIncluded: false
+        provisional: false,
+        finalOverlayIncluded: true
     });
     assert.equal(aggregate.scenarios[0].budgetRequiredTrialCount, 1);
     assert.equal(aggregate.scenarios[0].budgetEvidenceTrialCount, 1);
@@ -282,6 +345,7 @@ test('nonlegacy full aggregate는 cold trial p99 1.0ms 초과와 근거를 명�
             requestedSamples: 12,
             scenarios: ['T4']
         },
+        validation: createFullOverlayValidation({ frameId: 50 + coldStartIndex }),
         scenarios: [{
             id: 'T4',
             gpu: {
@@ -312,6 +376,7 @@ test('nonlegacy full aggregate는 cold trial p99 1.0ms 초과와 근거를 명�
     assert.equal(scenario.budgetRequiredTrialCount, 2);
     assert.equal(scenario.budgetEvidenceTrialCount, 2);
     assert.equal(scenario.budgetMissingEvidenceTrialCount, 0);
+    assert.equal(scenario.budgetUnqualifiedReceiptTrialCount, 0);
     assert.equal(scenario.overBudgetTrialCount, 1);
     assert.equal(scenario.budgetPassed, false);
     assert.equal(scenario.overBudgetTrials[0].trialIndex, 1);
@@ -333,6 +398,7 @@ test('nonlegacy full budget evidence 결측은 timestamp strict flag와 무관�
             requestedSamples: 12,
             scenarios: ['T5']
         },
+        validation: createFullOverlayValidation(),
         scenarios: [{ id: 'T5', gpu: { scopes: {} }, webgpu: { scopes: {} } }]
     }]);
     const scenario = aggregate.scenarios[0];
@@ -343,8 +409,76 @@ test('nonlegacy full budget evidence 결측은 timestamp strict flag와 무관�
     assert.equal(scenario.budgetRequiredTrialCount, 1);
     assert.equal(scenario.budgetEvidenceTrialCount, 0);
     assert.equal(scenario.budgetMissingEvidenceTrialCount, 1);
+    assert.equal(scenario.budgetUnqualifiedReceiptTrialCount, 0);
     assert.equal(scenario.overBudgetTrialCount, 0);
     assert.equal(scenario.budgetPassed, false);
+});
+
+test('WebGPU full aggregate는 missing, malformed, stale receipt를 p99 근거로 인정하지 않는다', () => {
+    const metric = 'title.webgpu_graph.gpu_ms';
+    const makeTrial = (coldStartIndex, validation) => ({
+        status: 'pass',
+        profile: 'full',
+        coldStartIndex,
+        config: {
+            profile: 'full',
+            pipelineMode: 'webgpu-gaussian',
+            requireGpuTimestamps: true,
+            requestedSamples: 12,
+            scenarios: ['T5']
+        },
+        validation,
+        scenarios: [{
+            id: 'T5',
+            webgpu: {
+                scopes: {
+                    [metric]: { frameTotal: { count: 12, p99: 0.5 } }
+                }
+            }
+        }]
+    });
+    const missing = makeTrial(0, {});
+    const malformed = makeTrial(1, createFullOverlayValidation({
+        receiptOverrides: { finalCanvasPassCount: 2 }
+    }));
+    const stale = makeTrial(2, createFullOverlayValidation({
+        frameId: 70,
+        cutoverOverrides: { lastCommittedFrameId: 71 }
+    }));
+    const aggregate = aggregateTrials([missing, malformed, stale]);
+    const scenario = aggregate.scenarios[0];
+    const receiptTrials = aggregate.measurement.receiptValidation.trials;
+
+    assert.equal(aggregate.status, 'fail');
+    assert.equal(aggregate.measurement.scope, 'title-webgpu-base-shadow-graph');
+    assert.equal(aggregate.measurement.provisional, true);
+    assert.equal(aggregate.measurement.finalOverlayIncluded, false);
+    assert.equal(
+        aggregate.measurement.qualification,
+        'full-overlay-receipt-unqualified'
+    );
+    assert.equal(aggregate.measurement.receiptValidation.passed, false);
+    assert.equal(aggregate.measurement.receiptValidation.qualifiedTrialCount, 0);
+    assert.equal(aggregate.measurement.receiptValidation.unqualifiedTrialCount, 3);
+    assert.deepEqual(receiptTrials[0].failures, [
+        'missing-coordinator-diagnostics',
+        'missing-last-graph-receipt',
+        'coordinator-cutover-not-qualified',
+        'cutover-commit-identity-invalid'
+    ]);
+    assert.deepEqual(receiptTrials[1].failures, [
+        'final-canvas-pass-count-not-one'
+    ]);
+    assert.deepEqual(receiptTrials[2].failures, [
+        'stale-cutover-commit-identity'
+    ]);
+    assert.deepEqual(scenario.trialP99, [0.5, 0.5, 0.5]);
+    assert.equal(scenario.budgetRequiredTrialCount, 3);
+    assert.equal(scenario.budgetEvidenceTrialCount, 0);
+    assert.equal(scenario.budgetMissingEvidenceTrialCount, 3);
+    assert.equal(scenario.budgetUnqualifiedReceiptTrialCount, 3);
+    assert.equal(scenario.budgetPassed, false);
+    assert.equal(aggregate.budget.passed, false);
 });
 
 test('recursive cleanup 대상은 os temp 바로 아래의 전용 prefix로 제한한다', () => {

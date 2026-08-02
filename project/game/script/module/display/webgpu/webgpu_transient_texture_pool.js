@@ -16,7 +16,7 @@ const TEXTURE_VIEW_DIMENSIONS = new Set([
  */
 export class WebGpuTransientTexturePool {
     /**
-     * @param {{maxTextures?:number,maxIdleFrames?:number}} [options={}] - 풀 제한입니다.
+     * @param {{maxTextures?:number,maxIdleFrames?:number,allowFrameOverflow?:boolean}} [options={}] - 풀 제한입니다.
      */
     constructor(options = {}) {
         this.maxTextures = requirePositiveInteger(
@@ -27,6 +27,7 @@ export class WebGpuTransientTexturePool {
             options.maxIdleFrames ?? DEFAULT_MAX_IDLE_FRAMES,
             'maxIdleFrames'
         );
+        this.allowFrameOverflow = options.allowFrameOverflow === true;
         this.device = null;
         this.deviceGeneration = null;
         this.frameId = null;
@@ -72,6 +73,7 @@ export class WebGpuTransientTexturePool {
         if (deviceDrifted) {
             this.#destroyAllEntries();
         }
+        this.frameDiagnostics.peakTextureCount = this.entries.size;
         this.device = device;
         this.deviceGeneration = deviceGeneration;
         this.frameActive = true;
@@ -93,13 +95,20 @@ export class WebGpuTransientTexturePool {
             this.frameDiagnostics.reuseCount += 1;
         } else {
             this.#trimForAllocation();
-            if (this.entries.size >= this.maxTextures) {
+            if (this.entries.size >= this.maxTextures && !this.allowFrameOverflow) {
                 throw new RangeError(
                     `WebGPU transient texture pool capacity를 초과했습니다: ${this.maxTextures}`
                 );
             }
             entry = this.#createEntry(key, normalizedDescriptor);
             this.frameDiagnostics.allocationCount += 1;
+            if (this.entries.size > this.maxTextures) {
+                this.frameDiagnostics.overflowAllocationCount += 1;
+            }
+            this.frameDiagnostics.peakTextureCount = Math.max(
+                this.frameDiagnostics.peakTextureCount,
+                this.entries.size
+            );
         }
 
         entry.lastUsedFrameSerial = this.frameSerial;
@@ -177,10 +186,13 @@ export class WebGpuTransientTexturePool {
             deviceGeneration: this.deviceGeneration,
             maxTextures: this.maxTextures,
             maxIdleFrames: this.maxIdleFrames,
+            allowFrameOverflow: this.allowFrameOverflow,
             textureCount: this.entries.size,
             idleTextureCount: this.entries.size - this.activeLeases.size,
             leasedTextureCount: this.activeLeases.size,
             allocationCount: this.frameDiagnostics.allocationCount,
+            overflowAllocationCount: this.frameDiagnostics.overflowAllocationCount,
+            peakTextureCount: this.frameDiagnostics.peakTextureCount,
             reuseCount: this.frameDiagnostics.reuseCount,
             forcedReleaseCount: this.frameDiagnostics.forcedReleaseCount,
             destroyCount: this.frameDiagnostics.destroyCount,
@@ -299,7 +311,9 @@ export class WebGpuTransientTexturePool {
 
     #trimForAllocation() {
         while (this.entries.size >= this.maxTextures) {
-            const entry = this.#findOldestIdleEntry();
+            const entry = this.#findOldestIdleEntry(
+                this.allowFrameOverflow ? this.frameSerial : null
+            );
             if (!entry) {
                 return;
             }
@@ -329,10 +343,11 @@ export class WebGpuTransientTexturePool {
         }
     }
 
-    #findOldestIdleEntry() {
+    #findOldestIdleEntry(protectedFrameSerial = null) {
         let oldest = null;
         for (const entry of this.entries) {
-            if (entry.lease !== null) {
+            if (entry.lease !== null
+                || entry.lastUsedFrameSerial === protectedFrameSerial) {
                 continue;
             }
             if (!oldest
@@ -438,6 +453,8 @@ function requireNonNegativeInteger(value, name) {
 function createFrameDiagnostics() {
     return {
         allocationCount: 0,
+        overflowAllocationCount: 0,
+        peakTextureCount: 0,
         reuseCount: 0,
         forcedReleaseCount: 0,
         destroyCount: 0,

@@ -202,11 +202,111 @@ test('Display port가 늦게 준비되면 같은 session profile로 graph를 한
     assert.equal(presentation.getTitleWebGpuShadowDiagnostics().status, 'shadow-ready');
 });
 
-async function createPresentationFixture({ displayPortsReady = true } = {}) {
+test('overlay pipeline은 draw 전 capture를 열고 모든 overlay draw 뒤 같은 frame C0를 최종화한다', async () => {
+    const fixture = await createPresentationFixture({ overlayDisplayReady: true });
+    const graph = createFakeGraph(fixture.trace);
+    const coordinator = createFakeOverlayCoordinator(fixture.trace);
+    let pipelineInput = null;
+    const presentation = new fixture.TitleScenePresentation(fixture.controller, {
+        titleGpuRolloutProfile: Object.freeze({
+            pipelineMode: 'webgpu-kawase',
+            simulationMode: 'cpu'
+        }),
+        webGpuFramePort: { id: 'frame-port' },
+        webGpuBlurPort: { id: 'blur-port' },
+        displaySystem: fixture.displaySystem,
+        titleWebGpuBaseGraphFactory() {
+            return graph;
+        },
+        titleWebGpuOverlayPipelineFactory(input) {
+            pipelineInput = input;
+            return coordinator;
+        }
+    });
+    const mainSnapshot = Object.freeze({ frameId: 17, sessionIdentity: 'main' });
+    presentation.content.titleMenu = {
+        session: {
+            getTitleWebGpuPresentationSnapshot() {
+                fixture.trace.push('main-snapshot');
+                return mainSnapshot;
+            }
+        }
+    };
+    const managerSnapshots = Object.freeze([
+        Object.freeze({ frameId: 17, sessionIdentity: 'manager' })
+    ]);
+
+    presentation.draw();
+    assert.deepEqual(fixture.trace, [
+        'overlay-begin',
+        'capture-begin',
+        'gradient',
+        'background',
+        'content',
+        'shadow'
+    ]);
+    assert.equal(pipelineInput.blurAlgorithmId, 'kawase-optimized');
+    assert.equal(pipelineInput.surfaceProvider().length, 2);
+
+    assert.equal(presentation.finalizeWebGpuPresentation({
+        overlaySnapshots: managerSnapshots
+    }), true);
+    assert.deepEqual(fixture.trace.slice(-3), [
+        'main-snapshot',
+        'overlay-finalize',
+        'capture-end'
+    ]);
+    assert.strictEqual(coordinator.lastFinalize.mainSnapshot, mainSnapshot);
+    assert.strictEqual(coordinator.lastFinalize.managerSnapshots, managerSnapshots);
+    assert.equal(coordinator.lastFinalize.dynamicSurfaces.length, 1);
+    assert.equal(coordinator.lastFinalize.vignettePacket.revision, 3);
+
+    fixture.trace.length = 0;
+    presentation.draw();
+    assert.equal(presentation.finalizeWebGpuPresentation({
+        overlaySnapshots: null
+    }), false);
+    assert.deepEqual(fixture.trace.slice(-2), ['overlay-abort', 'capture-end']);
+
+    presentation.destroy();
+    assert.equal(coordinator.destroyCount, 1);
+});
+
+async function createPresentationFixture({
+    displayPortsReady = true,
+    overlayDisplayReady = false
+} = {}) {
     const trace = [];
     const context = vm.createContext({ console });
     let displayFramePort = displayPortsReady ? { id: 'display-frame' } : null;
     let displayBlurPort = displayPortsReady ? { id: 'display-blur' } : null;
+    let activeCaptureToken = null;
+    const gpuCanvas = { width: 1280, height: 720, style: {} };
+    const dynamicCanvas = { width: 1280, height: 720, style: {} };
+    const displaySystem = overlayDisplayReady ? {
+        webGpuFrameSerial: 17,
+        surfaceMap: new Map([
+            ['gpu-object', {
+                id: 'gpu-object',
+                canvas: gpuCanvas,
+                dynamic: false
+            }],
+            ['dynamic:ui:1', {
+                id: 'dynamic:ui:1',
+                canvas: dynamicCanvas,
+                dynamic: true,
+                contentRevision: 2
+            }]
+        ]),
+        getSurface(id) {
+            return this.surfaceMap.get(id) ?? null;
+        },
+        vignetteRenderer: {
+            getWebGpuPresentationPacket() {
+                return Object.freeze({ revision: 3, visible: true });
+            }
+        }
+    } : null;
     class Gradient {
         constructor() {
             this.elapsed = 3;
@@ -267,9 +367,11 @@ async function createPresentationFixture({ displayPortsReady = true } = {}) {
     }
     const modules = new Map([
         ['display/display_system.js', new vm.SyntheticModule([
+            'getDisplaySystem',
             'getWebGpuBlurPort',
             'getWebGpuFrameContributorPort'
         ], function init() {
+            this.setExport('getDisplaySystem', () => displaySystem);
             this.setExport('getWebGpuBlurPort', () => displayBlurPort);
             this.setExport('getWebGpuFrameContributorPort', () => displayFramePort);
         }, { context })],
@@ -305,6 +407,28 @@ async function createPresentationFixture({ displayPortsReady = true } = {}) {
                 'webgpu-gaussian': 'gaussian-quality'
             })[pipelineMode] ?? null);
             this.setExport('TitleWebGpuBaseGraph', class TitleWebGpuBaseGraph {});
+        }, { context })],
+        ['./webgpu/_title_webgpu_overlay_capture_gate.js', new vm.SyntheticModule([
+            'beginTitleWebGpuOverlayCapture',
+            'endTitleWebGpuOverlayCapture'
+        ], function init() {
+            this.setExport('beginTitleWebGpuOverlayCapture', (display, frameId) => {
+                if (!display || activeCaptureToken) return null;
+                activeCaptureToken = Object.freeze({ display, frameId });
+                trace.push('capture-begin');
+                return activeCaptureToken;
+            });
+            this.setExport('endTitleWebGpuOverlayCapture', (display, token) => {
+                if (token !== activeCaptureToken || token?.display !== display) return false;
+                activeCaptureToken = null;
+                trace.push('capture-end');
+                return true;
+            });
+        }, { context })],
+        ['./webgpu/_title_webgpu_overlay_pipeline.js', new vm.SyntheticModule([
+            'createTitleWebGpuOverlayPipeline'
+        ], function init() {
+            this.setExport('createTitleWebGpuOverlayPipeline', () => null);
         }, { context })]
     ]);
     const runtimeModule = new vm.SourceTextModule(source, {
@@ -324,9 +448,45 @@ async function createPresentationFixture({ displayPortsReady = true } = {}) {
         TitleScenePresentation: runtimeModule.namespace.TitleScenePresentation,
         controller,
         trace,
+        displaySystem,
         setDisplayPorts({ framePort, blurPort }) {
             displayFramePort = framePort;
             displayBlurPort = blurPort;
+        }
+    };
+}
+
+function createFakeOverlayCoordinator(trace) {
+    return {
+        lastFinalize: null,
+        destroyCount: 0,
+        beginFrame(input) {
+            trace.push('overlay-begin');
+            return Object.freeze({
+                accepted: true,
+                frameId: input.frameId,
+                legacyDrawRequired: true,
+                fullCutoverActive: false
+            });
+        },
+        finalizeFrame(input) {
+            trace.push('overlay-finalize');
+            this.lastFinalize = input;
+            return Object.freeze({ accepted: true, frameId: input.frameId });
+        },
+        abortFrame() {
+            trace.push('overlay-abort');
+            return true;
+        },
+        restoreNow() {
+            return false;
+        },
+        getDiagnostics() {
+            return { status: 'ready' };
+        },
+        destroy() {
+            this.destroyCount += 1;
+            return true;
         }
     };
 }

@@ -10,17 +10,22 @@ const DEFAULT_MAX_ENTRIES = 8;
  */
 export class WebGpuUiAtlasRegistry {
     /**
-     * @param {{maxEntries?:number}} [options={}] - 유지할 source slot 상한입니다.
+     * @param {{maxEntries?:number,allowFrameOverflow?:boolean}} [options={}] - 유지할 source slot 상한입니다.
      */
     constructor(options = {}) {
         this.maxEntries = requirePositiveSafeInteger(
             options.maxEntries ?? DEFAULT_MAX_ENTRIES,
             'maxEntries'
         );
+        this.allowFrameOverflow = options.allowFrameOverflow === true;
         this.entries = new Map();
+        this.retiredEntries = new Set();
         this.device = null;
         this.deviceGeneration = null;
         this.lastFrameId = null;
+        this.activeFrameId = null;
+        this.frameSerial = 0;
+        this.frameActive = false;
         this.accessSerial = 0;
         this.destroyed = false;
         this.allocationCount = 0;
@@ -30,6 +35,53 @@ export class WebGpuUiAtlasRegistry {
         this.evictionCount = 0;
         this.destroyCount = 0;
         this.generationChangeCount = 0;
+        this.overflowAllocationCount = 0;
+        this.deferredDestroyCount = 0;
+        this.peakTextureCount = 0;
+    }
+
+    /**
+     * allowFrameOverflow registry의 제출 대기 구간을 엽니다. 이 구간에서 참조한
+     * texture는 exact source 재사용만 허용하고 LRU/resize 폐기는 endFrame까지 미룹니다.
+     */
+    beginFrame(contextValue) {
+        if (this.destroyed) {
+            throw new Error('destroy된 WebGPU UI atlas registry는 다시 시작할 수 없습니다.');
+        }
+        if (this.frameActive) {
+            throw new Error('WebGPU UI atlas registry frame이 이미 열려 있습니다.');
+        }
+        const context = requireFrameContext(contextValue);
+        this.#acceptFrameContext(context);
+        this.frameSerial += 1;
+        this.frameActive = true;
+        this.activeFrameId = context.frameId;
+        return this.getDiagnostics();
+    }
+
+    /**
+     * queue submit 또는 frame abort 뒤 호출해 지연된 resize/LRU texture를 폐기하고
+     * live source slot을 maxEntries까지 trim합니다.
+     */
+    endFrame() {
+        if (this.destroyed) {
+            throw new Error('destroy된 WebGPU UI atlas registry는 사용할 수 없습니다.');
+        }
+        if (!this.frameActive) {
+            throw new Error('WebGPU UI atlas registry frame이 열려 있지 않습니다.');
+        }
+        for (const entry of Array.from(this.retiredEntries)) {
+            this.#destroyEntry(entry);
+        }
+        while (this.entries.size > this.maxEntries) {
+            const oldest = this.#findOldestEntry(false);
+            if (!oldest) break;
+            this.#destroyEntry(oldest);
+            this.evictionCount += 1;
+        }
+        this.frameActive = false;
+        this.activeFrameId = null;
+        return this.getDiagnostics();
     }
 
     /**
@@ -43,6 +95,18 @@ export class WebGpuUiAtlasRegistry {
             throw new Error('destroy된 WebGPU UI atlas registry는 사용할 수 없습니다.');
         }
         const context = requireFrameContext(input.context);
+        if (this.allowFrameOverflow) {
+            if (!this.frameActive) {
+                throw new Error('WebGPU UI atlas registry frame이 열려 있지 않습니다.');
+            }
+            if (context.frameId !== this.activeFrameId) {
+                throw new Error('WebGPU UI atlas registry active frame drift입니다.');
+            }
+            if (context.device !== this.device
+                || context.deviceGeneration !== this.deviceGeneration) {
+                throw new Error('WebGPU UI atlas registry active device drift입니다.');
+            }
+        }
         this.#acceptFrameContext(context);
         const source = requireExternalImageSource(input.source);
         const revision = requireNonNegativeSafeInteger(input.revision, 'revision');
@@ -81,15 +145,23 @@ export class WebGpuUiAtlasRegistry {
                     : capacityHeight
             });
             if (entry) {
-                this.#destroyEntry(entry);
+                this.#retireOrDestroyEntry(entry);
             } else {
                 this.#trimForInsertion();
             }
             this.entries.set(source, nextEntry);
             entry = nextEntry;
+            if (this.entries.size > this.maxEntries) {
+                this.overflowAllocationCount += 1;
+            }
+            this.peakTextureCount = Math.max(
+                this.peakTextureCount,
+                this.entries.size + this.retiredEntries.size
+            );
         }
 
         entry.lastAccessSerial = ++this.accessSerial;
+        entry.lastAccessFrameSerial = this.frameSerial;
         const uploadRequired = entry.revision !== revision
             || entry.sourceWidth !== sourceWidth
             || entry.sourceHeight !== sourceHeight;
@@ -147,15 +219,23 @@ export class WebGpuUiAtlasRegistry {
             destroyed: this.destroyed,
             deviceGeneration: this.deviceGeneration,
             lastFrameId: this.lastFrameId,
+            activeFrameId: this.activeFrameId,
+            frameActive: this.frameActive,
             entryCount: this.entries.size,
+            retiredEntryCount: this.retiredEntries.size,
+            textureCount: this.entries.size + this.retiredEntries.size,
             maxEntries: this.maxEntries,
+            allowFrameOverflow: this.allowFrameOverflow,
             allocationCount: this.allocationCount,
             uploadCount: this.uploadCount,
             uploadedPixelCount: this.uploadedPixelCount,
             cacheHitCount: this.cacheHitCount,
             evictionCount: this.evictionCount,
             destroyCount: this.destroyCount,
-            generationChangeCount: this.generationChangeCount
+            generationChangeCount: this.generationChangeCount,
+            overflowAllocationCount: this.overflowAllocationCount,
+            deferredDestroyCount: this.deferredDestroyCount,
+            peakTextureCount: this.peakTextureCount
         });
     }
 
@@ -168,6 +248,8 @@ export class WebGpuUiAtlasRegistry {
         this.device = null;
         this.deviceGeneration = null;
         this.lastFrameId = null;
+        this.activeFrameId = null;
+        this.frameActive = false;
         this.destroyed = true;
         return true;
     }
@@ -233,18 +315,14 @@ export class WebGpuUiAtlasRegistry {
             revision: -1,
             packet: null,
             lastAccessSerial: ++this.accessSerial,
+            lastAccessFrameSerial: this.frameSerial,
             destroyed: false
         };
     }
 
     #trimForInsertion() {
         while (this.entries.size >= this.maxEntries) {
-            let oldest = null;
-            for (const entry of this.entries.values()) {
-                if (!oldest || entry.lastAccessSerial < oldest.lastAccessSerial) {
-                    oldest = entry;
-                }
-            }
+            const oldest = this.#findOldestEntry(this.allowFrameOverflow);
             if (!oldest) {
                 return;
             }
@@ -253,11 +331,44 @@ export class WebGpuUiAtlasRegistry {
         }
     }
 
+    #findOldestEntry(protectCurrentFrame) {
+        let oldest = null;
+        for (const entry of this.entries.values()) {
+            if (protectCurrentFrame
+                && this.frameActive
+                && entry.lastAccessFrameSerial === this.frameSerial) {
+                continue;
+            }
+            if (!oldest || entry.lastAccessSerial < oldest.lastAccessSerial) {
+                oldest = entry;
+            }
+        }
+        return oldest;
+    }
+
+    #retireOrDestroyEntry(entry) {
+        if (this.allowFrameOverflow
+            && this.frameActive
+            && entry.lastAccessFrameSerial === this.frameSerial) {
+            if (this.entries.get(entry.source) === entry) {
+                this.entries.delete(entry.source);
+            }
+            this.retiredEntries.add(entry);
+            this.deferredDestroyCount += 1;
+            return;
+        }
+        this.#destroyEntry(entry);
+    }
+
     #destroyAllEntries() {
         for (const entry of Array.from(this.entries.values())) {
             this.#destroyEntry(entry);
         }
+        for (const entry of Array.from(this.retiredEntries)) {
+            this.#destroyEntry(entry);
+        }
         this.entries.clear();
+        this.retiredEntries.clear();
     }
 
     #destroyEntry(entry) {
@@ -268,6 +379,7 @@ export class WebGpuUiAtlasRegistry {
         if (this.entries.get(entry.source) === entry) {
             this.entries.delete(entry.source);
         }
+        this.retiredEntries.delete(entry);
         try {
             entry.texture.destroy();
         } catch {

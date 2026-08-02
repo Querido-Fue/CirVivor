@@ -334,6 +334,32 @@ test('optimized ID, normalized premultiplied shader와 presentation ownership �
         1 / 16
     );
     assert.equal(
+        namespace.WEBGPU_OPTIMIZED_KAWASE_SUBPIXEL_IDENTITY_SIGMA_CUTOFF,
+        0.1
+    );
+    assert.equal(
+        namespace.WEBGPU_OPTIMIZED_KAWASE_SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA,
+        1 / 8
+    );
+    assert.equal(
+        namespace.WEBGPU_OPTIMIZED_KAWASE_SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE,
+        1 / 64
+    );
+    assert.equal(
+        namespace.WEBGPU_OPTIMIZED_KAWASE_BLUR_CONSTANTS
+            .SUBPIXEL_IDENTITY_REQUEST_SIGMA_CUTOFF,
+        0.1
+    );
+    assert.equal(
+        namespace.WEBGPU_OPTIMIZED_KAWASE_BLUR_CONSTANTS
+            .SUBPIXEL_IDENTITY_MAX_FOLDED_SIGMA,
+        1 / 8
+    );
+    assert.equal(
+        namespace.WEBGPU_OPTIMIZED_KAWASE_BLUR_CONSTANTS.SUBPIXEL_IDENTITY_MAX_PSF_VARIANCE,
+        1 / 64
+    );
+    assert.equal(
         (namespace.WEBGPU_OPTIMIZED_KAWASE_BLUR_SHADER.match(/\* 0\.125;/g) || []).length,
         4
     );
@@ -374,22 +400,34 @@ test('optimized ID, normalized premultiplied shader와 presentation ownership �
     }
 });
 
-test('양수 sigma는 1/16px로 양자화되고 0만 exact identity다', async () => {
+test('0.1px 이하 requested sigma는 identity이고 나머지 bucket은 멱등이다', async () => {
     const namespace = await loadAlgorithmModule();
     const quantize = namespace.quantizeWebGpuOptimizedKawaseSigma;
     const requiredHalo = namespace.getWebGpuOptimizedKawaseRequiredHalo;
     assert.equal(quantize(0), 0);
     assert.equal(quantize(-10), 0);
-    assert.equal(quantize(0.001), 0.0625);
+    assert.equal(quantize(0.001), 0);
+    assert.equal(quantize(0.1), 0);
+    assert.equal(quantize(0.100001), 0.125);
+    assert.equal(quantize(0.125), 0.125);
+    assert.equal(quantize(0.126), 0.125);
     assert.equal(quantize(1.03), 1);
     assert.equal(quantize(1.04), 1.0625);
     assert.equal(quantize(16), 16);
     assert.throws(() => quantize(16.01), /16 이하/);
     assert.equal(requiredHalo(0), 0);
+    assert.equal(requiredHalo(0.1), 0);
+    assert.ok(requiredHalo(0.100001) > 0);
+    assert.ok(requiredHalo(0.125) > 0);
+    assert.ok(requiredHalo(0.126) > 0);
     assert.equal(requiredHalo(7.5625), 25);
+    for (const sigma of [0, 0.001, 0.1, 0.100001, 0.125, 0.126, 1.04, 16]) {
+        const quantized = quantize(sigma);
+        assert.equal(quantize(quantized), quantized, `sigma ${sigma} bucket은 멱등이어야 함`);
+    }
 });
 
-test('모든 양수 sigma가 고정 quarter pyramid와 full reconstruction topology를 사용한다', async () => {
+test('subpixel cutoff를 넘는 sigma가 고정 quarter pyramid와 full reconstruction topology를 사용한다', async () => {
     const {
         createWebGpuOptimizedKawaseBlurAlgorithmFactory,
         getWebGpuOptimizedKawaseRequiredHalo
@@ -405,7 +443,7 @@ test('모든 양수 sigma가 고정 quarter pyramid와 full reconstruction topol
     const source = createSourceTexture('source', 401, 241);
     const frame = createContext(deviceHarness.device, 2, 1, 401, 241);
 
-    const cases = [0.0625, 1, 2, 3.5, 3.5625, 6.5, 7.5, 7.5625, 10];
+    const cases = [0.1875, 1, 2, 3.5, 3.5625, 6.5, 7.5, 7.5625, 10];
     for (const sigma of cases) {
         const prepared = algorithm.prepare({
             context: frame.context,
@@ -623,7 +661,7 @@ test('같은 frame의 두 output은 uniform buffer와 최종 lease를 공유하�
     algorithm.destroy();
 });
 
-test('sigma 0은 source identity이고 작은 양수는 고정 pyramid의 convex weight로 연속이다', async () => {
+test('sigma 0과 0.1px 이하는 source identity이고 cutoff 위는 convex weight로 연속이다', async () => {
     const {
         createWebGpuOptimizedKawaseBlurAlgorithmFactory
     } = await loadAlgorithmModule();
@@ -651,22 +689,44 @@ test('sigma 0은 source identity이고 작은 양수는 고정 pyramid의 convex
     assert.equal(composer.deferred.length, 0);
     assert.equal(deviceHarness.records.textures.length, 0);
 
-    const tinyRequest = createRequest(source.texture, 0.001);
+    const tinyRequest = createRequest(source.texture, 0.1);
     const tinyPrepared = algorithm.prepare({
         context: frame.context,
         request: tinyRequest,
         key: 'tiny'
     });
-    assert.equal(tinyPrepared.quantizedSigma, 0.0625);
-    assert.equal(tinyPrepared.topology, 'fixed-quarter-pyramid-reconstruct');
+    const tinyOutput = algorithm.encode({
+        context: frame.context,
+        request: tinyRequest,
+        key: 'tiny',
+        prepared: tinyPrepared
+    });
+    assert.equal(tinyPrepared.quantizedSigma, 0);
+    assert.equal(tinyPrepared.topology, 'identity');
     assert.equal(tinyPrepared.centerMix, 0);
-    assertClose(tinyPrepared.blurWeight, (0.0625 ** 2) / 4);
-    assert.equal(tinyPrepared.totalPassCount, 5);
-    assert.equal(tinyPrepared.filterPassCount, 2);
-    assert.equal(
-        tinyPrepared.passes.every((pass) => pass.hardwareSampleCount === 5),
-        true
+    assert.equal(tinyPrepared.blurWeight, 0);
+    assert.equal(tinyPrepared.requiredHalo, 0);
+    assert.equal(tinyPrepared.totalPassCount, 0);
+    assert.equal(tinyPrepared.filterPassCount, 0);
+    assert.strictEqual(tinyOutput.texture, source.texture);
+    assert.equal(tinyOutput.passCount, 0);
+    assert.equal(deviceHarness.records.textures.length, 0);
+
+    const aboveCutoffRequest = createRequest(source.texture, 0.100001);
+    const aboveCutoffPrepared = algorithm.prepare({
+        context: frame.context,
+        request: aboveCutoffRequest,
+        key: 'above-cutoff'
+    });
+    assert.equal(aboveCutoffPrepared.quantizedSigma, 0.125);
+    assert.equal(aboveCutoffPrepared.topology, 'fixed-quarter-pyramid-reconstruct');
+    assertClose(aboveCutoffPrepared.blurWeight, (0.125 ** 2) / 4);
+    assert.ok(
+        255 * aboveCutoffPrepared.blurWeight < 1,
+        'cutoff 직후 topology 전환은 RGBA8 최악 채널 차이 1 LSB 미만이어야 함'
     );
+    assert.equal(aboveCutoffPrepared.totalPassCount, 5);
+    assert.equal(aboveCutoffPrepared.filterPassCount, 2);
     algorithm.destroy();
 });
 
@@ -711,7 +771,7 @@ test('1/16 sigma bucket과 이전 3.5/7.5 경계에서 topology와 extent가 변
         key: `continuity:${sigma}`
     });
 
-    const referenceExtents = prepare(0.0625).passes.map(
+    const referenceExtents = prepare(0.1875).passes.map(
         (pass) => [pass.targetWidth, pass.targetHeight]
     );
     for (const [beforeSigma, afterSigma] of [

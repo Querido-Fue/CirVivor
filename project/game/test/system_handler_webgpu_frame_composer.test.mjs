@@ -100,6 +100,24 @@ function createRenderableHandler(SystemHandler, events, options = {}) {
             events.push(`end:${completed}`);
         }
     };
+    handler.sceneSystem = {
+        finalizeWebGpuPresentation({ overlaySnapshots }) {
+            assert.deepEqual(overlaySnapshots, ['overlay-snapshot']);
+            events.push('finalize');
+            if (options.throwFromFinalize) {
+                throw options.throwFromFinalize;
+            }
+        },
+        abortWebGpuPresentation(reason) {
+            events.push(`abort:${reason}`);
+        }
+    };
+    handler.overlayManager = {
+        getTitleWebGpuPresentationSnapshots() {
+            events.push('snapshots');
+            return ['overlay-snapshot'];
+        }
+    };
     return handler;
 }
 
@@ -117,6 +135,8 @@ test('렌더 프레임은 draw와 최종 flush를 하나의 WebGPU presentation 
         'begin',
         'draw',
         'flush',
+        'snapshots',
+        'finalize',
         'end:true'
     ]);
 });
@@ -130,8 +150,14 @@ test('draw 실패는 활성 WebGPU frame을 abort 상태로 닫고 원래 오류
     });
 
     assert.throws(() => handler.tick({ fixedStepCount: 0 }), (error) => error === expectedError);
-    assert.deepEqual(events.slice(-3), ['begin', 'draw', 'end:false']);
+    assert.deepEqual(events.slice(-4), [
+        'begin',
+        'draw',
+        'abort:presentation-incomplete',
+        'end:false'
+    ]);
     assert.equal(events.includes('flush'), false);
+    assert.equal(events.includes('finalize'), false);
 });
 
 test('composer가 frame을 시작하지 않았으면 종료 훅도 호출하지 않는다', async () => {
@@ -143,6 +169,25 @@ test('composer가 frame을 시작하지 않았으면 종료 훅도 호출하지 
 
     assert.equal(events.includes('end:true'), false);
     assert.deepEqual(events.slice(-3), ['begin', 'draw', 'flush']);
+    assert.equal(events.includes('snapshots'), false);
+    assert.equal(events.includes('finalize'), false);
+});
+
+test('최종 WebGPU 합성 실패는 composer를 abort하고 오류를 보존한다', async () => {
+    const SystemHandler = await loadSystemHandler();
+    const events = [];
+    const expectedError = new Error('finalize-failed');
+    const handler = createRenderableHandler(SystemHandler, events, {
+        throwFromFinalize: expectedError
+    });
+
+    assert.throws(() => handler.tick({ fixedStepCount: 0 }), (error) => error === expectedError);
+    assert.deepEqual(events.slice(-4), [
+        'snapshots',
+        'finalize',
+        'abort:presentation-incomplete',
+        'end:false'
+    ]);
 });
 
 test('renderFrame 비활성 정책은 WebGPU frame lifecycle을 열지 않는다', async () => {

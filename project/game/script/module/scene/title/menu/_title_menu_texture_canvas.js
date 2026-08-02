@@ -53,6 +53,10 @@ export function ensureTitleMenuTextureCanvas(target, canvasKey, contextKey, widt
     if (canvas.height !== canvasHeight) {
         canvas.height = canvasHeight;
     }
+    // 이 backing canvas는 legacy WebGL의 bottom-left texture 좌표에 맞춰
+    // 아래 beginTitleMenuTextureClip()에서 Y축이 미리 반전됩니다. WebGPU가
+    // 같은 외부 이미지를 샘플할 때만 이 의미를 명시적으로 복원합니다.
+    canvas.__overlayTextureFlipY = true;
 
     return {
         canvas,
