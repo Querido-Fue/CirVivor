@@ -465,7 +465,7 @@ test('동일 sigma의 가까운 panel ROI만 1.35x 정책으로 합치고 halo�
 
 test('legacy panel blur strength를 visual sigma 경로에서만 가시적인 sigma로 변환한다', () => {
     for (const [blurAlgorithmId, expectedSigma] of [
-        ['gaussian-quality', 9],
+        ['gaussian-quality', 13.5],
         ['kawase-optimized', 9],
         ['kawase-compatibility', 0.1]
     ]) {

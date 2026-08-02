@@ -220,7 +220,7 @@ function mapWithInverseUniform(floats, x, y) {
     };
 }
 
-test('uniform ABI와 WGSL은 ROI origin, rounded AA, explicit LOD, premultiplied 출력을 고정한다', () => {
+test('uniform ABI와 WGSL은 ROI, effect atlas subrect, premultiplied 출력을 고정한다', () => {
     assert.equal(CONSTANTS.UNIFORM_FLOAT_COUNT, 64);
     assert.equal(CONSTANTS.UNIFORM_BYTE_SIZE, 256);
     assert.deepEqual(
@@ -254,7 +254,11 @@ test('uniform ABI와 WGSL은 ROI origin, rounded AA, explicit LOD, premultiplied
     assert.match(SHADER, /@group\(0\) @binding\(3\) var effectTexture/);
     assert.match(SHADER, /effectTextureParameters\.w > 0\.5/);
     assert.match(SHADER, /1\.0 - rawEffectUv\.y/);
-    assert.match(SHADER, /let halfEffectTexel = vec2<f32>\(0\.5\) \/ effectResolution/);
+    assert.match(SHADER, /let effectTextureExtent = textureDimensions\(effectTexture\)/);
+    assert.match(SHADER, /let effectUvScale = effectSourceResolution\s*\/ effectTextureResolution/);
+    assert.match(SHADER, /let effectUv = orientedEffectUv \* effectUvScale/);
+    assert.match(SHADER, /let halfEffectTexel = vec2<f32>\(0\.5\) \/ effectTextureResolution/);
+    assert.match(SHADER, /effectUvScale - halfEffectTexel/);
     assert.match(SHADER, /textureSampleLevel\(\s*effectTexture,[\s\S]*?clampedEffectUv,[\s\S]*?0\.0\s*\)/);
     assert.match(SHADER, /shadowPremultiplied/);
     assert.match(SHADER, /effectPremultiplied = effectColor\.rgb \* effectCoverage/);

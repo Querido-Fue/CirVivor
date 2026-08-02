@@ -13,9 +13,10 @@ const DEFAULT_SIGMA_HALO_PADDING = 2;
 const WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID = 'gaussian-quality';
 const WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID = 'kawase-optimized';
 const LEGACY_PANEL_BLUR_STRENGTH_MAX = 1;
-// 9px는 Gaussian quarter-scale bucket에 들어가 6.5px half-scale보다 샘플 면적이
-// 작으면서도 glass backdrop에는 더 부드러운 시각 반경을 제공합니다.
-const PANEL_VISUAL_SIGMA_FALLBACK = 9;
+// Gaussian 13.5px는 1/4-scale bucket과 3-pass 구조를 유지하면서 기존 9px보다
+// 풍부한 확산을 냅니다. optimized Kawase는 독립 진입점의 기존 비용/외형을 보존합니다.
+const GAUSSIAN_PANEL_VISUAL_SIGMA = 13.5;
+const OPTIMIZED_KAWASE_PANEL_VISUAL_SIGMA = 9;
 
 /**
  * OverlaySession 의미 snapshot과 analytic vignette를 overlay graph record로 변환합니다.
@@ -588,11 +589,13 @@ function buildBackdropGroups({
 function resolvePanelBackdropSigma(value, blurAlgorithmId) {
     const sigma = nonNegativeFiniteOr(value, 0);
     if (sigma <= 0 || sigma > LEGACY_PANEL_BLUR_STRENGTH_MAX) return sigma;
-    if (blurAlgorithmId !== WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID
-        && blurAlgorithmId !== WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID) {
-        return sigma;
+    if (blurAlgorithmId === WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID) {
+        return GAUSSIAN_PANEL_VISUAL_SIGMA;
     }
-    return PANEL_VISUAL_SIGMA_FALLBACK;
+    if (blurAlgorithmId === WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID) {
+        return OPTIMIZED_KAWASE_PANEL_VISUAL_SIGMA;
+    }
+    return sigma;
 }
 
 function findOrCreateBackdropGroup(groups, bounds, sigma, requiredHalo) {

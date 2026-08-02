@@ -236,13 +236,24 @@ export const TITLE_WEBGPU_OVERLAY_GLASS_SHADER = `
             && effectLocal.y >= 0.0
             && effectLocal.x <= parameters.effectTextureRect.z
             && effectLocal.y <= parameters.effectTextureRect.w) {
-            let effectResolution = max(
-                parameters.effectTextureParameters.xy,
+            let effectTextureExtent = textureDimensions(effectTexture);
+            let effectTextureResolution = max(
+                vec2<f32>(
+                    f32(effectTextureExtent.x),
+                    f32(effectTextureExtent.y)
+                ),
                 vec2<f32>(1.0)
             );
+            let effectSourceResolution = clamp(
+                parameters.effectTextureParameters.xy,
+                vec2<f32>(1.0),
+                effectTextureResolution
+            );
+            let effectUvScale = effectSourceResolution
+                / effectTextureResolution;
             let rawEffectUv = effectLocal
                 / max(parameters.effectTextureRect.zw, vec2<f32>(1.0));
-            let effectUv = vec2<f32>(
+            let orientedEffectUv = vec2<f32>(
                 rawEffectUv.x,
                 select(
                     rawEffectUv.y,
@@ -250,11 +261,14 @@ export const TITLE_WEBGPU_OVERLAY_GLASS_SHADER = `
                     parameters.effectTextureParameters.w > 0.5
                 )
             );
-            let halfEffectTexel = vec2<f32>(0.5) / effectResolution;
+            // Atlas texture는 source가 축소되어도 peak capacity를 유지합니다.
+            // 실제 source가 점유한 좌상단 subrect 안에서만 flip/sample해야 합니다.
+            let effectUv = orientedEffectUv * effectUvScale;
+            let halfEffectTexel = vec2<f32>(0.5) / effectTextureResolution;
             let clampedEffectUv = clamp(
                 effectUv,
                 halfEffectTexel,
-                vec2<f32>(1.0) - halfEffectTexel
+                effectUvScale - halfEffectTexel
             );
             let effectColor = textureSampleLevel(
                 effectTexture,
@@ -343,8 +357,8 @@ export class TitleWebGpuOverlayGlassPass {
      * @param {number} [input.logicalTargetWidth] - 원래 logical viewport 너비입니다.
      * @param {number} [input.logicalTargetHeight] - 원래 logical viewport 높이입니다.
      * @param {GPUTextureView} [input.effectTextureView] - 선택적 premultiplied panel effect view입니다.
-     * @param {number} [input.effectTextureWidth] - effect texture 실제 너비입니다.
-     * @param {number} [input.effectTextureHeight] - effect texture 실제 높이입니다.
+     * @param {number} [input.effectTextureWidth] - atlas view 안 실제 source 점유 너비입니다.
+     * @param {number} [input.effectTextureHeight] - atlas view 안 실제 source 점유 높이입니다.
      * @param {{x?:number,y?:number,w?:number,h?:number}} [input.effectTextureRect] - 절대 화면 좌표 표시 영역입니다.
      * @returns {boolean} 실제 render pass를 기록했으면 true입니다.
      */
