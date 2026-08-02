@@ -43,8 +43,8 @@ export class ToggleElement extends BaseUIElement {
         this.animValue = this.value ? 1 : 0;
         if (this.#animID) { remove(this.#animID.id); this.#animID = null; }
 
-        this.hoverScaleMultiplier = 1.15;
-        this.pressScaleMultiplier = 1.15;
+        this.hoverScaleMultiplier = 1.05;
+        this.pressScaleMultiplier = 1.05;
     }
 
     /**

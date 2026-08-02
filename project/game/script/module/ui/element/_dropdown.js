@@ -97,8 +97,8 @@ export class DropdownElement extends BaseUIElement {
             sizePx: this.height * 0.5
         });
 
-        this.hoverScaleMultiplier = 1.03;
-        this.pressScaleMultiplier = 1.03;
+        this.hoverScaleMultiplier = 1.0;
+        this.pressScaleMultiplier = 1.0;
 
         this.#value = null;
         this.selectedIndex = -1;

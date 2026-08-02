@@ -458,6 +458,7 @@ export class SystemHandler {
      */
     resize() {
         this.displaySystem.resize();
+        this.inputSystem?.refreshMousePosition?.();
         this.#syncSimulationRuntime();
         if (this.objectSystem && typeof this.objectSystem.resize === 'function') {
             this.objectSystem.resize();

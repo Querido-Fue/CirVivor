@@ -60,8 +60,8 @@ export class SliderElement extends BaseUIElement {
 
         this._overflow = 0;
         this.lastMouseX = 0;
-        this.hoverScaleMultiplier = 1.1;
-        this.pressScaleMultiplier = 1.1;
+        this.hoverScaleMultiplier = 1.0;
+        this.pressScaleMultiplier = 1.0;
 
         if (this.#valueAnim) { remove(this.#valueAnim.id); this.#valueAnim = null; }
         this.#valueAnimRevision = (this.#valueAnimRevision || 0) + 1;

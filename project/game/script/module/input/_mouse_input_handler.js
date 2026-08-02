@@ -48,6 +48,8 @@ function normalizeWheelDelta(rawDelta, rawDeltaMode) {
 export class MouseInputHandler {
     constructor() {
         this.mousePos = { x: 0, y: 0 };
+        this.lastClientPos = { x: 0, y: 0 };
+        this.hasLastClientPos = false;
         this.wheelTotals = { x: 0, y: 0 };
         this.buttonStateMachine = new MouseButtonStateMachine(new DebugModeToggleHandler());
         this.mouseButtons = this.buttonStateMachine.mouseButtons;
@@ -105,6 +107,29 @@ export class MouseInputHandler {
         const clientY = resolveFiniteNumber(Number(event?.clientY), offsetY);
         this.mousePos.x = (clientX - offsetX) * scale;
         this.mousePos.y = (clientY - offsetY) * scale;
+        this.lastClientPos.x = clientX;
+        this.lastClientPos.y = clientY;
+        this.hasLastClientPos = true;
+    }
+
+    /**
+     * 마지막 DOM 마우스 좌표를 현재 캔버스 오프셋과 배율로 다시 투영합니다.
+     * 디스플레이 설정 변경 뒤 실제 mousemove가 없어도 내부 좌표를 즉시 맞추는 데 사용합니다.
+     * @returns {boolean} 다시 투영할 DOM 좌표가 있었는지 여부입니다.
+     */
+    refreshMousePosition() {
+        if (!this.hasLastClientPos) {
+            return false;
+        }
+
+        const scale = resolveFiniteNumber(Number(getScaleRatio()), 1);
+        const rawOffsetX = getCanvasOffsetX();
+        const rawOffsetY = getCanvasOffsetY();
+        const offsetX = resolveFiniteNumber(Number(rawOffsetX), 0);
+        const offsetY = resolveFiniteNumber(Number(rawOffsetY), 0);
+        this.mousePos.x = (this.lastClientPos.x - offsetX) * scale;
+        this.mousePos.y = (this.lastClientPos.y - offsetY) * scale;
+        return true;
     }
 
     /**
