@@ -301,6 +301,20 @@ test('WGSL은 legacy 최대치와 magnetic shield 수식 및 premultiplied alpha
     assert.match(shader, /dents: array<vec4<f32>, 16>/u);
     assert.match(shader, /index < 12u/u);
     assert.match(shader, /index < 16u/u);
+    const angularDeltaBody = shader.match(
+        /fn angular_delta\(angleA: f32, angleB: f32\) -> f32 \{([\s\S]*?)\n    \}/u
+    )?.[1] ?? '';
+    assert.match(shader, /const TWO_PI: f32 = 6\.283185307179586;/u);
+    assert.match(angularDeltaBody, /round\(delta \/ TWO_PI\) \* TWO_PI/u);
+    assert.doesNotMatch(angularDeltaBody, /\b(?:atan2|sin|cos)\s*\(/u);
+    assert.match(
+        shader,
+        /index < 16u; index \+= 1u\) \{\s*if \(index >= parameters\.dentCount\) \{\s*break;/u
+    );
+    assert.match(
+        shader,
+        /index < 12u; index \+= 1u\) \{\s*if \(index >= parameters\.impactCount\) \{\s*break;/u
+    );
     assert.match(shader, /shellWave = sin/u);
     assert.match(shader, /fieldBloom = exp\(-pow/u);
     assert.match(shader, /fade = pow\(1\.0 - progress, 1\.4\)/u);

@@ -107,6 +107,7 @@ function createRenderableHandler(SystemHandler, events, options = {}) {
             if (options.throwFromFinalize) {
                 throw options.throwFromFinalize;
             }
+            return options.finalizeResult;
         },
         abortWebGpuPresentation(reason) {
             events.push(`abort:${reason}`);
@@ -182,6 +183,22 @@ test('최종 WebGPU 합성 실패는 composer를 abort하고 오류를 보존한
     });
 
     assert.throws(() => handler.tick({ fixedStepCount: 0 }), (error) => error === expectedError);
+    assert.deepEqual(events.slice(-4), [
+        'snapshots',
+        'finalize',
+        'abort:presentation-incomplete',
+        'end:false'
+    ]);
+});
+
+test('최종 WebGPU 합성의 false 결과는 partial command를 commit하지 않고 composer를 abort한다', async () => {
+    const SystemHandler = await loadSystemHandler();
+    const events = [];
+    const handler = createRenderableHandler(SystemHandler, events, {
+        finalizeResult: false
+    });
+
+    handler.tick({ fixedStepCount: 0 });
     assert.deepEqual(events.slice(-4), [
         'snapshots',
         'finalize',

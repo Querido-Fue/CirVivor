@@ -272,6 +272,48 @@ test('overlay pipeline은 draw 전 capture를 열고 모든 overlay draw 뒤 같
     assert.equal(coordinator.destroyCount, 1);
 });
 
+test('GPU simulation은 overlay begin/finalize의 모든 실패 출구에서 CPU epoch로 fail-closed한다', async () => {
+    for (const failureMode of [
+        'begin-rejected',
+        'frame-unavailable',
+        'finalize-rejected',
+        'finalize-threw'
+    ]) {
+        const fixture = await createPresentationFixture({ overlayDisplayReady: true });
+        const graph = createFakeGraph(fixture.trace);
+        const coordinator = createFakeOverlayCoordinator(fixture.trace, { failureMode });
+        const presentation = new fixture.TitleScenePresentation(fixture.controller, {
+            titleGpuRolloutProfile: Object.freeze({
+                pipelineMode: 'webgpu-gaussian',
+                simulationMode: 'gpu'
+            }),
+            webGpuFramePort: { id: 'frame-port' },
+            webGpuBlurPort: { id: 'blur-port' },
+            displaySystem: fixture.displaySystem,
+            titleWebGpuBaseGraphFactory() {
+                return graph;
+            },
+            titleWebGpuOverlayPipelineFactory() {
+                return coordinator;
+            }
+        });
+
+        if (failureMode === 'frame-unavailable') {
+            assert.equal(presentation.finalizeWebGpuPresentation({ overlaySnapshots: [] }), false);
+        } else {
+            presentation.draw();
+            if (failureMode !== 'begin-rejected') {
+                assert.equal(presentation.finalizeWebGpuPresentation({ overlaySnapshots: [] }), false);
+            }
+        }
+
+        assert.equal(presentation.titleBackground.simulationMode, 'cpu');
+        assert.equal(presentation.titleBackground.fallbackReasons.length, 1);
+        assert.match(presentation.titleBackground.fallbackReasons[0], /^overlay-/u);
+        presentation.destroy();
+    }
+});
+
 async function createPresentationFixture({
     displayPortsReady = true,
     overlayDisplayReady = false
@@ -320,12 +362,22 @@ async function createPresentationFixture({
         destroy() {}
     }
     class Background {
-        constructor() {
+        constructor(controller, options = {}) {
             this.shieldEffect = {};
+            this.simulationMode = options.simulationMode ?? 'cpu';
+            this.fallbackReasons = [];
         }
 
         draw() {
             trace.push('background');
+        }
+
+        fallbackToCpuSimulation(reason) {
+            if (this.simulationMode !== 'gpu') return false;
+            this.simulationMode = 'cpu';
+            this.fallbackReasons.push(reason);
+            trace.push(`simulation-fallback:${reason}`);
+            return true;
         }
 
         destroy() {}
@@ -456,12 +508,15 @@ async function createPresentationFixture({
     };
 }
 
-function createFakeOverlayCoordinator(trace) {
+function createFakeOverlayCoordinator(trace, { failureMode = null } = {}) {
     return {
         lastFinalize: null,
         destroyCount: 0,
         beginFrame(input) {
             trace.push('overlay-begin');
+            if (failureMode === 'begin-rejected') {
+                return Object.freeze({ accepted: false, reason: 'synthetic-begin-rejection' });
+            }
             return Object.freeze({
                 accepted: true,
                 frameId: input.frameId,
@@ -472,6 +527,15 @@ function createFakeOverlayCoordinator(trace) {
         finalizeFrame(input) {
             trace.push('overlay-finalize');
             this.lastFinalize = input;
+            if (failureMode === 'finalize-threw') {
+                throw new Error('synthetic-finalize-failure');
+            }
+            if (failureMode === 'finalize-rejected') {
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'synthetic-finalize-rejection'
+                });
+            }
             return Object.freeze({ accepted: true, frameId: input.frameId });
         },
         abortFrame() {

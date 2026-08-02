@@ -2,6 +2,7 @@ import {
     TITLE_SHIELD_PRESENTATION_MAX_DENTS,
     TITLE_SHIELD_PRESENTATION_MAX_IMPACTS
 } from '../shield/_title_shield_render_command.js';
+import { TITLE_WEBGPU_SHIELD_INTERACTION_ABI } from './_title_webgpu_shield_interaction_abi.js';
 
 const BUFFER_USAGE_COPY_DST = 0x08;
 const BUFFER_USAGE_UNIFORM = 0x40;
@@ -10,6 +11,10 @@ const UNIFORM_FLOAT_COUNT = 140;
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * Float32Array.BYTES_PER_ELEMENT;
 const IMPACT_FLOAT_OFFSET = 28;
 const DENT_FLOAT_OFFSET = IMPACT_FLOAT_OFFSET + (TITLE_SHIELD_PRESENTATION_MAX_IMPACTS * 4);
+const IMPACT_UNIFORM_BYTE_OFFSET = IMPACT_FLOAT_OFFSET * Float32Array.BYTES_PER_ELEMENT;
+const DENT_UNIFORM_BYTE_OFFSET = DENT_FLOAT_OFFSET * Float32Array.BYTES_PER_ELEMENT;
+const COUNT_UNIFORM_BYTE_OFFSET = 10 * Uint32Array.BYTES_PER_ELEMENT;
+const COUNT_UNIFORM_BYTE_SIZE = 2 * Uint32Array.BYTES_PER_ELEMENT;
 const TRANSPARENT_CLEAR_VALUE = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 const DEFAULT_SHADOW_COLOR = Object.freeze([0.07, 0.04, 0.25]);
 const DEFAULT_LOW_COLOR = Object.freeze([0.60, 0.36, 0.98]);
@@ -27,6 +32,8 @@ export const TITLE_WEBGPU_SHIELD_PASS_CONSTANTS = Object.freeze({
  * 기존 WebGL magnetic shield 수식을 premultiplied-alpha WebGPU pass로 옮긴 WGSL입니다.
  */
 export const TITLE_WEBGPU_SHIELD_SHADER = `
+    const TWO_PI: f32 = 6.283185307179586;
+
     struct ShieldParameters {
         resolution: vec2<f32>,
         center: vec2<f32>,
@@ -63,7 +70,8 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
     }
 
     fn angular_delta(angleA: f32, angleB: f32) -> f32 {
-        return atan2(sin(angleA - angleB), cos(angleA - angleB));
+        let delta = angleA - angleB;
+        return delta - (round(delta / TWO_PI) * TWO_PI);
     }
 
     @vertex
@@ -89,7 +97,7 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
         var dentField = 0.0;
         for (var index: u32 = 0u; index < ${TITLE_SHIELD_PRESENTATION_MAX_DENTS}u; index += 1u) {
             if (index >= parameters.dentCount) {
-                continue;
+                break;
             }
 
             let dent = parameters.dents[index];
@@ -164,7 +172,7 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
         var impactActivity = 0.0;
         for (var index: u32 = 0u; index < ${TITLE_SHIELD_PRESENTATION_MAX_IMPACTS}u; index += 1u) {
             if (index >= parameters.impactCount) {
-                continue;
+                break;
             }
 
             let impact = parameters.impacts[index];
@@ -219,6 +227,7 @@ export class TitleWebGpuShieldPass {
         this.frameUniformCount = 0;
         this.encodeCount = 0;
         this.skipCount = 0;
+        this.gpuInteractionCopyCount = 0;
         this.cleanupFailureCount = 0;
         this.destroyed = false;
     }
@@ -242,7 +251,8 @@ export class TitleWebGpuShieldPass {
         this.#assertUsableContext(context);
 
         const command = input.command;
-        if (!hasRenderableShieldActivity(command)) {
+        const gpuInteractionBuffer = normalizeGpuInteractionBuffer(input.gpuInteractionBuffer);
+        if (!hasRenderableShieldActivity(command, gpuInteractionBuffer)) {
             this.skipCount += 1;
             return false;
         }
@@ -298,6 +308,9 @@ export class TitleWebGpuShieldPass {
             glowWidth
         });
         context.device.queue.writeBuffer(uniformBuffer, 0, this.uniformBytes);
+        if (gpuInteractionBuffer) {
+            this.#copyGpuInteractions(context.encoder, gpuInteractionBuffer, uniformBuffer);
+        }
         const bindGroup = this.#getBindGroup(pipelineState, uniformBuffer);
         const renderPass = context.encoder.beginRenderPass({
             label: `title-magnetic-shield-pass:${context.frameId}`,
@@ -527,6 +540,34 @@ export class TitleWebGpuShieldPass {
         this.uniformUints[10] = writeImpacts(floats, command.impacts);
         this.uniformUints[11] = writeDents(floats, command.dents);
     }
+
+    #copyGpuInteractions(encoder, sourceBuffer, uniformBuffer) {
+        if (typeof encoder?.copyBufferToBuffer !== 'function') {
+            throw new TypeError('GPU title shield interaction에는 encoder.copyBufferToBuffer()가 필요합니다.');
+        }
+        encoder.copyBufferToBuffer(
+            sourceBuffer,
+            TITLE_WEBGPU_SHIELD_INTERACTION_ABI.HEADER_BYTE_OFFSET,
+            uniformBuffer,
+            COUNT_UNIFORM_BYTE_OFFSET,
+            COUNT_UNIFORM_BYTE_SIZE
+        );
+        encoder.copyBufferToBuffer(
+            sourceBuffer,
+            TITLE_WEBGPU_SHIELD_INTERACTION_ABI.IMPACT_BYTE_OFFSET,
+            uniformBuffer,
+            IMPACT_UNIFORM_BYTE_OFFSET,
+            TITLE_WEBGPU_SHIELD_INTERACTION_ABI.IMPACT_BYTE_SIZE
+        );
+        encoder.copyBufferToBuffer(
+            sourceBuffer,
+            TITLE_WEBGPU_SHIELD_INTERACTION_ABI.DENT_BYTE_OFFSET,
+            uniformBuffer,
+            DENT_UNIFORM_BYTE_OFFSET,
+            TITLE_WEBGPU_SHIELD_INTERACTION_ABI.DENT_BYTE_SIZE
+        );
+        this.gpuInteractionCopyCount += 1;
+    }
 }
 
 function requireDevice(device) {
@@ -656,11 +697,24 @@ function writeDents(target, dents) {
     return writeCount;
 }
 
-function hasRenderableShieldActivity(command) {
+function hasRenderableShieldActivity(command, gpuInteractionBuffer = null) {
     if (!command || !Number.isFinite(command.radius) || command.radius <= 0) {
         return false;
     }
+    if (gpuInteractionBuffer) {
+        return true;
+    }
     return hasPresentEntry(command.impacts) || hasPresentEntry(command.dents);
+}
+
+function normalizeGpuInteractionBuffer(value) {
+    if (value === undefined || value === null) {
+        return null;
+    }
+    if (typeof value !== 'object' && typeof value !== 'function') {
+        throw new TypeError('title WebGPU shield gpuInteractionBuffer identity가 필요합니다.');
+    }
+    return value;
 }
 
 function hasPresentEntry(value) {

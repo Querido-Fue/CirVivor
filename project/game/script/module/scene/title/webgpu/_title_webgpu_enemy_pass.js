@@ -159,6 +159,7 @@ export class TitleWebGpuEnemyPass {
         this.pipelineCreateCount = 0;
         this.recordBufferCreateCount = 0;
         this.uniformBufferCreateCount = 0;
+        this.gpuRecordCopyCount = 0;
         this.cleanupFailureCount = 0;
     }
 
@@ -200,13 +201,24 @@ export class TitleWebGpuEnemyPass {
         const pipelineRecord = this.#getPipeline(format, atlas.view);
         const usedRecordFloatCount = packet.recordCount
             * TITLE_CPU_ENEMY_PRESENTATION_RECORD_FLOATS;
-        context.device.queue.writeBuffer(
-            this.recordBuffer,
-            0,
-            packet.records,
-            0,
-            usedRecordFloatCount
-        );
+        if (packet.gpuSourceBuffer) {
+            context.encoder.copyBufferToBuffer(
+                packet.gpuSourceBuffer,
+                0,
+                this.recordBuffer,
+                0,
+                packet.usedByteLength
+            );
+            this.gpuRecordCopyCount += 1;
+        } else {
+            context.device.queue.writeBuffer(
+                this.recordBuffer,
+                0,
+                packet.records,
+                0,
+                usedRecordFloatCount
+            );
+        }
         context.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformScratch);
 
         const renderPass = context.encoder.beginRenderPass({
@@ -255,6 +267,7 @@ export class TitleWebGpuEnemyPass {
             pipelineCreateCount: this.pipelineCreateCount,
             recordBufferCreateCount: this.recordBufferCreateCount,
             uniformBufferCreateCount: this.uniformBufferCreateCount,
+            gpuRecordCopyCount: this.gpuRecordCopyCount,
             cleanupFailureCount: this.cleanupFailureCount,
             atlas: this.shapeAtlas.getDiagnostics()
         });
@@ -428,10 +441,13 @@ function validatePacket(packet) {
     if (!packet || typeof packet !== 'object') {
         throw new TypeError('title WebGPU enemy presentation packet이 필요합니다.');
     }
-    if (!(packet.records instanceof Float32Array)) {
+    const hasGpuSource = packet.gpuSourceBuffer
+        && (typeof packet.gpuSourceBuffer === 'object'
+            || typeof packet.gpuSourceBuffer === 'function');
+    if (!hasGpuSource && !(packet.records instanceof Float32Array)) {
         throw new TypeError('title WebGPU enemy packet.records는 Float32Array여야 합니다.');
     }
-    if (packet.records.length !== TITLE_CPU_ENEMY_PRESENTATION_MAX_RECORDS
+    if (!hasGpuSource && packet.records.length !== TITLE_CPU_ENEMY_PRESENTATION_MAX_RECORDS
         * TITLE_CPU_ENEMY_PRESENTATION_RECORD_FLOATS) {
         throw new RangeError('title WebGPU enemy packet.records 용량이 840 records가 아닙니다.');
     }

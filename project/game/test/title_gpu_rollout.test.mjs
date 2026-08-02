@@ -4,13 +4,13 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const rollout = await loadGameModule('scene/title/_title_gpu_rollout.js');
 
-test('타이틀 GPU rollout production default는 legacy WebGL과 CPU simulation이다', () => {
+test('타이틀 GPU rollout production default는 Gaussian WebGPU와 GPU simulation이다', () => {
     rollout.setTitleGpuRolloutTestOverride(null);
     const profile = rollout.createTitleGpuRolloutProfile();
 
     assert.strictEqual(profile, rollout.DEFAULT_TITLE_GPU_ROLLOUT_PROFILE);
-    assert.equal(profile.pipelineMode, rollout.TITLE_PIPELINE_MODE.LEGACY_WEBGL);
-    assert.equal(profile.simulationMode, rollout.TITLE_SIMULATION_MODE.CPU);
+    assert.equal(profile.pipelineMode, rollout.TITLE_PIPELINE_MODE.WEBGPU_GAUSSIAN);
+    assert.equal(profile.simulationMode, rollout.TITLE_SIMULATION_MODE.GPU);
     assert.equal(profile.source, 'production-default');
     assert.equal(Object.isFrozen(profile), true);
 });

@@ -45,7 +45,10 @@ export class TitleScenePresentation {
         this.controller = controller;
         this.titleGpuRolloutProfile = titleGpuRolloutProfile;
         this.titleGradientBackground = new TitleGradientBackground();
-        this.titleBackground = new TitleBackGround(controller, { drawBackgroundFill: false });
+        this.titleBackground = new TitleBackGround(controller, {
+            drawBackgroundFill: false,
+            simulationMode: titleGpuRolloutProfile?.simulationMode ?? 'cpu'
+        });
         this.content = new TitleLoadingSequence(controller);
         this.titleWebGpuBaseGraph = null;
         this.titleWebGpuOverlayCoordinator = null;
@@ -78,6 +81,10 @@ export class TitleScenePresentation {
             introBlur: 0
         });
         this.titleWebGpuShadowState = this.#initializeWebGpuShadowGraph();
+        if (titleGpuRolloutProfile?.simulationMode === 'gpu'
+            && (!this.titleWebGpuBaseGraph || !this.titleWebGpuOverlayCoordinator)) {
+            this.#fallbackGpuSimulation('webgpu-title-pipeline-unavailable');
+        }
         this.controller.setTitleContent(this.content);
     }
 
@@ -93,14 +100,18 @@ export class TitleScenePresentation {
 
     /** 기존 gradient→enemy background→foreground 렌더 순서를 보존합니다. */
     draw() {
-        this.#beginWebGpuOverlayPresentation();
+        if (this.#beginWebGpuOverlayPresentation() !== true) {
+            this.#fallbackGpuSimulation('overlay-begin-failed');
+        }
         try {
             this.titleGradientBackground?.draw();
             this.titleBackground?.draw();
             this.content?.draw();
-            if (this.#encodeWebGpuShadowGraph() !== true
-                && this.titleWebGpuOverlayFrame) {
-                this.abortWebGpuPresentation('base-graph-encode-failed');
+            if (this.#encodeWebGpuShadowGraph() !== true) {
+                if (this.titleWebGpuOverlayFrame) {
+                    this.abortWebGpuPresentation('base-graph-encode-failed');
+                }
+                this.#fallbackGpuSimulation('base-graph-encode-failed');
             }
         } catch (error) {
             this.abortWebGpuPresentation('title-draw-threw');
@@ -156,6 +167,7 @@ export class TitleScenePresentation {
             failureCount: this.titleWebGpuShadowFailureCount,
             lastFailure: this.titleWebGpuShadowLastFailure,
             graph: this.titleWebGpuBaseGraph?.getDiagnostics?.() ?? null,
+            simulation: this.titleBackground?.getSimulationDiagnostics?.() ?? null,
             overlay: Object.freeze({
                 ...this.titleWebGpuOverlayState,
                 failureCount: this.titleWebGpuOverlayFailureCount,
@@ -170,7 +182,10 @@ export class TitleScenePresentation {
     finalizeWebGpuPresentation({ overlaySnapshots = null } = {}) {
         const frame = this.titleWebGpuOverlayFrame;
         const coordinator = this.titleWebGpuOverlayCoordinator;
-        if (!frame || !coordinator) return false;
+        if (!frame || !coordinator) {
+            this.#fallbackGpuSimulation('overlay-frame-unavailable');
+            return false;
+        }
 
         try {
             if (!Array.isArray(overlaySnapshots)) {
@@ -196,6 +211,7 @@ export class TitleScenePresentation {
                     reason: result?.reason ?? 'overlay-finalize-rejected',
                     message: result?.message ?? null
                 });
+                this.#fallbackGpuSimulation('overlay-finalize-rejected');
                 return false;
             }
             this.titleWebGpuOverlayLastFailure = null;
@@ -207,6 +223,7 @@ export class TitleScenePresentation {
                 reason: 'overlay-finalize-threw',
                 message: error?.message ?? String(error)
             });
+            this.#fallbackGpuSimulation('overlay-finalize-threw');
             return false;
         } finally {
             endTitleWebGpuOverlayCapture(
@@ -441,6 +458,10 @@ export class TitleScenePresentation {
                 blurAlgorithmId
             });
         }
+    }
+
+    #fallbackGpuSimulation(reason) {
+        return this.titleBackground?.fallbackToCpuSimulation?.(reason) === true;
     }
 
     #beginWebGpuOverlayPresentation() {

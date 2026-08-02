@@ -1,12 +1,19 @@
-import { getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
+import { getDelta, getFixedDelta, getFixedInterpolationAlpha } from 'game/time_handler.js';
 import { mathUtil } from 'util/math_util.js';
 import { clampNumber } from 'util/number_util.js';
-import { ENEMY_SHAPE_TYPES } from 'data/object/enemy/enemy_catalog_data.js';
+import {
+    ENEMY_ASPECT_RATIO,
+    ENEMY_DRAW_HEIGHT_RATIO,
+    ENEMY_HEIGHT_SCALE,
+    ENEMY_SHAPE_TYPES
+} from 'data/object/enemy/enemy_catalog_data.js';
 import { getObjectSystem } from 'object/object_system.js';
 import { titleAI } from 'object/enemy/ai/_title_ai.js';
+import { getEnemyCircleCollisionRadius } from 'physics/_collision_enemy_geometry.js';
 import { TitleShieldEffect } from './shield/_title_shield_effect.js';
 import {
-    getTitleEnemyColor
+    getTitleEnemyColor,
+    mixTitleEnemyColorWithBackground
 } from './background/_title_background_theme.js';
 import {
     applyTitleParallaxVisualProfile,
@@ -36,6 +43,9 @@ import {
     getSimulationWW
 } from 'simulation/simulation_runtime.js';
 import { TITLE_AI_CONSTANTS } from './_title_runtime_constants.js';
+import { TITLE_SIMULATION_MODE } from './_title_gpu_rollout.js';
+import { TitleWebGpuEnemySimulation } from './webgpu/_title_webgpu_enemy_simulation.js';
+import { colorUtil } from 'util/color_util.js';
 
 const TITLE_ENEMY_CONSTANTS = Object.freeze({
     ENEMY_SPAWN_RATE: 40,
@@ -121,6 +131,8 @@ const TITLE_PARALLAX_LAYERS = TITLE_CONSTANTS.TITLE_ENEMIES.PARALLAX_LAYERS || [
 const TITLE_PARALLAX_LAYER_COUNT = Array.isArray(TITLE_PARALLAX_LAYERS)
     ? TITLE_PARALLAX_LAYERS.length
     : 0;
+const TITLE_GPU_PALETTE_FLOATS_PER_ENTRY = 4;
+const TITLE_GPU_PALETTE_ENTRIES_PER_LAYER = 2;
 
 /**
  * @class TitleBackGround
@@ -133,11 +145,16 @@ export class TitleBackGround {
     /**
      * 시뮬레이션 화면 지표와 스폰 설정을 캡처하고 실드 효과 및 초기 스폰 상태를 준비합니다.
      * @param {TitleScene} titleScene - 이 배경을 소유하는 타이틀 씬입니다.
-     * @param {{drawBackgroundFill?: boolean}} [options={}] - 배경색 채움 여부를 포함한 렌더 옵션입니다.
+     * @param {{drawBackgroundFill?: boolean,simulationMode?:'cpu'|'gpu'}} [options={}] - 배경색 채움과 simulation backend 옵션입니다.
      */
     constructor(titleScene, options = {}) {
         this.titleScene = titleScene;
         this.drawBackgroundFill = options.drawBackgroundFill !== false;
+        this.requestedSimulationMode = options.simulationMode === TITLE_SIMULATION_MODE.GPU
+            ? TITLE_SIMULATION_MODE.GPU
+            : TITLE_SIMULATION_MODE.CPU;
+        this.effectiveSimulationMode = this.requestedSimulationMode;
+        this.simulationFallbackReason = null;
         this.objectSystem = getObjectSystem();
         const excludedTypes = TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_EXCLUDED_TYPES || [];
         this.enemyTypes = ENEMY_SHAPE_TYPES.filter((type) => !excludedTypes.includes(type));
@@ -167,6 +184,23 @@ export class TitleBackGround {
         this.UIWW = getSimulationUIWW();
         this.shieldRadius = 0;
         this.shieldEffect = new TitleShieldEffect();
+        this.gpuEnemyPalette = new Float32Array(
+            Math.max(1, TITLE_PARALLAX_LAYER_COUNT)
+            * TITLE_GPU_PALETTE_ENTRIES_PER_LAYER
+            * TITLE_GPU_PALETTE_FLOATS_PER_ENTRY
+        );
+        this.gpuEnemyPaletteSignatures = new Array(
+            Math.max(1, TITLE_PARALLAX_LAYER_COUNT)
+            * TITLE_GPU_PALETTE_ENTRIES_PER_LAYER
+        ).fill(null);
+        this.gpuEnemySimulation = this.requestedSimulationMode === TITLE_SIMULATION_MODE.GPU
+            ? new TitleWebGpuEnemySimulation({
+                capacity: TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_LIMIT,
+                layerCapacity: TITLE_CONSTANTS.TITLE_ENEMIES.ENEMY_LIMIT_PER_LAYER,
+                layerProfiles: TITLE_PARALLAX_LAYERS,
+                targetPerLayer: getTitleTargetLayerEnemyCount(TITLE_CONSTANTS.TITLE_ENEMIES)
+            })
+            : null;
         this.#drawOptions = {
             drawBackgroundFill: false,
             ww: 0,
@@ -212,6 +246,14 @@ export class TitleBackGround {
         const ratioX = this.WW / Math.max(1, prevWW);
         const ratioY = this.objectWH / Math.max(1, prevObjectWH);
 
+        if (this.gpuEnemySimulation) {
+            this.gpuEnemySimulation.queueResize(ratioX, ratioY, {
+                width: this.WW,
+                height: this.objectWH
+            });
+            return;
+        }
+
         for (const enemy of this.titleEnemies) {
             enemy.position.x *= ratioX;
             enemy.position.y *= ratioY;
@@ -246,6 +288,26 @@ export class TitleBackGround {
         this.shieldRadius = this.shieldEffect ? this.shieldEffect.getShieldRadius() : 0;
         const alpha = getFixedInterpolationAlpha();
 
+        if (this.gpuEnemySimulation) {
+            this.shieldEffect.update([], this.objectOffsetY);
+            const shieldCommand = this.shieldEffect.getPresentationCommand();
+            this.gpuEnemySimulation.setPresentationState({
+                width: this.WW,
+                height: this.objectWH,
+                objectOffsetY: this.objectOffsetY,
+                interpolationAlpha: alpha,
+                frameDelta: getDelta(),
+                shieldLayout: shieldCommand
+                    ? {
+                        centerX: shieldCommand.x,
+                        centerY: shieldCommand.y,
+                        radius: shieldCommand.radius
+                    }
+                    : null
+            });
+            return;
+        }
+
         for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
             const enemy = this.titleEnemies[i];
             if (!enemy || !enemy.active) {
@@ -278,6 +340,24 @@ export class TitleBackGround {
             this.objectOffsetY,
             this.UIWW
         );
+
+        if (this.gpuEnemySimulation) {
+            this.gpuEnemySimulation.queueFixedStep(delta, aiContext);
+            if (!this.enemySpawnEnabled) {
+                return;
+            }
+            const hasParallaxLayers = TITLE_PARALLAX_LAYER_COUNT > 0;
+            if (hasParallaxLayers) {
+                if (this.#hasPendingInitialBurst()) {
+                    this.#spawnInitialBurstEnemies(delta);
+                } else {
+                    this.#spawnParallaxLayerEnemies(delta);
+                }
+            } else {
+                this.#spawnDefaultEnemies(delta);
+            }
+            return;
+        }
 
         for (let i = this.titleEnemies.length - 1; i >= 0; i--) {
             const enemy = this.titleEnemies[i];
@@ -319,10 +399,68 @@ export class TitleBackGround {
         options.drawBackgroundFill = drawBackgroundFill;
         options.ww = ww;
         options.wh = wh;
-        options.titleEnemies = titleEnemies;
+        options.titleEnemies = this.gpuEnemySimulation ? [] : titleEnemies;
         options.parallaxLayers = parallaxLayers;
-        options.shieldEffect = shieldEffect;
+        options.shieldEffect = this.gpuEnemySimulation ? null : shieldEffect;
         drawTitleBackgroundScene(options);
+    }
+
+    /** composer-owned WebGPU graph에서 encode할 GPU-authoritative simulation을 반환합니다. */
+    getWebGpuEnemySimulation() {
+        return this.gpuEnemySimulation;
+    }
+
+    /** GPU simulation 렌더가 사용할 layer core/softness palette를 고정 typed array로 반환합니다. */
+    getWebGpuEnemyPalette() {
+        const util = colorUtil();
+        for (let layerIndex = 0; layerIndex < TITLE_PARALLAX_LAYERS.length; layerIndex++) {
+            const profile = TITLE_PARALLAX_LAYERS[layerIndex];
+            const coreColor = mixTitleEnemyColorWithBackground(profile.ColorMix || 0);
+            const softnessColor = mixTitleEnemyColorWithBackground(
+                Math.min(1, (profile.ColorMix || 0) + 0.12)
+            );
+            writeGpuPaletteColor(
+                this.gpuEnemyPalette,
+                this.gpuEnemyPaletteSignatures,
+                layerIndex * TITLE_GPU_PALETTE_ENTRIES_PER_LAYER,
+                coreColor,
+                util
+            );
+            writeGpuPaletteColor(
+                this.gpuEnemyPalette,
+                this.gpuEnemyPaletteSignatures,
+                (layerIndex * TITLE_GPU_PALETTE_ENTRIES_PER_LAYER) + 1,
+                softnessColor,
+                util
+            );
+        }
+        return this.gpuEnemyPalette;
+    }
+
+    /** rollout 요청/실효 backend와 fail-closed 전환 이유를 반환합니다. */
+    getSimulationDiagnostics() {
+        return Object.freeze({
+            requestedMode: this.requestedSimulationMode,
+            effectiveMode: this.effectiveSimulationMode,
+            fallbackReason: this.simulationFallbackReason,
+            gpu: this.gpuEnemySimulation?.getDiagnostics?.() ?? null
+        });
+    }
+
+    /** GPU 권위 continuity를 위조하지 않고 장식 population을 CPU epoch로 재시작합니다. */
+    fallbackToCpuSimulation(reason = 'gpu-simulation-unavailable') {
+        if (!this.gpuEnemySimulation) {
+            return false;
+        }
+        this.gpuEnemySimulation.destroy();
+        this.gpuEnemySimulation = null;
+        this.effectiveSimulationMode = TITLE_SIMULATION_MODE.CPU;
+        this.simulationFallbackReason = String(reason || 'gpu-simulation-unavailable');
+        this.shieldEffect?.destroy?.();
+        this.shieldEffect = new TitleShieldEffect();
+        this.shieldRadius = 0;
+        this.init();
+        return true;
     }
 
     /**
@@ -343,6 +481,7 @@ export class TitleBackGround {
      * @returns {void}
      */
     applyTheme() {
+        this.gpuEnemyPaletteSignatures.fill(null);
         for (const enemy of this.titleEnemies) {
             if (!enemy) {
                 continue;
@@ -369,10 +508,10 @@ export class TitleBackGround {
      * @returns {number} 실제로 생성된 적 수입니다.
      */
     pushShape(times, layerCounts = null, preferredLayerIndex = null, spawnMode = 'standard', spawnOptions = null) {
-        if (!this.objectSystem) {
+        if (!this.gpuEnemySimulation && !this.objectSystem) {
             this.objectSystem = getObjectSystem();
         }
-        if (!this.objectSystem || this.enemyTypes.length === 0) return 0;
+        if ((!this.gpuEnemySimulation && !this.objectSystem) || this.enemyTypes.length === 0) return 0;
 
         const resolvedLayerCounts = Array.isArray(layerCounts)
             && layerCounts.length === TITLE_PARALLAX_LAYERS.length
@@ -409,6 +548,45 @@ export class TitleBackGround {
                 break;
             }
             const layerProfile = spawn.layerProfile;
+            const size = mathUtil().random(layerProfile.SizeMin, layerProfile.SizeMax);
+            const rotation = mathUtil().random(0, 360);
+            const baseHeight = this.objectWH * ENEMY_DRAW_HEIGHT_RATIO * size;
+            const width = baseHeight * (ENEMY_ASPECT_RATIO[type] ?? 1);
+            const height = baseHeight * (ENEMY_HEIGHT_SCALE[type] ?? 1);
+            const collisionGrace = spawnMode === 'initialBurst'
+                ? getTitleInitialBurstCollisionGraceSeconds(TITLE_CONSTANTS.TITLE_ENEMIES)
+                : 0;
+
+            if (this.gpuEnemySimulation) {
+                const handle = this.gpuEnemySimulation.queueSpawn({
+                    layerIndex: spawn.layerIndex,
+                    position: spawn.position,
+                    speed: spawn.speed,
+                    baseSpeed: spawn.baseSpeed,
+                    burstVelocity: spawn.burstVelocity,
+                    burstDecayRate: spawn.burstDecayRate,
+                    shapeType: type,
+                    size,
+                    width,
+                    height,
+                    rotation,
+                    angularVelocity: 0,
+                    alpha: layerProfile.Alpha,
+                    collisionRadius: getEnemyCircleCollisionRadius(type, width, height),
+                    collisionGrace,
+                    magneticScale: layerProfile.MagneticScale
+                });
+                if (!handle) {
+                    continue;
+                }
+                spawnedCount += 1;
+                if (resolvedLayerCounts && resolvedLayerCounts.length > 0
+                    && Number.isInteger(spawn.layerIndex)) {
+                    resolvedLayerCounts[spawn.layerIndex] += 1;
+                }
+                continue;
+            }
+
             const enemy = this.objectSystem.acquireEnemy(type, {
                 type,
                 hp: 1,
@@ -416,23 +594,21 @@ export class TitleBackGround {
                 atk: 1,
                 moveSpeed: 1,
                 accSpeed: 0,
-                size: mathUtil().random(layerProfile.SizeMin, layerProfile.SizeMax),
+                size,
                 position: spawn.position,
                 speed: spawn.speed,
                 acc: { x: 0, y: 0 },
                 ai: titleAI,
                 fill: getTitleEnemyColor(),
                 alpha: layerProfile.Alpha,
-                rotation: mathUtil().random(0, 360)
+                rotation
             });
             if (!enemy) continue;
             if (spawn.baseSpeed) {
                 enemy._titleBaseSpeed.x = spawn.baseSpeed.x;
                 enemy._titleBaseSpeed.y = spawn.baseSpeed.y;
             }
-            enemy._titleCollisionGraceRemaining = spawnMode === 'initialBurst'
-                ? getTitleInitialBurstCollisionGraceSeconds(TITLE_CONSTANTS.TITLE_ENEMIES)
-                : 0;
+            enemy._titleCollisionGraceRemaining = collisionGrace;
             if (spawn.burstVelocity) {
                 enemy._titleBurstVel.x = spawn.burstVelocity.x;
                 enemy._titleBurstVel.y = spawn.burstVelocity.y;
@@ -483,6 +659,8 @@ export class TitleBackGround {
      * @returns {void}
      */
     destroy() {
+        this.gpuEnemySimulation?.destroy?.();
+        this.gpuEnemySimulation = null;
         if (this.shieldEffect) {
             this.shieldEffect.destroy();
             this.shieldEffect = null;
@@ -833,4 +1011,17 @@ export class TitleBackGround {
         );
     }
 
+}
+
+function writeGpuPaletteColor(target, signatures, entryIndex, source, util) {
+    if (signatures[entryIndex] === source) {
+        return;
+    }
+    signatures[entryIndex] = source;
+    const color = util.cssToRgb(source);
+    const offset = entryIndex * TITLE_GPU_PALETTE_FLOATS_PER_ENTRY;
+    target[offset] = (Number(color?.r) || 0) / 255;
+    target[offset + 1] = (Number(color?.g) || 0) / 255;
+    target[offset + 2] = (Number(color?.b) || 0) / 255;
+    target[offset + 3] = Number.isFinite(color?.a) ? clampNumber(color.a, 0, 1) : 1;
 }

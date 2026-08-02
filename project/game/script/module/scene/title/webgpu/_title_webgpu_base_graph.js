@@ -17,9 +17,11 @@ import {
     TITLE_WEBGPU_ENEMY_PASS_CONSTANTS,
     TitleWebGpuEnemyPass
 } from './_title_webgpu_enemy_pass.js';
+import { TITLE_WEBGPU_SHIELD_INTERACTION_ABI } from './_title_webgpu_shield_interaction_abi.js';
 import { TitleWebGpuShieldPass } from './_title_webgpu_shield_pass.js';
 import { TitleWebGpuCenterCirclePass } from './_title_webgpu_center_circle_pass.js';
 
+const BUFFER_USAGE_COPY_SRC = 0x04;
 const TEXTURE_USAGE_TEXTURE_BINDING = 0x04;
 const TEXTURE_USAGE_RENDER_ATTACHMENT = 0x10;
 const GRAPH_TEXTURE_USAGE = TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_RENDER_ATTACHMENT;
@@ -138,6 +140,7 @@ export class TitleWebGpuBaseGraph {
         this.pendingInput = Object.seal({
             presentationSeconds: 0,
             gradientColors: null,
+            enemySimulation: null,
             enemyPacket: null,
             enemyPalette: null,
             centerCommand: null,
@@ -284,14 +287,20 @@ export class TitleWebGpuBaseGraph {
 
     #stageInput(input) {
         const pending = this.pendingInput;
+        pending.enemySimulation = input.enemySimulation
+            ?? input.titleBackground?.getWebGpuEnemySimulation?.()
+            ?? null;
         pending.presentationSeconds = Number.isFinite(input.presentationSeconds)
             ? input.presentationSeconds
             : 0;
         pending.gradientColors = input.gradientColors;
         pending.enemyPacket = input.enemyPacket
-            ?? input.titleBackground?.getWebGpuEnemyPresentationPacket?.(this.enemyAdapter)
-            ?? this.enemyAdapter.writePacket([], []);
+            ?? (pending.enemySimulation
+                ? null
+                : (input.titleBackground?.getWebGpuEnemyPresentationPacket?.(this.enemyAdapter)
+                    ?? this.enemyAdapter.writePacket([], [])));
         pending.enemyPalette = input.enemyPalette
+            ?? input.titleBackground?.getWebGpuEnemyPalette?.()
             ?? this.#writeEnemyPalette(input.titleBackground?.titleEnemies);
         pending.centerCommand = input.centerCommand
             ?? input.centerCircle?.getPresentationCommand?.()
@@ -299,7 +308,8 @@ export class TitleWebGpuBaseGraph {
         pending.shieldCommand = input.shieldCommand
             ?? input.titleBackground?.shieldEffect?.getPresentationCommand?.()
             ?? null;
-        pending.shieldActive = hasRenderableShieldActivity(pending.shieldCommand);
+        pending.shieldActive = hasRenderableShieldActivity(pending.shieldCommand)
+            || hasGpuShieldPotential(pending.shieldCommand, pending.enemySimulation);
         if (pending.shieldCommand && !pending.shieldActive) {
             this.shieldInactiveSkipCount += 1;
         }
@@ -341,6 +351,9 @@ export class TitleWebGpuBaseGraph {
         frame.effectLease = null;
         frame.effectOutput = null;
         frame.outputCheckpoint = null;
+        frame.enemySimulation = this.pendingInput.enemySimulation;
+        frame.enemyPacket = this.pendingInput.enemyPacket;
+        frame.shieldInteractionBuffer = null;
         frame.introBlur = this.pendingInput.introBlur;
         frame.groupBlurActive = frame.introBlur > 0.001;
         resetRect(frame.centerRoi);
@@ -351,6 +364,14 @@ export class TitleWebGpuBaseGraph {
         resetHalo(frame.blurHalo);
         this.lastRoi = null;
         this.activeFrame = frame;
+
+        if (frame.enemySimulation) {
+            const simulationOutput = frame.enemySimulation.encode(context);
+            validateGpuSimulationOutput(simulationOutput, context);
+            frame.enemyPacket = simulationOutput.presentationPacket;
+            frame.shieldInteractionBuffer
+                = simulationOutput.shieldInteractionSource.gpuSourceBuffer;
+        }
 
         frame.sceneLease = this.texturePool.acquire(setTextureDescriptor(
             this.textureDescriptorScratch[0],
@@ -370,7 +391,7 @@ export class TitleWebGpuBaseGraph {
         });
         this.checkpoints.assertWritable(frame.sceneLease.texture);
         this.enemyPass.encode(context, {
-            packet: this.pendingInput.enemyPacket,
+            packet: frame.enemyPacket,
             targetView: frame.sceneLease.view,
             targetWidth: context.width,
             targetHeight: context.height,
@@ -424,7 +445,8 @@ export class TitleWebGpuBaseGraph {
                     originX: 0,
                     originY: 0,
                     loadOp: 'load',
-                    format: frame.format
+                    format: frame.format,
+                    gpuInteractionBuffer: frame.shieldInteractionBuffer
                 });
             }
             return;
@@ -484,7 +506,8 @@ export class TitleWebGpuBaseGraph {
                 originX: 0,
                 originY: 0,
                 loadOp: 'load',
-                format: frame.format
+                format: frame.format,
+                gpuInteractionBuffer: frame.shieldInteractionBuffer
             });
         }
 
@@ -508,7 +531,8 @@ export class TitleWebGpuBaseGraph {
                 originX: frame.effectRoi.x,
                 originY: frame.effectRoi.y,
                 loadOp: 'clear',
-                format: frame.format
+                format: frame.format,
+                gpuInteractionBuffer: frame.shieldInteractionBuffer
             })
             : false;
         if (frame.groupBlurActive && !shieldEncoded) {
@@ -788,6 +812,11 @@ export class TitleWebGpuBaseGraph {
             this.lastFrameId = frame.frameId;
             this.lastDeviceGeneration = frame.deviceGeneration;
             this.lastDevice = frame.device;
+            try {
+                frame.enemySimulation?.finishFrame?.(outcome, frame.frameId);
+            } catch (error) {
+                this.#fail('enemy-simulation-frame-finish-failed', error);
+            }
         }
         try {
             this.checkpoints.endFrame();
@@ -1018,6 +1047,9 @@ function createReusableFrameState() {
         effectLease: null,
         effectOutput: null,
         outputCheckpoint: null,
+        enemySimulation: null,
+        enemyPacket: null,
+        shieldInteractionBuffer: null,
         centerRoi: createRect(),
         centerBlurBounds: createRect(),
         centerBlurHalo: { left: 0, top: 0, right: 0, bottom: 0 },
@@ -1081,6 +1113,90 @@ function hasRenderableShieldActivity(command) {
         return false;
     }
     return hasPresentEntry(command.impacts) || hasPresentEntry(command.dents);
+}
+
+function hasGpuShieldPotential(command, enemySimulation) {
+    return Boolean(enemySimulation)
+        && Number.isFinite(command?.radius)
+        && command.radius > 0;
+}
+
+function validateGpuSimulationOutput(output, context) {
+    const packet = output?.presentationPacket;
+    const presentationSource = output?.presentationSource;
+    const shieldSource = output?.shieldInteractionSource;
+    if (!output || typeof output !== 'object'
+        || output.frameId !== context.frameId
+        || output.deviceGeneration !== context.deviceGeneration
+        || !Number.isSafeInteger(output.revision)
+        || output.revision <= 0
+        || !packet
+        || typeof packet !== 'object'
+        || packet.frameId !== context.frameId
+        || packet.deviceGeneration !== context.deviceGeneration
+        || packet.revision !== output.revision
+        || packet.records !== null
+        || packet.recordCount !== TITLE_WEBGPU_ENEMY_PASS_CONSTANTS.MAX_RECORDS
+        || packet.usedByteLength !== TITLE_WEBGPU_ENEMY_PASS_CONSTANTS.RECORD_BUFFER_BYTE_SIZE
+        || packet.recordStrideBytes !== TITLE_WEBGPU_ENEMY_PASS_CONSTANTS.RECORD_STRIDE_BYTES
+        || packet.recordStrideFloats
+            !== TITLE_WEBGPU_ENEMY_PASS_CONSTANTS.RECORD_STRIDE_BYTES
+                / Float32Array.BYTES_PER_ELEMENT
+        || packet.maxRecordCount !== TITLE_WEBGPU_ENEMY_PASS_CONSTANTS.MAX_RECORDS
+        || !hasMatchingGpuSourceIdentity(presentationSource, output, context)
+        || !hasMatchingGpuSourceIdentity(shieldSource, output, context)
+        || packet.gpuSourceBuffer !== presentationSource.gpuSourceBuffer
+        || output.shieldInteractionBuffer !== shieldSource.gpuSourceBuffer) {
+        throw new Error('title GPU simulation output ABI 또는 frame epoch가 유효하지 않습니다.');
+    }
+    validateExactGpuSourceSpan(
+        presentationSource,
+        0,
+        TITLE_WEBGPU_ENEMY_PASS_CONSTANTS.RECORD_BUFFER_BYTE_SIZE,
+        'presentation'
+    );
+    validateExactGpuSourceSpan(
+        shieldSource,
+        0,
+        TITLE_WEBGPU_SHIELD_INTERACTION_ABI.BYTE_SIZE,
+        'shield interaction'
+    );
+    if (shieldSource.impactCountByteOffset
+            !== TITLE_WEBGPU_SHIELD_INTERACTION_ABI.HEADER_BYTE_OFFSET
+        || shieldSource.dentCountByteOffset
+            !== TITLE_WEBGPU_SHIELD_INTERACTION_ABI.HEADER_BYTE_OFFSET + 4) {
+        throw new Error('title GPU simulation shield interaction header ABI가 유효하지 않습니다.');
+    }
+}
+
+function hasMatchingGpuSourceIdentity(source, output, context) {
+    return Boolean(source)
+        && typeof source === 'object'
+        && source.frameId === context.frameId
+        && source.deviceGeneration === context.deviceGeneration
+        && source.revision === output.revision;
+}
+
+function validateExactGpuSourceSpan(source, expectedOffset, expectedLength, label) {
+    const buffer = source.gpuSourceBuffer;
+    if (!buffer || (typeof buffer !== 'object' && typeof buffer !== 'function')) {
+        throw new TypeError(`title GPU simulation ${label} buffer identity가 유효하지 않습니다.`);
+    }
+    if (source.byteOffset !== expectedOffset || source.byteLength !== expectedLength) {
+        throw new RangeError(`title GPU simulation ${label} source span ABI가 유효하지 않습니다.`);
+    }
+    if (buffer.size !== undefined) {
+        if (!Number.isSafeInteger(buffer.size)
+            || buffer.size < expectedOffset + expectedLength) {
+            throw new RangeError(`title GPU simulation ${label} GPUBuffer 크기가 부족합니다.`);
+        }
+    }
+    if (buffer.usage !== undefined) {
+        if (!Number.isSafeInteger(buffer.usage)
+            || (buffer.usage & BUFFER_USAGE_COPY_SRC) !== BUFFER_USAGE_COPY_SRC) {
+            throw new RangeError(`title GPU simulation ${label} GPUBuffer COPY_SRC usage가 필요합니다.`);
+        }
+    }
 }
 
 function hasPresentEntry(value) {

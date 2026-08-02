@@ -415,6 +415,7 @@ export class SystemHandler {
         if (executionPolicy.renderFrame) {
             const webGpuFrameStarted = this.displaySystem.beginWebGpuFrame?.() === true;
             let presentationCompleted = false;
+            let webGpuPresentationAccepted = true;
             try {
                 const drawStart = beginPerformanceSection();
                 this.draw(executionPolicy);
@@ -426,16 +427,17 @@ export class SystemHandler {
                 }
                 if (webGpuFrameStarted) {
                     const webGpuFinalizeStart = beginPerformanceSection();
-                    this.sceneSystem?.finalizeWebGpuPresentation?.({
+                    const finalizeResult = this.sceneSystem?.finalizeWebGpuPresentation?.({
                         overlaySnapshots: this.overlayManager
                             ?.getTitleWebGpuPresentationSnapshots?.()
                     });
+                    webGpuPresentationAccepted = finalizeResult !== false;
                     endPerformanceSection(
                         'frame.draw.webgpuPresentationFinalize',
                         webGpuFinalizeStart
                     );
                 }
-                presentationCompleted = true;
+                presentationCompleted = webGpuPresentationAccepted;
             } finally {
                 if (webGpuFrameStarted) {
                     if (!presentationCompleted) {

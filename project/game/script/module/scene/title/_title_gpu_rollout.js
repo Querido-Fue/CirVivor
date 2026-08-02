@@ -14,10 +14,13 @@ export const TITLE_SIMULATION_MODE = Object.freeze({
 const VALID_PIPELINE_MODES = new Set(Object.values(TITLE_PIPELINE_MODE));
 const VALID_SIMULATION_MODES = new Set(Object.values(TITLE_SIMULATION_MODE));
 
-/** production은 최종 성능·시각 승인 전까지 기존 경로를 유지합니다. */
+/**
+ * production 기본값은 시각 QA와 5회 cold-start GPU p99 승인을 마친 quality 경로입니다.
+ * WebGPU 초기화/프레임 실패는 session fail-safe가 기존 WebGL/CPU 표시를 계속 유지합니다.
+ */
 export const DEFAULT_TITLE_GPU_ROLLOUT_PROFILE = Object.freeze({
-    pipelineMode: TITLE_PIPELINE_MODE.LEGACY_WEBGL,
-    simulationMode: TITLE_SIMULATION_MODE.CPU,
+    pipelineMode: TITLE_PIPELINE_MODE.WEBGPU_GAUSSIAN,
+    simulationMode: TITLE_SIMULATION_MODE.GPU,
     source: 'production-default'
 });
 
