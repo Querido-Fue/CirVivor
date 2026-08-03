@@ -178,7 +178,7 @@ test('vignette/main/manager를 고정 rank와 실제 manager DOM order로 record
     });
     assert.deepEqual({ ...mainRoot.contentBlurs[0].contentRoi }, {
         mode: 'full-screen',
-        reason: 'panel-content-roi-disabled'
+        reason: 'explicit-content-authority-missing'
     });
     assert.equal(managerRoot.contentBlurs[0].sigma, 2);
     assert.deepEqual({ ...managerRoot.contentBlurs[0].contentRoi }, {
@@ -204,6 +204,46 @@ test('vignette/main/manager를 고정 rank와 실제 manager DOM order로 record
     });
     assert.equal(result.glassPanelCount, 3);
     assert.equal(result.dimNodeCount, 1);
+});
+
+test('main title menu는 pane 밖 version block authority까지 content blur ROI로 사용한다', () => {
+    const fixture = createGraph();
+    const main = sessionSnapshot({
+        identity: 'main-menu-authority',
+        withDim: false,
+        contentBlur: 4,
+        rootContentBounds: [{
+            x: 200,
+            y: 10,
+            width: 180,
+            height: 70,
+            shadowBlur: 5
+        }]
+    });
+    recordTitleWebGpuOverlayFrame({
+        graph: fixture.graph,
+        frameId: 9,
+        width: 400,
+        height: 240,
+        blurAlgorithmId: 'gaussian-quality',
+        blurPort: { getRequiredHalo: () => 12 },
+        vignettePacket: { visible: false, color: [0, 0, 0, 0] },
+        mainSnapshot: main
+    });
+
+    const root = fixture.calls.find(
+        ({ input }) => input.id === 'main-menu-authority:root'
+    ).input;
+    assert.deepEqual({ ...root.contentBlurs[0].contentRoi }, {
+        mode: 'panel',
+        reason: null
+    });
+    assert.deepEqual({ ...root.contentBlurs[0].bounds }, {
+        x: 183,
+        y: 0,
+        width: 214,
+        height: 97
+    });
 });
 
 test('manager content ROI는 glass scissor의 shadow/refraction 범위를 공유하고 algorithm ID를 보존한다', () => {

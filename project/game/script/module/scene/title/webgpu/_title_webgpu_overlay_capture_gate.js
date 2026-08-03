@@ -7,9 +7,15 @@ let nextCaptureEpoch = 0;
  * 이미 열린 구간이 있으면 기존 owner를 덮어쓰지 않고 null을 반환합니다.
  * @param {object|Function} displaySystem - 캡처 대상 DisplaySystem identity입니다.
  * @param {number} frameId - composer와 공유할 frame identity입니다.
- * @returns {Readonly<{frameId:number, epoch:number}>|null} 종료에 사용할 opaque token입니다.
+ * @param {object} [options={}] - 현재 presentation 정책입니다.
+ * @param {boolean} [options.legacyDrawRequired=true] - 레거시 raster를 함께 생성해야 하는지 여부입니다.
+ * @returns {Readonly<{frameId:number, epoch:number, legacyDrawRequired:boolean}>|null} 종료에 사용할 opaque token입니다.
  */
-export function beginTitleWebGpuOverlayCapture(displaySystem, frameId) {
+export function beginTitleWebGpuOverlayCapture(
+    displaySystem,
+    frameId,
+    { legacyDrawRequired = true } = {}
+) {
     requireDisplayIdentity(displaySystem);
     requireFrameId(frameId);
     if (ACTIVE_CAPTURE_BY_DISPLAY.has(displaySystem)) {
@@ -20,7 +26,11 @@ export function beginTitleWebGpuOverlayCapture(displaySystem, frameId) {
     if (!Number.isSafeInteger(nextCaptureEpoch)) {
         throw new RangeError('title WebGPU overlay capture epoch 범위를 초과했습니다.');
     }
-    const token = Object.freeze({ frameId, epoch: nextCaptureEpoch });
+    const token = Object.freeze({
+        frameId,
+        epoch: nextCaptureEpoch,
+        legacyDrawRequired: legacyDrawRequired !== false
+    });
     ACTIVE_CAPTURE_BY_DISPLAY.set(displaySystem, token);
     END_CLEANUPS_BY_TOKEN.set(token, new Set());
     return token;
@@ -58,7 +68,7 @@ export function endTitleWebGpuOverlayCapture(displaySystem, token) {
  * DisplaySystem에 현재 열린 title overlay 의미 캡처 token을 반환합니다.
  * @param {object|Function} displaySystem - 조회할 DisplaySystem identity입니다.
  * @param {Function|null} [onCaptureEnd=null] - token 종료 즉시 보관 데이터를 비울 callback입니다.
- * @returns {Readonly<{frameId:number, epoch:number}>|null} 활성 token입니다.
+ * @returns {Readonly<{frameId:number, epoch:number, legacyDrawRequired:boolean}>|null} 활성 token입니다.
  */
 export function getTitleWebGpuOverlayCaptureToken(displaySystem, onCaptureEnd = null) {
     if (!displaySystem

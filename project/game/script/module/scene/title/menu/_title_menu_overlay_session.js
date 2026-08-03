@@ -22,6 +22,7 @@ export function createTitleMenuOverlaySession(displaySystem) {
         blurUpdateMode: 'always',
         disableTransparency: getSetting('disableTransparency'),
         orderSequence: 0,
+        titleWebGpuContentBoundsAuthority: 'panels',
         effects: _createTitleMenuOverlayEffects()
     });
 }

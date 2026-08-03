@@ -414,8 +414,16 @@ export class SystemHandler {
 
         if (executionPolicy.renderFrame) {
             const webGpuFrameStarted = this.displaySystem.beginWebGpuFrame?.() === true;
+            if (!webGpuFrameStarted) {
+                // ACTIVE cutover를 draw 전에 fallback-pending으로 바꿔 같은 프레임에
+                // 숨겨진 legacy backing 전체를 다시 그릴 수 있게 합니다.
+                this.sceneSystem?.abortWebGpuPresentation?.(
+                    'composer-frame-unavailable'
+                );
+            }
             let presentationCompleted = false;
             let webGpuPresentationAccepted = true;
+            let legacyFlushCompleted = false;
             try {
                 const drawStart = beginPerformanceSection();
                 this.draw(executionPolicy);
@@ -425,6 +433,7 @@ export class SystemHandler {
                     this.displaySystem.webGLHandler.flushAll();
                     endPerformanceSection('frame.flush.final', flushStart);
                 }
+                legacyFlushCompleted = true;
                 if (webGpuFrameStarted) {
                     const webGpuFinalizeStart = beginPerformanceSection();
                     const finalizeResult = this.sceneSystem?.finalizeWebGpuPresentation?.({
@@ -439,13 +448,23 @@ export class SystemHandler {
                 }
                 presentationCompleted = webGpuPresentationAccepted;
             } finally {
-                if (webGpuFrameStarted) {
-                    if (!presentationCompleted) {
+                try {
+                    if (!webGpuFrameStarted) {
+                        this.sceneSystem?.abortWebGpuPresentation?.(
+                            'composer-frame-unavailable'
+                        );
+                    } else if (!presentationCompleted) {
                         this.sceneSystem?.abortWebGpuPresentation?.(
                             'presentation-incomplete'
                         );
                     }
-                    this.displaySystem.endWebGpuFrame?.(presentationCompleted);
+                    if (legacyFlushCompleted) {
+                        this.sceneSystem?.completePresentationFallback?.();
+                    }
+                } finally {
+                    if (webGpuFrameStarted) {
+                        this.displaySystem.endWebGpuFrame?.(presentationCompleted);
+                    }
                 }
             }
         }
@@ -626,8 +645,8 @@ export class SystemHandler {
     }
 
     /**
-     * input, object, scene을 그린 뒤 overlay backdrop 합성이 필요할 때만 중간 WebGL flush를 수행하고,
-     * UI, vignette, overlay, release profiler HUD, debug, sound 순서로 렌더 명령을 발행합니다.
+     * input, object, scene, vignette를 그린 뒤 overlay backdrop 합성이 필요할 때만 중간 WebGL flush를 수행하고,
+     * UI, overlay, release profiler HUD, debug, sound 순서로 렌더 명령을 발행합니다.
      * @param {object} [executionPolicy=this.frameExecutionPolicy] - 현재 프레임 실행 정책입니다.
      * @returns {void}
      */
@@ -647,6 +666,9 @@ export class SystemHandler {
             this.sceneSystem.draw();
             endPerformanceSection('frame.draw.scene', startTime);
         }
+        const vignetteStart = beginPerformanceSection();
+        this.displaySystem.drawVignettes();
+        endPerformanceSection('frame.draw.vignette', vignetteStart);
         // 오버레이(glass blur)가 하위 캔버스를 샘플링할 때만 중간 flush를 수행합니다.
         // 오버레이가 없을 때는 프레임 말미 flush만 사용해 불필요한 동기화를 줄입니다.
         const needsOverlayComposite = executionPolicy.renderOverlay
@@ -661,9 +683,6 @@ export class SystemHandler {
             this.uiSystem.draw();
             endPerformanceSection('frame.draw.ui', startTime);
         }
-        const vignetteStart = beginPerformanceSection();
-        this.displaySystem.drawVignettes();
-        endPerformanceSection('frame.draw.vignette', vignetteStart);
         if (executionPolicy.renderOverlay) {
             const startTime = beginPerformanceSection();
             this.overlayManager.draw();

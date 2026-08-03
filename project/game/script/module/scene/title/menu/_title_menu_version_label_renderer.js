@@ -22,6 +22,7 @@ export class TitleMenuVersionLabelRenderer {
         this.globalConstants = globalConstants;
         this.measureCanvas = null;
         this.measureContext = null;
+        this.measureWidthCache = new Map();
     }
 
     /**
@@ -34,6 +35,7 @@ export class TitleMenuVersionLabelRenderer {
             this.measureCanvas = null;
             this.measureContext = null;
         }
+        this.measureWidthCache.clear();
     }
 
     /**
@@ -106,8 +108,21 @@ export class TitleMenuVersionLabelRenderer {
             resolvedUiScale
         );
         const linkText = getTitleMenuVersionHistoryLinkText();
+        const versionTextWidth = this.#measureTextWidth(
+            versionText,
+            versionTypography.font,
+            uiww,
+            resolvedUiScale,
+            versionTypography.size
+        );
         const linkTextWidth = linkText
-            ? this.#measureTextWidth(linkText, linkTypography.font, uiww, resolvedUiScale)
+            ? this.#measureTextWidth(
+                linkText,
+                linkTypography.font,
+                uiww,
+                resolvedUiScale,
+                linkTypography.size
+            )
             : 0;
 
         return buildTitleMenuVersionLabelLayout({
@@ -120,6 +135,7 @@ export class TitleMenuVersionLabelRenderer {
             versionText,
             versionFont: versionTypography.font,
             versionFontSize: versionTypography.size,
+            versionTextWidth,
             linkText,
             linkFont: linkTypography.font,
             linkFontSize: linkTypography.size,
@@ -175,6 +191,17 @@ export class TitleMenuVersionLabelRenderer {
         const textShadowBlur = Math.max(4 * resolvedUiScale, wh * 0.008 * resolvedUiScale);
         const textShadowColor = menuForegroundWithAlpha(0.08);
 
+        if (session.contentBlur > 0.0001
+            && layout.contentBounds?.width > 0
+            && layout.contentBounds?.height > 0) {
+            session.recordTitleWebGpuPanelContentBounds?.({
+                ...layout.contentBounds,
+                shadowBlur: textShadowBlur,
+                shadowOffsetX: 0,
+                shadowOffsetY: 0
+            });
+        }
+
         session.renderPanel({
             shape: 'text',
             text: layout.versionText,
@@ -216,29 +243,50 @@ export class TitleMenuVersionLabelRenderer {
      * @param {string} font - 캔버스 폰트 문자열입니다.
      * @param {number} uiww - UI 기준 너비입니다.
      * @param {number} [uiScale=1] - 현재 UI 스케일 배율입니다.
+     * @param {number|null} [fontSize=null] - 측정 실패 시 사용할 실제 typography 크기입니다.
      * @returns {number} 측정된 텍스트 폭입니다.
      * @private
      */
-    #measureTextWidth(text, font, uiww, uiScale = 1) {
-        const context = this.#getMeasureContext();
-        if (!context) {
-            const fallbackTypography = resolveTitleMenuTypography(
-                TYPOGRAPHY.H6,
-                uiww,
-                uiScale
-            );
-            return Math.max(
-                1,
-                String(text || '').length
-                    * fallbackTypography.size
-                    * 0.6
-            );
+    #measureTextWidth(text, font, uiww, uiScale = 1, fontSize = null) {
+        const normalizedText = String(text || '');
+        const cacheKey = `${font}\u0000${normalizedText}`;
+        const cachedWidth = this.measureWidthCache.get(cacheKey);
+        if (cachedWidth !== undefined) {
+            return cachedWidth;
         }
 
-        context.save();
-        context.font = font;
-        const measuredWidth = context.measureText(String(text || '')).width;
-        context.restore();
+        const context = this.#getMeasureContext();
+        let measuredWidth;
+        if (!context) {
+            const fallbackSize = Number.isFinite(fontSize) && fontSize > 0
+                ? fontSize
+                : resolveTitleMenuTypography(TYPOGRAPHY.H6, uiww, uiScale).size;
+            measuredWidth = Math.max(
+                1,
+                normalizedText.length * fallbackSize * 0.6
+            );
+        } else {
+            context.save();
+            context.font = font;
+            measuredWidth = context.measureText(normalizedText).width;
+            context.restore();
+        }
+
+        const fontSet = typeof document === 'undefined' ? null : document.fonts;
+        let fontReady = true;
+        if (typeof fontSet?.check === 'function') {
+            try {
+                fontReady = fontSet.check(font, normalizedText) === true;
+            } catch {
+                fontReady = false;
+            }
+        }
+        if (fontReady) {
+            if (this.measureWidthCache.size >= 16) {
+                this.measureWidthCache.clear();
+            }
+            this.measureWidthCache.set(cacheKey, measuredWidth);
+        }
         return measuredWidth;
     }
 

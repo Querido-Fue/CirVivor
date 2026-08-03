@@ -55,7 +55,7 @@ assert.match(
 );
 assert.match(
     overlaySessionSource,
-    /requiresBackdropComposite\(\)\s*\{\s*return Boolean\(this\.effectLayerId\)\s*&&\s*this\.getGlassPanelAlpha\(\)\s*>\s*0\s*&&\s*this\.alpha\s*>\s*0;/s
+    /requiresBackdropComposite\(\)\s*\{\s*return !this\.#shouldSuppressLegacyTitleOverlayRender\(\)\s*&&\s*Boolean\(this\.effectLayerId\)[\s\S]*?this\.alpha\s*>\s*0;/s
 );
 assert.match(overlayConstantsSource, /GLASS_TRANSITION_DURATION_SECONDS:\s*0\.4/);
 assert.match(overlayConstantsSource, /GLASS_TRANSITION_EASING:\s*'easeOutExpo'/);
@@ -81,6 +81,10 @@ assert.match(
     /disableTransparency:\s*getSetting\('disableTransparency'\)/
 );
 assert.match(
+    titleMenuSessionSource,
+    /titleWebGpuContentBoundsAuthority:\s*'panels'/
+);
+assert.match(
     titleMenuThemeSource,
     /getMenuBackdropPaneStyle\(disableTransparency, unifiedStroke\)[\s\S]*?if \(disableTransparency\)[\s\S]*?sampleBackdrop:\s*false[\s\S]*?return \{[\s\S]*?sampleBackdrop:\s*true/
 );
@@ -101,7 +105,10 @@ assert.match(
     /disableTransparency:\s*Object\.freeze\(\{[^}]*hidden:\s*false/
 );
 assert.match(titleMenuSource, /this\.session\.setDisableTransparency\(getSetting\('disableTransparency'\)\)/);
-assert.match(titleMenuSource, /getDisplaySystem\(\)\?\.webGLHandler\?\.flushAll\(\)/);
+assert.match(
+    titleMenuSource,
+    /if \(this\.session\.requiresBackdropComposite\?\.\(\) === true\) \{\s*getDisplaySystem\(\)\?\.webGLHandler\?\.flushAll\(\);/s
+);
 assert.match(
     settingHandlerSource,
     /if \(nextTheme !== previousTheme\) \{\s*beginThemeTransition\(previousThemeBackground\);/s

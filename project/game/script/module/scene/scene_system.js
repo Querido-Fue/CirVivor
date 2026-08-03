@@ -93,6 +93,11 @@ export class SceneSystem {
         return this.#callActiveScene('finalizeWebGpuPresentation', [options]);
     }
 
+    /** 최종 WebGL flush 뒤 숨겨진 legacy redraw가 끝난 fallback만 표시 상태로 전환합니다. */
+    completePresentationFallback() {
+        return this.#callActiveScene('completePresentationFallback');
+    }
+
     /** 공유 composer가 abort되기 전에 활성 scene의 frame-local 캡처를 폐기합니다. */
     abortWebGpuPresentation(reason = 'presentation-incomplete') {
         return this.#callActiveScene('abortWebGpuPresentation', [reason]);

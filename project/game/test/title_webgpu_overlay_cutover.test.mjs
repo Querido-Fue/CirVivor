@@ -27,7 +27,7 @@ function createSurface(id, options = {}) {
 function createHarness() {
     const surfaces = [
         createSurface('background'),
-        createSurface('gpu-object'),
+        createSurface('gpu-object', { visibility: 'hidden' }),
         createSurface('object'),
         createSurface('effect'),
         createSurface('texteffect'),
@@ -84,6 +84,11 @@ test('첫 qualifying commit 뒤 legacy/dynamic만 숨기고 WebGPU와 top을 보
         fullCutoverActive: false,
         fallbackRecovered: false
     });
+    assert.equal(
+        harness.surfaces.find((surface) => surface.id === 'gpu-object')
+            .canvas.style.visibility,
+        'hidden'
+    );
     const status = cutover.commitFrame(qualifyingReceipt(), harness.ownerToken);
     assert.equal(status.fullCutoverActive, true);
     assert.equal(status.legacyVisibleSurfaceCount, 0);
@@ -107,6 +112,52 @@ test('첫 qualifying commit 뒤 legacy/dynamic만 숨기고 WebGPU와 top을 보
         assert.equal(style.transformOrigin, '50% 50%');
         assert.equal(style.filter, 'blur(8px)');
     }
+});
+
+test('ARMED begin은 처음 visible인 WebGPU candidate도 submit 전에 숨긴다', async () => {
+    const { TitleWebGpuOverlayCutover } = await import(MODULE_URL.href);
+    const harness = createHarness();
+    const gpuSurface = harness.surfaces.find((surface) => surface.id === 'gpu-object');
+    gpuSurface.canvas.style.visibility = '';
+    const cutover = new TitleWebGpuOverlayCutover({
+        surfaceProvider: () => harness.surfaces,
+        ownerToken: harness.ownerToken
+    });
+
+    assert.equal(cutover.beginFrame(harness.ownerToken).legacyDrawRequired, true);
+    assert.equal(gpuSurface.canvas.style.visibility, 'hidden');
+    assert.equal(
+        cutover.commitFrame(qualifyingReceipt(), harness.ownerToken).fullCutoverActive,
+        true
+    );
+    assert.equal(gpuSurface.canvas.style.visibility, 'visible');
+    assert.equal(cutover.abortFrame('visible-candidate-abort', harness.ownerToken), true);
+    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRedrawPending, true);
+    assert.equal(cutover.completeFallbackRedraw(
+        'visible-candidate-redrawn',
+        harness.ownerToken
+    ), true);
+    assert.equal(gpuSurface.canvas.style.visibility, 'hidden');
+    assert.equal(cutover.destroy(harness.ownerToken), true);
+    assert.equal(gpuSurface.canvas.style.visibility, '');
+});
+
+test('ARMED candidate가 legacy와 canvas identity를 공유하면 어떤 surface도 숨기지 않는다', async () => {
+    const { TitleWebGpuOverlayCutover } = await import(MODULE_URL.href);
+    const harness = createHarness();
+    const background = harness.surfaces.find((surface) => surface.id === 'background');
+    const gpu = harness.surfaces.find((surface) => surface.id === 'gpu-object');
+    gpu.canvas = background.canvas;
+    const cutover = new TitleWebGpuOverlayCutover({
+        surfaceProvider: () => harness.surfaces,
+        ownerToken: harness.ownerToken
+    });
+
+    const begin = cutover.beginFrame(harness.ownerToken);
+    assert.equal(begin.legacyDrawRequired, true);
+    assert.equal(begin.fullCutoverActive, false);
+    assert.equal(background.canvas.style.visibility, '');
+    assert.match(cutover.getStatus().fallbackReason, /canvas identity/u);
 });
 
 test('미완료/잘못된 receipt는 cutover를 활성화하지 않는다', async () => {
@@ -168,13 +219,17 @@ test('ACTIVE는 순서를 판정할 수 없는 invalid receipt에서 fail-closed
             'hidden',
             `${label}: commit callback에서는 즉시 복구하지 않음`
         );
-        assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRecovered, true, label);
+        const redraw = cutover.beginFrame(harness.ownerToken);
+        assert.equal(redraw.fallbackRecovered, false, label);
+        assert.equal(redraw.fallbackRedrawPending, true, label);
         assert.equal(
             harness.surfaces.find((surface) => surface.id === 'background')
                 .canvas.style.visibility,
-            '',
-            `${label}: 다음 draw 직전에 legacy를 복구`
+            'hidden',
+            `${label}: fallback redraw 동안 마지막 GPU 화면을 유지`
         );
+        assert.equal(cutover.completeFallbackRedraw('fallback-redraw', harness.ownerToken), true);
+        assert.equal(harness.surfaces[0].canvas.style.visibility, '');
     }
 });
 
@@ -196,8 +251,11 @@ test('active abort는 다음 beginFrame 직전에만 legacy style을 원복한�
     assert.deepEqual(cutover.beginFrame(harness.ownerToken), {
         legacyDrawRequired: true,
         fullCutoverActive: false,
-        fallbackRecovered: true
+        fallbackRecovered: false,
+        fallbackRedrawPending: true
     });
+    assert.equal(dynamic.canvas.style.visibility, 'hidden');
+    assert.equal(cutover.completeFallbackRedraw('fallback-redraw', harness.ownerToken), true);
     assert.deepEqual(dynamic.canvas.style, originalDynamicStyle);
     assert.equal(harness.surfaces[0].canvas.style.visibility, '');
     assert.equal(cutover.getStatus().lastRestoreReason, 'fallback-redraw');
@@ -287,7 +345,8 @@ test('surface provider 실패는 activation을 fallback-pending으로 격리한�
     assert.equal(status.fallbackPending, true);
     assert.match(status.fallbackReason, /forced-provider-failure/);
     shouldThrow = false;
-    assert.equal(cutover.beginFrame(ownerToken).fallbackRecovered, true);
+    assert.equal(cutover.beginFrame(ownerToken).fallbackRedrawPending, true);
+    assert.equal(cutover.completeFallbackRedraw('provider-recovered', ownerToken), true);
 });
 
 test('dynamic presentation CSS의 live 변경은 cutover와 fallback을 통과해도 유지된다', async () => {
@@ -317,7 +376,9 @@ test('dynamic presentation CSS의 live 변경은 cutover와 fallback을 통과�
     });
 
     cutover.abortFrame('live-css-fallback', harness.ownerToken);
-    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRecovered, true);
+    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRedrawPending, true);
+    assert.equal(dynamic.canvas.style.visibility, 'hidden');
+    assert.equal(cutover.completeFallbackRedraw('live-css-redrawn', harness.ownerToken), true);
     assert.deepEqual(dynamic.canvas.style, {
         visibility: '',
         display: '',
@@ -356,9 +417,14 @@ test('필수 legacy/WebGPU/top descriptor가 하나라도 없으면 ACTIVE가 �
         assert.equal(status.surfaceTopologyQualified, false, `${missingId} 누락`);
         assert.equal(status.counters.activationCount, 0, `${missingId} 누락`);
         for (const surface of harness.surfaces) {
-            assert.notEqual(surface.canvas.style.visibility, 'hidden', `${missingId} 누락`);
+            if (surface.id === 'gpu-object') {
+                assert.equal(surface.canvas.style.visibility, 'hidden', `${missingId} 누락`);
+            } else {
+                assert.notEqual(surface.canvas.style.visibility, 'hidden', `${missingId} 누락`);
+            }
         }
-        assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRecovered, true);
+        assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRedrawPending, true);
+        assert.equal(cutover.completeFallbackRedraw('missing-topology-redrawn', harness.ownerToken), true);
     }
 });
 
@@ -383,7 +449,11 @@ test('WebGPU surface 사후조건이 실패하면 activation과 active beginFram
     assert.equal(failedActivation.counters.activationCount, 0);
     assert.equal(activationCutover.beginFrame(
         activationHarness.ownerToken
-    ).legacyDrawRequired, true);
+    ).fallbackRedrawPending, true);
+    assert.equal(activationCutover.completeFallbackRedraw(
+        'activation-fallback-redrawn',
+        activationHarness.ownerToken
+    ), true);
     assert.equal(
         activationHarness.surfaces.find((surface) => surface.id === 'background')
             .canvas.style.visibility,
@@ -402,8 +472,13 @@ test('WebGPU surface 사후조건이 실패하면 activation과 active beginFram
     assert.deepEqual(activeCutover.beginFrame(activeHarness.ownerToken), {
         legacyDrawRequired: true,
         fullCutoverActive: false,
-        fallbackRecovered: true
+        fallbackRecovered: false,
+        fallbackRedrawPending: true
     });
+    assert.equal(activeCutover.completeFallbackRedraw(
+        'active-postcondition-redrawn',
+        activeHarness.ownerToken
+    ), true);
     assert.equal(activeCutover.getStatus().state, 'armed');
     assert.equal(
         activeHarness.surfaces.find((surface) => surface.id === 'background')
@@ -450,7 +525,8 @@ test('receipt는 generation/frame 단조성을 지키고 invalid newer에서 fal
     assert.equal(status.lastCommittedFrameId, 17);
     assert.equal(status.counters.rejectedCommitCount, 3);
 
-    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRecovered, true);
+    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRedrawPending, true);
+    assert.equal(cutover.completeFallbackRedraw('receipt-fallback-redrawn', harness.ownerToken), true);
     status = cutover.commitFrame(qualifyingReceipt(), harness.ownerToken);
     assert.equal(status.state, 'armed', '복구 뒤 exact duplicate도 재활성화하지 않음');
     assert.equal(status.counters.activationCount, 1);
@@ -584,8 +660,13 @@ test('ACTIVE synchronize 예외는 외부로 throw하지 않고 같은 beginFram
     assert.deepEqual(cutover.beginFrame(harness.ownerToken), {
         legacyDrawRequired: true,
         fullCutoverActive: false,
-        fallbackRecovered: true
+        fallbackRecovered: false,
+        fallbackRedrawPending: true
     });
+    assert.equal(cutover.completeFallbackRedraw(
+        'active-sync-redrawn',
+        harness.ownerToken
+    ), true);
     let status = cutover.getStatus();
     assert.equal(status.state, 'armed');
     assert.equal(status.counters.providerFailureCount, 1);
@@ -606,5 +687,106 @@ test('ACTIVE synchronize 예외는 외부로 throw하지 않고 같은 beginFram
         qualifyingReceipt({ frameId: 19 }),
         harness.ownerToken
     ).lastCommittedFrameId, 18);
-    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRecovered, true);
+    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRedrawPending, true);
+    assert.equal(cutover.completeFallbackRedraw(
+        'explicit-sync-fallback-redrawn',
+        harness.ownerToken
+    ), true);
+});
+
+test('fallback legacy style 복구가 중간 실패하면 모든 변경을 되돌리고 마지막 GPU를 유지한다', async () => {
+    const { TitleWebGpuOverlayCutover } = await import(MODULE_URL.href);
+    const harness = createHarness();
+    const cutover = new TitleWebGpuOverlayCutover({
+        surfaceProvider: () => harness.surfaces,
+        ownerToken: harness.ownerToken
+    });
+    cutover.commitFrame(qualifyingReceipt(), harness.ownerToken);
+    cutover.abortFrame('style-rollback', harness.ownerToken);
+    assert.equal(cutover.beginFrame(harness.ownerToken).fallbackRedrawPending, true);
+
+    const objectStyle = harness.surfaces.find(
+        (surface) => surface.id === 'object'
+    ).canvas.style;
+    let objectVisibility = objectStyle.visibility;
+    let throwOnRestore = true;
+    Object.defineProperty(objectStyle, 'visibility', {
+        configurable: true,
+        get() {
+            return objectVisibility;
+        },
+        set(value) {
+            if (throwOnRestore && value === '') {
+                throw new Error('forced-legacy-restore-failure');
+            }
+            objectVisibility = value;
+        }
+    });
+
+    assert.equal(cutover.completeFallbackRedraw(
+        'style-rollback-failed',
+        harness.ownerToken
+    ), false);
+    assert.equal(cutover.getStatus().fallbackPending, true);
+    assert.equal(
+        harness.surfaces.find((surface) => surface.id === 'gpu-object')
+            .canvas.style.visibility,
+        'visible'
+    );
+    assert.equal(
+        harness.surfaces.find((surface) => surface.id === 'background')
+            .canvas.style.visibility,
+        'hidden'
+    );
+
+    throwOnRestore = false;
+    assert.equal(cutover.completeFallbackRedraw(
+        'style-rollback-retry',
+        harness.ownerToken
+    ), true);
+    assert.equal(objectStyle.visibility, '');
+    assert.equal(
+        harness.surfaces.find((surface) => surface.id === 'gpu-object')
+            .canvas.style.visibility,
+        'hidden'
+    );
+});
+
+test('첫 cutover visibility 변경이 중간 실패하면 ARMED 표시 상태로 원자적으로 롤백한다', async () => {
+    const { TitleWebGpuOverlayCutover } = await import(MODULE_URL.href);
+    const harness = createHarness();
+    const objectStyle = harness.surfaces.find(
+        (surface) => surface.id === 'object'
+    ).canvas.style;
+    let objectVisibility = objectStyle.visibility;
+    Object.defineProperty(objectStyle, 'visibility', {
+        configurable: true,
+        get() {
+            return objectVisibility;
+        },
+        set(value) {
+            if (value === 'hidden') {
+                throw new Error('forced-cutover-style-failure');
+            }
+            objectVisibility = value;
+        }
+    });
+    const cutover = new TitleWebGpuOverlayCutover({
+        surfaceProvider: () => harness.surfaces,
+        ownerToken: harness.ownerToken
+    });
+
+    const status = cutover.commitFrame(qualifyingReceipt(), harness.ownerToken);
+    assert.equal(status.fallbackPending, true);
+    assert.equal(
+        harness.surfaces.find((surface) => surface.id === 'gpu-object')
+            .canvas.style.visibility,
+        'hidden'
+    );
+    assert.equal(
+        harness.surfaces.find((surface) => surface.id === 'background')
+            .canvas.style.visibility,
+        ''
+    );
+    assert.equal(objectStyle.visibility, '');
 });

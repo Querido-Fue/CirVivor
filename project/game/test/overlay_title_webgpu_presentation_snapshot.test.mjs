@@ -256,6 +256,52 @@ test('OverlaySession은 같은 frame의 모든 dim/root/floating 의미 명령�
     assert.equal(endCapture(displaySystem, nextCaptureToken), true);
 });
 
+test('full cutover capture는 semantic과 UI source를 유지하고 legacy dim/WebGL sink만 생략한다', async () => {
+    const { OverlaySession, beginCapture, endCapture, renders } = await loadOverlaySession();
+    const displaySystem = createDisplaySystem(43);
+    const captureToken = beginCapture(displaySystem, 43, {
+        legacyDrawRequired: false
+    });
+    const session = new OverlaySession({
+        displaySystem,
+        layer: 3,
+        orderSequence: 2,
+        dim: 0.2,
+        transparent: true,
+        glOverlay: false,
+        disableTransparency: false
+    });
+
+    assert.equal(session.requiresBackdropComposite(), false);
+    session.renderDim();
+    session.renderGlassPanel({ x: 10, y: 20, w: 100, h: 80, blur: 4, alpha: 1 });
+    assert.equal(session.renderFloatingGlassPanel({
+        x: 20,
+        y: 30,
+        w: 60,
+        h: 40,
+        blur: 3,
+        alpha: 1
+    }), true);
+    session.renderPanel({ shape: 'text', text: 'atlas source', x: 1, y: 2 });
+
+    const snapshot = session.getTitleWebGpuPresentationSnapshot();
+    assert.equal(snapshot.dim.commands.length, 1);
+    assert.equal(snapshot.root.glassCommands.length, 1);
+    assert.equal(snapshot.floating.glassCommands.length, 1);
+    assert.equal(renders.filter(({ type }) => type === 'webgl').length, 0);
+    assert.equal(renders.filter(({ type }) => type === '2d').length, 1);
+    assert.equal(endCapture(displaySystem, captureToken), true);
+
+    const legacyToken = beginCapture(displaySystem, 44, {
+        legacyDrawRequired: true
+    });
+    assert.equal(session.requiresBackdropComposite(), true);
+    session.renderGlassPanel({ x: 1, y: 2, w: 3, h: 4, blur: 1, alpha: 1 });
+    assert.equal(renders.filter(({ type }) => type === 'webgl').length, 1);
+    assert.equal(endCapture(displaySystem, legacyToken), true);
+});
+
 test('명시적으로 opt-in한 session만 presented panel content bounds authority를 snapshot한다', async () => {
     const { OverlaySession, beginCapture, endCapture } = await loadOverlaySession();
     const displaySystem = createDisplaySystem(51);
@@ -269,6 +315,7 @@ test('명시적으로 opt-in한 session만 presented panel content bounds author
         glOverlay: false,
         titleWebGpuContentBoundsAuthority: 'panels'
     });
+    authorized.setContentBlur(4);
     assert.equal(authorized.recordTitleWebGpuPanelContentBounds({
         x: 120,
         y: 80,
@@ -432,7 +479,9 @@ test('semantic deep-copy 실패는 legacy WebGL draw를 중단하지 않고 해�
         renders
     } = await loadOverlaySession();
     const displaySystem = createDisplaySystem(12);
-    const captureToken = beginCapture(displaySystem, 12);
+    const captureToken = beginCapture(displaySystem, 12, {
+        legacyDrawRequired: false
+    });
     const session = new OverlaySession({
         displaySystem,
         layer: 1,

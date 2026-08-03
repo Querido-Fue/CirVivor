@@ -166,7 +166,8 @@ export class TitleMenu {
     }
 
     /**
-     * 선행 WebGL 배치를 flush한 뒤 두 외곽 pane, 보조 타일, 카드와 버전 라벨을 overlay 세션에 순서대로 그립니다.
+     * legacy backdrop 샘플링이 필요한 프레임에만 선행 WebGL 배치를 flush한 뒤 두 외곽 pane,
+     * 보조 타일, 카드와 버전 라벨을 overlay 세션에 순서대로 그립니다.
      * 세션이 이미 정리되었으면 아무 작업도 하지 않습니다.
      * @returns {void}
      */
@@ -175,7 +176,9 @@ export class TitleMenu {
             return;
         }
 
-        getDisplaySystem()?.webGLHandler?.flushAll();
+        if (this.session.requiresBackdropComposite?.() === true) {
+            getDisplaySystem()?.webGLHandler?.flushAll();
+        }
         const paneLayout = this.currentPaneLayout || this.#getRightPaneLayout();
         const paneRenderState = buildTitleMenuPaneRenderState({
             paneLayout,

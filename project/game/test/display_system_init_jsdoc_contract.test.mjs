@@ -26,7 +26,7 @@ const [
     readFile(DISPLAY_DESCRIPTOR_PATH, 'utf8'),
     readFile(SYSTEM_HANDLER_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = '9a7a66f5e69e5978352d6ddbb585273909d13749d3cdb7308fd13255954fbfdf';
+const EXECUTABLE_SOURCE_HASH = '448b3969fd22e1b18452f831e0f34ee66e7922745a29eb6033d0896212e3eb6c';
 const STATIC_SURFACE_IDS = Object.freeze([
     'background',
     'gpu-object',
@@ -897,7 +897,7 @@ test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존
         true,
         true,
         true,
-        false,
+        true,
         false
     ]);
     assert.deepEqual(descriptors.map(({ contentRevision }) => contentRevision), [1, 2, 3, 4, 5, 6, 7, 8]);

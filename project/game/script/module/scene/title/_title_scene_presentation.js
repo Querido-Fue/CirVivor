@@ -53,6 +53,7 @@ export class TitleScenePresentation {
         this.titleWebGpuBaseGraph = null;
         this.titleWebGpuOverlayCoordinator = null;
         this.titleWebGpuOverlayFrame = null;
+        this.titleLegacyFallbackRedrawReady = false;
         this.titleWebGpuSurfaceBuffer = [];
         this.titleWebGpuDynamicSurfaceBuffer = [];
         this.titleWebGpuOverlayFailureCount = 0;
@@ -100,19 +101,27 @@ export class TitleScenePresentation {
 
     /** 기존 gradient→enemy background→foreground 렌더 순서를 보존합니다. */
     draw() {
+        this.titleLegacyFallbackRedrawReady = false;
         if (this.#beginWebGpuOverlayPresentation() !== true) {
             this.#fallbackGpuSimulation('overlay-begin-failed');
         }
+        const legacyDrawRequired = this.titleWebGpuOverlayFrame
+            ?.legacyDrawRequired !== false;
         try {
-            this.titleGradientBackground?.draw();
-            this.titleBackground?.draw();
-            this.content?.draw();
+            if (legacyDrawRequired) {
+                this.titleGradientBackground?.draw();
+                this.titleBackground?.draw();
+            } else {
+                this.titleGradientBackground?.prepareFrame?.();
+            }
+            this.content?.draw({ legacyDrawRequired });
             if (this.#encodeWebGpuShadowGraph() !== true) {
                 if (this.titleWebGpuOverlayFrame) {
                     this.abortWebGpuPresentation('base-graph-encode-failed');
                 }
                 this.#fallbackGpuSimulation('base-graph-encode-failed');
             }
+            this.titleLegacyFallbackRedrawReady = legacyDrawRequired;
         } catch (error) {
             this.abortWebGpuPresentation('title-draw-threw');
             throw error;
@@ -234,11 +243,21 @@ export class TitleScenePresentation {
         }
     }
 
+    /** 숨겨진 legacy 전체 draw와 SystemHandler의 최종 WebGL flush가 끝난 경우에만 fallback을 노출합니다. */
+    completePresentationFallback() {
+        if (!this.titleLegacyFallbackRedrawReady) {
+            return false;
+        }
+        this.titleLegacyFallbackRedrawReady = false;
+        return this.titleWebGpuOverlayCoordinator
+            ?.completeFallbackRedraw?.('post-final-flush') === true;
+    }
+
     /** composer abort/scene 경계에서 semantic capture와 logical overlay frame을 함께 닫습니다. */
     abortWebGpuPresentation(reason = 'title-presentation-aborted') {
         const frame = this.titleWebGpuOverlayFrame;
-        if (!frame) return false;
-        this.titleWebGpuOverlayCoordinator?.abortFrame?.(reason);
+        const aborted = this.titleWebGpuOverlayCoordinator?.abortFrame?.(reason) === true;
+        if (!frame) return aborted;
         endTitleWebGpuOverlayCapture(frame.displaySystem, frame.captureToken);
         this.titleWebGpuOverlayFrame = null;
         return true;
@@ -280,6 +299,7 @@ export class TitleScenePresentation {
         this.titleWebGpuShadowConfig = null;
         this.titleWebGpuSurfaceBuffer = null;
         this.titleWebGpuDynamicSurfaceBuffer = null;
+        this.titleLegacyFallbackRedrawReady = false;
         this.titleWebGpuShadowRetryEnabled = false;
         this.titleGradientBackground?.destroy();
         this.titleGradientBackground = null;
@@ -489,7 +509,10 @@ export class TitleScenePresentation {
         try {
             const begin = coordinator.beginFrame({ frameId, width, height });
             if (begin?.accepted !== true) return false;
-            const captureToken = beginTitleWebGpuOverlayCapture(displaySystem, frameId);
+            const legacyDrawRequired = begin.legacyDrawRequired !== false;
+            const captureToken = beginTitleWebGpuOverlayCapture(displaySystem, frameId, {
+                legacyDrawRequired
+            });
             if (!captureToken) {
                 coordinator.abortFrame?.('overlay-capture-token-unavailable');
                 return false;
@@ -497,11 +520,12 @@ export class TitleScenePresentation {
             this.titleWebGpuOverlayFrame = Object.seal({
                 frameId,
                 displaySystem,
-                captureToken
+                captureToken,
+                legacyDrawRequired
             });
             return true;
         } catch (error) {
-            coordinator.restoreNow?.('overlay-begin-threw');
+            coordinator.abortFrame?.('overlay-begin-threw');
             this.titleWebGpuOverlayFailureCount += 1;
             this.titleWebGpuOverlayLastFailure = Object.freeze({
                 reason: 'overlay-begin-threw',

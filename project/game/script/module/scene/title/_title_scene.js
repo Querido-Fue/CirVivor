@@ -50,6 +50,11 @@ export class TitleScene extends BaseScene {
         return this.presentation?.finalizeWebGpuPresentation?.(options);
     }
 
+    /** @override 최종 WebGL flush 뒤 준비된 legacy fallback만 노출합니다. */
+    completePresentationFallback() {
+        return this.presentation?.completePresentationFallback?.();
+    }
+
     /** @override composer abort 전에 title capture/cutover를 복구합니다. */
     abortWebGpuPresentation(reason) {
         return this.presentation?.abortWebGpuPresentation?.(reason);

@@ -30,10 +30,16 @@ export class TitleSceneContent {
         this.titleMenu?.update();
     }
 
-    /** 완료된 타이틀 표현을 기존 레이어 순서로 그립니다. */
-    draw() {
-        this.centerCircle?.draw();
-        this.titleLogo?.draw();
+    /**
+     * 완료된 타이틀 표현을 기존 레이어 순서로 그립니다.
+     * @param {object} [options={}] - 현재 presentation 정책입니다.
+     * @param {boolean} [options.legacyDrawRequired=true] - 레거시 중앙 원·로고 raster가 필요한지 여부입니다.
+     */
+    draw({ legacyDrawRequired = true } = {}) {
+        if (legacyDrawRequired) {
+            this.centerCircle?.draw();
+            this.titleLogo?.draw();
+        }
         this.titleMenu?.draw();
     }
 

@@ -23,7 +23,11 @@ const transformMatrix = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5,
 const perspective = Object.freeze({ distance: 900 });
 const effectTextureCanvas = Object.freeze({ width: 120, height: 80 });
 let renderedCommand = null;
+const recordedBounds = [];
 const session = {
+    recordTitleWebGpuPanelContentBounds(bounds) {
+        recordedBounds.push(bounds);
+    },
     renderGlassPanel(command) {
         renderedCommand = command;
     }
@@ -47,11 +51,15 @@ assert.equal(renderedCommand.h, panelRect.h);
 assert.equal(renderedCommand.transformMatrix, transformMatrix);
 assert.equal(renderedCommand.perspective, perspective);
 assert.equal(renderedCommand.effectTextureCanvas, effectTextureCanvas);
+assert.deepEqual(recordedBounds, [panelRect]);
 
 const mixedCommands = [];
 const mixedSession = {
     getGlassPanelAlpha: () => 1,
     getOpaquePanelAlpha: () => 0.75,
+    recordTitleWebGpuPanelContentBounds(bounds) {
+        recordedBounds.push(bounds);
+    },
     renderGlassPanel(command) {
         mixedCommands.push(command);
     }
@@ -78,5 +86,6 @@ assert.deepEqual(
 );
 assert.equal(mixedCommands[0].transformMatrix, transformMatrix);
 assert.equal(mixedCommands[1].effectTextureCanvas, effectTextureCanvas);
+assert.deepEqual(recordedBounds, [panelRect, panelRect]);
 
 console.log('title menu glass panel render contract: ok');

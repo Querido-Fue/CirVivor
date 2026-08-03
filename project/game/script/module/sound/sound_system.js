@@ -19,6 +19,8 @@ export class SoundSystem {
     #isUnlockListenerAttached;
     #runtimeSuspended;
     #resumePlaybackAfterRuntimeSuspend;
+    #playRequestEpoch;
+    #explicitStopRequested;
 
     constructor() {
         soundSystemInstance = this;
@@ -30,17 +32,24 @@ export class SoundSystem {
         this.#isUnlockListenerAttached = false;
         this.#runtimeSuspended = false;
         this.#resumePlaybackAfterRuntimeSuspend = false;
+        this.#playRequestEpoch = 0;
+        this.#explicitStopRequested = false;
     }
 
     /**
-     * 사운드 시스템을 초기화하고 BGM 재생을 시작합니다.
+     * 사운드 시스템을 초기화하고 BGM 재생을 비동기로 요청합니다.
+     * 브라우저의 `Audio.play()` Promise는 오디오 백엔드가 준비되지 않으면 장시간 pending일 수 있으므로,
+     * 선택 기능인 BGM 재생 완료가 전체 게임 초기화를 막지 않게 합니다.
+     * @returns {Promise<void>} Audio 객체와 볼륨 설정이 끝나면 즉시 이행합니다.
      */
     async init() {
         this.bgmAudio = new Audio(BGM_RESOURCE_DATA.PATH);
         this.bgmAudio.loop = true;
         this.bgmAudio.preload = 'auto';
         this.#syncBgmVolume();
-        await this.playBgm();
+        void this.playBgm().catch((error) => {
+            console.warn('초기 BGM 재생 요청을 완료하지 못했습니다.', error);
+        });
     }
 
     /**
@@ -65,6 +74,8 @@ export class SoundSystem {
      */
     async playBgm() {
         if (!this.bgmAudio) return;
+        const requestEpoch = ++this.#playRequestEpoch;
+        this.#explicitStopRequested = false;
         if (this.#runtimeSuspended) {
             this.#pendingAutoplay = true;
             this.#resumePlaybackAfterRuntimeSuspend = true;
@@ -73,10 +84,38 @@ export class SoundSystem {
 
         try {
             await this.bgmAudio.play();
+            if (requestEpoch !== this.#playRequestEpoch) {
+                if (this.#explicitStopRequested) {
+                    this.pauseBgm();
+                    this.bgmAudio.currentTime = 0;
+                } else if (this.#runtimeSuspended) {
+                    this.pauseBgm();
+                }
+                return;
+            }
+            if (this.#runtimeSuspended) {
+                this.#pendingAutoplay = true;
+                this.#resumePlaybackAfterRuntimeSuspend = true;
+                this.pauseBgm();
+                this.#detachUnlockListeners();
+                return;
+            }
             this.#pendingAutoplay = false;
             this.#detachUnlockListeners();
         } catch (e) {
+            if (requestEpoch !== this.#playRequestEpoch) {
+                if (this.#explicitStopRequested) {
+                    this.pauseBgm();
+                    this.bgmAudio.currentTime = 0;
+                }
+                return;
+            }
             this.#pendingAutoplay = true;
+            if (this.#runtimeSuspended) {
+                this.#resumePlaybackAfterRuntimeSuspend = true;
+                this.#detachUnlockListeners();
+                return;
+            }
             this.#attachUnlockListeners();
         }
     }
@@ -94,10 +133,13 @@ export class SoundSystem {
      */
     stopBgm() {
         if (!this.bgmAudio) return;
+        this.#playRequestEpoch++;
+        this.#explicitStopRequested = true;
         this.#pendingAutoplay = false;
         this.#resumePlaybackAfterRuntimeSuspend = false;
         this.bgmAudio.pause();
         this.bgmAudio.currentTime = 0;
+        this.#detachUnlockListeners();
     }
 
     /**

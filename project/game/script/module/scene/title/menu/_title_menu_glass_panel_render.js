@@ -74,6 +74,10 @@ export function renderTitleMenuGlassPanel(
         return;
     }
 
+    if (alpha > 0) {
+        session.recordTitleWebGpuPanelContentBounds?.(panelRect);
+    }
+
     const glassAlpha = typeof session.getGlassPanelAlpha === 'function'
         ? session.getGlassPanelAlpha()
         : (session.effectiveTransparent === true ? 1 : 0);

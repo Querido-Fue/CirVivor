@@ -28,12 +28,14 @@ export class TitleWebGpuOverlayCoordinator {
         this.lastRecordingReceipt = null;
         this.lastGraphReceipt = null;
         this.lastFailure = null;
+        this.discardReceiptsBeforeNextBegin = false;
         this.beginCount = 0;
         this.finalizeCount = 0;
         this.abortCount = 0;
         this.restoreCount = 0;
         this.receiptCommitCount = 0;
         this.receiptAbortCount = 0;
+        this.discardedReceiptCount = 0;
         this.incompleteRecordingCount = 0;
     }
 
@@ -58,7 +60,7 @@ export class TitleWebGpuOverlayCoordinator {
             }
         } catch (error) {
             this.graph.cancelActiveFrame?.('coordinator-begin-failed');
-            this.#restoreLegacy('coordinator-begin-failed');
+            this.cutover.abortFrame('coordinator-begin-failed');
             return this.#beginFailure('begin-failed', error, cutoverFrame);
         }
 
@@ -66,7 +68,8 @@ export class TitleWebGpuOverlayCoordinator {
             frameId,
             width,
             height,
-            fullCutoverActive: cutoverFrame.fullCutoverActive === true
+            fullCutoverActive: cutoverFrame.fullCutoverActive === true,
+            fallbackRedrawPending: cutoverFrame.fallbackRedrawPending === true
         };
         this.beginCount += 1;
         this.lastFailure = null;
@@ -76,6 +79,7 @@ export class TitleWebGpuOverlayCoordinator {
             legacyDrawRequired: cutoverFrame.legacyDrawRequired !== false,
             fullCutoverActive: cutoverFrame.fullCutoverActive === true,
             fallbackRecovered: cutoverFrame.fallbackRecovered === true,
+            fallbackRedrawPending: cutoverFrame.fallbackRedrawPending === true,
             reason: null
         });
         return this.lastBeginResult;
@@ -92,6 +96,12 @@ export class TitleWebGpuOverlayCoordinator {
         }
 
         try {
+            const synchronized = frame.fullCutoverActive
+                ? this.cutover.synchronize() === true
+                : false;
+            if (frame.fullCutoverActive && !synchronized) {
+                throw new Error('active cutover surface 동기화가 실패했습니다.');
+            }
             const recording = this.recordFrame({
                 graph: this.graph,
                 frameId: frame.frameId,
@@ -121,9 +131,12 @@ export class TitleWebGpuOverlayCoordinator {
                 throw new Error('overlay graph finalize가 거부되었습니다.');
             }
 
-            const synchronized = frame.fullCutoverActive
-                ? this.cutover.synchronize() === true
+            const fallbackRecovered = frame.fallbackRedrawPending
+                ? this.cutover.completeFallbackRedraw() === true
                 : false;
+            if (frame.fallbackRedrawPending && !fallbackRecovered) {
+                throw new Error('fallback legacy redraw 전환이 완료되지 않았습니다.');
+            }
             this.activeFrame = null;
             this.finalizeCount += 1;
             this.lastRecordingReceipt = recording;
@@ -133,18 +146,30 @@ export class TitleWebGpuOverlayCoordinator {
                 frameId: frame.frameId,
                 fullCutoverActive: frame.fullCutoverActive,
                 cutoverSynchronized: synchronized,
+                fallbackRecovered,
                 recording
             });
         } catch (error) {
-            return this.#abortFrame('finalize-failed', error);
+            return this.#abortFrame('finalize-failed', error, true);
         }
     }
 
     /** presentation 예외/scene handoff에서 열린 frame을 취소하고 legacy를 즉시 복구합니다. */
     abortFrame(reason = 'presentation-aborted') {
-        if (!this.activeFrame || this.destroyed) return false;
-        this.#abortFrame(normalizeReason(reason));
-        return true;
+        if (this.destroyed) return false;
+        if (this.activeFrame) {
+            this.#abortFrame(normalizeReason(reason));
+            return true;
+        }
+        return this.cutover.abortFrame(normalizeReason(reason)) === true;
+    }
+
+    /** active graph frame이 없을 때 post-final-flush legacy fallback 전환을 완료합니다. */
+    completeFallbackRedraw(reason = 'post-final-flush') {
+        if (this.destroyed || this.activeFrame) return false;
+        const normalizedReason = normalizeReason(reason);
+        this.cutover.abortFrame(normalizedReason);
+        return this.cutover.completeFallbackRedraw(normalizedReason) === true;
     }
 
     /** device loss/resize/handoff 경계의 즉시 복원 진입점입니다. */
@@ -155,6 +180,7 @@ export class TitleWebGpuOverlayCoordinator {
             this.activeFrame = null;
             this.abortCount += 1;
         }
+        this.#discardGraphReceipts();
         return this.#restoreLegacy(reason);
     }
 
@@ -170,6 +196,7 @@ export class TitleWebGpuOverlayCoordinator {
             restoreCount: this.restoreCount,
             receiptCommitCount: this.receiptCommitCount,
             receiptAbortCount: this.receiptAbortCount,
+            discardedReceiptCount: this.discardedReceiptCount,
             incompleteRecordingCount: this.incompleteRecordingCount,
             activeFrameId: this.activeFrame?.frameId ?? null,
             lastBeginResult: this.lastBeginResult,
@@ -194,6 +221,16 @@ export class TitleWebGpuOverlayCoordinator {
 
     #consumeGraphReceipts() {
         const receipts = this.graph.drainReceipts();
+        if (this.discardReceiptsBeforeNextBegin) {
+            this.discardReceiptsBeforeNextBegin = false;
+            if (Array.isArray(receipts)) {
+                this.discardedReceiptCount += receipts.length;
+                if (receipts.length > 0) {
+                    this.lastGraphReceipt = receipts[receipts.length - 1];
+                }
+            }
+            return;
+        }
         for (const receipt of receipts) {
             this.lastGraphReceipt = receipt;
             if (receipt?.committed === true) {
@@ -208,12 +245,32 @@ export class TitleWebGpuOverlayCoordinator {
         }
     }
 
-    #abortFrame(reason, error = null) {
-        const frameId = this.activeFrame?.frameId ?? null;
+    #discardGraphReceipts() {
+        this.discardReceiptsBeforeNextBegin = true;
+        try {
+            const receipts = this.graph.drainReceipts();
+            if (!Array.isArray(receipts)) return;
+            this.discardedReceiptCount += receipts.length;
+            if (receipts.length > 0) {
+                this.lastGraphReceipt = receipts[receipts.length - 1];
+            }
+            this.discardReceiptsBeforeNextBegin = false;
+        } catch {
+            // explicit restore는 stale receipt 진단보다 legacy 표시 복구가 우선입니다.
+        }
+    }
+
+    #abortFrame(reason, error = null, legacyRedrawComplete = false) {
+        const frame = this.activeFrame;
+        const frameId = frame?.frameId ?? null;
         this.graph.cancelActiveFrame?.(reason);
         this.activeFrame = null;
         this.abortCount += 1;
-        this.#restoreLegacy(reason);
+        if (legacyRedrawComplete && frame?.fallbackRedrawPending) {
+            this.cutover.completeFallbackRedraw(reason);
+        } else {
+            this.cutover.abortFrame(reason);
+        }
         this.lastFailure = Object.freeze({
             reason,
             message: error ? formatError(error) : null,
@@ -245,6 +302,7 @@ export class TitleWebGpuOverlayCoordinator {
             legacyDrawRequired: true,
             fullCutoverActive: false,
             fallbackRecovered: cutoverFrame?.fallbackRecovered === true,
+            fallbackRedrawPending: cutoverFrame?.fallbackRedrawPending === true,
             reason
         });
         return this.lastBeginResult;
@@ -283,6 +341,7 @@ function requireCutover(cutover) {
         'beginFrame',
         'commitFrame',
         'abortFrame',
+        'completeFallbackRedraw',
         'restoreNow',
         'synchronize',
         'getStatus'
@@ -337,6 +396,7 @@ function freezeBeginResult(value) {
         legacyDrawRequired: value.legacyDrawRequired !== false,
         fullCutoverActive: value.fullCutoverActive === true,
         fallbackRecovered: value.fallbackRecovered === true,
+        fallbackRedrawPending: value.fallbackRedrawPending === true,
         reason: value.reason ?? null
     });
 }

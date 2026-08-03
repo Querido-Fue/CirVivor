@@ -46,7 +46,7 @@ test('optimized Kawase는 동일 coordinator 경로에서 별도 algorithm ID로
     );
 });
 
-test('불완전 capture는 graph frame을 취소하고 active cutover를 같은 turn에 복원한다', () => {
+test('불완전 capture는 graph frame을 취소하고 active cutover를 fallback-pending으로 유지한다', () => {
     const fixture = createFixture({ recordingComplete: false });
     fixture.graph.receipts.push(createReceipt({ frameId: 1 }));
     assert.equal(
@@ -59,12 +59,12 @@ test('불완전 capture는 graph frame을 취소하고 active cutover를 같은 
     assert.equal(result.accepted, false);
     assert.equal(result.reason, 'finalize-failed');
     assert.deepEqual(fixture.graph.cancelled, ['finalize-failed']);
-    assert.equal(fixture.cutover.active, false);
-    assert.equal(fixture.cutover.restoreReasons.at(-1), 'finalize-failed');
+    assert.equal(fixture.cutover.fallbackPending, true);
+    assert.equal(fixture.cutover.restoreReasons.length, 0);
     assert.equal(fixture.coordinator.getDiagnostics().incompleteRecordingCount, 1);
 });
 
-test('renderer begin 실패는 legacy draw 전에 graph를 취소하고 cutover를 복구한다', () => {
+test('renderer begin 실패는 legacy draw 전에 graph를 취소하고 마지막 GPU presentation을 유지한다', () => {
     const fixture = createFixture({ rendererBegins: false });
     fixture.graph.receipts.push(createReceipt({ frameId: 8 }));
 
@@ -76,10 +76,10 @@ test('renderer begin 실패는 legacy draw 전에 graph를 취소하고 cutover�
     assert.equal(result.accepted, false);
     assert.equal(result.legacyDrawRequired, true);
     assert.deepEqual(fixture.graph.cancelled, ['coordinator-begin-failed']);
-    assert.equal(fixture.cutover.active, false);
+    assert.equal(fixture.cutover.fallbackPending, true);
 });
 
-test('aborted receipt는 active cutover를 fallback으로 전환한 뒤 begin에서 복구한다', () => {
+test('aborted receipt는 숨겨진 legacy redraw와 finalize가 끝난 뒤에만 복구한다', () => {
     const fixture = createFixture();
     fixture.cutover.active = true;
     fixture.graph.receipts.push(createReceipt({
@@ -92,14 +92,61 @@ test('aborted receipt는 active cutover를 fallback으로 전환한 뒤 begin에
     const result = fixture.coordinator.beginFrame({ frameId: 4, width: 320, height: 180 });
     assert.equal(result.accepted, true);
     assert.equal(result.legacyDrawRequired, true);
-    assert.equal(result.fallbackRecovered, true);
+    assert.equal(result.fallbackRecovered, false);
+    assert.equal(result.fallbackRedrawPending, true);
+    assert.equal(fixture.cutover.fallbackPending, true);
+    const finalized = fixture.coordinator.finalizeFrame({ frameId: 4 });
+    assert.equal(finalized.accepted, true);
+    assert.equal(finalized.fallbackRecovered, true);
+    assert.equal(fixture.cutover.fallbackPending, false);
     assert.equal(fixture.coordinator.getDiagnostics().receiptAbortCount, 1);
+});
+
+test('post-flush fallback 완료는 frame이 없어도 ACTIVE를 먼저 abort한 뒤 복구한다', () => {
+    const fixture = createFixture();
+    fixture.cutover.active = true;
+
+    assert.equal(fixture.coordinator.completeFallbackRedraw('legacy-flushed'), true);
+    assert.deepEqual(fixture.cutover.calls.slice(-2), [
+        'abort:legacy-flushed',
+        'complete:legacy-flushed'
+    ]);
+    assert.equal(fixture.cutover.active, false);
+    assert.equal(fixture.cutover.fallbackPending, false);
+});
+
+test('explicit restore는 resize 전 queued receipt를 폐기해 다음 begin에서 재활성화하지 않는다', () => {
+    const fixture = createFixture();
+    fixture.graph.receipts.push(createReceipt({ frameId: 7 }));
+
+    fixture.coordinator.restoreNow('title-resize');
+    const begin = fixture.coordinator.beginFrame({ frameId: 8, width: 800, height: 600 });
+    assert.equal(begin.accepted, true);
+    assert.equal(begin.legacyDrawRequired, true);
+    assert.equal(begin.fullCutoverActive, false);
+    assert.equal(fixture.cutover.calls.includes('commit:7'), false);
+    assert.equal(fixture.coordinator.getDiagnostics().discardedReceiptCount, 1);
+});
+
+test('active late-surface synchronize 실패는 recording 전에 frame을 취소한다', () => {
+    const fixture = createFixture({ synchronizeResult: false });
+    fixture.cutover.active = true;
+    assert.equal(
+        fixture.coordinator.beginFrame({ frameId: 11, width: 800, height: 600 }).accepted,
+        true
+    );
+
+    const result = fixture.coordinator.finalizeFrame({ frameId: 11 });
+    assert.equal(result.accepted, false);
+    assert.equal(fixture.recordInputs.length, 0);
+    assert.equal(fixture.cutover.fallbackPending, true);
 });
 
 function createFixture({
     blurAlgorithmId = 'gaussian-quality',
     recordingComplete = true,
-    rendererBegins = true
+    rendererBegins = true,
+    synchronizeResult = true
 } = {}) {
     const baseCheckpoint = Object.freeze({ id: 'title:base:C0' });
     const graph = {
@@ -138,7 +185,7 @@ function createFixture({
         },
         destroy() {}
     };
-    const cutover = new FakeCutover();
+    const cutover = new FakeCutover({ synchronizeResult });
     const recordInputs = [];
     const coordinator = new TitleWebGpuOverlayCoordinator({
         baseGraph: {
@@ -172,24 +219,21 @@ function createFixture({
 }
 
 class FakeCutover {
-    constructor() {
+    constructor({ synchronizeResult = true } = {}) {
         this.active = false;
         this.fallbackPending = false;
+        this.synchronizeResult = synchronizeResult;
         this.calls = [];
         this.restoreReasons = [];
     }
 
     beginFrame() {
         this.calls.push('begin');
-        const recovered = this.fallbackPending;
-        if (recovered) {
-            this.fallbackPending = false;
-            this.active = false;
-        }
         return Object.freeze({
-            legacyDrawRequired: !this.active,
-            fullCutoverActive: this.active,
-            fallbackRecovered: recovered
+            legacyDrawRequired: !this.active || this.fallbackPending,
+            fullCutoverActive: this.active && !this.fallbackPending,
+            fallbackRecovered: false,
+            fallbackRedrawPending: this.fallbackPending
         });
     }
 
@@ -206,6 +250,14 @@ class FakeCutover {
         return true;
     }
 
+    completeFallbackRedraw(reason = 'fallback-redraw-complete') {
+        this.calls.push(`complete:${reason}`);
+        if (!this.fallbackPending) return false;
+        this.active = false;
+        this.fallbackPending = false;
+        return true;
+    }
+
     restoreNow(reason) {
         this.calls.push(`restore:${reason}`);
         this.restoreReasons.push(reason);
@@ -217,6 +269,10 @@ class FakeCutover {
 
     synchronize() {
         this.calls.push('synchronize');
+        if (!this.synchronizeResult) {
+            this.fallbackPending = true;
+            return false;
+        }
         return this.active;
     }
 

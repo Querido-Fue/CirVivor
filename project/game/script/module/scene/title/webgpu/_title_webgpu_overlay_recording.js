@@ -77,9 +77,9 @@ export function recordTitleWebGpuOverlayFrame(options = {}) {
             claimedSurfaceIds,
             recordedStageIds,
             counters,
-            // Title menu는 version label처럼 panel 밖 UI를 가질 수 있으므로
-            // 명시적인 content authority가 생기기 전까지 full-screen을 유지합니다.
-            allowPanelContentRoi: false
+            // production TitleMenu는 glass panel과 pane 밖 version block까지
+            // presented-screen bounds authority를 함께 기록합니다.
+            allowPanelContentRoi: true
         });
     }
 
@@ -281,7 +281,7 @@ function buildSurfaceStage({
     if (panelEntries.length === 0 && uiSurfaces.length === 0) return null;
 
     const contentSigma = nonNegativeFiniteOr(presentation?.contentBlur, 0);
-    const trustedContent = allowPanelContentRoi === true
+    const trustedContent = contentSigma > 0.0001 && allowPanelContentRoi === true
         ? buildTrustedPanelContentBounds(
             stage.contentBoundsAuthority,
             commands,

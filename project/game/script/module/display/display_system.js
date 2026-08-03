@@ -119,7 +119,7 @@ export class DisplaySystem {
         this.#registerStaticSurface('ui', 'ui', '2d');
         this.#registerStaticSurface('vignette', 'vignette', '2d', {
             order: 50,
-            includeInComposite: false,
+            includeInComposite: true,
             persistent: true
         });
         this.#registerStaticSurface('top', 'top', '2d', { includeInComposite: false });

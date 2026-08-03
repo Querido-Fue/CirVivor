@@ -36,6 +36,11 @@ export class LoadingScene extends BaseScene {
         return this.presentation?.finalizeWebGpuPresentation?.(options);
     }
 
+    /** 최종 WebGL flush 뒤 공유 title presentation의 fallback 전환을 완료합니다. */
+    completePresentationFallback() {
+        return this.presentation?.completePresentationFallback?.();
+    }
+
     /** composer abort 전에 공유 title capture/cutover를 복구합니다. */
     abortWebGpuPresentation(reason) {
         return this.presentation?.abortWebGpuPresentation?.(reason);

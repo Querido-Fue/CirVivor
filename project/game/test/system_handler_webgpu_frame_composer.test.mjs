@@ -90,6 +90,9 @@ function createRenderableHandler(SystemHandler, events, options = {}) {
             },
             flushAll() {
                 events.push('flush');
+                if (options.throwFromFlush) {
+                    throw options.throwFromFlush;
+                }
             }
         },
         beginWebGpuFrame() {
@@ -111,6 +114,9 @@ function createRenderableHandler(SystemHandler, events, options = {}) {
         },
         abortWebGpuPresentation(reason) {
             events.push(`abort:${reason}`);
+        },
+        completePresentationFallback() {
+            events.push('fallback-complete');
         }
     };
     handler.overlayManager = {
@@ -138,6 +144,7 @@ test('렌더 프레임은 draw와 최종 flush를 하나의 WebGPU presentation 
         'flush',
         'snapshots',
         'finalize',
+        'fallback-complete',
         'end:true'
     ]);
 });
@@ -161,7 +168,7 @@ test('draw 실패는 활성 WebGPU frame을 abort 상태로 닫고 원래 오류
     assert.equal(events.includes('finalize'), false);
 });
 
-test('composer가 frame을 시작하지 않았으면 종료 훅도 호출하지 않는다', async () => {
+test('composer가 frame을 시작하지 않아도 draw 전 abort와 post-flush fallback 완료 훅을 호출한다', async () => {
     const SystemHandler = await loadSystemHandler();
     const events = [];
     const handler = createRenderableHandler(SystemHandler, events, { beginResult: false });
@@ -169,7 +176,14 @@ test('composer가 frame을 시작하지 않았으면 종료 훅도 호출하지 
     handler.tick({ fixedStepCount: 0 });
 
     assert.equal(events.includes('end:true'), false);
-    assert.deepEqual(events.slice(-3), ['begin', 'draw', 'flush']);
+    assert.deepEqual(events.slice(-6), [
+        'begin',
+        'abort:composer-frame-unavailable',
+        'draw',
+        'flush',
+        'abort:composer-frame-unavailable',
+        'fallback-complete'
+    ]);
     assert.equal(events.includes('snapshots'), false);
     assert.equal(events.includes('finalize'), false);
 });
@@ -183,10 +197,11 @@ test('최종 WebGPU 합성 실패는 composer를 abort하고 오류를 보존한
     });
 
     assert.throws(() => handler.tick({ fixedStepCount: 0 }), (error) => error === expectedError);
-    assert.deepEqual(events.slice(-4), [
+    assert.deepEqual(events.slice(-5), [
         'snapshots',
         'finalize',
         'abort:presentation-incomplete',
+        'fallback-complete',
         'end:false'
     ]);
 });
@@ -199,9 +214,27 @@ test('최종 WebGPU 합성의 false 결과는 partial command를 commit하지 �
     });
 
     handler.tick({ fixedStepCount: 0 });
-    assert.deepEqual(events.slice(-4), [
+    assert.deepEqual(events.slice(-5), [
         'snapshots',
         'finalize',
+        'abort:presentation-incomplete',
+        'fallback-complete',
+        'end:false'
+    ]);
+});
+
+test('최종 WebGL flush 실패는 fallback 완료 훅 없이 composer를 abort한다', async () => {
+    const SystemHandler = await loadSystemHandler();
+    const events = [];
+    const expectedError = new Error('flush-failed');
+    const handler = createRenderableHandler(SystemHandler, events, {
+        throwFromFlush: expectedError
+    });
+
+    assert.throws(() => handler.tick({ fixedStepCount: 0 }), (error) => error === expectedError);
+    assert.equal(events.includes('fallback-complete'), false);
+    assert.deepEqual(events.slice(-3), [
+        'flush',
         'abort:presentation-incomplete',
         'end:false'
     ]);

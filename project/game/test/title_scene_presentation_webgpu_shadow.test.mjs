@@ -272,6 +272,76 @@ test('overlay pipeline은 draw 전 capture를 열고 모든 overlay draw 뒤 같
     assert.equal(coordinator.destroyCount, 1);
 });
 
+test('active cutover는 legacy raster만 생략하고 content 준비와 base graph encode를 유지한다', async () => {
+    const fixture = await createPresentationFixture({ overlayDisplayReady: true });
+    const graph = createFakeGraph(fixture.trace);
+    const coordinator = createFakeOverlayCoordinator(fixture.trace, {
+        legacyDrawRequired: false
+    });
+    const presentation = new fixture.TitleScenePresentation(fixture.controller, {
+        titleGpuRolloutProfile: Object.freeze({
+            pipelineMode: 'webgpu-gaussian',
+            simulationMode: 'cpu'
+        }),
+        webGpuFramePort: { id: 'frame-port' },
+        webGpuBlurPort: { id: 'blur-port' },
+        displaySystem: fixture.displaySystem,
+        titleWebGpuBaseGraphFactory: () => graph,
+        titleWebGpuOverlayPipelineFactory: () => coordinator
+    });
+
+    presentation.draw();
+    assert.deepEqual(fixture.trace, [
+        'overlay-begin',
+        'capture-begin',
+        'content',
+        'shadow'
+    ]);
+    assert.equal(presentation.titleGradientBackground.prepareCount, 1);
+    assert.equal(presentation.content.lastDrawOptions.legacyDrawRequired, false);
+    assert.equal(presentation.finalizeWebGpuPresentation({ overlaySnapshots: [] }), true);
+
+    coordinator.legacyDrawRequired = true;
+    fixture.trace.length = 0;
+    presentation.draw();
+    assert.deepEqual(fixture.trace, [
+        'overlay-begin',
+        'capture-begin',
+        'gradient',
+        'background',
+        'content',
+        'shadow'
+    ]);
+    assert.equal(presentation.titleGradientBackground.prepareCount, 2);
+    assert.equal(presentation.content.lastDrawOptions.legacyDrawRequired, true);
+    assert.equal(presentation.finalizeWebGpuPresentation({ overlaySnapshots: [] }), true);
+    presentation.destroy();
+});
+
+test('overlay begin 거부 뒤 완성된 legacy draw만 post-flush fallback 완료를 한 번 요청한다', async () => {
+    const fixture = await createPresentationFixture({ overlayDisplayReady: true });
+    const coordinator = createFakeOverlayCoordinator(fixture.trace, {
+        failureMode: 'begin-rejected'
+    });
+    const presentation = new fixture.TitleScenePresentation(fixture.controller, {
+        titleGpuRolloutProfile: Object.freeze({
+            pipelineMode: 'webgpu-gaussian',
+            simulationMode: 'cpu'
+        }),
+        webGpuFramePort: { id: 'frame-port' },
+        webGpuBlurPort: { id: 'blur-port' },
+        displaySystem: fixture.displaySystem,
+        titleWebGpuBaseGraphFactory: () => createFakeGraph(fixture.trace),
+        titleWebGpuOverlayPipelineFactory: () => coordinator
+    });
+
+    presentation.draw();
+    assert.equal(presentation.completePresentationFallback(), true);
+    assert.equal(presentation.completePresentationFallback(), false);
+    assert.equal(fixture.trace.filter((entry) => entry === 'overlay-fallback-complete').length, 1);
+    presentation.destroy();
+});
+
 test('GPU simulation은 overlay begin/finalize의 모든 실패 출구에서 CPU epoch로 fail-closed한다', async () => {
     for (const failureMode of [
         'begin-rejected',
@@ -353,9 +423,15 @@ async function createPresentationFixture({
         constructor() {
             this.elapsed = 3;
             this.colorData = new Float32Array(15);
+            this.prepareCount = 0;
+        }
+
+        prepareFrame() {
+            this.prepareCount += 1;
         }
 
         draw() {
+            this.prepareFrame();
             trace.push('gradient');
         }
 
@@ -389,7 +465,8 @@ async function createPresentationFixture({
             this.ready = true;
         }
 
-        draw() {
+        draw(options = {}) {
+            this.lastDrawOptions = options;
             trace.push('content');
         }
 
@@ -508,10 +585,14 @@ async function createPresentationFixture({
     };
 }
 
-function createFakeOverlayCoordinator(trace, { failureMode = null } = {}) {
+function createFakeOverlayCoordinator(
+    trace,
+    { failureMode = null, legacyDrawRequired = true } = {}
+) {
     return {
         lastFinalize: null,
         destroyCount: 0,
+        legacyDrawRequired,
         beginFrame(input) {
             trace.push('overlay-begin');
             if (failureMode === 'begin-rejected') {
@@ -520,8 +601,8 @@ function createFakeOverlayCoordinator(trace, { failureMode = null } = {}) {
             return Object.freeze({
                 accepted: true,
                 frameId: input.frameId,
-                legacyDrawRequired: true,
-                fullCutoverActive: false
+                legacyDrawRequired: this.legacyDrawRequired,
+                fullCutoverActive: this.legacyDrawRequired === false
             });
         },
         finalizeFrame(input) {
@@ -544,6 +625,10 @@ function createFakeOverlayCoordinator(trace, { failureMode = null } = {}) {
         },
         restoreNow() {
             return false;
+        },
+        completeFallbackRedraw() {
+            trace.push('overlay-fallback-complete');
+            return true;
         },
         getDiagnostics() {
             return { status: 'ready' };

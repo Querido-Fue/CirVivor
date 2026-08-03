@@ -310,7 +310,10 @@ export class OverlaySession {
      * @returns {boolean} 중간 flush가 필요한 경우 true입니다.
      */
     requiresBackdropComposite() {
-        return Boolean(this.effectLayerId) && this.getGlassPanelAlpha() > 0 && this.alpha > 0;
+        return !this.#shouldSuppressLegacyTitleOverlayRender()
+            && Boolean(this.effectLayerId)
+            && this.getGlassPanelAlpha() > 0
+            && this.alpha > 0;
     }
 
     /**
@@ -335,8 +338,11 @@ export class OverlaySession {
         command.h = this.dimSurface?.canvas?.height || 0;
         command.fill = '#000000';
         command.alpha = this.effectiveDim * this.dimAlpha;
-        render(dimLayerId, command);
-        this.#recordTitleWebGpuCommand('dim', command);
+        const suppressLegacyRender = this.#shouldSuppressLegacyTitleOverlayRender();
+        const recorded = this.#recordTitleWebGpuCommand('dim', command);
+        if (!suppressLegacyRender || !recorded) {
+            render(dimLayerId, command);
+        }
     }
 
     /**
@@ -427,8 +433,11 @@ export class OverlaySession {
         this.#applyEffectTransform(command);
         command.sampleBackdrop = this.getGlassPanelAlpha() > 0
             && command.sampleBackdrop !== false;
-        renderGL(this.effectLayerId, command);
-        this.#recordTitleWebGpuCommand('root', command);
+        const suppressLegacyRender = this.#shouldSuppressLegacyTitleOverlayRender();
+        const recorded = this.#recordTitleWebGpuCommand('root', command);
+        if (!suppressLegacyRender || !recorded) {
+            renderGL(this.effectLayerId, command);
+        }
     }
 
     /**
@@ -455,8 +464,11 @@ export class OverlaySession {
         command.blurRevision = this.blurRevision;
         command.sourceProvider = this.floatingGlassSourceProvider;
         command.sampleBackdrop = command.sampleBackdrop !== false;
-        renderGL(this.floatingEffectLayerId, command);
-        this.#recordTitleWebGpuCommand('floating', command);
+        const suppressLegacyRender = this.#shouldSuppressLegacyTitleOverlayRender();
+        const recorded = this.#recordTitleWebGpuCommand('floating', command);
+        if (!suppressLegacyRender || !recorded) {
+            renderGL(this.floatingEffectLayerId, command);
+        }
         return true;
     }
 
@@ -485,7 +497,8 @@ export class OverlaySession {
      * @returns {boolean} 안전한 bounds snapshot을 기록했으면 true입니다.
      */
     recordTitleWebGpuPanelContentBounds(panel) {
-        if (this.titleWebGpuContentBoundsAuthority !== 'panels') {
+        if (this.titleWebGpuContentBoundsAuthority !== 'panels'
+            || this.contentBlur <= 0.0001) {
             return false;
         }
 
@@ -527,7 +540,8 @@ export class OverlaySession {
     /**
      * 현재 DisplaySystem WebGPU frame에 수집된 overlay 의미 정보를 반환합니다.
      * 반환 객체와 명령 배열은 소비자가 보관해도 다음 프레임 reset의 영향을 받지 않습니다.
-     * legacy WebGL/Canvas 렌더링은 이 snapshot과 독립적으로 계속 수행됩니다.
+     * full cutover capture에서는 WebGPU가 소비할 의미 명령과 2D source만 유지하고
+     * 중복 legacy dim/WebGL raster는 생략될 수 있습니다.
      * @returns {object|null} title WebGPU presentation snapshot입니다.
      */
     getTitleWebGpuPresentationSnapshot() {
@@ -914,7 +928,7 @@ export class OverlaySession {
     /**
      * 명시적으로 열린 title WebGPU capture token에 현재 명령 배열을 맞춥니다.
      * 비활성 상태에서는 legacy draw만 유지하고 캡처 데이터는 즉시 폐기합니다.
-     * @returns {Readonly<{frameId:number, epoch:number}>|null} 활성 capture token입니다.
+     * @returns {Readonly<{frameId:number, epoch:number,legacyDrawRequired:boolean}>|null} 활성 capture token입니다.
      * @private
      */
     #syncTitleWebGpuCaptureFrame() {
@@ -938,6 +952,23 @@ export class OverlaySession {
     }
 
     /**
+     * 현재 capture가 이미 활성화된 full cutover frame인지 반환합니다.
+     * 캡처가 없거나 동기화가 실패하면 legacy 렌더를 보존합니다.
+     * @returns {boolean} 의미 기록 성공 시 legacy dim/WebGL sink를 생략할 수 있으면 true입니다.
+     * @private
+     */
+    #shouldSuppressLegacyTitleOverlayRender() {
+        try {
+            const captureToken = this.#syncTitleWebGpuCaptureFrame();
+            return captureToken?.legacyDrawRequired === false
+                && this.#titleWebGpuCaptureFailedToken !== captureToken;
+        } catch {
+            this.#deactivateTitleWebGpuCapture();
+            return false;
+        }
+    }
+
+    /**
      * reusable legacy command를 WebGPU 소비자용 값 snapshot으로 복사합니다.
      * @param {'dim'|'root'|'floating'} kind - 명령 종류입니다.
      * @param {object} command - 복사할 legacy 렌더 명령입니다.
@@ -948,7 +979,7 @@ export class OverlaySession {
         try {
             captureToken = this.#syncTitleWebGpuCaptureFrame();
             if (!captureToken || this.#titleWebGpuCaptureFailedToken === captureToken) {
-                return;
+                return false;
             }
 
             const snapshot = createTitleWebGpuCommandSnapshot(command);
@@ -960,12 +991,14 @@ export class OverlaySession {
                 this.#titleWebGpuFloatingGlassCommands.push(snapshot);
             }
             this.#markTitleWebGpuSnapshotChanged();
+            return true;
         } catch {
             if (captureToken) {
                 this.#failTitleWebGpuCapture(captureToken);
             } else {
                 this.#deactivateTitleWebGpuCapture();
             }
+            return false;
         }
     }
 

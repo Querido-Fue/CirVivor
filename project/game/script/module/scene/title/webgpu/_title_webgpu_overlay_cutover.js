@@ -89,17 +89,25 @@ export class TitleWebGpuOverlayCutover {
 
     /**
      * scene draw 전에 fallback 복구 또는 active surface 동기화를 수행합니다.
-     * @returns {{legacyDrawRequired:boolean, fullCutoverActive:boolean, fallbackRecovered:boolean}}
+     * @returns {{legacyDrawRequired:boolean, fullCutoverActive:boolean, fallbackRecovered:boolean, fallbackRedrawPending:boolean}}
      */
     beginFrame(ownerToken = this.ownerToken) {
         if (!this.#acceptOwner(ownerToken) || this.destroyed) {
-            return createBeginFrameResult(true, false, false);
+            return createBeginFrameResult(true, false, false, false);
         }
 
         let fallbackRecovered = false;
+        let fallbackRedrawPending = false;
         let activeQualified = false;
         if (this.state === CUTOVER_STATE.FALLBACK_PENDING) {
-            fallbackRecovered = this.#recoverFallback('fallback-redraw');
+            fallbackRedrawPending = true;
+            try {
+                // 마지막 정상 GPU 화면을 계속 표시한 채 새 dynamic surface까지 숨기고,
+                // 이번 프레임에 legacy backing을 완전히 다시 채웁니다.
+                this.#synchronizeActiveSurfaces();
+            } catch (error) {
+                this.fallbackReason = `fallback-synchronize-failed:${error?.message ?? String(error)}`;
+            }
         } else if (this.state === CUTOVER_STATE.ACTIVE) {
             try {
                 const inspection = this.#synchronizeActiveSurfaces();
@@ -108,7 +116,13 @@ export class TitleWebGpuOverlayCutover {
                 this.#enterFallback(
                     `cutover-synchronize-failed:${error?.message ?? String(error)}`
                 );
-                fallbackRecovered = this.#recoverFallback('fallback-redraw');
+                fallbackRedrawPending = true;
+            }
+        } else if (this.state === CUTOVER_STATE.ARMED) {
+            try {
+                this.#synchronizeArmedWebGpuSurface();
+            } catch (error) {
+                this.fallbackReason = `armed-webgpu-hide-failed:${error?.message ?? String(error)}`;
             }
         }
 
@@ -116,7 +130,8 @@ export class TitleWebGpuOverlayCutover {
         return createBeginFrameResult(
             !fullCutoverActive,
             fullCutoverActive,
-            fallbackRecovered
+            fallbackRecovered,
+            fallbackRedrawPending
         );
     }
 
@@ -195,13 +210,31 @@ export class TitleWebGpuOverlayCutover {
         return true;
     }
 
+    /**
+     * 숨겨진 legacy backing의 전체 draw와 최종 flush가 끝난 경계에서만 fallback을 표시합니다.
+     * @returns {boolean} legacy visible/WebGPU hidden 상태로 안전하게 전환했으면 true입니다.
+     */
+    completeFallbackRedraw(
+        reason = 'fallback-redraw-complete',
+        ownerToken = this.ownerToken
+    ) {
+        if (!this.#acceptOwner(ownerToken)
+            || this.destroyed
+            || this.state !== CUTOVER_STATE.FALLBACK_PENDING) {
+            return false;
+        }
+        return this.#recoverFallback(normalizeReason(reason));
+    }
+
     /** device loss/scene handoff처럼 즉시 원복이 필요한 경계에서 호출합니다. */
     restoreNow(reason = 'explicit-restore', ownerToken = this.ownerToken) {
         if (!this.#acceptOwner(ownerToken) || this.destroyed) {
             return false;
         }
         const normalizedReason = normalizeReason(reason);
-        const restoration = this.#restoreSurfaces(normalizedReason);
+        const restoration = this.#restoreSurfaces(normalizedReason, {
+            preserveWebGpuHidden: true
+        });
         if (restoration.complete) {
             this.state = CUTOVER_STATE.ARMED;
             this.fallbackReason = null;
@@ -315,13 +348,48 @@ export class TitleWebGpuOverlayCutover {
     }
 
     #recoverFallback(reason) {
-        const restoration = this.#restoreSurfaces(reason);
+        const restoration = this.#restoreSurfaces(reason, {
+            preserveWebGpuHidden: true
+        });
         if (!restoration.complete) {
             return false;
         }
         this.state = CUTOVER_STATE.ARMED;
         this.fallbackReason = null;
         return true;
+    }
+
+    /** legacy presentation 중 candidate WebGPU surface만 숨기고 원본 visibility를 보관합니다. */
+    #synchronizeArmedWebGpuSurface() {
+        const surfaces = this.#readSurfaces(true)
+            .map(normalizeSurfaceDescriptor)
+            .filter(Boolean);
+        return this.#hideWebGpuSurface(surfaces);
+    }
+
+    /** 이미 읽은 topology에서 candidate WebGPU surface의 lease와 hidden 상태를 확보합니다. */
+    #hideWebGpuSurface(surfaces) {
+        const matches = surfaces.filter((surface) => surface.id === this.webGpuSurfaceId);
+        if (matches.length !== 1) {
+            throw new Error(`armed WebGPU surface count=${matches.length}`);
+        }
+        const surface = matches[0];
+        if (surfaces.some((candidate) => (
+            candidate !== surface && candidate.canvas === surface.canvas
+        ))) {
+            throw new Error('armed WebGPU surface가 다른 surface와 canvas identity를 공유합니다.');
+        }
+        this.#assertCanvasLeasesClaimable([surface]);
+        this.#claimCanvasLease(surface, 'webgpu');
+        try {
+            if (surface.canvas.style.visibility !== 'hidden') {
+                surface.canvas.style.visibility = 'hidden';
+            }
+        } catch (error) {
+            this.counters.styleFailureCount += 1;
+            throw error;
+        }
+        return surface;
     }
 
     #synchronizeActiveSurfaces() {
@@ -356,39 +424,51 @@ export class TitleWebGpuOverlayCutover {
             }
         }
 
-        for (const { surface, role } of managedLeases) {
-            const desiredVisibility = role === 'webgpu' ? 'visible' : 'hidden';
-            try {
+        const visibilityMutations = [];
+        const topSurfaceSnapshotBefore = this.topSurfaceSnapshot;
+        try {
+            for (const { surface, role } of managedLeases) {
+                const desiredVisibility = role === 'webgpu' ? 'visible' : 'hidden';
                 if (surface.canvas.style.visibility !== desiredVisibility) {
-                    surface.canvas.style.visibility = desiredVisibility;
+                    visibilityMutations.push({
+                        canvas: surface.canvas,
+                        visibility: surface.canvas.style.visibility
+                    });
+                    try {
+                        surface.canvas.style.visibility = desiredVisibility;
+                    } catch (error) {
+                        this.counters.styleFailureCount += 1;
+                        throw error;
+                    }
                     if (role === 'legacy') {
                         this.counters.hiddenSurfaceCount += 1;
                     }
                 }
-            } catch (error) {
-                this.counters.styleFailureCount += 1;
-                throw error;
             }
-        }
 
-        if (!styleSnapshotEquals(topSurface.canvas.style, topStyleBefore)) {
-            throw new Error('top control surface style이 cutover 중 변경되었습니다.');
-        }
-        this.topSurfaceSnapshot ??= Object.freeze({
-            id: topSurface.id,
-            canvas: topSurface.canvas
-        });
+            if (!styleSnapshotEquals(topSurface.canvas.style, topStyleBefore)) {
+                throw new Error('top control surface style이 cutover 중 변경되었습니다.');
+            }
+            this.topSurfaceSnapshot ??= Object.freeze({
+                id: topSurface.id,
+                canvas: topSurface.canvas
+            });
 
-        const inspection = inspectCutoverSurfaces(
-            topology,
-            this.ownerToken,
-            this.ownerEpoch,
-            this.topSurfaceSnapshot
-        );
-        if (!inspection.cutoverQualified) {
-            throw new Error(describeInspectionFailure(inspection));
+            const inspection = inspectCutoverSurfaces(
+                topology,
+                this.ownerToken,
+                this.ownerEpoch,
+                this.topSurfaceSnapshot
+            );
+            if (!inspection.cutoverQualified) {
+                throw new Error(describeInspectionFailure(inspection));
+            }
+            return inspection;
+        } catch (error) {
+            rollbackVisibilityMutations(visibilityMutations, this.counters);
+            this.topSurfaceSnapshot = topSurfaceSnapshotBefore;
+            throw error;
         }
-        return inspection;
     }
 
     #assertCanvasLeasesClaimable(surfaces) {
@@ -438,10 +518,10 @@ export class TitleWebGpuOverlayCutover {
         return { lease, created: true };
     }
 
-    #restoreSurfaces(reason) {
+    #restoreSurfaces(reason, { preserveWebGpuHidden = false } = {}) {
         const normalizedReason = normalizeReason(reason);
         this.lastRestoreReason = normalizedReason;
-        if (this.surfaceSnapshots.size === 0) {
+        if (this.surfaceSnapshots.size === 0 && !preserveWebGpuHidden) {
             this.topSurfaceSnapshot = null;
             return { restored: false, complete: true };
         }
@@ -455,9 +535,58 @@ export class TitleWebGpuOverlayCutover {
             return { restored: false, complete: false };
         }
 
+        const visibilityMutations = [];
+        if (preserveWebGpuHidden) {
+            const currentWebGpuMatches = currentSurfaces.filter(
+                (surface) => surface.id === this.webGpuSurfaceId
+            );
+            if (currentWebGpuMatches.length > 1) {
+                return { restored: false, complete: false };
+            }
+            if (currentWebGpuMatches.length === 1
+                && currentSurfaces.some((surface) => (
+                    surface !== currentWebGpuMatches[0]
+                    && surface.canvas === currentWebGpuMatches[0].canvas
+                ))) {
+                return { restored: false, complete: false };
+            }
+
+            const trackedWebGpuLeases = [...this.surfaceSnapshots.values()].filter(
+                (lease) => lease.role === 'webgpu'
+                    && lease.ownerEpoch === this.ownerEpoch
+                    && lease.ownerToken === this.ownerToken
+                    && CANVAS_CUTOVER_LEASES.get(lease.canvas) === lease
+            );
+            const candidateCanvases = new Set([
+                ...currentWebGpuMatches.map((surface) => surface.canvas),
+                ...trackedWebGpuLeases.map((lease) => lease.canvas)
+            ]);
+            try {
+                // legacy를 노출하기 전에 candidate를 먼저 숨깁니다. 같은 surface snapshot을
+                // 사용하고, provider에서 사라진 경우에도 소유 중인 tracked canvas를 숨깁니다.
+                if (currentWebGpuMatches.length === 1) {
+                    this.#assertCanvasLeasesClaimable(currentWebGpuMatches);
+                    this.#claimCanvasLease(currentWebGpuMatches[0], 'webgpu');
+                }
+                for (const candidateCanvas of candidateCanvases) {
+                    if (candidateCanvas.style.visibility !== 'hidden') {
+                        visibilityMutations.push({
+                            canvas: candidateCanvas,
+                            visibility: candidateCanvas.style.visibility
+                        });
+                        candidateCanvas.style.visibility = 'hidden';
+                    }
+                }
+            } catch {
+                this.counters.styleFailureCount += 1;
+                rollbackVisibilityMutations(visibilityMutations, this.counters);
+                return { restored: false, complete: false };
+            }
+        }
+
         let restored = false;
-        let complete = true;
-        for (const [canvas, lease] of this.surfaceSnapshots) {
+        const leasesToRelease = [];
+        for (const [canvas, lease] of [...this.surfaceSnapshots]) {
             const currentLease = CANVAS_CUTOVER_LEASES.get(canvas);
             if (currentLease !== lease
                 || lease.ownerEpoch !== this.ownerEpoch
@@ -466,35 +595,44 @@ export class TitleWebGpuOverlayCutover {
                 continue;
             }
 
+            if (preserveWebGpuHidden && lease.role === 'webgpu') {
+                continue;
+            }
+
             const descriptorIdentityMatches = currentSurfaces.some(
                 (surface) => surface.id === lease.id && surface.canvas === canvas
             );
             if (!descriptorIdentityMatches) {
-                CANVAS_CUTOVER_LEASES.set(canvas, createReleasedLease(lease));
-                this.surfaceSnapshots.delete(canvas);
+                leasesToRelease.push({ canvas, lease });
                 continue;
             }
 
             try {
                 if (canvas.style.visibility !== lease.originalVisibility) {
+                    visibilityMutations.push({
+                        canvas,
+                        visibility: canvas.style.visibility
+                    });
                     canvas.style.visibility = lease.originalVisibility;
+                    restored = true;
                 }
-                CANVAS_CUTOVER_LEASES.set(canvas, createReleasedLease(lease));
-                this.surfaceSnapshots.delete(canvas);
-                restored = true;
             } catch {
-                complete = false;
                 this.counters.styleFailureCount += 1;
+                rollbackVisibilityMutations(visibilityMutations, this.counters);
+                return { restored: false, complete: false };
             }
+            leasesToRelease.push({ canvas, lease });
         }
 
-        if (complete) {
-            this.topSurfaceSnapshot = null;
+        for (const { canvas, lease } of leasesToRelease) {
+            CANVAS_CUTOVER_LEASES.set(canvas, createReleasedLease(lease));
+            this.surfaceSnapshots.delete(canvas);
         }
+        this.topSurfaceSnapshot = null;
         if (restored) {
             this.counters.restoreCount += 1;
         }
-        return { restored, complete };
+        return { restored, complete: true };
     }
 }
 
@@ -717,11 +855,28 @@ function createReleasedLease(lease) {
     });
 }
 
-function createBeginFrameResult(legacyDrawRequired, fullCutoverActive, fallbackRecovered) {
+function rollbackVisibilityMutations(mutations, counters) {
+    for (let index = mutations.length - 1; index >= 0; index--) {
+        const mutation = mutations[index];
+        try {
+            mutation.canvas.style.visibility = mutation.visibility;
+        } catch {
+            counters.styleFailureCount += 1;
+        }
+    }
+}
+
+function createBeginFrameResult(
+    legacyDrawRequired,
+    fullCutoverActive,
+    fallbackRecovered,
+    fallbackRedrawPending
+) {
     return Object.freeze({
         legacyDrawRequired,
         fullCutoverActive,
-        fallbackRecovered
+        fallbackRecovered,
+        ...(fallbackRedrawPending ? { fallbackRedrawPending: true } : {})
     });
 }
 
