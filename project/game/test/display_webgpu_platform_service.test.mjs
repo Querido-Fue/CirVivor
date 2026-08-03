@@ -39,7 +39,7 @@ async function loadServiceModule(globals = {}) {
     return module.namespace;
 }
 
-function createReadyHarness(deviceCount = 1) {
+function createReadyHarness(deviceCount = 1, options = {}) {
     const records = {
         adapterRequests: [],
         deviceRequests: 0,
@@ -119,9 +119,16 @@ function createReadyHarness(deviceCount = 1) {
             },
             limits: device.limits,
             features: device.features,
-            async requestDevice(options) {
+            async requestDevice(requestOptions) {
                 records.deviceRequests += 1;
-                records.deviceRequestOptions.push(options);
+                records.deviceRequestOptions.push(requestOptions);
+                if (options.rejectTimestampRequest === true
+                    && requestOptions?.requiredFeatures?.includes?.('timestamp-query')) {
+                    throw new Error('timestamp feature request rejected');
+                }
+                if (options.rejectTimestampRequest === true) {
+                    device.features.delete('timestamp-query');
+                }
                 return device;
             }
         };
@@ -328,6 +335,10 @@ test('READY 서비스는 premultiplied context, limits, frame target, clear/draw
             .requiredLimits.maxStorageBuffersPerShaderStage,
         9
     );
+    assert.deepEqual(
+        Array.from(harness.records.deviceRequestOptions[0].requiredFeatures),
+        ['timestamp-query']
+    );
     assert.deepEqual(harness.records.contextTypes, ['webgpu']);
     assert.equal(harness.records.configurations.length, 1);
     assert.equal(harness.records.configurations[0].device, harness.devices[0]);
@@ -385,6 +396,132 @@ test('READY 서비스는 premultiplied context, limits, frame target, clear/draw
     assert.equal(port.acquireFrameTarget(), null);
     assert.equal(harness.records.unconfigureCount, 1);
     assert.equal(harness.records.deviceDestroyCount, 1);
+});
+
+test('선택 timestamp-query device 요청 실패는 core device 재요청으로 격리한다', async () => {
+    const harness = createReadyHarness(1, { rejectTimestampRequest: true });
+    const namespace = await loadServiceModule();
+    const service = new namespace.WebGpuPlatformService({
+        canvas: harness.canvas,
+        navigatorObject: { gpu: harness.gpu },
+        secureContext: true
+    });
+
+    const state = await service.init();
+    assert.equal(state.status, 'ready');
+    assert.equal(state.ready, true);
+    assert.deepEqual(Array.from(state.features), []);
+    assert.equal(harness.records.deviceRequestOptions.length, 2);
+    assert.deepEqual(
+        Array.from(harness.records.deviceRequestOptions[0].requiredFeatures),
+        ['timestamp-query']
+    );
+    assert.equal(harness.records.deviceRequestOptions[1].requiredFeatures, undefined);
+    assert.equal(
+        harness.records.deviceRequestOptions[1]
+            .requiredLimits.maxStorageBuffersPerShaderStage,
+        9
+    );
+    service.destroy();
+});
+
+test('frame composer attachment는 stable contributor identity와 분리된 lifecycle owner를 관리한다', async () => {
+    const namespace = await loadServiceModule();
+    let composerDestroyCount = 0;
+    const composerPort = Object.freeze({
+        id: 'frame-composer-port'
+    });
+    const lifecycleOwner = Object.freeze({
+        destroy() {
+            composerDestroyCount += 1;
+        }
+    });
+    const service = new namespace.WebGpuPlatformService({
+        canvas: null,
+        navigatorObject: {},
+        secureContext: false
+    });
+    const port = service.getPort();
+
+    assert.strictEqual(service.getPort(), port);
+    assert.equal(port.getFrameComposer(), null);
+    assert.strictEqual(
+        service.attachFrameComposer(composerPort, lifecycleOwner),
+        composerPort
+    );
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.strictEqual(
+        service.attachFrameComposer(composerPort, lifecycleOwner),
+        composerPort
+    );
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.equal(service.attachFrameComposer(null), null);
+    assert.equal(port.getFrameComposer(), null);
+    assert.throws(
+        () => service.attachFrameComposer('invalid-port'),
+        /객체, 함수 또는 null/
+    );
+    assert.throws(
+        () => service.attachFrameComposer(composerPort, {}),
+        /lifecycle owner에는 destroy\(\)/
+    );
+
+    assert.strictEqual(
+        service.attachFrameComposer(composerPort, lifecycleOwner),
+        composerPort
+    );
+    service.destroy();
+    assert.equal(port.getFrameComposer(), null);
+    assert.equal(composerDestroyCount, 1);
+    service.destroy();
+    assert.equal(composerDestroyCount, 1);
+    assert.equal(service.attachFrameComposer(composerPort, lifecycleOwner), null);
+    assert.equal(port.getFrameComposer(), null);
+    assert.equal(composerDestroyCount, 1);
+});
+
+test('frame composer lifecycle은 reinitialize와 device loss에서 유지되고 최종 service destroy에서만 끝난다', async () => {
+    const harness = createReadyHarness(3);
+    const namespace = await loadServiceModule();
+    let composerDestroyCount = 0;
+    const composerPort = { id: 'frame-composer-port' };
+    const lifecycleOwner = {
+        destroy() {
+            composerDestroyCount += 1;
+        }
+    };
+    const service = new namespace.WebGpuPlatformService({
+        canvas: harness.canvas,
+        navigatorObject: { gpu: harness.gpu },
+        secureContext: true
+    });
+    const port = service.getPort();
+
+    assert.strictEqual(
+        service.attachFrameComposer(composerPort, lifecycleOwner),
+        composerPort
+    );
+    assert.equal((await service.init()).deviceGeneration, 1);
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+
+    const reinitialized = await service.reinitialize();
+    assert.equal(reinitialized.status, 'ready');
+    assert.equal(reinitialized.deviceGeneration, 2);
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.equal(composerDestroyCount, 0);
+
+    harness.devices[1].resolveLoss({ reason: 'unknown', message: 'composer recovery' });
+    await flushUntil(
+        () => service.getState().status === 'ready'
+            && service.getState().deviceGeneration === 3,
+        'composer attachment device generation 3 복구'
+    );
+    assert.strictEqual(port.getFrameComposer(), composerPort);
+    assert.equal(composerDestroyCount, 0);
+
+    service.destroy();
+    assert.equal(port.getFrameComposer(), null);
+    assert.equal(composerDestroyCount, 1);
 });
 
 test('canvas signal은 snapshot 없이 clear→draw 순서로 매 프레임 surface revision을 재무장한다', async () => {

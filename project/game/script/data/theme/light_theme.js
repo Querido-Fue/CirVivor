@@ -13,10 +13,10 @@ const LIGHT_OVERLAY_THEME = Object.freeze({
     Panel: Object.freeze({
         Background: '#d2d2d2ff',
         Border: '#c8c8c8ff',
-        GlassBackground: 'rgba(236, 237, 239, 0.88)',
+        GlassBackground: 'rgba(236, 237, 239, 0.92)',
         GlassBorder: 'rgba(222, 224, 228, 0.56)',
         GlassTint: 'rgba(236, 236, 236, 1)',
-        GlassTintStrength: 0.18,
+        GlassTintStrength: 0.36,
         GlassEdge: 'rgba(207, 213, 222, 1)',
         GlassEdgeStrength: 0.1,
         Divider: 'rgba(70, 70, 70, 0.08)',
@@ -54,7 +54,7 @@ const LIGHT_OVERLAY_THEME = Object.freeze({
     Slider: Object.freeze({
         Track: 'rgba(0, 0, 0, 0.16)',
         ValueActive: '#166ffb',
-        ValueInactive: '#888888',
+        ValueInactive: '#666666',
         Knob: '#ececec',
         Shadow: 'rgba(0, 0, 0, 0.3)'
     })

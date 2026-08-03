@@ -31,7 +31,10 @@ export class ExternalLinkWarningOverlay extends BaseOverlay {
             layer: 15,
             dim: 0.28,
             transparent: true,
-            blurUpdateMode: 'always'
+            blurUpdateMode: 'always',
+            // 이 overlay의 title/body/link/buttons는 모두 root panel layout 안에 있습니다.
+            // 이 명시적 opt-in만 title WebGPU content-blur ROI authority가 됩니다.
+            titleWebGpuContentBoundsAuthority: 'panels'
         });
 
         this.url = typeof url === 'string' ? url.trim() : '';

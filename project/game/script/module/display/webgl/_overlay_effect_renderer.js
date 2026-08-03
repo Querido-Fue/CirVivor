@@ -15,6 +15,18 @@ import {
     SOLID_COLOR_FRAGMENT_SHADER
 } from './_shader_utils.js';
 import { OVERLAY_RENDER_CONSTANTS, WEBGL_CONSTANTS } from './_webgl_constants.js';
+import {
+    invalidateWebGLGpuTimerQueryContext,
+    WebGLGpuTimerQueryRing
+} from './_webgl_gpu_timer_query_ring.js';
+import {
+    getWebGLGpuTelemetryTrialGeneration,
+    getWebGLGpuTelemetryFrameId,
+    isWebGLGpuTelemetryEnabled,
+    recordWebGLGpuTelemetryContextLoss,
+    retireWebGLGpuTelemetryCollector,
+    setWebGLGpuTelemetryEnabled
+} from './_webgl_gpu_telemetry_state.js';
 
 /**
  * @class OverlayEffectRenderer
@@ -23,9 +35,15 @@ import { OVERLAY_RENDER_CONSTANTS, WEBGL_CONSTANTS } from './_webgl_constants.js
 export class OverlayEffectRenderer {
     /**
      * @param {WebGLRenderingContext} gl - 대상 WebGL 컨텍스트입니다.
+     * @param {object} [options={}] - renderer 식별과 진단 옵션입니다.
+     * @param {string} [options.rendererId='overlay-effect'] - telemetry에서 사용할 renderer 식별자입니다.
      */
-    constructor(gl) {
+    constructor(gl, options = {}) {
         this.gl = gl;
+        const canvasRendererId = gl?.canvas?.dataset?.surfaceId;
+        this.rendererId = typeof options.rendererId === 'string' && options.rendererId
+            ? options.rendererId
+            : (canvasRendererId || 'overlay-effect');
         this.width = 0;
         this.height = 0;
         this.blurDirty = true;
@@ -60,6 +78,23 @@ export class OverlayEffectRenderer {
         this.transparentColor = new Float32Array([0, 0, 0, 0]);
         this.colorStringCache = new Map();
         this.colorObjectCache = new WeakMap();
+        this.gpuTimerQueryRing = null;
+        this.gpuTelemetryEnabled = isWebGLGpuTelemetryEnabled();
+        this.gpuTelemetryFrame = null;
+        this.gpuTelemetryFrameSamples = null;
+        this.gpuTelemetryFrameSampleReadIndex = 0;
+        this.gpuTelemetryFrameSampleWriteIndex = 0;
+        this.gpuTelemetryFrameSampleCount = 0;
+        this.gpuTelemetryDroppedFrameSampleCount = 0;
+        this.gpuTelemetryPendingFrameId = null;
+        this.gpuTelemetryCurrentFrameId = 0;
+        this.gpuTelemetryCurrentTrialGeneration = getWebGLGpuTelemetryTrialGeneration();
+        this.gpuTelemetryContextLossListener = null;
+
+        if (this.gpuTelemetryEnabled) {
+            this.#attachGpuTelemetryContextLossListener();
+            this.#ensureGpuTimerQueryRing();
+        }
 
         this.#initPrograms();
         this.#initBuffers();
@@ -97,11 +132,97 @@ export class OverlayEffectRenderer {
      * @param {number} height - 현재 surface 높이입니다.
      */
     beginFrame(width, height) {
+        this.#finalizeGpuTelemetryFrame();
+        this.#applyGpuTelemetryEnabled(isWebGLGpuTelemetryEnabled());
+        this.gpuTimerQueryRing?.poll();
         this.resize(width, height);
         this.frameSerial += 1;
         if (this.frameSerial >= Number.MAX_SAFE_INTEGER) {
             this.frameSerial = 1;
         }
+        const appFrameId = isWebGLGpuTelemetryEnabled()
+            ? getWebGLGpuTelemetryFrameId()
+            : null;
+        if (Number.isSafeInteger(this.gpuTelemetryPendingFrameId)
+            && this.gpuTelemetryPendingFrameId >= 0) {
+            this.gpuTelemetryCurrentFrameId = this.gpuTelemetryPendingFrameId;
+        } else if (Number.isSafeInteger(appFrameId) && appFrameId > 0) {
+            this.gpuTelemetryCurrentFrameId = appFrameId;
+        } else {
+            this.gpuTelemetryCurrentFrameId = this.frameSerial;
+        }
+        this.gpuTelemetryPendingFrameId = null;
+        this.gpuTelemetryCurrentTrialGeneration = getWebGLGpuTelemetryTrialGeneration();
+    }
+
+    /**
+     * 여러 WebGL context가 공유할 다음 표시 프레임 식별자를 설정합니다.
+     * @param {number} frameId - WebGLHandler가 발급한 공통 frame ID입니다.
+     * @returns {void}
+     */
+    setGpuTelemetryFrameId(frameId) {
+        this.gpuTelemetryPendingFrameId = Number.isSafeInteger(frameId) && frameId >= 0
+            ? frameId
+            : null;
+    }
+
+    /**
+     * 동적 surface 등록 이름을 telemetry renderer 식별자로 설정합니다.
+     * @param {string} rendererId - surface 또는 renderer 식별자입니다.
+     * @returns {void}
+     */
+    setGpuTelemetryRendererId(rendererId) {
+        if (typeof rendererId === 'string' && rendererId) {
+            this.rendererId = rendererId;
+        }
+    }
+
+    /**
+     * 비동기 GPU query와 프레임 카운터 수집을 전환합니다.
+     * 일반 게임에서는 기본적으로 꺼져 있으며 성능 하네스가 명시적으로 활성화합니다.
+     * @param {boolean} enabled - 수집 활성 여부입니다.
+     * @returns {boolean} 최종 활성 상태입니다.
+     */
+    setGpuTelemetryEnabled(enabled) {
+        const nextEnabled = enabled === true;
+        setWebGLGpuTelemetryEnabled(nextEnabled);
+        this.#applyGpuTelemetryEnabled(nextEnabled);
+        return nextEnabled;
+    }
+
+    /**
+     * 완료된 비동기 GPU 시간과 프레임별 작업량 표본을 반환하고 내부 완료 큐를 비웁니다.
+     * GPU 완료를 기다리거나 동기 readback을 수행하지 않습니다.
+     * @returns {{gpuSamples:Array<object>, frameSamples:Array<object>}} 완료된 telemetry 표본입니다.
+     */
+    drainGpuTelemetry() {
+        this.gpuTimerQueryRing?.poll();
+        const rawGpuSamples = this.gpuTimerQueryRing?.drainSamples() || [];
+        const gpuSamples = new Array(rawGpuSamples.length);
+        for (let index = 0; index < rawGpuSamples.length; index++) {
+            gpuSamples[index] = Object.freeze({ ...rawGpuSamples[index] });
+        }
+        const frameSamples = this.#drainGpuTelemetryFrameSamples();
+        return {
+            gpuSamples,
+            frameSamples
+        };
+    }
+
+    /**
+     * 현재 비동기 query와 frame-counter ring 상태를 반환합니다.
+     * @returns {object} telemetry 상태 스냅샷입니다.
+     */
+    getGpuTelemetrySnapshot() {
+        this.gpuTimerQueryRing?.poll();
+        return Object.freeze({
+            rendererId: this.rendererId,
+            enabled: this.gpuTelemetryEnabled,
+            timer: this.gpuTimerQueryRing?.getSnapshot()
+                || OverlayEffectRenderer.DISABLED_GPU_TIMER_SNAPSHOT,
+            completedFrameSampleCount: this.gpuTelemetryFrameSampleCount,
+            droppedFrameSampleCount: this.gpuTelemetryDroppedFrameSampleCount
+        });
     }
 
     /**
@@ -113,10 +234,25 @@ export class OverlayEffectRenderer {
             return;
         }
 
+        const telemetryFrame = this.#getGpuTelemetryFrame();
+        if (telemetryFrame) {
+            telemetryFrame.renderCallCount += 1;
+        }
+
         if (command.sampleBackdrop !== false) {
             this.#ensureBlurTexture(command);
         }
-        this.#drawGlassPanel(command);
+        const timerStarted = this.#beginGpuTimer('title.overlay_glass_draw.gpu_ms');
+        let drawCompleted = false;
+        try {
+            this.#drawGlassPanel(command);
+            drawCompleted = true;
+        } finally {
+            this.#endGpuTimer(timerStarted, drawCompleted, 'glass-draw-aborted');
+            if (!drawCompleted && telemetryFrame) {
+                telemetryFrame.failedGlassDrawCount += 1;
+            }
+        }
     }
 
     /**
@@ -124,6 +260,18 @@ export class OverlayEffectRenderer {
      */
     destroy() {
         const gl = this.gl;
+
+        this.#detachGpuTelemetryContextLossListener();
+        this.#finalizeGpuTelemetryFrame();
+        this.gpuTelemetryEnabled = false;
+        const frameSamples = this.#drainGpuTelemetryFrameSamples();
+        retireWebGLGpuTelemetryCollector({
+            rendererId: this.rendererId,
+            timerQueryRing: this.gpuTimerQueryRing,
+            frameSamples,
+            droppedFrameSampleCount: this.gpuTelemetryDroppedFrameSampleCount
+        });
+        this.gpuTimerQueryRing = null;
 
         this.#destroyTargets(this.downTargets);
         this.#destroyTargets(this.upTargets);
@@ -282,11 +430,21 @@ export class OverlayEffectRenderer {
      * @param {object} command - 현재 glass 패널 명령입니다.
      */
     #ensureBlurTexture(command) {
+        const telemetryFrame = this.#getGpuTelemetryFrame();
         const blurUpdateMode = command.blurUpdateMode || OVERLAY_RENDER_CONSTANTS.BLUR_UPDATE_MODE.DIRTY;
         const blurRevision = Number.isFinite(command.blurRevision) ? command.blurRevision : 0;
-        const providedSnapshot = typeof command.sourceProvider === 'function'
-            ? command.sourceProvider()
-            : OverlayEffectRenderer.EMPTY_SOURCE_SNAPSHOT;
+        let providedSnapshot;
+        try {
+            providedSnapshot = typeof command.sourceProvider === 'function'
+                ? command.sourceProvider()
+                : OverlayEffectRenderer.EMPTY_SOURCE_SNAPSHOT;
+        } catch (error) {
+            if (telemetryFrame) {
+                telemetryFrame.sourceProviderFailureCount += 1;
+                telemetryFrame.failedBlurRefreshCount += 1;
+            }
+            throw error;
+        }
         const sources = Array.isArray(providedSnapshot)
             ? providedSnapshot
             : (Array.isArray(providedSnapshot?.sources)
@@ -316,11 +474,33 @@ export class OverlayEffectRenderer {
             || !this.finalBlurTexture;
 
         if (!shouldRefresh) {
+            if (telemetryFrame) {
+                telemetryFrame.blurCacheHitCount += 1;
+            }
             return;
         }
 
-        this.#captureSources(sources);
-        this.#runKawaseBlur(command);
+        if (telemetryFrame) {
+            telemetryFrame.blurRefreshCount += 1;
+            telemetryFrame.lastBlurRadius = blurRadius;
+            telemetryFrame.lastBlurQualityPreset = qualityPreset;
+        }
+        const timerStarted = this.#beginGpuTimer('title.overlay_blur_composite.gpu_ms');
+        let blurCompleted = false;
+        try {
+            const captureCompleted = this.#captureSources(sources);
+            this.#runKawaseBlur(command);
+            blurCompleted = captureCompleted;
+        } finally {
+            this.#endGpuTimer(timerStarted, blurCompleted, 'blur-composite-aborted');
+            if (!blurCompleted && telemetryFrame) {
+                telemetryFrame.failedBlurRefreshCount += 1;
+            }
+        }
+        if (!blurCompleted) {
+            this.blurDirty = true;
+            return;
+        }
 
         this.lastBlurRevision = blurRevision;
         this.lastBlurSourceIdentity = sourceIdentity;
@@ -337,12 +517,19 @@ export class OverlayEffectRenderer {
      * @private
      * 현재 오버레이보다 아래에 있는 화면을 GPU 합성 경로로 scene texture에 누적합니다.
      * @param {Array<{kind: string, canvas?: HTMLCanvasElement, opacity?: number}>} sources - 합성할 소스 목록입니다.
+     * @returns {boolean} 모든 유효 canvas source를 업로드했으면 true입니다.
      */
     #captureSources(sources) {
         const gl = this.gl;
         if (!this.sceneTarget) {
-            return;
+            const telemetryFrame = this.#getGpuTelemetryFrame();
+            if (telemetryFrame) {
+                telemetryFrame.captureTargetFailureCount += 1;
+            }
+            return false;
         }
+        const telemetryFrame = this.#getGpuTelemetryFrame();
+        let captureCompleted = true;
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
         gl.viewport(0, 0, this.width, this.height);
@@ -356,10 +543,17 @@ export class OverlayEffectRenderer {
                 continue;
             }
 
+            if (telemetryFrame) {
+                telemetryFrame.sourceCount += 1;
+            }
+
             if (source.kind === 'dim') {
                 const opacity = clamp01(source.opacity || 0);
                 if (opacity > 0) {
                     this.#drawSolidColorPass(opacity);
+                    if (telemetryFrame) {
+                        telemetryFrame.compositeDrawCount += 1;
+                    }
                 }
                 continue;
             }
@@ -369,13 +563,21 @@ export class OverlayEffectRenderer {
             }
 
             if (!this.#uploadSourceCanvas(source)) {
+                captureCompleted = false;
+                if (telemetryFrame) {
+                    telemetryFrame.sourceUploadFailureCount += 1;
+                }
                 continue;
             }
             this.#drawCompositeTexturePass(clamp01(source.opacity === undefined ? 1 : source.opacity));
+            if (telemetryFrame) {
+                telemetryFrame.compositeDrawCount += 1;
+            }
         }
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, this.width, this.height);
+        return captureCompleted;
     }
 
     /**
@@ -406,6 +608,10 @@ export class OverlayEffectRenderer {
                 target,
                 (index + 1) * blurScale
             );
+            const telemetryFrame = this.#getGpuTelemetryFrame();
+            if (telemetryFrame) {
+                telemetryFrame.blurDownPassCount += 1;
+            }
 
             readTexture = target.texture;
             readWidth = target.width;
@@ -426,6 +632,10 @@ export class OverlayEffectRenderer {
                 target,
                 (index + 1) * blurScale
             );
+            const telemetryFrame = this.#getGpuTelemetryFrame();
+            if (telemetryFrame) {
+                telemetryFrame.blurUpPassCount += 1;
+            }
 
             currentTexture = target.texture;
             currentWidth = target.width;
@@ -519,6 +729,10 @@ export class OverlayEffectRenderer {
             };
             this.sourceTextureCache.set(canvas, record);
             this.sourceTextureRecords.add(record);
+            const telemetryFrame = this.#getGpuTelemetryFrame();
+            if (telemetryFrame) {
+                telemetryFrame.sourceTextureAllocationCount += 1;
+            }
         }
 
         const revision = Number.isFinite(source.revision) ? source.revision : Number.NaN;
@@ -541,6 +755,16 @@ export class OverlayEffectRenderer {
             record.width = canvas.width;
             record.height = canvas.height;
             record.revision = revision;
+            const telemetryFrame = this.#getGpuTelemetryFrame();
+            if (telemetryFrame) {
+                telemetryFrame.sourceUploadCount += 1;
+                telemetryFrame.sourceUploadPixelCount += canvas.width * canvas.height;
+                if (sizeChanged) {
+                    telemetryFrame.sourceFullUploadCount += 1;
+                } else {
+                    telemetryFrame.sourceSubUploadCount += 1;
+                }
+            }
             return true;
         } catch {
             return false;
@@ -567,6 +791,10 @@ export class OverlayEffectRenderer {
             };
             this.panelTextureCache.set(canvas, record);
             this.panelTextureRecords.add(record);
+            const telemetryFrame = this.#getGpuTelemetryFrame();
+            if (telemetryFrame) {
+                telemetryFrame.panelTextureAllocationCount += 1;
+            }
         }
 
         const revision = Number.isFinite(canvas.__overlayTextureRevision)
@@ -599,6 +827,11 @@ export class OverlayEffectRenderer {
         record.height = canvas.height;
         record.revision = revision;
         this.activePanelTexture = record.texture;
+        const telemetryFrame = this.#getGpuTelemetryFrame();
+        if (telemetryFrame) {
+            telemetryFrame.panelUploadCount += 1;
+            telemetryFrame.panelUploadPixelCount += canvas.width * canvas.height;
+        }
     }
 
     /**
@@ -675,6 +908,10 @@ export class OverlayEffectRenderer {
         gl.bindTexture(gl.TEXTURE_2D, backdropTexture);
         gl.uniform1i(this.glassProgram.uniforms.u_blurTexture, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        const telemetryFrame = this.#getGpuTelemetryFrame();
+        if (telemetryFrame) {
+            telemetryFrame.glassDrawCount += 1;
+        }
 
         if (command.effectTextureCanvas) {
             this.#drawPanelTexture(
@@ -716,6 +953,10 @@ export class OverlayEffectRenderer {
         gl.uniform2f(this.shadowProgram.uniforms.u_shadowOffset, shadowOffsetX, shadowOffsetY);
         gl.uniform4fv(this.shadowProgram.uniforms.u_shadowColor, shadowColor);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        const telemetryFrame = this.#getGpuTelemetryFrame();
+        if (telemetryFrame) {
+            telemetryFrame.shadowDrawCount += 1;
+        }
     }
 
     /**
@@ -770,6 +1011,242 @@ export class OverlayEffectRenderer {
         gl.bindTexture(gl.TEXTURE_2D, this.activePanelTexture);
         gl.uniform1i(this.panelTextureProgram.uniforms.u_texture, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        const telemetryFrame = this.#getGpuTelemetryFrame();
+        if (telemetryFrame) {
+            telemetryFrame.panelTextureDrawCount += 1;
+        }
+    }
+
+    /**
+     * 현재 frame의 비동기 GPU timer scope를 시작합니다.
+     * @param {string} scope - 고정 metric 이름입니다.
+     * @returns {boolean} query 시작 성공 여부입니다.
+     * @private
+     */
+    #beginGpuTimer(scope) {
+        return this.gpuTelemetryEnabled
+            && this.gpuTimerQueryRing?.begin(scope, this.gpuTelemetryCurrentFrameId, {
+                rendererId: this.rendererId,
+                trialGeneration: this.gpuTelemetryCurrentTrialGeneration
+            }) === true;
+    }
+
+    /**
+     * 성공적으로 시작한 GPU timer scope를 정상 종료하거나 partial 결과를 폐기합니다.
+     * @param {boolean} started - begin 성공 여부입니다.
+     * @param {boolean} completed - 측정 대상 draw가 예외 없이 완료되었는지 여부입니다.
+     * @param {string} abortReason - 폐기 진단 이유입니다.
+     * @returns {void}
+     * @private
+     */
+    #endGpuTimer(started, completed, abortReason) {
+        if (!started) {
+            return;
+        }
+        if (completed) {
+            this.gpuTimerQueryRing?.end();
+        } else {
+            this.gpuTimerQueryRing?.abort(abortReason);
+        }
+    }
+
+    /**
+     * app-wide telemetry authority를 renderer-local 수집 상태에 적용합니다.
+     * @param {boolean} enabled - 적용할 전역 활성 상태입니다.
+     * @returns {void}
+     * @private
+     */
+    #applyGpuTelemetryEnabled(enabled) {
+        const nextEnabled = enabled === true;
+        if (this.gpuTelemetryEnabled === nextEnabled) {
+            return;
+        }
+        if (!nextEnabled) {
+            this.#finalizeGpuTelemetryFrame();
+        } else {
+            this.#attachGpuTelemetryContextLossListener();
+            this.#ensureGpuTimerQueryRing();
+        }
+        this.gpuTelemetryEnabled = nextEnabled;
+    }
+
+    /**
+     * context loss에서 기존 renderer가 교체되기 전에 pending query를 명시적으로 무효화합니다.
+     * @returns {void}
+     * @private
+     */
+    #handleGpuTelemetryContextLoss() {
+        this.#detachGpuTelemetryContextLossListener();
+        if (!this.gpuTelemetryEnabled
+            && !isWebGLGpuTelemetryEnabled()
+            && !this.gpuTimerQueryRing) {
+            return;
+        }
+
+        this.#finalizeGpuTelemetryFrame();
+        invalidateWebGLGpuTimerQueryContext(this.gl, 'webgl-context-lost');
+        recordWebGLGpuTelemetryContextLoss();
+        this.gpuTelemetryEnabled = false;
+        retireWebGLGpuTelemetryCollector({
+            rendererId: this.rendererId,
+            timerQueryRing: this.gpuTimerQueryRing,
+            frameSamples: this.#drainGpuTelemetryFrameSamples(),
+            droppedFrameSampleCount: this.gpuTelemetryDroppedFrameSampleCount
+        });
+        this.gpuTimerQueryRing = null;
+    }
+
+    /**
+     * telemetry를 실제로 사용한 renderer에만 context-loss listener를 설치합니다.
+     * @returns {void}
+     * @private
+     */
+    #attachGpuTelemetryContextLossListener() {
+        if (this.gpuTelemetryContextLossListener
+            || typeof this.gl?.canvas?.addEventListener !== 'function') {
+            return;
+        }
+        this.gpuTelemetryContextLossListener = () => {
+            this.#handleGpuTelemetryContextLoss();
+        };
+        this.gl.canvas.addEventListener(
+            'webglcontextlost',
+            this.gpuTelemetryContextLossListener
+        );
+    }
+
+    /**
+     * 교체되거나 폐기된 renderer가 canvas event로 유지되지 않도록 listener를 제거합니다.
+     * @returns {void}
+     * @private
+     */
+    #detachGpuTelemetryContextLossListener() {
+        if (!this.gpuTelemetryContextLossListener) {
+            return;
+        }
+        this.gl?.canvas?.removeEventListener?.(
+            'webglcontextlost',
+            this.gpuTelemetryContextLossListener
+        );
+        this.gpuTelemetryContextLossListener = null;
+    }
+
+    /**
+     * telemetry가 실제로 켜질 때만 query ring과 256개 slot metadata를 생성합니다.
+     * @returns {WebGLGpuTimerQueryRing} 현재 query ring입니다.
+     * @private
+     */
+    #ensureGpuTimerQueryRing() {
+        if (!this.gpuTimerQueryRing) {
+            this.gpuTimerQueryRing = new WebGLGpuTimerQueryRing(this.gl, {
+                capacity: WEBGL_CONSTANTS.GPU_TIMER_QUERY_CAPACITY
+            });
+        }
+        return this.gpuTimerQueryRing;
+    }
+
+    /**
+     * 활성화된 telemetry의 현재 frame counter를 지연 생성합니다.
+     * @returns {object|null} 현재 frame counter입니다.
+     * @private
+     */
+    #getGpuTelemetryFrame() {
+        if (!this.gpuTelemetryEnabled) {
+            return null;
+        }
+        if (this.gpuTelemetryFrame?.frameId === this.gpuTelemetryCurrentFrameId
+            && this.gpuTelemetryFrame?.trialGeneration
+                === this.gpuTelemetryCurrentTrialGeneration) {
+            return this.gpuTelemetryFrame;
+        }
+        this.#finalizeGpuTelemetryFrame();
+        this.gpuTelemetryFrame = {
+            rendererId: this.rendererId,
+            frameId: this.gpuTelemetryCurrentFrameId,
+            trialGeneration: this.gpuTelemetryCurrentTrialGeneration,
+            renderCallCount: 0,
+            blurRefreshCount: 0,
+            failedBlurRefreshCount: 0,
+            sourceProviderFailureCount: 0,
+            captureTargetFailureCount: 0,
+            sourceUploadFailureCount: 0,
+            blurCacheHitCount: 0,
+            lastBlurRadius: 0,
+            lastBlurQualityPreset: '',
+            sourceCount: 0,
+            sourceTextureAllocationCount: 0,
+            sourceUploadCount: 0,
+            sourceFullUploadCount: 0,
+            sourceSubUploadCount: 0,
+            sourceUploadPixelCount: 0,
+            compositeDrawCount: 0,
+            blurDownPassCount: 0,
+            blurUpPassCount: 0,
+            glassDrawCount: 0,
+            failedGlassDrawCount: 0,
+            shadowDrawCount: 0,
+            panelTextureAllocationCount: 0,
+            panelUploadCount: 0,
+            panelUploadPixelCount: 0,
+            panelTextureDrawCount: 0
+        };
+        return this.gpuTelemetryFrame;
+    }
+
+    /**
+     * 현재 frame counter를 bounded 완료 ring에 보관합니다.
+     * @returns {void}
+     * @private
+     */
+    #finalizeGpuTelemetryFrame() {
+        if (!this.gpuTelemetryFrame) {
+            return;
+        }
+        if (this.gpuTelemetryFrameSampleCount
+            >= WEBGL_CONSTANTS.GPU_TELEMETRY_FRAME_RING_CAPACITY) {
+            this.gpuTelemetryFrameSamples[this.gpuTelemetryFrameSampleReadIndex] = undefined;
+            this.gpuTelemetryFrameSampleReadIndex = (
+                this.gpuTelemetryFrameSampleReadIndex + 1
+            ) % WEBGL_CONSTANTS.GPU_TELEMETRY_FRAME_RING_CAPACITY;
+            this.gpuTelemetryFrameSampleCount -= 1;
+            this.gpuTelemetryDroppedFrameSampleCount += 1;
+        }
+        if (!this.gpuTelemetryFrameSamples) {
+            this.gpuTelemetryFrameSamples = new Array(
+                WEBGL_CONSTANTS.GPU_TELEMETRY_FRAME_RING_CAPACITY
+            );
+        }
+        this.gpuTelemetryFrameSamples[this.gpuTelemetryFrameSampleWriteIndex]
+            = Object.freeze(this.gpuTelemetryFrame);
+        this.gpuTelemetryFrameSampleWriteIndex = (
+            this.gpuTelemetryFrameSampleWriteIndex + 1
+        ) % WEBGL_CONSTANTS.GPU_TELEMETRY_FRAME_RING_CAPACITY;
+        this.gpuTelemetryFrameSampleCount += 1;
+        this.gpuTelemetryFrame = null;
+    }
+
+    /**
+     * 완료 frame 원형 버퍼를 오래된 순서대로 비웁니다.
+     * @returns {Array<object>} 완료 frame 표본입니다.
+     * @private
+     */
+    #drainGpuTelemetryFrameSamples() {
+        if (!this.gpuTelemetryFrameSamples || this.gpuTelemetryFrameSampleCount === 0) {
+            return [];
+        }
+        const samples = new Array(this.gpuTelemetryFrameSampleCount);
+        for (let index = 0; index < samples.length; index++) {
+            samples[index] = this.gpuTelemetryFrameSamples[
+                this.gpuTelemetryFrameSampleReadIndex
+            ];
+            this.gpuTelemetryFrameSamples[this.gpuTelemetryFrameSampleReadIndex] = undefined;
+            this.gpuTelemetryFrameSampleReadIndex = (
+                this.gpuTelemetryFrameSampleReadIndex + 1
+            ) % WEBGL_CONSTANTS.GPU_TELEMETRY_FRAME_RING_CAPACITY;
+        }
+        this.gpuTelemetryFrameSampleCount = 0;
+        this.gpuTelemetryFrameSampleWriteIndex = this.gpuTelemetryFrameSampleReadIndex;
+        return samples;
     }
 
     /**
@@ -1108,4 +1585,13 @@ OverlayEffectRenderer.EMPTY_SOURCE_SNAPSHOT = Object.freeze({
     snapshotIdentity: 'empty',
     sourceRevision: 0,
     sources: OverlayEffectRenderer.EMPTY_SOURCES
+});
+OverlayEffectRenderer.DISABLED_GPU_TIMER_SNAPSHOT = Object.freeze({
+    status: 'disabled',
+    supported: false,
+    enabled: false,
+    reason: 'telemetry-not-enabled',
+    capacity: 0,
+    pendingCount: 0,
+    sampleCount: 0
 });

@@ -62,9 +62,16 @@ export class DisplaySystem {
         this.vignetteRenderer = new VignetteRenderer();
         this.themeTransitionController = null;
         this.webGpuPlatformService = null;
+        this.webGpuFrameComposer = null;
+        this.webGpuFrameContributorPort = null;
+        this.webGpuFrameTelemetryPort = null;
+        this.webGpuBlurService = null;
         this.webGpuPlatformInitializationPromise = null;
         this.webGpuPlatformFailureReason = null;
+        this.webGpuOptionalOptimizedKawaseFailureReason = null;
+        this.webGpuOptionalGaussianFailureReason = null;
         this.webGpuSurfaceGeneration = 0;
+        this.webGpuFrameSerial = 0;
     }
 
     /**
@@ -112,7 +119,7 @@ export class DisplaySystem {
         this.#registerStaticSurface('ui', 'ui', '2d');
         this.#registerStaticSurface('vignette', 'vignette', '2d', {
             order: 50,
-            includeInComposite: false,
+            includeInComposite: true,
             persistent: true
         });
         this.#registerStaticSurface('top', 'top', '2d', { includeInComposite: false });
@@ -239,6 +246,30 @@ export class DisplaySystem {
     }
 
     /**
+     * 타이틀 render graph 등에 주입할 immutable WebGPU frame contributor port를 반환합니다.
+     * @returns {Readonly<object>|null} Display 수명 동안 identity가 안정적인 contribution port입니다.
+     */
+    getWebGpuFrameContributorPort() {
+        return this.webGpuFrameContributorPort;
+    }
+
+    /**
+     * WebGL timer와 분리된 Display-owned WebGPU frame timestamp port를 반환합니다.
+     * @returns {Readonly<object>|null} enable/drain/snapshot API를 제공하는 진단 port입니다.
+     */
+    getWebGpuFrameTelemetryPort() {
+        return this.webGpuFrameTelemetryPort;
+    }
+
+    /**
+     * 타이틀 render graph 등에 주입할 공유 WebGPU blur service port를 반환합니다.
+     * @returns {object|null} generation-safe blur encode port입니다.
+     */
+    getWebGpuBlurPort() {
+        return this.webGpuBlurService?.getPort?.() ?? null;
+    }
+
+    /**
      * 현재 WebGPU 플랫폼 상태를 반환합니다.
      * @returns {object} capability와 device generation을 포함한 상태입니다.
      */
@@ -260,6 +291,52 @@ export class DisplaySystem {
             width: this.getSurface('gpu-object')?.canvas?.width ?? 0,
             height: this.getSurface('gpu-object')?.canvas?.height ?? 0
         });
+    }
+
+    /**
+     * 현재 presentation draw 구간에 사용할 공유 WebGPU frame을 엽니다.
+     * @returns {boolean} frame composer가 프레임을 열었는지 여부입니다.
+     */
+    beginWebGpuFrame() {
+        const composer = this.webGpuFrameComposer;
+        if (!composer?.beginFrame
+            || this.webGpuPlatformService?.getState?.().ready !== true) {
+            return false;
+        }
+
+        this.webGpuFrameSerial = this.webGpuFrameSerial >= Number.MAX_SAFE_INTEGER
+            ? 1
+            : this.webGpuFrameSerial + 1;
+        try {
+            return composer.beginFrame(this.webGpuFrameSerial) === true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * 공유 WebGPU presentation frame을 성공 시 한 번 제출하고, 미완료 시 폐기합니다.
+     * @param {boolean} [completed=true] draw와 최종 flush가 모두 완료되었는지 여부입니다.
+     * @returns {boolean} 요청한 종료 처리가 완료되었는지 여부입니다.
+     */
+    endWebGpuFrame(completed = true) {
+        const composer = this.webGpuFrameComposer;
+        if (!composer?.isFrameActive?.()) {
+            return false;
+        }
+
+        try {
+            return completed === true
+                ? composer.commit() === true
+                : composer.abort('presentation-incomplete') === true;
+        } catch {
+            try {
+                composer.abort?.('presentation-finalize-failed');
+            } catch {
+                // frame composer 실패는 기존 WebGL/2D presentation을 중단시키지 않습니다.
+            }
+            return false;
+        }
     }
 
     /**
@@ -678,8 +755,37 @@ export class DisplaySystem {
             return this.webGpuPlatformInitializationPromise;
         }
 
-        const initializationPromise = import('./webgpu/webgpu_platform_service.js')
-            .then(async ({ WebGpuPlatformService }) => {
+        this.webGpuOptionalOptimizedKawaseFailureReason = null;
+        this.webGpuOptionalGaussianFailureReason = null;
+        const optimizedKawaseModulePromise = import(
+            './webgpu/webgpu_optimized_kawase_blur_algorithm.js'
+        )
+            .catch((error) => {
+                this.webGpuOptionalOptimizedKawaseFailureReason =
+                    `optimized-kawase-module-unavailable:${error?.message || String(error)}`;
+                return null;
+            });
+        const gaussianModulePromise = import('./webgpu/webgpu_gaussian_blur_algorithm.js')
+            .catch((error) => {
+                this.webGpuOptionalGaussianFailureReason =
+                    `gaussian-module-unavailable:${error?.message || String(error)}`;
+                return null;
+            });
+        const initializationPromise = Promise.all([
+            import('./webgpu/webgpu_platform_service.js'),
+            import('./webgpu/webgpu_frame_composer.js'),
+            import('./webgpu/webgpu_blur_service.js'),
+            import('./webgpu/webgpu_kawase_blur_algorithm.js')
+        ])
+            .then(async ([
+                { WebGpuPlatformService },
+                { WebGpuFrameComposer },
+                { WebGpuBlurService },
+                {
+                    WEBGPU_KAWASE_BLUR_ALGORITHM_ID,
+                    createWebGpuKawaseBlurAlgorithmFactory
+                }
+            ]) => {
                 const descriptor = this.surfaceMap.get('gpu-object');
                 const service = new WebGpuPlatformService({
                     canvas: descriptor?.canvas ?? null,
@@ -687,7 +793,49 @@ export class DisplaySystem {
                     onCanvasDrawn: () => this.markSurfaceDirectDraw('gpu-object'),
                     onCanvasCleared: () => this.markSurfaceDirectClear('gpu-object', false)
                 });
+                const composer = new WebGpuFrameComposer(service.getPort());
+                const composerPort = composer.getPort();
+                service.attachFrameComposer(composerPort, composer);
+                const algorithmFactories = new Map([[
+                    WEBGPU_KAWASE_BLUR_ALGORITHM_ID,
+                    createWebGpuKawaseBlurAlgorithmFactory({ composerPort })
+                ]]);
+                const [optimizedKawaseModule, gaussianModule] = await Promise.all([
+                    optimizedKawaseModulePromise,
+                    gaussianModulePromise
+                ]);
+                if (optimizedKawaseModule) {
+                    try {
+                        algorithmFactories.set(
+                            optimizedKawaseModule.WEBGPU_OPTIMIZED_KAWASE_BLUR_ALGORITHM_ID,
+                            optimizedKawaseModule
+                                .createWebGpuOptimizedKawaseBlurAlgorithmFactory({ composerPort })
+                        );
+                    } catch (error) {
+                        this.webGpuOptionalOptimizedKawaseFailureReason =
+                            `optimized-kawase-factory-unavailable:${error?.message || String(error)}`;
+                    }
+                }
+                if (gaussianModule) {
+                    try {
+                        algorithmFactories.set(
+                            gaussianModule.WEBGPU_GAUSSIAN_BLUR_ALGORITHM_ID,
+                            gaussianModule.createWebGpuGaussianBlurAlgorithmFactory({ composerPort })
+                        );
+                    } catch (error) {
+                        this.webGpuOptionalGaussianFailureReason =
+                            `gaussian-factory-unavailable:${error?.message || String(error)}`;
+                    }
+                }
+                const blurService = new WebGpuBlurService({
+                    composerPort,
+                    algorithmFactories
+                });
                 this.webGpuPlatformService = service;
+                this.webGpuFrameComposer = composer;
+                this.webGpuFrameContributorPort = composerPort;
+                this.webGpuFrameTelemetryPort = composer.getGpuTelemetryPort?.() ?? null;
+                this.webGpuBlurService = blurService;
                 const state = await service.init();
                 if (descriptor) {
                     descriptor.context = service.getCanvasContext();
@@ -880,6 +1028,28 @@ export const getDisplaySystem = () => displaySystemInstance;
  * @returns {object|null} 세션 의존성으로 전달할 플랫폼 port입니다.
  */
 export const getWebGpuPlatformPort = () => displaySystemInstance?.getWebGpuPlatformPort() ?? null;
+
+/**
+ * 현재 Display가 소유한 immutable WebGPU frame contributor port를 반환합니다.
+ * @returns {Readonly<object>|null} render graph 의존성으로 전달할 contribution port입니다.
+ */
+export const getWebGpuFrameContributorPort = () => (
+    displaySystemInstance?.getWebGpuFrameContributorPort() ?? null
+);
+
+/**
+ * 현재 Display가 소유한 WebGPU frame timestamp telemetry port를 반환합니다.
+ * @returns {Readonly<object>|null} WebGL telemetry와 분리된 진단 port입니다.
+ */
+export const getWebGpuFrameTelemetryPort = () => (
+    displaySystemInstance?.getWebGpuFrameTelemetryPort() ?? null
+);
+
+/**
+ * 현재 Display가 소유한 공유 WebGPU blur service port를 반환합니다.
+ * @returns {object|null} blur encode port입니다.
+ */
+export const getWebGpuBlurPort = () => displaySystemInstance?.getWebGpuBlurPort() ?? null;
 
 /**
  * 화면 너비를 반환합니다.

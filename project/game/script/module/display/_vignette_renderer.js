@@ -62,6 +62,15 @@ export class VignetteRenderer {
             this._createLayerDescriptor('WORLD', VIGNETTE_CONSTANTS.LAYERS.WORLD)
         ]);
         this.cacheMap = new Map();
+        this.webGpuPresentationColor = new Float32Array(4);
+        this.webGpuPresentationPacket = Object.seal({
+            visible: false,
+            color: this.webGpuPresentationColor,
+            edgeWidth: 1,
+            cornerRadius: 0,
+            revision: 0
+        });
+        this.webGpuPresentationSignature = '';
 
         this.layerDescriptors.forEach((descriptor) => {
             this.cacheMap.set(descriptor.id, this._createCacheEntry());
@@ -74,6 +83,44 @@ export class VignetteRenderer {
      */
     getLayerDescriptors() {
         return this.layerDescriptors;
+    }
+
+    /**
+     * CPU blur/cache를 재사용하지 않고 같은 테마·viewport 의미를 analytic WebGPU
+     * vignette node로 만들 수 있는 allocation-free packet을 반환합니다.
+     * 반환 객체와 color buffer는 재사용되므로 현재 프레임 안에서 소비해야 합니다.
+     * @returns {{visible:boolean,color:Float32Array,edgeWidth:number,cornerRadius:number,revision:number}}
+     */
+    getWebGpuPresentationPacket() {
+        const descriptor = this.layerDescriptors[0];
+        const themeLayer = descriptor ? this._resolveThemeLayer(descriptor) : null;
+        const edgeWidth = descriptor ? this._calculateEdgeWidth(descriptor) : 0;
+        const edgeAlpha = this._calculateEdgeAlpha(themeLayer);
+        const edgeRgb = this._resolveEdgeRgb(themeLayer);
+        const maskInset = this._calculateMaskInset(edgeWidth);
+        const color = this.webGpuPresentationColor;
+        color[0] = clampNumber(Number(edgeRgb[0]) / 255, 0, 1);
+        color[1] = clampNumber(Number(edgeRgb[1]) / 255, 0, 1);
+        color[2] = clampNumber(Number(edgeRgb[2]) / 255, 0, 1);
+        color[3] = edgeAlpha;
+
+        const packet = this.webGpuPresentationPacket;
+        packet.visible = this.width > 0
+            && this.height > 0
+            && edgeWidth > 0
+            && edgeAlpha > 0;
+        packet.edgeWidth = Math.max(1, edgeWidth);
+        packet.cornerRadius = this._calculateCornerRadius(maskInset);
+        const signature = `${this.currentThemeKey}:${this.width}:${this.height}`
+            + `:${color[0]}:${color[1]}:${color[2]}:${color[3]}`
+            + `:${packet.edgeWidth}:${packet.cornerRadius}`;
+        if (signature !== this.webGpuPresentationSignature) {
+            this.webGpuPresentationSignature = signature;
+            packet.revision = packet.revision >= Number.MAX_SAFE_INTEGER
+                ? 1
+                : packet.revision + 1;
+        }
+        return packet;
     }
 
     /**

@@ -136,6 +136,10 @@ class FakeGpuDevice {
         this.pipelineLayouts = new Map();
         this.bindGroups = new Map();
         this.computePasses = [];
+        this.commandEncoderDescriptors = [];
+        this.renderPasses = [];
+        this.finishCount = 0;
+        this.submissions = [];
         this.eventPayloads = [];
         this.eventPayloadCursor = 0;
         this.eventMapRequests = [];
@@ -152,7 +156,9 @@ class FakeGpuDevice {
                 );
             },
             writeTexture: () => {},
-            submit: () => {}
+            submit: (commandBuffers) => {
+                this.submissions.push(commandBuffers);
+            }
         };
     }
 
@@ -200,8 +206,9 @@ class FakeGpuDevice {
         return descriptor;
     }
 
-    createCommandEncoder() {
+    createCommandEncoder(descriptor = {}) {
         const device = this;
+        this.commandEncoderDescriptors.push(descriptor);
         return {
             beginComputePass() {
                 const operations = [];
@@ -238,6 +245,25 @@ class FakeGpuDevice {
                     end: () => {}
                 };
             },
+            beginRenderPass(renderDescriptor) {
+                const operations = [];
+                const renderPass = { descriptor: renderDescriptor, operations };
+                device.renderPasses.push(renderPass);
+                return {
+                    setPipeline(pipeline) {
+                        operations.push({ type: 'pipeline', value: pipeline });
+                    },
+                    setBindGroup(index, bindGroup) {
+                        operations.push({ type: 'bind-group', index, value: bindGroup });
+                    },
+                    drawIndirect(buffer, offset) {
+                        operations.push({ type: 'draw-indirect', buffer, offset });
+                    },
+                    end() {
+                        operations.push({ type: 'end' });
+                    }
+                };
+            },
             copyBufferToBuffer(source, sourceOffset, target, targetOffset, size) {
                 if (target.label.includes('event-readback')) {
                     device.#writeEventReadbackCopy(source, target, targetOffset);
@@ -247,7 +273,10 @@ class FakeGpuDevice {
                     new Uint8Array(source.data, sourceOffset, size)
                 );
             },
-            finish: () => ({})
+            finish() {
+                device.finishCount += 1;
+                return { id: `command-buffer:${device.finishCount}` };
+            }
         };
     }
 
@@ -346,10 +375,326 @@ function createFakePlatformPort(device) {
     };
 }
 
+function createPresentationPlatform(device, composerPort = null) {
+    const records = {
+        acquireFrameTargetCount: 0,
+        clearCanvasCount: 0,
+        markCanvasDrawnCount: 0,
+        markCanvasClearedCount: 0
+    };
+    const port = {
+        getState: () => ({ status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => 'rgba8unorm',
+        getDeviceGeneration: () => 1,
+        getFrameComposer: () => composerPort,
+        acquireFrameTarget() {
+            records.acquireFrameTargetCount += 1;
+            return {
+                device,
+                deviceGeneration: 1,
+                format: 'rgba8unorm',
+                view: { id: `legacy-view:${records.acquireFrameTargetCount}` },
+                width: 640,
+                height: 360
+            };
+        },
+        clearCanvas() {
+            records.clearCanvasCount += 1;
+            return true;
+        },
+        markCanvasDrawn() {
+            records.markCanvasDrawnCount += 1;
+            return true;
+        },
+        markCanvasCleared() {
+            records.markCanvasClearedCount += 1;
+            return true;
+        }
+    };
+    return { port, records };
+}
+
+function createFrameComposerHarness(device, overrides = {}) {
+    const records = {
+        encodeCanvasPassCount: 0,
+        clearCanvasCount: 0,
+        deferredCallbackCount: 0,
+        renderPasses: []
+    };
+    let active = true;
+    let callbacks = [];
+    let clearResult = true;
+    let contextOverrides = { ...overrides };
+
+    function abortCallbacks(reason) {
+        const pending = callbacks;
+        callbacks = [];
+        active = false;
+        for (const entry of pending) {
+            entry.aborted?.({ reason });
+        }
+    }
+
+    const port = Object.freeze({
+        isFrameActive: () => active,
+        deferFrameCallbacks(entry) {
+            if (!active) return false;
+            records.deferredCallbackCount += 1;
+            callbacks.push(entry);
+            return true;
+        },
+        encodeCanvasPass(callback) {
+            if (!active) return false;
+            records.encodeCanvasPassCount += 1;
+            const operations = [];
+            const pass = {
+                setPipeline(pipeline) {
+                    operations.push({ type: 'pipeline', value: pipeline });
+                },
+                setBindGroup(index, bindGroup) {
+                    operations.push({ type: 'bind-group', index, value: bindGroup });
+                },
+                drawIndirect(buffer, offset) {
+                    operations.push({ type: 'draw-indirect', buffer, offset });
+                }
+            };
+            records.renderPasses.push({ operations });
+            const generation = contextOverrides.deviceGeneration ?? 1;
+            const format = contextOverrides.format ?? 'rgba8unorm';
+            const contextDevice = contextOverrides.device ?? device;
+            const context = {
+                frameId: contextOverrides.frameId ?? 1,
+                device: contextDevice,
+                deviceGeneration: generation,
+                encoder: {},
+                target: {
+                    device: contextOverrides.targetDevice ?? contextDevice,
+                    deviceGeneration:
+                        contextOverrides.targetGeneration ?? generation,
+                    format: contextOverrides.targetFormat ?? format
+                },
+                format,
+                width: contextOverrides.width ?? 800,
+                height: contextOverrides.height ?? 450
+            };
+            try {
+                callback(pass, context);
+                return true;
+            } catch {
+                abortCallbacks('encode-failed');
+                return false;
+            }
+        },
+        clearCanvas() {
+            if (!active || !clearResult) return false;
+            records.clearCanvasCount += 1;
+            return true;
+        }
+    });
+
+    return {
+        port,
+        records,
+        begin(nextOverrides = {}) {
+            assert.equal(active, false, '이전 composer frame을 먼저 종료해야 합니다.');
+            active = true;
+            callbacks = [];
+            contextOverrides = { ...nextOverrides };
+        },
+        commit() {
+            assert.equal(active, true);
+            const pending = callbacks;
+            callbacks = [];
+            active = false;
+            for (const entry of pending) {
+                entry.committed?.({ submitted: true });
+            }
+        },
+        abort(reason = 'test-abort') {
+            assert.equal(active, true);
+            abortCallbacks(reason);
+        },
+        setClearResult(value) {
+            clearResult = value;
+        }
+    };
+}
+
+function createCamera() {
+    return {
+        worldToViewport(x, y, out) {
+            out.x = x + 12;
+            out.y = y + 34;
+            return out;
+        },
+        getScale: () => 2
+    };
+}
+
 async function flushMicrotasks() {
     await Promise.resolve();
     await Promise.resolve();
 }
+
+test('활성 composer draw/clear는 direct submit 없이 commit 뒤에만 canvas 상태를 바꾼다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const composer = createFrameComposerHarness(device);
+    const platform = createPresentationPlatform(device, composer.port);
+    const simulation = new GpuCircleBodySimulation(platform.port, {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.replaceBodies([createBody(1)]).accepted, 1);
+        const encoderCountBeforeDraw = device.commandEncoderDescriptors.length;
+        const submitCountBeforeDraw = device.submissions.length;
+        assert.equal(simulation.draw(createCamera()), true);
+        assert.equal(simulation.draw(createCamera()), true, '같은 frame의 draw는 coalesce됩니다.');
+        assert.equal(composer.records.encodeCanvasPassCount, 1);
+        assert.equal(composer.records.deferredCallbackCount, 1);
+        assert.equal(device.commandEncoderDescriptors.length, encoderCountBeforeDraw);
+        assert.equal(device.submissions.length, submitCountBeforeDraw);
+        assert.equal(platform.records.acquireFrameTargetCount, 0);
+        assert.equal(platform.records.markCanvasDrawnCount, 0);
+        assert.equal(platform.records.markCanvasClearedCount, 0);
+        assert.equal(simulation.canvasHasDrawnBodies, false);
+        assert.deepEqual(
+            composer.records.renderPasses[0].operations.map((operation) => (
+                operation.type === 'bind-group'
+                    ? `${operation.type}:${operation.index}`
+                    : operation.type
+            )),
+            ['pipeline', 'bind-group:0', 'bind-group:1', 'draw-indirect']
+        );
+        const renderParams = new DataView(
+            device.buffers.get('cirvivor-gpu-circle-render-params').data
+        );
+        assert.equal(renderParams.getFloat32(8, true), 800);
+        assert.equal(renderParams.getFloat32(12, true), 450);
+
+        composer.commit();
+        assert.equal(simulation.canvasHasDrawnBodies, true);
+        assert.equal(simulation.replaceBodies([]).accepted, 0);
+
+        composer.begin({ frameId: 2 });
+        assert.equal(simulation.draw(createCamera()), true);
+        assert.equal(simulation.draw(createCamera()), true, '같은 frame의 clear도 coalesce됩니다.');
+        assert.equal(composer.records.clearCanvasCount, 1);
+        assert.equal(composer.records.deferredCallbackCount, 2);
+        assert.equal(platform.records.clearCanvasCount, 0);
+        assert.equal(simulation.canvasHasDrawnBodies, true);
+        composer.abort();
+        assert.equal(simulation.canvasHasDrawnBodies, true, 'abort는 기존 draw 상태를 보존합니다.');
+
+        composer.begin({ frameId: 3 });
+        assert.equal(simulation.draw(createCamera()), true);
+        composer.commit();
+        assert.equal(simulation.canvasHasDrawnBodies, false);
+        assert.equal(device.submissions.length, submitCountBeforeDraw);
+        assert.equal(platform.records.clearCanvasCount, 0);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('composer clear 실패는 기존 canvas 상태와 재시도 가능성을 보존한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const composer = createFrameComposerHarness(device);
+    const platform = createPresentationPlatform(device, composer.port);
+    const simulation = new GpuCircleBodySimulation(platform.port, {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        simulation.canvasHasDrawnBodies = true;
+        composer.setClearResult(false);
+        assert.equal(simulation.draw(createCamera()), false);
+        assert.equal(simulation.canvasHasDrawnBodies, true);
+        composer.setClearResult(true);
+        assert.equal(simulation.draw(createCamera()), true);
+        assert.equal(composer.records.deferredCallbackCount, 2);
+        composer.commit();
+        assert.equal(simulation.canvasHasDrawnBodies, false);
+        assert.equal(platform.records.clearCanvasCount, 0);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('composer generation/context mismatch는 legacy submit으로 우회하지 않고 fail-closed 한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const composer = createFrameComposerHarness(device, { deviceGeneration: 2 });
+    const platform = createPresentationPlatform(device, composer.port);
+    const simulation = new GpuCircleBodySimulation(platform.port, {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.replaceBodies([createBody(1)]).accepted, 1);
+        const encoderCount = device.commandEncoderDescriptors.length;
+        const submitCount = device.submissions.length;
+        assert.equal(simulation.draw(createCamera()), false);
+        assert.equal(composer.port.isFrameActive(), false);
+        assert.equal(simulation.canvasHasDrawnBodies, false);
+        assert.equal(device.commandEncoderDescriptors.length, encoderCount);
+        assert.equal(device.submissions.length, submitCount);
+        assert.equal(platform.records.acquireFrameTargetCount, 0);
+        assert.equal(platform.records.markCanvasDrawnCount, 0);
+        assert.equal(platform.records.clearCanvasCount, 0);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('composer 비활성 legacy draw/clear와 destroy는 기존 직접 제출 계약을 보존한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const inactiveComposer = Object.freeze({ isFrameActive: () => false });
+    const platform = createPresentationPlatform(device, inactiveComposer);
+    const simulation = new GpuCircleBodySimulation(platform.port, {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.replaceBodies([createBody(1)]).accepted, 1);
+        const submitCount = device.submissions.length;
+        assert.equal(simulation.draw(createCamera()), true);
+        assert.equal(device.submissions.length, submitCount + 1);
+        assert.equal(platform.records.acquireFrameTargetCount, 1);
+        assert.equal(platform.records.markCanvasDrawnCount, 1);
+        assert.equal(simulation.canvasHasDrawnBodies, true);
+        assert.deepEqual(
+            device.renderPasses.at(-1).operations.map((operation) => (
+                operation.type === 'bind-group'
+                    ? `${operation.type}:${operation.index}`
+                    : operation.type
+            )),
+            ['pipeline', 'bind-group:0', 'bind-group:1', 'draw-indirect', 'end']
+        );
+
+        assert.equal(simulation.replaceBodies([]).accepted, 0);
+        assert.equal(simulation.draw(createCamera()), true);
+        assert.equal(platform.records.clearCanvasCount, 1);
+        assert.equal(simulation.canvasHasDrawnBodies, false);
+        simulation.canvasHasDrawnBodies = true;
+        simulation.destroy();
+        assert.equal(platform.records.clearCanvasCount, 2);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
 
 test('unsupported WebGPU는 spawn 성공으로 오인하지 않고 명시적으로 거부한다', () => {
     const simulation = new GpuCircleBodySimulation(createUnavailablePlatformPort(), {

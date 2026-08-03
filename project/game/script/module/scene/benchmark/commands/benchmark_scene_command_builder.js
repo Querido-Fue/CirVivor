@@ -14,7 +14,6 @@ const BENCHMARK_CONSTANTS = Object.freeze({
     BOX_MARGIN_WORLD_RATIO: 0.03,
     BOX_PLACEMENT_TRIES: 36,
     PLAYER_ID: 1,
-    PLAYER_RADIUS_RATIO: 0.02,
     PLAYER_WEIGHT: 999999,
     PLAYER_KEEP_OUT_WORLD_RATIO: 0.04,
     PLAYER_KEEP_OUT_MIN_PX: 8,
@@ -154,11 +153,12 @@ export function buildBenchmarkSceneResetAuxiliaryWorldCommands(scene) {
     const arenaProjection = resolveBenchmarkArenaProjection(scene);
     const targetPosition = projectBenchmarkArenaPoint(
         arenaProjection,
-        GPU_BENCHMARK_ARENA_LAYOUT.targetPosition
+        GPU_BENCHMARK_ARENA_LAYOUT.playerCollider.position
     );
     const playerData = {
         id: BENCHMARK_CONSTANTS.PLAYER_ID,
-        radius: scene.objectWH * BENCHMARK_CONSTANTS.PLAYER_RADIUS_RATIO,
+        radius: GPU_BENCHMARK_ARENA_LAYOUT.playerCollider.radius
+            * arenaProjection.scale,
         position: targetPosition,
         speed: { x: 0, y: 0 },
         weight: BENCHMARK_CONSTANTS.PLAYER_WEIGHT

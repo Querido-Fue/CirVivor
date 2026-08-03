@@ -109,6 +109,7 @@ export class SettingsOverlay extends TitleOverlay {
     #uiScaleCommitGeneration = 0;
     #uiScaleCommitPromise = null;
     #isCancelling = false;
+    #benchmarkScenePending = false;
 
     constructor(TitleScene) {
         super(TitleScene, { glOverlay: true, titleIconId: 'setting' });
@@ -600,9 +601,22 @@ export class SettingsOverlay extends TitleOverlay {
      * @returns {Promise<void>}
      */
     async #startBenchmarkScene() {
-        await this.#flushPendingPreview();
-        this.rollbackOnClose = false;
-        this.titleScene?.benchmarkStart?.();
+        if (this.#benchmarkScenePending) {
+            return;
+        }
+        if (!this.lockInteractions()) {
+            return;
+        }
+
+        this.#benchmarkScenePending = true;
+        try {
+            await this.#flushPendingPreview();
+            this.rollbackOnClose = false;
+            this.close();
+        } catch (error) {
+            this.#benchmarkScenePending = false;
+            throw error;
+        }
     }
 
     /**
@@ -863,22 +877,18 @@ export class SettingsOverlay extends TitleOverlay {
     }
 
     /**
-     * 런타임 설정 변경이 overlay 본인에게도 즉시 반영되도록 처리합니다.
-     * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
-     */
-    applyRuntimeSettings(changedSettings = {}) {
-        super.applyRuntimeSettings(changedSettings);
-        if (changedSettings.theme !== undefined || changedSettings.language !== undefined) {
-            this.resize();
-        }
-    }
-
-    /**
      * overlay가 저장 없이 닫히는 경우 메모리·런타임 미리보기 설정을 디스크 쓰기 없이 원복합니다.
      * 비동기 원복 작업을 시작하고 즉시 반환합니다.
      * @returns {void}
      */
     onCloseComplete() {
+        if (this.#benchmarkScenePending) {
+            this.#benchmarkScenePending = false;
+            const titleScene = this.titleScene;
+            Promise.resolve().then(() => titleScene?.benchmarkStart?.());
+            return;
+        }
+
         const hasPendingUiScale = this.#uiScaleCommitPromise !== null
             || this.#transientUiScalePromise !== null
             || this.#pendingTransientUiScale !== null

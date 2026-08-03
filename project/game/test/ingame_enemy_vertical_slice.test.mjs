@@ -324,6 +324,7 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
         body.collisionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
     );
     assert.equal(body.sensorMask, 0);

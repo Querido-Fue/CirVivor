@@ -70,6 +70,7 @@ async function createBenchmarkHarness() {
         enqueuedCommands: [],
         requestedGpuBatches: [],
         requestedGpuProjectileBatches: [],
+        requestedGpuPlayerProxies: [],
         navigationSources: [],
         profilerStates: [],
         buttonDraws: [],
@@ -219,6 +220,28 @@ async function createBenchmarkHarness() {
                 }
             }
         )],
+        ['./gpu_benchmark_player_proxy_spawn_adapter.js', createSyntheticModule(
+            context,
+            'gpu_benchmark_player_proxy_spawn_adapter.js',
+            {
+                GPU_BENCHMARK_PLAYER_PROXY_KIND_ID: 'benchmark-player-proxy',
+                requestGpuBenchmarkPlayerProxy(request) {
+                    const result = Object.freeze({
+                        accepted: true,
+                        requestedCount: 1,
+                        queuedCount: 1,
+                        targetFixedTick:
+                            request.gameScene.getNextGpuLifecycleFixedTick(),
+                        reason: 'queued'
+                    });
+                    trace.requestedGpuPlayerProxies.push({
+                        ...request,
+                        result
+                    });
+                    return result;
+                }
+            }
+        )],
         ['./gpu_benchmark_navigation_source.js', createSyntheticModule(
             context,
             'gpu_benchmark_navigation_source.js',
@@ -342,7 +365,7 @@ function createGpuChild(sceneHandler, options) {
         getStatus() {
             return {
                 state: 'gpu-ready',
-                activeCount: 23,
+                activeCount: 24,
                 reservedCount: 2,
                 pendingCommandCount: 4,
                 recoveryRequired: false,
@@ -378,7 +401,8 @@ function createGpuChild(sceneHandler, options) {
                 getActiveCount(kindId) {
                     if (kindId === 'enemy') return 19;
                     if (kindId === 'projectile') return 4;
-                    return 23;
+                    if (kindId === 'benchmark-player-proxy') return 1;
+                    return 24;
                 }
             };
         }
@@ -495,6 +519,25 @@ test('GPU-only benchmark는 기능 명령을 GPU 적과 CPU 보조 월드에 적
         children[0].options.enemyPresentationProfile,
         PRESENTATION_PROFILES.REFERENCE_CLOCK_EXTRAPOLATION
     );
+    assert.equal(harness.trace.requestedGpuPlayerProxies.length, 1);
+    assert.strictEqual(
+        harness.trace.requestedGpuPlayerProxies[0].gameScene,
+        children[0]
+    );
+    assert.equal(
+        harness.trace.requestedGpuPlayerProxies[0].sessionGeneration,
+        1
+    );
+    assert.deepEqual(
+        { ...harness.trace.requestedGpuPlayerProxies[0].result },
+        {
+            accepted: true,
+            requestedCount: 1,
+            queuedCount: 1,
+            targetFixedTick: 42,
+            reason: 'queued'
+        }
+    );
     assert.equal(harness.trace.buildResetCount, 1);
     assert.equal(
         harness.trace.appliedCommandBatches[0].commands[0].type,
@@ -558,9 +601,10 @@ test('GPU-only benchmark는 기능 명령을 GPU 적과 CPU 보조 월드에 적
     assert.equal(status.presentationProfile, PRESENTATION_PROFILES.REFERENCE_CLOCK_EXTRAPOLATION);
     assert.equal(status.predictionDelta, 0.008);
     assert.equal(status.interpolationAlpha, 0.5);
-    assert.equal(status.activeCount, 23);
+    assert.equal(status.activeCount, 24);
     assert.equal(status.enemyActiveCount, 19);
     assert.equal(status.projectileActiveCount, 4);
+    assert.equal(status.playerProxyActiveCount, 1);
     assert.equal(status.reservedCount, 2);
     assert.equal(status.pendingCommandCount, 4);
     assert.equal(status.totalQueuedEnemySpawnCount, 100);
@@ -572,6 +616,7 @@ test('GPU-only benchmark는 기능 명령을 GPU 적과 CPU 보조 월드에 적
     assert.equal(status.lastSpawnBatchReason, 'queued');
     assert.equal(status.lastEnemySpawnBatchReason, 'queued');
     assert.equal(status.lastProjectileSpawnBatchReason, 'queued');
+    assert.equal(status.lastPlayerProxyReason, 'queued');
     assert.equal(status.gpuContactCount, 8);
     assert.equal(status.gpuAppliedEventCount, 6);
     assert.equal(status.gpuDeathEventCount, 2);
@@ -602,10 +647,16 @@ test('GPU-only benchmark는 기능 명령을 GPU 적과 CPU 보조 월드에 적
     assert.equal(harness.trace.gpuHudDraws[0].status.cpuCollisionCheckCount, 17);
     assert.equal(harness.trace.buildResetCount, 2, 'resize는 CPU 보조 월드만 재설정해야 합니다.');
     assert.equal(children.length, 1, 'resize가 GPU session을 재생성하면 안 됩니다.');
+    assert.equal(
+        harness.trace.requestedGpuPlayerProxies.length,
+        1,
+        'resize는 현재 GPU session에 player proxy를 중복 예약하면 안 됩니다.'
+    );
     assert.ok(getButton(scene, 'spawnEnemy100'));
 
     scene.destroy();
     assert.equal(children[0].calls.destroy, 1);
+    assert.equal(harness.trace.requestedGpuPlayerProxies.length, 1);
     assert.deepEqual(harness.trace.profilerStates, [true, false]);
 });
 
@@ -624,6 +675,15 @@ test('profile 전환은 GPU child와 보조 월드를 재설정하고 CPU fallba
             return child;
         }
     });
+    assert.equal(harness.trace.requestedGpuPlayerProxies.length, 1);
+    assert.strictEqual(
+        harness.trace.requestedGpuPlayerProxies[0].gameScene,
+        children[0]
+    );
+    assert.equal(
+        harness.trace.requestedGpuPlayerProxies[0].sessionGeneration,
+        1
+    );
 
     scene.spawnGpuEnemyBatch(7);
     scene.spawnGpuProjectileBatch(2);
@@ -639,6 +699,19 @@ test('profile 전환은 GPU child와 보조 월드를 재설정하고 CPU fallba
     );
     assert.equal(firstChild.calls.destroy, 1);
     assert.equal(children.length, 2);
+    assert.equal(harness.trace.requestedGpuPlayerProxies.length, 2);
+    assert.strictEqual(
+        harness.trace.requestedGpuPlayerProxies[1].gameScene,
+        children[1]
+    );
+    assert.equal(
+        harness.trace.requestedGpuPlayerProxies[1].sessionGeneration,
+        2
+    );
+    assert.equal(
+        harness.trace.requestedGpuPlayerProxies[1].result.targetFixedTick,
+        42
+    );
     assert.equal(children[1].options.enemyWaveEnabled, false);
     assert.equal(children[1].options.enemyRecoveryEnabled, false);
     assert.equal(children[1].options.initialCameraZoom, 1);
@@ -659,6 +732,8 @@ test('profile 전환은 GPU child와 보조 월드를 재설정하고 CPU fallba
         scene.getGpuVisualQaStatus().lastProjectileSpawnBatchReason,
         'session-reset'
     );
+    assert.equal(scene.getGpuVisualQaStatus().playerProxyActiveCount, 1);
+    assert.equal(scene.getGpuVisualQaStatus().lastPlayerProxyReason, 'queued');
     assert.ok(getButton(scene, 'spawnEnemy100'));
     assert.ok(getButton(scene, 'spawnBox'));
     assert.ok(getButton(scene, 'spawnProjectile10'));
@@ -694,6 +769,7 @@ test('profile 전환은 GPU child와 보조 월드를 재설정하고 CPU fallba
     assert.equal(children.length, 2, 'invalid profile은 새 child를 만들면 안 됩니다.');
     assert.equal(children[1].calls.destroy, 0, 'invalid profile은 현재 child를 파괴하면 안 됩니다.');
     assert.equal(harness.trace.buildResetCount, 2);
+    assert.equal(harness.trace.requestedGpuPlayerProxies.length, 2);
 
     const appliedBeforeDestroy = harness.trace.appliedCommandBatches.length;
     scene.destroy();
@@ -723,8 +799,10 @@ test('profile 전환은 GPU child와 보조 월드를 재설정하고 CPU fallba
     assert.equal(harness.trace.appliedCommandBatches.length, appliedBeforeDestroy + 1);
     assert.equal(scene.spawnGpuEnemyBatch(100).reason, 'scene-destroyed');
     assert.equal(scene.spawnGpuProjectileBatch(10).reason, 'scene-destroyed');
+    assert.equal(scene.restartGpuVisualQa(), false);
     assert.equal(harness.trace.requestedGpuBatches.length, 2);
     assert.equal(harness.trace.requestedGpuProjectileBatches.length, 2);
+    assert.equal(harness.trace.requestedGpuPlayerProxies.length, 2);
 });
 
 test('invalid 초기 profile은 child·보조 월드·profiler를 만들기 전에 거부한다', async () => {
@@ -744,6 +822,7 @@ test('invalid 초기 profile은 child·보조 월드·profiler를 만들기 전�
     assert.equal(childCreateCount, 0);
     assert.equal(harness.trace.buildResetCount, 0);
     assert.equal(harness.trace.appliedCommandBatches.length, 0);
+    assert.equal(harness.trace.requestedGpuPlayerProxies.length, 0);
     assert.deepEqual(harness.trace.profilerStates, []);
     assert.doesNotMatch(BENCHMARK_SCENE_SOURCE, /activateLegacyCpuBenchmark/);
 });

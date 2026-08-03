@@ -35,6 +35,8 @@ export class TitleLogoRenderCache {
         this.cacheOffsetY = 0;
         this.cachedShadowColor = '';
         this.cachedLogoColor = '';
+        this.renderRevision = 0;
+        this.presentationSource = null;
     }
 
     /**
@@ -89,6 +91,15 @@ export class TitleLogoRenderCache {
     }
 
     /**
+     * WebGPU atlas upload가 dirty 여부를 판정할 수 있는 안정적인 source packet을 반환합니다.
+     * packet identity는 rebuild 때만 바뀌고, 같은 revision에서는 재사용됩니다.
+     * @returns {Readonly<object>|null} canvas/revision/크기/패딩 offset 정보입니다.
+     */
+    getPresentationSource() {
+        return this.presentationSource;
+    }
+
+    /**
      * 렌더 캐시를 UI 컨텍스트에 그립니다.
      * @param {CanvasRenderingContext2D} ctx - UI 레이어 컨텍스트입니다.
      * @param {number} logoX - 로고 원점 X 좌표입니다.
@@ -114,6 +125,7 @@ export class TitleLogoRenderCache {
         this.tintCanvas.height = 0;
         this.renderCanvas.width = 0;
         this.renderCanvas.height = 0;
+        this.presentationSource = null;
     }
 
     /**
@@ -168,6 +180,17 @@ export class TitleLogoRenderCache {
         this.cachedShadowColor = shadowColor;
         this.cachedLogoColor = logoColor;
         this.cacheDirty = false;
+        this.renderRevision = this.renderRevision >= Number.MAX_SAFE_INTEGER
+            ? 1
+            : this.renderRevision + 1;
+        this.presentationSource = Object.freeze({
+            canvas: this.renderCanvas,
+            revision: this.renderRevision,
+            width: renderWidth,
+            height: renderHeight,
+            offsetX: this.cacheOffsetX,
+            offsetY: this.cacheOffsetY
+        });
     }
 
     /**

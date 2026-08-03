@@ -10,11 +10,19 @@ export class TitleScene extends BaseScene {
      * @param {object} handoff - LoadingScene이 넘긴 동일 identity 상태입니다.
      * @param {import('./_title_scene_presentation.js').TitleScenePresentation} handoff.presentation - 이동 직전 타이틀 presentation입니다.
      * @param {import('./_title_scene_controller.js').TitleSceneController} handoff.titleController - 안정적인 타이틀 action controller입니다.
+     * @param {Readonly<object>} [handoff.titleGpuRolloutProfile=null] - Loading에서 고정한 rollout profile입니다.
      */
-    constructor(sceneSystem, { presentation, titleController }) {
+    constructor(sceneSystem, { presentation, titleController, titleGpuRolloutProfile = null }) {
         super(sceneSystem);
+        const presentationRolloutProfile = presentation?.getTitleGpuRolloutProfile?.()
+            ?? presentation?.titleGpuRolloutProfile
+            ?? null;
+        if (presentationRolloutProfile !== titleGpuRolloutProfile) {
+            throw new Error('TitleScene requires the exact loading rollout profile identity.');
+        }
         this.presentation = presentation;
         this.titleController = titleController;
+        this.titleGpuRolloutProfile = titleGpuRolloutProfile;
         if (this.presentation?.beginTitleScenePhase?.() !== true) {
             throw new Error('TitleScene requires a ready loading presentation.');
         }
@@ -37,6 +45,21 @@ export class TitleScene extends BaseScene {
         this.presentation?.draw();
     }
 
+    /** @override 최종 overlay snapshot을 같은 title presentation frame에 합성합니다. */
+    finalizeWebGpuPresentation(options = {}) {
+        return this.presentation?.finalizeWebGpuPresentation?.(options);
+    }
+
+    /** @override 최종 WebGL flush 뒤 준비된 legacy fallback만 노출합니다. */
+    completePresentationFallback() {
+        return this.presentation?.completePresentationFallback?.();
+    }
+
+    /** @override composer abort 전에 title capture/cutover를 복구합니다. */
+    abortWebGpuPresentation(reason) {
+        return this.presentation?.abortWebGpuPresentation?.(reason);
+    }
+
     /**
      * @override
      * 화면 크기 변경 시 완료된 presentation 배치를 다시 계산합니다.
@@ -54,6 +77,7 @@ export class TitleScene extends BaseScene {
         this.presentation?.destroy();
         this.presentation = null;
         this.titleController = null;
+        this.titleGpuRolloutProfile = null;
         this.closeTitleOverlay();
     }
 

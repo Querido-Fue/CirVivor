@@ -265,11 +265,15 @@ export class ShapeEnemy extends BaseEnemy {
     }
 
     /**
-         * 디스플레이 시스템의 WebGL 레이어를 통해 스프라이트를 렌더링합니다.
-         * @param {{layer?: string, fill?: string, alpha?: number, sizeScale?: number, offsetX?: number, offsetY?: number}} [overrideOptions={}] - 임시 렌더 오버라이드 값입니다.
-         */
-    draw(overrideOptions = EMPTY_DRAW_OPTIONS) {
-        if (!this.active) return;
+     * 현재 보간 transform과 합체 표시 오프셋을 최종 렌더 상태로 기록합니다.
+     * 레거시 WebGL draw와 다른 presentation backend가 같은 계산 경계를 공유하도록
+     * 호출자가 제공한 컨테이너를 덮어쓰며 새 객체를 만들지 않습니다.
+     * @param {object} out - 렌더 상태를 기록할 재사용 컨테이너입니다.
+     * @param {{fill?: string, alpha?: number, sizeScale?: number, offsetX?: number, offsetY?: number}} [overrideOptions={}] - 임시 렌더 오버라이드입니다.
+     * @returns {boolean} 활성 적의 상태를 기록했는지 여부입니다.
+     */
+    writePresentationState(out, overrideOptions = EMPTY_DRAW_OPTIONS) {
+        if (!this.active || !out || typeof out !== 'object') return false;
         this.#syncRotationCache();
 
         const sizeScale = Number.isFinite(overrideOptions.sizeScale) ? overrideOptions.sizeScale : 1;
@@ -281,19 +285,32 @@ export class ShapeEnemy extends BaseEnemy {
             + (Number.isFinite(this.mergeSettleOffset?.y) ? this.mergeSettleOffset.y : 0);
         const baseH = this.getRenderHeightPx() * sizeScale;
         const h = baseH * this.heightScale;
-        const w = baseH * this.aspectRatio;
+
+        out.shape = this.shapeKey;
+        out.x = this.renderPosition.x + offsetX + mergeOffsetX;
+        out.y = (this.renderPosition.y - getObjectOffsetY()) + offsetY + mergeOffsetY;
+        out.w = baseH * this.aspectRatio;
+        out.h = h;
+        out.fill = overrideOptions.fill ?? this.fill;
+        out.alpha = overrideOptions.alpha ?? this.alpha;
+        out.rotation = this.#rotationCacheDeg;
+        out.rotationCos = this.#rotationCos;
+        out.rotationSin = this.#rotationSin;
+        return true;
+    }
+
+    /**
+         * 디스플레이 시스템의 WebGL 레이어를 통해 스프라이트를 렌더링합니다.
+         * @param {{layer?: string, fill?: string, alpha?: number, sizeScale?: number, offsetX?: number, offsetY?: number}} [overrideOptions={}] - 임시 렌더 오버라이드 값입니다.
+         */
+    draw(overrideOptions = EMPTY_DRAW_OPTIONS) {
         const options = this.#renderOptions;
-        options.x = this.renderPosition.x + offsetX + mergeOffsetX;
-        options.y = (this.renderPosition.y - getObjectOffsetY()) + offsetY + mergeOffsetY;
-        options.w = w;
-        options.h = h;
-        options.fill = overrideOptions.fill ?? this.fill;
-        options.alpha = overrideOptions.alpha ?? this.alpha;
+        if (!this.writePresentationState(options, overrideOptions)) return;
         renderGL(overrideOptions.layer || 'object', options);
         const debugOptions = this.#collisionDebugOptions;
         debugOptions.enemyType = this.type ?? this.shapeType;
-        debugOptions.width = w;
-        debugOptions.height = h;
+        debugOptions.width = options.w;
+        debugOptions.height = options.h;
         debugOptions.rotationRadians = (Number.isFinite(options.rotation) ? options.rotation : 0) * DEGREES_TO_RADIANS;
         debugOptions.renderX = options.x;
         debugOptions.renderY = options.y;

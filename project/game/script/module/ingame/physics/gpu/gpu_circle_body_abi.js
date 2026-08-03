@@ -113,6 +113,7 @@ export const GPU_CIRCLE_BODY_LAYER = Object.freeze({
     EFFECT: 1 << 3,
     FLAME: 1 << 4,
     GRENADE: 1 << 5,
+    KINEMATIC_OBSTACLE: 1 << 6,
     LAYER_7: 1 << 6,
     TERRAIN: 1 << 7
 });

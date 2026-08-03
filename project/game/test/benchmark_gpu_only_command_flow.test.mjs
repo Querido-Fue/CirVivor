@@ -108,6 +108,10 @@ async function createCommandHarness() {
     const benchmarkArenaLayout = Object.freeze({
         worldBounds: Object.freeze({ width: 64, height: 36 }),
         targetPosition: Object.freeze({ x: 32, y: 18 }),
+        playerCollider: Object.freeze({
+            position: Object.freeze({ x: 32, y: 18 }),
+            radius: 0.72
+        }),
         staticWalls: Object.freeze([
             Object.freeze({ x: 16, y: 18, w: 2, h: 18 }),
             Object.freeze({ x: 48, y: 18, w: 2, h: 18 })
@@ -247,6 +251,7 @@ test('실제 명령 그래프는 enemy/projectile GPU spawn과 CPU 보조 box �
         { x: scene.player.position.x, y: scene.player.position.y },
         { x: 600, y: 400 }
     );
+    assert.equal(scene.player.radius, 13.5);
     assert.deepEqual(
         scene.staticWalls.map(({ x, y, w, h }) => ({ x, y, w, h })),
         [
@@ -372,6 +377,7 @@ test('CPU 보조 arena는 GPU child camera projection과 object canvas Y offset�
         { x: command.player.position.x, y: command.player.position.y - 180 },
         camera.worldToViewport(32, 18, {})
     );
+    assert.equal(command.player.radius, 0.72 * 30);
     assert.deepEqual(
         command.staticWalls.map(({ x, y, w, h }) => ({
             x,

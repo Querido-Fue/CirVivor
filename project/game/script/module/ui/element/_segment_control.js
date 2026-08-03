@@ -53,8 +53,8 @@ export class SegmentControlElement extends BaseUIElement {
         this.selectionProgress = 0;
 
         this.clickAble = true;
-        this.hoverScaleMultiplier = 1.05;
-        this.pressScaleMultiplier = 1.05;
+        this.hoverScaleMultiplier = 1.01;
+        this.pressScaleMultiplier = 1.01;
 
         if (properties.value !== undefined) {
             this.value = properties.value;

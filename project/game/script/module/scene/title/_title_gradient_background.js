@@ -220,18 +220,27 @@ export class TitleGradientBackground {
     }
 
     /**
-     * 해상도·팔레트·texture 또는 명시적 dirty 상태가 바뀐 경우에만 현재 phase로 다시 bake하고,
-     * 그 외 프레임에는 마지막 baked texture를 그대로 화면에 blit합니다.
+     * WebGL/WebGPU 양쪽 gradient가 공유하는 해상도와 테마 팔레트 상태를 동기화합니다.
+     * raster 출력이 생략되는 full cutover 프레임에도 호출해야 합니다.
+     * @returns {boolean} 해상도 또는 팔레트가 변경되었으면 true입니다.
      */
-    draw() {
-        if (!this.gl || !this.program || !this.positionBuffer || this.aPosition < 0) {
-            return;
-        }
-
+    prepareFrame() {
         const resolutionChanged = this.#syncResolution();
         const paletteChanged = this.#syncThemeColors();
         if (resolutionChanged || paletteChanged || !this.bakedTexture) {
             this.bakeDirty = true;
+        }
+        return resolutionChanged || paletteChanged;
+    }
+
+    /**
+     * 해상도·팔레트·texture 또는 명시적 dirty 상태가 바뀐 경우에만 현재 phase로 다시 bake하고,
+     * 그 외 프레임에는 마지막 baked texture를 그대로 화면에 blit합니다.
+     */
+    draw() {
+        this.prepareFrame();
+        if (!this.gl || !this.program || !this.positionBuffer || this.aPosition < 0) {
+            return;
         }
 
         if (this.bakeDirty) {

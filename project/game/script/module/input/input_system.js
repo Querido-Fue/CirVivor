@@ -89,6 +89,14 @@ export class InputSystem {
     }
 
     /**
+     * 마지막 DOM 마우스 좌표를 현재 디스플레이 투영으로 다시 계산합니다.
+     * @returns {boolean} 갱신할 좌표가 있었는지 여부입니다.
+     */
+    refreshMousePosition() {
+        return this.mouseInputHandler.refreshMousePosition();
+    }
+
+    /**
      * 마우스와 키보드 입력 상태를 모두 초기화합니다.
      * 창 비활성화 후 복귀 시 남아 있는 눌림 상태를 제거합니다.
      * @param {{mouseInactive?: boolean}} [options={}] - 마우스를 inactive 상태로 둘지 여부입니다.

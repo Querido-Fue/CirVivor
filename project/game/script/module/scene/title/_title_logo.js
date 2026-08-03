@@ -37,6 +37,14 @@ export class TitleLogo {
         this.elapsed = 0;
         this.currentColor = getDefaultLogoColor();
         this.customPlacement = null;
+        this.presentationPacket = {
+            canvas: null,
+            revision: 0,
+            destX: 0,
+            destY: 0,
+            width: 0,
+            height: 0
+        };
         this.hasStarted = false;
         this.isPlaying = false;
         this.isFinished = false;
@@ -162,6 +170,30 @@ export class TitleLogo {
     }
 
     /**
+     * 현재 legacy 로고 캐시와 정확히 같은 bitmap/배치를 WebGPU graph에 전달합니다.
+     * 반환 객체는 hot path에서 재사용되므로 호출자는 같은 프레임 안에서만 값을 소비해야 합니다.
+     * @returns {object|null} atlas upload와 composite에 사용할 source packet입니다.
+     */
+    getPresentationPacket() {
+        if (!this.hasStarted) {
+            return null;
+        }
+        this.#ensureRenderCache();
+        const source = this.renderCache.getPresentationSource?.();
+        if (!source?.canvas || source.width <= 0 || source.height <= 0) {
+            return null;
+        }
+        const packet = this.presentationPacket;
+        packet.canvas = source.canvas;
+        packet.revision = source.revision;
+        packet.destX = this.logoX - source.offsetX;
+        packet.destY = this.logoY - source.offsetY;
+        packet.width = source.width;
+        packet.height = source.height;
+        return packet;
+    }
+
+    /**
      * 내부 참조를 정리합니다.
      */
     destroy() {
@@ -169,6 +201,7 @@ export class TitleLogo {
         this.displaySystem = null;
         this.isPlaying = false;
         this.renderCache.destroy();
+        this.presentationPacket.canvas = null;
     }
 
     /**

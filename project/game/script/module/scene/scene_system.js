@@ -88,6 +88,21 @@ export class SceneSystem {
         this.#callActiveScene('draw');
     }
 
+    /** 모든 scene/UI/overlay draw와 최종 WebGL flush 뒤 WebGPU presentation을 완성합니다. */
+    finalizeWebGpuPresentation(options = {}) {
+        return this.#callActiveScene('finalizeWebGpuPresentation', [options]);
+    }
+
+    /** 최종 WebGL flush 뒤 숨겨진 legacy redraw가 끝난 fallback만 표시 상태로 전환합니다. */
+    completePresentationFallback() {
+        return this.#callActiveScene('completePresentationFallback');
+    }
+
+    /** 공유 composer가 abort되기 전에 활성 scene의 frame-local 캡처를 폐기합니다. */
+    abortWebGpuPresentation(reason = 'presentation-incomplete') {
+        return this.#callActiveScene('abortWebGpuPresentation', [reason]);
+    }
+
     /**
      * 창 크기 변경 이벤트를 현재 활성화된 씬에 전달합니다.
      */

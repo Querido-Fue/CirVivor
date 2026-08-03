@@ -51,6 +51,7 @@ assert.equal(ensuredTexture.width, 901);
 assert.equal(ensuredTexture.height, 601);
 assert.equal(existingCanvas.width, 901);
 assert.equal(existingCanvas.height, 601);
+assert.equal(existingCanvas.__overlayTextureFlipY, true);
 
 const calls = [];
 const context = {

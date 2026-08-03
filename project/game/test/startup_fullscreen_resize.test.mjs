@@ -42,7 +42,7 @@ function createSyntheticModule(context, identifier, exports) {
  * production main.js를 지연 가능한 SystemHandler.init과 이벤트 대역으로 로드합니다.
  * @returns {Promise<object>} 테스트 제어기와 호출 기록입니다.
  */
-async function loadMainHarness() {
+async function loadMainHarness(options = {}) {
     const initGate = createDeferred();
     const trace = [];
     const resizeSnapshots = [];
@@ -104,7 +104,17 @@ async function loadMainHarness() {
             trace.push('system.construct');
             this.uiSystem = null;
             this.debugSystem = null;
-            this.saveSystem = { saveAll: async () => {} };
+            this.overlayManager = Object.hasOwn(options, 'overlayManager')
+                ? options.overlayManager
+                : { openExitOverlay: () => 'exit-overlay' };
+            this.saveSystem = {
+                saveAll: () => {
+                    trace.push('saveAll');
+                    return typeof options.saveAll === 'function'
+                        ? options.saveAll()
+                        : Promise.resolve();
+                }
+            };
         }
 
         init() {
@@ -151,7 +161,9 @@ async function loadMainHarness() {
             runtimeToolInstance = this;
         }
 
-        closeWindow() {}
+        closeWindow() {
+            trace.push('closeWindow');
+        }
     }
 
     const dependencies = new Map([
@@ -173,6 +185,9 @@ async function loadMainHarness() {
             resumeReleaseSimulationProfiler: () => trace.push('profiler.resume'),
             shouldRecordReleaseSimulationForFrameMode: () => false,
             suspendReleaseSimulationProfiler: () => trace.push('profiler.suspend')
+        }],
+        ['display/webgl/_webgl_gpu_telemetry_state.js', {
+            advanceWebGLGpuTelemetryFrame: () => 0
         }]
     ]);
 
@@ -256,4 +271,73 @@ test('초기 전체화면 resize 유실 뒤 최신 viewport를 첫 frame 전에 
         { width: 2560, height: 1440, gamePublished: true },
         { width: 1920, height: 1080, gamePublished: true }
     ]);
+});
+
+async function initializeMainHarness(options = {}) {
+    const harness = await loadMainHarness(options);
+    const loadPromise = harness.window.onload();
+    harness.initGate.resolve();
+    await loadPromise;
+    return harness;
+}
+
+test('종료 확인 오버레이 생성 실패 시 저장 후 강제 종료 경로로 전환한다', async (t) => {
+    await t.test('오버레이가 열리면 현재 close 요청만 소비한다', async () => {
+        let openCount = 0;
+        const harness = await initializeMainHarness({
+            overlayManager: {
+                openExitOverlay() {
+                    openCount++;
+                    return 'exit-overlay';
+                }
+            }
+        });
+
+        assert.equal(harness.window.Game.tryClose(), true);
+        assert.equal(openCount, 1);
+        assert.equal(harness.window.Game.shouldForceCloseWindow(), false);
+        assert.equal(harness.trace.includes('saveAll'), false);
+    });
+
+    await t.test('오버레이 ID가 없으면 종료를 막은 채 방치하지 않는다', async () => {
+        const harness = await initializeMainHarness({
+            overlayManager: { openExitOverlay: () => null }
+        });
+
+        assert.equal(harness.window.Game.tryClose(), true);
+        assert.equal(harness.window.Game.shouldForceCloseWindow(), true);
+        assert.equal(harness.trace.includes('saveAll'), true);
+        assert.equal(harness.window.Game.tryClose(), false);
+    });
+
+    await t.test('오버레이 생성 예외도 저장 후 종료하고 경고를 남긴다', async () => {
+        const harness = await initializeMainHarness({
+            overlayManager: {
+                openExitOverlay() {
+                    throw new Error('overlay failed');
+                }
+            }
+        });
+
+        assert.equal(harness.window.Game.tryClose(), true);
+        assert.equal(harness.window.Game.shouldForceCloseWindow(), true);
+        assert.equal(harness.trace.includes('saveAll'), true);
+        assert.equal(harness.warnings.length, 1);
+    });
+
+    await t.test('fallback 저장 Promise가 거부되어도 실제 창 닫기를 예약한다', async () => {
+        const saveError = new Error('save failed');
+        const harness = await initializeMainHarness({
+            overlayManager: { openExitOverlay: () => null },
+            saveAll: () => Promise.reject(saveError)
+        });
+
+        assert.equal(harness.window.Game.tryClose(), true);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+
+        assert.equal(harness.window.Game.shouldForceCloseWindow(), true);
+        assert.equal(harness.trace.includes('closeWindow'), true);
+        assert.equal(harness.warnings.length, 1);
+        assert.strictEqual(harness.warnings[0][1], saveError);
+    });
 });

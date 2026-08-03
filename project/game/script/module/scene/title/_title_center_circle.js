@@ -39,7 +39,8 @@ export class TitleCenterCircle {
             outlineWidth: 0,
             glowPhase: 0,
             glowCompensationScale: 1,
-            blurSourceCanvases: null
+            blurSourceCanvases: null,
+            legacyBlurSourceCanvases: [null, null]
         };
         this.#recalculateLayout();
     }
@@ -100,26 +101,36 @@ export class TitleCenterCircle {
      */
     draw() {
         this.#syncIntroBlur();
+        renderGL('effect', this.getPresentationCommand({ includeLegacyBlurSources: true }));
+    }
 
-        const drawRadius = this.radius * this.visualScale;
-        const drawOutlineWidth = Math.max(1, this.outlineWidth * this.visualScale);
-        const centerX = this.centerX;
-        const centerY = this.centerY;
-        const glowPhase = this.glowPhase;
-        const glowCompensationScale = this.glowCompensationScale;
-        const blurSourceCanvases = [
-            getCanvas('background'),
-            getCanvas('object')
-        ];
+    /**
+     * WebGL과 WebGPU가 공유하는 현재 중앙 원 presentation 명령을 반환합니다.
+     * 이 getter는 레거시 CSS intro blur를 갱신하지 않습니다.
+     * @param {object} [options] - 명령 생성 옵션입니다.
+     * @param {boolean} [options.includeLegacyBlurSources=false] - WebGL canvas blur source를 포함할지 여부입니다.
+     * @returns {object} 현재 중앙 원 effect 렌더 명령입니다.
+     */
+    getPresentationCommand(options = {}) {
+        const includeLegacyBlurSources = options?.includeLegacyBlurSources === true;
         const state = this.#renderCommandBuildState;
-        state.centerX = centerX;
-        state.centerY = centerY;
-        state.radius = drawRadius;
-        state.outlineWidth = drawOutlineWidth;
-        state.glowPhase = glowPhase;
-        state.glowCompensationScale = glowCompensationScale;
-        state.blurSourceCanvases = blurSourceCanvases;
-        renderGL('effect', buildTitleCenterCircleRenderCommand(state));
+        state.centerX = this.centerX;
+        state.centerY = this.centerY;
+        state.radius = this.radius * this.visualScale;
+        state.outlineWidth = Math.max(1, this.outlineWidth * this.visualScale);
+        state.glowPhase = this.glowPhase;
+        state.glowCompensationScale = this.glowCompensationScale;
+
+        if (includeLegacyBlurSources) {
+            const sources = state.legacyBlurSourceCanvases;
+            sources[0] = getCanvas('background');
+            sources[1] = getCanvas('object');
+            state.blurSourceCanvases = sources;
+        } else {
+            state.blurSourceCanvases = null;
+        }
+
+        return buildTitleCenterCircleRenderCommand(state);
     }
 
     /**

@@ -58,6 +58,7 @@ export function getTitleMenuVersionLabelBlockHeight({
  * @param {string} options.versionText - 버전 텍스트입니다.
  * @param {string} options.versionFont - 버전 텍스트 폰트입니다.
  * @param {number} options.versionFontSize - 버전 텍스트 폰트 크기입니다.
+ * @param {number} options.versionTextWidth - 버전 텍스트 측정 폭입니다.
  * @param {string} options.linkText - 업데이트 링크 텍스트입니다.
  * @param {string} options.linkFont - 업데이트 링크 폰트입니다.
  * @param {number} options.linkFontSize - 업데이트 링크 폰트 크기입니다.
@@ -74,6 +75,7 @@ export function buildTitleMenuVersionLabelLayout({
     versionText,
     versionFont,
     versionFontSize,
+    versionTextWidth,
     linkText,
     linkFont,
     linkFontSize,
@@ -110,15 +112,26 @@ export function buildTitleMenuVersionLabelLayout({
     const linkIconY = linkY + ((linkFontSize - linkIconSize) * 0.5);
     const hitPaddingX = Math.max(6 * resolvedUiScale, uiww * 0.004 * resolvedUiScale);
     const hitPaddingY = Math.max(4 * resolvedUiScale, wh * 0.004 * resolvedUiScale);
+    const measuredVersionWidth = Number.isFinite(versionTextWidth)
+        ? Math.max(0, versionTextWidth)
+        : Math.max(0, String(versionText).length * versionFontSize * 0.6);
+    const versionLeft = renderState.x - measuredVersionWidth;
+    const contentLeft = linkText ? Math.min(versionLeft, linkIconX) : versionLeft;
+    const contentBottom = linkText
+        ? linkY + Math.max(0, linkFontSize)
+        : renderState.y + Math.max(0, versionFontSize);
 
     return {
         alpha: renderState.alpha,
         versionText,
         versionFont,
+        versionFontSize,
+        versionTextWidth: measuredVersionWidth,
         versionX: renderState.x,
         versionY: renderState.y,
         linkText,
         linkFont,
+        linkFontSize,
         linkTextX,
         linkY,
         linkIconX,
@@ -131,7 +144,13 @@ export function buildTitleMenuVersionLabelLayout({
                 w: linkBlockWidth + (hitPaddingX * 2),
                 h: linkFontSize + (hitPaddingY * 2)
             }
-            : null
+            : null,
+        contentBounds: {
+            x: contentLeft,
+            y: renderState.y,
+            width: Math.max(0, renderState.x - contentLeft),
+            height: Math.max(0, contentBottom - renderState.y)
+        }
     };
 }
 

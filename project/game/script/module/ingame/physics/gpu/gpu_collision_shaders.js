@@ -1143,7 +1143,8 @@ fn solve_body_world(@builtin(global_invocation_id) global_id: vec3u) {
     }
 
     let predicted = temporaries.values[body_id].predicted_position;
-    let distance = sample_world_sdf(predicted);
+    let candidate = predicted + temporaries.values[body_id].position_delta;
+    let distance = sample_world_sdf(candidate);
     let penetration = body.radius - distance;
     if (penetration <= 0.0) {
         return;
@@ -1152,14 +1153,14 @@ fn solve_body_world(@builtin(global_invocation_id) global_id: vec3u) {
     let gradient_step = max(params.source_world_unit_scale, 0.0001);
     let gradient_uv_epsilon = vec2f(gradient_step) / params.world_size;
     var normal = vec2f(
-        sample_world_sdf(predicted + vec2f(gradient_step, 0.0))
-            - sample_world_sdf(predicted - vec2f(gradient_step, 0.0)),
-        sample_world_sdf(predicted + vec2f(0.0, gradient_step))
-            - sample_world_sdf(predicted - vec2f(0.0, gradient_step))
+        sample_world_sdf(candidate + vec2f(gradient_step, 0.0))
+            - sample_world_sdf(candidate - vec2f(gradient_step, 0.0)),
+        sample_world_sdf(candidate + vec2f(0.0, gradient_step))
+            - sample_world_sdf(candidate - vec2f(0.0, gradient_step))
     ) / (gradient_uv_epsilon * 2.0);
     let normal_length = length(normal);
     if (normal_length < EPSILON_MASS) {
-        let center_delta = (params.world_size * 0.5) - predicted;
+        let center_delta = (params.world_size * 0.5) - candidate;
         let center_distance = length(center_delta);
         normal = select(
             vec2f(1.0, 0.0),

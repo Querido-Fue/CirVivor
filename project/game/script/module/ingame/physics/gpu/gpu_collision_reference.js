@@ -643,9 +643,11 @@ function solveBodyWorldIteration(bodies, options) {
             || body.inverseMass <= GPU_COLLISION_REFERENCE.MASS_EPSILON) {
             continue;
         }
+        const candidateX = Math.fround(body.predictedX + body.deltaX);
+        const candidateY = Math.fround(body.predictedY + body.deltaY);
         const initialSample = options.sdfSample(
-            body.predictedX,
-            body.predictedY,
+            candidateX,
+            candidateY,
             body.bodyIndex
         );
         const distance = requireFloat32(
@@ -679,26 +681,26 @@ function solveBodyWorldIteration(bodies, options) {
             gradientX = Math.fround(
                 (readSdfDistance(
                     options.sdfSample,
-                    body.predictedX + gradientStep,
-                    body.predictedY,
+                    candidateX + gradientStep,
+                    candidateY,
                     body.bodyIndex
                 ) - readSdfDistance(
                     options.sdfSample,
-                    body.predictedX - gradientStep,
-                    body.predictedY,
+                    candidateX - gradientStep,
+                    candidateY,
                     body.bodyIndex
                 )) / Math.fround(epsilonX * 2)
             );
             gradientY = Math.fround(
                 (readSdfDistance(
                     options.sdfSample,
-                    body.predictedX,
-                    body.predictedY + gradientStep,
+                    candidateX,
+                    candidateY + gradientStep,
                     body.bodyIndex
                 ) - readSdfDistance(
                     options.sdfSample,
-                    body.predictedX,
-                    body.predictedY - gradientStep,
+                    candidateX,
+                    candidateY - gradientStep,
                     body.bodyIndex
                 )) / Math.fround(epsilonY * 2)
             );
@@ -707,8 +709,8 @@ function solveBodyWorldIteration(bodies, options) {
         let normalY;
         const gradientLength = Math.hypot(gradientX, gradientY);
         if (gradientLength < GPU_COLLISION_REFERENCE.MASS_EPSILON) {
-            const centerDeltaX = Math.fround((options.worldWidth * 0.5) - body.predictedX);
-            const centerDeltaY = Math.fround((options.worldHeight * 0.5) - body.predictedY);
+            const centerDeltaX = Math.fround((options.worldWidth * 0.5) - candidateX);
+            const centerDeltaY = Math.fround((options.worldHeight * 0.5) - candidateY);
             const centerLength = Math.hypot(centerDeltaX, centerDeltaY);
             if (centerLength < GPU_COLLISION_REFERENCE.MASS_EPSILON) {
                 normalX = 1;

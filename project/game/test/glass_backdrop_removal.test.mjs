@@ -12,20 +12,26 @@ const [
     titleMenuSessionSource,
     titleMenuThemeSource,
     titleMenuSource,
+    titleOverlaySource,
+    mapSelectOverlaySource,
     settingsOverlaySource,
     settingsStateSource,
     settingDefinitionsSource,
-    settingHandlerSource
+    settingHandlerSource,
+    lightThemeSource
 ] = await Promise.all([
     readSource('../script/module/display/webgl/_webgl_constants.js'),
     readSource('../script/module/overlay/_overlay_session.js'),
     readSource('../script/module/scene/title/menu/_title_menu_overlay_session.js'),
     readSource('../script/module/scene/title/menu/_title_menu_theme.js'),
     readSource('../script/module/scene/title/_title_menu.js'),
+    readSource('../script/module/overlay/title/_title_overlay.js'),
+    readSource('../script/module/overlay/title/_map_select_overlay.js'),
     readSource('../script/module/overlay/title/_settings_overlay.js'),
     readSource('../script/module/overlay/title/settings/_settings_state.js'),
     readSource('../script/data/settings/setting_definitions.js'),
-    readSource('../script/module/save/_setting_handler.js')
+    readSource('../script/module/save/_setting_handler.js'),
+    readSource('../script/data/theme/light_theme.js')
 ]);
 
 assert.match(
@@ -49,7 +55,7 @@ assert.match(
 );
 assert.match(
     overlaySessionSource,
-    /requiresBackdropComposite\(\)\s*\{\s*return Boolean\(this\.effectLayerId\)\s*&&\s*this\.getGlassPanelAlpha\(\)\s*>\s*0\s*&&\s*this\.alpha\s*>\s*0;/s
+    /requiresBackdropComposite\(\)\s*\{\s*return !this\.#shouldSuppressLegacyTitleOverlayRender\(\)\s*&&\s*Boolean\(this\.effectLayerId\)[\s\S]*?this\.alpha\s*>\s*0;/s
 );
 assert.match(overlayConstantsSource, /GLASS_TRANSITION_DURATION_SECONDS:\s*0\.4/);
 assert.match(overlayConstantsSource, /GLASS_TRANSITION_EASING:\s*'easeOutExpo'/);
@@ -75,8 +81,20 @@ assert.match(
     /disableTransparency:\s*getSetting\('disableTransparency'\)/
 );
 assert.match(
+    titleMenuSessionSource,
+    /titleWebGpuContentBoundsAuthority:\s*'panels'/
+);
+assert.match(
     titleMenuThemeSource,
     /getMenuBackdropPaneStyle\(disableTransparency, unifiedStroke\)[\s\S]*?if \(disableTransparency\)[\s\S]*?sampleBackdrop:\s*false[\s\S]*?return \{[\s\S]*?sampleBackdrop:\s*true/
+);
+assert.match(
+    titleMenuThemeSource,
+    /getMenuPanelStyle\(disableTransparency\)[\s\S]*?if \(disableTransparency\) \{\s*return \{[\s\S]*?stroke:\s*false,[\s\S]*?lineWidth:\s*0,/
+);
+assert.match(
+    titleMenuThemeSource,
+    /getMenuBackdropPaneStyle\(disableTransparency, unifiedStroke\)[\s\S]*?if \(disableTransparency\) \{\s*return \{[\s\S]*?stroke:\s*getOpaqueMenuPanelStrokeColor\(\)/
 );
 
 assert.match(settingsOverlaySource, /super\(TitleScene, \{ glOverlay: true, titleIconId: 'setting' \}\)/);
@@ -87,7 +105,10 @@ assert.match(
     /disableTransparency:\s*Object\.freeze\(\{[^}]*hidden:\s*false/
 );
 assert.match(titleMenuSource, /this\.session\.setDisableTransparency\(getSetting\('disableTransparency'\)\)/);
-assert.match(titleMenuSource, /getDisplaySystem\(\)\?\.webGLHandler\?\.flushAll\(\)/);
+assert.match(
+    titleMenuSource,
+    /if \(this\.session\.requiresBackdropComposite\?\.\(\) === true\) \{\s*getDisplaySystem\(\)\?\.webGLHandler\?\.flushAll\(\);/s
+);
 assert.match(
     settingHandlerSource,
     /if \(nextTheme !== previousTheme\) \{\s*beginThemeTransition\(previousThemeBackground\);/s
@@ -99,9 +120,28 @@ assert.match(
     baseOverlaySource,
     /changedSettings\.disableTransparency !== undefined[\s\S]*?this\.session\.setDisableTransparency\(getSetting\('disableTransparency'\)\);[\s\S]*?if \(shouldResize\) \{/s
 );
+assert.match(
+    baseOverlaySource,
+    /let shouldResize = changedSettings\.theme !== undefined\s*\|\| changedSettings\.language !== undefined;/
+);
+assert.match(
+    titleOverlaySource,
+    /applyRuntimeSettings\(changedSettings = \{\}\) \{\s*if \(changedSettings\.theme !== undefined\) \{\s*this\._refreshTitleIconSource\(\);\s*\}\s*super\.applyRuntimeSettings\(changedSettings\);/
+);
+assert.doesNotMatch(
+    mapSelectOverlaySource,
+    /\n    applyRuntimeSettings\(changedSettings = \{\}\) \{/
+);
+assert.doesNotMatch(
+    settingsOverlaySource,
+    /\n    applyRuntimeSettings\(changedSettings = \{\}\) \{/
+);
 assert.match(baseOverlaySource, /const glassAlpha = typeof this\.session\?\.getGlassPanelAlpha/);
 assert.match(baseOverlaySource, /const opaqueAlpha = typeof this\.session\?\.getOpaquePanelAlpha/);
 assert.match(baseOverlaySource, /glassOptions\.alpha = glassAlpha/);
 assert.match(baseOverlaySource, /flatOptions\.alpha = opaqueAlpha/);
+assert.match(lightThemeSource, /GlassBackground:\s*'rgba\(236, 237, 239, 0\.92\)'/);
+assert.match(lightThemeSource, /GlassTintStrength:\s*0\.36/);
+assert.match(lightThemeSource, /ValueInactive:\s*'#666666'/);
 
 console.log('glass transparency option contract: ok');

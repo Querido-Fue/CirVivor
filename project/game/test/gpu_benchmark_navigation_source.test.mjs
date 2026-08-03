@@ -10,7 +10,8 @@ const {
     createRouteFlowFieldAtlas
 } = await loadGameModule('ingame/navigation/route_flow_field_atlas.js');
 const {
-    createGpuSignedDistanceField
+    createGpuSignedDistanceField,
+    sampleGpuSignedDistanceField
 } = await loadGameModule('ingame/physics/gpu/gpu_signed_distance_field.js');
 const {
     GPU_BENCHMARK_ARENA_LAYOUT,
@@ -33,8 +34,20 @@ test('GPU benchmark arena는 고정 64x36 layout과 정확한 좌표 경계를 �
     assert.strictEqual(assertTileNavigationSource(source), source);
     assert.equal(source.mapId, 'gpu-benchmark-open-arena');
     assert.deepEqual(
-        { cols: grid.cols, rows: grid.rows, size: grid.size, cellSize: grid.cellSize },
-        { cols: 64, rows: 36, size: 2304, cellSize: 1 }
+        {
+            cols: grid.cols,
+            rows: grid.rows,
+            size: grid.size,
+            cellSize: grid.cellSize,
+            sdfSubdivisions: grid.sdfSubdivisions
+        },
+        {
+            cols: 64,
+            rows: 36,
+            size: 2304,
+            cellSize: 1,
+            sdfSubdivisions: 8
+        }
     );
     assert.deepEqual({ ...bounds }, {
         minX: 0,
@@ -84,6 +97,16 @@ test('GPU benchmark arena는 고정 64x36 layout과 정확한 좌표 경계를 �
     assert.ok(Object.isFrozen(source));
     assert.ok(Object.isFrozen(GPU_BENCHMARK_ARENA_LAYOUT));
     assert.ok(Object.isFrozen(GPU_BENCHMARK_ARENA_LAYOUT.worldBounds));
+    assert.ok(Object.isFrozen(GPU_BENCHMARK_ARENA_LAYOUT.playerCollider));
+    assert.strictEqual(
+        GPU_BENCHMARK_ARENA_LAYOUT.playerCollider.position,
+        GPU_BENCHMARK_ARENA_LAYOUT.targetPosition
+    );
+    assert.equal(GPU_BENCHMARK_ARENA_LAYOUT.playerCollider.radius, 0.72);
+    assert.ok(
+        GPU_BENCHMARK_ARENA_LAYOUT.playerCollider.radius * 2 <= 1.5,
+        'player proxy는 benchmark 1.5-unit collision cell의 small bucket을 유지해야 합니다.'
+    );
     assert.ok(Object.isFrozen(GPU_BENCHMARK_ARENA_LAYOUT.staticWalls));
     assert.ok(Object.isFrozen(GPU_BENCHMARK_ARENA_LAYOUT.initialBoxes));
     assert.equal(GPU_BENCHMARK_ARENA_LAYOUT.staticWalls.length, 2);
@@ -203,13 +226,63 @@ test('네 direct route와 중앙 target은 walkable이며 GPU navigation 산출�
     }
 
     const sdf = createGpuSignedDistanceField(grid);
-    assert.equal(sdf.cols, 64);
-    assert.equal(sdf.rows, 36);
+    assert.equal(sdf.cols, 512);
+    assert.equal(sdf.rows, 288);
+    assert.equal(sdf.size, 147456);
+    assert.equal(sdf.cellSize, 0.125);
+    assert.equal(sdf.subdivisions, 8);
+    assert.equal(sdf.sourceCols, 64);
+    assert.equal(sdf.sourceRows, 36);
     assert.equal(sdf.worldWidth, 64);
     assert.equal(sdf.worldHeight, 36);
     assert.notStrictEqual(sdf.blocked, grid.blocked);
-    assert.equal(sdf.blocked[cellIndex(grid, 18, 15)], 1);
-    assert.ok(sdf.values[cellIndex(grid, 18, 15)] <= 0);
-    assert.equal(sdf.blocked[cellIndex(grid, target.row, target.column)], 0);
-    assert.ok(sdf.values[cellIndex(grid, target.row, target.column)] > 0);
+    assert.ok(sampleGpuSignedDistanceField(sdf, 15.5, 18.5) < 0);
+    assert.ok(sampleGpuSignedDistanceField(sdf, target.x, target.y) > 0);
+
+    for (const rectangle of [
+        ...GPU_BENCHMARK_ARENA_LAYOUT.staticWalls,
+        ...GPU_BENCHMARK_ARENA_LAYOUT.initialBoxes
+    ]) {
+        const halfWidth = rectangle.w * 0.5;
+        const halfHeight = rectangle.h * 0.5;
+        const edgeMidpoints = [
+            [rectangle.x - halfWidth, rectangle.y],
+            [rectangle.x + halfWidth, rectangle.y],
+            [rectangle.x, rectangle.y - halfHeight],
+            [rectangle.x, rectangle.y + halfHeight]
+        ];
+        for (const [x, y] of edgeMidpoints) {
+            assert.ok(
+                Math.abs(sampleGpuSignedDistanceField(sdf, x, y)) <= 1e-6,
+                `${rectangle.id} edge midpoint (${x}, ${y}) must be zero`
+            );
+        }
+
+        const corners = [
+            [rectangle.x - halfWidth, rectangle.y - halfHeight],
+            [rectangle.x + halfWidth, rectangle.y - halfHeight],
+            [rectangle.x - halfWidth, rectangle.y + halfHeight],
+            [rectangle.x + halfWidth, rectangle.y + halfHeight]
+        ];
+        for (const [x, y] of corners) {
+            const cornerDistance = sampleGpuSignedDistanceField(sdf, x, y);
+            assert.ok(
+                Math.abs(cornerDistance) <= 0.05,
+                `${rectangle.id} corner (${x}, ${y}) inset must stay below 0.05 world units`
+            );
+
+            const circleRadius = 0.3;
+            const normalX = x < rectangle.x ? -Math.SQRT1_2 : Math.SQRT1_2;
+            const normalY = y < rectangle.y ? -Math.SQRT1_2 : Math.SQRT1_2;
+            const tangentDistance = sampleGpuSignedDistanceField(
+                sdf,
+                x + (normalX * circleRadius),
+                y + (normalY * circleRadius)
+            );
+            assert.ok(
+                Math.abs(tangentDistance - circleRadius) <= 0.03,
+                `${rectangle.id} corner tangent error must stay below 0.03 world units`
+            );
+        }
+    }
 });

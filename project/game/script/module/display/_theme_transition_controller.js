@@ -1,13 +1,38 @@
 import { animate, remove } from 'animation/animation_system.js';
+import { colorUtil } from 'util/color_util.js';
 
 const THEME_TRANSITION_DATA = Object.freeze({
     LAYER: 'top',
-    START_ALPHA: 1,
+    START_ALPHA: 0.82,
+    LIGHT_START_ALPHA: 0.55,
+    LIGHT_LUMINANCE_THRESHOLD: 0.6,
     END_ALPHA: 0,
     DURATION_SECONDS: 0.4,
     EASING: 'linear'
 });
 let themeTransitionControllerInstance = null;
+
+/**
+ * 밝은 이전 배경은 낮은 veil 알파로 시작해 light -> dark 전환의 흰색 플래시를 억제합니다.
+ * 공용 CSS 색상 파서를 사용하며, 파서가 준비되지 않았거나 유효한 RGB를 주지 않으면
+ * 보수적인 기본값을 사용합니다.
+ * @param {string} background - 교체 직전 배경색입니다.
+ * @returns {number} 전환 시작 알파입니다.
+ */
+function getStartAlpha(background) {
+    const rgb = colorUtil()?.cssToRgb?.(background);
+    if (!rgb
+        || !Number.isFinite(rgb.r)
+        || !Number.isFinite(rgb.g)
+        || !Number.isFinite(rgb.b)) {
+        return THEME_TRANSITION_DATA.START_ALPHA;
+    }
+
+    const luminance = ((rgb.r * 0.2126) + (rgb.g * 0.7152) + (rgb.b * 0.0722)) / 255;
+    return luminance >= THEME_TRANSITION_DATA.LIGHT_LUMINANCE_THRESHOLD
+        ? THEME_TRANSITION_DATA.LIGHT_START_ALPHA
+        : THEME_TRANSITION_DATA.START_ALPHA;
+}
 
 /**
  * @class ThemeTransitionController
@@ -42,7 +67,7 @@ export class ThemeTransitionController {
     }
 
     /**
-     * 이전 테마 배경색 veil을 완전 불투명 상태에서 0으로 감쇠합니다.
+     * 이전 테마 배경색 veil을 밝기에 맞춘 제한 알파에서 0으로 감쇠합니다.
      * 진행 중 재요청은 이전 완료 콜백을 무효화하고 새 색상으로 즉시 재시작합니다.
      * 전체 화면 복사본을 만들지 않으므로 GPU readback이나 canvas 합성을 유발하지 않습니다.
      * @param {string} previousBackground - 교체 직전 테마 배경색입니다.
@@ -58,13 +83,14 @@ export class ThemeTransitionController {
             remove(this.#animationId);
         }
 
+        const startAlpha = getStartAlpha(previousBackground);
         this.renderCommand.fill = previousBackground;
-        this.alpha = THEME_TRANSITION_DATA.START_ALPHA;
+        this.alpha = startAlpha;
         this.active = true;
 
         const animation = animate(this, {
             variable: 'alpha',
-            startValue: THEME_TRANSITION_DATA.START_ALPHA,
+            startValue: startAlpha,
             endValue: THEME_TRANSITION_DATA.END_ALPHA,
             duration: THEME_TRANSITION_DATA.DURATION_SECONDS,
             type: THEME_TRANSITION_DATA.EASING

@@ -57,6 +57,9 @@ const dependencies = new Map([
         clampFiniteNumber: (value, min, max, fallback) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback,
         clampNumber: (value, min, max) => Math.max(min, Math.min(max, value))
     })],
+    ['scene/title/webgpu/_title_webgpu_overlay_capture_gate.js', createSyntheticModule(context, {
+        getTitleWebGpuOverlayCaptureToken: () => null
+    })],
     ['./_overlay_effect_registry.js', createSyntheticModule(context, { createOverlayEffectState: () => null })]
 ]);
 await sessionModule.link((specifier) => dependencies.get(specifier));

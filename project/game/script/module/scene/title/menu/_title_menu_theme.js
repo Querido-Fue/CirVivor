@@ -230,10 +230,10 @@ export function getMenuPanelStyle(disableTransparency) {
     if (disableTransparency) {
         return {
             fill: ColorSchemes.Overlay.Panel.Background,
-            stroke: getOpaqueMenuPanelStrokeColor(),
+            stroke: false,
             sampleBackdrop: false,
             blur: 0,
-            lineWidth: 1.35,
+            lineWidth: 0,
             tintColor: ColorSchemes.Overlay.Panel.GlassTint,
             edgeColor: ColorSchemes.Overlay.Panel.GlassEdge,
             tintStrength: 0,
