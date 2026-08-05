@@ -34,6 +34,38 @@ function requireFiniteOffsets(source, label) {
     }));
 }
 
+function resolveEnemyDefinitionCycle(group, definitions, label) {
+    const fallbackId = requireNonEmptyString(
+        group?.enemyDefinitionId,
+        `${label}.enemyDefinitionId`
+    );
+    const fallbackDefinition = definitions[fallbackId];
+    if (!fallbackDefinition) {
+        throw new RangeError(`등록되지 않은 enemy definition입니다: ${fallbackId}`);
+    }
+    const source = group?.enemyDefinitionIds;
+    const definitionIds = source === undefined
+        ? null
+        : source;
+    if (definitionIds === null) {
+        return Object.freeze([fallbackDefinition]);
+    }
+    if (!Array.isArray(definitionIds) || definitionIds.length === 0) {
+        throw new TypeError(`${label}.enemyDefinitionIds는 하나 이상의 ID 배열이어야 합니다.`);
+    }
+    return Object.freeze(definitionIds.map((value, index) => {
+        const definitionId = requireNonEmptyString(
+            value,
+            `${label}.enemyDefinitionIds[${index}]`
+        );
+        const definition = definitions[definitionId];
+        if (!definition) {
+            throw new RangeError(`등록되지 않은 enemy definition입니다: ${definitionId}`);
+        }
+        return definition;
+    }));
+}
+
 /**
  * @class WaveDirector
  * @description fixed tick schedule을 stable GPU enemy spawn command로 변환합니다.
@@ -97,14 +129,12 @@ export class WaveDirector {
             }
             for (let groupIndex = 0; groupIndex < phase.spawnGroups.length; groupIndex++) {
                 const group = phase.spawnGroups[groupIndex];
-                const enemyDefinitionId = requireNonEmptyString(
-                    group?.enemyDefinitionId,
-                    `spawnGroups[${groupIndex}].enemyDefinitionId`
+                const groupLabel = `phases[${phaseIndex}].spawnGroups[${groupIndex}]`;
+                const enemyDefinitionCycle = resolveEnemyDefinitionCycle(
+                    group,
+                    this.enemyDefinitions,
+                    groupLabel
                 );
-                const enemyDefinition = this.enemyDefinitions[enemyDefinitionId];
-                if (!enemyDefinition) {
-                    throw new RangeError(`등록되지 않은 enemy definition입니다: ${enemyDefinitionId}`);
-                }
                 const gateId = requireNonEmptyString(
                     group?.gateId,
                     `spawnGroups[${groupIndex}].gateId`
@@ -141,6 +171,9 @@ export class WaveDirector {
                 for (let spawnIndex = 0; spawnIndex < count; spawnIndex++) {
                     const targetFixedTick = startTick + (spawnIndex * intervalTicks);
                     const commandId = `${waveId}:${phaseIndex}:${groupIndex}:${spawnIndex}`;
+                    const enemyDefinition = enemyDefinitionCycle[
+                        spawnIndex % enemyDefinitionCycle.length
+                    ];
                     schedule.push(Object.freeze({
                         commandId,
                         targetFixedTick,

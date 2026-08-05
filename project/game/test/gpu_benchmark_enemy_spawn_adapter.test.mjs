@@ -18,6 +18,9 @@ const {
 } = await loadGameModule(
     'data/object/enemy/basic_circle_enemy_data.js'
 );
+const {
+    LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES
+} = await loadGameModule('data/object/enemy/enemy_shape_geometry_data.js');
 
 const LANE_OFFSETS_TILES = Object.freeze([-3, -1.5, 0, 1.5, 3]);
 
@@ -155,7 +158,7 @@ test('GPU benchmark spawn adapter는 deferred 첫 배치 100개를 다음 fixed 
     for (let index = 0; index < fixture.calls.length; index++) {
         const { intent, commandId } = fixture.calls[index];
         assert.equal(commandId.includes(':7:3:'), true);
-        assert.equal(intent.enemyDefinitionId, 'basic_circle_01');
+        assert.equal(intent.enemyDefinitionId, BASIC_CIRCLE_ENEMY_DATA.id);
         assert.equal(intent.spawnSequence, 900 + index);
         assert.equal(intent.waypointIndex, 1);
     }
@@ -199,7 +202,10 @@ test('GPU benchmark 적은 production 정의를 바꾸지 않고 물리·렌더 
         productionRadius * productionRadiusScale * 0.5
     );
     assert.equal(BASIC_CIRCLE_ENEMY_DATA.collisionRadiusTiles, productionRadius);
-    assert.equal(BASIC_CIRCLE_ENEMY_DATA.collisionRadiusTiles, 0.5939696961966999);
+    assert.equal(
+        BASIC_CIRCLE_ENEMY_DATA.collisionRadiusTiles,
+        (LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES / 2) * 1.3
+    );
     assert.equal(BASIC_CIRCLE_ENEMY_DATA.radiusScale, 1);
 });
 

@@ -1,30 +1,85 @@
+import {
+    LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES
+} from './enemy_shape_geometry_data.js';
+
 /**
- * 신규 플레이에서 처음 사용하는 GPU 원형 적 정의입니다.
- *
- * 속도는 legacy 기본 steering의 40 px/s와 16 px navigation cell을 타일 grid로
- * 환산한 2.5 cells/s입니다. 반경은 1타일 square의 legacy 충돌 벡터
- * (0.42, 0.42)를 감싸는 원이며, weight와 색상도 같은 square 적을 기준으로
- * 타일/선형 RGBA 단위에 명시적으로 옮겼습니다.
- * 피격 처리를 GPU contact 경계에서 바로 검증할 수 있도록 기본 HP만 선언합니다.
- * 무기별 피해·속성·특수 효과는 projectile definition이 별도로 소유합니다.
+ * 신규 플레이의 GPU 적은 원형 collider를 공유합니다. 기존 절반 반경에 정확히
+ * 1.3을 곱한 값으로, legacy 1타일 square 외접 원 반경의 0.65배입니다.
+ * 물리와 렌더가 이 값을 함께 사용하며 shape별 별도 반경은 두지 않습니다.
  */
-export const BASIC_CIRCLE_ENEMY_DATA = Object.freeze({
-    id: 'basic_circle_01',
-    shapeType: 'square',
-    moveSpeedTilesPerSecond: 2.5,
-    collisionRadiusTiles: 0.5939696961966999,
-    collisionWeight: 1,
-    maxHealth: 1,
-    colorRgba: Object.freeze([
-        1,
-        0.4235294117647059,
-        0.4235294117647059,
-        1
-    ]),
-    radiusScale: 1
-});
+export const MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES = (
+    LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES / 2
+) * 1.3;
+
+const MAIN_GPU_ENEMY_COLOR_RGBA = Object.freeze([
+    1,
+    0.4235294117647059,
+    0.4235294117647059,
+    1
+]);
+
+function createMainGpuEnemyDefinition(id, shapeType) {
+    return Object.freeze({
+        id,
+        shapeType,
+        // legacy 기본 steering의 40 px/s와 16 px navigation cell을 타일 grid로 환산합니다.
+        moveSpeedTilesPerSecond: 2.5,
+        collisionRadiusTiles: MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
+        collisionWeight: 1,
+        maxHealth: 1,
+        colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,
+        radiusScale: 1
+    });
+}
+
+/** main GPU wave에서 사용하는 시각 archetype 6종의 불변 선언입니다. */
+export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
+    'basic_square_01',
+    'square'
+);
+export const BASIC_TRIANGLE_ENEMY_DATA = createMainGpuEnemyDefinition(
+    'basic_triangle_01',
+    'triangle'
+);
+export const BASIC_ARROW_ENEMY_DATA = createMainGpuEnemyDefinition(
+    'basic_arrow_01',
+    'arrow'
+);
+export const BASIC_PENTA_ENEMY_DATA = createMainGpuEnemyDefinition(
+    'basic_penta_01',
+    'penta'
+);
+export const BASIC_HEXA_ENEMY_DATA = createMainGpuEnemyDefinition(
+    'basic_hexa_01',
+    'hexa'
+);
+export const BASIC_GEN_ENEMY_DATA = createMainGpuEnemyDefinition(
+    'basic_gen_01',
+    'gen'
+);
+
+/**
+ * @deprecated 새 메인 wave catalog에는 포함하지 않는 legacy 원형 definition입니다.
+ * 기존 import/저장 데이터의 content identity를 보존하기 위해 독립 객체로 유지합니다.
+ */
+export const BASIC_CIRCLE_ENEMY_DATA = createMainGpuEnemyDefinition(
+    'basic_circle_01',
+    'circle'
+);
+
+export const INGAME_ENEMY_DEFINITIONS = Object.freeze([
+    BASIC_SQUARE_ENEMY_DATA,
+    BASIC_TRIANGLE_ENEMY_DATA,
+    BASIC_ARROW_ENEMY_DATA,
+    BASIC_PENTA_ENEMY_DATA,
+    BASIC_HEXA_ENEMY_DATA,
+    BASIC_GEN_ENEMY_DATA
+]);
 
 /** 적 definition ID를 선언 데이터로 해석하는 읽기 전용 catalog입니다. */
-export const INGAME_ENEMY_DEFINITION_BY_ID = Object.freeze({
-    [BASIC_CIRCLE_ENEMY_DATA.id]: BASIC_CIRCLE_ENEMY_DATA
-});
+export const INGAME_ENEMY_DEFINITION_BY_ID = Object.freeze(
+    Object.fromEntries([
+        ...INGAME_ENEMY_DEFINITIONS,
+        BASIC_CIRCLE_ENEMY_DATA
+    ].map((definition) => [definition.id, definition]))
+);

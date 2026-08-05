@@ -3,8 +3,10 @@ import {
     GPU_CIRCLE_BODY_FLOW,
     GPU_CIRCLE_BODY_IDENTITY,
     GPU_CIRCLE_BODY_META,
+    GPU_CIRCLE_BODY_RENDER_SHAPE,
     createGpuCircleBodyAbiStorage,
     decodeGpuCircleBodyFixedPoint,
+    normalizeGpuCircleBodyRenderShapeCode,
     readGpuCircleBody,
     unpackGpuCirclePhysicsMeta,
     writeGpuCircleBodyCounts,
@@ -51,7 +53,7 @@ const DEATH_EVENT_BYTE_SIZE = 16;
 const EVENT_READBACK_HEADER_BYTE_SIZE = 256;
 const DISPATCH_INDIRECT_BYTE_SIZE = 12;
 const DRAW_INDIRECT_BYTE_SIZE = 16;
-const BODY_RENDER_STYLE_STRIDE = 32;
+const BODY_RENDER_STYLE_STRIDE = GPU_CIRCLE_BODY_ABI.RENDER_STYLE.STRIDE;
 const FLOAT32_BYTES = 4;
 const MASS_EPSILON = 0.000001;
 const UINT32_MAX = 0xffffffff;
@@ -136,6 +138,14 @@ function requirePositiveFinite(value, label) {
     const number = Number(value);
     if (!Number.isFinite(number) || number <= 0) {
         throw new RangeError(`${label}은(는) 양의 유한 숫자여야 합니다.`);
+    }
+    return number;
+}
+
+function requirePositiveFloat32(value, label) {
+    const number = requirePositiveFinite(value, label);
+    if (!Number.isFinite(Math.fround(number))) {
+        throw new RangeError(`${label}은(는) float32 범위 안이어야 합니다.`);
     }
     return number;
 }
@@ -324,9 +334,19 @@ function normalizeFlowFieldAtlas(atlas) {
     if (!Array.isArray(atlas.stages) || atlas.stages.length !== fieldCount) {
         throw new TypeError('flow field stages는 fieldCount 길이의 배열이어야 합니다.');
     }
+    const cellSize = normalizeSize2(atlas.cellSize, 'flowFieldAtlas.cellSize');
+    const defaultTransitionRadius = Math.min(cellSize.x, cellSize.y) * 0.75;
+    const atlasTransitionRadius = atlas.transitionRadius === undefined
+        ? defaultTransitionRadius
+        : requirePositiveFloat32(
+            atlas.transitionRadius,
+            'flowFieldAtlas.transitionRadius'
+        );
     const stages = atlas.stages.map((stage, index) => {
         const column = stage?.goalCell?.column ?? stage?.goalCell?.x;
         const row = stage?.goalCell?.row ?? stage?.goalCell?.y;
+        const goalX = Number(stage?.goalPosition?.x);
+        const goalY = Number(stage?.goalPosition?.y);
         const nextFieldIndex = Number(stage?.nextFieldIndex ?? -1);
         if (!Number.isInteger(column)
             || !Number.isInteger(row)
@@ -336,12 +356,32 @@ function normalizeFlowFieldAtlas(atlas) {
             || row >= rows) {
             throw new RangeError(`flow field goalCell이 atlas 범위를 벗어났습니다: index=${index}`);
         }
+        if (!Number.isFinite(goalX)
+            || !Number.isFinite(goalY)
+            || !Number.isFinite(Math.fround(goalX))
+            || !Number.isFinite(Math.fround(goalY))) {
+            throw new TypeError(
+                `flow field goalPosition은 유한한 float32여야 합니다: index=${index}`
+            );
+        }
         if (!Number.isInteger(nextFieldIndex)
             || nextFieldIndex < -1
             || nextFieldIndex >= fieldCount) {
             throw new RangeError(`flow field nextFieldIndex가 유효하지 않습니다: index=${index}`);
         }
-        return Object.freeze({ column, row, nextFieldIndex });
+        const transitionRadius = stage?.transitionRadius === undefined
+            ? atlasTransitionRadius
+            : requirePositiveFloat32(
+                stage.transitionRadius,
+                `flowFieldAtlas.stages[${index}].transitionRadius`
+            );
+        return Object.freeze({
+            column,
+            row,
+            goalPosition: Object.freeze({ x: goalX, y: goalY }),
+            nextFieldIndex,
+            transitionRadius
+        });
     });
     const originX = Number(atlas.origin?.x ?? 0);
     const originY = Number(atlas.origin?.y ?? 0);
@@ -354,7 +394,7 @@ function normalizeFlowFieldAtlas(atlas) {
         rows,
         fieldCount,
         origin: Object.freeze({ x: originX, y: originY }),
-        cellSize: normalizeSize2(atlas.cellSize, 'flowFieldAtlas.cellSize'),
+        cellSize,
         directions,
         stages: Object.freeze(stages)
     });
@@ -373,20 +413,41 @@ function writeRenderStyle(view, index, body) {
     for (let component = 0; component < 4; component++) {
         const fallback = component === 3 ? 1 : 0;
         const value = Math.min(1, normalizeNonNegativeFinite(components[component], fallback));
-        view.setFloat32(offset + (component * FLOAT32_BYTES), value, LITTLE_ENDIAN);
+        view.setFloat32(
+            offset + GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_RED
+                + (component * FLOAT32_BYTES),
+            value,
+            LITTLE_ENDIAN
+        );
     }
     const radiusScale = requirePositiveFinite(
         body.renderStyle?.radiusScale ?? body.radiusScale ?? 1,
         'renderStyle.radiusScale'
     );
-    view.setFloat32(offset + 16, radiusScale, LITTLE_ENDIAN);
+    view.setFloat32(
+        offset + GPU_CIRCLE_BODY_ABI.RENDER_STYLE.RADIUS_SCALE,
+        radiusScale,
+        LITTLE_ENDIAN
+    );
     view.setUint32(
-        offset + 20,
+        offset + GPU_CIRCLE_BODY_ABI.RENDER_STYLE.VISIBLE,
         body.renderStyle?.visible === false || body.visible === false ? 0 : 1,
         LITTLE_ENDIAN
     );
-    view.setUint32(offset + 24, 0, LITTLE_ENDIAN);
-    view.setUint32(offset + 28, 0, LITTLE_ENDIAN);
+    view.setUint32(
+        offset + GPU_CIRCLE_BODY_ABI.RENDER_STYLE.SHAPE_CODE,
+        normalizeGpuCircleBodyRenderShapeCode(
+            body.renderStyle?.shapeCode
+                ?? body.shapeCode
+                ?? GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + GPU_CIRCLE_BODY_ABI.RENDER_STYLE.RESERVED,
+        0,
+        LITTLE_ENDIAN
+    );
 }
 
 const TOMBSTONE_BODY = Object.freeze({
@@ -2851,10 +2912,10 @@ export class GpuCircleBodySimulation {
             const offset = COMPUTE_PARAMS_FLOW_STAGE_OFFSET
                 + (index * COMPUTE_PARAMS_FLOW_STAGE_STRIDE);
             const stage = this.flowFieldAtlas.stages[index];
-            view.setUint32(offset, stage?.column ?? 0, LITTLE_ENDIAN);
-            view.setUint32(offset + 4, stage?.row ?? 0, LITTLE_ENDIAN);
+            view.setFloat32(offset, stage?.goalPosition.x ?? 0, LITTLE_ENDIAN);
+            view.setFloat32(offset + 4, stage?.goalPosition.y ?? 0, LITTLE_ENDIAN);
             view.setInt32(offset + 8, stage?.nextFieldIndex ?? -1, LITTLE_ENDIAN);
-            view.setUint32(offset + 12, 0, LITTLE_ENDIAN);
+            view.setFloat32(offset + 12, stage?.transitionRadius ?? 0, LITTLE_ENDIAN);
         }
         view.setUint32(
             COMPUTE_PARAMS_MAX_CONTACTS_OFFSET,

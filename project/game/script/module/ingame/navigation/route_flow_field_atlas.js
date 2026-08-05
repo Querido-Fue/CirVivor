@@ -60,13 +60,14 @@ function hashByte(hash, byte) {
 }
 
 /**
- * route topology와 blocked plane의 cache/debug content key를 만듭니다.
+ * route topology, authored float32 waypoint 위치와 blocked plane의 cache/debug key를 만듭니다.
  * @param {object} grid - navigation grid입니다.
  * @param {object[]} routes - 컴파일된 route입니다.
  * @returns {string} deterministic content key입니다.
  */
 function createContentKey(grid, routes) {
     let hash = 0x811c9dc5;
+    const floatBits = new DataView(new ArrayBuffer(Float32Array.BYTES_PER_ELEMENT));
     for (let index = 0; index < grid.blocked.length; index++) {
         hash = hashByte(hash, grid.blocked[index]);
     }
@@ -84,6 +85,12 @@ function createContentKey(grid, routes) {
                 hash = hashByte(hash, value >>> 16);
                 hash = hashByte(hash, value >>> 24);
             }
+            for (const value of [waypoint.x, waypoint.y]) {
+                floatBits.setFloat32(0, value, true);
+                for (let byteIndex = 0; byteIndex < Float32Array.BYTES_PER_ELEMENT; byteIndex++) {
+                    hash = hashByte(hash, floatBits.getUint8(byteIndex));
+                }
+            }
         }
     }
     return `${grid.cols}x${grid.rows}-${hash.toString(16).padStart(8, '0')}`;
@@ -91,7 +98,8 @@ function createContentKey(grid, routes) {
 
 /**
  * 현재 JS/WASM flow-field 결과를 route waypoint별 GPU texture layer로 컴파일합니다.
- * layer texel은 `RG = direction`, stage metadata는 goal cell과 다음 layer를 보유합니다.
+ * layer texel은 `RG = direction`, stage metadata는 flow 생성용 goal cell과 GPU
+ * 전환용 authored goal position 및 다음 layer를 보유합니다.
  * 첫 waypoint는 spawn 위치이므로 각 route의 첫 field는 waypoint index 1을 목표로 합니다.
  * @param {object} tileMap - 현재 TileMap입니다.
  * @returns {object} immutable metadata와 caller-owned Float32 direction plane입니다.
@@ -116,6 +124,8 @@ export function createRouteFlowFieldAtlas(tileMap) {
             const waypoint = route.waypoints[waypointIndex];
             const column = waypoint?.column;
             const row = waypoint?.row;
+            const goalX = Number(waypoint?.x);
+            const goalY = Number(waypoint?.y);
             if (!Number.isInteger(column)
                 || !Number.isInteger(row)
                 || column < 0
@@ -125,6 +135,14 @@ export function createRouteFlowFieldAtlas(tileMap) {
                 || grid.blocked[(row * grid.cols) + column] !== 0) {
                 throw new RangeError(
                     `route waypoint는 보행 가능한 navigation cell이어야 합니다: ${route.pathId}/${waypointIndex}`
+                );
+            }
+            if (!Number.isFinite(goalX)
+                || !Number.isFinite(goalY)
+                || !Number.isFinite(Math.fround(goalX))
+                || !Number.isFinite(Math.fround(goalY))) {
+                throw new RangeError(
+                    `route waypoint world 위치는 유한한 float32여야 합니다: ${route.pathId}/${waypointIndex}`
                 );
             }
             if (pendingFields.length >= ROUTE_FLOW_FIELD_MAX_LAYERS) {
@@ -149,8 +167,8 @@ export function createRouteFlowFieldAtlas(tileMap) {
                 waypointIndex,
                 goalCell: Object.freeze({ column, row }),
                 goalPosition: Object.freeze({
-                    x: Number(waypoint.x),
-                    y: Number(waypoint.y)
+                    x: goalX,
+                    y: goalY
                 }),
                 nextFieldIndex: ROUTE_FLOW_FIELD_NO_NEXT_LAYER
             });

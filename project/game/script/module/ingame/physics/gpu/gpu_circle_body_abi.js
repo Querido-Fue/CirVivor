@@ -72,7 +72,36 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         CHAINING: 20,
         DAMAGE_REPORT_ID: 24,
         SLOW_TIMER: 28
+    }),
+    /**
+     * presentation 전용 32-byte storage layout입니다. 물리/시뮬레이션 ABI와
+     * 분리되지만 host writer와 render WGSL이 이 offset을 함께 사용합니다.
+     */
+    RENDER_STYLE: Object.freeze({
+        STRIDE: 32,
+        COLOR_RED: 0,
+        COLOR_GREEN: 4,
+        COLOR_BLUE: 8,
+        COLOR_ALPHA: 12,
+        RADIUS_SCALE: 16,
+        VISIBLE: 20,
+        SHAPE_CODE: 24,
+        RESERVED: 28
     })
+});
+
+/**
+ * GPU circle body presentation의 분석형 silhouette 코드입니다.
+ * 0은 일반 body/projectile의 기존 circle presentation 호환값입니다.
+ */
+export const GPU_CIRCLE_BODY_RENDER_SHAPE = Object.freeze({
+    CIRCLE: 0,
+    SQUARE: 1,
+    TRIANGLE: 2,
+    ARROW: 3,
+    PENTA: 4,
+    HEXA: 5,
+    GEN: 6
 });
 
 export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
@@ -302,6 +331,31 @@ function requireUint32(value, fieldName) {
         throw new RangeError(`${fieldName}은(는) uint32 범위의 정수여야 합니다.`);
     }
     return value >>> 0;
+}
+
+/**
+ * render style의 지원 silhouette code를 검증합니다.
+ * @param {*} value - uint32 presentation code입니다.
+ * @param {string} [fieldName='renderStyle.shapeCode'] - 오류 표기 이름입니다.
+ * @returns {number} 검증된 shape code입니다.
+ */
+export function normalizeGpuCircleBodyRenderShapeCode(
+    value = GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE,
+    fieldName = 'renderStyle.shapeCode'
+) {
+    const shapeCode = requireUint32(value, fieldName);
+    switch (shapeCode) {
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.SQUARE:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.TRIANGLE:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.ARROW:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.GEN:
+            return shapeCode;
+        default:
+            throw new RangeError(`${fieldName}에 지원하지 않는 shape code가 있습니다: ${shapeCode}`);
+    }
 }
 
 /**

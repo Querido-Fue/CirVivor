@@ -1,9 +1,20 @@
 import {
-    GPU_CIRCLE_BODY_COLLISION_LAYER
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_CIRCLE_BODY_RENDER_SHAPE
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 
 export const GPU_ENEMY_WORLD_KIND_ID = 'enemy';
 export const GPU_ENEMY_FIRST_TARGET_WAYPOINT_INDEX = 1;
+
+const GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE = Object.freeze({
+    circle: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE,
+    square: GPU_CIRCLE_BODY_RENDER_SHAPE.SQUARE,
+    triangle: GPU_CIRCLE_BODY_RENDER_SHAPE.TRIANGLE,
+    arrow: GPU_CIRCLE_BODY_RENDER_SHAPE.ARROW,
+    penta: GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA,
+    hexa: GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA,
+    gen: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+});
 
 function requirePositiveFinite(value, label) {
     const number = Number(value);
@@ -26,6 +37,18 @@ function requireNonEmptyString(value, label) {
         throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
     }
     return value;
+}
+
+function resolveEnemyRenderShapeCode(shapeType) {
+    // shapeType 도입 전 definition은 물리 ABI의 기존 원형 render 계약을 유지합니다.
+    if (shapeType === undefined) {
+        return GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE;
+    }
+    const type = requireNonEmptyString(shapeType, 'enemy shapeType');
+    if (!Object.prototype.hasOwnProperty.call(GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE, type)) {
+        throw new RangeError(`지원하지 않는 GPU enemy shapeType입니다: ${type}`);
+    }
+    return GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE[type];
 }
 
 function normalizeColor(source) {
@@ -73,17 +96,24 @@ export function createGpuEnemySpawnIntent(options) {
     const directionX = requireFinite(next?.x, 'route.next.x') - entryX;
     const directionY = requireFinite(next?.y, 'route.next.y') - entryY;
     const directionLength = Math.hypot(directionX, directionY);
-    if (!(directionLength > 0)) {
+    if (!Number.isFinite(directionLength) || !(directionLength > 0)) {
         throw new RangeError('route의 첫 두 waypoint는 서로 다른 위치여야 합니다.');
     }
+    const directionUnitX = directionX / directionLength;
+    const directionUnitY = directionY / directionLength;
     const laneOffsetTiles = requireFinite(options.laneOffsetTiles ?? 0, 'laneOffsetTiles');
-    const normalX = -directionY / directionLength;
-    const normalY = directionX / directionLength;
+    const normalX = -directionUnitY;
+    const normalY = directionUnitX;
     const collisionWeight = requirePositiveFinite(
         definition.collisionWeight,
         'collisionWeight'
     );
+    const flowSpeed = requirePositiveFinite(
+        definition.moveSpeedTilesPerSecond,
+        'moveSpeedTilesPerSecond'
+    );
     const color = normalizeColor(definition.colorRgba);
+    const shapeCode = resolveEnemyRenderShapeCode(definition.shapeType);
     const waveId = options.waveId === undefined || options.waveId === null
         ? null
         : requireNonEmptyString(options.waveId, 'waveId');
@@ -105,7 +135,10 @@ export function createGpuEnemySpawnIntent(options) {
             x: entryX + (normalX * laneOffsetTiles),
             y: entryY + (normalY * laneOffsetTiles)
         }),
-        velocity: Object.freeze({ x: 0, y: 0 }),
+        velocity: Object.freeze({
+            x: directionUnitX * flowSpeed,
+            y: directionUnitY * flowSpeed
+        }),
         radius: requirePositiveFinite(
             definition.collisionRadiusTiles,
             'collisionRadiusTiles'
@@ -121,14 +154,12 @@ export function createGpuEnemySpawnIntent(options) {
         health: requirePositiveFinite(definition.maxHealth ?? 1, 'maxHealth'),
         lifetime: -1,
         alive: true,
-        flowSpeed: requirePositiveFinite(
-            definition.moveSpeedTilesPerSecond,
-            'moveSpeedTilesPerSecond'
-        ),
+        flowSpeed,
         renderStyle: Object.freeze({
             color,
             radiusScale: requirePositiveFinite(definition.radiusScale ?? 1, 'radiusScale'),
-            visible: true
+            visible: true,
+            shapeCode
         })
     });
 }

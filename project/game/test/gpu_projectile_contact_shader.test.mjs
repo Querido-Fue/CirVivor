@@ -41,8 +41,19 @@ assert.match(compute, /@group\(3\) @binding\(1\)[^;]+contacts: ContactBuffer;/);
 assert.match(compute, /@group\(3\) @binding\(2\)[^;]+applied_events: AppliedEventBuffer;/);
 assert.match(compute, /@group\(3\) @binding\(3\)[^;]+death_events: DeathEventBuffer;/);
 
-// 기존 flow-stage uniform 뒤에만 네 필드를 append해 이전 offset을 보존합니다.
+// flow stage는 기존 16바이트 stride에서 authored 좌표·반경을 보존합니다.
+assert.match(
+    compute,
+    /struct FlowStage \{\s*goal_position: vec2f,\s*next_field_index: i32,\s*transition_radius: f32,\s*\}/
+);
 assert.match(compute, /flow_stages: array<FlowStage, 256>,\s*max_contacts: u32,\s*max_events: u32,\s*max_death_events: u32,\s*maximum_body_radius: f32,/);
+assert.match(compute, /fn segment_intersects_transition_circle\(/);
+assert.match(
+    compute,
+    /segment_intersects_transition_circle\([\s\S]*?temporaries\.values\[body_id\]\.previous_position,[\s\S]*?current,[\s\S]*?stage\.goal_position,[\s\S]*?stage\.transition_radius/
+);
+assert.match(compute, /direction = stage\.goal_position - current;/);
+assert.doesNotMatch(compute, /goal_cell/);
 
 // 센서/레이어/상대 collision mask, previous-overlap 억제와 closest-only를 보존합니다.
 assert.match(compute, /fn body_sensor_mask\(packed_meta: u32\)[\s\S]*?packed_meta >> 16u/);

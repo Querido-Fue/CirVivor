@@ -6,6 +6,10 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 const { GpuCircleBodySimulation } = await loadGameModule(
     'ingame/physics/gpu/gpu_circle_body_simulation.js'
 );
+const {
+    GPU_CIRCLE_BODY_ABI,
+    GPU_CIRCLE_BODY_RENDER_SHAPE
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const gameModuleGlobal = GpuCircleBodySimulation.constructor('return globalThis')();
 const { createTileMap } = await loadGameModule('ingame/map/tile_map.js');
 const { createRouteFlowFieldAtlas } = await loadGameModule(
@@ -35,6 +39,33 @@ function createBody(x) {
         collisionMask: 1,
         alive: true
     };
+}
+
+function createFlowFieldAtlasFixture({
+    goalPosition = { x: 0.25, y: 0.75 },
+    atlasTransitionRadius,
+    stageTransitionRadius
+} = {}) {
+    const atlas = {
+        cols: 1,
+        rows: 1,
+        fieldCount: 1,
+        origin: { x: 0, y: 0 },
+        cellSize: { x: 2, y: 4 },
+        directions: new gameModuleGlobal.Float32Array([0, 0]),
+        stages: [{
+            goalCell: { column: 0, row: 0 },
+            goalPosition,
+            nextFieldIndex: -1,
+            ...(stageTransitionRadius === undefined
+                ? {}
+                : { transitionRadius: stageTransitionRadius })
+        }]
+    };
+    if (atlasTransitionRadius !== undefined) {
+        atlas.transitionRadius = atlasTransitionRadius;
+    }
+    return atlas;
 }
 
 function installFakeWebGpuGlobals() {
@@ -724,6 +755,70 @@ test('unsupported WebGPU는 spawn 성공으로 오인하지 않고 명시적으�
     assert.equal(simulation.getStatus().state, 'unavailable');
 });
 
+test('render style shapeCode는 byte 24에 기록되고 tombstone/reuse에서 circle 기본값으로 초기화된다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        const first = simulation.spawnBodies([{
+            ...createBody(1),
+            entityId: 7,
+            incarnation: 1,
+            renderStyle: {
+                color: [1, 0.2, 0.1, 1],
+                radiusScale: 1,
+                visible: true,
+                shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA
+            }
+        }]);
+        assert.equal(first.accepted, 1);
+        const styleBuffer = device.buffers.get('cirvivor-gpu-circle-render-styles');
+        const styleView = new DataView(styleBuffer.data);
+        assert.equal(
+            styleView.getUint32(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.SHAPE_CODE, true),
+            GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA
+        );
+        assert.equal(
+            styleView.getUint32(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.RESERVED, true),
+            0
+        );
+
+        assert.deepEqual({ ...simulation.despawnBodies([first.handles[0]]) }, {
+            removed: 1,
+            rejected: 0,
+            capacity: 1
+        });
+        assert.equal(
+            styleView.getUint32(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.SHAPE_CODE, true),
+            GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+        );
+
+        const reused = simulation.spawnBodies([{
+            ...createBody(2),
+            entityId: 7,
+            incarnation: 2
+        }]);
+        assert.equal(reused.accepted, 1);
+        assert.equal(reused.handles[0].entityId, 7);
+        assert.equal(reused.handles[0].incarnation, 2);
+        assert.equal(
+            styleView.getUint32(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.SHAPE_CODE, true),
+            GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+        );
+        assert.equal(
+            styleView.getUint32(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.RESERVED, true),
+            0
+        );
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
 test('incremental spawn은 stable entity handle을 강제하고 실패 시 host 상태를 보존한다', () => {
     const simulation = new GpuCircleBodySimulation(createUnavailablePlatformPort(), {
         capacity: 2,
@@ -831,6 +926,72 @@ test('flow body는 기존 JS/WASM atlas 범위와 per-body speed 계약을 검�
         capacity: 1,
         reason: 'unavailable'
     });
+});
+
+test('flow stage는 authored goalPosition과 transition radius를 16-byte uniform에 보존한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 },
+        flowFieldAtlas: createFlowFieldAtlasFixture()
+    });
+    try {
+        assert.equal(simulation.init(), true);
+        assert.deepEqual(
+            { ...simulation.flowFieldAtlas.stages[0].goalPosition },
+            { x: 0.25, y: 0.75 }
+        );
+        assert.equal(simulation.flowFieldAtlas.stages[0].transitionRadius, 1.5);
+
+        const params = new DataView(
+            device.buffers.get('cirvivor-gpu-circle-compute-params').data
+        );
+        const flowStageOffset = 96;
+        assert.equal(params.getFloat32(flowStageOffset, true), 0.25);
+        assert.equal(params.getFloat32(flowStageOffset + 4, true), 0.75);
+        assert.equal(params.getInt32(flowStageOffset + 8, true), -1);
+        assert.equal(params.getFloat32(flowStageOffset + 12, true), 1.5);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+
+    const atlasOverride = new GpuCircleBodySimulation(createUnavailablePlatformPort(), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 },
+        flowFieldAtlas: createFlowFieldAtlasFixture({ atlasTransitionRadius: 1.25 })
+    });
+    const stageOverride = new GpuCircleBodySimulation(createUnavailablePlatformPort(), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 },
+        flowFieldAtlas: createFlowFieldAtlasFixture({
+            atlasTransitionRadius: 1.25,
+            stageTransitionRadius: 0.5
+        })
+    });
+    assert.equal(atlasOverride.flowFieldAtlas.stages[0].transitionRadius, 1.25);
+    assert.equal(stageOverride.flowFieldAtlas.stages[0].transitionRadius, 0.5);
+    atlasOverride.destroy();
+    stageOverride.destroy();
+
+    assert.throws(() => new GpuCircleBodySimulation(createUnavailablePlatformPort(), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 },
+        flowFieldAtlas: createFlowFieldAtlasFixture({
+            goalPosition: { x: Number.NaN, y: 0.75 }
+        })
+    }), /goalPosition은 유한/);
+    assert.throws(() => new GpuCircleBodySimulation(createUnavailablePlatformPort(), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 },
+        flowFieldAtlas: createFlowFieldAtlasFixture({ stageTransitionRadius: 0 })
+    }), /transitionRadius/);
 });
 
 test('contact/event capacity 기본값과 override 상한을 생성 시점에 고정한다', () => {

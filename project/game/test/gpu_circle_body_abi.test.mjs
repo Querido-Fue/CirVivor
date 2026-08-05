@@ -13,6 +13,7 @@ const {
     GPU_CIRCLE_BODY_LAYER,
     GPU_CIRCLE_BODY_LIFETIME,
     GPU_CIRCLE_BODY_META,
+    GPU_CIRCLE_BODY_RENDER_SHAPE,
     GPU_CIRCLE_BODY_SIMULATION_FLAG,
     appendGpuCircleBodySpawn,
     createGpuCircleBodyAbiStorage,
@@ -20,6 +21,7 @@ const {
     decodeGpuCircleBodyFixedPoint,
     encodeGpuCircleBodyFixedPoint,
     normalizeGpuCircleBodyLifetime,
+    normalizeGpuCircleBodyRenderShapeCode,
     packGpuCirclePhysicsMeta,
     packGpuCircleSimulationMeta,
     readGpuCircleBody,
@@ -129,6 +131,32 @@ assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FLAGS, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.CHAINING, 20);
 assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_REPORT_ID, 24);
 assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.SLOW_TIMER, 28);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.STRIDE, 32);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_RED, 0);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_GREEN, 4);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_BLUE, 8);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_ALPHA, 12);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.RADIUS_SCALE, 16);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.VISIBLE, 20);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.SHAPE_CODE, 24);
+assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.RESERVED, 28);
+assert.deepEqual({ ...GPU_CIRCLE_BODY_RENDER_SHAPE }, {
+    CIRCLE: 0,
+    SQUARE: 1,
+    TRIANGLE: 2,
+    ARROW: 3,
+    PENTA: 4,
+    HEXA: 5,
+    GEN: 6
+});
+assert.equal(
+    normalizeGpuCircleBodyRenderShapeCode(),
+    GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+);
+assert.equal(
+    normalizeGpuCircleBodyRenderShapeCode(GPU_CIRCLE_BODY_RENDER_SHAPE.GEN),
+    GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+);
 
 // physics/simulation meta는 low8 layer를 공유하고 collision/sensor/flags byte를 분리합니다.
 const physicsMeta = packGpuCirclePhysicsMeta(0xa5, 0x81);
@@ -556,6 +584,7 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
 assertThrowsNamed(() => packGpuCirclePhysicsMeta(256, 1), 'RangeError');
 assertThrowsNamed(() => packGpuCirclePhysicsMeta(1, 1, 256), 'RangeError');
 assertThrowsNamed(() => packGpuCircleSimulationMeta(1, 256), 'RangeError');
+assertThrowsNamed(() => normalizeGpuCircleBodyRenderShapeCode(7), 'RangeError');
 assertThrowsNamed(() => normalizeGpuCircleBodyLifetime(-2), 'RangeError');
 assertThrowsNamed(
     () => normalizeGpuCircleBodyLifetime(Number.POSITIVE_INFINITY),

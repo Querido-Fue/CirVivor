@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { loadGameModule } from './support/source_module_loader.mjs';
 
-const { BASIC_CIRCLE_ENEMY_DATA } = await loadGameModule(
+const { BASIC_SQUARE_ENEMY_DATA } = await loadGameModule(
     'data/object/enemy/basic_circle_enemy_data.js'
 );
 const { CORRIDOR_EIGHT_WAVE_01_DATA } = await loadGameModule(
@@ -27,7 +27,8 @@ const {
     'scene/benchmark/gpu_benchmark_projectile_spawn_adapter.js'
 );
 const {
-    GPU_CIRCLE_BODY_COLLISION_LAYER
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_CIRCLE_BODY_RENDER_SHAPE
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
 function handleKey(handle) {
@@ -296,8 +297,8 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.ok(Number.isSafeInteger(body.entityId) && body.entityId > 0);
     assert.equal(body.incarnation, 1);
     assert.equal(body.kindId, 'enemy');
-    assert.equal(body.definitionId, BASIC_CIRCLE_ENEMY_DATA.id);
-    assert.equal(body.enemyDefinitionId, BASIC_CIRCLE_ENEMY_DATA.id);
+    assert.equal(body.definitionId, BASIC_SQUARE_ENEMY_DATA.id);
+    assert.equal(body.enemyDefinitionId, BASIC_SQUARE_ENEMY_DATA.id);
     assert.equal(body.gateId, route.gateId);
     assert.equal(body.pathId, route.pathId);
     assert.equal(body.waypointIndex, 1);
@@ -313,11 +314,17 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     const laneOffset = waveGroup.laneOffsetsTiles[0];
     assert.equal(body.position.x, entry.x + ((-directionY / directionLength) * laneOffset));
     assert.equal(body.position.y, entry.y + ((directionX / directionLength) * laneOffset));
-    assert.equal(body.velocity.x, 0);
-    assert.equal(body.velocity.y, 0);
-    assert.equal(body.radius, BASIC_CIRCLE_ENEMY_DATA.collisionRadiusTiles);
-    assert.equal(body.inverseMass, 1 / BASIC_CIRCLE_ENEMY_DATA.collisionWeight);
-    assert.equal(body.flowSpeed, BASIC_CIRCLE_ENEMY_DATA.moveSpeedTilesPerSecond);
+    assert.equal(
+        body.velocity.x,
+        (directionX / directionLength) * BASIC_SQUARE_ENEMY_DATA.moveSpeedTilesPerSecond
+    );
+    assert.equal(
+        body.velocity.y,
+        (directionY / directionLength) * BASIC_SQUARE_ENEMY_DATA.moveSpeedTilesPerSecond
+    );
+    assert.equal(body.radius, BASIC_SQUARE_ENEMY_DATA.collisionRadiusTiles);
+    assert.equal(body.inverseMass, 1 / BASIC_SQUARE_ENEMY_DATA.collisionWeight);
+    assert.equal(body.flowSpeed, BASIC_SQUARE_ENEMY_DATA.moveSpeedTilesPerSecond);
     assert.equal(body.layerMask, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
     assert.equal(body.bodyLayer, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
     assert.equal(
@@ -328,12 +335,13 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
     );
     assert.equal(body.sensorMask, 0);
-    assert.equal(body.health, BASIC_CIRCLE_ENEMY_DATA.maxHealth);
+    assert.equal(body.health, BASIC_SQUARE_ENEMY_DATA.maxHealth);
     assert.equal(body.lifetime, -1);
     assert.equal(body.alive, true);
-    assert.deepEqual(Array.from(body.renderStyle.color), Array.from(BASIC_CIRCLE_ENEMY_DATA.colorRgba));
-    assert.equal(body.renderStyle.radiusScale, BASIC_CIRCLE_ENEMY_DATA.radiusScale);
+    assert.deepEqual(Array.from(body.renderStyle.color), Array.from(BASIC_SQUARE_ENEMY_DATA.colorRgba));
+    assert.equal(body.renderStyle.radiusScale, BASIC_SQUARE_ENEMY_DATA.radiusScale);
     assert.equal(body.renderStyle.visible, true);
+    assert.equal(body.renderStyle.shapeCode, GPU_CIRCLE_BODY_RENDER_SHAPE.SQUARE);
 
     const handle = {
         entityId: body.entityId,
@@ -345,7 +353,7 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(registry.getActiveCount('enemy'), 1);
     assert.equal(endpoint.getStatus().activeCount, 1);
     const entityView = registry.copyEntityView(handle, {});
-    assert.equal(entityView.definitionId, BASIC_CIRCLE_ENEMY_DATA.id);
+    assert.equal(entityView.definitionId, BASIC_SQUARE_ENEMY_DATA.id);
     assert.equal(entityView.createdAtTick, 1);
     assert.equal(entityView.metadata.gateId, route.gateId);
     assert.equal(entityView.metadata.pathId, route.pathId);

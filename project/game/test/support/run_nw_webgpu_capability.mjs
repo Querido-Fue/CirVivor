@@ -6,16 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 const RUN_DIRECTORY_PREFIX = 'cirvivor-webgpu-capability-';
 const RUN_TIMEOUT_MS = 60_000;
-const PRODUCTION_GPU_MODULE_FILES = Object.freeze([
-    'gpu_body_presentation_clock.js',
-    'gpu_circle_body_abi.js',
-    'gpu_circle_body_simulation.js',
-    'gpu_collision_shaders.js'
-]);
 const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/basic_circle_enemy_data.js',
     'data/object/enemy/enemy_ai_data.js',
     'data/object/enemy/enemy_catalog_data.js',
+    'data/object/enemy/enemy_shape_geometry_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'module/ingame/contract/tile_navigation_contract.js',
     'module/ingame/gpu_simulation_endpoint.js',
@@ -142,7 +137,6 @@ async function prepareIsolatedNwRuntime(projectDirectory, runDirectory) {
 async function prepareHarnessApp(
     harnessDirectory,
     gameScriptDirectory,
-    productionGpuDirectory,
     runDirectory
 ) {
     const appDirectory = path.join(runDirectory, 'app');
@@ -174,12 +168,6 @@ async function prepareHarnessApp(
     );
     const productionDirectory = path.join(appDirectory, 'production');
     await fs.mkdir(productionDirectory, { recursive: true });
-    for (const fileName of PRODUCTION_GPU_MODULE_FILES) {
-        await linkRuntimeFile(
-            path.join(productionGpuDirectory, fileName),
-            path.join(productionDirectory, fileName)
-        );
-    }
     for (const relativePath of PRODUCTION_SCRIPT_MODULE_FILES) {
         const destinationPath = path.join(
             productionDirectory,
@@ -217,15 +205,6 @@ async function runHarness() {
         'test',
         'nw_webgpu_capability'
     );
-    const productionGpuDirectory = path.join(
-        projectDirectory,
-        'game',
-        'script',
-        'module',
-        'ingame',
-        'physics',
-        'gpu'
-    );
     const gameScriptDirectory = path.join(projectDirectory, 'game', 'script');
     const runDirectory = await fs.mkdtemp(path.join(os.tmpdir(), RUN_DIRECTORY_PREFIX));
     const resultPath = path.join(runDirectory, 'result.json');
@@ -236,9 +215,6 @@ async function runHarness() {
             fs.access(path.join(harnessDirectory, 'package.json')),
             fs.access(path.join(harnessDirectory, 'index.html')),
             fs.access(path.join(harnessDirectory, 'runner.js')),
-            ...PRODUCTION_GPU_MODULE_FILES.map((fileName) => (
-                fs.access(path.join(productionGpuDirectory, fileName))
-            )),
             ...PRODUCTION_SCRIPT_MODULE_FILES.map((relativePath) => (
                 fs.access(path.join(gameScriptDirectory, ...relativePath.split('/')))
             ))
@@ -247,7 +223,6 @@ async function runHarness() {
         const appDirectory = await prepareHarnessApp(
             harnessDirectory,
             gameScriptDirectory,
-            productionGpuDirectory,
             runDirectory
         );
 

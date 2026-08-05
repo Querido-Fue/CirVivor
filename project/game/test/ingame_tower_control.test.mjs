@@ -54,6 +54,20 @@ function assertPointNearlyEqual(actual, expected, epsilon = 1e-9) {
     assert.ok(Math.abs(actual.y - expected.y) <= epsilon);
 }
 
+/**
+ * fixture 표준 애니메이션을 지정한 진행률까지 전진시킵니다.
+ * 실제 AnimationSystem과 달리 easing 식은 검증하지 않고 owner/variable 전달만 확인합니다.
+ * @param {{owner:object,properties:object,startValue:number}} record - fixture animation record입니다.
+ * @param {number} progress - 0~1 진행률입니다.
+ * @returns {void}
+ */
+function advanceCameraAnimation(record, progress) {
+    const clampedProgress = Math.max(0, Math.min(1, Number(progress) || 0));
+    const endValue = Number(record.properties.endValue);
+    record.owner[record.properties.variable] = record.startValue
+        + ((endValue - record.startValue) * clampedProgress);
+}
+
 const pressedDirections = new Set([
     INPUT_ACTION_IDS.MOVE_UP,
     INPUT_ACTION_IDS.MOVE_RIGHT
@@ -134,6 +148,11 @@ const gameSystem = new GameSystem({
             const record = {
                 owner,
                 properties: { ...properties },
+                startValue: Number(
+                    properties.startValue === 'current'
+                        ? owner[properties.variable]
+                        : properties.startValue
+                ),
                 retargets: [],
                 active: true
             };
@@ -144,6 +163,11 @@ const gameSystem = new GameSystem({
                     if (!record.active) return false;
                     record.retargets.push({ ...nextProperties });
                     record.properties = { ...record.properties, ...nextProperties };
+                    record.startValue = Number(
+                        record.properties.startValue === 'current'
+                            ? record.owner[record.properties.variable]
+                            : record.properties.startValue
+                    );
                     return true;
                 },
                 remove() {
@@ -439,18 +463,54 @@ assertPointNearlyEqual(
 
 wheelTotals.y = -1;
 gameSystem.update();
-assert.equal(cameraAnimations.length, 1);
-assert.equal(cameraAnimations[0].properties.variable, 'zoom');
-assert.equal(cameraAnimations[0].properties.duration, 0.4);
-assert.equal(cameraAnimations[0].properties.type, 'easeOutExpo');
+assert.equal(cameraAnimations.length, 2);
+const zoomAnimation = cameraAnimations.find(
+    ({ properties }) => properties.variable === 'zoom'
+);
+const followAnimation = cameraAnimations.find(
+    ({ properties }) => properties.variable === 'followBlend'
+);
+assert.ok(zoomAnimation);
+assert.ok(followAnimation);
+assert.equal(zoomAnimation.properties.duration, 0.4);
+assert.equal(zoomAnimation.properties.type, 'easeOutExpo');
+assert.equal(followAnimation.properties.duration, 0.4);
+assert.equal(followAnimation.properties.type, 'easeOutExpo');
+assert.equal(followAnimation.properties.endValue, 1);
 assert.ok(
     Math.abs(
         cameraZoomController.getTargetZoom()
         - (CAMERA_ZOOM_LIMITS.DEFAULT * 1.16)
     ) < 1e-12
 );
+assertPointNearlyEqual(
+    worldProjection.worldToViewport(27, 15, {}),
+    { x: 640, y: 360 }
+);
 
 worldProjection.zoom = 0.76;
+gameSystem.update();
+const preFollowTowerViewport = worldProjection.worldToViewport(
+    tower.renderPosition.x,
+    tower.renderPosition.y,
+    {}
+);
+assert.ok(Math.abs(preFollowTowerViewport.x - 640) > 1e-9);
+assert.ok(worldProjection.viewportToWorld(0, 360, {}).x < 0);
+
+advanceCameraAnimation(followAnimation, 0.5);
+gameSystem.update();
+const halfFollowTowerViewport = worldProjection.worldToViewport(
+    tower.renderPosition.x,
+    tower.renderPosition.y,
+    {}
+);
+assert.ok(
+    Math.abs(halfFollowTowerViewport.x - 640)
+        < Math.abs(preFollowTowerViewport.x - 640)
+);
+
+advanceCameraAnimation(followAnimation, 1);
 gameSystem.update();
 assertPointNearlyEqual(
     worldProjection.worldToViewport(
@@ -460,7 +520,6 @@ assertPointNearlyEqual(
     ),
     { x: 640, y: 360 }
 );
-assert.ok(worldProjection.viewportToWorld(0, 360, {}).x < 0);
 
 const followStartRenderX = tower.renderPosition.x;
 assert.equal(towerPhysicsBody.applyPositionCorrection(1, 0), true);
@@ -475,10 +534,55 @@ assertPointNearlyEqual(
     { x: 640, y: 360 }
 );
 
+const lastValidFollowPosition = { ...tower.renderPosition };
+const originalCopyCameraFollowPositionInto = tower.copyCameraFollowPositionInto;
+tower.copyCameraFollowPositionInto = (out = {}) => {
+    out.x = Number.NaN;
+    out.y = Number.POSITIVE_INFINITY;
+    return out;
+};
+gameSystem.update();
+assert.equal(followAnimation.retargets.length, 1);
+assert.equal(followAnimation.properties.endValue, 0);
+assertPointNearlyEqual(
+    worldProjection.viewportToWorld(640, 360, {}),
+    lastValidFollowPosition
+);
+
+advanceCameraAnimation(followAnimation, 0.5);
+gameSystem.update();
+assertPointNearlyEqual(
+    worldProjection.viewportToWorld(640, 360, {}),
+    {
+        x: 27 + ((lastValidFollowPosition.x - 27) * 0.5),
+        y: 15 + ((lastValidFollowPosition.y - 15) * 0.5)
+    }
+);
+
+tower.copyCameraFollowPositionInto = originalCopyCameraFollowPositionInto;
+gameSystem.update();
+assert.equal(followAnimation.retargets.length, 2);
+assert.equal(followAnimation.properties.endValue, 1);
+advanceCameraAnimation(followAnimation, 1);
+gameSystem.update();
+assertPointNearlyEqual(
+    worldProjection.worldToViewport(
+        tower.renderPosition.x,
+        tower.renderPosition.y,
+        {}
+    ),
+    { x: 640, y: 360 }
+);
+const recoveredFollowRetargetCount = followAnimation.retargets.length;
+
 wheelTotals.y = -2;
 gameSystem.update();
-assert.equal(cameraAnimations.length, 1);
-assert.equal(cameraAnimations[0].retargets.length, 1);
+assert.equal(cameraAnimations.length, 2);
+assert.equal(zoomAnimation.retargets.length, 1);
+assert.equal(
+    followAnimation.retargets.length,
+    recoveredFollowRetargetCount
+);
 assert.ok(
     Math.abs(
         cameraZoomController.getTargetZoom()
@@ -486,15 +590,46 @@ assert.ok(
     ) < 1e-12
 );
 gameSystem.update();
-assert.equal(cameraAnimations[0].retargets.length, 1);
+assert.equal(zoomAnimation.retargets.length, 1);
+assert.equal(
+    followAnimation.retargets.length,
+    recoveredFollowRetargetCount
+);
 
 wheelTotals.y = 0;
 gameSystem.update();
-assert.equal(cameraAnimations[0].retargets.length, 2);
+assert.equal(zoomAnimation.retargets.length, 2);
+assert.equal(
+    followAnimation.retargets.length,
+    recoveredFollowRetargetCount + 1
+);
+assert.equal(followAnimation.properties.endValue, 0);
 assert.equal(
     cameraZoomController.getTargetZoom(),
     CAMERA_ZOOM_LIMITS.DEFAULT
 );
+
+assertPointNearlyEqual(
+    worldProjection.worldToViewport(
+        tower.renderPosition.x,
+        tower.renderPosition.y,
+        {}
+    ),
+    { x: 640, y: 360 }
+);
+advanceCameraAnimation(followAnimation, 0.5);
+gameSystem.update();
+const halfResetTowerViewport = worldProjection.worldToViewport(
+    tower.renderPosition.x,
+    tower.renderPosition.y,
+    {}
+);
+assert.ok(
+    Math.abs(halfResetTowerViewport.x - 640)
+        < Math.abs(preFollowTowerViewport.x - 640)
+);
+assert.ok(Math.abs(halfResetTowerViewport.x - 640) > 1e-9);
+advanceCameraAnimation(followAnimation, 1);
 worldProjection.zoom = CAMERA_ZOOM_LIMITS.DEFAULT;
 gameSystem.update();
 assertPointNearlyEqual(
@@ -514,7 +649,7 @@ assert.equal(tower.active, false);
 assert.equal(core.active, false);
 assert.equal(towerController.isControlEnabled(), false);
 assert.equal(cameraZoomController.isControlEnabled(), false);
-assert.equal(cameraAnimations[0].active, false);
+assert.ok(cameraAnimations.every(({ active }) => active === false));
 assert.equal(towerPhysicsBody.isPhysicsEnabled(), false);
 assert.equal(corePhysicsBody.isPhysicsEnabled(), false);
 assert.equal(towerCollider.isCollisionEnabled(), false);

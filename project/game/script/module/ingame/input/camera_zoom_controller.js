@@ -33,8 +33,22 @@ function clampCameraZoom(value, fallback) {
 }
 
 /**
+ * 값을 맵 중심과 follow target 사이의 보간 범위로 제한합니다.
+ * @param {*} value - 제한할 blend 값입니다.
+ * @param {number} fallback - 유효하지 않을 때의 값입니다.
+ * @returns {number} 제한된 blend 값입니다.
+ */
+function clampCameraFollowBlend(value, fallback) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+        return fallback;
+    }
+    return Math.max(0, Math.min(1, numericValue));
+}
+
+/**
  * @class CameraZoomController
- * @description CAMERA_ZOOM을 Tower 추종 WorldCamera2D retarget 애니메이션으로 변환합니다.
+ * @description CAMERA_ZOOM과 맵 중심↔Tower 중심 전환을 별도 retarget 애니메이션으로 변환합니다.
  */
 export class CameraZoomController {
     /**
@@ -53,17 +67,31 @@ export class CameraZoomController {
         this.followTarget = assertCameraFollowTarget2D(followTarget);
         this.animationPort = animationPort;
         this.animationHandle = null;
+        this.followAnimationHandle = null;
         this.followPosition = { x: 0, y: 0 };
-        this.following = false;
+        this.followPositionCandidate = { x: 0, y: 0 };
+        this.hasFollowPosition = false;
         this.targetZoom = clampCameraZoom(
             camera.getZoom(),
             CAMERA_ZOOM_LIMITS.DEFAULT
         );
+        this.followBlend = this.targetZoom
+            > CAMERA_ZOOM_LIMITS.DEFAULT + CAMERA_FOLLOW_ZOOM_EPSILON
+            ? 1
+            : 0;
+        this.targetFollowBlend = this.followBlend;
         this.enabled = true;
         this.animationProperties = {
             variable: 'zoom',
             startValue: 'current',
             endValue: this.targetZoom,
+            duration: ZOOM_ANIMATION_DURATION_SECONDS,
+            type: ZOOM_ANIMATION_EASING
+        };
+        this.followAnimationProperties = {
+            variable: 'followBlend',
+            startValue: 'current',
+            endValue: this.targetFollowBlend,
             duration: ZOOM_ANIMATION_DURATION_SECONDS,
             type: ZOOM_ANIMATION_EASING
         };
@@ -109,7 +137,6 @@ export class CameraZoomController {
 
         this.targetZoom = nextTargetZoom;
         this.animationProperties.endValue = nextTargetZoom;
-        this.updateFollowTarget();
 
         if (this.animationHandle?.retarget?.(this.animationProperties) !== true) {
             this.animationHandle?.remove?.();
@@ -118,6 +145,7 @@ export class CameraZoomController {
                 this.animationProperties
             );
         }
+        this.updateFollowTarget();
         return INPUT_DISPOSITIONS.CONSUMED;
     }
 
@@ -127,8 +155,8 @@ export class CameraZoomController {
     }
 
     /**
-     * 확대 중 활성 follow target의 보간 좌표를 viewport 중앙에 배치합니다.
-     * 기본 zoom으로 복귀하면 맵 중심으로 되돌립니다.
+     * target zoom 상태에 따라 맵 중심↔Tower 중심 전환을 한 번만 retarget합니다.
+     * blend=1 이후에는 Tower의 보간 renderPosition을 기존처럼 즉시 추종합니다.
      * @returns {boolean} 카메라 중심 변경 여부입니다.
      */
     updateFollowTarget() {
@@ -136,40 +164,66 @@ export class CameraZoomController {
             return false;
         }
 
-        const currentZoom = clampCameraZoom(
-            this.camera.getZoom(),
-            CAMERA_ZOOM_LIMITS.DEFAULT
-        );
-        const shouldFollow = currentZoom
-            > CAMERA_ZOOM_LIMITS.DEFAULT + CAMERA_FOLLOW_ZOOM_EPSILON
-            || this.targetZoom
+        const targetRequestsFollow = this.targetZoom
             > CAMERA_ZOOM_LIMITS.DEFAULT + CAMERA_FOLLOW_ZOOM_EPSILON;
-        if (!shouldFollow) {
-            if (!this.following) {
-                return false;
+        let hasActiveFollowTarget = false;
+        if (targetRequestsFollow
+            && this.followTarget.isCameraFollowEnabled() === true) {
+            this.followPositionCandidate.x = Number.NaN;
+            this.followPositionCandidate.y = Number.NaN;
+            const positionResult = this.followTarget.copyCameraFollowPositionInto(
+                this.followPositionCandidate
+            );
+            const positionSource = positionResult
+                && positionResult !== this.followPositionCandidate
+                ? positionResult
+                : this.followPositionCandidate;
+            const worldX = Number(positionSource.x);
+            const worldY = Number(positionSource.y);
+            if (Number.isFinite(worldX) && Number.isFinite(worldY)) {
+                this.followPosition.x = worldX;
+                this.followPosition.y = worldY;
+                this.hasFollowPosition = true;
+                hasActiveFollowTarget = true;
             }
-            this.following = false;
-            return this.camera.resetViewCenter();
         }
-        if (this.followTarget.isCameraFollowEnabled() !== true) {
+
+        this.#retargetFollowBlend(hasActiveFollowTarget ? 1 : 0);
+        if (!this.hasFollowPosition) {
             return false;
         }
 
-        const positionResult = this.followTarget.copyCameraFollowPositionInto(
-            this.followPosition
+        return this.camera.centerOnWorldPoint(
+            this.followPosition.x,
+            this.followPosition.y,
+            clampCameraFollowBlend(this.followBlend, this.targetFollowBlend)
         );
-        if (positionResult && positionResult !== this.followPosition) {
-            this.followPosition.x = positionResult.x;
-            this.followPosition.y = positionResult.y;
-        }
-        const worldX = Number(this.followPosition.x);
-        const worldY = Number(this.followPosition.y);
-        if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) {
+    }
+
+    /**
+     * 맵 중심(0)과 Tower 중심(1) 사이의 전환 목표가 바뀔 때만 한 개의 handle을 재지정합니다.
+     * @param {*} value - 새 follow blend 목표입니다.
+     * @returns {boolean} 목표 또는 handle이 실제로 갱신됐는지 여부입니다.
+     * @private
+     */
+    #retargetFollowBlend(value) {
+        const nextTarget = clampCameraFollowBlend(value, this.targetFollowBlend);
+        if (Object.is(nextTarget, this.targetFollowBlend)) {
             return false;
         }
 
-        this.following = true;
-        return this.camera.centerOnWorldPoint(worldX, worldY);
+        this.targetFollowBlend = nextTarget;
+        this.followAnimationProperties.endValue = nextTarget;
+        if (this.followAnimationHandle?.retarget?.(
+            this.followAnimationProperties
+        ) !== true) {
+            this.followAnimationHandle?.remove?.();
+            this.followAnimationHandle = this.animationPort.animate(
+                this,
+                this.followAnimationProperties
+            );
+        }
+        return true;
     }
 
     /**
@@ -184,9 +238,13 @@ export class CameraZoomController {
         this.enabled = false;
         this.animationHandle?.remove?.();
         this.animationHandle = null;
+        this.followAnimationHandle?.remove?.();
+        this.followAnimationHandle = null;
         this.camera = null;
         this.followTarget = null;
         this.followPosition = null;
+        this.followPositionCandidate = null;
+        this.followAnimationProperties = null;
         this.animationPort = null;
     }
 }

@@ -2,14 +2,20 @@ import {
     GPU_COLLISION_COMPUTE_WGSL,
     GPU_COLLISION_INDIRECT_WGSL,
     GPU_COLLISION_RENDER_WGSL
-} from './production/gpu_collision_shaders.js';
+} from './production/script/module/ingame/physics/gpu/gpu_collision_shaders.js';
 import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
-} from './production/gpu_circle_body_abi.js';
-import { GpuCircleBodySimulation } from './production/gpu_circle_body_simulation.js';
+} from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
+import { GpuCircleBodySimulation } from './production/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js';
 import {
-    BASIC_CIRCLE_ENEMY_DATA
+    BASIC_ARROW_ENEMY_DATA,
+    BASIC_CIRCLE_ENEMY_DATA,
+    BASIC_GEN_ENEMY_DATA,
+    BASIC_HEXA_ENEMY_DATA,
+    BASIC_PENTA_ENEMY_DATA,
+    BASIC_SQUARE_ENEMY_DATA,
+    BASIC_TRIANGLE_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
 import { createTileMap } from './production/script/module/ingame/map/tile_map.js';
 import {
@@ -563,42 +569,53 @@ async function runProductionFlowAtlasSmoke(device) {
         markCanvasDrawn: () => false,
         markCanvasCleared: () => false
     };
-    const directions = new Float32Array([
-        // layer 0: every cell steers right.
-        1, 0, 1, 0,
-        1, 0, 1, 0,
-        // layer 1: every cell steers down in the +Y world axis.
-        0, 1, 0, 1,
-        0, 1, 0, 1
-    ]);
+    const flowAtlasCols = 2;
+    const flowAtlasRows = 2;
+    const fieldCount = 2;
+    const fixedDelta = 1 / 60;
+    const transitionRadius = 0.15;
+    const immediateGoal = Object.freeze({ x: 1, y: 1 });
+    const finalGoal = Object.freeze({ x: 6.5, y: 1.5 });
+    const directions = new Float32Array(
+        flowAtlasCols * flowAtlasRows * fieldCount * 2
+    );
+    for (let fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++) {
+        for (let cellIndex = 0; cellIndex < flowAtlasCols * flowAtlasRows; cellIndex++) {
+            directions[((fieldIndex * flowAtlasCols * flowAtlasRows) + cellIndex) * 2] = 1;
+        }
+    }
     const simulation = new GpuCircleBodySimulation(platformPort, {
-        capacity: 2,
-        worldSize: { x: 2, y: 2 },
+        capacity: 3,
+        worldSize: { x: 8, y: 8 },
         gridCellSize: { x: 1, y: 1 },
         flowFieldAtlas: {
-            cols: 2,
-            rows: 2,
-            fieldCount: 2,
+            cols: flowAtlasCols,
+            rows: flowAtlasRows,
+            fieldCount,
             origin: { x: 0, y: 0 },
-            cellSize: { x: 1, y: 1 },
+            cellSize: { x: 4, y: 4 },
             directions,
             stages: [
                 {
-                    goalCell: { column: 1, row: 0 },
+                    goalCell: { column: 0, row: 0 },
+                    goalPosition: immediateGoal,
+                    transitionRadius,
                     nextFieldIndex: 1
                 },
                 {
-                    goalCell: { column: 1, row: 1 },
+                    goalCell: { column: 1, row: 0 },
+                    goalPosition: finalGoal,
+                    transitionRadius,
                     nextFieldIndex: -1
                 }
             ]
         }
     });
-    const fixedDelta = 1 / 60;
-    const flowSpeed = 6;
     const initialBodies = [
         {
-            position: { x: 0.5, y: 0.5 },
+            entityId: 6101,
+            incarnation: 1,
+            position: immediateGoal,
             velocity: { x: 0, y: 0 },
             radius: 0.1,
             inverseMass: 1,
@@ -607,11 +624,13 @@ async function runProductionFlowAtlasSmoke(device) {
             alive: true,
             useFlow: true,
             flowFieldIndex: 0,
-            flowSpeed
+            flowSpeed: 6
         },
         {
-            position: { x: 1.5, y: 0.5 },
-            velocity: { x: 0, y: 0 },
+            entityId: 6102,
+            incarnation: 1,
+            position: { x: 0, y: immediateGoal.y },
+            velocity: { x: 120, y: 0 },
             radius: 0.1,
             inverseMass: 1,
             layerMask: 1,
@@ -619,87 +638,132 @@ async function runProductionFlowAtlasSmoke(device) {
             alive: true,
             useFlow: true,
             flowFieldIndex: 0,
-            flowSpeed
+            flowSpeed: 120
+        },
+        {
+            entityId: 6103,
+            incarnation: 1,
+            position: finalGoal,
+            velocity: { x: 4, y: -3 },
+            radius: 0.1,
+            inverseMass: 1,
+            layerMask: 1,
+            collisionMask: 0,
+            alive: true,
+            useFlow: true,
+            flowFieldIndex: 1,
+            flowSpeed: 6
         }
     ];
+    const findBody = (bodies, entityId, label) => {
+        const body = bodies.find((candidate) => candidate.entityId === entityId);
+        assert(body, `flow atlas ${label} body를 찾지 못했습니다: entityId=${entityId}`);
+        return body;
+    };
     try {
         assert(simulation.init(), 'flow atlas production GPU circle simulation init 실패');
         const replaceResult = simulation.replaceBodies(initialBodies);
         assert(
-            replaceResult.accepted === 2 && replaceResult.rejected === 0,
+            replaceResult.accepted === initialBodies.length && replaceResult.rejected === 0,
             `flow atlas body 교체 실패: ${JSON.stringify(replaceResult)}`
         );
         const initialStatus = simulation.getStatus();
         assert(
-            initialStatus.flowFieldEnabled && initialStatus.flowFieldCount === 2,
+            initialStatus.flowFieldEnabled && initialStatus.flowFieldCount === fieldCount,
             `flow atlas 상태가 올바르지 않습니다: ${JSON.stringify(initialStatus)}`
         );
-        assert(simulation.fixedUpdate(fixedDelta), 'flow atlas fixed tick 제출 실패');
-        const bodiesPromise = simulation.readbackBodies();
+        assert(simulation.fixedUpdate(fixedDelta), 'flow atlas 첫 fixed tick 제출 실패');
+        const firstBodiesPromise = simulation.readbackBodies();
         await device.queue.onSubmittedWorkDone();
-        const bodies = await bodiesPromise;
-        assert(bodies.length === 2, `flow atlas readback body 수 불일치: ${bodies.length}`);
-
-        const expectedVelocity = flowSpeed * fixedDelta;
-        const expectedDisplacement = expectedVelocity * fixedDelta;
-        const steeringBody = bodies[0];
-        assertNear(
-            steeringBody.velocity.x,
-            expectedVelocity,
-            0.00001,
-            'zero velocity body의 source flow 조향 x 속도가 다릅니다'
-        );
-        assertNear(
-            steeringBody.velocity.y,
-            0,
-            0.00001,
-            'zero velocity body의 source flow 조향 y 속도가 다릅니다'
-        );
-        assertNear(
-            steeringBody.position.x,
-            initialBodies[0].position.x + expectedDisplacement,
-            0.00001,
-            'zero velocity body의 source flow 적분 x 위치가 다릅니다'
-        );
-        assertNear(
-            steeringBody.position.y,
-            initialBodies[0].position.y,
-            0.00001,
-            'zero velocity body의 source flow 적분 y 위치가 다릅니다'
-        );
+        const firstBodies = await firstBodiesPromise;
         assert(
-            steeringBody.flowFieldIndex === 0,
-            `goal 밖 body의 flowFieldIndex가 변경되었습니다: ${steeringBody.flowFieldIndex}`
+            firstBodies.length === initialBodies.length,
+            `flow atlas 첫 readback body 수 불일치: ${firstBodies.length}`
         );
-
-        const transitionedBody = bodies[1];
+        const immediateBody = findBody(firstBodies, initialBodies[0].entityId, 'immediate');
         assert(
-            transitionedBody.flowFieldIndex === 1,
-            `goal cell에서 다음 flow layer로 전환되지 않았습니다: ${transitionedBody.flowFieldIndex}`
+            immediateBody.flowFieldIndex === 1
+                && immediateBody.previousFlowFieldIndex === 0,
+            `authored goal 내부 즉시 flow layer 전환이 실패했습니다: ${JSON.stringify(immediateBody)}`
+        );
+        const sweepAfterFirstTick = findBody(firstBodies, initialBodies[1].entityId, 'sweep');
+        assert(
+            sweepAfterFirstTick.flowFieldIndex === 0
+                && sweepAfterFirstTick.previousFlowFieldIndex === 0,
+            `sweep 첫 tick이 stage를 미리 전환했습니다: ${JSON.stringify(sweepAfterFirstTick)}`
         );
         assertNear(
-            transitionedBody.velocity.x,
-            0,
-            0.00001,
-            '전환 body가 이전 layer의 x 방향으로 조향되었습니다'
-        );
-        assertNear(
-            transitionedBody.velocity.y,
-            expectedVelocity,
-            0.00001,
-            '전환 body가 새 layer의 y 방향으로 조향되지 않았습니다'
-        );
-        assertNear(
-            transitionedBody.position.x,
+            sweepAfterFirstTick.previousPosition.x,
             initialBodies[1].position.x,
             0.00001,
-            '전환 body의 x 위치가 새 layer 방향과 다릅니다'
+            'sweep 첫 tick previous x가 authored 시작점과 다릅니다'
         );
         assertNear(
-            transitionedBody.position.y,
-            initialBodies[1].position.y + expectedDisplacement,
+            sweepAfterFirstTick.previousPosition.y,
+            initialBodies[1].position.y,
             0.00001,
-            '전환 body의 y 위치가 새 layer 방향과 다릅니다'
+            'sweep 첫 tick previous y가 authored 시작점과 다릅니다'
+        );
+        assert(
+            sweepAfterFirstTick.position.x > immediateGoal.x + transitionRadius,
+            `sweep 첫 tick이 goal circle을 실제로 가로지르지 않았습니다: ${JSON.stringify(sweepAfterFirstTick)}`
+        );
+        const finalAfterFirstTick = findBody(firstBodies, initialBodies[2].entityId, 'final');
+        assertNear(
+            finalAfterFirstTick.position.x,
+            finalGoal.x,
+            0.00001,
+            '최종 goal 내부 body의 x 위치가 이동했습니다'
+        );
+        assertNear(
+            finalAfterFirstTick.position.y,
+            finalGoal.y,
+            0.00001,
+            '최종 goal 내부 body의 y 위치가 이동했습니다'
+        );
+        assertNear(
+            finalAfterFirstTick.velocity.x,
+            0,
+            0.00001,
+            '최종 goal 내부 body의 x 속도가 정지하지 않았습니다'
+        );
+        assertNear(
+            finalAfterFirstTick.velocity.y,
+            0,
+            0.00001,
+            '최종 goal 내부 body의 y 속도가 정지하지 않았습니다'
+        );
+        assert(
+            finalAfterFirstTick.flowFieldIndex === 1,
+            `최종 goal 내부 body가 terminal stage를 벗어났습니다: ${JSON.stringify(finalAfterFirstTick)}`
+        );
+
+        assert(simulation.fixedUpdate(fixedDelta), 'flow atlas 두 번째 fixed tick 제출 실패');
+        const secondBodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const secondBodies = await secondBodiesPromise;
+        assert(
+            secondBodies.length === initialBodies.length,
+            `flow atlas 두 번째 readback body 수 불일치: ${secondBodies.length}`
+        );
+        const sweepAfterSecondTick = findBody(secondBodies, initialBodies[1].entityId, 'sweep second');
+        assert(
+            sweepAfterSecondTick.previousFlowFieldIndex === 0
+                && sweepAfterSecondTick.flowFieldIndex === 1,
+            `previous→current sweep이 다음 tick에 정확히 한 stage만 전환하지 않았습니다: ${JSON.stringify(sweepAfterSecondTick)}`
+        );
+        const finalAfterSecondTick = findBody(secondBodies, initialBodies[2].entityId, 'final second');
+        assertNear(
+            finalAfterSecondTick.position.x,
+            finalGoal.x,
+            0.00001,
+            '최종 goal 정지 x가 다음 tick에도 유지되지 않았습니다'
+        );
+        assertNear(
+            finalAfterSecondTick.position.y,
+            finalGoal.y,
+            0.00001,
+            '최종 goal 정지 y가 다음 tick에도 유지되지 않았습니다'
         );
         const completedStatus = await waitForSimulationStatus(
             simulation,
@@ -708,30 +772,39 @@ async function runProductionFlowAtlasSmoke(device) {
         );
         return {
             atlas: {
-                cols: 2,
-                rows: 2,
-                fieldCount: 2,
-                layerDirections: [
-                    { x: 1, y: 0 },
-                    { x: 0, y: 1 }
+                cols: flowAtlasCols,
+                rows: flowAtlasRows,
+                fieldCount,
+                transitionRadius,
+                stages: [
+                    { goalPosition: immediateGoal, nextFieldIndex: 1 },
+                    { goalPosition: finalGoal, nextFieldIndex: -1 }
                 ]
             },
             fixedDelta,
-            flowSpeed,
-            expectedVelocity,
-            expectedDisplacement,
-            steering: {
+            immediateTransition: {
                 before: { ...initialBodies[0].position },
-                after: { ...steeringBody.position },
-                velocity: { ...steeringBody.velocity },
-                flowFieldIndex: steeringBody.flowFieldIndex
+                after: { ...immediateBody.position },
+                flowFieldIndexBefore: initialBodies[0].flowFieldIndex,
+                flowFieldIndexAfter: immediateBody.flowFieldIndex
             },
-            stageTransition: {
+            sweptTransition: {
                 before: { ...initialBodies[1].position },
-                after: { ...transitionedBody.position },
-                velocity: { ...transitionedBody.velocity },
-                flowFieldIndexBefore: initialBodies[1].flowFieldIndex,
-                flowFieldIndexAfter: transitionedBody.flowFieldIndex
+                firstTick: {
+                    previous: { ...sweepAfterFirstTick.previousPosition },
+                    current: { ...sweepAfterFirstTick.position },
+                    flowFieldIndex: sweepAfterFirstTick.flowFieldIndex
+                },
+                secondTick: {
+                    previousFlowFieldIndex: sweepAfterSecondTick.previousFlowFieldIndex,
+                    flowFieldIndex: sweepAfterSecondTick.flowFieldIndex,
+                    position: { ...sweepAfterSecondTick.position }
+                }
+            },
+            finalGoalStop: {
+                position: { ...finalAfterSecondTick.position },
+                velocity: { ...finalAfterSecondTick.velocity },
+                flowFieldIndex: finalAfterSecondTick.flowFieldIndex
             },
             status: {
                 state: completedStatus.state,
@@ -765,8 +838,11 @@ async function runProductionShapeFlowAtlasSmoke(device) {
     ) * componentsPerCell;
     directions[sampledDirectionOffset] = 0;
     directions[sampledDirectionOffset + 1] = 1;
+    const shapeGoalPosition = Object.freeze({ x: 0.5, y: 0.5 });
     const stages = Array.from({ length: fieldCount }, () => ({
         goalCell: { column: 0, row: 0 },
+        goalPosition: shapeGoalPosition,
+        transitionRadius: 0.25,
         nextFieldIndex: -1
     }));
 
@@ -1269,6 +1345,280 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
                 nonTransparentPixelCount
             }
         };
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+        context.unconfigure();
+    }
+}
+
+async function runProductionEnemyShapePixelSmoke(device) {
+    const context = canvas.getContext('webgpu');
+    assert(context, 'production enemy shape canvas WebGPU context가 없습니다.');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+    });
+    let lastFrameTexture = null;
+    let drawMarks = 0;
+    const platformPort = {
+        getState: () => 'ready',
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget() {
+            const texture = context.getCurrentTexture();
+            lastFrameTexture = texture;
+            return {
+                device,
+                context,
+                texture,
+                view: texture.createView(),
+                format,
+                deviceGeneration: 1,
+                width: canvas.width,
+                height: canvas.height
+            };
+        },
+        clearCanvas: () => false,
+        markCanvasDrawn() {
+            drawMarks++;
+            return true;
+        },
+        markCanvasCleared: () => false
+    };
+    const cameraScale = 30;
+    const definitions = Object.freeze([
+        BASIC_SQUARE_ENEMY_DATA,
+        BASIC_TRIANGLE_ENEMY_DATA,
+        BASIC_ARROW_ENEMY_DATA,
+        BASIC_PENTA_ENEMY_DATA,
+        BASIC_HEXA_ENEMY_DATA,
+        BASIC_GEN_ENEMY_DATA
+    ]);
+    const centers = Object.freeze([
+        Object.freeze({ x: 10.5, y: 16.5 }),
+        Object.freeze({ x: 31.5, y: 16.5 }),
+        Object.freeze({ x: 52.5, y: 16.5 }),
+        Object.freeze({ x: 10.5, y: 48.5 }),
+        Object.freeze({ x: 31.5, y: 48.5 }),
+        Object.freeze({ x: 52.5, y: 48.5 })
+    ]);
+    const route = Object.freeze({
+        gateId: 'nw-shape-gate',
+        pathId: 'nw-shape-path',
+        waypoints: Object.freeze([
+            Object.freeze({ x: 0, y: 0 }),
+            Object.freeze({ x: 1, y: 0 })
+        ])
+    });
+    const bodies = definitions.map((definition, index) => {
+        const intent = createGpuEnemySpawnIntent({
+            definition,
+            route,
+            spawnSequence: index,
+            waveId: 'nw-production-enemy-shape-pixels',
+            policyId: 'fixed-fixture'
+        });
+        return {
+            ...intent,
+            entityId: 7201 + index,
+            incarnation: 1,
+            position: {
+                x: centers[index].x / cameraScale,
+                y: centers[index].y / cameraScale
+            },
+            velocity: definition === BASIC_ARROW_ENEMY_DATA
+                ? { x: 1, y: 0 }
+                : { x: 0, y: 0 },
+            collisionMask: 0
+        };
+    });
+    const radiusPixels = BASIC_SQUARE_ENEMY_DATA.collisionRadiusTiles * cameraScale;
+    const simulation = new GpuCircleBodySimulation(platformPort, {
+        capacity: definitions.length,
+        worldSize: {
+            x: canvas.width / cameraScale,
+            y: canvas.height / cameraScale
+        },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    const camera = {
+        worldToViewport(x, y, out) {
+            out.x = x * cameraScale;
+            out.y = y * cameraScale;
+            return out;
+        },
+        getScale: () => cameraScale
+    };
+
+    try {
+        assert(simulation.init(), 'production enemy shape simulation init 실패');
+        const spawnResult = simulation.spawnBodies(bodies);
+        assert(
+            spawnResult.accepted === definitions.length
+                && spawnResult.rejected === 0,
+            `production enemy shape spawn 실패: ${JSON.stringify(spawnResult)}`
+        );
+        simulation.updatePresentation({
+            frameDelta: 0,
+            fixedDelta: 1 / 60,
+            fixedAlpha: 0,
+            renderFrameId: 102
+        });
+        assert(simulation.draw(camera), 'production enemy shape indirect draw 실패');
+        assert(lastFrameTexture, 'production enemy shape draw texture가 없습니다.');
+
+        const bytesPerRow = 256;
+        const readbackBuffer = device.createBuffer({
+            label: 'production-enemy-shape-render-readback',
+            size: bytesPerRow * canvas.height,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+        try {
+            const encoder = device.createCommandEncoder({
+                label: 'production-enemy-shape-render-copy'
+            });
+            encoder.copyTextureToBuffer(
+                { texture: lastFrameTexture },
+                { buffer: readbackBuffer, bytesPerRow, rowsPerImage: canvas.height },
+                [canvas.width, canvas.height]
+            );
+            device.queue.submit([encoder.finish()]);
+            await readbackBuffer.mapAsync(GPUMapMode.READ);
+            const pixels = new Uint8Array(readbackBuffer.getMappedRange());
+            const readAlpha = (x, y) => pixels[(y * bytesPerRow) + (x * 4) + 3];
+            let outsideCircumcirclePixelCount = 0;
+            for (let y = 0; y < canvas.height; y++) {
+                for (let x = 0; x < canvas.width; x++) {
+                    if (readAlpha(x, y) === 0) {
+                        continue;
+                    }
+                    const pixelCenterX = x + 0.5;
+                    const pixelCenterY = y + 0.5;
+                    const insideAnyCircumcircle = centers.some((center) => (
+                        Math.hypot(
+                            pixelCenterX - center.x,
+                            pixelCenterY - center.y
+                        ) <= radiusPixels + 0.01
+                    ));
+                    if (!insideAnyCircumcircle) {
+                        outsideCircumcirclePixelCount++;
+                    }
+                }
+            }
+            assert(
+                outsideCircumcirclePixelCount === 0,
+                `enemy shape가 collider circumcircle 밖에 alpha를 만들었습니다: ${outsideCircumcirclePixelCount}`
+            );
+
+            const maskRadius = Math.ceil(radiusPixels) + 1;
+            const masks = definitions.map((definition, index) => {
+                const centerPixelX = Math.floor(centers[index].x);
+                const centerPixelY = Math.floor(centers[index].y);
+                let opaquePixelCount = 0;
+                let hash = 2166136261;
+                for (let offsetY = -maskRadius; offsetY <= maskRadius; offsetY++) {
+                    for (let offsetX = -maskRadius; offsetX <= maskRadius; offsetX++) {
+                        const opaque = readAlpha(
+                            centerPixelX + offsetX,
+                            centerPixelY + offsetY
+                        ) >= 128;
+                        opaquePixelCount += opaque ? 1 : 0;
+                        hash ^= opaque ? 1 : 0;
+                        hash = Math.imul(hash, 16777619);
+                    }
+                }
+                assert(
+                    opaquePixelCount > 0,
+                    `${definition.shapeType} silhouette가 비었습니다.`
+                );
+                return Object.freeze({
+                    shapeType: definition.shapeType,
+                    opaquePixelCount,
+                    maskHash: (hash >>> 0).toString(16).padStart(8, '0')
+                });
+            });
+            assert(
+                new Set(masks.map(({ maskHash }) => maskHash)).size === definitions.length,
+                `enemy shape silhouette mask가 서로 다르지 않습니다: ${JSON.stringify(masks)}`
+            );
+
+            const arrowCenter = centers[2];
+            const arrowSampleOffset = 7;
+            const arrowForwardAlpha = readAlpha(
+                Math.floor(arrowCenter.x) + arrowSampleOffset,
+                Math.floor(arrowCenter.y)
+            );
+            const arrowBackwardAlpha = readAlpha(
+                Math.floor(arrowCenter.x) - arrowSampleOffset,
+                Math.floor(arrowCenter.y)
+            );
+            assert(
+                arrowForwardAlpha >= 128 && arrowBackwardAlpha === 0,
+                `arrow velocity 방향 silhouette가 반대입니다: forward=${arrowForwardAlpha}, backward=${arrowBackwardAlpha}`
+            );
+
+            const generatorCenter = centers[5];
+            const generatorRingOffset = Object.freeze({ x: 5, y: 0 });
+            const generatorTerminalOffset = Object.freeze({ x: -7, y: -7 });
+            const generatorTerminalGapOffset = Object.freeze({ x: -7, y: -5 });
+            const generatorCenterAlpha = readAlpha(
+                Math.floor(generatorCenter.x),
+                Math.floor(generatorCenter.y)
+            );
+            const generatorRingAlpha = readAlpha(
+                Math.floor(generatorCenter.x) + generatorRingOffset.x,
+                Math.floor(generatorCenter.y) + generatorRingOffset.y
+            );
+            const generatorTerminalAlpha = readAlpha(
+                Math.floor(generatorCenter.x) + generatorTerminalOffset.x,
+                Math.floor(generatorCenter.y) + generatorTerminalOffset.y
+            );
+            const generatorTerminalGapAlpha = readAlpha(
+                Math.floor(generatorCenter.x) + generatorTerminalGapOffset.x,
+                Math.floor(generatorCenter.y) + generatorTerminalGapOffset.y
+            );
+            assert(
+                generatorCenterAlpha < 16
+                    && generatorRingAlpha >= 128
+                    && generatorTerminalAlpha >= 128
+                    && generatorTerminalGapAlpha < 16,
+                `generator square hole/ring/terminal topology가 잘못됐습니다: center=${generatorCenterAlpha}, ring=${generatorRingAlpha}, terminal=${generatorTerminalAlpha}, terminalGap=${generatorTerminalGapAlpha}`
+            );
+            assert(drawMarks === 1, `production enemy shape draw mark 불일치: ${drawMarks}`);
+
+            return {
+                radiusPixels,
+                drawMarks,
+                outsideCircumcirclePixelCount,
+                masks,
+                arrow: {
+                    sampleOffset: arrowSampleOffset,
+                    forwardAlpha: arrowForwardAlpha,
+                    backwardAlpha: arrowBackwardAlpha
+                },
+                generator: {
+                    ringOffset: generatorRingOffset,
+                    terminalOffset: generatorTerminalOffset,
+                    terminalGapOffset: generatorTerminalGapOffset,
+                    centerAlpha: generatorCenterAlpha,
+                    ringAlpha: generatorRingAlpha,
+                    terminalAlpha: generatorTerminalAlpha,
+                    terminalGapAlpha: generatorTerminalGapAlpha
+                }
+            };
+        } finally {
+            try {
+                readbackBuffer.unmap();
+            } catch {
+                // map 실패 또는 이미 unmap된 진단 buffer입니다.
+            }
+            readbackBuffer.destroy();
+        }
     } finally {
         simulation.destroy();
         await device.queue.onSubmittedWorkDone();
@@ -1788,7 +2138,8 @@ async function runProductionEndpointDeathLifecycleSmoke(device) {
             closestOnly: true,
             killOnTerrain: true
         }),
-        position: { x: 31, y: 10 },
+        // main enemy collider가 절반으로 줄어도 fixed tick 안에서 새 overlap을 만듭니다.
+        position: { x: 31.4, y: 10 },
         velocity: { x: 24, y: 0 },
         spawnSequence: 1
     });
@@ -2942,6 +3293,8 @@ async function runProductionOverflowSmoke(device) {
         flowDirections[((flowCellCount + cellIndex) * 2) + 1] = 1;
     }
     const flowGoalCell = Object.freeze({ column: 1, row: 1 });
+    const flowGoalPosition = Object.freeze({ x: 3, y: 3 });
+    const finalFlowGoalPosition = Object.freeze({ x: 7, y: 7 });
     const simulation = new GpuCircleBodySimulation(platformPort, {
         capacity: 65,
         worldSize: { x: 8, y: 8 },
@@ -2961,10 +3314,14 @@ async function runProductionOverflowSmoke(device) {
             stages: [
                 {
                     goalCell: flowGoalCell,
+                    goalPosition: flowGoalPosition,
+                    transitionRadius: 0.25,
                     nextFieldIndex: 1
                 },
                 {
                     goalCell: { column: 3, row: 3 },
+                    goalPosition: finalFlowGoalPosition,
+                    transitionRadius: 0.25,
                     nextFieldIndex: -1
                 }
             ]
@@ -3067,6 +3424,7 @@ async function runProductionOverflowSmoke(device) {
             flowIndexRollback: {
                 handle: flowRollbackBody.handle,
                 goalCell: flowGoalCell,
+                goalPosition: flowGoalPosition,
                 initialFlowFieldIndex: spawns[0].flowFieldIndex,
                 configuredNextFieldIndex: 1,
                 previousFlowFieldIndex: flowRollbackBody.previousFlowFieldIndex,
@@ -3129,6 +3487,7 @@ async function run() {
         result.productionFlowAtlas = await runProductionFlowAtlasSmoke(device);
         result.productionShapeFlowAtlas = await runProductionShapeFlowAtlasSmoke(device);
         result.productionEnemyAdapter = await runProductionEnemyAdapterGpuSmoke(device);
+        result.productionEnemyShapePixels = await runProductionEnemyShapePixelSmoke(device);
         result.productionMixedBodyContactEvent = await runProductionMixedBodyContactEventSmoke(device);
         result.productionBenchmarkEndpoint = await runProductionBenchmarkEndpointSmoke(device);
         result.productionEndpointDeathLifecycle = await runProductionEndpointDeathLifecycleSmoke(device);

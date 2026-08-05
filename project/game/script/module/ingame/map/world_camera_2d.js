@@ -139,21 +139,29 @@ export class WorldCamera2D {
      * offset을 월드 경계로 제한하지 않아 가장자리에서도 월드 밖을 표시합니다.
      * @param {*} worldX - 중앙에 둘 월드 X입니다.
      * @param {*} worldY - 중앙에 둘 월드 Y입니다.
+     * @param {*} [blend=1] - 맵 기하 중심(0)과 target 중심(1) 사이의 보간값입니다.
      * @returns {boolean} projection 중심이 실제로 바뀌었는지 여부입니다.
      */
-    centerOnWorldPoint(worldX, worldY) {
-        const nextWorldX = clampFinite(
+    centerOnWorldPoint(worldX, worldY, blend = 1) {
+        const mapCenterX = this.worldWidth * 0.5;
+        const mapCenterY = this.worldHeight * 0.5;
+        const targetWorldX = clampFinite(
             worldX,
             0,
             this.worldWidth,
-            this.worldWidth * 0.5
+            mapCenterX
         );
-        const nextWorldY = clampFinite(
+        const targetWorldY = clampFinite(
             worldY,
             0,
             this.worldHeight,
-            this.worldHeight * 0.5
+            mapCenterY
         );
+        const centerBlend = clampFinite(blend, 0, 1, 1);
+        const nextWorldX = mapCenterX
+            + ((targetWorldX - mapCenterX) * centerBlend);
+        const nextWorldY = mapCenterY
+            + ((targetWorldY - mapCenterY) * centerBlend);
         const nextViewportX = this.viewportWidth * 0.5;
         const nextViewportY = this.viewportHeight * 0.5;
         if (Object.is(nextWorldX, this.viewCenterWorld.x)

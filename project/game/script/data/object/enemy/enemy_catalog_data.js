@@ -1,3 +1,8 @@
+export {
+    ENEMY_ASPECT_RATIO,
+    ENEMY_HEIGHT_SCALE
+} from './enemy_shape_geometry_data.js';
+
 /**
  * 적을 렌더링할 때 화면 높이에 적용하는 기본 비율입니다.
  */
@@ -21,34 +26,6 @@ export const ENEMY_SHAPE_TYPES = Object.freeze([
  * 여러 육각 셀이 합쳐진 적 타입입니다.
  */
 export const HEXA_HIVE_ENEMY_TYPE = 'hexa_hive';
-
-/**
- * 적 타입별 너비/높이 종횡비입니다.
- */
-export const ENEMY_ASPECT_RATIO = Object.freeze({
-    square: 1.0,
-    triangle: 1.0,
-    arrow: 0.96,
-    hexa: 1.0,
-    penta: 1.0,
-    rhom: 0.81,
-    octa: 1.0,
-    gen: 1.05
-});
-
-/**
- * 적 타입별 렌더 높이 배율입니다.
- */
-export const ENEMY_HEIGHT_SCALE = Object.freeze({
-    square: 1.0,
-    triangle: 1.0,
-    arrow: 0.9,
-    hexa: 1.0,
-    penta: 1.0,
-    rhom: 1.0,
-    octa: 1.0,
-    gen: 1.0
-});
 
 /**
  * 적 타입별 기본 충돌 무게입니다.

@@ -10,6 +10,10 @@ const sourcePaths = Object.freeze({
     baseEnemy: new URL('module/object/enemy/_base_enemy.js', SCRIPT_ROOT),
     shapeAssets: new URL('module/object/enemy/_enemy_shape_assets.js', SCRIPT_ROOT),
     catalog: new URL('data/object/enemy/enemy_catalog_data.js', SCRIPT_ROOT),
+    shapeGeometry: new URL(
+        'data/object/enemy/enemy_shape_geometry_data.js',
+        SCRIPT_ROOT
+    ),
     balance: new URL('data/object/enemy/enemy_balance_data.js', SCRIPT_ROOT),
     math: new URL('util/math_util.js', SCRIPT_ROOT),
     number: new URL('util/number_util.js', SCRIPT_ROOT),
@@ -67,6 +71,11 @@ async function loadPresentationModules() {
     addSource('./_enemy_shape_assets.js', sources.shapeAssets);
     addSource('object/enemy/_enemy_shape_assets.js', sources.shapeAssets);
     addSource('data/object/enemy/enemy_catalog_data.js', sources.catalog);
+    addSource('./enemy_shape_geometry_data.js', sources.shapeGeometry);
+    addSource(
+        'data/object/enemy/enemy_shape_geometry_data.js',
+        sources.shapeGeometry
+    );
     addSource('data/object/enemy/enemy_balance_data.js', sources.balance);
     addSource('util/math_util.js', sources.math);
     addSource('util/number_util.js', sources.number);

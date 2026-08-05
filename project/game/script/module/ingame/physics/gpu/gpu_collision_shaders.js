@@ -1,3 +1,39 @@
+import { GPU_CIRCLE_BODY_RENDER_SHAPE } from './gpu_circle_body_abi.js';
+import {
+    ENEMY_NORMALIZED_RENDER_GEOMETRY
+} from '../../../../data/object/enemy/enemy_shape_geometry_data.js';
+
+const WGSL_POLYGON_POINT_CAPACITY = 6;
+
+const toWgslFloat = (value) => {
+    if (!Number.isFinite(value)) {
+        throw new TypeError('WGSL enemy shape 좌표는 유한한 숫자여야 합니다.');
+    }
+    const normalized = Object.is(value, -0) ? 0 : value;
+    const literal = String(normalized);
+    return /[.eE]/.test(literal) ? literal : `${literal}.0`;
+};
+
+const toWgslVec2 = ({ x, y }) => (
+    `vec2f(${toWgslFloat(x)}, ${toWgslFloat(y)})`
+);
+
+const toWgslPointArray = (
+    points,
+    capacity = WGSL_POLYGON_POINT_CAPACITY
+) => {
+    if (points.length > capacity) {
+        throw new RangeError(`WGSL enemy shape point capacity를 초과했습니다: ${points.length}`);
+    }
+    const padded = Array.from(points);
+    while (padded.length < capacity) {
+        padded.push({ x: 0, y: 0 });
+    }
+    return `array<vec2f, ${capacity}>(\n        ${padded.map(toWgslVec2).join(',\n        ')}\n    )`;
+};
+
+const ENEMY_RENDER_GEOMETRY = ENEMY_NORMALIZED_RENDER_GEOMETRY;
+
 export const GPU_COLLISION_COMPUTE_WGSL = /* wgsl */`
 const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_USE_FLOW: u32 = 2u;
@@ -129,9 +165,9 @@ struct GridOverflow {
 }
 
 struct FlowStage {
-    goal_cell: vec2u,
+    goal_position: vec2f,
     next_field_index: i32,
-    reserved: u32,
+    transition_radius: f32,
 }
 
 struct SimulationParams {
@@ -223,6 +259,35 @@ fn flow_direction(field_index: u32, cell: vec2i) -> vec2f {
     return textureLoad(world_flow, cell, i32(field_index), 0).xy;
 }
 
+fn segment_intersects_transition_circle(
+    start: vec2f,
+    end: vec2f,
+    center: vec2f,
+    radius: f32
+) -> bool {
+    let radius_squared = radius * radius;
+    let from_center = start - center;
+    if (dot(from_center, from_center) <= radius_squared) {
+        return true;
+    }
+    let to_center = end - center;
+    if (dot(to_center, to_center) <= radius_squared) {
+        return true;
+    }
+    let segment = end - start;
+    let segment_length_squared = dot(segment, segment);
+    if (segment_length_squared <= EPSILON_DISTANCE_SQUARED) {
+        return false;
+    }
+    let nearest_t = clamp(
+        -dot(from_center, segment) / segment_length_squared,
+        0.0,
+        1.0
+    );
+    let nearest_delta = from_center + (segment * nearest_t);
+    return dot(nearest_delta, nearest_delta) <= radius_squared;
+}
+
 fn grid_cell_total() -> u32 {
     return params.grid_cell_count.x * params.grid_cell_count.y;
 }
@@ -304,7 +369,12 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
         var field_index = simulations.values[body_id].flow_field_index;
         var stage = params.flow_stages[field_index];
         var reached_final_goal = false;
-        if (u32(cell.x) == stage.goal_cell.x && u32(cell.y) == stage.goal_cell.y) {
+        if (segment_intersects_transition_circle(
+            temporaries.values[body_id].previous_position,
+            current,
+            stage.goal_position,
+            stage.transition_radius
+        )) {
             if (stage.next_field_index >= 0
                 && u32(stage.next_field_index) < params.flow_field_count) {
                 field_index = u32(stage.next_field_index);
@@ -320,9 +390,7 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
         } else {
             var direction = flow_direction(field_index, cell);
             if (abs(direction.x) < EPSILON_MASS && abs(direction.y) < EPSILON_MASS) {
-                let goal_position = params.flow_origin
-                    + ((vec2f(stage.goal_cell) + vec2f(0.5)) * params.flow_cell_size);
-                direction = goal_position - current;
+                direction = stage.goal_position - current;
             }
             let direction_length = length(direction);
             if (direction_length >= EPSILON_MASS) {
@@ -1321,7 +1389,7 @@ struct BodyRenderStyle {
     color: vec4f,
     radius_scale: f32,
     visible: u32,
-    reserved_0: u32,
+    shape_code: u32,
     reserved_1: u32,
 }
 
@@ -1343,6 +1411,8 @@ struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) local_position: vec2f,
     @location(1) color: vec4f,
+    @location(2) @interpolate(flat) shape_code: u32,
+    @location(3) velocity: vec2f,
 }
 
 @group(0) @binding(0) var<storage, read> counts: BodyCounts;
@@ -1356,6 +1426,135 @@ const QUAD_VERTICES = array<vec2f, 6>(
     vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
     vec2f(-1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0)
 );
+const RENDER_SHAPE_CIRCLE: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE}u;
+const RENDER_SHAPE_SQUARE: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.SQUARE}u;
+const RENDER_SHAPE_TRIANGLE: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.TRIANGLE}u;
+const RENDER_SHAPE_ARROW: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.ARROW}u;
+const RENDER_SHAPE_PENTA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA}u;
+const RENDER_SHAPE_HEXA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA}u;
+const RENDER_SHAPE_GEN: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.GEN}u;
+const SHAPE_DIRECTION_EPSILON: f32 = 0.000001;
+const SQUARE_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.center)};
+const SQUARE_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.halfSize)};
+const TRIANGLE_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.triangle.points)};
+const ARROW_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.arrow.points)};
+const PENTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.penta.points)};
+const HEXA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.hexa.points)};
+const GENERATOR_OUTER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.center)};
+const GENERATOR_OUTER_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.halfSize)};
+const GENERATOR_INNER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.innerBox.center)};
+const GENERATOR_INNER_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.innerBox.halfSize)};
+const GENERATOR_TERMINAL_CENTERS = ${toWgslPointArray(
+    ENEMY_RENDER_GEOMETRY.gen.terminalBoxes.map(({ center }) => center),
+    4
+)};
+const GENERATOR_TERMINAL_HALF_SIZES = ${toWgslPointArray(
+    ENEMY_RENDER_GEOMETRY.gen.terminalBoxes.map(({ halfSize }) => halfSize),
+    4
+)};
+
+fn directional_local_position(point: vec2f, velocity: vec2f) -> vec2f {
+    var forward = vec2f(0.0, -1.0);
+    let velocity_length_squared = dot(velocity, velocity);
+    if (velocity_length_squared > SHAPE_DIRECTION_EPSILON) {
+        forward = velocity * inverseSqrt(velocity_length_squared);
+    }
+    let right = vec2f(forward.y, -forward.x);
+    return vec2f(dot(point, right), dot(point, forward));
+}
+
+fn box_distance(point: vec2f, center: vec2f, half_size: vec2f) -> f32 {
+    let delta = abs(point - center) - half_size;
+    return length(max(delta, vec2f(0.0))) + min(max(delta.x, delta.y), 0.0);
+}
+
+fn polygon_distance(
+    point: vec2f,
+    vertices: array<vec2f, 6>,
+    vertex_count: u32
+) -> f32 {
+    var distance_squared = 3.402823466e+38;
+    var inside = false;
+    var previous_index = vertex_count - 1u;
+    for (var index = 0u; index < vertex_count; index += 1u) {
+        let current = vertices[index];
+        let previous = vertices[previous_index];
+        let edge = previous - current;
+        let relative = point - current;
+        let edge_length_squared = max(dot(edge, edge), 0.000000000001);
+        let nearest = relative - edge * clamp(
+            dot(relative, edge) / edge_length_squared,
+            0.0,
+            1.0
+        );
+        distance_squared = min(distance_squared, dot(nearest, nearest));
+
+        let crosses_scanline = (current.y > point.y) != (previous.y > point.y);
+        if (crosses_scanline) {
+            let crossing_x = current.x
+                + ((point.y - current.y) * (previous.x - current.x)
+                    / (previous.y - current.y));
+            if (point.x < crossing_x) {
+                inside = !inside;
+            }
+        }
+        previous_index = index;
+    }
+    let distance = sqrt(max(distance_squared, 0.0));
+    return select(distance, -distance, inside);
+}
+
+fn arrow_distance(point: vec2f) -> f32 {
+    return polygon_distance(point, ARROW_POINTS, 4u);
+}
+
+fn generator_distance(point: vec2f) -> f32 {
+    let outer = box_distance(
+        point,
+        GENERATOR_OUTER_CENTER,
+        GENERATOR_OUTER_HALF_SIZE
+    );
+    let inner = box_distance(
+        point,
+        GENERATOR_INNER_CENTER,
+        GENERATOR_INNER_HALF_SIZE
+    );
+    var distance = max(outer, -inner);
+    for (var index = 0u; index < 4u; index += 1u) {
+        distance = min(distance, box_distance(
+            point,
+            GENERATOR_TERMINAL_CENTERS[index],
+            GENERATOR_TERMINAL_HALF_SIZES[index]
+        ));
+    }
+    return distance;
+}
+
+fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
+    if (shape_code == RENDER_SHAPE_SQUARE) {
+        return box_distance(point, SQUARE_CENTER, SQUARE_HALF_SIZE);
+    }
+    if (shape_code == RENDER_SHAPE_TRIANGLE) {
+        return polygon_distance(
+            directional_local_position(point, velocity),
+            TRIANGLE_POINTS,
+            3u
+        );
+    }
+    if (shape_code == RENDER_SHAPE_ARROW) {
+        return arrow_distance(directional_local_position(point, velocity));
+    }
+    if (shape_code == RENDER_SHAPE_PENTA) {
+        return polygon_distance(point, PENTA_POINTS, 5u);
+    }
+    if (shape_code == RENDER_SHAPE_HEXA) {
+        return polygon_distance(point, HEXA_POINTS, 6u);
+    }
+    if (shape_code == RENDER_SHAPE_GEN) {
+        return generator_distance(point);
+    }
+    return length(point) - 1.0;
+}
 
 @vertex
 fn vertex_main(
@@ -1368,6 +1567,8 @@ fn vertex_main(
         output.position = vec4f(2.0, 2.0, 0.0, 1.0);
         output.local_position = vec2f(0.0);
         output.color = vec4f(0.0);
+        output.shape_code = RENDER_SHAPE_CIRCLE;
+        output.velocity = vec2f(0.0);
         return output;
     }
     let body = physics.values[instance_index];
@@ -1392,13 +1593,19 @@ fn vertex_main(
     output.position = vec4f(clip_position, 0.0, 1.0);
     output.local_position = local;
     output.color = style.color * f32(style.visible != 0u);
+    output.shape_code = style.shape_code;
+    output.velocity = body.velocity;
     return output;
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
-    let distance = length(input.local_position);
-    let coverage = 1.0 - smoothstep(0.94, 1.0, distance);
+    if (length(input.local_position) > 1.0) {
+        discard;
+    }
+    let distance = shape_distance(input.local_position, input.velocity, input.shape_code);
+    let anti_alias_width = max(fwidth(distance), 0.002);
+    let coverage = 1.0 - smoothstep(-anti_alias_width, anti_alias_width, distance);
     let alpha = input.color.a * coverage;
     return vec4f(input.color.rgb * alpha, alpha);
 }

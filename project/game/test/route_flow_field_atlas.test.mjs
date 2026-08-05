@@ -26,12 +26,40 @@ test('기존 JS/WASM flow plane을 waypoint별 GPU atlas로 결정적으로 컴�
     assert.equal(atlas.contentKey, repeated.contentKey);
     assert.deepEqual(Array.from(atlas.directions), Array.from(repeated.directions));
 
+    const shiftedRoutes = tileMap.getSpawnRoutes().map((sourceRoute, routeIndex) => ({
+        ...sourceRoute,
+        waypoints: sourceRoute.waypoints.map((waypoint, waypointIndex) => (
+            routeIndex === 0 && waypointIndex === 1
+                ? { ...waypoint, x: waypoint.x + 0.125 }
+                : waypoint
+        ))
+    }));
+    const shiftedGoalAtlas = createRouteFlowFieldAtlas({
+        getNavigationGrid: () => tileMap.getNavigationGrid(),
+        getSpawnRoutes: () => shiftedRoutes,
+        getWorldBounds: () => tileMap.getWorldBounds()
+    });
+    assert.deepEqual(
+        Array.from(shiftedGoalAtlas.directions),
+        Array.from(atlas.directions),
+        '같은 goal cell은 동일한 방향 plane을 사용해야 합니다.'
+    );
+    assert.notEqual(
+        shiftedGoalAtlas.contentKey,
+        atlas.contentKey,
+        'GPU goalPosition float32 비트가 바뀌면 content key도 바뀌어야 합니다.'
+    );
+
     for (let index = 0; index < atlas.stages.length; index++) {
         const stage = atlas.stages[index];
         const waypoint = route.waypoints[index + 1];
         assert.deepEqual(
             { column: stage.goalCell.column, row: stage.goalCell.row },
             { column: waypoint.column, row: waypoint.row }
+        );
+        assert.deepEqual(
+            { x: stage.goalPosition.x, y: stage.goalPosition.y },
+            { x: waypoint.x, y: waypoint.y }
         );
         assert.equal(
             stage.nextFieldIndex,

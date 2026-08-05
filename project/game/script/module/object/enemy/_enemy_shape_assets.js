@@ -1,4 +1,8 @@
 import { ENEMY_SHAPE_TYPES } from 'data/object/enemy/enemy_catalog_data.js';
+import {
+    ENEMY_SHAPE_GEOMETRY,
+    ENEMY_SHAPE_PATH_KIND
+} from 'data/object/enemy/enemy_shape_geometry_data.js';
 
 const ENEMY_SHAPE_KEY_PREFIX = 'enemy_';
 
@@ -25,26 +29,6 @@ export const ENEMY_WEBGL_SHAPES = Object.freeze(
 );
 
 /**
- * 다각형의 꼭짓점 좌표 배열을 생성합니다.
- * @param {number} sides - 다각형 변 개수입니다.
- * @param {number} radius - 반지름입니다.
- * @param {number} [rotation=-Math.PI / 2] - 시작 회전각입니다.
- * @returns {{x:number,y:number}[]} 좌표 목록입니다.
- */
-const polygonPoints = (sides, radius, rotation = -Math.PI / 2) => {
-    const points = [];
-    const step = (Math.PI * 2) / sides;
-    for (let i = 0; i < sides; i++) {
-        const angle = rotation + (i * step);
-        points.push({
-            x: Math.cos(angle) * radius,
-            y: Math.sin(angle) * radius
-        });
-    }
-    return points;
-};
-
-/**
  * 좌표 목록을 닫힌 SVG path로 변환합니다.
  * @param {{x:number,y:number}[]} points - 좌표 목록입니다.
  * @returns {string} SVG path입니다.
@@ -68,6 +52,24 @@ const rectPath = (x, y, width, height) => (
 );
 
 /**
+ * data-layer path descriptor를 SVG path 문자열로 변환합니다.
+ * @param {object} path - 적 shape path descriptor입니다.
+ * @returns {string} SVG path입니다.
+ */
+const shapePathToSvg = (path) => {
+    if (path.kind === ENEMY_SHAPE_PATH_KIND.POLYGON) {
+        return pointsToPath(path.points);
+    }
+    if (path.kind === ENEMY_SHAPE_PATH_KIND.RECT) {
+        return rectPath(path.x, path.y, path.width, path.height);
+    }
+    if (path.kind === ENEMY_SHAPE_PATH_KIND.COMPOUND) {
+        return path.paths.map(shapePathToSvg).join(' ');
+    }
+    throw new Error(`지원하지 않는 enemy shape path kind입니다: ${path.kind}`);
+};
+
+/**
  * SVG path 항목을 불변 목록으로 만듭니다.
  * @param {Array<string|{d:string,fillRule?:string}>} paths - path 항목입니다.
  * @returns {ReadonlyArray<string|Readonly<{d:string,fillRule?:string}>>} 불변 path 목록입니다.
@@ -80,39 +82,17 @@ const freezeShapePaths = (paths) => Object.freeze(
     ))
 );
 
-/**
- * 적 렌더 키별 SVG path asset입니다.
- */
-export const ENEMY_SVG_SHAPES = Object.freeze({
-    enemy_square: freezeShapePaths([rectPath(-0.42, -0.42, 0.84, 0.84)]),
-    enemy_triangle: freezeShapePaths([pointsToPath([
-        { x: 0.0, y: -0.5333 },
-        { x: 0.462, y: 0.2667 },
-        { x: -0.462, y: 0.2667 }
-    ])]),
-    enemy_arrow: freezeShapePaths([pointsToPath([
-        { x: 0.0, y: -0.5767 },
-        { x: 0.46, y: 0.3733 },
-        { x: 0.0, y: 0.2033 },
-        { x: -0.46, y: 0.3733 }
-    ])]),
-    enemy_hexa: freezeShapePaths([pointsToPath(polygonPoints(6, 0.47, -Math.PI / 2))]),
-    enemy_penta: freezeShapePaths([pointsToPath(polygonPoints(5, 0.48, -Math.PI / 2))]),
-    enemy_rhom: freezeShapePaths([pointsToPath([
-        { x: 0.0, y: -0.50 },
-        { x: 0.34, y: 0.0 },
-        { x: 0.0, y: 0.50 },
-        { x: -0.34, y: 0.0 }
-    ])]),
-    enemy_octa: freezeShapePaths([pointsToPath(polygonPoints(8, 0.47, Math.PI / 8))]),
-    enemy_gen: freezeShapePaths([
-        {
-            d: `${rectPath(-0.30, -0.30, 0.60, 0.60)} ${rectPath(-0.22, -0.22, 0.44, 0.44)}`,
-            fillRule: 'evenodd'
-        },
-        rectPath(-0.44, -0.44, 0.10, 0.10),
-        rectPath(0.34, -0.44, 0.10, 0.10),
-        rectPath(0.34, 0.34, 0.10, 0.10),
-        rectPath(-0.44, 0.34, 0.10, 0.10)
-    ])
-});
+/** 적 렌더 키별 SVG path asset입니다. */
+export const ENEMY_SVG_SHAPES = Object.freeze(Object.fromEntries(
+    ENEMY_SHAPE_TYPES.map((type) => {
+        const geometry = ENEMY_SHAPE_GEOMETRY[type];
+        if (!geometry) {
+            throw new Error(`enemy shape geometry가 없습니다: ${type}`);
+        }
+        const paths = geometry.paths.map((path) => {
+            const d = shapePathToSvg(path);
+            return path.fillRule ? { d, fillRule: path.fillRule } : d;
+        });
+        return [ENEMY_SHAPE_KEYS[type], freezeShapePaths(paths)];
+    })
+));

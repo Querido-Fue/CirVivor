@@ -26,6 +26,15 @@ import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 
 `data/` 파일은 `module/`을 import하지 않습니다. 데이터 조합을 위한 `data/` 간 import는 허용하지만 lookup, coercion, migration, fallback과 런타임 적용은 코드 모듈이 담당합니다.
 
+적의 부작용 없는 숫자 path descriptor와 aspect/height 배율은
+`object/enemy/enemy_shape_geometry_data.js`가 소유합니다. SVG path 문자열과 GPU
+analytic mask는 이 선언 데이터를 각각 변환하며 별도 좌표 사본을 두지 않습니다.
+
+Wave spawn group은 호환 fallback인 단일 `enemyDefinitionId`를 항상 유지하고,
+여러 archetype을 같은 phase/group에서 순환할 때 선택적으로 `enemyDefinitionIds`
+배열을 함께 선언합니다. `WaveDirector`는 spawn index로 배열을 순환하므로 기존
+phase/group 기반 command ID와 fixed-tick schedule은 바뀌지 않습니다.
+
 ## 폴더 안내
 
 - `settings/`: 설정 정의와 기본값

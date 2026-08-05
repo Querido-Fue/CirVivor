@@ -1,12 +1,13 @@
 import { SVGDrawer } from './_svg_drawer.js';
 import { ENEMY_SVG_SHAPES } from 'object/enemy/_enemy_shape_assets.js';
+import {
+    ENEMY_SVG_DRAW_SIZE_RATIO
+} from 'data/object/enemy/enemy_shape_geometry_data.js';
 
 /** 적 SVG 도형을 구분하는 shape 접두사입니다. */
 const ENEMY_SHAPE_PREFIX = 'enemy_';
 /** 기본 도형이 셀 안에서 차지하는 반지름 비율입니다. */
 const BASE_SHAPE_RADIUS_RATIO = 0.45;
-/** 적 SVG 도형이 셀 안에서 차지하는 크기 비율입니다. */
-const ENEMY_SVG_DRAW_SIZE_RATIO = 0.90;
 /** 원형과 다각형 경로를 닫는 라디안 값입니다. */
 const FULL_CIRCLE_RADIANS = Math.PI * 2;
 /** 다각형 첫 꼭짓점을 위쪽으로 맞추는 라디안 오프셋입니다. */

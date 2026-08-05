@@ -21,6 +21,7 @@ function createSpawnIntent(spawnSequence = 0) {
     return createGpuEnemySpawnIntent({
         definition: {
             id: 'basic_circle_01',
+            shapeType: 'square',
             moveSpeedTilesPerSecond: 2.5,
             collisionRadiusTiles: 0.5939696961966999,
             collisionWeight: 1,
