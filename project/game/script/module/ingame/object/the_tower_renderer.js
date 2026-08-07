@@ -1,8 +1,8 @@
 import {
     assertWorldViewProjection2D
 } from '../contract/world_view_projection_contract.js';
+import { THE_TOWER_RENDER_DATA } from 'data/object/tower/the_tower_data.js';
 
-const TOWER_FILL = '#2785ff';
 const TOWER_ALPHA = 1;
 
 /**
@@ -23,7 +23,7 @@ export class TheTowerRenderer {
             x: 0,
             y: 0,
             diameter: 0,
-            fill: TOWER_FILL,
+            fill: THE_TOWER_RENDER_DATA.FILL,
             alpha: TOWER_ALPHA
         };
         this.viewportPosition = { x: 0, y: 0 };

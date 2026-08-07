@@ -1384,7 +1384,7 @@ test('mixed fixed program의 capacity/stale preflight reject는 control과 desti
     }
 });
 
-test('tracked pose는 exact body 하나만 4×32-byte ring으로 읽고 포화 시 sample만 drop한다', async () => {
+test('tracked pose는 4×32-byte ring 포화 시 sample만 drop하고 역순 완료에서는 newest exact pose를 보존한다', async () => {
     const restoreGlobals = installFakeWebGpuGlobals();
     const device = new FakeGpuDevice();
     device.deferTrackedPoseMaps = true;
@@ -1442,16 +1442,37 @@ test('tracked pose는 exact body 하나만 4×32-byte ring으로 읽고 포화 �
             4
         );
 
-        for (let index = 0; index < 3; index++) {
-            device.resolveTrackedPoseMap(index);
-        }
+        const submittedStatus = simulation.getStatus();
+        device.resolveTrackedPoseMap(3);
+        await flushMicrotasks();
+        trackedStatus = simulation.getStatus().fixedPrimitives.trackedPose;
+        assert.equal(trackedStatus.pendingReadbacks, 3);
+        assert.equal(trackedStatus.publishedSamples, 1);
+        assert.equal(trackedStatus.latest.valid, true);
+        assert.equal(trackedStatus.latest.entityId, 91);
+        assert.equal(trackedStatus.latest.incarnation, 3);
+        assert.equal(trackedStatus.latest.sourceTick, 4);
+        assert.equal(trackedStatus.latest.submittedTick, 4);
+        assert.equal(trackedStatus.latest.observedThroughTick, 4);
+        assert.equal(
+            trackedStatus.latest.sessionGeneration,
+            submittedStatus.sessionGeneration
+        );
+        assert.equal(trackedStatus.latest.deviceGeneration, 1);
+        assert.equal(
+            trackedStatus.latest.authoritativeEpoch,
+            submittedStatus.authoritativeEpoch
+        );
+        assert.deepEqual({ ...trackedStatus.latest.position }, { x: 13, y: 23 });
+
+        device.resolveTrackedPoseMap(2);
+        device.resolveTrackedPoseMap(1);
         await flushMicrotasks();
         trackedStatus = simulation.getStatus().fixedPrimitives.trackedPose;
         assert.equal(trackedStatus.pendingReadbacks, 1);
-        assert.equal(trackedStatus.publishedSamples, 3);
-        assert.equal(trackedStatus.latest.valid, true);
-        assert.equal(trackedStatus.latest.sourceTick, 3);
-        assert.deepEqual({ ...trackedStatus.latest.position }, { x: 12, y: 22 });
+        assert.equal(trackedStatus.publishedSamples, 1);
+        assert.equal(trackedStatus.latest.sourceTick, 4);
+        assert.deepEqual({ ...trackedStatus.latest.position }, { x: 13, y: 23 });
 
         const physicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
         assert.equal(simulation.despawnBodies([{
@@ -1461,10 +1482,131 @@ test('tracked pose는 exact body 하나만 4×32-byte ring으로 읽고 포화 �
         assert.equal(simulation.getStatus().activeBodyCount, 0);
         assert.equal(physicsBuffer.destroyed, false);
 
-        device.resolveTrackedPoseMap(3);
+        device.resolveTrackedPoseMap(0);
         await flushMicrotasks();
-        assert.equal(simulation.getStatus().state, 'idle');
+        const releasedStatus = simulation.getStatus();
+        assert.equal(releasedStatus.state, 'idle');
+        assert.equal(
+            releasedStatus.fixedPrimitives.trackedPose.publishedSamples,
+            1
+        );
+        assert.equal(releasedStatus.fixedPrimitives.trackedPose.latest.valid, false);
         assert.equal(physicsBuffer.destroyed, true);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('generation/epoch 교체 뒤 늦은 tracked pose callback은 새 exact pose를 덮지 않는다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferTrackedPoseMaps = true;
+    device.trackedPosePayloads.push({
+        entityId: 91,
+        incarnation: 3,
+        position: { x: 10, y: 20 },
+        velocity: { x: 1, y: 2 },
+        previousPosition: { x: 9, y: 19 }
+    }, {
+        entityId: 92,
+        incarnation: 4,
+        position: { x: 30, y: 40 },
+        velocity: { x: 3, y: 4 },
+        previousPosition: { x: 29, y: 39 }
+    });
+    let deviceGeneration = 1;
+    const basePlatform = createFakePlatformPort(device);
+    const platform = {
+        ...basePlatform,
+        getDeviceGeneration: () => deviceGeneration
+    };
+    const simulation = new GpuCircleBodySimulation(platform, {
+        capacity: 1,
+        sessionGeneration: 77,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.replaceBodies([{
+            ...createBody(1),
+            entityId: 91,
+            incarnation: 3
+        }]).accepted, 1);
+        assert.equal(simulation.configureTrackedBody({
+            entityId: 91,
+            incarnation: 3
+        }).accepted, true);
+        assert.equal(simulation.fixedUpdate(1 / 60, 40), true);
+
+        const oldStatus = simulation.getStatus();
+        const oldPhysicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
+        assert.equal(oldStatus.deviceGeneration, 1);
+        assert.equal(oldStatus.fixedPrimitives.trackedPose.pendingReadbacks, 1);
+        assert.equal(oldStatus.fixedPrimitives.trackedPose.publishedSamples, 0);
+
+        deviceGeneration = 2;
+        assert.equal(simulation.replaceBodies([{
+            ...createBody(3),
+            entityId: 92,
+            incarnation: 4
+        }]).accepted, 1);
+        const replacementStatus = simulation.getStatus();
+        const replacementPhysicsBuffer = device.buffers.get(
+            'cirvivor-gpu-circle-physics'
+        );
+        assert.equal(replacementStatus.deviceGeneration, 2);
+        assert.ok(replacementStatus.authoritativeEpoch > oldStatus.authoritativeEpoch);
+        assert.equal(replacementStatus.fixedPrimitives.trackedPose.pendingReadbacks, 0);
+        assert.equal(replacementStatus.fixedPrimitives.trackedPose.latest.valid, false);
+        assert.notStrictEqual(replacementPhysicsBuffer, oldPhysicsBuffer);
+        assert.equal(oldPhysicsBuffer.destroyed, true);
+        assert.equal(replacementPhysicsBuffer.destroyed, false);
+
+        assert.equal(simulation.configureTrackedBody({
+            entityId: 92,
+            incarnation: 4
+        }).accepted, true);
+        assert.equal(simulation.fixedUpdate(1 / 60, 41), true);
+        assert.deepEqual(device.pendingTrackedPoseMapIndices(), [0, 1]);
+
+        device.resolveTrackedPoseMap(1);
+        await flushMicrotasks();
+        const newestStatus = simulation.getStatus();
+        const newestPose = newestStatus.fixedPrimitives.trackedPose.latest;
+        assert.equal(newestStatus.fixedPrimitives.trackedPose.publishedSamples, 1);
+        assert.equal(newestPose.valid, true);
+        assert.equal(newestPose.entityId, 92);
+        assert.equal(newestPose.incarnation, 4);
+        assert.equal(newestPose.sourceTick, 41);
+        assert.equal(newestPose.submittedTick, 1);
+        assert.equal(newestPose.observedThroughTick, 41);
+        assert.equal(newestPose.sessionGeneration, 77);
+        assert.equal(newestPose.deviceGeneration, 2);
+        assert.equal(newestPose.authoritativeEpoch, replacementStatus.authoritativeEpoch);
+        assert.deepEqual({ ...newestPose.position }, { x: 30, y: 40 });
+
+        device.resolveTrackedPoseMap(0);
+        await flushMicrotasks();
+        const afterOldCallback = simulation.getStatus();
+        const preservedPose = afterOldCallback.fixedPrimitives.trackedPose.latest;
+        assert.equal(afterOldCallback.deviceGeneration, 2);
+        assert.equal(
+            afterOldCallback.authoritativeEpoch,
+            replacementStatus.authoritativeEpoch
+        );
+        assert.equal(
+            afterOldCallback.fixedPrimitives.trackedPose.publishedSamples,
+            1
+        );
+        assert.equal(afterOldCallback.fixedPrimitives.trackedPose.pendingReadbacks, 0);
+        assert.equal(preservedPose.entityId, 92);
+        assert.equal(preservedPose.incarnation, 4);
+        assert.equal(preservedPose.sourceTick, 41);
+        assert.equal(preservedPose.deviceGeneration, 2);
+        assert.equal(preservedPose.authoritativeEpoch, replacementStatus.authoritativeEpoch);
+        assert.deepEqual({ ...preservedPose.position }, { x: 30, y: 40 });
+        assert.equal(replacementPhysicsBuffer.destroyed, false);
     } finally {
         simulation.destroy();
         restoreGlobals();

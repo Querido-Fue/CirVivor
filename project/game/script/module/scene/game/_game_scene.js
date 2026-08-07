@@ -19,7 +19,7 @@ export const GAME_SCENE_MODES = Object.freeze({
 export class GameScene extends BaseScene {
     /**
      * @param {object} sceneHandler - 상위 SceneSystem입니다.
-     * @param {{mapId?:string,dependencies?:object,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,enemyRecoveryEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 플레이 진입 옵션입니다.
+     * @param {{mapId?:string,dependencies?:object,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,enemyRecoveryEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 플레이 진입 옵션입니다.
      */
     constructor(sceneHandler, options = {}) {
         super(sceneHandler);
@@ -28,6 +28,7 @@ export class GameScene extends BaseScene {
         this.dependencies = options.dependencies || createGameSceneDependencies();
         this.tileNavigationSource = options.tileNavigationSource ?? null;
         this.enemyWaveEnabled = options.enemyWaveEnabled;
+        this.gameplayWorldActorsEnabled = options.gameplayWorldActorsEnabled;
         this.enemyRecoveryEnabled = options.enemyRecoveryEnabled !== false;
         this.waveDefinition = options.waveDefinition;
         this.enemyPresentationProfile = options.enemyPresentationProfile;
@@ -164,11 +165,17 @@ export class GameScene extends BaseScene {
         return this.gameSystem;
     }
 
+    /** @returns {string|null} enter에서 불변으로 선택된 world authority mode입니다. */
+    getSessionMode() {
+        return this.gameSystem.getSessionMode();
+    }
+
     #createGameSystem() {
         const gameSystem = new GameSystem(this.dependencies, {
             mapId: this.mapId,
             tileNavigationSource: this.tileNavigationSource,
             enemyWaveEnabled: this.enemyWaveEnabled,
+            gameplayWorldActorsEnabled: this.gameplayWorldActorsEnabled,
             waveDefinition: this.waveDefinition,
             enemyPresentationProfile: this.enemyPresentationProfile,
             initialCameraZoom: this.initialCameraZoom
@@ -178,7 +185,7 @@ export class GameScene extends BaseScene {
     }
 
     /**
-     * GPU 권위 상태를 spawn snapshot으로 되감지 않고 현재 wave session 전체를 재시작합니다.
+     * GPU 권위 상태를 snapshot으로 되감지 않고 restartable GPU world만 재시작합니다.
      * 같은 device generation에서 새 session이 한 tick도 성공하지 못하면 재시작을 반복하지 않습니다.
      * @returns {boolean} 새 session으로 교체했는지 여부입니다.
      */
@@ -193,10 +200,10 @@ export class GameScene extends BaseScene {
         if (this.recoveryRestartGeneration === deviceGeneration) {
             return false;
         }
+        if (!this.gameSystem.restartGpuWorldAtSafeWaveBoundary()) {
+            return false;
+        }
         this.recoveryRestartGeneration = deviceGeneration;
-        this.gameSystem.destroy();
-        this.dependencies.legacyWorldPort?.clear?.();
-        this.gameSystem = this.#createGameSystem();
         this.recoveryRestartCount++;
         return true;
     }

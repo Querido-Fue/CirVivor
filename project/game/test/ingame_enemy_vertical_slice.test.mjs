@@ -112,6 +112,65 @@ class FakeEnemySimulationBackend {
         return this.bodiesByHandle.size > 0;
     }
 
+    canControlBody(handle) {
+        const body = this.bodiesByHandle.get(handleKey(handle));
+        return body?.kindId === 'tower';
+    }
+
+    stageFixedPrograms(plan = {}) {
+        const controls = Array.from(plan.controls ?? []);
+        const sourceRelativeSpawns = Array.from(
+            plan.sourceRelativeSpawns ?? []
+        );
+        this.calls.push({
+            type: 'stageFixedPrograms',
+            targetFixedTick: plan.targetFixedTick,
+            controls,
+            sourceRelativeSpawns
+        });
+
+        const controlledHandles = new Set();
+        const controlsValid = controls.every((control) => {
+            const key = handleKey(control);
+            if (controlledHandles.has(key) || !this.canControlBody(control)) {
+                return false;
+            }
+            controlledHandles.add(key);
+            return true;
+        });
+        const sourcesValid = sourceRelativeSpawns.every(({ sourceHandle }) => (
+            this.hasBody(sourceHandle)
+        ));
+        const commandCount = controls.length + sourceRelativeSpawns.length;
+        if (!controlsValid || !sourcesValid) {
+            return {
+                accepted: 0,
+                rejected: commandCount,
+                reason: 'control-contract',
+                requiresRecovery: false
+            };
+        }
+        return {
+            accepted: commandCount,
+            rejected: 0,
+            requiresRecovery: false
+        };
+    }
+
+    configureTrackedBody(handle = null) {
+        if (handle === null) {
+            return { accepted: true, tracked: null };
+        }
+        const accepted = this.canControlBody(handle);
+        return {
+            accepted,
+            tracked: accepted
+                ? { entityId: handle.entityId, incarnation: handle.incarnation }
+                : null,
+            reason: accepted ? undefined : 'stale-handle'
+        };
+    }
+
     setFixedUpdateMode(mode) {
         this.fixedUpdateMode = mode;
     }
@@ -307,8 +366,14 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 1);
 
     const spawnCall = backend.calls[0];
-    assert.equal(spawnCall.bodies.length, 1);
-    const body = spawnCall.bodies[0];
+    assert.equal(spawnCall.bodies.length, 3);
+    const body = spawnCall.bodies.find(({ kindId }) => kindId === 'enemy');
+    assert.ok(body);
+    assert.equal(spawnCall.bodies.filter(({ kindId }) => kindId === 'tower').length, 1);
+    assert.equal(
+        spawnCall.bodies.filter(({ kindId }) => kindId === 'core-proxy').length,
+        1
+    );
     assert.ok(Number.isSafeInteger(body.entityId) && body.entityId > 0);
     assert.equal(body.incarnation, 1);
     assert.equal(body.kindId, 'enemy');
@@ -351,6 +416,7 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(
         body.interactionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
     );
     assert.equal('layerMask' in body, false);
     assert.equal('sensorMask' in body, false);
@@ -370,7 +436,7 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(backend.hasBody(handle), true);
     assert.equal(registry.has(handle), true);
     assert.equal(registry.getActiveCount('enemy'), 1);
-    assert.equal(endpoint.getStatus().activeCount, 1);
+    assert.equal(endpoint.getStatus().activeCount, 3);
     const entityView = registry.copyEntityView(handle, {});
     assert.equal(entityView.definitionId, BASIC_SQUARE_ENEMY_DATA.id);
     assert.equal(entityView.createdAtTick, 1);
@@ -382,10 +448,21 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(objectSystem.fixedUpdate(1 / 60, 2), true);
     assert.deepEqual(
         backend.calls.map(({ type }) => type),
-        ['fixedUpdate']
+        ['stageFixedPrograms', 'fixedUpdate']
     );
+    assert.equal(backend.calls[0].targetFixedTick, 2);
+    assert.equal(backend.calls[0].controls.length, 1);
+    const towerControl = backend.calls[0].controls[0];
+    assert.equal(
+        towerControl.entityId,
+        spawnCall.bodies.find(({ kindId }) => kindId === 'tower').entityId
+    );
+    assert.equal(towerControl.incarnation, 1);
+    assert.equal(towerControl.moveIntentX, 0);
+    assert.equal(towerControl.moveIntentY, 0);
+    assert.deepEqual(backend.calls[0].sourceRelativeSpawns, []);
     assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 2);
-    assert.equal(backend.bodiesByHandle.size, 1);
+    assert.equal(backend.bodiesByHandle.size, 3);
 
     backend.calls.length = 0;
     objectSystem.update(0.75, 1 / 144, 1 / 60);
@@ -449,14 +526,14 @@ test('일시 unavailable인 첫 spawn은 wave cursor를 잃지 않고 같은 fix
     );
     assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), false);
     assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 1);
-    assert.equal(objectSystem.getEnemyLifecycleCommandOwner().getPendingCount(), 1);
+    assert.equal(objectSystem.getEnemyLifecycleCommandOwner().getPendingCount(), 3);
     assert.equal(objectSystem.getWorldRegistry().getActiveCount(), 0);
     assert.equal(objectSystem.getWorldRegistry().getReservedCount(), 0);
 
     assert.equal(objectSystem.fixedUpdate(1 / 60, 1), true);
     assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 1);
     assert.equal(objectSystem.getEnemyLifecycleCommandOwner().getPendingCount(), 0);
-    assert.equal(objectSystem.getWorldRegistry().getActiveCount(), 1);
+    assert.equal(objectSystem.getWorldRegistry().getActiveCount(), 3);
     assert.equal(
         backend.calls.filter(({ type }) => type === 'spawnBodies').length,
         2
@@ -539,7 +616,7 @@ test('pending N+1 GPU submit 중 새 mixed-body batch는 열린 N+2 lifecycle �
     gameSystem.destroy();
 });
 
-test('terminal unsupported 플랫폼은 spawn command를 무기한 soft-stall하지 않고 hard recovery로 승격한다', () => {
+test('terminal unsupported 플랫폼은 CPU no-wave fallback으로 고정되어 fixed tick을 지속한다', () => {
     const platform = {
         getState: () => ({ status: 'unsupported', ready: false }),
         getDevice: () => null,
@@ -562,15 +639,15 @@ test('terminal unsupported 플랫폼은 spawn command를 무기한 soft-stall하
     });
     objectSystem.init({ ww: 1920, wh: 1080 });
 
-    assert.equal(objectSystem.fixedUpdate(1 / 60, 1), false);
-    assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 0);
-    assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), true);
-    assert.equal(objectSystem.getEnemyLifecycleCommandOwner().getPendingCount(), 1);
+    assert.equal(objectSystem.fixedUpdate(1 / 60, 1), true);
+    assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 1);
+    assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), false);
+    assert.equal(objectSystem.getEnemyLifecycleCommandOwner().getPendingCount(), 0);
     assert.equal(objectSystem.getWorldRegistry().getReservedCount(), 0);
     assert.equal(objectSystem.getWorldRegistry().getActiveCount(), 0);
     assert.equal(
         objectSystem.getEnemySimulationBackend().getRuntimeState(),
-        'gpu-terminal-unavailable'
+        'gpu-deferred'
     );
 
     objectSystem.destroy();

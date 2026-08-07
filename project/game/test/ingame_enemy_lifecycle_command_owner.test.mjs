@@ -12,6 +12,9 @@ const { EnemyLifecycleCommandOwner } = await loadGameModule(
 const { createGpuEnemySpawnIntent } = await loadGameModule(
     'ingame/object/enemy/gpu_enemy_spawn_adapter.js'
 );
+const { GPU_CIRCLE_BODY_COLLISION_LAYER } = await loadGameModule(
+    'ingame/physics/gpu/gpu_circle_body_abi.js'
+);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -183,7 +186,11 @@ test('request는 fixed 경계 전 backend를 호출하지 않고 due command를 
     assert.equal(backend.events[1].bodies[0].enemyDefinitionId, 'basic_circle_01');
     assert.equal(backend.events[1].bodies[0].bodyLayer, 1);
     assert.equal(backend.events[1].bodies[0].interactionLayer, 1);
-    assert.equal(backend.events[1].bodies[0].interactionMask, 2);
+    assert.equal(
+        backend.events[1].bodies[0].interactionMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+    );
     assert.equal('layerMask' in backend.events[1].bodies[0], false);
     assert.equal('sensorMask' in backend.events[1].bodies[0], false);
 });

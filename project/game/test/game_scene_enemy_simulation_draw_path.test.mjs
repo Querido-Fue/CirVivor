@@ -190,8 +190,8 @@ function createGameSceneHarness(options = {}) {
         webGpuPlatformPort: {
             getState() {
                 return {
-                    ready: true,
-                    status: 'ready',
+                    ready: options.platformReady !== false,
+                    status: options.platformReady === false ? 'unsupported' : 'ready',
                     deviceGeneration: 1
                 };
             }
@@ -236,17 +236,30 @@ test('enemy-only draw는 owner camera로 GPU만 한 번 그리고 draw 실패를
     }
 });
 
-test('기존 full draw는 TileMap, GPU 적, Core, Tower 순서를 유지한다', () => {
+test('GPU world full draw는 TileMap, GPU world, CPU Core만 그리고 CPU Tower를 그리지 않는다', () => {
     const { scene, trace } = createGameSceneHarness();
     try {
         scene.draw();
         assert.deepEqual(
             trace.map(({ type }) => type),
-            ['tile-map', 'gpu-enemies', 'core', 'tower']
+            ['tile-map', 'gpu-enemies', 'core']
         );
         assert.strictEqual(
             trace[1].camera,
             scene.getGameSystem().getObjectSystem().getWorldViewProjection()
+        );
+    } finally {
+        scene.destroy();
+    }
+});
+
+test('CPU fallback full draw는 기존 TileMap, GPU no-op layer, Core, Tower 순서를 유지한다', () => {
+    const { scene, trace } = createGameSceneHarness({ platformReady: false });
+    try {
+        scene.draw();
+        assert.deepEqual(
+            trace.map(({ type }) => type),
+            ['tile-map', 'gpu-enemies', 'core', 'tower']
         );
     } finally {
         scene.destroy();

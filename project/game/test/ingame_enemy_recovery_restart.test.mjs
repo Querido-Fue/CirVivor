@@ -96,7 +96,9 @@ class RecoveryBackend {
         this.runtimeState = 'gpu-ready';
         this.recovering = false;
         this.hardFailNextFixed = false;
+        this.initCount = 0;
         this.destroyCount = 0;
+        this.trackedHandle = null;
     }
 
     getCapacity() {
@@ -104,6 +106,10 @@ class RecoveryBackend {
     }
 
     init() {
+        this.initCount++;
+        if (this.mode === 'init-throws') {
+            throw new Error('replacement backend init failure');
+        }
         return true;
     }
 
@@ -144,6 +150,59 @@ class RecoveryBackend {
         return this.bodies.size > 0;
     }
 
+    canControlBody(handle) {
+        return this.hasBody(handle);
+    }
+
+    stageFixedPrograms(plan) {
+        const controls = Array.isArray(plan?.controls) ? plan.controls : [];
+        const sourceRelativeSpawns = Array.isArray(plan?.sourceRelativeSpawns)
+            ? plan.sourceRelativeSpawns
+            : [];
+        const requested = controls.length + sourceRelativeSpawns.length;
+        if (this.recovering) {
+            return {
+                accepted: 0,
+                rejected: requested,
+                requiresRecovery: true,
+                reason: 'gpu-requires-rebuild'
+            };
+        }
+        const hasStaleHandle = controls.some((control) => (
+            !this.canControlBody(control)
+        )) || sourceRelativeSpawns.some((spawn) => (
+            !this.hasBody(spawn.sourceHandle)
+        ));
+        if (hasStaleHandle) {
+            return {
+                accepted: 0,
+                rejected: requested,
+                requiresRecovery: false,
+                reason: 'stale-source'
+            };
+        }
+        return {
+            accepted: requested,
+            rejected: 0,
+            requiresRecovery: false
+        };
+    }
+
+    configureTrackedBody(handle = null) {
+        if (handle === null) {
+            this.trackedHandle = null;
+            return { accepted: true, tracked: false };
+        }
+        if (!this.hasBody(handle)) {
+            return { accepted: false, reason: 'stale-handle' };
+        }
+        this.trackedHandle = Object.freeze({
+            entityId: handle.entityId,
+            incarnation: handle.incarnation
+        });
+        return { accepted: true, tracked: true };
+    }
+
     fixedUpdate() {
         if (this.hardFailNextFixed) {
             this.hardFailNextFixed = false;
@@ -176,6 +235,7 @@ class RecoveryBackend {
         }
         this.destroyCount++;
         this.bodies.clear();
+        this.trackedHandle = null;
         this.runtimeState = 'destroyed';
     }
 }
@@ -253,43 +313,263 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
     };
     const scene = new GameScene({}, { dependencies });
 
+    const initialGameSystem = scene.getGameSystem();
+    const initialObjectSystem = initialGameSystem.getObjectSystem();
+    const initialCoreIntegrity = initialGameSystem.getCoreIntegrity();
+    const initialCorePresentation = initialObjectSystem.getCore();
+    const initialInputRouter = initialGameSystem.playerControlRouter;
+    const initialInputMapper = initialGameSystem.inputActionMapper;
+    const initialCameraController = initialGameSystem.getCameraZoomController();
+    const initialTowerFacade = initialObjectSystem.getTower();
+    const initialEndpoint = initialObjectSystem.getGpuSimulationEndpoint();
+    const initialRegistry = initialObjectSystem.getWorldRegistry();
+    const initialSessionGeneration = initialEndpoint.getStatus().sessionGeneration;
+    const maxIntegrity = initialCoreIntegrity.getMaxIntegrity();
+    const appliedDamage = initialCoreIntegrity.applyIntegrityDamage(37);
+    const damagedIntegrity = initialCoreIntegrity.getCurrentIntegrity();
+
+    assert.ok(appliedDamage > 0);
+    assert.equal(damagedIntegrity, maxIntegrity - appliedDamage);
+    assert.strictEqual(
+        initialCorePresentation.getCoreIntegrity(),
+        initialCoreIntegrity
+    );
+    assert.equal(legacyClearCount, 1);
+
     assert.equal(scene.getNextGpuLifecycleFixedTick(), 1);
     assert.equal(scene.getNextEnemyLifecycleFixedTick(), 1);
 
     scene.fixedUpdate();
+    const firstReplacementEndpoint = initialObjectSystem.getGpuSimulationEndpoint();
+    const firstReplacementRegistry = initialObjectSystem.getWorldRegistry();
+
     assert.equal(backends.length, 2);
     assert.equal(backends[0].destroyCount, 1);
+    assert.strictEqual(scene.getGameSystem(), initialGameSystem);
+    assert.strictEqual(initialGameSystem.getObjectSystem(), initialObjectSystem);
+    assert.strictEqual(initialGameSystem.getCoreIntegrity(), initialCoreIntegrity);
+    assert.strictEqual(initialObjectSystem.getCore(), initialCorePresentation);
+    assert.strictEqual(initialObjectSystem.getTower(), initialTowerFacade);
+    assert.strictEqual(initialGameSystem.playerControlRouter, initialInputRouter);
+    assert.strictEqual(initialGameSystem.inputActionMapper, initialInputMapper);
+    assert.strictEqual(
+        initialGameSystem.getCameraZoomController(),
+        initialCameraController
+    );
+    assert.notStrictEqual(firstReplacementEndpoint, initialEndpoint);
+    assert.notStrictEqual(firstReplacementRegistry, initialRegistry);
+    assert.ok(
+        firstReplacementEndpoint.getStatus().sessionGeneration
+            > initialSessionGeneration
+    );
+    assert.equal(initialEndpoint.getStatus().destroyed, true);
     assert.equal(scene.getEnemyRecoveryStatus().restartCount, 1);
     assert.equal(scene.getEnemyRecoveryStatus().restartGeneration, 1);
-    assert.equal(scene.gameSystem.getFixedTick(), 0);
-    assert.equal(scene.gameSystem.getObjectSystem().getWorldRegistry().getActiveCount(), 0);
+    assert.equal(initialGameSystem.getFixedTick(), 0);
+    assert.equal(firstReplacementRegistry.getActiveCount(), 0);
+    assert.equal(
+        initialObjectSystem.getGpuWorldActorStatus().spawnTargetFixedTick,
+        1
+    );
+    assert.equal(initialCoreIntegrity.getCurrentIntegrity(), damagedIntegrity);
+    assert.equal(initialCoreIntegrity.getMaxIntegrity(), maxIntegrity);
+    assert.equal(legacyClearCount, 1);
 
     scene.fixedUpdate();
-    assert.equal(scene.gameSystem.getFixedTick(), 1);
+    assert.equal(initialGameSystem.getFixedTick(), 1);
     assert.equal(scene.getNextGpuLifecycleFixedTick(), 2);
-    assert.equal(scene.gameSystem.getObjectSystem().getWorldRegistry().getActiveCount(), 1);
+    assert.equal(firstReplacementRegistry.getActiveCount(), 3);
+    assert.equal(firstReplacementRegistry.getActiveCount('enemy'), 1);
+    assert.equal(firstReplacementRegistry.getActiveCount('tower'), 1);
+    assert.equal(firstReplacementRegistry.getActiveCount('core-proxy'), 1);
+    assert.ok(initialObjectSystem.getGpuWorldActorStatus().towerHandle);
+    assert.ok(initialObjectSystem.getGpuWorldActorStatus().coreProxyHandle);
     assert.equal(scene.getEnemyRecoveryStatus().restartGeneration, null);
+    assert.equal(initialCoreIntegrity.getCurrentIntegrity(), damagedIntegrity);
+    assert.equal(legacyClearCount, 1);
 
     backends[1].hardFailNextFixed = true;
     scene.fixedUpdate();
+    const secondReplacementEndpoint = initialObjectSystem.getGpuSimulationEndpoint();
+    const secondReplacementRegistry = initialObjectSystem.getWorldRegistry();
+
     assert.equal(backends.length, 3);
     assert.equal(backends[1].destroyCount, 1);
+    assert.strictEqual(scene.getGameSystem(), initialGameSystem);
+    assert.strictEqual(initialGameSystem.getObjectSystem(), initialObjectSystem);
+    assert.strictEqual(initialGameSystem.getCoreIntegrity(), initialCoreIntegrity);
+    assert.strictEqual(initialObjectSystem.getCore(), initialCorePresentation);
+    assert.strictEqual(initialObjectSystem.getTower(), initialTowerFacade);
+    assert.strictEqual(initialGameSystem.playerControlRouter, initialInputRouter);
+    assert.strictEqual(
+        initialGameSystem.getCameraZoomController(),
+        initialCameraController
+    );
+    assert.notStrictEqual(secondReplacementEndpoint, firstReplacementEndpoint);
+    assert.notStrictEqual(secondReplacementRegistry, firstReplacementRegistry);
+    assert.ok(
+        secondReplacementEndpoint.getStatus().sessionGeneration
+            > firstReplacementEndpoint.getStatus().sessionGeneration
+    );
+    assert.equal(firstReplacementEndpoint.getStatus().destroyed, true);
     assert.equal(scene.getEnemyRecoveryStatus().restartCount, 2);
-    assert.equal(scene.gameSystem.getFixedTick(), 0);
+    assert.equal(initialGameSystem.getFixedTick(), 1);
+    assert.equal(secondReplacementRegistry.getActiveCount(), 0);
+    assert.equal(
+        initialObjectSystem.getGpuWorldActorStatus().spawnTargetFixedTick,
+        2
+    );
+    assert.equal(initialCoreIntegrity.getCurrentIntegrity(), damagedIntegrity);
+    assert.equal(legacyClearCount, 1);
 
     scene.fixedUpdate();
     assert.equal(backends.length, 3);
-    assert.equal(scene.gameSystem.getFixedTick(), 0);
+    assert.equal(initialGameSystem.getFixedTick(), 1);
     assert.equal(scene.getEnemyRecoveryStatus().restartCount, 2);
     assert.equal(scene.getEnemyRecoveryStatus().restartGeneration, 1);
+    assert.strictEqual(
+        initialObjectSystem.getGpuSimulationEndpoint(),
+        secondReplacementEndpoint
+    );
+    assert.equal(initialCoreIntegrity.getCurrentIntegrity(), damagedIntegrity);
+    assert.equal(legacyClearCount, 1);
 
     scene.destroy();
     scene.destroy();
     assert.equal(backends[2].destroyCount, 1);
-    assert.equal(legacyClearCount, 4);
+    assert.equal(legacyClearCount, 2);
 });
 
-test('선택한 enemy presentation profile은 최초와 hard-recovery 교체 GameSystem에 동일하게 전달된다', async () => {
+test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으로 보존한다', () => {
+    const backends = [];
+    const backendModes = ['normal', 'init-throws'];
+    const dependencies = {
+        inputActionSource: {
+            isPressed() {
+                return false;
+            },
+            getWheelTotals(out) {
+                out.x = 0;
+                out.y = 0;
+                return out;
+            }
+        },
+        animationPort: {
+            animate() {
+                return createAnimationHandle();
+            }
+        },
+        timePort: {
+            getDelta: () => 1 / 120,
+            getFixedDelta: () => 1 / 60,
+            getFixedInterpolationAlpha: () => 0.5
+        },
+        viewportPort: {
+            getSnapshot(out) {
+                out.ww = 1920;
+                out.wh = 1080;
+                return out;
+            }
+        },
+        worldRenderPort: {
+            drawCircle() {},
+            drawSquareInstances() {}
+        },
+        webGpuPlatformPort: {
+            getState() {
+                return { ready: true, deviceGeneration: 1 };
+            }
+        },
+        enemySimulationBackendFactory() {
+            const backend = new RecoveryBackend(
+                backendModes[backends.length] ?? 'init-throws'
+            );
+            backends.push(backend);
+            return backend;
+        }
+    };
+    const gameSystem = new GameSystem(dependencies);
+    assert.equal(gameSystem.enter(), true);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 1);
+
+    const objectSystem = gameSystem.getObjectSystem();
+    const coreIntegrity = gameSystem.getCoreIntegrity();
+    const corePresentation = objectSystem.getCore();
+    const towerFacade = objectSystem.getTower();
+    const inputRouter = gameSystem.playerControlRouter;
+    const inputMapper = gameSystem.inputActionMapper;
+    const cameraController = gameSystem.getCameraZoomController();
+    const endpoint = objectSystem.getGpuSimulationEndpoint();
+    const registry = objectSystem.getWorldRegistry();
+    const backend = objectSystem.getEnemySimulationBackend();
+    const waveDirector = objectSystem.waveDirector;
+    const sessionGeneration = endpoint.getStatus().sessionGeneration;
+    const actorStatus = objectSystem.getGpuWorldActorStatus();
+    const towerHandle = actorStatus.towerHandle;
+    const coreProxyHandle = actorStatus.coreProxyHandle;
+    const maxIntegrity = coreIntegrity.getMaxIntegrity();
+    coreIntegrity.applyIntegrityDamage(37);
+    const damagedIntegrity = coreIntegrity.getCurrentIntegrity();
+
+    assert.equal(backends.length, 1);
+    assert.strictEqual(backend, backends[0]);
+    assert.equal(backend.initCount, 1);
+    assert.equal(backend.destroyCount, 0);
+    assert.ok(towerHandle);
+    assert.ok(coreProxyHandle);
+    assert.equal(registry.getActiveCount(), 3);
+    assert.equal(damagedIntegrity < maxIntegrity, true);
+
+    backend.hardFailNextFixed = true;
+    assert.equal(gameSystem.fixedUpdate(), false);
+    assert.equal(gameSystem.getFixedTick(), 1);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
+    const nextLifecycleTickBeforeRestart = gameSystem.getNextGpuLifecycleFixedTick();
+
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+    assert.equal(backends.length, 2);
+    assert.equal(backends[0].destroyCount, 0);
+    assert.equal(backends[1].initCount, 1);
+    assert.equal(backends[1].destroyCount, 1);
+    assert.strictEqual(gameSystem.getObjectSystem(), objectSystem);
+    assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
+    assert.strictEqual(objectSystem.getCore(), corePresentation);
+    assert.strictEqual(objectSystem.getTower(), towerFacade);
+    assert.strictEqual(gameSystem.playerControlRouter, inputRouter);
+    assert.strictEqual(gameSystem.inputActionMapper, inputMapper);
+    assert.strictEqual(gameSystem.getCameraZoomController(), cameraController);
+    assert.strictEqual(objectSystem.getGpuSimulationEndpoint(), endpoint);
+    assert.strictEqual(objectSystem.getWorldRegistry(), registry);
+    assert.strictEqual(objectSystem.getEnemySimulationBackend(), backend);
+    assert.strictEqual(objectSystem.waveDirector, waveDirector);
+    assert.equal(endpoint.getStatus().sessionGeneration, sessionGeneration);
+    assert.equal(endpoint.getStatus().destroyed, false);
+    assert.equal(gameSystem.getFixedTick(), 1);
+    assert.equal(
+        gameSystem.getNextGpuLifecycleFixedTick(),
+        nextLifecycleTickBeforeRestart
+    );
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
+    assert.equal(registry.getActiveCount(), 3);
+    assert.strictEqual(objectSystem.getGpuWorldActorStatus().towerHandle, towerHandle);
+    assert.strictEqual(
+        objectSystem.getGpuWorldActorStatus().coreProxyHandle,
+        coreProxyHandle
+    );
+    assert.strictEqual(towerFacade.getStatus().bodyHandle, towerHandle);
+    assert.equal(towerFacade.getStatus().sessionGeneration, sessionGeneration);
+    assert.strictEqual(corePresentation.getCoreIntegrity(), coreIntegrity);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), damagedIntegrity);
+    assert.equal(coreIntegrity.getMaxIntegrity(), maxIntegrity);
+
+    gameSystem.destroy();
+    gameSystem.destroy();
+    assert.equal(backends[0].destroyCount, 1);
+    assert.equal(backends[1].destroyCount, 1);
+});
+
+test('선택한 enemy presentation profile을 소유한 같은 GameSystem이 GPU world만 재시작한다', async () => {
     const instances = [];
     class CapturingGameSystem {
         constructor(dependencies, options) {
@@ -297,7 +577,8 @@ test('선택한 enemy presentation profile은 최초와 hard-recovery 교체 Gam
             this.options = options;
             this.enterCount = 0;
             this.destroyCount = 0;
-            this.recoveryRequired = (instances.length % 2) === 0;
+            this.restartCount = 0;
+            this.recoveryRequired = true;
             instances.push(this);
         }
 
@@ -307,11 +588,20 @@ test('선택한 enemy presentation profile은 최초와 hard-recovery 교체 Gam
         }
 
         fixedUpdate() {
-            return false;
+            return this.restartCount > 0;
         }
 
         isEnemySimulationRecoveryRequired() {
             return this.recoveryRequired;
+        }
+
+        restartGpuWorldAtSafeWaveBoundary() {
+            if (!this.recoveryRequired) {
+                return false;
+            }
+            this.restartCount++;
+            this.recoveryRequired = false;
+            return true;
         }
 
         destroy() {
@@ -365,28 +655,27 @@ test('선택한 enemy presentation profile은 최초와 hard-recovery 교체 Gam
         assert.equal(initialSystem.enterCount, 1);
 
         scene.fixedUpdate();
-        const recoveredSystem = instances[firstInstanceIndex + 1];
-        assert.equal(instances.length, firstInstanceIndex + 2);
-        assert.equal(initialSystem.destroyCount, 1);
-        assert.strictEqual(recoveredSystem.dependencies, dependencies);
-        assert.equal(recoveredSystem.options.enemyPresentationProfile, profile);
-        assert.strictEqual(
-            recoveredSystem.options.tileNavigationSource,
-            tileNavigationSource
-        );
-        assert.equal(recoveredSystem.enterCount, 1);
+        assert.equal(instances.length, firstInstanceIndex + 1);
+        assert.strictEqual(scene.getGameSystem(), initialSystem);
+        assert.equal(initialSystem.destroyCount, 0);
+        assert.equal(initialSystem.restartCount, 1);
         assert.equal(scene.getEnemyRecoveryStatus().restartCount, 1);
         assert.equal(
             scene.getEnemyRecoveryStatus().restartGeneration,
             profileIndex + 1
         );
-        assert.equal(legacyClearCount, 2);
+        assert.equal(legacyClearCount, 1);
+
+        scene.fixedUpdate();
+        assert.equal(instances.length, firstInstanceIndex + 1);
+        assert.equal(scene.getEnemyRecoveryStatus().restartGeneration, null);
+        assert.equal(initialSystem.restartCount, 1);
+        assert.equal(legacyClearCount, 1);
 
         scene.destroy();
         scene.destroy();
         assert.equal(initialSystem.destroyCount, 1);
-        assert.equal(recoveredSystem.destroyCount, 1);
-        assert.equal(legacyClearCount, 3);
+        assert.equal(legacyClearCount, 2);
     }
 });
 

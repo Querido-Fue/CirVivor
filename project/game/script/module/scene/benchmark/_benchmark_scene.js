@@ -427,6 +427,7 @@ export class BenchmarkScene extends BaseScene {
             dependencies: this.gameSceneDependencies,
             tileNavigationSource: createGpuBenchmarkNavigationSource(),
             enemyWaveEnabled: false,
+            gameplayWorldActorsEnabled: false,
             enemyRecoveryEnabled: false,
             enemyPresentationProfile: this.enemyPresentationProfile,
             initialCameraZoom: BENCHMARK_CAMERA_ZOOM

@@ -169,7 +169,10 @@ export const GPU_CIRCLE_BODY_LAYER = Object.freeze({
     GRENADE: 1 << 5,
     KINEMATIC_OBSTACLE: 1 << 6,
     LAYER_7: 1 << 6,
-    TERRAIN: 1 << 7
+    TERRAIN: 1 << 7,
+    // Core interaction acceptance capability입니다. gameplay noun은 kindId/definitionId에 남고
+    // 이 bit는 physical bodyLayer/collisionMask에 사용하지 않습니다.
+    CORE_PROXY: 1 << 8
 });
 
 /** 기존 enemy-only import 이름을 유지하는 호환 alias입니다. */

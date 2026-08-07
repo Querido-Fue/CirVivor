@@ -21,6 +21,14 @@ function requirePositiveSafeInteger(value, label) {
     return number;
 }
 
+function requireNonNegativeSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) {
+        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
 function requireFiniteOffsets(source, label) {
     if (!Array.isArray(source) || source.length === 0) {
         throw new TypeError(`${label}은 하나 이상의 lane offset 배열이어야 합니다.`);
@@ -73,11 +81,15 @@ function resolveEnemyDefinitionCycle(group, definitions, label) {
  */
 export class WaveDirector {
     /**
-     * @param {{waveDefinition?:object,enemyDefinitions?:object}} [options={}]
+     * @param {{waveDefinition?:object,enemyDefinitions?:object,fixedTickOffset?:number}} [options={}]
      */
     constructor(options = {}) {
         this.waveDefinition = options.waveDefinition ?? CORRIDOR_EIGHT_WAVE_01_DATA;
         this.enemyDefinitions = options.enemyDefinitions ?? INGAME_ENEMY_DEFINITION_BY_ID;
+        this.fixedTickOffset = requireNonNegativeSafeInteger(
+            options.fixedTickOffset ?? 0,
+            'fixedTickOffset'
+        );
         this.schedule = Object.freeze([]);
         this.nextScheduleIndex = 0;
         this.initialized = false;
@@ -169,7 +181,11 @@ export class WaveDirector {
                     );
                 }
                 for (let spawnIndex = 0; spawnIndex < count; spawnIndex++) {
-                    const targetFixedTick = startTick + (spawnIndex * intervalTicks);
+                    const localFixedTick = startTick + (spawnIndex * intervalTicks);
+                    const targetFixedTick = this.fixedTickOffset + localFixedTick;
+                    if (!Number.isSafeInteger(targetFixedTick)) {
+                        throw new RangeError('wave targetFixedTick이 안전한 정수 범위를 벗어났습니다.');
+                    }
                     const commandId = `${waveId}:${phaseIndex}:${groupIndex}:${spawnIndex}`;
                     const enemyDefinition = enemyDefinitionCycle[
                         spawnIndex % enemyDefinitionCycle.length
@@ -244,7 +260,8 @@ export class WaveDirector {
             queuedSpawnCount: this.nextScheduleIndex,
             remainingSpawnCount: this.schedule.length - this.nextScheduleIndex,
             allSpawnsQueued: this.initialized && this.nextScheduleIndex >= this.schedule.length,
-            completionOwned: false
+            completionOwned: false,
+            fixedTickOffset: this.fixedTickOffset
         });
     }
 

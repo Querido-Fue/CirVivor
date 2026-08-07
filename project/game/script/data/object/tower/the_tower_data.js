@@ -25,3 +25,10 @@ export const THE_TOWER_DATA = Object.freeze({
     MASS: 1,
     MAX_LINEAR_SPEED_TILES_PER_SECOND: 25
 });
+
+/** CPU fallback renderer와 GPU direct renderer가 공유하는 Tower presentation data입니다. */
+export const THE_TOWER_RENDER_DATA = Object.freeze({
+    FILL: '#2785ff',
+    COLOR_RGBA: Object.freeze([39 / 255, 133 / 255, 1, 1]),
+    RADIUS_SCALE: 1
+});

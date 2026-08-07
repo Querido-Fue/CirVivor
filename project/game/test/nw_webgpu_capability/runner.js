@@ -35,6 +35,12 @@ import {
     createGpuEnemySpawnIntent
 } from './production/script/module/ingame/object/enemy/gpu_enemy_spawn_adapter.js';
 import {
+    createGpuCoreProxySpawnIntent
+} from './production/script/module/ingame/object/core/gpu_core_proxy_spawn_adapter.js';
+import {
+    createGpuTowerSpawnIntent
+} from './production/script/module/ingame/object/tower/gpu_tower_spawn_adapter.js';
+import {
     createGpuSimulationEndpoint,
     createGpuEnemySimulationEndpoint,
     createGpuProjectileSpawnIntent
@@ -4229,30 +4235,27 @@ async function runProductionFixedPrimitiveGeometrySmoke(device) {
         }
     );
     const terrainMask = GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
-    const wall = createPhase3Body({
+    const wall = {
+        ...createGpuTowerSpawnIntent({ position: { x: 3.5, y: 4.5 } }),
         entityId: 9301,
         incarnation: 1,
-        position: { x: 3.5, y: 4.5 },
         velocity: { x: 20, y: 0 },
-        radius: 0.3,
         collisionMask: terrainMask
-    });
-    const corner = createPhase3Body({
+    };
+    const corner = {
+        ...createGpuTowerSpawnIntent({ position: { x: 3.5, y: 3.5 } }),
         entityId: 9302,
         incarnation: 1,
-        position: { x: 3.5, y: 3.5 },
         velocity: { x: 20, y: 20 },
-        radius: 0.3,
         collisionMask: terrainMask
-    });
-    const outside = createPhase3Body({
+    };
+    const outside = {
+        ...createGpuTowerSpawnIntent({ position: { x: 0.3, y: 2 } }),
         entityId: 9303,
         incarnation: 1,
-        position: { x: 0.3, y: 2 },
         velocity: { x: -20, y: 0 },
-        radius: 0.3,
         collisionMask: terrainMask
-    });
+    };
     const largeStatic = createPhase3Body({
         entityId: 9304,
         incarnation: 1,
@@ -4381,12 +4384,439 @@ async function runProductionFixedPrimitiveGeometrySmoke(device) {
     }
 }
 
+function createTowerCoreHardwareNavigationSource() {
+    const columns = 16;
+    const rows = 16;
+    const cellSize = 1;
+    const corePosition = Object.freeze({ x: 8, y: 8, row: 8, column: 8 });
+    const entryPosition = Object.freeze({ x: 2, y: 8, row: 8, column: 2 });
+    const worldBounds = Object.freeze({
+        minX: 0,
+        minY: 0,
+        maxX: columns * cellSize,
+        maxY: rows * cellSize,
+        width: columns * cellSize,
+        height: rows * cellSize
+    });
+    const navigationGrid = Object.freeze({
+        cols: columns,
+        rows,
+        size: columns * rows,
+        cellSize,
+        sdfSubdivisions: 8,
+        blocked: new Uint8Array(columns * rows)
+    });
+    const route = Object.freeze({
+        gateId: 'nw-phase4-core-gate',
+        pathId: 'nw-phase4-core-route',
+        waypoints: Object.freeze([entryPosition, corePosition])
+    });
+    return Object.freeze({
+        corePosition,
+        route,
+        getNavigationGrid: () => navigationGrid,
+        getSpawnRoutes: () => Object.freeze([route]),
+        getWorldBounds: () => worldBounds
+    });
+}
+
+async function runProductionTowerCoreWorldHardwareSmoke(device) {
+    const context = canvas.getContext('webgpu');
+    assert(context, 'Phase 4 Tower/Core canvas WebGPU context가 없습니다.');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+    });
+    let lastFrameTexture = null;
+    let drawMarks = 0;
+    const platformPort = {
+        getState: () => Object.freeze({ ready: true, status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget() {
+            const texture = context.getCurrentTexture();
+            lastFrameTexture = texture;
+            return {
+                device,
+                context,
+                texture,
+                view: texture.createView(),
+                format,
+                deviceGeneration: 1,
+                width: canvas.width,
+                height: canvas.height
+            };
+        },
+        clearCanvas: () => false,
+        markCanvasDrawn() {
+            drawMarks++;
+            return true;
+        },
+        markCanvasCleared: () => false
+    };
+    const navigationSource = createTowerCoreHardwareNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: platformPort
+    }, {
+        capacity: 3,
+        controlCommandCapacity: 2
+    });
+    const fixedDelta = 1 / 60;
+    const towerIntent = createGpuTowerSpawnIntent({
+        position: { x: 4, y: 4 }
+    });
+    const coreIntent = createGpuCoreProxySpawnIntent({
+        position: navigationSource.corePosition
+    });
+    const enemyIntent = Object.freeze({
+        ...createGpuEnemySpawnIntent({
+            definition: {
+                id: 'nw_phase4_core_enemy',
+                collisionWeight: 1,
+                moveSpeedTilesPerSecond: 1,
+                collisionRadiusTiles: 0.25,
+                maxHealth: 3,
+                colorRgba: [1, 0.2, 0.2, 1]
+            },
+            route: navigationSource.route,
+            spawnSequence: 0,
+            waveId: 'nw-phase4-disabled-wave',
+            policyId: 'hardware-fixture'
+        }),
+        position: Object.freeze({ x: 8.75005, y: 8 }),
+        velocity: Object.freeze({ x: 0, y: 0 })
+    });
+    const minimumCoreEnemyDistance = coreIntent.radius + enemyIntent.radius;
+    const initialCoreEnemyDistance = Math.hypot(
+        enemyIntent.position.x - coreIntent.position.x,
+        enemyIntent.position.y - coreIntent.position.y
+    );
+    assert(
+        initialCoreEnemyDistance > minimumCoreEnemyDistance
+            && initialCoreEnemyDistance - minimumCoreEnemyDistance < 0.001
+            && initialCoreEnemyDistance > enemyIntent.radius,
+        `Phase 4 Core/Enemy fixture가 enter/hidden pixel 조건을 만족하지 않습니다: distance=${initialCoreEnemyDistance}, minimum=${minimumCoreEnemyDistance}`
+    );
+    const findBody = (bodies, handle, label) => {
+        const body = bodies.find((candidate) => (
+            candidate.handle?.entityId === handle.entityId
+            && candidate.handle?.incarnation === handle.incarnation
+        ));
+        assert(body, `Phase 4 ${label} body가 없습니다: ${JSON.stringify(handle)}`);
+        return body;
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Phase 4 generic endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const spawnRequests = [
+            ['phase4:tower', towerIntent],
+            ['phase4:core-proxy', coreIntent],
+            ['phase4:enemy', enemyIntent]
+        ].map(([commandId, intent]) => endpoint.requestSpawn(intent, 1, commandId));
+        assert(
+            spawnRequests.every(({ accepted }) => accepted),
+            `Phase 4 wave 없는 generic spawn 예약 실패: ${JSON.stringify(spawnRequests)}`
+        );
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        assert(
+            spawnCommit.state === 'committed'
+                && spawnCommit.spawned.length === 3
+                && spawnCommit.rejected.length === 0,
+            `Phase 4 Tower/Core/Enemy spawn commit 실패: ${JSON.stringify(spawnCommit)}`
+        );
+        const handleByCommandId = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const towerHandle = handleByCommandId.get('phase4:tower');
+        const coreHandle = handleByCommandId.get('phase4:core-proxy');
+        const enemyHandle = handleByCommandId.get('phase4:enemy');
+        assert(
+            towerHandle && coreHandle && enemyHandle
+                && endpoint.getRegistry().has(towerHandle)
+                && endpoint.getRegistry().has(coreHandle)
+                && endpoint.getRegistry().has(enemyHandle)
+                && endpoint.hasBody(towerHandle)
+                && endpoint.hasBody(coreHandle)
+                && endpoint.hasBody(enemyHandle),
+            `Phase 4 exact spawn handle/registry가 불일치합니다: ${JSON.stringify(spawnCommit.spawned)}`
+        );
+        assert(
+            endpoint.configureTrackedBody(towerHandle).accepted,
+            'Phase 4 Tower tracked body 구성 실패'
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 1), 'Phase 4 initial fixed submit 실패');
+        const initialTowerPose = await waitForPhase3ObservedPose(
+            endpoint,
+            1,
+            'Phase 4 Tower initial'
+        );
+        assert(
+            initialTowerPose.entityId === towerHandle.entityId
+                && initialTowerPose.incarnation === towerHandle.incarnation,
+            `Phase 4 tracked Tower identity가 publish되지 않았습니다: ${JSON.stringify(initialTowerPose)}`
+        );
+        const simulation = endpoint.getBackend().simulation;
+        assert(simulation, 'Phase 4 generic endpoint production simulation이 없습니다.');
+        const initialBodies = await simulation.readbackBodies();
+        const coreAfterInitial = findBody(initialBodies, coreHandle, 'Core initial');
+        const enemyAfterInitial = findBody(initialBodies, enemyHandle, 'Enemy initial');
+        assertNear(coreAfterInitial.position.x, coreIntent.position.x, 0.00001,
+            'Phase 4 static Core x가 이동했습니다');
+        assertNear(coreAfterInitial.position.y, coreIntent.position.y, 0.00001,
+            'Phase 4 static Core y가 이동했습니다');
+
+        await waitForSimulationStatus(
+            simulation,
+            (status) => status.events.pendingReadbacks === 0
+                && status.events.completedThroughTick >= 1,
+            'Phase 4 Core enter event completion'
+        );
+        const initialEvents = endpoint.commitCompletedEventsAtFixedBoundary(2);
+        assert(
+            initialEvents.contactEvents.length === 1
+                && initialEvents.deathEvents.length === 0,
+            `Phase 4 Core enter event 수가 정확하지 않습니다: ${JSON.stringify(initialEvents)}`
+        );
+        const [coreEnterEvent] = initialEvents.contactEvents;
+        assert(
+            coreEnterEvent.type === 'contact'
+                && coreEnterEvent.eventType === 'interaction-enter'
+                && coreEnterEvent.entityId === coreHandle.entityId
+                && coreEnterEvent.incarnation === coreHandle.incarnation
+                && coreEnterEvent.otherEntityId === enemyHandle.entityId
+                && coreEnterEvent.otherIncarnation === enemyHandle.incarnation
+                && coreEnterEvent.valueFixedPoint === 0
+                && coreEnterEvent.damage === 0
+                && coreEnterEvent.disposition === 'applied',
+            `Phase 4 Core-origin enter event 내용이 잘못되었습니다: ${JSON.stringify(coreEnterEvent)}`
+        );
+
+        const cardinalReceipt = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 2, 'phase4:tower:cardinal');
+        assert(cardinalReceipt.accepted, `Phase 4 cardinal control 예약 실패: ${JSON.stringify(cardinalReceipt)}`);
+        const cardinalCommit = endpoint.commitAtFixedBoundary(2);
+        assert(
+            cardinalCommit.state === 'committed'
+                && cardinalCommit.fixedCommands.controls.length === 1,
+            `Phase 4 cardinal control commit 실패: ${JSON.stringify(cardinalCommit)}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 2), 'Phase 4 cardinal fixed submit 실패');
+        const cardinalTowerPose = await waitForPhase3ObservedPose(
+            endpoint,
+            2,
+            'Phase 4 Tower cardinal'
+        );
+        const cardinalOracle = integrateTowerControlOracle({
+            position: initialTowerPose.position,
+            velocity: initialTowerPose.velocity
+        }, { x: 1, y: 0 }, fixedDelta);
+        assertPhase3PoseNear(cardinalTowerPose, cardinalOracle, 'Phase 4 cardinal Tower');
+
+        await waitForSimulationStatus(
+            simulation,
+            (status) => status.events.pendingReadbacks === 0
+                && status.events.completedThroughTick >= 2,
+            'Phase 4 sustained Core overlap completion'
+        );
+        const sustainedEvents = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        assert(
+            sustainedEvents.contactEvents.length === 0
+                && sustainedEvents.deathEvents.length === 0,
+            `Phase 4 sustained Core overlap이 enter event를 중복했습니다: ${JSON.stringify(sustainedEvents)}`
+        );
+
+        const releaseReceipt = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 3, 'phase4:tower:release');
+        assert(releaseReceipt.accepted, `Phase 4 release control 예약 실패: ${JSON.stringify(releaseReceipt)}`);
+        const releaseCommit = endpoint.commitAtFixedBoundary(3);
+        assert(
+            releaseCommit.state === 'committed'
+                && releaseCommit.fixedCommands.controls.length === 1,
+            `Phase 4 release control commit 실패: ${JSON.stringify(releaseCommit)}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 3), 'Phase 4 release fixed submit 실패');
+        const releaseTowerPose = await waitForPhase3ObservedPose(
+            endpoint,
+            3,
+            'Phase 4 Tower release'
+        );
+        const releaseOracle = integrateTowerControlOracle(
+            cardinalOracle,
+            { x: 0, y: 0 },
+            fixedDelta
+        );
+        assertPhase3PoseNear(releaseTowerPose, releaseOracle, 'Phase 4 release Tower');
+        assert(
+            releaseTowerPose.velocity.x > 0
+                && releaseTowerPose.velocity.x < cardinalTowerPose.velocity.x,
+            `Phase 4 release가 Tower friction을 적용하지 않았습니다: ${JSON.stringify(releaseTowerPose)}`
+        );
+
+        const releasedBodies = await simulation.readbackBodies();
+        const coreAfterRelease = findBody(releasedBodies, coreHandle, 'Core release');
+        const enemyAfterRelease = findBody(releasedBodies, enemyHandle, 'Enemy release');
+        const releasedCoreEnemyDistance = Math.hypot(
+            enemyAfterRelease.position.x - coreAfterRelease.position.x,
+            enemyAfterRelease.position.y - coreAfterRelease.position.y
+        );
+        const enemyTravelDuringSustainedOverlap = Math.hypot(
+            enemyAfterRelease.position.x - enemyAfterInitial.position.x,
+            enemyAfterRelease.position.y - enemyAfterInitial.position.y
+        );
+        assertNear(coreAfterRelease.position.x, coreAfterInitial.position.x, 0.00001,
+            'Phase 4 Core가 physical response로 x 이동했습니다');
+        assertNear(coreAfterRelease.position.y, coreAfterInitial.position.y, 0.00001,
+            'Phase 4 Core가 physical response로 y 이동했습니다');
+        assert(
+            releasedCoreEnemyDistance < minimumCoreEnemyDistance
+                && enemyTravelDuringSustainedOverlap < 0.001
+                && coreAfterRelease.health > 0
+                && enemyAfterRelease.health > 0,
+            `Phase 4 Core/Enemy physical displacement 또는 zero-damage 계약이 깨졌습니다: ${JSON.stringify({
+                releasedCoreEnemyDistance,
+                minimumCoreEnemyDistance,
+                enemyTravelDuringSustainedOverlap,
+                core: coreAfterRelease,
+                enemy: enemyAfterRelease
+            })}`
+        );
+
+        const cameraScale = 4;
+        const camera = {
+            worldToViewport(x, y, out) {
+                out.x = x * cameraScale;
+                out.y = y * cameraScale;
+                return out;
+            },
+            getScale: () => cameraScale
+        };
+        endpoint.updatePresentation({
+            frameDelta: 0,
+            fixedDelta,
+            fixedAlpha: 1,
+            renderFrameId: 4101
+        });
+        assert(endpoint.draw(camera), 'Phase 4 Tower/Core production draw 실패');
+        assert(lastFrameTexture, 'Phase 4 Tower/Core production draw texture가 없습니다.');
+        const bytesPerRow = 256;
+        const renderReadback = device.createBuffer({
+            label: 'phase4-tower-core-render-readback',
+            size: bytesPerRow * canvas.height,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+        let towerCenterAlpha = 0;
+        let coreCenterAlpha = 0;
+        try {
+            const encoder = device.createCommandEncoder({
+                label: 'phase4-tower-core-render-copy'
+            });
+            encoder.copyTextureToBuffer(
+                { texture: lastFrameTexture },
+                { buffer: renderReadback, bytesPerRow, rowsPerImage: canvas.height },
+                [canvas.width, canvas.height]
+            );
+            device.queue.submit([encoder.finish()]);
+            await renderReadback.mapAsync(GPUMapMode.READ);
+            const pixels = new Uint8Array(renderReadback.getMappedRange());
+            const readWorldAlpha = (position) => {
+                const x = Math.floor(position.x * cameraScale);
+                const y = Math.floor(position.y * cameraScale);
+                return pixels[(y * bytesPerRow) + (x * 4) + 3];
+            };
+            towerCenterAlpha = readWorldAlpha(releaseTowerPose.position);
+            coreCenterAlpha = readWorldAlpha(coreAfterRelease.position);
+        } finally {
+            try {
+                renderReadback.unmap();
+            } catch {
+                // map 실패 또는 이미 unmap된 진단 buffer입니다.
+            }
+            renderReadback.destroy();
+        }
+        assert(
+            drawMarks === 1 && towerCenterAlpha > 0 && coreCenterAlpha === 0,
+            `Phase 4 Tower visible/Core invisible render style이 잘못됐습니다: ${JSON.stringify({
+                drawMarks,
+                towerCenterAlpha,
+                coreCenterAlpha
+            })}`
+        );
+
+        const fixedPrimitives = simulation.getStatus().fixedPrimitives;
+        const storageProfile = fixedPrimitives.storageProfile;
+        const storageProfileValues = Object.values(storageProfile)
+            .filter((value) => typeof value === 'number');
+        assert(
+            storageProfile.requiredMaximum === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+                && storageProfileValues.every(
+                    (value) => value <= REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+                ),
+            `Phase 4 storage profile이 max=9를 초과했습니다: ${JSON.stringify(storageProfile)}`
+        );
+
+        return {
+            waveEnabled: false,
+            handles: {
+                tower: towerHandle,
+                core: coreHandle,
+                enemy: enemyHandle
+            },
+            tower: {
+                initial: {
+                    position: { ...initialTowerPose.position },
+                    velocity: { ...initialTowerPose.velocity }
+                },
+                cardinal: {
+                    position: { ...cardinalTowerPose.position },
+                    velocity: { ...cardinalTowerPose.velocity }
+                },
+                release: {
+                    position: { ...releaseTowerPose.position },
+                    velocity: { ...releaseTowerPose.velocity }
+                }
+            },
+            coreEnemy: {
+                initialDistance: initialCoreEnemyDistance,
+                distanceAfterRelease: releasedCoreEnemyDistance,
+                enemyTravelDuringSustainedOverlap,
+                enterEvent: coreEnterEvent,
+                sustainedContactEventCount: sustainedEvents.contactEvents.length
+            },
+            render: {
+                drawMarks,
+                towerCenterAlpha,
+                coreCenterAlpha
+            },
+            storageProfile,
+            uncapturedErrorsCheckedAtRunEnd: true
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+        context.unconfigure();
+    }
+}
+
 async function runProductionFixedPrimitiveSmoke(device) {
     return {
         endpoint: await runProductionFixedPrimitiveEndpointSmoke(device),
         isolation: await runProductionFixedPrimitiveIsolationSmoke(device),
         sourceInvalid: await runProductionSourceInvalidCleanupSmoke(device),
         geometry: await runProductionFixedPrimitiveGeometrySmoke(device),
+        towerCoreWorld: await runProductionTowerCoreWorldHardwareSmoke(device),
         uncapturedErrorsCheckedAtRunEnd: true,
         deviceLossCheckedAtRunEnd: true
     };

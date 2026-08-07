@@ -31,7 +31,7 @@ export class TheCoreRenderer {
 
     /**
      * Core가 보일 때만 렌더 포트에 제출합니다.
-     * @param {import('./the_core.js').TheCore|null} core - 렌더할 Core입니다.
+     * @param {{active:boolean,position:{x:number,y:number},radius:number}|null} core - 렌더할 CPU Core presentation입니다.
      * @param {object} projection - IWorldViewProjection2D입니다.
      * @returns {void}
      */

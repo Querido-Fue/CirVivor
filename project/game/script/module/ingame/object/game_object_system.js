@@ -3,11 +3,22 @@ import { assertCameraFollowTarget2D } from '../contract/camera_control_contract.
 import { assertCoreIntegrity } from '../contract/core_integrity_contract.js';
 import { assertPhysicsBody2D } from '../contract/physics_body_contract.js';
 import { assertTileNavigationSource } from '../contract/tile_navigation_contract.js';
+import {
+    GAME_WORLD_SESSION_MODE,
+    assertGameWorldSessionMode,
+    resolveGameWorldSessionPolicy,
+    selectGameWorldSessionMode
+} from '../game_world_session_mode.js';
 import { TileMapCollisionResolver } from '../map/tile_map_collision_resolver.js';
 import { TileMapRenderer } from '../map/tile_map_renderer.js';
 import { createTileMap } from '../map/tile_map.js';
 import { WorldCamera2D } from '../map/world_camera_2d.js';
 import { WaveDirector } from '../flow/wave_director.js';
+import { CorePresentationFacade } from './core/core_presentation_facade.js';
+import {
+    GPU_CORE_PROXY_WORLD_KIND_ID,
+    createGpuCoreProxySpawnIntent
+} from './core/gpu_core_proxy_spawn_adapter.js';
 import {
     createGpuSimulationEndpoint
 } from './enemy/gpu_enemy_simulation_endpoint.js';
@@ -16,13 +27,12 @@ import { TheCoreRenderer } from './the_core_renderer.js';
 import { TheTower } from './the_tower.js';
 import { TheTowerRenderer } from './the_tower_renderer.js';
 import { TowerPlayerController } from './tower_player_controller.js';
+import { GpuTowerActorFacade } from './tower/gpu_tower_actor_facade.js';
+import {
+    GPU_TOWER_WORLD_KIND_ID,
+    createGpuTowerSpawnIntent
+} from './tower/gpu_tower_spawn_adapter.js';
 
-/**
- * 뷰포트 값을 재사용 대상에 정규화해 기록합니다.
- * @param {{ww:number,wh:number}} target - 기록 대상입니다.
- * @param {object} [source={}] - 원본 뷰포트입니다.
- * @returns {{ww:number,wh:number}} 같은 대상 객체입니다.
- */
 function syncWorldViewport(target, source = {}) {
     const ww = Number(source.ww);
     const wh = Number(source.wh);
@@ -31,27 +41,84 @@ function syncWorldViewport(target, source = {}) {
     return target;
 }
 
-function resolveEnemyWaveEnabled(dependencies, options) {
-    if (typeof options?.enemyWaveEnabled === 'boolean') {
-        return options.enemyWaveEnabled;
+function requireNonNegativeSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) {
+        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
     }
-    return dependencies?.webGpuPlatformPort?.getState?.().ready === true;
+    return number;
+}
+
+function createEmptyGpuEventSnapshot(completedThroughTick = 0) {
+    return Object.freeze({
+        targetFixedTick: null,
+        completedThroughTick,
+        batchCount: 0,
+        droppedEventCount: 0,
+        events: Object.freeze([]),
+        contactEvents: Object.freeze([]),
+        deathEvents: Object.freeze([]),
+        protocolFailure: null
+    });
+}
+
+const GPU_WORLD_PAUSED_OBSERVATION = Object.freeze({
+    valid: false,
+    reason: 'gpu-world-paused'
+});
+
+function freezeHandle(handle) {
+    return Object.freeze({
+        entityId: Number(handle.entityId),
+        incarnation: Number(handle.incarnation)
+    });
 }
 
 /**
  * @class GameObjectSystem
- * @description 타일 맵, The Tower, The Core와 물리·충돌·렌더 capability를 소유합니다.
+ * @description 한 session mode의 CPU fallback world 또는 mixed-body GPU world를 소유합니다.
  */
 export class GameObjectSystem {
-    /**
-     * @param {{worldRenderPort:{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}}} dependencies - 오브젝트 의존성입니다.
-     * @param {{mapId?:string|null,tileNavigationSource?:object|null,coreIntegrity:object,enemyWaveEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string}} options - 세션 오브젝트 옵션입니다.
-     */
     constructor(dependencies, options) {
+        const inferredMode = options?.sessionMode
+            ?? selectGameWorldSessionMode(dependencies?.webGpuPlatformPort);
+        const policy = resolveGameWorldSessionPolicy(
+            assertGameWorldSessionMode(inferredMode),
+            options
+        );
+        Object.defineProperty(this, 'sessionMode', {
+            value: policy.sessionMode,
+            writable: false,
+            configurable: false,
+            enumerable: true
+        });
+
+        this.dependencies = dependencies;
         this.viewport = { ww: 0, wh: 0 };
         this.requestedMapId = typeof options?.mapId === 'string' ? options.mapId : null;
         this.injectedTileNavigationSource = options?.tileNavigationSource ?? null;
         this.coreIntegrity = assertCoreIntegrity(options?.coreIntegrity);
+        this.waveDefinition = options?.waveDefinition;
+        this.enemyPresentationProfile = options?.enemyPresentationProfile;
+        this.gameplayWorldActorsEnabled = policy.gameplayWorldActorsEnabled;
+        this.enemyWaveEnabled = policy.enemyWaveEnabled;
+        this.initialFixedTick = requireNonNegativeSafeInteger(
+            options?.initialFixedTick ?? 0,
+            'initialFixedTick'
+        );
+
+        this.endpointDependencies = Object.freeze({
+            webGpuPlatformPort: dependencies?.webGpuPlatformPort ?? null,
+            enemySimulationBackendFactory: dependencies?.enemySimulationBackendFactory,
+            enemySimulationBackend: dependencies?.enemySimulationBackend
+        });
+        this.endpointSessionCount = 0;
+        this.enemySimulationEndpoint = null;
+        this.enemySimulationBackend = null;
+        this.worldRegistry = null;
+        this.enemyLifecycleCommandOwner = null;
+        this.#installGpuEndpoint(this.#createGpuEndpoint(true));
+
         this.tileMap = null;
         this.tileCollisionResolver = null;
         this.camera = new WorldCamera2D();
@@ -62,43 +129,39 @@ export class GameObjectSystem {
         this.playerControllables = [];
         this.physicsBodies = [];
         this.collidables = [];
-        this.enemySimulationEndpoint = createGpuSimulationEndpoint({
-            webGpuPlatformPort: dependencies?.webGpuPlatformPort ?? null,
-            enemySimulationBackendFactory:
-                dependencies?.enemySimulationBackendFactory,
-            enemySimulationBackend: dependencies?.enemySimulationBackend
-        }, {
-            presentationProfile: options?.enemyPresentationProfile
-        });
-        this.enemySimulationBackend = this.enemySimulationEndpoint.getBackend();
-        this.worldRegistry = this.enemySimulationEndpoint.getRegistry();
-        this.enemyLifecycleCommandOwner
-            = this.enemySimulationEndpoint.getLifecycleCommandOwner();
-        this.enemyWaveEnabled = resolveEnemyWaveEnabled(dependencies, options);
         this.waveDirector = this.enemyWaveEnabled
-            ? new WaveDirector({ waveDefinition: options?.waveDefinition })
+            ? new WaveDirector({
+                waveDefinition: this.waveDefinition,
+                fixedTickOffset: this.initialFixedTick
+            })
             : null;
-        this.lastCompletedEnemyFixedTick = 0;
+        this.lastCompletedEnemyFixedTick = this.initialFixedTick;
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = false;
+        this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(this.initialFixedTick);
         this.enemyPresentationFrame = {
             frameDelta: 0,
             fixedDelta: 0,
             fixedAlpha: 0
         };
+        this.actorSpawnTargetFixedTick = 0;
+        this.towerSpawnCommandId = null;
+        this.coreProxySpawnCommandId = null;
+        this.actorLifecycleQueued = false;
+        this.towerHandle = null;
+        this.coreProxyHandle = null;
+        this.trackedTowerConfigured = false;
         this.tileMapRenderer = new TileMapRenderer(dependencies?.worldRenderPort);
         this.coreRenderer = new TheCoreRenderer(dependencies?.worldRenderPort);
-        this.towerRenderer = new TheTowerRenderer(dependencies?.worldRenderPort);
+        this.towerRenderer = this.sessionMode
+            === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK
+            ? new TheTowerRenderer(dependencies?.worldRenderPort)
+            : null;
         this.initialized = false;
         this.destroyed = false;
     }
 
-    /**
-     * 방향 route 기반 6타일 맵과 Core/Tower를 생성합니다.
-     * @param {object} viewport - 초기 표시 viewport입니다.
-     * @returns {void}
-     */
     init(viewport) {
         if (this.initialized || this.destroyed) {
             return;
@@ -108,144 +171,129 @@ export class GameObjectSystem {
             this.injectedTileNavigationSource
                 ?? createTileMap(this.requestedMapId)
         );
-        this.tileCollisionResolver = new TileMapCollisionResolver(this.tileMap);
         this.enemySimulationEndpoint.init(this.tileMap);
         this.waveDirector?.init(this.tileMap);
 
         const towerSpawn = this.tileMap.getTowerSpawnPosition();
         const coreSpawn = this.tileMap.getCorePosition();
-        this.tower = new TheTower({
-            x: towerSpawn.x,
-            y: towerSpawn.y
-        });
-        this.core = new TheCore({
-            x: coreSpawn.x,
-            y: coreSpawn.y,
-            integrity: this.coreIntegrity
-        });
-
-        this.physicsBodies.push(
-            assertPhysicsBody2D(this.tower.getPhysicsBody()),
-            assertPhysicsBody2D(this.core.getPhysicsBody())
-        );
-        this.collidables.push(
-            assertCollidable2D(this.tower.getCollider()),
-            assertCollidable2D(this.core.getCollider())
-        );
-        this.towerController = new TowerPlayerController(this.tower);
-        this.playerControllables.push(this.towerController);
-        this.cameraFollowTarget = assertCameraFollowTarget2D(this.tower);
+        if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD) {
+            this.tower = new GpuTowerActorFacade();
+            this.core = new CorePresentationFacade({
+                x: coreSpawn.x,
+                y: coreSpawn.y,
+                integrity: this.coreIntegrity
+            });
+            this.playerControllables.push(this.tower);
+            this.cameraFollowTarget = assertCameraFollowTarget2D(this.tower);
+            this.#armGpuWorldActors(this.lastCompletedEnemyFixedTick);
+        } else {
+            this.tileCollisionResolver = new TileMapCollisionResolver(this.tileMap);
+            this.tower = new TheTower({ x: towerSpawn.x, y: towerSpawn.y });
+            this.core = new TheCore({
+                x: coreSpawn.x,
+                y: coreSpawn.y,
+                integrity: this.coreIntegrity
+            });
+            this.physicsBodies.push(
+                assertPhysicsBody2D(this.tower.getPhysicsBody()),
+                assertPhysicsBody2D(this.core.getPhysicsBody())
+            );
+            this.collidables.push(
+                assertCollidable2D(this.tower.getCollider()),
+                assertCollidable2D(this.core.getCollider())
+            );
+            this.towerController = new TowerPlayerController(this.tower);
+            this.playerControllables.push(this.towerController);
+            this.cameraFollowTarget = assertCameraFollowTarget2D(this.tower);
+        }
 
         this.camera.init(this.tileMap.getWorldBounds(), this.viewport);
         this.initialized = true;
     }
 
-    /**
-     * 등록 가능한 IPlayerControllable의 동일한 읽기 전용 목록 참조를 반환합니다.
-     * @returns {object[]} IPlayerControllable 목록입니다.
-     */
+    getSessionMode() {
+        return this.sessionMode;
+    }
+
     getPlayerControllables() {
         return this.playerControllables;
     }
 
-    /**
-     * 물리 단계와 향후 CollisionHandler가 사용할 IPhysicsBody2D 목록을 반환합니다.
-     * @returns {object[]} 등록된 물리 바디 목록입니다.
-     */
     getPhysicsBodies() {
         return this.physicsBodies;
     }
 
-    /**
-     * 향후 동적 충돌 파이프라인이 사용할 ICollidable2D 목록을 반환합니다.
-     * @returns {object[]} 등록된 collider 목록입니다.
-     */
     getCollidables() {
         return this.collidables;
     }
 
-    /** @returns {TheTower|null} 현재 The Tower입니다. */
     getTower() {
         return this.tower;
     }
 
-    /** @returns {object|null} 현재 ICameraFollowTarget2D 대상입니다. */
     getCameraFollowTarget() {
         return this.cameraFollowTarget;
     }
 
-    /** @returns {TheCore|null} 현재 The Core입니다. */
     getCore() {
         return this.core;
     }
 
-    /** @returns {object|null} 현재 ITileNavigationSource입니다. */
     getTileMap() {
         return this.tileMap;
     }
 
-    /**
-     * 렌더와 향후 pointer 입력이 공유할 IWorldViewProjection2D를 반환합니다.
-     * @returns {WorldCamera2D} 현재 월드 projection입니다.
-     */
     getWorldViewProjection() {
         return this.camera;
     }
 
-    /**
-     * 복수 Gate를 지원하는 적 spawn route 목록을 반환합니다.
-     * @returns {object[]} 컴파일된 route 목록입니다.
-     */
     getEnemySpawnRoutes() {
         return this.tileMap?.getSpawnRoutes() ?? [];
     }
 
-    /**
-     * 향후 enemy spawn/flow-field lifecycle이 사용할 session simulation 경계를 반환합니다.
-     * @returns {EnemySimulationBackend} 현재 enemy simulation backend입니다.
-     */
     getEnemySimulationBackend() {
         return this.enemySimulationBackend;
     }
 
-    /**
-     * 실제 게임·벤치마크·도구가 공통으로 사용할 mixed-body GPU simulation 진입점입니다.
-     * @returns {import('./enemy/gpu_enemy_simulation_endpoint.js').GpuSimulationEndpoint}
-     */
     getGpuSimulationEndpoint() {
         return this.enemySimulationEndpoint;
     }
 
-    /** @returns {import('./enemy/gpu_enemy_simulation_endpoint.js').GpuSimulationEndpoint} 기존 enemy API 호환 alias입니다. */
     getEnemySimulationEndpoint() {
         return this.getGpuSimulationEndpoint();
     }
 
-    /** @returns {WorldRegistry} 테스트·진단용 session entity registry입니다. */
     getWorldRegistry() {
         return this.worldRegistry;
     }
 
-    /** @returns {EnemyLifecycleCommandOwner} 테스트·향후 gameplay command adapter용 경계입니다. */
     getEnemyLifecycleCommandOwner() {
         return this.enemyLifecycleCommandOwner;
     }
 
-    /** @returns {object|null} 현재 spawn-only wave 진행 snapshot입니다. */
     getEnemyWaveStatus() {
         return this.waveDirector?.getStatus() ?? null;
     }
 
-    /** @returns {number} 마지막으로 전체 세션이 완료한 fixed tick입니다. */
     getLastCompletedEnemyFixedTick() {
         return this.lastCompletedEnemyFixedTick;
     }
 
-    /**
-     * 새 GPU lifecycle command를 예약할 수 있는 가장 이른 fixed tick입니다.
-     * lifecycle commit 뒤 GPU submit을 재시도 중이면 pending 경계 다음 tick을 반환합니다.
-     * @returns {number} 양의 안전한 fixed tick입니다.
-     */
+    getLastCompletedGpuEvents() {
+        return this.lastCompletedGpuEvents;
+    }
+
+    getGpuWorldActorStatus() {
+        return Object.freeze({
+            enabled: this.gameplayWorldActorsEnabled,
+            spawnTargetFixedTick: this.actorSpawnTargetFixedTick,
+            lifecycleQueued: this.actorLifecycleQueued,
+            towerHandle: this.towerHandle,
+            coreProxyHandle: this.coreProxyHandle,
+            trackedTowerConfigured: this.trackedTowerConfigured
+        });
+    }
+
     getNextGpuLifecycleFixedTick() {
         const lastClosedFixedTick = this.pendingEnemyFixedTick !== 0
             ? this.pendingEnemyFixedTick
@@ -258,27 +306,22 @@ export class GameObjectSystem {
         return lastClosedFixedTick + 1;
     }
 
-    /** @returns {number} 기존 enemy lifecycle tick API 호환 alias입니다. */
     getNextEnemyLifecycleFixedTick() {
         return this.getNextGpuLifecycleFixedTick();
     }
 
-    /** @returns {boolean} 현재 wave를 안전 경계에서 재시작해야 하는 hard GPU failure 여부입니다. */
     isEnemySimulationRecoveryRequired() {
         return this.enemySimulationRecoveryRequired;
     }
 
-    /** pause/resume 경계에서 적 render prediction clock을 물리 clock에 맞춥니다. */
+    isGpuWorldRecoveryRequired() {
+        return this.isEnemySimulationRecoveryRequired();
+    }
+
     synchronizeEnemyPresentation() {
         this.enemySimulationEndpoint.synchronizePresentation();
     }
 
-    /**
-     * 적 GPU tick 제출을 먼저 확인한 뒤 Tower 운동과 tile 침투를 같은 fixed 경계에서 진행합니다.
-     * @param {number} delta - 초 단위 fixed delta입니다.
-     * @param {number} [proposedFixedTick] - GameSystem이 아직 확정하지 않은 다음 tick입니다.
-     * @returns {boolean} 적과 Tower가 같은 tick을 모두 전진했는지 여부입니다.
-     */
     fixedUpdate(delta, proposedFixedTick = this.lastCompletedEnemyFixedTick + 1) {
         if (!this.initialized || this.destroyed) {
             return false;
@@ -289,41 +332,52 @@ export class GameObjectSystem {
         if (this.pendingEnemyFixedTick !== 0
             && this.pendingEnemyFixedTick !== proposedFixedTick) {
             throw new RangeError(
-                `미완료 enemy fixed tick이 있습니다: ${this.pendingEnemyFixedTick}`
+                `미완료 GPU fixed tick이 있습니다: ${this.pendingEnemyFixedTick}`
             );
         }
-        const enemyState = this.enemySimulationEndpoint.getRuntimeState();
-        const enemyGpuRequired = this.enemyWaveEnabled
+        const gpuState = this.enemySimulationEndpoint.getRuntimeState();
+        const gpuRequired = this.enemyWaveEnabled
+            || this.gameplayWorldActorsEnabled
             || this.enemySimulationEndpoint.getPendingCommandCount() > 0
             || this.enemySimulationEndpoint.hasActiveBodies();
-        if (enemyGpuRequired
+        if (gpuRequired
             && this.enemySimulationEndpoint.requiresRecovery()
-            && enemyState !== 'gpu-backpressure') {
-            this.enemySimulationRecoveryRequired = true;
-            if (!this.enemySimulationPaused) {
-                this.enemySimulationEndpoint.synchronizePresentation();
-            }
-            this.enemySimulationPaused = true;
-            return false;
+            && gpuState !== 'gpu-backpressure') {
+            return this.#pauseForGpuRecovery();
         }
 
         if (this.pendingEnemyFixedTick === 0) {
             const completedEvents = this.enemySimulationEndpoint
-                .commitCompletedEventsAtFixedBoundary(
-                proposedFixedTick
-            );
+                .commitCompletedEventsAtFixedBoundary(proposedFixedTick);
             if (completedEvents.protocolFailure) {
-                this.enemySimulationRecoveryRequired = true;
-                if (!this.enemySimulationPaused) {
-                    this.enemySimulationEndpoint.synchronizePresentation();
-                }
-                this.enemySimulationPaused = true;
-                return false;
+                return this.#pauseForGpuRecovery();
             }
+            this.lastCompletedGpuEvents = completedEvents;
             this.waveDirector?.queueSpawnsForFixedTick(
                 proposedFixedTick,
                 this.enemySimulationEndpoint
             );
+            if (!this.#queueGpuWorldActorsForFixedTick(proposedFixedTick)) {
+                return this.#pauseForGpuRecovery();
+            }
+
+            let expectedControlCommandId = null;
+            if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+                && this.towerHandle) {
+                const targetFixedTick = this.getNextGpuLifecycleFixedTick();
+                if (targetFixedTick !== proposedFixedTick) {
+                    throw new RangeError('Tower control과 lifecycle fixed 경계가 다릅니다.');
+                }
+                const receipt = this.tower.stageControlForFixedTick(
+                    this.enemySimulationEndpoint,
+                    targetFixedTick
+                );
+                if (!receipt?.accepted) {
+                    return this.#pauseForGpuRecovery();
+                }
+                expectedControlCommandId = receipt.commandId;
+            }
+
             const lifecycleResult = this.enemySimulationEndpoint
                 .commitAtFixedBoundary(proposedFixedTick);
             if (lifecycleResult.recoveryRequired) {
@@ -335,113 +389,163 @@ export class GameObjectSystem {
                 this.enemySimulationPaused = true;
                 return false;
             }
+            if (!this.#bindCommittedGpuWorldActors(lifecycleResult, proposedFixedTick)) {
+                return this.#pauseForGpuRecovery();
+            }
+            if (expectedControlCommandId) {
+                const controls = lifecycleResult.fixedCommands?.controls ?? [];
+                if (controls.filter(({ commandId }) => (
+                    commandId === expectedControlCommandId
+                )).length !== 1) {
+                    return this.#pauseForGpuRecovery();
+                }
+            }
             this.pendingEnemyFixedTick = proposedFixedTick;
         }
 
-        const hasActiveEnemies = this.enemySimulationEndpoint.hasActiveBodies();
-        const enemySubmitted = this.enemySimulationEndpoint.fixedUpdate(
+        const hasActiveBodies = this.enemySimulationEndpoint.hasActiveBodies();
+        const gpuSubmitted = this.enemySimulationEndpoint.fixedUpdate(
             delta,
             proposedFixedTick
         );
         const postSubmitState = this.enemySimulationEndpoint.getRuntimeState();
-        const enemyGpuStillRequired = this.enemyWaveEnabled
-            || hasActiveEnemies
+        const gpuStillRequired = this.enemyWaveEnabled
+            || this.gameplayWorldActorsEnabled
+            || hasActiveBodies
             || this.enemySimulationEndpoint.getPendingCommandCount() > 0;
-        this.enemySimulationRecoveryRequired
-            = enemyGpuStillRequired
-                && this.enemySimulationEndpoint.requiresRecovery()
-                && postSubmitState !== 'gpu-backpressure';
-        if (hasActiveEnemies && !enemySubmitted) {
+        this.enemySimulationRecoveryRequired = gpuStillRequired
+            && this.enemySimulationEndpoint.requiresRecovery()
+            && postSubmitState !== 'gpu-backpressure';
+        if (hasActiveBodies && !gpuSubmitted) {
             if (!this.enemySimulationPaused) {
                 this.enemySimulationEndpoint.synchronizePresentation();
             }
             this.enemySimulationPaused = true;
             return false;
         }
+
         this.enemySimulationPaused = false;
         this.enemySimulationRecoveryRequired = false;
         this.lastCompletedEnemyFixedTick = proposedFixedTick;
         this.pendingEnemyFixedTick = 0;
-        this.tower?.fixedUpdate(delta);
-        if (this.tower && this.tileCollisionResolver) {
+        if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
+            this.tower.fixedUpdate(delta);
             this.tileCollisionResolver.resolve(this.tower.getCollider());
         }
         return true;
     }
 
-    /**
-     * Tower 보간과 적 GPU presentation clock을 갱신합니다.
-     * @param {number} alpha - 0~1 fixed interpolation alpha입니다.
-     * @param {number} [frameDelta=0] - 초 단위 가변 렌더 delta입니다.
-     * @param {number} [fixedDelta=0] - 초 단위 fixed delta입니다.
-     * @returns {void}
-     */
     update(alpha, frameDelta = 0, fixedDelta = 0) {
-        this.tower?.updateRenderPosition(alpha);
+        if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
+            this.tower?.updateRenderPosition(alpha);
+        }
         this.enemyPresentationFrame.frameDelta = this.enemySimulationPaused ? 0 : frameDelta;
         this.enemyPresentationFrame.fixedDelta = fixedDelta;
         this.enemyPresentationFrame.fixedAlpha = alpha;
         this.enemySimulationEndpoint.updatePresentation(this.enemyPresentationFrame);
+        if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+            && this.towerHandle) {
+            const endpointStatus = this.enemySimulationEndpoint.getStatus();
+            const gpuStatus = endpointStatus.backend?.gpu ?? endpointStatus.backend ?? {};
+            const observedPose = this.enemySimulationPaused
+                || this.enemySimulationRecoveryRequired
+                ? GPU_WORLD_PAUSED_OBSERVATION
+                : this.enemySimulationEndpoint.getObservedTrackedPose();
+            this.tower.updateObservedPose(
+                observedPose,
+                {
+                    currentFixedTick: this.lastCompletedEnemyFixedTick,
+                    fixedAlpha: alpha,
+                    fixedDelta,
+                    sessionGeneration: endpointStatus.sessionGeneration,
+                    deviceGeneration: gpuStatus.deviceGeneration,
+                    authoritativeEpoch: gpuStatus.authoritativeEpoch
+                }
+            );
+        }
     }
 
-    /**
-     * 보이는 타일, Core, Tower 순서로 렌더 포트에 제출합니다.
-     * @returns {void}
-     */
     draw() {
         if (!this.tileMap) {
             return;
         }
-        this.tileMapRenderer.draw(
-            this.tileMap,
-            this.camera
-        );
+        this.tileMapRenderer.draw(this.tileMap, this.camera);
         this.drawEnemySimulation();
-        this.coreRenderer.draw(
-            this.core,
-            this.camera
-        );
-        this.towerRenderer.draw(
-            this.tower,
-            this.camera
-        );
+        this.coreRenderer.draw(this.core, this.camera);
+        if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
+            this.towerRenderer.draw(this.tower, this.camera);
+        }
     }
 
-    /**
-     * benchmark/tool이 map·Core·Tower 없이 GPU 적 layer만 제출하는 소유자 경계입니다.
-     * @returns {boolean} endpoint draw 제출 여부입니다.
-     */
     drawEnemySimulation() {
         if (!this.tileMap || this.destroyed) {
             return false;
         }
         const submitted = this.enemySimulationEndpoint.draw(this.camera);
-        const enemyState = this.enemySimulationEndpoint.getRuntimeState();
-        const enemyGpuRequired = this.enemyWaveEnabled
+        const gpuState = this.enemySimulationEndpoint.getRuntimeState();
+        const gpuRequired = this.enemyWaveEnabled
+            || this.gameplayWorldActorsEnabled
             || this.enemySimulationEndpoint.getPendingCommandCount() > 0
             || this.enemySimulationEndpoint.hasActiveBodies();
-        this.enemySimulationRecoveryRequired
-            = enemyGpuRequired
-                && this.enemySimulationEndpoint.requiresRecovery()
-                && enemyState !== 'gpu-backpressure';
+        this.enemySimulationRecoveryRequired = gpuRequired
+            && this.enemySimulationEndpoint.requiresRecovery()
+            && gpuState !== 'gpu-backpressure';
         return submitted;
     }
 
-    /**
-     * 월드 entity를 재생성하지 않고 카메라 viewport만 갱신합니다.
-     * @param {object} viewport - 새 object viewport입니다.
-     * @returns {void}
-     */
     resize(viewport) {
         syncWorldViewport(this.viewport, viewport);
         this.camera.resize(this.viewport);
     }
 
-    /**
-     * 소유 객체와 capability를 역순으로 정리합니다.
-     * 반복 호출해도 안전합니다.
-     * @returns {void}
-     */
+    /** Core/input/domain identity를 보존하고 restartable GPU world만 교체합니다. */
+    restartGpuWorldAtSafeWaveBoundary() {
+        if (this.destroyed
+            || !this.initialized
+            || this.sessionMode !== GAME_WORLD_SESSION_MODE.GPU_WORLD) {
+            return false;
+        }
+        const hasFactory = typeof this.endpointDependencies.enemySimulationBackendFactory
+            === 'function';
+        if (!hasFactory && this.endpointDependencies.enemySimulationBackend) {
+            return false;
+        }
+
+        const replacementEndpoint = this.#createGpuEndpoint(false);
+        const replacementWaveDirector = this.enemyWaveEnabled
+            ? new WaveDirector({
+                waveDefinition: this.waveDefinition,
+                fixedTickOffset: this.lastCompletedEnemyFixedTick
+            })
+            : null;
+        try {
+            replacementEndpoint.init(this.tileMap);
+            replacementWaveDirector?.init(this.tileMap);
+        } catch {
+            replacementWaveDirector?.destroy();
+            replacementEndpoint.destroy();
+            return false;
+        }
+        this.enemySimulationEndpoint.synchronizePresentation();
+        this.waveDirector?.destroy();
+        this.enemySimulationEndpoint.destroy();
+        this.tower.resetGpuBinding();
+        this.#installGpuEndpoint(replacementEndpoint);
+        this.waveDirector = replacementWaveDirector;
+        this.pendingEnemyFixedTick = 0;
+        this.enemySimulationRecoveryRequired = false;
+        this.enemySimulationPaused = true;
+        this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(
+            this.lastCompletedEnemyFixedTick
+        );
+        this.#armGpuWorldActors(this.lastCompletedEnemyFixedTick);
+        return true;
+    }
+
+    restartEnemyGpuWorldAtSafeWaveBoundary() {
+        return this.restartGpuWorldAtSafeWaveBoundary();
+    }
+
     destroy() {
         if (this.destroyed) {
             return;
@@ -467,9 +571,126 @@ export class GameObjectSystem {
         this.tileCollisionResolver = null;
         this.tileMap = null;
         this.injectedTileNavigationSource = null;
-        this.towerRenderer.destroy();
+        this.towerRenderer?.destroy();
+        this.towerRenderer = null;
         this.coreRenderer.destroy();
         this.tileMapRenderer.destroy();
         this.initialized = false;
+    }
+
+    #createGpuEndpoint(allowInjectedBackend) {
+        const dependencies = {
+            webGpuPlatformPort: this.endpointDependencies.webGpuPlatformPort,
+            enemySimulationBackendFactory:
+                this.endpointDependencies.enemySimulationBackendFactory
+        };
+        if (allowInjectedBackend
+            && !dependencies.enemySimulationBackendFactory
+            && this.endpointDependencies.enemySimulationBackend) {
+            dependencies.enemySimulationBackend
+                = this.endpointDependencies.enemySimulationBackend;
+        }
+        const endpoint = createGpuSimulationEndpoint(dependencies, {
+            presentationProfile: this.enemyPresentationProfile
+        });
+        this.endpointSessionCount++;
+        return endpoint;
+    }
+
+    #installGpuEndpoint(endpoint) {
+        this.enemySimulationEndpoint = endpoint;
+        this.enemySimulationBackend = endpoint.getBackend();
+        this.worldRegistry = endpoint.getRegistry();
+        this.enemyLifecycleCommandOwner = endpoint.getLifecycleCommandOwner();
+    }
+
+    #armGpuWorldActors(fixedTickOffset) {
+        this.towerHandle = null;
+        this.coreProxyHandle = null;
+        this.trackedTowerConfigured = false;
+        this.actorLifecycleQueued = false;
+        this.towerSpawnCommandId = null;
+        this.coreProxySpawnCommandId = null;
+        if (!this.gameplayWorldActorsEnabled) {
+            this.actorSpawnTargetFixedTick = 0;
+            return;
+        }
+        this.actorSpawnTargetFixedTick = fixedTickOffset + 1;
+        const sessionGeneration = this.enemySimulationEndpoint.getStatus().sessionGeneration;
+        this.towerSpawnCommandId = [
+            'gpu-world-tower-spawn',
+            sessionGeneration,
+            this.actorSpawnTargetFixedTick
+        ].join(':');
+        this.coreProxySpawnCommandId = [
+            'gpu-world-core-proxy-spawn',
+            sessionGeneration,
+            this.actorSpawnTargetFixedTick
+        ].join(':');
+    }
+
+    #queueGpuWorldActorsForFixedTick(fixedTick) {
+        if (!this.gameplayWorldActorsEnabled
+            || this.towerHandle
+            || this.actorLifecycleQueued
+            || fixedTick !== this.actorSpawnTargetFixedTick) {
+            return true;
+        }
+        const towerReceipt = this.enemySimulationEndpoint.requestSpawn(
+            createGpuTowerSpawnIntent({
+                position: this.tileMap.getTowerSpawnPosition()
+            }),
+            fixedTick,
+            this.towerSpawnCommandId
+        );
+        const coreReceipt = this.enemySimulationEndpoint.requestSpawn(
+            createGpuCoreProxySpawnIntent({
+                position: this.tileMap.getCorePosition()
+            }),
+            fixedTick,
+            this.coreProxySpawnCommandId
+        );
+        if (!towerReceipt?.accepted || !coreReceipt?.accepted) {
+            return false;
+        }
+        this.actorLifecycleQueued = true;
+        return true;
+    }
+
+    #bindCommittedGpuWorldActors(lifecycleResult, fixedTick) {
+        if (!this.gameplayWorldActorsEnabled
+            || this.towerHandle
+            || fixedTick !== this.actorSpawnTargetFixedTick) {
+            return true;
+        }
+        const handleByCommandId = new Map(
+            (lifecycleResult.spawned ?? []).map(({ commandId, handle }) => (
+                [commandId, handle]
+            ))
+        );
+        const towerHandle = handleByCommandId.get(this.towerSpawnCommandId);
+        const coreProxyHandle = handleByCommandId.get(this.coreProxySpawnCommandId);
+        if (!towerHandle || !coreProxyHandle) {
+            return false;
+        }
+        const sessionGeneration = this.enemySimulationEndpoint.getStatus().sessionGeneration;
+        this.towerHandle = this.tower.bindGpuBody(towerHandle, sessionGeneration);
+        this.coreProxyHandle = freezeHandle(coreProxyHandle);
+        const tracking = this.enemySimulationEndpoint.configureTrackedBody(
+            this.towerHandle
+        );
+        this.trackedTowerConfigured = tracking?.accepted === true;
+        return this.trackedTowerConfigured
+            && this.worldRegistry.getActiveCount(GPU_TOWER_WORLD_KIND_ID) === 1
+            && this.worldRegistry.getActiveCount(GPU_CORE_PROXY_WORLD_KIND_ID) === 1;
+    }
+
+    #pauseForGpuRecovery() {
+        this.enemySimulationRecoveryRequired = true;
+        if (!this.enemySimulationPaused) {
+            this.enemySimulationEndpoint.synchronizePresentation();
+        }
+        this.enemySimulationPaused = true;
+        return false;
     }
 }

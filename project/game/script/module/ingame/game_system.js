@@ -4,6 +4,7 @@ import { CameraZoomController } from './input/camera_zoom_controller.js';
 import { PlayerControlRouter } from './input/player_control_router.js';
 import { GameObjectSystem } from './object/game_object_system.js';
 import { CoreIntegrity } from './state/core_integrity.js';
+import { selectGameWorldSessionMode } from './game_world_session_mode.js';
 
 /**
  * @class GameSystem
@@ -17,7 +18,7 @@ export class GameSystem {
      * @param {{getDelta?:()=>number,getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
-     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 세션 시작 옵션입니다.
+     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 세션 시작 옵션입니다.
      */
     constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
@@ -39,14 +40,17 @@ export class GameSystem {
             maxIntegrity: THE_CORE_DATA.MAX_INTEGRITY
         });
         this.initialCameraZoom = options.initialCameraZoom;
-        this.objectSystem = new GameObjectSystem(dependencies, {
+        this.objectSystemOptions = Object.freeze({
             mapId: options.mapId,
             tileNavigationSource: options.tileNavigationSource,
             coreIntegrity: this.coreIntegrity,
             enemyWaveEnabled: options.enemyWaveEnabled,
+            gameplayWorldActorsEnabled: options.gameplayWorldActorsEnabled,
             waveDefinition: options.waveDefinition,
             enemyPresentationProfile: options.enemyPresentationProfile
         });
+        this.objectSystem = null;
+        this.sessionMode = null;
         this.cameraZoomController = null;
         this.registrationTokens = [];
         this.viewportSnapshot = { ww: 0, wh: 0 };
@@ -63,6 +67,19 @@ export class GameSystem {
         if (this.entered || this.destroyed) {
             return false;
         }
+        const sessionMode = selectGameWorldSessionMode(
+            this.dependencies.webGpuPlatformPort
+        );
+        Object.defineProperty(this, 'sessionMode', {
+            value: sessionMode,
+            writable: false,
+            configurable: false,
+            enumerable: true
+        });
+        this.objectSystem = new GameObjectSystem(this.dependencies, {
+            ...this.objectSystemOptions,
+            sessionMode
+        });
         this.#syncViewportSnapshot();
         this.objectSystem.init(this.viewportSnapshot);
         if (this.initialCameraZoom !== undefined) {
@@ -189,6 +206,11 @@ export class GameSystem {
         return this.objectSystem;
     }
 
+    /** @returns {string|null} enter에서 고정한 world authority mode입니다. */
+    getSessionMode() {
+        return this.sessionMode;
+    }
+
     /**
      * gameplay adapter가 mixed-body GPU lifecycle request와 상태를 연결할 공개 endpoint입니다.
      * commit/tick/presentation/draw는 이 GameSystem의 실행 경로가 소유합니다.
@@ -244,7 +266,25 @@ export class GameSystem {
 
     /** @returns {boolean} 현재 wave를 안전 경계에서 재시작해야 하는 hard GPU failure 여부입니다. */
     isEnemySimulationRecoveryRequired() {
-        return this.objectSystem.isEnemySimulationRecoveryRequired();
+        return this.objectSystem?.isEnemySimulationRecoveryRequired() ?? false;
+    }
+
+    /** @returns {boolean} canonical GPU world recovery 상태입니다. */
+    isGpuWorldRecoveryRequired() {
+        return this.isEnemySimulationRecoveryRequired();
+    }
+
+    /** CPU domain을 유지한 채 restartable GPU world만 safe boundary에서 교체합니다. */
+    restartGpuWorldAtSafeWaveBoundary() {
+        if (!this.entered || this.destroyed) {
+            return false;
+        }
+        return this.objectSystem.restartGpuWorldAtSafeWaveBoundary();
+    }
+
+    /** 기존 enemy 명칭 호환 alias입니다. */
+    restartEnemyGpuWorldAtSafeWaveBoundary() {
+        return this.restartGpuWorldAtSafeWaveBoundary();
     }
 
     /**
@@ -264,7 +304,8 @@ export class GameSystem {
         this.playerControlRouter.destroy();
         this.cameraZoomController?.destroy();
         this.cameraZoomController = null;
-        this.objectSystem.destroy();
+        this.objectSystem?.destroy();
+        this.objectSystem = null;
         this.fixedTick = 0;
         this.entered = false;
     }
