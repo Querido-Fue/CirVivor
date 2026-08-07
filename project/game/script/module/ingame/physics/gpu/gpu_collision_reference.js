@@ -4,6 +4,9 @@ import {
     unpackGpuCirclePhysicsMeta,
     unpackGpuCircleSimulationMeta
 } from './gpu_circle_body_abi.js';
+import {
+    MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
+} from '../../../../data/object/enemy/basic_circle_enemy_data.js';
 
 export const GPU_COLLISION_REFERENCE = Object.freeze({
     CELL_CAPACITY: 64,
@@ -14,6 +17,7 @@ export const GPU_COLLISION_REFERENCE = Object.freeze({
     BORDER_COMPLIANCE: 0.001,
     SOFT_BORDER_SIZE: 8,
     ENEMY_LAYER_MASK: 1,
+    ENEMY_PAIR_COLLISION_RADIUS_SCALE: MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
     TERRAIN_LAYER_MASK: 128,
     WORLD_CLAMP_MARGIN: 0.1
 });
@@ -473,6 +477,20 @@ export function isGpuCircleInteractionPairEnabled(
         && (right.interactionMask & left.interactionLayer) !== 0;
 }
 
+/** production WGSL과 같은 physical pair별 minimum separation을 계산합니다. */
+function resolvePhysicalPairMinimumDistance(selfBody, otherBody) {
+    const selfLayer = unpackGpuCirclePhysicsMeta(selfBody.physicsMeta).bodyLayer;
+    const otherLayer = unpackGpuCirclePhysicsMeta(otherBody.physicsMeta).bodyLayer;
+    const radiusSum = Math.fround(selfBody.radius + otherBody.radius);
+    if ((selfLayer & GPU_COLLISION_REFERENCE.ENEMY_LAYER_MASK) !== 0
+        && (otherLayer & GPU_COLLISION_REFERENCE.ENEMY_LAYER_MASK) !== 0) {
+        return Math.fround(
+            radiusSum * GPU_COLLISION_REFERENCE.ENEMY_PAIR_COLLISION_RADIUS_SCALE
+        );
+    }
+    return radiusSum;
+}
+
 /**
  * production WGSL의 XPBD body-body correction을 한 body 관점에서 계산합니다.
  * 동일 위치에서는 entity/body identity 기반 반대칭 normal을 사용합니다.
@@ -498,7 +516,7 @@ function calculatePairCorrection(selfBody, otherBody, alpha, _bigPair) {
     const distanceSquared = Math.fround(
         Math.fround(deltaX * deltaX) + Math.fround(deltaY * deltaY)
     );
-    const minimumDistance = Math.fround(selfBody.radius + otherBody.radius);
+    const minimumDistance = resolvePhysicalPairMinimumDistance(selfBody, otherBody);
     const minimumDistanceSquared = Math.fround(minimumDistance * minimumDistance);
     if (distanceSquared >= minimumDistanceSquared) {
         return { x: 0, y: 0 };

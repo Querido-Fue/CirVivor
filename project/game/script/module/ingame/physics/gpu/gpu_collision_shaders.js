@@ -16,6 +16,9 @@ import {
 import {
     ENEMY_NORMALIZED_RENDER_GEOMETRY
 } from '../../../../data/object/enemy/enemy_shape_geometry_data.js';
+import {
+    MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
+} from '../../../../data/object/enemy/basic_circle_enemy_data.js';
 
 const WGSL_POLYGON_POINT_CAPACITY = 6;
 
@@ -84,6 +87,9 @@ const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
 const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 const BODY_LAYER_ENEMY: u32 = 1u;
 const BODY_LAYER_TERRAIN: u32 = 128u;
+const ENEMY_PAIR_COLLISION_RADIUS_SCALE: f32 = ${toWgslFloat(
+    MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
+)};
 const CONTACT_HANDLER_FLAG_KILL_IF_OTHER_TERRAIN: u32 = 1u;
 const CONTACT_HANDLER_FLAG_CLOSEST_ONLY: u32 = 2u;
 const CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY: u32 = 8u;
@@ -1584,6 +1590,16 @@ fn clear_position_deltas(@builtin(global_invocation_id) global_id: vec3u) {
     }
 }
 
+fn physical_pair_minimum_distance(self_body: GridBody, other_body: GridBody) -> f32 {
+    let radius_sum = self_body.radius + other_body.radius;
+    let self_is_enemy = (body_layer(self_body.physical_meta) & BODY_LAYER_ENEMY) != 0u;
+    let other_is_enemy = (body_layer(other_body.physical_meta) & BODY_LAYER_ENEMY) != 0u;
+    if (self_is_enemy && other_is_enemy) {
+        return radius_sum * ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+    }
+    return radius_sum;
+}
+
 fn pair_correction(self_body: GridBody, other_body: GridBody, alpha: f32, big_pair: bool) -> vec2f {
     if (self_body.body_id == other_body.body_id) {
         return vec2f(0.0);
@@ -1600,7 +1616,7 @@ fn pair_correction(self_body: GridBody, other_body: GridBody, alpha: f32, big_pa
 
     let delta = self_body.predicted_position - other_body.predicted_position;
     let distance_squared = dot(delta, delta);
-    let minimum_distance = self_body.radius + other_body.radius;
+    let minimum_distance = physical_pair_minimum_distance(self_body, other_body);
     if (distance_squared >= minimum_distance * minimum_distance) {
         return vec2f(0.0);
     }

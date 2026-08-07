@@ -29,6 +29,7 @@ import {
     BASIC_CIRCLE_ENEMY_DATA,
     BASIC_GEN_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
+    MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
     BASIC_PENTA_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA
@@ -526,7 +527,14 @@ async function runProductionSimulationSmoke(device) {
         bodies[0].position.x - bodies[1].position.x,
         bodies[0].position.y - bodies[1].position.y
     );
-    assert(distance >= 0.999, `production GPU circle collision 미해소: ${distance}`);
+    const pairVisualRadiusSum = bodies[0].radius + bodies[1].radius;
+    const pairEffectiveMinimumDistance = pairVisualRadiusSum
+        * MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+    assert(
+        distance >= pairEffectiveMinimumDistance - 0.001
+            && distance < pairVisualRadiusSum - 0.001,
+        `production GPU enemy-pair 유효 반경 해소가 잘못됐습니다: distance=${distance}, effectiveMinimum=${pairEffectiveMinimumDistance}, visualRadiusSum=${pairVisualRadiusSum}`
+    );
     const boundaryBodyX = bodies[2].position.x;
     assert(
         boundaryBodyX >= 0.499,
@@ -577,6 +585,11 @@ async function runProductionSimulationSmoke(device) {
     context.unconfigure();
     return {
         distance,
+        collisionPair: {
+            visualRadiusSum: pairVisualRadiusSum,
+            effectiveMinimumDistance: pairEffectiveMinimumDistance,
+            radiusScale: MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
+        },
         boundaryBodyX,
         sourceWorldUnitScale,
         staticBody: {
@@ -1144,7 +1157,7 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
     });
     const waveId = 'nw-production-enemy-adapter-smoke';
     const policyId = 'fixed-route';
-    const intents = [0, -0.25, 0.25].map((laneOffsetTiles, spawnSequence) => (
+    const intents = [0, -0.2, 0.2].map((laneOffsetTiles, spawnSequence) => (
         createGpuEnemySpawnIntent({
             definition: BASIC_CIRCLE_ENEMY_DATA,
             route,
@@ -1212,7 +1225,9 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
         bodies[1].position.x - bodies[2].position.x,
         bodies[1].position.y - bodies[2].position.y
     );
-    const pairMinimumDistance = bodies[1].radius + bodies[2].radius;
+    const pairVisualRadiusSum = bodies[1].radius + bodies[2].radius;
+    const pairMinimumDistance = pairVisualRadiusSum
+        * MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE;
     assert(
         pairDistanceBefore < pairMinimumDistance,
         `production enemy collision pair가 처음부터 겹치지 않습니다: ${pairDistanceBefore}`
@@ -1275,8 +1290,9 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
             pairA.position.y - pairB.position.y
         );
         assert(
-            pairDistanceAfter >= pairMinimumDistance - 0.001,
-            `production enemy collision pair 해소가 부족합니다: before=${pairDistanceBefore}, after=${pairDistanceAfter}, minimum=${pairMinimumDistance}`
+            pairDistanceAfter >= pairMinimumDistance - 0.001
+                && pairDistanceAfter < pairVisualRadiusSum - 0.001,
+            `production enemy collision pair 유효 반경 해소가 잘못됐습니다: before=${pairDistanceBefore}, after=${pairDistanceAfter}, effectiveMinimum=${pairMinimumDistance}, visualRadiusSum=${pairVisualRadiusSum}`
         );
         const completedStatus = await waitForSimulationStatus(
             simulation,
@@ -1370,7 +1386,10 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
             collisionPair: {
                 distanceBefore: pairDistanceBefore,
                 distanceAfter: pairDistanceAfter,
-                minimumDistance: pairMinimumDistance
+                minimumDistance: pairMinimumDistance,
+                effectiveMinimumDistance: pairMinimumDistance,
+                visualRadiusSum: pairVisualRadiusSum,
+                radiusScale: MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
             },
             overflow: completedStatus.overflow,
             render: {

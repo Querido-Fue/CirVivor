@@ -3,6 +3,10 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 // 공유 의존성을 먼저 평가해 VM module graph의 중복 링크를 피합니다.
 const abi = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const enemyData = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
+const collisionShaders = await loadGameModule(
+    'ingame/physics/gpu/gpu_collision_shaders.js'
+);
 const reference = await loadGameModule('ingame/physics/gpu/gpu_collision_reference.js');
 
 const {
@@ -11,6 +15,8 @@ const {
     packGpuCirclePhysicsMeta,
     packGpuCircleSimulationMeta
 } = abi;
+const { MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE } = enemyData;
+const { GPU_COLLISION_COMPUTE_WGSL } = collisionShaders;
 const {
     GPU_COLLISION_NEIGHBOR_OFFSETS,
     GPU_COLLISION_REFERENCE,
@@ -188,8 +194,18 @@ for (let index = 0; index < expectedNeighbors.length; index += 1) {
 }
 assert.equal(GPU_COLLISION_REFERENCE.CELL_CAPACITY, 64);
 assert.equal(GPU_COLLISION_REFERENCE.SOLVER_ITERATIONS, 6);
+assert.equal(MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE, 0.8);
+assert.equal(GPU_COLLISION_REFERENCE.ENEMY_PAIR_COLLISION_RADIUS_SCALE, 0.8);
+assert.match(
+    GPU_COLLISION_COMPUTE_WGSL,
+    /const ENEMY_PAIR_COLLISION_RADIUS_SCALE: f32 = 0\.8;/u
+);
+assert.match(
+    GPU_COLLISION_COMPUTE_WGSL,
+    /let minimum_distance = physical_pair_minimum_distance\(self_body, other_body\);/u
+);
 
-// 두 equal-mass 원은 6회 Jacobi 뒤 대칭적으로 분리되고 입력은 변경되지 않습니다.
+// 두 enemy 원은 시각/body radius를 보존하면서 80% effective 반경으로 분리됩니다.
 const equalMassInput = [
     makeBody({ position: { x: 40, y: 50 } }),
     makeBody({ position: { x: 41, y: 50 } })
@@ -203,12 +219,15 @@ assert.equal(equalMassResult.stats.smallOverflowCount, 0);
 assert.equal(equalMassResult.stats.bigOverflowCount, 0);
 const equalA = equalMassResult.bodies[0];
 const equalB = equalMassResult.bodies[1];
-assertNear(equalA.position.x, 39.5, 'equal mass body A corrected x');
-assertNear(equalB.position.x, 41.5, 'equal mass body B corrected x');
+assertNear(equalA.position.x, 39.7, 'equal mass enemy A corrected x');
+assertNear(equalB.position.x, 41.3, 'equal mass enemy B corrected x');
 assertNear(equalA.position.y, 50, 'equal mass body A y');
 assertNear(equalB.position.y, 50, 'equal mass body B y');
 assertNear(equalA.position.x + equalB.position.x, 81, 'equal mass center conservation');
-assert.ok(equalB.position.x - equalA.position.x > 1.9996);
+assert.ok(equalB.position.x - equalA.position.x > 1.5996);
+assert.ok(equalB.position.x - equalA.position.x < 1.6001);
+assert.equal(equalA.radius, 1);
+assert.equal(equalB.radius, 1);
 assert.equal(equalA.previousPosition.x, 40);
 assert.equal(equalB.previousPosition.x, 41);
 assertNear(
@@ -230,17 +249,25 @@ const unequalResult = solveGpuCollisionReference([
 const movementA = 40 - unequalResult.bodies[0].position.x;
 const movementB = unequalResult.bodies[1].position.x - 41;
 assertNear(movementA / movementB, 2, 'inverse mass correction ratio');
-assertNear(unequalResult.bodies[0].position.x, 39.33333206176758, 'unequal body A x');
-assertNear(unequalResult.bodies[1].position.x, 41.33333206176758, 'unequal body B x');
+assertNear(unequalResult.bodies[0].position.x, 39.6, 'unequal body A x');
+assertNear(unequalResult.bodies[1].position.x, 41.2, 'unequal body B x');
 
 // static small 원은 candidate로 남되 움직이지 않고 dynamic 원만 해소합니다.
 const staticResult = solveGpuCollisionReference([
     makeBody({ position: { x: 40, y: 50 }, inverseMass: 1 }),
     makeBody({ position: { x: 41, y: 50 }, inverseMass: 0 })
 ], DEFAULT_OPTIONS);
-assertNear(staticResult.bodies[0].position.x, 39, 'dynamic against static x');
+assertNear(staticResult.bodies[0].position.x, 39.4, 'dynamic enemy against static enemy x');
 assert.equal(staticResult.bodies[1].position.x, 41);
 assert.equal(staticResult.bodies[1].velocity.x, 0);
+
+// 시각 반경은 겹치지만 80% 적-적 반경 밖이면 solver correction을 만들지 않습니다.
+const reducedEnemyRangeResult = solveGpuCollisionReference([
+    makeBody({ position: { x: 40, y: 50 } }),
+    makeBody({ position: { x: 41.7, y: 50 } })
+], DEFAULT_OPTIONS);
+assert.equal(reducedEnemyRangeResult.bodies[0].position.x, 40);
+assert.equal(reducedEnemyRangeResult.bodies[1].position.x, Math.fround(41.7));
 
 // benchmark player proxy는 기존 small-grid solver에서 enemy만 밀고 자신은 고정됩니다.
 const benchmarkEnemyRadius = 0.5939696961966999 * 0.5;
@@ -283,12 +310,16 @@ const largeStaticResult = solveGpuCollisionReference([
         position: { x: 5, y: 5 },
         radius: 0.25,
         inverseMass: 1,
+        layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
         entityId: 31
     }),
     makeBody({
         position: { x: 5.5, y: 5 },
         radius: 0.9,
         inverseMass: 0,
+        layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         entityId: 32
     })
 ], {
@@ -317,8 +348,8 @@ assertNear(
     80,
     'coincident center conservation'
 );
-assertNear(coincidentResult.bodies[0].position.x, 41, 'coincident body A x');
-assertNear(coincidentResult.bodies[1].position.x, 39, 'coincident body B x');
+assertNear(coincidentResult.bodies[0].position.x, 40.8, 'coincident enemy A x');
+assertNear(coincidentResult.bodies[1].position.x, 39.2, 'coincident enemy B x');
 assert.equal(coincidentResult.bodies[0].position.y, 50);
 
 // 서로 다른 셀의 원도 row-major 9-cell scan으로 경계를 넘어 해소됩니다.
@@ -329,7 +360,7 @@ const boundaryResult = solveGpuCollisionReference([
 assert.ok(boundaryResult.bodies[0].position.x < 9.75);
 assert.ok(boundaryResult.bodies[1].position.x > 10.25);
 assert.ok(
-    boundaryResult.bodies[1].position.x - boundaryResult.bodies[0].position.x > 0.9996
+    boundaryResult.bodies[1].position.x - boundaryResult.bodies[0].position.x > 0.7996
 );
 
 // dead 슬롯은 primary/candidate 어느 쪽에서도 pair solve에 참여하지 않습니다.
