@@ -27,3 +27,12 @@ export {
     createGpuProjectileSpawnIntent,
     requestGpuProjectileSpawn
 } from './object/projectile/gpu_projectile_spawn_adapter.js';
+
+export {
+    GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
+    GPU_FIXED_PRIMITIVE_ABI,
+    GPU_FIXED_PROGRAM_STATUS,
+    GPU_SPAWN_PROGRAM_ABI_VERSION,
+    GPU_SPAWN_PROGRAM_MODE,
+    GPU_SPAWN_PROGRAM_RESULT
+} from './physics/gpu/gpu_fixed_primitive_abi.js';

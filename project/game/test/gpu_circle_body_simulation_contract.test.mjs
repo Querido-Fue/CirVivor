@@ -15,6 +15,10 @@ const {
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
     packGpuCircleAppliedEventMeta
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const {
+    GPU_FIXED_PRIMITIVE_ABI,
+    GPU_SPAWN_PROGRAM_RESULT
+} = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 const gameModuleGlobal = GpuCircleBodySimulation.constructor('return globalThis')();
 const { createTileMap } = await loadGameModule('ingame/map/tile_map.js');
 const { createRouteFlowFieldAtlas } = await loadGameModule(
@@ -45,6 +49,32 @@ function createBody(x) {
         interactionLayer: 1,
         interactionMask: 0,
         alive: true
+    };
+}
+
+function createSourceRelativeSpawn({
+    sourceEntityId = 1,
+    sourceIncarnation = 1,
+    destinationEntityId,
+    destinationIncarnation = 1
+}) {
+    return {
+        sourceHandle: {
+            entityId: sourceEntityId,
+            incarnation: sourceIncarnation
+        },
+        destinationHandle: {
+            entityId: destinationEntityId,
+            incarnation: destinationIncarnation
+        },
+        destinationSpawn: {
+            ...createBody(0),
+            radius: 0.1,
+            inverseMass: 1
+        },
+        positionOffset: { x: 0.25, y: -0.5 },
+        launchVelocity: { x: 4, y: 1 },
+        sourceVelocityScale: 0.5
     };
 }
 
@@ -109,7 +139,7 @@ class FakeGpuBuffer {
         this.device = device;
         this.label = descriptor.label;
         this.size = descriptor.size;
-        this.data = new ArrayBuffer(descriptor.size);
+        this.data = new gameModuleGlobal.ArrayBuffer(descriptor.size);
         this.destroyed = false;
         this.mapped = false;
     }
@@ -118,6 +148,34 @@ class FakeGpuBuffer {
         if (this.label.includes('event-readback')) {
             return new Promise((resolve, reject) => {
                 this.device.eventMapRequests.push({
+                    buffer: this,
+                    resolved: false,
+                    resolve: () => {
+                        this.mapped = true;
+                        resolve();
+                    },
+                    reject
+                });
+            });
+        }
+        if (this.label.includes('spawn-program-readback')
+            && this.device.deferSpawnProgramMaps) {
+            return new Promise((resolve, reject) => {
+                this.device.spawnProgramMapRequests.push({
+                    buffer: this,
+                    resolved: false,
+                    resolve: () => {
+                        this.mapped = true;
+                        resolve();
+                    },
+                    reject
+                });
+            });
+        }
+        if (this.label.includes('tracked-pose-readback')
+            && this.device.deferTrackedPoseMaps) {
+            return new Promise((resolve, reject) => {
+                this.device.trackedPoseMapRequests.push({
                     buffer: this,
                     resolved: false,
                     resolve: () => {
@@ -181,8 +239,17 @@ class FakeGpuDevice {
         this.eventPayloads = [];
         this.eventPayloadCursor = 0;
         this.eventMapRequests = [];
+        this.deferSpawnProgramMaps = false;
+        this.spawnProgramMapRequests = [];
+        this.spawnProgramResultPayloads = [];
+        this.spawnProgramResultCursor = 0;
+        this.deferTrackedPoseMaps = false;
+        this.trackedPoseMapRequests = [];
+        this.trackedPosePayloads = [];
+        this.trackedPosePayloadCursor = 0;
         this.deferOverflowMaps = false;
         this.overflowMapRequests = [];
+        this.bufferCopies = [];
         this.queue = {
             writeBuffer: (buffer, targetOffset, source, sourceOffset = 0, size) => {
                 const sourceBytes = ArrayBuffer.isView(source)
@@ -303,6 +370,13 @@ class FakeGpuDevice {
                 };
             },
             copyBufferToBuffer(source, sourceOffset, target, targetOffset, size) {
+                device.bufferCopies.push({
+                    sourceLabel: source.label,
+                    sourceOffset,
+                    targetLabel: target.label,
+                    targetOffset,
+                    size
+                });
                 if (target.label.includes('event-readback')) {
                     device.#writeEventReadbackCopy(source, target, targetOffset);
                     return;
@@ -310,6 +384,12 @@ class FakeGpuDevice {
                 new Uint8Array(target.data, targetOffset, size).set(
                     new Uint8Array(source.data, sourceOffset, size)
                 );
+                if (target.label.includes('spawn-program-readback')) {
+                    device.#writeSpawnProgramResult(target);
+                }
+                if (target.label.includes('tracked-pose-readback')) {
+                    device.#writeTrackedPosePayload(target);
+                }
             },
             finish() {
                 device.finishCount += 1;
@@ -331,6 +411,44 @@ class FakeGpuDevice {
         const result = [];
         for (let index = 0; index < this.eventMapRequests.length; index++) {
             if (!this.eventMapRequests[index].resolved) {
+                result.push(index);
+            }
+        }
+        return result;
+    }
+
+    resolveSpawnProgramMap(index) {
+        const request = this.spawnProgramMapRequests[index];
+        assert.ok(request, `spawn program map request ${index}`);
+        if (!request.resolved) {
+            request.resolved = true;
+            request.resolve();
+        }
+    }
+
+    pendingSpawnProgramMapIndices() {
+        const result = [];
+        for (let index = 0; index < this.spawnProgramMapRequests.length; index++) {
+            if (!this.spawnProgramMapRequests[index].resolved) {
+                result.push(index);
+            }
+        }
+        return result;
+    }
+
+    resolveTrackedPoseMap(index) {
+        const request = this.trackedPoseMapRequests[index];
+        assert.ok(request, `tracked pose map request ${index}`);
+        if (!request.resolved) {
+            request.resolved = true;
+            request.resolve();
+        }
+    }
+
+    pendingTrackedPoseMapIndices() {
+        const result = [];
+        for (let index = 0; index < this.trackedPoseMapRequests.length; index++) {
+            if (!this.trackedPoseMapRequests[index].resolved) {
                 result.push(index);
             }
         }
@@ -407,6 +525,47 @@ class FakeGpuDevice {
                 view.setUint32(offset + 12, event.flags ?? 0, true);
             }
         }
+    }
+
+    #writeSpawnProgramResult(target) {
+        const payload = this.spawnProgramResultPayloads[
+            this.spawnProgramResultCursor++
+        ];
+        if (payload === undefined) {
+            return;
+        }
+        const view = new DataView(target.data);
+        const count = view.getUint32(
+            GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.COUNT,
+            true
+        );
+        const results = Array.isArray(payload)
+            ? payload
+            : Array.from({ length: count }, () => payload);
+        assert.equal(results.length, count);
+        for (let index = 0; index < count; index++) {
+            const offset = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
+                + (index * GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE)
+                + GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.RESULT;
+            view.setUint32(offset, results[index], true);
+        }
+    }
+
+    #writeTrackedPosePayload(target) {
+        const payload = this.trackedPosePayloads[this.trackedPosePayloadCursor++];
+        if (!payload) {
+            return;
+        }
+        const abi = GPU_FIXED_PRIMITIVE_ABI.TRACKED_POSE_RECORD;
+        const view = new DataView(target.data);
+        view.setFloat32(abi.POSITION_X, payload.position.x, true);
+        view.setFloat32(abi.POSITION_Y, payload.position.y, true);
+        view.setFloat32(abi.VELOCITY_X, payload.velocity.x, true);
+        view.setFloat32(abi.VELOCITY_Y, payload.velocity.y, true);
+        view.setFloat32(abi.PREVIOUS_POSITION_X, payload.previousPosition.x, true);
+        view.setFloat32(abi.PREVIOUS_POSITION_Y, payload.previousPosition.y, true);
+        view.setUint32(abi.ENTITY_ID, payload.entityId, true);
+        view.setUint32(abi.INCARNATION, payload.incarnation, true);
     }
 }
 
@@ -1058,6 +1217,359 @@ test('contact/event capacity 기본값과 override 상한을 생성 시점에 �
     }), /contactCapacity.*65536 이하/);
 });
 
+test('source-relative program은 validate→resolve 뒤 control을 적용하고 physics integration으로 진입한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 2,
+        controlCommandCapacity: 2,
+        spawnProgramCapacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            entityId: 1,
+            incarnation: 1
+        }]).accepted, 1);
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [{
+                entityId: 1,
+                incarnation: 1,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }],
+            sourceRelativeSpawns: [createSourceRelativeSpawn({
+                destinationEntityId: 2
+            })]
+        });
+        assert.equal(staged.accepted, 2);
+        assert.equal(staged.controlCount, 1);
+        assert.equal(staged.sourceRelativeSpawnCount, 1);
+        assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
+
+        assert.deepEqual(
+            device.computePasses[0].slice(0, 9).map(({ entryPoint }) => entryPoint),
+            [
+                'update_indirect_args',
+                'validate_source_relative_spawns',
+                'resolve_source_relative_spawns',
+                'clear_body_control_states',
+                'validate_body_control_commands',
+                'apply_body_control_commands',
+                'apply_controlled_motion',
+                'prepare_bodies',
+                'clear_grid'
+            ]
+        );
+        assert.deepEqual(
+            device.computePasses[0].slice(1, 8).map(({ pipelineLayout }) => (
+                pipelineLayout
+            )),
+            [
+                'cirvivor-gpu-circle-compute-source-resolve-pipeline-layout',
+                'cirvivor-gpu-circle-compute-source-resolve-pipeline-layout',
+                'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
+                'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
+                'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
+                'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
+                'cirvivor-gpu-circle-compute-physics-pipeline-layout'
+            ]
+        );
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('mixed fixed program의 capacity/stale preflight reject는 control과 destination을 zero-partial로 보존한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 4,
+        controlCommandCapacity: 1,
+        spawnProgramCapacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    const source = { entityId: 1, incarnation: 1 };
+    const control = {
+        ...source,
+        moveIntentX: 1,
+        moveIntentY: 0
+    };
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            ...source
+        }]).accepted, 1);
+
+        const controlOverflow = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [control, control],
+            sourceRelativeSpawns: [createSourceRelativeSpawn({
+                destinationEntityId: 2
+            })]
+        });
+        assert.deepEqual({ ...controlOverflow }, {
+            accepted: 0,
+            rejected: 3,
+            reason: 'fixed-program-capacity'
+        });
+        assert.equal(
+            simulation.getStatus().fixedPrimitives.spawnProgram.overflowCount,
+            0,
+            'control capacity reject는 SpawnProgram overflow telemetry를 오염시키지 않습니다.'
+        );
+
+        const spawnOverflow = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [control],
+            sourceRelativeSpawns: [2, 3, 4].map((destinationEntityId) => (
+                createSourceRelativeSpawn({ destinationEntityId })
+            ))
+        });
+        assert.deepEqual({ ...spawnOverflow }, {
+            accepted: 0,
+            rejected: 4,
+            reason: 'fixed-program-capacity'
+        });
+        assert.equal(
+            simulation.getStatus().fixedPrimitives.spawnProgram.overflowCount,
+            1,
+            'capacity 2에 3 records를 요청하면 초과한 1 record만 누적합니다.'
+        );
+
+        const staleMidBatch = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [control],
+            sourceRelativeSpawns: [
+                createSourceRelativeSpawn({ destinationEntityId: 2 }),
+                createSourceRelativeSpawn({
+                    sourceEntityId: 99,
+                    destinationEntityId: 3
+                })
+            ]
+        });
+        assert.deepEqual({ ...staleMidBatch }, {
+            accepted: 0,
+            rejected: 3,
+            reason: 'stale-source'
+        });
+
+        let status = simulation.getStatus();
+        assert.equal(status.activeBodyCount, 1);
+        assert.equal(status.pendingBodyCount, 0);
+        assert.equal(status.bodyCount, 1);
+        assert.equal(status.fixedPrimitives.control.stagedCount, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.stagedCount, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.overflowCount, 1);
+        assert.equal(simulation.hasBody({ entityId: 2, incarnation: 1 }), false);
+        assert.equal(simulation.hasBody({ entityId: 3, incarnation: 1 }), false);
+
+        assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
+        const entryPoints = device.computePasses[0].map(({ entryPoint }) => entryPoint);
+        assert.equal(entryPoints.includes('validate_source_relative_spawns'), false);
+        assert.equal(entryPoints.includes('resolve_source_relative_spawns'), false);
+        assert.equal(entryPoints.includes('validate_body_control_commands'), false);
+        assert.equal(entryPoints.includes('apply_body_control_commands'), false);
+        status = simulation.getStatus();
+        assert.equal(status.activeBodyCount, 1);
+        assert.equal(status.pendingBodyCount, 0);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('tracked pose는 exact body 하나만 4×32-byte ring으로 읽고 포화 시 sample만 drop한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferTrackedPoseMaps = true;
+    device.trackedPosePayloads.push(...Array.from({ length: 4 }, (_, index) => ({
+        entityId: 91,
+        incarnation: 3,
+        position: { x: 10 + index, y: 20 + index },
+        velocity: { x: 1 + index, y: 2 + index },
+        previousPosition: { x: 9 + index, y: 19 + index }
+    })));
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            entityId: 91,
+            incarnation: 3
+        }]).accepted, 1);
+        assert.deepEqual({ ...simulation.configureTrackedBody({
+            entityId: 91,
+            incarnation: 3
+        }) }, {
+            accepted: true,
+            tracked: true
+        });
+
+        for (let tick = 1; tick <= 5; tick++) {
+            assert.equal(simulation.fixedUpdate(1 / 60, tick), true);
+        }
+        let trackedStatus = simulation.getStatus().fixedPrimitives.trackedPose;
+        assert.equal(trackedStatus.ringSlotCount, 4);
+        assert.equal(trackedStatus.recordByteSize, 32);
+        assert.equal(trackedStatus.maximumBytesPerTick, 32);
+        assert.equal(trackedStatus.pendingReadbacks, 4);
+        assert.equal(trackedStatus.droppedSamples, 1);
+        assert.equal(device.pendingTrackedPoseMapIndices().length, 4);
+        assert.equal(
+            Array.from(device.buffers.values()).filter(({ label, size }) => (
+                label.includes('tracked-pose-readback') && size === 32
+            )).length,
+            4
+        );
+        const trackedCopies = device.bufferCopies.filter(({ targetLabel }) => (
+            targetLabel.includes('tracked-pose-readback')
+        ));
+        assert.equal(trackedCopies.length, 4);
+        assert.ok(trackedCopies.every(({ size }) => size === 32));
+        assert.equal(
+            device.computePasses.filter((operations) => (
+                operations.some(({ entryPoint }) => entryPoint === 'pack_tracked_pose')
+            )).length,
+            4
+        );
+
+        for (let index = 0; index < 3; index++) {
+            device.resolveTrackedPoseMap(index);
+        }
+        await flushMicrotasks();
+        trackedStatus = simulation.getStatus().fixedPrimitives.trackedPose;
+        assert.equal(trackedStatus.pendingReadbacks, 1);
+        assert.equal(trackedStatus.publishedSamples, 3);
+        assert.equal(trackedStatus.latest.valid, true);
+        assert.equal(trackedStatus.latest.sourceTick, 3);
+        assert.deepEqual({ ...trackedStatus.latest.position }, { x: 12, y: 22 });
+
+        const physicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
+        assert.equal(simulation.despawnBodies([{
+            entityId: 91,
+            incarnation: 3
+        }]).removed, 1);
+        assert.equal(simulation.getStatus().activeBodyCount, 0);
+        assert.equal(physicsBuffer.destroyed, false);
+
+        device.resolveTrackedPoseMap(3);
+        await flushMicrotasks();
+        assert.equal(simulation.getStatus().state, 'idle');
+        assert.equal(physicsBuffer.destroyed, true);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('SpawnProgram result ring은 4개로 bounded되고 pending outcome/event drain까지 idle release를 지연한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferSpawnProgramMaps = true;
+    device.spawnProgramResultPayloads.push(
+        GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID,
+        GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID,
+        GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID,
+        GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID
+    );
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 8,
+        spawnProgramCapacity: 4,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            entityId: 1,
+            incarnation: 1
+        }]).accepted, 1);
+        for (let tick = 1; tick <= 4; tick++) {
+            const staged = simulation.stageFixedPrograms({
+                targetFixedTick: tick,
+                sourceRelativeSpawns: [createSourceRelativeSpawn({
+                    destinationEntityId: 100 + tick
+                })]
+            });
+            assert.equal(staged.accepted, 1);
+            assert.equal(simulation.fixedUpdate(1 / 60, tick), true);
+        }
+
+        let status = simulation.getStatus();
+        assert.equal(status.activeBodyCount, 1);
+        assert.equal(status.pendingBodyCount, 4);
+        assert.equal(status.fixedPrimitives.spawnProgram.ringSlotCount, 4);
+        assert.equal(status.fixedPrimitives.spawnProgram.pendingReadbacks, 4);
+        assert.equal(device.pendingSpawnProgramMapIndices().length, 4);
+        const resultCopies = device.bufferCopies.filter(({ targetLabel }) => (
+            targetLabel.includes('spawn-program-readback')
+        ));
+        assert.equal(resultCopies.length, 4);
+        assert.ok(resultCopies.every(({ size }) => (
+            size === GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
+                + (4 * GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE)
+        )));
+
+        const rejected = simulation.stageFixedPrograms({
+            targetFixedTick: 5,
+            sourceRelativeSpawns: [createSourceRelativeSpawn({
+                destinationEntityId: 105
+            })]
+        });
+        assert.equal(rejected.accepted, 0);
+        assert.equal(rejected.reason, 'spawn-program-readback-capacity');
+        assert.equal(simulation.getStatus().pendingBodyCount, 4);
+
+        for (const index of device.pendingEventMapIndices()) {
+            device.resolveEventMap(index);
+        }
+        await flushMicrotasks();
+        assert.equal(simulation.drainCompletedEventBatches([]).length, 4);
+
+        const physicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
+        assert.equal(simulation.despawnBodies([{
+            entityId: 1,
+            incarnation: 1
+        }]).removed, 1);
+        assert.equal(simulation.getStatus().activeBodyCount, 0);
+        assert.equal(physicsBuffer.destroyed, false);
+
+        for (const index of device.pendingSpawnProgramMapIndices()) {
+            device.resolveSpawnProgramMap(index);
+        }
+        await flushMicrotasks();
+        status = simulation.getStatus();
+        assert.equal(status.fixedPrimitives.spawnProgram.pendingReadbacks, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.queuedBatches, 4);
+        assert.equal(physicsBuffer.destroyed, false);
+
+        const batches = simulation.drainCompletedSpawnProgramBatches([]);
+        assert.equal(batches.length, 4);
+        assert.ok(batches.every((batch) => (
+            batch.failure === null
+                && batch.outcomes.length === 1
+                && batch.outcomes[0].result
+                    === GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID
+        )), JSON.stringify(batches));
+        status = simulation.getStatus();
+        assert.equal(status.pendingBodyCount, 0);
+        assert.equal(status.state, 'idle');
+        assert.equal(physicsBuffer.destroyed, true);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
 test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 watermark를 지킨다', async () => {
     const restoreGlobals = installFakeWebGpuGlobals();
     const device = new FakeGpuDevice();
@@ -1180,7 +1692,10 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'physics',
             'body-contacts',
             'world-contacts',
-            'contact-handling'
+            'contact-handling',
+            'fixed-control',
+            'source-resolve',
+            'tracked-pose'
         ].map((profile) => {
             const layout = device.pipelineLayouts.get(
                 `cirvivor-gpu-circle-compute-${profile}-pipeline-layout`
@@ -1192,7 +1707,10 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             physics: 8,
             'body-contacts': 9,
             'world-contacts': 7,
-            'contact-handling': 9
+            'contact-handling': 9,
+            'fixed-control': 5,
+            'source-resolve': 5,
+            'tracked-pose': 6
         });
         assert.ok(
             Object.values(profileStorageCounts).every((count) => count <= 9),
@@ -1208,9 +1726,11 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         assert.equal(simulation.fixedUpdate(1 / 60, 101), true);
         const operations = device.computePasses[0];
         assert.deepEqual(
-            operations.slice(0, 9).map((operation) => operation.entryPoint),
+            operations.slice(0, 11).map((operation) => operation.entryPoint),
             [
                 'update_indirect_args',
+                'clear_body_control_states',
+                'apply_controlled_motion',
                 'prepare_bodies',
                 'clear_grid',
                 'build_grid',
@@ -1223,14 +1743,16 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         );
         assert.equal(operations[0].mode, 'direct');
         assert.equal(operations[0].workgroups, 1);
-        assert.equal(operations[4].mode, 'direct');
-        assert.equal(operations[4].workgroups, 1);
-        assert.equal(operations[7].mode, 'direct');
-        assert.equal(operations[7].workgroups, 1);
+        assert.equal(operations[6].mode, 'direct');
+        assert.equal(operations[6].workgroups, 1);
+        assert.equal(operations[9].mode, 'direct');
+        assert.equal(operations[9].workgroups, 1);
         assert.deepEqual(
-            operations.slice(0, 9).map(({ pipelineLayout }) => pipelineLayout),
+            operations.slice(0, 11).map(({ pipelineLayout }) => pipelineLayout),
             [
                 'cirvivor-gpu-circle-indirect-pipeline-layout',
+                'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
+                'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
@@ -1245,23 +1767,28 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'cirvivor-gpu-circle-indirect'
         ]);
         assert.deepEqual(operations[1].bindGroups, [
+            'cirvivor-gpu-circle-compute-fixed-control',
+            'cirvivor-gpu-circle-compute-empty',
+            'cirvivor-gpu-circle-compute-params'
+        ]);
+        assert.deepEqual(operations[3].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-base',
             'cirvivor-gpu-circle-compute-world-full',
             'cirvivor-gpu-circle-compute-params'
         ]);
-        assert.deepEqual(operations[5].bindGroups, [
+        assert.deepEqual(operations[7].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-with-handlers',
             'cirvivor-gpu-circle-compute-world-grid',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(operations[6].bindGroups, [
+        assert.deepEqual(operations[8].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-base',
             'cirvivor-gpu-circle-compute-world-sdf',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(operations[7].bindGroups, [
+        assert.deepEqual(operations[9].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-with-handlers',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',

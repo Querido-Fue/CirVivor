@@ -7,7 +7,17 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
+import {
+    GPU_FIXED_PRIMITIVE_ABI
+} from './production/script/module/ingame/physics/gpu/gpu_fixed_primitive_abi.js';
 import { GpuCircleBodySimulation } from './production/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js';
+import {
+    createGpuSignedDistanceField,
+    sampleGpuSignedDistanceField
+} from './production/script/module/ingame/physics/gpu/gpu_signed_distance_field.js';
+import {
+    THE_TOWER_DATA
+} from './production/script/data/object/tower/the_tower_data.js';
 import {
     BASIC_ARROW_ENEMY_DATA,
     BASIC_CIRCLE_ENEMY_DATA,
@@ -25,6 +35,7 @@ import {
     createGpuEnemySpawnIntent
 } from './production/script/module/ingame/object/enemy/gpu_enemy_spawn_adapter.js';
 import {
+    createGpuSimulationEndpoint,
     createGpuEnemySimulationEndpoint,
     createGpuProjectileSpawnIntent
 } from './production/script/module/ingame/gpu_simulation_endpoint.js';
@@ -230,6 +241,12 @@ async function runProductionShaderSmoke(device, format) {
     ]);
 
     const computeEntryPoints = [
+        'clear_body_control_states',
+        'validate_body_control_commands',
+        'apply_body_control_commands',
+        'apply_controlled_motion',
+        'validate_source_relative_spawns',
+        'resolve_source_relative_spawns',
         'prepare_bodies',
         'clear_grid',
         'build_grid',
@@ -243,7 +260,9 @@ async function runProductionShaderSmoke(device, format) {
         'solve_body_world',
         'apply_position_deltas',
         'rebuild_velocities',
-        'finalize_velocities'
+        'finalize_velocities',
+        'finalize_controlled_motion',
+        'pack_tracked_pose'
     ];
     await Promise.all(computeEntryPoints.map((entryPoint) => (
         device.createComputePipelineAsync({
@@ -3439,6 +3458,940 @@ async function runProductionOverflowSmoke(device) {
     }
 }
 
+function createPhase3PlatformPort(device) {
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    return Object.freeze({
+        getState: () => Object.freeze({ ready: true, status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget: () => null,
+        clearCanvas: () => false,
+        markCanvasDrawn: () => false,
+        markCanvasCleared: () => false
+    });
+}
+
+function createPhase3Body(overrides = {}) {
+    return {
+        position: { x: 1, y: 1 },
+        velocity: { x: 0, y: 0 },
+        radius: 0.2,
+        inverseMass: 1,
+        bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+        collisionMask: 0,
+        interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+        interactionMask: 0,
+        health: 1,
+        penetration: 1,
+        lifetime: -1,
+        alive: true,
+        ...overrides
+    };
+}
+
+function createPhase3SpawnIntent(definitionId, overrides = {}) {
+    return Object.freeze({
+        kindId: 'projectile',
+        definitionId,
+        ...createPhase3Body(overrides)
+    });
+}
+
+function integrateTowerControlOracle(state, authoredIntent, fixedDelta) {
+    let moveIntentX = Number(authoredIntent.x);
+    let moveIntentY = Number(authoredIntent.y);
+    const magnitude = Math.hypot(moveIntentX, moveIntentY);
+    if (magnitude > 1) {
+        moveIntentX = Math.fround(moveIntentX / magnitude);
+        moveIntentY = Math.fround(moveIntentY / magnitude);
+    }
+    const decay = Math.exp(
+        -THE_TOWER_DATA.LINEAR_FRICTION_PER_SECOND * fixedDelta
+    );
+    const accelerationScale = (1 - decay)
+        / THE_TOWER_DATA.LINEAR_FRICTION_PER_SECOND;
+    let velocityX = (state.velocity.x * decay)
+        + (moveIntentX
+            * THE_TOWER_DATA.CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED
+            * accelerationScale);
+    let velocityY = (state.velocity.y * decay)
+        + (moveIntentY
+            * THE_TOWER_DATA.CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED
+            * accelerationScale);
+    const speed = Math.hypot(velocityX, velocityY);
+    if (speed > THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND) {
+        const scale = THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND / speed;
+        velocityX *= scale;
+        velocityY *= scale;
+    }
+    if (moveIntentX === 0
+        && moveIntentY === 0
+        && Math.hypot(velocityX, velocityY)
+            <= THE_TOWER_DATA.SLEEP_SPEED_TILES_PER_SECOND) {
+        velocityX = 0;
+        velocityY = 0;
+    }
+    return Object.freeze({
+        position: Object.freeze({
+            x: state.position.x + (velocityX * fixedDelta),
+            y: state.position.y + (velocityY * fixedDelta)
+        }),
+        velocity: Object.freeze({ x: velocityX, y: velocityY })
+    });
+}
+
+function assertPhase3PoseNear(actual, expected, label, tolerance = 0.0003) {
+    assert(actual?.valid, `${label} observed pose가 valid가 아닙니다: ${JSON.stringify(actual)}`);
+    assertNear(actual.position.x, expected.position.x, tolerance, `${label} position.x`);
+    assertNear(actual.position.y, expected.position.y, tolerance, `${label} position.y`);
+    assertNear(actual.velocity.x, expected.velocity.x, tolerance, `${label} velocity.x`);
+    assertNear(actual.velocity.y, expected.velocity.y, tolerance, `${label} velocity.y`);
+}
+
+async function waitForPhase3ObservedPose(endpoint, sourceTick, label) {
+    const simulation = endpoint.getBackend().simulation;
+    assert(simulation, `${label} production simulation이 없습니다.`);
+    await deviceQueueDone(simulation);
+    await waitForSimulationStatus(
+        simulation,
+        (status) => status.fixedPrimitives.trackedPose.pendingReadbacks === 0
+            && status.fixedPrimitives.trackedPose.latest?.valid
+            && status.fixedPrimitives.trackedPose.latest.sourceTick >= sourceTick,
+        `${label} tracked pose`
+    );
+    const observed = endpoint.getObservedTrackedPose();
+    assert(
+        observed.valid
+            && observed.sourceTick === sourceTick
+            && observed.observedThroughTick === sourceTick,
+        `${label} observed tick/identity 불일치: ${JSON.stringify(observed)}`
+    );
+    return observed;
+}
+
+async function deviceQueueDone(simulation) {
+    const device = simulation?.device;
+    assert(device?.queue, 'Phase 3 simulation device queue가 없습니다.');
+    await device.queue.onSubmittedWorkDone();
+}
+
+async function runProductionFixedPrimitiveEndpointSmoke(device) {
+    const platformPort = createPhase3PlatformPort(device);
+    const columns = 32;
+    const rows = 16;
+    const navigationGrid = Object.freeze({
+        cols: columns,
+        rows,
+        size: columns * rows,
+        cellSize: 1,
+        blocked: new Uint8Array(columns * rows)
+    });
+    const navigationSource = Object.freeze({
+        getNavigationGrid: () => navigationGrid,
+        getWorldBounds: () => Object.freeze({
+            minX: 0,
+            minY: 0,
+            maxX: columns,
+            maxY: rows,
+            width: columns,
+            height: rows
+        })
+    });
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: platformPort
+    }, {
+        capacity: 12,
+        controlCommandCapacity: 8,
+        spawnProgramCapacity: 2
+    });
+    const fixedDelta = 1 / 60;
+    const spawnDefinitions = Object.freeze([
+        Object.freeze({
+            commandId: 'phase3:spawn:primary',
+            intent: createPhase3SpawnIntent('phase3_controlled_primary', {
+                position: { x: 4, y: 4 }
+            })
+        }),
+        Object.freeze({
+            commandId: 'phase3:spawn:max-clamp',
+            intent: createPhase3SpawnIntent('phase3_max_clamp', {
+                position: { x: 8, y: 4 },
+                velocity: { x: 100, y: 0 }
+            })
+        }),
+        Object.freeze({
+            commandId: 'phase3:spawn:sleep',
+            intent: createPhase3SpawnIntent('phase3_sleep_threshold', {
+                position: { x: 4, y: 8 },
+                velocity: { x: 0.005, y: 0 }
+            })
+        })
+    ]);
+    const movementSamples = [];
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Phase 3 endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        for (const spawn of spawnDefinitions) {
+            const receipt = endpoint.requestSpawn(spawn.intent, 1, spawn.commandId);
+            assert(receipt.accepted, `Phase 3 fixture spawn request 실패: ${JSON.stringify(receipt)}`);
+        }
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        assert(
+            spawnCommit.state === 'committed'
+                && spawnCommit.spawned.length === spawnDefinitions.length,
+            `Phase 3 fixture spawn commit 실패: ${JSON.stringify(spawnCommit)}`
+        );
+        const handleByCommandId = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const primaryHandle = handleByCommandId.get('phase3:spawn:primary');
+        const maxClampHandle = handleByCommandId.get('phase3:spawn:max-clamp');
+        const sleepHandle = handleByCommandId.get('phase3:spawn:sleep');
+        assert(primaryHandle && maxClampHandle && sleepHandle, 'Phase 3 fixture handle 누락');
+
+        assert(
+            endpoint.configureTrackedBody(primaryHandle).accepted,
+            'Phase 3 primary tracking 구성 실패'
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 1), 'Phase 3 initial fixed submit 실패');
+        const initialPose = await waitForPhase3ObservedPose(
+            endpoint,
+            1,
+            'Phase 3 initial'
+        );
+        let primaryOracle = Object.freeze({
+            position: Object.freeze({ ...initialPose.position }),
+            velocity: Object.freeze({ ...initialPose.velocity })
+        });
+        const controlCases = Object.freeze([
+            Object.freeze({ tick: 2, label: 'zero', intent: Object.freeze({ x: 0, y: 0 }) }),
+            Object.freeze({ tick: 3, label: 'cardinal', intent: Object.freeze({ x: 1, y: 0 }) }),
+            Object.freeze({ tick: 4, label: 'reversal', intent: Object.freeze({ x: -1, y: 0 }) }),
+            Object.freeze({ tick: 5, label: 'diagonal', intent: Object.freeze({ x: 1, y: 1 }) }),
+            Object.freeze({ tick: 6, label: 'idle-friction', intent: Object.freeze({ x: 0, y: 0 }) })
+        ]);
+        for (const fixture of controlCases) {
+            const receipt = endpoint.requestBodyControl({
+                handle: primaryHandle,
+                moveIntentX: fixture.intent.x,
+                moveIntentY: fixture.intent.y
+            }, fixture.tick, `phase3:control:${fixture.label}`);
+            assert(receipt.accepted, `${fixture.label} control request 실패: ${JSON.stringify(receipt)}`);
+            const commit = endpoint.commitAtFixedBoundary(fixture.tick);
+            assert(
+                commit.state === 'committed'
+                    && commit.fixedCommands.controls.length === 1,
+                `${fixture.label} control commit 실패: ${JSON.stringify(commit)}`
+            );
+            assert(
+                endpoint.fixedUpdate(fixedDelta, fixture.tick),
+                `${fixture.label} fixed submit 실패: ${JSON.stringify(endpoint.getStatus())}`
+            );
+            const observed = await waitForPhase3ObservedPose(
+                endpoint,
+                fixture.tick,
+                `Phase 3 ${fixture.label}`
+            );
+            primaryOracle = integrateTowerControlOracle(
+                primaryOracle,
+                fixture.intent,
+                fixedDelta
+            );
+            assertPhase3PoseNear(observed, primaryOracle, fixture.label);
+            if (fixture.label === 'reversal') {
+                assert(
+                    observed.velocity.x < 0,
+                    `reversal input 뒤 x velocity가 방향을 바꾸지 않았습니다: ${observed.velocity.x}`
+                );
+            }
+            movementSamples.push(Object.freeze({
+                tick: fixture.tick,
+                label: fixture.label,
+                position: Object.freeze({ ...observed.position }),
+                velocity: Object.freeze({ ...observed.velocity })
+            }));
+        }
+
+        assert(endpoint.configureTrackedBody(sleepHandle).accepted, 'sleep tracking 구성 실패');
+        const sleepReceipt = endpoint.requestBodyControl({
+            handle: sleepHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 7, 'phase3:control:sleep');
+        assert(sleepReceipt.accepted, `sleep control request 실패: ${JSON.stringify(sleepReceipt)}`);
+        assert(endpoint.commitAtFixedBoundary(7).fixedCommands.controls.length === 1,
+            'sleep control commit 수 불일치');
+        assert(endpoint.fixedUpdate(fixedDelta, 7), 'sleep fixed submit 실패');
+        const sleepPose = await waitForPhase3ObservedPose(endpoint, 7, 'Phase 3 sleep');
+        assertNear(sleepPose.velocity.x, 0, 0.000001, 'sleep threshold velocity.x');
+        assertNear(sleepPose.velocity.y, 0, 0.000001, 'sleep threshold velocity.y');
+
+        assert(endpoint.configureTrackedBody(maxClampHandle).accepted, 'max clamp tracking 구성 실패');
+        const maxReceipt = endpoint.requestBodyControl({
+            handle: maxClampHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 8, 'phase3:control:max-clamp');
+        assert(maxReceipt.accepted, `max clamp request 실패: ${JSON.stringify(maxReceipt)}`);
+        assert(endpoint.commitAtFixedBoundary(8).fixedCommands.controls.length === 1,
+            'max clamp control commit 수 불일치');
+        assert(endpoint.fixedUpdate(fixedDelta, 8), 'max clamp fixed submit 실패');
+        const maxClampPose = await waitForPhase3ObservedPose(endpoint, 8, 'Phase 3 max clamp');
+        assertNear(
+            Math.hypot(maxClampPose.velocity.x, maxClampPose.velocity.y),
+            THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND,
+            0.0001,
+            'controlled max-speed clamp'
+        );
+        const expectedMaxClampX = 8 + (100 * fixedDelta * 7)
+            + (THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND * fixedDelta);
+        assertNear(
+            maxClampPose.position.x,
+            expectedMaxClampX,
+            0.0005,
+            'uncommanded ballistic ticks + controlled clamp position'
+        );
+
+        primaryOracle = Object.freeze({
+            position: Object.freeze({
+                x: primaryOracle.position.x + (primaryOracle.velocity.x * fixedDelta * 2),
+                y: primaryOracle.position.y + (primaryOracle.velocity.y * fixedDelta * 2)
+            }),
+            velocity: primaryOracle.velocity
+        });
+        assert(endpoint.configureTrackedBody(primaryHandle).accepted,
+            'source-relative preflight tracking 구성 실패');
+        const preflightReceipt = endpoint.requestBodyControl({
+            handle: primaryHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 9, 'phase3:control:source-preflight');
+        assert(preflightReceipt.accepted, 'source-relative preflight control request 실패');
+        assert(endpoint.commitAtFixedBoundary(9).fixedCommands.controls.length === 1,
+            'source-relative preflight commit 실패');
+        assert(endpoint.fixedUpdate(fixedDelta, 9), 'source-relative preflight submit 실패');
+        const sourceTickStartPose = await waitForPhase3ObservedPose(
+            endpoint,
+            9,
+            'Phase 3 source tick-start'
+        );
+        primaryOracle = integrateTowerControlOracle(
+            primaryOracle,
+            { x: 0, y: 0 },
+            fixedDelta
+        );
+        assertPhase3PoseNear(
+            sourceTickStartPose,
+            primaryOracle,
+            'source tick-start oracle'
+        );
+
+        const positionOffset = Object.freeze({ x: 0.75, y: -0.5 });
+        const launchVelocity = Object.freeze({ x: 3, y: -2 });
+        const sourceVelocityScale = 0.5;
+        const sourceRelativeReceipt = endpoint.requestSourceRelativeSpawn({
+            sourceHandle: primaryHandle,
+            destinationSpawn: createPhase3SpawnIntent(
+                'phase3_source_relative_destination',
+                { position: { x: 0, y: 0 }, velocity: { x: 0, y: 0 } }
+            ),
+            positionOffset,
+            launchVelocity,
+            sourceVelocityScale
+        }, 10, 'phase3:source-relative:resolved');
+        const sameTickControl = endpoint.requestBodyControl({
+            handle: primaryHandle,
+            moveIntentX: 0,
+            moveIntentY: 1
+        }, 10, 'phase3:control:same-tick-source');
+        assert(sourceRelativeReceipt.accepted && sameTickControl.accepted,
+            `source-relative/control 동시 request 실패: ${JSON.stringify({ sourceRelativeReceipt, sameTickControl })}`);
+        const sourceRelativeCommit = endpoint.commitAtFixedBoundary(10);
+        assert(
+            sourceRelativeCommit.fixedCommands.controls.length === 1
+                && sourceRelativeCommit.fixedCommands.sourceRelativeSpawns.length === 1,
+            `source-relative/control 동시 commit 실패: ${JSON.stringify(sourceRelativeCommit)}`
+        );
+        const destinationHandle = sourceRelativeCommit
+            .fixedCommands.sourceRelativeSpawns[0].handle;
+        assert(endpoint.fixedUpdate(fixedDelta, 10), 'source-relative fixed submit 실패');
+        const controlledSourceAfterTick = await waitForPhase3ObservedPose(
+            endpoint,
+            10,
+            'Phase 3 same-tick controlled source'
+        );
+        const simulation = endpoint.getBackend().simulation;
+        await waitForSimulationStatus(
+            simulation,
+            (status) => status.fixedPrimitives.spawnProgram.pendingReadbacks === 0
+                && status.fixedPrimitives.spawnProgram.queuedBatches >= 1,
+            'Phase 3 SpawnProgram completion'
+        );
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(11);
+        assert(completed.protocolFailure === null,
+            `source-relative completion protocol 실패: ${JSON.stringify(completed)}`);
+        assert(endpoint.getRegistry().has(destinationHandle),
+            'resolved destination이 registry에서 활성화되지 않았습니다.');
+        const bodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const bodies = await bodiesPromise;
+        const destination = bodies.find((body) => (
+            body.handle?.entityId === destinationHandle.entityId
+            && body.handle?.incarnation === destinationHandle.incarnation
+        ));
+        assert(destination, `resolved destination readback 누락: ${JSON.stringify(bodies)}`);
+        const expectedMaterializedPosition = Object.freeze({
+            x: sourceTickStartPose.position.x + positionOffset.x,
+            y: sourceTickStartPose.position.y + positionOffset.y
+        });
+        const expectedLaunchVelocity = Object.freeze({
+            x: launchVelocity.x
+                + (sourceTickStartPose.velocity.x * sourceVelocityScale),
+            y: launchVelocity.y
+                + (sourceTickStartPose.velocity.y * sourceVelocityScale)
+        });
+        assertNear(destination.previousPosition.x, expectedMaterializedPosition.x,
+            0.0004, 'source-relative tick-start previousPosition.x');
+        assertNear(destination.previousPosition.y, expectedMaterializedPosition.y,
+            0.0004, 'source-relative tick-start previousPosition.y');
+        assertNear(destination.velocity.x, expectedLaunchVelocity.x,
+            0.0004, 'source-relative tick-start velocity.x');
+        assertNear(destination.velocity.y, expectedLaunchVelocity.y,
+            0.0004, 'source-relative tick-start velocity.y');
+        assertNear(destination.position.x,
+            expectedMaterializedPosition.x + (expectedLaunchVelocity.x * fixedDelta),
+            0.0005, 'source-relative integrated position.x');
+        assertNear(destination.position.y,
+            expectedMaterializedPosition.y + (expectedLaunchVelocity.y * fixedDelta),
+            0.0005, 'source-relative integrated position.y');
+        const postControlLaunchY = launchVelocity.y
+            + (controlledSourceAfterTick.velocity.y * sourceVelocityScale);
+        assert(
+            Math.abs(destination.velocity.y - postControlLaunchY) > 0.01,
+            `source-relative spawn이 same-tick post-control velocity를 사용했습니다: destination=${destination.velocity.y}, postControl=${postControlLaunchY}`
+        );
+
+        assert(endpoint.configureTrackedBody(primaryHandle).accepted,
+            'pose ring saturation tracking 구성 실패');
+        const droppedBefore = simulation.getStatus()
+            .fixedPrimitives.trackedPose.droppedSamples;
+        for (let tick = 11; tick <= 16; tick++) {
+            const receipt = endpoint.requestBodyControl({
+                handle: primaryHandle,
+                moveIntentX: 0,
+                moveIntentY: 0
+            }, tick, `phase3:control:ring:${tick}`);
+            assert(receipt.accepted, `pose ring tick ${tick} request 실패`);
+            assert(endpoint.commitAtFixedBoundary(tick).fixedCommands.controls.length === 1,
+                `pose ring tick ${tick} commit 실패`);
+            assert(endpoint.fixedUpdate(fixedDelta, tick),
+                `pose ring saturation 중 fixed submit 중단: tick=${tick}`);
+        }
+        await device.queue.onSubmittedWorkDone();
+        const saturatedStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.fixedPrimitives.trackedPose.pendingReadbacks === 0,
+            'Phase 3 pose ring saturation completion'
+        );
+        const trackedTelemetry = saturatedStatus.fixedPrimitives.trackedPose;
+        assert(
+            trackedTelemetry.ringSlotCount === 4
+                && trackedTelemetry.recordByteSize
+                    === GPU_FIXED_PRIMITIVE_ABI.TRACKED_POSE_RECORD.STRIDE
+                && trackedTelemetry.maximumBytesPerTick === 32
+                && trackedTelemetry.droppedSamples - droppedBefore >= 2
+                && saturatedStatus.submittedTickCount === 16
+                && saturatedStatus.state === 'ready',
+            `tracked pose bounded/ring saturation telemetry 불일치: ${JSON.stringify(trackedTelemetry)}`
+        );
+
+        const activeBeforeCapacityReject = endpoint.getStatus().activeCount;
+        for (let index = 0; index < 3; index++) {
+            const receipt = endpoint.requestSourceRelativeSpawn({
+                sourceHandle: primaryHandle,
+                destinationSpawn: createPhase3SpawnIntent(
+                    `phase3_capacity_destination_${index}`,
+                    { position: { x: 0, y: 0 } }
+                ),
+                positionOffset: { x: index, y: 0 },
+                launchVelocity: { x: 0, y: 0 },
+                sourceVelocityScale: 0
+            }, 17, `phase3:source-relative:capacity:${index}`);
+            assert(receipt.accepted, `SpawnProgram capacity request ${index} enqueue 실패`);
+        }
+        const capacityReject = endpoint.commitAtFixedBoundary(17);
+        assert(
+            capacityReject.state === 'committed-with-rejections'
+                && capacityReject.fixedCommands.rejected.length === 3
+                && capacityReject.fixedCommands.sourceRelativeSpawns.length === 0
+                && !capacityReject.recoveryRequired
+                && endpoint.getStatus().activeCount === activeBeforeCapacityReject
+                && endpoint.getStatus().reservedCount === 0,
+            `SpawnProgram capacity zero-partial 실패: ${JSON.stringify(capacityReject)}`
+        );
+        const finalStatus = simulation.getStatus();
+        const fixedPrimitives = finalStatus.fixedPrimitives;
+        assert(
+            fixedPrimitives.storageProfile.fixedControl === 5
+                && fixedPrimitives.storageProfile.sourceResolve === 5
+                && fixedPrimitives.storageProfile.trackedPose === 6
+                && fixedPrimitives.storageProfile.requiredMaximum === 9
+                && fixedPrimitives.spawnProgram.capacity === 2
+                && fixedPrimitives.spawnProgram.overflowCount === 1,
+            `Phase 3 storage/capacity telemetry 불일치: ${JSON.stringify(fixedPrimitives)}`
+        );
+
+        return {
+            fixedDelta,
+            handles: {
+                primary: primaryHandle,
+                maxClamp: maxClampHandle,
+                sleep: sleepHandle,
+                destination: destinationHandle
+            },
+            movementSamples,
+            sleepVelocity: { ...sleepPose.velocity },
+            maxClamp: {
+                position: { ...maxClampPose.position },
+                velocity: { ...maxClampPose.velocity }
+            },
+            sourceRelative: {
+                tickStartSource: {
+                    position: { ...sourceTickStartPose.position },
+                    velocity: { ...sourceTickStartPose.velocity }
+                },
+                postControlSourceVelocity: { ...controlledSourceAfterTick.velocity },
+                materializedPreviousPosition: { ...destination.previousPosition },
+                destinationPosition: { ...destination.position },
+                destinationVelocity: { ...destination.velocity }
+            },
+            trackedPose: {
+                ringSlotCount: trackedTelemetry.ringSlotCount,
+                recordByteSize: trackedTelemetry.recordByteSize,
+                maximumBytesPerTick: trackedTelemetry.maximumBytesPerTick,
+                droppedSamples: trackedTelemetry.droppedSamples,
+                publishedSamples: trackedTelemetry.publishedSamples,
+                pendingReadbacks: trackedTelemetry.pendingReadbacks
+            },
+            spawnProgram: {
+                capacity: fixedPrimitives.spawnProgram.capacity,
+                overflowCount: fixedPrimitives.spawnProgram.overflowCount,
+                backpressureCount: fixedPrimitives.spawnProgram.backpressureCount,
+                resolvedCount: fixedPrimitives.spawnProgram.resolvedCount,
+                capacityRejectCount: capacityReject.fixedCommands.rejected.length,
+                zeroPartial: true
+            },
+            storageProfile: fixedPrimitives.storageProfile
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionFixedPrimitiveIsolationSmoke(device) {
+    const platformPort = createPhase3PlatformPort(device);
+    const directions = new Float32Array(2 * 2 * 2);
+    for (let cellIndex = 0; cellIndex < 4; cellIndex++) {
+        directions[(cellIndex * 2) + 1] = 1;
+    }
+    const simulation = new GpuCircleBodySimulation(platformPort, {
+        capacity: 3,
+        worldSize: { x: 16, y: 16 },
+        gridCellSize: { x: 2, y: 2 },
+        flowFieldAtlas: {
+            cols: 2,
+            rows: 2,
+            fieldCount: 1,
+            origin: { x: 0, y: 0 },
+            cellSize: { x: 8, y: 8 },
+            directions,
+            stages: [{
+                goalCell: { column: 1, row: 1 },
+                goalPosition: { x: 15, y: 15 },
+                transitionRadius: 0.1,
+                nextFieldIndex: -1
+            }]
+        }
+    });
+    const fixedDelta = 1 / 60;
+    const controlled = createPhase3Body({
+        entityId: 9101,
+        incarnation: 1,
+        position: { x: 2, y: 2 }
+    });
+    const ballistic = createPhase3Body({
+        entityId: 9102,
+        incarnation: 1,
+        position: { x: 6, y: 4 },
+        velocity: { x: 2, y: -1 }
+    });
+    const flow = createPhase3Body({
+        entityId: 9103,
+        incarnation: 1,
+        position: { x: 10, y: 4 },
+        useFlow: true,
+        flowFieldIndex: 0,
+        flowSpeed: 6
+    });
+    try {
+        assert(simulation.init(), 'Phase 3 isolation simulation init 실패');
+        assert(simulation.spawnBodies([controlled, ballistic, flow]).accepted === 3,
+            'Phase 3 isolation spawn 실패');
+        assert(simulation.canControlBody(controlled), 'controlled body가 controllable이 아닙니다.');
+        assert(!simulation.canControlBody(flow), 'FLOW_FIELD body가 controllable로 분류되었습니다.');
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [{
+                entityId: controlled.entityId,
+                incarnation: controlled.incarnation,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }],
+            sourceRelativeSpawns: []
+        });
+        assert(staged.accepted === 1 && staged.rejected === 0,
+            `Phase 3 isolation control stage 실패: ${JSON.stringify(staged)}`);
+        assert(simulation.fixedUpdate(fixedDelta, 1), 'Phase 3 isolation fixed submit 실패');
+        const bodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const bodies = await bodiesPromise;
+        const byId = new Map(bodies.map((body) => [body.entityId, body]));
+        const controlledAfter = byId.get(controlled.entityId);
+        const ballisticAfter = byId.get(ballistic.entityId);
+        const flowAfter = byId.get(flow.entityId);
+        const controlledOracle = integrateTowerControlOracle({
+            position: controlled.position,
+            velocity: controlled.velocity
+        }, { x: 1, y: 0 }, fixedDelta);
+        assertPhase3PoseNear({ ...controlledAfter, valid: true }, controlledOracle,
+            'isolation controlled');
+        assertNear(ballisticAfter.velocity.x, ballistic.velocity.x, 0.00001,
+            'ballistic velocity.x 보존');
+        assertNear(ballisticAfter.velocity.y, ballistic.velocity.y, 0.00001,
+            'ballistic velocity.y 보존');
+        assertNear(ballisticAfter.position.x,
+            ballistic.position.x + (ballistic.velocity.x * fixedDelta),
+            0.00002, 'ballistic position.x 보존');
+        assertNear(ballisticAfter.position.y,
+            ballistic.position.y + (ballistic.velocity.y * fixedDelta),
+            0.00002, 'ballistic position.y 보존');
+        assertNear(flowAfter.velocity.x, 0, 0.00002, 'FLOW velocity.x 보존');
+        assertNear(flowAfter.velocity.y, flow.flowSpeed * fixedDelta, 0.00005,
+            'FLOW steering velocity.y 보존');
+        assert(flowAfter.flowFieldIndex === 0,
+            `FLOW stage가 control pass로 변경됐습니다: ${JSON.stringify(flowAfter)}`);
+        return {
+            controlled: {
+                position: { ...controlledAfter.position },
+                velocity: { ...controlledAfter.velocity }
+            },
+            ballistic: {
+                position: { ...ballisticAfter.position },
+                velocity: { ...ballisticAfter.velocity }
+            },
+            flow: {
+                position: { ...flowAfter.position },
+                velocity: { ...flowAfter.velocity },
+                flowFieldIndex: flowAfter.flowFieldIndex,
+                controllable: false
+            }
+        };
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionSourceInvalidCleanupSmoke(device) {
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: 3,
+            worldSize: { x: 8, y: 8 },
+            gridCellSize: { x: 1, y: 1 },
+            spawnProgramCapacity: 2,
+            sessionGeneration: 41
+        }
+    );
+    const fixedDelta = 1 / 60;
+    const source = createPhase3Body({
+        entityId: 9201,
+        incarnation: 3,
+        position: { x: 3, y: 3 },
+        health: 0
+    });
+    const destinationHandle = Object.freeze({ entityId: 9202, incarnation: 5 });
+    try {
+        assert(simulation.init(), 'source-invalid simulation init 실패');
+        assert(simulation.spawnBodies([source]).accepted === 1,
+            'source-invalid source spawn 실패');
+        assert(simulation.fixedUpdate(fixedDelta, 1), 'source death tick submit 실패');
+        await device.queue.onSubmittedWorkDone();
+        assert(simulation.hasBody(source),
+            'GPU death readback 전 host exact source handle이 조기 제거되었습니다.');
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 2,
+            controls: [],
+            sourceRelativeSpawns: [{
+                sourceHandle: source,
+                destinationHandle,
+                destinationSpawn: createPhase3Body({
+                    position: { x: 0, y: 0 },
+                    velocity: { x: 0, y: 0 }
+                }),
+                positionOffset: { x: 0.5, y: 0 },
+                launchVelocity: { x: 2, y: 0 },
+                sourceVelocityScale: 1
+            }]
+        });
+        assert(staged.accepted === 1 && staged.sourceRelativeSpawnCount === 1,
+            `source-invalid SpawnProgram stage 실패: ${JSON.stringify(staged)}`);
+        const pendingStatus = simulation.getStatus();
+        assert(
+            pendingStatus.pendingBodyCount === 1
+                && !simulation.hasBody(destinationHandle),
+            `source-invalid destination이 resolve 전에 활성화됐습니다: ${JSON.stringify(pendingStatus)}`
+        );
+        assert(simulation.fixedUpdate(fixedDelta, 2), 'source-invalid resolve submit 실패');
+        await device.queue.onSubmittedWorkDone();
+        await waitForSimulationStatus(
+            simulation,
+            (status) => status.fixedPrimitives.spawnProgram.pendingReadbacks === 0
+                && status.fixedPrimitives.spawnProgram.queuedBatches === 1,
+            'source-invalid SpawnProgram readback'
+        );
+        const batches = simulation.drainCompletedSpawnProgramBatches([]);
+        assert(
+            batches.length === 1
+                && batches[0].failure === null
+                && batches[0].outcomes.length === 1
+                && batches[0].outcomes[0].reason === 'source-invalid',
+            `source-invalid typed outcome 불일치: ${JSON.stringify(batches)}`
+        );
+        const cleanedStatus = simulation.getStatus();
+        assert(
+            !simulation.hasBody(destinationHandle)
+                && cleanedStatus.pendingBodyCount === 0
+                && cleanedStatus.bodyCount === 1
+                && cleanedStatus.fixedPrimitives.spawnProgram.invalidCount === 1
+                && cleanedStatus.fixedPrimitives.spawnProgram.overflowCount === 0,
+            `source-invalid destination stable-slot cleanup 실패: ${JSON.stringify(cleanedStatus)}`
+        );
+        const aliveBodies = await simulation.readbackBodies();
+        assert(aliveBodies.length === 0,
+            `source-invalid fixture에 GPU ALIVE body가 남았습니다: ${JSON.stringify(aliveBodies)}`);
+        return {
+            sourceHandle: Object.freeze({
+                entityId: source.entityId,
+                incarnation: source.incarnation
+            }),
+            destinationHandle,
+            outcome: batches[0].outcomes[0].reason,
+            pendingBodyCountBeforeResolve: pendingStatus.pendingBodyCount,
+            pendingBodyCountAfterCleanup: cleanedStatus.pendingBodyCount,
+            highWaterBodyCountAfterCleanup: cleanedStatus.bodyCount,
+            aliveBodyCountAfterCleanup: aliveBodies.length,
+            invalidCount: cleanedStatus.fixedPrimitives.spawnProgram.invalidCount,
+            overflowCount: cleanedStatus.fixedPrimitives.spawnProgram.overflowCount
+        };
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionFixedPrimitiveGeometrySmoke(device) {
+    const columns = 8;
+    const rows = 8;
+    const blocked = new Uint8Array(columns * rows);
+    blocked[(4 * columns) + 4] = 1;
+    const sdf = createGpuSignedDistanceField({
+        cols: columns,
+        rows,
+        size: columns * rows,
+        cellSize: 1,
+        sdfSubdivisions: 8,
+        blocked
+    });
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: 6,
+            worldSize: { x: columns, y: rows },
+            gridCellSize: { x: 1, y: 1 },
+            sdf,
+            solverIterations: 6
+        }
+    );
+    const terrainMask = GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    const wall = createPhase3Body({
+        entityId: 9301,
+        incarnation: 1,
+        position: { x: 3.5, y: 4.5 },
+        velocity: { x: 20, y: 0 },
+        radius: 0.3,
+        collisionMask: terrainMask
+    });
+    const corner = createPhase3Body({
+        entityId: 9302,
+        incarnation: 1,
+        position: { x: 3.5, y: 3.5 },
+        velocity: { x: 20, y: 20 },
+        radius: 0.3,
+        collisionMask: terrainMask
+    });
+    const outside = createPhase3Body({
+        entityId: 9303,
+        incarnation: 1,
+        position: { x: 0.3, y: 2 },
+        velocity: { x: -20, y: 0 },
+        radius: 0.3,
+        collisionMask: terrainMask
+    });
+    const largeStatic = createPhase3Body({
+        entityId: 9304,
+        incarnation: 1,
+        position: { x: 6.3, y: 6 },
+        radius: 0.7,
+        inverseMass: 0,
+        bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+        interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+    });
+    const boundaryDynamic = createPhase3Body({
+        entityId: 9305,
+        incarnation: 1,
+        position: { x: 5.2, y: 6 },
+        radius: 0.5,
+        bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+    });
+    const fixedDelta = 1 / 60;
+    try {
+        assert(simulation.init(), 'Phase 3 geometry simulation init 실패');
+        assert(
+            simulation.spawnBodies([
+                wall,
+                corner,
+                outside,
+                largeStatic,
+                boundaryDynamic
+            ]).accepted === 5,
+            'Phase 3 geometry body spawn 실패'
+        );
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [
+                { ...wall, moveIntentX: 1, moveIntentY: 0 },
+                { ...corner, moveIntentX: 1 / Math.sqrt(2), moveIntentY: 1 / Math.sqrt(2) },
+                { ...outside, moveIntentX: -1, moveIntentY: 0 }
+            ],
+            sourceRelativeSpawns: []
+        });
+        assert(staged.accepted === 3 && staged.rejected === 0,
+            `Phase 3 geometry control stage 실패: ${JSON.stringify(staged)}`);
+        const minimumPairDistance = largeStatic.radius + boundaryDynamic.radius;
+        const pairDistanceBefore = Math.hypot(
+            largeStatic.position.x - boundaryDynamic.position.x,
+            largeStatic.position.y - boundaryDynamic.position.y
+        );
+        assert(pairDistanceBefore < minimumPairDistance,
+            'large-static/small-dynamic fixture가 겹치지 않습니다.');
+        assert(simulation.fixedUpdate(fixedDelta, 1), 'Phase 3 geometry fixed submit 실패');
+        const bodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const bodies = await bodiesPromise;
+        const byId = new Map(bodies.map((body) => [body.entityId, body]));
+        const wallAfter = byId.get(wall.entityId);
+        const cornerAfter = byId.get(corner.entityId);
+        const outsideAfter = byId.get(outside.entityId);
+        const largeStaticAfter = byId.get(largeStatic.entityId);
+        const boundaryDynamicAfter = byId.get(boundaryDynamic.entityId);
+        const wallDistance = sampleGpuSignedDistanceField(
+            sdf,
+            wallAfter.position.x,
+            wallAfter.position.y
+        );
+        const cornerDistance = sampleGpuSignedDistanceField(
+            sdf,
+            cornerAfter.position.x,
+            cornerAfter.position.y
+        );
+        assert(wallDistance >= wall.radius - 0.035,
+            `controlled wall 접촉 penetration 과다: distance=${wallDistance}`);
+        assert(cornerDistance >= corner.radius - 0.04,
+            `controlled corner 접촉 penetration 과다: distance=${cornerDistance}`);
+        assert(outsideAfter.position.x >= outside.radius - 0.002,
+            `controlled out-of-map boundary 미해소: x=${outsideAfter.position.x}`);
+        const pairDistanceAfter = Math.hypot(
+            largeStaticAfter.position.x - boundaryDynamicAfter.position.x,
+            largeStaticAfter.position.y - boundaryDynamicAfter.position.y
+        );
+        assert(pairDistanceAfter >= minimumPairDistance - 0.002,
+            `large-static/small-dynamic 경계 collision 미해소: ${pairDistanceAfter}/${minimumPairDistance}`);
+        assertNear(largeStaticAfter.position.x, largeStatic.position.x, 0.00001,
+            'large static position.x 이동');
+        assertNear(largeStaticAfter.position.y, largeStatic.position.y, 0.00001,
+            'large static position.y 이동');
+        const completedStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.overflow.pendingReadbacks === 0,
+            'Phase 3 geometry overflow telemetry'
+        );
+        assert(
+            completedStatus.state === 'ready'
+                && completedStatus.overflow.lastSmallCount === 0
+                && completedStatus.overflow.lastBigCount === 0
+                && completedStatus.overflow.totalSmallCount === 0
+                && completedStatus.overflow.totalBigCount === 0,
+            `Phase 3 geometry grid overflow: ${JSON.stringify(completedStatus.overflow)}`
+        );
+        return {
+            sdf: {
+                subdivisions: 8,
+                wallDistance,
+                cornerDistance,
+                wallRadius: wall.radius,
+                cornerRadius: corner.radius
+            },
+            worldBoundary: {
+                radius: outside.radius,
+                positionAfter: { ...outsideAfter.position }
+            },
+            largeStaticSmallDynamic: {
+                gridCellSize: 1,
+                largeStaticDiameter: largeStatic.radius * 2,
+                smallDynamicDiameter: boundaryDynamic.radius * 2,
+                exactSmallBoundary: boundaryDynamic.radius * 2 === 1,
+                distanceBefore: pairDistanceBefore,
+                distanceAfter: pairDistanceAfter,
+                minimumDistance: minimumPairDistance
+            },
+            overflow: completedStatus.overflow
+        };
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionFixedPrimitiveSmoke(device) {
+    return {
+        endpoint: await runProductionFixedPrimitiveEndpointSmoke(device),
+        isolation: await runProductionFixedPrimitiveIsolationSmoke(device),
+        sourceInvalid: await runProductionSourceInvalidCleanupSmoke(device),
+        geometry: await runProductionFixedPrimitiveGeometrySmoke(device),
+        uncapturedErrorsCheckedAtRunEnd: true,
+        deviceLossCheckedAtRunEnd: true
+    };
+}
+
 async function run() {
     assert(resultPath, 'CIRVIVOR_WEBGPU_RESULT_PATH가 없습니다.');
     const result = {
@@ -3491,6 +4444,7 @@ async function run() {
         result.productionMixedBodyContactEvent = await runProductionMixedBodyContactEventSmoke(device);
         result.productionBenchmarkEndpoint = await runProductionBenchmarkEndpointSmoke(device);
         result.productionEndpointDeathLifecycle = await runProductionEndpointDeathLifecycleSmoke(device);
+        result.productionFixedPrimitives = await runProductionFixedPrimitiveSmoke(device);
         result.productionStableSlotLifecycle = await runProductionStableSlotLifecycleSmoke(device);
         result.productionFixedSubmitFailure = await runProductionFixedSubmitFailureSmoke(device);
         result.productionSparseCollisionHole = await runProductionSparseCollisionHoleSmoke(device);

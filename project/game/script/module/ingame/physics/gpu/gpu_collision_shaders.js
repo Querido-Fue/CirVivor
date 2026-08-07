@@ -4,6 +4,15 @@ import {
     GPU_CIRCLE_BODY_ABI_VERSION,
     GPU_CIRCLE_BODY_RENDER_SHAPE
 } from './gpu_circle_body_abi.js';
+import { THE_TOWER_DATA } from '../../../../data/object/tower/the_tower_data.js';
+import {
+    GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
+    GPU_FIXED_PRIMITIVE_IDENTITY,
+    GPU_FIXED_PROGRAM_STATUS,
+    GPU_SPAWN_PROGRAM_ABI_VERSION,
+    GPU_SPAWN_PROGRAM_MODE,
+    GPU_SPAWN_PROGRAM_RESULT
+} from './gpu_fixed_primitive_abi.js';
 import {
     ENEMY_NORMALIZED_RENDER_GEOMETRY
 } from '../../../../data/object/enemy/enemy_shape_geometry_data.js';
@@ -41,10 +50,35 @@ const ENEMY_RENDER_GEOMETRY = ENEMY_NORMALIZED_RENDER_GEOMETRY;
 
 export const GPU_COLLISION_COMPUTE_WGSL = /* wgsl */`
 const BODY_ABI_VERSION: u32 = ${GPU_CIRCLE_BODY_ABI_VERSION}u;
+const BODY_CONTROL_PROGRAM_ABI_VERSION: u32 = ${GPU_BODY_CONTROL_PROGRAM_ABI_VERSION}u;
+const SPAWN_PROGRAM_ABI_VERSION: u32 = ${GPU_SPAWN_PROGRAM_ABI_VERSION}u;
+const FIXED_PROGRAM_STATUS_ABI_MISMATCH: u32 = ${GPU_FIXED_PROGRAM_STATUS.ABI_MISMATCH}u;
+const FIXED_PROGRAM_STATUS_CAPACITY_EXCEEDED: u32 = ${GPU_FIXED_PROGRAM_STATUS.CAPACITY_EXCEEDED}u;
+const FIXED_PROGRAM_STATUS_RECORD_INVALID: u32 = ${GPU_FIXED_PROGRAM_STATUS.RECORD_INVALID}u;
+const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TICK_START: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TICK_START}u;
+const SPAWN_PROGRAM_RESULT_PENDING: u32 = ${GPU_SPAWN_PROGRAM_RESULT.PENDING}u;
+const SPAWN_PROGRAM_RESULT_RESOLVED: u32 = ${GPU_SPAWN_PROGRAM_RESULT.RESOLVED}u;
+const SPAWN_PROGRAM_RESULT_SOURCE_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID}u;
+const SPAWN_PROGRAM_RESULT_DESTINATION_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.DESTINATION_INVALID}u;
+const INVALID_IDENTITY_COMPONENT: u32 = ${GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT}u;
+const CONTROL_ACCELERATION: f32 = ${toWgslFloat(
+    THE_TOWER_DATA.CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED
+)};
+const CONTROL_LINEAR_FRICTION: f32 = ${toWgslFloat(
+    THE_TOWER_DATA.LINEAR_FRICTION_PER_SECOND
+)};
+const CONTROL_SLEEP_SPEED: f32 = ${toWgslFloat(
+    THE_TOWER_DATA.SLEEP_SPEED_TILES_PER_SECOND
+)};
+const CONTROL_MAX_LINEAR_SPEED: f32 = ${toWgslFloat(
+    THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND
+)};
 const CONTACT_ABI_STATUS_OK: u32 = 1u;
 const CONTACT_ABI_STATUS_MISMATCH: u32 = 2u;
 const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_USE_FLOW: u32 = 2u;
+// GPU fixed journal에서만 쓰는 한-tick marker입니다. Body ABI stride는 바꾸지 않습니다.
+const BODY_FLAG_CONTROLLED_THIS_TICK: u32 = 65536u;
 const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
 const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 const BODY_LAYER_ENEMY: u32 = 1u;
@@ -175,6 +209,73 @@ struct DeathEvent {
 
 struct DeathEventBuffer { values: array<DeathEvent> }
 
+struct FixedProgramHeader {
+    abi_version: u32,
+    count: u32,
+    capacity: u32,
+    status: atomic<u32>,
+}
+
+struct BodyControlRecord {
+    destination_slot: u32,
+    entity_id: u32,
+    incarnation: u32,
+    flags: u32,
+    move_intent: vec2f,
+    reserved_0: u32,
+    reserved_1: u32,
+}
+
+struct BodyControlProgram {
+    header: FixedProgramHeader,
+    records: array<BodyControlRecord>,
+}
+
+struct BodyControlState {
+    move_intent: vec2f,
+    entity_id: u32,
+    incarnation: u32,
+}
+
+struct BodyControlStateBuffer { values: array<BodyControlState> }
+
+struct SpawnProgramRecord {
+    destination_slot: u32,
+    destination_entity_id: u32,
+    destination_incarnation: u32,
+    source_slot: u32,
+    source_entity_id: u32,
+    source_incarnation: u32,
+    mode_flags: u32,
+    result: u32,
+    position_offset: vec2f,
+    launch_velocity: vec2f,
+    source_velocity_scale: f32,
+    source_tick: u32,
+    reserved_0: u32,
+    reserved_1: u32,
+}
+
+struct SpawnProgram {
+    header: FixedProgramHeader,
+    records: array<SpawnProgramRecord>,
+}
+
+struct TrackedPoseConfig {
+    source_slot: u32,
+    entity_id: u32,
+    incarnation: u32,
+    enabled: u32,
+}
+
+struct TrackedPoseRecord {
+    position: vec2f,
+    velocity: vec2f,
+    previous_position: vec2f,
+    entity_id: u32,
+    incarnation: u32,
+}
+
 struct GridOverflow {
     small_count: atomic<u32>,
     big_count: atomic<u32>,
@@ -218,6 +319,11 @@ struct SimulationParams {
 @group(0) @binding(2) var<storage, read_write> simulations: SimulationBuffer;
 @group(0) @binding(3) var<storage, read_write> temporaries: TemporaryBuffer;
 @group(0) @binding(4) var<storage, read> contact_handlers: ContactHandlerBuffer;
+@group(0) @binding(5) var<storage, read_write> body_control_states: BodyControlStateBuffer;
+@group(0) @binding(6) var<storage, read_write> body_control_program: BodyControlProgram;
+@group(0) @binding(7) var<storage, read_write> spawn_program: SpawnProgram;
+@group(0) @binding(8) var<storage, read> tracked_pose_config: TrackedPoseConfig;
+@group(0) @binding(9) var<storage, read_write> tracked_pose_output: TrackedPoseRecord;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read_write> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read> sdf_values: SdfBuffer;
@@ -363,6 +469,262 @@ fn make_grid_body(body_id: u32, predicted_position: vec2f) -> GridBody {
         body_id,
         physics.values[body_id].interaction_meta
     );
+}
+
+fn invalidate_tracked_pose_output() {
+    tracked_pose_output.position = vec2f(0.0);
+    tracked_pose_output.velocity = vec2f(0.0);
+    tracked_pose_output.previous_position = vec2f(0.0);
+    tracked_pose_output.entity_id = INVALID_IDENTITY_COMPONENT;
+    tracked_pose_output.incarnation = INVALID_IDENTITY_COMPONENT;
+}
+
+@compute @workgroup_size(256)
+fn clear_body_control_states(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count) {
+        return;
+    }
+    body_control_states.values[body_id] = BodyControlState(
+        vec2f(0.0),
+        INVALID_IDENTITY_COMPONENT,
+        INVALID_IDENTITY_COMPONENT
+    );
+    atomicAnd(
+        &simulations.values[body_id].flags,
+        ~BODY_FLAG_CONTROLLED_THIS_TICK
+    );
+}
+
+@compute @workgroup_size(256)
+fn validate_body_control_commands(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &body_control_program.header.status,
+                FIXED_PROGRAM_STATUS_ABI_MISMATCH
+            );
+        }
+        return;
+    }
+    let runtime_capacity = arrayLength(&body_control_program.records);
+    if (body_control_program.header.abi_version != BODY_CONTROL_PROGRAM_ABI_VERSION) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &body_control_program.header.status,
+                FIXED_PROGRAM_STATUS_ABI_MISMATCH
+            );
+        }
+        return;
+    }
+    if (body_control_program.header.capacity != runtime_capacity
+        || body_control_program.header.count > runtime_capacity) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &body_control_program.header.status,
+                FIXED_PROGRAM_STATUS_CAPACITY_EXCEEDED
+            );
+        }
+        return;
+    }
+    let command_index = global_id.x;
+    if (command_index >= body_control_program.header.count) {
+        return;
+    }
+    let command = body_control_program.records[command_index];
+    if (command.flags != 0u
+        || command.reserved_0 != 0u
+        || command.reserved_1 != 0u
+        || command.destination_slot >= counts.body_count
+        || simulations.values[command.destination_slot].entity_id != command.entity_id
+        || simulations.values[command.destination_slot].incarnation != command.incarnation
+        || !body_id_is_alive(command.destination_slot)
+        || body_has_flag(
+            load_simulation_flags(command.destination_slot),
+            BODY_FLAG_USE_FLOW
+        )
+        || dot(command.move_intent, command.move_intent) > 1.000002) {
+        atomicOr(
+            &body_control_program.header.status,
+            FIXED_PROGRAM_STATUS_RECORD_INVALID
+        );
+    }
+}
+
+@compute @workgroup_size(256)
+fn apply_body_control_commands(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()
+        || body_control_program.header.abi_version
+            != BODY_CONTROL_PROGRAM_ABI_VERSION
+        || atomicLoad(&body_control_program.header.status) != 0u
+        || body_control_program.header.capacity
+            != arrayLength(&body_control_program.records)) {
+        return;
+    }
+    let command_index = global_id.x;
+    if (command_index >= body_control_program.header.count) {
+        return;
+    }
+    let command = body_control_program.records[command_index];
+    body_control_states.values[command.destination_slot] = BodyControlState(
+        command.move_intent,
+        command.entity_id,
+        command.incarnation
+    );
+    atomicOr(
+        &simulations.values[command.destination_slot].flags,
+        BODY_FLAG_CONTROLLED_THIS_TICK
+    );
+}
+
+@compute @workgroup_size(256)
+fn apply_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count || !body_id_is_alive(body_id)) {
+        return;
+    }
+    let control_state = body_control_states.values[body_id];
+    if (control_state.entity_id != simulations.values[body_id].entity_id
+        || control_state.incarnation != simulations.values[body_id].incarnation) {
+        return;
+    }
+    var velocity = physics.values[body_id].velocity;
+    let decay = exp(-CONTROL_LINEAR_FRICTION * params.dt);
+    let acceleration_scale = (1.0 - decay) / CONTROL_LINEAR_FRICTION;
+    velocity = (velocity * decay)
+        + (control_state.move_intent
+            * CONTROL_ACCELERATION
+            * acceleration_scale);
+    let controlled_speed = length(velocity);
+    if (controlled_speed > CONTROL_MAX_LINEAR_SPEED) {
+        velocity = (velocity / controlled_speed) * CONTROL_MAX_LINEAR_SPEED;
+    }
+    if (control_state.move_intent.x == 0.0
+        && control_state.move_intent.y == 0.0
+        && length(velocity) <= CONTROL_SLEEP_SPEED) {
+        velocity = vec2f(0.0);
+    }
+    physics.values[body_id].velocity = velocity;
+}
+
+@compute @workgroup_size(256)
+fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &spawn_program.header.status,
+                FIXED_PROGRAM_STATUS_ABI_MISMATCH
+            );
+        }
+        return;
+    }
+    let runtime_capacity = arrayLength(&spawn_program.records);
+    if (spawn_program.header.abi_version != SPAWN_PROGRAM_ABI_VERSION) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &spawn_program.header.status,
+                FIXED_PROGRAM_STATUS_ABI_MISMATCH
+            );
+        }
+        return;
+    }
+    if (spawn_program.header.capacity != runtime_capacity
+        || spawn_program.header.count > runtime_capacity) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &spawn_program.header.status,
+                FIXED_PROGRAM_STATUS_CAPACITY_EXCEEDED
+            );
+        }
+        return;
+    }
+    let program_index = global_id.x;
+    if (program_index >= spawn_program.header.count) {
+        return;
+    }
+    let program = spawn_program.records[program_index];
+    if (program.result != SPAWN_PROGRAM_RESULT_PENDING
+        || program.mode_flags != SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TICK_START
+        || program.source_tick == 0u
+        || program.reserved_0 != 0u
+        || program.reserved_1 != 0u
+        || program.destination_slot >= counts.body_count
+        || program.source_slot >= counts.body_count
+        || program.destination_slot == program.source_slot
+        || simulations.values[program.destination_slot].entity_id
+            != program.destination_entity_id
+        || simulations.values[program.destination_slot].incarnation
+            != program.destination_incarnation
+        || body_id_is_alive(program.destination_slot)) {
+        atomicOr(
+            &spawn_program.header.status,
+            FIXED_PROGRAM_STATUS_RECORD_INVALID
+        );
+        return;
+    }
+}
+
+@compute @workgroup_size(256)
+fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()
+        || spawn_program.header.abi_version != SPAWN_PROGRAM_ABI_VERSION
+        || atomicLoad(&spawn_program.header.status) != 0u) {
+        return;
+    }
+    let runtime_capacity = arrayLength(&spawn_program.records);
+    if (spawn_program.header.capacity != runtime_capacity
+        || spawn_program.header.count > runtime_capacity) {
+        return;
+    }
+    let program_index = global_id.x;
+    if (program_index >= spawn_program.header.count) {
+        return;
+    }
+    let program = spawn_program.records[program_index];
+    if (program.destination_slot >= counts.body_count
+        || simulations.values[program.destination_slot].entity_id
+            != program.destination_entity_id
+        || simulations.values[program.destination_slot].incarnation
+            != program.destination_incarnation
+        || body_id_is_alive(program.destination_slot)) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_DESTINATION_INVALID;
+        return;
+    }
+    if (simulations.values[program.source_slot].entity_id != program.source_entity_id
+        || simulations.values[program.source_slot].incarnation
+            != program.source_incarnation
+        || !body_id_is_alive(program.source_slot)) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_SOURCE_INVALID;
+        return;
+    }
+
+    let source_physics = physics.values[program.source_slot];
+    let destination_position = source_physics.position + program.position_offset;
+    let destination_velocity = program.launch_velocity
+        + (source_physics.velocity * program.source_velocity_scale);
+    physics.values[program.destination_slot].position = destination_position;
+    physics.values[program.destination_slot].velocity = destination_velocity;
+    temporaries.values[program.destination_slot].previous_position
+        = destination_position;
+    temporaries.values[program.destination_slot].predicted_position
+        = destination_position;
+    temporaries.values[program.destination_slot].position_delta = vec2f(0.0);
+    temporaries.values[program.destination_slot].grid_index = -1;
+    temporaries.values[program.destination_slot].previous_flow_field_index
+        = simulations.values[program.destination_slot].flow_field_index;
+    atomicOr(
+        &simulations.values[program.destination_slot].flags,
+        BODY_FLAG_ALIVE
+    );
+    spawn_program.records[program_index].result = SPAWN_PROGRAM_RESULT_RESOLVED;
 }
 
 @compute @workgroup_size(256)
@@ -1457,6 +1819,12 @@ fn finalize_velocities(@builtin(global_invocation_id) global_id: vec3u) {
         || !body_id_is_alive(body_id)) {
         return;
     }
+    if (body_has_flag(
+        load_simulation_flags(body_id),
+        BODY_FLAG_CONTROLLED_THIS_TICK
+    )) {
+        return;
+    }
     var velocity = physics.values[body_id].velocity
         * clamp(1.0 - (params.velocity_damping * params.dt), 0.0, 1.0);
     let speed_squared = dot(velocity, velocity);
@@ -1464,6 +1832,52 @@ fn finalize_velocities(@builtin(global_invocation_id) global_id: vec3u) {
         velocity = normalize(velocity) * params.max_speed;
     }
     physics.values[body_id].velocity = velocity;
+}
+
+@compute @workgroup_size(256)
+fn finalize_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count || !body_id_is_alive(body_id)) {
+        return;
+    }
+    let control_state = body_control_states.values[body_id];
+    if (control_state.entity_id != simulations.values[body_id].entity_id
+        || control_state.incarnation != simulations.values[body_id].incarnation) {
+        return;
+    }
+    var velocity = physics.values[body_id].velocity;
+    let controlled_speed = length(velocity);
+    if (controlled_speed > CONTROL_MAX_LINEAR_SPEED) {
+        velocity = (velocity / controlled_speed) * CONTROL_MAX_LINEAR_SPEED;
+    }
+    physics.values[body_id].velocity = velocity;
+}
+
+@compute @workgroup_size(1)
+fn pack_tracked_pose() {
+    if (!abi_is_current()
+        || tracked_pose_config.enabled == 0u
+        || tracked_pose_config.source_slot >= counts.body_count) {
+        invalidate_tracked_pose_output();
+        return;
+    }
+    let source_slot = tracked_pose_config.source_slot;
+    if (simulations.values[source_slot].entity_id != tracked_pose_config.entity_id
+        || simulations.values[source_slot].incarnation
+            != tracked_pose_config.incarnation
+        || !body_id_is_alive(source_slot)) {
+        invalidate_tracked_pose_output();
+        return;
+    }
+    tracked_pose_output.position = physics.values[source_slot].position;
+    tracked_pose_output.velocity = physics.values[source_slot].velocity;
+    tracked_pose_output.previous_position
+        = temporaries.values[source_slot].previous_position;
+    tracked_pose_output.entity_id = tracked_pose_config.entity_id;
+    tracked_pose_output.incarnation = tracked_pose_config.incarnation;
 }
 `;
 

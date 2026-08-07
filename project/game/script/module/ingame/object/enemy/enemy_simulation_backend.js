@@ -53,6 +53,8 @@ export class EnemySimulationBackend {
         this.capacity = options.capacity ?? DEFAULT_BODY_CAPACITY;
         this.presentationProfile = options.presentationProfile
             ?? GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION;
+        this.controlCommandCapacity = options.controlCommandCapacity;
+        this.spawnProgramCapacity = options.spawnProgramCapacity;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -115,6 +117,8 @@ export class EnemySimulationBackend {
             sourceWorldUnitScale: this.navigationGrid.cellSize
                 * SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO,
             presentationProfile: this.presentationProfile,
+            controlCommandCapacity: this.controlCommandCapacity,
+            spawnProgramCapacity: this.spawnProgramCapacity,
             sessionGeneration: this.sessionGeneration
         });
         this.state = 'gpu-deferred';
@@ -195,6 +199,65 @@ export class EnemySimulationBackend {
     /** @param {object} handle - entityId/incarnation handle입니다. */
     hasBody(handle) {
         return this.simulation?.hasBody(handle) ?? false;
+    }
+
+    canControlBody(handle) {
+        return this.simulation?.canControlBody?.(handle) ?? false;
+    }
+
+    /** Generic control + source-relative spawn plan을 한 fixed submit용으로 staging합니다. */
+    stageFixedPrograms(plan = {}) {
+        if (!this.simulation) {
+            const count = (plan.controls?.length ?? 0)
+                + (plan.sourceRelativeSpawns?.length ?? 0);
+            return Object.freeze({
+                accepted: 0,
+                rejected: count,
+                reason: 'gpu-unavailable'
+            });
+        }
+        const sourceRelativeSpawns = (plan.sourceRelativeSpawns ?? []).map(
+            (entry, index) => ({
+                ...entry,
+                destinationSpawn: this.#resolveBodyFlow(
+                    entry.destinationSpawn,
+                    index
+                )
+            })
+        );
+        const result = this.simulation.stageFixedPrograms({
+            ...plan,
+            sourceRelativeSpawns
+        });
+        this.#syncState();
+        return result;
+    }
+
+    drainCompletedSpawnProgramBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('SpawnProgram 완료 출력은 배열이어야 합니다.');
+        }
+        return this.simulation?.drainCompletedSpawnProgramBatches?.(out) ?? out;
+    }
+
+    hasPendingSpawnProgramThroughTick(sourceTick) {
+        return this.simulation?.hasPendingSpawnProgramThroughTick?.(sourceTick) ?? false;
+    }
+
+    configureTrackedBody(handle = null) {
+        return this.simulation?.configureTrackedBody?.(handle)
+            ?? Object.freeze({ accepted: false, reason: 'gpu-unavailable' });
+    }
+
+    getObservedTrackedPose() {
+        return this.simulation?.getObservedTrackedPose?.()
+            ?? this.simulation?.getLatestTrackedPose?.()
+            ?? null;
+    }
+
+    /** @deprecated generic observed 명칭의 compatibility alias입니다. */
+    getLatestTrackedPose() {
+        return this.getObservedTrackedPose();
     }
 
     /**

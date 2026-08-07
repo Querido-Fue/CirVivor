@@ -1,4 +1,5 @@
 import { WorldRegistry } from '../world_registry.js';
+import { GpuFixedCommandOwner } from '../gpu_fixed_command_owner.js';
 import {
     EnemyLifecycleCommandOwner
 } from './enemy_lifecycle_command_owner.js';
@@ -90,6 +91,32 @@ function resolveCapacity(backend, options) {
     return number;
 }
 
+function createFixedPrimitiveBackendPort(backend, sessionGeneration) {
+    return Object.freeze({
+        hasBody: (handle) => backend.hasBody(handle),
+        canControlBody: (handle) => backend.canControlBody?.(handle) ?? false,
+        stageFixedPrograms: (plan) => backend.stageFixedPrograms?.(plan)
+            ?? Object.freeze({
+                accepted: 0,
+                rejected: (plan.controls?.length ?? 0)
+                    + (plan.sourceRelativeSpawns?.length ?? 0),
+                reason: 'fixed-primitives-unsupported'
+            }),
+        drainCompletedSpawnProgramBatches: (out) => (
+            backend.drainCompletedSpawnProgramBatches?.(out) ?? out
+        ),
+        getEventProtocolState: () => backend.getEventProtocolState?.()
+            ?? Object.freeze({
+                sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                submittedTickCount: 0
+            }),
+        requiresRecovery: () => backend.requiresRecovery(),
+        getRuntimeState: () => backend.getRuntimeState()
+    });
+}
+
 /**
  * @class GpuEnemySimulationEndpoint
  * @description 게임 코드가 적·투사체를 공유하는 GPU 물리의 lifecycle·fixed tick·presentation을
@@ -99,7 +126,7 @@ function resolveCapacity(backend, options) {
 export class GpuEnemySimulationEndpoint {
     /**
      * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object}} [dependencies={}]
-     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number}} [options={}]
+     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number}} [options={}]
      */
     constructor(dependencies = {}, options = {}) {
         this.sessionGeneration = allocateSessionGeneration();
@@ -109,6 +136,8 @@ export class GpuEnemySimulationEndpoint {
         const backendOptions = {
             capacity: options.capacity,
             presentationProfile: options.presentationProfile,
+            controlCommandCapacity: options.controlCommandCapacity,
+            spawnProgramCapacity: options.spawnProgramCapacity,
             sessionGeneration: this.sessionGeneration
         };
         const backendFactory = dependencies.gpuSimulationBackendFactory
@@ -130,6 +159,15 @@ export class GpuEnemySimulationEndpoint {
         this.lifecycleCommandOwner = new EnemyLifecycleCommandOwner(
             this.backend,
             this.registry
+        );
+        this.fixedPrimitiveBackendPort = createFixedPrimitiveBackendPort(
+            this.backend,
+            this.sessionGeneration
+        );
+        this.fixedCommandOwner = new GpuFixedCommandOwner(
+            this.fixedPrimitiveBackendPort,
+            this.registry,
+            { commandCapacity: options.controlCommandCapacity }
         );
         this.completedEventSnapshotCapacity = requirePositiveSafeInteger(
             options.completedEventSnapshotCapacity
@@ -199,10 +237,107 @@ export class GpuEnemySimulationEndpoint {
         );
     }
 
+    /** Exact active body에 move-only command를 다음 fixed tick 한 번 예약합니다. */
+    requestBodyControl(command, targetFixedTick, commandId) {
+        this.#assertUsable();
+        return this.fixedCommandOwner.requestBodyControl(
+            command,
+            targetFixedTick,
+            commandId
+        );
+    }
+
+    /** CPU pose를 거치지 않는 tick-start source-relative spawn을 예약합니다. */
+    requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
+        this.#assertUsable();
+        return this.fixedCommandOwner.requestSourceRelativeSpawn(
+            intent,
+            targetFixedTick,
+            commandId
+        );
+    }
+
+    /** Session당 exact GPU body 하나의 lossy observed-pose tracking을 설정합니다. */
+    configureTrackedBody(handle = null) {
+        this.#assertUsable();
+        if (handle !== null) {
+            const registryHas = this.registry.has(handle);
+            const backendHas = this.backend.hasBody(handle);
+            if (!registryHas && !backendHas) {
+                return Object.freeze({ accepted: false, reason: 'stale-handle' });
+            }
+            if (registryHas !== backendHas) {
+                this.completedEventRecoveryRequired = true;
+                this.completedEventProtocolFailure = Object.freeze({
+                    stage: 'tracked-pose-config',
+                    code: 'registry-backend-desync',
+                    name: 'TrackedPoseIdentityMismatch',
+                    message: 'tracked body identity가 registry/backend에서 일치하지 않습니다.'
+                });
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'registry-backend-desync'
+                });
+            }
+        }
+        return this.backend.configureTrackedBody?.(handle)
+            ?? Object.freeze({ accepted: false, reason: 'fixed-primitives-unsupported' });
+    }
+
+    /** GPU authority가 아닌 최신 bounded observed pose snapshot입니다. */
+    getObservedTrackedPose() {
+        return this.destroyed
+            ? null
+            : this.backend.getObservedTrackedPose?.()
+                ?? this.backend.getLatestTrackedPose?.()
+                ?? null;
+    }
+
+    /** @deprecated generic observed 명칭의 compatibility alias입니다. */
+    getLatestTrackedPose() {
+        return this.getObservedTrackedPose();
+    }
+
     /** 예약한 lifecycle command를 지정 fixed tick에서 원자적으로 반영합니다. */
     commitAtFixedBoundary(fixedTick) {
         this.#assertUsable();
-        return this.lifecycleCommandOwner.commitAtFixedBoundary(fixedTick);
+        const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
+        if (this.completedEventRecoveryRequired
+            || this.fixedCommandOwner.getStatus().recoveryRequired
+            || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
+            return Object.freeze({
+                fixedTick: tick,
+                state: 'failed',
+                spawned: Object.freeze([]),
+                despawned: Object.freeze([]),
+                rejected: Object.freeze([]),
+                recoveryRequired: true,
+                backendState: this.backend.getRuntimeState(),
+                registryRevision: this.registry.getRevision(),
+                fixedCommands: null
+            });
+        }
+        const lifecycle = this.lifecycleCommandOwner.commitAtFixedBoundary(tick);
+        if (lifecycle.recoveryRequired) {
+            return Object.freeze({
+                ...lifecycle,
+                fixedCommands: null
+            });
+        }
+        const fixedCommands = this.fixedCommandOwner.commitAtFixedBoundary(tick);
+        const recoveryRequired = fixedCommands.recoveryRequired === true;
+        const state = recoveryRequired
+            ? fixedCommands.state === 'stalled' ? 'stalled' : 'failed'
+            : lifecycle.state === 'committed-with-rejections'
+                || fixedCommands.state === 'committed-with-rejections'
+                ? 'committed-with-rejections'
+                : lifecycle.state;
+        return Object.freeze({
+            ...lifecycle,
+            state,
+            recoveryRequired,
+            fixedCommands
+        });
     }
 
     /**
@@ -214,6 +349,19 @@ export class GpuEnemySimulationEndpoint {
     commitCompletedEventsAtFixedBoundary(targetFixedTick) {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
+        const spawnPrograms = this.fixedCommandOwner
+            .commitCompletedAtFixedBoundary(tick);
+        if (spawnPrograms.protocolFailure) {
+            return this.#failCompletedEventProtocol(
+                tick,
+                Object.freeze({
+                    stage: 'spawn-program-completion',
+                    code: spawnPrograms.protocolFailure.code,
+                    name: 'SpawnProgramProtocolViolation',
+                    message: spawnPrograms.protocolFailure.message
+                })
+            );
+        }
         // lower drain은 마지막 pending batch를 꺼내는 과정에서 idle resource를
         // release하고 authoritative epoch를 올릴 수 있습니다. 방금 drain한
         // envelope는 호출 직전 protocol에 속하므로 그 snapshot으로 검증합니다.
@@ -337,6 +485,11 @@ export class GpuEnemySimulationEndpoint {
     /** 권위 GPU 물리를 한 fixed step 제출합니다. */
     fixedUpdate(delta, sourceTick) {
         this.#assertUsable();
+        if (this.completedEventRecoveryRequired
+            || this.fixedCommandOwner.getStatus().recoveryRequired
+            || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
+            return false;
+        }
         return this.backend.fixedUpdate(delta, sourceTick);
     }
 
@@ -375,6 +528,7 @@ export class GpuEnemySimulationEndpoint {
     requiresRecovery() {
         return !this.destroyed && (
             this.completedEventRecoveryRequired
+            || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired
             || this.backend.requiresRecovery()
         );
@@ -385,7 +539,10 @@ export class GpuEnemySimulationEndpoint {
     }
 
     getPendingCommandCount() {
-        return this.destroyed ? 0 : this.lifecycleCommandOwner.getPendingCount();
+        return this.destroyed
+            ? 0
+            : this.lifecycleCommandOwner.getPendingCount()
+                + this.fixedCommandOwner.getPendingCount();
     }
 
     getCapacity() {
@@ -411,6 +568,7 @@ export class GpuEnemySimulationEndpoint {
     getStatus() {
         const registry = this.registry.getStatus();
         const lifecycle = this.lifecycleCommandOwner.getStatus();
+        const fixedCommands = this.fixedCommandOwner.getStatus();
         const backend = typeof this.backend.getStatus === 'function'
             ? this.backend.getStatus()
             : Object.freeze({ state: this.getRuntimeState() });
@@ -437,15 +595,22 @@ export class GpuEnemySimulationEndpoint {
             activeEnemyCount: this.registry.getActiveCount('enemy'),
             activeProjectileCount: this.registry.getActiveCount('projectile'),
             reservedCount: registry.reservedCount,
-            pendingCommandCount: lifecycle.pendingCount,
+            pendingCommandCount: lifecycle.pendingCount
+                + fixedCommands.pendingCommandCount
+                + fixedCommands.pendingDestinationCount,
+            pendingFixedCommandCount: fixedCommands.pendingCommandCount,
+            pendingSourceRelativeDestinationCount:
+                fixedCommands.pendingDestinationCount,
             completedThroughTick: this.completedThroughTick,
             recoveryRequired: !this.destroyed && (
                 this.completedEventRecoveryRequired
+                || fixedCommands.recoveryRequired
                 || lifecycle.recoveryRequired
                 || this.backend.requiresRecovery()
             ),
             events,
             backend,
+            fixedCommands,
             lifecycle,
             registry
         });
@@ -457,6 +622,7 @@ export class GpuEnemySimulationEndpoint {
             return;
         }
         this.destroyed = true;
+        this.fixedCommandOwner.destroy();
         this.lifecycleCommandOwner.destroy();
         this.registry.destroy();
         this.backend.destroy();
@@ -530,6 +696,11 @@ export class GpuEnemySimulationEndpoint {
             }
             if (hasOlderGeneration) {
                 staleEventCount += batch.sourceEvents.length;
+                continue;
+            }
+            if (this.backend.hasPendingSpawnProgramThroughTick?.(batch.sourceTick)) {
+                encounteredFuture = true;
+                future.push(batch);
                 continue;
             }
             if (batch.sourceTick >= targetFixedTick) {
