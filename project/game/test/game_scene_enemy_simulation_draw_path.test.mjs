@@ -149,6 +149,14 @@ function createGameSceneHarness(options = {}) {
     const dependencies = {
         inputActionSource: {
             isPressed: () => false,
+            getPointerPosition(out) {
+                out.x = 0;
+                out.y = 0;
+                return out;
+            },
+            isPrimaryPointerPressed() {
+                return false;
+            },
             getWheelTotals(out) {
                 out.x = 0;
                 out.y = 0;

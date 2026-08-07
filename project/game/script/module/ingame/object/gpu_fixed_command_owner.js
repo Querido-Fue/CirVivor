@@ -2,10 +2,20 @@ import {
     createGpuRegistryMetadata,
     normalizeGpuSpawnIntent
 } from './gpu_spawn_intent.js';
+import {
+    GPU_SPAWN_PROGRAM_MODE
+} from '../physics/gpu/gpu_fixed_primitive_abi.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_CAPACITY = 1024;
 const DEFAULT_HISTORY_CAPACITY = 65536;
+const NORMAL_SPAWN_REJECTION_CODES = new Set([
+    'fixed-program-capacity',
+    'body-capacity',
+    'spawn-program-capacity',
+    'spawn-program-readback-capacity',
+    'fixed-primitives-unsupported'
+]);
 
 function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
@@ -91,6 +101,13 @@ function normalizeVector(source, label) {
     });
 }
 
+function normalizeRequiredVector(source, label) {
+    if (!source || typeof source !== 'object') {
+        throw new TypeError(`${label} 벡터가 필요합니다.`);
+    }
+    return normalizeVector(source, label);
+}
+
 function normalizeSourceRelativeIntent(source) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('source-relative spawn intent가 필요합니다.');
@@ -99,26 +116,122 @@ function normalizeSourceRelativeIntent(source) {
         source.sourceHandle,
         'sourceRelativeSpawn.sourceHandle'
     );
-    const destinationSpawn = normalizeGpuSpawnIntent(
+    const suppliedDestinationSpawn = normalizeGpuSpawnIntent(
         source.destinationSpawn
             ?? source.destinationIntent
             ?? source.spawnIntent
     );
-    return Object.freeze({
+    const hasSourceEntityId = suppliedDestinationSpawn.sourceEntityId !== undefined
+        && suppliedDestinationSpawn.sourceEntityId !== null;
+    const hasSourceIncarnation = suppliedDestinationSpawn.sourceIncarnation !== undefined
+        && suppliedDestinationSpawn.sourceIncarnation !== null;
+    if (hasSourceEntityId !== hasSourceIncarnation) {
+        throw new TypeError(
+            'source-relative destination metadata에는 sourceEntityId/sourceIncarnation이 모두 필요합니다.'
+        );
+    }
+    if (hasSourceEntityId
+        && (suppliedDestinationSpawn.sourceEntityId !== sourceHandle.entityId
+            || suppliedDestinationSpawn.sourceIncarnation !== sourceHandle.incarnation)) {
+        throw new RangeError(
+            'source-relative destination metadata는 actual sourceHandle과 정확히 일치해야 합니다.'
+        );
+    }
+    const destinationSpawn = normalizeGpuSpawnIntent({
+        ...suppliedDestinationSpawn,
+        sourceEntityId: sourceHandle.entityId,
+        sourceIncarnation: sourceHandle.incarnation
+    });
+    const modeFlags = requirePositiveSafeInteger(
+        source.modeFlags ?? GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
+        'sourceRelativeSpawn.modeFlags'
+    );
+    const base = {
         sourceHandle,
         destinationSpawn,
+        modeFlags,
         positionOffset: normalizeVector(
             source.positionOffset,
             'sourceRelativeSpawn.positionOffset'
-        ),
-        launchVelocity: normalizeVector(
-            source.launchVelocity,
-            'sourceRelativeSpawn.launchVelocity'
-        ),
-        sourceVelocityScale: requireFinite(
-            source.sourceVelocityScale ?? 0,
-            'sourceRelativeSpawn.sourceVelocityScale'
         )
+    };
+    if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY) {
+        if (source.aimWorldPoint !== undefined || source.launchSpeed !== undefined) {
+            throw new TypeError('velocity source-relative intent에는 aimWorldPoint/launchSpeed를 사용할 수 없습니다.');
+        }
+        return Object.freeze({
+            ...base,
+            launchVelocity: normalizeRequiredVector(
+                source.launchVelocity,
+                'sourceRelativeSpawn.launchVelocity'
+            ),
+            sourceVelocityScale: requireFinite(
+                source.sourceVelocityScale ?? 0,
+                'sourceRelativeSpawn.sourceVelocityScale'
+            )
+        });
+    }
+    if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT) {
+        if (source.launchVelocity !== undefined
+            || source.sourceVelocityScale !== undefined) {
+            throw new TypeError('aim-point source-relative intent에는 launchVelocity/sourceVelocityScale을 사용할 수 없습니다.');
+        }
+        const launchSpeed = requireFinite(
+            source.launchSpeed,
+            'sourceRelativeSpawn.launchSpeed'
+        );
+        if (launchSpeed <= 0) {
+            throw new RangeError('sourceRelativeSpawn.launchSpeed는 양수여야 합니다.');
+        }
+        return Object.freeze({
+            ...base,
+            aimWorldPoint: normalizeRequiredVector(
+                source.aimWorldPoint,
+                'sourceRelativeSpawn.aimWorldPoint'
+            ),
+            launchSpeed
+        });
+    }
+    throw new RangeError(`지원하지 않는 source-relative SpawnProgram mode입니다: ${modeFlags}`);
+}
+
+function commandDomain(command) {
+    return command?.type === 'control' ? 'control' : 'spawn';
+}
+
+function normalizeBackendDomainResult(
+    backendResult,
+    propertyName,
+    expectedCount,
+    totalExpectedCount
+) {
+    if (expectedCount === 0) {
+        return Object.freeze({ accepted: 0, rejected: 0, reason: null });
+    }
+    const explicit = backendResult?.[propertyName];
+    if (explicit && typeof explicit === 'object') {
+        return Object.freeze({
+            accepted: Number(explicit.accepted),
+            rejected: Number(explicit.rejected),
+            reason: explicit.reason ?? backendResult?.reason ?? null
+        });
+    }
+    const flatAccepted = Number(backendResult?.accepted);
+    const flatRejected = Number(backendResult?.rejected ?? 0);
+    if (flatAccepted === totalExpectedCount && flatRejected === 0) {
+        return Object.freeze({ accepted: expectedCount, rejected: 0, reason: null });
+    }
+    if (expectedCount === totalExpectedCount) {
+        return Object.freeze({
+            accepted: flatAccepted,
+            rejected: flatRejected,
+            reason: backendResult?.reason ?? null
+        });
+    }
+    return Object.freeze({
+        accepted: Number.NaN,
+        rejected: Number.NaN,
+        reason: backendResult?.reason ?? 'fixed-program-domain-contract'
     });
 }
 
@@ -196,16 +309,36 @@ export class GpuFixedCommandOwner {
     constructor(backend, registry, options = {}) {
         this.backend = assertBackend(backend);
         this.registry = assertRegistry(registry);
-        this.commandCapacity = requirePositiveSafeInteger(
+        this.usesSharedCommandCapacity = options.commandCapacity !== undefined
+            && options.controlCommandCapacity === undefined
+            && options.sourceRelativeSpawnCommandCapacity === undefined;
+        const sharedCapacity = requirePositiveSafeInteger(
             options.commandCapacity ?? DEFAULT_COMMAND_CAPACITY,
             'commandCapacity'
         );
+        this.controlCommandCapacity = this.usesSharedCommandCapacity
+            ? sharedCapacity
+            : requirePositiveSafeInteger(
+                options.controlCommandCapacity ?? sharedCapacity,
+                'controlCommandCapacity'
+            );
+        this.sourceRelativeSpawnCommandCapacity = this.usesSharedCommandCapacity
+            ? sharedCapacity
+            : requirePositiveSafeInteger(
+                options.sourceRelativeSpawnCommandCapacity ?? sharedCapacity,
+                'sourceRelativeSpawnCommandCapacity'
+            );
+        this.commandCapacity = this.usesSharedCommandCapacity
+            ? sharedCapacity
+            : this.controlCommandCapacity + this.sourceRelativeSpawnCommandCapacity;
         this.historyCapacity = requirePositiveSafeInteger(
             options.historyCapacity ?? DEFAULT_HISTORY_CAPACITY,
             'historyCapacity'
         );
         this.pending = new Array(this.commandCapacity).fill(null);
         this.pendingCount = 0;
+        this.pendingControlCount = 0;
+        this.pendingSourceRelativeSpawnCount = 0;
         this.nextSequence = 1;
         this.knownCommands = new Map();
         this.completedCommandIds = [];
@@ -525,6 +658,7 @@ export class GpuFixedCommandOwner {
                 result.recoveryRequired = true;
                 result.rejected.push({
                     commandId: command.commandId,
+                    domain: commandDomain(command),
                     code: 'missed-fixed-boundary'
                 });
             } else if (command.targetFixedTick === tick) {
@@ -570,6 +704,7 @@ export class GpuFixedCommandOwner {
             if (!sameProtocol(command.protocol, currentProtocol)) {
                 result.rejected.push({
                     commandId: command.commandId,
+                    domain: commandDomain(command),
                     code: 'stale-generation'
                 });
                 consumed.add(command.commandId);
@@ -578,6 +713,7 @@ export class GpuFixedCommandOwner {
             if (command.conflicted) {
                 result.rejected.push({
                     commandId: command.commandId,
+                    domain: commandDomain(command),
                     code: 'body-tick-conflict'
                 });
                 consumed.add(command.commandId);
@@ -590,6 +726,7 @@ export class GpuFixedCommandOwner {
             if (disposition !== 'active') {
                 result.rejected.push({
                     commandId: command.commandId,
+                    domain: commandDomain(command),
                     code: disposition === 'desync'
                         ? 'registry-backend-desync'
                         : command.type === 'control'
@@ -604,6 +741,7 @@ export class GpuFixedCommandOwner {
                 if (!this.backend.canControlBody(handle)) {
                     result.rejected.push({
                         commandId: command.commandId,
+                        domain: 'control',
                         code: 'flow-body-not-controllable'
                     });
                     consumed.add(command.commandId);
@@ -631,6 +769,7 @@ export class GpuFixedCommandOwner {
         }
 
         const reservations = [];
+        let registryRejectedSourceCommands = false;
         for (const command of sourceCommands) {
             const handle = this.registry.reserveEntity({
                 kindId: command.payload.destinationSpawn.kindId,
@@ -641,20 +780,25 @@ export class GpuFixedCommandOwner {
                 for (const reservation of reservations) {
                     this.registry.cancelReservation(reservation.handle);
                 }
-                for (const rejected of [...controls, ...sourceCommands]) {
+                reservations.length = 0;
+                for (const rejected of sourceCommands) {
                     result.rejected.push({
                         commandId: rejected.commandId,
+                        domain: 'spawn',
                         code: 'registry-capacity'
                     });
                     consumed.add(rejected.commandId);
                 }
                 result.state = 'committed-with-rejections';
-                this.telemetry.capacityRejected += controls.length
-                    + sourceCommands.length;
-                this.#consume(consumed);
-                return this.#saveResult(result);
+                this.telemetry.capacityRejected += sourceCommands.length;
+                registryRejectedSourceCommands = true;
+                break;
             }
             reservations.push({ command, handle });
+        }
+        if (controls.length === 0 && reservations.length === 0) {
+            this.#consume(consumed);
+            return this.#saveResult(result);
         }
 
         const plan = {
@@ -664,9 +808,18 @@ export class GpuFixedCommandOwner {
                 sourceHandle: command.payload.sourceHandle,
                 destinationHandle: handle,
                 destinationSpawn: command.payload.destinationSpawn,
+                modeFlags: command.payload.modeFlags,
                 positionOffset: command.payload.positionOffset,
-                launchVelocity: command.payload.launchVelocity,
-                sourceVelocityScale: command.payload.sourceVelocityScale
+                ...(command.payload.modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
+                    ? {
+                        aimWorldPoint: command.payload.aimWorldPoint,
+                        launchSpeed: command.payload.launchSpeed
+                    }
+                    : {
+                        launchVelocity: command.payload.launchVelocity,
+                        sourceVelocityScale: command.payload.sourceVelocityScale
+                    })
             }))
         };
         let backendResult;
@@ -680,6 +833,7 @@ export class GpuFixedCommandOwner {
             result.recoveryRequired = true;
             result.rejected.push({
                 commandId: due[0].commandId,
+                domain: commandDomain(due[0]),
                 code: 'fixed-program-exception',
                 message: String(error?.message ?? error)
             });
@@ -696,37 +850,83 @@ export class GpuFixedCommandOwner {
             result.recoveryRequired = true;
             result.rejected.push({
                 commandId: due[0].commandId,
+                domain: commandDomain(due[0]),
                 code: backendResult?.reason ?? 'fixed-program-recovery'
             });
             this.recoveryRequired = true;
             this.#consume(new Set(due.map((command) => command.commandId)));
             return this.#saveResult(result);
         }
-        if (backendResult?.accepted !== expectedAccepted
-            || Number(backendResult?.rejected ?? 0) !== 0) {
+
+        const controlDomain = normalizeBackendDomainResult(
+            backendResult,
+            'controls',
+            controls.length,
+            expectedAccepted
+        );
+        const spawnDomain = normalizeBackendDomainResult(
+            backendResult,
+            'sourceRelativeSpawns',
+            reservations.length,
+            expectedAccepted
+        );
+        const controlContractValid = controlDomain.accepted === controls.length
+            && controlDomain.rejected === 0;
+        const spawnAccepted = spawnDomain.accepted === reservations.length
+            && spawnDomain.rejected === 0;
+        const spawnNormallyRejected = reservations.length > 0
+            && spawnDomain.accepted === 0
+            && spawnDomain.rejected === reservations.length
+            && NORMAL_SPAWN_REJECTION_CODES.has(spawnDomain.reason);
+        if (!controlContractValid || (!spawnAccepted && !spawnNormallyRejected)) {
             for (const reservation of reservations) {
                 this.registry.cancelReservation(reservation.handle);
             }
-            for (const command of [...controls, ...sourceCommands]) {
+            for (const command of controls) {
                 result.rejected.push({
                     commandId: command.commandId,
-                    code: backendResult?.reason ?? 'fixed-program-rejected'
+                    domain: 'control',
+                    code: controlDomain.reason ?? 'fixed-program-control-rejected'
                 });
                 consumed.add(command.commandId);
             }
-            if (backendResult?.reason === 'fixed-program-capacity') {
-                this.telemetry.capacityRejected += expectedAccepted;
+            for (const command of sourceCommands) {
+                result.rejected.push({
+                    commandId: command.commandId,
+                    domain: 'spawn',
+                    code: spawnDomain.reason ?? 'fixed-program-spawn-contract'
+                });
+                consumed.add(command.commandId);
             }
-            result.state = backendResult?.requiresRecovery
-                || this.backend.requiresRecovery()
-                ? 'failed'
-                : 'committed-with-rejections';
-            result.recoveryRequired = result.state === 'failed';
-            if (result.recoveryRequired) {
-                this.recoveryRequired = true;
-            }
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.protocolFailure = Object.freeze({
+                stage: 'fixed-command-domain',
+                code: !controlContractValid
+                    ? 'control-domain-rejected'
+                    : 'spawn-domain-partial',
+                message: 'fixed program backend의 domain별 acceptance 계약이 깨졌습니다.'
+            });
+            this.recoveryRequired = true;
             this.#consume(consumed);
             return this.#saveResult(result);
+        }
+
+        if (spawnNormallyRejected) {
+            for (const reservation of reservations) {
+                this.registry.cancelReservation(reservation.handle);
+                result.rejected.push({
+                    commandId: reservation.command.commandId,
+                    domain: 'spawn',
+                    code: spawnDomain.reason ?? 'fixed-program-spawn-rejected'
+                });
+                consumed.add(reservation.command.commandId);
+            }
+            if (spawnDomain.reason?.includes('capacity')) {
+                this.telemetry.capacityRejected += reservations.length;
+            }
+            reservations.length = 0;
+            result.state = 'committed-with-rejections';
         }
 
         for (const command of controls) {
@@ -749,7 +949,7 @@ export class GpuFixedCommandOwner {
             consumed.add(command.commandId);
         }
         this.#consume(consumed);
-        if (result.rejected.length > 0) {
+        if (registryRejectedSourceCommands || result.rejected.length > 0) {
             result.state = 'committed-with-rejections';
         }
         return this.#saveResult(result);
@@ -762,7 +962,11 @@ export class GpuFixedCommandOwner {
     getStatus() {
         return Object.freeze({
             capacity: this.commandCapacity,
+            controlCapacity: this.controlCommandCapacity,
+            sourceRelativeSpawnCapacity: this.sourceRelativeSpawnCommandCapacity,
             pendingCommandCount: this.pendingCount,
+            pendingControlCount: this.pendingControlCount,
+            pendingSourceRelativeSpawnCount: this.pendingSourceRelativeSpawnCount,
             pendingDestinationCount: this.pendingDestinations.size,
             recoveryRequired: this.recoveryRequired,
             lastCommitResult: this.lastCommitResult,
@@ -782,6 +986,8 @@ export class GpuFixedCommandOwner {
         this.pendingDestinations.clear();
         this.pending.fill(null);
         this.pendingCount = 0;
+        this.pendingControlCount = 0;
+        this.pendingSourceRelativeSpawnCount = 0;
         this.knownCommands.clear();
         this.controlTargetKeys.clear();
         this.spawnCompletionScratch.length = 0;
@@ -790,7 +996,16 @@ export class GpuFixedCommandOwner {
 
     #enqueue(command, fingerprint) {
         this.#evictCompletedHistoryForInsert();
-        if (this.pendingCount >= this.commandCapacity
+        const domainCount = command.type === 'control'
+            ? this.pendingControlCount
+            : this.pendingSourceRelativeSpawnCount;
+        const domainCapacity = command.type === 'control'
+            ? this.controlCommandCapacity
+            : this.sourceRelativeSpawnCommandCapacity;
+        const commandCapacityExceeded = this.usesSharedCommandCapacity
+            ? this.pendingCount >= this.commandCapacity
+            : domainCount >= domainCapacity;
+        if (commandCapacityExceeded
             || this.knownCommands.size >= this.historyCapacity) {
             this.telemetry.capacityRejected++;
             const receipt = Object.freeze({
@@ -814,6 +1029,11 @@ export class GpuFixedCommandOwner {
         };
         this.pending[slot] = stored;
         this.pendingCount++;
+        if (command.type === 'control') {
+            this.pendingControlCount++;
+        } else {
+            this.pendingSourceRelativeSpawnCount++;
+        }
         const receipt = Object.freeze({
             accepted: true,
             commandId: command.commandId,
@@ -876,6 +1096,11 @@ export class GpuFixedCommandOwner {
             }
             this.pending[index] = null;
             this.pendingCount--;
+            if (command.type === 'control') {
+                this.pendingControlCount--;
+            } else {
+                this.pendingSourceRelativeSpawnCount--;
+            }
             if (command.targetKey) {
                 this.controlTargetKeys.delete(command.targetKey);
             }

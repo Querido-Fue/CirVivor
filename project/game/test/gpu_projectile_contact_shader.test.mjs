@@ -36,6 +36,52 @@ assert.match(compute, /struct ContactHandler \{\s*damage_self: f32,\s*damage_oth
 assert.match(compute, /let damage_self = max\(i32\(handler\.damage_self \* 100\.0\), 0\);/);
 assert.match(compute, /let damage_other = max\(i32\(damage_other_value \* 100\.0\), 0\);/);
 
+// SpawnProgram v2는 64-byte record의 vector/scalar payload로 velocity/aim 두 mode를 공유합니다.
+assert.match(compute, /const SPAWN_PROGRAM_ABI_VERSION: u32 = 2u;/);
+assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY: u32 = 1u;/);
+assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT: u32 = 2u;/);
+assert.match(
+    compute,
+    /struct SpawnProgramRecord \{\s*destination_slot: u32,\s*destination_entity_id: u32,\s*destination_incarnation: u32,\s*source_slot: u32,\s*source_entity_id: u32,\s*source_incarnation: u32,\s*mode_flags: u32,\s*result: u32,\s*position_offset: vec2f,\s*vector: vec2f,\s*scalar: f32,\s*source_tick: u32,\s*reserved_0: u32,\s*reserved_1: u32,\s*\}/
+);
+assert.match(
+    compute,
+    /let supported_mode = program\.mode_flags[\s\S]*?SOURCE_RELATIVE_VELOCITY[\s\S]*?SOURCE_RELATIVE_AIM_POINT;/
+);
+assert.match(
+    compute,
+    /program\.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT[\s\S]*?!\(program\.scalar > 0\.0\)/
+);
+
+// Aim cardinal는 authoritative tick-start source position에서 world aim을 빼고 정규화합니다.
+// 동일 지점은 source velocity, 그것도 0이면 +X로 결정적 fallback합니다.
+const aimResolveStart = compute.lastIndexOf(
+    'if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT)'
+);
+assert.ok(aimResolveStart >= 0);
+const aimResolveBlock = compute.slice(aimResolveStart, aimResolveStart + 900);
+assert.match(
+    compute,
+    /let destination_position = source_physics\.position \+ program\.position_offset;/
+);
+assert.match(
+    aimResolveBlock,
+    /var launch_direction = program\.vector - source_physics\.position;/
+);
+assert.match(
+    aimResolveBlock,
+    /launch_direction = source_physics\.velocity;[\s\S]*?launch_direction = vec2f\(1\.0, 0\.0\);/
+);
+assert.match(
+    aimResolveBlock,
+    /launch_direction \*= inverseSqrt\(launch_direction_length_squared\);/
+);
+assert.match(
+    aimResolveBlock,
+    /destination_velocity = launch_direction \* program\.scalar;/
+);
+assert.doesNotMatch(aimResolveBlock, /tracked|readback/);
+
 // 새 contact/event bind group과 고정 stride 레코드를 정적으로 잠급니다.
 assert.match(compute, /struct ContactState \{[\s\S]*?contact_count: atomic<u32>,[\s\S]*?death_overflow: atomic<u32>,[\s\S]*?abi_status: atomic<u32>,[\s\S]*?event_encoding_version: atomic<u32>,/);
 assert.match(compute, /struct Contact \{\s*self_body_id: u32,\s*self_incarnation: u32,\s*other_body_id: i32,\s*other_incarnation: u32,\s*world_position: vec2f,\s*normal: vec2f,/);

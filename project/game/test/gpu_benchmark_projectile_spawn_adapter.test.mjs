@@ -23,7 +23,7 @@ function createBenchmarkChild({
     pendingCommandCount = 0,
     state = 'gpu-ready',
     recoveryRequired = false,
-    requestSpawnResult = Object.freeze({ accepted: true }),
+    requestSpawnBatchResult = null,
     legacyEndpointOnly = false
 } = {}) {
     const calls = [];
@@ -40,11 +40,20 @@ function createBenchmarkChild({
                 pendingCommandCount
             });
         },
-        requestSpawn(intent, targetFixedTick, commandId) {
-            calls.push({ intent, targetFixedTick, commandId });
-            return typeof requestSpawnResult === 'function'
-                ? requestSpawnResult(calls.length - 1)
-                : requestSpawnResult;
+        requestSpawnBatch(requests) {
+            const normalizedRequests = Array.from(requests);
+            calls.push(Object.freeze({ requests: normalizedRequests }));
+            if (typeof requestSpawnBatchResult === 'function') {
+                return requestSpawnBatchResult(
+                    normalizedRequests,
+                    calls.length - 1
+                );
+            }
+            return requestSpawnBatchResult ?? Object.freeze({
+                accepted: true,
+                requestedCount: normalizedRequests.length,
+                queuedCount: normalizedRequests.length
+            });
         },
         commitAtFixedBoundary() {
             lifecycleCalls.push('commitAtFixedBoundary');
@@ -106,11 +115,13 @@ test('중앙 목표에서 10발을 동일 next tick에 균등 방사형으로 �
         reason: 'queued',
         nextSpawnSequence: 910
     });
-    assert.equal(fixture.calls.length, 10);
+    assert.equal(fixture.calls.length, 1);
     assert.deepEqual(fixture.lifecycleCalls, []);
 
-    for (let index = 0; index < fixture.calls.length; index++) {
-        const { intent, targetFixedTick, commandId } = fixture.calls[index];
+    const requests = fixture.calls[0].requests;
+    assert.equal(requests.length, 10);
+    for (let index = 0; index < requests.length; index++) {
+        const { intent, targetFixedTick, commandId } = requests[index];
         const angle = (Math.PI / 12) + ((Math.PI * 2 * index) / 10);
         assert.equal(targetFixedTick, 42);
         assert.equal(
@@ -164,7 +175,7 @@ test('pending submit 중에는 공개 lifecycle tick API가 연 N+2 경계에 �
 
     assert.equal(result.accepted, true);
     assert.equal(result.targetFixedTick, 43);
-    assert.equal(fixture.calls[0].targetFixedTick, 43);
+    assert.equal(fixture.calls[0].requests[0].targetFixedTick, 43);
 });
 
 test('동일 session/batch/spawn 입력은 재생성해도 같은 command ID를 만든다', () => {
@@ -181,11 +192,11 @@ test('동일 session/batch/spawn 입력은 재생성해도 같은 command ID를 
     requestGpuBenchmarkProjectileBatch({ ...options, gameScene: second.gameScene });
 
     assert.deepEqual(
-        first.calls.map(({ commandId }) => commandId),
-        second.calls.map(({ commandId }) => commandId)
+        first.calls[0].requests.map(({ commandId }) => commandId),
+        second.calls[0].requests.map(({ commandId }) => commandId)
     );
     assert.deepEqual(
-        first.calls.map(({ intent }) => intent.spawnSequence),
+        first.calls[0].requests.map(({ intent }) => intent.spawnSequence),
         [17, 18, 19]
     );
 });
@@ -215,6 +226,54 @@ test('capacity preflight 실패는 batch를 zero-partial로 거절한다', () =>
     });
     assert.deepEqual(fixture.calls, []);
     assert.deepEqual(fixture.lifecycleCalls, []);
+});
+
+test('batch ingress 거절은 prefix 없이 0 또는 N diagnostic만 반환한다', () => {
+    const fixture = createBenchmarkChild({
+        requestSpawnBatchResult: Object.freeze({
+            accepted: false,
+            requestedCount: 10,
+            queuedCount: 0,
+            reason: 'duplicate-command'
+        })
+    });
+    const result = requestGpuBenchmarkProjectileBatch({
+        gameScene: fixture.gameScene,
+        sessionGeneration: 9,
+        batchSequence: 2,
+        spawnSequence: 80
+    });
+
+    assertDiagnostic(result, {
+        accepted: false,
+        requestedCount: 10,
+        queuedCount: 0,
+        targetFixedTick: 42,
+        reason: 'spawn-request-rejected',
+        nextSpawnSequence: 80
+    });
+    assert.equal(fixture.calls.length, 1);
+    assert.equal(fixture.calls[0].requests.length, 10);
+    assert.deepEqual(fixture.lifecycleCalls, []);
+
+    const incompleteFixture = createBenchmarkChild({
+        requestSpawnBatchResult: Object.freeze({
+            accepted: true,
+            requestedCount: 10,
+            queuedCount: 9
+        })
+    });
+    const incomplete = requestGpuBenchmarkProjectileBatch({
+        gameScene: incompleteFixture.gameScene,
+        sessionGeneration: 9,
+        batchSequence: 3,
+        spawnSequence: 90
+    });
+    assert.equal(incomplete.accepted, false);
+    assert.equal(incomplete.queuedCount, 0);
+    assert.equal(incomplete.nextSpawnSequence, 90);
+    assert.equal(incompleteFixture.calls.length, 1);
+    assert.equal(incompleteFixture.calls[0].requests.length, 10);
 });
 
 test('legacy enemy endpoint accessor fallback과 unavailable fail-closed를 지원한다', () => {

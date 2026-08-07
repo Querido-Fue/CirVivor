@@ -9,6 +9,9 @@ const { WorldRegistry } = await loadGameModule(
 const { GpuFixedCommandOwner } = await loadGameModule(
     'ingame/object/gpu_fixed_command_owner.js'
 );
+const { GPU_SPAWN_PROGRAM_MODE } = await loadGameModule(
+    'ingame/physics/gpu/gpu_fixed_primitive_abi.js'
+);
 
 function handleKey(handle) {
     return handle.entityId + ':' + handle.incarnation;
@@ -90,9 +93,23 @@ function createFakeBackend(options = {}) {
         },
         stageFixedPrograms(plan) {
             stagedPlans.push(plan);
-            const accepted = plan.controls.length
-                + plan.sourceRelativeSpawns.length;
-            return { accepted, rejected: 0, requiresRecovery: false };
+            const controlCount = plan.controls.length;
+            const spawnCount = plan.sourceRelativeSpawns.length;
+            return {
+                accepted: controlCount + spawnCount,
+                rejected: 0,
+                requiresRecovery: false,
+                controls: {
+                    accepted: controlCount,
+                    rejected: 0,
+                    reason: null
+                },
+                sourceRelativeSpawns: {
+                    accepted: spawnCount,
+                    rejected: 0,
+                    reason: null
+                }
+            };
         },
         drainCompletedSpawnProgramBatches(out) {
             out.push(...completionBatches.splice(0));
@@ -304,7 +321,78 @@ test('bounded command capacity reject는 거부된 request의 partial stage를 �
     );
 });
 
-test('destination reservation의 mid-loop capacity failure는 source-relative batch 전체를 zero-partial rollback한다', () => {
+test('legacy explicit commandCapacity는 control/spawn이 공유하는 inbox 상한을 보존한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 2 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry, {
+        commandCapacity: 1,
+        historyCapacity: 8
+    });
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        2,
+        'spawn:legacy-shared-capacity'
+    ).accepted, true);
+    const control = owner.requestBodyControl({
+        handle: source,
+        moveIntentX: 1,
+        moveIntentY: 0
+    }, 2, 'control:legacy-shared-capacity');
+    assert.deepEqual({ ...control }, {
+        accepted: false,
+        commandId: 'control:legacy-shared-capacity',
+        reason: 'command-capacity'
+    });
+    const status = owner.getStatus();
+    assert.equal(status.capacity, 1);
+    assert.equal(status.pendingSourceRelativeSpawnCount, 1);
+    assert.equal(status.pendingControlCount, 0);
+    owner.destroy();
+});
+
+test('default와 explicit domain inbox는 spawn 포화가 control enqueue를 막지 않는다', () => {
+    for (const options of [
+        {},
+        {
+            controlCommandCapacity: 1,
+            sourceRelativeSpawnCommandCapacity: 2,
+            historyCapacity: 16
+        }
+    ]) {
+        const backend = createFakeBackend();
+        const registry = new WorldRegistry({ capacity: 1 });
+        const source = activateBody(registry, backend);
+        const owner = new GpuFixedCommandOwner(backend, registry, options);
+        const spawnCapacity = owner.getStatus().sourceRelativeSpawnCapacity;
+        for (let index = 0; index < spawnCapacity; index++) {
+            assert.equal(owner.requestSourceRelativeSpawn(
+                createSourceRelativeIntent(source, {
+                    positionOffset: { x: index, y: -index }
+                }),
+                2,
+                `spawn:domain-capacity:${spawnCapacity}:${index}`
+            ).accepted, true);
+        }
+        assert.equal(owner.requestSourceRelativeSpawn(
+            createSourceRelativeIntent(source),
+            2,
+            `spawn:domain-capacity:${spawnCapacity}:overflow`
+        ).accepted, false);
+        assert.equal(owner.requestBodyControl({
+            handle: source,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 2, `control:after-spawn-capacity:${spawnCapacity}`).accepted, true);
+        const status = owner.getStatus();
+        assert.equal(status.pendingSourceRelativeSpawnCount, spawnCapacity);
+        assert.equal(status.pendingControlCount, 1);
+        owner.destroy();
+    }
+});
+
+test('registry capacity failure는 source-relative batch만 zero-partial rollback하고 동일 tick control은 수락한다', () => {
     const backend = createFakeBackend();
     const registry = new WorldRegistry({ capacity: 2 });
     const source = activateBody(registry, backend);
@@ -325,14 +413,29 @@ test('destination reservation의 mid-loop capacity failure는 source-relative ba
         5,
         'spawn:capacity-b'
     ).accepted, true);
+    assert.equal(owner.requestBodyControl({
+        handle: source,
+        moveIntentX: 1,
+        moveIntentY: 0
+    }, 5, 'control:survives-registry-pressure').accepted, true);
 
     const commit = owner.commitAtFixedBoundary(5);
+    assert.equal(commit.controls.length, 1);
     assert.equal(commit.sourceRelativeSpawns.length, 0);
     assert.deepEqual(
-        Array.from(commit.rejected, (entry) => entry.code),
-        ['registry-capacity', 'registry-capacity']
+        Array.from(commit.rejected, (entry) => ({
+            domain: entry.domain,
+            code: entry.code
+        })),
+        [{ domain: 'spawn', code: 'registry-capacity' }, {
+            domain: 'spawn',
+            code: 'registry-capacity'
+        }]
     );
-    assert.equal(backend.stagedPlans.length, 0);
+    assert.equal(commit.recoveryRequired, false);
+    assert.equal(backend.stagedPlans.length, 1);
+    assert.equal(backend.stagedPlans[0].controls.length, 1);
+    assert.equal(backend.stagedPlans[0].sourceRelativeSpawns.length, 0);
     assert.equal(registry.getActiveCount(), 1);
     assert.equal(registry.getReservedCount(), 0);
     assert.equal(owner.getPendingCount(), 0);
@@ -417,6 +520,92 @@ test('source-relative destination은 GPU result 전 reserved이고 resolved resu
     assert.equal(registry.getReservedCount(), 0);
     assert.equal(registry.has(destination), true);
     assert.equal(owner.getPendingCount(), 0);
+});
+
+test('source-relative owner는 exact source provenance를 주입하고 mismatch/partial metadata를 enqueue 전 거부한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    const accepted = owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, {
+            destinationSpawn: createProjectileIntent({
+                spawnSequence: 42,
+                producerId: 'tower-primary-weapon',
+                sourceAbilityId: 'primary-pointer-fire'
+            }),
+            modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
+            launchVelocity: undefined,
+            sourceVelocityScale: undefined,
+            aimWorldPoint: { x: 9, y: -2 },
+            launchSpeed: 18
+        }),
+        14,
+        'spawn:provenance'
+    );
+    assert.equal(accepted.accepted, true);
+    const committed = owner.commitAtFixedBoundary(14);
+    assert.equal(committed.controls.length, 0);
+    assert.equal(committed.sourceRelativeSpawns.length, 1);
+    const staged = backend.stagedPlans[0].sourceRelativeSpawns[0];
+    assert.equal(staged.modeFlags, GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT);
+    assert.deepEqual({ ...staged.aimWorldPoint }, { x: 9, y: -2 });
+    assert.equal(staged.launchSpeed, 18);
+    assert.equal('launchVelocity' in staged, false);
+    assert.equal('sourceVelocityScale' in staged, false);
+    assert.equal(staged.destinationSpawn.sourceEntityId, source.entityId);
+    assert.equal(staged.destinationSpawn.sourceIncarnation, source.incarnation);
+    assert.equal(staged.destinationSpawn.producerId, 'tower-primary-weapon');
+    assert.equal(staged.destinationSpawn.sourceAbilityId, 'primary-pointer-fire');
+    assert.equal(Object.isFrozen(staged.destinationSpawn), true);
+
+    const destination = committed.sourceRelativeSpawns[0].handle;
+    backend.addBody(destination);
+    queueSpawnOutcome(backend, {
+        sourceTick: 14,
+        sourceHandle: source,
+        destinationHandle: destination,
+        reason: 'resolved'
+    });
+    assert.equal(owner.commitCompletedAtFixedBoundary(15).completed.length, 1);
+    const view = registry.copyEntityView(destination, {});
+    assert.equal(view.metadata.sourceEntityId, source.entityId);
+    assert.equal(view.metadata.sourceIncarnation, source.incarnation);
+    assert.equal(view.metadata.spawnSequence, 42);
+    assert.equal(view.metadata.producerId, 'tower-primary-weapon');
+    assert.equal(view.metadata.sourceAbilityId, 'primary-pointer-fire');
+
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, {
+            destinationSpawn: createProjectileIntent({
+                sourceEntityId: source.entityId
+            })
+        }),
+        16,
+        'spawn:partial-provenance'
+    ), /sourceEntityId\/sourceIncarnation/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, {
+            destinationSpawn: createProjectileIntent({
+                sourceEntityId: source.entityId,
+                sourceIncarnation: source.incarnation + 1
+            })
+        }),
+        16,
+        'spawn:mismatched-provenance'
+    ), /정확히 일치/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, {
+            modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
+            aimWorldPoint: { x: 1, y: 2 },
+            launchSpeed: 18
+        }),
+        16,
+        'spawn:aim-forbidden-velocity'
+    ), /launchVelocity\/sourceVelocityScale/);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(registry.getReservedCount(), 0);
 });
 
 test('commit 후 source-invalid result는 destination reservation을 취소하고 incarnation 재사용에서도 orphan을 남기지 않는다', () => {
@@ -586,7 +775,131 @@ test('completion batch의 후반 outcome contract failure는 앞 outcome도 regi
     assert.equal(registry.getReservedCount(), 0);
 });
 
-test('backend fixed-program-capacity atomic reject는 due count 전체를 capacity telemetry에 기록한다', () => {
+test('body/program/result-ring spawn pressure는 control을 수락하고 destination reservation을 전부 회수한다', () => {
+    for (const reason of [
+        'body-capacity',
+        'spawn-program-capacity',
+        'spawn-program-readback-capacity'
+    ]) {
+        const backend = createFakeBackend();
+        const registry = new WorldRegistry({ capacity: 3 });
+        const source = activateBody(registry, backend);
+        const owner = new GpuFixedCommandOwner(backend, registry, {
+            controlCommandCapacity: 1,
+            sourceRelativeSpawnCommandCapacity: 2,
+            historyCapacity: 16
+        });
+        backend.stageFixedPrograms = (plan) => {
+            backend.stagedPlans.push(plan);
+            return {
+                accepted: plan.controls.length,
+                rejected: plan.sourceRelativeSpawns.length,
+                requiresRecovery: false,
+                controls: {
+                    accepted: plan.controls.length,
+                    rejected: 0,
+                    reason: null
+                },
+                sourceRelativeSpawns: {
+                    accepted: 0,
+                    rejected: plan.sourceRelativeSpawns.length,
+                    reason
+                }
+            };
+        };
+
+        assert.equal(owner.requestBodyControl({
+            handle: source,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 20, `control:${reason}`).accepted, true);
+        assert.equal(owner.requestSourceRelativeSpawn(
+            createSourceRelativeIntent(source),
+            20,
+            `spawn:${reason}:a`
+        ).accepted, true);
+        assert.equal(owner.requestSourceRelativeSpawn(
+            createSourceRelativeIntent(source, {
+                positionOffset: { x: -0.5, y: 0.25 }
+            }),
+            20,
+            `spawn:${reason}:b`
+        ).accepted, true);
+
+        const committed = owner.commitAtFixedBoundary(20);
+        assert.equal(committed.state, 'committed-with-rejections', reason);
+        assert.equal(committed.recoveryRequired, false, reason);
+        assert.equal(committed.controls.length, 1, reason);
+        assert.equal(committed.sourceRelativeSpawns.length, 0, reason);
+        assert.deepEqual(
+            Array.from(committed.rejected, ({ domain, code }) => ({ domain, code })),
+            [{ domain: 'spawn', code: reason }, { domain: 'spawn', code: reason }],
+            reason
+        );
+        assert.equal(backend.stagedPlans.length, 1, reason);
+        assert.equal(backend.stagedPlans[0].controls.length, 1, reason);
+        assert.equal(backend.stagedPlans[0].sourceRelativeSpawns.length, 2, reason);
+        assert.equal(registry.getActiveCount(), 1, reason);
+        assert.equal(registry.getReservedCount(), 0, reason);
+        assert.equal(owner.getPendingCount(), 0, reason);
+        assert.equal(owner.getStatus().recoveryRequired, false, reason);
+    }
+});
+
+test('backend이 source batch를 partial accept하면 계약 오염으로 recovery하고 모든 reservation을 zero-partial 회수한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 3 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry, {
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 2,
+        historyCapacity: 16
+    });
+    backend.stageFixedPrograms = (plan) => {
+        backend.stagedPlans.push(plan);
+        return {
+            accepted: 1,
+            rejected: 1,
+            requiresRecovery: false,
+            controls: { accepted: 0, rejected: 0, reason: null },
+            sourceRelativeSpawns: {
+                accepted: 1,
+                rejected: 1,
+                reason: 'spawn-program-partial'
+            }
+        };
+    };
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        30,
+        'spawn:partial:a'
+    ).accepted, true);
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, {
+            positionOffset: { x: -0.5, y: 0.25 }
+        }),
+        30,
+        'spawn:partial:b'
+    ).accepted, true);
+
+    const committed = owner.commitAtFixedBoundary(30);
+    assert.equal(committed.state, 'failed');
+    assert.equal(committed.recoveryRequired, true);
+    assert.equal(committed.sourceRelativeSpawns.length, 0);
+    assert.equal(committed.protocolFailure.stage, 'fixed-command-domain');
+    assert.equal(committed.protocolFailure.code, 'spawn-domain-partial');
+    assert.ok(Array.from(committed.rejected).every(
+        ({ domain, code }) => domain === 'spawn'
+            && code === 'spawn-program-partial'
+    ));
+    assert.equal(registry.getActiveCount(), 1);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(owner.getStatus().recoveryRequired, true);
+});
+
+test('backend control domain reject는 spawn 정상 거부와 달리 protocol failure/recovery로 올린다', () => {
     const backend = createFakeBackend();
     const registry = new WorldRegistry({ capacity: 2 });
     const firstHandle = activateBody(registry, backend);
@@ -597,13 +910,21 @@ test('backend fixed-program-capacity atomic reject는 due count 전체를 capaci
     });
     backend.stageFixedPrograms = (plan) => {
         backend.stagedPlans.push(plan);
-        const dueCount = plan.controls.length
-            + plan.sourceRelativeSpawns.length;
         return {
             accepted: 0,
-            rejected: dueCount,
-            reason: 'fixed-program-capacity',
-            requiresRecovery: false
+            rejected: plan.controls.length,
+            reason: 'control-program-capacity',
+            requiresRecovery: false,
+            controls: {
+                accepted: 0,
+                rejected: plan.controls.length,
+                reason: 'control-program-capacity'
+            },
+            sourceRelativeSpawns: {
+                accepted: 0,
+                rejected: 0,
+                reason: null
+            }
         };
     };
 
@@ -618,19 +939,18 @@ test('backend fixed-program-capacity atomic reject는 due count 전체를 capaci
         moveIntentY: 1
     }, 20, 'control:backend-capacity:second').accepted, true);
 
-    const before = owner.getStatus().telemetry.capacityRejected;
     const committed = owner.commitAtFixedBoundary(20);
-    assert.equal(committed.state, 'committed-with-rejections');
-    assert.equal(committed.recoveryRequired, false);
+    assert.equal(committed.state, 'failed');
+    assert.equal(committed.recoveryRequired, true);
     assert.equal(committed.controls.length, 0);
     assert.equal(committed.rejected.length, 2);
     assert.ok(Array.from(committed.rejected).every(
-        ({ code }) => code === 'fixed-program-capacity'
+        ({ domain, code }) => domain === 'control'
+            && code === 'control-program-capacity'
     ));
+    assert.equal(committed.protocolFailure.stage, 'fixed-command-domain');
+    assert.equal(committed.protocolFailure.code, 'control-domain-rejected');
     assert.equal(backend.stagedPlans.length, 1);
     assert.equal(owner.getPendingCount(), 0);
-    assert.equal(
-        owner.getStatus().telemetry.capacityRejected - before,
-        2
-    );
+    assert.equal(owner.getStatus().recoveryRequired, true);
 });

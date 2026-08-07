@@ -195,6 +195,149 @@ test('request는 fixed 경계 전 backend를 호출하지 않고 due command를 
     assert.equal('sensorMask' in backend.events[1].bodies[0], false);
 });
 
+test('spawn batch는 preflight 뒤 전부 queue하고 같은 fixed 경계에서 함께 commit한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+
+    const requested = owner.requestSpawnBatch([
+        {
+            intent: createProjectileIntent({ spawnSequence: 20 }),
+            targetFixedTick: 3,
+            commandId: 'batch:projectile:20'
+        },
+        {
+            intent: createProjectileIntent({ spawnSequence: 21 }),
+            targetFixedTick: 3,
+            commandId: 'batch:projectile:21'
+        }
+    ]);
+
+    assert.deepEqual({ ...requested }, {
+        accepted: true,
+        requestedCount: 2,
+        queuedCount: 2
+    });
+    assert.equal(owner.getPendingCount(), 2);
+    assert.deepEqual(backend.events, []);
+
+    const committed = owner.commitAtFixedBoundary(3);
+    assert.equal(committed.state, 'committed');
+    assert.equal(committed.spawned.length, 2);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(backend.events.length, 1);
+    assert.deepEqual(
+        Array.from(
+            backend.events[0].bodies,
+            ({ spawnSequence }) => spawnSequence
+        ),
+        [20, 21]
+    );
+});
+
+test('spawn batch preflight 실패는 prefix command ID와 sequence를 소비하지 않는다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 16 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+
+    assert.throws(
+        () => owner.requestSpawnBatch([
+            {
+                intent: createProjectileIntent({ spawnSequence: 30 }),
+                targetFixedTick: 1,
+                commandId: 'batch:unclaimed-after-invalid'
+            },
+            {
+                intent: createProjectileIntent({
+                    spawnSequence: 31,
+                    layerMask: 2,
+                    interactionLayer: 4
+                }),
+                targetFixedTick: 1,
+                commandId: 'batch:invalid-payload'
+            }
+        ]),
+        /interactionLayer.*layerMask/
+    );
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: 30 }),
+            1,
+            'batch:unclaimed-after-invalid'
+        ).accepted,
+        true
+    );
+    assert.equal(
+        owner.requestSpawn(createProjectileIntent({ spawnSequence: 31 }), 1)
+            .commandId,
+        'enemy-lifecycle:2'
+    );
+
+    const duplicate = owner.requestSpawnBatch([
+        {
+            intent: createProjectileIntent({ spawnSequence: 32 }),
+            targetFixedTick: 1,
+            commandId: 'batch:duplicate'
+        },
+        {
+            intent: createProjectileIntent({ spawnSequence: 33 }),
+            targetFixedTick: 1,
+            commandId: 'batch:duplicate'
+        }
+    ]);
+    assert.deepEqual({ ...duplicate }, {
+        accepted: false,
+        requestedCount: 2,
+        queuedCount: 0,
+        reason: 'duplicate-command'
+    });
+    assert.equal(owner.getPendingCount(), 2);
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: 32 }),
+            1,
+            'batch:duplicate'
+        ).accepted,
+        true
+    );
+
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: 34 }),
+            1,
+            'batch:known'
+        ).accepted,
+        true
+    );
+    const existing = owner.requestSpawnBatch([
+        {
+            intent: createProjectileIntent({ spawnSequence: 35 }),
+            targetFixedTick: 1,
+            commandId: 'batch:unclaimed-after-duplicate'
+        },
+        {
+            intent: createProjectileIntent({ spawnSequence: 36 }),
+            targetFixedTick: 1,
+            commandId: 'batch:known'
+        }
+    ]);
+    assert.deepEqual({ ...existing }, {
+        accepted: false,
+        requestedCount: 2,
+        queuedCount: 0,
+        reason: 'duplicate-command'
+    });
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: 35 }),
+            1,
+            'batch:unclaimed-after-duplicate'
+        ).accepted,
+        true
+    );
+});
+
 test('generic projectile intent는 route 없이 canonical definition/layer와 nested gameplay 데이터를 보존한다', () => {
     const backend = createFakeBackend();
     const registry = new WorldRegistry({ capacity: 2 });

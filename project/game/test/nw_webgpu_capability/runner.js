@@ -8,7 +8,8 @@ import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
 import {
-    GPU_FIXED_PRIMITIVE_ABI
+    GPU_FIXED_PRIMITIVE_ABI,
+    GPU_SPAWN_PROGRAM_MODE
 } from './production/script/module/ingame/physics/gpu/gpu_fixed_primitive_abi.js';
 import { GpuCircleBodySimulation } from './production/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js';
 import {
@@ -18,6 +19,11 @@ import {
 import {
     THE_TOWER_DATA
 } from './production/script/data/object/tower/the_tower_data.js';
+import {
+    BASIC_BULLET_PRODUCER_ID,
+    BASIC_BULLET_PROJECTILE_DATA,
+    BASIC_BULLET_WEAPON_DATA
+} from './production/script/data/object/projectile/basic_bullet_data.js';
 import {
     BASIC_ARROW_ENEMY_DATA,
     BASIC_CIRCLE_ENEMY_DATA,
@@ -43,7 +49,9 @@ import {
 import {
     createGpuSimulationEndpoint,
     createGpuEnemySimulationEndpoint,
-    createGpuProjectileSpawnIntent
+    createGpuProjectileSpawnIntent,
+    GPU_PROJECTILE_SPAWN_MODE,
+    GpuProjectileSpawnAdapter
 } from './production/script/module/ingame/gpu_simulation_endpoint.js';
 import {
     requestGpuBenchmarkEnemyBatch
@@ -4810,6 +4818,1594 @@ async function runProductionTowerCoreWorldHardwareSmoke(device) {
     }
 }
 
+function createPhase5ProjectileNavigationSource(options = {}) {
+    const columns = 16;
+    const rows = 16;
+    const blocked = options.blocked instanceof Uint8Array
+        ? options.blocked
+        : new Uint8Array(columns * rows);
+    assert(
+        blocked.length === columns * rows,
+        `Phase 5 navigation blocked size 불일치: ${blocked.length}`
+    );
+    const corePosition = Object.freeze({ x: 12, y: 8, row: 8, column: 12 });
+    const entryPosition = Object.freeze({ x: 2, y: 8, row: 8, column: 2 });
+    const route = Object.freeze({
+        gateId: 'nw-phase5-projectile-gate',
+        pathId: 'nw-phase5-projectile-route',
+        waypoints: Object.freeze([entryPosition, corePosition])
+    });
+    return Object.freeze({
+        corePosition,
+        route,
+        getNavigationGrid: () => Object.freeze({
+            cols: columns,
+            rows,
+            size: columns * rows,
+            cellSize: 1,
+            sdfSubdivisions: 8,
+            blocked
+        }),
+        getSpawnRoutes: () => Object.freeze([route]),
+        getWorldBounds: () => Object.freeze({
+            minX: 0,
+            minY: 0,
+            maxX: columns,
+            maxY: rows,
+            width: columns,
+            height: rows
+        })
+    });
+}
+
+function findPhase5Body(bodies, handle, label) {
+    const body = bodies.find((candidate) => (
+        candidate.handle?.entityId === handle.entityId
+        && candidate.handle?.incarnation === handle.incarnation
+    ));
+    assert(body, `Phase 5 ${label} body가 없습니다: ${JSON.stringify(handle)}`);
+    return body;
+}
+
+async function settlePhase5Endpoint(endpoint, label, options = {}) {
+    const simulation = endpoint.getBackend().simulation;
+    assert(simulation, `${label} production simulation이 없습니다.`);
+    await deviceQueueDone(simulation);
+    return waitForSimulationStatus(
+        simulation,
+        (status) => status.overflow.pendingReadbacks === 0
+            && status.events.pendingReadbacks === 0
+            && (!options.spawnProgram
+                || status.fixedPrimitives.spawnProgram.pendingReadbacks === 0),
+        label
+    );
+}
+
+async function readPhase5Bodies(endpoint) {
+    const simulation = endpoint.getBackend().simulation;
+    assert(
+        simulation && typeof simulation.readbackBodies === 'function',
+        'Phase 5 diagnostic readback 경계가 없습니다.'
+    );
+    const bodiesPromise = simulation.readbackBodies();
+    await deviceQueueDone(simulation);
+    return bodiesPromise;
+}
+
+async function readPhase5WorldAlpha(device, texture, worldPosition, cameraScale, label) {
+    const bytesPerRow = 256;
+    const readback = device.createBuffer({
+        label,
+        size: bytesPerRow * canvas.height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    try {
+        const encoder = device.createCommandEncoder({ label: `${label}-copy` });
+        encoder.copyTextureToBuffer(
+            { texture },
+            { buffer: readback, bytesPerRow, rowsPerImage: canvas.height },
+            [canvas.width, canvas.height]
+        );
+        device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const pixels = new Uint8Array(readback.getMappedRange());
+        const x = Math.floor(worldPosition.x * cameraScale);
+        const y = Math.floor(worldPosition.y * cameraScale);
+        return pixels[(y * bytesPerRow) + (x * 4) + 3];
+    } finally {
+        try {
+            readback.unmap();
+        } catch {
+            // map 실패 또는 이미 unmap된 diagnostic buffer입니다.
+        }
+        readback.destroy();
+    }
+}
+
+async function runProductionPhase5AimHardwareSmoke(device) {
+    const context = canvas.getContext('webgpu');
+    assert(context, 'Phase 5 projectile aim canvas WebGPU context가 없습니다.');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+    });
+    let lastFrameTexture = null;
+    let drawMarks = 0;
+    const platformPort = {
+        getState: () => Object.freeze({ ready: true, status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget() {
+            const texture = context.getCurrentTexture();
+            lastFrameTexture = texture;
+            return {
+                device,
+                context,
+                texture,
+                view: texture.createView(),
+                format,
+                deviceGeneration: 1,
+                width: canvas.width,
+                height: canvas.height
+            };
+        },
+        clearCanvas: () => false,
+        markCanvasDrawn() {
+            drawMarks++;
+            return true;
+        },
+        markCanvasCleared: () => false
+    };
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({ webGpuPlatformPort: platformPort }, {
+        capacity: 12,
+        controlCommandCapacity: 4,
+        sourceRelativeSpawnCommandCapacity: 8,
+        spawnProgramCapacity: 4
+    });
+    const projectileAdapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-phase5-basic-bullet'
+    });
+    const fixedDelta = 1 / 60;
+    const primaryTowerPosition = Object.freeze({ x: 2, y: 2 });
+    const stationaryTowerPosition = Object.freeze({ x: 2, y: 10 });
+    const cardinalAim = Object.freeze({ x: 2, y: 6 });
+    const cardinalOffset = Object.freeze({ x: 0.6, y: 0 });
+    const commandIds = Object.freeze({
+        cardinal: 'phase5:aim:cardinal',
+        movingDegenerate: 'phase5:aim:moving-degenerate',
+        zeroDegenerate: 'phase5:aim:zero-degenerate',
+        behind: 'phase5:aim:behind',
+        diagonal: 'phase5:aim:diagonal'
+    });
+
+    try {
+        assert(endpoint.init(navigationSource) === false,
+            'Phase 5 aim endpoint는 첫 spawn 전 deferred여야 합니다.');
+        assert(endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: primaryTowerPosition }),
+            1,
+            'phase5:tower:primary'
+        ).accepted, 'Phase 5 primary Tower spawn request 실패');
+        assert(endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: stationaryTowerPosition }),
+            1,
+            'phase5:tower:stationary'
+        ).accepted, 'Phase 5 stationary Tower spawn request 실패');
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        assert(
+            spawnCommit.state === 'committed'
+                && spawnCommit.spawned.length === 2,
+            `Phase 5 Tower spawn commit 실패: ${JSON.stringify(spawnCommit)}`
+        );
+        const handleByCommandId = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const primaryTowerHandle = handleByCommandId.get('phase5:tower:primary');
+        const stationaryTowerHandle = handleByCommandId.get('phase5:tower:stationary');
+        assert(primaryTowerHandle && stationaryTowerHandle,
+            'Phase 5 Tower exact handle이 없습니다.');
+        assert(endpoint.fixedUpdate(fixedDelta, 1), 'Phase 5 Tower initial submit 실패');
+        await settlePhase5Endpoint(endpoint, 'Phase 5 Tower initial completion');
+        const initialBodies = await readPhase5Bodies(endpoint);
+        const primaryTickStart = findPhase5Body(
+            initialBodies,
+            primaryTowerHandle,
+            'primary Tower tick-start'
+        );
+        const stationaryTickStart = findPhase5Body(
+            initialBodies,
+            stationaryTowerHandle,
+            'stationary Tower tick-start'
+        );
+
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+        const cardinalRequest = projectileAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: primaryTowerHandle,
+            positionOffset: cardinalOffset,
+            aimWorldPoint: cardinalAim,
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: commandIds.cardinal
+        });
+        const sameTickControl = endpoint.requestBodyControl({
+            handle: primaryTowerHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 2, 'phase5:control:same-tick-cardinal');
+        assert(cardinalRequest.accepted && sameTickControl.accepted,
+            `Phase 5 same-tick aim/control request 실패: ${JSON.stringify({ cardinalRequest, sameTickControl })}`);
+        const cardinalCommit = endpoint.commitAtFixedBoundary(2);
+        assert(
+            cardinalCommit.state === 'committed'
+                && cardinalCommit.fixedCommands.controls.length === 1
+                && cardinalCommit.fixedCommands.sourceRelativeSpawns.length === 1
+                && cardinalCommit.fixedCommands.rejected.length === 0,
+            `Phase 5 same-tick aim/control commit 실패: ${JSON.stringify(cardinalCommit)}`
+        );
+        const cardinalHandle = cardinalCommit.fixedCommands
+            .sourceRelativeSpawns[0].handle;
+        assert(endpoint.fixedUpdate(fixedDelta, 2),
+            'Phase 5 same-tick aim/control submit 실패');
+        await settlePhase5Endpoint(
+            endpoint,
+            'Phase 5 cardinal SpawnProgram completion',
+            { spawnProgram: true }
+        );
+        const cardinalBodies = await readPhase5Bodies(endpoint);
+        const primaryAfterControl = findPhase5Body(
+            cardinalBodies,
+            primaryTowerHandle,
+            'primary Tower after control'
+        );
+        const cardinalBullet = findPhase5Body(
+            cardinalBodies,
+            cardinalHandle,
+            'cardinal Basic Bullet'
+        );
+        const expectedCardinalOrigin = Object.freeze({
+            x: primaryTickStart.position.x + cardinalOffset.x,
+            y: primaryTickStart.position.y + cardinalOffset.y
+        });
+        assertNear(cardinalBullet.previousPosition.x, expectedCardinalOrigin.x,
+            0.00002, 'Phase 5 cardinal origin.x');
+        assertNear(cardinalBullet.previousPosition.y, expectedCardinalOrigin.y,
+            0.00002, 'Phase 5 cardinal origin.y');
+        assertNear(cardinalBullet.velocity.x, 0, 0.00002,
+            'Phase 5 cardinal velocity.x');
+        assertNear(
+            cardinalBullet.velocity.y,
+            BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            0.00002,
+            'Phase 5 cardinal velocity.y'
+        );
+        const cardinalSpeed = Math.hypot(
+            cardinalBullet.velocity.x,
+            cardinalBullet.velocity.y
+        );
+        assertNear(
+            cardinalSpeed,
+            BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            0.00002,
+            'Phase 5 cardinal Basic Bullet speed'
+        );
+        const controlMovementDelta = Object.freeze({
+            x: primaryAfterControl.position.x - primaryTickStart.position.x,
+            y: primaryAfterControl.position.y - primaryTickStart.position.y
+        });
+        assert(controlMovementDelta.x > 0,
+            `Phase 5 same submit Tower control이 이동하지 않았습니다: ${JSON.stringify(controlMovementDelta)}`);
+        const postControlAimDeltaX = cardinalAim.x - primaryAfterControl.position.x;
+        assert(
+            postControlAimDeltaX < 0 && Math.abs(cardinalBullet.velocity.x) < 0.00002,
+            `Basic Bullet aim이 post-control Tower 위치를 사용했습니다: ${JSON.stringify({ postControlAimDeltaX, bulletVelocityX: cardinalBullet.velocity.x })}`
+        );
+
+        endpoint.commitCompletedEventsAtFixedBoundary(3);
+        const cardinalView = endpoint.getRegistry().copyEntityView(cardinalHandle, {});
+        assert(
+            cardinalView?.metadata?.sourceEntityId === primaryTowerHandle.entityId
+                && cardinalView.metadata.sourceIncarnation
+                    === primaryTowerHandle.incarnation
+                && cardinalView.metadata.producerId === BASIC_BULLET_PRODUCER_ID,
+            `Phase 5 exact source provenance가 registry에 없습니다: ${JSON.stringify(cardinalView)}`
+        );
+
+        const movingDegenerateRequest = projectileAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: primaryTowerHandle,
+            positionOffset: { x: 0.6, y: -0.6 },
+            aimWorldPoint: { ...primaryAfterControl.position },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 3,
+            spawnSequence: 1,
+            commandId: commandIds.movingDegenerate
+        });
+        const zeroDegenerateRequest = projectileAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: stationaryTowerHandle,
+            positionOffset: { x: 0, y: 0.6 },
+            aimWorldPoint: { ...stationaryTickStart.position },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 3,
+            spawnSequence: 2,
+            commandId: commandIds.zeroDegenerate
+        });
+        const behindRequest = projectileAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: stationaryTowerHandle,
+            positionOffset: { x: 0, y: -0.6 },
+            aimWorldPoint: { x: 0, y: stationaryTickStart.position.y },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 3,
+            spawnSequence: 3,
+            commandId: commandIds.behind
+        });
+        const diagonalRequest = projectileAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: stationaryTowerHandle,
+            positionOffset: { x: 0.6, y: 0.6 },
+            aimWorldPoint: { x: 6, y: 14 },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 3,
+            spawnSequence: 4,
+            commandId: commandIds.diagonal
+        });
+        assert([
+            movingDegenerateRequest,
+            zeroDegenerateRequest,
+            behindRequest,
+            diagonalRequest
+        ].every(({ accepted }) => accepted),
+        'Phase 5 degenerate/behind/diagonal request 중 하나가 거부되었습니다.');
+        const fallbackCommit = endpoint.commitAtFixedBoundary(3);
+        assert(
+            fallbackCommit.fixedCommands.sourceRelativeSpawns.length === 4
+                && fallbackCommit.fixedCommands.rejected.length === 0,
+            `Phase 5 aim fallback batch commit 실패: ${JSON.stringify(fallbackCommit)}`
+        );
+        const fallbackHandleByCommandId = new Map(
+            fallbackCommit.fixedCommands.sourceRelativeSpawns.map(
+                ({ commandId, handle }) => [commandId, handle]
+            )
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 3),
+            'Phase 5 aim fallback submit 실패');
+        await settlePhase5Endpoint(
+            endpoint,
+            'Phase 5 aim fallback completion',
+            { spawnProgram: true }
+        );
+        const fallbackBodies = await readPhase5Bodies(endpoint);
+        const movingDegenerateBullet = findPhase5Body(
+            fallbackBodies,
+            fallbackHandleByCommandId.get(commandIds.movingDegenerate),
+            'moving degenerate Basic Bullet'
+        );
+        const zeroDegenerateBullet = findPhase5Body(
+            fallbackBodies,
+            fallbackHandleByCommandId.get(commandIds.zeroDegenerate),
+            'zero degenerate Basic Bullet'
+        );
+        const behindBullet = findPhase5Body(
+            fallbackBodies,
+            fallbackHandleByCommandId.get(commandIds.behind),
+            'behind Basic Bullet'
+        );
+        const diagonalBullet = findPhase5Body(
+            fallbackBodies,
+            fallbackHandleByCommandId.get(commandIds.diagonal),
+            'diagonal Basic Bullet'
+        );
+        const cardinalBulletAtDraw = findPhase5Body(
+            fallbackBodies,
+            cardinalHandle,
+            'cardinal Basic Bullet at draw tick'
+        );
+        const sourceVelocityMagnitude = Math.hypot(
+            primaryAfterControl.velocity.x,
+            primaryAfterControl.velocity.y
+        );
+        const expectedMovingFallback = Object.freeze({
+            x: (primaryAfterControl.velocity.x / sourceVelocityMagnitude)
+                * BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            y: (primaryAfterControl.velocity.y / sourceVelocityMagnitude)
+                * BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond
+        });
+        assertNear(movingDegenerateBullet.velocity.x, expectedMovingFallback.x,
+            0.00003, 'Phase 5 moving-degenerate velocity.x');
+        assertNear(movingDegenerateBullet.velocity.y, expectedMovingFallback.y,
+            0.00003, 'Phase 5 moving-degenerate velocity.y');
+        assertNear(zeroDegenerateBullet.velocity.x,
+            BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            0.00002, 'Phase 5 zero-degenerate +X velocity.x');
+        assertNear(zeroDegenerateBullet.velocity.y, 0, 0.00002,
+            'Phase 5 zero-degenerate +X velocity.y');
+        assertNear(behindBullet.velocity.x,
+            -BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            0.00002, 'Phase 5 behind velocity.x');
+        assertNear(behindBullet.velocity.y, 0, 0.00002,
+            'Phase 5 behind velocity.y');
+        const diagonalComponent = BASIC_BULLET_WEAPON_DATA
+            .projectileSpeedTilesPerSecond / Math.sqrt(2);
+        assertNear(diagonalBullet.velocity.x, diagonalComponent, 0.00003,
+            'Phase 5 diagonal velocity.x');
+        assertNear(diagonalBullet.velocity.y, diagonalComponent, 0.00003,
+            'Phase 5 diagonal velocity.y');
+
+        const cameraScale = 4;
+        endpoint.updatePresentation({
+            frameDelta: 0,
+            fixedDelta,
+            fixedAlpha: 1,
+            renderFrameId: 5101
+        });
+        assert(endpoint.draw({
+            worldToViewport(x, y, out) {
+                out.x = x * cameraScale;
+                out.y = y * cameraScale;
+                return out;
+            },
+            getScale: () => cameraScale
+        }), 'Phase 5 Basic Bullet direct draw 실패');
+        assert(lastFrameTexture, 'Phase 5 Basic Bullet draw texture가 없습니다.');
+        const bulletCenterAlpha = await readPhase5WorldAlpha(
+            device,
+            lastFrameTexture,
+            cardinalBulletAtDraw.position,
+            cameraScale,
+            'phase5-basic-bullet-render-readback'
+        );
+        assert(
+            drawMarks === 1 && bulletCenterAlpha > 0,
+            `Phase 5 Basic Bullet visible render 실패: drawMarks=${drawMarks}, alpha=${bulletCenterAlpha}`
+        );
+        const finalStatus = endpoint.getStatus();
+        assert(
+            !finalStatus.recoveryRequired
+                && finalStatus.backend.gpu.fixedPrimitives.storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `Phase 5 aim endpoint recovery/storage 상태 불일치: ${JSON.stringify(finalStatus)}`
+        );
+        return {
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            basicBulletDefinitionId: BASIC_BULLET_PROJECTILE_DATA.id,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            handles: {
+                primaryTower: primaryTowerHandle,
+                stationaryTower: stationaryTowerHandle,
+                cardinalBullet: cardinalHandle
+            },
+            sameTick: {
+                towerTickStartPosition: { ...primaryTickStart.position },
+                towerCurrentPosition: { ...primaryAfterControl.position },
+                towerCurrentVelocity: { ...primaryAfterControl.velocity },
+                controlMovementDelta,
+                aimWorldPoint: cardinalAim,
+                positionOffset: cardinalOffset,
+                bulletMaterializedOrigin: { ...cardinalBullet.previousPosition },
+                bulletIntegratedPosition: { ...cardinalBullet.position },
+                bulletVelocity: { ...cardinalBullet.velocity },
+                bulletSpeed: cardinalSpeed,
+                cpuProjectilePositionAuthored: false
+            },
+            degenerate: {
+                movingSourceVelocity: { ...primaryAfterControl.velocity },
+                movingFallbackVelocity: { ...movingDegenerateBullet.velocity },
+                zeroVelocityFallback: { ...zeroDegenerateBullet.velocity }
+            },
+            behindVelocity: { ...behindBullet.velocity },
+            diagonalVelocity: { ...diagonalBullet.velocity },
+            provenance: cardinalView.metadata,
+            render: { drawMarks, bulletCenterAlpha },
+            storageProfile: finalStatus.backend.gpu.fixedPrimitives.storageProfile
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+        context.unconfigure();
+    }
+}
+
+async function runProductionPhase5ContactHardwareSmoke(device, domainSentinel) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 6,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2
+    });
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-phase5-contact'
+    });
+    const fixedDelta = 1 / 60;
+    const towerPosition = Object.freeze({ x: 3.5, y: 4 });
+    const enemyPosition = Object.freeze({ x: 4.7, y: 4 });
+    const bulletOffset = Object.freeze({ x: 0.6, y: 0 });
+    const sentinelBefore = JSON.stringify(domainSentinel);
+    try {
+        assert(endpoint.init(navigationSource) === false,
+            'Phase 5 contact endpoint는 첫 spawn 전 deferred여야 합니다.');
+        const contactEnemyDefinition = Object.freeze({
+            ...BASIC_CIRCLE_ENEMY_DATA,
+            id: 'nw_phase5_basic_bullet_exact_damage_enemy',
+            maxHealth: BASIC_BULLET_PROJECTILE_DATA.damage
+        });
+        const enemyIntent = Object.freeze({
+            ...createGpuEnemySpawnIntent({
+                definition: contactEnemyDefinition,
+                route: navigationSource.route,
+                spawnSequence: 0,
+                waveId: 'nw-phase5-contact-disabled-wave',
+                policyId: 'hardware-fixture'
+            }),
+            position: enemyPosition,
+            velocity: Object.freeze({ x: 0, y: 0 })
+        });
+        assert(endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: towerPosition }),
+            1,
+            'phase5:contact:tower'
+        ).accepted, 'Phase 5 contact Tower spawn request 실패');
+        assert(endpoint.requestSpawn(
+            enemyIntent,
+            1,
+            'phase5:contact:enemy'
+        ).accepted, 'Phase 5 contact Enemy spawn request 실패');
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        assert(
+            spawnCommit.spawned.length === 2 && spawnCommit.rejected.length === 0,
+            `Phase 5 contact actor spawn commit 실패: ${JSON.stringify(spawnCommit)}`
+        );
+        const actorHandles = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const towerHandle = actorHandles.get('phase5:contact:tower');
+        const enemyHandle = actorHandles.get('phase5:contact:enemy');
+        assert(towerHandle && enemyHandle, 'Phase 5 contact actor handle 누락');
+        assert(endpoint.fixedUpdate(fixedDelta, 1),
+            'Phase 5 contact actor initial submit 실패');
+        await settlePhase5Endpoint(endpoint, 'Phase 5 contact actor initial completion');
+        const preShotBodies = await readPhase5Bodies(endpoint);
+        const enemyBeforeShot = findPhase5Body(
+            preShotBodies,
+            enemyHandle,
+            'Enemy before Basic Bullet'
+        );
+
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+        const shotReceipt = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: towerHandle,
+            positionOffset: bulletOffset,
+            aimWorldPoint: { x: 8, y: towerPosition.y },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'phase5:contact:basic-bullet'
+        });
+        const controlReceipt = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 2, 'phase5:contact:tower-control');
+        assert(shotReceipt.accepted && controlReceipt.accepted,
+            'Phase 5 contact shot/control request 실패');
+        const shotCommit = endpoint.commitAtFixedBoundary(2);
+        assert(
+            shotCommit.fixedCommands.controls.length === 1
+                && shotCommit.fixedCommands.sourceRelativeSpawns.length === 1,
+            `Phase 5 contact shot commit 실패: ${JSON.stringify(shotCommit)}`
+        );
+        const bulletHandle = shotCommit.fixedCommands
+            .sourceRelativeSpawns[0].handle;
+        assert(endpoint.fixedUpdate(fixedDelta, 2),
+            'Phase 5 contact shot submit 실패');
+        await settlePhase5Endpoint(
+            endpoint,
+            'Phase 5 contact/death completion',
+            { spawnProgram: true }
+        );
+        const afterContactBodies = await readPhase5Bodies(endpoint);
+        assert(
+            !afterContactBodies.some((body) => (
+                body.handle?.entityId === bulletHandle.entityId
+                    && body.handle?.incarnation === bulletHandle.incarnation
+            ))
+                && !afterContactBodies.some((body) => (
+                    body.handle?.entityId === enemyHandle.entityId
+                    && body.handle?.incarnation === enemyHandle.incarnation
+                )),
+            `Phase 5 contact 뒤 dead body가 ALIVE readback에 남았습니다: ${JSON.stringify(afterContactBodies)}`
+        );
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        const appliedContact = completed.contactEvents.find((event) => (
+            event.entityId === bulletHandle.entityId
+                && event.incarnation === bulletHandle.incarnation
+                && event.otherEntityId === enemyHandle.entityId
+                && event.otherIncarnation === enemyHandle.incarnation
+        ));
+        const expectedDamageFixedPoint = Math.trunc(Math.fround(
+            Math.fround(BASIC_BULLET_PROJECTILE_DATA.damage) * Math.fround(100)
+        ));
+        assert(
+            appliedContact
+                && appliedContact.damageFixedPoint === expectedDamageFixedPoint,
+            `Phase 5 Basic Bullet→Enemy exact damage가 없습니다: ${JSON.stringify(completed.contactEvents)}`
+        );
+        assertNear(
+            appliedContact.damage,
+            BASIC_BULLET_PROJECTILE_DATA.damage,
+            0.000001,
+            'Phase 5 Basic Bullet gameplay damage'
+        );
+        const deathKeys = new Set(completed.deathEvents.map((event) => (
+            `${event.entityId}:${event.incarnation}`
+        )));
+        assert(
+            completed.deathEvents.length === 2
+                && deathKeys.has(`${bulletHandle.entityId}:${bulletHandle.incarnation}`)
+                && deathKeys.has(`${enemyHandle.entityId}:${enemyHandle.incarnation}`),
+            `Phase 5 contact death identity 불일치: ${JSON.stringify(completed.deathEvents)}`
+        );
+        const cleanupCommit = endpoint.commitAtFixedBoundary(3);
+        assert(
+            cleanupCommit.despawned.length === 2
+                && cleanupCommit.rejected.length === 0,
+            `Phase 5 contact death cleanup commit 실패: ${JSON.stringify(cleanupCommit)}`
+        );
+        const cleanupBodies = await readPhase5Bodies(endpoint);
+        const cleanupStatus = endpoint.getStatus();
+        const gpuCleanupStatus = endpoint.getBackend().simulation.getStatus();
+        assert(
+            cleanupBodies.length === 1
+                && cleanupStatus.activeCount === 1
+                && cleanupStatus.activeEnemyCount === 0
+                && cleanupStatus.activeProjectileCount === 0
+                && cleanupStatus.reservedCount === 0
+                && cleanupStatus.pendingCommandCount === 0
+                && gpuCleanupStatus.pendingBodyCount === 0
+                && !cleanupStatus.recoveryRequired,
+            `Phase 5 contact cleanup 상태 불일치: ${JSON.stringify({ cleanupStatus, gpuCleanupStatus })}`
+        );
+        assert(JSON.stringify(domainSentinel) === sentinelBefore,
+            'Phase 5 contact가 CPU domain sentinel을 변경했습니다.');
+        return {
+            handles: { tower: towerHandle, enemy: enemyHandle, bullet: bulletHandle },
+            enemyBeforeShot: {
+                position: { ...enemyBeforeShot.position },
+                health: enemyBeforeShot.health
+            },
+            damageFixedPoint: appliedContact.damageFixedPoint,
+            damage: appliedContact.damage,
+            contactEvent: appliedContact,
+            enemyDeathCount: completed.deathEvents.filter((event) => (
+                event.entityId === enemyHandle.entityId
+            )).length,
+            projectileDeathCount: completed.deathEvents.filter((event) => (
+                event.entityId === bulletHandle.entityId
+            )).length,
+            cleanup: {
+                activeCount: cleanupStatus.activeCount,
+                activeEnemyCount: cleanupStatus.activeEnemyCount,
+                activeProjectileCount: cleanupStatus.activeProjectileCount,
+                reservedCount: cleanupStatus.reservedCount,
+                pendingCommandCount: cleanupStatus.pendingCommandCount,
+                pendingBodyCount: gpuCleanupStatus.pendingBodyCount
+            }
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionPhase5TerrainHardwareSmoke(device, domainSentinel) {
+    const blocked = new Uint8Array(16 * 16);
+    const blockedCell = Object.freeze({ column: 4, row: 4 });
+    blocked[(blockedCell.row * 16) + blockedCell.column] = 1;
+    const navigationSource = createPhase5ProjectileNavigationSource({ blocked });
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 4,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2
+    });
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-phase5-terrain'
+    });
+    const fixedDelta = 1 / 60;
+    const towerPosition = Object.freeze({ x: 2, y: 4.5 });
+    const sentinelBefore = JSON.stringify(domainSentinel);
+    let submittedTickCount = 0;
+    try {
+        assert(endpoint.init(navigationSource) === false,
+            'Phase 5 terrain endpoint는 첫 spawn 전 deferred여야 합니다.');
+        assert(endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: towerPosition }),
+            1,
+            'phase5:terrain:tower'
+        ).accepted, 'Phase 5 terrain Tower spawn request 실패');
+        const towerCommit = endpoint.commitAtFixedBoundary(1);
+        const towerHandle = towerCommit.spawned[0]?.handle;
+        assert(towerHandle, 'Phase 5 terrain Tower handle 누락');
+        assert(endpoint.fixedUpdate(fixedDelta, 1),
+            'Phase 5 terrain Tower initial submit 실패');
+        submittedTickCount = 1;
+        await settlePhase5Endpoint(endpoint, 'Phase 5 terrain Tower completion');
+
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+        const shotReceipt = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: towerHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            aimWorldPoint: { x: 8, y: towerPosition.y },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'phase5:terrain:basic-bullet'
+        });
+        assert(shotReceipt.accepted, 'Phase 5 terrain shot request 실패');
+        assert(endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 2, 'phase5:terrain:control:2').accepted,
+        'Phase 5 terrain tick 2 control request 실패');
+        const shotCommit = endpoint.commitAtFixedBoundary(2);
+        const bulletHandle = shotCommit.fixedCommands
+            .sourceRelativeSpawns[0]?.handle;
+        assert(bulletHandle, `Phase 5 terrain bullet handle 누락: ${JSON.stringify(shotCommit)}`);
+        assert(endpoint.fixedUpdate(fixedDelta, 2),
+            'Phase 5 terrain shot submit 실패');
+        submittedTickCount = 2;
+        await settlePhase5Endpoint(
+            endpoint,
+            'Phase 5 terrain shot completion',
+            { spawnProgram: true }
+        );
+
+        let terrainDeath = null;
+        let terrainContact = null;
+        let cleanupCommit = null;
+        for (let tick = 3; tick <= 16; tick++) {
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+            terrainDeath = completed.deathEvents.find((event) => (
+                event.entityId === bulletHandle.entityId
+                    && event.incarnation === bulletHandle.incarnation
+            )) ?? null;
+            terrainContact = completed.contactEvents.find((event) => (
+                event.entityId === bulletHandle.entityId
+                    && event.incarnation === bulletHandle.incarnation
+            )) ?? terrainContact;
+            if (terrainDeath) {
+                cleanupCommit = endpoint.commitAtFixedBoundary(tick);
+                break;
+            }
+            assert(endpoint.requestBodyControl({
+                handle: towerHandle,
+                moveIntentX: 0,
+                moveIntentY: 0
+            }, tick, `phase5:terrain:control:${tick}`).accepted,
+            `Phase 5 terrain control request 실패: tick=${tick}`);
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            assert(
+                commit.fixedCommands.controls.length === 1
+                    && !commit.recoveryRequired,
+                `Phase 5 terrain control commit 실패: tick=${tick}, result=${JSON.stringify(commit)}`
+            );
+            assert(endpoint.fixedUpdate(fixedDelta, tick),
+                `Phase 5 terrain fixed submit 실패: tick=${tick}`);
+            submittedTickCount = tick;
+            await settlePhase5Endpoint(endpoint, `Phase 5 terrain tick ${tick}`);
+        }
+        assert(
+            terrainDeath && cleanupCommit?.despawned.length === 1,
+            `Phase 5 terrain death/cleanup가 완료되지 않았습니다: ${JSON.stringify({ terrainDeath, cleanupCommit })}`
+        );
+        const status = endpoint.getStatus();
+        const gpuStatus = endpoint.getBackend().simulation.getStatus();
+        assert(
+            status.activeCount === 1
+                && status.activeProjectileCount === 0
+                && status.reservedCount === 0
+                && status.pendingCommandCount === 0
+                && gpuStatus.pendingBodyCount === 0
+                && !status.recoveryRequired,
+            `Phase 5 terrain cleanup 상태 불일치: ${JSON.stringify({ status, gpuStatus })}`
+        );
+        assert(JSON.stringify(domainSentinel) === sentinelBefore,
+            'Phase 5 terrain contact가 CPU domain sentinel을 변경했습니다.');
+        return {
+            blockedCell,
+            bulletHandle,
+            submittedTickCount,
+            terrainContact,
+            terrainDeath,
+            cleanup: {
+                activeCount: status.activeCount,
+                activeProjectileCount: status.activeProjectileCount,
+                reservedCount: status.reservedCount,
+                pendingCommandCount: status.pendingCommandCount,
+                pendingBodyCount: gpuStatus.pendingBodyCount
+            }
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionPhase5LifetimeHardwareSmoke(device, domainSentinel) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 2,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-phase5-lifetime'
+    });
+    const fixedDelta = 1 / 60;
+    const sentinelBefore = JSON.stringify(domainSentinel);
+    let submittedTickCount = 0;
+    try {
+        assert(endpoint.init(navigationSource) === false,
+            'Phase 5 lifetime endpoint는 첫 spawn 전 deferred여야 합니다.');
+        const request = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            position: { x: 8, y: 8 },
+            velocity: { x: 0, y: 0 },
+            targetFixedTick: 1,
+            spawnSequence: 0,
+            commandId: 'phase5:lifetime:basic-bullet'
+        });
+        assert(request.accepted, `Phase 5 lifetime absolute request 실패: ${JSON.stringify(request)}`);
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        const bulletHandle = spawnCommit.spawned[0]?.handle;
+        assert(bulletHandle, `Phase 5 lifetime bullet handle 누락: ${JSON.stringify(spawnCommit)}`);
+        assert(endpoint.fixedUpdate(fixedDelta, 1),
+            'Phase 5 lifetime first submit 실패');
+        submittedTickCount = 1;
+        await settlePhase5Endpoint(endpoint, 'Phase 5 lifetime tick 1');
+
+        let lifetimeDeath = null;
+        let cleanupCommit = null;
+        for (let tick = 2; tick <= 130; tick++) {
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+            lifetimeDeath = completed.deathEvents.find((event) => (
+                event.entityId === bulletHandle.entityId
+                    && event.incarnation === bulletHandle.incarnation
+            )) ?? null;
+            if (lifetimeDeath) {
+                cleanupCommit = endpoint.commitAtFixedBoundary(tick);
+                break;
+            }
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            assert(!commit.recoveryRequired,
+                `Phase 5 lifetime lifecycle commit recovery: tick=${tick}`);
+            assert(endpoint.fixedUpdate(fixedDelta, tick),
+                `Phase 5 lifetime fixed submit 실패: tick=${tick}`);
+            submittedTickCount = tick;
+            await settlePhase5Endpoint(endpoint, `Phase 5 lifetime tick ${tick}`);
+        }
+        assert(
+            lifetimeDeath && cleanupCommit?.despawned.length === 1,
+            `Phase 5 lifetime death/cleanup 미완료: ${JSON.stringify({ lifetimeDeath, cleanupCommit, submittedTickCount })}`
+        );
+        const status = endpoint.getStatus();
+        const gpuStatus = endpoint.getBackend().simulation.getStatus();
+        assert(
+            status.activeCount === 0
+                && status.activeProjectileCount === 0
+                && status.reservedCount === 0
+                && status.pendingCommandCount === 0
+                && gpuStatus.pendingBodyCount === 0
+                && !status.recoveryRequired,
+            `Phase 5 lifetime cleanup 상태 불일치: ${JSON.stringify({ status, gpuStatus })}`
+        );
+        assert(JSON.stringify(domainSentinel) === sentinelBefore,
+            'Phase 5 lifetime가 CPU domain sentinel을 변경했습니다.');
+        return {
+            authoredLifetimeSeconds: BASIC_BULLET_PROJECTILE_DATA.lifetimeSeconds,
+            fixedDelta,
+            submittedTickCount,
+            deathSourceTick: lifetimeDeath.sourceTick,
+            bulletHandle,
+            cleanup: {
+                activeCount: status.activeCount,
+                activeProjectileCount: status.activeProjectileCount,
+                reservedCount: status.reservedCount,
+                pendingCommandCount: status.pendingCommandCount,
+                pendingBodyCount: gpuStatus.pendingBodyCount
+            }
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionPhase5ProjectileLifecycleHardwareSmoke(device) {
+    const coreIntegrity = { current: 100, max: 100 };
+    const domainSentinel = {
+        coreIntegrity,
+        gold: 0,
+        reward: 0
+    };
+    const before = JSON.stringify(domainSentinel);
+    const contact = await runProductionPhase5ContactHardwareSmoke(
+        device,
+        domainSentinel
+    );
+    const terrain = await runProductionPhase5TerrainHardwareSmoke(
+        device,
+        domainSentinel
+    );
+    const lifetime = await runProductionPhase5LifetimeHardwareSmoke(
+        device,
+        domainSentinel
+    );
+    assert(
+        domainSentinel.coreIntegrity === coreIntegrity
+            && JSON.stringify(domainSentinel) === before,
+        `Phase 5 projectile lifecycle가 CPU domain sentinel을 변경했습니다: ${JSON.stringify(domainSentinel)}`
+    );
+    return {
+        contact,
+        terrain,
+        lifetime,
+        cpuDomainSentinel: {
+            coreIntegrityIdentityPreserved: domainSentinel.coreIntegrity === coreIntegrity,
+            coreIntegrityCurrentMutation: 0,
+            coreIntegrityMaxMutation: 0,
+            goldMutation: domainSentinel.gold,
+            rewardMutation: domainSentinel.reward
+        }
+    };
+}
+
+function createPhase5PressureSpawn(sourceHandle, destinationHandle, index = 0) {
+    return {
+        sourceHandle,
+        destinationHandle,
+        destinationSpawn: createPhase3Body({
+            position: { x: 0, y: 0 },
+            velocity: { x: 0, y: 0 },
+            definitionId: `phase5_pressure_destination_${index}`
+        }),
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
+        positionOffset: { x: 0.5 + (index * 0.25), y: 0 },
+        launchVelocity: { x: 1, y: 0 },
+        sourceVelocityScale: 0
+    };
+}
+
+async function runProductionPhase5SinglePressureHardwareSmoke(device, mode) {
+    const isBodyCapacity = mode === 'body-capacity';
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: isBodyCapacity ? 2 : 5,
+            controlCommandCapacity: 2,
+            spawnProgramCapacity: isBodyCapacity ? 2 : 1
+        }
+    );
+    const fixedDelta = 1 / 60;
+    const source = createPhase3Body({
+        entityId: isBodyCapacity ? 9601 : 9611,
+        incarnation: 1,
+        definitionId: `phase5_${mode}_source`,
+        position: { x: 2, y: 2 }
+    });
+    const initialBodies = [source];
+    if (isBodyCapacity) {
+        initialBodies.push(createPhase3Body({
+            entityId: 9602,
+            incarnation: 1,
+            definitionId: 'phase5_body_capacity_filler',
+            position: { x: 4, y: 4 }
+        }));
+    }
+    const requestedSpawnCount = isBodyCapacity ? 1 : 2;
+    const pressureSpawns = Array.from({ length: requestedSpawnCount }, (_, index) => (
+        createPhase5PressureSpawn(
+            source,
+            { entityId: 9701 + index, incarnation: 1 },
+            index
+        )
+    ));
+    try {
+        assert(simulation.init(), `Phase 5 ${mode} simulation init 실패`);
+        assert(simulation.spawnBodies(initialBodies).accepted === initialBodies.length,
+            `Phase 5 ${mode} initial spawn 실패`);
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [{
+                ...source,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }],
+            sourceRelativeSpawns: pressureSpawns
+        });
+        assert(
+            staged.controls.accepted === 1
+                && staged.controls.rejected === 0
+                && staged.sourceRelativeSpawns.accepted === 0
+                && staged.sourceRelativeSpawns.rejected === requestedSpawnCount
+                && staged.sourceRelativeSpawns.reason === mode
+                && !staged.requiresRecovery,
+            `Phase 5 ${mode} domain 분리 실패: ${JSON.stringify(staged)}`
+        );
+        assert(simulation.fixedUpdate(fixedDelta, 1),
+            `Phase 5 ${mode} control-only fixed submit 실패`);
+        await device.queue.onSubmittedWorkDone();
+        const completedStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.overflow.pendingReadbacks === 0,
+            `Phase 5 ${mode} telemetry completion`
+        );
+        const bodies = await simulation.readbackBodies();
+        const sourceAfter = findPhase5Body(bodies, source, `${mode} source after control`);
+        assert(
+            sourceAfter.position.x > source.position.x
+                && completedStatus.state === 'ready'
+                && !completedStatus.requiresAuthoritativeRebuild
+                && completedStatus.pendingBodyCount === 0,
+            `Phase 5 ${mode} control 진행/cleanup 불일치: ${JSON.stringify({ sourceAfter, completedStatus })}`
+        );
+        return {
+            reason: staged.sourceRelativeSpawns.reason,
+            requestedSpawnCount,
+            controlAcceptedCount: staged.controls.accepted,
+            spawnAcceptedCount: staged.sourceRelativeSpawns.accepted,
+            spawnRejectedCount: staged.sourceRelativeSpawns.rejected,
+            fixedSubmitContinued: true,
+            sourcePositionBefore: { ...source.position },
+            sourcePositionAfter: { ...sourceAfter.position },
+            pendingBodyCount: completedStatus.pendingBodyCount,
+            recoveryRequired: completedStatus.requiresAuthoritativeRebuild
+        };
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionPhase5SpawnRingPressureHardwareSmoke(device) {
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: 8,
+            controlCommandCapacity: 1,
+            spawnProgramCapacity: 1
+        }
+    );
+    const fixedDelta = 1 / 60;
+    const source = createPhase3Body({
+        entityId: 9621,
+        incarnation: 1,
+        definitionId: 'phase5_spawn_ring_source',
+        position: { x: 2, y: 2 }
+    });
+    const acceptedStages = [];
+    try {
+        assert(simulation.init(), 'Phase 5 spawn ring simulation init 실패');
+        assert(simulation.spawnBodies([source]).accepted === 1,
+            'Phase 5 spawn ring source spawn 실패');
+        for (let tick = 1; tick <= 4; tick++) {
+            const staged = simulation.stageFixedPrograms({
+                targetFixedTick: tick,
+                controls: [{ ...source, moveIntentX: 1, moveIntentY: 0 }],
+                sourceRelativeSpawns: [createPhase5PressureSpawn(
+                    source,
+                    { entityId: 9720 + tick, incarnation: 1 },
+                    tick
+                )]
+            });
+            assert(
+                staged.controls.accepted === 1
+                    && staged.sourceRelativeSpawns.accepted === 1
+                    && !staged.requiresRecovery,
+                `Phase 5 spawn ring prefill stage 실패: tick=${tick}, result=${JSON.stringify(staged)}`
+            );
+            acceptedStages.push(staged);
+            assert(simulation.fixedUpdate(fixedDelta, tick),
+                `Phase 5 spawn ring prefill submit 실패: tick=${tick}`);
+        }
+
+        const rejectedStage = simulation.stageFixedPrograms({
+            targetFixedTick: 5,
+            controls: [{ ...source, moveIntentX: 1, moveIntentY: 0 }],
+            sourceRelativeSpawns: [createPhase5PressureSpawn(
+                source,
+                { entityId: 9725, incarnation: 1 },
+                5
+            )]
+        });
+        assert(
+            rejectedStage.controls.accepted === 1
+                && rejectedStage.controls.rejected === 0
+                && rejectedStage.sourceRelativeSpawns.accepted === 0
+                && rejectedStage.sourceRelativeSpawns.rejected === 1
+                && rejectedStage.sourceRelativeSpawns.reason
+                    === 'spawn-program-readback-capacity'
+                && !rejectedStage.requiresRecovery,
+            `Phase 5 actual SpawnProgram ring pressure domain 분리 실패: ${JSON.stringify(rejectedStage)}`
+        );
+        assert(simulation.fixedUpdate(fixedDelta, 5),
+            'Phase 5 spawn ring pressure control-only submit 실패');
+        await device.queue.onSubmittedWorkDone();
+        const settledStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.overflow.pendingReadbacks === 0
+                && status.fixedPrimitives.spawnProgram.pendingReadbacks === 0,
+            'Phase 5 SpawnProgram ring completion'
+        );
+        const completedBatches = simulation.drainCompletedSpawnProgramBatches([]);
+        assert(
+            completedBatches.length === 4
+                && completedBatches.every((batch) => (
+                    batch.failure === null
+                        && batch.outcomes.length === 1
+                        && batch.outcomes[0].reason === 'resolved'
+                )),
+            `Phase 5 SpawnProgram ring accepted batch completion 불일치: ${JSON.stringify(completedBatches)}`
+        );
+        const cleanedStatus = simulation.getStatus();
+        const bodies = await simulation.readbackBodies();
+        const sourceAfter = findPhase5Body(bodies, source, 'spawn ring source after control');
+        assert(
+            sourceAfter.position.x > source.position.x
+                && cleanedStatus.state === 'ready'
+                && cleanedStatus.submittedTickCount === 5
+                && cleanedStatus.pendingBodyCount === 0
+                && cleanedStatus.fixedPrimitives.spawnProgram.backpressureCount >= 1
+                && !cleanedStatus.requiresAuthoritativeRebuild,
+            `Phase 5 SpawnProgram ring cleanup/recovery 불일치: ${JSON.stringify(cleanedStatus)}`
+        );
+        return {
+            ringSlotCount: cleanedStatus.fixedPrimitives.spawnProgram.ringSlotCount,
+            acceptedSpawnCount: acceptedStages.length,
+            rejectedSpawnCount: rejectedStage.sourceRelativeSpawns.rejected,
+            rejectionReason: rejectedStage.sourceRelativeSpawns.reason,
+            controlAcceptedCount: acceptedStages.length
+                + rejectedStage.controls.accepted,
+            submittedTickCount: cleanedStatus.submittedTickCount,
+            backpressureCount:
+                cleanedStatus.fixedPrimitives.spawnProgram.backpressureCount,
+            sourcePositionBefore: { ...source.position },
+            sourcePositionAfter: { ...sourceAfter.position },
+            completedBatchCount: completedBatches.length,
+            pendingBodyCount: cleanedStatus.pendingBodyCount,
+            recoveryRequired: cleanedStatus.requiresAuthoritativeRebuild
+        };
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionPhase5RegistryPressureHardwareSmoke(device) {
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 1,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 1
+    });
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-phase5-registry-pressure'
+    });
+    const fixedDelta = 1 / 60;
+    const towerPosition = Object.freeze({ x: 2, y: 2 });
+    try {
+        assert(endpoint.init(navigationSource) === false,
+            'Phase 5 registry pressure endpoint는 deferred여야 합니다.');
+        assert(endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: towerPosition }),
+            1,
+            'phase5:registry-pressure:tower'
+        ).accepted, 'Phase 5 registry pressure Tower request 실패');
+        const towerCommit = endpoint.commitAtFixedBoundary(1);
+        const towerHandle = towerCommit.spawned[0]?.handle;
+        assert(towerHandle, 'Phase 5 registry pressure Tower handle 누락');
+        assert(endpoint.fixedUpdate(fixedDelta, 1),
+            'Phase 5 registry pressure initial submit 실패');
+        await settlePhase5Endpoint(endpoint, 'Phase 5 registry pressure initial completion');
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+
+        const shotRequest = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: towerHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            aimWorldPoint: { x: 8, y: 2 },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'phase5:registry-pressure:shot'
+        });
+        const controlRequest = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 2, 'phase5:registry-pressure:control');
+        assert(shotRequest.accepted && controlRequest.accepted,
+            'Phase 5 registry pressure request enqueue 실패');
+        const commit = endpoint.commitAtFixedBoundary(2);
+        const spawnRejection = commit.fixedCommands.rejected.find(
+            ({ domain }) => domain === 'spawn'
+        );
+        assert(
+            commit.state === 'committed-with-rejections'
+                && commit.fixedCommands.controls.length === 1
+                && commit.fixedCommands.sourceRelativeSpawns.length === 0
+                && spawnRejection?.code === 'registry-capacity'
+                && !commit.recoveryRequired,
+            `Phase 5 registry pressure domain 분리 실패: ${JSON.stringify(commit)}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 2),
+            'Phase 5 registry pressure control submit 실패');
+        await settlePhase5Endpoint(endpoint, 'Phase 5 registry pressure completion');
+        const bodies = await readPhase5Bodies(endpoint);
+        const towerAfter = findPhase5Body(bodies, towerHandle,
+            'registry pressure Tower after control');
+        const status = endpoint.getStatus();
+        const gpuStatus = endpoint.getBackend().simulation.getStatus();
+        assert(
+            towerAfter.position.x > towerPosition.x
+                && status.activeCount === 1
+                && status.reservedCount === 0
+                && status.pendingCommandCount === 0
+                && gpuStatus.pendingBodyCount === 0
+                && !status.recoveryRequired,
+            `Phase 5 registry pressure cleanup/recovery 불일치: ${JSON.stringify({ status, gpuStatus })}`
+        );
+        return {
+            rejectionReason: spawnRejection.code,
+            controlAcceptedCount: commit.fixedCommands.controls.length,
+            spawnRejectedCount: commit.fixedCommands.rejected.filter(
+                ({ domain }) => domain === 'spawn'
+            ).length,
+            fixedSubmitContinued: true,
+            towerPositionBefore: towerPosition,
+            towerPositionAfter: { ...towerAfter.position },
+            activeCount: status.activeCount,
+            reservedCount: status.reservedCount,
+            pendingCommandCount: status.pendingCommandCount,
+            pendingBodyCount: gpuStatus.pendingBodyCount,
+            recoveryRequired: status.recoveryRequired
+        };
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionPhase5FailureDomainHardwareSmoke(device) {
+    const spawnProgramCapacity = await runProductionPhase5SinglePressureHardwareSmoke(
+        device,
+        'spawn-program-capacity'
+    );
+    const bodyCapacity = await runProductionPhase5SinglePressureHardwareSmoke(
+        device,
+        'body-capacity'
+    );
+    const resultRing = await runProductionPhase5SpawnRingPressureHardwareSmoke(device);
+    const registryCapacity = await runProductionPhase5RegistryPressureHardwareSmoke(device);
+    return {
+        spawnProgramCapacity,
+        bodyCapacity,
+        resultRing,
+        registryCapacity,
+        totalSpawnRejectedCount: spawnProgramCapacity.spawnRejectedCount
+            + bodyCapacity.spawnRejectedCount
+            + resultRing.rejectedSpawnCount
+            + registryCapacity.spawnRejectedCount,
+        totalControlAcceptedCount: spawnProgramCapacity.controlAcceptedCount
+            + bodyCapacity.controlAcceptedCount
+            + resultRing.controlAcceptedCount
+            + registryCapacity.controlAcceptedCount,
+        allFixedSubmitsContinued: true,
+        allRecoveryFalse: [
+            spawnProgramCapacity,
+            bodyCapacity,
+            resultRing,
+            registryCapacity
+        ].every(({ recoveryRequired }) => recoveryRequired === false),
+        allReservationAndPendingLeaksZero:
+            registryCapacity.reservedCount === 0
+            && registryCapacity.pendingCommandCount === 0
+            && registryCapacity.pendingBodyCount === 0
+            && spawnProgramCapacity.pendingBodyCount === 0
+            && bodyCapacity.pendingBodyCount === 0
+            && resultRing.pendingBodyCount === 0
+    };
+}
+
+async function runProductionPhase5GenerationRecoveryHardwareSmoke(device) {
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    const generation = { value: 1 };
+    const platformPort = Object.freeze({
+        getState: () => Object.freeze({ ready: true, status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => generation.value,
+        acquireFrameTarget: () => null,
+        clearCanvas: () => false,
+        markCanvasDrawn: () => false,
+        markCanvasCleared: () => false
+    });
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const fixedDelta = 1 / 60;
+    const coreIntegrity = { current: 100, max: 100 };
+    const coreIntegrityIdentity = coreIntegrity;
+    const heldInput = { primaryPressed: true };
+    const oldEndpoint = createGpuSimulationEndpoint({ webGpuPlatformPort: platformPort }, {
+        capacity: 4,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2
+    });
+    const oldAdapter = new GpuProjectileSpawnAdapter(oldEndpoint, {
+        commandNamespace: 'nw-phase5-old-generation'
+    });
+    let oldEndpointDestroyed = false;
+    let replacementEndpoint = null;
+    try {
+        assert(oldEndpoint.init(navigationSource) === false,
+            'Phase 5 old generation endpoint는 deferred여야 합니다.');
+        assert(oldEndpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: { x: 2, y: 2 } }),
+            1,
+            'phase5:generation:old-tower'
+        ).accepted, 'Phase 5 old Tower spawn request 실패');
+        const oldTowerCommit = oldEndpoint.commitAtFixedBoundary(1);
+        const oldTowerHandle = oldTowerCommit.spawned[0]?.handle;
+        assert(oldTowerHandle, 'Phase 5 old Tower handle 누락');
+        assert(oldEndpoint.fixedUpdate(fixedDelta, 1),
+            'Phase 5 old Tower initial submit 실패');
+        await settlePhase5Endpoint(oldEndpoint, 'Phase 5 old Tower completion');
+        oldEndpoint.commitCompletedEventsAtFixedBoundary(2);
+
+        assert(heldInput.primaryPressed, 'Phase 5 held input fixture가 release되었습니다.');
+        const oldShotRequest = oldAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: oldTowerHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            aimWorldPoint: { x: 8, y: 2 },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'phase5:generation:old-shot'
+        });
+        const oldControlRequest = oldEndpoint.requestBodyControl({
+            handle: oldTowerHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 2, 'phase5:generation:old-control');
+        assert(oldShotRequest.accepted && oldControlRequest.accepted,
+            'Phase 5 old generation shot/control request 실패');
+        const oldShotCommit = oldEndpoint.commitAtFixedBoundary(2);
+        const oldBulletHandle = oldShotCommit.fixedCommands
+            .sourceRelativeSpawns[0]?.handle;
+        assert(oldBulletHandle, `Phase 5 old generation bullet handle 누락: ${JSON.stringify(oldShotCommit)}`);
+        assert(oldEndpoint.fixedUpdate(fixedDelta, 2),
+            'Phase 5 old generation shot submit 실패');
+        const oldSimulation = oldEndpoint.getBackend().simulation;
+        const oldRegistry = oldEndpoint.getRegistry();
+        const beforeGenerationRetire = oldSimulation.getStatus();
+        const oldEndpointBeforeRetire = oldEndpoint.getStatus();
+        assert(
+            beforeGenerationRetire.fixedPrimitives.spawnProgram.pendingReadbacks === 1
+                && beforeGenerationRetire.pendingBodyCount === 1
+                && oldEndpointBeforeRetire.reservedCount === 1
+                && oldEndpointBeforeRetire.pendingSourceRelativeDestinationCount === 1,
+            `Phase 5 old generation in-flight envelope가 없습니다: ${JSON.stringify({ beforeGenerationRetire, oldEndpointBeforeRetire })}`
+        );
+
+        generation.value = 2;
+        assert(
+            oldSimulation.init() === false,
+            'Phase 5 generation change가 GPU-authoritative old session을 차단하지 않았습니다.'
+        );
+        await device.queue.onSubmittedWorkDone();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const afterGenerationRetire = oldSimulation.getStatus();
+        const staleCompletions = oldSimulation.drainCompletedSpawnProgramBatches([]);
+        assert(
+            afterGenerationRetire.state === 'requires-rebuild'
+                && afterGenerationRetire.failure?.stage === 'device-generation-change'
+                && afterGenerationRetire.fixedPrimitives.spawnProgram.pendingReadbacks === 0
+                && afterGenerationRetire.fixedPrimitives.spawnProgram.queuedBatches === 0
+                && staleCompletions.length === 0
+                && !oldRegistry.has(oldBulletHandle)
+                && oldRegistry.copyEntityView(oldBulletHandle, {}) === null,
+            `Phase 5 old SpawnProgram generation envelope drop 실패: ${JSON.stringify({ afterGenerationRetire, staleCompletions })}`
+        );
+        const oldSessionGeneration = oldEndpointBeforeRetire.sessionGeneration;
+        oldEndpoint.destroy();
+        oldEndpointDestroyed = true;
+        const oldRegistryAfterDestroy = oldRegistry.getStatus();
+        assert(
+            oldRegistryAfterDestroy.activeCount === 0
+                && oldRegistryAfterDestroy.reservedCount === 0,
+            `Phase 5 old endpoint destroy가 pending reservation을 정리하지 않았습니다: ${JSON.stringify(oldRegistryAfterDestroy)}`
+        );
+
+        replacementEndpoint = createGpuSimulationEndpoint({ webGpuPlatformPort: platformPort }, {
+            capacity: 5,
+            controlCommandCapacity: 2,
+            sourceRelativeSpawnCommandCapacity: 2,
+            spawnProgramCapacity: 2
+        });
+        const replacementAdapter = new GpuProjectileSpawnAdapter(replacementEndpoint, {
+            commandNamespace: 'nw-phase5-new-generation'
+        });
+        assert(replacementEndpoint.init(navigationSource) === false,
+            'Phase 5 replacement endpoint는 deferred여야 합니다.');
+        assert(replacementEndpoint.requestSpawn(
+            createGpuCoreProxySpawnIntent({ position: navigationSource.corePosition }),
+            3,
+            'phase5:generation:new-core'
+        ).accepted, 'Phase 5 replacement Core proxy request 실패');
+        assert(replacementEndpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: { x: 2, y: 2 } }),
+            3,
+            'phase5:generation:new-tower'
+        ).accepted, 'Phase 5 replacement Tower request 실패');
+        const replacementActorCommit = replacementEndpoint.commitAtFixedBoundary(3);
+        const replacementHandles = new Map(
+            replacementActorCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const newCoreHandle = replacementHandles.get('phase5:generation:new-core');
+        const newTowerHandle = replacementHandles.get('phase5:generation:new-tower');
+        assert(
+            newCoreHandle && newTowerHandle
+                && (newTowerHandle.entityId !== oldTowerHandle.entityId
+                    || newTowerHandle.incarnation !== oldTowerHandle.incarnation),
+            `Phase 5 replacement source handle이 old source와 구분되지 않습니다: ${JSON.stringify({ oldTowerHandle, newTowerHandle })}`
+        );
+        assert(replacementEndpoint.fixedUpdate(fixedDelta, 3),
+            'Phase 5 replacement actor submit 실패');
+        await settlePhase5Endpoint(replacementEndpoint,
+            'Phase 5 replacement actor completion');
+        replacementEndpoint.commitCompletedEventsAtFixedBoundary(4);
+
+        assert(heldInput.primaryPressed,
+            'Phase 5 held input이 endpoint replacement 중 보존되지 않았습니다.');
+        const newShotRequest = replacementAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: BASIC_BULLET_PROJECTILE_DATA,
+            sourceHandle: newTowerHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            aimWorldPoint: { x: 8, y: 2 },
+            launchSpeed: BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+            producerId: BASIC_BULLET_PRODUCER_ID,
+            targetFixedTick: 4,
+            spawnSequence: 0,
+            commandId: 'phase5:generation:new-held-shot'
+        });
+        const newControlRequest = replacementEndpoint.requestBodyControl({
+            handle: newTowerHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 4, 'phase5:generation:new-control');
+        assert(newShotRequest.accepted && newControlRequest.accepted,
+            'Phase 5 replacement held shot/control request 실패');
+        const newShotCommit = replacementEndpoint.commitAtFixedBoundary(4);
+        const newBulletHandle = newShotCommit.fixedCommands
+            .sourceRelativeSpawns[0]?.handle;
+        assert(newBulletHandle, `Phase 5 replacement held shot commit 실패: ${JSON.stringify(newShotCommit)}`);
+        assert(replacementEndpoint.fixedUpdate(fixedDelta, 4),
+            'Phase 5 replacement held shot submit 실패');
+        await settlePhase5Endpoint(
+            replacementEndpoint,
+            'Phase 5 replacement held shot completion',
+            { spawnProgram: true }
+        );
+        replacementEndpoint.commitCompletedEventsAtFixedBoundary(5);
+        const newBulletView = replacementEndpoint.getRegistry()
+            .copyEntityView(newBulletHandle, {});
+        const replacementStatus = replacementEndpoint.getStatus();
+        assert(
+            newBulletView?.metadata?.sourceEntityId === newTowerHandle.entityId
+                && newBulletView.metadata.sourceIncarnation
+                    === newTowerHandle.incarnation
+                && replacementStatus.sessionGeneration !== oldSessionGeneration
+                && replacementStatus.activeProjectileCount === 1
+                && replacementStatus.reservedCount === 0
+                && replacementStatus.pendingCommandCount === 0
+                && !replacementStatus.recoveryRequired
+                && coreIntegrity === coreIntegrityIdentity
+                && coreIntegrity.current === 100
+                && coreIntegrity.max === 100,
+            `Phase 5 replacement held fire/CoreIntegrity 보존 실패: ${JSON.stringify({ newBulletView, replacementStatus, coreIntegrity })}`
+        );
+        return {
+            generationBefore: 1,
+            generationAfter: generation.value,
+            oldSessionGeneration,
+            newSessionGeneration: replacementStatus.sessionGeneration,
+            oldSourceHandle: oldTowerHandle,
+            oldPendingBulletHandle: oldBulletHandle,
+            oldEnvelopeBeforeRetire: {
+                pendingReadbacks: beforeGenerationRetire.fixedPrimitives
+                    .spawnProgram.pendingReadbacks,
+                queuedBatches: beforeGenerationRetire.fixedPrimitives
+                    .spawnProgram.queuedBatches,
+                pendingBodyCount: beforeGenerationRetire.pendingBodyCount,
+                reservedCount: oldEndpointBeforeRetire.reservedCount
+            },
+            oldEnvelopeAfterRetire: {
+                state: afterGenerationRetire.state,
+                failureStage: afterGenerationRetire.failure.stage,
+                pendingReadbacks: afterGenerationRetire.fixedPrimitives
+                    .spawnProgram.pendingReadbacks,
+                queuedBatches: afterGenerationRetire.fixedPrimitives
+                    .spawnProgram.queuedBatches,
+                completedBatchCount: staleCompletions.length,
+                reservedCountAfterDestroy: oldRegistryAfterDestroy.reservedCount
+            },
+            newSourceHandle: newTowerHandle,
+            newCoreHandle,
+            newBulletHandle,
+            heldInputPreserved: heldInput.primaryPressed,
+            newProjectileSourceMetadata: newBulletView.metadata,
+            coreIntegrityIdentityPreserved: coreIntegrity === coreIntegrityIdentity,
+            coreIntegrityCurrent: coreIntegrity.current,
+            coreIntegrityMax: coreIntegrity.max,
+            replacement: {
+                activeCount: replacementStatus.activeCount,
+                activeProjectileCount: replacementStatus.activeProjectileCount,
+                reservedCount: replacementStatus.reservedCount,
+                pendingCommandCount: replacementStatus.pendingCommandCount,
+                recoveryRequired: replacementStatus.recoveryRequired
+            }
+        };
+    } finally {
+        if (!oldEndpointDestroyed) {
+            oldEndpoint.destroy();
+        }
+        replacementEndpoint?.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
 async function runProductionFixedPrimitiveSmoke(device) {
     return {
         endpoint: await runProductionFixedPrimitiveEndpointSmoke(device),
@@ -4817,6 +6413,13 @@ async function runProductionFixedPrimitiveSmoke(device) {
         sourceInvalid: await runProductionSourceInvalidCleanupSmoke(device),
         geometry: await runProductionFixedPrimitiveGeometrySmoke(device),
         towerCoreWorld: await runProductionTowerCoreWorldHardwareSmoke(device),
+        phase5ProjectileAim: await runProductionPhase5AimHardwareSmoke(device),
+        phase5ProjectileLifecycle:
+            await runProductionPhase5ProjectileLifecycleHardwareSmoke(device),
+        phase5FailureDomains:
+            await runProductionPhase5FailureDomainHardwareSmoke(device),
+        phase5GenerationRecovery:
+            await runProductionPhase5GenerationRecoveryHardwareSmoke(device),
         uncapturedErrorsCheckedAtRunEnd: true,
         deviceLossCheckedAtRunEnd: true
     };

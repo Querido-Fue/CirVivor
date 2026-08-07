@@ -266,6 +266,14 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
             isPressed() {
                 return false;
             },
+            getPointerPosition(out) {
+                out.x = 0;
+                out.y = 0;
+                return out;
+            },
+            isPrimaryPointerPressed() {
+                return false;
+            },
             getWheelTotals(out) {
                 out.x = 0;
                 out.y = 0;
@@ -446,6 +454,14 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
     const dependencies = {
         inputActionSource: {
             isPressed() {
+                return false;
+            },
+            getPointerPosition(out) {
+                out.x = 0;
+                out.y = 0;
+                return out;
+            },
+            isPrimaryPointerPressed() {
                 return false;
             },
             getWheelTotals(out) {

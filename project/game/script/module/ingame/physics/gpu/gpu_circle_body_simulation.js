@@ -24,6 +24,7 @@ import {
     GPU_FIXED_PRIMITIVE_IDENTITY,
     GPU_FIXED_PROGRAM_STATUS,
     GPU_SPAWN_PROGRAM_ABI_VERSION,
+    GPU_SPAWN_PROGRAM_MODE,
     GPU_SPAWN_PROGRAM_RESULT,
     createGpuBodyControlProgramStorage,
     createGpuSpawnProgramStorage,
@@ -692,6 +693,38 @@ function freezeTrackedPoseSnapshot(values) {
     });
 }
 
+function freezeFixedProgramStageResult({
+    controlAccepted = 0,
+    controlRejected = 0,
+    spawnAccepted = 0,
+    spawnRejected = 0,
+    controlReason = null,
+    spawnReason = null,
+    reason = controlReason ?? spawnReason ?? null,
+    requiresRecovery = false,
+    destinationHandles = Object.freeze([])
+}) {
+    return Object.freeze({
+        accepted: controlAccepted + spawnAccepted,
+        rejected: controlRejected + spawnRejected,
+        reason,
+        requiresRecovery,
+        controlCount: controlAccepted,
+        sourceRelativeSpawnCount: spawnAccepted,
+        controls: Object.freeze({
+            accepted: controlAccepted,
+            rejected: controlRejected,
+            reason: controlReason
+        }),
+        sourceRelativeSpawns: Object.freeze({
+            accepted: spawnAccepted,
+            rejected: spawnRejected,
+            reason: spawnReason
+        }),
+        destinationHandles
+    });
+}
+
 /**
  * @class GpuCircleBodySimulation
  * @description 원본 GPU circle flow/solver pass와 stable-slot indirect presentation을 소유합니다.
@@ -1356,33 +1389,22 @@ export class GpuCircleBodySimulation {
         if (!Array.isArray(controls) || !Array.isArray(sourceRelativeSpawns)) {
             throw new TypeError('fixed program controls/sourceRelativeSpawns 배열이 필요합니다.');
         }
+        const hardReject = (reason) => freezeFixedProgramStageResult({
+            controlRejected: controls.length,
+            spawnRejected: sourceRelativeSpawns.length,
+            controlReason: reason,
+            spawnReason: reason,
+            reason,
+            requiresRecovery: true
+        });
         if (this.stagedFixedPrograms) {
-            return Object.freeze({
-                accepted: 0,
-                rejected: controls.length + sourceRelativeSpawns.length,
-                reason: 'fixed-program-already-staged'
-            });
+            return hardReject('fixed-program-already-staged');
         }
-        if (controls.length > this.controlCommandCapacity
-            || sourceRelativeSpawns.length > this.spawnProgramCapacity
-            || sourceRelativeSpawns.length
-                > this.capacity - this.activeBodyCount - this.pendingBodyCount) {
-            this.spawnProgramOverflowCount += Math.max(
-                0,
-                sourceRelativeSpawns.length - this.spawnProgramCapacity
-            );
-            return Object.freeze({
-                accepted: 0,
-                rejected: controls.length + sourceRelativeSpawns.length,
-                reason: 'fixed-program-capacity'
-            });
+        if (controls.length > this.controlCommandCapacity) {
+            return hardReject('control-program-capacity');
         }
         if (!this.#ensureReady()) {
-            return Object.freeze({
-                accepted: 0,
-                rejected: controls.length + sourceRelativeSpawns.length,
-                reason: this.state
-            });
+            return hardReject(this.state);
         }
 
         const controlProgram = createGpuBodyControlProgramStorage(
@@ -1399,11 +1421,9 @@ export class GpuCircleBodySimulation {
                 || this.slotActive[slot] !== 1
                 || !this.canControlBody(handle)
                 || controlKeys.has(key)) {
-                return Object.freeze({
-                    accepted: 0,
-                    rejected: controls.length + sourceRelativeSpawns.length,
-                    reason: slot === undefined ? 'stale-handle' : 'control-contract'
-                });
+                return hardReject(
+                    slot === undefined ? 'stale-handle' : 'control-contract'
+                );
             }
             controlKeys.add(key);
             const normalized = {
@@ -1419,108 +1439,130 @@ export class GpuCircleBodySimulation {
         }
         writeGpuBodyControlProgramHeader(controlProgram, controls.length);
 
-        const spawnProgram = createGpuSpawnProgramStorage(this.spawnProgramCapacity);
-        const destinationKeys = new Set();
-        const normalizedSpawns = new Array(sourceRelativeSpawns.length);
-        const stagingStorage = sourceRelativeSpawns.length > 0
-            ? createGpuCircleBodyAbiStorage(sourceRelativeSpawns.length)
-            : null;
-        const stagingStyles = sourceRelativeSpawns.length > 0
-            ? new ArrayBuffer(BODY_RENDER_STYLE_STRIDE * sourceRelativeSpawns.length)
-            : null;
-        const stagingStyleView = stagingStyles ? new DataView(stagingStyles) : null;
-        const selectedSlots = new Array(sourceRelativeSpawns.length);
-        const reusableCount = Math.min(
-            this.freeSlots.length,
-            sourceRelativeSpawns.length
-        );
-        for (let index = 0; index < reusableCount; index++) {
-            selectedSlots[index] = this.freeSlots[this.freeSlots.length - 1 - index];
+        let spawnProgram = createGpuSpawnProgramStorage(this.spawnProgramCapacity);
+        let normalizedSpawns = [];
+        let selectedSlots = [];
+        let stagingStorage = null;
+        let stagingStyles = null;
+        let reusableCount = 0;
+        let readbackSlot = null;
+        let spawnRejectionReason = null;
+        if (sourceRelativeSpawns.length > this.spawnProgramCapacity) {
+            this.spawnProgramOverflowCount += sourceRelativeSpawns.length
+                - this.spawnProgramCapacity;
+            spawnRejectionReason = 'spawn-program-capacity';
+        } else if (sourceRelativeSpawns.length
+            > this.capacity - this.activeBodyCount - this.pendingBodyCount) {
+            spawnRejectionReason = 'body-capacity';
         }
-        for (let index = reusableCount; index < sourceRelativeSpawns.length; index++) {
-            selectedSlots[index] = this.bodyCount + (index - reusableCount);
-        }
-        for (let index = 0; index < sourceRelativeSpawns.length; index++) {
-            const source = sourceRelativeSpawns[index];
-            const sourceHandle = normalizeEntityHandle(
-                source.sourceHandle,
-                `sourceRelativeSpawns[${index}].sourceHandle`
-            );
-            const destinationHandle = normalizeEntityHandle(
-                source.destinationHandle,
-                `sourceRelativeSpawns[${index}].destinationHandle`
-            );
-            const sourceKey = entityHandleKey(sourceHandle);
-            const destinationKey = entityHandleKey(destinationHandle);
-            const sourceSlot = this.handleToSlot.get(sourceKey);
-            if (sourceSlot === undefined || this.slotActive[sourceSlot] !== 1) {
-                return Object.freeze({
-                    accepted: 0,
-                    rejected: controls.length + sourceRelativeSpawns.length,
-                    reason: 'stale-source'
-                });
-            }
-            if (destinationKeys.has(destinationKey)
-                || this.handleToSlot.has(destinationKey)
-                || this.pendingHandleToSlot.has(destinationKey)) {
-                return Object.freeze({
-                    accepted: 0,
-                    rejected: controls.length + sourceRelativeSpawns.length,
-                    reason: 'destination-identity-conflict'
-                });
-            }
-            destinationKeys.add(destinationKey);
-            const body = {
-                ...source.destinationSpawn,
-                entityId: destinationHandle.entityId,
-                incarnation: destinationHandle.incarnation
-            };
-            this.#validateBody(body, index);
-            writeGpuCircleBodySpawn(stagingStorage, index, body);
-            writeRenderStyle(stagingStyleView, index, body);
-            const simulationView = new DataView(stagingStorage.simulationBuffer);
-            const simulationOffset = index * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
-            const finalFlags = simulationView.getUint32(
-                simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.FLAGS,
-                LITTLE_ENDIAN
-            );
-            simulationView.setUint32(
-                simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.FLAGS,
-                finalFlags & ~GPU_CIRCLE_BODY_META.ALIVE_FLAG,
-                LITTLE_ENDIAN
-            );
-            const programRecord = {
-                destinationSlot: selectedSlots[index],
-                destinationEntityId: destinationHandle.entityId,
-                destinationIncarnation: destinationHandle.incarnation,
-                sourceSlot,
-                sourceEntityId: sourceHandle.entityId,
-                sourceIncarnation: sourceHandle.incarnation,
-                positionOffset: source.positionOffset,
-                launchVelocity: source.launchVelocity,
-                sourceVelocityScale: source.sourceVelocityScale,
-                sourceTick: targetFixedTick
-            };
-            writeGpuSpawnProgramRecord(spawnProgram, index, programRecord);
-            normalizedSpawns[index] = Object.freeze({
-                ...programRecord,
-                destinationHandle,
-                sourceHandle,
-                finalFlags
-            });
-        }
-        writeGpuSpawnProgramHeader(spawnProgram, sourceRelativeSpawns.length);
 
-        const readbackSlot = sourceRelativeSpawns.length > 0
-            ? this.#claimSpawnProgramReadbackSlot()
-            : null;
-        if (sourceRelativeSpawns.length > 0 && !readbackSlot) {
-            this.spawnProgramBackpressureCount++;
-            return Object.freeze({
-                accepted: 0,
-                rejected: controls.length + sourceRelativeSpawns.length,
-                reason: 'spawn-program-readback-capacity'
-            });
+        if (!spawnRejectionReason && sourceRelativeSpawns.length > 0) {
+            const destinationKeys = new Set();
+            normalizedSpawns = new Array(sourceRelativeSpawns.length);
+            stagingStorage = createGpuCircleBodyAbiStorage(sourceRelativeSpawns.length);
+            stagingStyles = new ArrayBuffer(
+                BODY_RENDER_STYLE_STRIDE * sourceRelativeSpawns.length
+            );
+            const stagingStyleView = new DataView(stagingStyles);
+            selectedSlots = new Array(sourceRelativeSpawns.length);
+            reusableCount = Math.min(
+                this.freeSlots.length,
+                sourceRelativeSpawns.length
+            );
+            for (let index = 0; index < reusableCount; index++) {
+                selectedSlots[index] = this.freeSlots[this.freeSlots.length - 1 - index];
+            }
+            for (let index = reusableCount; index < sourceRelativeSpawns.length; index++) {
+                selectedSlots[index] = this.bodyCount + (index - reusableCount);
+            }
+            for (let index = 0; index < sourceRelativeSpawns.length; index++) {
+                const source = sourceRelativeSpawns[index];
+                const sourceHandle = normalizeEntityHandle(
+                    source.sourceHandle,
+                    `sourceRelativeSpawns[${index}].sourceHandle`
+                );
+                const destinationHandle = normalizeEntityHandle(
+                    source.destinationHandle,
+                    `sourceRelativeSpawns[${index}].destinationHandle`
+                );
+                const sourceKey = entityHandleKey(sourceHandle);
+                const destinationKey = entityHandleKey(destinationHandle);
+                const sourceSlot = this.handleToSlot.get(sourceKey);
+                if (sourceSlot === undefined || this.slotActive[sourceSlot] !== 1) {
+                    return hardReject('stale-source');
+                }
+                if (destinationKeys.has(destinationKey)
+                    || this.handleToSlot.has(destinationKey)
+                    || this.pendingHandleToSlot.has(destinationKey)) {
+                    return hardReject('destination-identity-conflict');
+                }
+                destinationKeys.add(destinationKey);
+                const body = {
+                    ...source.destinationSpawn,
+                    entityId: destinationHandle.entityId,
+                    incarnation: destinationHandle.incarnation
+                };
+                this.#validateBody(body, index);
+                writeGpuCircleBodySpawn(stagingStorage, index, body);
+                writeRenderStyle(stagingStyleView, index, body);
+                const simulationView = new DataView(stagingStorage.simulationBuffer);
+                const simulationOffset = index * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
+                const finalFlags = simulationView.getUint32(
+                    simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.FLAGS,
+                    LITTLE_ENDIAN
+                );
+                simulationView.setUint32(
+                    simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.FLAGS,
+                    finalFlags & ~GPU_CIRCLE_BODY_META.ALIVE_FLAG,
+                    LITTLE_ENDIAN
+                );
+                const modeFlags = source.modeFlags
+                    ?? GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY;
+                const isAimPoint = modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
+                const programRecord = {
+                    destinationSlot: selectedSlots[index],
+                    destinationEntityId: destinationHandle.entityId,
+                    destinationIncarnation: destinationHandle.incarnation,
+                    sourceSlot,
+                    sourceEntityId: sourceHandle.entityId,
+                    sourceIncarnation: sourceHandle.incarnation,
+                    modeFlags,
+                    positionOffset: source.positionOffset,
+                    ...(isAimPoint
+                        ? {
+                            aimWorldPoint: source.aimWorldPoint,
+                            launchSpeed: source.launchSpeed
+                        }
+                        : {
+                            launchVelocity: source.launchVelocity,
+                            sourceVelocityScale: source.sourceVelocityScale
+                        }),
+                    sourceTick: targetFixedTick
+                };
+                writeGpuSpawnProgramRecord(spawnProgram, index, programRecord);
+                normalizedSpawns[index] = Object.freeze({
+                    ...programRecord,
+                    destinationHandle,
+                    sourceHandle,
+                    finalFlags
+                });
+            }
+            writeGpuSpawnProgramHeader(spawnProgram, sourceRelativeSpawns.length);
+            readbackSlot = this.#claimSpawnProgramReadbackSlot();
+            if (!readbackSlot) {
+                this.spawnProgramBackpressureCount++;
+                spawnRejectionReason = 'spawn-program-readback-capacity';
+                normalizedSpawns = [];
+                selectedSlots = [];
+                stagingStorage = null;
+                stagingStyles = null;
+                reusableCount = 0;
+                spawnProgram = createGpuSpawnProgramStorage(this.spawnProgramCapacity);
+            }
+        }
+        if (normalizedSpawns.length === 0) {
+            writeGpuSpawnProgramHeader(spawnProgram, 0);
         }
 
         try {
@@ -1554,10 +1596,13 @@ export class GpuCircleBodySimulation {
                 ? 'requires-rebuild'
                 : 'failed';
             return Object.freeze({
-                accepted: normalizedControls.length + normalizedSpawns.length,
-                rejected: 0,
-                reason: this.state,
-                requiresRecovery: true
+                ...freezeFixedProgramStageResult({
+                    controlAccepted: normalizedControls.length,
+                    spawnAccepted: normalizedSpawns.length,
+                    reason: this.state,
+                    requiresRecovery: true
+                }),
+                reason: this.state
             });
         }
 
@@ -1570,11 +1615,12 @@ export class GpuCircleBodySimulation {
             selectedSlots: Object.freeze(selectedSlots),
             readbackSlot
         };
-        return Object.freeze({
-            accepted: normalizedControls.length + normalizedSpawns.length,
-            rejected: 0,
-            controlCount: normalizedControls.length,
-            sourceRelativeSpawnCount: normalizedSpawns.length,
+        return freezeFixedProgramStageResult({
+            controlAccepted: normalizedControls.length,
+            spawnAccepted: normalizedSpawns.length,
+            spawnRejected: sourceRelativeSpawns.length - normalizedSpawns.length,
+            spawnReason: spawnRejectionReason,
+            reason: spawnRejectionReason,
             destinationHandles: Object.freeze(
                 normalizedSpawns.map((spawn) => spawn.destinationHandle)
             )
@@ -2984,6 +3030,7 @@ export class GpuCircleBodySimulation {
                         || record.sourceEntityId !== expected.sourceHandle.entityId
                         || record.sourceIncarnation
                             !== expected.sourceHandle.incarnation
+                        || record.modeFlags !== expected.modeFlags
                         || record.sourceTick !== queueEntry.sourceTick
                         || (record.result !== GPU_SPAWN_PROGRAM_RESULT.RESOLVED
                             && record.result

@@ -26,6 +26,9 @@ import { TheCore } from './the_core.js';
 import { TheCoreRenderer } from './the_core_renderer.js';
 import { TheTower } from './the_tower.js';
 import { TheTowerRenderer } from './the_tower_renderer.js';
+import {
+    GpuPrimaryProjectileController
+} from './projectile/gpu_primary_projectile_controller.js';
 import { TowerPlayerController } from './tower_player_controller.js';
 import { GpuTowerActorFacade } from './tower/gpu_tower_actor_facade.js';
 import {
@@ -126,6 +129,7 @@ export class GameObjectSystem {
         this.tower = null;
         this.cameraFollowTarget = null;
         this.towerController = null;
+        this.primaryProjectileController = null;
         this.playerControllables = [];
         this.physicsBodies = [];
         this.collidables = [];
@@ -184,6 +188,15 @@ export class GameObjectSystem {
                 integrity: this.coreIntegrity
             });
             this.playerControllables.push(this.tower);
+            if (this.gameplayWorldActorsEnabled) {
+                this.primaryProjectileController
+                    = new GpuPrimaryProjectileController({
+                        tower: this.tower,
+                        camera: this.camera,
+                        endpoint: this.enemySimulationEndpoint
+                    });
+                this.playerControllables.push(this.primaryProjectileController);
+            }
             this.cameraFollowTarget = assertCameraFollowTarget2D(this.tower);
             this.#armGpuWorldActors(this.lastCompletedEnemyFixedTick);
         } else {
@@ -362,6 +375,7 @@ export class GameObjectSystem {
             }
 
             let expectedControlCommandId = null;
+            let primaryProjectileShotReceipt = null;
             if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
                 && this.towerHandle) {
                 const targetFixedTick = this.getNextGpuLifecycleFixedTick();
@@ -376,6 +390,8 @@ export class GameObjectSystem {
                     return this.#pauseForGpuRecovery();
                 }
                 expectedControlCommandId = receipt.commandId;
+                primaryProjectileShotReceipt = this.primaryProjectileController
+                    ?.stageShotForFixedTick(targetFixedTick) ?? null;
             }
 
             const lifecycleResult = this.enemySimulationEndpoint
@@ -399,6 +415,12 @@ export class GameObjectSystem {
                 )).length !== 1) {
                     return this.#pauseForGpuRecovery();
                 }
+            }
+            if (primaryProjectileShotReceipt?.accepted === true) {
+                this.primaryProjectileController.finalizeFixedCommit(
+                    lifecycleResult.fixedCommands,
+                    proposedFixedTick
+                );
             }
             this.pendingEnemyFixedTick = proposedFixedTick;
         }
@@ -528,9 +550,11 @@ export class GameObjectSystem {
         }
         this.enemySimulationEndpoint.synchronizePresentation();
         this.waveDirector?.destroy();
+        this.primaryProjectileController?.resetGpuBinding();
         this.enemySimulationEndpoint.destroy();
         this.tower.resetGpuBinding();
         this.#installGpuEndpoint(replacementEndpoint);
+        this.primaryProjectileController?.bindGpuEndpoint(replacementEndpoint);
         this.waveDirector = replacementWaveDirector;
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
@@ -556,6 +580,8 @@ export class GameObjectSystem {
         this.physicsBodies.length = 0;
         this.towerController?.destroy();
         this.towerController = null;
+        this.primaryProjectileController?.destroy();
+        this.primaryProjectileController = null;
         this.waveDirector?.destroy();
         this.waveDirector = null;
         this.enemySimulationEndpoint.destroy();

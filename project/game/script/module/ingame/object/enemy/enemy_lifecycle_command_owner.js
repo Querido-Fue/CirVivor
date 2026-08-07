@@ -149,6 +149,69 @@ export class EnemyLifecycleCommandOwner {
         });
     }
 
+    /**
+     * 여러 spawn command를 같은 ingress transaction으로 예약합니다.
+     * 각 entry는 `{ intent, targetFixedTick, commandId? }`여야 하며, 하나라도
+     * 유효하지 않거나 command ID가 중복되면 queue/identity sequence를 바꾸지 않습니다.
+     */
+    requestSpawnBatch(requests) {
+        this.#assertUsable();
+        if (!Array.isArray(requests) || requests.length === 0) {
+            throw new TypeError('spawn batch는 하나 이상의 request 배열이어야 합니다.');
+        }
+
+        const commands = [];
+        const batchCommandIds = new Set();
+        let hasDuplicateCommandId = false;
+        for (let index = 0; index < requests.length; index++) {
+            const request = requests[index];
+            if (!request || typeof request !== 'object') {
+                throw new TypeError(`requests[${index}]는 spawn request 객체여야 합니다.`);
+            }
+            const targetFixedTick = requirePositiveSafeInteger(
+                request.targetFixedTick,
+                `requests[${index}].targetFixedTick`
+            );
+            const intent = normalizeSpawnIntent(request.intent);
+            const sequence = this.nextCommandSequence + index;
+            if (!Number.isSafeInteger(sequence) || sequence <= 0) {
+                throw new RangeError('spawn batch command sequence 공간이 고갈되었습니다.');
+            }
+            const commandId = this.#normalizeCommandId(request.commandId, sequence);
+            if (this.knownCommandIds.has(commandId)
+                || batchCommandIds.has(commandId)) {
+                hasDuplicateCommandId = true;
+            }
+            batchCommandIds.add(commandId);
+            commands.push(Object.freeze({
+                type: 'spawn',
+                commandId,
+                targetFixedTick,
+                sequence,
+                intent
+            }));
+        }
+        if (hasDuplicateCommandId) {
+            return Object.freeze({
+                accepted: false,
+                requestedCount: requests.length,
+                queuedCount: 0,
+                reason: 'duplicate-command'
+            });
+        }
+
+        for (const command of commands) {
+            this.knownCommandIds.add(command.commandId);
+        }
+        this.pendingCommands.push(...commands);
+        this.nextCommandSequence += commands.length;
+        return Object.freeze({
+            accepted: true,
+            requestedCount: commands.length,
+            queuedCount: commands.length
+        });
+    }
+
     /** stable handle despawn을 target fixed tick까지 보관합니다. */
     requestDespawn(handle, reason, targetFixedTick, commandId = null) {
         this.#assertUsable();
@@ -537,14 +600,21 @@ export class EnemyLifecycleCommandOwner {
     }
 
     #claimCommandId(commandId) {
-        const resolved = commandId === undefined || commandId === null
-            ? `enemy-lifecycle:${this.nextCommandSequence}`
-            : requireNonEmptyString(commandId, 'commandId');
+        const resolved = this.#normalizeCommandId(
+            commandId,
+            this.nextCommandSequence
+        );
         if (this.knownCommandIds.has(resolved)) {
             return null;
         }
         this.knownCommandIds.add(resolved);
         return resolved;
+    }
+
+    #normalizeCommandId(commandId, sequence) {
+        return commandId === undefined || commandId === null
+            ? `enemy-lifecycle:${sequence}`
+            : requireNonEmptyString(commandId, 'commandId');
     }
 
     #consumeCommands(consumedCommandIds) {

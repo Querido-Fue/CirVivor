@@ -1,5 +1,5 @@
 import {
-    GpuProjectileSpawnAdapter
+    createGpuProjectileSpawnIntent
 } from 'ingame/gpu_simulation_endpoint.js';
 import {
     GPU_BENCHMARK_ARENA_LAYOUT
@@ -100,7 +100,7 @@ function resolveBenchmarkSession(gameScene) {
             || !readNextGpuLifecycleFixedTick
             || !endpoint
             || typeof endpoint.getStatus !== 'function'
-            || typeof endpoint.requestSpawn !== 'function') {
+            || typeof endpoint.requestSpawnBatch !== 'function') {
             return null;
         }
         return { endpoint, readNextGpuLifecycleFixedTick };
@@ -267,64 +267,62 @@ export function requestGpuBenchmarkProjectileBatch(options = {}) {
         });
     }
 
-    let adapter;
+    const requests = [];
     try {
-        adapter = new GpuProjectileSpawnAdapter(session.endpoint, {
-            commandNamespace: GPU_BENCHMARK_PROJECTILE_COMMAND_NAMESPACE
-        });
-    } catch {
-        return createDiagnostic({
-            requestedCount,
-            targetFixedTick,
-            reason: 'invalid-endpoint',
-            nextSpawnSequence: initialSpawnSequence
-        });
-    }
-
-    let queuedCount = 0;
-    for (let itemIndex = 0; itemIndex < requestedCount; itemIndex++) {
-        const spawnSequence = initialSpawnSequence + itemIndex;
-        const radial = createRadialSpawnOptions(itemIndex, requestedCount);
-        let result;
-        try {
-            result = adapter.requestSpawn({
-                ...radial,
+        for (let itemIndex = 0; itemIndex < requestedCount; itemIndex++) {
+            const spawnSequence = initialSpawnSequence + itemIndex;
+            const radial = createRadialSpawnOptions(itemIndex, requestedCount);
+            requests.push(Object.freeze({
+                intent: createGpuProjectileSpawnIntent({
+                    ...radial,
+                    spawnSequence
+                }),
                 targetFixedTick,
-                spawnSequence,
                 commandId: createCommandId(
                     sessionGeneration,
                     batchSequence,
                     spawnSequence,
                     itemIndex
                 )
-            });
-        } catch {
-            return createDiagnostic({
-                requestedCount,
-                queuedCount,
-                targetFixedTick,
-                reason: 'spawn-request-error',
-                nextSpawnSequence: initialSpawnSequence + queuedCount
-            });
+            }));
         }
-        if (result?.accepted !== true) {
-            return createDiagnostic({
-                requestedCount,
-                queuedCount,
-                targetFixedTick,
-                reason: 'spawn-request-rejected',
-                nextSpawnSequence: initialSpawnSequence + queuedCount
-            });
-        }
-        queuedCount++;
+    } catch {
+        return createDiagnostic({
+            requestedCount,
+            targetFixedTick,
+            reason: 'spawn-request-error',
+            nextSpawnSequence: initialSpawnSequence
+        });
+    }
+
+    let result;
+    try {
+        result = session.endpoint.requestSpawnBatch(requests);
+    } catch {
+        return createDiagnostic({
+            requestedCount,
+            targetFixedTick,
+            reason: 'spawn-request-error',
+            nextSpawnSequence: initialSpawnSequence
+        });
+    }
+    if (result?.accepted !== true
+        || result.requestedCount !== requestedCount
+        || result.queuedCount !== requestedCount) {
+        return createDiagnostic({
+            requestedCount,
+            targetFixedTick,
+            reason: 'spawn-request-rejected',
+            nextSpawnSequence: initialSpawnSequence
+        });
     }
 
     return createDiagnostic({
         accepted: true,
         requestedCount,
-        queuedCount,
+        queuedCount: requestedCount,
         targetFixedTick,
         reason: 'queued',
-        nextSpawnSequence: initialSpawnSequence + queuedCount
+        nextSpawnSequence: initialSpawnSequence + requestedCount
     });
 }

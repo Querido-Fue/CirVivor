@@ -121,10 +121,22 @@ function createPrimitiveBackend(options = {}) {
                     entry.destinationSpawn
                 );
             }
+            const controlCount = plan.controls.length;
+            const spawnCount = plan.sourceRelativeSpawns.length;
             return {
-                accepted: plan.controls.length + plan.sourceRelativeSpawns.length,
+                accepted: controlCount + spawnCount,
                 rejected: 0,
-                requiresRecovery: false
+                requiresRecovery: false,
+                controls: {
+                    accepted: controlCount,
+                    rejected: 0,
+                    reason: null
+                },
+                sourceRelativeSpawns: {
+                    accepted: spawnCount,
+                    rejected: 0,
+                    reason: null
+                }
             };
         },
         drainCompletedSpawnProgramBatches(out = []) {
@@ -437,6 +449,61 @@ test('SpawnProgram completion은 event drain 전에 destination을 활성화하�
     endpoint.destroy();
 });
 
+test('endpoint는 spawn domain pressure에서 동일 tick control을 commit하고 reservation을 누수하지 않는다', () => {
+    const backend = createPrimitiveBackend();
+    backend.stageFixedPrograms = (plan) => {
+        backend.calls.push({ type: 'stageFixedPrograms', plan });
+        return {
+            accepted: plan.controls.length,
+            rejected: plan.sourceRelativeSpawns.length,
+            requiresRecovery: false,
+            controls: {
+                accepted: plan.controls.length,
+                rejected: 0,
+                reason: null
+            },
+            sourceRelativeSpawns: {
+                accepted: 0,
+                rejected: plan.sourceRelativeSpawns.length,
+                reason: 'spawn-program-capacity'
+            }
+        };
+    };
+    const endpoint = createEndpoint(backend);
+    const source = spawnSource(endpoint, 'pressure_source');
+
+    assert.equal(endpoint.requestBodyControl({
+        handle: source,
+        moveIntentX: 1,
+        moveIntentY: 0
+    }, 2, 'control:pressure').accepted, true);
+    assert.equal(endpoint.requestSourceRelativeSpawn({
+        sourceHandle: source,
+        destinationSpawn: createCanonicalSpawnIntent('pressure_destination'),
+        positionOffset: { x: 0, y: 0 },
+        launchVelocity: { x: 4, y: 0 },
+        sourceVelocityScale: 0
+    }, 2, 'spawn:pressure').accepted, true);
+
+    const committed = endpoint.commitAtFixedBoundary(2);
+    assert.equal(committed.state, 'committed-with-rejections');
+    assert.equal(committed.recoveryRequired, false);
+    assert.equal(committed.fixedCommands.controls.length, 1);
+    assert.equal(committed.fixedCommands.sourceRelativeSpawns.length, 0);
+    assert.deepEqual(
+        Array.from(committed.fixedCommands.rejected, ({ domain, code }) => ({
+            domain,
+            code
+        })),
+        [{ domain: 'spawn', code: 'spawn-program-capacity' }]
+    );
+    assert.equal(endpoint.getStatus().activeCount, 1);
+    assert.equal(endpoint.getStatus().reservedCount, 0);
+    assert.equal(endpoint.getStatus().fixedCommands.pendingDestinationCount, 0);
+    assert.equal(endpoint.requiresRecovery(), false);
+    endpoint.destroy();
+});
+
 test('SpawnProgram protocol failure는 같은 경계의 event/lifecycle/fixed submit을 모두 차단한다', () => {
     const backend = createPrimitiveBackend();
     const endpoint = createEndpoint(backend);
@@ -505,7 +572,7 @@ test('SpawnProgram protocol failure는 같은 경계의 event/lifecycle/fixed su
     endpoint.destroy();
 });
 
-test('새 optional API가 없는 injected legacy backend는 terminal throw 없이 fail closed 한다', () => {
+test('새 optional API가 없는 injected legacy backend의 spawn-only 거부는 terminal recovery 없이 fail closed한다', () => {
     const backend = createLegacyBackend();
     const endpoint = createEndpoint(backend);
     const source = spawnSource(endpoint, 'legacy_source');
@@ -536,6 +603,8 @@ test('새 optional API가 없는 injected legacy backend는 terminal throw 없�
     assert.equal(committed.recoveryRequired, false);
     assert.equal(committed.fixedCommands.rejected[0].code,
         'fixed-primitives-unsupported');
+    assert.equal(committed.fixedCommands.rejected[0].domain, 'spawn');
+    assert.equal(committed.fixedCommands.protocolFailure, null);
     assert.equal(endpoint.getStatus().reservedCount, 0);
     assert.equal(endpoint.requiresRecovery(), false);
     endpoint.destroy();

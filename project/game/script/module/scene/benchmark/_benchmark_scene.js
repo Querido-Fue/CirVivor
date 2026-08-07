@@ -138,6 +138,14 @@ const BENCHMARK_CHILD_INPUT_ACTION_SOURCE = Object.freeze({
     isPressed() {
         return false;
     },
+    getPointerPosition(out = {}) {
+        out.x = 0;
+        out.y = 0;
+        return out;
+    },
+    isPrimaryPointerPressed() {
+        return false;
+    },
     getWheelTotals(out = {}) {
         out.x = 0;
         out.y = 0;

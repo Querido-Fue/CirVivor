@@ -67,6 +67,9 @@ test('fixed primitive ABI의 header, control, spawn, tracked-pose stride와 offs
     assert.equal(spawn.RESULT, 28);
     assert.equal(spawn.POSITION_OFFSET_X, 32);
     assert.equal(spawn.POSITION_OFFSET_Y, 36);
+    assert.equal(spawn.VECTOR_X, 40);
+    assert.equal(spawn.VECTOR_Y, 44);
+    assert.equal(spawn.SCALAR, 48);
     assert.equal(spawn.LAUNCH_VELOCITY_X, 40);
     assert.equal(spawn.LAUNCH_VELOCITY_Y, 44);
     assert.equal(spawn.SOURCE_VELOCITY_SCALE, 48);
@@ -122,7 +125,7 @@ test('body-control program은 16-byte header와 32-byte record의 little-endian 
     assert.equal(header.status, GPU_FIXED_PROGRAM_STATUS.OK);
 });
 
-test('SpawnProgram v1은 16-byte header와 64-byte record의 exact binary fixture를 round-trip한다', () => {
+test('SpawnProgram v2 velocity mode는 16-byte header와 64-byte record의 exact binary fixture를 round-trip한다', () => {
     const storage = createGpuSpawnProgramStorage(1);
     writeGpuSpawnProgramHeader(storage, 1);
     writeGpuSpawnProgramRecord(storage, 0, {
@@ -142,7 +145,7 @@ test('SpawnProgram v1은 16-byte header와 64-byte record의 exact binary fixtur
 
     assert.equal(storage.buffer.byteLength, 16 + 64);
     assert.equal(toHex(storage.buffer), [
-        '01000000010000000100000000000000',
+        '02000000010000000100000000000000',
         '03000000040302010500000007000000',
         '0d0c0b0a0b0000000100000000000000',
         '0000c03f000010c000008040000000bf',
@@ -166,17 +169,118 @@ test('SpawnProgram v1은 16-byte header와 64-byte record의 exact binary fixtur
     assert.equal(record.result, GPU_SPAWN_PROGRAM_RESULT.PENDING);
     assert.equal(record.positionOffset.x, 1.5);
     assert.equal(record.positionOffset.y, -2.25);
+    assert.equal(record.vector.x, 4);
+    assert.equal(record.vector.y, -0.5);
+    assert.equal(record.scalar, 0.25);
     assert.equal(record.launchVelocity.x, 4);
     assert.equal(record.launchVelocity.y, -0.5);
     assert.equal(record.sourceVelocityScale, 0.25);
     assert.equal(record.sourceTick, 37);
     assert.equal(record.reserved0, 0);
     assert.equal(record.reserved1, 0);
+    assert.equal(Object.isFrozen(record), true);
+    assert.equal(Object.isFrozen(record.positionOffset), true);
+    assert.equal(Object.isFrozen(record.vector), true);
+    assert.strictEqual(record.vector, record.launchVelocity);
+});
+
+test('SpawnProgram v2 aim-point mode는 동일 64-byte record의 vector/scalar offset을 사용한다', () => {
+    const storage = createGpuSpawnProgramStorage(1);
+    writeGpuSpawnProgramHeader(storage, 1);
+    writeGpuSpawnProgramRecord(storage, 0, {
+        destinationSlot: 3,
+        destinationEntityId: 0x01020304,
+        destinationIncarnation: 5,
+        sourceSlot: 7,
+        sourceEntityId: 0x0a0b0c0d,
+        sourceIncarnation: 11,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
+        positionOffset: { x: -1, y: 2.5 },
+        aimWorldPoint: { x: 8, y: -4 },
+        launchSpeed: 18,
+        sourceTick: 37
+    });
+
+    assert.equal(storage.buffer.byteLength, 16 + 64);
+    assert.equal(toHex(storage.buffer), [
+        '02000000010000000100000000000000',
+        '03000000040302010500000007000000',
+        '0d0c0b0a0b0000000200000000000000',
+        '000080bf0000204000000041000080c0',
+        '00009041250000000000000000000000'
+    ].join(''));
+
+    const record = readGpuSpawnProgramRecord(storage, 0);
+    assert.equal(record.modeFlags, GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT);
+    assert.deepEqual({ ...record.positionOffset }, { x: -1, y: 2.5 });
+    assert.deepEqual({ ...record.vector }, { x: 8, y: -4 });
+    assert.strictEqual(record.vector, record.aimWorldPoint);
+    assert.equal(record.scalar, 18);
+    assert.equal(record.launchSpeed, 18);
+    assert.equal('launchVelocity' in record, false);
+    assert.equal('sourceVelocityScale' in record, false);
+    assert.equal(Object.isFrozen(record.aimWorldPoint), true);
+});
+
+test('SpawnProgram v2 writer는 mode별 forbidden field와 result/reserved 계약을 fail closed한다', () => {
+    const storage = createGpuSpawnProgramStorage(1);
+    const common = {
+        destinationSlot: 1,
+        destinationEntityId: 2,
+        destinationIncarnation: 3,
+        sourceSlot: 4,
+        sourceEntityId: 5,
+        sourceIncarnation: 6,
+        positionOffset: { x: 0, y: 0 },
+        sourceTick: 7
+    };
+
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
+        launchVelocity: { x: 1, y: 0 },
+        sourceVelocityScale: 0,
+        aimWorldPoint: { x: 4, y: 5 }
+    }), /aimWorldPoint\/launchSpeed/);
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
+        aimWorldPoint: { x: 4, y: 5 },
+        launchSpeed: 18,
+        launchVelocity: { x: 1, y: 0 }
+    }), /launchVelocity\/sourceVelocityScale/);
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
+        aimWorldPoint: { x: 4, y: 5 },
+        launchSpeed: 0
+    }), /launchSpeed/);
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: 99,
+        vector: { x: 1, y: 0 },
+        scalar: 0
+    }), /v2 ingress/);
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
+        launchVelocity: { x: 1, y: 0 },
+        sourceVelocityScale: 0,
+        result: GPU_SPAWN_PROGRAM_RESULT.RESOLVED
+    }), /v2 ingress/);
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
+        launchVelocity: { x: 1, y: 0 },
+        sourceVelocityScale: 0,
+        reserved0: 1
+    }), /v2 ingress/);
 });
 
 test('program header의 version mismatch와 capacity 초과는 host에서 fail closed한다', () => {
     const spawnStorage = createGpuSpawnProgramStorage(1);
-    new DataView(spawnStorage.buffer).setUint32(0, 2, true);
+    assert.equal(GPU_SPAWN_PROGRAM_ABI_VERSION, 2);
+    new DataView(spawnStorage.buffer).setUint32(0, 1, true);
     assert.throws(
         () => readGpuSpawnProgramHeader(spawnStorage),
         /ABI version mismatch/

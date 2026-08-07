@@ -235,6 +235,7 @@ class PrimitiveGpuBackend {
 
 function createRuntimeFixture({ ready, enemyWaveEnabled = false }) {
     const pressed = new Set();
+    const primaryPointer = { pressed: false, x: 0, y: 0 };
     const circleDraws = [];
     const squareDraws = [];
     const animations = [];
@@ -245,6 +246,14 @@ function createRuntimeFixture({ ready, enemyWaveEnabled = false }) {
         inputActionSource: {
             isPressed(actionId) {
                 return pressed.has(actionId);
+            },
+            getPointerPosition(out) {
+                out.x = primaryPointer.x;
+                out.y = primaryPointer.y;
+                return out;
+            },
+            isPrimaryPointerPressed() {
+                return primaryPointer.pressed;
             },
             getWheelTotals(out) {
                 out.x = 0;
@@ -316,10 +325,61 @@ function createRuntimeFixture({ ready, enemyWaveEnabled = false }) {
         circleDraws,
         gameSystem,
         pressed,
+        primaryPointer,
         squareDraws,
         viewport
     };
 }
+
+test('GameSystem은 active GPU Tower의 held LMB를 source-relative aim request로 같은 fixed boundary에 stage한다', () => {
+    const fixture = createRuntimeFixture({
+        ready: true,
+        enemyWaveEnabled: false
+    });
+    const { backend, gameSystem, primaryPointer } = fixture;
+    assert.equal(gameSystem.enter(), true);
+    const objectSystem = gameSystem.getObjectSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    backend.setEventProtocol(createProtocol(endpoint));
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const actorStatus = objectSystem.getGpuWorldActorStatus();
+    assert.ok(actorStatus.towerHandle);
+    const controller = objectSystem.primaryProjectileController;
+    assert.ok(controller);
+    assert.equal(controller.getStatus().shotSequence, 0);
+
+    primaryPointer.pressed = true;
+    primaryPointer.x = 127;
+    primaryPointer.y = 281;
+    assert.equal(gameSystem.fixedUpdate(), true);
+
+    const staged = backend.calls.filter(
+        ({ type }) => type === 'stageFixedPrograms'
+    );
+    assert.equal(staged.length, 1);
+    assert.equal(staged[0].targetFixedTick, 2);
+    assert.equal(staged[0].controls.length, 1);
+    assert.equal(staged[0].sourceRelativeSpawns.length, 1);
+    const shot = staged[0].sourceRelativeSpawns[0];
+    assert.equal(
+        controller.getStatus().lastCommittedShot.commandId,
+        `gpu-primary-bullet:1:${actorStatus.towerHandle.entityId}:${actorStatus.towerHandle.incarnation}:2:0`
+    );
+    assert.equal(shot.sourceHandle.entityId, actorStatus.towerHandle.entityId);
+    assert.equal(shot.sourceHandle.incarnation, actorStatus.towerHandle.incarnation);
+    assert.equal(controller.getStatus().shotSequence, 1);
+    assert.equal(controller.getStatus().nextEligibleFixedTick, 29);
+
+    primaryPointer.pressed = false;
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const afterRelease = backend.calls.filter(
+        ({ type }) => type === 'stageFixedPrograms'
+    );
+    assert.equal(afterRelease.length, 2);
+    assert.equal(afterRelease[1].sourceRelativeSpawns.length, 0);
+    gameSystem.destroy();
+});
 
 function countCalls(backend, type) {
     return backend.calls.filter((call) => call.type === type).length;
@@ -654,7 +714,7 @@ test('unsupported enter는 CPU_NO_WAVE_FALLBACK에서 Tower physics/collision/re
         ready: false,
         enemyWaveEnabled: true
     });
-    const { backend, circleDraws, gameSystem, pressed } = fixture;
+    const { backend, circleDraws, gameSystem, pressed, primaryPointer } = fixture;
     assert.equal(gameSystem.enter(), true);
     const objectSystem = gameSystem.getObjectSystem();
     const tower = objectSystem.getTower();
@@ -677,6 +737,7 @@ test('unsupported enter는 CPU_NO_WAVE_FALLBACK에서 Tower physics/collision/re
     assert.ok(objectSystem.tileCollisionResolver);
     assert.ok(objectSystem.towerController);
     assert.ok(objectSystem.towerRenderer);
+    assert.equal(objectSystem.primaryProjectileController, null);
     assert.equal(isPhysicsBodyOwner(tower), true);
     assert.equal(isPhysicsBody2D(towerBody), true);
     assert.equal(isCollidable2D(tower.getCollider()), true);
@@ -709,6 +770,9 @@ test('unsupported enter는 CPU_NO_WAVE_FALLBACK에서 Tower physics/collision/re
         `actual=${tower.position.x}, expected=${expectedLeftBoundary}`
     );
     assert.equal(towerBody.getVelocity().x, 0);
+    primaryPointer.pressed = true;
+    primaryPointer.x = 321;
+    primaryPointer.y = 123;
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.equal(gameSystem.getFixedTick(), 3);
 

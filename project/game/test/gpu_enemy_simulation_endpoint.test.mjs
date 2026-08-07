@@ -312,6 +312,66 @@ test('GPU enemy endpoint는 lifecycle mutation을 target fixed boundary까지 �
     endpoint.destroy();
 });
 
+test('generic GPU endpoint는 atomic spawn batch ingress를 lifecycle owner에 위임한다', () => {
+    const backend = createFakeBackend({ capacity: 4 });
+    const endpoint = createGpuSimulationEndpoint({
+        gpuSimulationBackend: backend
+    });
+    endpoint.init({ id: 'batch-ingress-map' });
+
+    const requested = endpoint.requestSpawnBatch([
+        {
+            intent: createSpawnIntent(10),
+            targetFixedTick: 1,
+            commandId: 'endpoint:batch:0'
+        },
+        {
+            intent: createSpawnIntent(11),
+            targetFixedTick: 1,
+            commandId: 'endpoint:batch:1'
+        }
+    ]);
+    assert.deepEqual({ ...requested }, {
+        accepted: true,
+        requestedCount: 2,
+        queuedCount: 2
+    });
+    assert.equal(endpoint.getPendingCommandCount(), 2);
+
+    const duplicate = endpoint.requestSpawnBatch([
+        {
+            intent: createSpawnIntent(12),
+            targetFixedTick: 1,
+            commandId: 'endpoint:batch:duplicate'
+        },
+        {
+            intent: createSpawnIntent(13),
+            targetFixedTick: 1,
+            commandId: 'endpoint:batch:duplicate'
+        }
+    ]);
+    assert.deepEqual({ ...duplicate }, {
+        accepted: false,
+        requestedCount: 2,
+        queuedCount: 0,
+        reason: 'duplicate-command'
+    });
+    assert.equal(endpoint.getPendingCommandCount(), 2);
+
+    const committed = endpoint.commitAtFixedBoundary(1);
+    assert.equal(committed.state, 'committed');
+    assert.equal(committed.spawned.length, 2);
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.deepEqual(
+        backend.calls
+            .filter(({ type }) => type === 'spawnBodies')[0]
+            .bodies
+            .map(({ spawnSequence }) => spawnSequence),
+        [10, 11]
+    );
+    endpoint.destroy();
+});
+
 test('GPU enemy endpoint는 fixed/presentation/draw/status를 위임하고 한 번만 teardown한다', () => {
     const backend = createFakeBackend({ capacity: 6 });
     let receivedBackendDependencies = null;

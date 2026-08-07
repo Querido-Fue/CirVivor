@@ -33,7 +33,19 @@ export class InputActionMapper {
                 wheelDelta: 0
             }
         };
+        this.primaryPointerFireAction = {
+            type: PLAYER_ACTION_TYPES.PRIMARY_POINTER_FIRE,
+            payload: {
+                pressed: false,
+                viewportX: 0,
+                viewportY: 0
+            }
+        };
+        this.pointerPosition = { x: 0, y: 0 };
+        this.lastPointerX = 0;
+        this.lastPointerY = 0;
         this.wheelTotals = { x: 0, y: 0 };
+        this.lastWheelX = 0;
         this.lastWheelY = 0;
         this.wheelBaselineInitialized = false;
     }
@@ -58,6 +70,36 @@ export class InputActionMapper {
         this.moveAction.payload.x = x;
         this.moveAction.payload.y = y;
         return this.moveAction;
+    }
+
+    /**
+     * primary pointer의 held 상태와 viewport 좌표를 재사용 PlayerAction으로 변환합니다.
+     * release도 fixed tick마다 `pressed: false` action으로 전달합니다.
+     * @param {{getPointerPosition?:(out:{x:number,y:number})=>{x:number,y:number},isPrimaryPointerPressed?:()=>boolean}} inputSource - pointer 입력 소스입니다.
+     * @returns {{type:string,payload:{pressed:boolean,viewportX:number,viewportY:number}}} PRIMARY_POINTER_FIRE action입니다.
+     */
+    mapPrimaryPointerFireAction(inputSource) {
+        const pointerResult = inputSource?.getPointerPosition?.(
+            this.pointerPosition
+        );
+        const pointer = pointerResult && pointerResult !== this.pointerPosition
+            ? pointerResult
+            : this.pointerPosition;
+        const rawX = Number(pointer?.x);
+        const rawY = Number(pointer?.y);
+        if (Number.isFinite(rawX)) {
+            this.lastPointerX = rawX;
+        }
+        if (Number.isFinite(rawY)) {
+            this.lastPointerY = rawY;
+        }
+        this.pointerPosition.x = this.lastPointerX;
+        this.pointerPosition.y = this.lastPointerY;
+        this.primaryPointerFireAction.payload.pressed = inputSource
+            ?.isPrimaryPointerPressed?.() === true;
+        this.primaryPointerFireAction.payload.viewportX = this.lastPointerX;
+        this.primaryPointerFireAction.payload.viewportY = this.lastPointerY;
+        return this.primaryPointerFireAction;
     }
 
     /**

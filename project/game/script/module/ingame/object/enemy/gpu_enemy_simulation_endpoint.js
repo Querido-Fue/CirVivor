@@ -167,7 +167,11 @@ export class GpuEnemySimulationEndpoint {
         this.fixedCommandOwner = new GpuFixedCommandOwner(
             this.fixedPrimitiveBackendPort,
             this.registry,
-            { commandCapacity: options.controlCommandCapacity }
+            {
+                controlCommandCapacity: options.controlCommandCapacity,
+                sourceRelativeSpawnCommandCapacity:
+                    options.sourceRelativeSpawnCommandCapacity
+            }
         );
         this.completedEventSnapshotCapacity = requirePositiveSafeInteger(
             options.completedEventSnapshotCapacity
@@ -224,6 +228,12 @@ export class GpuEnemySimulationEndpoint {
             targetFixedTick,
             commandId
         );
+    }
+
+    /** 다음 fixed 경계들에 적용할 spawn batch를 ingress에서 원자적으로 예약합니다. */
+    requestSpawnBatch(requests) {
+        this.#assertUsable();
+        return this.lifecycleCommandOwner.requestSpawnBatch(requests);
     }
 
     /** 다음 fixed 경계에 적용할 despawn을 예약합니다. */

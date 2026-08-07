@@ -4,11 +4,14 @@ import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const {
+    GPU_PROJECTILE_SPAWN_MODE,
     GPU_PROJECTILE_CONTACT_HANDLER_FLAGS,
     GPU_PROJECTILE_WORLD_KIND_ID,
+    GPU_SPAWN_PROGRAM_MODE,
     GpuProjectileSpawnAdapter,
     createGpuProjectileCommandId,
     createGpuProjectileSpawnIntent,
+    requestGpuProjectile,
     requestGpuProjectileSpawn
 } = await loadGameModule(
     'ingame/gpu_simulation_endpoint.js'
@@ -38,10 +41,20 @@ function createDefinition(overrides = {}) {
 
 function createFakeEndpoint() {
     const calls = [];
+    const sourceRelativeCalls = [];
     return {
         calls,
+        sourceRelativeCalls,
         requestSpawn(intent, targetFixedTick, commandId) {
             calls.push({ intent, targetFixedTick, commandId });
+            return Object.freeze({
+                accepted: true,
+                targetFixedTick,
+                commandId
+            });
+        },
+        requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
+            sourceRelativeCalls.push({ intent, targetFixedTick, commandId });
             return Object.freeze({
                 accepted: true,
                 targetFixedTick,
@@ -201,6 +214,144 @@ test('adapter instance는 endpoint/namespace를 보관하고 explicit command ID
     assert.equal(result.commandId, 'weapon-system-owned-command');
     assert.equal(endpoint.calls[0].commandId, 'weapon-system-owned-command');
     assert.equal(endpoint.calls[0].intent.spawnSequence, 2);
+});
+
+test('generic mode API는 velocity source-relative payload를 불변 GPU SpawnProgram ingress로 보낸다', () => {
+    const endpoint = createFakeEndpoint();
+    const sourceHandle = { entityId: 11, incarnation: 3 };
+    const receipt = requestGpuProjectile({
+        endpoint,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_VELOCITY,
+        definition: createDefinition(),
+        sourceHandle,
+        positionOffset: { x: 0.25, y: -0.5 },
+        launchVelocity: { x: 18, y: 0 },
+        sourceVelocityScale: 0.5,
+        targetFixedTick: 13,
+        spawnSequence: 4,
+        producerId: 'tower-primary-weapon',
+        sourceAbilityId: 'primary-pointer-fire',
+        commandNamespace: 'primary-projectile'
+    });
+
+    assert.equal(receipt.accepted, true);
+    assert.equal(endpoint.calls.length, 0);
+    assert.equal(endpoint.sourceRelativeCalls.length, 1);
+    const call = endpoint.sourceRelativeCalls[0];
+    assert.equal(call.targetFixedTick, 13);
+    assert.equal(
+        call.commandId,
+        'primary-projectile:11:3:13:4:benchmark_round_01'
+    );
+    assert.equal(
+        call.intent.modeFlags,
+        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY
+    );
+    assert.deepEqual({ ...call.intent.sourceHandle }, sourceHandle);
+    assert.deepEqual({ ...call.intent.positionOffset }, { x: 0.25, y: -0.5 });
+    assert.deepEqual({ ...call.intent.launchVelocity }, { x: 18, y: 0 });
+    assert.equal(call.intent.sourceVelocityScale, 0.5);
+    assert.deepEqual(
+        { ...call.intent.destinationSpawn.position },
+        { x: 0, y: 0 }
+    );
+    assert.deepEqual(
+        { ...call.intent.destinationSpawn.velocity },
+        { x: 0, y: 0 }
+    );
+    assert.equal(call.intent.destinationSpawn.sourceEntityId, 11);
+    assert.equal(call.intent.destinationSpawn.sourceIncarnation, 3);
+    assert.equal(call.intent.destinationSpawn.producerId, 'tower-primary-weapon');
+    assert.equal(call.intent.destinationSpawn.sourceAbilityId, 'primary-pointer-fire');
+    assert.equal(Object.isFrozen(call.intent), true);
+    assert.equal(Object.isFrozen(call.intent.sourceHandle), true);
+    assert.equal(Object.isFrozen(call.intent.positionOffset), true);
+    assert.equal(Object.isFrozen(call.intent.launchVelocity), true);
+    assert.equal(Object.isFrozen(call.intent.destinationSpawn), true);
+    assert.equal(Object.isFrozen(call.intent.destinationSpawn.position), true);
+    assert.equal(Object.isFrozen(call.intent.destinationSpawn.velocity), true);
+});
+
+test('adapter aim-point mode는 CPU pose 없이 world aim/speed만 source-relative endpoint에 전달한다', () => {
+    const endpoint = createFakeEndpoint();
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'tower-primary'
+    });
+    const result = adapter.requestProjectile({
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+        definition: createDefinition(),
+        sourceHandle: { entityId: 17, incarnation: 5 },
+        positionOffset: { x: 0, y: 0 },
+        aimWorldPoint: { x: -8, y: 3 },
+        launchSpeed: 18,
+        targetFixedTick: 21,
+        spawnSequence: 7
+    });
+
+    assert.equal(result.accepted, true);
+    assert.equal(endpoint.calls.length, 0);
+    assert.equal(endpoint.sourceRelativeCalls.length, 1);
+    const intent = endpoint.sourceRelativeCalls[0].intent;
+    assert.equal(intent.modeFlags, GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT);
+    assert.deepEqual({ ...intent.aimWorldPoint }, { x: -8, y: 3 });
+    assert.equal(intent.launchSpeed, 18);
+    assert.equal('launchVelocity' in intent, false);
+    assert.equal('sourceVelocityScale' in intent, false);
+    assert.equal(Object.isFrozen(intent.aimWorldPoint), true);
+});
+
+test('generic mode API는 mode별 absolute/source-relative forbidden field를 fail-fast한다', () => {
+    const endpoint = createFakeEndpoint();
+    const definition = createDefinition();
+    const sourceHandle = { entityId: 11, incarnation: 3 };
+    const common = {
+        endpoint,
+        definition,
+        targetFixedTick: 5,
+        spawnSequence: 1
+    };
+
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE,
+        position: { x: 0, y: 0 },
+        velocity: { x: 1, y: 0 },
+        launchSpeed: 18
+    }), /ABSOLUTE mode/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+        sourceHandle,
+        position: { x: 0, y: 0 },
+        positionOffset: { x: 0, y: 0 },
+        aimWorldPoint: { x: 1, y: 0 },
+        launchSpeed: 18
+    }), /position/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+        sourceHandle,
+        positionOffset: { x: 0, y: 0 },
+        aimWorldPoint: { x: 1, y: 0 },
+        launchSpeed: 18,
+        sourceVelocityScale: 0
+    }), /sourceVelocityScale/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_VELOCITY,
+        sourceHandle,
+        positionOffset: { x: 0, y: 0 },
+        launchVelocity: { x: 1, y: 0 },
+        aimWorldPoint: { x: 1, y: 0 }
+    }), /aimWorldPoint/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: 'tracked-pose-relative',
+        sourceHandle,
+        positionOffset: { x: 0, y: 0 }
+    }), /지원하지 않는/);
+    assert.equal(endpoint.calls.length, 0);
+    assert.equal(endpoint.sourceRelativeCalls.length, 0);
 });
 
 test('command ID helper와 spawn intent는 잘못된 identity/수치를 fail-fast한다', () => {

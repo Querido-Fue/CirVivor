@@ -12,6 +12,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/enemy_catalog_data.js',
     'data/object/enemy/enemy_shape_geometry_data.js',
     'data/object/core/the_core_data.js',
+    'data/object/projectile/basic_bullet_data.js',
     'data/object/tower/the_tower_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'module/ingame/contract/tile_navigation_contract.js',

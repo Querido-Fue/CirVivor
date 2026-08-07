@@ -138,6 +138,8 @@ export function createGpuRegistryMetadata(intent) {
         definitionId: intent.definitionId,
         spawnSequence: intent.spawnSequence,
         sourceEntityId: intent.sourceEntityId,
-        sourceIncarnation: intent.sourceIncarnation
+        sourceIncarnation: intent.sourceIncarnation,
+        producerId: intent.producerId,
+        sourceAbilityId: intent.sourceAbilityId
     };
 }

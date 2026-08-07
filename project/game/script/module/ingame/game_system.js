@@ -13,7 +13,7 @@ import { selectGameWorldSessionMode } from './game_world_session_mode.js';
 export class GameSystem {
     /**
      * @param {object} dependencies - 엔진 adapter로부터 주입된 의존성입니다.
-     * @param {{isPressed:(actionId:string)=>boolean,getWheelTotals:(out:object)=>object}} dependencies.inputActionSource - 의미 입력 소스입니다.
+     * @param {{isPressed:(actionId:string)=>boolean,getPointerPosition:(out:{x:number,y:number})=>{x:number,y:number},isPrimaryPointerPressed:()=>boolean,getWheelTotals:(out:object)=>object}} dependencies.inputActionSource - 의미 입력 소스입니다.
      * @param {{animate:(owner:object,properties:object)=>object}} dependencies.animationPort - 표현 애니메이션 포트입니다.
      * @param {{getDelta?:()=>number,getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
@@ -23,6 +23,8 @@ export class GameSystem {
     constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
             || typeof dependencies.inputActionSource.isPressed !== 'function'
+            || typeof dependencies.inputActionSource.getPointerPosition !== 'function'
+            || typeof dependencies.inputActionSource.isPrimaryPointerPressed !== 'function'
             || typeof dependencies.inputActionSource.getWheelTotals !== 'function'
             || typeof dependencies?.animationPort?.animate !== 'function'
             || typeof dependencies?.timePort?.getFixedDelta !== 'function'
@@ -107,7 +109,8 @@ export class GameSystem {
     }
 
     /**
-     * 이동 의미 입력을 MOVE_VECTOR로 변환·전달한 뒤 오브젝트 fixed-step을 실행합니다.
+     * 같은 fixed input snapshot에서 이동·primary pointer 의미 입력을 순서대로 전달한 뒤
+     * 오브젝트 fixed-step을 실행합니다.
      * @returns {boolean} GPU 적과 플레이어가 같은 fixed tick을 완료했는지 여부입니다.
      */
     fixedUpdate() {
@@ -117,7 +120,10 @@ export class GameSystem {
         const moveAction = this.inputActionMapper.mapMoveAction(
             this.dependencies.inputActionSource
         );
+        const primaryPointerFireAction = this.inputActionMapper
+            .mapPrimaryPointerFireAction(this.dependencies.inputActionSource);
         this.playerControlRouter.dispatch(moveAction);
+        this.playerControlRouter.dispatch(primaryPointerFireAction);
         const proposedFixedTick = this.fixedTick + 1;
         const advanced = this.objectSystem.fixedUpdate(
             this.dependencies.timePort.getFixedDelta(),

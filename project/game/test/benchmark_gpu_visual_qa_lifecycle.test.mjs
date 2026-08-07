@@ -512,6 +512,14 @@ test('GPU-only benchmark는 기능 명령을 GPU 적과 CPU 보조 월드에 적
         false
     );
     assert.deepEqual(
+        { ...children[0].options.dependencies.inputActionSource.getPointerPosition({}) },
+        { x: 0, y: 0 }
+    );
+    assert.equal(
+        children[0].options.dependencies.inputActionSource.isPrimaryPointerPressed(),
+        false
+    );
+    assert.deepEqual(
         { ...children[0].options.dependencies.inputActionSource.getWheelTotals({}) },
         { x: 0, y: 0 }
     );

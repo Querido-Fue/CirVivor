@@ -55,7 +55,8 @@ const SPAWN_PROGRAM_ABI_VERSION: u32 = ${GPU_SPAWN_PROGRAM_ABI_VERSION}u;
 const FIXED_PROGRAM_STATUS_ABI_MISMATCH: u32 = ${GPU_FIXED_PROGRAM_STATUS.ABI_MISMATCH}u;
 const FIXED_PROGRAM_STATUS_CAPACITY_EXCEEDED: u32 = ${GPU_FIXED_PROGRAM_STATUS.CAPACITY_EXCEEDED}u;
 const FIXED_PROGRAM_STATUS_RECORD_INVALID: u32 = ${GPU_FIXED_PROGRAM_STATUS.RECORD_INVALID}u;
-const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TICK_START: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TICK_START}u;
+const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY}u;
+const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT}u;
 const SPAWN_PROGRAM_RESULT_PENDING: u32 = ${GPU_SPAWN_PROGRAM_RESULT.PENDING}u;
 const SPAWN_PROGRAM_RESULT_RESOLVED: u32 = ${GPU_SPAWN_PROGRAM_RESULT.RESOLVED}u;
 const SPAWN_PROGRAM_RESULT_SOURCE_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID}u;
@@ -249,8 +250,8 @@ struct SpawnProgramRecord {
     mode_flags: u32,
     result: u32,
     position_offset: vec2f,
-    launch_velocity: vec2f,
-    source_velocity_scale: f32,
+    vector: vec2f,
+    scalar: f32,
     source_tick: u32,
     reserved_0: u32,
     reserved_1: u32,
@@ -649,8 +650,20 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
         return;
     }
     let program = spawn_program.records[program_index];
+    let supported_mode = program.mode_flags
+            == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY
+        || program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT;
+    let finite_payload = all(program.position_offset <= vec2f(3.402823466e+38))
+        && all(program.position_offset >= vec2f(-3.402823466e+38))
+        && all(program.vector <= vec2f(3.402823466e+38))
+        && all(program.vector >= vec2f(-3.402823466e+38))
+        && program.scalar <= 3.402823466e+38
+        && program.scalar >= -3.402823466e+38;
     if (program.result != SPAWN_PROGRAM_RESULT_PENDING
-        || program.mode_flags != SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TICK_START
+        || !supported_mode
+        || !finite_payload
+        || (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT
+            && !(program.scalar > 0.0))
         || program.source_tick == 0u
         || program.reserved_0 != 0u
         || program.reserved_1 != 0u
@@ -708,8 +721,22 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
 
     let source_physics = physics.values[program.source_slot];
     let destination_position = source_physics.position + program.position_offset;
-    let destination_velocity = program.launch_velocity
-        + (source_physics.velocity * program.source_velocity_scale);
+    var destination_velocity = program.vector
+        + (source_physics.velocity * program.scalar);
+    if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT) {
+        var launch_direction = program.vector - source_physics.position;
+        var launch_direction_length_squared = dot(launch_direction, launch_direction);
+        if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+            launch_direction = source_physics.velocity;
+            launch_direction_length_squared = dot(launch_direction, launch_direction);
+        }
+        if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+            launch_direction = vec2f(1.0, 0.0);
+        } else {
+            launch_direction *= inverseSqrt(launch_direction_length_squared);
+        }
+        destination_velocity = launch_direction * program.scalar;
+    }
     physics.values[program.destination_slot].position = destination_position;
     physics.values[program.destination_slot].velocity = destination_velocity;
     temporaries.values[program.destination_slot].previous_position

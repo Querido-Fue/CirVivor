@@ -17,6 +17,7 @@ const {
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
     GPU_FIXED_PRIMITIVE_ABI,
+    GPU_SPAWN_PROGRAM_MODE,
     GPU_SPAWN_PROGRAM_RESULT
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 const gameModuleGlobal = GpuCircleBodySimulation.constructor('return globalThis')();
@@ -56,8 +57,11 @@ function createSourceRelativeSpawn({
     sourceEntityId = 1,
     sourceIncarnation = 1,
     destinationEntityId,
-    destinationIncarnation = 1
+    destinationIncarnation = 1,
+    modeFlags = GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY
 }) {
+    const isAimPoint = modeFlags
+        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
     return {
         sourceHandle: {
             entityId: sourceEntityId,
@@ -72,9 +76,15 @@ function createSourceRelativeSpawn({
             radius: 0.1,
             inverseMass: 1
         },
+        modeFlags,
         positionOffset: { x: 0.25, y: -0.5 },
-        launchVelocity: { x: 4, y: 1 },
-        sourceVelocityScale: 0.5
+        ...(isAimPoint ? {
+            aimWorldPoint: { x: 7, y: -3 },
+            launchSpeed: 18
+        } : {
+            launchVelocity: { x: 4, y: 1 },
+            sourceVelocityScale: 0.5
+        })
     };
 }
 
@@ -378,7 +388,13 @@ class FakeGpuDevice {
                     size
                 });
                 if (target.label.includes('event-readback')) {
-                    device.#writeEventReadbackCopy(source, target, targetOffset);
+                    device.#writeEventReadbackCopy(
+                        source,
+                        sourceOffset,
+                        target,
+                        targetOffset,
+                        size
+                    );
                     return;
                 }
                 new Uint8Array(target.data, targetOffset, size).set(
@@ -474,7 +490,13 @@ class FakeGpuDevice {
         return result;
     }
 
-    #writeEventReadbackCopy(source, target, targetOffset) {
+    #writeEventReadbackCopy(source, sourceOffset, target, targetOffset, size) {
+        if (source.label.includes('body-control-program')) {
+            new Uint8Array(target.data, targetOffset, size).set(
+                new Uint8Array(source.data, sourceOffset, size)
+            );
+            return;
+        }
         if (source.label.includes('contact-state')) {
             const payload = this.eventPayloads[this.eventPayloadCursor++] ?? {};
             target.eventPayload = payload;
@@ -1284,7 +1306,7 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
     }
 });
 
-test('mixed fixed program의 capacity/stale preflight reject는 control과 destination을 zero-partial로 보존한다', () => {
+test('control capacity/contract failure는 hard recovery이고 SpawnProgram capacity는 control-only stage로 격리한다', () => {
     const restoreGlobals = installFakeWebGpuGlobals();
     const device = new FakeGpuDevice();
     const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
@@ -1313,10 +1335,19 @@ test('mixed fixed program의 capacity/stale preflight reject는 control과 desti
                 destinationEntityId: 2
             })]
         });
-        assert.deepEqual({ ...controlOverflow }, {
+        assert.equal(controlOverflow.accepted, 0);
+        assert.equal(controlOverflow.rejected, 3);
+        assert.equal(controlOverflow.reason, 'control-program-capacity');
+        assert.equal(controlOverflow.requiresRecovery, true);
+        assert.deepEqual({ ...controlOverflow.controls }, {
             accepted: 0,
-            rejected: 3,
-            reason: 'fixed-program-capacity'
+            rejected: 2,
+            reason: 'control-program-capacity'
+        });
+        assert.deepEqual({ ...controlOverflow.sourceRelativeSpawns }, {
+            accepted: 0,
+            rejected: 1,
+            reason: 'control-program-capacity'
         });
         assert.equal(
             simulation.getStatus().fixedPrimitives.spawnProgram.overflowCount,
@@ -1331,10 +1362,19 @@ test('mixed fixed program의 capacity/stale preflight reject는 control과 desti
                 createSourceRelativeSpawn({ destinationEntityId })
             ))
         });
-        assert.deepEqual({ ...spawnOverflow }, {
+        assert.equal(spawnOverflow.accepted, 1);
+        assert.equal(spawnOverflow.rejected, 3);
+        assert.equal(spawnOverflow.reason, 'spawn-program-capacity');
+        assert.equal(spawnOverflow.requiresRecovery, false);
+        assert.deepEqual({ ...spawnOverflow.controls }, {
+            accepted: 1,
+            rejected: 0,
+            reason: null
+        });
+        assert.deepEqual({ ...spawnOverflow.sourceRelativeSpawns }, {
             accepted: 0,
-            rejected: 4,
-            reason: 'fixed-program-capacity'
+            rejected: 3,
+            reason: 'spawn-program-capacity'
         });
         assert.equal(
             simulation.getStatus().fixedPrimitives.spawnProgram.overflowCount,
@@ -1342,8 +1382,27 @@ test('mixed fixed program의 capacity/stale preflight reject는 control과 desti
             'capacity 2에 3 records를 요청하면 초과한 1 record만 누적합니다.'
         );
 
+        let status = simulation.getStatus();
+        assert.equal(status.activeBodyCount, 1);
+        assert.equal(status.pendingBodyCount, 0);
+        assert.equal(status.bodyCount, 1);
+        assert.equal(status.fixedPrimitives.control.stagedCount, 1);
+        assert.equal(status.fixedPrimitives.spawnProgram.stagedCount, 0);
+        assert.equal(simulation.hasBody({ entityId: 2, incarnation: 1 }), false);
+        assert.equal(simulation.hasBody({ entityId: 3, incarnation: 1 }), false);
+        assert.equal(simulation.hasBody({ entityId: 4, incarnation: 1 }), false);
+
+        const submitCount = device.submissions.length;
+        assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
+        assert.equal(device.submissions.length, submitCount + 1);
+        const entryPoints = device.computePasses[0].map(({ entryPoint }) => entryPoint);
+        assert.equal(entryPoints.includes('validate_body_control_commands'), true);
+        assert.equal(entryPoints.includes('apply_body_control_commands'), true);
+        assert.equal(entryPoints.includes('validate_source_relative_spawns'), false);
+        assert.equal(entryPoints.includes('resolve_source_relative_spawns'), false);
+
         const staleMidBatch = simulation.stageFixedPrograms({
-            targetFixedTick: 1,
+            targetFixedTick: 2,
             controls: [control],
             sourceRelativeSpawns: [
                 createSourceRelativeSpawn({ destinationEntityId: 2 }),
@@ -1353,13 +1412,14 @@ test('mixed fixed program의 capacity/stale preflight reject는 control과 desti
                 })
             ]
         });
-        assert.deepEqual({ ...staleMidBatch }, {
-            accepted: 0,
-            rejected: 3,
-            reason: 'stale-source'
-        });
+        assert.equal(staleMidBatch.accepted, 0);
+        assert.equal(staleMidBatch.rejected, 3);
+        assert.equal(staleMidBatch.reason, 'stale-source');
+        assert.equal(staleMidBatch.requiresRecovery, true);
+        assert.equal(staleMidBatch.controls.rejected, 1);
+        assert.equal(staleMidBatch.sourceRelativeSpawns.rejected, 2);
 
-        let status = simulation.getStatus();
+        status = simulation.getStatus();
         assert.equal(status.activeBodyCount, 1);
         assert.equal(status.pendingBodyCount, 0);
         assert.equal(status.bodyCount, 1);
@@ -1368,16 +1428,69 @@ test('mixed fixed program의 capacity/stale preflight reject는 control과 desti
         assert.equal(status.fixedPrimitives.spawnProgram.overflowCount, 1);
         assert.equal(simulation.hasBody({ entityId: 2, incarnation: 1 }), false);
         assert.equal(simulation.hasBody({ entityId: 3, incarnation: 1 }), false);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
 
+test('body capacity pressure는 source batch 전체를 거부하고 동일 tick control을 한 submit에 적용한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 2,
+        controlCommandCapacity: 1,
+        spawnProgramCapacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            entityId: 1,
+            incarnation: 1
+        }, {
+            ...createBody(3),
+            entityId: 9,
+            incarnation: 1
+        }]).accepted, 2);
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [{
+                entityId: 1,
+                incarnation: 1,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }],
+            sourceRelativeSpawns: [
+                createSourceRelativeSpawn({ destinationEntityId: 2 }),
+                createSourceRelativeSpawn({ destinationEntityId: 3 })
+            ]
+        });
+        assert.equal(staged.accepted, 1);
+        assert.equal(staged.rejected, 2);
+        assert.equal(staged.reason, 'body-capacity');
+        assert.equal(staged.requiresRecovery, false);
+        assert.deepEqual({ ...staged.controls }, {
+            accepted: 1,
+            rejected: 0,
+            reason: null
+        });
+        assert.deepEqual({ ...staged.sourceRelativeSpawns }, {
+            accepted: 0,
+            rejected: 2,
+            reason: 'body-capacity'
+        });
+        assert.equal(simulation.getStatus().pendingBodyCount, 0);
+        assert.equal(simulation.hasBody({ entityId: 2, incarnation: 1 }), false);
+        assert.equal(simulation.hasBody({ entityId: 3, incarnation: 1 }), false);
+
+        const submitCount = device.submissions.length;
         assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
+        assert.equal(device.submissions.length, submitCount + 1);
         const entryPoints = device.computePasses[0].map(({ entryPoint }) => entryPoint);
+        assert.equal(entryPoints.includes('validate_body_control_commands'), true);
         assert.equal(entryPoints.includes('validate_source_relative_spawns'), false);
-        assert.equal(entryPoints.includes('resolve_source_relative_spawns'), false);
-        assert.equal(entryPoints.includes('validate_body_control_commands'), false);
-        assert.equal(entryPoints.includes('apply_body_control_commands'), false);
-        status = simulation.getStatus();
-        assert.equal(status.activeBodyCount, 1);
-        assert.equal(status.pendingBodyCount, 0);
     } finally {
         simulation.destroy();
         restoreGlobals();
@@ -1663,19 +1776,52 @@ test('SpawnProgram result ring은 4개로 bounded되고 pending outcome/event dr
 
         const rejected = simulation.stageFixedPrograms({
             targetFixedTick: 5,
+            controls: [{
+                entityId: 1,
+                incarnation: 1,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }],
             sourceRelativeSpawns: [createSourceRelativeSpawn({
                 destinationEntityId: 105
             })]
         });
-        assert.equal(rejected.accepted, 0);
+        assert.equal(rejected.accepted, 1);
+        assert.equal(rejected.rejected, 1);
         assert.equal(rejected.reason, 'spawn-program-readback-capacity');
+        assert.equal(rejected.requiresRecovery, false);
+        assert.deepEqual({ ...rejected.controls }, {
+            accepted: 1,
+            rejected: 0,
+            reason: null
+        });
+        assert.deepEqual({ ...rejected.sourceRelativeSpawns }, {
+            accepted: 0,
+            rejected: 1,
+            reason: 'spawn-program-readback-capacity'
+        });
         assert.equal(simulation.getStatus().pendingBodyCount, 4);
+        assert.equal(simulation.hasBody({ entityId: 105, incarnation: 1 }), false);
+        const submitCount = device.submissions.length;
+        assert.equal(simulation.fixedUpdate(1 / 60, 5), true);
+        assert.equal(device.submissions.length, submitCount + 1);
+        const fifthTickOperations = device.computePasses[4].map(
+            ({ entryPoint }) => entryPoint
+        );
+        assert.equal(
+            fifthTickOperations.includes('validate_body_control_commands'),
+            true
+        );
+        assert.equal(
+            fifthTickOperations.includes('validate_source_relative_spawns'),
+            false
+        );
 
         for (const index of device.pendingEventMapIndices()) {
             device.resolveEventMap(index);
         }
         await flushMicrotasks();
-        assert.equal(simulation.drainCompletedEventBatches([]).length, 4);
+        assert.equal(simulation.drainCompletedEventBatches([]).length, 5);
 
         const physicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
         assert.equal(simulation.despawnBodies([{

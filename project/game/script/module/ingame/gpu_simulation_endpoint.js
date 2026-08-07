@@ -21,10 +21,12 @@ export {
 
 export {
     GPU_PROJECTILE_CONTACT_HANDLER_FLAGS,
+    GPU_PROJECTILE_SPAWN_MODE,
     GPU_PROJECTILE_WORLD_KIND_ID,
     GpuProjectileSpawnAdapter,
     createGpuProjectileCommandId,
     createGpuProjectileSpawnIntent,
+    requestGpuProjectile,
     requestGpuProjectileSpawn
 } from './object/projectile/gpu_projectile_spawn_adapter.js';
 

@@ -9,7 +9,8 @@ import {
     copySimulationWheelTotalsInto,
     getSimulationWH,
     getSimulationWW,
-    isSimulationInputActionPressed
+    isSimulationInputActionPressed,
+    isSimulationMousePressing
 } from 'simulation/simulation_runtime.js';
 import {
     getDelta,
@@ -73,6 +74,7 @@ export function createGameSceneDependencies() {
         inputActionSource: {
             isPressed: isSimulationInputActionPressed,
             getPointerPosition: copySimulationMousePositionInto,
+            isPrimaryPointerPressed: () => isSimulationMousePressing('left'),
             getWheelTotals: copySimulationWheelTotalsInto
         },
         animationPort: {

@@ -5,7 +5,7 @@ const LITTLE_ENDIAN = true;
 export const GPU_BODY_CONTROL_PROGRAM_ABI_VERSION = 1;
 
 /** Source-relative destination materialization 전용 SpawnProgram ABI version입니다. */
-export const GPU_SPAWN_PROGRAM_ABI_VERSION = 1;
+export const GPU_SPAWN_PROGRAM_ABI_VERSION = 2;
 
 /**
  * Phase 3 fixed primitive의 host/WGSL 공용 byte layout입니다.
@@ -49,6 +49,9 @@ export const GPU_FIXED_PRIMITIVE_ABI = Object.freeze({
         RESULT: 28,
         POSITION_OFFSET_X: 32,
         POSITION_OFFSET_Y: 36,
+        VECTOR_X: 40,
+        VECTOR_Y: 44,
+        SCALAR: 48,
         LAUNCH_VELOCITY_X: 40,
         LAUNCH_VELOCITY_Y: 44,
         SOURCE_VELOCITY_SCALE: 48,
@@ -88,7 +91,9 @@ export const GPU_FIXED_PROGRAM_STATUS = Object.freeze({
 });
 
 export const GPU_SPAWN_PROGRAM_MODE = Object.freeze({
-    SOURCE_RELATIVE_TICK_START: 1
+    SOURCE_RELATIVE_VELOCITY: 1,
+    SOURCE_RELATIVE_TICK_START: 1,
+    SOURCE_RELATIVE_AIM_POINT: 2
 });
 
 export const GPU_SPAWN_PROGRAM_RESULT = Object.freeze({
@@ -391,13 +396,47 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
         'spawnProgram.reserved1',
         true
     );
-    if (modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TICK_START
+    if ((modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY
+            && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT)
         || result !== GPU_SPAWN_PROGRAM_RESULT.PENDING
         || reserved0 !== 0
         || reserved1 !== 0) {
         throw new RangeError(
-            'SpawnProgram mode/result/reserved가 Phase 3 ingress 계약과 다릅니다.'
+            'SpawnProgram mode/result/reserved가 v2 ingress 계약과 다릅니다.'
         );
+    }
+    const isAimPoint = modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
+    if (isAimPoint
+        && (record.launchVelocity !== undefined
+            || record.launchVelocityX !== undefined
+            || record.launchVelocityY !== undefined
+            || record.sourceVelocityScale !== undefined)) {
+        throw new TypeError('aim-point SpawnProgram에는 launchVelocity/sourceVelocityScale을 사용할 수 없습니다.');
+    }
+    if (!isAimPoint
+        && (record.aimWorldPoint !== undefined || record.launchSpeed !== undefined)) {
+        throw new TypeError('velocity SpawnProgram에는 aimWorldPoint/launchSpeed를 사용할 수 없습니다.');
+    }
+    const vector = isAimPoint
+        ? (record.vector ?? record.aimWorldPoint)
+        : (record.vector ?? record.launchVelocity);
+    const scalar = isAimPoint
+        ? (record.scalar ?? record.launchSpeed)
+        : (record.scalar ?? record.sourceVelocityScale ?? 0);
+    const vectorX = requireFloat32(
+        vector?.x ?? (isAimPoint ? record.aimWorldPointX : record.launchVelocityX) ?? 0,
+        isAimPoint ? 'spawnProgram.aimWorldPoint.x' : 'spawnProgram.launchVelocity.x'
+    );
+    const vectorY = requireFloat32(
+        vector?.y ?? (isAimPoint ? record.aimWorldPointY : record.launchVelocityY) ?? 0,
+        isAimPoint ? 'spawnProgram.aimWorldPoint.y' : 'spawnProgram.launchVelocity.y'
+    );
+    const scalarValue = requireFloat32(
+        scalar,
+        isAimPoint ? 'spawnProgram.launchSpeed' : 'spawnProgram.sourceVelocityScale'
+    );
+    if (isAimPoint && scalarValue <= 0) {
+        throw new RangeError('aim-point SpawnProgram launchSpeed는 양의 float32여야 합니다.');
     }
     view.setUint32(offset + abi.MODE_FLAGS, modeFlags, LITTLE_ENDIAN);
     view.setUint32(offset + abi.RESULT, result, LITTLE_ENDIAN);
@@ -409,18 +448,9 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
         record.positionOffset?.y ?? record.positionOffsetY ?? 0,
         'spawnProgram.positionOffset.y'
     ), LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.LAUNCH_VELOCITY_X, requireFloat32(
-        record.launchVelocity?.x ?? record.launchVelocityX ?? 0,
-        'spawnProgram.launchVelocity.x'
-    ), LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.LAUNCH_VELOCITY_Y, requireFloat32(
-        record.launchVelocity?.y ?? record.launchVelocityY ?? 0,
-        'spawnProgram.launchVelocity.y'
-    ), LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.SOURCE_VELOCITY_SCALE, requireFloat32(
-        record.sourceVelocityScale ?? 0,
-        'spawnProgram.sourceVelocityScale'
-    ), LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.VECTOR_X, vectorX, LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.VECTOR_Y, vectorY, LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.SCALAR, scalarValue, LITTLE_ENDIAN);
     const sourceTick = requireUint32(
         record.sourceTick,
         'spawnProgram.sourceTick',
@@ -449,6 +479,21 @@ export function readGpuSpawnProgramRecord(storage, index) {
     const offset = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
         + (recordIndex * abi.STRIDE);
     const view = new DataView(storage.buffer);
+    const modeFlags = view.getUint32(offset + abi.MODE_FLAGS, LITTLE_ENDIAN);
+    const vector = Object.freeze({
+        x: view.getFloat32(offset + abi.VECTOR_X, LITTLE_ENDIAN),
+        y: view.getFloat32(offset + abi.VECTOR_Y, LITTLE_ENDIAN)
+    });
+    const scalar = view.getFloat32(offset + abi.SCALAR, LITTLE_ENDIAN);
+    const modePayload = modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
+        ? {
+            aimWorldPoint: vector,
+            launchSpeed: scalar
+        }
+        : {
+            launchVelocity: vector,
+            sourceVelocityScale: scalar
+        };
     return Object.freeze({
         destinationSlot: view.getUint32(offset + abi.DESTINATION_SLOT, LITTLE_ENDIAN),
         destinationEntityId: view.getUint32(
@@ -465,20 +510,15 @@ export function readGpuSpawnProgramRecord(storage, index) {
             offset + abi.SOURCE_INCARNATION,
             LITTLE_ENDIAN
         ),
-        modeFlags: view.getUint32(offset + abi.MODE_FLAGS, LITTLE_ENDIAN),
+        modeFlags,
         result: view.getUint32(offset + abi.RESULT, LITTLE_ENDIAN),
         positionOffset: Object.freeze({
             x: view.getFloat32(offset + abi.POSITION_OFFSET_X, LITTLE_ENDIAN),
             y: view.getFloat32(offset + abi.POSITION_OFFSET_Y, LITTLE_ENDIAN)
         }),
-        launchVelocity: Object.freeze({
-            x: view.getFloat32(offset + abi.LAUNCH_VELOCITY_X, LITTLE_ENDIAN),
-            y: view.getFloat32(offset + abi.LAUNCH_VELOCITY_Y, LITTLE_ENDIAN)
-        }),
-        sourceVelocityScale: view.getFloat32(
-            offset + abi.SOURCE_VELOCITY_SCALE,
-            LITTLE_ENDIAN
-        ),
+        vector,
+        scalar,
+        ...modePayload,
         sourceTick: view.getUint32(offset + abi.SOURCE_TICK, LITTLE_ENDIAN),
         reserved0: view.getUint32(offset + abi.RESERVED_0, LITTLE_ENDIAN),
         reserved1: view.getUint32(offset + abi.RESERVED_1, LITTLE_ENDIAN)
