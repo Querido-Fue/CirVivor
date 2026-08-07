@@ -6,6 +6,43 @@ const compute = shaders.GPU_COLLISION_COMPUTE_WGSL;
 const indirect = shaders.GPU_COLLISION_INDIRECT_WGSL;
 const render = shaders.GPU_COLLISION_RENDER_WGSL;
 
+const FIXED_DELTA_F32 = Math.fround(1 / 60);
+const DEATH_EVENT_FLAG_HEALTH = 1 << 0;
+const DEATH_EVENT_FLAG_LIFETIME = 1 << 1;
+
+function updateLifetimeF32(value) {
+    const lifetime = Math.fround(value);
+    if (lifetime < 0) {
+        return lifetime;
+    }
+    return Math.fround(Math.max(Math.fround(lifetime - FIXED_DELTA_F32), 0));
+}
+
+function firstZeroFixedUpdate(value, maximumUpdates = 256) {
+    let lifetime = Math.fround(value);
+    for (let update = 1; update <= maximumUpdates; update++) {
+        lifetime = updateLifetimeF32(lifetime);
+        if (lifetime === 0) {
+            return update;
+        }
+    }
+    return null;
+}
+
+function markDeadReference({ entityId, incarnation, bodyId, health, lifetime, alive }) {
+    let reasonFlags = 0;
+    if (health <= 0) {
+        reasonFlags |= DEATH_EVENT_FLAG_HEALTH;
+    }
+    if (lifetime === 0) {
+        reasonFlags |= DEATH_EVENT_FLAG_LIFETIME;
+    }
+    if (reasonFlags === 0 || !alive) {
+        return [];
+    }
+    return [{ entityId, incarnation, bodyId, reasonFlags }];
+}
+
 for (const entryPoint of [
     'prepare_bodies',
     'clear_grid',
@@ -152,13 +189,53 @@ assert.match(
     /let candidate = predicted \+ temporaries\.values\[body_id\]\.position_delta;[\s\S]*?sample_world_sdf\(candidate\)/
 );
 
-// finite lifetime만 prepare에서 줄이고 mark_dead가 alive를 한 번 내린 뒤 death event를 냅니다.
-assert.match(compute, /if \(lifetime >= 0\.0\) \{\s*simulations\.values\[body_id\]\.lifetime = lifetime - params\.dt;/);
-assert.match(compute, /if \(lifetime >= 0\.0 && lifetime <= 0\.0\)/);
+// finite lifetime만 prepare에서 0으로 clamp하고 mark_dead는 canonical exact zero만 판정합니다.
+assert.match(compute, /if \(lifetime >= 0\.0\) \{\s*simulations\.values\[body_id\]\.lifetime = max\(lifetime - params\.dt, 0\.0\);/);
+assert.match(compute, /if \(lifetime == 0\.0\)/);
+assert.doesNotMatch(compute, /lifetime\s*(?:<=|<)\s*0\.0/);
 assert.match(compute, /atomicAnd\(\s*&simulations\.values\[body_id\]\.flags/);
 assert.match(compute, /append_death_event\(body_id, reason_flags\);/);
 assert.match(compute, /event_index >= params\.max_events[\s\S]*?event_overflow/);
 assert.match(compute, /death_index >= params\.max_death_events[\s\S]*?death_overflow/);
+
+// WGSL f32와 같은 매 연산 f32 반올림으로 sentinel/경계/2초 expiry tick을 잠급니다.
+assert.equal(updateLifetimeF32(-1), -1);
+assert.equal(firstZeroFixedUpdate(-1), null);
+assert.equal(updateLifetimeF32(0), 0);
+assert.equal(firstZeroFixedUpdate(0), 1);
+assert.equal(updateLifetimeF32(Math.fround(FIXED_DELTA_F32 * 0.5)), 0);
+assert.equal(firstZeroFixedUpdate(Math.fround(FIXED_DELTA_F32 * 0.5)), 1);
+assert.equal(firstZeroFixedUpdate(2), 121);
+let twoSecondLifetime = Math.fround(2);
+for (let update = 0; update < 120; update++) {
+    twoSecondLifetime = updateLifetimeF32(twoSecondLifetime);
+}
+assert.ok(twoSecondLifetime > 0);
+assert.equal(updateLifetimeF32(twoSecondLifetime), 0);
+
+// health와 lifetime이 같은 tick에 만료돼도 한 identity/event에 두 reason bit를 합칩니다.
+const simultaneousDeathEvents = markDeadReference({
+    entityId: 101,
+    incarnation: 7,
+    bodyId: 3,
+    health: 0,
+    lifetime: 0,
+    alive: true
+});
+assert.deepEqual(simultaneousDeathEvents, [{
+    entityId: 101,
+    incarnation: 7,
+    bodyId: 3,
+    reasonFlags: DEATH_EVENT_FLAG_HEALTH | DEATH_EVENT_FLAG_LIFETIME
+}]);
+const markDeadStart = compute.indexOf('fn mark_dead(');
+const markDeadEnd = compute.indexOf('fn clear_position_deltas(', markDeadStart);
+assert.ok(markDeadStart >= 0 && markDeadEnd > markDeadStart);
+const markDeadBlock = compute.slice(markDeadStart, markDeadEnd);
+assert.match(markDeadBlock, /reason_flags \|= DEATH_EVENT_FLAG_HEALTH;[\s\S]*?reason_flags \|= DEATH_EVENT_FLAG_LIFETIME;/);
+assert.match(markDeadBlock, /if \(reason_flags == 0u \|\| !clear_alive_once\(body_id\)\) \{\s*return;/);
+assert.doesNotMatch(markDeadBlock, /epsilon|abs\s*\(/i);
+assert.equal((markDeadBlock.match(/append_death_event\(body_id, reason_flags\);/g) ?? []).length, 1);
 
 // mark_dead 직후 렌더링되는 tombstone은 simulation binding으로 즉시 숨깁니다.
 assert.match(render, /@group\(0\) @binding\(4\) var<storage, read> simulations: SimulationBuffer;/);

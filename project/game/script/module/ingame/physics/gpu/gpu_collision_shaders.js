@@ -777,7 +777,7 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
     }
     let lifetime = simulations.values[body_id].lifetime;
     if (lifetime >= 0.0) {
-        simulations.values[body_id].lifetime = lifetime - params.dt;
+        simulations.values[body_id].lifetime = max(lifetime - params.dt, 0.0);
     }
     if (params.flow_enabled != 0u
         && params.flow_field_count > 0u
@@ -1564,7 +1564,7 @@ fn mark_dead(@builtin(global_invocation_id) global_id: vec3u) {
         reason_flags |= DEATH_EVENT_FLAG_HEALTH;
     }
     let lifetime = simulations.values[body_id].lifetime;
-    if (lifetime >= 0.0 && lifetime <= 0.0) {
+    if (lifetime == 0.0) {
         reason_flags |= DEATH_EVENT_FLAG_LIFETIME;
     }
     if (reason_flags == 0u || !clear_alive_once(body_id)) {

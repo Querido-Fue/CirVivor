@@ -5660,12 +5660,40 @@ async function runProductionPhase5TerrainHardwareSmoke(device, domainSentinel) {
     }
 }
 
+function createPhase5LifetimeF32Oracle(authoredLifetime, fixedDelta) {
+    const dt = Math.fround(fixedDelta);
+    let lifetime = Math.fround(authoredLifetime);
+    assert(
+        Number.isFinite(lifetime) && lifetime >= 0 && dt > 0,
+        `Phase 5 lifetime f32 oracle 입력이 유효하지 않습니다: ${JSON.stringify({
+            authoredLifetime,
+            fixedDelta,
+            lifetime,
+            dt
+        })}`
+    );
+    let fixedTick = 0;
+    let lifetimeBeforeZero = lifetime;
+    do {
+        lifetimeBeforeZero = lifetime;
+        lifetime = Math.fround(Math.max(Math.fround(lifetime - dt), 0));
+        fixedTick++;
+        assert(fixedTick <= 10_000, 'Phase 5 lifetime f32 oracle 반복 상한을 초과했습니다.');
+    } while (lifetime !== 0);
+    return Object.freeze({
+        authoredLifetime: Math.fround(authoredLifetime),
+        fixedDelta: dt,
+        firstZeroFixedTick: fixedTick,
+        lifetimeBeforeZero
+    });
+}
+
 async function runProductionPhase5LifetimeHardwareSmoke(device, domainSentinel) {
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
         webGpuPlatformPort: createPhase3PlatformPort(device)
     }, {
-        capacity: 2,
+        capacity: 4,
         controlCommandCapacity: 1,
         sourceRelativeSpawnCommandCapacity: 1,
         spawnProgramCapacity: 1
@@ -5674,12 +5702,25 @@ async function runProductionPhase5LifetimeHardwareSmoke(device, domainSentinel) 
         commandNamespace: 'nw-phase5-lifetime'
     });
     const fixedDelta = 1 / 60;
+    const lifetimeDeathFlag = 1 << 1;
+    const lifetimeOracle = createPhase5LifetimeF32Oracle(
+        BASIC_BULLET_PROJECTILE_DATA.lifetimeSeconds,
+        fixedDelta
+    );
+    const halfDeltaLifetime = Math.fround(Math.fround(fixedDelta) * 0.5);
+    const observationTick = Math.max(130, lifetimeOracle.firstZeroFixedTick);
+    const explicitCleanupBoundaryTick = observationTick + 1;
+    assert(
+        lifetimeOracle.firstZeroFixedTick === 121,
+        `Basic Bullet 2초 f32 first-zero tick이 121이 아닙니다: ${JSON.stringify(lifetimeOracle)}`
+    );
     const sentinelBefore = JSON.stringify(domainSentinel);
+    const coreIntegrityIdentity = domainSentinel.coreIntegrity;
     let submittedTickCount = 0;
     try {
         assert(endpoint.init(navigationSource) === false,
             'Phase 5 lifetime endpoint는 첫 spawn 전 deferred여야 합니다.');
-        const request = adapter.requestProjectile({
+        const finiteRequest = adapter.requestProjectile({
             mode: GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE,
             definition: BASIC_BULLET_PROJECTILE_DATA,
             position: { x: 8, y: 8 },
@@ -5688,64 +5729,352 @@ async function runProductionPhase5LifetimeHardwareSmoke(device, domainSentinel) 
             spawnSequence: 0,
             commandId: 'phase5:lifetime:basic-bullet'
         });
-        assert(request.accepted, `Phase 5 lifetime absolute request 실패: ${JSON.stringify(request)}`);
+        const zeroLifetimeRequest = endpoint.requestSpawn(
+            createPhase3SpawnIntent('phase5_zero_lifetime_probe', {
+                position: { x: 4, y: 4 },
+                lifetime: 0
+            }),
+            1,
+            'phase5:lifetime:zero'
+        );
+        const halfDeltaRequest = endpoint.requestSpawn(
+            createPhase3SpawnIntent('phase5_half_delta_lifetime_probe', {
+                position: { x: 6, y: 4 },
+                lifetime: halfDeltaLifetime
+            }),
+            1,
+            'phase5:lifetime:half-dt'
+        );
+        const immortalRequest = endpoint.requestSpawn(
+            createPhase3SpawnIntent('phase5_immortal_lifetime_probe', {
+                position: { x: 10, y: 8 },
+                lifetime: -1
+            }),
+            1,
+            'phase5:lifetime:immortal'
+        );
+        assert(
+            finiteRequest.accepted
+                && zeroLifetimeRequest.accepted
+                && halfDeltaRequest.accepted
+                && immortalRequest.accepted,
+            `Phase 5 lifetime fixture request 실패: ${JSON.stringify({
+                finiteRequest,
+                zeroLifetimeRequest,
+                halfDeltaRequest,
+                immortalRequest
+            })}`
+        );
         const spawnCommit = endpoint.commitAtFixedBoundary(1);
-        const bulletHandle = spawnCommit.spawned[0]?.handle;
-        assert(bulletHandle, `Phase 5 lifetime bullet handle 누락: ${JSON.stringify(spawnCommit)}`);
+        assert(
+            spawnCommit.spawned.length === 4
+                && spawnCommit.rejected.length === 0
+                && !spawnCommit.recoveryRequired,
+            `Phase 5 lifetime fixture spawn commit 실패: ${JSON.stringify(spawnCommit)}`
+        );
+        const handleByCommandId = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const bulletHandle = handleByCommandId.get('phase5:lifetime:basic-bullet');
+        const zeroLifetimeHandle = handleByCommandId.get('phase5:lifetime:zero');
+        const halfDeltaHandle = handleByCommandId.get('phase5:lifetime:half-dt');
+        const immortalHandle = handleByCommandId.get('phase5:lifetime:immortal');
+        assert(
+            bulletHandle && zeroLifetimeHandle && halfDeltaHandle && immortalHandle,
+            `Phase 5 lifetime exact handles 누락: ${JSON.stringify(spawnCommit.spawned)}`
+        );
         assert(endpoint.fixedUpdate(fixedDelta, 1),
             'Phase 5 lifetime first submit 실패');
         submittedTickCount = 1;
         await settlePhase5Endpoint(endpoint, 'Phase 5 lifetime tick 1');
 
-        let lifetimeDeath = null;
-        let cleanupCommit = null;
-        for (let tick = 2; tick <= 130; tick++) {
-            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
-            lifetimeDeath = completed.deathEvents.find((event) => (
-                event.entityId === bulletHandle.entityId
-                    && event.incarnation === bulletHandle.incarnation
-            )) ?? null;
-            if (lifetimeDeath) {
-                cleanupCommit = endpoint.commitAtFixedBoundary(tick);
+        const exactHandleMatches = (eventOrEntry, handle) => {
+            const candidate = eventOrEntry?.handle ?? eventOrEntry;
+            return candidate?.entityId === handle.entityId
+                && candidate?.incarnation === handle.incarnation;
+        };
+        const expectedDeathHandles = [
+            bulletHandle,
+            zeroLifetimeHandle,
+            halfDeltaHandle
+        ];
+        const deathObservations = [];
+        let finiteSlotCleanup = null;
+        let basicBodyBeforeExpiry = null;
+        let immortalBodyAfterObservation = null;
+        for (let boundaryTick = 2;
+            boundaryTick <= explicitCleanupBoundaryTick;
+            boundaryTick++) {
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(boundaryTick);
+            assert(
+                completed.protocolFailure === null
+                    && completed.contactEvents.length === 0,
+                `Phase 5 lifetime event protocol/contact 불일치: boundary=${boundaryTick}, result=${JSON.stringify(completed)}`
+            );
+            for (const event of completed.deathEvents) {
+                assert(
+                    expectedDeathHandles.some((handle) => exactHandleMatches(event, handle)),
+                    `Phase 5 lifetime fixture 외 death event가 발생했습니다: ${JSON.stringify(event)}`
+                );
+                assert(
+                    event.reason === 'lifetime'
+                        && event.flags === lifetimeDeathFlag
+                        && event.reasonFlags === lifetimeDeathFlag
+                        && event.disposition === 'despawn-requested',
+                    `Phase 5 lifetime death reason/flags가 정확하지 않습니다: ${JSON.stringify(event)}`
+                );
+                deathObservations.push(Object.freeze({ boundaryTick, event }));
+            }
+
+            if (boundaryTick === explicitCleanupBoundaryTick) {
+                const cleanupRequest = endpoint.requestDespawn(
+                    immortalHandle,
+                    'phase5-lifetime-fixture-cleanup',
+                    boundaryTick,
+                    'phase5:lifetime:immortal:cleanup'
+                );
+                assert(
+                    cleanupRequest.accepted,
+                    `Phase 5 immortal explicit cleanup request 실패: ${JSON.stringify(cleanupRequest)}`
+                );
+            }
+            const commit = endpoint.commitAtFixedBoundary(boundaryTick);
+            const expectedDespawnCount = boundaryTick === 2
+                ? 2
+                : boundaryTick === lifetimeOracle.firstZeroFixedTick + 1
+                    ? 1
+                    : boundaryTick === explicitCleanupBoundaryTick
+                        ? 1
+                        : 0;
+            assert(
+                !commit.recoveryRequired
+                    && commit.rejected.length === 0
+                    && commit.despawned.length === expectedDespawnCount,
+                `Phase 5 lifetime lifecycle commit 불일치: boundary=${boundaryTick}, expectedDespawnCount=${expectedDespawnCount}, result=${JSON.stringify(commit)}`
+            );
+            if (boundaryTick === 2) {
+                assert(
+                    commit.despawned.some((entry) => exactHandleMatches(entry, zeroLifetimeHandle))
+                        && commit.despawned.some((entry) => exactHandleMatches(entry, halfDeltaHandle)),
+                    `Phase 5 zero/half-dt next-boundary cleanup identity 불일치: ${JSON.stringify(commit.despawned)}`
+                );
+            }
+            if (boundaryTick === lifetimeOracle.firstZeroFixedTick + 1) {
+                assert(
+                    commit.despawned.some((entry) => exactHandleMatches(entry, bulletHandle)),
+                    `Phase 5 Basic Bullet next-boundary cleanup identity 불일치: ${JSON.stringify(commit.despawned)}`
+                );
+                const endpointStatus = endpoint.getStatus();
+                const gpuStatus = endpoint.getBackend().simulation.getStatus();
+                assert(
+                    endpointStatus.activeCount === 1
+                        && endpointStatus.activeProjectileCount === 1
+                        && endpointStatus.reservedCount === 0
+                        && endpointStatus.pendingCommandCount === 0
+                        && endpointStatus.registry.activeCount === 1
+                        && endpointStatus.registry.reservedCount === 0
+                        && !endpoint.getRegistry().has(bulletHandle)
+                        && !endpoint.hasBody(bulletHandle)
+                        && endpoint.getRegistry().has(immortalHandle)
+                        && endpoint.hasBody(immortalHandle)
+                        && gpuStatus.activeBodyCount === 1
+                        && gpuStatus.pendingBodyCount === 0
+                        && gpuStatus.freeSlotCount === gpuStatus.bodyCount - 1
+                        && !endpointStatus.recoveryRequired,
+                    `Phase 5 Basic Bullet registry/body/slot cleanup 불일치: ${JSON.stringify({ endpointStatus, gpuStatus })}`
+                );
+                finiteSlotCleanup = Object.freeze({
+                    boundaryTick,
+                    bodyCount: gpuStatus.bodyCount,
+                    activeBodyCount: gpuStatus.activeBodyCount,
+                    freeSlotCount: gpuStatus.freeSlotCount,
+                    pendingBodyCount: gpuStatus.pendingBodyCount,
+                    registryActiveCount: endpointStatus.registry.activeCount,
+                    registryReservedCount: endpointStatus.registry.reservedCount
+                });
+            }
+            if (boundaryTick === explicitCleanupBoundaryTick) {
+                assert(
+                    commit.despawned.length === 1
+                        && exactHandleMatches(commit.despawned[0], immortalHandle)
+                        && commit.despawned[0].reason === 'phase5-lifetime-fixture-cleanup',
+                    `Phase 5 immortal explicit cleanup identity 불일치: ${JSON.stringify(commit.despawned)}`
+                );
                 break;
             }
-            const commit = endpoint.commitAtFixedBoundary(tick);
-            assert(!commit.recoveryRequired,
-                `Phase 5 lifetime lifecycle commit recovery: tick=${tick}`);
-            assert(endpoint.fixedUpdate(fixedDelta, tick),
-                `Phase 5 lifetime fixed submit 실패: tick=${tick}`);
-            submittedTickCount = tick;
-            await settlePhase5Endpoint(endpoint, `Phase 5 lifetime tick ${tick}`);
+
+            assert(
+                endpoint.fixedUpdate(fixedDelta, boundaryTick),
+                `Phase 5 lifetime fixed submit 실패: tick=${boundaryTick}`
+            );
+            submittedTickCount = boundaryTick;
+            const settledStatus = await settlePhase5Endpoint(
+                endpoint,
+                `Phase 5 lifetime tick ${boundaryTick}`
+            );
+            assert(
+                settledStatus.state === 'ready'
+                    && !settledStatus.requiresAuthoritativeRebuild
+                    && !endpoint.requiresRecovery(),
+                `Phase 5 lifetime tick recovery 발생: tick=${boundaryTick}, status=${JSON.stringify(settledStatus)}`
+            );
+            if (boundaryTick === lifetimeOracle.firstZeroFixedTick - 1) {
+                const bodies = await readPhase5Bodies(endpoint);
+                basicBodyBeforeExpiry = findPhase5Body(
+                    bodies,
+                    bulletHandle,
+                    'Basic Bullet before exact lifetime expiry'
+                );
+                assert(
+                    basicBodyBeforeExpiry.lifetime === lifetimeOracle.lifetimeBeforeZero,
+                    `Phase 5 Basic Bullet expiry 직전 f32 lifetime 불일치: ${JSON.stringify({
+                        actual: basicBodyBeforeExpiry.lifetime,
+                        expected: lifetimeOracle.lifetimeBeforeZero
+                    })}`
+                );
+            }
+            if (boundaryTick === lifetimeOracle.firstZeroFixedTick) {
+                const bodies = await readPhase5Bodies(endpoint);
+                assert(
+                    !bodies.some((body) => exactHandleMatches(body, bulletHandle))
+                        && bodies.some((body) => exactHandleMatches(body, immortalHandle)),
+                    `Phase 5 exact expiry tick ALIVE body 상태 불일치: ${JSON.stringify(bodies)}`
+                );
+            }
+            if (boundaryTick === observationTick) {
+                const bodies = await readPhase5Bodies(endpoint);
+                immortalBodyAfterObservation = findPhase5Body(
+                    bodies,
+                    immortalHandle,
+                    'immortal body after 130 ticks'
+                );
+                assert(
+                    immortalBodyAfterObservation.lifetime === -1,
+                    `Phase 5 immortal sentinel이 변경되었습니다: ${JSON.stringify(immortalBodyAfterObservation)}`
+                );
+            }
         }
+
+        const deathsForHandle = (handle) => deathObservations.filter(({ event }) => (
+            exactHandleMatches(event, handle)
+        ));
+        const basicDeaths = deathsForHandle(bulletHandle);
+        const zeroDeaths = deathsForHandle(zeroLifetimeHandle);
+        const halfDeltaDeaths = deathsForHandle(halfDeltaHandle);
+        const immortalDeaths = deathsForHandle(immortalHandle);
         assert(
-            lifetimeDeath && cleanupCommit?.despawned.length === 1,
-            `Phase 5 lifetime death/cleanup 미완료: ${JSON.stringify({ lifetimeDeath, cleanupCommit, submittedTickCount })}`
+            basicDeaths.length === 1
+                && basicDeaths[0].boundaryTick
+                    === lifetimeOracle.firstZeroFixedTick + 1
+                && basicDeaths[0].event.sourceTick
+                    === lifetimeOracle.firstZeroFixedTick
+                && zeroDeaths.length === 1
+                && zeroDeaths[0].boundaryTick === 2
+                && zeroDeaths[0].event.sourceTick === 1
+                && halfDeltaDeaths.length === 1
+                && halfDeltaDeaths[0].boundaryTick === 2
+                && halfDeltaDeaths[0].event.sourceTick === 1
+                && immortalDeaths.length === 0
+                && deathObservations.length === 3,
+            `Phase 5 finite/edge/immortal death count 또는 tick 불일치: ${JSON.stringify(deathObservations)}`
         );
+        assert(
+            basicBodyBeforeExpiry
+                && immortalBodyAfterObservation
+                && finiteSlotCleanup
+                && submittedTickCount === observationTick,
+            `Phase 5 lifetime observation 증거가 완성되지 않았습니다: ${JSON.stringify({
+                submittedTickCount,
+                observationTick,
+                hasBasicBodyBeforeExpiry: !!basicBodyBeforeExpiry,
+                hasImmortalBodyAfterObservation: !!immortalBodyAfterObservation,
+                hasFiniteSlotCleanup: !!finiteSlotCleanup
+            })}`
+        );
+        const remainingBodies = await endpoint.getBackend().simulation.readbackBodies();
         const status = endpoint.getStatus();
         const gpuStatus = endpoint.getBackend().simulation.getStatus();
         assert(
-            status.activeCount === 0
+            remainingBodies.length === 0
+                && status.activeCount === 0
                 && status.activeProjectileCount === 0
                 && status.reservedCount === 0
                 && status.pendingCommandCount === 0
+                && status.registry.activeCount === 0
+                && status.registry.reservedCount === 0
+                && gpuStatus.bodyCount === 0
+                && gpuStatus.activeBodyCount === 0
                 && gpuStatus.pendingBodyCount === 0
+                && gpuStatus.freeSlotCount === 0
+                && !endpoint.getRegistry().has(immortalHandle)
+                && !endpoint.hasBody(immortalHandle)
                 && !status.recoveryRequired,
             `Phase 5 lifetime cleanup 상태 불일치: ${JSON.stringify({ status, gpuStatus })}`
         );
-        assert(JSON.stringify(domainSentinel) === sentinelBefore,
+        assert(
+            domainSentinel.coreIntegrity === coreIntegrityIdentity
+                && JSON.stringify(domainSentinel) === sentinelBefore,
             'Phase 5 lifetime가 CPU domain sentinel을 변경했습니다.');
         return {
             authoredLifetimeSeconds: BASIC_BULLET_PROJECTILE_DATA.lifetimeSeconds,
-            fixedDelta,
+            lifetimeOracle,
+            fixedDelta: Math.fround(fixedDelta),
             submittedTickCount,
-            deathSourceTick: lifetimeDeath.sourceTick,
-            bulletHandle,
+            observationTick,
+            expectedDeathSourceTick: lifetimeOracle.firstZeroFixedTick,
+            deathSourceTick: basicDeaths[0].event.sourceTick,
+            deathObservedBoundaryTick: basicDeaths[0].boundaryTick,
+            handles: {
+                finiteBasicBullet: bulletHandle,
+                zeroLifetime: zeroLifetimeHandle,
+                halfDeltaLifetime: halfDeltaHandle,
+                immortal: immortalHandle
+            },
+            finite: {
+                lifetimeBeforeZero: basicBodyBeforeExpiry.lifetime,
+                deathReason: basicDeaths[0].event.reason,
+                deathFlags: basicDeaths[0].event.flags,
+                deathCount: basicDeaths.length,
+                cleanup: finiteSlotCleanup
+            },
+            edgeCases: {
+                zeroLifetime: {
+                    authoredLifetime: 0,
+                    deathSourceTick: zeroDeaths[0].event.sourceTick,
+                    deathReason: zeroDeaths[0].event.reason,
+                    deathCount: zeroDeaths.length
+                },
+                halfDeltaLifetime: {
+                    authoredLifetime: halfDeltaLifetime,
+                    deathSourceTick: halfDeltaDeaths[0].event.sourceTick,
+                    deathReason: halfDeltaDeaths[0].event.reason,
+                    deathCount: halfDeltaDeaths.length
+                }
+            },
+            immortal: {
+                authoredLifetime: -1,
+                observedThroughTick: observationTick,
+                lifetimeAfterObservation: immortalBodyAfterObservation.lifetime,
+                lifetimeDeathCount: immortalDeaths.length,
+                explicitCleanupBoundaryTick
+            },
             cleanup: {
                 activeCount: status.activeCount,
                 activeProjectileCount: status.activeProjectileCount,
                 reservedCount: status.reservedCount,
                 pendingCommandCount: status.pendingCommandCount,
-                pendingBodyCount: gpuStatus.pendingBodyCount
+                registryActiveCount: status.registry.activeCount,
+                registryReservedCount: status.registry.reservedCount,
+                bodyCount: gpuStatus.bodyCount,
+                activeBodyCount: gpuStatus.activeBodyCount,
+                pendingBodyCount: gpuStatus.pendingBodyCount,
+                freeSlotCount: gpuStatus.freeSlotCount,
+                recoveryRequired: status.recoveryRequired
+            },
+            cpuDomainSentinel: {
+                coreIntegrityIdentityPreserved:
+                    domainSentinel.coreIntegrity === coreIntegrityIdentity,
+                unchanged: JSON.stringify(domainSentinel) === sentinelBefore
             }
         };
     } finally {
@@ -5815,6 +6144,8 @@ async function runProductionPhase5SinglePressureHardwareSmoke(device, mode) {
         createPhase3PlatformPort(device),
         {
             capacity: isBodyCapacity ? 2 : 5,
+            worldSize: { x: 8, y: 8 },
+            gridCellSize: { x: 1, y: 1 },
             controlCommandCapacity: 2,
             spawnProgramCapacity: isBodyCapacity ? 2 : 1
         }
@@ -5905,6 +6236,8 @@ async function runProductionPhase5SpawnRingPressureHardwareSmoke(device) {
         createPhase3PlatformPort(device),
         {
             capacity: 8,
+            worldSize: { x: 8, y: 8 },
+            gridCellSize: { x: 1, y: 1 },
             controlCommandCapacity: 1,
             spawnProgramCapacity: 1
         }
