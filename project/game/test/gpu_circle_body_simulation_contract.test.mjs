@@ -8,7 +8,12 @@ const { GpuCircleBodySimulation } = await loadGameModule(
 );
 const {
     GPU_CIRCLE_BODY_ABI,
-    GPU_CIRCLE_BODY_RENDER_SHAPE
+    GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_APPLIED_EVENT_TYPE,
+    GPU_CIRCLE_APPLIED_EVENT_FLAG,
+    packGpuCircleAppliedEventMeta
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const gameModuleGlobal = GpuCircleBodySimulation.constructor('return globalThis')();
 const { createTileMap } = await loadGameModule('ingame/map/tile_map.js');
@@ -35,8 +40,10 @@ function createBody(x) {
         velocity: { x: 1, y: 0 },
         radius: 0.25,
         inverseMass: 1,
-        layerMask: 1,
+        bodyLayer: 1,
         collisionMask: 1,
+        interactionLayer: 1,
+        interactionMask: 0,
         alive: true
     };
 }
@@ -361,6 +368,12 @@ class FakeGpuDevice {
             view.setUint32(12, payload.appliedOverflow ?? 0, true);
             view.setUint32(16, payload.deaths?.length ?? 0, true);
             view.setUint32(20, payload.deathOverflow ?? 0, true);
+            view.setUint32(24, payload.abiStatus ?? 1, true);
+            view.setUint32(
+                28,
+                payload.eventEncodingVersion ?? GPU_CIRCLE_BODY_ABI_VERSION,
+                true
+            );
             return;
         }
         const payload = target.eventPayload ?? {};
@@ -373,8 +386,12 @@ class FakeGpuDevice {
                 view.setUint32(offset + 4, event.incarnation, true);
                 view.setUint32(offset + 8, event.otherEntityId, true);
                 view.setUint32(offset + 12, event.otherIncarnation, true);
-                view.setInt32(offset + 16, event.damageFixedPoint, true);
-                view.setUint32(offset + 20, event.flags ?? 0, true);
+                view.setInt32(
+                    offset + 16,
+                    event.valueFixedPoint ?? event.damageFixedPoint ?? 0,
+                    true
+                );
+                view.setUint32(offset + 20, event.eventMeta ?? 0, true);
                 view.setFloat32(offset + 24, event.x ?? 0, true);
                 view.setFloat32(offset + 28, event.y ?? 0, true);
             }
@@ -834,7 +851,7 @@ test('incremental spawn은 stable entity handle을 강제하고 실패 시 host 
         ...createBody(1),
         entityId: 7,
         incarnation: 2,
-        simulationMeta: 1
+        simulationMeta: 0
     }]), /ALIVE flag와 alive 입력/);
     assert.deepEqual({ ...simulation.spawnBodies([{
         ...createBody(1),
@@ -1061,9 +1078,26 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
                 otherEntityId: 22,
                 otherIncarnation: 3,
                 damageFixedPoint: 123,
-                flags: 1,
+                eventMeta: packGpuCircleAppliedEventMeta(
+                    GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
+                    GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
+                        | GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
+                ),
                 x: 1.5,
                 y: -2
+            }, {
+                entityId: 11,
+                incarnation: 2,
+                otherEntityId: 0,
+                otherIncarnation: 0,
+                damageFixedPoint: 0,
+                eventMeta: packGpuCircleAppliedEventMeta(
+                    GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER,
+                    GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
+                        | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT
+                ),
+                x: 2,
+                y: 3
             }],
             deaths: [{
                 entityId: 22,
@@ -1076,11 +1110,12 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             ...createBody(1),
             entityId: 11,
             incarnation: 2,
-            sensorMask: 1,
+            interactionMask: 1,
             health: 3.25,
             contactHandler: {
                 damageSelf: 1,
-                damageOther: 2.5
+                damageOther: 2.5,
+                flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
             }
         }]);
         assert.equal(
@@ -1173,8 +1208,9 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         assert.equal(simulation.fixedUpdate(1 / 60, 101), true);
         const operations = device.computePasses[0];
         assert.deepEqual(
-            operations.slice(0, 8).map((operation) => operation.entryPoint),
+            operations.slice(0, 9).map((operation) => operation.entryPoint),
             [
+                'update_indirect_args',
                 'prepare_bodies',
                 'clear_grid',
                 'build_grid',
@@ -1185,13 +1221,16 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
                 'mark_dead'
             ]
         );
-        assert.equal(operations[3].mode, 'direct');
-        assert.equal(operations[3].workgroups, 1);
-        assert.equal(operations[6].mode, 'direct');
-        assert.equal(operations[6].workgroups, 1);
+        assert.equal(operations[0].mode, 'direct');
+        assert.equal(operations[0].workgroups, 1);
+        assert.equal(operations[4].mode, 'direct');
+        assert.equal(operations[4].workgroups, 1);
+        assert.equal(operations[7].mode, 'direct');
+        assert.equal(operations[7].workgroups, 1);
         assert.deepEqual(
-            operations.slice(0, 8).map(({ pipelineLayout }) => pipelineLayout),
+            operations.slice(0, 9).map(({ pipelineLayout }) => pipelineLayout),
             [
+                'cirvivor-gpu-circle-indirect-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
@@ -1203,23 +1242,26 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             ]
         );
         assert.deepEqual(operations[0].bindGroups, [
+            'cirvivor-gpu-circle-indirect'
+        ]);
+        assert.deepEqual(operations[1].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-base',
             'cirvivor-gpu-circle-compute-world-full',
             'cirvivor-gpu-circle-compute-params'
         ]);
-        assert.deepEqual(operations[4].bindGroups, [
+        assert.deepEqual(operations[5].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-with-handlers',
             'cirvivor-gpu-circle-compute-world-grid',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(operations[5].bindGroups, [
+        assert.deepEqual(operations[6].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-base',
             'cirvivor-gpu-circle-compute-world-sdf',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(operations[6].bindGroups, [
+        assert.deepEqual(operations[7].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-with-handlers',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
@@ -1237,13 +1279,16 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         await flushMicrotasks();
         const batches = simulation.drainCompletedEventBatches([]);
         assert.equal(batches.length, 2);
+        assert.equal(batches[0].previousSourceTick, 0);
+        assert.equal(batches[0].previousSubmittedTick, 0);
         assert.equal(batches[0].sourceTick, 100);
         assert.equal(batches[0].submittedTick, 1);
         assert.equal(batches[0].deviceGeneration, 1);
         assert.equal(batches[0].completedThroughTick, 101);
-        assert.equal(batches[0].events.length, 2);
+        assert.equal(batches[0].events.length, 3);
         const contact = batches[0].events[0];
         assert.equal(contact.type, 'contact');
+        assert.equal(contact.eventType, 'damage-applied');
         assert.equal(contact.sequence, 0);
         assert.equal(contact.entityId, 11);
         assert.equal(contact.incarnation, 2);
@@ -1253,16 +1298,29 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         assert.equal(contact.damage, 1.23);
         assert.equal(contact.position.x, 1.5);
         assert.equal(contact.position.y, -2);
-        assert.equal(contact.flags, 1);
+        assert.equal(
+            contact.flags,
+            GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
+                | GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
+        );
         assert.equal(contact.reason, 'target-died');
-        const death = batches[0].events[1];
+        const terrain = batches[0].events[1];
+        assert.equal(terrain.type, 'contact');
+        assert.equal(terrain.eventType, 'interaction-enter');
+        assert.equal(terrain.sequence, 1);
+        assert.equal(terrain.other, null);
+        assert.equal(terrain.valueFixedPoint, 0);
+        assert.equal(terrain.reason, 'terrain-interaction');
+        const death = batches[0].events[2];
         assert.equal(death.type, 'death');
-        assert.equal(death.sequence, 1);
+        assert.equal(death.sequence, 2);
         assert.equal(death.entityId, 22);
         assert.equal(death.incarnation, 3);
         assert.equal(death.bodyId, 1);
         assert.equal(death.damageFixedPoint, 0);
         assert.equal(death.reason, 'health');
+        assert.equal(batches[1].previousSourceTick, 100);
+        assert.equal(batches[1].previousSubmittedTick, 1);
         assert.equal(batches[1].sourceTick, 101);
         assert.equal(batches[1].events.length, 0);
         assert.equal(simulation.getStatus().events.lastStatsTick, 2);
@@ -1287,6 +1345,47 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         device.resolveEventMap(stalePending);
         await flushMicrotasks();
         assert.equal(simulation.getStatus().state, 'destroyed');
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('health 0 active body는 interaction/lifetime 없이도 death readback을 예약한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        eventCapacity: 1,
+        deathEventCapacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        device.eventPayloads.push({
+            deaths: [{
+                entityId: 73,
+                incarnation: 1,
+                bodyId: 0,
+                flags: 1
+            }]
+        });
+        assert.equal(simulation.replaceBodies([{
+            ...createBody(2),
+            entityId: 73,
+            incarnation: 1,
+            health: 0
+        }]).accepted, 1);
+        assert.equal(simulation.getStatus().events.eventProducingBodyCount, 1);
+        assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
+        assert.equal(simulation.getStatus().events.pendingReadbacks, 1);
+        device.resolveEventMap(0);
+        await flushMicrotasks();
+        const batches = simulation.drainCompletedEventBatches([]);
+        assert.equal(batches.length, 1);
+        assert.equal(batches[0].events.length, 1);
+        assert.equal(batches[0].events[0].type, 'death');
+        assert.equal(batches[0].events[0].entityId, 73);
     } finally {
         simulation.destroy();
         restoreGlobals();
@@ -1359,7 +1458,10 @@ test('마지막 despawn은 지연된 0-event batch drain 뒤 watermark를 보존
             ...createBody(1),
             entityId: 41,
             incarnation: 7,
-            sensorMask: 1
+            interactionMask: 1,
+            contactHandler: {
+                flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+            }
         }]);
         assert.equal(
             replaceResult.accepted,
@@ -1404,6 +1506,8 @@ test('마지막 despawn은 지연된 0-event batch drain 뒤 watermark를 보존
 
         const batches = simulation.drainCompletedEventBatches([]);
         assert.equal(batches.length, 1);
+        assert.equal(batches[0].previousSourceTick, 0);
+        assert.equal(batches[0].previousSubmittedTick, 0);
         assert.equal(batches[0].sourceTick, 400);
         assert.equal(batches[0].completedThroughTick, 400);
         assert.equal(batches[0].events.length, 0);
@@ -1439,7 +1543,10 @@ test('contact raw count가 capacity를 넘으면 부분 event를 방출하지 �
             ...createBody(1),
             entityId: 9,
             incarnation: 1,
-            sensorMask: 1
+            interactionMask: 1,
+            contactHandler: {
+                flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+            }
         }]);
         assert.equal(
             replaceResult.accepted,
@@ -1456,6 +1563,259 @@ test('contact raw count가 capacity를 넘으면 부분 event를 방출하지 �
         assert.equal(status.contact.lastOverflowCount, 1);
         assert.equal(status.events.pendingReadbacks, 0);
         assert.equal(simulation.drainCompletedEventBatches([]).length, 0);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('host ABI version mismatch는 fixed submit과 event watermark를 fail-closed 한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.replaceBodies([{
+            ...createBody(1),
+            entityId: 51,
+            incarnation: 1
+        }]).accepted, 1);
+        const submittedBefore = device.submissions.length;
+        new DataView(simulation.hostStorage.countsBuffer).setUint32(
+            GPU_CIRCLE_BODY_ABI.COUNTS.ABI_VERSION,
+            GPU_CIRCLE_BODY_ABI_VERSION - 1,
+            true
+        );
+
+        assert.equal(simulation.fixedUpdate(1 / 60, 500), false);
+        const status = simulation.getStatus();
+        assert.equal(status.state, 'requires-rebuild');
+        assert.equal(status.failure.stage, 'abi-version');
+        assert.equal(status.events.completedThroughTick, 0);
+        assert.equal(device.submissions.length, submittedBefore);
+        assert.equal(simulation.drainCompletedEventBatches([]).length, 0);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('contact event encoding mismatch는 stale payload를 decode하지 않고 rebuild를 요구한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        contactCapacity: 4,
+        eventCapacity: 4,
+        deathEventCapacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        device.eventPayloads.push({
+            abiStatus: 0,
+            eventEncodingVersion: GPU_CIRCLE_BODY_ABI_VERSION - 1,
+            applied: [{
+                entityId: 61,
+                incarnation: 1,
+                otherEntityId: 62,
+                otherIncarnation: 1,
+                damageFixedPoint: 100,
+                eventMeta: packGpuCircleAppliedEventMeta(
+                    GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED
+                )
+            }]
+        });
+        assert.equal(simulation.replaceBodies([{
+            ...createBody(1),
+            entityId: 61,
+            incarnation: 1,
+            interactionMask: 1,
+            contactHandler: {
+                damageOther: 1,
+                flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+            }
+        }]).accepted, 1);
+        assert.equal(simulation.fixedUpdate(1 / 60, 600), true);
+        device.resolveEventMap(0);
+        await flushMicrotasks();
+
+        const status = simulation.getStatus();
+        assert.equal(status.state, 'requires-rebuild');
+        assert.equal(status.failure.stage, 'event-readback');
+        assert.equal(status.events.completedThroughTick, 0);
+        assert.equal(simulation.drainCompletedEventBatches([]).length, 0);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('typed applied event의 unknown/모순 flag 조합은 decode 전에 fail-closed 한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const invalidCases = [{
+        eventType: GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER,
+        flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY,
+        valueFixedPoint: 0
+    }, {
+        eventType: GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_CONTINUOUS,
+        flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY
+            | GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED,
+        valueFixedPoint: 0
+    }, {
+        eventType: GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
+        flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY | (1 << 20),
+        valueFixedPoint: 100
+    }];
+    try {
+        for (let index = 0; index < invalidCases.length; index++) {
+            const invalid = invalidCases[index];
+            const device = new FakeGpuDevice();
+            const simulation = new GpuCircleBodySimulation(
+                createFakePlatformPort(device),
+                {
+                    capacity: 1,
+                    contactCapacity: 4,
+                    eventCapacity: 4,
+                    deathEventCapacity: 1,
+                    worldSize: { x: 8, y: 8 },
+                    gridCellSize: { x: 1, y: 1 }
+                }
+            );
+            try {
+                device.eventPayloads.push({
+                    applied: [{
+                        entityId: 71,
+                        incarnation: 1,
+                        otherEntityId: 72,
+                        otherIncarnation: 1,
+                        damageFixedPoint: invalid.valueFixedPoint,
+                        eventMeta: packGpuCircleAppliedEventMeta(
+                            invalid.eventType,
+                            invalid.flags
+                        )
+                    }]
+                });
+                assert.equal(simulation.replaceBodies([{
+                    ...createBody(1),
+                    entityId: 71,
+                    incarnation: 1,
+                    interactionMask: 1,
+                    contactHandler: {
+                        damageOther: 1,
+                        flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+                    }
+                }]).accepted, 1);
+                assert.equal(simulation.fixedUpdate(1 / 60, 700 + index), true);
+                device.resolveEventMap(0);
+                await flushMicrotasks();
+
+                const status = simulation.getStatus();
+                assert.equal(status.state, 'requires-rebuild');
+                assert.equal(status.failure.stage, 'event-readback');
+                assert.equal(status.events.completedThroughTick, 0);
+                assert.equal(simulation.drainCompletedEventBatches([]).length, 0);
+            } finally {
+                simulation.destroy();
+            }
+        }
+    } finally {
+        restoreGlobals();
+    }
+});
+
+test('마지막 non-event despawn은 in-flight overflow map 종료까지 GPU resource를 보존한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferOverflowMaps = true;
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            entityId: 71,
+            incarnation: 1
+        }]).accepted, 1);
+        assert.equal(simulation.fixedUpdate(1 / 60, 700), true);
+        assert.equal(simulation.getStatus().overflow.pendingReadbacks, 1);
+        const physicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
+        const overflowBuffer = device.overflowMapRequests[0].buffer;
+
+        assert.equal(simulation.despawnBodies([{
+            entityId: 71,
+            incarnation: 1
+        }]).removed, 1);
+        let status = simulation.getStatus();
+        assert.equal(status.activeBodyCount, 0);
+        assert.equal(status.overflow.pendingReadbacks, 1);
+        assert.equal(status.state, 'ready');
+        assert.equal(physicsBuffer.destroyed, false);
+        assert.equal(overflowBuffer.destroyed, false);
+
+        device.resolveOverflowMap(0);
+        await flushMicrotasks();
+        status = simulation.getStatus();
+        assert.equal(status.state, 'idle');
+        assert.equal(status.deviceGeneration, -1);
+        assert.equal(status.overflow.pendingReadbacks, 0);
+        assert.equal(physicsBuffer.destroyed, true);
+        assert.equal(overflowBuffer.destroyed, true);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('rebuild 뒤 완료된 old overflow callback은 새 epoch와 resource를 변경하지 않는다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferOverflowMaps = true;
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    try {
+        assert.equal(simulation.replaceBodies([{
+            ...createBody(1),
+            entityId: 81,
+            incarnation: 1
+        }]).accepted, 1);
+        assert.equal(simulation.fixedUpdate(1 / 60, 800), true);
+        const oldPhysicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
+        const oldOverflowRequest = device.overflowMapRequests[0];
+        const oldEpoch = simulation.getStatus().authoritativeEpoch;
+
+        assert.equal(simulation.replaceBodies([{
+            ...createBody(3),
+            entityId: 82,
+            incarnation: 1
+        }]).accepted, 1);
+        const newPhysicsBuffer = device.buffers.get('cirvivor-gpu-circle-physics');
+        const beforeOldCallback = simulation.getStatus();
+        assert.ok(beforeOldCallback.authoritativeEpoch > oldEpoch);
+        assert.equal(beforeOldCallback.state, 'ready');
+        assert.equal(beforeOldCallback.activeBodyCount, 1);
+        assert.equal(beforeOldCallback.overflow.pendingReadbacks, 0);
+        assert.notStrictEqual(newPhysicsBuffer, oldPhysicsBuffer);
+        assert.equal(oldPhysicsBuffer.destroyed, true);
+        assert.equal(newPhysicsBuffer.destroyed, false);
+
+        oldOverflowRequest.resolve();
+        await flushMicrotasks();
+        const afterOldCallback = simulation.getStatus();
+        assert.equal(afterOldCallback.authoritativeEpoch, beforeOldCallback.authoritativeEpoch);
+        assert.equal(afterOldCallback.state, 'ready');
+        assert.equal(afterOldCallback.activeBodyCount, 1);
+        assert.equal(afterOldCallback.overflow.pendingReadbacks, 0);
+        assert.equal(newPhysicsBuffer.destroyed, false);
+        assert.equal(simulation.hasBody({ entityId: 82, incarnation: 1 }), true);
     } finally {
         simulation.destroy();
         restoreGlobals();

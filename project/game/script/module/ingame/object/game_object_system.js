@@ -308,9 +308,18 @@ export class GameObjectSystem {
         }
 
         if (this.pendingEnemyFixedTick === 0) {
-            this.enemySimulationEndpoint.commitCompletedEventsAtFixedBoundary(
+            const completedEvents = this.enemySimulationEndpoint
+                .commitCompletedEventsAtFixedBoundary(
                 proposedFixedTick
             );
+            if (completedEvents.protocolFailure) {
+                this.enemySimulationRecoveryRequired = true;
+                if (!this.enemySimulationPaused) {
+                    this.enemySimulationEndpoint.synchronizePresentation();
+                }
+                this.enemySimulationPaused = true;
+                return false;
+            }
             this.waveDirector?.queueSpawnsForFixedTick(
                 proposedFixedTick,
                 this.enemySimulationEndpoint

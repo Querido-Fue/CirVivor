@@ -115,9 +115,14 @@ test('중앙 player와 일치하는 정적 hidden GPU proxy를 next fixed tick�
         intent.bodyLayer,
         GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
     );
-    assert.equal(intent.layerMask, intent.bodyLayer);
     assert.equal(intent.collisionMask, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
-    assert.equal(intent.sensorMask, 0);
+    assert.equal(
+        intent.interactionLayer,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
+    );
+    assert.equal(intent.interactionMask, 0);
+    assert.equal('layerMask' in intent, false);
+    assert.equal('sensorMask' in intent, false);
     assert.equal(intent.health, 1);
     assert.equal(intent.lifetime, -1);
     assert.equal(intent.alive, true);

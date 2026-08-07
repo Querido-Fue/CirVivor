@@ -51,11 +51,18 @@ function createFakeBackend(options = {}) {
     let state = options.state ?? 'gpu-ready';
     let recoveryRequired = options.recoveryRequired === true;
     let destroyCount = 0;
+    let eventProtocolState = options.eventProtocolState ?? null;
 
     return {
         bodies,
         calls,
         completedEventBatches,
+        setEventProtocolState(next) {
+            eventProtocolState = next === null ? null : Object.freeze({ ...next });
+        },
+        getEventProtocolState() {
+            return eventProtocolState;
+        },
         get destroyCount() {
             return destroyCount;
         },
@@ -132,6 +139,7 @@ function createFakeBackend(options = {}) {
             return Object.freeze({
                 state,
                 bodyCount: bodies.size,
+                ...(eventProtocolState ?? {}),
                 events: Object.freeze({
                     queuedBatches: completedEventBatches.length
                 }),
@@ -148,6 +156,32 @@ function createFakeBackend(options = {}) {
             recoveryRequired = false;
             state = 'destroyed';
         }
+    };
+}
+
+function setCurrentEventProtocol(endpoint, backend, overrides = {}) {
+    const protocol = Object.freeze({
+        sessionGeneration: endpoint.getStatus().sessionGeneration,
+        deviceGeneration: overrides.deviceGeneration ?? 1,
+        authoritativeEpoch: overrides.authoritativeEpoch ?? 1
+    });
+    backend.setEventProtocolState(protocol);
+    return protocol;
+}
+
+function createCompletedBatch(protocol, overrides = {}) {
+    return {
+        sessionGeneration: protocol.sessionGeneration,
+        deviceGeneration: protocol.deviceGeneration,
+        authoritativeEpoch: protocol.authoritativeEpoch,
+        previousSourceTick: overrides.previousSourceTick ?? 0,
+        previousSubmittedTick: overrides.previousSubmittedTick ?? 0,
+        sourceTick: overrides.sourceTick ?? 1,
+        submittedTick: overrides.submittedTick ?? overrides.sourceTick ?? 1,
+        completedThroughTick:
+            overrides.completedThroughTick ?? overrides.sourceTick ?? 1,
+        events: overrides.events ?? [],
+        ...overrides
     };
 }
 
@@ -390,45 +424,41 @@ test('GPU enemy endpoint는 fixed/presentation/draw/status를 위임하고 한 �
     );
 });
 
-test('GPU death completion은 drain 경계에서만 despawn을 예약하고 같은 target tick commit에서 제거된다', () => {
+test('GPU death completion은 검증된 envelope drain 경계에서만 despawn을 예약한다', () => {
     const backend = createFakeBackend({ capacity: 4 });
-    const endpoint = createGpuEnemySimulationEndpoint({
-        enemySimulationBackend: backend
-    });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
     endpoint.init({ id: 'event-map' });
     endpoint.requestSpawn(createSpawnIntent(), 1, 'event-spawn:0');
     const spawn = endpoint.commitAtFixedBoundary(1).spawned[0].handle;
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
+        deviceGeneration: 7,
+        authoritativeEpoch: 2
+    });
 
-    backend.completedEventBatches.push({
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
         sourceTick: 1,
         submittedTick: 1,
-        deviceGeneration: 7,
-        completedThroughTick: 1,
         events: [{
             type: 'death',
-            sequence: 3,
+            eventType: 'death',
+            sequence: 0,
             entityId: spawn.entityId,
             incarnation: spawn.incarnation,
             bodyId: 0,
-            reason: 1
+            reasonFlags: 1
         }]
-    });
+    }));
 
-    assert.equal(endpoint.hasBody(spawn), true);
-    assert.equal(endpoint.getPendingCommandCount(), 0);
     const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(2);
     assert.equal(endpoint.hasBody(spawn), true);
-    assert.equal(endpoint.getRegistry().has(spawn), true);
     assert.equal(endpoint.getPendingCommandCount(), 1);
     assert.equal(snapshot.deathEvents.length, 1);
     assert.equal(snapshot.deathEvents[0].disposition, 'despawn-requested');
-    assert.equal(snapshot.deathEvents[0].deviceGeneration, 7);
-    assert.equal(snapshot.deathEvents[0].sourceTick, 1);
-    assert.equal(snapshot.deathEvents[0].sequence, 3);
+    assert.equal(snapshot.deathEvents[0].authoritativeEpoch, 2);
     assert.equal(
         snapshot.deathEvents[0].key,
-        `${endpoint.getStatus().sessionGeneration}:7:${spawn.entityId}`
-            + `:${spawn.incarnation}:1:3:death`
+        `${protocol.sessionGeneration}:7:2:${spawn.entityId}`
+            + `:${spawn.incarnation}:1:0:death`
     );
     assert.equal(
         backend.calls.filter(({ type }) => type === 'despawnBodies').length,
@@ -438,22 +468,15 @@ test('GPU death completion은 drain 경계에서만 despawn을 예약하고 같�
     const commit = endpoint.commitAtFixedBoundary(2);
     assert.equal(commit.despawned.length, 1);
     assert.equal(commit.despawned[0].reason, 'gpu-death');
-    assert.equal(
-        commit.despawned[0].commandId,
-        `gpu-death:${snapshot.deathEvents[0].key}`
-    );
+    assert.equal(commit.despawned[0].commandId, `gpu-death:${snapshot.deathEvents[0].key}`);
     assert.equal(endpoint.hasBody(spawn), false);
-    assert.equal(endpoint.getRegistry().has(spawn), false);
     assert.equal(endpoint.getStatus().events.death, 1);
-    assert.equal(endpoint.getStatus().events.stale, 0);
     endpoint.destroy();
 });
 
-test('GPU completion은 stale incarnation과 exact duplicate를 안전하게 억제한다', () => {
+test('stale incarnation은 폐기하고 같은 batch의 exact duplicate만 dedupe한다', () => {
     const backend = createFakeBackend({ capacity: 4 });
-    const endpoint = createGpuEnemySimulationEndpoint({
-        enemySimulationBackend: backend
-    });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
     endpoint.init({ id: 'dedupe-map' });
     endpoint.requestSpawn(createSpawnIntent(), 1, 'dedupe-spawn:0');
     const firstHandle = endpoint.commitAtFixedBoundary(1).spawned[0].handle;
@@ -461,136 +484,503 @@ test('GPU completion은 stale incarnation과 exact duplicate를 안전하게 억
     endpoint.commitAtFixedBoundary(2);
     endpoint.requestSpawn(createSpawnIntent(1), 3, 'dedupe-spawn:1');
     const currentHandle = endpoint.commitAtFixedBoundary(3).spawned[0].handle;
-    assert.equal(currentHandle.entityId, firstHandle.entityId);
-    assert.ok(currentHandle.incarnation > firstHandle.incarnation);
-
-    backend.completedEventBatches.push({
-        sourceTick: 2,
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
         deviceGeneration: 4,
-        completedThroughTick: 2,
-        events: [{
-            type: 'death',
-            sequence: 9,
-            entityId: firstHandle.entityId,
-            incarnation: firstHandle.incarnation,
-            bodyId: 0,
-            reason: 1
-        }]
-    }, {
-        sourceTick: 3,
-        deviceGeneration: 4,
-        completedThroughTick: 3,
-        events: [{
-            type: 'death',
-            sequence: 10,
-            entityId: currentHandle.entityId,
-            incarnation: currentHandle.incarnation,
-            bodyId: 0,
-            reason: 1
-        }, {
-            type: 'death',
-            sequence: 10,
-            entityId: currentHandle.entityId,
-            incarnation: currentHandle.incarnation,
-            bodyId: 0,
-            reason: 1
-        }]
+        authoritativeEpoch: 3
     });
 
+    const staleDeath = {
+        type: 'death', eventType: 'death', sequence: 0,
+        entityId: firstHandle.entityId, incarnation: firstHandle.incarnation,
+        bodyId: 0, reasonFlags: 1
+    };
+    const currentDeath = {
+        type: 'death', eventType: 'death', sequence: 0,
+        entityId: currentHandle.entityId, incarnation: currentHandle.incarnation,
+        bodyId: 0, reasonFlags: 1
+    };
+    backend.completedEventBatches.push(
+        createCompletedBatch(protocol, {
+            sourceTick: 2,
+            submittedTick: 2,
+            events: [staleDeath]
+        }),
+        createCompletedBatch(protocol, {
+            sourceTick: 3,
+            submittedTick: 3,
+            previousSourceTick: 2,
+            previousSubmittedTick: 2,
+            events: [currentDeath, { ...currentDeath }]
+        })
+    );
+
     const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(4);
-    assert.equal(snapshot.deathEvents.length, 3);
     assert.deepEqual(
         Array.from(snapshot.deathEvents, ({ disposition }) => disposition),
         ['stale', 'despawn-requested', 'duplicate']
     );
     assert.equal(endpoint.getPendingCommandCount(), 1);
-    assert.equal(endpoint.hasBody(currentHandle), true);
-    const status = endpoint.getStatus();
-    assert.equal(status.events.death, 2);
-    assert.equal(status.events.stale, 1);
-    assert.equal(status.events.deduped, 1);
-
-    const commit = endpoint.commitAtFixedBoundary(4);
-    assert.equal(commit.despawned.length, 1);
-    assert.equal(endpoint.hasBody(currentHandle), false);
+    assert.equal(endpoint.getStatus().events.death, 1);
+    assert.equal(endpoint.getStatus().events.stale, 1);
+    assert.equal(endpoint.getStatus().events.deduped, 1);
+    assert.equal(endpoint.commitAtFixedBoundary(4).despawned.length, 1);
     endpoint.destroy();
 });
 
-test('event가 없는 GPU completion도 completedThroughTick watermark와 최신 빈 snapshot을 전진시킨다', () => {
+test('event가 없는 completion도 완전한 envelope에서만 watermark를 전진시킨다', () => {
     const backend = createFakeBackend({ capacity: 2 });
-    const endpoint = createGpuEnemySimulationEndpoint({
-        enemySimulationBackend: backend
-    }, {
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend }, {
         completedEventSnapshotCapacity: 1,
         completedEventKeyHistoryCapacity: 2
     });
     endpoint.init({ id: 'watermark-map' });
-    backend.completedEventBatches.push({
-        sourceTick: 8,
-        submittedTick: 8,
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
         deviceGeneration: 11,
-        completedThroughTick: 8,
-        events: []
+        authoritativeEpoch: 4
     });
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        sourceTick: 8,
+        submittedTick: 8
+    }));
 
     const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(9);
     assert.equal(Object.isFrozen(snapshot), true);
-    assert.equal(snapshot.targetFixedTick, 9);
     assert.equal(snapshot.completedThroughTick, 8);
     assert.equal(snapshot.batchCount, 1);
     assert.equal(snapshot.events.length, 0);
-    assert.equal(endpoint.getLastCompletedSimulationEvents(), snapshot);
-    assert.equal(endpoint.getStatus().completedThroughTick, 8);
     assert.equal(endpoint.getStatus().events.completedThroughTick, 8);
-    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(endpoint.requiresRecovery(), false);
     endpoint.destroy();
 });
 
-test('event dedupe key는 같은 tick/sequence라도 exact entity incarnation을 구분한다', () => {
-    const backend = createFakeBackend({ capacity: 2 });
-    const endpoint = createGpuEnemySimulationEndpoint({
-        enemySimulationBackend: backend
-    });
-    endpoint.init({ id: 'exact-event-identity-map' });
-    backend.completedEventBatches.push({
-        sourceTick: 12,
+test('typed interaction event 방향과 exact duplicate key는 body 배열 순서와 독립적이다', () => {
+    const backend = createFakeBackend({ capacity: 4 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'typed-event-map' });
+    endpoint.requestSpawn(createSpawnIntent(0), 1, 'typed-spawn:0');
+    endpoint.requestSpawn(createSpawnIntent(1), 1, 'typed-spawn:1');
+    const [subject, other] = endpoint.commitAtFixedBoundary(1).spawned.map(({ handle }) => handle);
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
         deviceGeneration: 3,
-        completedThroughTick: 12,
-        events: [{
-            type: 'contact',
-            sequence: 5,
-            entityId: 41,
-            incarnation: 1,
-            damageFixedPoint: 25
-        }, {
-            type: 'contact',
-            sequence: 5,
-            entityId: 41,
-            incarnation: 2,
-            damageFixedPoint: 25
-        }, {
-            type: 'contact',
-            sequence: 5,
-            entityId: 41,
-            incarnation: 2,
-            damageFixedPoint: 25
-        }]
+        authoritativeEpoch: 5
     });
+    const reverseEvent = {
+        type: 'contact', eventType: 'interaction-enter', sequence: 1,
+        entityId: other.entityId, incarnation: other.incarnation,
+        otherEntityId: subject.entityId, otherIncarnation: subject.incarnation,
+        valueFixedPoint: 0
+    };
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        sourceTick: 1,
+        submittedTick: 1,
+        events: [{
+            type: 'contact', eventType: 'interaction-enter', sequence: 0,
+            entityId: subject.entityId, incarnation: subject.incarnation,
+            otherEntityId: other.entityId, otherIncarnation: other.incarnation,
+            valueFixedPoint: 0
+        }, reverseEvent, { ...reverseEvent }]
+    }));
 
-    const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(13);
+    const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(2);
     assert.deepEqual(
         Array.from(snapshot.contactEvents, ({ disposition }) => disposition),
         ['applied', 'applied', 'duplicate']
     );
-    assert.notEqual(
-        snapshot.contactEvents[0].key,
-        snapshot.contactEvents[1].key
+    assert.equal(snapshot.contactEvents[0].eventType, 'interaction-enter');
+    assert.equal(snapshot.contactEvents[0].valueFixedPoint, 0);
+    assert.notEqual(snapshot.contactEvents[0].key, snapshot.contactEvents[1].key);
+    assert.equal(snapshot.contactEvents[1].key, snapshot.contactEvents[2].key);
+    endpoint.destroy();
+});
+
+test('sequence gap과 conflicting duplicate는 watermark/side effect 없이 recovery를 latch한다', () => {
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'sequence-gap-map' });
+    endpoint.requestSpawn(createSpawnIntent(), 1, 'sequence-spawn:0');
+    const handle = endpoint.commitAtFixedBoundary(1).spawned[0].handle;
+    const protocol = setCurrentEventProtocol(endpoint, backend);
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        sourceTick: 1,
+        events: [{
+            type: 'death', eventType: 'death', sequence: 1,
+            entityId: handle.entityId, incarnation: handle.incarnation,
+            bodyId: 0, reasonFlags: 1
+        }]
+    }));
+
+    const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(snapshot.events.length, 0);
+    assert.equal(snapshot.completedThroughTick, 0);
+    assert.equal(snapshot.protocolFailure.code, 'sequence-gap');
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(endpoint.requiresRecovery(), true);
+    endpoint.destroy();
+});
+
+test('noncontiguous batch와 incomplete watermark는 prefix 전체를 fail-closed 한다', () => {
+    const backend = createFakeBackend({ capacity: 4 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'batch-gap-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend);
+    backend.completedEventBatches.push(
+        createCompletedBatch(protocol, { sourceTick: 1, submittedTick: 1 }),
+        createCompletedBatch(protocol, {
+            previousSourceTick: 2,
+            previousSubmittedTick: 2,
+            sourceTick: 3,
+            submittedTick: 3
+        })
     );
+
+    const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(4);
+    assert.equal(snapshot.completedThroughTick, 0);
+    assert.equal(snapshot.batchCount, 0);
+    assert.equal(snapshot.protocolFailure.code, 'batch-gap');
+    assert.equal(endpoint.requiresRecovery(), true);
+    endpoint.destroy();
+
+    const backend2 = createFakeBackend({ capacity: 2 });
+    const endpoint2 = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend2 });
+    endpoint2.init({ id: 'watermark-gap-map' });
+    const protocol2 = setCurrentEventProtocol(endpoint2, backend2);
+    backend2.completedEventBatches.push(createCompletedBatch(protocol2, {
+        sourceTick: 1,
+        submittedTick: 1,
+        completedThroughTick: 2
+    }));
+    const incomplete = endpoint2.commitCompletedEventsAtFixedBoundary(3);
+    assert.equal(incomplete.completedThroughTick, 0);
+    assert.equal(incomplete.protocolFailure.code, 'watermark-gap');
+    assert.equal(endpoint2.requiresRecovery(), true);
+    endpoint2.destroy();
+});
+
+test('old generation/epoch은 폐기하고 future tick은 해당 fixed 경계까지 보류한다', () => {
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'generation-future-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
+        deviceGeneration: 5,
+        authoritativeEpoch: 7
+    });
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        deviceGeneration: 4,
+        authoritativeEpoch: 6,
+        sourceTick: 1,
+        events: [{
+            type: 'death', eventType: 'death', sequence: 0,
+            entityId: 99, incarnation: 1, bodyId: 0, reasonFlags: 1
+        }]
+    }));
+    const stale = endpoint.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(stale.events.length, 0);
+    assert.equal(stale.completedThroughTick, 0);
+    assert.equal(endpoint.getStatus().events.stale, 1);
+    assert.equal(endpoint.requiresRecovery(), false);
+
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        sourceTick: 5,
+        submittedTick: 5
+    }));
+    const early = endpoint.commitCompletedEventsAtFixedBoundary(5);
+    assert.equal(early.batchCount, 0);
+    assert.equal(early.completedThroughTick, 0);
+    assert.equal(endpoint.getStatus().events.deferredBatchCount, 1);
+    const due = endpoint.commitCompletedEventsAtFixedBoundary(6);
+    assert.equal(due.batchCount, 1);
+    assert.equal(due.completedThroughTick, 5);
+    endpoint.destroy();
+});
+
+test('generation mismatch와 bounded snapshot overflow는 어떤 event도 부분 적용하지 않는다', () => {
+    const backend = createFakeBackend({ capacity: 4 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'generation-mismatch-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
+        deviceGeneration: 2,
+        authoritativeEpoch: 2
+    });
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        deviceGeneration: 3,
+        sourceTick: 1
+    }));
+    const mismatch = endpoint.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(mismatch.protocolFailure.code, 'generation-mismatch');
+    assert.equal(mismatch.completedThroughTick, 0);
+    assert.equal(endpoint.requiresRecovery(), true);
+    assert.equal(endpoint.getStatus().events.deferredBatchCount, 0);
+    for (let sourceTick = 2; sourceTick <= 5; sourceTick++) {
+        backend.completedEventBatches.push(createCompletedBatch(protocol, {
+            sourceTick,
+            submittedTick: sourceTick
+        }));
+        const afterFailure = endpoint.commitCompletedEventsAtFixedBoundary(
+            sourceTick + 1
+        );
+        assert.equal(afterFailure.protocolFailure.code, 'generation-mismatch');
+        assert.equal(endpoint.getStatus().events.deferredBatchCount, 0);
+    }
+    endpoint.destroy();
+
+    const backend2 = createFakeBackend({ capacity: 4 });
+    const endpoint2 = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend2 }, {
+        completedEventSnapshotCapacity: 1
+    });
+    endpoint2.init({ id: 'snapshot-overflow-map' });
+    endpoint2.requestSpawn(createSpawnIntent(0), 1, 'overflow-spawn:0');
+    endpoint2.requestSpawn(createSpawnIntent(1), 1, 'overflow-spawn:1');
+    const [left, right] = endpoint2.commitAtFixedBoundary(1).spawned.map(({ handle }) => handle);
+    const protocol2 = setCurrentEventProtocol(endpoint2, backend2);
+    backend2.completedEventBatches.push(createCompletedBatch(protocol2, {
+        sourceTick: 1,
+        events: [left, right].map((handle, sequence) => ({
+            type: 'contact', eventType: 'interaction-enter', sequence,
+            entityId: handle.entityId, incarnation: handle.incarnation,
+            valueFixedPoint: 0
+        }))
+    }));
+    const overflow = endpoint2.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(overflow.protocolFailure.code, 'snapshot-capacity');
+    assert.equal(overflow.events.length, 0);
+    assert.equal(overflow.completedThroughTick, 0);
+    assert.equal(endpoint2.getPendingCommandCount(), 0);
+    assert.equal(endpoint2.requiresRecovery(), true);
+    endpoint2.destroy();
+});
+
+test('lower drain 내부 idle epoch 전환은 방금 완료된 batch를 stale로 만들지 않는다', () => {
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'drain-epoch-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
+        deviceGeneration: 6,
+        authoritativeEpoch: 9
+    });
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        sourceTick: 1,
+        submittedTick: 1
+    }));
+    const drain = backend.drainCompletedEventBatches;
+    backend.drainCompletedEventBatches = (out) => {
+        const result = drain(out);
+        backend.setEventProtocolState({
+            ...protocol,
+            authoritativeEpoch: protocol.authoritativeEpoch + 1
+        });
+        return result;
+    };
+
+    const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(snapshot.protocolFailure, null);
+    assert.equal(snapshot.batchCount, 1);
+    assert.equal(snapshot.completedThroughTick, 1);
+    assert.equal(endpoint.getStatus().events.stale, 0);
+    assert.equal(endpoint.requiresRecovery(), false);
+    endpoint.destroy();
+});
+
+test('sparse event batch predecessor chain은 drain timing과 무관하게 같은 watermark를 만든다', () => {
+    const run = (splitDrain) => {
+        const backend = createFakeBackend({ capacity: 2 });
+        const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+        endpoint.init({ id: `sparse-${splitDrain ? 'split' : 'joined'}-map` });
+        const protocol = setCurrentEventProtocol(endpoint, backend);
+        backend.completedEventBatches.push(createCompletedBatch(protocol, {
+            sourceTick: 1,
+            submittedTick: 1,
+            completedThroughTick: splitDrain ? 1 : 3
+        }));
+        if (splitDrain) {
+            const first = endpoint.commitCompletedEventsAtFixedBoundary(4);
+            assert.equal(first.completedThroughTick, 1);
+            assert.equal(first.protocolFailure, null);
+        }
+        backend.completedEventBatches.push(createCompletedBatch(protocol, {
+            previousSourceTick: 1,
+            previousSubmittedTick: 1,
+            sourceTick: 3,
+            submittedTick: 3,
+            completedThroughTick: 3
+        }));
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(4);
+        const result = {
+            completedThroughTick: completed.completedThroughTick,
+            recoveryRequired: endpoint.requiresRecovery()
+        };
+        endpoint.destroy();
+        return result;
+    };
+
+    assert.deepEqual(run(false), run(true));
+    assert.deepEqual(run(false), {
+        completedThroughTick: 3,
+        recoveryRequired: false
+    });
+});
+
+test('backend protocol session mismatch와 mixed old/new generation은 stale로 숨기지 않는다', () => {
+    const bootstrap = createGpuEnemySimulationEndpoint({
+        enemySimulationBackend: createFakeBackend({ capacity: 1 })
+    });
+    bootstrap.destroy();
+
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'protocol-session-mismatch-map' });
+    const sessionGeneration = endpoint.getStatus().sessionGeneration;
+    const staleProtocol = {
+        sessionGeneration: sessionGeneration - 1,
+        deviceGeneration: 1,
+        authoritativeEpoch: 1
+    };
+    backend.setEventProtocolState(staleProtocol);
+    backend.completedEventBatches.push(createCompletedBatch(staleProtocol));
+    const mismatch = endpoint.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(mismatch.protocolFailure.code, 'generation-mismatch');
+    assert.equal(endpoint.getStatus().events.stale, 0);
+    endpoint.destroy();
+
+    const backend2 = createFakeBackend({ capacity: 2 });
+    const endpoint2 = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend2 });
+    endpoint2.init({ id: 'mixed-generation-map' });
+    const protocol2 = setCurrentEventProtocol(endpoint2, backend2, {
+        deviceGeneration: 3,
+        authoritativeEpoch: 3
+    });
+    backend2.completedEventBatches.push(createCompletedBatch(protocol2, {
+        deviceGeneration: 2,
+        authoritativeEpoch: 4
+    }));
+    const mixed = endpoint2.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(mixed.protocolFailure.code, 'generation-mismatch');
+    assert.equal(endpoint2.getStatus().events.stale, 0);
+    endpoint2.destroy();
+});
+
+test('새 authoritative epoch의 predecessor chain은 0에서 다시 시작한다', () => {
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'event-stream-epoch-map' });
+    const firstProtocol = setCurrentEventProtocol(endpoint, backend, {
+        deviceGeneration: 4,
+        authoritativeEpoch: 1
+    });
+    backend.completedEventBatches.push(createCompletedBatch(firstProtocol, {
+        sourceTick: 10,
+        submittedTick: 1
+    }));
     assert.equal(
-        snapshot.contactEvents[1].key,
-        snapshot.contactEvents[2].key
+        endpoint.commitCompletedEventsAtFixedBoundary(11).completedThroughTick,
+        10
     );
-    assert.equal(endpoint.getStatus().events.applied, 2);
-    assert.equal(endpoint.getStatus().events.deduped, 1);
+
+    const secondProtocol = setCurrentEventProtocol(endpoint, backend, {
+        deviceGeneration: 4,
+        authoritativeEpoch: 2
+    });
+    backend.completedEventBatches.push(createCompletedBatch(secondProtocol, {
+        previousSourceTick: 0,
+        previousSubmittedTick: 0,
+        sourceTick: 12,
+        submittedTick: 2
+    }));
+    const restarted = endpoint.commitCompletedEventsAtFixedBoundary(13);
+    assert.equal(restarted.protocolFailure, null);
+    assert.equal(restarted.completedThroughTick, 12);
+    assert.equal(endpoint.requiresRecovery(), false);
+    endpoint.destroy();
+});
+
+test('future batch는 drain 당시 protocol provenance로 due 경계까지 보존된다', () => {
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'future-provenance-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend, {
+        deviceGeneration: 7,
+        authoritativeEpoch: 9
+    });
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        sourceTick: 5,
+        submittedTick: 1
+    }));
+    const drain = backend.drainCompletedEventBatches;
+    backend.drainCompletedEventBatches = (out) => {
+        const result = drain(out);
+        backend.setEventProtocolState({
+            ...protocol,
+            authoritativeEpoch: protocol.authoritativeEpoch + 1
+        });
+        return result;
+    };
+
+    const early = endpoint.commitCompletedEventsAtFixedBoundary(5);
+    assert.equal(early.batchCount, 0);
+    assert.equal(endpoint.getStatus().events.deferredBatchCount, 1);
+    const due = endpoint.commitCompletedEventsAtFixedBoundary(6);
+    assert.equal(due.protocolFailure, null);
+    assert.equal(due.completedThroughTick, 5);
+    assert.equal(endpoint.requiresRecovery(), false);
+    endpoint.destroy();
+});
+
+test('zero-event batch replay는 exact envelope만 dedupe하고 변조는 fail-closed 한다', () => {
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'batch-replay-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend);
+    const original = createCompletedBatch(protocol, {
+        sourceTick: 1,
+        submittedTick: 1,
+        completedThroughTick: 1
+    });
+    backend.completedEventBatches.push(original);
+    assert.equal(
+        endpoint.commitCompletedEventsAtFixedBoundary(2).completedThroughTick,
+        1
+    );
+
+    backend.completedEventBatches.push({ ...original });
+    const replay = endpoint.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(replay.protocolFailure, null);
+    assert.equal(replay.completedThroughTick, 1);
+    assert.equal(endpoint.requiresRecovery(), false);
+
+    backend.completedEventBatches.push({
+        ...original,
+        completedThroughTick: 2
+    });
+    const corrupted = endpoint.commitCompletedEventsAtFixedBoundary(3);
+    assert.equal(corrupted.protocolFailure.code, 'duplicate-batch-conflict');
+    assert.equal(corrupted.completedThroughTick, 1);
+    assert.equal(endpoint.requiresRecovery(), true);
+    endpoint.destroy();
+});
+
+test('동일 future batch가 두 번 defer돼도 due prepare 안에서 exact dedupe한다', () => {
+    const backend = createFakeBackend({ capacity: 2 });
+    const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
+    endpoint.init({ id: 'future-replay-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend);
+    const future = createCompletedBatch(protocol, {
+        sourceTick: 5,
+        submittedTick: 1,
+        completedThroughTick: 5
+    });
+    backend.completedEventBatches.push(future);
+    assert.equal(
+        endpoint.commitCompletedEventsAtFixedBoundary(5).protocolFailure,
+        null
+    );
+    backend.completedEventBatches.push({ ...future });
+    assert.equal(
+        endpoint.commitCompletedEventsAtFixedBoundary(5).protocolFailure,
+        null
+    );
+
+    const due = endpoint.commitCompletedEventsAtFixedBoundary(6);
+    assert.equal(due.protocolFailure, null);
+    assert.equal(due.completedThroughTick, 5);
+    assert.equal(endpoint.requiresRecovery(), false);
     endpoint.destroy();
 });

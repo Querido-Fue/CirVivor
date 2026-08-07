@@ -12,7 +12,11 @@ export const GPU_PROJECTILE_WORLD_KIND_ID = 'projectile';
 export const GPU_PROJECTILE_CONTACT_HANDLER_FLAGS = Object.freeze({
     KILL_IF_OTHER_TERRAIN:
         GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.KILL_IF_OTHER_TERRAIN,
-    CLOSEST_ONLY: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+    CLOSEST_ONLY: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY,
+    INTERACTION_ENTER_ONLY:
+        GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY,
+    INTERACTION_CONTINUOUS:
+        GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS
 });
 
 function requireNonEmptyString(value, label) {
@@ -137,7 +141,9 @@ function normalizeColor(source) {
 }
 
 function createContactHandler(definition) {
-    let flags = 0;
+    let flags = definition.continuousInteraction === true
+        ? GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.INTERACTION_CONTINUOUS
+        : GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.INTERACTION_ENTER_ONLY;
     if (definition.killOnTerrain !== false) {
         flags |= GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.KILL_IF_OTHER_TERRAIN;
     }
@@ -215,9 +221,9 @@ export function createGpuProjectileSpawnIntent(options = {}) {
         ),
         inverseMass: resolveInverseMass(definition),
         bodyLayer,
-        layerMask: bodyLayer,
         collisionMask: 0,
-        sensorMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+        interactionLayer: bodyLayer,
+        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         // ABI writer가 health를 shader용 fixed-point로 encode합니다.
         health: requireGpuFixedPointCompatible(

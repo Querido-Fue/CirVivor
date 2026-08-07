@@ -1,4 +1,9 @@
-import { GPU_CIRCLE_BODY_RENDER_SHAPE } from './gpu_circle_body_abi.js';
+import {
+    GPU_CIRCLE_APPLIED_EVENT_FLAG,
+    GPU_CIRCLE_APPLIED_EVENT_TYPE,
+    GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_BODY_RENDER_SHAPE
+} from './gpu_circle_body_abi.js';
 import {
     ENEMY_NORMALIZED_RENDER_GEOMETRY
 } from '../../../../data/object/enemy/enemy_shape_geometry_data.js';
@@ -35,14 +40,27 @@ const toWgslPointArray = (
 const ENEMY_RENDER_GEOMETRY = ENEMY_NORMALIZED_RENDER_GEOMETRY;
 
 export const GPU_COLLISION_COMPUTE_WGSL = /* wgsl */`
+const BODY_ABI_VERSION: u32 = ${GPU_CIRCLE_BODY_ABI_VERSION}u;
+const CONTACT_ABI_STATUS_OK: u32 = 1u;
+const CONTACT_ABI_STATUS_MISMATCH: u32 = 2u;
 const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_USE_FLOW: u32 = 2u;
+const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
+const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 const BODY_LAYER_ENEMY: u32 = 1u;
 const BODY_LAYER_TERRAIN: u32 = 128u;
 const CONTACT_HANDLER_FLAG_KILL_IF_OTHER_TERRAIN: u32 = 1u;
 const CONTACT_HANDLER_FLAG_CLOSEST_ONLY: u32 = 2u;
-const APPLIED_EVENT_FLAG_TARGET_DIED: u32 = 1u;
-const APPLIED_EVENT_FLAG_TERRAIN_KILL: u32 = 2u;
+const CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY: u32 = 8u;
+const CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS: u32 = 16u;
+const APPLIED_EVENT_TYPE_DAMAGE_APPLIED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED}u;
+const APPLIED_EVENT_TYPE_INTERACTION_ENTER: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER}u;
+const APPLIED_EVENT_TYPE_INTERACTION_CONTINUOUS: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_CONTINUOUS}u;
+const APPLIED_EVENT_FLAG_TARGET_DIED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED}u;
+const APPLIED_EVENT_FLAG_TERRAIN_KILL: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_KILL}u;
+const APPLIED_EVENT_FLAG_ENTER_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY}u;
+const APPLIED_EVENT_FLAG_CONTINUOUS_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY}u;
+const APPLIED_EVENT_FLAG_TERRAIN_CONTACT: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT}u;
 const DEATH_EVENT_FLAG_HEALTH: u32 = 1u;
 const DEATH_EVENT_FLAG_LIFETIME: u32 = 2u;
 const EPSILON_MASS: f32 = 0.000001;
@@ -53,7 +71,7 @@ struct BodyCounts {
     body_count: u32,
     addition_count: u32,
     removal_count: u32,
-    reserved: u32,
+    abi_version: u32,
 }
 
 struct BodyPhysics {
@@ -61,15 +79,15 @@ struct BodyPhysics {
     velocity: vec2f,
     radius: f32,
     inverse_mass: f32,
-    physics_meta: u32,
-    reserved: u32,
+    physical_meta: u32,
+    interaction_meta: u32,
 }
 
 struct BodySimulation {
     lifetime: f32,
     health: atomic<i32>,
     timer: u32,
-    simulation_meta: atomic<u32>,
+    flags: atomic<u32>,
     flow_field_index: u32,
     flow_speed: f32,
     entity_id: u32,
@@ -86,12 +104,12 @@ struct BodyTemporary {
 
 struct GridBody {
     predicted_position: vec2f,
-    physics_meta: u32,
-    simulation_meta: u32,
+    physical_meta: u32,
+    flags: u32,
     inverse_mass: f32,
     radius: f32,
     body_id: u32,
-    reserved: u32,
+    interaction_meta: u32,
 }
 
 struct PhysicsBuffer { values: array<BodyPhysics> }
@@ -121,8 +139,8 @@ struct ContactState {
     event_overflow: atomic<u32>,
     death_count: atomic<u32>,
     death_overflow: atomic<u32>,
-    reserved_0: atomic<u32>,
-    reserved_1: atomic<u32>,
+    abi_status: atomic<u32>,
+    event_encoding_version: atomic<u32>,
 }
 
 struct Contact {
@@ -137,12 +155,12 @@ struct Contact {
 struct ContactBuffer { values: array<Contact> }
 
 struct AppliedEvent {
-    self_entity_id: u32,
-    self_incarnation: u32,
+    subject_entity_id: u32,
+    subject_incarnation: u32,
     other_entity_id: u32,
     other_incarnation: u32,
-    damage_applied: i32,
-    flags: u32,
+    value_fixed_point: i32,
+    event_meta: u32,
     world_position: vec2f,
 }
 
@@ -222,32 +240,40 @@ var<workgroup> neighbor_cell_indices: array<u32, 9>;
 var<workgroup> current_cell_count: u32;
 var<workgroup> current_big_count: u32;
 
-fn body_layer(packed_meta: u32) -> u32 {
-    return packed_meta & 255u;
+fn abi_is_current() -> bool {
+    return counts.abi_version == BODY_ABI_VERSION;
 }
 
-fn body_collision_mask(packed_meta: u32) -> u32 {
-    return (packed_meta >> 8u) & 255u;
+fn body_layer(physical_meta: u32) -> u32 {
+    return physical_meta & 65535u;
 }
 
-fn body_sensor_mask(packed_meta: u32) -> u32 {
-    return (packed_meta >> 16u) & 255u;
+fn body_collision_mask(physical_meta: u32) -> u32 {
+    return (physical_meta >> 16u) & 65535u;
 }
 
-fn body_is_alive(packed_meta: u32) -> bool {
-    return (((packed_meta >> 8u) & 255u) & BODY_FLAG_ALIVE) == BODY_FLAG_ALIVE;
+fn body_interaction_layer(interaction_meta: u32) -> u32 {
+    return interaction_meta & 65535u;
 }
 
-fn body_has_flag(packed_meta: u32, flag: u32) -> bool {
-    return ((((packed_meta >> 8u) & 255u) & flag) == flag);
+fn body_interaction_mask(interaction_meta: u32) -> u32 {
+    return (interaction_meta >> 16u) & 65535u;
 }
 
-fn load_simulation_meta(body_id: u32) -> u32 {
-    return atomicLoad(&simulations.values[body_id].simulation_meta);
+fn body_is_alive(flags: u32) -> bool {
+    return (flags & BODY_FLAG_ALIVE) == BODY_FLAG_ALIVE;
+}
+
+fn body_has_flag(flags: u32, flag: u32) -> bool {
+    return (flags & flag) == flag;
+}
+
+fn load_simulation_flags(body_id: u32) -> u32 {
+    return atomicLoad(&simulations.values[body_id].flags);
 }
 
 fn body_id_is_alive(body_id: u32) -> bool {
-    return body_is_alive(load_simulation_meta(body_id));
+    return body_is_alive(load_simulation_flags(body_id));
 }
 
 fn flow_cell_for_position(position: vec2f) -> vec2i {
@@ -302,7 +328,7 @@ fn grid_has_overflow() -> bool {
 }
 
 fn body_uses_small_grid(radius: f32) -> bool {
-    return radius + max(params.maximum_body_radius, 0.0)
+    return radius * 2.0
         <= min(params.grid_cell_size.x, params.grid_cell_size.y);
 }
 
@@ -330,27 +356,30 @@ fn deterministic_separation_normal(self_body_id: u32, other_body_id: u32) -> vec
 fn make_grid_body(body_id: u32, predicted_position: vec2f) -> GridBody {
     return GridBody(
         predicted_position,
-        physics.values[body_id].physics_meta,
-        load_simulation_meta(body_id),
+        physics.values[body_id].physical_meta,
+        load_simulation_flags(body_id),
         physics.values[body_id].inverse_mass,
         physics.values[body_id].radius,
         body_id,
-        0u
+        physics.values[body_id].interaction_meta
     );
 }
 
 @compute @workgroup_size(256)
 fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count) {
         return;
     }
     let current = physics.values[body_id].position;
     var velocity = physics.values[body_id].velocity;
-    let simulation_meta = load_simulation_meta(body_id);
+    let simulation_flags = load_simulation_flags(body_id);
     temporaries.values[body_id].previous_flow_field_index
         = simulations.values[body_id].flow_field_index;
-    if (!body_is_alive(simulation_meta)) {
+    if (!body_is_alive(simulation_flags)) {
         temporaries.values[body_id].previous_position = current;
         temporaries.values[body_id].predicted_position = current;
         temporaries.values[body_id].position_delta = vec2f(0.0);
@@ -363,7 +392,7 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
     }
     if (params.flow_enabled != 0u
         && params.flow_field_count > 0u
-        && body_has_flag(simulation_meta, BODY_FLAG_USE_FLOW)
+        && body_has_flag(simulation_flags, BODY_FLAG_USE_FLOW)
         && simulations.values[body_id].flow_field_index < params.flow_field_count) {
         let cell = flow_cell_for_position(current);
         var field_index = simulations.values[body_id].flow_field_index;
@@ -427,6 +456,9 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
 
 @compute @workgroup_size(256)
 fn clear_grid(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let index = global_id.x;
     let total_bucket_count = grid_cell_total() * 2u;
     if (index < total_bucket_count) {
@@ -440,6 +472,9 @@ fn clear_grid(@builtin(global_invocation_id) global_id: vec3u) {
 
 @compute @workgroup_size(256)
 fn build_grid(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count) {
         return;
@@ -475,7 +510,9 @@ fn build_grid(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
 
-    let padding = vec2f(body.radius + max(params.maximum_body_radius, 0.0));
+    let maximum_small_radius = 0.5
+        * min(params.grid_cell_size.x, params.grid_cell_size.y);
+    let padding = vec2f(body.radius + maximum_small_radius);
     let max_cell = vec2i(params.grid_cell_count) - vec2i(1);
     let min_covered = clamp(
         vec2i(floor((predicted - padding) / params.grid_cell_size)),
@@ -520,6 +557,37 @@ fn contact_handler_has_flag(flags: u32, flag: u32) -> bool {
     return (flags & flag) == flag;
 }
 
+fn contact_handler_has_interaction_policy(flags: u32) -> bool {
+    let policy = flags & (
+        CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY
+        | CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS
+    );
+    return policy == CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY
+        || policy == CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS;
+}
+
+fn interaction_policy_event_type(flags: u32) -> u32 {
+    return select(
+        APPLIED_EVENT_TYPE_INTERACTION_CONTINUOUS,
+        APPLIED_EVENT_TYPE_INTERACTION_ENTER,
+        contact_handler_has_flag(
+            flags,
+            CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY
+        )
+    );
+}
+
+fn interaction_policy_event_flag(flags: u32) -> u32 {
+    return select(
+        APPLIED_EVENT_FLAG_CONTINUOUS_POLICY,
+        APPLIED_EVENT_FLAG_ENTER_POLICY,
+        contact_handler_has_flag(
+            flags,
+            CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY
+        )
+    );
+}
+
 fn append_contact(contact: Contact) {
     let contact_index = atomicAdd(&contact_state.contact_count, 1u);
     if (contact_index >= params.max_contacts) {
@@ -533,17 +601,19 @@ fn consider_body_contact(
     self_body: GridBody,
     other_body: GridBody,
     closest_only: bool,
+    suppress_previous_overlap: bool,
     selection: ContactSelection
 ) -> ContactSelection {
     if (self_body.body_id == other_body.body_id
-        || !body_is_alive(other_body.simulation_meta)) {
+        || !body_id_is_alive(other_body.body_id)) {
         return selection;
     }
-    let sensor_mask = body_sensor_mask(self_body.physics_meta);
-    let self_layer = body_layer(self_body.physics_meta);
-    let other_layer = body_layer(other_body.physics_meta);
-    if ((sensor_mask & other_layer) == 0u
-        || (body_collision_mask(other_body.physics_meta) & self_layer) == 0u) {
+    let self_mask = body_interaction_mask(self_body.interaction_meta);
+    let self_layer = body_interaction_layer(self_body.interaction_meta);
+    let other_mask = body_interaction_mask(other_body.interaction_meta);
+    let other_layer = body_interaction_layer(other_body.interaction_meta);
+    if ((self_mask & other_layer) == 0u
+        || (other_mask & self_layer) == 0u) {
         return selection;
     }
 
@@ -555,10 +625,12 @@ fn consider_body_contact(
         return selection;
     }
 
-    let previous_delta = temporaries.values[other_body.body_id].previous_position
-        - temporaries.values[self_body.body_id].previous_position;
-    if (dot(previous_delta, previous_delta) < minimum_distance_squared) {
-        return selection;
+    if (suppress_previous_overlap) {
+        let previous_delta = temporaries.values[other_body.body_id].previous_position
+            - temporaries.values[self_body.body_id].previous_position;
+        if (dot(previous_delta, previous_delta) < minimum_distance_squared) {
+            return selection;
+        }
     }
 
     var normal = -deterministic_separation_normal(
@@ -597,6 +669,7 @@ fn scan_contact_bucket(
     bucket_offset: u32,
     bucket_count: u32,
     closest_only: bool,
+    suppress_previous_overlap: bool,
     selection: ContactSelection
 ) -> ContactSelection {
     var result = selection;
@@ -605,6 +678,7 @@ fn scan_contact_bucket(
             self_body,
             grid_bodies.values[bucket_offset + index],
             closest_only,
+            suppress_previous_overlap,
             result
         );
     }
@@ -615,6 +689,7 @@ fn scan_canonical_big_contact_bucket(
     self_body: GridBody,
     cell_index: u32,
     closest_only: bool,
+    suppress_previous_overlap: bool,
     selection: ContactSelection
 ) -> ContactSelection {
     var result = selection;
@@ -642,6 +717,7 @@ fn scan_canonical_big_contact_bucket(
             self_body,
             other_body,
             closest_only,
+            suppress_previous_overlap,
             result
         );
     }
@@ -656,26 +732,38 @@ fn clear_contact_state() {
     atomicStore(&contact_state.event_overflow, 0u);
     atomicStore(&contact_state.death_count, 0u);
     atomicStore(&contact_state.death_overflow, 0u);
-    atomicStore(&contact_state.reserved_0, 0u);
-    atomicStore(&contact_state.reserved_1, 0u);
+    atomicStore(
+        &contact_state.abi_status,
+        select(CONTACT_ABI_STATUS_MISMATCH, CONTACT_ABI_STATUS_OK, abi_is_current())
+    );
+    atomicStore(&contact_state.event_encoding_version, BODY_ABI_VERSION);
 }
 
 @compute @workgroup_size(256)
 fn generate_body_contacts(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let self_body_id = global_id.x;
     if (self_body_id >= counts.body_count || !body_id_is_alive(self_body_id)) {
         return;
     }
     let self_physics = physics.values[self_body_id];
+    let handler_flags = contact_handlers.values[self_body_id].flags;
     if (self_physics.radius <= 0.0
-        || body_sensor_mask(self_physics.physics_meta) == 0u) {
+        || body_interaction_mask(self_physics.interaction_meta) == 0u
+        || !contact_handler_has_interaction_policy(handler_flags)) {
         return;
     }
     let predicted = temporaries.values[self_body_id].predicted_position;
     let self_body = make_grid_body(self_body_id, predicted);
     let closest_only = contact_handler_has_flag(
-        contact_handlers.values[self_body_id].flags,
+        handler_flags,
         CONTACT_HANDLER_FLAG_CLOSEST_ONLY
+    );
+    let suppress_previous_overlap = contact_handler_has_flag(
+        handler_flags,
+        CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY
     );
     var selection = empty_contact_selection();
 
@@ -704,6 +792,7 @@ fn generate_body_contacts(@builtin(global_invocation_id) global_id: vec3u) {
                 grid_bucket_offset(cell_index, 0u),
                 count,
                 closest_only,
+                suppress_previous_overlap,
                 selection
             );
         }
@@ -717,6 +806,7 @@ fn generate_body_contacts(@builtin(global_invocation_id) global_id: vec3u) {
             grid_bucket_offset(center_index, 1u),
             big_count,
             closest_only,
+            suppress_previous_overlap,
             selection
         );
     } else {
@@ -748,12 +838,14 @@ fn generate_body_contacts(@builtin(global_invocation_id) global_id: vec3u) {
                     grid_bucket_offset(cell_index, 0u),
                     small_count,
                     closest_only,
+                    suppress_previous_overlap,
                     selection
                 );
                 selection = scan_canonical_big_contact_bucket(
                     self_body,
                     cell_index,
                     closest_only,
+                    suppress_previous_overlap,
                     selection
                 );
             }
@@ -823,6 +915,9 @@ fn world_contact_normal(body_id: u32, predicted: vec2f) -> vec2f {
 
 @compute @workgroup_size(256)
 fn generate_world_contacts(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count
         || params.sdf_enabled == 0u
@@ -830,14 +925,23 @@ fn generate_world_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let body = physics.values[body_id];
-    if ((body_sensor_mask(body.physics_meta) & BODY_LAYER_TERRAIN) == 0u) {
+    let simulation_flags = load_simulation_flags(body_id);
+    if ((body_interaction_mask(body.interaction_meta) & BODY_LAYER_TERRAIN) == 0u
+        || ((simulation_flags & (
+            BODY_FLAG_INTERACTION_ENTER_ONLY
+            | BODY_FLAG_INTERACTION_CONTINUOUS
+        )) == 0u)) {
         return;
     }
     let predicted = temporaries.values[body_id].predicted_position;
     let previous = temporaries.values[body_id].previous_position;
     let penetration = body.radius - sample_world_sdf(predicted);
     let previous_penetration = body.radius - sample_world_sdf(previous);
-    if (penetration <= 0.0 || previous_penetration > 0.0) {
+    let suppress_previous_overlap = (
+        simulation_flags & BODY_FLAG_INTERACTION_ENTER_ONLY
+    ) != 0u;
+    if (penetration <= 0.0
+        || (suppress_previous_overlap && previous_penetration > 0.0)) {
         return;
     }
     let normal = world_contact_normal(body_id, predicted);
@@ -901,9 +1005,9 @@ fn apply_target_damage(body_id: u32, amount: i32) -> DamageResult {
 }
 
 fn clear_alive_once(body_id: u32) -> bool {
-    let alive_bit = BODY_FLAG_ALIVE << 8u;
+    let alive_bit = BODY_FLAG_ALIVE;
     let previous_meta = atomicAnd(
-        &simulations.values[body_id].simulation_meta,
+        &simulations.values[body_id].flags,
         ~alive_bit
     );
     return (previous_meta & alive_bit) != 0u;
@@ -934,6 +1038,9 @@ fn append_death_event(body_id: u32, reason_flags: u32) {
 
 @compute @workgroup_size(256)
 fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     if (atomicLoad(&contact_state.contact_overflow) != 0u) {
         return;
     }
@@ -953,29 +1060,48 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let handler = contact_handlers.values[self_body_id];
+    if (!contact_handler_has_interaction_policy(handler.flags)) {
+        return;
+    }
+    let policy_event_type = interaction_policy_event_type(handler.flags);
+    let policy_event_flag = interaction_policy_event_flag(handler.flags);
 
     if (contact.other_body_id < 0) {
-        if (contact.other_body_id == -1
-            && contact_handler_has_flag(
-                handler.flags,
-                CONTACT_HANDLER_FLAG_KILL_IF_OTHER_TERRAIN
-            )
-            && clear_alive_once(self_body_id)) {
-            append_applied_event(AppliedEvent(
-                simulations.values[self_body_id].entity_id,
-                contact.self_incarnation,
-                0u,
-                0u,
-                0,
-                APPLIED_EVENT_FLAG_TERRAIN_KILL,
-                contact.world_position
-            ));
+        if (contact.other_body_id != -1) {
+            return;
+        }
+        let kill_on_terrain = contact_handler_has_flag(
+            handler.flags,
+            CONTACT_HANDLER_FLAG_KILL_IF_OTHER_TERRAIN
+        );
+        if (kill_on_terrain && !clear_alive_once(self_body_id)) {
+            return;
+        }
+        append_applied_event(AppliedEvent(
+            simulations.values[self_body_id].entity_id,
+            contact.self_incarnation,
+            0u,
+            0u,
+            0,
+            policy_event_type
+                | policy_event_flag
+                | APPLIED_EVENT_FLAG_TERRAIN_CONTACT
+                | select(0u, APPLIED_EVENT_FLAG_TERRAIN_KILL, kill_on_terrain),
+            contact.world_position
+        ));
+        if (kill_on_terrain) {
             append_death_event(self_body_id, DEATH_EVENT_FLAG_HEALTH);
         }
         return;
     }
 
     let other_body_id = u32(contact.other_body_id);
+    if (other_body_id >= counts.body_count
+        || other_body_id == self_body_id
+        || simulations.values[other_body_id].incarnation != contact.other_incarnation
+        || !body_id_is_alive(other_body_id)) {
+        return;
+    }
     let damage_self = max(i32(handler.damage_self * 100.0), 0);
     var damage_other_value = handler.damage_other;
     if (handler.damage_falloff > 0.0) {
@@ -989,11 +1115,16 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         }
     }
     let damage_other = max(i32(damage_other_value * 100.0), 0);
-    if (other_body_id >= counts.body_count
-        || other_body_id == self_body_id
-        || simulations.values[other_body_id].incarnation != contact.other_incarnation
-        || !body_id_is_alive(other_body_id)
-        || damage_other <= 0) {
+    if (damage_other <= 0) {
+        append_applied_event(AppliedEvent(
+            simulations.values[self_body_id].entity_id,
+            contact.self_incarnation,
+            simulations.values[other_body_id].entity_id,
+            contact.other_incarnation,
+            0,
+            policy_event_type | policy_event_flag,
+            contact.world_position
+        ));
         return;
     }
 
@@ -1023,13 +1154,18 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         simulations.values[other_body_id].entity_id,
         contact.other_incarnation,
         damage.applied,
-        target_died_flag,
+        APPLIED_EVENT_TYPE_DAMAGE_APPLIED
+            | policy_event_flag
+            | target_died_flag,
         contact.world_position
     ));
 }
 
 @compute @workgroup_size(256)
 fn mark_dead(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count || !body_id_is_alive(body_id)) {
         return;
@@ -1050,6 +1186,9 @@ fn mark_dead(@builtin(global_invocation_id) global_id: vec3u) {
 
 @compute @workgroup_size(256)
 fn clear_position_deltas(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id < counts.body_count) {
         temporaries.values[body_id].position_delta = vec2f(0.0);
@@ -1060,16 +1199,13 @@ fn pair_correction(self_body: GridBody, other_body: GridBody, alpha: f32, big_pa
     if (self_body.body_id == other_body.body_id) {
         return vec2f(0.0);
     }
-    if (!body_is_alive(other_body.simulation_meta)) {
+    if (!body_id_is_alive(other_body.body_id)) {
         return vec2f(0.0);
     }
-    // Sensor bodies share the broad-phase grid for gameplay contacts, but never
-    // contribute a physical position correction to either side of the pair.
-    if (body_sensor_mask(self_body.physics_meta) != 0u
-        || body_sensor_mask(other_body.physics_meta) != 0u) {
-        return vec2f(0.0);
-    }
-    if ((body_collision_mask(self_body.physics_meta) & body_layer(other_body.physics_meta)) == 0u) {
+    if ((body_collision_mask(self_body.physical_meta)
+            & body_layer(other_body.physical_meta)) == 0u
+        || (body_collision_mask(other_body.physical_meta)
+            & body_layer(self_body.physical_meta)) == 0u) {
         return vec2f(0.0);
     }
 
@@ -1139,16 +1275,23 @@ fn solve_body_body(
     }
     workgroupBarrier();
 
+    // ABI version은 storage load이므로 WGSL uniformity analysis가 barrier 앞의
+    // early-return 조건으로 인정하지 않습니다. 이 pass는 barrier 전에는
+    // workgroup scratch만 쓰고, version 확인 뒤에만 body storage를 변경합니다.
+    if (!abi_is_current()) {
+        return;
+    }
+
     if (local >= current_cell_count) {
         return;
     }
     let self_index = grid_bucket_offset(cell_index, 0u) + local;
     let self_body = grid_bodies.values[self_index];
-    let collision_mask = body_collision_mask(self_body.physics_meta);
+    let collision_mask = body_collision_mask(self_body.physical_meta);
     if (self_body.inverse_mass <= EPSILON_MASS
         || self_body.radius <= 0.0
         || collision_mask == 0u
-        || !body_is_alive(self_body.simulation_meta)) {
+        || !body_id_is_alive(self_body.body_id)) {
         return;
     }
 
@@ -1198,6 +1341,9 @@ fn solve_body_body(
 
 @compute @workgroup_size(256)
 fn solve_body_world(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count
         || params.sdf_enabled == 0u
@@ -1205,7 +1351,7 @@ fn solve_body_world(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let body = physics.values[body_id];
-    if ((body_collision_mask(body.physics_meta) & BODY_LAYER_TERRAIN) == 0u
+    if ((body_collision_mask(body.physical_meta) & BODY_LAYER_TERRAIN) == 0u
         || body.inverse_mass <= EPSILON_MASS) {
         return;
     }
@@ -1243,6 +1389,9 @@ fn solve_body_world(@builtin(global_invocation_id) global_id: vec3u) {
 
 @compute @workgroup_size(256)
 fn apply_position_deltas(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count) {
         return;
@@ -1265,6 +1414,9 @@ fn is_inside_world(position: vec2f) -> bool {
 
 @compute @workgroup_size(256)
 fn rebuild_velocities(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count) {
         return;
@@ -1284,7 +1436,7 @@ fn rebuild_velocities(@builtin(global_invocation_id) global_id: vec3u) {
     var predicted = temporaries.values[body_id].predicted_position;
     var previous = temporaries.values[body_id].previous_position;
     if (!is_inside_world(predicted)
-        && (body_layer(physics.values[body_id].physics_meta) & BODY_LAYER_ENEMY) != 0u
+        && (body_layer(physics.values[body_id].physical_meta) & BODY_LAYER_ENEMY) != 0u
         && is_inside_world(previous)) {
         let clamp_margin = 0.1 * params.source_world_unit_scale;
         predicted = clamp(predicted, vec2f(0.0), params.world_size - vec2f(clamp_margin));
@@ -1296,6 +1448,9 @@ fn rebuild_velocities(@builtin(global_invocation_id) global_id: vec3u) {
 
 @compute @workgroup_size(256)
 fn finalize_velocities(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
     let body_id = global_id.x;
     if (body_id >= counts.body_count
         || grid_has_overflow()
@@ -1313,11 +1468,13 @@ fn finalize_velocities(@builtin(global_invocation_id) global_id: vec3u) {
 `;
 
 export const GPU_COLLISION_INDIRECT_WGSL = /* wgsl */`
+const BODY_ABI_VERSION: u32 = ${GPU_CIRCLE_BODY_ABI_VERSION}u;
+
 struct BodyCounts {
     body_count: u32,
     addition_count: u32,
     removal_count: u32,
-    reserved: u32,
+    abi_version: u32,
 }
 
 struct DispatchArgs {
@@ -1339,6 +1496,16 @@ struct DrawArgs {
 
 @compute @workgroup_size(1)
 fn update_indirect_args() {
+    if (counts.abi_version != BODY_ABI_VERSION) {
+        dispatch_args.x = 0u;
+        dispatch_args.y = 0u;
+        dispatch_args.z = 0u;
+        draw_args.vertex_count = 0u;
+        draw_args.instance_count = 0u;
+        draw_args.first_vertex = 0u;
+        draw_args.first_instance = 0u;
+        return;
+    }
     dispatch_args.x = (counts.body_count + 255u) / 256u;
     dispatch_args.y = 1u;
     dispatch_args.z = 1u;
@@ -1350,11 +1517,13 @@ fn update_indirect_args() {
 `;
 
 export const GPU_COLLISION_RENDER_WGSL = /* wgsl */`
+const BODY_ABI_VERSION: u32 = ${GPU_CIRCLE_BODY_ABI_VERSION}u;
+
 struct BodyCounts {
     body_count: u32,
     addition_count: u32,
     removal_count: u32,
-    reserved: u32,
+    abi_version: u32,
 }
 
 struct BodyPhysics {
@@ -1362,15 +1531,15 @@ struct BodyPhysics {
     velocity: vec2f,
     radius: f32,
     inverse_mass: f32,
-    physics_meta: u32,
-    reserved: u32,
+    physical_meta: u32,
+    interaction_meta: u32,
 }
 
 struct BodySimulation {
     lifetime: f32,
     health: i32,
     timer: u32,
-    simulation_meta: u32,
+    flags: u32,
     flow_field_index: u32,
     flow_speed: f32,
     entity_id: u32,
@@ -1562,7 +1731,15 @@ fn vertex_main(
     @builtin(instance_index) instance_index: u32
 ) -> VertexOutput {
     var output: VertexOutput;
-    let simulation_flags = (simulations.values[instance_index].simulation_meta >> 8u) & 255u;
+    if (counts.abi_version != BODY_ABI_VERSION) {
+        output.position = vec4f(2.0, 2.0, 0.0, 1.0);
+        output.local_position = vec2f(0.0);
+        output.color = vec4f(0.0);
+        output.shape_code = RENDER_SHAPE_CIRCLE;
+        output.velocity = vec2f(0.0);
+        return output;
+    }
+    let simulation_flags = simulations.values[instance_index].flags;
     if ((simulation_flags & 1u) == 0u) {
         output.position = vec4f(2.0, 2.0, 0.0, 1.0);
         output.local_position = vec2f(0.0);

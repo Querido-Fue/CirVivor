@@ -55,15 +55,15 @@ function createProjectileIntent(overrides = {}) {
         radius: 0.25,
         inverseMass: 10,
         bodyLayer: 2,
-        layerMask: 2,
         collisionMask: 0,
-        sensorMask: 129,
+        interactionLayer: 2,
+        interactionMask: 129,
         health: 3,
         lifetime: 2,
         contactHandler: {
             damageSelf: 1,
             damageOther: 2.5,
-            flags: 1
+            flags: 9
         },
         alive: true,
         ...overrides
@@ -182,7 +182,10 @@ test('request는 fixed 경계 전 backend를 호출하지 않고 due command를 
     assert.equal(backend.events[1].bodies[0].definitionId, 'basic_circle_01');
     assert.equal(backend.events[1].bodies[0].enemyDefinitionId, 'basic_circle_01');
     assert.equal(backend.events[1].bodies[0].bodyLayer, 1);
-    assert.equal(backend.events[1].bodies[0].layerMask, 1);
+    assert.equal(backend.events[1].bodies[0].interactionLayer, 1);
+    assert.equal(backend.events[1].bodies[0].interactionMask, 2);
+    assert.equal('layerMask' in backend.events[1].bodies[0], false);
+    assert.equal('sensorMask' in backend.events[1].bodies[0], false);
 });
 
 test('generic projectile intent는 route 없이 canonical definition/layer와 nested gameplay 데이터를 보존한다', () => {
@@ -204,13 +207,16 @@ test('generic projectile intent는 route 없이 canonical definition/layer와 ne
     assert.equal(body.definitionId, 'benchmark_round_01');
     assert.equal(body.enemyDefinitionId, undefined);
     assert.equal(body.bodyLayer, 2);
-    assert.equal(body.layerMask, 2);
+    assert.equal(body.interactionLayer, 2);
+    assert.equal(body.interactionMask, 129);
+    assert.equal('layerMask' in body, false);
+    assert.equal('sensorMask' in body, false);
     assert.deepEqual(JSON.parse(JSON.stringify(body.position)), { x: 1, y: 2 });
     assert.deepEqual(JSON.parse(JSON.stringify(body.velocity)), { x: 30, y: -2 });
     assert.deepEqual(JSON.parse(JSON.stringify(body.contactHandler)), {
         damageSelf: 1,
         damageOther: 2.5,
-        flags: 1
+        flags: 9
     });
     assert.equal(Object.isFrozen(body.position), true);
     assert.equal(Object.isFrozen(body.contactHandler), true);
@@ -242,12 +248,25 @@ test('layer alias 불일치는 fail-fast하고 같은 command ID 재요청을 �
     );
     assert.equal(
         owner.requestSpawn(
-            createProjectileIntent(),
+            createProjectileIntent({
+                bodyLayer: undefined,
+                interactionLayer: undefined,
+                interactionMask: undefined,
+                layerMask: 2,
+                sensorMask: 129
+            }),
             1,
             'projectile:retry-layer'
         ).accepted,
         true
     );
+    assert.throws(() => owner.requestSpawn(createProjectileIntent({
+        layerMask: 2,
+        interactionLayer: 4
+    }), 1, 'projectile:interaction-layer-conflict'), /interactionLayer.*layerMask/);
+    assert.throws(() => owner.requestSpawn(createProjectileIntent({
+        sensorMask: 1
+    }), 1, 'projectile:interaction-mask-conflict'), /interactionMask.*sensorMask/);
 });
 
 test('enemy intent만 gate/path/flow를 요구하고 projectile identity 주입은 거부한다', () => {
@@ -259,7 +278,10 @@ test('enemy intent만 gate/path/flow를 요구하고 projectile identity 주입�
         () => owner.requestSpawn({
             kindId: 'enemy',
             definitionId: 'enemy_without_route',
-            bodyLayer: 1
+            bodyLayer: 1,
+            collisionMask: 1,
+            interactionLayer: 1,
+            interactionMask: 0
         }, 1, 'enemy:missing-route'),
         /gateId/
     );

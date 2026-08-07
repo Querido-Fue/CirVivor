@@ -1,3 +1,8 @@
+import {
+    normalizeGpuCircleBodyContactHandler,
+    normalizeGpuCircleBodyMetadata
+} from '../../physics/gpu/gpu_circle_body_abi.js';
+
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
 
@@ -21,14 +26,6 @@ function requirePositiveFinite(value, label) {
     const number = Number(value);
     if (!Number.isFinite(number) || number <= 0) {
         throw new RangeError(`${label}은 양의 유한 숫자여야 합니다.`);
-    }
-    return number;
-}
-
-function requireUint8(value, label) {
-    const number = Number(value);
-    if (!Number.isInteger(number) || number < 0 || number > 0xff) {
-        throw new RangeError(`${label}은 uint8 범위의 정수여야 합니다.`);
     }
     return number;
 }
@@ -132,20 +129,10 @@ function normalizeSpawnIntent(source) {
         );
     }
 
-    const bodyLayer = requireUint8(
-        snapshot.bodyLayer ?? snapshot.layerMask,
-        'spawnIntent.bodyLayer'
-    );
-    if (snapshot.bodyLayer !== undefined
-        && snapshot.layerMask !== undefined
-        && snapshot.bodyLayer !== snapshot.layerMask) {
-        throw new RangeError(
-            'spawnIntent.bodyLayer와 layerMask alias가 일치해야 합니다.'
-        );
-    }
-    if (bodyLayer === 0) {
-        throw new RangeError('spawnIntent.bodyLayer는 하나 이상의 layer bit가 필요합니다.');
-    }
+    const metadata = normalizeGpuCircleBodyMetadata(snapshot, {
+        requireNonZeroLayers: true
+    });
+    const contactHandler = normalizeGpuCircleBodyContactHandler(snapshot);
 
     if (snapshot.spawnSequence !== undefined && snapshot.spawnSequence !== null) {
         requireNonNegativeSafeInteger(
@@ -163,12 +150,17 @@ function normalizeSpawnIntent(source) {
         requirePositiveFinite(snapshot.flowSpeed, 'spawnIntent.flowSpeed');
     }
 
+    const {
+        layerMask: _legacyLayerMask,
+        sensorMask: _legacySensorMask,
+        ...canonicalSnapshot
+    } = snapshot;
     return Object.freeze({
-        ...snapshot,
+        ...canonicalSnapshot,
         definitionId,
         ...(kindId === 'enemy' ? { enemyDefinitionId: definitionId } : {}),
-        bodyLayer,
-        layerMask: bodyLayer
+        ...metadata,
+        contactHandler
     });
 }
 

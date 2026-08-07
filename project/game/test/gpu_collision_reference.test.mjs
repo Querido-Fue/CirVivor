@@ -7,6 +7,7 @@ const reference = await loadGameModule('ingame/physics/gpu/gpu_collision_referen
 
 const {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
+    packGpuCircleInteractionMeta,
     packGpuCirclePhysicsMeta,
     packGpuCircleSimulationMeta
 } = abi;
@@ -15,6 +16,8 @@ const {
     GPU_COLLISION_REFERENCE,
     buildGpuCollisionReferenceGrid,
     interpolateStrictGpuCirclePosition,
+    isGpuCircleInteractionPairEnabled,
+    isGpuCirclePhysicalPairEnabled,
     predictReferenceGpuCirclePosition,
     solveGpuCollisionReference
 } = reference;
@@ -58,6 +61,7 @@ function makeBody(options = {}) {
     const previousPosition = options.previousPosition ?? position;
     const predictedPosition = options.predictedPosition ?? position;
     const layerMask = options.layerMask ?? 1;
+    const interactionLayer = options.interactionLayer ?? layerMask;
     return {
         position: { x: position.x, y: position.y },
         previousPosition: { x: previousPosition.x, y: previousPosition.y },
@@ -70,9 +74,105 @@ function makeBody(options = {}) {
         inverseMass: options.inverseMass ?? 1,
         physicsMeta: options.physicsMeta
             ?? packGpuCirclePhysicsMeta(layerMask, options.collisionMask ?? 1),
+        interactionMeta: options.interactionMeta
+            ?? packGpuCircleInteractionMeta(
+                interactionLayer,
+                options.interactionMask ?? 0
+            ),
         simulationMeta: options.simulationMeta
-            ?? packGpuCircleSimulationMeta(layerMask, options.alive === false ? 0 : 1)
+            ?? packGpuCircleSimulationMeta(options.alive === false ? 0 : 1)
     };
+}
+
+// Physical/interaction pair는 서로 독립이며 각각 reciprocal mask를 요구합니다.
+const enemyPhysical = packGpuCirclePhysicsMeta(1, 1 | 64);
+const proxyPhysical = packGpuCirclePhysicsMeta(64, 1);
+const projectilePhysical = packGpuCirclePhysicsMeta(2, 0);
+const enemyInteraction = packGpuCircleInteractionMeta(1, 2);
+const projectileInteraction = packGpuCircleInteractionMeta(2, 1);
+const noInteraction = packGpuCircleInteractionMeta(64, 0);
+assert.equal(isGpuCirclePhysicalPairEnabled(enemyPhysical, proxyPhysical), true);
+assert.equal(isGpuCircleInteractionPairEnabled(enemyInteraction, noInteraction), false);
+assert.equal(isGpuCirclePhysicalPairEnabled(enemyPhysical, projectilePhysical), false);
+assert.equal(
+    isGpuCircleInteractionPairEnabled(enemyInteraction, projectileInteraction),
+    true
+);
+assert.equal(
+    isGpuCirclePhysicalPairEnabled(
+        packGpuCirclePhysicsMeta(1, 2),
+        packGpuCirclePhysicsMeta(2, 0)
+    ),
+    false
+);
+
+const pairMatrix = [
+    {
+        name: 'physical-only',
+        physicalA: packGpuCirclePhysicsMeta(1, 2),
+        physicalB: packGpuCirclePhysicsMeta(2, 1),
+        interactionA: packGpuCircleInteractionMeta(1, 0),
+        interactionB: packGpuCircleInteractionMeta(2, 0),
+        solver: true,
+        event: false
+    },
+    {
+        name: 'interaction-only',
+        physicalA: packGpuCirclePhysicsMeta(1, 0),
+        physicalB: packGpuCirclePhysicsMeta(2, 0),
+        interactionA: packGpuCircleInteractionMeta(1, 2),
+        interactionB: packGpuCircleInteractionMeta(2, 1),
+        solver: false,
+        event: true
+    },
+    {
+        name: 'physical-and-interaction',
+        physicalA: packGpuCirclePhysicsMeta(1, 2),
+        physicalB: packGpuCirclePhysicsMeta(2, 1),
+        interactionA: packGpuCircleInteractionMeta(1, 2),
+        interactionB: packGpuCircleInteractionMeta(2, 1),
+        solver: true,
+        event: true
+    },
+    {
+        name: 'neither',
+        physicalA: packGpuCirclePhysicsMeta(1, 0),
+        physicalB: packGpuCirclePhysicsMeta(2, 0),
+        interactionA: packGpuCircleInteractionMeta(1, 0),
+        interactionB: packGpuCircleInteractionMeta(2, 0),
+        solver: false,
+        event: false
+    },
+    {
+        name: 'projectile-to-enemy',
+        physicalA: projectilePhysical,
+        physicalB: enemyPhysical,
+        interactionA: projectileInteraction,
+        interactionB: enemyInteraction,
+        solver: false,
+        event: true
+    },
+    {
+        name: 'benchmark-proxy-to-enemy',
+        physicalA: proxyPhysical,
+        physicalB: enemyPhysical,
+        interactionA: noInteraction,
+        interactionB: enemyInteraction,
+        solver: true,
+        event: false
+    }
+];
+for (const entry of pairMatrix) {
+    assert.equal(
+        isGpuCirclePhysicalPairEnabled(entry.physicalA, entry.physicalB),
+        entry.solver,
+        `${entry.name} solver predicate`
+    );
+    assert.equal(
+        isGpuCircleInteractionPairEnabled(entry.interactionA, entry.interactionB),
+        entry.event,
+        `${entry.name} event predicate`
+    );
 }
 
 // candidate scan 순서는 원본의 row-major 주변 9셀 순서입니다.
@@ -177,18 +277,48 @@ assert.equal(benchmarkProxyResult.bodies[1].position.y, 18);
 assert.equal(benchmarkProxyResult.stats.smallOverflowCount, 0);
 assert.equal(benchmarkProxyResult.stats.bigOverflowCount, 0);
 
-// 원본의 동일위치 epsilon branch는 두 primary 모두 기본 normal +X를 선택합니다.
+// 큰 static 후보가 있어도 작은 dynamic body는 primary bucket에 남아 보정됩니다.
+const largeStaticResult = solveGpuCollisionReference([
+    makeBody({
+        position: { x: 5, y: 5 },
+        radius: 0.25,
+        inverseMass: 1,
+        entityId: 31
+    }),
+    makeBody({
+        position: { x: 5.5, y: 5 },
+        radius: 0.9,
+        inverseMass: 0,
+        entityId: 32
+    })
+], {
+    worldSize: { x: 10, y: 10 },
+    gridCellSize: { x: 1, y: 1 },
+    dt: 1 / 60
+});
+assert.ok(
+    largeStaticResult.bodies[1].position.x
+        - largeStaticResult.bodies[0].position.x
+        >= 1.149
+);
+assert.equal(largeStaticResult.bodies[1].position.x, 5.5);
+assert.ok(largeStaticResult.grid.counts.some((_, index) => (
+    index % 2 === 1 && largeStaticResult.grid.counts[index] > 0
+)));
+
+// 동일 위치 epsilon branch는 entity/body identity 기반 반대칭 normal을 사용합니다.
 const coincidentResult = solveGpuCollisionReference([
     makeBody({ position: { x: 40, y: 50 } }),
     makeBody({ position: { x: 40, y: 50 } })
 ], DEFAULT_OPTIONS);
 assert.ok(coincidentResult.bodies[0].position.x > 40);
 assertNear(
-    coincidentResult.bodies[0].position.x,
-    coincidentResult.bodies[1].position.x,
-    'coincident default normal parity'
+    coincidentResult.bodies[0].position.x + coincidentResult.bodies[1].position.x,
+    80,
+    'coincident center conservation'
 );
-assertNear(coincidentResult.bodies[0].position.x, 45.998199462890625, 'coincident +X drift');
+assertNear(coincidentResult.bodies[0].position.x, 41, 'coincident body A x');
+assertNear(coincidentResult.bodies[1].position.x, 39, 'coincident body B x');
 assert.equal(coincidentResult.bodies[0].position.y, 50);
 
 // 서로 다른 셀의 원도 row-major 9-cell scan으로 경계를 넘어 해소됩니다.

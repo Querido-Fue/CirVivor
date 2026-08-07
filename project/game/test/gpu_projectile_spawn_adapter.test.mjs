@@ -72,15 +72,16 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
         radius: 0.2,
         inverseMass: 2,
         bodyLayer: 2,
-        layerMask: 2,
         collisionMask: 0,
-        sensorMask: 129,
+        interactionLayer: 2,
+        interactionMask: 129,
         health: 3,
         lifetime: 2,
         contactHandler: {
             damageSelf: 1,
             damageOther: 2.5,
             flags: GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.KILL_IF_OTHER_TERRAIN
+                | GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.INTERACTION_ENTER_ONLY
         },
         alive: true,
         renderStyle: {
@@ -132,7 +133,8 @@ test('terrain/closest contact 옵션과 inverseMass/lifetime alias를 데이터�
     assert.equal(intent.lifetime, 0.75);
     assert.equal(intent.contactHandler.damageSelf, 2);
     assert.equal(intent.contactHandler.flags,
-        GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.CLOSEST_ONLY);
+        GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.CLOSEST_ONLY
+            | GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.INTERACTION_ENTER_ONLY);
     assert.equal('renderStyle' in intent, false);
 
     const reusableSensorIntent = createGpuProjectileSpawnIntent({
@@ -141,6 +143,16 @@ test('terrain/closest contact 옵션과 inverseMass/lifetime alias를 데이터�
         velocity: { x: 1, y: 0 }
     });
     assert.equal(reusableSensorIntent.contactHandler.damageSelf, 0);
+    const continuousIntent = createGpuProjectileSpawnIntent({
+        definition: createDefinition({ continuousInteraction: true }),
+        position: { x: 0, y: 0 },
+        velocity: { x: 1, y: 0 }
+    });
+    assert.equal(
+        continuousIntent.contactHandler.flags
+            & GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.INTERACTION_CONTINUOUS,
+        GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.INTERACTION_CONTINUOUS
+    );
 });
 
 test('request helper는 안정적인 command ID와 동일 intent를 endpoint에 전달한다', () => {

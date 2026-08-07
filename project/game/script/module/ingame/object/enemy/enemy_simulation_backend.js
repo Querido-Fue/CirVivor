@@ -31,6 +31,14 @@ function classifyUnavailablePlatformState(platformPort) {
     }
 }
 
+function requirePositiveSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number <= 0) {
+        throw new RangeError(`${label}은 양의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
 /**
  * @class EnemySimulationBackend
  * @description 현재 TileMap/flow-field 좌표계를 보존하며 GPU collision/presentation 세션을 소유합니다.
@@ -45,6 +53,10 @@ export class EnemySimulationBackend {
         this.capacity = options.capacity ?? DEFAULT_BODY_CAPACITY;
         this.presentationProfile = options.presentationProfile
             ?? GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION;
+        this.sessionGeneration = requirePositiveSafeInteger(
+            options.sessionGeneration ?? 1,
+            'sessionGeneration'
+        );
         this.navigationGrid = null;
         this.signedDistanceField = null;
         this.flowFieldAtlas = null;
@@ -102,7 +114,8 @@ export class EnemySimulationBackend {
             flowFieldAtlas: this.flowFieldAtlas,
             sourceWorldUnitScale: this.navigationGrid.cellSize
                 * SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO,
-            presentationProfile: this.presentationProfile
+            presentationProfile: this.presentationProfile,
+            sessionGeneration: this.sessionGeneration
         });
         this.state = 'gpu-deferred';
         return false;
@@ -257,6 +270,16 @@ export class EnemySimulationBackend {
             flowFieldCount: this.flowFieldAtlas?.fieldCount ?? 0,
             events: gpu?.events ?? null,
             gpu
+        });
+    }
+
+    /** Facade event envelope 검증용 현재 session/device/epoch 상태입니다. */
+    getEventProtocolState() {
+        return this.simulation?.getEventProtocolState?.() ?? Object.freeze({
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: -1,
+            authoritativeEpoch: 0,
+            submittedTickCount: 0
         });
     }
 

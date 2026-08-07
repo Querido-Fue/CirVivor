@@ -1,5 +1,6 @@
 import {
     GPU_CIRCLE_BODY_META,
+    unpackGpuCircleInteractionMeta,
     unpackGpuCirclePhysicsMeta,
     unpackGpuCircleSimulationMeta
 } from './gpu_circle_body_abi.js';
@@ -113,9 +114,7 @@ function readVectorComponent(source, nestedName, axis, fallback) {
  * @returns {boolean} 활성 슬롯 여부입니다.
  */
 function bodyIsAlive(body) {
-    const simulationFlags = (body.simulationMeta
-        >>> GPU_CIRCLE_BODY_META.SIMULATION_FLAGS_SHIFT)
-        & GPU_CIRCLE_BODY_META.BYTE_MASK;
+    const simulationFlags = body.simulationMeta >>> 0;
     return (simulationFlags & GPU_CIRCLE_BODY_META.ALIVE_FLAG)
         === GPU_CIRCLE_BODY_META.ALIVE_FLAG;
 }
@@ -149,12 +148,19 @@ function normalizeBody(body, bodyIndex) {
         );
     }
     const physicsMeta = Number(body.physicsMeta);
+    const interactionMeta = Number(body.interactionMeta ?? 0);
     const simulationMeta = Number(body.simulationMeta);
+    const entityId = Number(body.entityId ?? bodyIndex + 1);
+    if (!Number.isSafeInteger(entityId) || entityId < 0 || entityId > UINT32_MAX) {
+        throw new RangeError(`bodies[${bodyIndex}].entityId는 uint32 정수여야 합니다.`);
+    }
     unpackGpuCirclePhysicsMeta(physicsMeta);
+    unpackGpuCircleInteractionMeta(interactionMeta);
     unpackGpuCircleSimulationMeta(simulationMeta);
 
     return {
         bodyIndex,
+        entityId,
         positionX,
         positionY,
         velocityX,
@@ -168,6 +174,7 @@ function normalizeBody(body, bodyIndex) {
         radius,
         inverseMass,
         physicsMeta: physicsMeta >>> 0,
+        interactionMeta: interactionMeta >>> 0,
         simulationMeta: simulationMeta >>> 0,
         gridIndex: -1
     };
@@ -269,9 +276,11 @@ function getBucketOffset(cellIndex, bucket) {
  */
 function writeGridEntry(grid, entryIndex, body) {
     grid.entryBodyIds[entryIndex] = body.bodyIndex;
+    grid.entryEntityIds[entryIndex] = body.entityId;
     grid.entryPredictedX[entryIndex] = body.predictedX;
     grid.entryPredictedY[entryIndex] = body.predictedY;
     grid.entryPhysicsMeta[entryIndex] = body.physicsMeta;
+    grid.entryInteractionMeta[entryIndex] = body.interactionMeta;
     grid.entrySimulationMeta[entryIndex] = body.simulationMeta;
     grid.entryInverseMass[entryIndex] = body.inverseMass;
     grid.entryRadius[entryIndex] = body.radius;
@@ -315,9 +324,11 @@ function buildGridFromNormalizedBodies(normalizedBodies, normalizedOptions) {
         cellCapacity: GPU_COLLISION_REFERENCE.CELL_CAPACITY,
         counts: new Uint32Array(normalizedOptions.cellTotal * 2),
         entryBodyIds: new Int32Array(normalizedOptions.entryCapacity),
+        entryEntityIds: new Uint32Array(normalizedOptions.entryCapacity),
         entryPredictedX: new Float32Array(normalizedOptions.entryCapacity),
         entryPredictedY: new Float32Array(normalizedOptions.entryCapacity),
         entryPhysicsMeta: new Uint32Array(normalizedOptions.entryCapacity),
+        entryInteractionMeta: new Uint32Array(normalizedOptions.entryCapacity),
         entrySimulationMeta: new Uint32Array(normalizedOptions.entryCapacity),
         entryInverseMass: new Float32Array(normalizedOptions.entryCapacity),
         entryRadius: new Float32Array(normalizedOptions.entryCapacity),
@@ -353,8 +364,9 @@ function buildGridFromNormalizedBodies(normalizedBodies, normalizedOptions) {
             body.gridIndex = appendGridEntry(grid, cellIndex, SMALL_BUCKET, body);
             continue;
         }
-        const paddingX = body.radius + normalizedOptions.cellWidth;
-        const paddingY = body.radius + normalizedOptions.cellHeight;
+        const maximumSmallRadius = minimumCellSize * 0.5;
+        const paddingX = body.radius + maximumSmallRadius;
+        const paddingY = body.radius + maximumSmallRadius;
         const minimumX = Math.max(
             0,
             Math.min(
@@ -431,32 +443,53 @@ function smoothstepFromZero(edge, value) {
 function readGridEntry(grid, entryIndex) {
     return {
         bodyIndex: grid.entryBodyIds[entryIndex],
+        entityId: grid.entryEntityIds[entryIndex],
         predictedX: grid.entryPredictedX[entryIndex],
         predictedY: grid.entryPredictedY[entryIndex],
         physicsMeta: grid.entryPhysicsMeta[entryIndex],
+        interactionMeta: grid.entryInteractionMeta[entryIndex],
         simulationMeta: grid.entrySimulationMeta[entryIndex],
         inverseMass: grid.entryInverseMass[entryIndex],
         radius: grid.entryRadius[entryIndex]
     };
 }
 
+/** production WGSL과 같은 reciprocal physical capability predicate입니다. */
+export function isGpuCirclePhysicalPairEnabled(leftPhysicsMeta, rightPhysicsMeta) {
+    const left = unpackGpuCirclePhysicsMeta(leftPhysicsMeta);
+    const right = unpackGpuCirclePhysicsMeta(rightPhysicsMeta);
+    return (left.collisionMask & right.bodyLayer) !== 0
+        && (right.collisionMask & left.bodyLayer) !== 0;
+}
+
+/** production WGSL과 같은 reciprocal gameplay interaction predicate입니다. */
+export function isGpuCircleInteractionPairEnabled(
+    leftInteractionMeta,
+    rightInteractionMeta
+) {
+    const left = unpackGpuCircleInteractionMeta(leftInteractionMeta);
+    const right = unpackGpuCircleInteractionMeta(rightInteractionMeta);
+    return (left.interactionMask & right.interactionLayer) !== 0
+        && (right.interactionMask & left.interactionLayer) !== 0;
+}
+
 /**
- * 원본 XPBD body-body correction을 한 body 관점에서 계산합니다.
- * bigPair=true일 때 동일 위치 거리 초기값도 원본 big 분기의 동작을 보존합니다.
+ * production WGSL의 XPBD body-body correction을 한 body 관점에서 계산합니다.
+ * 동일 위치에서는 entity/body identity 기반 반대칭 normal을 사용합니다.
  * @param {*} selfBody - primary grid body입니다.
  * @param {*} otherBody - candidate grid body입니다.
  * @param {number} alpha - compliance alpha입니다.
  * @param {boolean} bigPair - big bucket 후보 여부입니다.
  * @returns {{x:number,y:number}} primary correction입니다.
  */
-function calculatePairCorrection(selfBody, otherBody, alpha, bigPair) {
+function calculatePairCorrection(selfBody, otherBody, alpha, _bigPair) {
     if (selfBody.bodyIndex === otherBody.bodyIndex || !bodyIsAlive(otherBody)) {
         return { x: 0, y: 0 };
     }
-    const collisionMask = (selfBody.physicsMeta
-        >>> GPU_CIRCLE_BODY_META.COLLISION_MASK_SHIFT) & GPU_CIRCLE_BODY_META.BYTE_MASK;
-    const otherLayer = otherBody.physicsMeta & GPU_CIRCLE_BODY_META.BYTE_MASK;
-    if ((collisionMask & otherLayer) === 0) {
+    if (!isGpuCirclePhysicalPairEnabled(
+        selfBody.physicsMeta,
+        otherBody.physicsMeta
+    )) {
         return { x: 0, y: 0 };
     }
 
@@ -471,9 +504,35 @@ function calculatePairCorrection(selfBody, otherBody, alpha, bigPair) {
         return { x: 0, y: 0 };
     }
 
-    let normalX = 1;
-    let normalY = 0;
-    let distance = bigPair ? minimumDistance : 0;
+    let normalX;
+    let normalY;
+    const selfIsFirst = selfBody.entityId < otherBody.entityId
+        || (selfBody.entityId === otherBody.entityId
+            && selfBody.bodyIndex < otherBody.bodyIndex);
+    const lowId = Math.min(selfBody.entityId, otherBody.entityId) >>> 0;
+    const highId = Math.max(selfBody.entityId, otherBody.entityId) >>> 0;
+    let mixed = (Math.imul(lowId, 1664525)
+        + Math.imul(highId, 1013904223)) >>> 0;
+    mixed = (mixed ^ (mixed >>> 16)) >>> 0;
+    const selector = mixed & 3;
+    if (selector === 1) {
+        normalX = 0;
+        normalY = 1;
+    } else if (selector === 2) {
+        normalX = Math.fround(Math.SQRT1_2);
+        normalY = Math.fround(Math.SQRT1_2);
+    } else if (selector === 3) {
+        normalX = Math.fround(Math.SQRT1_2);
+        normalY = Math.fround(-Math.SQRT1_2);
+    } else {
+        normalX = 1;
+        normalY = 0;
+    }
+    if (!selfIsFirst) {
+        normalX = Math.fround(-normalX);
+        normalY = Math.fround(-normalY);
+    }
+    let distance = 0;
     if (distanceSquared > GPU_COLLISION_REFERENCE.DISTANCE_SQUARED_EPSILON) {
         const inverseDistance = Math.fround(1 / Math.sqrt(distanceSquared));
         normalX = Math.fround(deltaX * inverseDistance);
@@ -515,9 +574,9 @@ function solveBodyBodyIteration(bodies, grid, options) {
 
         for (let localIndex = 0; localIndex < currentSmallCount; localIndex += 1) {
             const selfBody = readGridEntry(grid, primaryOffset + localIndex);
-            const collisionMask = (selfBody.physicsMeta
-                >>> GPU_CIRCLE_BODY_META.COLLISION_MASK_SHIFT)
-                & GPU_CIRCLE_BODY_META.BYTE_MASK;
+            const collisionMask = unpackGpuCirclePhysicsMeta(
+                selfBody.physicsMeta
+            ).collisionMask;
             if (selfBody.inverseMass <= GPU_COLLISION_REFERENCE.MASS_EPSILON
                 || selfBody.radius <= 0
                 || collisionMask === 0
@@ -637,8 +696,9 @@ function solveBodyWorldIteration(bodies, options) {
         if (!bodyIsAlive(body)) {
             continue;
         }
-        const collisionMask = (body.physicsMeta
-            >>> GPU_CIRCLE_BODY_META.COLLISION_MASK_SHIFT) & GPU_CIRCLE_BODY_META.BYTE_MASK;
+        const collisionMask = unpackGpuCirclePhysicsMeta(
+            body.physicsMeta
+        ).collisionMask;
         if ((collisionMask & GPU_COLLISION_REFERENCE.TERRAIN_LAYER_MASK) === 0
             || body.inverseMass <= GPU_COLLISION_REFERENCE.MASS_EPSILON) {
             continue;
@@ -781,7 +841,7 @@ function rebuildVelocities(bodies, options) {
         let predictedY = body.predictedY;
         let velocityPreviousX = body.previousX;
         let velocityPreviousY = body.previousY;
-        const layer = body.physicsMeta & GPU_CIRCLE_BODY_META.BYTE_MASK;
+        const layer = unpackGpuCirclePhysicsMeta(body.physicsMeta).bodyLayer;
         if (!isInsideWorld(predictedX, predictedY, options)
             && (layer & GPU_COLLISION_REFERENCE.ENEMY_LAYER_MASK) !== 0
             && isInsideWorld(body.previousX, body.previousY, options)) {
@@ -823,6 +883,7 @@ function toPublicBody(body) {
         radius: body.radius,
         inverseMass: body.inverseMass,
         physicsMeta: body.physicsMeta,
+        interactionMeta: body.interactionMeta,
         simulationMeta: body.simulationMeta,
         gridIndex: body.gridIndex
     };

@@ -145,12 +145,11 @@ export function createGpuEnemySpawnIntent(options) {
         ),
         inverseMass: 1 / collisionWeight,
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
-        layerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
-            | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
-        sensorMask: 0,
+        interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
         health: requirePositiveFinite(definition.maxHealth ?? 1, 'maxHealth'),
         lifetime: -1,
         alive: true,

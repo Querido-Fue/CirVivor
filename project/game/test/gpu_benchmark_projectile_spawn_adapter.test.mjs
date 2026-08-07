@@ -131,14 +131,16 @@ test('중앙 목표에서 10발을 동일 next tick에 균등 방사형으로 �
         assert.equal(intent.radius, 0.18);
         assert.equal(intent.inverseMass, 1);
         assert.equal(intent.bodyLayer, 2);
-        assert.equal(intent.layerMask, 2);
         assert.equal(intent.collisionMask, 0);
-        assert.equal(intent.sensorMask, 129);
+        assert.equal(intent.interactionLayer, 2);
+        assert.equal(intent.interactionMask, 129);
+        assert.equal('layerMask' in intent, false);
+        assert.equal('sensorMask' in intent, false);
         assert.equal(intent.health, 1);
         assert.equal(intent.lifetime, 2.5);
         assert.equal(intent.contactHandler.damageSelf, 1);
         assert.equal(intent.contactHandler.damageOther, 1);
-        assert.equal(intent.contactHandler.flags, 3);
+        assert.equal(intent.contactHandler.flags, 11);
         assert.deepEqual(
             Array.from(intent.renderStyle.color),
             [0.08, 0.72, 1, 1]

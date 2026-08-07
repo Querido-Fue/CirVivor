@@ -46,6 +46,8 @@ class FakeEnemySimulationBackend {
         this.fixedUpdateMode = 'accept';
         this.runtimeState = 'gpu-ready';
         this.recovering = false;
+        this.completedEventBatches = [];
+        this.eventProtocolState = null;
         this.replaceBodiesCallCount = 0;
         this.readbackBodiesCallCount = 0;
     }
@@ -157,6 +159,19 @@ class FakeEnemySimulationBackend {
 
     requiresRecovery() {
         return this.recovering;
+    }
+
+    setEventProtocolState(protocol) {
+        this.eventProtocolState = protocol;
+    }
+
+    getEventProtocolState() {
+        return this.eventProtocolState;
+    }
+
+    drainCompletedEventBatches(out) {
+        out.push(...this.completedEventBatches.splice(0));
+        return out;
     }
 
     replaceBodies() {
@@ -325,16 +340,20 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(body.radius, BASIC_SQUARE_ENEMY_DATA.collisionRadiusTiles);
     assert.equal(body.inverseMass, 1 / BASIC_SQUARE_ENEMY_DATA.collisionWeight);
     assert.equal(body.flowSpeed, BASIC_SQUARE_ENEMY_DATA.moveSpeedTilesPerSecond);
-    assert.equal(body.layerMask, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
     assert.equal(body.bodyLayer, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
     assert.equal(
         body.collisionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
-            | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
     );
-    assert.equal(body.sensorMask, 0);
+    assert.equal(body.interactionLayer, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
+    assert.equal(
+        body.interactionMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+    );
+    assert.equal('layerMask' in body, false);
+    assert.equal('sensorMask' in body, false);
     assert.equal(body.health, BASIC_SQUARE_ENEMY_DATA.maxHealth);
     assert.equal(body.lifetime, -1);
     assert.equal(body.alive, true);
@@ -552,6 +571,56 @@ test('terminal unsupported 플랫폼은 spawn command를 무기한 soft-stall하
     assert.equal(
         objectSystem.getEnemySimulationBackend().getRuntimeState(),
         'gpu-terminal-unavailable'
+    );
+
+    objectSystem.destroy();
+});
+
+test('event protocol violation은 같은 fixed 경계의 lifecycle과 GPU submit 전에 즉시 중단한다', () => {
+    const backend = new FakeEnemySimulationBackend();
+    const objectSystem = new GameObjectSystem({
+        enemySimulationBackend: backend,
+        worldRenderPort: {
+            drawCircle() {},
+            drawSquareInstances() {}
+        }
+    }, {
+        coreIntegrity: new CoreIntegrity({ maxIntegrity: 100 }),
+        enemyWaveEnabled: false
+    });
+    objectSystem.init({ ww: 1920, wh: 1080 });
+    const endpoint = objectSystem.getGpuSimulationEndpoint();
+    const protocol = {
+        sessionGeneration: endpoint.getStatus().sessionGeneration,
+        deviceGeneration: 2,
+        authoritativeEpoch: 3
+    };
+    backend.setEventProtocolState(protocol);
+    backend.completedEventBatches.push({
+        ...protocol,
+        deviceGeneration: protocol.deviceGeneration + 1,
+        previousSourceTick: 0,
+        previousSubmittedTick: 0,
+        sourceTick: 1,
+        submittedTick: 1,
+        completedThroughTick: 1,
+        events: []
+    });
+
+    assert.equal(objectSystem.fixedUpdate(1 / 60, 2), false);
+    assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), true);
+    assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 0);
+    assert.equal(
+        backend.calls.filter(({ type }) => type === 'fixedUpdate').length,
+        0
+    );
+    assert.equal(
+        backend.calls.filter(({ type }) => type === 'spawnBodies').length,
+        0
+    );
+    assert.equal(
+        backend.calls.filter(({ type }) => type === 'synchronizePresentation').length,
+        1
     );
 
     objectSystem.destroy();
