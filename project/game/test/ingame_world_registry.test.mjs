@@ -125,6 +125,51 @@ test('재사용 incarnation은 이전 team/provenance metadata를 새 entity에 
     assert.notDeepEqual(reusedView.metadata, firstMetadata);
 });
 
+test('exact target provenance metadata를 보존하고 incarnation reuse에 누출하지 않는다', () => {
+    const registry = new WorldRegistry({ capacity: 1 });
+    const firstHandle = reserveEnemy(registry, 13);
+    const targetedMetadata = createGpuRegistryMetadata({
+        kindId: 'projectile',
+        definitionId: 'targeted-registry-fixture',
+        teamId: 2,
+        damagePolicyId: 0,
+        allegiancePolicy: 'inherit-subject',
+        sourceEntityId: 71,
+        sourceIncarnation: 4,
+        targetEntityId: 81,
+        targetIncarnation: 6,
+        producerId: 'targeted-registry-producer',
+        sourceAbilityId: 'exact-target-aim',
+        targetPolicyId: 'player-damageable-and-terrain',
+        spawnSequence: 9
+    });
+    assert.equal(registry.activateReserved(firstHandle, targetedMetadata), true);
+    const firstView = registry.copyEntityView(firstHandle, {});
+    assert.equal(firstView.metadata.targetEntityId, 81);
+    assert.equal(firstView.metadata.targetIncarnation, 6);
+    assert.equal(firstView.metadata.sourceEntityId, 71);
+    assert.equal(firstView.metadata.sourceIncarnation, 4);
+    assert.equal(registry.remove(firstHandle), true);
+
+    const reusedHandle = reserveEnemy(registry, 14);
+    const untargetedMetadata = createGpuRegistryMetadata({
+        kindId: 'projectile',
+        definitionId: 'untargeted-registry-fixture',
+        teamId: 1,
+        damagePolicyId: 0,
+        allegiancePolicy: 'fixed-player',
+        sourceEntityId: 91,
+        sourceIncarnation: 8,
+        spawnSequence: 10
+    });
+    assert.equal(registry.activateReserved(reusedHandle, untargetedMetadata), true);
+    const reusedView = registry.copyEntityView(reusedHandle, {});
+    assert.equal(reusedView.metadata.targetEntityId, null);
+    assert.equal(reusedView.metadata.targetIncarnation, null);
+    assert.equal(reusedView.metadata.sourceEntityId, 91);
+    assert.equal(reusedView.metadata.sourceIncarnation, 8);
+});
+
 test('예약 취소와 destroy는 phantom entity를 남기지 않고 이후 mutation을 막는다', () => {
     const registry = new WorldRegistry({ capacity: 2 });
     const cancelledHandle = reserveEnemy(registry, 7);

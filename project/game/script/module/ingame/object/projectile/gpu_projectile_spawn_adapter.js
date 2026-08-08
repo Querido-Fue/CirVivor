@@ -18,6 +18,9 @@ import {
     PROJECTILE_TARGET_POLICY_ID,
     normalizeProjectileTargetPolicyId
 } from '../../contract/projectile_target_policy_contract.js';
+import {
+    materializeGpuPlainDataSnapshot
+} from '../gpu_spawn_intent.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_NAMESPACE = 'gpu-projectile';
@@ -27,7 +30,8 @@ export const GPU_PROJECTILE_WORLD_KIND_ID = 'projectile';
 export const GPU_PROJECTILE_SPAWN_MODE = Object.freeze({
     ABSOLUTE: 'absolute',
     SOURCE_RELATIVE_VELOCITY: 'source-relative-velocity',
-    SOURCE_RELATIVE_AIM_POINT: 'source-relative-aim-point'
+    SOURCE_RELATIVE_AIM_POINT: 'source-relative-aim-point',
+    SOURCE_RELATIVE_TARGET_ENTITY: 'source-relative-target-entity'
 });
 export const GPU_PROJECTILE_CONTACT_HANDLER_FLAGS = Object.freeze({
     KILL_IF_OTHER_TERRAIN:
@@ -48,7 +52,10 @@ function requireNonEmptyString(value, label) {
 
 function requirePositiveFinite(value, label) {
     const number = Number(value);
-    if (!Number.isFinite(number) || number <= 0) {
+    const float32 = Math.fround(number);
+    if (!Number.isFinite(number)
+        || !Number.isFinite(float32)
+        || float32 <= 0) {
         throw new RangeError(`${label}은 양의 유한 숫자여야 합니다.`);
     }
     return number;
@@ -56,8 +63,8 @@ function requirePositiveFinite(value, label) {
 
 function requireFinite(value, label) {
     const number = Number(value);
-    if (!Number.isFinite(number)) {
-        throw new TypeError(`${label}은 유한 숫자여야 합니다.`);
+    if (!Number.isFinite(number) || !Number.isFinite(Math.fround(number))) {
+        throw new TypeError(`${label}은 유한한 float32 범위 숫자여야 합니다.`);
     }
     return number;
 }
@@ -119,24 +126,24 @@ function normalizeVector(source, label) {
     });
 }
 
-function normalizeSourceHandle(source) {
+function normalizeEntityHandle(source, label = 'sourceHandle') {
     if (source === undefined || source === null) {
         return null;
     }
     if (!source || typeof source !== 'object') {
-        throw new TypeError('sourceHandle은 entity handle 객체여야 합니다.');
+        throw new TypeError(`${label}은 entity handle 객체여야 합니다.`);
     }
     const entityId = Number(source.entityId);
     const incarnation = Number(source.incarnation);
     if (!Number.isSafeInteger(entityId)
         || entityId <= 0
         || entityId >= INVALID_HANDLE_COMPONENT) {
-        throw new RangeError('sourceHandle.entityId가 유효하지 않습니다.');
+        throw new RangeError(`${label}.entityId가 유효하지 않습니다.`);
     }
     if (!Number.isSafeInteger(incarnation)
         || incarnation <= 0
         || incarnation >= INVALID_HANDLE_COMPONENT) {
-        throw new RangeError('sourceHandle.incarnation이 유효하지 않습니다.');
+        throw new RangeError(`${label}.incarnation이 유효하지 않습니다.`);
     }
     return Object.freeze({ entityId, incarnation });
 }
@@ -253,6 +260,10 @@ function createRenderStyle(definition) {
  * @returns {object} 불변 projectile spawn intent입니다.
  */
 export function createGpuProjectileSpawnIntent(options = {}) {
+    options = materializeGpuPlainDataSnapshot(
+        options,
+        'gpuProjectileSpawnIntent'
+    );
     const definition = options.definition;
     if (!definition || typeof definition !== 'object') {
         throw new TypeError('GPU projectile definition이 필요합니다.');
@@ -263,8 +274,9 @@ export function createGpuProjectileSpawnIntent(options = {}) {
         throw new TypeError('projectile identity는 WorldRegistry만 발급할 수 있습니다.');
     }
     const definitionId = requireNonEmptyString(definition.id, 'definition.id');
-    const sourceHandle = normalizeSourceHandle(options.sourceHandle);
-    const ownerHandle = normalizeSourceHandle(options.ownerHandle);
+    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
+    const ownerHandle = normalizeEntityHandle(options.ownerHandle, 'ownerHandle');
+    const targetHandle = normalizeEntityHandle(options.targetHandle, 'targetHandle');
     const allegiance = resolveProjectileAllegiance(options);
     const damagePolicyId = normalizeGameplayDamagePolicyId(
         options.damagePolicyId
@@ -293,6 +305,10 @@ export function createGpuProjectileSpawnIntent(options = {}) {
         ...(ownerHandle ? {
             ownerEntityId: ownerHandle.entityId,
             ownerIncarnation: ownerHandle.incarnation
+        } : {}),
+        ...(targetHandle ? {
+            targetEntityId: targetHandle.entityId,
+            targetIncarnation: targetHandle.incarnation
         } : {}),
         ...(producerId !== undefined ? {
             producerId: requireNonEmptyString(producerId, 'producerId')
@@ -345,7 +361,7 @@ export function createGpuProjectileCommandId(options = {}) {
         options.spawnSequence,
         'spawnSequence'
     );
-    const sourceHandle = normalizeSourceHandle(options.sourceHandle);
+    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
     const sourceKey = sourceHandle
         ? `${sourceHandle.entityId}:${sourceHandle.incarnation}`
         : 'session';
@@ -358,6 +374,11 @@ export function createGpuProjectileCommandId(options = {}) {
  * @returns {object} endpoint.requestSpawn() 결과입니다.
  */
 export function requestGpuProjectileSpawn(options = {}) {
+    options = materializeGpuPlainDataSnapshot(
+        options,
+        'gpuProjectileSpawnRequest',
+        { opaqueKeys: ['endpoint'] }
+    );
     const endpoint = requireEndpoint(options.endpoint);
     const targetFixedTick = requirePositiveSafeInteger(
         options.targetFixedTick,
@@ -398,6 +419,11 @@ export function requestGpuProjectileSpawn(options = {}) {
  * source-relative mode의 destination position/velocity는 GPU materialization 전용 inert 값입니다.
  */
 export function requestGpuProjectile(options = {}) {
+    options = materializeGpuPlainDataSnapshot(
+        options,
+        'gpuProjectileRequest',
+        { opaqueKeys: ['endpoint'] }
+    );
     const mode = options.mode ?? GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE;
     if (!Object.values(GPU_PROJECTILE_SPAWN_MODE).includes(mode)) {
         throw new RangeError(`지원하지 않는 GPU projectile spawn mode입니다: ${mode}`);
@@ -408,7 +434,15 @@ export function requestGpuProjectile(options = {}) {
             'launchVelocity',
             'sourceVelocityScale',
             'aimWorldPoint',
-            'launchSpeed'
+            'launchSpeed',
+            'targetHandle',
+            'targetOffset',
+            'targetEntityId',
+            'targetIncarnation',
+            'trackedPose',
+            'targetPosition',
+            'targetWorldPosition',
+            'cpuTargetPosition'
         ], 'ABSOLUTE');
         return requestGpuProjectileSpawn(options);
     }
@@ -423,17 +457,68 @@ export function requestGpuProjectile(options = {}) {
         options.spawnSequence ?? 0,
         'spawnSequence'
     );
-    const sourceHandle = normalizeSourceHandle(options.sourceHandle);
+    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
     if (!sourceHandle) {
         throw new TypeError(`${mode} mode에는 sourceHandle이 필요합니다.`);
     }
+    const isTargetEntity = mode
+        === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
+    if (mode === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_VELOCITY) {
+        rejectPresentProperties(options, [
+            'aimWorldPoint',
+            'launchSpeed',
+            'targetHandle',
+            'targetOffset',
+            'targetEntityId',
+            'targetIncarnation',
+            'trackedPose',
+            'targetPosition',
+            'targetWorldPosition',
+            'cpuTargetPosition'
+        ], mode);
+    } else if (mode === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT) {
+        rejectPresentProperties(options, [
+            'launchVelocity',
+            'sourceVelocityScale',
+            'targetHandle',
+            'targetOffset',
+            'targetEntityId',
+            'targetIncarnation',
+            'trackedPose',
+            'targetPosition',
+            'targetWorldPosition',
+            'cpuTargetPosition'
+        ], mode);
+    } else {
+        rejectPresentProperties(options, [
+            'launchVelocity',
+            'sourceVelocityScale',
+            'aimWorldPoint',
+            'targetEntityId',
+            'targetIncarnation',
+            'trackedPose',
+            'targetPosition',
+            'targetWorldPosition',
+            'cpuTargetPosition'
+        ], mode);
+    }
+    const targetHandle = isTargetEntity
+        ? normalizeEntityHandle(options.targetHandle, 'targetHandle')
+        : null;
+    if (isTargetEntity && !targetHandle) {
+        throw new TypeError(`${mode} mode에는 targetHandle이 필요합니다.`);
+    }
     const positionOffset = normalizeVector(options.positionOffset, 'positionOffset');
+    const targetOffset = isTargetEntity
+        ? normalizeVector(options.targetOffset ?? { x: 0, y: 0 }, 'targetOffset')
+        : null;
     const destinationSpawn = createGpuProjectileSpawnIntent({
         definition: options.definition,
         position: { x: 0, y: 0 },
         velocity: { x: 0, y: 0 },
         spawnSequence,
         sourceHandle,
+        targetHandle,
         ownerHandle: options.ownerHandle,
         producerId: options.producerId,
         sourceAbilityId: options.sourceAbilityId,
@@ -454,7 +539,6 @@ export function requestGpuProjectile(options = {}) {
         : requireNonEmptyString(options.commandId, 'commandId');
     let sourceRelativeIntent;
     if (mode === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_VELOCITY) {
-        rejectPresentProperties(options, ['aimWorldPoint', 'launchSpeed'], mode);
         sourceRelativeIntent = Object.freeze({
             modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
             sourceHandle,
@@ -466,17 +550,23 @@ export function requestGpuProjectile(options = {}) {
                 'sourceVelocityScale'
             )
         });
-    } else {
-        rejectPresentProperties(options, [
-            'launchVelocity',
-            'sourceVelocityScale'
-        ], mode);
+    } else if (mode === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT) {
         sourceRelativeIntent = Object.freeze({
             modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
             sourceHandle,
             destinationSpawn,
             positionOffset,
             aimWorldPoint: normalizeVector(options.aimWorldPoint, 'aimWorldPoint'),
+            launchSpeed: requirePositiveFinite(options.launchSpeed, 'launchSpeed')
+        });
+    } else {
+        sourceRelativeIntent = Object.freeze({
+            modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            sourceHandle,
+            targetHandle,
+            destinationSpawn,
+            positionOffset,
+            targetOffset,
             launchSpeed: requirePositiveFinite(options.launchSpeed, 'launchSpeed')
         });
     }
@@ -505,20 +595,30 @@ export class GpuProjectileSpawnAdapter {
 
     /** @param {object} options - requestGpuProjectileSpawn()에서 endpoint를 제외한 값입니다. */
     requestSpawn(options = {}) {
+        const snapshot = materializeGpuPlainDataSnapshot(
+            options,
+            'gpuProjectileAdapterSpawn',
+            { opaqueKeys: ['endpoint'] }
+        );
         return requestGpuProjectileSpawn({
-            ...options,
+            ...snapshot,
             endpoint: this.endpoint,
-            commandNamespace: options.commandNamespace ?? this.commandNamespace
+            commandNamespace: snapshot.commandNamespace ?? this.commandNamespace
         });
     }
 
 
     /** Explicit mode projectile request입니다. */
     requestProjectile(options = {}) {
+        const snapshot = materializeGpuPlainDataSnapshot(
+            options,
+            'gpuProjectileAdapterRequest',
+            { opaqueKeys: ['endpoint'] }
+        );
         return requestGpuProjectile({
-            ...options,
+            ...snapshot,
             endpoint: this.endpoint,
-            commandNamespace: options.commandNamespace ?? this.commandNamespace
+            commandNamespace: snapshot.commandNamespace ?? this.commandNamespace
         });
     }
 }

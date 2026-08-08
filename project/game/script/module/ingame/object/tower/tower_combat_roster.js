@@ -138,6 +138,7 @@ export class TowerCombatRoster {
         this.alive = true;
         this.binding = null;
         this.lastCommittedDamage = null;
+        this.lastCommittedLethalDamage = null;
         this.lastCommittedDeath = null;
         this.lastCommittedFacts = EMPTY_FACTS;
         this.lastCommittedSourceTick = 0;
@@ -157,6 +158,7 @@ export class TowerCombatRoster {
         }
         const exactHandle = freezeHandle(handle, 'towerHandle');
         const exactProtocol = normalizeProtocol(protocol, 'towerProtocol');
+        this.lastCommittedLethalDamage = null;
         this.binding = Object.freeze({ ...exactHandle, ...exactProtocol });
         this.lastCommittedSourceTick = 0;
         this.lastCommittedSequence = -1;
@@ -165,7 +167,11 @@ export class TowerCombatRoster {
 
     /** GPU world 교체 시 combat HP/alive를 보존하고 stale exact binding만 폐기합니다. */
     releaseGpuBinding() {
-        if (this.destroyed || !this.binding) {
+        if (this.destroyed) {
+            return false;
+        }
+        this.lastCommittedLethalDamage = null;
+        if (!this.binding) {
             return false;
         }
         this.binding = null;
@@ -247,6 +253,9 @@ export class TowerCombatRoster {
                     targetDied: event.reason === 'target-died'
                 });
                 this.lastCommittedDamage = fact;
+                if (fact.targetDied) {
+                    this.lastCommittedLethalDamage = fact;
+                }
                 facts.push(fact);
                 continue;
             }
@@ -256,13 +265,15 @@ export class TowerCombatRoster {
             }
             this.alive = false;
             this.currentHpFixedPoint = 0;
-            const previousDamageFact = this.lastCommittedDamage;
-            const sourceFact = previousDamageFact?.targetDied
-                && previousDamageFact.sessionGeneration === event.sessionGeneration
-                && previousDamageFact.deviceGeneration === event.deviceGeneration
-                && previousDamageFact.authoritativeEpoch === event.authoritativeEpoch
-                && previousDamageFact.sourceTick === event.sourceTick
-                ? previousDamageFact
+            const lethalDamageFact = this.lastCommittedLethalDamage;
+            const sourceFact = lethalDamageFact?.targetDied
+                && sameHandle(lethalDamageFact.targetHandle, binding)
+                && lethalDamageFact.sessionGeneration === event.sessionGeneration
+                && lethalDamageFact.deviceGeneration === event.deviceGeneration
+                && lethalDamageFact.authoritativeEpoch === event.authoritativeEpoch
+                && lethalDamageFact.sourceTick === event.sourceTick
+                && lethalDamageFact.sequence < event.sequence
+                ? lethalDamageFact
                 : null;
             const deathFact = Object.freeze({
                 type: TOWER_COMBAT_FACT_TYPE.DIED,
@@ -294,6 +305,7 @@ export class TowerCombatRoster {
 
         if (towerDied) {
             this.binding = null;
+            this.lastCommittedLethalDamage = null;
         }
         this.lastCommittedFacts = facts.length > 0
             ? Object.freeze(facts)
@@ -340,6 +352,7 @@ export class TowerCombatRoster {
         }
         this.destroyed = true;
         this.binding = null;
+        this.lastCommittedLethalDamage = null;
         this.lastCommittedFacts = EMPTY_FACTS;
         this.knownEventKeys.clear();
         this.eventKeyHistory.length = 0;

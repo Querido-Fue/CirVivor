@@ -6,6 +6,9 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 const { EnemySimulationBackend } = await loadGameModule(
     'ingame/object/enemy/enemy_simulation_backend.js'
 );
+const { GPU_SPAWN_PROGRAM_MODE } = await loadGameModule(
+    'ingame/physics/gpu/gpu_fixed_primitive_abi.js'
+);
 
 function createSimulation() {
     const calls = [];
@@ -83,6 +86,7 @@ test('backend fixed primitive seam은 simulation에 exact handle과 bounded plan
     const simulation = createSimulation();
     backend.simulation = simulation;
     const sourceHandle = Object.freeze({ entityId: 11, incarnation: 4 });
+    const targetHandle = Object.freeze({ entityId: 13, incarnation: 2 });
     const destinationHandle = Object.freeze({ entityId: 12, incarnation: 1 });
     const destinationSpawn = Object.freeze({
         kindId: 'projectile',
@@ -99,12 +103,14 @@ test('backend fixed primitive seam은 simulation에 exact handle과 bounded plan
             moveIntentY: 0
         })]),
         sourceRelativeSpawns: Object.freeze([Object.freeze({
+            modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
             sourceHandle,
+            targetHandle,
             destinationHandle,
             destinationSpawn,
             positionOffset: Object.freeze({ x: 0.25, y: -0.5 }),
-            launchVelocity: Object.freeze({ x: 3, y: 2 }),
-            sourceVelocityScale: 0.5
+            targetOffset: Object.freeze({ x: 0.5, y: -0.25 }),
+            launchSpeed: 12
         })])
     });
 
@@ -120,6 +126,14 @@ test('backend fixed primitive seam은 simulation에 exact handle과 bounded plan
     assert.deepEqual(
         { ...staged.plan.sourceRelativeSpawns[0].sourceHandle },
         { ...sourceHandle }
+    );
+    assert.deepEqual(
+        { ...staged.plan.sourceRelativeSpawns[0].targetHandle },
+        { ...targetHandle }
+    );
+    assert.equal(
+        staged.plan.sourceRelativeSpawns[0].modeFlags,
+        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
     );
     assert.deepEqual(
         { ...staged.plan.sourceRelativeSpawns[0].destinationHandle },
@@ -140,6 +154,13 @@ test('backend fixed primitive seam은 simulation에 exact handle과 bounded plan
         Object.prototype.hasOwnProperty.call(
             staged.plan.sourceRelativeSpawns[0],
             'destinationSlot'
+        ),
+        false
+    );
+    assert.equal(
+        Object.prototype.hasOwnProperty.call(
+            staged.plan.sourceRelativeSpawns[0],
+            'targetSlot'
         ),
         false
     );

@@ -436,6 +436,158 @@ test('adapter aim-point mode는 CPU pose 없이 world aim/speed만 source-relati
     assert.equal(Object.isFrozen(intent.aimWorldPoint), true);
 });
 
+test('target-entity mode는 exact aim handle/provenance와 default targetOffset을 Team과 독립적으로 보낸다', () => {
+    const endpoint = createFakeEndpoint();
+    const sourceHandle = { entityId: 31, incarnation: 2 };
+    const targetHandle = { entityId: 47, incarnation: 9 };
+    const receipt = requestGpuProjectile({
+        endpoint,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        definition: createDefinition(),
+        sourceHandle,
+        targetHandle,
+        positionOffset: { x: 0.25, y: -0.5 },
+        launchSpeed: 12,
+        targetFixedTick: 25,
+        spawnSequence: 6,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+        producerId: 'targeted-projectile-fixture',
+        sourceAbilityId: 'exact-target-aim',
+        commandNamespace: 'hostile-targeted'
+    });
+
+    assert.equal(
+        GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        'source-relative-target-entity'
+    );
+    assert.equal(receipt.accepted, true);
+    assert.equal(endpoint.sourceRelativeCalls.length, 1);
+    const call = endpoint.sourceRelativeCalls[0];
+    assert.equal(
+        call.commandId,
+        'hostile-targeted:31:2:25:6:benchmark_round_01'
+    );
+    assert.equal(
+        call.intent.modeFlags,
+        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+    );
+    assert.deepEqual({ ...call.intent.sourceHandle }, sourceHandle);
+    assert.deepEqual({ ...call.intent.targetHandle }, targetHandle);
+    assert.deepEqual({ ...call.intent.positionOffset }, { x: 0.25, y: -0.5 });
+    assert.deepEqual({ ...call.intent.targetOffset }, { x: 0, y: 0 });
+    assert.equal(call.intent.launchSpeed, 12);
+    assert.equal(call.intent.destinationSpawn.sourceEntityId, sourceHandle.entityId);
+    assert.equal(
+        call.intent.destinationSpawn.sourceIncarnation,
+        sourceHandle.incarnation
+    );
+    assert.equal(call.intent.destinationSpawn.targetEntityId, targetHandle.entityId);
+    assert.equal(
+        call.intent.destinationSpawn.targetIncarnation,
+        targetHandle.incarnation
+    );
+    assert.equal('teamId' in call.intent.destinationSpawn, false);
+    assert.equal(
+        call.intent.destinationSpawn.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+    );
+    assert.equal(
+        call.intent.destinationSpawn.targetPolicyId,
+        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    );
+    assert.equal(call.intent.destinationSpawn.interactionMask, 640);
+    assert.equal(Object.isFrozen(call.intent), true);
+    assert.equal(Object.isFrozen(call.intent.sourceHandle), true);
+    assert.equal(Object.isFrozen(call.intent.targetHandle), true);
+    assert.equal(Object.isFrozen(call.intent.positionOffset), true);
+    assert.equal(Object.isFrozen(call.intent.targetOffset), true);
+    assert.equal(Object.isFrozen(call.intent.destinationSpawn), true);
+});
+
+test('target-entity public raw Proxy는 ownKeys/source/target getter를 한 번만 materialize한다', () => {
+    const endpoint = createFakeEndpoint();
+    const source = { entityId: 51, incarnation: 4 };
+    const firstTarget = { entityId: 61, incarnation: 7 };
+    const driftTarget = { entityId: 62, incarnation: 8 };
+    let ownKeysCount = 0;
+    let sourceReadCount = 0;
+    let targetReadCount = 0;
+    const raw = {
+        endpoint,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        definition: createDefinition(),
+        positionOffset: { x: 0, y: 0 },
+        targetOffset: { x: 1, y: -2 },
+        launchSpeed: 12,
+        targetFixedTick: 26,
+        spawnSequence: 7
+    };
+    Object.defineProperty(raw, 'sourceHandle', {
+        enumerable: true,
+        configurable: true,
+        get() {
+            sourceReadCount++;
+            return source;
+        }
+    });
+    Object.defineProperty(raw, 'targetHandle', {
+        enumerable: true,
+        configurable: true,
+        get() {
+            targetReadCount++;
+            return targetReadCount === 1 ? firstTarget : driftTarget;
+        }
+    });
+    const proxied = new Proxy(raw, {
+        ownKeys(target) {
+            ownKeysCount++;
+            return Reflect.ownKeys(target);
+        }
+    });
+
+    assert.equal(requestGpuProjectile(proxied).accepted, true);
+    assert.equal(ownKeysCount, 1);
+    assert.equal(sourceReadCount, 1);
+    assert.equal(targetReadCount, 1);
+    const intent = endpoint.sourceRelativeCalls[0].intent;
+    assert.deepEqual({ ...intent.sourceHandle }, source);
+    assert.deepEqual({ ...intent.targetHandle }, firstTarget);
+    assert.notDeepEqual({ ...intent.targetHandle }, driftTarget);
+    assert.equal(intent.destinationSpawn.targetEntityId, firstTarget.entityId);
+    assert.deepEqual({ ...intent.targetOffset }, { x: 1, y: -2 });
+});
+
+test('aim-point/target-entity launchSpeed의 float32 underflow는 endpoint 호출 전에 거부한다', () => {
+    const endpoint = createFakeEndpoint();
+    const definition = createDefinition();
+    const sourceHandle = { entityId: 71, incarnation: 3 };
+    const common = {
+        endpoint,
+        definition,
+        sourceHandle,
+        positionOffset: { x: 0, y: 0 },
+        launchSpeed: 1e-50,
+        targetFixedTick: 27,
+        spawnSequence: 8
+    };
+
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+        aimWorldPoint: { x: 1, y: 0 }
+    }), /launchSpeed/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        targetHandle: { entityId: 72, incarnation: 4 }
+    }), /launchSpeed/);
+
+    assert.equal(endpoint.calls.length, 0);
+    assert.equal(endpoint.sourceRelativeCalls.length, 0);
+});
+
 test('generic mode API는 mode별 absolute/source-relative forbidden field를 fail-fast한다', () => {
     const endpoint = createFakeEndpoint();
     const definition = createDefinition();
@@ -480,6 +632,57 @@ test('generic mode API는 mode별 absolute/source-relative forbidden field를 fa
         launchVelocity: { x: 1, y: 0 },
         aimWorldPoint: { x: 1, y: 0 }
     }), /aimWorldPoint/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        targetHandle: { entityId: 12, incarnation: 4 },
+        positionOffset: { x: 0, y: 0 },
+        aimWorldPoint: { x: 1, y: 0 },
+        launchSpeed: 12
+    }), /aimWorldPoint/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        positionOffset: { x: 0, y: 0 },
+        launchSpeed: 12
+    }), /targetHandle/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        targetHandle: { entityId: 12, incarnation: 4 },
+        launchSpeed: 12
+    }), /positionOffset/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        targetHandle: { entityId: 12, incarnation: 4 },
+        positionOffset: { x: 0, y: 0 },
+        targetOffset: { x: 1e100, y: 0 },
+        launchSpeed: 12
+    }), /float32/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+        sourceHandle,
+        targetHandle: { entityId: 12, incarnation: 4 },
+        positionOffset: { x: 0, y: 0 },
+        aimWorldPoint: { x: 1, y: 0 },
+        launchSpeed: 12
+    }), /targetHandle/);
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        targetHandle: { entityId: 12, incarnation: 4 },
+        targetEntityId: 13,
+        targetIncarnation: 5,
+        positionOffset: { x: 0, y: 0 },
+        launchSpeed: 12
+    }), /targetEntityId/);
     assert.throws(() => requestGpuProjectile({
         ...common,
         mode: 'tracked-pose-relative',

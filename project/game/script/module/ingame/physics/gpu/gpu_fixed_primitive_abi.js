@@ -5,7 +5,7 @@ const LITTLE_ENDIAN = true;
 export const GPU_BODY_CONTROL_PROGRAM_ABI_VERSION = 1;
 
 /** Source-relative destination materialization 전용 SpawnProgram ABI version입니다. */
-export const GPU_SPAWN_PROGRAM_ABI_VERSION = 2;
+export const GPU_SPAWN_PROGRAM_ABI_VERSION = 3;
 
 /**
  * Phase 3 fixed primitive의 host/WGSL 공용 byte layout입니다.
@@ -38,26 +38,33 @@ export const GPU_FIXED_PRIMITIVE_ABI = Object.freeze({
         INCARNATION: 12
     }),
     SPAWN_PROGRAM_RECORD: Object.freeze({
-        STRIDE: 64,
+        STRIDE: 80,
         DESTINATION_SLOT: 0,
         DESTINATION_ENTITY_ID: 4,
         DESTINATION_INCARNATION: 8,
         SOURCE_SLOT: 12,
         SOURCE_ENTITY_ID: 16,
         SOURCE_INCARNATION: 20,
-        MODE_FLAGS: 24,
-        RESULT: 28,
-        POSITION_OFFSET_X: 32,
-        POSITION_OFFSET_Y: 36,
-        VECTOR_X: 40,
-        VECTOR_Y: 44,
-        SCALAR: 48,
-        LAUNCH_VELOCITY_X: 40,
-        LAUNCH_VELOCITY_Y: 44,
-        SOURCE_VELOCITY_SCALE: 48,
-        SOURCE_TICK: 52,
-        RESERVED_0: 56,
-        RESERVED_1: 60
+        TARGET_SLOT: 24,
+        TARGET_ENTITY_ID: 28,
+        TARGET_INCARNATION: 32,
+        MODE_FLAGS: 36,
+        RESULT: 40,
+        SOURCE_TICK: 44,
+        POSITION_OFFSET_X: 48,
+        POSITION_OFFSET_Y: 52,
+        TARGET_OFFSET_X: 56,
+        TARGET_OFFSET_Y: 60,
+        MODE_VECTOR_X: 64,
+        MODE_VECTOR_Y: 68,
+        MODE_SCALAR: 72,
+        VECTOR_X: 64,
+        VECTOR_Y: 68,
+        SCALAR: 72,
+        LAUNCH_VELOCITY_X: 64,
+        LAUNCH_VELOCITY_Y: 68,
+        SOURCE_VELOCITY_SCALE: 72,
+        RESERVED_0: 76
     }),
     TRACKED_POSE_CONFIG: Object.freeze({
         STRIDE: 16,
@@ -93,14 +100,16 @@ export const GPU_FIXED_PROGRAM_STATUS = Object.freeze({
 export const GPU_SPAWN_PROGRAM_MODE = Object.freeze({
     SOURCE_RELATIVE_VELOCITY: 1,
     SOURCE_RELATIVE_TICK_START: 1,
-    SOURCE_RELATIVE_AIM_POINT: 2
+    SOURCE_RELATIVE_AIM_POINT: 2,
+    SOURCE_RELATIVE_TARGET_ENTITY: 3
 });
 
 export const GPU_SPAWN_PROGRAM_RESULT = Object.freeze({
     PENDING: 0,
     RESOLVED: 1,
     SOURCE_INVALID: 2,
-    DESTINATION_INVALID: 3
+    DESTINATION_INVALID: 3,
+    TARGET_INVALID: 4
 });
 
 function requireCapacity(value, label) {
@@ -397,15 +406,18 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
         true
     );
     if ((modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY
-            && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT)
+            && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
+            && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY)
         || result !== GPU_SPAWN_PROGRAM_RESULT.PENDING
         || reserved0 !== 0
         || reserved1 !== 0) {
         throw new RangeError(
-            'SpawnProgram mode/result/reserved가 v2 ingress 계약과 다릅니다.'
+            'SpawnProgram mode/result/reserved가 v3 ingress 계약과 다릅니다.'
         );
     }
     const isAimPoint = modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
+    const isTargetEntity = modeFlags
+        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
     if (isAimPoint
         && (record.launchVelocity !== undefined
             || record.launchVelocityX !== undefined
@@ -413,44 +425,112 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
             || record.sourceVelocityScale !== undefined)) {
         throw new TypeError('aim-point SpawnProgram에는 launchVelocity/sourceVelocityScale을 사용할 수 없습니다.');
     }
-    if (!isAimPoint
-        && (record.aimWorldPoint !== undefined || record.launchSpeed !== undefined)) {
+    if (!isAimPoint && !isTargetEntity
+        && (record.aimWorldPoint !== undefined
+            || record.aimWorldPointX !== undefined
+            || record.aimWorldPointY !== undefined
+            || record.launchSpeed !== undefined)) {
         throw new TypeError('velocity SpawnProgram에는 aimWorldPoint/launchSpeed를 사용할 수 없습니다.');
     }
-    const vector = isAimPoint
-        ? (record.vector ?? record.aimWorldPoint)
-        : (record.vector ?? record.launchVelocity);
-    const scalar = isAimPoint
-        ? (record.scalar ?? record.launchSpeed)
-        : (record.scalar ?? record.sourceVelocityScale ?? 0);
+    if (isTargetEntity
+        && (record.launchVelocity !== undefined
+            || record.launchVelocityX !== undefined
+            || record.launchVelocityY !== undefined
+            || record.sourceVelocityScale !== undefined
+            || record.aimWorldPoint !== undefined
+            || record.aimWorldPointX !== undefined
+            || record.aimWorldPointY !== undefined)) {
+        throw new TypeError('target-entity SpawnProgram에는 velocity/aim-point payload를 사용할 수 없습니다.');
+    }
+    const targetSlot = requireUint32(
+        record.targetSlot ?? UINT32_MAX,
+        'spawnProgram.targetSlot',
+        true
+    );
+    const targetEntityId = requireUint32(
+        record.targetEntityId ?? UINT32_MAX,
+        'spawnProgram.targetEntityId',
+        true
+    );
+    const targetIncarnation = requireUint32(
+        record.targetIncarnation ?? UINT32_MAX,
+        'spawnProgram.targetIncarnation',
+        true
+    );
+    const targetOffsetX = requireFloat32(
+        record.targetOffset?.x ?? record.targetOffsetX ?? 0,
+        'spawnProgram.targetOffset.x'
+    );
+    const targetOffsetY = requireFloat32(
+        record.targetOffset?.y ?? record.targetOffsetY ?? 0,
+        'spawnProgram.targetOffset.y'
+    );
+    if (isTargetEntity) {
+        if (targetSlot === UINT32_MAX
+            || targetEntityId === UINT32_MAX
+            || targetIncarnation === UINT32_MAX) {
+            throw new RangeError(
+                'target-entity SpawnProgram에는 exact target identity가 필요합니다.'
+            );
+        }
+    } else if (targetSlot !== UINT32_MAX
+        || targetEntityId !== UINT32_MAX
+        || targetIncarnation !== UINT32_MAX
+        || targetOffsetX !== 0
+        || targetOffsetY !== 0) {
+        throw new RangeError(
+            'non-target SpawnProgram의 target identity/offset은 sentinel/zero여야 합니다.'
+        );
+    }
+    const vector = isTargetEntity
+        ? (record.vector ?? record.modeVector)
+        : (isAimPoint
+            ? (record.vector ?? record.modeVector ?? record.aimWorldPoint)
+            : (record.vector ?? record.modeVector ?? record.launchVelocity));
+    const scalar = (isAimPoint || isTargetEntity)
+        ? (record.scalar ?? record.modeScalar ?? record.launchSpeed)
+        : (record.scalar ?? record.modeScalar ?? record.sourceVelocityScale ?? 0);
     const vectorX = requireFloat32(
-        vector?.x ?? (isAimPoint ? record.aimWorldPointX : record.launchVelocityX) ?? 0,
-        isAimPoint ? 'spawnProgram.aimWorldPoint.x' : 'spawnProgram.launchVelocity.x'
+        vector?.x
+            ?? (isAimPoint ? record.aimWorldPointX : record.launchVelocityX)
+            ?? 0,
+        isTargetEntity
+            ? 'spawnProgram.modeVector.x'
+            : (isAimPoint
+                ? 'spawnProgram.aimWorldPoint.x'
+                : 'spawnProgram.launchVelocity.x')
     );
     const vectorY = requireFloat32(
-        vector?.y ?? (isAimPoint ? record.aimWorldPointY : record.launchVelocityY) ?? 0,
-        isAimPoint ? 'spawnProgram.aimWorldPoint.y' : 'spawnProgram.launchVelocity.y'
+        vector?.y
+            ?? (isAimPoint ? record.aimWorldPointY : record.launchVelocityY)
+            ?? 0,
+        isTargetEntity
+            ? 'spawnProgram.modeVector.y'
+            : (isAimPoint
+                ? 'spawnProgram.aimWorldPoint.y'
+                : 'spawnProgram.launchVelocity.y')
     );
     const scalarValue = requireFloat32(
         scalar,
-        isAimPoint ? 'spawnProgram.launchSpeed' : 'spawnProgram.sourceVelocityScale'
+        (isAimPoint || isTargetEntity)
+            ? 'spawnProgram.launchSpeed'
+            : 'spawnProgram.sourceVelocityScale'
     );
-    if (isAimPoint && scalarValue <= 0) {
-        throw new RangeError('aim-point SpawnProgram launchSpeed는 양의 float32여야 합니다.');
+    if ((isAimPoint || isTargetEntity) && scalarValue <= 0) {
+        throw new RangeError('aim SpawnProgram launchSpeed는 양의 float32여야 합니다.');
     }
+    if (isTargetEntity && (vectorX !== 0 || vectorY !== 0)) {
+        throw new RangeError('target-entity SpawnProgram modeVector는 zero여야 합니다.');
+    }
+    const encodedTargetOffsetX = isTargetEntity ? targetOffsetX : 0;
+    const encodedTargetOffsetY = isTargetEntity ? targetOffsetY : 0;
+    const encodedVectorX = isTargetEntity ? 0 : vectorX;
+    const encodedVectorY = isTargetEntity ? 0 : vectorY;
+    view.setUint32(offset + abi.TARGET_SLOT, targetSlot, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.TARGET_ENTITY_ID, targetEntityId, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.TARGET_INCARNATION, targetIncarnation, LITTLE_ENDIAN);
     view.setUint32(offset + abi.MODE_FLAGS, modeFlags, LITTLE_ENDIAN);
     view.setUint32(offset + abi.RESULT, result, LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.POSITION_OFFSET_X, requireFloat32(
-        record.positionOffset?.x ?? record.positionOffsetX ?? 0,
-        'spawnProgram.positionOffset.x'
-    ), LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.POSITION_OFFSET_Y, requireFloat32(
-        record.positionOffset?.y ?? record.positionOffsetY ?? 0,
-        'spawnProgram.positionOffset.y'
-    ), LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.VECTOR_X, vectorX, LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.VECTOR_Y, vectorY, LITTLE_ENDIAN);
-    view.setFloat32(offset + abi.SCALAR, scalarValue, LITTLE_ENDIAN);
     const sourceTick = requireUint32(
         record.sourceTick,
         'spawnProgram.sourceTick',
@@ -460,8 +540,28 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
         throw new RangeError('spawnProgram.sourceTick은 양의 fixed tick이어야 합니다.');
     }
     view.setUint32(offset + abi.SOURCE_TICK, sourceTick, LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.POSITION_OFFSET_X, requireFloat32(
+        record.positionOffset?.x ?? record.positionOffsetX ?? 0,
+        'spawnProgram.positionOffset.x'
+    ), LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.POSITION_OFFSET_Y, requireFloat32(
+        record.positionOffset?.y ?? record.positionOffsetY ?? 0,
+        'spawnProgram.positionOffset.y'
+    ), LITTLE_ENDIAN);
+    view.setFloat32(
+        offset + abi.TARGET_OFFSET_X,
+        encodedTargetOffsetX,
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + abi.TARGET_OFFSET_Y,
+        encodedTargetOffsetY,
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(offset + abi.MODE_VECTOR_X, encodedVectorX, LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.MODE_VECTOR_Y, encodedVectorY, LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.MODE_SCALAR, scalarValue, LITTLE_ENDIAN);
     view.setUint32(offset + abi.RESERVED_0, 0, LITTLE_ENDIAN);
-    view.setUint32(offset + abi.RESERVED_1, 0, LITTLE_ENDIAN);
 }
 
 export function readGpuSpawnProgramRecord(storage, index) {
@@ -480,20 +580,32 @@ export function readGpuSpawnProgramRecord(storage, index) {
         + (recordIndex * abi.STRIDE);
     const view = new DataView(storage.buffer);
     const modeFlags = view.getUint32(offset + abi.MODE_FLAGS, LITTLE_ENDIAN);
-    const vector = Object.freeze({
-        x: view.getFloat32(offset + abi.VECTOR_X, LITTLE_ENDIAN),
-        y: view.getFloat32(offset + abi.VECTOR_Y, LITTLE_ENDIAN)
+    const targetOffset = Object.freeze({
+        x: view.getFloat32(offset + abi.TARGET_OFFSET_X, LITTLE_ENDIAN),
+        y: view.getFloat32(offset + abi.TARGET_OFFSET_Y, LITTLE_ENDIAN)
     });
-    const scalar = view.getFloat32(offset + abi.SCALAR, LITTLE_ENDIAN);
-    const modePayload = modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
-        ? {
+    const vector = Object.freeze({
+        x: view.getFloat32(offset + abi.MODE_VECTOR_X, LITTLE_ENDIAN),
+        y: view.getFloat32(offset + abi.MODE_VECTOR_Y, LITTLE_ENDIAN)
+    });
+    const scalar = view.getFloat32(offset + abi.MODE_SCALAR, LITTLE_ENDIAN);
+    let modePayload;
+    if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT) {
+        modePayload = {
             aimWorldPoint: vector,
             launchSpeed: scalar
-        }
-        : {
+        };
+    } else if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY) {
+        modePayload = {
+            targetOffset,
+            launchSpeed: scalar
+        };
+    } else {
+        modePayload = {
             launchVelocity: vector,
             sourceVelocityScale: scalar
         };
+    }
     return Object.freeze({
         destinationSlot: view.getUint32(offset + abi.DESTINATION_SLOT, LITTLE_ENDIAN),
         destinationEntityId: view.getUint32(
@@ -510,17 +622,23 @@ export function readGpuSpawnProgramRecord(storage, index) {
             offset + abi.SOURCE_INCARNATION,
             LITTLE_ENDIAN
         ),
+        targetSlot: view.getUint32(offset + abi.TARGET_SLOT, LITTLE_ENDIAN),
+        targetEntityId: view.getUint32(offset + abi.TARGET_ENTITY_ID, LITTLE_ENDIAN),
+        targetIncarnation: view.getUint32(
+            offset + abi.TARGET_INCARNATION,
+            LITTLE_ENDIAN
+        ),
         modeFlags,
         result: view.getUint32(offset + abi.RESULT, LITTLE_ENDIAN),
+        sourceTick: view.getUint32(offset + abi.SOURCE_TICK, LITTLE_ENDIAN),
         positionOffset: Object.freeze({
             x: view.getFloat32(offset + abi.POSITION_OFFSET_X, LITTLE_ENDIAN),
             y: view.getFloat32(offset + abi.POSITION_OFFSET_Y, LITTLE_ENDIAN)
         }),
+        targetOffset,
         vector,
         scalar,
         ...modePayload,
-        sourceTick: view.getUint32(offset + abi.SOURCE_TICK, LITTLE_ENDIAN),
-        reserved0: view.getUint32(offset + abi.RESERVED_0, LITTLE_ENDIAN),
-        reserved1: view.getUint32(offset + abi.RESERVED_1, LITTLE_ENDIAN)
+        reserved0: view.getUint32(offset + abi.RESERVED_0, LITTLE_ENDIAN)
     });
 }

@@ -69,6 +69,31 @@ function createSourceRelativeIntent(sourceHandle, overrides = {}) {
     };
 }
 
+function createAimPointIntent(sourceHandle, overrides = {}) {
+    return {
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
+        sourceHandle,
+        destinationSpawn: createProjectileIntent(),
+        positionOffset: { x: 0.5, y: -0.25 },
+        aimWorldPoint: { x: 9, y: -2 },
+        launchSpeed: 18,
+        ...overrides
+    };
+}
+
+function createTargetEntityIntent(sourceHandle, targetHandle, overrides = {}) {
+    return {
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        targetHandle,
+        destinationSpawn: createProjectileIntent(),
+        positionOffset: { x: 0.5, y: -0.25 },
+        targetOffset: { x: 0, y: 0 },
+        launchSpeed: 12,
+        ...overrides
+    };
+}
+
 function createFakeBackend(options = {}) {
     const bodies = new Map();
     const stagedPlans = [];
@@ -166,6 +191,7 @@ function activateBody(registry, backend, descriptor = {}) {
 function queueSpawnOutcome(backend, {
     sourceTick,
     sourceHandle,
+    targetHandle = null,
     destinationHandle,
     reason,
     protocol = backend.getProtocol()
@@ -173,7 +199,12 @@ function queueSpawnOutcome(backend, {
     backend.completionBatches.push({
         ...protocol,
         sourceTick,
-        outcomes: [{ sourceHandle, destinationHandle, reason }]
+        outcomes: [{
+            sourceHandle,
+            ...(targetHandle ? { targetHandle } : {}),
+            destinationHandle,
+            reason
+        }]
     });
 }
 
@@ -463,6 +494,7 @@ test('registry capacity failure는 source-relative batch만 zero-partial rollbac
     assert.equal(registry.getActiveCount(), 1);
     assert.equal(registry.getReservedCount(), 0);
     assert.equal(owner.getPendingCount(), 0);
+
 });
 
 test('enqueue 뒤 generation/epoch가 바뀐 command는 새 world에 stage되지 않는다', () => {
@@ -553,15 +585,12 @@ test('source-relative owner는 exact source provenance를 주입하고 mismatch/
     const owner = new GpuFixedCommandOwner(backend, registry);
 
     const accepted = owner.requestSourceRelativeSpawn(
-        createSourceRelativeIntent(source, {
+        createAimPointIntent(source, {
             destinationSpawn: createProjectileIntent({
                 spawnSequence: 42,
                 producerId: 'tower-primary-weapon',
                 sourceAbilityId: 'primary-pointer-fire'
             }),
-            modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT,
-            launchVelocity: undefined,
-            sourceVelocityScale: undefined,
             aimWorldPoint: { x: 9, y: -2 },
             launchSpeed: 18
         }),
@@ -627,9 +656,320 @@ test('source-relative owner는 exact source provenance를 주입하고 mismatch/
         }),
         16,
         'spawn:aim-forbidden-velocity'
-    ), /launchVelocity\/sourceVelocityScale/);
+    ), /launchVelocity/);
     assert.equal(owner.getPendingCount(), 0);
     assert.equal(registry.getReservedCount(), 0);
+});
+
+test('target-entity request는 Team/kind와 무관하게 exact target provenance를 주입·보존한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend, {
+        kindId: 'enemy',
+        definitionId: 'same-team-source',
+        teamId: GAMEPLAY_TEAM_ID.PLAYER
+    });
+    const target = activateBody(registry, backend, {
+        kindId: 'tower-proxy-fixture',
+        definitionId: 'same-team-target',
+        teamId: GAMEPLAY_TEAM_ID.PLAYER
+    });
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const intent = createTargetEntityIntent(source, target);
+    delete intent.targetOffset;
+
+    const receipt = owner.requestSourceRelativeSpawn(
+        intent,
+        16,
+        'spawn:target-entity:resolved'
+    );
+    assert.equal(receipt.accepted, true);
+    const committed = owner.commitAtFixedBoundary(16);
+    assert.equal(committed.sourceRelativeSpawns.length, 1);
+    const destination = committed.sourceRelativeSpawns[0].handle;
+    const staged = backend.stagedPlans[0].sourceRelativeSpawns[0];
+    assert.equal(
+        staged.modeFlags,
+        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+    );
+    assert.deepEqual({ ...staged.sourceHandle }, { ...source });
+    assert.deepEqual({ ...staged.targetHandle }, { ...target });
+    assert.deepEqual({ ...staged.positionOffset }, { x: 0.5, y: -0.25 });
+    assert.deepEqual({ ...staged.targetOffset }, { x: 0, y: 0 });
+    assert.equal(staged.launchSpeed, 12);
+    assert.equal(staged.destinationSpawn.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+    assert.equal(staged.destinationSpawn.targetEntityId, target.entityId);
+    assert.equal(staged.destinationSpawn.targetIncarnation, target.incarnation);
+    assert.equal(Object.isFrozen(staged.targetHandle), true);
+    assert.equal(Object.isFrozen(staged.targetOffset), true);
+    assert.equal(registry.getReservedCount(), 1);
+
+    backend.addBody(destination);
+    queueSpawnOutcome(backend, {
+        sourceTick: 16,
+        sourceHandle: source,
+        targetHandle: target,
+        destinationHandle: destination,
+        reason: 'resolved'
+    });
+    const completion = owner.commitCompletedAtFixedBoundary(17);
+    assert.equal(completion.protocolFailure, null);
+    assert.equal(completion.completed[0].outcome, 'resolved');
+    const view = registry.copyEntityView(destination, {});
+    assert.equal(view.metadata.sourceEntityId, source.entityId);
+    assert.equal(view.metadata.sourceIncarnation, source.incarnation);
+    assert.equal(view.metadata.targetEntityId, target.entityId);
+    assert.equal(view.metadata.targetIncarnation, target.incarnation);
+    assert.equal(owner.getStatus().recoveryRequired, false);
+});
+
+test('target-entity schema는 exact metadata contradiction과 mode forbidden field를 reservation 전에 거부한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend);
+    const target = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target, {
+            destinationSpawn: createProjectileIntent({
+                targetEntityId: target.entityId
+            })
+        }),
+        18,
+        'spawn:target-partial-metadata'
+    ), /targetEntityId\/targetIncarnation/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target, {
+            destinationSpawn: createProjectileIntent({
+                targetEntityId: target.entityId,
+                targetIncarnation: target.incarnation + 1
+            })
+        }),
+        18,
+        'spawn:target-mismatched-metadata'
+    ), /actual targetHandle/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target, {
+            aimWorldPoint: { x: 3, y: 4 }
+        }),
+        18,
+        'spawn:target-forbidden-aim'
+    ), /aimWorldPoint/);
+    const missingOffset = createTargetEntityIntent(source, target);
+    delete missingOffset.positionOffset;
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        missingOffset,
+        18,
+        'spawn:target-missing-position-offset'
+    ), /positionOffset/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, { targetHandle: target }),
+        18,
+        'spawn:velocity-forbidden-target'
+    ), /targetHandle/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target, {
+            targetOffset: { x: 1e100, y: 0 }
+        }),
+        18,
+        'spawn:target-float32-overflow'
+    ), /float32/);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(backend.stagedPlans.length, 0);
+});
+
+test('target request liveness는 source-first이고 stale target은 normal, target desync만 recovery다', () => {
+    const staleBackend = createFakeBackend();
+    const staleRegistry = new WorldRegistry({ capacity: 2 });
+    const source = activateBody(staleRegistry, staleBackend);
+    const staleOwner = new GpuFixedCommandOwner(staleBackend, staleRegistry);
+    const staleTarget = { entityId: 91, incarnation: 4 };
+    assert.deepEqual({ ...staleOwner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, staleTarget),
+        19,
+        'spawn:stale-target'
+    ) }, {
+        accepted: false,
+        commandId: 'spawn:stale-target',
+        reason: 'stale-target'
+    });
+    assert.equal(staleOwner.getStatus().recoveryRequired, false);
+    assert.deepEqual({ ...staleOwner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(
+            { entityId: 92, incarnation: 5 },
+            staleTarget
+        ),
+        19,
+        'spawn:both-stale'
+    ) }, {
+        accepted: false,
+        commandId: 'spawn:both-stale',
+        reason: 'stale-source'
+    });
+
+    const desyncBackend = createFakeBackend();
+    const desyncRegistry = new WorldRegistry({ capacity: 2 });
+    const desyncSource = activateBody(desyncRegistry, desyncBackend);
+    const desyncTarget = activateBody(desyncRegistry, desyncBackend);
+    desyncBackend.removeBody(desyncTarget);
+    const desyncOwner = new GpuFixedCommandOwner(desyncBackend, desyncRegistry);
+    assert.deepEqual({ ...desyncOwner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(desyncSource, desyncTarget),
+        19,
+        'spawn:target-desync'
+    ) }, {
+        accepted: false,
+        commandId: 'spawn:target-desync',
+        reason: 'registry-backend-desync'
+    });
+    assert.equal(desyncOwner.getStatus().recoveryRequired, true);
+    assert.equal(desyncRegistry.getReservedCount(), 0);
+});
+
+test('commit-time stale target은 reservation 없이 spawn만 거절하고 같은 tick control은 유지한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 3 });
+    const source = activateBody(registry, backend);
+    const target = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target),
+        20,
+        'spawn:commit-stale-target'
+    ).accepted, true);
+    assert.equal(owner.requestBodyControl({
+        handle: source,
+        moveIntentX: 1,
+        moveIntentY: 0
+    }, 20, 'control:commit-stale-target').accepted, true);
+    backend.removeBody(target);
+    assert.equal(registry.remove(target), true);
+
+    const committed = owner.commitAtFixedBoundary(20);
+    assert.equal(committed.state, 'committed-with-rejections');
+    assert.equal(committed.recoveryRequired, false);
+    assert.equal(committed.controls.length, 1);
+    assert.equal(committed.sourceRelativeSpawns.length, 0);
+    assert.deepEqual(
+        Array.from(committed.rejected, ({ domain, code }) => ({ domain, code })),
+        [{ domain: 'spawn', code: 'stale-target' }]
+    );
+    assert.equal(backend.stagedPlans[0].controls.length, 1);
+    assert.equal(backend.stagedPlans[0].sourceRelativeSpawns.length, 0);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(owner.getPendingCount(), 0);
+
+    const bothBackend = createFakeBackend();
+    const bothRegistry = new WorldRegistry({ capacity: 2 });
+    const bothSource = activateBody(bothRegistry, bothBackend);
+    const bothTarget = activateBody(bothRegistry, bothBackend);
+    const bothOwner = new GpuFixedCommandOwner(bothBackend, bothRegistry);
+    assert.equal(bothOwner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(bothSource, bothTarget),
+        20,
+        'spawn:commit-both-stale'
+    ).accepted, true);
+    bothBackend.removeBody(bothSource);
+    bothBackend.removeBody(bothTarget);
+    assert.equal(bothRegistry.remove(bothSource), true);
+    assert.equal(bothRegistry.remove(bothTarget), true);
+    const bothCommit = bothOwner.commitAtFixedBoundary(20);
+    assert.deepEqual(
+        Array.from(bothCommit.rejected, ({ domain, code }) => ({ domain, code })),
+        [{ domain: 'spawn', code: 'stale-source' }]
+    );
+    assert.equal(bothCommit.recoveryRequired, false);
+    assert.equal(bothRegistry.getReservedCount(), 0);
+});
+
+test('GPU target-invalid completion은 exact reservation을 normal cleanup하고 telemetry를 올린다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 3 });
+    const source = activateBody(registry, backend);
+    const target = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target),
+        21,
+        'spawn:gpu-target-invalid'
+    ).accepted, true);
+    const committed = owner.commitAtFixedBoundary(21);
+    const destination = committed.sourceRelativeSpawns[0].handle;
+    assert.equal(registry.getReservedCount(), 1);
+    assert.equal(backend.hasBody(destination), false);
+
+    queueSpawnOutcome(backend, {
+        sourceTick: 21,
+        sourceHandle: source,
+        targetHandle: target,
+        destinationHandle: destination,
+        reason: 'target-invalid'
+    });
+    const completion = owner.commitCompletedAtFixedBoundary(22);
+    assert.equal(completion.protocolFailure, null);
+    assert.deepEqual(
+        Array.from(completion.completed, ({ commandId, outcome }) => ({
+            commandId,
+            outcome
+        })),
+        [{ commandId: 'spawn:gpu-target-invalid', outcome: 'target-invalid' }]
+    );
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(registry.has(destination), false);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(owner.getStatus().telemetry.completedTargetInvalid, 1);
+    assert.equal(owner.getStatus().recoveryRequired, false);
+});
+
+test('targeted SpawnProgram pressure는 같은 tick control/fixed domain과 reservation을 오염시키지 않는다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 3 });
+    const source = activateBody(registry, backend);
+    const target = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry, {
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        historyCapacity: 8
+    });
+    backend.stageFixedPrograms = (plan) => {
+        backend.stagedPlans.push(plan);
+        return {
+            accepted: plan.controls.length,
+            rejected: plan.sourceRelativeSpawns.length,
+            requiresRecovery: false,
+            controls: {
+                accepted: plan.controls.length,
+                rejected: 0,
+                reason: null
+            },
+            sourceRelativeSpawns: {
+                accepted: 0,
+                rejected: plan.sourceRelativeSpawns.length,
+                reason: 'spawn-program-capacity'
+            }
+        };
+    };
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target),
+        22,
+        'spawn:target-pressure'
+    ).accepted, true);
+    assert.equal(owner.requestBodyControl({
+        handle: source,
+        moveIntentX: 0,
+        moveIntentY: 1
+    }, 22, 'control:target-pressure').accepted, true);
+
+    const committed = owner.commitAtFixedBoundary(22);
+    assert.equal(committed.state, 'committed-with-rejections');
+    assert.equal(committed.recoveryRequired, false);
+    assert.equal(committed.controls.length, 1);
+    assert.equal(committed.sourceRelativeSpawns.length, 0);
+    assert.equal(committed.rejected[0].code, 'spawn-program-capacity');
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(owner.getPendingCount(), 0);
 });
 
 test('source-relative materialization은 target policy/mask를 exact source Team 주입 뒤에도 보존한다', () => {
@@ -719,6 +1059,69 @@ test('source-relative raw command는 getter sourceHandle을 한 번만 snapshot�
     assert.equal(staged.destinationSpawn.sourceIncarnation, player.incarnation);
 });
 
+test('target raw Proxy는 ownKeys/source/target getter를 한 번만 읽고 target drift를 fingerprint로 막는다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend);
+    const firstTarget = activateBody(registry, backend);
+    const secondTarget = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const raw = createTargetEntityIntent(source, firstTarget);
+    let sourceReadCount = 0;
+    let targetReadCount = 0;
+    let ownKeysCount = 0;
+    Object.defineProperty(raw, 'sourceHandle', {
+        enumerable: true,
+        configurable: true,
+        get() {
+            sourceReadCount++;
+            return source;
+        }
+    });
+    Object.defineProperty(raw, 'targetHandle', {
+        enumerable: true,
+        configurable: true,
+        get() {
+            targetReadCount++;
+            return targetReadCount === 1 ? firstTarget : secondTarget;
+        }
+    });
+    const proxied = new Proxy(raw, {
+        ownKeys(target) {
+            ownKeysCount++;
+            return Reflect.ownKeys(target);
+        }
+    });
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        proxied,
+        23,
+        'spawn:target-proxy-snapshot'
+    ).accepted, true);
+    assert.equal(ownKeysCount, 1);
+    assert.equal(sourceReadCount, 1);
+    assert.equal(targetReadCount, 1);
+    const committed = owner.commitAtFixedBoundary(23);
+    const staged = backend.stagedPlans[0].sourceRelativeSpawns[0];
+    assert.deepEqual({ ...staged.targetHandle }, { ...firstTarget });
+    assert.equal(staged.destinationSpawn.targetEntityId, firstTarget.entityId);
+    assert.equal(
+        staged.destinationSpawn.targetIncarnation,
+        firstTarget.incarnation
+    );
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, firstTarget),
+        24,
+        'spawn:target-command-id-drift'
+    ).accepted, true);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, secondTarget),
+        24,
+        'spawn:target-command-id-drift'
+    ), /다른 payload/);
+});
+
 test('source-relative snapshot은 frozen plain intent와 typed array를 보존하고 duplicate replay를 유지한다', () => {
     const backend = createFakeBackend();
     const registry = new WorldRegistry({ capacity: 3 });
@@ -777,6 +1180,13 @@ test('source-relative snapshot은 cycle/function/symbol raw payload를 enqueue �
         createSourceRelativeIntent(source, { extra: Symbol('snapshot') }),
         19,
         'spawn:symbol-snapshot'
+    ), /symbol/);
+    const symbolKey = createSourceRelativeIntent(source);
+    symbolKey[Symbol('hidden-drift')] = 1;
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        symbolKey,
+        19,
+        'spawn:symbol-key-snapshot'
     ), /symbol/);
     assert.equal(owner.getPendingCount(), 0);
     assert.equal(backend.stagedPlans.length, 0);

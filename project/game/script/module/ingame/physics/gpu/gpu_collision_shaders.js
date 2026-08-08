@@ -65,10 +65,12 @@ const FIXED_PROGRAM_STATUS_CAPACITY_EXCEEDED: u32 = ${GPU_FIXED_PROGRAM_STATUS.C
 const FIXED_PROGRAM_STATUS_RECORD_INVALID: u32 = ${GPU_FIXED_PROGRAM_STATUS.RECORD_INVALID}u;
 const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY}u;
 const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT}u;
+const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY}u;
 const SPAWN_PROGRAM_RESULT_PENDING: u32 = ${GPU_SPAWN_PROGRAM_RESULT.PENDING}u;
 const SPAWN_PROGRAM_RESULT_RESOLVED: u32 = ${GPU_SPAWN_PROGRAM_RESULT.RESOLVED}u;
 const SPAWN_PROGRAM_RESULT_SOURCE_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID}u;
 const SPAWN_PROGRAM_RESULT_DESTINATION_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.DESTINATION_INVALID}u;
+const SPAWN_PROGRAM_RESULT_TARGET_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID}u;
 const INVALID_IDENTITY_COMPONENT: u32 = ${GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT}u;
 const CONTROL_ACCELERATION: f32 = ${toWgslFloat(
     THE_TOWER_DATA.CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED
@@ -267,14 +269,17 @@ struct SpawnProgramRecord {
     source_slot: u32,
     source_entity_id: u32,
     source_incarnation: u32,
+    target_slot: u32,
+    target_entity_id: u32,
+    target_incarnation: u32,
     mode_flags: u32,
     result: u32,
+    source_tick: u32,
     position_offset: vec2f,
+    target_offset: vec2f,
     vector: vec2f,
     scalar: f32,
-    source_tick: u32,
     reserved_0: u32,
-    reserved_1: u32,
 }
 
 struct SpawnProgram {
@@ -701,26 +706,45 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
     if (program_index >= spawn_program.header.count) {
         return;
     }
+    let body_capacity = arrayLength(&simulations.values);
     let program = spawn_program.records[program_index];
     let supported_mode = program.mode_flags
             == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY
-        || program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT;
+        || program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT
+        || program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY;
     let finite_payload = all(program.position_offset <= vec2f(3.402823466e+38))
         && all(program.position_offset >= vec2f(-3.402823466e+38))
+        && all(program.target_offset <= vec2f(3.402823466e+38))
+        && all(program.target_offset >= vec2f(-3.402823466e+38))
         && all(program.vector <= vec2f(3.402823466e+38))
         && all(program.vector >= vec2f(-3.402823466e+38))
         && program.scalar <= 3.402823466e+38
         && program.scalar >= -3.402823466e+38;
+    let target_mode = program.mode_flags
+        == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY;
+    let non_target_payload_valid = target_mode
+        || (program.target_slot == INVALID_IDENTITY_COMPONENT
+            && program.target_entity_id == INVALID_IDENTITY_COMPONENT
+            && program.target_incarnation == INVALID_IDENTITY_COMPONENT
+            && all(program.target_offset == vec2f(0.0)));
+    let target_payload_valid = !target_mode
+        || (program.target_slot < body_capacity
+            && program.target_entity_id != INVALID_IDENTITY_COMPONENT
+            && program.target_incarnation != INVALID_IDENTITY_COMPONENT
+            && all(program.vector == vec2f(0.0)));
     if (program.result != SPAWN_PROGRAM_RESULT_PENDING
         || !supported_mode
         || !finite_payload
-        || (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT
+        || !non_target_payload_valid
+        || !target_payload_valid
+        || ((program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT
+                || target_mode)
             && !(program.scalar > 0.0))
         || program.source_tick == 0u
         || program.reserved_0 != 0u
-        || program.reserved_1 != 0u
         || program.destination_slot >= counts.body_count
-        || program.source_slot >= counts.body_count
+        || program.destination_slot >= body_capacity
+        || program.source_slot >= body_capacity
         || program.destination_slot == program.source_slot
         || simulations.values[program.destination_slot].entity_id
             != program.destination_entity_id
@@ -751,8 +775,10 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
     if (program_index >= spawn_program.header.count) {
         return;
     }
+    let body_capacity = arrayLength(&simulations.values);
     let program = spawn_program.records[program_index];
     if (program.destination_slot >= counts.body_count
+        || program.destination_slot >= body_capacity
         || simulations.values[program.destination_slot].entity_id
             != program.destination_entity_id
         || simulations.values[program.destination_slot].incarnation
@@ -762,12 +788,24 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
             = SPAWN_PROGRAM_RESULT_DESTINATION_INVALID;
         return;
     }
-    if (simulations.values[program.source_slot].entity_id != program.source_entity_id
+    if (program.source_slot >= body_capacity
+        || simulations.values[program.source_slot].entity_id != program.source_entity_id
         || simulations.values[program.source_slot].incarnation
             != program.source_incarnation
         || !body_id_is_alive(program.source_slot)) {
         spawn_program.records[program_index].result
             = SPAWN_PROGRAM_RESULT_SOURCE_INVALID;
+        return;
+    }
+    if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY
+        && (program.target_slot >= body_capacity
+            || simulations.values[program.target_slot].entity_id
+                != program.target_entity_id
+            || simulations.values[program.target_slot].incarnation
+                != program.target_incarnation
+            || !body_id_is_alive(program.target_slot))) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_TARGET_INVALID;
         return;
     }
 
@@ -777,6 +815,22 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
         + (source_physics.velocity * program.scalar);
     if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT) {
         var launch_direction = program.vector - source_physics.position;
+        var launch_direction_length_squared = dot(launch_direction, launch_direction);
+        if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+            launch_direction = source_physics.velocity;
+            launch_direction_length_squared = dot(launch_direction, launch_direction);
+        }
+        if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+            launch_direction = vec2f(1.0, 0.0);
+        } else {
+            launch_direction *= inverseSqrt(launch_direction_length_squared);
+        }
+        destination_velocity = launch_direction * program.scalar;
+    } else if (program.mode_flags
+            == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY) {
+        let target_physics = physics.values[program.target_slot];
+        var launch_direction = (target_physics.position + program.target_offset)
+            - source_physics.position;
         var launch_direction_length_squared = dot(launch_direction, launch_direction);
         if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
             launch_direction = source_physics.velocity;

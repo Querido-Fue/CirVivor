@@ -119,21 +119,31 @@ assert.deepEqual(storageBindings, [
 assert.equal(storageBindings.length, 18);
 assert.doesNotMatch(storageBindingBlock, /gameplay|team|damage_policy/i);
 
-// SpawnProgram v2는 64-byte record의 vector/scalar payload로 velocity/aim 두 mode를 공유합니다.
-assert.match(compute, /const SPAWN_PROGRAM_ABI_VERSION: u32 = 2u;/);
+// SpawnProgram v3는 80-byte record에서 exact target identity와 aim payload를 고정합니다.
+assert.match(compute, /const SPAWN_PROGRAM_ABI_VERSION: u32 = 3u;/);
 assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY: u32 = 1u;/);
 assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT: u32 = 2u;/);
+assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY: u32 = 3u;/);
+assert.match(compute, /const SPAWN_PROGRAM_RESULT_TARGET_INVALID: u32 = 4u;/);
 assert.match(
     compute,
-    /struct SpawnProgramRecord \{\s*destination_slot: u32,\s*destination_entity_id: u32,\s*destination_incarnation: u32,\s*source_slot: u32,\s*source_entity_id: u32,\s*source_incarnation: u32,\s*mode_flags: u32,\s*result: u32,\s*position_offset: vec2f,\s*vector: vec2f,\s*scalar: f32,\s*source_tick: u32,\s*reserved_0: u32,\s*reserved_1: u32,\s*\}/
+    /struct SpawnProgramRecord \{\s*destination_slot: u32,\s*destination_entity_id: u32,\s*destination_incarnation: u32,\s*source_slot: u32,\s*source_entity_id: u32,\s*source_incarnation: u32,\s*target_slot: u32,\s*target_entity_id: u32,\s*target_incarnation: u32,\s*mode_flags: u32,\s*result: u32,\s*source_tick: u32,\s*position_offset: vec2f,\s*target_offset: vec2f,\s*vector: vec2f,\s*scalar: f32,\s*reserved_0: u32,\s*\}/
 );
 assert.match(
     compute,
-    /let supported_mode = program\.mode_flags[\s\S]*?SOURCE_RELATIVE_VELOCITY[\s\S]*?SOURCE_RELATIVE_AIM_POINT;/
+    /let supported_mode = program\.mode_flags[\s\S]*?SOURCE_RELATIVE_VELOCITY[\s\S]*?SOURCE_RELATIVE_AIM_POINT[\s\S]*?SOURCE_RELATIVE_TARGET_ENTITY;/
 );
 assert.match(
     compute,
     /program\.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT[\s\S]*?!\(program\.scalar > 0\.0\)/
+);
+assert.match(
+    compute,
+    /let target_mode = program\.mode_flags[\s\S]*?SOURCE_RELATIVE_TARGET_ENTITY;[\s\S]*?program\.target_slot == INVALID_IDENTITY_COMPONENT[\s\S]*?all\(program\.target_offset == vec2f\(0\.0\)\)[\s\S]*?program\.target_slot < body_capacity[\s\S]*?all\(program\.vector == vec2f\(0\.0\)\)/
+);
+assert.match(
+    compute,
+    /let body_capacity = arrayLength\(&simulations\.values\);[\s\S]*?program\.destination_slot >= counts\.body_count[\s\S]*?program\.source_slot >= body_capacity/
 );
 
 // Aim cardinal는 authoritative tick-start source position에서 world aim을 빼고 정규화합니다.
@@ -164,6 +174,63 @@ assert.match(
     /destination_velocity = launch_direction \* program\.scalar;/
 );
 assert.doesNotMatch(aimResolveBlock, /tracked|readback/);
+
+// Target entity는 source/target의 tick-start physics만 읽고 targetOffset을 aim에만 적용합니다.
+const targetResolveStart = compute.lastIndexOf(
+    '== SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY) {'
+);
+assert.ok(targetResolveStart >= 0);
+const targetResolveBlock = compute.slice(targetResolveStart, targetResolveStart + 1250);
+assert.match(
+    targetResolveBlock,
+    /let target_physics = physics\.values\[program\.target_slot\];/
+);
+assert.match(
+    targetResolveBlock,
+    /\(target_physics\.position \+ program\.target_offset\)\s*- source_physics\.position;/
+);
+assert.match(
+    targetResolveBlock,
+    /launch_direction = source_physics\.velocity;[\s\S]*?launch_direction = vec2f\(1\.0, 0\.0\);/
+);
+assert.match(
+    targetResolveBlock,
+    /destination_velocity = launch_direction \* program\.scalar;/
+);
+assert.doesNotMatch(targetResolveBlock, /team|gameplay|target_policy|tracked|readback/i);
+
+const spawnResolveStart = compute.indexOf('fn resolve_source_relative_spawns(');
+const spawnResolveEnd = compute.indexOf('fn prepare_bodies(', spawnResolveStart);
+const spawnResolveBlock = compute.slice(spawnResolveStart, spawnResolveEnd);
+const destinationInvalidIndex = spawnResolveBlock.indexOf(
+    'SPAWN_PROGRAM_RESULT_DESTINATION_INVALID'
+);
+const sourceInvalidIndex = spawnResolveBlock.indexOf(
+    'SPAWN_PROGRAM_RESULT_SOURCE_INVALID'
+);
+const targetInvalidIndex = spawnResolveBlock.indexOf(
+    'SPAWN_PROGRAM_RESULT_TARGET_INVALID'
+);
+assert.ok(
+    destinationInvalidIndex >= 0
+        && sourceInvalidIndex > destinationInvalidIndex
+        && targetInvalidIndex > sourceInvalidIndex
+);
+const destinationWriteIndex = spawnResolveBlock.indexOf(
+    'physics.values[program.destination_slot].position = destination_position;'
+);
+const aliveActivationIndex = spawnResolveBlock.indexOf(
+    '&simulations.values[program.destination_slot].flags'
+);
+const resolvedResultIndex = spawnResolveBlock.indexOf(
+    'SPAWN_PROGRAM_RESULT_RESOLVED',
+    aliveActivationIndex
+);
+assert.ok(
+    destinationWriteIndex >= 0
+        && aliveActivationIndex > destinationWriteIndex
+        && resolvedResultIndex > aliveActivationIndex
+);
 
 // 새 contact/event bind group과 고정 stride 레코드를 정적으로 잠급니다.
 assert.match(compute, /struct ContactState \{[\s\S]*?contact_count: atomic<u32>,[\s\S]*?death_overflow: atomic<u32>,[\s\S]*?abi_status: atomic<u32>,[\s\S]*?event_encoding_version: atomic<u32>,/);

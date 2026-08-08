@@ -13,6 +13,9 @@ const {
     GAMEPLAY_DAMAGE_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
+const {
+    GPU_SPAWN_PROGRAM_MODE
+} = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -155,7 +158,8 @@ function createPrimitiveBackend(options = {}) {
             calls.push({ type: 'drainCompletedSpawnProgramBatches' });
             for (const batch of completedSpawnProgramBatches.splice(0)) {
                 for (const outcome of batch.outcomes ?? []) {
-                    if (outcome.reason === 'source-invalid') {
+                    if (outcome.reason === 'source-invalid'
+                        || outcome.reason === 'target-invalid') {
                         bodies.delete(handleKey(outcome.destinationHandle));
                     }
                 }
@@ -462,6 +466,85 @@ test('SpawnProgram completion은 event drain 전에 destination을 활성화하�
         endpoint.getStatus().fixedCommands.lastCompletionResult.completed[0].outcome,
         'resolved'
     );
+    endpoint.destroy();
+});
+
+test('target-invalid completion은 exact targetHandle을 검증하고 reservation을 normal cleanup한다', () => {
+    const backend = createPrimitiveBackend();
+    const endpoint = createEndpoint(backend);
+    assert.equal(endpoint.requestSpawn(
+        createCanonicalSpawnIntent('target_mode_source'),
+        1,
+        'spawn:target-mode-source'
+    ).accepted, true);
+    assert.equal(endpoint.requestSpawn(
+        createCanonicalSpawnIntent('target_mode_target'),
+        1,
+        'spawn:target-mode-target'
+    ).accepted, true);
+    const initial = endpoint.commitAtFixedBoundary(1).spawned;
+    const sourceHandle = initial[0].handle;
+    const targetHandle = initial[1].handle;
+    const protocol = backend.getEventProtocolState();
+
+    const requested = endpoint.requestSourceRelativeSpawn({
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        targetHandle,
+        destinationSpawn: createCanonicalSpawnIntent('target_mode_destination'),
+        positionOffset: { x: 0.25, y: -0.5 },
+        targetOffset: { x: 0.5, y: -0.25 },
+        launchSpeed: 12
+    }, 2, 'source-relative-target:2');
+    assert.equal(requested.accepted, true);
+    assertNoPublicSlotKeys(requested, 'targetSpawnReceipt');
+
+    const commit = endpoint.commitAtFixedBoundary(2);
+    const pending = commit.fixedCommands.sourceRelativeSpawns[0];
+    const staged = backend.calls.findLast(
+        ({ type }) => type === 'stageFixedPrograms'
+    ).plan.sourceRelativeSpawns[0];
+    assert.deepEqual({ ...staged.sourceHandle }, { ...sourceHandle });
+    assert.deepEqual({ ...staged.targetHandle }, { ...targetHandle });
+    assert.equal(
+        staged.modeFlags,
+        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+    );
+    assert.equal(staged.destinationSpawn.targetEntityId, targetHandle.entityId);
+    assert.equal(
+        staged.destinationSpawn.targetIncarnation,
+        targetHandle.incarnation
+    );
+    assertNoPublicSlotKeys(pending, 'targetSpawnPending');
+    assertNoPublicSlotKeys(staged, 'targetSpawnStage');
+
+    backend.queueSpawnProgramBatch(Object.freeze({
+        ...protocol,
+        sourceTick: 2,
+        outcomes: Object.freeze([Object.freeze({
+            sourceHandle,
+            targetHandle,
+            destinationHandle: pending.handle,
+            reason: 'target-invalid'
+        })])
+    }));
+    const snapshot = endpoint.commitCompletedEventsAtFixedBoundary(3);
+    assert.equal(snapshot.protocolFailure, null);
+    assert.equal(endpoint.getRegistry().has(pending.handle), false);
+    assert.equal(endpoint.getStatus().reservedCount, 0);
+    assert.equal(endpoint.requiresRecovery(), false);
+    assert.equal(
+        endpoint.getStatus().fixedCommands.telemetry.completedTargetInvalid,
+        1
+    );
+    assert.deepEqual(
+        Array.from(
+            endpoint.getStatus().fixedCommands.lastCompletionResult.completed,
+            ({ commandId, outcome }) => ({ commandId, outcome })
+        ),
+        [{ commandId: 'source-relative-target:2', outcome: 'target-invalid' }]
+    );
+    assertNoPublicSlotKeys(snapshot, 'targetInvalidCompletion');
     endpoint.destroy();
 });
 

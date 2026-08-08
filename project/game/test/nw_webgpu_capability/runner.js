@@ -22,7 +22,8 @@ import {
 } from './production/script/module/ingame/contract/projectile_target_policy_contract.js';
 import {
     GPU_FIXED_PRIMITIVE_ABI,
-    GPU_SPAWN_PROGRAM_MODE
+    GPU_SPAWN_PROGRAM_MODE,
+    GPU_SPAWN_PROGRAM_RESULT
 } from './production/script/module/ingame/physics/gpu/gpu_fixed_primitive_abi.js';
 import { GpuCircleBodySimulation } from './production/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js';
 import {
@@ -5399,6 +5400,1330 @@ async function runProductionPhase5AimHardwareSmoke(device) {
     }
 }
 
+function createTargetEntityHardwareProjectileDefinition(id, overrides = {}) {
+    return Object.freeze({
+        id,
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: 9,
+        damage: 5,
+        damageSelf: 5,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [1, 0.25, 0.1, 1],
+        radiusScale: 1,
+        visible: true,
+        ...overrides
+    });
+}
+
+async function runProductionTargetEntityMovingAimHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 4,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2
+    });
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-target-entity-moving-aim'
+    });
+    const fixedDelta = 1 / 60;
+    const sourcePosition = Object.freeze({ x: 2, y: 8 });
+    const targetPosition = Object.freeze({ x: 7, y: 10 });
+    const positionOffset = Object.freeze({ x: 0.35, y: 0.1 });
+    const targetOffset = Object.freeze({ x: 0.5, y: -0.25 });
+    const launchSpeed = 12;
+    const projectileDefinition = createTargetEntityHardwareProjectileDefinition(
+        'nw_target_entity_moving_aim',
+        { penetration: 3, damage: 1, damageSelf: 1 }
+    );
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Target-entity moving aim endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const sourceIntent = Object.freeze({
+            ...createGpuEnemySpawnIntent({
+                definition: {
+                    ...BASIC_CIRCLE_ENEMY_DATA,
+                    id: 'nw_target_entity_moving_source',
+                    maxHealth: 20
+                },
+                route: navigationSource.route,
+                spawnSequence: 0,
+                waveId: 'nw-target-entity-moving-aim',
+                policyId: 'hardware-fixture'
+            }),
+            position: sourcePosition
+        });
+        const requests = [
+            endpoint.requestSpawn(
+                sourceIntent,
+                1,
+                'target-entity:moving:source'
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: targetPosition }),
+                1,
+                'target-entity:moving:target'
+            )
+        ];
+        assert(
+            requests.every(({ accepted }) => accepted),
+            `Target-entity moving source/target request 실패: ${JSON.stringify(requests)}`
+        );
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const handleByCommandId = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const sourceHandle = handleByCommandId.get('target-entity:moving:source');
+        const targetHandle = handleByCommandId.get('target-entity:moving:target');
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 2
+                && sourceHandle
+                && targetHandle,
+            `Target-entity moving initial commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Target-entity moving initial fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Target-entity moving initial completion');
+        const tickStartBodies = await readPhase5Bodies(endpoint);
+        const sourceTickStart = findPhase5Body(
+            tickStartBodies,
+            sourceHandle,
+            'target-entity moving source tick-start'
+        );
+        const targetTickStart = findPhase5Body(
+            tickStartBodies,
+            targetHandle,
+            'target-entity moving target tick-start'
+        );
+        assert(
+            Math.hypot(sourceTickStart.velocity.x, sourceTickStart.velocity.y) > 0,
+            `Target-entity Enemy-like source가 움직이지 않습니다: ${JSON.stringify(sourceTickStart)}`
+        );
+
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+        const shotRequest = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            definition: projectileDefinition,
+            sourceHandle,
+            targetHandle,
+            positionOffset,
+            targetOffset,
+            launchSpeed,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+            targetPolicyId:
+                PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            producerId: 'nw-target-entity-moving-producer',
+            sourceAbilityId: 'target-entity-moving-shot',
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'target-entity:moving:shot'
+        });
+        const targetControl = endpoint.requestBodyControl({
+            handle: targetHandle,
+            moveIntentX: 0,
+            moveIntentY: 1
+        }, 2, 'target-entity:moving:target-control');
+        assert(
+            shotRequest.accepted && targetControl.accepted,
+            `Target-entity moving shot/control request 실패: ${JSON.stringify({ shotRequest, targetControl })}`
+        );
+        const shotCommit = endpoint.commitAtFixedBoundary(2);
+        const projectileHandle = shotCommit.fixedCommands
+            .sourceRelativeSpawns[0]?.handle;
+        assert(
+            shotCommit.state === 'committed'
+                && shotCommit.fixedCommands.controls.length === 1
+                && shotCommit.fixedCommands.sourceRelativeSpawns.length === 1
+                && shotCommit.fixedCommands.rejected.length === 0
+                && projectileHandle,
+            `Target-entity moving shot commit 실패: ${JSON.stringify(shotCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 2),
+            'Target-entity moving shot fixed submit 실패'
+        );
+        await settlePhase5Endpoint(
+            endpoint,
+            'Target-entity moving SpawnProgram completion',
+            { spawnProgram: true }
+        );
+        const afterBodies = await readPhase5Bodies(endpoint);
+        const sourceAfter = findPhase5Body(
+            afterBodies,
+            sourceHandle,
+            'target-entity moving source after submit'
+        );
+        const targetAfter = findPhase5Body(
+            afterBodies,
+            targetHandle,
+            'target-entity moving target after submit'
+        );
+        const projectile = findPhase5Body(
+            afterBodies,
+            projectileHandle,
+            'target-entity moving projectile'
+        );
+        const delta = Object.freeze({
+            x: targetTickStart.position.x
+                + targetOffset.x
+                - sourceTickStart.position.x,
+            y: targetTickStart.position.y
+                + targetOffset.y
+                - sourceTickStart.position.y
+        });
+        const deltaMagnitude = Math.hypot(delta.x, delta.y);
+        const expectedOrigin = Object.freeze({
+            x: sourceTickStart.position.x + positionOffset.x,
+            y: sourceTickStart.position.y + positionOffset.y
+        });
+        const expectedVelocity = Object.freeze({
+            x: (delta.x / deltaMagnitude) * launchSpeed,
+            y: (delta.y / deltaMagnitude) * launchSpeed
+        });
+        assertNear(
+            projectile.previousPosition.x,
+            expectedOrigin.x,
+            0.00003,
+            'Target-entity moving origin.x'
+        );
+        assertNear(
+            projectile.previousPosition.y,
+            expectedOrigin.y,
+            0.00003,
+            'Target-entity moving origin.y'
+        );
+        assertNear(
+            projectile.velocity.x,
+            expectedVelocity.x,
+            0.00004,
+            'Target-entity moving velocity.x'
+        );
+        assertNear(
+            projectile.velocity.y,
+            expectedVelocity.y,
+            0.00004,
+            'Target-entity moving velocity.y'
+        );
+        assertNear(
+            projectile.position.x,
+            expectedOrigin.x + (expectedVelocity.x * fixedDelta),
+            0.00005,
+            'Target-entity moving integrated position.x'
+        );
+        assertNear(
+            projectile.position.y,
+            expectedOrigin.y + (expectedVelocity.y * fixedDelta),
+            0.00005,
+            'Target-entity moving integrated position.y'
+        );
+        const sourceMovement = Math.hypot(
+            sourceAfter.position.x - sourceTickStart.position.x,
+            sourceAfter.position.y - sourceTickStart.position.y
+        );
+        const targetMovement = Math.hypot(
+            targetAfter.position.x - targetTickStart.position.x,
+            targetAfter.position.y - targetTickStart.position.y
+        );
+        assert(
+            sourceMovement > 0 && targetMovement > 0,
+            `Target-entity same-tick source/target 이동 증거가 없습니다: ${JSON.stringify({ sourceMovement, targetMovement })}`
+        );
+
+        endpoint.commitCompletedEventsAtFixedBoundary(3);
+        const projectileView = endpoint.getRegistry().copyEntityView(
+            projectileHandle,
+            {}
+        );
+        const completion = endpoint.getStatus().fixedCommands.lastCompletionResult;
+        assert(
+            completion.protocolFailure === null
+                && completion.completed.length === 1
+                && completion.completed[0].outcome === 'resolved'
+                && projectileView?.metadata?.sourceEntityId === sourceHandle.entityId
+                && projectileView.metadata.sourceIncarnation
+                    === sourceHandle.incarnation
+                && projectileView.metadata.targetEntityId === targetHandle.entityId
+                && projectileView.metadata.targetIncarnation
+                    === targetHandle.incarnation
+                && projectileView.metadata.teamId === GAMEPLAY_TEAM_ID.HOSTILE
+                && projectileView.metadata.targetPolicyId
+                    === PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            `Target-entity moving completion/provenance 불일치: ${JSON.stringify({ completion, projectileView })}`
+        );
+        const status = endpoint.getStatus();
+        assert(
+            !status.recoveryRequired
+                && status.reservedCount === 0
+                && status.backend.gpu.fixedPrimitives.spawnProgram.abiVersion === 3
+                && GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE === 80
+                && status.backend.gpu.fixedPrimitives.storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `Target-entity moving recovery/storage 불일치: ${JSON.stringify(status)}`
+        );
+        return Object.freeze({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            handles: Object.freeze({ source: sourceHandle, target: targetHandle }),
+            targetProvenance: Object.freeze({
+                targetEntityId: projectileView.metadata.targetEntityId,
+                targetIncarnation: projectileView.metadata.targetIncarnation
+            }),
+            fixedDelta,
+            launchSpeed,
+            positionOffset,
+            targetOffset,
+            tickStart: Object.freeze({
+                sourcePosition: Object.freeze({ ...sourceTickStart.position }),
+                sourceVelocity: Object.freeze({ ...sourceTickStart.velocity }),
+                targetPosition: Object.freeze({ ...targetTickStart.position }),
+                targetVelocity: Object.freeze({ ...targetTickStart.velocity })
+            }),
+            afterSameTickMotion: Object.freeze({
+                sourcePosition: Object.freeze({ ...sourceAfter.position }),
+                sourceVelocity: Object.freeze({ ...sourceAfter.velocity }),
+                targetPosition: Object.freeze({ ...targetAfter.position }),
+                targetVelocity: Object.freeze({ ...targetAfter.velocity }),
+                sourceMovement,
+                targetMovement
+            }),
+            projectile: Object.freeze({
+                origin: Object.freeze({ ...projectile.previousPosition }),
+                integratedPosition: Object.freeze({ ...projectile.position }),
+                velocity: Object.freeze({ ...projectile.velocity }),
+                expectedOrigin,
+                expectedVelocity
+            }),
+            completion: completion.completed[0],
+            spawnProgramAbi: Object.freeze({
+                version: status.backend.gpu.fixedPrimitives.spawnProgram.abiVersion,
+                recordStride: GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE
+            }),
+            storageProfile:
+                status.backend.gpu.fixedPrimitives.storageProfile
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntityFallbackHardwareSmoke(device) {
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: 9,
+            worldSize: { x: 16, y: 16 },
+            gridCellSize: { x: 2, y: 2 },
+            spawnProgramCapacity: 3,
+            sessionGeneration: 71
+        }
+    );
+    const fixedDelta = 1 / 60;
+    const launchSpeed = 12;
+    const movingSource = createPhase3Body({
+        entityId: 9901,
+        incarnation: 1,
+        position: { x: 3, y: 3 },
+        velocity: { x: 3, y: 4 }
+    });
+    const movingTarget = createPhase3Body({
+        entityId: 9902,
+        incarnation: 1,
+        position: { x: 3, y: 3 }
+    });
+    const zeroSource = createPhase3Body({
+        entityId: 9903,
+        incarnation: 1,
+        position: { x: 9, y: 9 },
+        velocity: { x: 0, y: 0 }
+    });
+    const zeroTarget = createPhase3Body({
+        entityId: 9904,
+        incarnation: 1,
+        position: { x: 9, y: 9 }
+    });
+    const behindSource = createPhase3Body({
+        entityId: 9907,
+        incarnation: 1,
+        position: { x: 12, y: 6 },
+        velocity: { x: 0, y: 0 }
+    });
+    const behindTarget = createPhase3Body({
+        entityId: 9908,
+        incarnation: 1,
+        position: { x: 8, y: 6 }
+    });
+    const movingDestination = Object.freeze({ entityId: 9905, incarnation: 1 });
+    const zeroDestination = Object.freeze({ entityId: 9906, incarnation: 1 });
+    const behindDestination = Object.freeze({ entityId: 9909, incarnation: 1 });
+    const targetOffset = Object.freeze({ x: 0, y: 0 });
+
+    try {
+        assert(simulation.init(), 'Target-entity fallback simulation init 실패');
+        const spawned = simulation.spawnBodies([
+            movingSource,
+            movingTarget,
+            zeroSource,
+            zeroTarget,
+            behindSource,
+            behindTarget
+        ]);
+        assert(
+            spawned.accepted === 6 && spawned.rejected === 0,
+            `Target-entity fallback source/target spawn 실패: ${JSON.stringify(spawned)}`
+        );
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [],
+            sourceRelativeSpawns: [
+                {
+                    sourceHandle: movingSource,
+                    targetHandle: movingTarget,
+                    destinationHandle: movingDestination,
+                    destinationSpawn: createPhase3Body({
+                        position: { x: 0, y: 0 },
+                        velocity: { x: 0, y: 0 }
+                    }),
+                    modeFlags:
+                        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+                    positionOffset: { x: 0, y: 0 },
+                    targetOffset,
+                    launchSpeed
+                },
+                {
+                    sourceHandle: zeroSource,
+                    targetHandle: zeroTarget,
+                    destinationHandle: zeroDestination,
+                    destinationSpawn: createPhase3Body({
+                        position: { x: 0, y: 0 },
+                        velocity: { x: 0, y: 0 }
+                    }),
+                    modeFlags:
+                        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+                    positionOffset: { x: 0, y: 0 },
+                    targetOffset,
+                    launchSpeed
+                },
+                {
+                    sourceHandle: behindSource,
+                    targetHandle: behindTarget,
+                    destinationHandle: behindDestination,
+                    destinationSpawn: createPhase3Body({
+                        position: { x: 0, y: 0 },
+                        velocity: { x: 0, y: 0 }
+                    }),
+                    modeFlags:
+                        GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+                    positionOffset: { x: 0, y: 0 },
+                    targetOffset,
+                    launchSpeed
+                }
+            ]
+        });
+        assert(
+            staged.sourceRelativeSpawns.accepted === 3
+                && staged.sourceRelativeSpawns.rejected === 0
+                && !staged.requiresRecovery,
+            `Target-entity fallback program stage 실패: ${JSON.stringify(staged)}`
+        );
+        assert(
+            simulation.fixedUpdate(fixedDelta, 1),
+            'Target-entity fallback fixed submit 실패'
+        );
+        await device.queue.onSubmittedWorkDone();
+        await waitForSimulationStatus(
+            simulation,
+            (status) => status.fixedPrimitives.spawnProgram.pendingReadbacks === 0
+                && status.fixedPrimitives.spawnProgram.queuedBatches === 1,
+            'Target-entity fallback SpawnProgram completion'
+        );
+        const completedBatches = simulation.drainCompletedSpawnProgramBatches([]);
+        assert(
+            completedBatches.length === 1
+                && completedBatches[0].failure === null
+                && completedBatches[0].outcomes.length === 3
+                && completedBatches[0].outcomes.every((outcome) => (
+                    outcome.reason === 'resolved'
+                        && outcome.result === GPU_SPAWN_PROGRAM_RESULT.RESOLVED
+                )),
+            `Target-entity fallback outcome 불일치: ${JSON.stringify(completedBatches)}`
+        );
+        const bodies = await simulation.readbackBodies();
+        const movingProjectile = findPhase5Body(
+            bodies,
+            movingDestination,
+            'target-entity moving-source fallback projectile'
+        );
+        const zeroProjectile = findPhase5Body(
+            bodies,
+            zeroDestination,
+            'target-entity +X fallback projectile'
+        );
+        const behindProjectile = findPhase5Body(
+            bodies,
+            behindDestination,
+            'target-entity target-behind-source projectile'
+        );
+        const expectedMovingVelocity = Object.freeze({ x: 7.2, y: 9.6 });
+        const expectedZeroVelocity = Object.freeze({ x: 12, y: 0 });
+        const expectedBehindVelocity = Object.freeze({ x: -12, y: 0 });
+        assertNear(
+            movingProjectile.velocity.x,
+            expectedMovingVelocity.x,
+            0.00003,
+            'Target-entity moving-source fallback velocity.x'
+        );
+        assertNear(
+            movingProjectile.velocity.y,
+            expectedMovingVelocity.y,
+            0.00003,
+            'Target-entity moving-source fallback velocity.y'
+        );
+        assertNear(
+            zeroProjectile.velocity.x,
+            expectedZeroVelocity.x,
+            0.00003,
+            'Target-entity +X fallback velocity.x'
+        );
+        assertNear(
+            zeroProjectile.velocity.y,
+            expectedZeroVelocity.y,
+            0.00003,
+            'Target-entity +X fallback velocity.y'
+        );
+        assertNear(
+            behindProjectile.velocity.x,
+            expectedBehindVelocity.x,
+            0.00003,
+            'Target-entity target-behind-source velocity.x'
+        );
+        assertNear(
+            behindProjectile.velocity.y,
+            expectedBehindVelocity.y,
+            0.00003,
+            'Target-entity target-behind-source velocity.y'
+        );
+        assertNear(
+            movingProjectile.previousPosition.x,
+            movingSource.position.x,
+            0.00002,
+            'Target-entity moving fallback origin.x'
+        );
+        assertNear(
+            movingProjectile.previousPosition.y,
+            movingSource.position.y,
+            0.00002,
+            'Target-entity moving fallback origin.y'
+        );
+        assertNear(
+            zeroProjectile.previousPosition.x,
+            zeroSource.position.x,
+            0.00002,
+            'Target-entity +X fallback origin.x'
+        );
+        assertNear(
+            zeroProjectile.previousPosition.y,
+            zeroSource.position.y,
+            0.00002,
+            'Target-entity +X fallback origin.y'
+        );
+        assertNear(
+            behindProjectile.previousPosition.x,
+            behindSource.position.x,
+            0.00002,
+            'Target-entity target-behind-source origin.x'
+        );
+        assertNear(
+            behindProjectile.previousPosition.y,
+            behindSource.position.y,
+            0.00002,
+            'Target-entity target-behind-source origin.y'
+        );
+        const status = simulation.getStatus();
+        assert(
+            status.fixedPrimitives.spawnProgram.resolvedCount >= 3
+                && status.fixedPrimitives.storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+                && !status.requiresAuthoritativeRebuild,
+            `Target-entity fallback telemetry/storage 불일치: ${JSON.stringify(status)}`
+        );
+        return Object.freeze({
+            launchSpeed,
+            movingSource: Object.freeze({
+                sourceHandle: Object.freeze({
+                    entityId: movingSource.entityId,
+                    incarnation: movingSource.incarnation
+                }),
+                targetHandle: Object.freeze({
+                    entityId: movingTarget.entityId,
+                    incarnation: movingTarget.incarnation
+                }),
+                sourcePosition: Object.freeze({ ...movingSource.position }),
+                sourceVelocity: Object.freeze({ ...movingSource.velocity }),
+                projectileOrigin:
+                    Object.freeze({ ...movingProjectile.previousPosition }),
+                projectileVelocity: Object.freeze({ ...movingProjectile.velocity }),
+                expectedVelocity: expectedMovingVelocity
+            }),
+            fullyDegenerate: Object.freeze({
+                sourceHandle: Object.freeze({
+                    entityId: zeroSource.entityId,
+                    incarnation: zeroSource.incarnation
+                }),
+                targetHandle: Object.freeze({
+                    entityId: zeroTarget.entityId,
+                    incarnation: zeroTarget.incarnation
+                }),
+                sourcePosition: Object.freeze({ ...zeroSource.position }),
+                sourceVelocity: Object.freeze({ ...zeroSource.velocity }),
+                projectileOrigin:
+                    Object.freeze({ ...zeroProjectile.previousPosition }),
+                projectileVelocity: Object.freeze({ ...zeroProjectile.velocity }),
+                expectedVelocity: expectedZeroVelocity
+            }),
+            targetBehindSource: Object.freeze({
+                sourceHandle: Object.freeze({
+                    entityId: behindSource.entityId,
+                    incarnation: behindSource.incarnation
+                }),
+                targetHandle: Object.freeze({
+                    entityId: behindTarget.entityId,
+                    incarnation: behindTarget.incarnation
+                }),
+                sourcePosition: Object.freeze({ ...behindSource.position }),
+                targetPosition: Object.freeze({ ...behindTarget.position }),
+                projectileOrigin:
+                    Object.freeze({ ...behindProjectile.previousPosition }),
+                projectileVelocity: Object.freeze({ ...behindProjectile.velocity }),
+                expectedVelocity: expectedBehindVelocity
+            }),
+            completedOutcomeCount: completedBatches[0].outcomes.length,
+            storageProfile: status.fixedPrimitives.storageProfile
+        });
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntityDamageCaseHardwareSmoke(
+    device,
+    options
+) {
+    const hostile = options.hostile === true;
+    const caseId = hostile ? 'hostile-to-player' : 'player-to-player';
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 3,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: `nw-target-entity-${caseId}`
+    });
+    const fixedDelta = 1 / 60;
+    const y = hostile ? 8 : 4;
+    const sourcePosition = Object.freeze({ x: 2, y });
+    const targetPosition = Object.freeze({ x: 4, y });
+    const positionOffset = Object.freeze({ x: hostile ? 1.35 : 1.4, y: 0 });
+    const launchSpeed = 12;
+    const projectileDefinition = createTargetEntityHardwareProjectileDefinition(
+        `nw_target_entity_${caseId.replaceAll('-', '_')}`
+    );
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            `Target-entity ${caseId} endpoint는 첫 spawn 전 deferred여야 합니다.`
+        );
+        const sourceIntent = hostile
+            ? Object.freeze({
+                ...createGpuEnemySpawnIntent({
+                    definition: {
+                        ...BASIC_CIRCLE_ENEMY_DATA,
+                        id: 'nw_target_entity_hostile_source',
+                        maxHealth: 20
+                    },
+                    route: navigationSource.route,
+                    spawnSequence: 0,
+                    waveId: 'nw-target-entity-hostile-damage',
+                    policyId: 'hardware-fixture'
+                }),
+                position: sourcePosition
+            })
+            : createGpuTowerSpawnIntent({ position: sourcePosition });
+        const spawnRequests = [
+            endpoint.requestSpawn(
+                sourceIntent,
+                1,
+                `target-entity:${caseId}:source`
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: targetPosition }),
+                1,
+                `target-entity:${caseId}:target`
+            )
+        ];
+        assert(
+            spawnRequests.every(({ accepted }) => accepted),
+            `Target-entity ${caseId} source/target request 실패: ${JSON.stringify(spawnRequests)}`
+        );
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        const handles = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const sourceHandle = handles.get(`target-entity:${caseId}:source`);
+        const targetHandle = handles.get(`target-entity:${caseId}:target`);
+        assert(
+            sourceHandle && targetHandle && spawnCommit.spawned.length === 2,
+            `Target-entity ${caseId} exact handles 누락: ${JSON.stringify(spawnCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            `Target-entity ${caseId} initial fixed submit 실패`
+        );
+        await settlePhase5Endpoint(
+            endpoint,
+            `Target-entity ${caseId} initial completion`
+        );
+        const beforeBodies = await readPhase5Bodies(endpoint);
+        const sourceBefore = findPhase5Body(
+            beforeBodies,
+            sourceHandle,
+            `${caseId} source before target shot`
+        );
+        const targetBefore = findPhase5Body(
+            beforeBodies,
+            targetHandle,
+            `${caseId} target before target shot`
+        );
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+
+        const shotRequest = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            definition: projectileDefinition,
+            sourceHandle,
+            targetHandle,
+            positionOffset,
+            targetOffset: { x: 0, y: 0 },
+            launchSpeed,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+            targetPolicyId:
+                PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            producerId: `nw-target-entity-${caseId}-producer`,
+            sourceAbilityId: `target-entity-${caseId}-shot`,
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: `target-entity:${caseId}:shot`
+        });
+        assert(
+            shotRequest.accepted,
+            `Target-entity ${caseId} shot request 실패: ${JSON.stringify(shotRequest)}`
+        );
+        const shotCommit = endpoint.commitAtFixedBoundary(2);
+        const projectileHandle = shotCommit.fixedCommands
+            .sourceRelativeSpawns[0]?.handle;
+        assert(
+            projectileHandle
+                && shotCommit.fixedCommands.sourceRelativeSpawns.length === 1
+                && shotCommit.fixedCommands.rejected.length === 0,
+            `Target-entity ${caseId} shot commit 실패: ${JSON.stringify(shotCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 2),
+            `Target-entity ${caseId} shot fixed submit 실패`
+        );
+        await settlePhase5Endpoint(
+            endpoint,
+            `Target-entity ${caseId} shot completion`,
+            { spawnProgram: true }
+        );
+        const afterBodies = await readPhase5Bodies(endpoint);
+        const targetAfter = findPhase5Body(
+            afterBodies,
+            targetHandle,
+            `${caseId} target after contact`
+        );
+        const projectileAfter = findPhase5Body(
+            afterBodies,
+            projectileHandle,
+            `${caseId} projectile after contact`
+        );
+        const completedEvents = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        const completion = endpoint.getStatus().fixedCommands.lastCompletionResult;
+        const projectileView = endpoint.getRegistry().copyEntityView(
+            projectileHandle,
+            {}
+        );
+        const exactContacts = completedEvents.contactEvents.filter((event) => (
+            event.entityId === projectileHandle.entityId
+                && event.incarnation === projectileHandle.incarnation
+                && event.otherEntityId === targetHandle.entityId
+                && event.otherIncarnation === targetHandle.incarnation
+        ));
+        const damageEvents = exactContacts.filter(
+            ({ eventType }) => eventType === 'damage-applied'
+        );
+        const interactionEvents = exactContacts.filter(
+            ({ eventType }) => eventType === 'interaction-continuous'
+        );
+        assert(
+            completion.protocolFailure === null
+                && completion.completed.length === 1
+                && completion.completed[0].outcome === 'resolved'
+                && projectileView?.metadata?.sourceEntityId === sourceHandle.entityId
+                && projectileView.metadata.sourceIncarnation
+                    === sourceHandle.incarnation
+                && projectileView.metadata.targetEntityId === targetHandle.entityId
+                && projectileView.metadata.targetIncarnation
+                    === targetHandle.incarnation
+                && projectileView.metadata.teamId === (
+                    hostile ? GAMEPLAY_TEAM_ID.HOSTILE : GAMEPLAY_TEAM_ID.PLAYER
+                )
+                && projectileView.metadata.targetPolicyId
+                    === PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            `Target-entity ${caseId} completion/provenance 불일치: ${JSON.stringify({ completion, projectileView })}`
+        );
+        if (hostile) {
+            assert(
+                damageEvents.length === 1
+                    && interactionEvents.length === 0
+                    && damageEvents[0].damageFixedPoint === 500
+                    && damageEvents[0].damage === 5,
+                `Target-entity hostile→Player damage event 불일치: ${JSON.stringify(exactContacts)}`
+            );
+            assertNear(
+                targetAfter.health,
+                targetBefore.health - projectileDefinition.damage,
+                0.000001,
+                'Target-entity hostile→Player target HP'
+            );
+            assertNear(
+                projectileAfter.health,
+                projectileDefinition.penetration - projectileDefinition.damageSelf,
+                0.000001,
+                'Target-entity hostile→Player penetration'
+            );
+        } else {
+            assert(
+                damageEvents.length === 0
+                    && interactionEvents.length === 1
+                    && interactionEvents[0].damageFixedPoint === 0
+                    && interactionEvents[0].damage === 0,
+                `Target-entity same-team block event 불일치: ${JSON.stringify(exactContacts)}`
+            );
+            assertNear(
+                targetAfter.health,
+                targetBefore.health,
+                0.000001,
+                'Target-entity same-team target HP 보존'
+            );
+            assertNear(
+                projectileAfter.health,
+                projectileDefinition.penetration,
+                0.000001,
+                'Target-entity same-team penetration 보존'
+            );
+        }
+        assert(
+            completedEvents.deathEvents.length === 0
+                && !endpoint.getStatus().recoveryRequired,
+            `Target-entity ${caseId} death/recovery가 발생했습니다: ${JSON.stringify(completedEvents)}`
+        );
+        return Object.freeze({
+            id: caseId,
+            sourceTeamId: projectileView.metadata.teamId,
+            targetTeamId: GAMEPLAY_TEAM_ID.PLAYER,
+            targetPolicyId: projectileView.metadata.targetPolicyId,
+            handles: Object.freeze({ source: sourceHandle, target: targetHandle }),
+            tickStart: Object.freeze({
+                sourcePosition: Object.freeze({ ...sourceBefore.position }),
+                sourceVelocity: Object.freeze({ ...sourceBefore.velocity }),
+                targetPosition: Object.freeze({ ...targetBefore.position }),
+                targetVelocity: Object.freeze({ ...targetBefore.velocity })
+            }),
+            projectile: Object.freeze({
+                positionOffset,
+                launchSpeed,
+                penetrationBefore: projectileDefinition.penetration,
+                penetrationAfter: projectileAfter.health
+            }),
+            targetHealth: Object.freeze({
+                before: targetBefore.health,
+                after: targetAfter.health
+            }),
+            outcome: completion.completed[0].outcome,
+            damageAppliedCount: damageEvents.length,
+            interactionCount: interactionEvents.length,
+            deathCount: completedEvents.deathEvents.length,
+            recoveryRequired: endpoint.getStatus().recoveryRequired
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntityAimHardwareSmoke(device) {
+    assert(
+        GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+                === 'source-relative-target-entity'
+            && GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY === 3
+            && GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID === 4
+            && GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE === 80,
+        'Target-entity public/SpawnProgram canonical protocol 불일치'
+    );
+    const moving = await runProductionTargetEntityMovingAimHardwareSmoke(device);
+    const fallback = await runProductionTargetEntityFallbackHardwareSmoke(device);
+    const sameTeam = await runProductionTargetEntityDamageCaseHardwareSmoke(
+        device,
+        { hostile: false }
+    );
+    const hostile = await runProductionTargetEntityDamageCaseHardwareSmoke(
+        device,
+        { hostile: true }
+    );
+    assert(
+        sameTeam.outcome === 'resolved'
+            && sameTeam.damageAppliedCount === 0
+            && hostile.outcome === 'resolved'
+            && hostile.damageAppliedCount === 1,
+        `Target-entity aim/damage authorization 분리 실패: ${JSON.stringify({ sameTeam, hostile })}`
+    );
+    return Object.freeze({
+        protocol: Object.freeze({
+            publicMode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            targetInvalidResult: GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID,
+            spawnProgramAbiVersion: moving.spawnProgramAbi.version,
+            spawnProgramRecordStride: moving.spawnProgramAbi.recordStride
+        }),
+        moving,
+        fallback,
+        damageAuthorization: Object.freeze({ sameTeam, hostile })
+    });
+}
+
+async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 3,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-target-entity-death-before-resolve'
+    });
+    const fixedDelta = 1 / 60;
+    const sourcePosition = Object.freeze({ x: 2, y: 2 });
+    const targetPosition = Object.freeze({ x: 6, y: 2 });
+    const projectileDefinition = createTargetEntityHardwareProjectileDefinition(
+        'nw_target_entity_death_before_resolve',
+        { penetration: 2, damage: 1, damageSelf: 1 }
+    );
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Target-invalid endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const sourceRequest = endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: sourcePosition }),
+            1,
+            'target-invalid:source'
+        );
+        const targetRequest = endpoint.requestSpawn(
+            createPhase3SpawnIntent('target_invalid_dead_target', {
+                kindId: 'target-probe',
+                position: targetPosition,
+                teamId: GAMEPLAY_TEAM_ID.PLAYER,
+                interactionLayer:
+                    GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE,
+                interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+                health: 0
+            }),
+            1,
+            'target-invalid:target'
+        );
+        assert(
+            sourceRequest.accepted && targetRequest.accepted,
+            `Target-invalid source/target request 실패: ${JSON.stringify({ sourceRequest, targetRequest })}`
+        );
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        const handles = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const sourceHandle = handles.get('target-invalid:source');
+        const targetHandle = handles.get('target-invalid:target');
+        assert(
+            sourceHandle && targetHandle && spawnCommit.spawned.length === 2,
+            `Target-invalid exact handles 누락: ${JSON.stringify(spawnCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Target-invalid target death fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Target-invalid target death completion');
+        const bodiesAfterDeath = await readPhase5Bodies(endpoint);
+        const sourceBeforeControl = findPhase5Body(
+            bodiesAfterDeath,
+            sourceHandle,
+            'target-invalid source before control'
+        );
+        assert(
+            !bodiesAfterDeath.some((body) => (
+                body.handle?.entityId === targetHandle.entityId
+                    && body.handle?.incarnation === targetHandle.incarnation
+            ))
+                && endpoint.getRegistry().has(targetHandle)
+                && endpoint.hasBody(targetHandle),
+            `Target-invalid fixture는 GPU dead/host exact-live race가 아닙니다: ${JSON.stringify({ bodiesAfterDeath, targetHandle })}`
+        );
+
+        const shotRequest = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            definition: projectileDefinition,
+            sourceHandle,
+            targetHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            targetOffset: { x: 0, y: 0 },
+            launchSpeed: 12,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+            targetPolicyId:
+                PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            producerId: 'nw-target-invalid-producer',
+            sourceAbilityId: 'target-invalid-shot',
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'target-invalid:shot'
+        });
+        const controlRequest = endpoint.requestBodyControl({
+            handle: sourceHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 2, 'target-invalid:source-control');
+        assert(
+            shotRequest.accepted && controlRequest.accepted,
+            `Target-invalid shot/control request 실패: ${JSON.stringify({ shotRequest, controlRequest })}`
+        );
+        const targetCommit = endpoint.commitAtFixedBoundary(2);
+        const destinationHandle = targetCommit.fixedCommands
+            .sourceRelativeSpawns[0]?.handle;
+        assert(
+            targetCommit.fixedCommands.controls.length === 1
+                && targetCommit.fixedCommands.sourceRelativeSpawns.length === 1
+                && targetCommit.fixedCommands.rejected.length === 0
+                && destinationHandle
+                && endpoint.getStatus().reservedCount === 1,
+            `Target-invalid pending reservation/commit 불일치: ${JSON.stringify(targetCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 2),
+            'Target-invalid resolve/control fixed submit 실패'
+        );
+        await settlePhase5Endpoint(
+            endpoint,
+            'Target-invalid SpawnProgram completion',
+            { spawnProgram: true }
+        );
+        const bodiesAfterResolve = await readPhase5Bodies(endpoint);
+        const sourceAfterControl = findPhase5Body(
+            bodiesAfterResolve,
+            sourceHandle,
+            'target-invalid source after control'
+        );
+        assert(
+            sourceAfterControl.position.x > sourceBeforeControl.position.x,
+            `Target-invalid와 같은 submit의 Tower control이 진행되지 않았습니다: ${JSON.stringify({ sourceBeforeControl, sourceAfterControl })}`
+        );
+        assert(
+            !bodiesAfterResolve.some((body) => (
+                body.handle?.entityId === destinationHandle.entityId
+                    && body.handle?.incarnation === destinationHandle.incarnation
+            )),
+            `TARGET_INVALID destination이 GPU ALIVE로 활성화됐습니다: ${JSON.stringify(bodiesAfterResolve)}`
+        );
+
+        const completedEvents = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        const completionStatus = endpoint.getStatus();
+        const completion = completionStatus.fixedCommands.lastCompletionResult;
+        assert(
+            completion.protocolFailure === null
+                && completion.completed.length === 1
+                && completion.completed[0].commandId === 'target-invalid:shot'
+                && completion.completed[0].handle.entityId
+                    === destinationHandle.entityId
+                && completion.completed[0].handle.incarnation
+                    === destinationHandle.incarnation
+                && completion.completed[0].outcome === 'target-invalid'
+                && completionStatus.fixedCommands.telemetry.completedTargetInvalid >= 1
+                && !endpoint.getRegistry().has(destinationHandle)
+                && endpoint.getRegistry().copyEntityView(destinationHandle, {}) === null
+                && !endpoint.hasBody(destinationHandle)
+                && completionStatus.reservedCount === 0
+                && completionStatus.pendingSourceRelativeDestinationCount === 0
+                && !completionStatus.recoveryRequired,
+            `Target-invalid exact completion/cleanup 불일치: ${JSON.stringify({ completion, completionStatus })}`
+        );
+        const targetDeathEvents = completedEvents.deathEvents.filter((event) => (
+            event.entityId === targetHandle.entityId
+                && event.incarnation === targetHandle.incarnation
+        ));
+        assert(
+            completedEvents.protocolFailure === null
+                && targetDeathEvents.length === 1
+                && targetDeathEvents[0].sourceTick === 1
+                && targetDeathEvents[0].disposition === 'despawn-requested',
+            `Target-invalid target death event 불일치: ${JSON.stringify(completedEvents)}`
+        );
+        const cleanupCommit = endpoint.commitAtFixedBoundary(3);
+        const cleanupStatus = endpoint.getStatus();
+        const gpuCleanupStatus = endpoint.getBackend().simulation.getStatus();
+        assert(
+            cleanupCommit.despawned.length === 1
+                && cleanupCommit.despawned[0].handle.entityId
+                    === targetHandle.entityId
+                && cleanupCommit.despawned[0].handle.incarnation
+                    === targetHandle.incarnation
+                && cleanupCommit.fixedCommands.completed.length === 1
+                && cleanupCommit.fixedCommands.completed[0].outcome
+                    === 'target-invalid'
+                && cleanupStatus.activeCount === 1
+                && cleanupStatus.reservedCount === 0
+                && cleanupStatus.pendingCommandCount === 0
+                && gpuCleanupStatus.pendingBodyCount === 0
+                && !cleanupStatus.recoveryRequired,
+            `Target-invalid next-boundary cleanup 불일치: ${JSON.stringify({ cleanupCommit, cleanupStatus, gpuCleanupStatus })}`
+        );
+        return Object.freeze({
+            sourceHandle,
+            targetHandle,
+            destinationHandle,
+            targetDeathSourceTick: targetDeathEvents[0].sourceTick,
+            completion: Object.freeze({
+                commandId: completion.completed[0].commandId,
+                handle: completion.completed[0].handle,
+                outcome: completion.completed[0].outcome
+            }),
+            towerControl: Object.freeze({
+                acceptedCount: targetCommit.fixedCommands.controls.length,
+                positionBefore: Object.freeze({ ...sourceBeforeControl.position }),
+                positionAfter: Object.freeze({ ...sourceAfterControl.position })
+            }),
+            cleanup: Object.freeze({
+                targetDespawnCount: cleanupCommit.despawned.length,
+                activeCount: cleanupStatus.activeCount,
+                reservedCount: cleanupStatus.reservedCount,
+                pendingCommandCount: cleanupStatus.pendingCommandCount,
+                pendingDestinationCount:
+                    cleanupStatus.pendingSourceRelativeDestinationCount,
+                pendingBodyCount: gpuCleanupStatus.pendingBodyCount,
+                recoveryRequired: cleanupStatus.recoveryRequired
+            }),
+            completedTargetInvalid:
+                completionStatus.fixedCommands.telemetry.completedTargetInvalid,
+            fixedSubmitContinued: true
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntitySlotAbaHardwareSmoke(device) {
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: 3,
+            worldSize: { x: 8, y: 8 },
+            gridCellSize: { x: 1, y: 1 },
+            spawnProgramCapacity: 1,
+            sessionGeneration: 72
+        }
+    );
+    const fixedDelta = 1 / 60;
+    const source = createPhase3Body({
+        entityId: 9911,
+        incarnation: 1,
+        position: { x: 2, y: 2 },
+        velocity: { x: 1, y: 0 }
+    });
+    const targetA = createPhase3Body({
+        entityId: 9912,
+        incarnation: 3,
+        position: { x: 6, y: 2 }
+    });
+    const targetB = createPhase3Body({
+        entityId: 9913,
+        incarnation: 5,
+        position: { x: 6, y: 2 }
+    });
+    const destinationHandle = Object.freeze({ entityId: 9914, incarnation: 7 });
+
+    try {
+        assert(simulation.init(), 'Target ABA simulation init 실패');
+        const initialSpawn = simulation.spawnBodies([source, targetA]);
+        assert(
+            initialSpawn.accepted === 2 && initialSpawn.rejected === 0,
+            `Target ABA source/target A spawn 실패: ${JSON.stringify(initialSpawn)}`
+        );
+        const initialBodies = await simulation.readbackBodies();
+        const targetABody = findPhase5Body(
+            initialBodies,
+            targetA,
+            'target ABA original target A'
+        );
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [],
+            sourceRelativeSpawns: [{
+                sourceHandle: source,
+                targetHandle: targetA,
+                destinationHandle,
+                destinationSpawn: createPhase3Body({
+                    position: { x: 0, y: 0 },
+                    velocity: { x: 0, y: 0 }
+                }),
+                modeFlags:
+                    GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+                positionOffset: { x: 0, y: 0 },
+                targetOffset: { x: 0, y: 0 },
+                launchSpeed: 12
+            }]
+        });
+        assert(
+            staged.sourceRelativeSpawns.accepted === 1
+                && staged.sourceRelativeSpawns.rejected === 0
+                && simulation.getStatus().pendingBodyCount === 1,
+            `Target ABA program stage 실패: ${JSON.stringify(staged)}`
+        );
+        const removedA = simulation.despawnBodies([targetA]);
+        const spawnedB = simulation.spawnBodies([targetB]);
+        assert(
+            removedA.removed === 1
+                && removedA.rejected === 0
+                && spawnedB.accepted === 1
+                && spawnedB.rejected === 0
+                && !simulation.hasBody(targetA)
+                && simulation.hasBody(targetB),
+            `Target ABA replacement 실패: ${JSON.stringify({ removedA, spawnedB })}`
+        );
+        const replacementBodies = await simulation.readbackBodies();
+        const targetBBody = findPhase5Body(
+            replacementBodies,
+            targetB,
+            'target ABA replacement target B'
+        );
+        assert(
+            targetBBody.index === targetABody.index,
+            `Target ABA fixture가 동일 private slot을 재사용하지 않았습니다: A=${targetABody.index}, B=${targetBBody.index}`
+        );
+
+        assert(
+            simulation.fixedUpdate(fixedDelta, 1),
+            'Target ABA resolve fixed submit 실패'
+        );
+        await device.queue.onSubmittedWorkDone();
+        await waitForSimulationStatus(
+            simulation,
+            (status) => status.fixedPrimitives.spawnProgram.pendingReadbacks === 0
+                && status.fixedPrimitives.spawnProgram.queuedBatches === 1,
+            'Target ABA SpawnProgram completion'
+        );
+        const completedBatches = simulation.drainCompletedSpawnProgramBatches([]);
+        assert(
+            completedBatches.length === 1
+                && completedBatches[0].failure === null
+                && completedBatches[0].outcomes.length === 1
+                && completedBatches[0].outcomes[0].result
+                    === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID
+                && completedBatches[0].outcomes[0].reason === 'target-invalid'
+                && completedBatches[0].outcomes[0].targetHandle.entityId
+                    === targetA.entityId
+                && completedBatches[0].outcomes[0].targetHandle.incarnation
+                    === targetA.incarnation,
+            `Target ABA outcome 불일치: ${JSON.stringify(completedBatches)}`
+        );
+        const finalBodies = await simulation.readbackBodies();
+        const finalTargetB = findPhase5Body(
+            finalBodies,
+            targetB,
+            'target ABA surviving replacement B'
+        );
+        const finalStatus = simulation.getStatus();
+        assert(
+            finalTargetB.handle?.entityId === targetB.entityId
+                && finalTargetB.handle?.incarnation === targetB.incarnation
+                && !simulation.hasBody(targetA)
+                && simulation.hasBody(targetB)
+                && !simulation.hasBody(destinationHandle)
+                && finalStatus.pendingBodyCount === 0
+                && finalStatus.activeBodyCount === 2
+                && !finalStatus.requiresAuthoritativeRebuild,
+            `Target ABA destination/replacement cleanup 불일치: ${JSON.stringify({ finalBodies, finalStatus })}`
+        );
+        return Object.freeze({
+            sourceHandle: Object.freeze({
+                entityId: source.entityId,
+                incarnation: source.incarnation
+            }),
+            originalTargetHandle: Object.freeze({
+                entityId: targetA.entityId,
+                incarnation: targetA.incarnation
+            }),
+            replacementTargetHandle: Object.freeze({
+                entityId: targetB.entityId,
+                incarnation: targetB.incarnation
+            }),
+            destinationHandle,
+            outcome: Object.freeze({
+                result: completedBatches[0].outcomes[0].result,
+                reason: completedBatches[0].outcomes[0].reason
+            }),
+            replacementAlive: true,
+            destinationActivated: false,
+            pendingBodyCount: finalStatus.pendingBodyCount,
+            recoveryRequired: finalStatus.requiresAuthoritativeRebuild
+        });
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntityInvalidHardwareSmoke(device) {
+    const deathBeforeResolve =
+        await runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device);
+    const slotAba = await runProductionTargetEntitySlotAbaHardwareSmoke(device);
+    assert(
+        deathBeforeResolve.completion.outcome === 'target-invalid'
+            && deathBeforeResolve.cleanup.recoveryRequired === false
+            && slotAba.outcome.reason === 'target-invalid'
+            && slotAba.destinationActivated === false
+            && slotAba.replacementAlive
+            && slotAba.recoveryRequired === false,
+        `Target-invalid/ABA actual gate 실패: ${JSON.stringify({ deathBeforeResolve, slotAba })}`
+    );
+    return Object.freeze({ deathBeforeResolve, slotAba });
+}
+
 async function runProductionPhase5TeamDamageMatrixHardwareSmoke(device) {
     const fixedDelta = 1 / 60;
     const sourceTick = 1;
@@ -6544,6 +7869,23 @@ async function runProductionTowerCombatHardwareSmoke(device) {
             {}
         );
         const cleanupStatus = endpoint.getStatus();
+        const deadTowerTargetRequest = playerProjectileAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            definition: hostileLethalDefinition,
+            sourceHandle: enemyHandle,
+            targetHandle: towerHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            targetOffset: { x: 0, y: 0 },
+            launchSpeed: 12,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+            targetPolicyId:
+                PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            producerId: 'nw-dead-tower-target-probe',
+            sourceAbilityId: 'dead-tower-target-probe',
+            targetFixedTick: 5,
+            spawnSequence: 4,
+            commandId: 'tower-combat:dead-tower-target-probe'
+        });
         assert(
             !endpoint.getRegistry().has(towerHandle)
                 && !endpoint.hasBody(towerHandle)
@@ -6557,9 +7899,15 @@ async function runProductionTowerCombatHardwareSmoke(device) {
                     === towerHandle.entityId
                 && sourceViewAfterTowerDeath.metadata.sourceIncarnation
                     === towerHandle.incarnation
+                && !deadTowerTargetRequest.accepted
+                && deadTowerTargetRequest.reason === 'stale-target'
                 && !cleanupStatus.recoveryRequired,
             'Tower combat dead replacement/Core/existing projectile cleanup 불일치: '
-                + JSON.stringify({ cleanupStatus, sourceViewAfterTowerDeath })
+                + JSON.stringify({
+                    cleanupStatus,
+                    sourceViewAfterTowerDeath,
+                    deadTowerTargetRequest
+                })
         );
 
         let zeroTowerSubmissionCount = 1;
@@ -6697,7 +8045,8 @@ async function runProductionTowerCombatHardwareSmoke(device) {
                 towerDeathEventCount: lethalTowerDeathEvents.length,
                 towerRenderAlpha: towerAlphaAfterLethal,
                 cleanup: towerCleanup,
-                rosterFacts: lethalRosterFacts
+                rosterFacts: lethalRosterFacts,
+                deadTowerTargetRequest
             }),
             roster: Object.freeze({
                 initialFacts: firstRosterFacts,
@@ -7568,6 +8917,270 @@ function createPhase5PressureSpawn(sourceHandle, destinationHandle, index = 0) {
     };
 }
 
+function createTargetEntityPressureSpawn(
+    sourceHandle,
+    targetHandle,
+    destinationHandle,
+    index = 0
+) {
+    return {
+        sourceHandle,
+        targetHandle,
+        destinationHandle,
+        destinationSpawn: createPhase3Body({
+            position: { x: 0, y: 0 },
+            velocity: { x: 0, y: 0 },
+            definitionId: `target_entity_pressure_destination_${index}`
+        }),
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        positionOffset: { x: 0.5 + (index * 0.1), y: 0 },
+        targetOffset: { x: 0, y: 0 },
+        launchSpeed: 12
+    };
+}
+
+async function runProductionTargetEntitySinglePressureHardwareSmoke(device, mode) {
+    const bodyCapacity = mode === 'body-capacity';
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: bodyCapacity ? 2 : 6,
+            worldSize: { x: 8, y: 8 },
+            gridCellSize: { x: 1, y: 1 },
+            controlCommandCapacity: 1,
+            spawnProgramCapacity: bodyCapacity ? 2 : 1,
+            sessionGeneration: bodyCapacity ? 81 : 82
+        }
+    );
+    const fixedDelta = 1 / 60;
+    const source = Object.freeze({
+        ...createGpuTowerSpawnIntent({ position: { x: 2, y: 2 } }),
+        entityId: bodyCapacity ? 9921 : 9931,
+        incarnation: 1
+    });
+    const target = Object.freeze({
+        ...createGpuTowerSpawnIntent({ position: { x: 6, y: 2 } }),
+        entityId: bodyCapacity ? 9922 : 9932,
+        incarnation: 1
+    });
+    const requestedSpawnCount = bodyCapacity ? 1 : 2;
+    const pressureSpawns = Array.from(
+        { length: requestedSpawnCount },
+        (_, index) => createTargetEntityPressureSpawn(
+            source,
+            target,
+            {
+                entityId: (bodyCapacity ? 9941 : 9951) + index,
+                incarnation: 1
+            },
+            index
+        )
+    );
+
+    try {
+        assert(simulation.init(), `Target-entity ${mode} simulation init 실패`);
+        assert(
+            simulation.spawnBodies([source, target]).accepted === 2,
+            `Target-entity ${mode} Tower source/target spawn 실패`
+        );
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 1,
+            controls: [{
+                entityId: source.entityId,
+                incarnation: source.incarnation,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }],
+            sourceRelativeSpawns: pressureSpawns
+        });
+        assert(
+            staged.controls.accepted === 1
+                && staged.controls.rejected === 0
+                && staged.sourceRelativeSpawns.accepted === 0
+                && staged.sourceRelativeSpawns.rejected === requestedSpawnCount
+                && staged.sourceRelativeSpawns.reason === mode
+                && !staged.requiresRecovery,
+            `Target-entity ${mode} pressure/control 분리 실패: ${JSON.stringify(staged)}`
+        );
+        assert(
+            simulation.fixedUpdate(fixedDelta, 1),
+            `Target-entity ${mode} control-only fixed submit 실패`
+        );
+        await device.queue.onSubmittedWorkDone();
+        const settledStatus = await waitForSimulationStatus(
+            simulation,
+            (status) => status.overflow.pendingReadbacks === 0,
+            `Target-entity ${mode} telemetry completion`
+        );
+        const bodies = await simulation.readbackBodies();
+        const sourceAfter = findPhase5Body(
+            bodies,
+            source,
+            `target-entity ${mode} Tower after control`
+        );
+        assert(
+            sourceAfter.position.x > source.position.x
+                && settledStatus.pendingBodyCount === 0
+                && !settledStatus.requiresAuthoritativeRebuild,
+            `Target-entity ${mode} Tower progress/cleanup 불일치: ${JSON.stringify({ sourceAfter, settledStatus })}`
+        );
+        return Object.freeze({
+            reason: staged.sourceRelativeSpawns.reason,
+            requestedSpawnCount,
+            controlAcceptedCount: staged.controls.accepted,
+            spawnAcceptedCount: staged.sourceRelativeSpawns.accepted,
+            spawnRejectedCount: staged.sourceRelativeSpawns.rejected,
+            fixedSubmitContinued: true,
+            towerPositionBefore: Object.freeze({ ...source.position }),
+            towerPositionAfter: Object.freeze({ ...sourceAfter.position }),
+            pendingBodyCount: settledStatus.pendingBodyCount,
+            recoveryRequired: settledStatus.requiresAuthoritativeRebuild
+        });
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntitySpawnRingPressureHardwareSmoke(device) {
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: 8,
+            worldSize: { x: 8, y: 8 },
+            gridCellSize: { x: 1, y: 1 },
+            controlCommandCapacity: 1,
+            spawnProgramCapacity: 1,
+            sessionGeneration: 83
+        }
+    );
+    const fixedDelta = 1 / 60;
+    const source = Object.freeze({
+        ...createGpuTowerSpawnIntent({ position: { x: 2, y: 2 } }),
+        entityId: 9961,
+        incarnation: 1
+    });
+    const target = Object.freeze({
+        ...createGpuTowerSpawnIntent({ position: { x: 6, y: 2 } }),
+        entityId: 9962,
+        incarnation: 1
+    });
+    let acceptedSpawnCount = 0;
+    let controlAcceptedCount = 0;
+
+    try {
+        assert(simulation.init(), 'Target-entity result-ring simulation init 실패');
+        assert(
+            simulation.spawnBodies([source, target]).accepted === 2,
+            'Target-entity result-ring Tower source/target spawn 실패'
+        );
+        for (let tick = 1; tick <= 4; tick++) {
+            const staged = simulation.stageFixedPrograms({
+                targetFixedTick: tick,
+                controls: [{
+                    entityId: source.entityId,
+                    incarnation: source.incarnation,
+                    moveIntentX: 1,
+                    moveIntentY: 0
+                }],
+                sourceRelativeSpawns: [createTargetEntityPressureSpawn(
+                    source,
+                    target,
+                    { entityId: 9970 + tick, incarnation: 1 },
+                    tick
+                )]
+            });
+            assert(
+                staged.controls.accepted === 1
+                    && staged.sourceRelativeSpawns.accepted === 1
+                    && !staged.requiresRecovery,
+                `Target-entity result-ring prefill 실패: tick=${tick}, result=${JSON.stringify(staged)}`
+            );
+            controlAcceptedCount += staged.controls.accepted;
+            acceptedSpawnCount += staged.sourceRelativeSpawns.accepted;
+            assert(
+                simulation.fixedUpdate(fixedDelta, tick),
+                `Target-entity result-ring prefill submit 실패: tick=${tick}`
+            );
+        }
+        const rejectedStage = simulation.stageFixedPrograms({
+            targetFixedTick: 5,
+            controls: [{
+                entityId: source.entityId,
+                incarnation: source.incarnation,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }],
+            sourceRelativeSpawns: [createTargetEntityPressureSpawn(
+                source,
+                target,
+                { entityId: 9975, incarnation: 1 },
+                5
+            )]
+        });
+        assert(
+            rejectedStage.controls.accepted === 1
+                && rejectedStage.controls.rejected === 0
+                && rejectedStage.sourceRelativeSpawns.accepted === 0
+                && rejectedStage.sourceRelativeSpawns.rejected === 1
+                && rejectedStage.sourceRelativeSpawns.reason
+                    === 'spawn-program-readback-capacity'
+                && !rejectedStage.requiresRecovery,
+            `Target-entity result-ring pressure/control 분리 실패: ${JSON.stringify(rejectedStage)}`
+        );
+        controlAcceptedCount += rejectedStage.controls.accepted;
+        assert(
+            simulation.fixedUpdate(fixedDelta, 5),
+            'Target-entity result-ring control-only submit 실패'
+        );
+        await device.queue.onSubmittedWorkDone();
+        await waitForSimulationStatus(
+            simulation,
+            (status) => status.overflow.pendingReadbacks === 0
+                && status.fixedPrimitives.spawnProgram.pendingReadbacks === 0,
+            'Target-entity result-ring completion'
+        );
+        const completedBatches = simulation.drainCompletedSpawnProgramBatches([]);
+        const finalStatus = simulation.getStatus();
+        const bodies = await simulation.readbackBodies();
+        const sourceAfter = findPhase5Body(
+            bodies,
+            source,
+            'target-entity result-ring Tower after control'
+        );
+        assert(
+            completedBatches.length === 4
+                && completedBatches.every((batch) => (
+                    batch.failure === null
+                        && batch.outcomes.length === 1
+                        && batch.outcomes[0].reason === 'resolved'
+                ))
+                && sourceAfter.position.x > source.position.x
+                && finalStatus.submittedTickCount === 5
+                && finalStatus.pendingBodyCount === 0
+                && finalStatus.fixedPrimitives.spawnProgram.backpressureCount >= 1
+                && !finalStatus.requiresAuthoritativeRebuild,
+            `Target-entity result-ring completion/cleanup 불일치: ${JSON.stringify({ completedBatches, finalStatus, sourceAfter })}`
+        );
+        return Object.freeze({
+            ringSlotCount: finalStatus.fixedPrimitives.spawnProgram.ringSlotCount,
+            acceptedSpawnCount,
+            rejectedSpawnCount: rejectedStage.sourceRelativeSpawns.rejected,
+            rejectionReason: rejectedStage.sourceRelativeSpawns.reason,
+            controlAcceptedCount,
+            submittedTickCount: finalStatus.submittedTickCount,
+            completedBatchCount: completedBatches.length,
+            towerPositionBefore: Object.freeze({ ...source.position }),
+            towerPositionAfter: Object.freeze({ ...sourceAfter.position }),
+            pendingBodyCount: finalStatus.pendingBodyCount,
+            recoveryRequired: finalStatus.requiresAuthoritativeRebuild
+        });
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
 async function runProductionPhase5SinglePressureHardwareSmoke(device, mode) {
     const isBodyCapacity = mode === 'body-capacity';
     const simulation = new GpuCircleBodySimulation(
@@ -7918,6 +9531,416 @@ async function runProductionPhase5FailureDomainHardwareSmoke(device) {
     };
 }
 
+async function runProductionTargetEntityRegistryPressureHardwareSmoke(device) {
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 2,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-target-entity-registry-pressure'
+    });
+    const fixedDelta = 1 / 60;
+    const sourcePosition = Object.freeze({ x: 2, y: 2 });
+    const targetPosition = Object.freeze({ x: 6, y: 2 });
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Target-entity registry pressure endpoint는 deferred여야 합니다.'
+        );
+        const spawnRequests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: sourcePosition }),
+                1,
+                'target-entity:registry:source'
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: targetPosition }),
+                1,
+                'target-entity:registry:target'
+            )
+        ];
+        assert(
+            spawnRequests.every(({ accepted }) => accepted),
+            `Target-entity registry source/target request 실패: ${JSON.stringify(spawnRequests)}`
+        );
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        const handles = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const sourceHandle = handles.get('target-entity:registry:source');
+        const targetHandle = handles.get('target-entity:registry:target');
+        assert(
+            sourceHandle && targetHandle && spawnCommit.spawned.length === 2,
+            `Target-entity registry handles 누락: ${JSON.stringify(spawnCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Target-entity registry initial fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Target-entity registry initial completion');
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+
+        const shotRequest = adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            definition: createTargetEntityHardwareProjectileDefinition(
+                'nw_target_entity_registry_pressure'
+            ),
+            sourceHandle,
+            targetHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            targetOffset: { x: 0, y: 0 },
+            launchSpeed: 12,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+            targetPolicyId:
+                PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'target-entity:registry:shot'
+        });
+        const controlRequest = endpoint.requestBodyControl({
+            handle: sourceHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 2, 'target-entity:registry:control');
+        assert(
+            shotRequest.accepted && controlRequest.accepted,
+            `Target-entity registry shot/control enqueue 실패: ${JSON.stringify({ shotRequest, controlRequest })}`
+        );
+        const commit = endpoint.commitAtFixedBoundary(2);
+        const spawnRejection = commit.fixedCommands.rejected.find(
+            ({ domain }) => domain === 'spawn'
+        );
+        assert(
+            commit.state === 'committed-with-rejections'
+                && commit.fixedCommands.controls.length === 1
+                && commit.fixedCommands.sourceRelativeSpawns.length === 0
+                && spawnRejection?.code === 'registry-capacity'
+                && !commit.recoveryRequired,
+            `Target-entity registry pressure/control 분리 실패: ${JSON.stringify(commit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 2),
+            'Target-entity registry pressure control submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Target-entity registry completion');
+        const bodies = await readPhase5Bodies(endpoint);
+        const sourceAfter = findPhase5Body(
+            bodies,
+            sourceHandle,
+            'target-entity registry Tower after control'
+        );
+        const status = endpoint.getStatus();
+        const gpuStatus = endpoint.getBackend().simulation.getStatus();
+        assert(
+            sourceAfter.position.x > sourcePosition.x
+                && status.activeCount === 2
+                && status.reservedCount === 0
+                && status.pendingCommandCount === 0
+                && gpuStatus.pendingBodyCount === 0
+                && !status.recoveryRequired,
+            `Target-entity registry cleanup/recovery 불일치: ${JSON.stringify({ sourceAfter, status, gpuStatus })}`
+        );
+        return Object.freeze({
+            rejectionReason: spawnRejection.code,
+            controlAcceptedCount: commit.fixedCommands.controls.length,
+            spawnRejectedCount: commit.fixedCommands.rejected.filter(
+                ({ domain }) => domain === 'spawn'
+            ).length,
+            fixedSubmitContinued: true,
+            towerPositionBefore: sourcePosition,
+            towerPositionAfter: Object.freeze({ ...sourceAfter.position }),
+            activeCount: status.activeCount,
+            reservedCount: status.reservedCount,
+            pendingCommandCount: status.pendingCommandCount,
+            pendingBodyCount: gpuStatus.pendingBodyCount,
+            recoveryRequired: status.recoveryRequired
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntityStaleTargetHardwareSmoke(device) {
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 3,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2
+    });
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-target-entity-stale-target'
+    });
+    const definition = createTargetEntityHardwareProjectileDefinition(
+        'nw_target_entity_stale_target'
+    );
+    const fixedDelta = 1 / 60;
+    const sourcePosition = Object.freeze({ x: 2, y: 2 });
+    const targetPosition = Object.freeze({ x: 6, y: 2 });
+    const makeRequest = (targetHandle, targetFixedTick, commandId, spawnSequence) => (
+        adapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+            definition,
+            sourceHandle,
+            targetHandle,
+            positionOffset: { x: 0.6, y: 0 },
+            targetOffset: { x: 0, y: 0 },
+            launchSpeed: 12,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+            targetPolicyId:
+                PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            targetFixedTick,
+            spawnSequence,
+            commandId
+        })
+    );
+    let sourceHandle = null;
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Target-entity stale-target endpoint는 deferred여야 합니다.'
+        );
+        const requests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: sourcePosition }),
+                1,
+                'target-entity:stale:source'
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: targetPosition }),
+                1,
+                'target-entity:stale:target'
+            )
+        ];
+        assert(
+            requests.every(({ accepted }) => accepted),
+            `Target-entity stale source/target request 실패: ${JSON.stringify(requests)}`
+        );
+        const spawnCommit = endpoint.commitAtFixedBoundary(1);
+        const handles = new Map(
+            spawnCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        sourceHandle = handles.get('target-entity:stale:source');
+        const targetHandle = handles.get('target-entity:stale:target');
+        assert(
+            sourceHandle && targetHandle,
+            `Target-entity stale exact handles 누락: ${JSON.stringify(spawnCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Target-entity stale initial fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Target-entity stale initial completion');
+        endpoint.commitCompletedEventsAtFixedBoundary(2);
+
+        const staleHandle = Object.freeze({
+            entityId: targetHandle.entityId,
+            incarnation: targetHandle.incarnation + 1
+        });
+        const requestTimeReject = makeRequest(
+            staleHandle,
+            2,
+            'target-entity:stale:request-time',
+            0
+        );
+        const requestTimeControl = endpoint.requestBodyControl({
+            handle: sourceHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 2, 'target-entity:stale:request-control');
+        assert(
+            !requestTimeReject.accepted
+                && requestTimeReject.reason === 'stale-target'
+                && requestTimeControl.accepted,
+            `Target-entity request-time stale/control 불일치: ${JSON.stringify({ requestTimeReject, requestTimeControl })}`
+        );
+        const requestTimeCommit = endpoint.commitAtFixedBoundary(2);
+        assert(
+            requestTimeCommit.fixedCommands.controls.length === 1
+                && requestTimeCommit.fixedCommands.sourceRelativeSpawns.length === 0
+                && !requestTimeCommit.recoveryRequired,
+            `Target-entity request-time stale commit 불일치: ${JSON.stringify(requestTimeCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 2),
+            'Target-entity request-time stale control submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Target-entity request-time stale completion');
+        endpoint.commitCompletedEventsAtFixedBoundary(3);
+
+        const commitTimeRequest = makeRequest(
+            targetHandle,
+            3,
+            'target-entity:stale:commit-time',
+            1
+        );
+        const commitTimeControl = endpoint.requestBodyControl({
+            handle: sourceHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, 3, 'target-entity:stale:commit-control');
+        const targetDespawnRequest = endpoint.requestDespawn(
+            targetHandle,
+            'target-entity-stale-race',
+            3,
+            'target-entity:stale:target-despawn'
+        );
+        assert(
+            commitTimeRequest.accepted
+                && commitTimeControl.accepted
+                && targetDespawnRequest.accepted,
+            `Target-entity commit-time stale setup 실패: ${JSON.stringify({ commitTimeRequest, commitTimeControl, targetDespawnRequest })}`
+        );
+        const commitTimeCommit = endpoint.commitAtFixedBoundary(3);
+        const staleRejection = commitTimeCommit.fixedCommands.rejected.find(
+            ({ domain, code }) => domain === 'spawn' && code === 'stale-target'
+        );
+        assert(
+            commitTimeCommit.despawned.length === 1
+                && commitTimeCommit.fixedCommands.controls.length === 1
+                && commitTimeCommit.fixedCommands.sourceRelativeSpawns.length === 0
+                && staleRejection
+                && !commitTimeCommit.recoveryRequired,
+            `Target-entity commit-time stale/control 분리 실패: ${JSON.stringify(commitTimeCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 3),
+            'Target-entity commit-time stale control submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Target-entity commit-time stale completion');
+        const bodies = await readPhase5Bodies(endpoint);
+        const sourceAfter = findPhase5Body(
+            bodies,
+            sourceHandle,
+            'target-entity stale Tower after controls'
+        );
+        const status = endpoint.getStatus();
+        const gpuStatus = endpoint.getBackend().simulation.getStatus();
+        assert(
+            sourceAfter.position.x > sourcePosition.x
+                && !endpoint.getRegistry().has(targetHandle)
+                && !endpoint.hasBody(targetHandle)
+                && status.activeCount === 1
+                && status.reservedCount === 0
+                && status.pendingCommandCount === 0
+                && gpuStatus.pendingBodyCount === 0
+                && !status.recoveryRequired,
+            `Target-entity stale cleanup/recovery 불일치: ${JSON.stringify({ sourceAfter, status, gpuStatus })}`
+        );
+        return Object.freeze({
+            requestTime: Object.freeze({
+                reason: requestTimeReject.reason,
+                controlAcceptedCount:
+                    requestTimeCommit.fixedCommands.controls.length,
+                fixedSubmitContinued: true
+            }),
+            commitTime: Object.freeze({
+                reason: staleRejection.code,
+                controlAcceptedCount:
+                    commitTimeCommit.fixedCommands.controls.length,
+                targetDespawnCount: commitTimeCommit.despawned.length,
+                fixedSubmitContinued: true
+            }),
+            towerPositionBefore: sourcePosition,
+            towerPositionAfter: Object.freeze({ ...sourceAfter.position }),
+            activeCount: status.activeCount,
+            reservedCount: status.reservedCount,
+            pendingCommandCount: status.pendingCommandCount,
+            pendingBodyCount: gpuStatus.pendingBodyCount,
+            recoveryRequired: status.recoveryRequired
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTargetEntityFailureDomainHardwareSmoke(
+    device,
+    targetInvalidEvidence
+) {
+    const spawnProgramCapacity =
+        await runProductionTargetEntitySinglePressureHardwareSmoke(
+            device,
+            'spawn-program-capacity'
+        );
+    const bodyCapacity =
+        await runProductionTargetEntitySinglePressureHardwareSmoke(
+            device,
+            'body-capacity'
+        );
+    const resultRing =
+        await runProductionTargetEntitySpawnRingPressureHardwareSmoke(device);
+    const registryCapacity =
+        await runProductionTargetEntityRegistryPressureHardwareSmoke(device);
+    const staleTarget =
+        await runProductionTargetEntityStaleTargetHardwareSmoke(device);
+    const gpuTargetInvalid = targetInvalidEvidence.deathBeforeResolve;
+    const cases = [
+        spawnProgramCapacity,
+        bodyCapacity,
+        resultRing,
+        registryCapacity,
+        staleTarget,
+        gpuTargetInvalid.cleanup
+    ];
+    assert(
+        gpuTargetInvalid.towerControl.acceptedCount === 1
+            && gpuTargetInvalid.fixedSubmitContinued
+            && gpuTargetInvalid.cleanup.reservedCount === 0
+            && gpuTargetInvalid.cleanup.pendingDestinationCount === 0
+            && gpuTargetInvalid.cleanup.pendingBodyCount === 0
+            && gpuTargetInvalid.cleanup.recoveryRequired === false
+            && cases.every(({ recoveryRequired }) => recoveryRequired === false),
+        `Target-entity failure domain recovery/control 불일치: ${JSON.stringify({ cases, gpuTargetInvalid })}`
+    );
+    return Object.freeze({
+        spawnProgramCapacity,
+        bodyCapacity,
+        resultRing,
+        registryCapacity,
+        staleTarget,
+        gpuTargetInvalid: Object.freeze({
+            outcome: gpuTargetInvalid.completion.outcome,
+            controlAcceptedCount: gpuTargetInvalid.towerControl.acceptedCount,
+            fixedSubmitContinued: gpuTargetInvalid.fixedSubmitContinued,
+            reservedCount: gpuTargetInvalid.cleanup.reservedCount,
+            pendingDestinationCount:
+                gpuTargetInvalid.cleanup.pendingDestinationCount,
+            pendingBodyCount: gpuTargetInvalid.cleanup.pendingBodyCount,
+            recoveryRequired: gpuTargetInvalid.cleanup.recoveryRequired
+        }),
+        allTowerControlsAccepted: true,
+        allFixedSubmitsContinued: true,
+        allRecoveryFalse: cases.every(
+            ({ recoveryRequired }) => recoveryRequired === false
+        ),
+        allReservationAndPendingLeaksZero:
+            spawnProgramCapacity.pendingBodyCount === 0
+            && bodyCapacity.pendingBodyCount === 0
+            && resultRing.pendingBodyCount === 0
+            && registryCapacity.reservedCount === 0
+            && registryCapacity.pendingCommandCount === 0
+            && registryCapacity.pendingBodyCount === 0
+            && staleTarget.reservedCount === 0
+            && staleTarget.pendingCommandCount === 0
+            && staleTarget.pendingBodyCount === 0
+            && gpuTargetInvalid.cleanup.reservedCount === 0
+            && gpuTargetInvalid.cleanup.pendingDestinationCount === 0
+            && gpuTargetInvalid.cleanup.pendingBodyCount === 0
+    });
+}
+
 async function runProductionPhase5GenerationRecoveryHardwareSmoke(device) {
     const format = navigator.gpu.getPreferredCanvasFormat();
     const generation = { value: 1 };
@@ -8170,20 +10193,41 @@ async function runProductionPhase5GenerationRecoveryHardwareSmoke(device) {
 }
 
 async function runProductionFixedPrimitiveSmoke(device) {
+    const endpoint = await runProductionFixedPrimitiveEndpointSmoke(device);
+    const isolation = await runProductionFixedPrimitiveIsolationSmoke(device);
+    const sourceInvalid = await runProductionSourceInvalidCleanupSmoke(device);
+    const geometry = await runProductionFixedPrimitiveGeometrySmoke(device);
+    const towerCoreWorld = await runProductionTowerCoreWorldHardwareSmoke(device);
+    const phase5ProjectileAim = await runProductionPhase5AimHardwareSmoke(device);
+    const targetEntityAim = await runProductionTargetEntityAimHardwareSmoke(device);
+    const targetEntityInvalid =
+        await runProductionTargetEntityInvalidHardwareSmoke(device);
+    const towerCombat = await runProductionTowerCombatHardwareSmoke(device);
+    const phase5ProjectileLifecycle =
+        await runProductionPhase5ProjectileLifecycleHardwareSmoke(device);
+    const phase5FailureDomains =
+        await runProductionPhase5FailureDomainHardwareSmoke(device);
+    const targetEntityFailureDomains =
+        await runProductionTargetEntityFailureDomainHardwareSmoke(
+            device,
+            targetEntityInvalid
+        );
+    const phase5GenerationRecovery =
+        await runProductionPhase5GenerationRecoveryHardwareSmoke(device);
     return {
-        endpoint: await runProductionFixedPrimitiveEndpointSmoke(device),
-        isolation: await runProductionFixedPrimitiveIsolationSmoke(device),
-        sourceInvalid: await runProductionSourceInvalidCleanupSmoke(device),
-        geometry: await runProductionFixedPrimitiveGeometrySmoke(device),
-        towerCoreWorld: await runProductionTowerCoreWorldHardwareSmoke(device),
-        phase5ProjectileAim: await runProductionPhase5AimHardwareSmoke(device),
-        towerCombat: await runProductionTowerCombatHardwareSmoke(device),
-        phase5ProjectileLifecycle:
-            await runProductionPhase5ProjectileLifecycleHardwareSmoke(device),
-        phase5FailureDomains:
-            await runProductionPhase5FailureDomainHardwareSmoke(device),
-        phase5GenerationRecovery:
-            await runProductionPhase5GenerationRecoveryHardwareSmoke(device)
+        endpoint,
+        isolation,
+        sourceInvalid,
+        geometry,
+        towerCoreWorld,
+        phase5ProjectileAim,
+        targetEntityAim,
+        targetEntityInvalid,
+        towerCombat,
+        phase5ProjectileLifecycle,
+        phase5FailureDomains,
+        targetEntityFailureDomains,
+        phase5GenerationRecovery
     };
 }
 

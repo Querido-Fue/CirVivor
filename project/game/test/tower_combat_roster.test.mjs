@@ -221,6 +221,126 @@ test('strict completed Tower damage/death fact는 30→17→0과 exact projectil
     assert.equal(roster.getLivingTowerCount(), 0);
 });
 
+test('same-tick lethal A 뒤 nonlethal B가 append돼도 death provenance는 exact A를 보존한다', () => {
+    const protocol = createProtocol();
+    const registry = createSourceRegistry([
+        {
+            handle: PROJECTILE_A,
+            producerId: 'lethal-producer-a',
+            sourceAbilityId: 'lethal-ability-a',
+            teamId: 2
+        },
+        {
+            handle: PROJECTILE_B,
+            producerId: 'late-nonlethal-producer-b',
+            sourceAbilityId: 'late-nonlethal-ability-b',
+            teamId: 2
+        }
+    ]);
+    const roster = new TowerCombatRoster({ maxHp: 30 });
+    roster.bindGpuBody(TOWER_A, protocol);
+
+    const facts = roster.commitCompletedEvents({
+        events: [
+            createDamageEvent({
+                protocol,
+                source: PROJECTILE_A,
+                target: TOWER_A,
+                key: 'same-tick-lethal-a',
+                sourceTick: 20,
+                sequence: 0,
+                damageFixedPoint: 3000,
+                reason: 'target-died'
+            }),
+            createDamageEvent({
+                protocol,
+                source: PROJECTILE_B,
+                target: TOWER_A,
+                key: 'same-tick-late-nonlethal-b',
+                sourceTick: 20,
+                sequence: 1,
+                damageFixedPoint: 100
+            }),
+            createDeathEvent({
+                protocol,
+                target: TOWER_A,
+                key: 'same-tick-tower-death',
+                sourceTick: 20,
+                sequence: 2
+            })
+        ]
+    }, registry);
+
+    assert.deepEqual(
+        [...facts].map((fact) => fact.type),
+        [
+            TOWER_COMBAT_FACT_TYPE.DAMAGE_APPLIED,
+            TOWER_COMBAT_FACT_TYPE.DAMAGE_APPLIED,
+            TOWER_COMBAT_FACT_TYPE.DIED,
+            TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS
+        ]
+    );
+    const [, lateNonlethalDamage, death] = facts;
+    assertHandle(lateNonlethalDamage.sourceHandle, PROJECTILE_B);
+    assert.equal(lateNonlethalDamage.targetDied, false);
+    assertHandle(roster.getStatus().lastCommittedDamage.sourceHandle, PROJECTILE_B);
+    assertHandle(death.sourceHandle, PROJECTILE_A);
+    assert.equal(death.producerId, 'lethal-producer-a');
+    assert.equal(death.sourceAbilityId, 'lethal-ability-a');
+    assert.equal(death.sourceTeamId, 2);
+    assert.equal(death.sourceTick, 20);
+    assert.equal(roster.getPrimaryTowerCurrentHp(), 0);
+    assert.equal(roster.getLivingTowerCount(), 0);
+});
+
+test('다른 exact Tower의 lethal fact는 현재 Tower death provenance가 될 수 없다', () => {
+    const protocol = createProtocol();
+    const registry = createSourceRegistry([{
+        handle: PROJECTILE_C,
+        producerId: 'unrelated-target-producer',
+        sourceAbilityId: 'unrelated-target-ability',
+        teamId: 2
+    }]);
+    const roster = new TowerCombatRoster({ maxHp: 30 });
+    roster.bindGpuBody(TOWER_A, protocol);
+
+    const facts = roster.commitCompletedEvents({
+        events: [
+            createDamageEvent({
+                protocol,
+                source: PROJECTILE_C,
+                target: TOWER_B,
+                key: 'unrelated-target-lethal',
+                sourceTick: 30,
+                sequence: 0,
+                damageFixedPoint: 3000,
+                reason: 'target-died'
+            }),
+            createDeathEvent({
+                protocol,
+                target: TOWER_A,
+                key: 'current-target-death-without-lethal',
+                sourceTick: 30,
+                sequence: 1
+            })
+        ]
+    }, registry);
+
+    assert.deepEqual(
+        [...facts].map((fact) => fact.type),
+        [
+            TOWER_COMBAT_FACT_TYPE.DIED,
+            TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS
+        ]
+    );
+    const [death] = facts;
+    assert.equal(death.sourceHandle, null);
+    assert.equal(death.producerId, null);
+    assert.equal(death.sourceAbilityId, null);
+    assert.equal(death.sourceTeamId, null);
+    assert.equal(registry.calls.length, 0);
+});
+
 test('duplicate, stale, old generation, old incarnation completed event는 Tower 상태를 바꾸지 않는다', () => {
     const protocol = createProtocol();
     const registry = createSourceRegistry([

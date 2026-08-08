@@ -909,6 +909,8 @@ export class GpuCircleBodySimulation {
         this.lastSpawnProgramSourceTick = 0;
         this.lastSpawnProgramResolvedCount = 0;
         this.lastSpawnProgramInvalidCount = 0;
+        this.lastSpawnProgramSourceInvalidCount = 0;
+        this.lastSpawnProgramTargetInvalidCount = 0;
         this.spawnProgramOverflowCount = 0;
         this.trackedPoseConfigBytes = new ArrayBuffer(TRACKED_POSE_CONFIG_BYTE_SIZE);
         this.trackedPoseHandle = null;
@@ -1497,6 +1499,24 @@ export class GpuCircleBodySimulation {
                 if (sourceSlot === undefined || this.slotActive[sourceSlot] !== 1) {
                     return hardReject('stale-source');
                 }
+                const modeFlags = source.modeFlags
+                    ?? GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY;
+                const isAimPoint = modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
+                const isTargetEntity = modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
+                let targetHandle = null;
+                let targetSlot = GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                if (isTargetEntity) {
+                    targetHandle = normalizeEntityHandle(
+                        source.targetHandle,
+                        `sourceRelativeSpawns[${index}].targetHandle`
+                    );
+                    targetSlot = this.handleToSlot.get(entityHandleKey(targetHandle));
+                    if (targetSlot === undefined || this.slotActive[targetSlot] !== 1) {
+                        return hardReject('stale-target');
+                    }
+                }
                 if (destinationKeys.has(destinationKey)
                     || this.handleToSlot.has(destinationKey)
                     || this.pendingHandleToSlot.has(destinationKey)) {
@@ -1522,10 +1542,22 @@ export class GpuCircleBodySimulation {
                     finalFlags & ~GPU_CIRCLE_BODY_META.ALIVE_FLAG,
                     LITTLE_ENDIAN
                 );
-                const modeFlags = source.modeFlags
-                    ?? GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY;
-                const isAimPoint = modeFlags
-                    === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
+                let modePayload;
+                if (isTargetEntity) {
+                    modePayload = {
+                        launchSpeed: source.launchSpeed
+                    };
+                } else if (isAimPoint) {
+                    modePayload = {
+                        aimWorldPoint: source.aimWorldPoint,
+                        launchSpeed: source.launchSpeed
+                    };
+                } else {
+                    modePayload = {
+                        launchVelocity: source.launchVelocity,
+                        sourceVelocityScale: source.sourceVelocityScale
+                    };
+                }
                 const programRecord = {
                     destinationSlot: selectedSlots[index],
                     destinationEntityId: destinationHandle.entityId,
@@ -1533,17 +1565,17 @@ export class GpuCircleBodySimulation {
                     sourceSlot,
                     sourceEntityId: sourceHandle.entityId,
                     sourceIncarnation: sourceHandle.incarnation,
+                    targetSlot,
+                    targetEntityId: targetHandle?.entityId
+                        ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+                    targetIncarnation: targetHandle?.incarnation
+                        ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
                     modeFlags,
                     positionOffset: source.positionOffset,
-                    ...(isAimPoint
-                        ? {
-                            aimWorldPoint: source.aimWorldPoint,
-                            launchSpeed: source.launchSpeed
-                        }
-                        : {
-                            launchVelocity: source.launchVelocity,
-                            sourceVelocityScale: source.sourceVelocityScale
-                        }),
+                    targetOffset: isTargetEntity
+                        ? source.targetOffset
+                        : Object.freeze({ x: 0, y: 0 }),
+                    ...modePayload,
                     sourceTick: targetFixedTick
                 };
                 writeGpuSpawnProgramRecord(spawnProgram, index, programRecord);
@@ -1551,6 +1583,7 @@ export class GpuCircleBodySimulation {
                     ...programRecord,
                     destinationHandle,
                     sourceHandle,
+                    ...(targetHandle ? { targetHandle } : {}),
                     finalFlags
                 });
             }
@@ -1713,6 +1746,12 @@ export class GpuCircleBodySimulation {
                     this.freeSlots.push(slot);
                     cleanupSlots.push(slot);
                     this.lastSpawnProgramInvalidCount++;
+                    if (outcome.result === GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID) {
+                        this.lastSpawnProgramSourceInvalidCount++;
+                    } else if (outcome.result
+                        === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID) {
+                        this.lastSpawnProgramTargetInvalidCount++;
+                    }
                 }
                 outcomes.push(Object.freeze({ ...outcome }));
             }
@@ -2602,6 +2641,11 @@ export class GpuCircleBodySimulation {
                     lastSourceTick: this.lastSpawnProgramSourceTick,
                     resolvedCount: this.lastSpawnProgramResolvedCount,
                     invalidCount: this.lastSpawnProgramInvalidCount,
+                    completedResolved: this.lastSpawnProgramResolvedCount,
+                    completedSourceInvalid:
+                        this.lastSpawnProgramSourceInvalidCount,
+                    completedTargetInvalid:
+                        this.lastSpawnProgramTargetInvalidCount,
                     storageBuffersPerStage: 5
                 }),
                 trackedPose: Object.freeze({
@@ -3027,6 +3071,23 @@ export class GpuCircleBodySimulation {
                 for (let index = 0; index < count; index++) {
                     const record = readGpuSpawnProgramRecord(mappedStorage, index);
                     const expected = queueEntry.programs[index];
+                    const isTargetEntity = expected.modeFlags
+                        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
+                    const expectedTargetSlot = isTargetEntity
+                        ? expected.targetSlot
+                        : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                    const expectedTargetEntityId = isTargetEntity
+                        ? expected.targetHandle.entityId
+                        : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                    const expectedTargetIncarnation = isTargetEntity
+                        ? expected.targetHandle.incarnation
+                        : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                    const resultIsAccepted = record.result
+                            === GPU_SPAWN_PROGRAM_RESULT.RESOLVED
+                        || record.result === GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID
+                        || (isTargetEntity
+                            && record.result
+                                === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID);
                     if (record.destinationSlot !== expected.destinationSlot
                         || record.destinationEntityId
                             !== expected.destinationHandle.entityId
@@ -3036,23 +3097,32 @@ export class GpuCircleBodySimulation {
                         || record.sourceEntityId !== expected.sourceHandle.entityId
                         || record.sourceIncarnation
                             !== expected.sourceHandle.incarnation
+                        || record.targetSlot !== expectedTargetSlot
+                        || record.targetEntityId !== expectedTargetEntityId
+                        || record.targetIncarnation !== expectedTargetIncarnation
                         || record.modeFlags !== expected.modeFlags
                         || record.sourceTick !== queueEntry.sourceTick
-                        || (record.result !== GPU_SPAWN_PROGRAM_RESULT.RESOLVED
-                            && record.result
-                                !== GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID)) {
+                        || !resultIsAccepted) {
                         throw new RangeError(
                             `SpawnProgram result record mismatch: index=${index}, result=${record.result}`
                         );
+                    }
+                    let reason = 'resolved';
+                    if (record.result === GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID) {
+                        reason = 'source-invalid';
+                    } else if (record.result
+                        === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID) {
+                        reason = 'target-invalid';
                     }
                     outcomes[index] = Object.freeze({
                         destinationSlot: record.destinationSlot,
                         destinationHandle: expected.destinationHandle,
                         sourceHandle: expected.sourceHandle,
+                        ...(isTargetEntity
+                            ? { targetHandle: expected.targetHandle }
+                            : {}),
                         result: record.result,
-                        reason: record.result === GPU_SPAWN_PROGRAM_RESULT.RESOLVED
-                            ? 'resolved'
-                            : 'source-invalid'
+                        reason
                     });
                 }
                 outcomes = Object.freeze(outcomes);

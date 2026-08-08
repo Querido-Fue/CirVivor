@@ -45,12 +45,12 @@ function requireNonEmptyString(value, label) {
     return value;
 }
 
-function cloneAndFreezeValue(source, label, ancestors = new Set()) {
+function materializeGpuPlainDataValue(source, label, ancestors, opaqueKeys = null) {
     if (source === null
         || typeof source === 'string'
         || typeof source === 'boolean'
         || typeof source === 'undefined') {
-        return source ?? null;
+        return source;
     }
     if (typeof source === 'number') {
         if (!Number.isFinite(source)) {
@@ -65,26 +65,75 @@ function cloneAndFreezeValue(source, label, ancestors = new Set()) {
         throw new TypeError(`${label}에 순환 참조가 있습니다.`);
     }
     ancestors.add(source);
-    let result;
-    if (Array.isArray(source) || ArrayBuffer.isView(source)) {
-        result = Array.from(source, (value, index) => (
-            cloneAndFreezeValue(value, `${label}[${index}]`, ancestors)
-        ));
-    } else {
-        const prototype = Object.getPrototypeOf(source);
-        const isPlainObject = prototype === null
-            || Object.getPrototypeOf(prototype) === null;
-        if (!isPlainObject) {
-            ancestors.delete(source);
-            throw new TypeError(`${label}은 plain object여야 합니다.`);
+    try {
+        const isArray = Array.isArray(source);
+        const isTypedArray = ArrayBuffer.isView(source);
+        if (isTypedArray && typeof source.length !== 'number') {
+            throw new TypeError(`${label}은 typed array여야 합니다.`);
         }
-        result = {};
-        for (const [key, value] of Object.entries(source)) {
-            result[key] = cloneAndFreezeValue(value, `${label}.${key}`, ancestors);
+        if (!isArray && !isTypedArray) {
+            const prototype = Object.getPrototypeOf(source);
+            const isPlainObject = prototype === null
+                || Object.getPrototypeOf(prototype) === null;
+            if (!isPlainObject) {
+                throw new TypeError(`${label}은 plain object여야 합니다.`);
+            }
+        }
+
+        // Proxy ownKeys/getter drift를 막기 위해 key 집합은 정확히 한 번만 읽고,
+        // 각 enumerable string value도 정확히 한 번만 materialize합니다.
+        const ownKeys = Reflect.ownKeys(source);
+        if (ownKeys.some((key) => typeof key === 'symbol')) {
+            throw new TypeError(`${label}에는 symbol을 사용할 수 없습니다.`);
+        }
+        const result = isArray || isTypedArray
+            ? new Array(source.length)
+            : Object.create(null);
+        for (const key of ownKeys) {
+            if ((isArray || isTypedArray) && key === 'length') {
+                continue;
+            }
+            const descriptor = Object.getOwnPropertyDescriptor(source, key);
+            if (!descriptor) {
+                throw new TypeError(`${label}.${key} descriptor가 materialize 중 변경되었습니다.`);
+            }
+            if (!descriptor.enumerable) {
+                continue;
+            }
+            const value = Reflect.get(source, key);
+            result[key] = opaqueKeys?.has(key)
+                ? value
+                : materializeGpuPlainDataValue(
+                    value,
+                    `${label}.${key}`,
+                    ancestors
+                );
+        }
+        return Object.freeze(result);
+    } finally {
+        ancestors.delete(source);
+    }
+}
+
+/**
+ * GPU public ingress의 raw plain-data를 getter/Proxy 재평가 없이 한 번 읽어
+ * deeply immutable snapshot으로 만듭니다.
+ */
+export function materializeGpuPlainDataSnapshot(
+    source,
+    label = 'gpuPlainData',
+    options = {}
+) {
+    if (typeof label !== 'string' || label.length === 0) {
+        throw new TypeError('plain-data snapshot label이 필요합니다.');
+    }
+    const opaqueKeys = new Set(options.opaqueKeys ?? []);
+    for (const key of opaqueKeys) {
+        if (typeof key !== 'string' || key.length === 0) {
+            throw new TypeError('opaqueKeys에는 비어 있지 않은 문자열만 사용할 수 있습니다.');
         }
     }
-    ancestors.delete(source);
-    return Object.freeze(result);
+    return materializeGpuPlainDataValue(source, label, new Set(), opaqueKeys);
 }
 
 function validateOptionalExactIdentityPair(snapshot, prefix) {
@@ -112,12 +161,12 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('GPU body spawn intent가 필요합니다.');
     }
-    if (Object.prototype.hasOwnProperty.call(source, 'entityId')
-        || Object.prototype.hasOwnProperty.call(source, 'incarnation')
-        || Object.prototype.hasOwnProperty.call(source, 'handle')) {
+    const snapshot = materializeGpuPlainDataSnapshot(source, 'spawnIntent');
+    if (Object.prototype.hasOwnProperty.call(snapshot, 'entityId')
+        || Object.prototype.hasOwnProperty.call(snapshot, 'incarnation')
+        || Object.prototype.hasOwnProperty.call(snapshot, 'handle')) {
         throw new TypeError('spawn identity는 WorldRegistry만 발급할 수 있습니다.');
     }
-    const snapshot = cloneAndFreezeValue(source, 'spawnIntent');
     const kindId = requireNonEmptyString(snapshot.kindId, 'spawnIntent.kindId');
     const legacyEnemyDefinitionId = snapshot.enemyDefinitionId;
     const definitionId = requireNonEmptyString(
@@ -152,6 +201,7 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     );
     validateOptionalExactIdentityPair(snapshot, 'owner');
     validateOptionalExactIdentityPair(snapshot, 'source');
+    validateOptionalExactIdentityPair(snapshot, 'target');
     const contactHandler = normalizeGpuCircleBodyContactHandler(snapshot);
     if (snapshot.spawnSequence !== undefined && snapshot.spawnSequence !== null) {
         requireNonNegativeSafeInteger(snapshot.spawnSequence, 'spawnIntent.spawnSequence');
@@ -190,6 +240,8 @@ export function createGpuRegistryMetadata(intent) {
         ownerIncarnation: intent.ownerIncarnation,
         sourceEntityId: intent.sourceEntityId,
         sourceIncarnation: intent.sourceIncarnation,
+        targetEntityId: intent.targetEntityId,
+        targetIncarnation: intent.targetIncarnation,
         producerId: intent.producerId,
         sourceAbilityId: intent.sourceAbilityId,
         targetPolicyId: intent.targetPolicyId

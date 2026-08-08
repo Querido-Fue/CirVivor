@@ -1,5 +1,6 @@
 import {
     createGpuRegistryMetadata,
+    materializeGpuPlainDataSnapshot,
     normalizeGpuSpawnIntent
 } from './gpu_spawn_intent.js';
 import {
@@ -82,68 +83,6 @@ function stableFingerprint(value, ancestors = new Set()) {
     return fingerprint;
 }
 
-/**
- * source-relative command의 raw 입력을 단 한 번 읽어 immutable plain-data
- * snapshot으로 만듭니다. 이후 fingerprint, source lookup, payload 정규화는 반드시
- * 이 snapshot만 사용해 getter/Proxy의 재평가로 source identity가 drift하지 않게 합니다.
- */
-function materializeSourceRelativeCommand(value, label, ancestors = new Set()) {
-    if (value === null
-        || typeof value === 'undefined'
-        || typeof value === 'string'
-        || typeof value === 'boolean') {
-        return value;
-    }
-    if (typeof value === 'number') {
-        if (!Number.isFinite(value)) {
-            throw new TypeError(`${label}에는 유한 숫자만 사용할 수 있습니다.`);
-        }
-        return value;
-    }
-    if (typeof value !== 'object') {
-        throw new TypeError(`${label}에는 함수, symbol 또는 bigint를 사용할 수 없습니다.`);
-    }
-    if (ancestors.has(value)) {
-        throw new TypeError(`${label}에 순환 참조가 있습니다.`);
-    }
-    ancestors.add(value);
-    try {
-        if (Object.getOwnPropertySymbols(value).length > 0) {
-            throw new TypeError(`${label}에는 symbol을 사용할 수 없습니다.`);
-        }
-        if (Array.isArray(value)) {
-            return Object.freeze(Array.from(value, (entry, index) => (
-                materializeSourceRelativeCommand(entry, `${label}[${index}]`, ancestors)
-            )));
-        }
-        if (ArrayBuffer.isView(value)) {
-            if (typeof value.length !== 'number') {
-                throw new TypeError(`${label}은 typed array여야 합니다.`);
-            }
-            return Object.freeze(Array.from(value, (entry, index) => (
-                materializeSourceRelativeCommand(entry, `${label}[${index}]`, ancestors)
-            )));
-        }
-        const prototype = Object.getPrototypeOf(value);
-        const isPlainObject = prototype === null
-            || Object.getPrototypeOf(prototype) === null;
-        if (!isPlainObject) {
-            throw new TypeError(`${label}은 plain object여야 합니다.`);
-        }
-        const snapshot = Object.create(null);
-        for (const [key, entry] of Object.entries(value)) {
-            snapshot[key] = materializeSourceRelativeCommand(
-                entry,
-                `${label}.${key}`,
-                ancestors
-            );
-        }
-        return Object.freeze(snapshot);
-    } finally {
-        ancestors.delete(value);
-    }
-}
-
 function normalizeMoveIntent(command) {
     const handle = normalizeHandle(command?.handle ?? command, 'control.handle');
     let moveIntentX = requireFinite(
@@ -180,14 +119,46 @@ function normalizeRequiredVector(source, label) {
     return normalizeVector(source, label);
 }
 
-function normalizeSourceRelativeIntent(source, subjectTeamId) {
+function rejectPresentProperties(source, propertyNames, label) {
+    for (const propertyName of propertyNames) {
+        if (Object.prototype.hasOwnProperty.call(source, propertyName)) {
+            throw new TypeError(`${label}에는 ${propertyName}을(를) 사용할 수 없습니다.`);
+        }
+    }
+}
+
+function normalizeSourceRelativeMode(source) {
+    const modeFlags = requirePositiveSafeInteger(
+        source?.modeFlags ?? GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
+        'sourceRelativeSpawn.modeFlags'
+    );
+    if (modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY
+        && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
+        && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY) {
+        throw new RangeError(
+            `지원하지 않는 source-relative SpawnProgram mode입니다: ${modeFlags}`
+        );
+    }
+    return modeFlags;
+}
+
+function normalizeSourceRelativeIntent(source, subjectTeamId, exact = {}) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('source-relative spawn intent가 필요합니다.');
     }
-    const sourceHandle = normalizeHandle(
+    const modeFlags = exact.modeFlags ?? normalizeSourceRelativeMode(source);
+    const sourceHandle = exact.sourceHandle ?? normalizeHandle(
         source.sourceHandle,
         'sourceRelativeSpawn.sourceHandle'
     );
+    const isTargetEntity = modeFlags
+        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
+    const targetHandle = isTargetEntity
+        ? exact.targetHandle ?? normalizeHandle(
+            source.targetHandle,
+            'sourceRelativeSpawn.targetHandle'
+        )
+        : null;
     const suppliedDestinationSpawn = normalizeGpuSpawnIntent(
         source.destinationSpawn
             ?? source.destinationIntent
@@ -210,28 +181,57 @@ function normalizeSourceRelativeIntent(source, subjectTeamId) {
             'source-relative destination metadata는 actual sourceHandle과 정확히 일치해야 합니다.'
         );
     }
+    const hasTargetEntityId = suppliedDestinationSpawn.targetEntityId !== undefined
+        && suppliedDestinationSpawn.targetEntityId !== null;
+    const hasTargetIncarnation = suppliedDestinationSpawn.targetIncarnation !== undefined
+        && suppliedDestinationSpawn.targetIncarnation !== null;
+    if (hasTargetEntityId !== hasTargetIncarnation) {
+        throw new TypeError(
+            'source-relative destination metadata에는 targetEntityId/targetIncarnation이 모두 필요합니다.'
+        );
+    }
+    if (!isTargetEntity && hasTargetEntityId) {
+        throw new TypeError(
+            'non-targeted source-relative destination에는 target provenance를 사용할 수 없습니다.'
+        );
+    }
+    if (isTargetEntity && hasTargetEntityId
+        && (suppliedDestinationSpawn.targetEntityId !== targetHandle.entityId
+            || suppliedDestinationSpawn.targetIncarnation !== targetHandle.incarnation)) {
+        throw new RangeError(
+            'targeted destination metadata는 actual targetHandle과 정확히 일치해야 합니다.'
+        );
+    }
     const destinationSpawn = normalizeGpuSpawnIntent({
         ...suppliedDestinationSpawn,
         sourceEntityId: sourceHandle.entityId,
-        sourceIncarnation: sourceHandle.incarnation
+        sourceIncarnation: sourceHandle.incarnation,
+        ...(isTargetEntity ? {
+            targetEntityId: targetHandle.entityId,
+            targetIncarnation: targetHandle.incarnation
+        } : {})
     }, { subjectTeamId });
-    const modeFlags = requirePositiveSafeInteger(
-        source.modeFlags ?? GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
-        'sourceRelativeSpawn.modeFlags'
-    );
     const base = {
         sourceHandle,
         destinationSpawn,
         modeFlags,
-        positionOffset: normalizeVector(
-            source.positionOffset,
-            'sourceRelativeSpawn.positionOffset'
-        )
+        positionOffset: isTargetEntity
+            ? normalizeRequiredVector(
+                source.positionOffset,
+                'sourceRelativeSpawn.positionOffset'
+            )
+            : normalizeVector(
+                source.positionOffset,
+                'sourceRelativeSpawn.positionOffset'
+            )
     };
     if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY) {
-        if (source.aimWorldPoint !== undefined || source.launchSpeed !== undefined) {
-            throw new TypeError('velocity source-relative intent에는 aimWorldPoint/launchSpeed를 사용할 수 없습니다.');
-        }
+        rejectPresentProperties(source, [
+            'aimWorldPoint',
+            'launchSpeed',
+            'targetHandle',
+            'targetOffset'
+        ], 'velocity source-relative intent');
         return Object.freeze({
             ...base,
             launchVelocity: normalizeRequiredVector(
@@ -245,10 +245,12 @@ function normalizeSourceRelativeIntent(source, subjectTeamId) {
         });
     }
     if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT) {
-        if (source.launchVelocity !== undefined
-            || source.sourceVelocityScale !== undefined) {
-            throw new TypeError('aim-point source-relative intent에는 launchVelocity/sourceVelocityScale을 사용할 수 없습니다.');
-        }
+        rejectPresentProperties(source, [
+            'launchVelocity',
+            'sourceVelocityScale',
+            'targetHandle',
+            'targetOffset'
+        ], 'aim-point source-relative intent');
         const launchSpeed = requireFinite(
             source.launchSpeed,
             'sourceRelativeSpawn.launchSpeed'
@@ -265,7 +267,33 @@ function normalizeSourceRelativeIntent(source, subjectTeamId) {
             launchSpeed
         });
     }
-    throw new RangeError(`지원하지 않는 source-relative SpawnProgram mode입니다: ${modeFlags}`);
+    rejectPresentProperties(source, [
+        'position',
+        'velocity',
+        'launchVelocity',
+        'sourceVelocityScale',
+        'aimWorldPoint',
+        'trackedPose',
+        'targetPosition',
+        'targetWorldPosition',
+        'cpuTargetPosition'
+    ], 'target-entity source-relative intent');
+    const launchSpeed = requireFinite(
+        source.launchSpeed,
+        'sourceRelativeSpawn.launchSpeed'
+    );
+    if (launchSpeed <= 0) {
+        throw new RangeError('sourceRelativeSpawn.launchSpeed는 양수여야 합니다.');
+    }
+    return Object.freeze({
+        ...base,
+        targetHandle,
+        targetOffset: normalizeVector(
+            source.targetOffset,
+            'sourceRelativeSpawn.targetOffset'
+        ),
+        launchSpeed
+    });
 }
 
 function commandDomain(command) {
@@ -433,7 +461,8 @@ export class GpuFixedCommandOwner {
             stale: 0,
             capacityRejected: 0,
             completedResolved: 0,
-            completedSourceInvalid: 0
+            completedSourceInvalid: 0,
+            completedTargetInvalid: 0
         };
         this.recoveryRequired = false;
         this.destroyed = false;
@@ -535,14 +564,23 @@ export class GpuFixedCommandOwner {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
-        const snapshot = materializeSourceRelativeCommand(
+        const snapshot = materializeGpuPlainDataSnapshot(
             intent,
             'sourceRelativeSpawn'
         );
+        const modeFlags = normalizeSourceRelativeMode(snapshot);
         const sourceHandle = normalizeHandle(
             snapshot?.sourceHandle,
             'sourceRelativeSpawn.sourceHandle'
         );
+        const isTargetEntity = modeFlags
+            === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
+        const targetHandle = isTargetEntity
+            ? normalizeHandle(
+                snapshot?.targetHandle,
+                'sourceRelativeSpawn.targetHandle'
+            )
+            : null;
         const fingerprint = stableFingerprint({
             type: 'source-relative-spawn',
             tick,
@@ -563,6 +601,19 @@ export class GpuFixedCommandOwner {
                     : 'stale-source'
             );
         }
+        if (targetHandle) {
+            const targetDisposition = this.#getExactActiveDisposition(targetHandle);
+            if (targetDisposition !== 'active') {
+                this.telemetry.stale++;
+                return this.#rememberImmediateRejection(
+                    id,
+                    fingerprint,
+                    targetDisposition === 'desync'
+                        ? 'registry-backend-desync'
+                        : 'stale-target'
+                );
+            }
+        }
         const sourceView = this.registry.copyEntityView(sourceHandle, {});
         if (!sourceView || !sourceView.metadata) {
             this.recoveryRequired = true;
@@ -574,7 +625,8 @@ export class GpuFixedCommandOwner {
         }
         const payload = normalizeSourceRelativeIntent(
             snapshot,
-            sourceView.metadata.teamId
+            sourceView.metadata.teamId,
+            { modeFlags, sourceHandle, targetHandle }
         );
         return this.#enqueue({
             type: 'source-relative-spawn',
@@ -630,15 +682,31 @@ export class GpuFixedCommandOwner {
                 for (const outcome of batch.outcomes) {
                     const key = handleKey(outcome?.destinationHandle);
                     const pending = this.pendingDestinations.get(key);
+                    const pendingTargetHandle = pending?.payload?.targetHandle ?? null;
+                    const outcomeTargetHandle = outcome?.targetHandle ?? null;
                     if (!pending
                         || preparedDestinationKeys.has(key)
                         || batch.sourceTick !== pending.targetFixedTick
                         || handleKey(outcome?.sourceHandle)
-                            !== handleKey(pending.payload.sourceHandle)) {
+                            !== handleKey(pending.payload.sourceHandle)
+                        || ((pendingTargetHandle === null)
+                            !== (outcomeTargetHandle === null))
+                        || (pendingTargetHandle !== null
+                            && handleKey(outcomeTargetHandle)
+                                !== handleKey(pendingTargetHandle))) {
                         protocolFailure = Object.freeze({
                             stage: 'spawn-program-completion',
                             code: 'destination-contract',
                             message: `등록되지 않았거나 중복된 destination outcome입니다: ${key}`
+                        });
+                        break;
+                    }
+                    if (outcome.reason === 'target-invalid'
+                        && pendingTargetHandle === null) {
+                        protocolFailure = Object.freeze({
+                            stage: 'spawn-program-completion',
+                            code: 'unknown-outcome',
+                            message: 'non-targeted SpawnProgram은 target-invalid를 반환할 수 없습니다.'
                         });
                         break;
                     }
@@ -651,12 +719,13 @@ export class GpuFixedCommandOwner {
                             });
                             break;
                         }
-                    } else if (outcome.reason === 'source-invalid') {
+                    } else if (outcome.reason === 'source-invalid'
+                        || outcome.reason === 'target-invalid') {
                         if (this.backend.hasBody(outcome.destinationHandle)) {
                             protocolFailure = Object.freeze({
                                 stage: 'spawn-program-completion',
                                 code: 'cleanup-failed',
-                                message: `source-invalid destination backend body가 남았습니다: ${key}`
+                                message: `${outcome.reason} destination backend body가 남았습니다: ${key}`
                             });
                             break;
                         }
@@ -704,8 +773,10 @@ export class GpuFixedCommandOwner {
                 }
                 if (outcome.reason === 'resolved') {
                     this.telemetry.completedResolved++;
-                } else {
+                } else if (outcome.reason === 'source-invalid') {
                     this.telemetry.completedSourceInvalid++;
+                } else {
+                    this.telemetry.completedTargetInvalid++;
                 }
                 this.pendingDestinations.delete(key);
                 completed.push(Object.freeze({
@@ -835,6 +906,24 @@ export class GpuFixedCommandOwner {
                 consumed.add(command.commandId);
                 continue;
             }
+            if (command.type === 'source-relative-spawn'
+                && command.payload.targetHandle) {
+                const targetDisposition = this.#getExactActiveDisposition(
+                    command.payload.targetHandle
+                );
+                if (targetDisposition !== 'active') {
+                    result.rejected.push({
+                        commandId: command.commandId,
+                        domain: 'spawn',
+                        code: targetDisposition === 'desync'
+                            ? 'registry-backend-desync'
+                            : 'stale-target'
+                    });
+                    this.telemetry.stale++;
+                    consumed.add(command.commandId);
+                    continue;
+                }
+            }
             if (command.type === 'control') {
                 if (!this.backend.canControlBody(handle)) {
                     result.rejected.push({
@@ -909,15 +998,22 @@ export class GpuFixedCommandOwner {
                 modeFlags: command.payload.modeFlags,
                 positionOffset: command.payload.positionOffset,
                 ...(command.payload.modeFlags
-                    === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
+                    === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
                     ? {
-                        aimWorldPoint: command.payload.aimWorldPoint,
+                        targetHandle: command.payload.targetHandle,
+                        targetOffset: command.payload.targetOffset,
                         launchSpeed: command.payload.launchSpeed
                     }
-                    : {
-                        launchVelocity: command.payload.launchVelocity,
-                        sourceVelocityScale: command.payload.sourceVelocityScale
-                    })
+                    : command.payload.modeFlags
+                        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
+                        ? {
+                            aimWorldPoint: command.payload.aimWorldPoint,
+                            launchSpeed: command.payload.launchSpeed
+                        }
+                        : {
+                            launchVelocity: command.payload.launchVelocity,
+                            sourceVelocityScale: command.payload.sourceVelocityScale
+                        })
             }))
         };
         let backendResult;

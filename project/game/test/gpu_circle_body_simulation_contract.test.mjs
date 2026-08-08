@@ -17,8 +17,10 @@ const {
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
     GPU_FIXED_PRIMITIVE_ABI,
+    GPU_FIXED_PRIMITIVE_IDENTITY,
     GPU_SPAWN_PROGRAM_MODE,
-    GPU_SPAWN_PROGRAM_RESULT
+    GPU_SPAWN_PROGRAM_RESULT,
+    readGpuSpawnProgramRecord
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 const {
     GAMEPLAY_DAMAGE_POLICY_ID,
@@ -62,12 +64,16 @@ function createBody(x) {
 function createSourceRelativeSpawn({
     sourceEntityId = 1,
     sourceIncarnation = 1,
+    targetEntityId = 9,
+    targetIncarnation = 1,
     destinationEntityId,
     destinationIncarnation = 1,
     modeFlags = GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY
 }) {
     const isAimPoint = modeFlags
         === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
+    const isTargetEntity = modeFlags
+        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
     return {
         sourceHandle: {
             entityId: sourceEntityId,
@@ -84,13 +90,20 @@ function createSourceRelativeSpawn({
         },
         modeFlags,
         positionOffset: { x: 0.25, y: -0.5 },
-        ...(isAimPoint ? {
+        ...(isTargetEntity ? {
+            targetHandle: {
+                entityId: targetEntityId,
+                incarnation: targetIncarnation
+            },
+            targetOffset: { x: 0.5, y: -0.25 },
+            launchSpeed: 12
+        } : (isAimPoint ? {
             aimWorldPoint: { x: 7, y: -3 },
             launchSpeed: 18
         } : {
             launchVelocity: { x: 4, y: 1 },
             sourceVelocityScale: 0.5
-        })
+        }))
     };
 }
 
@@ -1276,6 +1289,23 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
         assert.equal(staged.accepted, 2);
         assert.equal(staged.controlCount, 1);
         assert.equal(staged.sourceRelativeSpawnCount, 1);
+        const velocityProgram = readGpuSpawnProgramRecord(
+            simulation.hostSpawnProgram,
+            0
+        );
+        assert.equal(
+            velocityProgram.targetSlot,
+            GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+        );
+        assert.equal(
+            velocityProgram.targetEntityId,
+            GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+        );
+        assert.equal(
+            velocityProgram.targetIncarnation,
+            GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+        );
+        assert.deepEqual({ ...velocityProgram.targetOffset }, { x: 0, y: 0 });
         assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
 
         assert.deepEqual(
@@ -1306,6 +1336,126 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout'
             ]
         );
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('target-entity SpawnProgram은 private exact slot을 pack하고 target ABA를 normal cleanup한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.spawnProgramResultPayloads.push(
+        GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID
+    );
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 4,
+        controlCommandCapacity: 2,
+        spawnProgramCapacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    const sourceHandle = { entityId: 1, incarnation: 1 };
+    const targetHandle = { entityId: 9, incarnation: 3 };
+    const replacementHandle = { entityId: 10, incarnation: 4 };
+    const destinationHandle = { entityId: 2, incarnation: 1 };
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            ...sourceHandle
+        }, {
+            ...createBody(5),
+            velocity: { x: -2, y: 1 },
+            ...targetHandle
+        }]).accepted, 2);
+
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 7,
+            sourceRelativeSpawns: [createSourceRelativeSpawn({
+                sourceEntityId: sourceHandle.entityId,
+                sourceIncarnation: sourceHandle.incarnation,
+                targetEntityId: targetHandle.entityId,
+                targetIncarnation: targetHandle.incarnation,
+                destinationEntityId: destinationHandle.entityId,
+                destinationIncarnation: destinationHandle.incarnation,
+                modeFlags:
+                    GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+            })]
+        });
+        assert.equal(staged.accepted, 1);
+        assert.equal(staged.requiresRecovery, false);
+        assert.equal('targetSlot' in staged, false);
+        assert.equal(simulation.hasBody(destinationHandle), false);
+
+        const program = readGpuSpawnProgramRecord(
+            simulation.hostSpawnProgram,
+            0
+        );
+        assert.equal(program.modeFlags,
+            GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY);
+        assert.equal(program.targetEntityId, targetHandle.entityId);
+        assert.equal(program.targetIncarnation, targetHandle.incarnation);
+        assert.notEqual(
+            program.targetSlot,
+            GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+        );
+        assert.deepEqual({ ...program.targetOffset }, { x: 0.5, y: -0.25 });
+        assert.deepEqual({ ...program.vector }, { x: 0, y: 0 });
+        assert.equal(program.scalar, 12);
+        assert.equal(program.sourceTick, 7);
+
+        assert.equal(simulation.despawnBodies([targetHandle]).removed, 1);
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(6),
+            ...replacementHandle
+        }]).accepted, 1);
+        assert.equal(
+            simulation.handleToSlot.get(
+                `${replacementHandle.entityId}:${replacementHandle.incarnation}`
+            ),
+            program.targetSlot,
+            'target slot은 다른 exact identity로 ABA 재사용됩니다.'
+        );
+
+        assert.equal(simulation.fixedUpdate(1 / 60, 7), true);
+        await flushMicrotasks();
+        const batches = simulation.drainCompletedSpawnProgramBatches([]);
+        assert.equal(batches.length, 1);
+        assert.equal(batches[0].failure, null);
+        assert.equal(batches[0].outcomes.length, 1);
+        const [outcome] = batches[0].outcomes;
+        assert.equal(outcome.result, GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID);
+        assert.equal(outcome.reason, 'target-invalid');
+        assert.deepEqual({ ...outcome.sourceHandle }, sourceHandle);
+        assert.deepEqual({ ...outcome.targetHandle }, targetHandle);
+        assert.equal('targetSlot' in outcome, false);
+        assert.equal(simulation.hasBody(destinationHandle), false);
+        assert.equal(simulation.hasBody(replacementHandle), true);
+
+        const status = simulation.getStatus();
+        assert.equal(status.pendingBodyCount, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.completedResolved, 0);
+        assert.equal(
+            status.fixedPrimitives.spawnProgram.completedSourceInvalid,
+            0
+        );
+        assert.equal(
+            status.fixedPrimitives.spawnProgram.completedTargetInvalid,
+            1
+        );
+        assert.equal(status.fixedPrimitives.spawnProgram.invalidCount, 1);
+        assert.equal(
+            status.fixedPrimitives.spawnProgram.storageBuffersPerStage,
+            5
+        );
+        assert.equal(status.fixedPrimitives.storageProfile.sourceResolve, 5);
+        assert.equal(
+            status.fixedPrimitives.storageProfile.requiredMaximum,
+            9
+        );
+        assert.ok(Object.entries(status.fixedPrimitives.storageProfile)
+            .filter(([name]) => name !== 'requiredMaximum')
+            .every(([, count]) => count <= 9));
     } finally {
         simulation.destroy();
         restoreGlobals();
@@ -1856,6 +2006,14 @@ test('SpawnProgram result ring은 4개로 bounded되고 pending outcome/event dr
         )), JSON.stringify(batches));
         status = simulation.getStatus();
         assert.equal(status.pendingBodyCount, 0);
+        assert.equal(
+            status.fixedPrimitives.spawnProgram.completedSourceInvalid,
+            4
+        );
+        assert.equal(
+            status.fixedPrimitives.spawnProgram.completedTargetInvalid,
+            0
+        );
         assert.equal(status.state, 'idle');
         assert.equal(physicsBuffer.destroyed, true);
     } finally {
