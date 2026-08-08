@@ -25,6 +25,11 @@ export {
 } from './contract/gameplay_team_contract.js';
 
 export {
+    PROJECTILE_TARGET_POLICY_ID,
+    normalizeProjectileTargetPolicyId
+} from './contract/projectile_target_policy_contract.js';
+
+export {
     GPU_ENEMY_FIRST_TARGET_WAYPOINT_INDEX,
     GPU_ENEMY_WORLD_KIND_ID,
     createGpuEnemySpawnIntent

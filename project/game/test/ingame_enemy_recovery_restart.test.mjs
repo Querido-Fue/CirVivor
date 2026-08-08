@@ -7,6 +7,22 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const { BaseScene } = await loadGameModule('scene/_base_scene.js');
 const { GameSystem } = await loadGameModule('ingame/game_system.js');
+const {
+    createGpuProjectileSpawnIntent
+} = await loadGameModule(
+    'ingame/object/projectile/gpu_projectile_spawn_adapter.js'
+);
+const {
+    PROJECTILE_TARGET_POLICY_ID
+} = await loadGameModule(
+    'ingame/contract/projectile_target_policy_contract.js'
+);
+const {
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
+const {
+    encodeGpuCircleBodyFixedPoint
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const { GPU_BODY_PRESENTATION_PROFILE } = await loadGameModule(
     'ingame/physics/gpu/gpu_body_presentation_clock.js'
 );
@@ -238,6 +254,135 @@ class RecoveryBackend {
         this.trackedHandle = null;
         this.runtimeState = 'destroyed';
     }
+}
+
+class CombatRecoveryBackend extends RecoveryBackend {
+    constructor(mode, sessionGeneration) {
+        super(mode);
+        this.eventProtocol = Object.freeze({
+            sessionGeneration,
+            deviceGeneration: 7,
+            authoritativeEpoch: 11
+        });
+        this.completedEventBatches = [];
+        this.lastEventSourceTick = 0;
+        this.lastEventSubmittedTick = 0;
+        this.spawnBatches = [];
+        this.fixedProgramPlans = [];
+    }
+
+    spawnBodies(bodies) {
+        const batch = Array.from(bodies);
+        this.spawnBatches.push(batch);
+        return super.spawnBodies(batch);
+    }
+
+    stageFixedPrograms(plan) {
+        this.fixedProgramPlans.push(Object.freeze({
+            targetFixedTick: plan.targetFixedTick,
+            controls: Object.freeze(Array.from(plan.controls ?? [])),
+            sourceRelativeSpawns: Object.freeze(
+                Array.from(plan.sourceRelativeSpawns ?? [])
+            )
+        }));
+        return super.stageFixedPrograms(plan);
+    }
+
+    getEventProtocolState() {
+        return this.eventProtocol;
+    }
+
+    queueCompletedEvents(sourceTick, events) {
+        this.completedEventBatches.push(Object.freeze({
+            ...this.eventProtocol,
+            previousSourceTick: this.lastEventSourceTick,
+            previousSubmittedTick: this.lastEventSubmittedTick,
+            sourceTick,
+            submittedTick: sourceTick,
+            completedThroughTick: sourceTick,
+            events: Object.freeze(Array.from(events, (event) => (
+                Object.freeze({ ...event })
+            )))
+        }));
+        this.lastEventSourceTick = sourceTick;
+        this.lastEventSubmittedTick = sourceTick;
+    }
+
+    drainCompletedEventBatches(out = []) {
+        out.push(...this.completedEventBatches.splice(0));
+        return out;
+    }
+
+    getStatus() {
+        return Object.freeze({
+            state: this.getRuntimeState(),
+            ...this.eventProtocol
+        });
+    }
+}
+
+function createTowerDamageEvents(sourceHandle, towerHandle, damage, died = false) {
+    return [
+        {
+            type: 'contact',
+            eventType: 'damage-applied',
+            sequence: 0,
+            entityId: sourceHandle.entityId,
+            incarnation: sourceHandle.incarnation,
+            otherEntityId: towerHandle.entityId,
+            otherIncarnation: towerHandle.incarnation,
+            valueFixedPoint: encodeGpuCircleBodyFixedPoint(damage),
+            damage,
+            reason: died ? 'target-died' : null
+        },
+        ...(died ? [{
+            type: 'death',
+            sequence: 1,
+            entityId: towerHandle.entityId,
+            incarnation: towerHandle.incarnation,
+            flags: 1,
+            reason: 'health-depleted'
+        }] : [])
+    ];
+}
+
+function createHostileTowerTestProjectile(spawnSequence) {
+    return createGpuProjectileSpawnIntent({
+        definition: {
+            id: 'runtime-hostile-tower-test-projectile',
+            producerId: 'runtime-hostile-fixture',
+            sourceAbilityId: 'runtime-hostile-shot',
+            collisionRadius: 0.2,
+            mass: 1,
+            penetration: 1,
+            lifetimeSeconds: 30,
+            damage: 30,
+            damageSelf: 1,
+            killOnTerrain: true
+        },
+        position: { x: 1, y: 1 },
+        velocity: { x: 0, y: 0 },
+        spawnSequence,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    });
+}
+
+function requestHostileProjectileForNextTick(gameSystem, spawnSequence) {
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const targetFixedTick = gameSystem.getNextGpuLifecycleFixedTick();
+    const receipt = endpoint.requestSpawn(
+        createHostileTowerTestProjectile(spawnSequence),
+        targetFixedTick,
+        `runtime-hostile-projectile:${targetFixedTick}:${spawnSequence}`
+    );
+    assert.equal(receipt.accepted, true);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const handles = endpoint.getRegistry().copyActiveHandlesInto([], {
+        kindId: 'projectile'
+    });
+    return handles.at(-1);
 }
 
 function createAnimationHandle() {
@@ -583,6 +728,303 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
     gameSystem.destroy();
     assert.equal(backends[0].destroyCount, 1);
     assert.equal(backends[1].destroyCount, 1);
+});
+
+test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-only recovery를 보존한다', () => {
+    const backends = [];
+    const backendModes = ['normal', 'init-throws', 'normal', 'normal'];
+    let throwNextBackendFactory = false;
+    let backendFactoryThrowCount = 0;
+    const pointer = { pressed: false };
+    const dependencies = {
+        inputActionSource: {
+            isPressed() {
+                return false;
+            },
+            getPointerPosition(out) {
+                out.x = 320;
+                out.y = 180;
+                return out;
+            },
+            isPrimaryPointerPressed() {
+                return pointer.pressed;
+            },
+            getWheelTotals(out) {
+                out.x = 0;
+                out.y = 0;
+                return out;
+            }
+        },
+        animationPort: {
+            animate() {
+                return createAnimationHandle();
+            }
+        },
+        timePort: {
+            getDelta: () => 1 / 120,
+            getFixedDelta: () => 1 / 60,
+            getFixedInterpolationAlpha: () => 0.5
+        },
+        viewportPort: {
+            getSnapshot(out) {
+                out.ww = 1920;
+                out.wh = 1080;
+                return out;
+            }
+        },
+        worldRenderPort: {
+            drawCircle() {},
+            drawSquareInstances() {}
+        },
+        webGpuPlatformPort: {
+            getState() {
+                return { ready: true, deviceGeneration: 7 };
+            }
+        },
+        enemySimulationBackendFactory(_backendDependencies, options) {
+            if (throwNextBackendFactory) {
+                throwNextBackendFactory = false;
+                backendFactoryThrowCount++;
+                throw new Error('replacement backend factory failure');
+            }
+            const backend = new CombatRecoveryBackend(
+                backendModes[backends.length] ?? 'normal',
+                options.sessionGeneration
+            );
+            backends.push(backend);
+            return backend;
+        }
+    };
+    const gameSystem = new GameSystem(dependencies, {
+        enemyWaveEnabled: false
+    });
+    assert.equal(gameSystem.enter(), true);
+
+    const objectSystem = gameSystem.getObjectSystem();
+    const coreIntegrity = gameSystem.getCoreIntegrity();
+    const corePresentation = objectSystem.getCore();
+    const towerFacade = objectSystem.getTower();
+    const primaryController = objectSystem.primaryProjectileController;
+    const inputRouter = gameSystem.playerControlRouter;
+    const inputMapper = gameSystem.inputActionMapper;
+    const cameraController = gameSystem.getCameraZoomController();
+    const coreCurrent = coreIntegrity.getCurrentIntegrity();
+    const coreMax = coreIntegrity.getMaxIntegrity();
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const initialEndpoint = gameSystem.getGpuSimulationEndpoint();
+    const initialTowerHandle = objectSystem.getGpuWorldActorStatus().towerHandle;
+    const initialTowerStatus = gameSystem.getTowerCombatStatus();
+    assert.equal(Object.isFrozen(initialTowerStatus), true);
+    assert.equal(initialTowerStatus.alive, true);
+    assert.equal(initialTowerStatus.currentHp, 30);
+    assert.deepEqual({ ...initialTowerStatus.boundGpuBody }, {
+        ...initialTowerHandle,
+        ...backends[0].eventProtocol
+    });
+    assert.equal(backends[0].spawnBatches.length, 1);
+    assert.equal(backends[0].spawnBatches[0].length, 2);
+
+    const firstHostileHandle = requestHostileProjectileForNextTick(
+        gameSystem,
+        0
+    );
+    backends[0].queueCompletedEvents(2, createTowerDamageEvents(
+        firstHostileHandle,
+        initialTowerHandle,
+        13
+    ));
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 3);
+    const damagedStatus = gameSystem.getTowerCombatStatus();
+    assert.equal(damagedStatus.alive, true);
+    assert.equal(damagedStatus.currentHp, 17);
+    assert.equal(damagedStatus.lastCommittedDamage.damage, 13);
+    assert.equal(
+        damagedStatus.lastCommittedDamage.producerId,
+        'runtime-hostile-fixture'
+    );
+    assert.equal(coreIntegrity.getCurrentIntegrity(), coreCurrent);
+
+    const oldBinding = damagedStatus.boundGpuBody;
+    backends[0].hardFailNextFixed = true;
+    assert.equal(gameSystem.fixedUpdate(), false);
+    assert.equal(gameSystem.getFixedTick(), 3);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
+    throwNextBackendFactory = true;
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+    assert.equal(backendFactoryThrowCount, 1);
+    assert.equal(backends.length, 1);
+    assert.strictEqual(gameSystem.getGpuSimulationEndpoint(), initialEndpoint);
+    assert.strictEqual(
+        objectSystem.getGpuWorldActorStatus().towerHandle,
+        initialTowerHandle
+    );
+    assert.strictEqual(towerFacade.getStatus().bodyHandle, initialTowerHandle);
+    assert.strictEqual(gameSystem.getTowerCombatStatus().boundGpuBody, oldBinding);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 17);
+    assert.strictEqual(gameSystem.getObjectSystem(), objectSystem);
+    assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
+    assert.strictEqual(objectSystem.getCore(), corePresentation);
+    assert.strictEqual(objectSystem.getTower(), towerFacade);
+    assert.strictEqual(gameSystem.playerControlRouter, inputRouter);
+    assert.strictEqual(gameSystem.inputActionMapper, inputMapper);
+    assert.strictEqual(gameSystem.getCameraZoomController(), cameraController);
+    assert.strictEqual(objectSystem.primaryProjectileController, primaryController);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), coreCurrent);
+    assert.equal(coreIntegrity.getMaxIntegrity(), coreMax);
+    assert.equal(backends[0].destroyCount, 0);
+
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+    assert.equal(backends.length, 2);
+    assert.equal(backends[1].destroyCount, 1);
+    assert.strictEqual(gameSystem.getGpuSimulationEndpoint(), initialEndpoint);
+    assert.strictEqual(
+        objectSystem.getGpuWorldActorStatus().towerHandle,
+        initialTowerHandle
+    );
+    assert.strictEqual(towerFacade.getStatus().bodyHandle, initialTowerHandle);
+    assert.strictEqual(gameSystem.getTowerCombatStatus().boundGpuBody, oldBinding);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 17);
+    assert.equal(backends[0].destroyCount, 0);
+
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), true);
+    const aliveReplacementEndpoint = gameSystem.getGpuSimulationEndpoint();
+    assert.notStrictEqual(aliveReplacementEndpoint, initialEndpoint);
+    assert.equal(backends[0].destroyCount, 1);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 17);
+    assert.equal(gameSystem.getTowerCombatStatus().boundGpuBody, null);
+
+    backends[0].queueCompletedEvents(4, createTowerDamageEvents(
+        firstHostileHandle,
+        initialTowerHandle,
+        13
+    ));
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 4);
+    assert.equal(backends[2].spawnBatches.length, 1);
+    assert.equal(backends[2].spawnBatches[0].length, 2);
+    const restoredTowerBody = backends[2].spawnBatches[0].find(
+        ({ kindId }) => kindId === 'tower'
+    );
+    assert.ok(restoredTowerBody);
+    assert.equal(restoredTowerBody.health, 17);
+    const restoredTowerHandle = objectSystem.getGpuWorldActorStatus().towerHandle;
+    assert.notStrictEqual(restoredTowerHandle, initialTowerHandle);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, true);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 17);
+    assert.equal(
+        gameSystem.getTowerCombatStatus().boundGpuBody.sessionGeneration,
+        aliveReplacementEndpoint.getStatus().sessionGeneration
+    );
+
+    const secondHostileHandle = requestHostileProjectileForNextTick(
+        gameSystem,
+        1
+    );
+    const fixedPlanCountBeforeDeath = backends[2].fixedProgramPlans.length;
+    pointer.pressed = true;
+    backends[2].queueCompletedEvents(5, createTowerDamageEvents(
+        secondHostileHandle,
+        restoredTowerHandle,
+        17,
+        true
+    ));
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 6);
+
+    const deadStatus = gameSystem.getTowerCombatStatus();
+    assert.equal(deadStatus.alive, false);
+    assert.equal(deadStatus.livingTowerCount, 0);
+    assert.equal(deadStatus.currentHp, 0);
+    assert.equal(deadStatus.boundGpuBody, null);
+    assert.equal(Object.isFrozen(deadStatus.lastCommittedFacts), true);
+    assert.deepEqual(
+        Array.from(deadStatus.lastCommittedFacts, ({ type }) => type),
+        ['TowerDamageApplied', 'TowerDied', 'NoLivingTowers']
+    );
+    assert.equal(deadStatus.lastCommittedDamage.damage, 17);
+    assert.equal(deadStatus.lastCommittedDamage.currentHp, 0);
+    assert.equal(
+        deadStatus.lastCommittedDeath.producerId,
+        'runtime-hostile-fixture'
+    );
+    assert.deepEqual(
+        { ...deadStatus.lastCommittedDeath.sourceHandle },
+        { ...secondHostileHandle }
+    );
+    assert.equal(objectSystem.getGpuWorldActorStatus().towerHandle, null);
+    assert.ok(objectSystem.getGpuWorldActorStatus().coreProxyHandle);
+    assert.equal(objectSystem.getGpuWorldActorStatus().trackedTowerConfigured, false);
+    assert.equal(towerFacade.getStatus().active, false);
+    assert.equal(towerFacade.getStatus().lastPoseRejection, 'tower-dead');
+    assert.equal(primaryController.getStatus().enabled, false);
+    assert.equal(backends[2].trackedHandle, null);
+    assert.equal(backends[2].fixedProgramPlans.length, fixedPlanCountBeforeDeath);
+    assert.equal(
+        objectSystem.getWorldRegistry().getActiveCount('tower'),
+        0
+    );
+    assert.equal(
+        objectSystem.getWorldRegistry().getActiveCount('core-proxy'),
+        1
+    );
+    assert.equal(
+        objectSystem.getWorldRegistry().getActiveCount('projectile'),
+        1
+    );
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), coreCurrent);
+    assert.equal(coreIntegrity.getMaxIntegrity(), coreMax);
+
+    for (let index = 0; index < 10; index++) {
+        assert.equal(gameSystem.fixedUpdate(), true);
+    }
+    assert.equal(gameSystem.getFixedTick(), 16);
+    assert.equal(backends[2].fixedProgramPlans.length, fixedPlanCountBeforeDeath);
+    assert.equal(
+        objectSystem.getWorldRegistry().getActiveCount('projectile'),
+        1
+    );
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+
+    backends[2].hardFailNextFixed = true;
+    assert.equal(gameSystem.fixedUpdate(), false);
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), true);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, false);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 0);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 17);
+    assert.equal(backends[3].spawnBatches.length, 1);
+    assert.deepEqual(
+        Array.from(backends[3].spawnBatches[0], ({ kindId }) => kindId),
+        ['core-proxy']
+    );
+    assert.equal(backends[3].fixedProgramPlans.length, 0);
+    assert.equal(
+        objectSystem.getWorldRegistry().getActiveCount('tower'),
+        0
+    );
+    assert.equal(
+        objectSystem.getWorldRegistry().getActiveCount('core-proxy'),
+        1
+    );
+    assert.equal(primaryController.getStatus().enabled, false);
+    assert.equal(backends[3].trackedHandle, null);
+
+    assert.strictEqual(gameSystem.getObjectSystem(), objectSystem);
+    assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
+    assert.strictEqual(objectSystem.getCore(), corePresentation);
+    assert.strictEqual(objectSystem.getTower(), towerFacade);
+    assert.strictEqual(gameSystem.playerControlRouter, inputRouter);
+    assert.strictEqual(gameSystem.inputActionMapper, inputMapper);
+    assert.strictEqual(gameSystem.getCameraZoomController(), cameraController);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), coreCurrent);
+    assert.equal(coreIntegrity.getMaxIntegrity(), coreMax);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+
+    gameSystem.destroy();
+    assert.equal(backends[3].destroyCount, 1);
 });
 
 test('선택한 enemy presentation profile을 소유한 같은 GameSystem이 GPU world만 재시작한다', async () => {

@@ -8,15 +8,18 @@ const {
     GPU_PROJECTILE_CONTACT_HANDLER_FLAGS,
     GPU_PROJECTILE_WORLD_KIND_ID,
     GPU_SPAWN_PROGRAM_MODE,
+    PROJECTILE_TARGET_POLICY_ID,
     GpuProjectileSpawnAdapter,
     createGpuProjectileCommandId,
     createGpuProjectileSpawnIntent,
+    normalizeProjectileTargetPolicyId,
     requestGpuProjectile,
     requestGpuProjectileSpawn
 } = await loadGameModule(
     'ingame/gpu_simulation_endpoint.js'
 );
 const {
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
     createGpuCircleBodyAbiStorage,
     readGpuCircleBody,
     readGpuCircleContactHandler,
@@ -93,6 +96,7 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
         teamId: GAMEPLAY_TEAM_ID.PLAYER,
         damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        targetPolicyId: PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN,
         spawnSequence: 9,
         sourceEntityId: 11,
         sourceIncarnation: 3,
@@ -145,6 +149,79 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
     );
     assert.equal(packedHandler.damageSelf, 1);
     assert.equal(packedHandler.damageOther, 2.5);
+});
+
+test('named target policy는 Team과 독립적으로 Enemy 129와 Player-damageable 640을 결정한다', () => {
+    assert.equal(Object.isFrozen(PROJECTILE_TARGET_POLICY_ID), true);
+    assert.deepEqual({ ...PROJECTILE_TARGET_POLICY_ID }, {
+        ENEMY_AND_TERRAIN: 'enemy-and-terrain',
+        PLAYER_DAMAGEABLE_AND_TERRAIN: 'player-damageable-and-terrain'
+    });
+    assert.equal(
+        normalizeProjectileTargetPolicyId(),
+        PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN
+    );
+
+    const shared = {
+        definition: createDefinition(),
+        position: { x: 0, y: 0 },
+        velocity: { x: 1, y: 0 },
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE
+    };
+    const hostileDefault = createGpuProjectileSpawnIntent({
+        ...shared,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE
+    });
+    const hostileTowerTarget = createGpuProjectileSpawnIntent({
+        ...shared,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    });
+    const playerTowerTarget = createGpuProjectileSpawnIntent({
+        ...shared,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    });
+
+    assert.equal(
+        hostileDefault.targetPolicyId,
+        PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN
+    );
+    assert.equal(
+        hostileDefault.interactionMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+    );
+    assert.equal(hostileDefault.interactionMask, 129);
+    for (const intent of [hostileTowerTarget, playerTowerTarget]) {
+        assert.equal(
+            intent.targetPolicyId,
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+        );
+        assert.equal(
+            intent.interactionMask,
+            GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+                | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+        );
+        assert.equal(intent.interactionMask, 640);
+    }
+    assert.notEqual(hostileTowerTarget.teamId, playerTowerTarget.teamId);
+    assert.equal(
+        hostileTowerTarget.interactionMask,
+        playerTowerTarget.interactionMask,
+        'target policy는 projectile Team에서 추론하지 않습니다.'
+    );
+    assert.throws(
+        () => normalizeProjectileTargetPolicyId('kinematic-obstacles'),
+        /target policy/
+    );
+    assert.throws(() => createGpuProjectileSpawnIntent({
+        ...shared,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        targetPolicyId: 'kinematic-obstacles'
+    }), /target policy/);
 });
 
 test('terrain/closest contact 옵션과 inverseMass/lifetime alias를 데이터로만 해석한다', () => {
@@ -205,6 +282,8 @@ test('request helper는 안정적인 command ID와 동일 intent를 endpoint에 
         spawnSequence: 9,
         sourceHandle: { entityId: 11, incarnation: 3 },
         commandNamespace: 'benchmark-projectile',
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
         ...EXPLICIT_PLAYER_ALLEGIANCE
     };
 
@@ -221,6 +300,11 @@ test('request helper는 안정적인 command ID와 동일 intent를 endpoint에 
     assert.equal(endpoint.calls[0].commandId, expectedCommandId);
     assert.deepEqual(endpoint.calls[0].intent, endpoint.calls[1].intent);
     assert.equal(endpoint.calls[0].intent.definitionId, 'benchmark_round_01');
+    assert.equal(
+        endpoint.calls[0].intent.targetPolicyId,
+        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    );
+    assert.equal(endpoint.calls[0].intent.interactionMask, 640);
 });
 
 test('adapter instance는 endpoint/namespace를 보관하고 explicit command ID를 허용한다', () => {
@@ -260,6 +344,8 @@ test('generic mode API는 velocity source-relative payload를 불변 GPU SpawnPr
         spawnSequence: 4,
         producerId: 'tower-primary-weapon',
         sourceAbilityId: 'primary-pointer-fire',
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
         commandNamespace: 'primary-projectile'
     });
 
@@ -303,6 +389,11 @@ test('generic mode API는 velocity source-relative payload를 불변 GPU SpawnPr
     );
     assert.equal(call.intent.destinationSpawn.producerId, 'tower-primary-weapon');
     assert.equal(call.intent.destinationSpawn.sourceAbilityId, 'primary-pointer-fire');
+    assert.equal(
+        call.intent.destinationSpawn.targetPolicyId,
+        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    );
+    assert.equal(call.intent.destinationSpawn.interactionMask, 640);
     assert.equal(Object.isFrozen(call.intent), true);
     assert.equal(Object.isFrozen(call.intent.sourceHandle), true);
     assert.equal(Object.isFrozen(call.intent.positionOffset), true);

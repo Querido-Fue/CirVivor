@@ -1430,7 +1430,8 @@ fn apply_target_damage(body_id: u32, amount: i32) -> DamageResult {
         if (health_before <= 0) {
             return DamageResult(0, 1u);
         }
-        let health_after = health_before - amount;
+        let applied_amount = min(health_before, amount);
+        let health_after = health_before - applied_amount;
         let exchange = atomicCompareExchangeWeak(
             &simulations.values[body_id].health,
             health_before,
@@ -1438,8 +1439,8 @@ fn apply_target_damage(body_id: u32, amount: i32) -> DamageResult {
         );
         if (exchange.exchanged) {
             return DamageResult(
-                min(health_before, amount),
-                select(0u, 1u, health_after <= 0)
+                applied_amount,
+                select(0u, 1u, health_after == 0)
             );
         }
     }

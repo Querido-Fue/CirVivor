@@ -18,6 +18,9 @@ const {
     'ingame/object/tower/gpu_tower_spawn_adapter.js'
 );
 const {
+    THE_TOWER_COMBAT_DATA
+} = await loadGameModule('data/object/tower/the_tower_data.js');
+const {
     GPU_CORE_PROXY_DEFINITION_ID,
     GPU_CORE_PROXY_WORLD_KIND_ID,
     createGpuCoreProxySpawnIntent
@@ -41,13 +44,25 @@ const {
     'ingame/object/enemy/gpu_enemy_spawn_adapter.js'
 );
 const {
+    createGpuProjectileSpawnIntent
+} = await loadGameModule(
+    'ingame/object/projectile/gpu_projectile_spawn_adapter.js'
+);
+const {
+    PROJECTILE_TARGET_POLICY_ID
+} = await loadGameModule(
+    'ingame/contract/projectile_target_policy_contract.js'
+);
+const {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_BODY_LIFETIME,
     GPU_CIRCLE_BODY_RENDER_SHAPE
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_circle_body_abi.js'
 );
 const {
+    INPUT_DISPOSITIONS,
     isPlayerControllable,
     PLAYER_ACTION_TYPES
 } = await loadGameModule(
@@ -68,6 +83,7 @@ const {
 } = await loadGameModule('ingame/state/core_integrity.js');
 const {
     GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
@@ -162,6 +178,31 @@ function assertNearlyEqual(actual, expected, epsilon = 1e-12) {
     );
 }
 
+function isReciprocalInteractionPairEnabled(left, right) {
+    return (left.interactionMask & right.interactionLayer) !== 0
+        && (right.interactionMask & left.interactionLayer) !== 0;
+}
+
+function createProjectileIntent(teamId, targetPolicyId) {
+    return createGpuProjectileSpawnIntent({
+        definition: {
+            id: `tower-policy-projectile-${teamId}-${targetPolicyId}`,
+            collisionRadius: 0.2,
+            inverseMass: 1,
+            penetration: 1,
+            damage: 1,
+            damageSelf: 1,
+            lifetimeSeconds: 2,
+            killOnTerrain: true
+        },
+        position: { x: 27, y: 15 },
+        velocity: { x: 0, y: 0 },
+        teamId,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        targetPolicyId
+    });
+}
+
 test('enter 시점 platform snapshot이 immutable GPU/fallback mode와 wave policy를 고정한다', () => {
     assert.equal(Object.isFrozen(GAME_WORLD_SESSION_MODE), true);
     assert.equal(GAME_WORLD_SESSION_MODE.GPU_WORLD, 'gpu-world');
@@ -209,16 +250,32 @@ test('enter 시점 platform snapshot이 immutable GPU/fallback mode와 wave poli
     assert.throws(() => assertGameWorldSessionMode('gpu-if-available'), /mode/);
 });
 
-test('Tower intent는 authored data를 사용하고 terrain-only physical/no-interaction body다', () => {
+test('Tower intent는 HP 30과 별도 player-damageable interaction capability를 사용한다', () => {
     const authoredPosition = { x: 27, y: 15 };
     const tower = createGpuTowerSpawnIntent({ position: authoredPosition });
     const enemy = createEnemyIntent();
+    const core = createGpuCoreProxySpawnIntent({ position: { x: 27, y: 22 } });
+    const basicBullet = createProjectileIntent(
+        GAMEPLAY_TEAM_ID.PLAYER,
+        PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN
+    );
+    const hostileTowerProjectile = createProjectileIntent(
+        GAMEPLAY_TEAM_ID.HOSTILE,
+        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    );
 
+    assert.equal(Object.isFrozen(THE_TOWER_COMBAT_DATA), true);
+    assert.equal(THE_TOWER_COMBAT_DATA.MAX_HEALTH, 30);
+    assert.equal(THE_TOWER_COMBAT_DATA.BASE_POWER, 10);
     assert.equal(tower.kindId, GPU_TOWER_WORLD_KIND_ID);
     assert.equal(tower.kindId, 'tower');
     assert.equal(tower.definitionId, GPU_TOWER_DEFINITION_ID);
     assert.equal(tower.definitionId, 'the-tower');
     assert.equal(tower.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+    assert.equal(
+        tower.damagePolicyId,
+        GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    );
     assert.equal(
         tower.allegiancePolicy,
         GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
@@ -240,14 +297,58 @@ test('Tower intent는 authored data를 사용하고 terrain-only physical/no-int
         tower.collisionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
     );
-    assert.equal(tower.interactionMask, 0);
+    assert.equal(tower.bodyLayer, 64);
+    assert.equal(tower.collisionMask, 128);
+    assert.equal(
+        tower.interactionLayer,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+    );
+    assert.equal(tower.interactionLayer, 512);
+    assert.equal(
+        tower.interactionMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+    );
+    assert.equal(tower.interactionMask, 2);
     assert.equal('contactHandler' in tower, false);
-    assert.equal('health' in tower, false);
-    assert.equal('lifetime' in tower, false);
+    assert.equal(tower.health, THE_TOWER_COMBAT_DATA.MAX_HEALTH);
+    assert.equal(tower.health, 30);
+    assert.equal(tower.lifetime, GPU_CIRCLE_BODY_LIFETIME.IMMORTAL);
+    assert.equal(tower.alive, true);
+    assert.equal(tower.countAsKill, false);
+    assert.equal(tower.golden, false);
+    assert.equal(tower.explodeOnDeath, false);
+    assert.equal('gold' in tower, false);
+    assert.equal('reward' in tower, false);
+    assert.equal('bounty' in tower, false);
     assert.equal(
         tower.collisionMask & enemy.bodyLayer,
         0,
         'enemy layer는 Tower physical acceptance 대상이 아니다.'
+    );
+    assert.equal(
+        isReciprocalInteractionPairEnabled(basicBullet, enemy),
+        true,
+        'Player Basic policy는 Enemy interaction을 보존합니다.'
+    );
+    assert.equal(
+        isReciprocalInteractionPairEnabled(basicBullet, tower),
+        false,
+        'Player Basic policy는 Tower capability를 target하지 않습니다.'
+    );
+    assert.equal(
+        isReciprocalInteractionPairEnabled(hostileTowerProjectile, tower),
+        true,
+        'Hostile player-damageable policy는 Tower와 reciprocal pair입니다.'
+    );
+    assert.equal(
+        isReciprocalInteractionPairEnabled(hostileTowerProjectile, enemy),
+        false,
+        'Hostile Tower policy는 Enemy capability를 target하지 않습니다.'
+    );
+    assert.equal(
+        isReciprocalInteractionPairEnabled(hostileTowerProjectile, core),
+        false,
+        'Core proxy는 Tower target capability가 아닙니다.'
     );
     assert.equal(tower.renderStyle.visible, true);
     assert.equal(
@@ -258,6 +359,19 @@ test('Tower intent는 authored data를 사용하고 terrain-only physical/no-int
     assert.equal(Object.isFrozen(tower.position), true);
     assert.equal(Object.isFrozen(tower.renderStyle), true);
     assert.equal(Object.isFrozen(tower.renderStyle.color), true);
+    const damagedTower = createGpuTowerSpawnIntent({
+        position: authoredPosition,
+        currentHp: 17
+    });
+    assert.equal(damagedTower.health, 17);
+    assert.throws(
+        () => createGpuTowerSpawnIntent({ position: authoredPosition, currentHp: 0 }),
+        /currentHp/
+    );
+    assert.throws(
+        () => createGpuTowerSpawnIntent({ position: authoredPosition, currentHp: 31 }),
+        /currentHp/
+    );
     assert.throws(
         () => createGpuTowerSpawnIntent({ position: { x: NaN, y: 0 } }),
         /position/
@@ -406,6 +520,40 @@ test('Tower facade는 semantic control/camera만 구현하고 exact-once determi
     assert.strictEqual(tower.stageControlForFixedTick(endpoint, 4), released);
     assert.equal(endpoint.calls.length, 4);
     assert.throws(() => tower.stageControlForFixedTick(endpoint, 3), /단조 증가/);
+});
+
+test('committed Tower death는 facade control/binding/tracking을 영구 비활성화한다', () => {
+    const tower = new GpuTowerActorFacade();
+    const endpoint = createControlEndpoint();
+    tower.bindGpuBody({ entityId: 41, incarnation: 3 }, 7);
+    assert.equal(tower.updateObservedPose(createPose(), createPoseFrame()), true);
+    assert.equal(tower.isCameraFollowEnabled(), true);
+    assert.equal(tower.deactivateForDeath(), true);
+
+    const status = tower.getStatus();
+    assert.equal(status.active, false);
+    assert.equal(status.bodyHandle, null);
+    assert.equal(status.sessionGeneration, null);
+    assert.equal(status.followEnabled, false);
+    assert.equal(status.lastPoseRejection, 'tower-dead');
+    assert.equal(tower.isControlEnabled(), false);
+    assert.equal(tower.isCameraFollowEnabled(), false);
+    assert.deepEqual(
+        { ...tower.stageControlForFixedTick(endpoint, 11) },
+        { accepted: false, reason: 'body-not-active' }
+    );
+    assert.equal(endpoint.calls.length, 0);
+    assert.equal(tower.handlePlayerAction({
+        type: PLAYER_ACTION_TYPES.MOVE_VECTOR,
+        payload: { x: 1, y: 0 }
+    }), INPUT_DISPOSITIONS.PASS);
+    assert.throws(
+        () => tower.bindGpuBody({ entityId: 42, incarnation: 1 }, 8),
+        /비활성 Tower facade/
+    );
+    assert.equal(tower.deactivateForDeath(), false);
+    tower.destroy();
+    tower.destroy();
 });
 
 test('tracked pose는 exact identity/generation과 4-tick bound를 검증하고 valid sample로 회복한다', () => {

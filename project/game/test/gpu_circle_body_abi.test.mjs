@@ -68,9 +68,20 @@ assert.equal(
     GPU_CIRCLE_BODY_LAYER.KINEMATIC_OBSTACLE
 );
 assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN, 128);
+assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY, 256);
+assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE, 512);
+for (const [name, value] of Object.entries(GPU_CIRCLE_BODY_LAYER)) {
+    assert.equal(Number.isInteger(value), true, `${name} capability는 정수여야 합니다.`);
+    assert.ok(value > 0 && value <= 0xffff, `${name} capability는 uint16이어야 합니다.`);
+}
 assert.equal(
     GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
     129
+);
+assert.equal(
+    GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+        | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+    640
 );
 
 const FLOAT_EPSILON = 1e-6;
@@ -98,6 +109,7 @@ function assertThrowsNamed(callback, expectedName) {
 }
 
 // std430/WGSL과 공유할 stride 및 모든 field offset을 고정합니다.
+assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 3);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.BODY_COUNT, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.ADDITION_COUNT, 4);
@@ -222,6 +234,15 @@ assert.equal(unpackedPhysics.collisionMask, 0x81);
 const unpackedInteraction = unpackGpuCircleInteractionMeta(interactionMeta);
 assert.equal(unpackedInteraction.interactionLayer, 0x42);
 assert.equal(unpackedInteraction.interactionMask, 0xa5);
+const towerInteractionMeta = packGpuCircleInteractionMeta(
+    GPU_CIRCLE_BODY_LAYER.PLAYER_DAMAGEABLE,
+    GPU_CIRCLE_BODY_LAYER.PROJECTILE
+);
+assert.equal(towerInteractionMeta, 0x00020200);
+assert.deepEqual({ ...unpackGpuCircleInteractionMeta(towerInteractionMeta) }, {
+    interactionLayer: GPU_CIRCLE_BODY_LAYER.PLAYER_DAMAGEABLE,
+    interactionMask: GPU_CIRCLE_BODY_LAYER.PROJECTILE
+});
 assert.deepEqual({ ...unpackGpuCircleGameplayMeta(gameplayMeta) }, {
     teamId: GAMEPLAY_TEAM_ID.HOSTILE,
     damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX

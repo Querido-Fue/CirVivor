@@ -14,6 +14,10 @@ import {
     normalizeGameplayTeamId,
     resolveGameplayAllegianceTeam
 } from '../../contract/gameplay_team_contract.js';
+import {
+    PROJECTILE_TARGET_POLICY_ID,
+    normalizeProjectileTargetPolicyId
+} from '../../contract/projectile_target_policy_contract.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_NAMESPACE = 'gpu-projectile';
@@ -167,6 +171,21 @@ function resolveInverseMass(definition) {
     return 1 / mass;
 }
 
+function resolveProjectileTargetPolicy(options, definition) {
+    const targetPolicyId = normalizeProjectileTargetPolicyId(
+        options.targetPolicyId
+            ?? definition.targetPolicyId
+            ?? PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN
+    );
+    const interactionMask = targetPolicyId
+        === PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+        ? GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+        : GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    return Object.freeze({ targetPolicyId, interactionMask });
+}
+
 function normalizeColor(source) {
     if (source === undefined || source === null) {
         return null;
@@ -251,6 +270,7 @@ export function createGpuProjectileSpawnIntent(options = {}) {
         options.damagePolicyId
             ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
     );
+    const targetPolicy = resolveProjectileTargetPolicy(options, definition);
     const spawnSequence = requireNonNegativeSafeInteger(
         options.spawnSequence ?? 0,
         'spawnSequence'
@@ -264,6 +284,7 @@ export function createGpuProjectileSpawnIntent(options = {}) {
         definitionId,
         ...allegiance,
         damagePolicyId,
+        targetPolicyId: targetPolicy.targetPolicyId,
         spawnSequence,
         ...(sourceHandle ? {
             sourceEntityId: sourceHandle.entityId,
@@ -289,8 +310,7 @@ export function createGpuProjectileSpawnIntent(options = {}) {
         bodyLayer,
         collisionMask: 0,
         interactionLayer: bodyLayer,
-        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
-            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        interactionMask: targetPolicy.interactionMask,
         // ABI writer가 health를 shader용 fixed-point로 encode합니다.
         health: requireGpuFixedPointCompatible(
             definition.penetration,
@@ -358,7 +378,8 @@ export function requestGpuProjectileSpawn(options = {}) {
         sourceAbilityId: options.sourceAbilityId,
         teamId: options.teamId,
         allegiancePolicy: options.allegiancePolicy,
-        damagePolicyId: options.damagePolicyId
+        damagePolicyId: options.damagePolicyId,
+        targetPolicyId: options.targetPolicyId
     });
     const commandId = options.commandId === undefined || options.commandId === null
         ? createGpuProjectileCommandId({
@@ -419,7 +440,8 @@ export function requestGpuProjectile(options = {}) {
         teamId: options.teamId,
         allegiancePolicy: options.allegiancePolicy
             ?? GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
-        damagePolicyId: options.damagePolicyId
+        damagePolicyId: options.damagePolicyId,
+        targetPolicyId: options.targetPolicyId
     });
     const commandId = options.commandId === undefined || options.commandId === null
         ? createGpuProjectileCommandId({

@@ -17,6 +17,12 @@ const {
     GAMEPLAY_DAMAGE_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
+const { PROJECTILE_TARGET_POLICY_ID } = await loadGameModule(
+    'ingame/contract/projectile_target_policy_contract.js'
+);
+const { GPU_CIRCLE_BODY_COLLISION_LAYER } = await loadGameModule(
+    'ingame/physics/gpu/gpu_circle_body_abi.js'
+);
 const { createGpuRegistryMetadata } = await loadGameModule(
     'ingame/object/gpu_spawn_intent.js'
 );
@@ -624,6 +630,54 @@ test('source-relative owner는 exact source provenance를 주입하고 mismatch/
     ), /launchVelocity\/sourceVelocityScale/);
     assert.equal(owner.getPendingCount(), 0);
     assert.equal(registry.getReservedCount(), 0);
+});
+
+test('source-relative materialization은 target policy/mask를 exact source Team 주입 뒤에도 보존한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 2 });
+    const source = activateBody(registry, backend, {
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+    });
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const targetPolicyId =
+        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN;
+    const interactionMask = GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+        | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    const destinationSpawn = createProjectileIntent({
+        targetPolicyId,
+        interactionMask
+    });
+    assert.equal(destinationSpawn.teamId, undefined);
+    assert.equal(interactionMask, 640);
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, { destinationSpawn }),
+        16,
+        'spawn:target-policy-materialization'
+    ).accepted, true);
+    const committed = owner.commitAtFixedBoundary(16);
+    assert.equal(committed.sourceRelativeSpawns.length, 1);
+    const staged = backend.stagedPlans[0].sourceRelativeSpawns[0];
+    assert.equal(staged.destinationSpawn.teamId, GAMEPLAY_TEAM_ID.HOSTILE);
+    assert.equal(staged.destinationSpawn.targetPolicyId, targetPolicyId);
+    assert.equal(staged.destinationSpawn.interactionMask, interactionMask);
+    assert.equal(staged.destinationSpawn.sourceEntityId, source.entityId);
+    assert.equal(staged.destinationSpawn.sourceIncarnation, source.incarnation);
+    assert.equal(Object.isFrozen(staged.destinationSpawn), true);
+
+    const destination = committed.sourceRelativeSpawns[0].handle;
+    backend.addBody(destination);
+    queueSpawnOutcome(backend, {
+        sourceTick: 16,
+        sourceHandle: source,
+        destinationHandle: destination,
+        reason: 'resolved'
+    });
+    assert.equal(owner.commitCompletedAtFixedBoundary(17).completed.length, 1);
+    const view = registry.copyEntityView(destination, {});
+    assert.equal(view.metadata.teamId, GAMEPLAY_TEAM_ID.HOSTILE);
+    assert.equal(view.metadata.targetPolicyId, targetPolicyId);
 });
 
 test('source-relative raw command는 getter sourceHandle을 한 번만 snapshot해 team/source drift를 막는다', () => {

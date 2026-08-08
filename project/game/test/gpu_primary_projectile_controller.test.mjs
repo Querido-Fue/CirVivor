@@ -14,8 +14,12 @@ const {
     BASIC_BULLET_WEAPON_DATA
 } = await loadGameModule('data/object/projectile/basic_bullet_data.js');
 const {
-    GPU_PROJECTILE_SPAWN_MODE
+    GPU_PROJECTILE_SPAWN_MODE,
+    PROJECTILE_TARGET_POLICY_ID
 } = await loadGameModule('ingame/gpu_simulation_endpoint.js');
+const {
+    GPU_CIRCLE_BODY_COLLISION_LAYER
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
     GpuPrimaryProjectileController
 } = await loadGameModule('ingame/object/projectile/gpu_primary_projectile_controller.js');
@@ -149,6 +153,16 @@ test('primary controller는 copied semantic pointer와 exact GPU handle로 aim-p
     assert.equal(request.intent.launchSpeed, BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond);
     assert.equal(request.intent.destinationSpawn.definitionId, BASIC_BULLET_PROJECTILE_DATA.id);
     assert.equal(request.intent.destinationSpawn.producerId, BASIC_BULLET_PRODUCER_ID);
+    assert.equal(
+        request.intent.destinationSpawn.targetPolicyId,
+        PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN
+    );
+    assert.equal(
+        request.intent.destinationSpawn.interactionMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+    );
+    assert.equal(request.intent.destinationSpawn.interactionMask, 129);
 
     const beforeCommit = controller.getStatus();
     assert.equal(beforeCommit.shotSequence, 0);
@@ -230,4 +244,38 @@ test('controller는 primary semantic action만 소비한다', () => {
         type: 'moveVector',
         payload: { x: 1, y: 0 }
     }), INPUT_DISPOSITIONS.PASS);
+});
+
+test('committed Tower death는 held LMB/pending source와 endpoint를 영구 비활성화한다', () => {
+    const endpoint = createEndpoint();
+    const controller = new GpuPrimaryProjectileController({
+        tower: createTower(),
+        camera: createCamera(),
+        endpoint
+    });
+    assert.equal(
+        controller.handlePlayerAction(primaryAction(true, 4, 5)),
+        INPUT_DISPOSITIONS.CONSUMED
+    );
+    assert.equal(controller.stageShotForFixedTick(3)?.accepted, true);
+    assert.equal(endpoint.sourceRelativeCalls.length, 1);
+
+    assert.equal(controller.deactivateForTowerDeath(), true);
+    const status = controller.getStatus();
+    assert.equal(status.enabled, false);
+    assert.equal(status.primaryPressed, false);
+    assert.equal(status.sessionGeneration, null);
+    assert.equal(status.pendingShot, null);
+    assert.equal(status.lastShotReceipt, null);
+    assert.equal(controller.isControlEnabled(), false);
+    assert.equal(controller.stageShotForFixedTick(4), null);
+    assert.equal(
+        controller.handlePlayerAction(primaryAction(true, 6, 7)),
+        INPUT_DISPOSITIONS.PASS
+    );
+    assert.equal(controller.bindGpuEndpoint(createEndpoint()), false);
+    assert.equal(controller.deactivateForTowerDeath(), false);
+    assert.equal(endpoint.sourceRelativeCalls.length, 1);
+    controller.destroy();
+    controller.destroy();
 });

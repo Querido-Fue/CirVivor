@@ -187,7 +187,9 @@ export const GPU_CIRCLE_BODY_LAYER = Object.freeze({
     TERRAIN: 1 << 7,
     // Core interaction acceptance capability입니다. gameplay noun은 kindId/definitionId에 남고
     // 이 bit는 physical bodyLayer/collisionMask에 사용하지 않습니다.
-    CORE_PROXY: 1 << 8
+    CORE_PROXY: 1 << 8,
+    // Team/kind/physical obstacle과 분리된 player actor damage-candidate capability입니다.
+    PLAYER_DAMAGEABLE: 1 << 9
 });
 
 /** 기존 enemy-only import 이름을 유지하는 호환 alias입니다. */

@@ -3,8 +3,12 @@ import { InputActionMapper } from './input/input_action_mapper.js';
 import { CameraZoomController } from './input/camera_zoom_controller.js';
 import { PlayerControlRouter } from './input/player_control_router.js';
 import { GameObjectSystem } from './object/game_object_system.js';
+import { TowerCombatRoster } from './object/tower/tower_combat_roster.js';
 import { CoreIntegrity } from './state/core_integrity.js';
-import { selectGameWorldSessionMode } from './game_world_session_mode.js';
+import {
+    GAME_WORLD_SESSION_MODE,
+    selectGameWorldSessionMode
+} from './game_world_session_mode.js';
 
 /**
  * @class GameSystem
@@ -52,6 +56,7 @@ export class GameSystem {
             enemyPresentationProfile: options.enemyPresentationProfile
         });
         this.objectSystem = null;
+        this.towerCombatRoster = null;
         this.sessionMode = null;
         this.cameraZoomController = null;
         this.registrationTokens = [];
@@ -78,9 +83,13 @@ export class GameSystem {
             configurable: false,
             enumerable: true
         });
+        this.towerCombatRoster = sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+            ? new TowerCombatRoster()
+            : null;
         this.objectSystem = new GameObjectSystem(this.dependencies, {
             ...this.objectSystemOptions,
-            sessionMode
+            sessionMode,
+            towerCombatRoster: this.towerCombatRoster
         });
         this.#syncViewportSnapshot();
         this.objectSystem.init(this.viewportSnapshot);
@@ -239,6 +248,15 @@ export class GameSystem {
         return this.coreIntegrity;
     }
 
+    /**
+     * HUD·테스트가 읽을 수 있는 불변 GPU Tower combat snapshot입니다.
+     * CPU fallback의 Tower HP 정책은 아직 OPEN이므로 해당 mode에서는 null입니다.
+     * @returns {object|null} GPU_WORLD의 bounded Tower combat status입니다.
+     */
+    getTowerCombatStatus() {
+        return this.towerCombatRoster?.getStatus() ?? null;
+    }
+
     /** @returns {number} 세션 전체가 완료한 fixed tick입니다. */
     getFixedTick() {
         return this.fixedTick;
@@ -312,6 +330,8 @@ export class GameSystem {
         this.cameraZoomController = null;
         this.objectSystem?.destroy();
         this.objectSystem = null;
+        this.towerCombatRoster?.destroy();
+        this.towerCombatRoster = null;
         this.fixedTick = 0;
         this.entered = false;
     }

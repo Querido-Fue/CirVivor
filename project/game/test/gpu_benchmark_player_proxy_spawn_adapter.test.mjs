@@ -17,6 +17,9 @@ const {
 const {
     GPU_CIRCLE_BODY_COLLISION_LAYER
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const {
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 function createBenchmarkChild({
     nextGpuLifecycleFixedTick = 42,
@@ -111,6 +114,7 @@ test('중앙 player와 일치하는 정적 hidden GPU proxy를 next fixed tick�
     assert.equal(intent.radius, GPU_BENCHMARK_ARENA_LAYOUT.playerCollider.radius);
     assert.equal(intent.radius, 0.72);
     assert.equal(intent.inverseMass, 0);
+    assert.equal(intent.teamId, GAMEPLAY_TEAM_ID.PLAYER);
     assert.equal(
         intent.bodyLayer,
         GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
@@ -120,7 +124,26 @@ test('중앙 player와 일치하는 정적 hidden GPU proxy를 next fixed tick�
         intent.interactionLayer,
         GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
     );
+    assert.equal(
+        intent.interactionLayer
+            & GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE,
+        0,
+        'PLAYER Team인 benchmark proxy도 player-damageable capability가 아닙니다.'
+    );
     assert.equal(intent.interactionMask, 0);
+    const hostileTowerTargetMask =
+        GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+        | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    assert.equal(
+        hostileTowerTargetMask & intent.interactionLayer,
+        0,
+        'hostile Tower-target projectile는 benchmark proxy layer를 수락하지 않습니다.'
+    );
+    assert.equal(
+        intent.interactionMask & GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+        0,
+        'benchmark proxy는 projectile interaction을 reciprocal하게 수락하지 않습니다.'
+    );
     assert.equal('layerMask' in intent, false);
     assert.equal('sensorMask' in intent, false);
     assert.equal(intent.health, 1);

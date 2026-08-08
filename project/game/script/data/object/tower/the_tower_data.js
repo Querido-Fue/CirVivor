@@ -5,7 +5,6 @@
  * 입력 유지 시 `MOVE_SPEED_TILES_PER_SECOND`가 되도록 함께 조정합니다.
  *
  * 모든 길이와 속도는 렌더 픽셀이 아니라 타일 월드 단위입니다.
- * Tower에는 체력 데이터가 존재하지 않습니다.
  * @type {Readonly<{
  * RADIUS_TILES:number,
  * MOVE_SPEED_TILES_PER_SECOND:number,
@@ -24,6 +23,12 @@ export const THE_TOWER_DATA = Object.freeze({
     SLEEP_SPEED_TILES_PER_SECOND: 1 / 96,
     MASS: 1,
     MAX_LINEAR_SPEED_TILES_PER_SECOND: 25
+});
+
+/** GPU_WORLD R1 single-Tower combat baseline의 단일 수치 권위입니다. */
+export const THE_TOWER_COMBAT_DATA = Object.freeze({
+    MAX_HEALTH: 30,
+    BASE_POWER: 10
 });
 
 /** CPU fallback renderer와 GPU direct renderer가 공유하는 Tower presentation data입니다. */

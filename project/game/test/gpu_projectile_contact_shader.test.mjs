@@ -43,6 +43,18 @@ function markDeadReference({ entityId, incarnation, bodyId, health, lifetime, al
     return [{ entityId, incarnation, bodyId, reasonFlags }];
 }
 
+function applyTargetDamageReference(healthBefore, amount) {
+    if (amount <= 0) {
+        return { applied: 0, healthAfter: healthBefore, targetDied: false };
+    }
+    if (healthBefore <= 0) {
+        return { applied: 0, healthAfter: healthBefore, targetDied: true };
+    }
+    const applied = Math.min(healthBefore, amount);
+    const healthAfter = healthBefore - applied;
+    return { applied, healthAfter, targetDied: healthAfter === 0 };
+}
+
 for (const entryPoint of [
     'prepare_bodies',
     'clear_grid',
@@ -104,6 +116,7 @@ assert.deepEqual(storageBindings, [
     '1:3:grid_overflow', '3:0:contact_state', '3:1:contacts',
     '3:2:applied_events', '3:3:death_events'
 ]);
+assert.equal(storageBindings.length, 18);
 assert.doesNotMatch(storageBindingBlock, /gameplay|team|damage_policy/i);
 
 // SpawnProgram v2는 64-byte record의 vector/scalar payload로 velocity/aim 두 mode를 공유합니다.
@@ -179,6 +192,21 @@ assert.doesNotMatch(compute, /goal_cell/);
 // Interaction pair는 reciprocal이고 enter policy만 previous-overlap을 억제합니다.
 assert.match(compute, /self_mask & other_layer/);
 assert.match(compute, /other_mask & self_layer/);
+const reciprocalCapabilityGate = compute.indexOf(
+    'if ((self_mask & other_layer) == 0u'
+);
+const reciprocalCapabilityAppend = compute.indexOf(
+    'append_contact(contact);',
+    reciprocalCapabilityGate
+);
+assert.ok(
+    reciprocalCapabilityGate >= 0
+        && reciprocalCapabilityAppend > reciprocalCapabilityGate
+);
+assert.match(
+    compute.slice(reciprocalCapabilityGate, reciprocalCapabilityAppend),
+    /self_mask & other_layer[\s\S]*?other_mask & self_layer[\s\S]*?return selection;/
+);
 assert.match(compute, /if \(suppress_previous_overlap\)[\s\S]*?previous_delta[\s\S]*?minimum_distance_squared/);
 assert.match(compute, /CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY/);
 assert.match(compute, /CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS/);
@@ -204,7 +232,8 @@ const gameplayDamageGate = compute.indexOf('if (!gameplay_damage_is_allowed(', z
 const reserveCall = compute.indexOf('let self_budget_reserved = reserve_self_hit_budget');
 const targetDamageCall = compute.indexOf('let damage = apply_target_damage');
 assert.ok(
-    zeroDamageBranch >= 0
+    reciprocalCapabilityGate >= 0
+        && zeroDamageBranch > reciprocalCapabilityGate
         && gameplayDamageGate > zeroDamageBranch
         && reserveCall > gameplayDamageGate
         && targetDamageCall > reserveCall
@@ -225,6 +254,31 @@ assert.doesNotMatch(
 assert.match(compute, /atomicCompareExchangeWeak\(\s*&simulations\.values\[body_id\]\.health/);
 assert.match(compute, /if \(health_before < amount\) \{\s*return false;/);
 assert.match(compute, /if \(damage\.applied <= 0\)[\s\S]*?atomicAdd\(&simulations\.values\[self_body_id\]\.health, damage_self\);/);
+
+// Target damage는 overkill에서도 음수 HP를 쓰지 않고 canonical zero만 death로 판정합니다.
+const targetDamageStart = compute.indexOf('fn apply_target_damage(');
+const targetDamageEnd = compute.indexOf('fn clear_alive_once(', targetDamageStart);
+assert.ok(targetDamageStart >= 0 && targetDamageEnd > targetDamageStart);
+const targetDamageBlock = compute.slice(targetDamageStart, targetDamageEnd);
+assert.match(
+    targetDamageBlock,
+    /let applied_amount = min\(health_before, amount\);[\s\S]*?let health_after = health_before - applied_amount;/
+);
+assert.match(
+    targetDamageBlock,
+    /atomicCompareExchangeWeak\([\s\S]*?health_before,[\s\S]*?health_after[\s\S]*?select\(0u, 1u, health_after == 0\)/
+);
+assert.doesNotMatch(targetDamageBlock, /health_before\s*-\s*amount/);
+assert.deepEqual(applyTargetDamageReference(30, 100), {
+    applied: 30,
+    healthAfter: 0,
+    targetDied: true
+});
+assert.deepEqual(applyTargetDamageReference(30, 30), {
+    applied: 30,
+    healthAfter: 0,
+    targetDied: true
+});
 
 // terrain kill도 applied event에서 끝나지 않고 registry 회수용 death를 반드시 남깁니다.
 assert.match(compute, /APPLIED_EVENT_TYPE_INTERACTION_ENTER/);

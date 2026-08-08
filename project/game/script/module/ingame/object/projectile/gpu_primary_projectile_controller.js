@@ -11,6 +11,9 @@ import {
     GAMEPLAY_ALLEGIANCE_POLICY
 } from '../../contract/gameplay_team_contract.js';
 import {
+    PROJECTILE_TARGET_POLICY_ID
+} from '../../contract/projectile_target_policy_contract.js';
+import {
     GpuProjectileSpawnAdapter,
     GPU_PROJECTILE_SPAWN_MODE
 } from '../../gpu_simulation_endpoint.js';
@@ -100,6 +103,7 @@ export class GpuPrimaryProjectileController {
         this.pendingShot = null;
         this.lastShotReceipt = null;
         this.lastCommittedShot = null;
+        this.destroyed = false;
         this.bindGpuEndpoint(options.endpoint);
     }
 
@@ -112,7 +116,7 @@ export class GpuPrimaryProjectileController {
     }
 
     isControlEnabled() {
-        return this.enabled;
+        return this.enabled && !this.destroyed;
     }
 
     /** PRIMARY_POINTER_FIRE의 reusable payload를 controller-owned scalar state로 복사합니다. */
@@ -134,7 +138,7 @@ export class GpuPrimaryProjectileController {
 
     /** replacement endpoint를 controller에 결합하고 old session shot state를 폐기합니다. */
     bindGpuEndpoint(endpoint) {
-        if (!this.enabled) {
+        if (!this.enabled || this.destroyed) {
             return false;
         }
         this.endpoint = endpoint;
@@ -217,6 +221,7 @@ export class GpuPrimaryProjectileController {
             sourceHandle: exactSourceHandle,
             ownerHandle: exactSourceHandle,
             allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+            targetPolicyId: PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN,
             positionOffset: this.positionOffset,
             aimWorldPoint: this.aimWorldPoint,
             launchSpeed: LAUNCH_SPEED,
@@ -291,10 +296,22 @@ export class GpuPrimaryProjectileController {
         });
     }
 
+    /** Committed Tower death 뒤 held input/source/endpoint를 영구 비활성화합니다. */
+    deactivateForTowerDeath() {
+        if (this.destroyed || !this.enabled) {
+            return false;
+        }
+        this.enabled = false;
+        this.primaryPressed = false;
+        this.resetGpuBinding();
+        return true;
+    }
+
     destroy() {
-        if (!this.enabled) {
+        if (this.destroyed) {
             return;
         }
+        this.destroyed = true;
         this.enabled = false;
         this.primaryPressed = false;
         this.resetGpuBinding();

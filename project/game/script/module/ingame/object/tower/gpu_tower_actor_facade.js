@@ -45,6 +45,7 @@ export class GpuTowerActorFacade {
         this.followPosition = { x: 0, y: 0 };
         this.followEnabled = false;
         this.lastPoseRejection = 'unbound';
+        this.destroyed = false;
     }
 
     getControlContext() {
@@ -71,6 +72,9 @@ export class GpuTowerActorFacade {
 
     /** lifecycle owner가 활성화한 exact handle을 새 GPU session에 결합합니다. */
     bindGpuBody(handle, sessionGeneration) {
+        if (!this.active || this.destroyed) {
+            throw new Error('비활성 Tower facade는 GPU body에 결합할 수 없습니다.');
+        }
         const entityId = Number(handle?.entityId);
         const incarnation = Number(handle?.incarnation);
         const generation = Number(sessionGeneration);
@@ -98,6 +102,19 @@ export class GpuTowerActorFacade {
         this.lastObservedSourceTick = 0;
         this.followEnabled = false;
         this.lastPoseRejection = 'unbound';
+    }
+
+    /** Committed exact death 뒤 control/tracking/follow를 영구 중단합니다. */
+    deactivateForDeath() {
+        if (this.destroyed || !this.active) {
+            return false;
+        }
+        this.active = false;
+        this.moveIntent.x = 0;
+        this.moveIntent.y = 0;
+        this.resetGpuBinding();
+        this.lastPoseRejection = 'tower-dead';
+        return true;
     }
 
     getGpuBodyHandle() {
@@ -228,9 +245,10 @@ export class GpuTowerActorFacade {
     }
 
     destroy() {
-        if (!this.active) {
+        if (this.destroyed) {
             return;
         }
+        this.destroyed = true;
         this.active = false;
         this.moveIntent.x = 0;
         this.moveIntent.y = 0;

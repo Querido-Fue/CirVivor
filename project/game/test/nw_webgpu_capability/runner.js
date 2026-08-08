@@ -8,6 +8,7 @@ import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     packGpuCircleGameplayMeta,
+    unpackGpuCircleInteractionMeta,
     unpackGpuCircleGameplayMeta
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
 import {
@@ -16,6 +17,9 @@ import {
     GAMEPLAY_TEAM_ID,
     isGameplayDamageAllowed
 } from './production/script/module/ingame/contract/gameplay_team_contract.js';
+import {
+    PROJECTILE_TARGET_POLICY_ID
+} from './production/script/module/ingame/contract/projectile_target_policy_contract.js';
 import {
     GPU_FIXED_PRIMITIVE_ABI,
     GPU_SPAWN_PROGRAM_MODE
@@ -26,6 +30,7 @@ import {
     sampleGpuSignedDistanceField
 } from './production/script/module/ingame/physics/gpu/gpu_signed_distance_field.js';
 import {
+    THE_TOWER_COMBAT_DATA,
     THE_TOWER_DATA
 } from './production/script/data/object/tower/the_tower_data.js';
 import {
@@ -56,6 +61,10 @@ import {
 import {
     createGpuTowerSpawnIntent
 } from './production/script/module/ingame/object/tower/gpu_tower_spawn_adapter.js';
+import {
+    TOWER_COMBAT_FACT_TYPE,
+    TowerCombatRoster
+} from './production/script/module/ingame/object/tower/tower_combat_roster.js';
 import {
     createGpuSimulationEndpoint,
     createGpuEnemySimulationEndpoint,
@@ -5164,11 +5173,21 @@ async function runProductionPhase5AimHardwareSmoke(device) {
 
         endpoint.commitCompletedEventsAtFixedBoundary(3);
         const cardinalView = endpoint.getRegistry().copyEntityView(cardinalHandle, {});
+        const defaultBasicBulletInteractionMask =
+            GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+        const cardinalInteractionMask = unpackGpuCircleInteractionMeta(
+            cardinalBullet.interactionMeta
+        ).interactionMask;
         assert(
             cardinalView?.metadata?.sourceEntityId === primaryTowerHandle.entityId
                 && cardinalView.metadata.sourceIncarnation
                     === primaryTowerHandle.incarnation
-                && cardinalView.metadata.producerId === BASIC_BULLET_PRODUCER_ID,
+                && cardinalView.metadata.producerId === BASIC_BULLET_PRODUCER_ID
+                && cardinalView.metadata.targetPolicyId
+                    === PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN
+                && cardinalInteractionMask
+                    === defaultBasicBulletInteractionMask,
             `Phase 5 exact source provenance가 registry에 없습니다: ${JSON.stringify(cardinalView)}`
         );
 
@@ -5366,6 +5385,10 @@ async function runProductionPhase5AimHardwareSmoke(device) {
             behindVelocity: { ...behindBullet.velocity },
             diagonalVelocity: { ...diagonalBullet.velocity },
             provenance: cardinalView.metadata,
+            defaultTargetPolicy: {
+                id: cardinalView.metadata.targetPolicyId,
+                interactionMask: cardinalInteractionMask
+            },
             render: { drawMarks, bulletCenterAlpha },
             storageProfile: finalStatus.backend.gpu.fixedPrimitives.storageProfile
         };
@@ -5710,6 +5733,1017 @@ async function runProductionPhase5TeamDamageMatrixHardwareSmoke(device) {
         sourceTick,
         cases: results
     });
+}
+
+async function runProductionTowerCombatAliveReplacementHardwareSmoke(
+    device,
+    navigationSource,
+    currentHp
+) {
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 2,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const fixedDelta = 1 / 60;
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Tower combat alive replacement endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        assert(
+            endpoint.requestSpawn(
+                createGpuCoreProxySpawnIntent({
+                    position: navigationSource.corePosition
+                }),
+                1,
+                'tower-combat:alive-replacement:core'
+            ).accepted,
+            'Tower combat alive replacement Core spawn request 실패'
+        );
+        assert(
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({
+                    position: { x: 4, y: 6 },
+                    currentHp
+                }),
+                1,
+                'tower-combat:alive-replacement:tower'
+            ).accepted,
+            'Tower combat alive replacement Tower spawn request 실패'
+        );
+        const commit = endpoint.commitAtFixedBoundary(1);
+        assert(
+            commit.state === 'committed'
+                && commit.spawned.length === 2
+                && commit.rejected.length === 0,
+            'Tower combat alive replacement spawn commit 실패: '
+                + JSON.stringify(commit)
+        );
+        const handles = new Map(
+            commit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const coreHandle = handles.get('tower-combat:alive-replacement:core');
+        const towerHandle = handles.get('tower-combat:alive-replacement:tower');
+        assert(coreHandle && towerHandle,
+            'Tower combat alive replacement exact handle 누락');
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Tower combat alive replacement fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Tower combat alive replacement completion');
+        const bodies = await readPhase5Bodies(endpoint);
+        const tower = findPhase5Body(
+            bodies,
+            towerHandle,
+            'alive replacement Tower'
+        );
+        const core = findPhase5Body(bodies, coreHandle, 'alive replacement Core');
+        const status = endpoint.getStatus();
+        assertNear(tower.health, currentHp, 0.000001,
+            'Tower combat alive replacement GPU HP');
+        assert(
+            endpoint.getRegistry().has(towerHandle)
+                && endpoint.hasBody(towerHandle)
+                && endpoint.getRegistry().has(coreHandle)
+                && endpoint.hasBody(coreHandle)
+                && !status.recoveryRequired,
+            'Tower combat alive replacement registry/body/recovery 불일치: '
+                + JSON.stringify(status)
+        );
+        return Object.freeze({
+            requestedCurrentHp: currentHp,
+            handles: Object.freeze({ tower: towerHandle, core: coreHandle }),
+            towerHealth: tower.health,
+            corePosition: Object.freeze({ ...core.position }),
+            recoveryRequired: status.recoveryRequired
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTowerCombatDeadReplacementHardwareSmoke(
+    device,
+    navigationSource,
+    deadRosterStatus
+) {
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 2,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const fixedDelta = 1 / 60;
+    const towerRequestCount = deadRosterStatus?.livingTowerCount === 0 ? 0 : 1;
+    try {
+        assert(
+            deadRosterStatus?.alive === false
+                && deadRosterStatus.livingTowerCount === 0
+                && deadRosterStatus.currentHp === 0
+                && deadRosterStatus.boundGpuBody === null
+                && towerRequestCount === 0,
+            'Tower combat dead replacement는 dead roster의 Tower request 0 상태여야 합니다: '
+                + JSON.stringify(deadRosterStatus)
+        );
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Tower combat dead replacement endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        assert(
+            endpoint.requestSpawn(
+                createGpuCoreProxySpawnIntent({
+                    position: navigationSource.corePosition
+                }),
+                1,
+                'tower-combat:dead-replacement:core'
+            ).accepted,
+            'Tower combat dead replacement Core-only spawn request 실패'
+        );
+        const commit = endpoint.commitAtFixedBoundary(1);
+        assert(
+            commit.state === 'committed'
+                && commit.spawned.length === 1
+                && commit.rejected.length === 0
+                && !commit.recoveryRequired,
+            'Tower combat dead replacement Core-only spawn commit 실패: '
+                + JSON.stringify(commit)
+        );
+        const coreHandle = commit.spawned[0]?.handle;
+        assert(coreHandle,
+            'Tower combat dead replacement exact Core handle 누락');
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Tower combat dead replacement fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Tower combat dead replacement completion');
+        const bodies = await readPhase5Bodies(endpoint);
+        const core = findPhase5Body(
+            bodies,
+            coreHandle,
+            'dead replacement Core'
+        );
+        const registry = endpoint.getRegistry();
+        const status = endpoint.getStatus();
+        const towerRegistryCount = registry.getActiveCount('tower');
+        const towerBodyCount = bodies.length - 1;
+        assert(
+            bodies.length === 1
+                && core.handle?.entityId === coreHandle.entityId
+                && core.handle?.incarnation === coreHandle.incarnation
+                && registry.has(coreHandle)
+                && endpoint.hasBody(coreHandle)
+                && towerRegistryCount === 0
+                && towerBodyCount === 0
+                && !status.recoveryRequired,
+            'Tower combat dead replacement Tower absence/Core-only recovery 불일치: '
+                + JSON.stringify({
+                    bodies,
+                    coreHandle,
+                    towerRegistryCount,
+                    towerBodyCount,
+                    status
+                })
+        );
+        return Object.freeze({
+            coreHandle,
+            corePosition: Object.freeze({ ...core.position }),
+            roster: Object.freeze({
+                alive: deadRosterStatus.alive,
+                livingTowerCount: deadRosterStatus.livingTowerCount,
+                currentHp: deadRosterStatus.currentHp,
+                boundGpuBody: deadRosterStatus.boundGpuBody
+            }),
+            towerRequestCount,
+            towerRegistryCount,
+            towerBodyCount,
+            recoveryRequired: status.recoveryRequired
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionTowerCombatHardwareSmoke(device) {
+    const context = canvas.getContext('webgpu');
+    assert(context, 'Tower combat canvas WebGPU context가 없습니다.');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+    });
+    let lastFrameTexture = null;
+    let drawMarks = 0;
+    const platformPort = {
+        getState: () => Object.freeze({ ready: true, status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget() {
+            const texture = context.getCurrentTexture();
+            lastFrameTexture = texture;
+            return {
+                device,
+                context,
+                texture,
+                view: texture.createView(),
+                format,
+                deviceGeneration: 1,
+                width: canvas.width,
+                height: canvas.height
+            };
+        },
+        clearCanvas: () => false,
+        markCanvasDrawn() {
+            drawMarks++;
+            return true;
+        },
+        markCanvasCleared: () => false
+    };
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({ webGpuPlatformPort: platformPort }, {
+        capacity: 8,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2
+    });
+    const playerProjectileAdapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'nw-tower-combat-player'
+    });
+    const fixedDelta = 1 / 60;
+    const towerPosition = Object.freeze({ x: 4, y: 6 });
+    const enemyPosition = Object.freeze({ x: 6.5, y: 6 });
+    const playerDamageDefinition = Object.freeze({
+        id: 'nw_tower_combat_existing_player_projectile',
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: 10,
+        damage: 1,
+        damageSelf: 1,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        colorRgba: [1, 0.86, 0.22, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const hostileThirteenDefinition = Object.freeze({
+        id: 'nw_tower_combat_hostile_thirteen',
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: 14,
+        damage: 13,
+        damageSelf: 13,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [1, 0.15, 0.15, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const friendlyBlockDefinition = Object.freeze({
+        id: 'nw_tower_combat_player_friendly_block',
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: 9,
+        damage: 5,
+        damageSelf: 5,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [0.2, 0.9, 1, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const hostileLethalDefinition = Object.freeze({
+        id: 'nw_tower_combat_hostile_lethal',
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: 17,
+        damage: 17,
+        damageSelf: 17,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [1, 0.05, 0.05, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const domainSentinel = Object.freeze({
+        coreIntegrity: Object.freeze({ current: 100, max: 100 }),
+        reward: 0,
+        runFailed: 0
+    });
+    const domainSentinelBefore = JSON.stringify(domainSentinel);
+    const eventMatches = (event, subject, other) => (
+        event?.entityId === subject.entityId
+        && event?.incarnation === subject.incarnation
+        && event?.otherEntityId === other.entityId
+        && event?.otherIncarnation === other.incarnation
+    );
+    const exactHandleMatches = (entry, handle) => (
+        entry?.handle?.entityId === handle.entityId
+        && entry?.handle?.incarnation === handle.incarnation
+    );
+    const createHostileIntent = (
+        definition,
+        position,
+        velocity,
+        enemyHandle,
+        producerId,
+        sourceAbilityId,
+        spawnSequence
+    ) => createGpuProjectileSpawnIntent({
+        definition,
+        position,
+        velocity,
+        sourceHandle: enemyHandle,
+        ownerHandle: enemyHandle,
+        producerId,
+        sourceAbilityId,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        targetPolicyId: PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+        spawnSequence
+    });
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Tower combat endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const enemyIntent = Object.freeze({
+            ...createGpuEnemySpawnIntent({
+                definition: {
+                    ...BASIC_CIRCLE_ENEMY_DATA,
+                    id: 'nw_tower_combat_enemy',
+                    maxHealth: 20
+                },
+                route: navigationSource.route,
+                spawnSequence: 0,
+                waveId: 'nw-tower-combat',
+                policyId: 'hardware-fixture'
+            }),
+            position: enemyPosition,
+            velocity: Object.freeze({ x: 0, y: 0 })
+        });
+        const initialRequests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                1,
+                'tower-combat:initial:tower'
+            ),
+            endpoint.requestSpawn(
+                createGpuCoreProxySpawnIntent({
+                    position: navigationSource.corePosition
+                }),
+                1,
+                'tower-combat:initial:core'
+            ),
+            endpoint.requestSpawn(
+                enemyIntent,
+                1,
+                'tower-combat:initial:enemy'
+            )
+        ];
+        assert(
+            initialRequests.every(({ accepted }) => accepted),
+            'Tower combat initial spawn request 실패: '
+                + JSON.stringify(initialRequests)
+        );
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 3
+                && initialCommit.rejected.length === 0
+                && !initialCommit.recoveryRequired,
+            'Tower combat initial spawn commit 실패: '
+                + JSON.stringify(initialCommit)
+        );
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const towerHandle = initialHandles.get('tower-combat:initial:tower');
+        const coreHandle = initialHandles.get('tower-combat:initial:core');
+        const enemyHandle = initialHandles.get('tower-combat:initial:enemy');
+        assert(towerHandle && coreHandle && enemyHandle,
+            'Tower combat initial exact handle 누락');
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Tower combat initial fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Tower combat initial completion');
+        const initialBodies = await readPhase5Bodies(endpoint);
+        const initialTower = findPhase5Body(initialBodies, towerHandle, 'initial Tower');
+        const initialCore = findPhase5Body(initialBodies, coreHandle, 'initial Core');
+        const initialEnemy = findPhase5Body(initialBodies, enemyHandle, 'initial Enemy');
+        assertNear(initialTower.health, THE_TOWER_COMBAT_DATA.MAX_HEALTH, 0.000001,
+            'Tower combat initial GPU HP');
+        assertNear(initialEnemy.health, 20, 0.000001,
+            'Tower combat initial Enemy GPU HP');
+        assertNear(initialCore.position.x, navigationSource.corePosition.x, 0.000001,
+            'Tower combat initial Core x');
+        assertNear(initialCore.position.y, navigationSource.corePosition.y, 0.000001,
+            'Tower combat initial Core y');
+
+        const initialCompleted = endpoint.commitCompletedEventsAtFixedBoundary(2);
+        assert(
+            initialCompleted.protocolFailure === null,
+            'Tower combat initial completed-event protocol 실패: '
+                + JSON.stringify(initialCompleted)
+        );
+        const existingPlayerRequest = playerProjectileAdapter.requestProjectile({
+            mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
+            definition: playerDamageDefinition,
+            sourceHandle: towerHandle,
+            positionOffset: { x: 0.65, y: 0 },
+            aimWorldPoint: { x: 12, y: towerPosition.y },
+            launchSpeed: 18,
+            producerId: 'nw-tower-existing-player-projectile',
+            sourceAbilityId: 'tower-basic-shot',
+            targetFixedTick: 2,
+            spawnSequence: 0,
+            commandId: 'tower-combat:existing-player-projectile'
+        });
+        const hostileThirteenRequest = endpoint.requestSpawn(
+            createHostileIntent(
+                hostileThirteenDefinition,
+                towerPosition,
+                { x: 20, y: 0 },
+                enemyHandle,
+                'nw-hostile-tower-producer',
+                'hostile-tower-shot-13',
+                1
+            ),
+            2,
+            'tower-combat:hostile-thirteen'
+        );
+        const friendlyBlockRequest = endpoint.requestSpawn(
+            createGpuProjectileSpawnIntent({
+                definition: friendlyBlockDefinition,
+                position: { x: towerPosition.x + 0.65, y: towerPosition.y },
+                velocity: { x: 0, y: 0 },
+                sourceHandle: towerHandle,
+                ownerHandle: towerHandle,
+                producerId: 'nw-player-friendly-fire-probe',
+                sourceAbilityId: 'player-friendly-fire-probe',
+                teamId: GAMEPLAY_TEAM_ID.PLAYER,
+                allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+                damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+                targetPolicyId:
+                    PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+                spawnSequence: 2
+            }),
+            2,
+            'tower-combat:player-friendly-block'
+        );
+        assert(
+            existingPlayerRequest.accepted
+                && hostileThirteenRequest.accepted
+                && friendlyBlockRequest.accepted,
+            'Tower combat tick 2 projectile request 실패: '
+                + JSON.stringify({
+                    existingPlayerRequest,
+                    hostileThirteenRequest,
+                    friendlyBlockRequest
+                })
+        );
+        const damageCommit = endpoint.commitAtFixedBoundary(2);
+        assert(
+            damageCommit.state === 'committed'
+                && damageCommit.spawned.length === 2
+                && damageCommit.fixedCommands.sourceRelativeSpawns.length === 1
+                && damageCommit.fixedCommands.rejected.length === 0
+                && !damageCommit.recoveryRequired,
+            'Tower combat tick 2 spawn/program commit 실패: '
+                + JSON.stringify(damageCommit)
+        );
+        const damageHandles = new Map(
+            damageCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const hostileThirteenHandle = damageHandles.get('tower-combat:hostile-thirteen');
+        const friendlyBlockHandle = damageHandles.get('tower-combat:player-friendly-block');
+        const existingPlayerHandle = damageCommit.fixedCommands.sourceRelativeSpawns.find(
+            ({ commandId }) => commandId === 'tower-combat:existing-player-projectile'
+        )?.handle;
+        assert(hostileThirteenHandle && friendlyBlockHandle && existingPlayerHandle,
+            'Tower combat tick 2 projectile exact handle 누락');
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 2),
+            'Tower combat tick 2 fixed submit 실패'
+        );
+        await settlePhase5Endpoint(
+            endpoint,
+            'Tower combat initial damage completion',
+            { spawnProgram: true }
+        );
+        const afterThirteenBodies = await readPhase5Bodies(endpoint);
+        const towerAfterThirteen = findPhase5Body(
+            afterThirteenBodies,
+            towerHandle,
+            'Tower after hostile 13'
+        );
+        const hostileThirteenAfter = findPhase5Body(
+            afterThirteenBodies,
+            hostileThirteenHandle,
+            'hostile 13 projectile after hit'
+        );
+        const friendlyBlockAfter = findPhase5Body(
+            afterThirteenBodies,
+            friendlyBlockHandle,
+            'friendly-fire blocked projectile'
+        );
+        const existingPlayerBeforeDeath = findPhase5Body(
+            afterThirteenBodies,
+            existingPlayerHandle,
+            'existing player projectile before Tower death'
+        );
+        assertNear(towerAfterThirteen.health, 17, 0.000001,
+            'hostile 13 Tower HP 30→17');
+        assertNear(hostileThirteenAfter.health, 1, 0.000001,
+            'hostile 13 projectile penetration 14→1');
+        assertNear(friendlyBlockAfter.health, 9, 0.000001,
+            'PLAYER friendly-fire blocked projectile penetration 보존');
+
+        const firstCompleted = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        const hostileThirteenContact = firstCompleted.contactEvents.find((event) => (
+            eventMatches(event, hostileThirteenHandle, towerHandle)
+        ));
+        const friendlyBlockContact = firstCompleted.contactEvents.find((event) => (
+            eventMatches(event, friendlyBlockHandle, towerHandle)
+        ));
+        assert(
+            firstCompleted.protocolFailure === null
+                && hostileThirteenContact?.eventType === 'damage-applied'
+                && hostileThirteenContact.disposition === 'applied'
+                && hostileThirteenContact.damageFixedPoint === 1300
+                && hostileThirteenContact.damage === 13
+                && friendlyBlockContact?.eventType === 'interaction-continuous'
+                && friendlyBlockContact.disposition === 'applied'
+                && friendlyBlockContact.damageFixedPoint === 0
+                && friendlyBlockContact.damage === 0
+                && friendlyBlockContact.reason === 'interaction'
+                && !firstCompleted.contactEvents.some((event) => (
+                    eventMatches(event, friendlyBlockHandle, towerHandle)
+                    && event.eventType === 'damage-applied'
+                ))
+                && !firstCompleted.deathEvents.some((event) => (
+                    (event.entityId === towerHandle.entityId
+                        && event.incarnation === towerHandle.incarnation)
+                    || (event.entityId === friendlyBlockHandle.entityId
+                        && event.incarnation === friendlyBlockHandle.incarnation)
+                )),
+            'Tower combat hostile/friendly event contract 불일치: '
+                + JSON.stringify(firstCompleted)
+        );
+        const roster = new TowerCombatRoster({
+            maxHp: THE_TOWER_COMBAT_DATA.MAX_HEALTH
+        });
+        roster.bindGpuBody(towerHandle, {
+            sessionGeneration: hostileThirteenContact.sessionGeneration,
+            deviceGeneration: hostileThirteenContact.deviceGeneration,
+            authoritativeEpoch: hostileThirteenContact.authoritativeEpoch
+        });
+        const firstRosterFacts = roster.commitCompletedEvents(
+            firstCompleted,
+            endpoint.getRegistry()
+        );
+        assert(
+            firstRosterFacts.length === 1
+                && firstRosterFacts[0].type
+                    === TOWER_COMBAT_FACT_TYPE.DAMAGE_APPLIED
+                && firstRosterFacts[0].damageFixedPoint === 1300
+                && firstRosterFacts[0].currentHp === 17
+                && firstRosterFacts[0].sourceHandle.entityId
+                    === hostileThirteenHandle.entityId
+                && firstRosterFacts[0].sourceHandle.incarnation
+                    === hostileThirteenHandle.incarnation
+                && firstRosterFacts[0].targetHandle.entityId === towerHandle.entityId
+                && firstRosterFacts[0].targetHandle.incarnation
+                    === towerHandle.incarnation
+                && firstRosterFacts[0].producerId
+                    === 'nw-hostile-tower-producer'
+                && firstRosterFacts[0].sourceAbilityId
+                    === 'hostile-tower-shot-13'
+                && roster.getPrimaryTowerCurrentHp() === 17,
+            'Tower combat roster first damage/provenance 불일치: '
+                + JSON.stringify(firstRosterFacts)
+        );
+        const duplicateFacts = roster.commitCompletedEvents(
+            firstCompleted,
+            endpoint.getRegistry()
+        );
+        const oldGenerationFacts = roster.commitCompletedEvents({
+            events: [{
+                ...hostileThirteenContact,
+                sessionGeneration: hostileThirteenContact.sessionGeneration - 1
+            }]
+        }, endpoint.getRegistry());
+        const oldIncarnationFacts = roster.commitCompletedEvents({
+            events: [{
+                ...hostileThirteenContact,
+                other: {
+                    entityId: towerHandle.entityId,
+                    incarnation: towerHandle.incarnation + 1
+                },
+                otherIncarnation: towerHandle.incarnation + 1
+            }]
+        }, endpoint.getRegistry());
+        assert(
+            duplicateFacts.length === 0
+                && oldGenerationFacts.length === 0
+                && oldIncarnationFacts.length === 0
+                && roster.getPrimaryTowerCurrentHp() === 17,
+            'Tower combat roster duplicate/stale generation/incarnation 무시 실패'
+        );
+        const aliveReplacement =
+            await runProductionTowerCombatAliveReplacementHardwareSmoke(
+                device,
+                navigationSource,
+                towerAfterThirteen.health
+            );
+
+        const lethalRequest = endpoint.requestSpawn(
+            createHostileIntent(
+                hostileLethalDefinition,
+                towerPosition,
+                { x: 0, y: 0 },
+                enemyHandle,
+                'nw-hostile-tower-producer',
+                'hostile-tower-shot-lethal',
+                3
+            ),
+            3,
+            'tower-combat:hostile-lethal'
+        );
+        assert(lethalRequest.accepted,
+            'Tower combat lethal projectile request 실패: '
+                + JSON.stringify(lethalRequest));
+        const lethalCommit = endpoint.commitAtFixedBoundary(3);
+        const lethalHandle = lethalCommit.spawned.find(
+            ({ commandId }) => commandId === 'tower-combat:hostile-lethal'
+        )?.handle;
+        assert(
+            lethalCommit.state === 'committed'
+                && lethalCommit.despawned.length === 0
+                && lethalHandle
+                && !lethalCommit.recoveryRequired,
+            'Tower combat lethal spawn commit 실패: '
+                + JSON.stringify(lethalCommit)
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 3),
+            'Tower combat lethal fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Tower combat lethal completion');
+        const afterLethalBodies = await readPhase5Bodies(endpoint);
+        assert(
+            !afterLethalBodies.some((body) => (
+                body.handle?.entityId === towerHandle.entityId
+                && body.handle?.incarnation === towerHandle.incarnation
+            ))
+                && !afterLethalBodies.some((body) => (
+                    body.handle?.entityId === lethalHandle.entityId
+                    && body.handle?.incarnation === lethalHandle.incarnation
+                ))
+                && endpoint.getRegistry().has(towerHandle)
+                && endpoint.hasBody(towerHandle),
+            'Tower combat lethal GPU alive/endpoint pre-cleanup 상태 불일치: '
+                + JSON.stringify(afterLethalBodies)
+        );
+        const cameraScale = 8;
+        endpoint.updatePresentation({
+            frameDelta: 0,
+            fixedDelta,
+            fixedAlpha: 1,
+            renderFrameId: 5801
+        });
+        assert(endpoint.draw({
+            worldToViewport(x, y, out) {
+                out.x = x * cameraScale;
+                out.y = y * cameraScale;
+                return out;
+            },
+            getScale: () => cameraScale
+        }), 'Tower combat lethal render submit 실패');
+        assert(lastFrameTexture, 'Tower combat lethal render texture가 없습니다.');
+        const towerAlphaAfterLethal = await readPhase5WorldAlpha(
+            device,
+            lastFrameTexture,
+            towerPosition,
+            cameraScale,
+            'tower-combat-lethal-render-readback'
+        );
+        assert(
+            drawMarks === 1 && towerAlphaAfterLethal === 0,
+            'Tower combat lethal Tower render exclusion 실패: '
+                + JSON.stringify({ drawMarks, towerAlphaAfterLethal })
+        );
+
+        const lethalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(4);
+        const lethalContact = lethalCompleted.contactEvents.find((event) => (
+            eventMatches(event, lethalHandle, towerHandle)
+        ));
+        const lethalTowerDeathEvents = lethalCompleted.deathEvents.filter((event) => (
+            event.entityId === towerHandle.entityId
+            && event.incarnation === towerHandle.incarnation
+            && event.disposition === 'despawn-requested'
+        ));
+        assert(
+            lethalCompleted.protocolFailure === null
+                && lethalContact?.eventType === 'damage-applied'
+                && lethalContact.disposition === 'applied'
+                && lethalContact.damageFixedPoint === 1700
+                && lethalContact.reason === 'target-died'
+                && lethalTowerDeathEvents.length === 1,
+            'Tower combat lethal event/death contract 불일치: '
+                + JSON.stringify(lethalCompleted)
+        );
+        const lethalRosterFacts = roster.commitCompletedEvents(
+            lethalCompleted,
+            endpoint.getRegistry()
+        );
+        const rosterDeath = lethalRosterFacts.find(
+            ({ type }) => type === TOWER_COMBAT_FACT_TYPE.DIED
+        );
+        const noLiving = lethalRosterFacts.find(
+            ({ type }) => type === TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS
+        );
+        const deadRosterStatus = roster.getStatus();
+        assert(
+            lethalRosterFacts.filter(
+                ({ type }) => type === TOWER_COMBAT_FACT_TYPE.DAMAGE_APPLIED
+            ).length === 1
+                && rosterDeath
+                && noLiving
+                && rosterDeath.sourceHandle?.entityId === lethalHandle.entityId
+                && rosterDeath.sourceHandle?.incarnation === lethalHandle.incarnation
+                && rosterDeath.producerId === 'nw-hostile-tower-producer'
+                && rosterDeath.sourceAbilityId === 'hostile-tower-shot-lethal'
+                && noLiving.livingTowerCount === 0
+                && roster.getPrimaryTowerCurrentHp() === 0
+                && roster.getLivingTowerCount() === 0
+                && deadRosterStatus.alive === false
+                && deadRosterStatus.currentHp === 0
+                && deadRosterStatus.livingTowerCount === 0
+                && deadRosterStatus.boundGpuBody === null,
+            'Tower combat roster lethal/death/NoLiving provenance 불일치: '
+                + JSON.stringify(lethalRosterFacts)
+        );
+        const deadReplacement =
+            await runProductionTowerCombatDeadReplacementHardwareSmoke(
+                device,
+                navigationSource,
+                deadRosterStatus
+            );
+        const towerCleanup = endpoint.commitAtFixedBoundary(4);
+        assert(
+            towerCleanup.state === 'committed'
+                && towerCleanup.despawned.length === 2
+                && towerCleanup.despawned.some((entry) => (
+                    exactHandleMatches(entry, towerHandle)
+                ))
+                && towerCleanup.despawned.some((entry) => (
+                    exactHandleMatches(entry, lethalHandle)
+                ))
+                && towerCleanup.rejected.length === 0,
+            'Tower combat next-boundary Tower/projectile cleanup 실패: '
+                + JSON.stringify(towerCleanup)
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 4),
+            'Tower combat zero-Tower 첫 fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Tower combat zero-Tower first completion');
+        const zeroTowerStartBodies = await readPhase5Bodies(endpoint);
+        const existingPlayerAfterDeath = findPhase5Body(
+            zeroTowerStartBodies,
+            existingPlayerHandle,
+            'existing player projectile after Tower death'
+        );
+        const enemyAtZeroTowerStart = findPhase5Body(
+            zeroTowerStartBodies,
+            enemyHandle,
+            'Enemy after Tower death'
+        );
+        const sourceViewAfterTowerDeath = endpoint.getRegistry().copyEntityView(
+            existingPlayerHandle,
+            {}
+        );
+        const cleanupStatus = endpoint.getStatus();
+        assert(
+            !endpoint.getRegistry().has(towerHandle)
+                && !endpoint.hasBody(towerHandle)
+                && endpoint.getRegistry().has(coreHandle)
+                && endpoint.hasBody(coreHandle)
+                && endpoint.getRegistry().has(enemyHandle)
+                && endpoint.hasBody(enemyHandle)
+                && endpoint.getRegistry().has(existingPlayerHandle)
+                && endpoint.hasBody(existingPlayerHandle)
+                && sourceViewAfterTowerDeath?.metadata?.sourceEntityId
+                    === towerHandle.entityId
+                && sourceViewAfterTowerDeath.metadata.sourceIncarnation
+                    === towerHandle.incarnation
+                && !cleanupStatus.recoveryRequired,
+            'Tower combat dead replacement/Core/existing projectile cleanup 불일치: '
+                + JSON.stringify({ cleanupStatus, sourceViewAfterTowerDeath })
+        );
+
+        let zeroTowerSubmissionCount = 1;
+        const postDeathPlayerDamageEvents = [];
+        for (let tick = 5; tick <= 13; tick++) {
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+            assert(
+                completed.protocolFailure === null,
+                'Tower combat zero-Tower completed-event protocol 실패: tick='
+                    + tick + ', result=' + JSON.stringify(completed)
+            );
+            for (const event of completed.contactEvents) {
+                if (eventMatches(event, existingPlayerHandle, enemyHandle)
+                    && event.eventType === 'damage-applied') {
+                    postDeathPlayerDamageEvents.push(event);
+                }
+            }
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            assert(
+                commit.state === 'committed'
+                    && commit.rejected.length === 0
+                    && !commit.recoveryRequired,
+                'Tower combat zero-Tower lifecycle commit 실패: tick='
+                    + tick + ', result=' + JSON.stringify(commit)
+            );
+            assert(
+                endpoint.fixedUpdate(fixedDelta, tick),
+                'Tower combat zero-Tower fixed submit 실패: tick=' + tick
+            );
+            zeroTowerSubmissionCount++;
+            await settlePhase5Endpoint(
+                endpoint,
+                'Tower combat zero-Tower tick ' + tick
+            );
+        }
+        const finalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(14);
+        assert(
+            finalCompleted.protocolFailure === null,
+            'Tower combat final completed-event protocol 실패: '
+                + JSON.stringify(finalCompleted)
+        );
+        for (const event of finalCompleted.contactEvents) {
+            if (eventMatches(event, existingPlayerHandle, enemyHandle)
+                && event.eventType === 'damage-applied') {
+                postDeathPlayerDamageEvents.push(event);
+            }
+        }
+        const zeroTowerFinalBodies = await readPhase5Bodies(endpoint);
+        const coreAfterZeroTower = findPhase5Body(
+            zeroTowerFinalBodies,
+            coreHandle,
+            'Core after zero-Tower submissions'
+        );
+        const enemyAfterZeroTower = findPhase5Body(
+            zeroTowerFinalBodies,
+            enemyHandle,
+            'Enemy after zero-Tower submissions'
+        );
+        const existingPlayerAfterZeroTower = findPhase5Body(
+            zeroTowerFinalBodies,
+            existingPlayerHandle,
+            'existing player projectile after zero-Tower submissions'
+        );
+        const finalStatus = endpoint.getStatus();
+        const storageProfile = finalStatus.backend.gpu.fixedPrimitives.storageProfile;
+        assert(
+            zeroTowerSubmissionCount >= 10
+                && postDeathPlayerDamageEvents.length >= 1
+                && postDeathPlayerDamageEvents.every((event) => (
+                    event.disposition === 'applied'
+                    && event.damageFixedPoint === 100
+                ))
+                && existingPlayerAfterZeroTower.position.x
+                    > existingPlayerAfterDeath.position.x
+                && existingPlayerAfterZeroTower.lifetime
+                    < existingPlayerAfterDeath.lifetime
+                && enemyAfterZeroTower.health < initialEnemy.health
+                && Math.hypot(
+                    enemyAfterZeroTower.position.x - enemyAtZeroTowerStart.position.x,
+                    enemyAfterZeroTower.position.y - enemyAtZeroTowerStart.position.y
+                ) > 0
+                && coreAfterZeroTower.handle?.entityId === coreHandle.entityId
+                && coreAfterZeroTower.handle?.incarnation === coreHandle.incarnation
+                && !endpoint.getRegistry().has(towerHandle)
+                && !endpoint.hasBody(towerHandle)
+                && !finalStatus.recoveryRequired
+                && !endpoint.requiresRecovery()
+                && storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            'Tower combat zero-Tower progress/recovery/storage 불일치: '
+                + JSON.stringify({
+                    zeroTowerSubmissionCount,
+                    postDeathPlayerDamageEvents,
+                    enemyAtZeroTowerStart,
+                    enemyAfterZeroTower,
+                    existingPlayerAfterDeath,
+                    existingPlayerAfterZeroTower,
+                    finalStatus,
+                    storageProfile
+                })
+        );
+        assert(
+            JSON.stringify(domainSentinel) === domainSentinelBefore,
+            'Tower combat GPU fixture가 CoreIntegrity/reward/RunFailed sentinel을 변경했습니다.'
+        );
+        return Object.freeze({
+            handles: Object.freeze({
+                tower: towerHandle,
+                core: coreHandle,
+                enemy: enemyHandle,
+                hostileThirteen: hostileThirteenHandle,
+                friendlyBlock: friendlyBlockHandle,
+                lethal: lethalHandle,
+                existingPlayerProjectile: existingPlayerHandle
+            }),
+            towerDamage: Object.freeze({
+                maxHp: THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+                initialReadbackHp: initialTower.health,
+                afterHostileThirteen: towerAfterThirteen.health,
+                hostilePenetrationBefore: hostileThirteenDefinition.penetration,
+                hostilePenetrationAfter: hostileThirteenAfter.health,
+                contact: hostileThirteenContact
+            }),
+            friendlyFireBlock: Object.freeze({
+                targetPolicyId:
+                    PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+                towerHpBefore: 17,
+                towerHpAfter: towerAfterThirteen.health,
+                projectilePenetrationBefore: friendlyBlockDefinition.penetration,
+                projectilePenetrationAfter: friendlyBlockAfter.health,
+                contact: friendlyBlockContact
+            }),
+            lethal: Object.freeze({
+                contact: lethalContact,
+                towerDeathEventCount: lethalTowerDeathEvents.length,
+                towerRenderAlpha: towerAlphaAfterLethal,
+                cleanup: towerCleanup,
+                rosterFacts: lethalRosterFacts
+            }),
+            roster: Object.freeze({
+                initialFacts: firstRosterFacts,
+                duplicateIgnored: duplicateFacts.length === 0,
+                oldGenerationIgnored: oldGenerationFacts.length === 0,
+                oldIncarnationIgnored: oldIncarnationFacts.length === 0
+            }),
+            replacements: Object.freeze({
+                alive: aliveReplacement,
+                dead: deadReplacement
+            }),
+            zeroTower: Object.freeze({
+                submittedFixedTicks: zeroTowerSubmissionCount,
+                corePresent: endpoint.hasBody(coreHandle),
+                enemyPresent: endpoint.hasBody(enemyHandle),
+                existingProjectilePresent: endpoint.hasBody(existingPlayerHandle),
+                postDeathPlayerDamageEvents,
+                enemyPositionBefore: Object.freeze({ ...enemyAtZeroTowerStart.position }),
+                enemyPositionAfter: Object.freeze({ ...enemyAfterZeroTower.position }),
+                enemyHealth: Object.freeze({
+                    initial: initialEnemy.health,
+                    final: enemyAfterZeroTower.health
+                }),
+                projectilePositionBefore:
+                    Object.freeze({ ...existingPlayerAfterDeath.position }),
+                projectilePositionAfter:
+                    Object.freeze({ ...existingPlayerAfterZeroTower.position }),
+                existingProjectileLifetime: Object.freeze({
+                    afterTowerDeath: existingPlayerAfterDeath.lifetime,
+                    afterZeroTowerTicks: existingPlayerAfterZeroTower.lifetime
+                }),
+                originalTowerPresentAfterCleanup: endpoint.hasBody(towerHandle)
+            }),
+            diagnostics: Object.freeze({
+                coreIntegrityCurrentMutation: 0,
+                coreIntegrityMaxMutation: 0,
+                rewardMutation: 0,
+                runFailedMutation: 0
+            }),
+            storageProfile,
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+        context.unconfigure();
+    }
 }
 
 async function runProductionPhase5ContactHardwareSmoke(device, domainSentinel) {
@@ -7143,14 +8177,13 @@ async function runProductionFixedPrimitiveSmoke(device) {
         geometry: await runProductionFixedPrimitiveGeometrySmoke(device),
         towerCoreWorld: await runProductionTowerCoreWorldHardwareSmoke(device),
         phase5ProjectileAim: await runProductionPhase5AimHardwareSmoke(device),
+        towerCombat: await runProductionTowerCombatHardwareSmoke(device),
         phase5ProjectileLifecycle:
             await runProductionPhase5ProjectileLifecycleHardwareSmoke(device),
         phase5FailureDomains:
             await runProductionPhase5FailureDomainHardwareSmoke(device),
         phase5GenerationRecovery:
-            await runProductionPhase5GenerationRecoveryHardwareSmoke(device),
-        uncapturedErrorsCheckedAtRunEnd: true,
-        deviceLossCheckedAtRunEnd: true
+            await runProductionPhase5GenerationRecoveryHardwareSmoke(device)
     };
 }
 
@@ -7220,6 +8253,10 @@ async function run() {
         device.destroy();
         const lost = await lostPromise;
         result.deviceLostReason = lost.reason;
+        assert(
+            lost.reason === 'destroyed',
+            `WebGPU device lost reason이 destroyed가 아닙니다: ${lost.reason}`
+        );
         result.status = 'pass';
     } catch (error) {
         result.error = error?.stack ?? String(error);
