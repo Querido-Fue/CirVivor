@@ -14,6 +14,17 @@ export {
 } from './physics/gpu/gpu_body_presentation_clock.js';
 
 export {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID,
+    isGameplayDamageAllowed,
+    normalizeGameplayAllegiancePolicy,
+    normalizeGameplayDamagePolicyId,
+    normalizeGameplayTeamId,
+    resolveGameplayAllegianceTeam
+} from './contract/gameplay_team_contract.js';
+
+export {
     GPU_ENEMY_FIRST_TARGET_WAYPOINT_INDEX,
     GPU_ENEMY_WORLD_KIND_ID,
     createGpuEnemySpawnIntent

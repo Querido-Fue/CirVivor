@@ -6,6 +6,10 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_RENDER_SHAPE
 } from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
+} from '../../contract/gameplay_team_contract.js';
 
 export const GPU_TOWER_WORLD_KIND_ID = 'tower';
 export const GPU_TOWER_DEFINITION_ID = 'the-tower';
@@ -25,6 +29,8 @@ export function createGpuTowerSpawnIntent(options) {
     return Object.freeze({
         kindId: GPU_TOWER_WORLD_KIND_ID,
         definitionId: GPU_TOWER_DEFINITION_ID,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER,
         position,
         velocity: Object.freeze({ x: 0, y: 0 }),
         radius: THE_TOWER_DATA.RADIUS_TILES,

@@ -62,16 +62,49 @@ for (const entryPoint of [
     assert.match(compute, new RegExp(`fn\\s+${entryPoint}\\b`));
 }
 
-// ABI v2는 동일 stride 안에서 physical/interaction/flags를 분리합니다.
-assert.match(compute, /const BODY_ABI_VERSION: u32 = 2u;/);
+// ABI v3는 동일 stride 안에서 physical/interaction/gameplay/flags를 분리합니다.
+assert.match(compute, /const BODY_ABI_VERSION: u32 = 3u;/);
 assert.match(compute, /struct BodyCounts \{[\s\S]*?abi_version: u32,/);
 assert.match(compute, /struct BodyPhysics \{[\s\S]*?physical_meta: u32,[\s\S]*?interaction_meta: u32,/);
-assert.match(compute, /struct BodySimulation \{[\s\S]*?lifetime: f32,[\s\S]*?health: atomic<i32>,[\s\S]*?timer: u32,[\s\S]*?flags: atomic<u32>,[\s\S]*?incarnation: u32,/);
+assert.match(compute, /struct BodySimulation \{[\s\S]*?lifetime: f32,[\s\S]*?health: atomic<i32>,[\s\S]*?gameplay_meta: u32,[\s\S]*?flags: atomic<u32>,[\s\S]*?incarnation: u32,/);
+assert.match(render, /struct BodySimulation \{[\s\S]*?health: i32,[\s\S]*?gameplay_meta: u32,[\s\S]*?flags: u32,/);
 assert.match(compute, /struct GridBody \{[\s\S]*?physical_meta: u32,[\s\S]*?flags: u32,[\s\S]*?interaction_meta: u32,/);
 assert.match(compute, /@group\(0\) @binding\(4\) var<storage, read> contact_handlers: ContactHandlerBuffer;/);
 assert.match(compute, /struct ContactHandler \{\s*damage_self: f32,\s*damage_other: f32,\s*damage_falloff: f32,\s*fire_timer: f32,\s*flags: u32,\s*chaining: i32,\s*damage_report_id: i32,\s*slow_timer: f32,/);
 assert.match(compute, /let damage_self = max\(i32\(handler\.damage_self \* 100\.0\), 0\);/);
 assert.match(compute, /let damage_other = max\(i32\(damage_other_value \* 100\.0\), 0\);/);
+assert.match(compute, /const GAMEPLAY_TEAM_NEUTRAL: u32 = 0u;/);
+assert.match(compute, /const GAMEPLAY_TEAM_PLAYER: u32 = 1u;/);
+assert.match(compute, /const GAMEPLAY_TEAM_HOSTILE: u32 = 2u;/);
+assert.match(compute, /const GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX: u32 = 0u;/);
+assert.match(compute, /const GAMEPLAY_META_TEAM_SHIFT: u32 = 0u;/);
+assert.match(compute, /const GAMEPLAY_META_TEAM_MASK: u32 = 255u;/);
+assert.match(compute, /const GAMEPLAY_META_DAMAGE_POLICY_SHIFT: u32 = 8u;/);
+assert.match(compute, /const GAMEPLAY_META_DAMAGE_POLICY_MASK: u32 = 255u;/);
+assert.match(compute, /const GAMEPLAY_META_RESERVED_MASK: u32 = 4294901760u;/);
+assert.match(compute, /fn gameplay_team_id\(gameplay_meta: u32\)[\s\S]*?GAMEPLAY_META_TEAM_MASK/);
+assert.match(compute, /fn gameplay_damage_policy_id\(gameplay_meta: u32\)[\s\S]*?GAMEPLAY_META_DAMAGE_POLICY_MASK/);
+assert.match(compute, /fn gameplay_meta_is_valid\(gameplay_meta: u32\)[\s\S]*?GAMEPLAY_META_RESERVED_MASK[\s\S]*?GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX/);
+assert.match(compute, /fn gameplay_damage_is_allowed\(source_meta: u32, target_meta: u32\)[\s\S]*?GAMEPLAY_TEAM_PLAYER[\s\S]*?GAMEPLAY_TEAM_HOSTILE/);
+
+// Team은 기존 simulation word에서 decode하므로 storage binding을 하나도 늘리지 않습니다.
+const storageBindingBlock = compute.slice(
+    compute.indexOf('@group(0) @binding(0)'),
+    compute.indexOf('fn abi_is_current()')
+);
+const storageBindings = Array.from(storageBindingBlock.matchAll(
+    /@group\((\d+)\) @binding\((\d+)\) var<storage,[^>]+> (\w+):/g
+), ([, group, binding, name]) => `${group}:${binding}:${name}`);
+assert.deepEqual(storageBindings, [
+    '0:0:counts', '0:1:physics', '0:2:simulations', '0:3:temporaries',
+    '0:4:contact_handlers', '0:5:body_control_states',
+    '0:6:body_control_program', '0:7:spawn_program',
+    '0:8:tracked_pose_config', '0:9:tracked_pose_output',
+    '1:0:grid_counts', '1:1:grid_bodies', '1:2:sdf_values',
+    '1:3:grid_overflow', '3:0:contact_state', '3:1:contacts',
+    '3:2:applied_events', '3:3:death_events'
+]);
+assert.doesNotMatch(storageBindingBlock, /gameplay|team|damage_policy/i);
 
 // SpawnProgram v2는 64-byte record의 vector/scalar payload로 velocity/aim 두 mode를 공유합니다.
 assert.match(compute, /const SPAWN_PROGRAM_ABI_VERSION: u32 = 2u;/);
@@ -165,10 +198,30 @@ assert.match(compute, /deterministic_separation_normal/);
 assert.match(compute, /if \(atomicLoad\(&contact_state\.contact_overflow\) != 0u\) \{\s*return;/);
 assert.match(compute, /contact_index >= params\.max_contacts[\s\S]*?contact_state\.contact_overflow/);
 
-// self budget을 target damage보다 먼저 CAS 예약하고 죽은 target에는 환불합니다.
+// damage_other=0의 기존 interaction 처리 뒤, team gate는 budget reservation보다 먼저 실행합니다.
+const zeroDamageBranch = compute.indexOf('if (damage_other <= 0)');
+const gameplayDamageGate = compute.indexOf('if (!gameplay_damage_is_allowed(', zeroDamageBranch);
 const reserveCall = compute.indexOf('let self_budget_reserved = reserve_self_hit_budget');
 const targetDamageCall = compute.indexOf('let damage = apply_target_damage');
-assert.ok(reserveCall >= 0 && targetDamageCall > reserveCall);
+assert.ok(
+    zeroDamageBranch >= 0
+        && gameplayDamageGate > zeroDamageBranch
+        && reserveCall > gameplayDamageGate
+        && targetDamageCall > reserveCall
+);
+const gameplayDamageGateBlock = compute.slice(gameplayDamageGate, reserveCall);
+assert.match(
+    gameplayDamageGateBlock,
+    /simulations\.values\[self_body_id\]\.gameplay_meta,[\s\S]*?simulations\.values\[other_body_id\]\.gameplay_meta/
+);
+assert.match(
+    gameplayDamageGateBlock,
+    /append_applied_event\(AppliedEvent\([\s\S]*?\n\s*0,[\s\S]*?policy_event_type \| policy_event_flag,[\s\S]*?\n\s*contact\.world_position[\s\S]*?\)\);[\s\S]*?return;/
+);
+assert.doesNotMatch(
+    gameplayDamageGateBlock,
+    /reserve_self_hit_budget|apply_target_damage|APPLIED_EVENT_TYPE_DAMAGE_APPLIED|append_death_event/
+);
 assert.match(compute, /atomicCompareExchangeWeak\(\s*&simulations\.values\[body_id\]\.health/);
 assert.match(compute, /if \(health_before < amount\) \{\s*return false;/);
 assert.match(compute, /if \(damage\.applied <= 0\)[\s\S]*?atomicAdd\(&simulations\.values\[self_body_id\]\.health, damage_self\);/);

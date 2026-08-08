@@ -4,6 +4,10 @@ import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_RENDER_SHAPE
 } from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
+} from '../../contract/gameplay_team_contract.js';
 
 export const GPU_CORE_PROXY_WORLD_KIND_ID = 'core-proxy';
 export const GPU_CORE_PROXY_DEFINITION_ID = 'the-core-interaction-proxy';
@@ -22,6 +26,8 @@ export function createGpuCoreProxySpawnIntent(options) {
     return Object.freeze({
         kindId: GPU_CORE_PROXY_WORLD_KIND_ID,
         definitionId: GPU_CORE_PROXY_DEFINITION_ID,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
         position: requireFinitePosition(options?.position),
         velocity: Object.freeze({ x: 0, y: 0 }),
         radius: THE_CORE_DATA.RADIUS_TILES,

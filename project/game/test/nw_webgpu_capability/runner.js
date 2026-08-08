@@ -5,8 +5,17 @@ import {
 } from './production/script/module/ingame/physics/gpu/gpu_collision_shaders.js';
 import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
-    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_BODY_GAMEPLAY_META,
+    packGpuCircleGameplayMeta,
+    unpackGpuCircleGameplayMeta
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID,
+    isGameplayDamageAllowed
+} from './production/script/module/ingame/contract/gameplay_team_contract.js';
 import {
     GPU_FIXED_PRIMITIVE_ABI,
     GPU_SPAWN_PROGRAM_MODE
@@ -484,6 +493,7 @@ async function runProductionSimulationSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 1,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true
         },
         {
@@ -493,6 +503,7 @@ async function runProductionSimulationSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 1,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true
         },
         {
@@ -502,6 +513,7 @@ async function runProductionSimulationSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 128,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true
         },
         {
@@ -511,6 +523,7 @@ async function runProductionSimulationSmoke(device) {
             inverseMass: 0,
             layerMask: 1,
             collisionMask: 1,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true
         }
     ]);
@@ -667,6 +680,7 @@ async function runProductionFlowAtlasSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 0,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true,
             useFlow: true,
             flowFieldIndex: 0,
@@ -681,6 +695,7 @@ async function runProductionFlowAtlasSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 0,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true,
             useFlow: true,
             flowFieldIndex: 0,
@@ -695,6 +710,7 @@ async function runProductionFlowAtlasSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 0,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true,
             useFlow: true,
             flowFieldIndex: 1,
@@ -979,6 +995,7 @@ async function runProductionShapeFlowAtlasSmoke(device) {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
         alive: true,
         useFlow: true,
         flowFieldIndex: sampledFieldIndex,
@@ -1715,6 +1732,7 @@ async function runProductionMixedBodyContactEventSmoke(device) {
             | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         sensorMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
         health: 0.57,
         lifetime: -1,
         alive: true
@@ -1729,6 +1747,7 @@ async function runProductionMixedBodyContactEventSmoke(device) {
         collisionMask: 0,
         sensorMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
         health: 0.29,
         lifetime: 2,
         contactHandler: {
@@ -2193,6 +2212,9 @@ async function runProductionEndpointDeathLifecycleSmoke(device) {
         // main enemy collider가 절반으로 줄어도 fixed tick 안에서 새 overlap을 만듭니다.
         position: { x: 31.4, y: 10 },
         velocity: { x: 24, y: 0 },
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         spawnSequence: 1
     });
     const minimumDistance = enemyIntent.radius + projectileIntent.radius;
@@ -2401,6 +2423,7 @@ async function runProductionStableSlotLifecycleSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 0,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true
         },
         {
@@ -2412,6 +2435,7 @@ async function runProductionStableSlotLifecycleSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 0,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true
         }
     ];
@@ -2424,6 +2448,7 @@ async function runProductionStableSlotLifecycleSmoke(device) {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
         alive: true
     };
     const dSpawn = {
@@ -2435,6 +2460,7 @@ async function runProductionStableSlotLifecycleSmoke(device) {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
         alive: true
     };
     const matchesHandle = (body, handle) => (
@@ -2881,6 +2907,7 @@ async function runProductionFixedSubmitFailureSmoke(device) {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
         alive: true
     };
     const compactStatus = (status) => ({
@@ -3028,6 +3055,7 @@ async function runProductionSparseCollisionHoleSmoke(device) {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 1,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
         alive: true
     }));
 
@@ -3162,6 +3190,7 @@ async function runProductionSparseRenderHoleSmoke(device) {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
         alive: true,
         renderStyle: { color: [1, 0, 0, 1] }
     };
@@ -3174,6 +3203,7 @@ async function runProductionSparseRenderHoleSmoke(device) {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
         alive: true,
         renderStyle: { color: [0, 1, 0, 1] }
     };
@@ -3392,6 +3422,7 @@ async function runProductionOverflowSmoke(device) {
             inverseMass: 1,
             layerMask: 1,
             collisionMask: 1,
+            teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
             alive: true,
             ...(isFlowRollbackProbe ? {
                 ...flowProbeHandle,
@@ -3515,6 +3546,8 @@ function createPhase3Body(overrides = {}) {
         collisionMask: 0,
         interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
         interactionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         health: 1,
         penetration: 1,
         lifetime: -1,
@@ -3527,6 +3560,7 @@ function createPhase3SpawnIntent(definitionId, overrides = {}) {
     return Object.freeze({
         kindId: 'projectile',
         definitionId,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
         ...createPhase3Body(overrides)
     });
 }
@@ -5342,6 +5376,342 @@ async function runProductionPhase5AimHardwareSmoke(device) {
     }
 }
 
+async function runProductionPhase5TeamDamageMatrixHardwareSmoke(device) {
+    const fixedDelta = 1 / 60;
+    const sourceTick = 1;
+    const damagePolicyId = GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX;
+    const authoredHealth = 2;
+    const authoredDamage = 1;
+    const cases = Object.freeze([
+        Object.freeze({
+            id: 'player-to-hostile',
+            sourceTeamId: GAMEPLAY_TEAM_ID.PLAYER,
+            targetTeamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            damageAllowed: true
+        }),
+        Object.freeze({
+            id: 'hostile-to-player',
+            sourceTeamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            targetTeamId: GAMEPLAY_TEAM_ID.PLAYER,
+            damageAllowed: true
+        }),
+        Object.freeze({
+            id: 'player-to-player',
+            sourceTeamId: GAMEPLAY_TEAM_ID.PLAYER,
+            targetTeamId: GAMEPLAY_TEAM_ID.PLAYER,
+            damageAllowed: false
+        }),
+        Object.freeze({
+            id: 'hostile-to-hostile',
+            sourceTeamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            targetTeamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            damageAllowed: false
+        }),
+        Object.freeze({
+            id: 'neutral-to-player',
+            sourceTeamId: GAMEPLAY_TEAM_ID.NEUTRAL,
+            targetTeamId: GAMEPLAY_TEAM_ID.PLAYER,
+            damageAllowed: false
+        }),
+        Object.freeze({
+            id: 'player-to-neutral',
+            sourceTeamId: GAMEPLAY_TEAM_ID.PLAYER,
+            targetTeamId: GAMEPLAY_TEAM_ID.NEUTRAL,
+            damageAllowed: false
+        })
+    ]);
+    const results = [];
+
+    for (let index = 0; index < cases.length; index++) {
+        const fixture = cases[index];
+        const expectedDamageAllowed = isGameplayDamageAllowed(
+            fixture.sourceTeamId,
+            fixture.targetTeamId,
+            damagePolicyId
+        );
+        assert(
+            expectedDamageAllowed === fixture.damageAllowed,
+            `team damage matrix host oracle 불일치: ${fixture.id}`
+        );
+        const projectileHandle = Object.freeze({
+            entityId: 9811 + (index * 2),
+            incarnation: 101 + index
+        });
+        const targetHandle = Object.freeze({
+            entityId: projectileHandle.entityId + 1,
+            incarnation: 201 + index
+        });
+        const projectileGameplayMeta = packGpuCircleGameplayMeta(
+            fixture.sourceTeamId,
+            damagePolicyId
+        );
+        const targetGameplayMeta = packGpuCircleGameplayMeta(
+            fixture.targetTeamId,
+            damagePolicyId
+        );
+        assert(
+            (projectileGameplayMeta & GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK) === 0
+                && (targetGameplayMeta & GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK) === 0,
+            `team damage matrix gameplayMeta reserved bit가 설정되었습니다: ${fixture.id}`
+        );
+        const projectile = Object.freeze({
+            ...projectileHandle,
+            position: Object.freeze({ x: 4, y: 4 }),
+            velocity: Object.freeze({ x: 0, y: 0 }),
+            radius: 0.2,
+            inverseMass: 1,
+            bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+            collisionMask: 0,
+            interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+            interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+            teamId: fixture.sourceTeamId,
+            damagePolicyId,
+            gameplayMeta: projectileGameplayMeta,
+            health: authoredHealth,
+            lifetime: -1,
+            contactHandler: Object.freeze({
+                damageSelf: authoredDamage,
+                damageOther: authoredDamage,
+                flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+                    | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS
+            }),
+            alive: true
+        });
+        const target = Object.freeze({
+            ...targetHandle,
+            position: Object.freeze({ x: 4, y: 4 }),
+            velocity: Object.freeze({ x: 0, y: 0 }),
+            radius: 0.25,
+            inverseMass: 0,
+            bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+            collisionMask: 0,
+            interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+            interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+            teamId: fixture.targetTeamId,
+            damagePolicyId,
+            gameplayMeta: targetGameplayMeta,
+            health: authoredHealth,
+            lifetime: -1,
+            alive: true
+        });
+        const simulation = new GpuCircleBodySimulation(
+            createPhase3PlatformPort(device),
+            {
+                capacity: 2,
+                worldSize: { x: 8, y: 8 },
+                gridCellSize: { x: 2, y: 2 }
+            }
+        );
+        const findBody = (bodies, handle, label) => {
+            const body = bodies.find((candidate) => (
+                candidate.handle?.entityId === handle.entityId
+                && candidate.handle?.incarnation === handle.incarnation
+            ));
+            assert(
+                body,
+                `team damage matrix ${fixture.id} ${label} body identity 누락: ${JSON.stringify(handle)}`
+            );
+            return body;
+        };
+        const assertGameplayMeta = (body, expectedMeta, expectedTeamId, label) => {
+            const unpacked = unpackGpuCircleGameplayMeta(body.gameplayMeta);
+            assert(
+                body.gameplayMeta === expectedMeta
+                    && body.teamId === expectedTeamId
+                    && body.damagePolicyId === damagePolicyId
+                    && unpacked.teamId === expectedTeamId
+                    && unpacked.damagePolicyId === damagePolicyId,
+                `team damage matrix ${fixture.id} ${label} gameplay metadata 불일치: ${JSON.stringify({ body, unpacked })}`
+            );
+        };
+
+        try {
+            assert(simulation.init(), `team damage matrix ${fixture.id} simulation init 실패`);
+            const spawnResult = simulation.spawnBodies([projectile, target]);
+            assert(
+                spawnResult.accepted === 2
+                    && spawnResult.rejected === 0
+                    && spawnResult.handles?.length === 2
+                    && spawnResult.handles[0].entityId === projectileHandle.entityId
+                    && spawnResult.handles[0].incarnation === projectileHandle.incarnation
+                    && spawnResult.handles[1].entityId === targetHandle.entityId
+                    && spawnResult.handles[1].incarnation === targetHandle.incarnation,
+                `team damage matrix ${fixture.id} exact spawn identity 불일치: ${JSON.stringify(spawnResult)}`
+            );
+            assert(
+                simulation.fixedUpdate(fixedDelta, sourceTick),
+                `team damage matrix ${fixture.id} fixed submit 실패: ${JSON.stringify(simulation.getStatus())}`
+            );
+            const bodiesPromise = simulation.readbackBodies();
+            await device.queue.onSubmittedWorkDone();
+            const bodies = await bodiesPromise;
+            assert(
+                bodies.length === 2,
+                `team damage matrix ${fixture.id} readback body 수 불일치: ${JSON.stringify(bodies)}`
+            );
+            const projectileAfter = findBody(bodies, projectileHandle, 'projectile');
+            const targetAfter = findBody(bodies, targetHandle, 'target');
+            assertGameplayMeta(
+                projectileAfter,
+                projectileGameplayMeta,
+                fixture.sourceTeamId,
+                'projectile'
+            );
+            assertGameplayMeta(
+                targetAfter,
+                targetGameplayMeta,
+                fixture.targetTeamId,
+                'target'
+            );
+            assertNear(
+                projectileAfter.position.x,
+                projectile.position.x,
+                0.000001,
+                `team damage matrix ${fixture.id} projectile physical displacement x`
+            );
+            assertNear(
+                projectileAfter.position.y,
+                projectile.position.y,
+                0.000001,
+                `team damage matrix ${fixture.id} projectile physical displacement y`
+            );
+            assertNear(
+                projectileAfter.previousPosition.x,
+                projectile.position.x,
+                0.000001,
+                `team damage matrix ${fixture.id} projectile previous physical displacement x`
+            );
+            assertNear(
+                projectileAfter.previousPosition.y,
+                projectile.position.y,
+                0.000001,
+                `team damage matrix ${fixture.id} projectile previous physical displacement y`
+            );
+            assertNear(
+                projectileAfter.positionDelta.x,
+                0,
+                0.000001,
+                `team damage matrix ${fixture.id} projectile positionDelta.x`
+            );
+            assertNear(
+                projectileAfter.positionDelta.y,
+                0,
+                0.000001,
+                `team damage matrix ${fixture.id} projectile positionDelta.y`
+            );
+
+            const completedStatus = await waitForSimulationStatus(
+                simulation,
+                (status) => status.events.pendingReadbacks === 0
+                    && status.events.queuedBatches >= 1
+                    && status.events.completedThroughTick >= sourceTick,
+                `team damage matrix ${fixture.id} event completion`
+            );
+            const batches = simulation.drainCompletedEventBatches([]);
+            assert(
+                batches.length === 1
+                    && batches[0].sourceTick === sourceTick
+                    && batches[0].completedThroughTick === sourceTick,
+                `team damage matrix ${fixture.id} event batch tick 불일치: ${JSON.stringify(batches)}`
+            );
+            const [batch] = batches;
+            const contactEvents = batch.events.filter(({ type }) => type === 'contact');
+            const damageEvents = contactEvents.filter(
+                ({ eventType }) => eventType === 'damage-applied'
+            );
+            const deathEvents = batch.events.filter(({ type }) => type === 'death');
+            assert(
+                contactEvents.length === 1
+                    && contactEvents[0].entityId === projectileHandle.entityId
+                    && contactEvents[0].incarnation === projectileHandle.incarnation
+                    && contactEvents[0].otherEntityId === targetHandle.entityId
+                    && contactEvents[0].otherIncarnation === targetHandle.incarnation,
+                `team damage matrix ${fixture.id} contact exact identity 불일치: ${JSON.stringify(contactEvents)}`
+            );
+            assert(
+                deathEvents.length === 0,
+                `team damage matrix ${fixture.id} death event가 발생했습니다: ${JSON.stringify(deathEvents)}`
+            );
+            if (fixture.damageAllowed) {
+                const [damageEvent] = damageEvents;
+                assert(
+                    damageEvents.length === 1
+                        && damageEvent.damageFixedPoint === authoredDamage * 100
+                        && damageEvent.damage === authoredDamage,
+                    `team damage matrix ${fixture.id} DAMAGE_APPLIED가 정확하지 않습니다: ${JSON.stringify(damageEvents)}`
+                );
+                assertNear(
+                    targetAfter.health,
+                    authoredHealth - authoredDamage,
+                    0.000001,
+                    `team damage matrix ${fixture.id} target HP 적용`
+                );
+                assertNear(
+                    projectileAfter.health,
+                    authoredHealth - authoredDamage,
+                    0.000001,
+                    `team damage matrix ${fixture.id} projectile penetration 적용`
+                );
+            } else {
+                assert(
+                    damageEvents.length === 0
+                        && contactEvents[0].eventType === 'interaction-continuous',
+                    `team damage matrix ${fixture.id} blocked DAMAGE_APPLIED가 발생했습니다: ${JSON.stringify(contactEvents)}`
+                );
+                assertNear(
+                    targetAfter.health,
+                    authoredHealth,
+                    0.000001,
+                    `team damage matrix ${fixture.id} blocked target HP 보존`
+                );
+                assertNear(
+                    projectileAfter.health,
+                    authoredHealth,
+                    0.000001,
+                    `team damage matrix ${fixture.id} blocked projectile penetration 보존`
+                );
+            }
+            assert(
+                completedStatus.events.lastDeathCount === 0
+                    && completedStatus.events.lastAppliedOverflowCount === 0
+                    && completedStatus.events.lastDeathOverflowCount === 0,
+                `team damage matrix ${fixture.id} event telemetry 불일치: ${JSON.stringify(completedStatus.events)}`
+            );
+            results.push(Object.freeze({
+                id: fixture.id,
+                sourceTeamId: fixture.sourceTeamId,
+                targetTeamId: fixture.targetTeamId,
+                damageAllowed: fixture.damageAllowed,
+                handles: Object.freeze({ projectile: projectileHandle, target: targetHandle }),
+                targetHealth: Object.freeze({
+                    before: authoredHealth,
+                    after: targetAfter.health
+                }),
+                projectile: Object.freeze({
+                    penetrationBefore: authoredHealth,
+                    penetrationAfter: projectileAfter.health,
+                    positionBefore: Object.freeze({ ...projectile.position }),
+                    positionAfter: Object.freeze({ ...projectileAfter.position })
+                }),
+                event: Object.freeze({
+                    type: contactEvents[0].eventType,
+                    damageAppliedCount: damageEvents.length,
+                    deathCount: deathEvents.length
+                })
+            }));
+        } finally {
+            simulation.destroy();
+            await device.queue.onSubmittedWorkDone();
+        }
+    }
+
+    return Object.freeze({
+        damagePolicyId,
+        sourceTick,
+        cases: results
+    });
+}
+
 async function runProductionPhase5ContactHardwareSmoke(device, domainSentinel) {
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
@@ -5509,6 +5879,9 @@ async function runProductionPhase5ContactHardwareSmoke(device, domainSentinel) {
         );
         assert(JSON.stringify(domainSentinel) === sentinelBefore,
             'Phase 5 contact가 CPU domain sentinel을 변경했습니다.');
+        const teamDamageMatrix = await runProductionPhase5TeamDamageMatrixHardwareSmoke(
+            device
+        );
         return {
             handles: { tower: towerHandle, enemy: enemyHandle, bullet: bulletHandle },
             enemyBeforeShot: {
@@ -5531,7 +5904,8 @@ async function runProductionPhase5ContactHardwareSmoke(device, domainSentinel) {
                 reservedCount: cleanupStatus.reservedCount,
                 pendingCommandCount: cleanupStatus.pendingCommandCount,
                 pendingBodyCount: gpuCleanupStatus.pendingBodyCount
-            }
+            },
+            teamDamageMatrix
         };
     } finally {
         endpoint.destroy();
@@ -5744,6 +6118,9 @@ async function runProductionPhase5LifetimeHardwareSmoke(device, domainSentinel) 
             definition: BASIC_BULLET_PROJECTILE_DATA,
             position: { x: 8, y: 8 },
             velocity: { x: 0, y: 0 },
+            teamId: GAMEPLAY_TEAM_ID.PLAYER,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+            damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
             targetFixedTick: 1,
             spawnSequence: 0,
             commandId: 'phase5:lifetime:basic-bullet'

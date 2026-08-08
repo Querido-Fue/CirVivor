@@ -2,6 +2,10 @@ import {
     createGpuProjectileSpawnIntent
 } from 'ingame/gpu_simulation_endpoint.js';
 import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
+} from 'ingame/contract/gameplay_team_contract.js';
+import {
     GPU_BENCHMARK_ARENA_LAYOUT
 } from './gpu_benchmark_navigation_source.js';
 
@@ -275,7 +279,9 @@ export function requestGpuBenchmarkProjectileBatch(options = {}) {
             requests.push(Object.freeze({
                 intent: createGpuProjectileSpawnIntent({
                     ...radial,
-                    spawnSequence
+                    spawnSequence,
+                    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+                    allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE
                 }),
                 targetFixedTick,
                 commandId: createCommandId(

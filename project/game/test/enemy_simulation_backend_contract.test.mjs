@@ -7,6 +7,10 @@ const { EnemySimulationBackend } = await loadGameModule(
     'ingame/object/enemy/enemy_simulation_backend.js'
 );
 const { createTileMap } = await loadGameModule('ingame/map/tile_map.js');
+const {
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 function createTileMapSource() {
     const cols = 4;
@@ -35,6 +39,8 @@ function createBody() {
         inverseMass: 1,
         layerMask: 1,
         collisionMask: 129,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         alive: true
     };
 }

@@ -6,6 +6,14 @@ import {
 import {
     GPU_SPAWN_PROGRAM_MODE
 } from '../../physics/gpu/gpu_fixed_primitive_abi.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    normalizeGameplayAllegiancePolicy,
+    normalizeGameplayDamagePolicyId,
+    normalizeGameplayTeamId,
+    resolveGameplayAllegianceTeam
+} from '../../contract/gameplay_team_contract.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_NAMESPACE = 'gpu-projectile';
@@ -129,6 +137,28 @@ function normalizeSourceHandle(source) {
     return Object.freeze({ entityId, incarnation });
 }
 
+function resolveProjectileAllegiance(options) {
+    const allegiancePolicy = normalizeGameplayAllegiancePolicy(
+        options.allegiancePolicy
+            ?? GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE
+    );
+    if (allegiancePolicy === GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT) {
+        return Object.freeze({
+            allegiancePolicy,
+            ...(options.teamId === undefined || options.teamId === null
+                ? {}
+                : { teamId: normalizeGameplayTeamId(options.teamId) })
+        });
+    }
+    return Object.freeze({
+        allegiancePolicy,
+        teamId: resolveGameplayAllegianceTeam({
+            policy: allegiancePolicy,
+            teamId: options.teamId
+        })
+    });
+}
+
 function resolveInverseMass(definition) {
     if (definition.inverseMass !== undefined) {
         return requirePositiveFinite(definition.inverseMass, 'definition.inverseMass');
@@ -215,6 +245,12 @@ export function createGpuProjectileSpawnIntent(options = {}) {
     }
     const definitionId = requireNonEmptyString(definition.id, 'definition.id');
     const sourceHandle = normalizeSourceHandle(options.sourceHandle);
+    const ownerHandle = normalizeSourceHandle(options.ownerHandle);
+    const allegiance = resolveProjectileAllegiance(options);
+    const damagePolicyId = normalizeGameplayDamagePolicyId(
+        options.damagePolicyId
+            ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    );
     const spawnSequence = requireNonNegativeSafeInteger(
         options.spawnSequence ?? 0,
         'spawnSequence'
@@ -226,10 +262,16 @@ export function createGpuProjectileSpawnIntent(options = {}) {
     return Object.freeze({
         kindId: GPU_PROJECTILE_WORLD_KIND_ID,
         definitionId,
+        ...allegiance,
+        damagePolicyId,
         spawnSequence,
         ...(sourceHandle ? {
             sourceEntityId: sourceHandle.entityId,
             sourceIncarnation: sourceHandle.incarnation
+        } : {}),
+        ...(ownerHandle ? {
+            ownerEntityId: ownerHandle.entityId,
+            ownerIncarnation: ownerHandle.incarnation
         } : {}),
         ...(producerId !== undefined ? {
             producerId: requireNonEmptyString(producerId, 'producerId')
@@ -310,7 +352,13 @@ export function requestGpuProjectileSpawn(options = {}) {
         position: options.position,
         velocity: options.velocity,
         spawnSequence,
-        sourceHandle: options.sourceHandle
+        sourceHandle: options.sourceHandle,
+        ownerHandle: options.ownerHandle,
+        producerId: options.producerId,
+        sourceAbilityId: options.sourceAbilityId,
+        teamId: options.teamId,
+        allegiancePolicy: options.allegiancePolicy,
+        damagePolicyId: options.damagePolicyId
     });
     const commandId = options.commandId === undefined || options.commandId === null
         ? createGpuProjectileCommandId({
@@ -365,8 +413,13 @@ export function requestGpuProjectile(options = {}) {
         velocity: { x: 0, y: 0 },
         spawnSequence,
         sourceHandle,
+        ownerHandle: options.ownerHandle,
         producerId: options.producerId,
-        sourceAbilityId: options.sourceAbilityId
+        sourceAbilityId: options.sourceAbilityId,
+        teamId: options.teamId,
+        allegiancePolicy: options.allegiancePolicy
+            ?? GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+        damagePolicyId: options.damagePolicyId
     });
     const commandId = options.commandId === undefined || options.commandId === null
         ? createGpuProjectileCommandId({

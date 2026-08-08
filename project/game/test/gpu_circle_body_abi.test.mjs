@@ -13,6 +13,7 @@ const {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_FIXED_POINT,
     GPU_CIRCLE_BODY_FLOW,
+    GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_IDENTITY,
     GPU_CIRCLE_BODY_LAYER,
     GPU_CIRCLE_BODY_LIFETIME,
@@ -30,6 +31,7 @@ const {
     normalizeGpuCircleBodyRenderShapeCode,
     normalizeGpuCircleBodyMetadata,
     packGpuCircleAppliedEventMeta,
+    packGpuCircleGameplayMeta,
     packGpuCircleInteractionMeta,
     packGpuCirclePhysicsMeta,
     packGpuCircleSimulationMeta,
@@ -38,6 +40,7 @@ const {
     readGpuCircleContactHandler,
     readGpuCircleGridBody,
     unpackGpuCircleAppliedEventMeta,
+    unpackGpuCircleGameplayMeta,
     unpackGpuCircleInteractionMeta,
     unpackGpuCirclePhysicsMeta,
     unpackGpuCircleSimulationMeta,
@@ -46,6 +49,10 @@ const {
     writeGpuCircleContactHandler,
     writeGpuCircleGridBody
 } = abi;
+const {
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY, 1);
 assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER, GPU_CIRCLE_BODY_LAYER);
@@ -108,7 +115,8 @@ assert.equal(GPU_CIRCLE_BODY_ABI.PHYSICS.INTERACTION_META, 28);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE, 32);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.LIFETIME, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH, 4);
-assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.TIMER, 8);
+assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.GAMEPLAY_META, 8);
+assert.equal('TIMER' in GPU_CIRCLE_BODY_ABI.SIMULATION, false);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.FLAGS, 12);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.FLOW_FIELD_INDEX, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.SIMULATION.FLOW_SPEED, 20);
@@ -169,12 +177,22 @@ assert.equal(
     GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
 );
 
-// V2 physical/interaction metadata와 flags word는 서로 독립입니다.
+// V3 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
 const physicsMeta = packGpuCirclePhysicsMeta(0xa5, 0x81);
 const interactionMeta = packGpuCircleInteractionMeta(0x42, 0xa5);
+const gameplayMeta = packGpuCircleGameplayMeta(
+    GAMEPLAY_TEAM_ID.HOSTILE,
+    GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+);
 const simulationMeta = packGpuCircleSimulationMeta(0x05);
 assert.equal(physicsMeta, 0x008100a5);
 assert.equal(interactionMeta, 0x00a50042);
+assert.equal(gameplayMeta, 0x00000002);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT, 0);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK, 0xff);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT, 8);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_MASK, 0xff);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK, 0xffff0000);
 assert.equal(simulationMeta, 0x05);
 assert.equal(GPU_CIRCLE_BODY_META.ALIVE_BIT, 0x01);
 assert.equal(GPU_CIRCLE_BODY_META.USE_FLOW_BIT, 0x02);
@@ -204,6 +222,10 @@ assert.equal(unpackedPhysics.collisionMask, 0x81);
 const unpackedInteraction = unpackGpuCircleInteractionMeta(interactionMeta);
 assert.equal(unpackedInteraction.interactionLayer, 0x42);
 assert.equal(unpackedInteraction.interactionMask, 0xa5);
+assert.deepEqual({ ...unpackGpuCircleGameplayMeta(gameplayMeta) }, {
+    teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+});
 const unpackedSimulation = unpackGpuCircleSimulationMeta(simulationMeta);
 assert.equal(unpackedSimulation.flags, 0x05);
 assert.equal(unpackedSimulation.alive, true);
@@ -237,6 +259,8 @@ writeGpuCircleBodySpawn(storage, 1, {
     collisionMask: 0x81,
     interactionLayer: 2,
     interactionMask: 0x42,
+    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
     alive: true
 });
 const packedBody = readGpuCircleBody(storage, 1);
@@ -255,11 +279,20 @@ assert.equal(packedBody.positionDelta.y, 0);
 assert.equal(packedBody.gridIndex, -1);
 assert.equal(packedBody.physicsMeta, packGpuCirclePhysicsMeta(1, 0x81));
 assert.equal(packedBody.interactionMeta, packGpuCircleInteractionMeta(2, 0x42));
+assert.equal(
+    packedBody.gameplayMeta,
+    packGpuCircleGameplayMeta(GAMEPLAY_TEAM_ID.PLAYER)
+);
+assert.equal(packedBody.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+assert.equal(
+    packedBody.damagePolicyId,
+    GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+);
 assert.equal(packedBody.simulationMeta, packGpuCircleSimulationMeta(1));
 assert.equal(packedBody.lifetime, GPU_CIRCLE_BODY_LIFETIME.IMMORTAL);
 assert.equal(packedBody.healthFixedPoint, GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE);
 assert.equal(packedBody.health, 1);
-assert.equal(packedBody.timer, 0);
+assert.equal('timer' in packedBody, false);
 assert.equal(packedBody.flowFieldIndex, GPU_CIRCLE_BODY_FLOW.INVALID_FIELD_INDEX);
 assert.equal(packedBody.flowSpeed, 0);
 assert.equal(packedBody.entityId, GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT);
@@ -304,10 +337,10 @@ assert.equal(
 );
 assert.equal(
     simulationView.getUint32(
-        simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.TIMER,
+        simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.GAMEPLAY_META,
         true
     ),
-    0
+    packGpuCircleGameplayMeta(GAMEPLAY_TEAM_ID.PLAYER)
 );
 assert.equal(
     simulationView.getUint32(
@@ -354,6 +387,8 @@ writeGpuCircleBodySpawn(storage, 0, {
     collisionMask: 1,
     interactionLayer: 2,
     interactionMask: 0,
+    teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
     flowFieldIndex: 7,
     flowSpeed: 6.25,
     entityId: 42,
@@ -364,6 +399,7 @@ assert.equal(flowBody.flowFieldIndex, 7);
 assertNear(flowBody.flowSpeed, 6.25, 'flow speed');
 assert.equal(flowBody.entityId, 42);
 assert.equal(flowBody.incarnation, 9);
+assert.equal(flowBody.teamId, GAMEPLAY_TEAM_ID.HOSTILE);
 assert.equal(flowBody.previousFlowFieldIndex, 7);
 assert.equal(
     unpackGpuCircleSimulationMeta(flowBody.simulationMeta).flags,
@@ -392,9 +428,10 @@ writeGpuCircleBodySpawn(storage, 1, {
     collisionMask: 0,
     interactionLayer: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
     interactionMask: GPU_CIRCLE_BODY_LAYER.ENEMY | GPU_CIRCLE_BODY_LAYER.TERRAIN,
+    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
     health: 2,
     lifetime: 3.5,
-    timer: 11,
     entityId: 77,
     incarnation: 4,
     countAsKill: true,
@@ -442,7 +479,11 @@ assert.equal(projectileSimulation.golden, true);
 assertNear(projectileBody.lifetime, 3.5, 'projectile lifetime');
 assert.equal(projectileBody.healthFixedPoint, 200);
 assert.equal(projectileBody.health, 2);
-assert.equal(projectileBody.timer, 11);
+assert.equal(projectileBody.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+assert.equal(
+    projectileBody.damagePolicyId,
+    GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+);
 assert.equal(projectileBody.entityId, 77);
 assert.equal(projectileBody.incarnation, 4);
 assertNear(projectileBody.contactHandler.damageSelf, 1, 'projectile self damage');
@@ -512,6 +553,8 @@ writeGpuCircleBodySpawn(fractionalFixedPointStorage, 0, {
     collisionMask: 0,
     interactionLayer: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
     interactionMask: 0,
+    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
     health: 0.29,
     contactHandler: {
         damageSelf: 0.29,
@@ -569,7 +612,9 @@ const spawn = {
     bodyLayer: 1,
     collisionMask: 1,
     interactionLayer: 1,
-    interactionMask: 0
+    interactionMask: 0,
+    teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
 };
 assert.equal(appendGpuCircleBodySpawn(singleSlotStorage, spawn), 0);
 assert.equal(readGpuCircleBodyCounts(singleSlotStorage).bodyCount, 1);
@@ -647,7 +692,35 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
 assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
     ...spawn,
     timer: -1
+}), 'TypeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    teamId: 3
 }), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    teamId: -1
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    damagePolicyId: 1
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    gameplayMeta: 0x00010000
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+    gameplayMeta: packGpuCircleGameplayMeta(GAMEPLAY_TEAM_ID.PLAYER)
+}), 'RangeError');
+assertThrowsNamed(() => packGpuCircleGameplayMeta(3), 'RangeError');
+assertThrowsNamed(() => packGpuCircleGameplayMeta(
+    GAMEPLAY_TEAM_ID.PLAYER,
+    1
+), 'RangeError');
+assertThrowsNamed(() => unpackGpuCircleGameplayMeta(0x00010000), 'RangeError');
+assertThrowsNamed(() => unpackGpuCircleGameplayMeta(3), 'RangeError');
 assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
     damageOther: -0.01
 }), 'RangeError');
@@ -749,7 +822,7 @@ assert.equal(
     GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED
 );
 
-// Physics plane의 V2 binary fixture는 정확히 32 bytes이며 +24/+28 word를 보존합니다.
+// Physics plane의 V3 binary fixture는 정확히 32 bytes이며 +24/+28 word를 보존합니다.
 const fixtureStorage = createGpuCircleBodyAbiStorage(1);
 writeGpuCircleBodySpawn(fixtureStorage, 0, {
     position: { x: 1, y: -2 },
@@ -759,12 +832,23 @@ writeGpuCircleBodySpawn(fixtureStorage, 0, {
     bodyLayer: 0x1234,
     collisionMask: 0xabcd,
     interactionLayer: 0x5678,
-    interactionMask: 0xef01
+    interactionMask: 0xef01,
+    teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
 });
 assert.equal(fixtureStorage.physicsBuffer.byteLength, 32);
 const fixtureView = new DataView(fixtureStorage.physicsBuffer);
 assert.equal(fixtureView.getUint32(24, true), 0xabcd1234);
 assert.equal(fixtureView.getUint32(28, true), 0xef015678);
+const gameplayFixtureView = new DataView(fixtureStorage.simulationBuffer);
+assert.equal(fixtureStorage.simulationBuffer.byteLength, 32);
+assert.equal(
+    gameplayFixtureView.getUint32(
+        GPU_CIRCLE_BODY_ABI.SIMULATION.GAMEPLAY_META,
+        true
+    ),
+    packGpuCircleGameplayMeta(GAMEPLAY_TEAM_ID.HOSTILE)
+);
 
 // Header mismatch is inspected but never repaired by a live writer.
 const mismatchedStorage = createGpuCircleBodyAbiStorage(1);
@@ -773,7 +857,10 @@ new DataView(mismatchedStorage.countsBuffer).setUint32(
     GPU_CIRCLE_BODY_ABI_VERSION - 1,
     true
 );
-assert.equal(readGpuCircleBodyCounts(mismatchedStorage).abiVersion, 1);
+assert.equal(
+    readGpuCircleBodyCounts(mismatchedStorage).abiVersion,
+    GPU_CIRCLE_BODY_ABI_VERSION - 1
+);
 assertThrowsNamed(() => assertGpuCircleBodyAbiVersion(mismatchedStorage), 'RangeError');
 assertThrowsNamed(() => writeGpuCircleBodyCounts(mismatchedStorage, {
     bodyCount: 0

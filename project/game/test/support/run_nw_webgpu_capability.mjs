@@ -16,6 +16,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/tower/the_tower_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'module/ingame/contract/tile_navigation_contract.js',
+    'module/ingame/contract/gameplay_team_contract.js',
     'module/ingame/game_world_session_mode.js',
     'module/ingame/gpu_simulation_endpoint.js',
     'module/ingame/map/tile_map.js',

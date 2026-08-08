@@ -8,6 +8,9 @@ import {
     PLAYER_CONTROL_CONTEXTS
 } from '../../contract/player_controllable_contract.js';
 import {
+    GAMEPLAY_ALLEGIANCE_POLICY
+} from '../../contract/gameplay_team_contract.js';
+import {
     GpuProjectileSpawnAdapter,
     GPU_PROJECTILE_SPAWN_MODE
 } from '../../gpu_simulation_endpoint.js';
@@ -212,6 +215,8 @@ export class GpuPrimaryProjectileController {
             mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_AIM_POINT,
             definition: BASIC_BULLET_PROJECTILE_DATA,
             sourceHandle: exactSourceHandle,
+            ownerHandle: exactSourceHandle,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
             positionOffset: this.positionOffset,
             aimWorldPoint: this.aimWorldPoint,
             launchSpeed: LAUNCH_SPEED,

@@ -15,6 +15,11 @@ const { createGpuEnemySpawnIntent } = await loadGameModule(
 const { GPU_CIRCLE_BODY_COLLISION_LAYER } = await loadGameModule(
     'ingame/physics/gpu/gpu_circle_body_abi.js'
 );
+const {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -61,6 +66,9 @@ function createProjectileIntent(overrides = {}) {
         collisionMask: 0,
         interactionLayer: 2,
         interactionMask: 129,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
         health: 3,
         lifetime: 2,
         contactHandler: {
@@ -359,6 +367,11 @@ test('generic projectile intent는 route 없이 canonical definition/layer와 ne
     assert.equal(body.bodyLayer, 2);
     assert.equal(body.interactionLayer, 2);
     assert.equal(body.interactionMask, 129);
+    assert.equal(body.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+    assert.equal(
+        body.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE
+    );
     assert.equal('layerMask' in body, false);
     assert.equal('sensorMask' in body, false);
     assert.deepEqual(JSON.parse(JSON.stringify(body.position)), { x: 1, y: 2 });
@@ -381,6 +394,11 @@ test('generic projectile intent는 route 없이 canonical definition/layer와 ne
     assert.equal(view.metadata.spawnSequence, 7);
     assert.equal(view.metadata.sourceEntityId, 31);
     assert.equal(view.metadata.sourceIncarnation, 4);
+    assert.equal(view.metadata.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+    assert.equal(
+        view.metadata.damagePolicyId,
+        GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    );
 });
 
 test('layer alias 불일치는 fail-fast하고 같은 command ID 재요청을 막지 않는다', () => {
@@ -431,7 +449,9 @@ test('enemy intent만 gate/path/flow를 요구하고 projectile identity 주입�
             bodyLayer: 1,
             collisionMask: 1,
             interactionLayer: 1,
-            interactionMask: 0
+            interactionMask: 0,
+            teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
         }, 1, 'enemy:missing-route'),
         /gateId/
     );

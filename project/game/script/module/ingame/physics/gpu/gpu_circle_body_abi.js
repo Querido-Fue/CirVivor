@@ -1,3 +1,9 @@
+import {
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    normalizeGameplayDamagePolicyId,
+    normalizeGameplayTeamId
+} from '../../contract/gameplay_team_contract.js';
+
 const UINT8_MAX = 0xff;
 const UINT16_MAX = 0xffff;
 const INT32_MIN = -0x80000000;
@@ -32,7 +38,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         STRIDE: 32,
         LIFETIME: 0,
         HEALTH: 4,
-        TIMER: 8,
+        GAMEPLAY_META: 8,
         FLAGS: 12,
         FLOW_FIELD_INDEX: 16,
         FLOW_SPEED: 20,
@@ -110,7 +116,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
 });
 
 /** Host buffer header와 모든 WGSL module이 공유하는 session 단위 ABI version입니다. */
-export const GPU_CIRCLE_BODY_ABI_VERSION = 2;
+export const GPU_CIRCLE_BODY_ABI_VERSION = 3;
 
 /**
  * GPU circle body presentation의 분석형 silhouette 코드입니다.
@@ -154,6 +160,15 @@ export const GPU_CIRCLE_BODY_META = Object.freeze({
     COUNT_AS_KILL_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL,
     EXPLODE_ON_DEATH_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH,
     GOLDEN_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN
+});
+
+/** BodySimulation +8의 team/damage-policy packed gameplay word입니다. */
+export const GPU_CIRCLE_BODY_GAMEPLAY_META = Object.freeze({
+    TEAM_SHIFT: 0,
+    TEAM_MASK: UINT8_MAX,
+    DAMAGE_POLICY_SHIFT: 8,
+    DAMAGE_POLICY_MASK: UINT8_MAX,
+    RESERVED_MASK: 0xffff0000
 });
 
 /**
@@ -468,6 +483,39 @@ export function unpackGpuCircleInteractionMeta(meta) {
     };
 }
 
+/** gameplay team과 damage policy를 BodySimulation +8 uint32 word로 pack합니다. */
+export function packGpuCircleGameplayMeta(
+    teamId,
+    damagePolicyId = GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+) {
+    const team = normalizeGameplayTeamId(teamId, 'teamId');
+    const damagePolicy = normalizeGameplayDamagePolicyId(
+        damagePolicyId,
+        'damagePolicyId'
+    );
+    return ((team << GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT)
+        | (damagePolicy << GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT)) >>> 0;
+}
+
+/** BodySimulation +8 gameplay word를 검증하고 unpack합니다. */
+export function unpackGpuCircleGameplayMeta(meta) {
+    const packed = requireUint32(meta, 'gameplayMeta');
+    if ((packed & GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK) !== 0) {
+        throw new RangeError('gameplayMeta reserved bit는 0이어야 합니다.');
+    }
+    const teamId = normalizeGameplayTeamId(
+        (packed >>> GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT)
+            & GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK,
+        'gameplayMeta.teamId'
+    );
+    const damagePolicyId = normalizeGameplayDamagePolicyId(
+        (packed >>> GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT)
+            & GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_MASK,
+        'gameplayMeta.damagePolicyId'
+    );
+    return { teamId, damagePolicyId };
+}
+
 /**
  * simulation plane +12에 저장할 flags-only uint32를 pack합니다.
  * @param {*} [flags] - simulation flags입니다.
@@ -502,7 +550,7 @@ export function unpackGpuCircleSimulationMeta(meta) {
 }
 
 /**
- * lifecycle/low-level public ingress에서만 legacy metadata alias를 V2로 승격합니다.
+ * lifecycle/low-level public ingress에서만 legacy metadata alias를 V3로 승격합니다.
  * 반환값에는 legacy 이름이 절대 포함되지 않습니다.
  */
 export function normalizeGpuCircleBodyMetadata(source, options = {}) {
@@ -826,7 +874,7 @@ function assertOptionalFlagMatches(spawn, fieldNames, flags, flag, label) {
 }
 
 /**
- * spawn metadata를 V2 physical/interaction/simulation word로 검증합니다.
+ * spawn metadata를 V3 physical/interaction/gameplay/simulation word로 검증합니다.
  * @param {*} spawn - spawn 입력입니다.
  * @returns {{physicsMeta:number,interactionMeta:number,simulationMeta:number,metadata:object}} packed meta입니다.
  */
@@ -844,6 +892,17 @@ function resolveSpawnMeta(spawn, useFlow, contactHandler) {
             metadata.interactionMask
         )
         : requireUint32(spawn.interactionMeta, 'interactionMeta');
+    if (Object.prototype.hasOwnProperty.call(spawn, 'timer')) {
+        throw new TypeError('Body ABI v3에서는 timer 대신 gameplayMeta/teamId를 사용합니다.');
+    }
+    const teamId = normalizeGameplayTeamId(spawn.teamId, 'teamId');
+    const damagePolicyId = normalizeGameplayDamagePolicyId(
+        spawn.damagePolicyId ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        'damagePolicyId'
+    );
+    const gameplayMeta = spawn.gameplayMeta === undefined
+        ? packGpuCircleGameplayMeta(teamId, damagePolicyId)
+        : requireUint32(spawn.gameplayMeta, 'gameplayMeta');
     const simulationMeta = spawn.simulationMeta === undefined
         ? packGpuCircleSimulationMeta(resolveSpawnSimulationFlags(
             spawn,
@@ -861,6 +920,13 @@ function resolveSpawnMeta(spawn, useFlow, contactHandler) {
         || unpackedInteraction.interactionMask !== metadata.interactionMask) {
         throw new RangeError(
             'interactionMeta와 canonical interaction metadata가 일치해야 합니다.'
+        );
+    }
+    const unpackedGameplay = unpackGpuCircleGameplayMeta(gameplayMeta);
+    if (unpackedGameplay.teamId !== teamId
+        || unpackedGameplay.damagePolicyId !== damagePolicyId) {
+        throw new RangeError(
+            'gameplayMeta와 canonical team/damage policy metadata가 일치해야 합니다.'
         );
     }
     const simulationFlags = unpackGpuCircleSimulationMeta(simulationMeta).flags;
@@ -913,7 +979,13 @@ function resolveSpawnMeta(spawn, useFlow, contactHandler) {
         GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN,
         'GOLDEN'
     );
-    return { physicsMeta, interactionMeta, simulationMeta, metadata };
+    return {
+        physicsMeta,
+        interactionMeta,
+        gameplayMeta,
+        simulationMeta,
+        metadata
+    };
 }
 
 /**
@@ -1164,7 +1236,12 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
     const { useFlow, flowFieldIndex, flowSpeed } = resolveSpawnFlow(spawn);
     const { entityId, incarnation } = resolveSpawnIdentity(spawn);
     const contactHandler = normalizeGpuCircleBodyContactHandler(spawn);
-    const { physicsMeta, interactionMeta, simulationMeta } = resolveSpawnMeta(
+    const {
+        physicsMeta,
+        interactionMeta,
+        gameplayMeta,
+        simulationMeta
+    } = resolveSpawnMeta(
         spawn,
         useFlow,
         contactHandler
@@ -1173,7 +1250,6 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
         spawn.lifetime ?? GPU_CIRCLE_BODY_LIFETIME.IMMORTAL
     );
     const healthFixedPoint = resolveSpawnHealthFixedPoint(spawn);
-    const timer = requireUint32(spawn.timer ?? 0, 'timer');
     const physicsOffset = slot * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
     const simulationOffset = slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
     const temporaryOffset = slot * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE;
@@ -1233,8 +1309,8 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
         LITTLE_ENDIAN
     );
     simulationView.setUint32(
-        simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.TIMER,
-        timer,
+        simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.GAMEPLAY_META,
+        gameplayMeta,
         LITTLE_ENDIAN
     );
     simulationView.setUint32(
@@ -1393,10 +1469,14 @@ export function readGpuCircleBody(storage, index) {
             simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH,
             LITTLE_ENDIAN
         )),
-        timer: simulationView.getUint32(
-            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.TIMER,
+        gameplayMeta: simulationView.getUint32(
+            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.GAMEPLAY_META,
             LITTLE_ENDIAN
         ),
+        ...unpackGpuCircleGameplayMeta(simulationView.getUint32(
+            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.GAMEPLAY_META,
+            LITTLE_ENDIAN
+        )),
         simulationMeta: simulationView.getUint32(
             simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.FLAGS,
             LITTLE_ENDIAN

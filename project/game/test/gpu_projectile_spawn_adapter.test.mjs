@@ -24,6 +24,17 @@ const {
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_circle_body_abi.js'
 );
+const {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
+
+const EXPLICIT_PLAYER_ALLEGIANCE = Object.freeze({
+    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+    allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE
+});
 
 function createDefinition(overrides = {}) {
     return {
@@ -70,16 +81,23 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
         position: { x: 10, y: 12 },
         velocity: { x: 30, y: -2 },
         spawnSequence: 9,
-        sourceHandle: { entityId: 11, incarnation: 3 }
+        sourceHandle: { entityId: 11, incarnation: 3 },
+        ownerHandle: { entityId: 11, incarnation: 3 },
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     });
 
     assert.equal(GPU_PROJECTILE_WORLD_KIND_ID, 'projectile');
     assert.deepEqual(JSON.parse(JSON.stringify(intent)), {
         kindId: 'projectile',
         definitionId: 'benchmark_round_01',
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
         spawnSequence: 9,
         sourceEntityId: 11,
         sourceIncarnation: 3,
+        ownerEntityId: 11,
+        ownerIncarnation: 3,
         position: { x: 10, y: 12 },
         velocity: { x: 30, y: -2 },
         radius: 0.2,
@@ -120,6 +138,11 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
     const packedHandler = readGpuCircleContactHandler(storage, 0);
     assert.equal(packedBody.health, 3);
     assert.equal(packedBody.healthFixedPoint, 300);
+    assert.equal(packedBody.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+    assert.equal(
+        packedBody.damagePolicyId,
+        GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    );
     assert.equal(packedHandler.damageSelf, 1);
     assert.equal(packedHandler.damageOther, 2.5);
 });
@@ -139,7 +162,8 @@ test('terrain/closest contact 옵션과 inverseMass/lifetime alias를 데이터�
             visible: undefined
         }),
         position: { x: 0, y: 0 },
-        velocity: { x: 1, y: 0 }
+        velocity: { x: 1, y: 0 },
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     });
 
     assert.equal(intent.inverseMass, 4);
@@ -153,13 +177,15 @@ test('terrain/closest contact 옵션과 inverseMass/lifetime alias를 데이터�
     const reusableSensorIntent = createGpuProjectileSpawnIntent({
         definition: createDefinition({ damageSelf: 0 }),
         position: { x: 0, y: 0 },
-        velocity: { x: 1, y: 0 }
+        velocity: { x: 1, y: 0 },
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     });
     assert.equal(reusableSensorIntent.contactHandler.damageSelf, 0);
     const continuousIntent = createGpuProjectileSpawnIntent({
         definition: createDefinition({ continuousInteraction: true }),
         position: { x: 0, y: 0 },
-        velocity: { x: 1, y: 0 }
+        velocity: { x: 1, y: 0 },
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     });
     assert.equal(
         continuousIntent.contactHandler.flags
@@ -178,7 +204,8 @@ test('request helper는 안정적인 command ID와 동일 intent를 endpoint에 
         targetFixedTick: 5,
         spawnSequence: 9,
         sourceHandle: { entityId: 11, incarnation: 3 },
-        commandNamespace: 'benchmark-projectile'
+        commandNamespace: 'benchmark-projectile',
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     };
 
     const first = requestGpuProjectileSpawn(options);
@@ -208,7 +235,8 @@ test('adapter instance는 endpoint/namespace를 보관하고 explicit command ID
         velocity: { x: 6, y: 7 },
         targetFixedTick: 8,
         spawnSequence: 2,
-        commandId: 'weapon-system-owned-command'
+        commandId: 'weapon-system-owned-command',
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     });
 
     assert.equal(result.commandId, 'weapon-system-owned-command');
@@ -224,6 +252,7 @@ test('generic mode API는 velocity source-relative payload를 불변 GPU SpawnPr
         mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_VELOCITY,
         definition: createDefinition(),
         sourceHandle,
+        ownerHandle: { entityId: 41, incarnation: 3 },
         positionOffset: { x: 0.25, y: -0.5 },
         launchVelocity: { x: 18, y: 0 },
         sourceVelocityScale: 0.5,
@@ -261,6 +290,17 @@ test('generic mode API는 velocity source-relative payload를 불변 GPU SpawnPr
     );
     assert.equal(call.intent.destinationSpawn.sourceEntityId, 11);
     assert.equal(call.intent.destinationSpawn.sourceIncarnation, 3);
+    assert.equal(call.intent.destinationSpawn.ownerEntityId, 41);
+    assert.equal(call.intent.destinationSpawn.ownerIncarnation, 3);
+    assert.equal('teamId' in call.intent.destinationSpawn, false);
+    assert.equal(
+        call.intent.destinationSpawn.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+    );
+    assert.equal(
+        call.intent.destinationSpawn.damagePolicyId,
+        GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    );
     assert.equal(call.intent.destinationSpawn.producerId, 'tower-primary-weapon');
     assert.equal(call.intent.destinationSpawn.sourceAbilityId, 'primary-pointer-fire');
     assert.equal(Object.isFrozen(call.intent), true);
@@ -297,6 +337,11 @@ test('adapter aim-point mode는 CPU pose 없이 world aim/speed만 source-relati
     assert.equal(intent.launchSpeed, 18);
     assert.equal('launchVelocity' in intent, false);
     assert.equal('sourceVelocityScale' in intent, false);
+    assert.equal('teamId' in intent.destinationSpawn, false);
+    assert.equal(
+        intent.destinationSpawn.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+    );
     assert.equal(Object.isFrozen(intent.aimWorldPoint), true);
 });
 
@@ -366,23 +411,32 @@ test('command ID helper와 spawn intent는 잘못된 identity/수치를 fail-fas
         definition: createDefinition(),
         position: { x: 0, y: 0 },
         velocity: { x: 1, y: 0 },
-        entityId: 99
+        entityId: 99,
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     }), /WorldRegistry/);
     assert.throws(() => createGpuProjectileSpawnIntent({
         definition: createDefinition({ penetration: 0 }),
         position: { x: 0, y: 0 },
-        velocity: { x: 1, y: 0 }
+        velocity: { x: 1, y: 0 },
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     }), /penetration/);
     assert.throws(() => createGpuProjectileSpawnIntent({
         definition: createDefinition({ lifetimeSeconds: Infinity }),
         position: { x: 0, y: 0 },
-        velocity: { x: 1, y: 0 }
+        velocity: { x: 1, y: 0 },
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     }), /lifetimeSeconds/);
     assert.throws(() => createGpuProjectileSpawnIntent({
         definition: createDefinition({ damage: 0x7fffffff }),
         position: { x: 0, y: 0 },
-        velocity: { x: 1, y: 0 }
+        velocity: { x: 1, y: 0 },
+        ...EXPLICIT_PLAYER_ALLEGIANCE
     }), /int32/);
+    assert.throws(() => createGpuProjectileSpawnIntent({
+        definition: createDefinition(),
+        position: { x: 0, y: 0 },
+        velocity: { x: 1, y: 0 }
+    }), /EXPLICIT_OVERRIDE/);
     assert.throws(() => createGpuProjectileCommandId({
         definitionId: 'round',
         targetFixedTick: 0,

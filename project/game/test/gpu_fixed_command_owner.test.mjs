@@ -12,6 +12,14 @@ const { GpuFixedCommandOwner } = await loadGameModule(
 const { GPU_SPAWN_PROGRAM_MODE } = await loadGameModule(
     'ingame/physics/gpu/gpu_fixed_primitive_abi.js'
 );
+const {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
+const { createGpuRegistryMetadata } = await loadGameModule(
+    'ingame/object/gpu_spawn_intent.js'
+);
 
 function handleKey(handle) {
     return handle.entityId + ':' + handle.incarnation;
@@ -30,6 +38,8 @@ function createProjectileIntent(overrides = {}) {
         collisionMask: 0,
         interactionLayer: 2,
         interactionMask: 129,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
         health: 3,
         lifetime: 2,
         contactHandler: {
@@ -134,7 +144,15 @@ function activateBody(registry, backend, descriptor = {}) {
         createdAtTick: descriptor.createdAtTick ?? 0
     });
     assert.ok(handle);
-    assert.equal(registry.activateReserved(handle), true);
+    assert.equal(registry.activateReserved(handle, createGpuRegistryMetadata({
+        kindId: descriptor.kindId ?? 'tower-proxy-fixture',
+        definitionId: descriptor.definitionId ?? 'phase3_controlled_body',
+        teamId: descriptor.teamId ?? GAMEPLAY_TEAM_ID.PLAYER,
+        damagePolicyId: descriptor.damagePolicyId
+            ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        allegiancePolicy: descriptor.allegiancePolicy
+            ?? GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+    })), true);
     backend.addBody(handle, descriptor);
     return handle;
 }
@@ -606,6 +624,108 @@ test('source-relative owner는 exact source provenance를 주입하고 mismatch/
     ), /launchVelocity\/sourceVelocityScale/);
     assert.equal(owner.getPendingCount(), 0);
     assert.equal(registry.getReservedCount(), 0);
+});
+
+test('source-relative raw command는 getter sourceHandle을 한 번만 snapshot해 team/source drift를 막는다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const player = activateBody(registry, backend, {
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+    });
+    const hostile = activateBody(registry, backend, {
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+    });
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const driftingIntent = createSourceRelativeIntent(player);
+    let sourceHandleReadCount = 0;
+    Object.defineProperty(driftingIntent, 'sourceHandle', {
+        enumerable: true,
+        get() {
+            sourceHandleReadCount++;
+            return sourceHandleReadCount === 1 ? player : hostile;
+        }
+    });
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        driftingIntent,
+        17,
+        'spawn:getter-source-snapshot'
+    ).accepted, true);
+    assert.equal(sourceHandleReadCount, 1);
+
+    const committed = owner.commitAtFixedBoundary(17);
+    assert.equal(committed.sourceRelativeSpawns.length, 1);
+    const staged = backend.stagedPlans[0].sourceRelativeSpawns[0];
+    assert.equal(handleKey(staged.sourceHandle), handleKey(player));
+    assert.notEqual(handleKey(staged.sourceHandle), handleKey(hostile));
+    assert.equal(staged.destinationSpawn.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+    assert.equal(staged.destinationSpawn.sourceEntityId, player.entityId);
+    assert.equal(staged.destinationSpawn.sourceIncarnation, player.incarnation);
+});
+
+test('source-relative snapshot은 frozen plain intent와 typed array를 보존하고 duplicate replay를 유지한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 3 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const createFrozenTypedIntent = () => Object.freeze({
+        sourceHandle: Object.freeze({ ...source }),
+        destinationSpawn: Object.freeze({
+            ...createProjectileIntent(),
+            debugBytes: new Uint8Array([7, 11, 13])
+        }),
+        positionOffset: Object.freeze({ x: 0.5, y: -0.25 }),
+        launchVelocity: Object.freeze({ x: 12, y: -3 }),
+        sourceVelocityScale: 0.75
+    });
+
+    const first = owner.requestSourceRelativeSpawn(
+        createFrozenTypedIntent(),
+        18,
+        'spawn:frozen-typed-replay'
+    );
+    const replay = owner.requestSourceRelativeSpawn(
+        createFrozenTypedIntent(),
+        18,
+        'spawn:frozen-typed-replay'
+    );
+    assert.equal(first.accepted, true);
+    assert.equal(replay.accepted, true);
+    assert.equal(replay.replay, true);
+
+    const committed = owner.commitAtFixedBoundary(18);
+    const staged = backend.stagedPlans[0].sourceRelativeSpawns[0];
+    assert.deepEqual(Array.from(staged.destinationSpawn.debugBytes), [7, 11, 13]);
+    assert.equal(Object.isFrozen(staged.destinationSpawn.debugBytes), true);
+});
+
+test('source-relative snapshot은 cycle/function/symbol raw payload를 enqueue 전에 거부한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 2 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const cyclic = createSourceRelativeIntent(source);
+    cyclic.extra = cyclic;
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        cyclic,
+        19,
+        'spawn:cyclic-snapshot'
+    ), /순환 참조/);
+
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, { extra: () => {} }),
+        19,
+        'spawn:function-snapshot'
+    ), /함수/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source, { extra: Symbol('snapshot') }),
+        19,
+        'spawn:symbol-snapshot'
+    ), /symbol/);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(backend.stagedPlans.length, 0);
 });
 
 test('commit 후 source-invalid result는 destination reservation을 취소하고 incarnation 재사용에서도 orphan을 남기지 않는다', () => {

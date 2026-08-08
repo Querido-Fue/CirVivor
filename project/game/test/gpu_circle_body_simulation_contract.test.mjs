@@ -20,6 +20,10 @@ const {
     GPU_SPAWN_PROGRAM_MODE,
     GPU_SPAWN_PROGRAM_RESULT
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
+const {
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 const gameModuleGlobal = GpuCircleBodySimulation.constructor('return globalThis')();
 const { createTileMap } = await loadGameModule('ingame/map/tile_map.js');
 const { createRouteFlowFieldAtlas } = await loadGameModule(
@@ -49,6 +53,8 @@ function createBody(x) {
         collisionMask: 1,
         interactionLayer: 1,
         interactionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         alive: true
     };
 }
@@ -1945,6 +1951,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             device.buffers.get('cirvivor-gpu-circle-simulation').data
         );
         assert.equal(simulationView.getInt32(4, true), 325);
+        assert.equal(simulationView.getUint32(8, true), GAMEPLAY_TEAM_ID.HOSTILE);
 
         const computeBodiesWithHandlersLayout = device.bindGroupLayouts.get(
             'cirvivor-gpu-circle-compute-bodies-with-handlers-layout'

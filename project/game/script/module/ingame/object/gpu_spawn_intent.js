@@ -2,6 +2,15 @@ import {
     normalizeGpuCircleBodyContactHandler,
     normalizeGpuCircleBodyMetadata
 } from '../physics/gpu/gpu_circle_body_abi.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    normalizeGameplayAllegiancePolicy,
+    normalizeGameplayDamagePolicyId,
+    resolveGameplayAllegianceTeam
+} from '../contract/gameplay_team_contract.js';
+
+const INVALID_HANDLE_COMPONENT = 0xffffffff;
 
 function requireNonNegativeSafeInteger(value, label) {
     const number = Number(value);
@@ -15,6 +24,16 @@ function requirePositiveFinite(value, label) {
     const number = Number(value);
     if (!Number.isFinite(number) || number <= 0) {
         throw new RangeError(`${label}은 양의 유한 숫자여야 합니다.`);
+    }
+    return number;
+}
+
+function requireExactIdentityComponent(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number)
+        || number <= 0
+        || number >= INVALID_HANDLE_COMPONENT) {
+        throw new RangeError(`${label}은 reserved sentinel보다 작은 양의 정수여야 합니다.`);
     }
     return number;
 }
@@ -68,8 +87,28 @@ function cloneAndFreezeValue(source, label, ancestors = new Set()) {
     return Object.freeze(result);
 }
 
+function validateOptionalExactIdentityPair(snapshot, prefix) {
+    const entityField = `${prefix}EntityId`;
+    const incarnationField = `${prefix}Incarnation`;
+    const hasEntityId = snapshot[entityField] !== undefined
+        && snapshot[entityField] !== null;
+    const hasIncarnation = snapshot[incarnationField] !== undefined
+        && snapshot[incarnationField] !== null;
+    if (hasEntityId !== hasIncarnation) {
+        throw new TypeError(`${entityField}/${incarnationField}은 함께 제공해야 합니다.`);
+    }
+    if (!hasEntityId) {
+        return;
+    }
+    requireExactIdentityComponent(snapshot[entityField], `spawnIntent.${entityField}`);
+    requireExactIdentityComponent(
+        snapshot[incarnationField],
+        `spawnIntent.${incarnationField}`
+    );
+}
+
 /** 모든 GPU body producer가 공유하는 canonical immutable spawn ingress입니다. */
-export function normalizeGpuSpawnIntent(source) {
+export function normalizeGpuSpawnIntent(source, options = {}) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('GPU body spawn intent가 필요합니다.');
     }
@@ -96,6 +135,23 @@ export function normalizeGpuSpawnIntent(source) {
     const metadata = normalizeGpuCircleBodyMetadata(snapshot, {
         requireNonZeroLayers: true
     });
+    const allegiancePolicy = normalizeGameplayAllegiancePolicy(
+        snapshot.allegiancePolicy
+            ?? GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        'spawnIntent.allegiancePolicy'
+    );
+    const teamId = resolveGameplayAllegianceTeam({
+        policy: allegiancePolicy,
+        teamId: snapshot.teamId,
+        subjectTeamId: options.subjectTeamId
+    });
+    const damagePolicyId = normalizeGameplayDamagePolicyId(
+        snapshot.damagePolicyId
+            ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        'spawnIntent.damagePolicyId'
+    );
+    validateOptionalExactIdentityPair(snapshot, 'owner');
+    validateOptionalExactIdentityPair(snapshot, 'source');
     const contactHandler = normalizeGpuCircleBodyContactHandler(snapshot);
     if (snapshot.spawnSequence !== undefined && snapshot.spawnSequence !== null) {
         requireNonNegativeSafeInteger(snapshot.spawnSequence, 'spawnIntent.spawnSequence');
@@ -115,6 +171,9 @@ export function normalizeGpuSpawnIntent(source) {
         ...canonicalSnapshot,
         definitionId,
         ...(kindId === 'enemy' ? { enemyDefinitionId: definitionId } : {}),
+        teamId,
+        damagePolicyId,
+        allegiancePolicy,
         ...metadata,
         contactHandler
     });
@@ -122,9 +181,22 @@ export function normalizeGpuSpawnIntent(source) {
 
 /** Registry가 GPU body identity와 함께 보존할 CPU domain metadata를 만듭니다. */
 export function createGpuRegistryMetadata(intent) {
+    const common = {
+        definitionId: intent.definitionId,
+        teamId: intent.teamId,
+        damagePolicyId: intent.damagePolicyId,
+        allegiancePolicy: intent.allegiancePolicy,
+        ownerEntityId: intent.ownerEntityId,
+        ownerIncarnation: intent.ownerIncarnation,
+        sourceEntityId: intent.sourceEntityId,
+        sourceIncarnation: intent.sourceIncarnation,
+        producerId: intent.producerId,
+        sourceAbilityId: intent.sourceAbilityId,
+        targetPolicyId: intent.targetPolicyId
+    };
     if (intent.kindId === 'enemy') {
         return {
-            definitionId: intent.definitionId,
+            ...common,
             enemyDefinitionId: intent.enemyDefinitionId,
             gateId: intent.gateId,
             pathId: intent.pathId,
@@ -135,11 +207,7 @@ export function createGpuRegistryMetadata(intent) {
         };
     }
     return {
-        definitionId: intent.definitionId,
-        spawnSequence: intent.spawnSequence,
-        sourceEntityId: intent.sourceEntityId,
-        sourceIncarnation: intent.sourceIncarnation,
-        producerId: intent.producerId,
-        sourceAbilityId: intent.sourceAbilityId
+        ...common,
+        spawnSequence: intent.spawnSequence
     };
 }

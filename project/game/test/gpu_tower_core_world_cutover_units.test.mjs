@@ -66,6 +66,10 @@ const {
 const {
     CoreIntegrity
 } = await loadGameModule('ingame/state/core_integrity.js');
+const {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 const CORE_PROXY_ADAPTER_SOURCE = await readFile(
     new URL(
@@ -214,6 +218,16 @@ test('Tower intent는 authored data를 사용하고 terrain-only physical/no-int
     assert.equal(tower.kindId, 'tower');
     assert.equal(tower.definitionId, GPU_TOWER_DEFINITION_ID);
     assert.equal(tower.definitionId, 'the-tower');
+    assert.equal(tower.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+    assert.equal(
+        tower.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+    );
+    assert.equal(enemy.teamId, GAMEPLAY_TEAM_ID.HOSTILE);
+    assert.equal(
+        enemy.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+    );
     assert.deepEqual({ ...tower.position }, authoredPosition);
     assert.notStrictEqual(tower.position, authoredPosition);
     assert.deepEqual({ ...tower.velocity }, { x: 0, y: 0 });
@@ -259,6 +273,11 @@ test('Core proxy는 invisible static/no-physical이며 Enemy와만 mutual enter 
     assert.equal(core.kindId, GPU_CORE_PROXY_WORLD_KIND_ID);
     assert.equal(core.kindId, 'core-proxy');
     assert.equal(core.definitionId, GPU_CORE_PROXY_DEFINITION_ID);
+    assert.equal(core.teamId, GAMEPLAY_TEAM_ID.NEUTRAL);
+    assert.equal(
+        core.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE
+    );
     assert.equal(core.inverseMass, 0);
     assert.equal(core.collisionMask, 0);
     assert.equal(

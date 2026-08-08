@@ -44,6 +44,10 @@ import {
     GPU_COLLISION_INDIRECT_WGSL,
     GPU_COLLISION_RENDER_WGSL
 } from './gpu_collision_shaders.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
+} from '../../contract/gameplay_team_contract.js';
 
 const GRID_BUCKET_COUNT = 2;
 const SOURCE_GRID_CELL_WORLD_UNITS = 12;
@@ -576,6 +580,8 @@ const TOMBSTONE_BODY = Object.freeze({
     collisionMask: 0,
     interactionLayer: 0,
     interactionMask: 0,
+    teamId: GAMEPLAY_TEAM_ID.NEUTRAL,
+    allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
     alive: false,
     visible: false
 });

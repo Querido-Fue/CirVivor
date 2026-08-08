@@ -2,8 +2,13 @@ import {
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
     GPU_CIRCLE_APPLIED_EVENT_TYPE,
     GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_RENDER_SHAPE
 } from './gpu_circle_body_abi.js';
+import {
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} from '../../contract/gameplay_team_contract.js';
 import { THE_TOWER_DATA } from '../../../../data/object/tower/the_tower_data.js';
 import {
     GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
@@ -87,6 +92,15 @@ const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
 const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 const BODY_LAYER_ENEMY: u32 = 1u;
 const BODY_LAYER_TERRAIN: u32 = 128u;
+const GAMEPLAY_TEAM_NEUTRAL: u32 = ${GAMEPLAY_TEAM_ID.NEUTRAL}u;
+const GAMEPLAY_TEAM_PLAYER: u32 = ${GAMEPLAY_TEAM_ID.PLAYER}u;
+const GAMEPLAY_TEAM_HOSTILE: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
+const GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX: u32 = ${GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX}u;
+const GAMEPLAY_META_TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
+const GAMEPLAY_META_TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
+const GAMEPLAY_META_DAMAGE_POLICY_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT}u;
+const GAMEPLAY_META_DAMAGE_POLICY_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_MASK}u;
+const GAMEPLAY_META_RESERVED_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK}u;
 const ENEMY_PAIR_COLLISION_RADIUS_SCALE: f32 = ${toWgslFloat(
     MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
 )};
@@ -127,7 +141,7 @@ struct BodyPhysics {
 struct BodySimulation {
     lifetime: f32,
     health: atomic<i32>,
-    timer: u32,
+    gameplay_meta: u32,
     flags: atomic<u32>,
     flow_field_index: u32,
     flow_speed: f32,
@@ -371,6 +385,38 @@ fn body_interaction_layer(interaction_meta: u32) -> u32 {
 
 fn body_interaction_mask(interaction_meta: u32) -> u32 {
     return (interaction_meta >> 16u) & 65535u;
+}
+
+fn gameplay_team_id(gameplay_meta: u32) -> u32 {
+    return (gameplay_meta >> GAMEPLAY_META_TEAM_SHIFT)
+        & GAMEPLAY_META_TEAM_MASK;
+}
+
+fn gameplay_damage_policy_id(gameplay_meta: u32) -> u32 {
+    return (gameplay_meta >> GAMEPLAY_META_DAMAGE_POLICY_SHIFT)
+        & GAMEPLAY_META_DAMAGE_POLICY_MASK;
+}
+
+fn gameplay_meta_is_valid(gameplay_meta: u32) -> bool {
+    let team_id = gameplay_team_id(gameplay_meta);
+    return (gameplay_meta & GAMEPLAY_META_RESERVED_MASK) == 0u
+        && team_id >= GAMEPLAY_TEAM_NEUTRAL
+        && team_id <= GAMEPLAY_TEAM_HOSTILE
+        && gameplay_damage_policy_id(gameplay_meta)
+            == GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX;
+}
+
+fn gameplay_damage_is_allowed(source_meta: u32, target_meta: u32) -> bool {
+    if (!gameplay_meta_is_valid(source_meta)
+        || !gameplay_meta_is_valid(target_meta)) {
+        return false;
+    }
+    let source_team = gameplay_team_id(source_meta);
+    let target_team = gameplay_team_id(target_meta);
+    return (source_team == GAMEPLAY_TEAM_PLAYER
+            && target_team == GAMEPLAY_TEAM_HOSTILE)
+        || (source_team == GAMEPLAY_TEAM_HOSTILE
+            && target_team == GAMEPLAY_TEAM_PLAYER);
 }
 
 fn body_is_alive(flags: u32) -> bool {
@@ -1523,6 +1569,22 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
 
+    if (!gameplay_damage_is_allowed(
+        simulations.values[self_body_id].gameplay_meta,
+        simulations.values[other_body_id].gameplay_meta
+    )) {
+        append_applied_event(AppliedEvent(
+            simulations.values[self_body_id].entity_id,
+            contact.self_incarnation,
+            simulations.values[other_body_id].entity_id,
+            contact.other_incarnation,
+            0,
+            policy_event_type | policy_event_flag,
+            contact.world_position
+        ));
+        return;
+    }
+
     let self_budget_reserved = reserve_self_hit_budget(
         self_body_id,
         damage_self
@@ -1995,7 +2057,7 @@ struct BodyPhysics {
 struct BodySimulation {
     lifetime: f32,
     health: i32,
-    timer: u32,
+    gameplay_meta: u32,
     flags: u32,
     flow_field_index: u32,
     flow_speed: f32,

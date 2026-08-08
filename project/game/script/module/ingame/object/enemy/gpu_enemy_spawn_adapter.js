@@ -2,6 +2,10 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_RENDER_SHAPE
 } from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
+} from '../../contract/gameplay_team_contract.js';
 
 export const GPU_ENEMY_WORLD_KIND_ID = 'enemy';
 export const GPU_ENEMY_FIRST_TARGET_WAYPOINT_INDEX = 1;
@@ -124,6 +128,8 @@ export function createGpuEnemySpawnIntent(options) {
     return Object.freeze({
         kindId: GPU_ENEMY_WORLD_KIND_ID,
         definitionId: enemyDefinitionId,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE,
         enemyDefinitionId,
         gateId,
         pathId,

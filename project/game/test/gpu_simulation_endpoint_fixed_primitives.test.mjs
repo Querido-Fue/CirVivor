@@ -8,12 +8,20 @@ const {
     GpuEnemySimulationEndpoint,
     createGpuSimulationEndpoint
 } = await loadGameModule('ingame/gpu_simulation_endpoint.js');
+const {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
 
-function createCanonicalSpawnIntent(definitionId = 'fixed_primitive_fixture') {
+function createCanonicalSpawnIntent(
+    definitionId = 'fixed_primitive_fixture',
+    overrides = {}
+) {
     return {
         kindId: 'projectile',
         definitionId,
@@ -30,7 +38,11 @@ function createCanonicalSpawnIntent(definitionId = 'fixed_primitive_fixture') {
         penetration: 1,
         damageSelf: 0,
         damageOther: 0,
-        lifetimeRemaining: 5
+        lifetimeRemaining: 5,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        ...overrides
     };
 }
 
@@ -249,13 +261,17 @@ function createEndpoint(backend) {
     return endpoint;
 }
 
-function spawnSource(endpoint, definitionId = 'controlled_source') {
+function spawnSource(endpoint, definitionId = 'controlled_source', overrides = {}) {
     assert.equal(endpoint.requestSpawn(
-        createCanonicalSpawnIntent(definitionId),
+        createCanonicalSpawnIntent(definitionId, overrides),
         1,
         `spawn:${definitionId}`
     ).accepted, true);
     return endpoint.commitAtFixedBoundary(1).spawned[0].handle;
+}
+
+function assertThrowsNamed(callback, expectedName) {
+    assert.throws(callback, (error) => error?.name === expectedName);
 }
 
 function createEventBatch(protocol, handle, sourceTick) {
@@ -446,6 +462,98 @@ test('SpawnProgram completion은 event drain 전에 destination을 활성화하�
         endpoint.getStatus().fixedCommands.lastCompletionResult.completed[0].outcome,
         'resolved'
     );
+    endpoint.destroy();
+});
+
+test('source-relative INHERIT_SUBJECT destination은 exact active source registry team으로만 활성화된다', () => {
+    const backend = createPrimitiveBackend();
+    const endpoint = createEndpoint(backend);
+    const source = spawnSource(endpoint, 'hostile_inherit_source', {
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+    });
+    const protocol = backend.getEventProtocolState();
+    const receipt = endpoint.requestSourceRelativeSpawn({
+        sourceHandle: source,
+        destinationSpawn: createCanonicalSpawnIntent('inherited_destination', {
+            teamId: undefined,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+        }),
+        positionOffset: { x: 0, y: 0 },
+        launchVelocity: { x: 3, y: 0 },
+        sourceVelocityScale: 0
+    }, 2, 'inherit-subject:2');
+
+    assert.equal(receipt.accepted, true);
+    assert.equal(endpoint.getStatus().reservedCount, 0);
+    const committed = endpoint.commitAtFixedBoundary(2);
+    const pending = committed.fixedCommands.sourceRelativeSpawns[0];
+    const staged = backend.calls.find(({ type }) => type === 'stageFixedPrograms');
+    const stagedDestination = staged.plan.sourceRelativeSpawns[0].destinationSpawn;
+    assert.equal(stagedDestination.teamId, GAMEPLAY_TEAM_ID.HOSTILE);
+    assert.equal(
+        stagedDestination.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+    );
+    assert.equal(endpoint.getStatus().reservedCount, 1);
+
+    backend.queueSpawnProgramBatch(Object.freeze({
+        ...protocol,
+        sourceTick: 2,
+        outcomes: Object.freeze([Object.freeze({
+            sourceHandle: source,
+            destinationHandle: pending.handle,
+            reason: 'resolved'
+        })])
+    }));
+    backend.queueEventBatch(createEventBatch(protocol, pending.handle, 2));
+    endpoint.commitCompletedEventsAtFixedBoundary(3);
+
+    const destination = endpoint.getRegistry().copyEntityView(pending.handle, {});
+    assert.equal(destination.metadata.teamId, GAMEPLAY_TEAM_ID.HOSTILE);
+    assert.equal(
+        destination.metadata.damagePolicyId,
+        GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    );
+    assert.equal(
+        destination.metadata.allegiancePolicy,
+        GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+    );
+    assert.equal(destination.metadata.sourceEntityId, source.entityId);
+    assert.equal(destination.metadata.sourceIncarnation, source.incarnation);
+    endpoint.destroy();
+});
+
+test('source-relative team injection 충돌은 command enqueue와 registry reservation 전에 fail-fast한다', () => {
+    const backend = createPrimitiveBackend();
+    const endpoint = createEndpoint(backend);
+    const source = spawnSource(endpoint, 'hostile_conflict_source', {
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+    });
+    const callsBefore = backend.calls.length;
+
+    assertThrowsNamed(() => endpoint.requestSourceRelativeSpawn({
+        sourceHandle: source,
+        destinationSpawn: createCanonicalSpawnIntent('injected_player_destination', {
+            teamId: GAMEPLAY_TEAM_ID.PLAYER,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+        }),
+        positionOffset: { x: 0, y: 0 },
+        launchVelocity: { x: 3, y: 0 },
+        sourceVelocityScale: 0
+    }, 2, 'inherit-injection:2'), 'RangeError');
+
+    assert.equal(endpoint.getStatus().activeCount, 1);
+    assert.equal(endpoint.getStatus().reservedCount, 0);
+    assert.equal(
+        backend.calls.filter(({ type }) => type === 'stageFixedPrograms').length,
+        0
+    );
+    assert.equal(backend.calls.length, callsBefore);
+    const committed = endpoint.commitAtFixedBoundary(2);
+    assert.equal(committed.fixedCommands.sourceRelativeSpawns.length, 0);
+    assert.equal(endpoint.getStatus().reservedCount, 0);
     endpoint.destroy();
 });
 

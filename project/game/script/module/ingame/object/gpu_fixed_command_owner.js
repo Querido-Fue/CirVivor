@@ -59,17 +59,89 @@ function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
 
-function stableFingerprint(value) {
+function stableFingerprint(value, ancestors = new Set()) {
     if (value === null || typeof value !== 'object') {
         return JSON.stringify(value);
     }
-    if (Array.isArray(value)) {
-        return `[${value.map(stableFingerprint).join(',')}]`;
+    if (ancestors.has(value)) {
+        throw new TypeError('command payload에 순환 참조가 있습니다.');
     }
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => (
-        `${JSON.stringify(key)}:${stableFingerprint(value[key])}`
-    )).join(',')}}`;
+    ancestors.add(value);
+    let fingerprint;
+    if (Array.isArray(value)) {
+        fingerprint = `[${value.map((entry) => (
+            stableFingerprint(entry, ancestors)
+        )).join(',')}]`;
+    } else {
+        const keys = Object.keys(value).sort();
+        fingerprint = `{${keys.map((key) => (
+            `${JSON.stringify(key)}:${stableFingerprint(value[key], ancestors)}`
+        )).join(',')}}`;
+    }
+    ancestors.delete(value);
+    return fingerprint;
+}
+
+/**
+ * source-relative command의 raw 입력을 단 한 번 읽어 immutable plain-data
+ * snapshot으로 만듭니다. 이후 fingerprint, source lookup, payload 정규화는 반드시
+ * 이 snapshot만 사용해 getter/Proxy의 재평가로 source identity가 drift하지 않게 합니다.
+ */
+function materializeSourceRelativeCommand(value, label, ancestors = new Set()) {
+    if (value === null
+        || typeof value === 'undefined'
+        || typeof value === 'string'
+        || typeof value === 'boolean') {
+        return value;
+    }
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) {
+            throw new TypeError(`${label}에는 유한 숫자만 사용할 수 있습니다.`);
+        }
+        return value;
+    }
+    if (typeof value !== 'object') {
+        throw new TypeError(`${label}에는 함수, symbol 또는 bigint를 사용할 수 없습니다.`);
+    }
+    if (ancestors.has(value)) {
+        throw new TypeError(`${label}에 순환 참조가 있습니다.`);
+    }
+    ancestors.add(value);
+    try {
+        if (Object.getOwnPropertySymbols(value).length > 0) {
+            throw new TypeError(`${label}에는 symbol을 사용할 수 없습니다.`);
+        }
+        if (Array.isArray(value)) {
+            return Object.freeze(Array.from(value, (entry, index) => (
+                materializeSourceRelativeCommand(entry, `${label}[${index}]`, ancestors)
+            )));
+        }
+        if (ArrayBuffer.isView(value)) {
+            if (typeof value.length !== 'number') {
+                throw new TypeError(`${label}은 typed array여야 합니다.`);
+            }
+            return Object.freeze(Array.from(value, (entry, index) => (
+                materializeSourceRelativeCommand(entry, `${label}[${index}]`, ancestors)
+            )));
+        }
+        const prototype = Object.getPrototypeOf(value);
+        const isPlainObject = prototype === null
+            || Object.getPrototypeOf(prototype) === null;
+        if (!isPlainObject) {
+            throw new TypeError(`${label}은 plain object여야 합니다.`);
+        }
+        const snapshot = Object.create(null);
+        for (const [key, entry] of Object.entries(value)) {
+            snapshot[key] = materializeSourceRelativeCommand(
+                entry,
+                `${label}.${key}`,
+                ancestors
+            );
+        }
+        return Object.freeze(snapshot);
+    } finally {
+        ancestors.delete(value);
+    }
 }
 
 function normalizeMoveIntent(command) {
@@ -108,7 +180,7 @@ function normalizeRequiredVector(source, label) {
     return normalizeVector(source, label);
 }
 
-function normalizeSourceRelativeIntent(source) {
+function normalizeSourceRelativeIntent(source, subjectTeamId) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('source-relative spawn intent가 필요합니다.');
     }
@@ -119,7 +191,8 @@ function normalizeSourceRelativeIntent(source) {
     const suppliedDestinationSpawn = normalizeGpuSpawnIntent(
         source.destinationSpawn
             ?? source.destinationIntent
-            ?? source.spawnIntent
+            ?? source.spawnIntent,
+        { subjectTeamId }
     );
     const hasSourceEntityId = suppliedDestinationSpawn.sourceEntityId !== undefined
         && suppliedDestinationSpawn.sourceEntityId !== null;
@@ -141,7 +214,7 @@ function normalizeSourceRelativeIntent(source) {
         ...suppliedDestinationSpawn,
         sourceEntityId: sourceHandle.entityId,
         sourceIncarnation: sourceHandle.incarnation
-    });
+    }, { subjectTeamId });
     const modeFlags = requirePositiveSafeInteger(
         source.modeFlags ?? GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,
         'sourceRelativeSpawn.modeFlags'
@@ -258,6 +331,7 @@ function assertRegistry(registry) {
         'activateReserved',
         'cancelReservation',
         'has',
+        'copyEntityView',
         'getRevision',
         'getStatus'
     ]) {
@@ -461,13 +535,24 @@ export class GpuFixedCommandOwner {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
-        const payload = normalizeSourceRelativeIntent(intent);
-        const fingerprint = stableFingerprint({ type: 'source-relative-spawn', tick, payload });
+        const snapshot = materializeSourceRelativeCommand(
+            intent,
+            'sourceRelativeSpawn'
+        );
+        const sourceHandle = normalizeHandle(
+            snapshot?.sourceHandle,
+            'sourceRelativeSpawn.sourceHandle'
+        );
+        const fingerprint = stableFingerprint({
+            type: 'source-relative-spawn',
+            tick,
+            intent: snapshot
+        });
         const duplicate = this.#handleKnownCommand(id, fingerprint);
         if (duplicate) {
             return duplicate;
         }
-        const sourceDisposition = this.#getExactActiveDisposition(payload.sourceHandle);
+        const sourceDisposition = this.#getExactActiveDisposition(sourceHandle);
         if (sourceDisposition !== 'active') {
             this.telemetry.stale++;
             return this.#rememberImmediateRejection(
@@ -478,6 +563,19 @@ export class GpuFixedCommandOwner {
                     : 'stale-source'
             );
         }
+        const sourceView = this.registry.copyEntityView(sourceHandle, {});
+        if (!sourceView || !sourceView.metadata) {
+            this.recoveryRequired = true;
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                'source-metadata-missing'
+            );
+        }
+        const payload = normalizeSourceRelativeIntent(
+            snapshot,
+            sourceView.metadata.teamId
+        );
         return this.#enqueue({
             type: 'source-relative-spawn',
             commandId: id,

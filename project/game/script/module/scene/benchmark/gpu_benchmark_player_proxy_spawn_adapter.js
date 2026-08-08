@@ -2,6 +2,10 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER
 } from 'ingame/physics/gpu/gpu_circle_body_abi.js';
 import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
+} from 'ingame/contract/gameplay_team_contract.js';
+import {
     GPU_BENCHMARK_ARENA_LAYOUT
 } from './gpu_benchmark_navigation_source.js';
 
@@ -83,6 +87,8 @@ function createPlayerProxySpawnIntent() {
     return Object.freeze({
         kindId: GPU_BENCHMARK_PLAYER_PROXY_KIND_ID,
         definitionId: GPU_BENCHMARK_PLAYER_PROXY_KIND_ID,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER,
         position: collider.position,
         velocity: Object.freeze({ x: 0, y: 0 }),
         radius: collider.radius,
