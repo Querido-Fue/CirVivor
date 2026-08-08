@@ -7,12 +7,16 @@ import { fileURLToPath } from 'node:url';
 const RUN_DIRECTORY_PREFIX = 'cirvivor-webgpu-capability-';
 const RUN_TIMEOUT_MS = 60_000;
 const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
+    'data/object/enemy/archer_attack_data.js',
+    'data/object/enemy/archer_enemy_data.js',
     'data/object/enemy/basic_circle_enemy_data.js',
     'data/object/enemy/enemy_ai_data.js',
     'data/object/enemy/enemy_catalog_data.js',
     'data/object/enemy/enemy_shape_geometry_data.js',
+    'data/object/enemy/main_gpu_enemy_definition_data.js',
     'data/object/core/the_core_data.js',
     'data/object/projectile/basic_bullet_data.js',
+    'data/object/projectile/hostile_basic_bullet_data.js',
     'data/object/tower/the_tower_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'module/ingame/contract/tile_navigation_contract.js',
@@ -26,6 +30,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/enemy/enemy_simulation_backend.js',
     'module/ingame/object/enemy/gpu_enemy_spawn_adapter.js',
     'module/ingame/object/enemy/gpu_enemy_simulation_endpoint.js',
+    'module/ingame/object/enemy/hostile_attack_director.js',
     'module/ingame/object/core/gpu_core_proxy_spawn_adapter.js',
     'module/ingame/object/gpu_fixed_command_owner.js',
     'module/ingame/object/gpu_spawn_intent.js',

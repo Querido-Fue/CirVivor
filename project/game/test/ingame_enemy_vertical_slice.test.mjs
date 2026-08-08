@@ -472,6 +472,25 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 2);
     assert.equal(backend.bodiesByHandle.size, 3);
 
+    for (let fixedTick = 3; fixedTick <= 156; fixedTick++) {
+        assert.equal(objectSystem.fixedUpdate(1 / 60, fixedTick), true);
+    }
+    assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 156);
+    assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 32);
+    assert.deepEqual(
+        new Set(Array.from(
+            backend.bodiesByHandle.values(),
+            ({ kindId, definitionId }) => kindId === 'enemy' ? definitionId : null
+        ).filter(Boolean)),
+        new Set(waveGroup.enemyDefinitionIds)
+    );
+    const hostileAttackStatus = objectSystem.getHostileAttackStatus();
+    assert.equal(Object.isFrozen(hostileAttackStatus), true);
+    assert.equal(hostileAttackStatus.activeArcherCount, 0);
+    assert.equal(hostileAttackStatus.pendingShotCount, 0);
+    assert.equal(hostileAttackStatus.shotStartAttemptCount, 0);
+    assert.equal(hostileAttackStatus.shotResolvedCount, 0);
+
     backend.calls.length = 0;
     objectSystem.update(0.75, 1 / 144, 1 / 60);
     objectSystem.draw();

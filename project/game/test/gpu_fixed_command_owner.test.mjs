@@ -723,6 +723,136 @@ test('target-entity request는 Team/kind와 무관하게 exact target provenance
     assert.equal(owner.getStatus().recoveryRequired, false);
 });
 
+test('같은 completion boundary 재호출은 targeted resolved 결과를 exact 보존하고 다음 tick에서 비운다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 3 });
+    const source = activateBody(registry, backend, {
+        kindId: 'enemy',
+        definitionId: 'archer-completion-retry',
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE
+    });
+    const target = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target),
+        27,
+        'spawn:target-completion-retry'
+    ).accepted, true);
+    const staged = owner.commitAtFixedBoundary(27);
+    const destination = staged.sourceRelativeSpawns[0].handle;
+    backend.addBody(destination);
+    queueSpawnOutcome(backend, {
+        sourceTick: 27,
+        sourceHandle: source,
+        targetHandle: target,
+        destinationHandle: destination,
+        reason: 'resolved'
+    });
+
+    const first = owner.commitCompletedAtFixedBoundary(28);
+    assert.deepEqual(
+        Array.from(first.completed, ({ commandId, outcome }) => ({ commandId, outcome })),
+        [{
+            commandId: 'spawn:target-completion-retry',
+            outcome: 'resolved'
+        }]
+    );
+    const revisionAfterFirst = registry.getRevision();
+    const telemetryAfterFirst = { ...owner.getStatus().telemetry };
+    const activeAfterFirst = registry.getActiveCount();
+    const reservedAfterFirst = registry.getReservedCount();
+    const pendingAfterFirst = owner.getPendingCount();
+
+    const sameTickRetry = owner.commitCompletedAtFixedBoundary(28);
+    assert.equal(sameTickRetry, first);
+    assert.equal(registry.getRevision(), revisionAfterFirst);
+    assert.deepEqual({ ...owner.getStatus().telemetry }, telemetryAfterFirst);
+    assert.equal(registry.getActiveCount(), activeAfterFirst);
+    assert.equal(registry.getReservedCount(), reservedAfterFirst);
+    assert.equal(owner.getPendingCount(), pendingAfterFirst);
+    assert.equal(owner.getStatus().pendingDestinationCount, 0);
+
+    const sameTickCommit = owner.commitAtFixedBoundary(28);
+    assert.equal(sameTickCommit.completed.length, 1);
+    assert.equal(
+        sameTickCommit.completed[0].commandId,
+        'spawn:target-completion-retry'
+    );
+
+    const nextTick = owner.commitCompletedAtFixedBoundary(29);
+    assert.notEqual(nextTick, first);
+    assert.equal(nextTick.fixedTick, 29);
+    assert.equal(nextTick.completed.length, 0);
+    assert.equal(nextTick.protocolFailure, null);
+    assert.equal(owner.commitAtFixedBoundary(29).completed.length, 0);
+});
+
+test('같은 completion boundary의 새 batch는 prior 결과를 재적용하지 않고 증분 병합한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend, {
+        kindId: 'enemy',
+        definitionId: 'archer-completion-merge',
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE
+    });
+    const target = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target),
+        30,
+        'spawn:target-completion-merge:first'
+    ).accepted, true);
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, target, {
+            positionOffset: { x: -0.5, y: 0.25 }
+        }),
+        30,
+        'spawn:target-completion-merge:second'
+    ).accepted, true);
+    const staged = owner.commitAtFixedBoundary(30);
+    const firstDestination = staged.sourceRelativeSpawns[0].handle;
+    const secondDestination = staged.sourceRelativeSpawns[1].handle;
+
+    backend.addBody(firstDestination);
+    queueSpawnOutcome(backend, {
+        sourceTick: 30,
+        sourceHandle: source,
+        targetHandle: target,
+        destinationHandle: firstDestination,
+        reason: 'resolved'
+    });
+    const first = owner.commitCompletedAtFixedBoundary(31);
+    assert.equal(first.completed.length, 1);
+    assert.equal(owner.getStatus().telemetry.completedResolved, 1);
+    assert.equal(owner.getStatus().pendingDestinationCount, 1);
+    const revisionBeforeSecond = registry.getRevision();
+
+    backend.addBody(secondDestination);
+    queueSpawnOutcome(backend, {
+        sourceTick: 30,
+        sourceHandle: source,
+        targetHandle: target,
+        destinationHandle: secondDestination,
+        reason: 'resolved'
+    });
+    const merged = owner.commitCompletedAtFixedBoundary(31);
+    assert.deepEqual(
+        Array.from(merged.completed, ({ commandId }) => commandId),
+        [
+            'spawn:target-completion-merge:first',
+            'spawn:target-completion-merge:second'
+        ]
+    );
+    assert.equal(registry.getRevision(), revisionBeforeSecond + 1);
+    assert.equal(owner.getStatus().telemetry.completedResolved, 2);
+    assert.equal(owner.getStatus().pendingDestinationCount, 0);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(registry.getActiveCount(), 4);
+    assert.equal(registry.getReservedCount(), 0);
+});
+
 test('target-entity schema는 exact metadata contradiction과 mode forbidden field를 reservation 전에 거부한다', () => {
     const backend = createFakeBackend();
     const registry = new WorldRegistry({ capacity: 4 });
@@ -1353,6 +1483,73 @@ test('completion batch의 후반 outcome contract failure는 앞 outcome도 regi
     assert.equal(registry.has(secondDestination), false);
     assert.equal(owner.getPendingCount(), 2);
     assert.equal(owner.getStatus().recoveryRequired, true);
+
+    backend.removeBody(firstDestination);
+    owner.destroy();
+    assert.equal(registry.getReservedCount(), 0);
+});
+
+test('target completion mismatch는 batch 전체 registry mutation 없이 recovery를 강제한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 5 });
+    const source = activateBody(registry, backend);
+    const expectedTarget = activateBody(registry, backend);
+    const wrongTarget = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry, {
+        commandCapacity: 4,
+        historyCapacity: 16
+    });
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, expectedTarget),
+        25,
+        'spawn:target-mismatch:first'
+    ).accepted, true);
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(source, expectedTarget, {
+            positionOffset: { x: -0.5, y: 0.25 }
+        }),
+        25,
+        'spawn:target-mismatch:second'
+    ).accepted, true);
+    const committed = owner.commitAtFixedBoundary(25);
+    assert.equal(committed.sourceRelativeSpawns.length, 2);
+    const firstDestination = committed.sourceRelativeSpawns[0].handle;
+    const secondDestination = committed.sourceRelativeSpawns[1].handle;
+    assert.equal(registry.getActiveCount(), 3);
+    assert.equal(registry.getReservedCount(), 2);
+
+    backend.addBody(firstDestination);
+    const revisionBeforeCompletion = registry.getRevision();
+    backend.completionBatches.push({
+        ...backend.getProtocol(),
+        sourceTick: 25,
+        outcomes: [{
+            sourceHandle: source,
+            targetHandle: expectedTarget,
+            destinationHandle: firstDestination,
+            reason: 'resolved'
+        }, {
+            sourceHandle: source,
+            targetHandle: wrongTarget,
+            destinationHandle: secondDestination,
+            reason: 'target-invalid'
+        }]
+    });
+
+    const completion = owner.commitCompletedAtFixedBoundary(26);
+    assert.equal(completion.protocolFailure.code, 'destination-contract');
+    assert.equal(completion.completed.length, 0);
+    assert.equal(registry.getRevision(), revisionBeforeCompletion);
+    assert.equal(registry.getActiveCount(), 3);
+    assert.equal(registry.getReservedCount(), 2);
+    assert.equal(registry.has(firstDestination), false);
+    assert.equal(registry.has(secondDestination), false);
+    assert.equal(backend.hasBody(firstDestination), true);
+    assert.equal(backend.hasBody(secondDestination), false);
+    assert.equal(owner.getStatus().pendingDestinationCount, 2);
+    assert.equal(owner.getStatus().recoveryRequired, true);
+    assert.equal(owner.commitAtFixedBoundary(26).state, 'failed');
 
     backend.removeBody(firstDestination);
     owner.destroy();

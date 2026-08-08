@@ -467,7 +467,9 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
     );
     if (isTargetEntity) {
         if (targetSlot === UINT32_MAX
+            || targetEntityId === 0
             || targetEntityId === UINT32_MAX
+            || targetIncarnation === 0
             || targetIncarnation === UINT32_MAX) {
             throw new RangeError(
                 'target-entity SpawnProgram에는 exact target identity가 필요합니다.'

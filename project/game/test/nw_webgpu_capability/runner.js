@@ -49,6 +49,15 @@ import {
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
+import {
+    ARCHER_ENEMY_DATA
+} from './production/script/data/object/enemy/archer_enemy_data.js';
+import {
+    ARCHER_ATTACK_DATA
+} from './production/script/data/object/enemy/archer_attack_data.js';
+import {
+    HOSTILE_BASIC_BULLET_DATA
+} from './production/script/data/object/projectile/hostile_basic_bullet_data.js';
 import { createTileMap } from './production/script/module/ingame/map/tile_map.js';
 import {
     createRouteFlowFieldAtlas
@@ -56,6 +65,10 @@ import {
 import {
     createGpuEnemySpawnIntent
 } from './production/script/module/ingame/object/enemy/gpu_enemy_spawn_adapter.js';
+import {
+    HostileAttackDirector,
+    computeHostileAttackPhaseOffset
+} from './production/script/module/ingame/object/enemy/hostile_attack_director.js';
 import {
     createGpuCoreProxySpawnIntent
 } from './production/script/module/ingame/object/core/gpu_core_proxy_spawn_adapter.js';
@@ -7366,12 +7379,19 @@ async function runProductionTowerCombatHardwareSmoke(device) {
         radiusScale: 1,
         visible: true
     });
-    const domainSentinel = Object.freeze({
-        coreIntegrity: Object.freeze({ current: 100, max: 100 }),
+    const coreIntegrity = { current: 100, max: 100 };
+    const domainSentinel = {
+        coreIntegrity,
         reward: 0,
         runFailed: 0
-    });
+    };
     const domainSentinelBefore = JSON.stringify(domainSentinel);
+    const domainSentinelValuesBefore = Object.freeze({
+        coreIntegrityCurrent: coreIntegrity.current,
+        coreIntegrityMax: coreIntegrity.max,
+        reward: domainSentinel.reward,
+        runFailed: domainSentinel.runFailed
+    });
     const eventMatches = (event, subject, other) => (
         event?.entityId === subject.entityId
         && event?.incarnation === subject.incarnation
@@ -10192,6 +10212,1599 @@ async function runProductionPhase5GenerationRecoveryHardwareSmoke(device) {
     }
 }
 
+function hostileAttackLifecycleHandleMatches(value, handle) {
+    const candidate = value?.handle ?? value;
+    return candidate?.entityId === handle.entityId
+        && candidate?.incarnation === handle.incarnation;
+}
+
+function hostileAttackLifecyclePairMatches(event, sourceHandle, targetHandle) {
+    return event?.entityId === sourceHandle.entityId
+        && event?.incarnation === sourceHandle.incarnation
+        && event?.otherEntityId === targetHandle.entityId
+        && event?.otherIncarnation === targetHandle.incarnation;
+}
+
+function readHostileAttackLifecycleProtocol(endpoint) {
+    const endpointStatus = endpoint.getStatus();
+    const protocol = endpoint.getBackend().getEventProtocolState?.() ?? null;
+    const result = Object.freeze({
+        sessionGeneration: Number(
+            protocol?.sessionGeneration ?? endpointStatus.sessionGeneration
+        ),
+        deviceGeneration: Number(protocol?.deviceGeneration),
+        authoritativeEpoch: Number(protocol?.authoritativeEpoch)
+    });
+    assert(
+        Number.isSafeInteger(result.sessionGeneration)
+            && result.sessionGeneration === endpointStatus.sessionGeneration
+            && Number.isSafeInteger(result.deviceGeneration)
+            && result.deviceGeneration >= 0
+            && Number.isSafeInteger(result.authoritativeEpoch)
+            && result.authoritativeEpoch >= 0,
+        `Hostile attack event protocol이 유효하지 않습니다: ${JSON.stringify({ protocol, endpointStatus })}`
+    );
+    return result;
+}
+
+const HOSTILE_ATTACK_DIRECT_PROJECTILE_DATA = Object.freeze({
+    ...HOSTILE_BASIC_BULLET_DATA,
+    id: 'nw_hostile_attack_direct_projectile',
+    continuousInteraction: true
+});
+
+function createHostileAttackDirectProjectileIntent(
+    sourceHandle,
+    position,
+    velocity,
+    spawnSequence
+) {
+    return createGpuProjectileSpawnIntent({
+        definition: HOSTILE_ATTACK_DIRECT_PROJECTILE_DATA,
+        position,
+        velocity,
+        sourceHandle,
+        ownerHandle: sourceHandle,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+        producerId: ARCHER_ATTACK_DATA.producerId,
+        sourceAbilityId: ARCHER_ATTACK_DATA.sourceAbilityId,
+        spawnSequence
+    });
+}
+
+async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 4,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const director = new HostileAttackDirector({ endpoint });
+    const fixedDelta = 1 / 60;
+    const archerPosition = Object.freeze({ x: 2, y: 8 });
+    const targetPosition = Object.freeze({ x: 8, y: 8 });
+    let archerHandle = null;
+    let targetHandle = null;
+    let destinationHandle = null;
+    let fixedSubmitCount = 0;
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Hostile attack TARGET_INVALID endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const archerIntent = Object.freeze({
+            ...createGpuEnemySpawnIntent({
+                definition: ARCHER_ENEMY_DATA,
+                route: navigationSource.route,
+                spawnSequence: 0,
+                waveId: 'nw-hostile-attack-target-invalid',
+                policyId: 'hardware-fixture'
+            }),
+            position: archerPosition
+        });
+        assert(
+            endpoint.requestSpawn(
+                archerIntent,
+                1,
+                'hostile-attack:target-invalid:archer'
+            ).accepted,
+            'Hostile attack TARGET_INVALID Archer request 실패'
+        );
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        archerHandle = initialCommit.spawned[0]?.handle;
+        assert(
+            archerHandle
+                && initialCommit.spawned.length === 1
+                && initialCommit.rejected.length === 0,
+            `Hostile attack TARGET_INVALID Archer commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        const initialObservation = director.observeFixedCommit(initialCommit, 1);
+        assert(
+            initialObservation.spawnedArcherCount === 1
+                && !initialObservation.recoveryRequired,
+            `Hostile attack TARGET_INVALID Archer registration 실패: ${JSON.stringify(initialObservation)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Hostile attack TARGET_INVALID initial fixed submit 실패'
+        );
+        fixedSubmitCount = 1;
+        await settlePhase5Endpoint(
+            endpoint,
+            'Hostile attack TARGET_INVALID initial completion'
+        );
+
+        const initialArcherStatus = director.getStatus().archers[0];
+        const firstEligibleFixedTick = initialArcherStatus.nextEligibleFixedTick;
+        const targetSpawnFixedTick = firstEligibleFixedTick - 1;
+        assert(
+            firstEligibleFixedTick === 1
+                + ARCHER_ATTACK_DATA.initialDelayTicks
+                + computeHostileAttackPhaseOffset({
+                    ...archerHandle,
+                    phaseSpreadTicks: ARCHER_ATTACK_DATA.phaseSpreadTicks
+                }),
+            `Hostile attack TARGET_INVALID first eligibility가 deterministic하지 않습니다: ${JSON.stringify(initialArcherStatus)}`
+        );
+
+        for (let tick = 2; tick < targetSpawnFixedTick; tick++) {
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+            const completedObservation = director.observeCompletedEvents(completed);
+            const stage = director.stageForFixedTick({
+                targetFixedTick: tick,
+                targetHandle: null
+            });
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            const commitObservation = director.observeFixedCommit(commit, tick);
+            assert(
+                completed.protocolFailure === null
+                    && !completedObservation.recoveryRequired
+                    && stage.attemptedCount === 0
+                    && !commit.recoveryRequired
+                    && !commitObservation.recoveryRequired,
+                `Hostile attack TARGET_INVALID pre-target lifecycle 실패: tick=${tick}, result=${JSON.stringify({ completed, stage, commit })}`
+            );
+            assert(
+                endpoint.fixedUpdate(fixedDelta, tick),
+                `Hostile attack TARGET_INVALID pre-target fixed submit 실패: tick=${tick}`
+            );
+            fixedSubmitCount++;
+            await settlePhase5Endpoint(
+                endpoint,
+                `Hostile attack TARGET_INVALID pre-target tick ${tick}`
+            );
+        }
+
+        const targetSpawnCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            targetSpawnFixedTick
+        );
+        assert(
+            targetSpawnCompleted.protocolFailure === null
+                && !director.observeCompletedEvents(targetSpawnCompleted)
+                    .recoveryRequired,
+            `Hostile attack TARGET_INVALID target-spawn completed event 실패: ${JSON.stringify(targetSpawnCompleted)}`
+        );
+        const preTargetStage = director.stageForFixedTick({
+            targetFixedTick: targetSpawnFixedTick,
+            targetHandle: null
+        });
+        const deadTargetIntent = createPhase3SpawnIntent(
+            'nw_hostile_attack_gpu_dead_tower_target',
+            {
+                kindId: 'tower',
+                position: targetPosition,
+                velocity: { x: 0, y: 0 },
+                radius: THE_TOWER_DATA.RADIUS_TILES,
+                inverseMass: 1 / THE_TOWER_DATA.MASS,
+                bodyLayer:
+                    GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
+                collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+                interactionLayer:
+                    GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE,
+                interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+                teamId: GAMEPLAY_TEAM_ID.PLAYER,
+                health: 0,
+                lifetime: -1
+            }
+        );
+        const targetReceipt = endpoint.requestSpawn(
+            deadTargetIntent,
+            targetSpawnFixedTick,
+            'hostile-attack:target-invalid:dead-tower'
+        );
+        assert(
+            preTargetStage.attemptedCount === 0 && targetReceipt.accepted,
+            `Hostile attack TARGET_INVALID dead target request 실패: ${JSON.stringify({ preTargetStage, targetReceipt })}`
+        );
+        const targetSpawnCommit = endpoint.commitAtFixedBoundary(
+            targetSpawnFixedTick
+        );
+        targetHandle = targetSpawnCommit.spawned.find(({ commandId }) => (
+            commandId === 'hostile-attack:target-invalid:dead-tower'
+        ))?.handle;
+        const targetSpawnObservation = director.observeFixedCommit(
+            targetSpawnCommit,
+            targetSpawnFixedTick
+        );
+        assert(
+            targetHandle
+                && targetSpawnCommit.spawned.length === 1
+                && !targetSpawnCommit.recoveryRequired
+                && !targetSpawnObservation.recoveryRequired,
+            `Hostile attack TARGET_INVALID dead target commit 실패: ${JSON.stringify(targetSpawnCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, targetSpawnFixedTick),
+            'Hostile attack TARGET_INVALID dead target fixed submit 실패'
+        );
+        fixedSubmitCount++;
+        await settlePhase5Endpoint(
+            endpoint,
+            'Hostile attack TARGET_INVALID dead target completion'
+        );
+        const gpuDeadBodies = await readPhase5Bodies(endpoint);
+        assert(
+            !gpuDeadBodies.some((body) => (
+                hostileAttackLifecycleHandleMatches(body, targetHandle)
+            ))
+                && endpoint.getRegistry().has(targetHandle)
+                && endpoint.hasBody(targetHandle),
+            `Hostile attack TARGET_INVALID fixture가 GPU-dead/host-live가 아닙니다: ${JSON.stringify({ targetHandle, gpuDeadBodies })}`
+        );
+
+        const targetInvalidStage = director.stageForFixedTick({
+            targetFixedTick: firstEligibleFixedTick,
+            targetHandle
+        });
+        assert(
+            targetInvalidStage.acceptedCount === 1
+                && targetInvalidStage.commandIds.length === 1,
+            `Hostile attack TARGET_INVALID shot request 실패: ${JSON.stringify(targetInvalidStage)}`
+        );
+        const targetInvalidCommandId = targetInvalidStage.commandIds[0];
+        const targetInvalidCommit = endpoint.commitAtFixedBoundary(
+            firstEligibleFixedTick
+        );
+        destinationHandle = targetInvalidCommit.fixedCommands
+            .sourceRelativeSpawns.find(({ commandId }) => (
+                commandId === targetInvalidCommandId
+            ))?.handle;
+        const targetInvalidAcceptance = director.observeFixedCommit(
+            targetInvalidCommit,
+            firstEligibleFixedTick
+        );
+        assert(
+            destinationHandle
+                && targetInvalidCommit.fixedCommands.sourceRelativeSpawns.length === 1
+                && targetInvalidCommit.fixedCommands.rejected.length === 0
+                && targetInvalidAcceptance.fixedAcceptedCount === 1
+                && !targetInvalidAcceptance.recoveryRequired,
+            `Hostile attack TARGET_INVALID fixed acceptance 실패: ${JSON.stringify(targetInvalidCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, firstEligibleFixedTick),
+            'Hostile attack TARGET_INVALID resolve fixed submit 실패'
+        );
+        fixedSubmitCount++;
+        await settlePhase5Endpoint(
+            endpoint,
+            'Hostile attack TARGET_INVALID SpawnProgram completion',
+            { spawnProgram: true }
+        );
+        const bodiesAfterResolve = await readPhase5Bodies(endpoint);
+        assert(
+            !bodiesAfterResolve.some((body) => (
+                hostileAttackLifecycleHandleMatches(body, destinationHandle)
+            )),
+            `Hostile attack TARGET_INVALID destination이 GPU ALIVE가 됐습니다: ${JSON.stringify(bodiesAfterResolve)}`
+        );
+
+        const completionBoundaryTick = firstEligibleFixedTick + 1;
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(
+            completionBoundaryTick
+        );
+        const completedObservation = director.observeCompletedEvents(completed);
+        const pendingStage = director.stageForFixedTick({
+            targetFixedTick: completionBoundaryTick,
+            targetHandle
+        });
+        const completionCommit = endpoint.commitAtFixedBoundary(
+            completionBoundaryTick
+        );
+        const completionObservation = director.observeFixedCommit(
+            completionCommit,
+            completionBoundaryTick
+        );
+        const completion = completionCommit.fixedCommands.completed.find(
+            ({ commandId }) => commandId === targetInvalidCommandId
+        );
+        const targetDeath = completed.deathEvents.find((event) => (
+            hostileAttackLifecycleHandleMatches(event, targetHandle)
+        ));
+        const statusAfterTargetInvalid = director.getStatus();
+        const archerAfterTargetInvalid = statusAfterTargetInvalid.archers[0];
+        assert(
+            completed.protocolFailure === null
+                && targetDeath
+                && !completedObservation.recoveryRequired
+                && pendingStage.attemptedCount === 0
+                && completionCommit.despawned.some((entry) => (
+                    hostileAttackLifecycleHandleMatches(entry, targetHandle)
+                ))
+                && completion?.outcome === 'target-invalid'
+                && hostileAttackLifecycleHandleMatches(
+                    completion.handle,
+                    destinationHandle
+                )
+                && completionObservation.completedCount === 1
+                && !completionObservation.recoveryRequired
+                && statusAfterTargetInvalid.pendingShotCount === 0
+                && archerAfterTargetInvalid.shotSequence === 0
+                && archerAfterTargetInvalid.nextEligibleFixedTick
+                    === firstEligibleFixedTick
+                && statusAfterTargetInvalid.telemetry.completedTargetInvalid === 1,
+            `Hostile attack TARGET_INVALID completion/cooldown 실패: ${JSON.stringify({ completed, completionCommit, completionObservation, statusAfterTargetInvalid })}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, completionBoundaryTick),
+            'Hostile attack TARGET_INVALID post-completion fixed submit 실패'
+        );
+        fixedSubmitCount++;
+        await settlePhase5Endpoint(
+            endpoint,
+            'Hostile attack TARGET_INVALID post-completion tick'
+        );
+
+        const cleanupTick = completionBoundaryTick + 1;
+        const cleanupCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            cleanupTick
+        );
+        const cleanupCompletedObservation = director.observeCompletedEvents(
+            cleanupCompleted
+        );
+        const noTargetRetry = director.stageForFixedTick({
+            targetFixedTick: cleanupTick,
+            targetHandle: null
+        });
+        const archerCleanupReceipt = endpoint.requestDespawn(
+            archerHandle,
+            'hostile-attack-target-invalid-fixture-cleanup',
+            cleanupTick,
+            'hostile-attack:target-invalid:archer-cleanup'
+        );
+        const cleanupCommit = endpoint.commitAtFixedBoundary(cleanupTick);
+        const cleanupObservation = director.observeFixedCommit(
+            cleanupCommit,
+            cleanupTick
+        );
+        await device.queue.onSubmittedWorkDone();
+        const cleanupStatus = endpoint.getStatus();
+        const gpuCleanupStatus = endpoint.getBackend().simulation.getStatus();
+        const cleanupDirectorStatus = director.getStatus();
+        assert(
+            cleanupCompleted.protocolFailure === null
+                && !cleanupCompletedObservation.recoveryRequired
+                && noTargetRetry.attemptedCount === 0
+                && archerCleanupReceipt.accepted
+                && cleanupCommit.despawned.length === 1
+                && cleanupCommit.despawned.some((entry) => (
+                    hostileAttackLifecycleHandleMatches(entry, archerHandle)
+                ))
+                && cleanupCommit.rejected.length === 0
+                && cleanupObservation.removedArcherCount === 1
+                && cleanupStatus.activeCount === 0
+                && cleanupStatus.activeEnemyCount === 0
+                && cleanupStatus.activeProjectileCount === 0
+                && cleanupStatus.reservedCount === 0
+                && cleanupStatus.pendingCommandCount === 0
+                && cleanupStatus.pendingSourceRelativeDestinationCount === 0
+                && gpuCleanupStatus.activeBodyCount === 0
+                && gpuCleanupStatus.pendingBodyCount === 0
+                && cleanupDirectorStatus.activeArcherCount === 0
+                && cleanupDirectorStatus.pendingShotCount === 0
+                && !cleanupStatus.recoveryRequired
+                && !director.requiresRecovery(),
+            `Hostile attack TARGET_INVALID cleanup/leak 실패: ${JSON.stringify({ cleanupCommit, cleanupStatus, gpuCleanupStatus, cleanupDirectorStatus })}`
+        );
+        return Object.freeze({
+            firstEligibleFixedTick,
+            requestFixedTick: firstEligibleFixedTick,
+            completionBoundaryTick,
+            outcome: completion.outcome,
+            cooldownConsumed: false,
+            shotSequence: archerAfterTargetInvalid.shotSequence,
+            nextEligibleFixedTick:
+                archerAfterTargetInvalid.nextEligibleFixedTick,
+            targetDeathSourceTick: targetDeath.sourceTick,
+            fixedSubmitCount,
+            cleanup: Object.freeze({
+                activeCount: cleanupStatus.activeCount,
+                activeEnemyCount: cleanupStatus.activeEnemyCount,
+                activeProjectileCount: cleanupStatus.activeProjectileCount,
+                reservedCount: cleanupStatus.reservedCount,
+                pendingCommandCount: cleanupStatus.pendingCommandCount,
+                pendingDestinationCount:
+                    cleanupStatus.pendingSourceRelativeDestinationCount,
+                activeBodyCount: gpuCleanupStatus.activeBodyCount,
+                pendingBodyCount: gpuCleanupStatus.pendingBodyCount,
+                directorActiveArcherCount:
+                    cleanupDirectorStatus.activeArcherCount,
+                directorPendingShotCount:
+                    cleanupDirectorStatus.pendingShotCount,
+                recoveryRequired: cleanupStatus.recoveryRequired
+            })
+        });
+    } finally {
+        director.destroy();
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionHostileAttackLifecycleMainHardwareSmoke(device) {
+    const blocked = new Uint8Array(16 * 16);
+    const blockedCell = Object.freeze({ column: 4, row: 4 });
+    blocked[(blockedCell.row * 16) + blockedCell.column] = 1;
+    const navigationSource = createPhase5ProjectileNavigationSource({ blocked });
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 16,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2
+    });
+    const director = new HostileAttackDirector({ endpoint });
+    const towerRoster = new TowerCombatRoster({
+        maxHp: THE_TOWER_COMBAT_DATA.MAX_HEALTH
+    });
+    const fixedDelta = 1 / 60;
+    const archerPosition = Object.freeze({ x: 2, y: 8 });
+    // Repeat shot 전에 flow Archer가 Tower obstacle과 겹치지 않게 target lane을 분리합니다.
+    const towerPosition = Object.freeze({ x: 8, y: 10 });
+    const hostileProbePosition = Object.freeze({ x: 4, y: 3 });
+    const coreIntegrity = { current: 100, max: 100 };
+    const domainSentinel = {
+        coreIntegrity,
+        reward: 0,
+        runFailed: 0
+    };
+    const domainSentinelBefore = JSON.stringify(domainSentinel);
+    const domainSentinelValuesBefore = Object.freeze({
+        coreIntegrityCurrent: coreIntegrity.current,
+        coreIntegrityMax: coreIntegrity.max,
+        reward: domainSentinel.reward,
+        runFailed: domainSentinel.runFailed
+    });
+    const observedContactEvents = [];
+    const observedDeathEvents = [];
+    const towerDamageFacts = [];
+    const towerDeathFacts = [];
+    const towerHpSequence = [THE_TOWER_COMBAT_DATA.MAX_HEALTH];
+    let archerHandle = null;
+    let towerHandle = null;
+    let coreHandle = null;
+    let hostileProbeHandle = null;
+    let fixedSubmitCount = 0;
+
+    const collectCompleted = (completed) => {
+        observedContactEvents.push(...completed.contactEvents);
+        observedDeathEvents.push(...completed.deathEvents);
+    };
+    const collectTowerFacts = (facts) => {
+        for (const fact of facts) {
+            if (fact.type === TOWER_COMBAT_FACT_TYPE.DAMAGE_APPLIED) {
+                towerDamageFacts.push(fact);
+                towerHpSequence.push(fact.currentHp);
+            } else if (fact.type === TOWER_COMBAT_FACT_TYPE.DIED) {
+                towerDeathFacts.push(fact);
+            }
+        }
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Hostile attack lifecycle endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const archerIntent = Object.freeze({
+            ...createGpuEnemySpawnIntent({
+                definition: ARCHER_ENEMY_DATA,
+                route: navigationSource.route,
+                spawnSequence: 0,
+                waveId: 'nw-hostile-attack-direct-archer',
+                policyId: 'hardware-fixture'
+            }),
+            position: archerPosition
+        });
+        const hostileProbeIntent = Object.freeze({
+            ...createGpuEnemySpawnIntent({
+                definition: Object.freeze({
+                    ...BASIC_CIRCLE_ENEMY_DATA,
+                    id: 'nw_hostile_attack_non_archer_probe',
+                    maxHealth: 10
+                }),
+                route: navigationSource.route,
+                spawnSequence: 1,
+                waveId: 'nw-hostile-attack-direct-archer',
+                policyId: 'hardware-fixture'
+            }),
+            position: hostileProbePosition,
+            // 실제 hostile team matrix를 통과시키기 위한 technical target probe입니다.
+            interactionLayer:
+                GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+        });
+        const initialRequests = [
+            endpoint.requestSpawn(
+                archerIntent,
+                1,
+                'hostile-attack:initial:archer'
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                1,
+                'hostile-attack:initial:tower'
+            ),
+            endpoint.requestSpawn(
+                createGpuCoreProxySpawnIntent({
+                    position: navigationSource.corePosition
+                }),
+                1,
+                'hostile-attack:initial:core'
+            ),
+            endpoint.requestSpawn(
+                hostileProbeIntent,
+                1,
+                'hostile-attack:initial:hostile-probe'
+            )
+        ];
+        assert(
+            initialRequests.every(({ accepted }) => accepted),
+            `Hostile attack lifecycle initial requests 실패: ${JSON.stringify(initialRequests)}`
+        );
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        archerHandle = initialHandles.get('hostile-attack:initial:archer');
+        towerHandle = initialHandles.get('hostile-attack:initial:tower');
+        coreHandle = initialHandles.get('hostile-attack:initial:core');
+        hostileProbeHandle = initialHandles.get(
+            'hostile-attack:initial:hostile-probe'
+        );
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 4
+                && initialCommit.rejected.length === 0
+                && archerHandle
+                && towerHandle
+                && coreHandle
+                && hostileProbeHandle,
+            `Hostile attack lifecycle initial commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        const initialDirectorObservation = director.observeFixedCommit(
+            initialCommit,
+            1
+        );
+        assert(
+            initialDirectorObservation.spawnedArcherCount === 1
+                && !initialDirectorObservation.recoveryRequired
+                && director.getStatus().activeArcherCount === 1,
+            `Hostile attack lifecycle exact Archer registration 실패: ${JSON.stringify(initialDirectorObservation)}`
+        );
+        towerRoster.bindGpuBody(
+            towerHandle,
+            readHostileAttackLifecycleProtocol(endpoint)
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 1),
+            'Hostile attack lifecycle initial fixed submit 실패'
+        );
+        fixedSubmitCount = 1;
+        await settlePhase5Endpoint(
+            endpoint,
+            'Hostile attack lifecycle initial completion'
+        );
+        const initialBodies = await readPhase5Bodies(endpoint);
+        const initialArcher = findPhase5Body(
+            initialBodies,
+            archerHandle,
+            'Hostile attack initial Archer'
+        );
+        const initialTower = findPhase5Body(
+            initialBodies,
+            towerHandle,
+            'Hostile attack initial Tower'
+        );
+        const initialCore = findPhase5Body(
+            initialBodies,
+            coreHandle,
+            'Hostile attack initial Core'
+        );
+        const initialHostileProbe = findPhase5Body(
+            initialBodies,
+            hostileProbeHandle,
+            'Hostile attack initial hostile probe'
+        );
+        assert(
+            Math.hypot(initialArcher.velocity.x, initialArcher.velocity.y) > 0
+                && initialTower.health === THE_TOWER_COMBAT_DATA.MAX_HEALTH
+                && initialHostileProbe.health === 10,
+            `Hostile attack initial actor numeric 불일치: ${JSON.stringify({ initialArcher, initialTower, initialHostileProbe })}`
+        );
+
+        const advanceFixedTick = async (tick, options = {}) => {
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+            assert(
+                completed.protocolFailure === null,
+                `Hostile attack completed event protocol 실패: tick=${tick}, result=${JSON.stringify(completed)}`
+            );
+            collectCompleted(completed);
+            const towerFacts = towerRoster.commitCompletedEvents(
+                completed,
+                endpoint.getRegistry()
+            );
+            collectTowerFacts(towerFacts);
+            const completedObservation = director.observeCompletedEvents(completed);
+            assert(
+                !completedObservation.recoveryRequired,
+                `Hostile attack Director completed observation 실패: tick=${tick}, result=${JSON.stringify(completedObservation)}`
+            );
+
+            const liveTowerTarget = towerRoster.isPrimaryTowerAlive()
+                && endpoint.getRegistry().has(towerHandle)
+                && endpoint.hasBody(towerHandle)
+                ? towerHandle
+                : null;
+            const queued = options.beforeStage?.({
+                tick,
+                liveTowerTarget
+            }) ?? null;
+            let controlReceipt = null;
+            if (liveTowerTarget) {
+                const controlIntent = options.controlIntent ?? { x: 0, y: 0 };
+                controlReceipt = endpoint.requestBodyControl({
+                    handle: towerHandle,
+                    moveIntentX: controlIntent.x,
+                    moveIntentY: controlIntent.y
+                }, tick, `hostile-attack:tower-control:${tick}`);
+                assert(
+                    controlReceipt.accepted,
+                    `Hostile attack Tower control request 실패: tick=${tick}, receipt=${JSON.stringify(controlReceipt)}`
+                );
+            }
+            const stage = director.stageForFixedTick({
+                targetFixedTick: tick,
+                targetHandle: liveTowerTarget
+            });
+            assert(
+                !stage.recoveryRequired,
+                `Hostile attack shot stage recovery 발생: tick=${tick}, result=${JSON.stringify(stage)}`
+            );
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            assert(
+                !commit.recoveryRequired
+                    && commit.fixedCommands
+                    && commit.fixedCommands.rejected.length === 0,
+                `Hostile attack lifecycle/fixed commit 실패: tick=${tick}, result=${JSON.stringify(commit)}`
+            );
+            if (controlReceipt) {
+                assert(
+                    commit.fixedCommands.controls.filter(({ commandId }) => (
+                        commandId === controlReceipt.commandId
+                    )).length === 1,
+                    `Hostile attack pressure에서 Tower control이 commit되지 않았습니다: tick=${tick}, result=${JSON.stringify(commit)}`
+                );
+            }
+            const commitObservation = director.observeFixedCommit(commit, tick);
+            assert(
+                !commitObservation.recoveryRequired,
+                `Hostile attack Director fixed observation 실패: tick=${tick}, result=${JSON.stringify(commitObservation)}`
+            );
+            assert(
+                endpoint.fixedUpdate(fixedDelta, tick),
+                `Hostile attack fixed submit 실패: tick=${tick}`
+            );
+            fixedSubmitCount++;
+            await settlePhase5Endpoint(
+                endpoint,
+                `Hostile attack lifecycle tick ${tick}`,
+                {
+                    spawnProgram:
+                        commit.fixedCommands.sourceRelativeSpawns.length > 0
+                }
+            );
+            return Object.freeze({
+                completed,
+                towerFacts,
+                completedObservation,
+                queued,
+                controlReceipt,
+                stage,
+                commit,
+                commitObservation
+            });
+        };
+
+        const auxiliaryCommandIds = Object.freeze({
+            hostileBlock: 'hostile-attack:aux:hostile-block',
+            coreNoInteraction: 'hostile-attack:aux:core-no-interaction',
+            terrain: 'hostile-attack:aux:terrain',
+            lifetime: 'hostile-attack:aux:lifetime'
+        });
+        const auxiliaryAdvance = await advanceFixedTick(2, {
+            beforeStage() {
+                const requests = [
+                    endpoint.requestSpawn(
+                        createHostileAttackDirectProjectileIntent(
+                            archerHandle,
+                            initialHostileProbe.position,
+                            initialHostileProbe.velocity,
+                            10
+                        ),
+                        2,
+                        auxiliaryCommandIds.hostileBlock
+                    ),
+                    endpoint.requestSpawn(
+                        createHostileAttackDirectProjectileIntent(
+                            archerHandle,
+                            initialCore.position,
+                            { x: 0, y: 0 },
+                            11
+                        ),
+                        2,
+                        auxiliaryCommandIds.coreNoInteraction
+                    ),
+                    endpoint.requestSpawn(
+                        createHostileAttackDirectProjectileIntent(
+                            archerHandle,
+                            { x: 2.6, y: 4.5 },
+                            { x: 12, y: 0 },
+                            12
+                        ),
+                        2,
+                        auxiliaryCommandIds.terrain
+                    ),
+                    endpoint.requestSpawn(
+                        createHostileAttackDirectProjectileIntent(
+                            archerHandle,
+                            { x: 2, y: 14 },
+                            { x: 0, y: 0 },
+                            13
+                        ),
+                        2,
+                        auxiliaryCommandIds.lifetime
+                    )
+                ];
+                assert(
+                    requests.every(({ accepted }) => accepted),
+                    `Hostile attack auxiliary projectile requests 실패: ${JSON.stringify(requests)}`
+                );
+                return requests;
+            }
+        });
+        const auxiliaryHandles = new Map(
+            auxiliaryAdvance.commit.spawned.map(({ commandId, handle }) => (
+                [commandId, handle]
+            ))
+        );
+        const hostileBlockHandle = auxiliaryHandles.get(
+            auxiliaryCommandIds.hostileBlock
+        );
+        const coreNoInteractionHandle = auxiliaryHandles.get(
+            auxiliaryCommandIds.coreNoInteraction
+        );
+        const terrainHandle = auxiliaryHandles.get(auxiliaryCommandIds.terrain);
+        const lifetimeHandle = auxiliaryHandles.get(auxiliaryCommandIds.lifetime);
+        assert(
+            auxiliaryAdvance.commit.spawned.length === 4
+                && hostileBlockHandle
+                && coreNoInteractionHandle
+                && terrainHandle
+                && lifetimeHandle,
+            `Hostile attack auxiliary exact handles 누락: ${JSON.stringify(auxiliaryAdvance.commit)}`
+        );
+        const auxiliaryBodies = await readPhase5Bodies(endpoint);
+        const hostileBlockAfterSpawn = findPhase5Body(
+            auxiliaryBodies,
+            hostileBlockHandle,
+            'Hostile attack hostile-block projectile'
+        );
+        const hostileProbeAfterBlock = findPhase5Body(
+            auxiliaryBodies,
+            hostileProbeHandle,
+            'Hostile attack hostile probe after block'
+        );
+        const coreBulletAfterSpawn = findPhase5Body(
+            auxiliaryBodies,
+            coreNoInteractionHandle,
+            'Hostile attack Core non-interaction projectile'
+        );
+        assert(
+            hostileBlockAfterSpawn.health
+                === HOSTILE_BASIC_BULLET_DATA.penetration
+                && hostileProbeAfterBlock.health === initialHostileProbe.health
+                && coreBulletAfterSpawn.health
+                    === HOSTILE_BASIC_BULLET_DATA.penetration,
+            `Hostile attack auxiliary initial penetration/HP 불일치: ${JSON.stringify({ hostileBlockAfterSpawn, hostileProbeAfterBlock, coreBulletAfterSpawn })}`
+        );
+
+        const initialDirectorStatus = director.getStatus();
+        const initialArcherRecord = initialDirectorStatus.archers[0];
+        const firstEligibleFixedTick = initialArcherRecord.nextEligibleFixedTick;
+        const expectedPhaseOffset = computeHostileAttackPhaseOffset({
+            ...archerHandle,
+            phaseSpreadTicks: ARCHER_ATTACK_DATA.phaseSpreadTicks
+        });
+        assert(
+            initialArcherRecord.createdAtTick === 1
+                && initialArcherRecord.phaseOffsetTicks === expectedPhaseOffset
+                && firstEligibleFixedTick === 1
+                    + ARCHER_ATTACK_DATA.initialDelayTicks
+                    + expectedPhaseOffset,
+            `Hostile attack deterministic eligibility 불일치: ${JSON.stringify(initialArcherRecord)}`
+        );
+
+        for (let tick = 3; tick < firstEligibleFixedTick - 1; tick++) {
+            const advance = await advanceFixedTick(tick);
+            assert(
+                advance.stage.attemptedCount === 0,
+                `Hostile attack first eligibility 이전에 shot이 시작됐습니다: tick=${tick}, result=${JSON.stringify(advance.stage)}`
+            );
+        }
+        const firstMotionPrime = await advanceFixedTick(
+            firstEligibleFixedTick - 1,
+            { controlIntent: { x: 1, y: 0 } }
+        );
+        assert(
+            firstMotionPrime.stage.attemptedCount === 0
+                && firstMotionPrime.commit.fixedCommands.controls.length === 1,
+            `Hostile attack moving Tower priming 실패: ${JSON.stringify(firstMotionPrime)}`
+        );
+        const firstTickStartBodies = await readPhase5Bodies(endpoint);
+        const sourceTickStart = findPhase5Body(
+            firstTickStartBodies,
+            archerHandle,
+            'Hostile attack Archer source tick-start'
+        );
+        const targetTickStart = findPhase5Body(
+            firstTickStartBodies,
+            towerHandle,
+            'Hostile attack Tower target tick-start'
+        );
+        assert(
+            Math.hypot(sourceTickStart.velocity.x, sourceTickStart.velocity.y) > 0
+                && Math.hypot(targetTickStart.velocity.x, targetTickStart.velocity.y) > 0,
+            `Hostile attack source/target tick-start가 moving이 아닙니다: ${JSON.stringify({ sourceTickStart, targetTickStart })}`
+        );
+
+        const firstShotAdvance = await advanceFixedTick(firstEligibleFixedTick);
+        const firstShotCommandId = firstShotAdvance.stage.commandIds[0];
+        const firstProjectileHandle = firstShotAdvance.commit.fixedCommands
+            .sourceRelativeSpawns.find(({ commandId }) => (
+                commandId === firstShotCommandId
+            ))?.handle;
+        assert(
+            firstShotAdvance.stage.eligibleCount === 1
+                && firstShotAdvance.stage.acceptedCount === 1
+                && firstShotAdvance.commit.fixedCommands.controls.length === 1
+                && firstShotAdvance.commit.fixedCommands
+                    .sourceRelativeSpawns.length === 1
+                && firstProjectileHandle,
+            `Hostile attack first shot/control commit 실패: ${JSON.stringify(firstShotAdvance)}`
+        );
+        const firstShotBodies = await readPhase5Bodies(endpoint);
+        const sourceAfterFirstShot = findPhase5Body(
+            firstShotBodies,
+            archerHandle,
+            'Hostile attack Archer after first shot'
+        );
+        const targetAfterFirstShot = findPhase5Body(
+            firstShotBodies,
+            towerHandle,
+            'Hostile attack Tower after first shot'
+        );
+        const firstProjectile = findPhase5Body(
+            firstShotBodies,
+            firstProjectileHandle,
+            'Hostile attack first Archer projectile'
+        );
+        const aimDelta = Object.freeze({
+            x: targetTickStart.position.x
+                + ARCHER_ATTACK_DATA.targetOffset.x
+                - sourceTickStart.position.x,
+            y: targetTickStart.position.y
+                + ARCHER_ATTACK_DATA.targetOffset.y
+                - sourceTickStart.position.y
+        });
+        const aimMagnitude = Math.hypot(aimDelta.x, aimDelta.y);
+        const expectedOrigin = Object.freeze({
+            x: sourceTickStart.position.x + ARCHER_ATTACK_DATA.positionOffset.x,
+            y: sourceTickStart.position.y + ARCHER_ATTACK_DATA.positionOffset.y
+        });
+        const expectedVelocity = Object.freeze({
+            x: (aimDelta.x / aimMagnitude) * ARCHER_ATTACK_DATA.launchSpeed,
+            y: (aimDelta.y / aimMagnitude) * ARCHER_ATTACK_DATA.launchSpeed
+        });
+        const firstProjectileSpeed = Math.hypot(
+            firstProjectile.velocity.x,
+            firstProjectile.velocity.y
+        );
+        assertNear(
+            firstProjectile.previousPosition.x,
+            expectedOrigin.x,
+            0.00004,
+            'Hostile attack targeted origin.x'
+        );
+        assertNear(
+            firstProjectile.previousPosition.y,
+            expectedOrigin.y,
+            0.00004,
+            'Hostile attack targeted origin.y'
+        );
+        assertNear(
+            firstProjectile.velocity.x,
+            expectedVelocity.x,
+            0.00005,
+            'Hostile attack targeted velocity.x'
+        );
+        assertNear(
+            firstProjectile.velocity.y,
+            expectedVelocity.y,
+            0.00005,
+            'Hostile attack targeted velocity.y'
+        );
+        assertNear(
+            firstProjectileSpeed,
+            ARCHER_ATTACK_DATA.launchSpeed,
+            0.00005,
+            'Hostile attack targeted speed'
+        );
+        assert(
+            sourceAfterFirstShot.position.x > sourceTickStart.position.x
+                && targetAfterFirstShot.position.x
+                    > targetTickStart.position.x,
+            `Hostile attack same-tick moving source/target 증거가 없습니다: ${JSON.stringify({ sourceTickStart, sourceAfterFirstShot, targetTickStart, targetAfterFirstShot })}`
+        );
+
+        const firstResolvedBoundaryTick = firstEligibleFixedTick + 1;
+        const firstResolvedAdvance = await advanceFixedTick(
+            firstResolvedBoundaryTick
+        );
+        const firstCompletion = firstResolvedAdvance.commit.fixedCommands
+            .completed.find(({ commandId }) => commandId === firstShotCommandId);
+        const firstProjectileView = endpoint.getRegistry().copyEntityView(
+            firstProjectileHandle,
+            {}
+        );
+        const firstInteractionMask = unpackGpuCircleInteractionMeta(
+            firstProjectile.interactionMeta
+        ).interactionMask;
+        const firstResolvedDirectorStatus = director.getStatus();
+        const firstResolvedArcherRecord = firstResolvedDirectorStatus.archers[0];
+        const secondEligibleFixedTick = firstEligibleFixedTick
+            + ARCHER_ATTACK_DATA.intervalTicks;
+        assert(
+            firstCompletion?.outcome === 'resolved'
+                && hostileAttackLifecycleHandleMatches(
+                    firstCompletion.handle,
+                    firstProjectileHandle
+                )
+                && firstResolvedAdvance.commitObservation.completedCount === 1
+                && firstProjectileView?.metadata?.teamId
+                    === GAMEPLAY_TEAM_ID.HOSTILE
+                && firstProjectileView.metadata.targetPolicyId
+                    === PROJECTILE_TARGET_POLICY_ID
+                        .PLAYER_DAMAGEABLE_AND_TERRAIN
+                && firstProjectileView.metadata.sourceEntityId
+                    === archerHandle.entityId
+                && firstProjectileView.metadata.sourceIncarnation
+                    === archerHandle.incarnation
+                && firstProjectileView.metadata.targetEntityId
+                    === towerHandle.entityId
+                && firstProjectileView.metadata.targetIncarnation
+                    === towerHandle.incarnation
+                && firstProjectileView.metadata.producerId
+                    === ARCHER_ATTACK_DATA.producerId
+                && firstProjectileView.metadata.sourceAbilityId
+                    === ARCHER_ATTACK_DATA.sourceAbilityId
+                && firstInteractionMask === (
+                    GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+                    | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+                )
+                && firstResolvedArcherRecord.shotSequence === 1
+                && firstResolvedArcherRecord.nextEligibleFixedTick
+                    === secondEligibleFixedTick,
+            `Hostile attack first resolved/provenance/cooldown 실패: ${JSON.stringify({ firstCompletion, firstProjectileView, firstResolvedDirectorStatus })}`
+        );
+
+        for (let tick = firstResolvedBoundaryTick + 1;
+            tick < secondEligibleFixedTick - 1;
+            tick++) {
+            const advance = await advanceFixedTick(tick);
+            assert(
+                advance.stage.attemptedCount === 0,
+                `Hostile attack repeat interval 이전에 shot이 시작됐습니다: tick=${tick}, result=${JSON.stringify(advance.stage)}`
+            );
+        }
+        assert(
+            JSON.stringify(towerHpSequence.slice(0, 2))
+                === JSON.stringify([THE_TOWER_COMBAT_DATA.MAX_HEALTH, 25]),
+            `Hostile attack first bullet Tower HP 30→25 실패: ${JSON.stringify(towerHpSequence)}`
+        );
+        const secondMotionPrime = await advanceFixedTick(
+            secondEligibleFixedTick - 1,
+            { controlIntent: { x: 1, y: 0 } }
+        );
+        assert(
+            secondMotionPrime.stage.attemptedCount === 0
+                && secondMotionPrime.commit.fixedCommands.controls.length === 1,
+            `Hostile attack second moving Tower priming 실패: ${JSON.stringify(secondMotionPrime)}`
+        );
+        const secondShotAdvance = await advanceFixedTick(secondEligibleFixedTick);
+        const secondShotCommandId = secondShotAdvance.stage.commandIds[0];
+        const secondProjectileHandle = secondShotAdvance.commit.fixedCommands
+            .sourceRelativeSpawns.find(({ commandId }) => (
+                commandId === secondShotCommandId
+            ))?.handle;
+        assert(
+            secondShotAdvance.stage.acceptedCount === 1
+                && secondShotAdvance.commit.fixedCommands.controls.length === 1
+                && secondProjectileHandle
+                && secondEligibleFixedTick - firstEligibleFixedTick
+                    === ARCHER_ATTACK_DATA.intervalTicks,
+            `Hostile attack exact repeat interval shot 실패: ${JSON.stringify(secondShotAdvance)}`
+        );
+        const secondResolvedBoundaryTick = secondEligibleFixedTick + 1;
+        const secondResolvedAdvance = await advanceFixedTick(
+            secondResolvedBoundaryTick
+        );
+        const secondCompletion = secondResolvedAdvance.commit.fixedCommands
+            .completed.find(({ commandId }) => commandId === secondShotCommandId);
+        const secondResolvedDirectorStatus = director.getStatus();
+        const secondResolvedArcherRecord = secondResolvedDirectorStatus.archers[0];
+        const postSecondNextEligibleFixedTick = secondEligibleFixedTick
+            + ARCHER_ATTACK_DATA.intervalTicks;
+        assert(
+            secondCompletion?.outcome === 'resolved'
+                && hostileAttackLifecycleHandleMatches(
+                    secondCompletion.handle,
+                    secondProjectileHandle
+                )
+                && secondResolvedArcherRecord.shotSequence === 2
+                && secondResolvedArcherRecord.nextEligibleFixedTick
+                    === postSecondNextEligibleFixedTick,
+            `Hostile attack second resolved/cooldown 실패: ${JSON.stringify({ secondCompletion, secondResolvedDirectorStatus })}`
+        );
+
+        let currentTick = secondResolvedBoundaryTick;
+        while (towerHpSequence.length < 3
+            && currentTick < secondEligibleFixedTick + 60) {
+            currentTick++;
+            await advanceFixedTick(currentTick);
+        }
+        assert(
+            JSON.stringify(towerHpSequence.slice(0, 3))
+                === JSON.stringify([THE_TOWER_COMBAT_DATA.MAX_HEALTH, 25, 20]),
+            `Hostile attack repeated bullet Tower HP sequence 실패: ${JSON.stringify(towerHpSequence)}`
+        );
+        const bodiesBeforeLethal = await readPhase5Bodies(endpoint);
+        const towerBeforeLethal = findPhase5Body(
+            bodiesBeforeLethal,
+            towerHandle,
+            'Hostile attack Tower before lethal burst'
+        );
+        assertNear(
+            towerBeforeLethal.health,
+            20,
+            0.000001,
+            'Hostile attack Tower HP before lethal burst'
+        );
+
+        const lethalFixedTick = currentTick + 1;
+        const lethalCommandIds = Object.freeze(Array.from(
+            { length: 4 },
+            (_, index) => `hostile-attack:lethal:${index}`
+        ));
+        const lethalAdvance = await advanceFixedTick(lethalFixedTick, {
+            beforeStage() {
+                const requests = lethalCommandIds.map((commandId, index) => (
+                    endpoint.requestSpawn(
+                        createHostileAttackDirectProjectileIntent(
+                            archerHandle,
+                            towerBeforeLethal.position,
+                            { x: 0, y: 0 },
+                            100 + index
+                        ),
+                        lethalFixedTick,
+                        commandId
+                    )
+                ));
+                assert(
+                    requests.every(({ accepted }) => accepted),
+                    `Hostile attack lethal burst requests 실패: ${JSON.stringify(requests)}`
+                );
+                return requests;
+            }
+        });
+        const lethalHandles = lethalCommandIds.map((commandId) => (
+            lethalAdvance.commit.spawned.find((entry) => (
+                entry.commandId === commandId
+            ))?.handle
+        ));
+        assert(
+            lethalAdvance.stage.attemptedCount === 0
+                && lethalAdvance.commit.fixedCommands.controls.length === 1
+                && lethalHandles.every(Boolean),
+            `Hostile attack lethal pressure/control commit 실패: ${JSON.stringify(lethalAdvance)}`
+        );
+        const bodiesAfterLethal = await readPhase5Bodies(endpoint);
+        assert(
+            !bodiesAfterLethal.some((body) => (
+                hostileAttackLifecycleHandleMatches(body, towerHandle)
+            ))
+                && lethalHandles.every((handle) => !bodiesAfterLethal.some((body) => (
+                    hostileAttackLifecycleHandleMatches(body, handle)
+                ))),
+            `Hostile attack lethal GPU death가 완료되지 않았습니다: ${JSON.stringify(bodiesAfterLethal)}`
+        );
+
+        const towerDeathBoundaryTick = lethalFixedTick + 1;
+        const towerDeathAdvance = await advanceFixedTick(
+            towerDeathBoundaryTick
+        );
+        assert(
+            towerDeathAdvance.completed.deathEvents.some((event) => (
+                hostileAttackLifecycleHandleMatches(event, towerHandle)
+            ))
+                && towerDeathAdvance.stage.attemptedCount === 0
+                && towerDeathAdvance.controlReceipt === null
+                && !towerRoster.isPrimaryTowerAlive()
+                && towerRoster.getLivingTowerCount() === 0
+                && towerDeathFacts.length === 1
+                && towerDeathFacts[0].sourceHandle
+                && lethalHandles.some((handle) => (
+                    hostileAttackLifecycleHandleMatches(
+                        towerDeathFacts[0].sourceHandle,
+                        handle
+                    )
+                ))
+                && JSON.stringify(towerHpSequence)
+                    === JSON.stringify([30, 25, 20, 15, 10, 5, 0]),
+            `Hostile attack Tower lethal/death ordering 실패: ${JSON.stringify({ towerDeathAdvance, towerHpSequence, towerDeathFacts })}`
+        );
+        const archerAfterTowerDeathStart = findPhase5Body(
+            await readPhase5Bodies(endpoint),
+            archerHandle,
+            'Hostile attack Archer after Tower death start'
+        );
+        const acceptedShotCountAtTowerDeath = director.getStatus()
+            .shotRequestAcceptedCount;
+        const postDeathSampleFixedTick = towerDeathBoundaryTick + 6;
+        const postDeathEndFixedTick = Math.max(
+            postSecondNextEligibleFixedTick + 1,
+            postDeathSampleFixedTick
+        );
+        let archerAfterTowerDeathSample = null;
+        let postDeathStageAttemptCount = 0;
+        for (let tick = towerDeathBoundaryTick + 1;
+            tick <= postDeathEndFixedTick;
+            tick++) {
+            const advance = await advanceFixedTick(tick);
+            postDeathStageAttemptCount += advance.stage.attemptedCount;
+            assert(
+                advance.stage.acceptedCount === 0
+                    && advance.controlReceipt === null,
+                `Hostile attack Tower death 후 shot/control이 발생했습니다: tick=${tick}, result=${JSON.stringify(advance)}`
+            );
+            if (tick === postDeathSampleFixedTick) {
+                archerAfterTowerDeathSample = findPhase5Body(
+                    await readPhase5Bodies(endpoint),
+                    archerHandle,
+                    'Hostile attack Archer after Tower death displacement'
+                );
+            }
+        }
+        const archerPostDeathDisplacement = Object.freeze({
+            x: archerAfterTowerDeathSample.position.x
+                - archerAfterTowerDeathStart.position.x,
+            y: archerAfterTowerDeathSample.position.y
+                - archerAfterTowerDeathStart.position.y
+        });
+        const acceptedShotCountAfterTowerDeath = director.getStatus()
+            .shotRequestAcceptedCount;
+        assert(
+            Math.hypot(
+                archerPostDeathDisplacement.x,
+                archerPostDeathDisplacement.y
+            ) > 0
+                && postDeathStageAttemptCount === 0
+                && acceptedShotCountAfterTowerDeath
+                    === acceptedShotCountAtTowerDeath
+                && acceptedShotCountAfterTowerDeath === 2,
+            `Hostile attack Tower death 후 Archer flow/no-shot 실패: ${JSON.stringify({ archerAfterTowerDeathStart, archerAfterTowerDeathSample, archerPostDeathDisplacement, acceptedShotCountAtTowerDeath, acceptedShotCountAfterTowerDeath, postDeathStageAttemptCount })}`
+        );
+
+        const firstDamageContact = observedContactEvents.find((event) => (
+            hostileAttackLifecyclePairMatches(
+                event,
+                firstProjectileHandle,
+                towerHandle
+            )
+            && event.eventType === 'damage-applied'
+        ));
+        const firstProjectileDeath = observedDeathEvents.find((event) => (
+            hostileAttackLifecycleHandleMatches(event, firstProjectileHandle)
+        ));
+        const firstDamageFact = towerDamageFacts.find((fact) => (
+            hostileAttackLifecycleHandleMatches(
+                fact.sourceHandle,
+                firstProjectileHandle
+            )
+        ));
+        const hostileProbeDamageEvents = observedContactEvents.filter((event) => (
+            hostileAttackLifecyclePairMatches(
+                event,
+                hostileBlockHandle,
+                hostileProbeHandle
+            )
+            && event.eventType === 'damage-applied'
+        ));
+        const hostileProbeInteractionEvents = observedContactEvents.filter((event) => (
+            hostileAttackLifecyclePairMatches(
+                event,
+                hostileBlockHandle,
+                hostileProbeHandle
+            )
+        ));
+        const coreInteractionEvents = observedContactEvents.filter((event) => (
+            hostileAttackLifecyclePairMatches(
+                event,
+                coreNoInteractionHandle,
+                coreHandle
+            )
+        ));
+        const terrainDeath = observedDeathEvents.find((event) => (
+            hostileAttackLifecycleHandleMatches(event, terrainHandle)
+        ));
+        const lifetimeDeath = observedDeathEvents.find((event) => (
+            hostileAttackLifecycleHandleMatches(event, lifetimeHandle)
+        ));
+        const preCleanupBodies = await readPhase5Bodies(endpoint);
+        const coreBeforeCleanup = findPhase5Body(
+            preCleanupBodies,
+            coreHandle,
+            'Hostile attack Core before cleanup'
+        );
+        assert(
+            firstDamageContact?.damageFixedPoint === 500
+                && firstDamageContact.damage === 5
+                && firstProjectileDeath
+                && firstProjectileDeath.sourceTick
+                    === firstDamageContact.sourceTick
+                && firstProjectileDeath.reason !== 'lifetime'
+                && firstDamageFact?.damageFixedPoint === 500
+                && firstDamageFact.damage === 5
+                && firstDamageFact.producerId === ARCHER_ATTACK_DATA.producerId
+                && firstDamageFact.sourceAbilityId
+                    === ARCHER_ATTACK_DATA.sourceAbilityId
+                && hostileAttackLifecycleHandleMatches(
+                    firstDamageFact.targetHandle,
+                    towerHandle
+                ),
+            `Hostile attack Tower damage/provenance contract 실패: ${JSON.stringify({ firstDamageContact, firstProjectileDeath, firstDamageFact })}`
+        );
+        assert(
+            hostileProbeDamageEvents.length === 0
+                && hostileProbeInteractionEvents.length > 0
+                && hostileProbeInteractionEvents.every((event) => (
+                    event.eventType === 'interaction-continuous'
+                    && event.damageFixedPoint === 0
+                    && event.damage === 0
+                    && event.valueFixedPoint === 0
+                    && event.reason === 'interaction'
+                    && event.disposition === 'applied'
+                ))
+                && hostileBlockAfterSpawn.health
+                    === HOSTILE_BASIC_BULLET_DATA.penetration
+                && hostileProbeAfterBlock.health === initialHostileProbe.health,
+            `Hostile attack hostile-on-hostile isolation contract 실패: ${JSON.stringify({ hostileProbeDamageEvents, hostileProbeInteractionEvents, hostileBlockAfterSpawn, hostileProbeAfterBlock })}`
+        );
+        assert(
+            coreInteractionEvents.length === 0
+                && coreBeforeCleanup.health === initialCore.health,
+            `Hostile attack Core isolation contract 실패: ${JSON.stringify({ coreInteractionEvents, initialCore, coreBeforeCleanup })}`
+        );
+        assert(
+            terrainDeath?.reason === 'health'
+                && terrainDeath.flags === 1
+                && terrainDeath.reasonFlags === 1
+                && terrainDeath.disposition === 'despawn-requested'
+                && lifetimeDeath?.reason === 'lifetime'
+                && lifetimeDeath.flags === 2
+                && lifetimeDeath.reasonFlags === 2
+                && lifetimeDeath.disposition === 'despawn-requested',
+            `Hostile attack terrain/lifetime cleanup contract 실패: ${JSON.stringify({ terrainDeath, lifetimeDeath })}`
+        );
+
+        const preCleanupStatus = endpoint.getStatus();
+        assert(
+            preCleanupStatus.activeCount === 3
+                && preCleanupStatus.activeEnemyCount === 2
+                && preCleanupStatus.activeProjectileCount === 0
+                && preCleanupStatus.reservedCount === 0
+                && preCleanupStatus.pendingCommandCount === 0
+                && !preCleanupStatus.recoveryRequired,
+            `Hostile attack pre-cleanup active/pending 상태 불일치: ${JSON.stringify(preCleanupStatus)}`
+        );
+        const cleanupFixedTick = postDeathEndFixedTick + 1;
+        const cleanupCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            cleanupFixedTick
+        );
+        collectCompleted(cleanupCompleted);
+        collectTowerFacts(towerRoster.commitCompletedEvents(
+            cleanupCompleted,
+            endpoint.getRegistry()
+        ));
+        const cleanupCompletedObservation = director.observeCompletedEvents(
+            cleanupCompleted
+        );
+        const cleanupStage = director.stageForFixedTick({
+            targetFixedTick: cleanupFixedTick,
+            targetHandle: null
+        });
+        const cleanupHandles = [archerHandle, coreHandle, hostileProbeHandle];
+        const cleanupReceipts = cleanupHandles.map((handle, index) => (
+            endpoint.requestDespawn(
+                handle,
+                'hostile-attack-lifecycle-fixture-cleanup',
+                cleanupFixedTick,
+                `hostile-attack:cleanup:${index}`
+            )
+        ));
+        assert(
+            cleanupCompleted.protocolFailure === null
+                && !cleanupCompletedObservation.recoveryRequired
+                && cleanupStage.attemptedCount === 0
+                && cleanupReceipts.every(({ accepted }) => accepted),
+            `Hostile attack final cleanup requests 실패: ${JSON.stringify({ cleanupCompleted, cleanupStage, cleanupReceipts })}`
+        );
+        const cleanupCommit = endpoint.commitAtFixedBoundary(cleanupFixedTick);
+        const cleanupObservation = director.observeFixedCommit(
+            cleanupCommit,
+            cleanupFixedTick
+        );
+        await device.queue.onSubmittedWorkDone();
+        const cleanupStatus = endpoint.getStatus();
+        const gpuCleanupStatus = endpoint.getBackend().simulation.getStatus();
+        const storageProfile = cleanupStatus.backend.gpu.fixedPrimitives
+            .storageProfile;
+        assert(
+            cleanupCommit.despawned.length === cleanupHandles.length
+                && cleanupHandles.every((handle) => (
+                    cleanupCommit.despawned.some((entry) => (
+                        hostileAttackLifecycleHandleMatches(entry, handle)
+                    ))
+                ))
+                && cleanupObservation.removedArcherCount === 1
+                && cleanupStatus.activeCount === 0
+                && cleanupStatus.activeEnemyCount === 0
+                && cleanupStatus.activeProjectileCount === 0
+                && cleanupStatus.reservedCount === 0
+                && cleanupStatus.pendingCommandCount === 0
+                && cleanupStatus.pendingSourceRelativeDestinationCount === 0
+                && gpuCleanupStatus.activeBodyCount === 0
+                && gpuCleanupStatus.pendingBodyCount === 0
+                && director.getStatus().activeArcherCount === 0
+                && director.getStatus().pendingShotCount === 0
+                && !cleanupStatus.recoveryRequired
+                && !director.requiresRecovery()
+                && storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `Hostile attack final cleanup/recovery/storage 실패: ${JSON.stringify({ cleanupCommit, cleanupStatus, gpuCleanupStatus, directorStatus: director.getStatus() })}`
+        );
+        assert(
+            domainSentinel.coreIntegrity === coreIntegrity
+                && JSON.stringify(domainSentinel) === domainSentinelBefore,
+            'Hostile attack lifecycle가 CoreIntegrity/reward/RunFailed sentinel을 변경했습니다.'
+        );
+
+        return Object.freeze({
+            definitionIds: Object.freeze({
+                archer: ARCHER_ENEMY_DATA.id,
+                attack: ARCHER_ATTACK_DATA.id,
+                projectile: HOSTILE_BASIC_BULLET_DATA.id
+            }),
+            timeline: Object.freeze({
+                createdAtTick: initialArcherRecord.createdAtTick,
+                phaseOffsetTicks: expectedPhaseOffset,
+                firstEligibleFixedTick,
+                firstResolvedBoundaryTick,
+                firstNextEligibleFixedTick: secondEligibleFixedTick,
+                secondEligibleFixedTick,
+                secondResolvedBoundaryTick,
+                secondNextEligibleFixedTick:
+                    postSecondNextEligibleFixedTick,
+                towerDeathBoundaryTick,
+                observedThroughFixedTick: postDeathEndFixedTick
+            }),
+            targetedShot: Object.freeze({
+                sourceHandle: Object.freeze({ ...archerHandle }),
+                targetHandle: Object.freeze({ ...towerHandle }),
+                projectileHandle: Object.freeze({ ...firstProjectileHandle }),
+                sourceTickStart: Object.freeze({
+                    position: Object.freeze({ ...sourceTickStart.position }),
+                    velocity: Object.freeze({ ...sourceTickStart.velocity })
+                }),
+                targetTickStart: Object.freeze({
+                    position: Object.freeze({ ...targetTickStart.position }),
+                    velocity: Object.freeze({ ...targetTickStart.velocity })
+                }),
+                positionOffset: ARCHER_ATTACK_DATA.positionOffset,
+                targetOffset: ARCHER_ATTACK_DATA.targetOffset,
+                origin: Object.freeze({ ...firstProjectile.previousPosition }),
+                integratedPosition:
+                    Object.freeze({ ...firstProjectile.position }),
+                velocity: Object.freeze({ ...firstProjectile.velocity }),
+                expectedOrigin,
+                expectedVelocity,
+                speed: firstProjectileSpeed,
+                launchSpeed: ARCHER_ATTACK_DATA.launchSpeed,
+                sourceMovement: Object.freeze({
+                    x: sourceAfterFirstShot.position.x
+                        - sourceTickStart.position.x,
+                    y: sourceAfterFirstShot.position.y
+                        - sourceTickStart.position.y
+                }),
+                targetMovement: Object.freeze({
+                    x: targetAfterFirstShot.position.x
+                        - targetTickStart.position.x,
+                    y: targetAfterFirstShot.position.y
+                        - targetTickStart.position.y
+                })
+            }),
+            combat: Object.freeze({
+                allegiancePolicy: ARCHER_ATTACK_DATA.allegiancePolicy,
+                projectileTeamId: firstProjectileView.metadata.teamId,
+                targetPolicyId: firstProjectileView.metadata.targetPolicyId,
+                damage: firstDamageContact.damage,
+                damageFixedPoint: firstDamageContact.damageFixedPoint,
+                penetrationBefore: HOSTILE_BASIC_BULLET_DATA.penetration,
+                penetrationAfter: 0,
+                projectileDeathCount: observedDeathEvents.filter((event) => (
+                    hostileAttackLifecycleHandleMatches(
+                        event,
+                        firstProjectileHandle
+                    )
+                )).length,
+                towerHpSequence: Object.freeze([...towerHpSequence]),
+                producerId: firstDamageFact.producerId,
+                sourceAbilityId: firstDamageFact.sourceAbilityId
+            }),
+            isolation: Object.freeze({
+                hostileOnHostile: Object.freeze({
+                    damageAppliedCount: hostileProbeDamageEvents.length,
+                    interactionCount: hostileProbeInteractionEvents.length,
+                    targetHealthBefore: initialHostileProbe.health,
+                    targetHealthAfter: hostileProbeAfterBlock.health,
+                    penetrationBefore: HOSTILE_BASIC_BULLET_DATA.penetration,
+                    penetrationAfter: hostileBlockAfterSpawn.health
+                }),
+                core: Object.freeze({
+                    interactionCount: coreInteractionEvents.length,
+                    damageAppliedCount: coreInteractionEvents.filter(
+                        ({ eventType }) => eventType === 'damage-applied'
+                    ).length,
+                    healthBefore: initialCore.health,
+                    healthAfter: coreBeforeCleanup.health,
+                    healthMutation:
+                        coreBeforeCleanup.health - initialCore.health
+                })
+            }),
+            projectileCleanup: Object.freeze({
+                terrain: Object.freeze({
+                    blockedCell,
+                    deathSourceTick: terrainDeath.sourceTick,
+                    deathReason: terrainDeath.reason
+                }),
+                lifetime: Object.freeze({
+                    authoredSeconds:
+                        HOSTILE_BASIC_BULLET_DATA.lifetimeSeconds,
+                    deathSourceTick: lifetimeDeath.sourceTick,
+                    deathReason: lifetimeDeath.reason
+                })
+            }),
+            towerDeath: Object.freeze({
+                newShotCount: acceptedShotCountAfterTowerDeath
+                    - acceptedShotCountAtTowerDeath,
+                postDeathStageAttemptCount,
+                archerPositionStart: Object.freeze({
+                    ...archerAfterTowerDeathStart.position
+                }),
+                archerPositionAfter: Object.freeze({
+                    ...archerAfterTowerDeathSample.position
+                }),
+                archerFlowDisplacement: archerPostDeathDisplacement,
+                livingTowerCount: towerRoster.getLivingTowerCount()
+            }),
+            pressure: Object.freeze({
+                firstShotControlAcceptedCount:
+                    firstShotAdvance.commit.fixedCommands.controls.length,
+                secondShotControlAcceptedCount:
+                    secondShotAdvance.commit.fixedCommands.controls.length,
+                lethalBurstControlAcceptedCount:
+                    lethalAdvance.commit.fixedCommands.controls.length,
+                fixedSubmitCount,
+                fixedSubmitsContinued: true,
+                recoveryRequired: cleanupStatus.recoveryRequired
+            }),
+            cleanup: Object.freeze({
+                activeCount: cleanupStatus.activeCount,
+                reservedCount: cleanupStatus.reservedCount,
+                pendingCommandCount: cleanupStatus.pendingCommandCount,
+                pendingDestinationCount:
+                    cleanupStatus.pendingSourceRelativeDestinationCount,
+                pendingBodyCount: gpuCleanupStatus.pendingBodyCount,
+                recoveryRequired: cleanupStatus.recoveryRequired
+            }),
+            diagnostics: Object.freeze({
+                cpuDomainSentinelRuntimeBound: false,
+                coreIntegrityIdentityPreserved:
+                    domainSentinel.coreIntegrity === coreIntegrity,
+                coreIntegrityCurrentMutation: coreIntegrity.current
+                    - domainSentinelValuesBefore.coreIntegrityCurrent,
+                coreIntegrityMaxMutation: coreIntegrity.max
+                    - domainSentinelValuesBefore.coreIntegrityMax,
+                rewardMutation: domainSentinel.reward
+                    - domainSentinelValuesBefore.reward,
+                runFailedMutation: domainSentinel.runFailed
+                    - domainSentinelValuesBefore.runFailed
+            }),
+            storageProfile
+        });
+    } finally {
+        towerRoster.destroy();
+        director.destroy();
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionHostileAttackLifecycleHardwareSmoke(device) {
+    const main = await runProductionHostileAttackLifecycleMainHardwareSmoke(device);
+    const targetInvalid =
+        await runProductionHostileAttackTargetInvalidHardwareSmoke(device);
+    assert(
+        main.timeline.secondEligibleFixedTick
+                - main.timeline.firstEligibleFixedTick
+            === ARCHER_ATTACK_DATA.intervalTicks
+            && main.towerDeath.newShotCount === 0
+            && main.cleanup.activeCount === 0
+            && main.cleanup.reservedCount === 0
+            && main.cleanup.pendingCommandCount === 0
+            && main.cleanup.pendingDestinationCount === 0
+            && main.cleanup.pendingBodyCount === 0
+            && targetInvalid.outcome === 'target-invalid'
+            && targetInvalid.cooldownConsumed === false
+            && targetInvalid.cleanup.activeCount === 0
+            && targetInvalid.cleanup.reservedCount === 0
+            && targetInvalid.cleanup.pendingCommandCount === 0
+            && targetInvalid.cleanup.pendingDestinationCount === 0
+            && targetInvalid.cleanup.pendingBodyCount === 0
+            && !main.cleanup.recoveryRequired
+            && !targetInvalid.cleanup.recoveryRequired,
+        `Hostile attack actual lifecycle aggregate gate 실패: ${JSON.stringify({ main, targetInvalid })}`
+    );
+    return Object.freeze({ main, targetInvalid });
+}
+
 async function runProductionFixedPrimitiveSmoke(device) {
     const endpoint = await runProductionFixedPrimitiveEndpointSmoke(device);
     const isolation = await runProductionFixedPrimitiveIsolationSmoke(device);
@@ -10203,6 +11816,8 @@ async function runProductionFixedPrimitiveSmoke(device) {
     const targetEntityInvalid =
         await runProductionTargetEntityInvalidHardwareSmoke(device);
     const towerCombat = await runProductionTowerCombatHardwareSmoke(device);
+    const hostileAttackLifecycle =
+        await runProductionHostileAttackLifecycleHardwareSmoke(device);
     const phase5ProjectileLifecycle =
         await runProductionPhase5ProjectileLifecycleHardwareSmoke(device);
     const phase5FailureDomains =
@@ -10224,6 +11839,7 @@ async function runProductionFixedPrimitiveSmoke(device) {
         targetEntityAim,
         targetEntityInvalid,
         towerCombat,
+        hostileAttackLifecycle,
         phase5ProjectileLifecycle,
         phase5FailureDomains,
         targetEntityFailureDomains,

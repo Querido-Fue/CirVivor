@@ -306,6 +306,31 @@ test('SpawnProgram v3 writer는 mode별 forbidden field와 identity/result/reser
         sourceTick: 7
     };
 
+    assert.doesNotThrow(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        targetSlot: 0,
+        targetEntityId: 10,
+        targetIncarnation: 11,
+        launchSpeed: 12
+    }));
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        targetSlot: 0,
+        targetEntityId: 0,
+        targetIncarnation: 11,
+        launchSpeed: 12
+    }), /exact target identity/);
+    assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
+        ...common,
+        modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        targetSlot: 0,
+        targetEntityId: 10,
+        targetIncarnation: 0,
+        launchSpeed: 12
+    }), /exact target identity/);
+
     assert.throws(() => writeGpuSpawnProgramRecord(storage, 0, {
         ...common,
         modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY,

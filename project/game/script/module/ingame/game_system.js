@@ -257,6 +257,11 @@ export class GameSystem {
         return this.towerCombatRoster?.getStatus() ?? null;
     }
 
+    /** GPU_WORLD의 lifecycle 기반 hostile attack producer 상태입니다. */
+    getHostileAttackStatus() {
+        return this.objectSystem?.getHostileAttackStatus() ?? null;
+    }
+
     /** @returns {number} 세션 전체가 완료한 fixed tick입니다. */
     getFixedTick() {
         return this.fixedTick;

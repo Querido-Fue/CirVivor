@@ -644,14 +644,26 @@ export class GpuFixedCommandOwner {
     commitCompletedAtFixedBoundary(fixedTick) {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
+        const priorResult = this.lastCompletionResult.fixedTick === tick
+            ? this.lastCompletionResult
+            : null;
         const batches = this.spawnCompletionScratch;
         batches.length = 0;
         this.backend.drainCompletedSpawnProgramBatches(batches);
-        const completed = [];
+        if (priorResult?.protocolFailure) {
+            batches.length = 0;
+            return priorResult;
+        }
+        const completed = priorResult
+            ? [...priorResult.completed]
+            : [];
         const preparedOutcomes = [];
         const preparedDestinationKeys = new Set();
         let protocolFailure = null;
         if (batches.length === 0) {
+            if (priorResult) {
+                return priorResult;
+            }
             this.lastCompletionResult = Object.freeze({
                 fixedTick: tick,
                 completed: Object.freeze(completed),

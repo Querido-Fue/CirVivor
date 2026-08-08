@@ -7,6 +7,18 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const { BaseScene } = await loadGameModule('scene/_base_scene.js');
 const { GameSystem } = await loadGameModule('ingame/game_system.js');
+const { GameObjectSystem } = await loadGameModule(
+    'ingame/object/game_object_system.js'
+);
+const { CoreIntegrity } = await loadGameModule(
+    'ingame/state/core_integrity.js'
+);
+const { TowerCombatRoster } = await loadGameModule(
+    'ingame/object/tower/tower_combat_roster.js'
+);
+const { GAME_WORLD_SESSION_MODE } = await loadGameModule(
+    'ingame/game_world_session_mode.js'
+);
 const {
     createGpuProjectileSpawnIntent
 } = await loadGameModule(
@@ -125,6 +137,9 @@ class RecoveryBackend {
         this.initCount++;
         if (this.mode === 'init-throws') {
             throw new Error('replacement backend init failure');
+        }
+        if (this.mode === 'init-returns-false') {
+            return false;
         }
         return true;
     }
@@ -321,6 +336,122 @@ class CombatRecoveryBackend extends RecoveryBackend {
     }
 }
 
+class TrackingHostileAttackDirector {
+    constructor(options, sequence) {
+        this.endpoint = options.endpoint;
+        this.registry = options.registry;
+        this.backend = options.backend;
+        this.sequence = sequence;
+        this.sessionGeneration = options.endpoint.getStatus().sessionGeneration;
+        this.completedEventCalls = [];
+        this.stageCalls = [];
+        this.fixedCommitCalls = [];
+        this.destroyCount = 0;
+        this.destroyed = false;
+        this.recoveryRequired = false;
+    }
+
+    observeCompletedEvents(snapshot) {
+        this.completedEventCalls.push(snapshot);
+        return Object.freeze({
+            recoveryRequired: this.recoveryRequired,
+            protocolFailure: null
+        });
+    }
+
+    stageForFixedTick({ targetFixedTick, targetHandle }) {
+        const exactTarget = targetHandle
+            ? Object.freeze({
+                entityId: targetHandle.entityId,
+                incarnation: targetHandle.incarnation
+            })
+            : null;
+        this.stageCalls.push(Object.freeze({
+            targetFixedTick,
+            targetHandle: exactTarget
+        }));
+        return Object.freeze({
+            targetFixedTick,
+            eligibleCount: 0,
+            attemptedCount: 0,
+            acceptedCount: 0,
+            rejectedCount: 0,
+            deferredCount: 0,
+            commandIds: Object.freeze([]),
+            recoveryRequired: this.recoveryRequired,
+            protocolFailure: null
+        });
+    }
+
+    observeFixedCommit(lifecycleResult, fixedTick) {
+        this.fixedCommitCalls.push(Object.freeze({ lifecycleResult, fixedTick }));
+        return Object.freeze({
+            fixedTick,
+            completedCount: 0,
+            fixedAcceptedCount: 0,
+            fixedRejectedCount: 0,
+            spawnedArcherCount: 0,
+            removedArcherCount: 0,
+            recoveryRequired: this.recoveryRequired,
+            protocolFailure: null
+        });
+    }
+
+    requiresRecovery() {
+        return this.recoveryRequired;
+    }
+
+    getStatus() {
+        return Object.freeze({
+            sequence: this.sequence,
+            sessionGeneration: this.sessionGeneration,
+            activeArcherCount: 0,
+            pendingShotCount: 0,
+            shotStartAttemptCount: 0,
+            shotResolvedCount: 0,
+            stageCallCount: this.stageCalls.length,
+            lastTargetHandle: this.stageCalls.at(-1)?.targetHandle ?? null,
+            recoveryRequired: this.recoveryRequired,
+            protocolFailure: null,
+            destroyed: this.destroyed
+        });
+    }
+
+    destroy() {
+        if (this.destroyed) {
+            return;
+        }
+        this.destroyed = true;
+        this.destroyCount++;
+        this.completedEventCalls.length = 0;
+        this.stageCalls.length = 0;
+        this.fixedCommitCalls.length = 0;
+        this.recoveryRequired = false;
+    }
+}
+
+function createTrackingHostileAttackDirectorFactory(options = {}) {
+    const calls = [];
+    const instances = [];
+    return Object.freeze({
+        calls,
+        instances,
+        factory(directorOptions) {
+            const callNumber = calls.length + 1;
+            calls.push(directorOptions);
+            if (callNumber === options.throwOnCall) {
+                throw new Error('replacement hostile director factory failure');
+            }
+            const director = new TrackingHostileAttackDirector(
+                directorOptions,
+                callNumber
+            );
+            instances.push(director);
+            return director;
+        }
+    });
+}
+
 function createTowerDamageEvents(sourceHandle, towerHandle, damage, died = false) {
     return [
         {
@@ -402,9 +533,92 @@ function createAnimationHandle() {
     };
 }
 
+test('최초 hostile Director factory throw/invalid contract는 설치된 GPU endpoint만 정확히 정리한다', () => {
+    for (const failureMode of ['throw', 'invalid-contract']) {
+        const backends = [];
+        const coreIntegrity = new CoreIntegrity({
+            maxIntegrity: 100,
+            currentIntegrity: 73
+        });
+        const towerCombatRoster = new TowerCombatRoster();
+        const coreSnapshot = Object.freeze({
+            current: coreIntegrity.getCurrentIntegrity(),
+            maximum: coreIntegrity.getMaxIntegrity(),
+            depleted: coreIntegrity.isDepleted()
+        });
+        const towerSnapshot = towerCombatRoster.getStatus();
+        let capturedEndpoint = null;
+        let capturedRegistry = null;
+        let partialDirectorDestroyCount = 0;
+        const dependencies = {
+            webGpuPlatformPort: {
+                getState() {
+                    return { ready: true, deviceGeneration: 1 };
+                }
+            },
+            enemySimulationBackendFactory() {
+                const backend = new RecoveryBackend('normal');
+                backends.push(backend);
+                return backend;
+            },
+            hostileAttackDirectorFactory(options) {
+                capturedEndpoint = options.endpoint;
+                capturedRegistry = options.registry;
+                if (failureMode === 'throw') {
+                    throw new Error('initial hostile director factory failure');
+                }
+                return {
+                    destroy() {
+                        partialDirectorDestroyCount++;
+                        throw new Error('invalid initial director cleanup failure');
+                    }
+                };
+            }
+        };
+        const construct = () => new GameObjectSystem(dependencies, {
+            sessionMode: GAME_WORLD_SESSION_MODE.GPU_WORLD,
+            coreIntegrity,
+            towerCombatRoster,
+            enemyWaveEnabled: false,
+            gameplayWorldActorsEnabled: true
+        });
+
+        assert.throws(
+            construct,
+            failureMode === 'throw'
+                ? /initial hostile director factory failure/
+                : /HostileAttackDirector contract가 올바르지 않습니다/
+        );
+        assert.equal(backends.length, 1);
+        assert.equal(backends[0].initCount, 0);
+        assert.equal(backends[0].destroyCount, 1);
+        assert.equal(backends[0].bodies.size, 0);
+        assert.ok(capturedEndpoint);
+        assert.strictEqual(capturedEndpoint.getBackend(), backends[0]);
+        assert.strictEqual(capturedEndpoint.getRegistry(), capturedRegistry);
+        assert.equal(capturedEndpoint.getStatus().destroyed, true);
+        assert.equal(capturedRegistry.getStatus().destroyed, true);
+        assert.equal(
+            partialDirectorDestroyCount,
+            failureMode === 'invalid-contract' ? 1 : 0
+        );
+        assert.deepEqual({
+            current: coreIntegrity.getCurrentIntegrity(),
+            maximum: coreIntegrity.getMaxIntegrity(),
+            depleted: coreIntegrity.isDepleted()
+        }, coreSnapshot);
+        assert.deepEqual(towerCombatRoster.getStatus(), towerSnapshot);
+        assert.equal(towerCombatRoster.getStatus().destroyed, false);
+        assert.equal(towerCombatRoster.getStatus().boundGpuBody, null);
+
+        towerCombatRoster.destroy();
+    }
+});
+
 test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무한 restart를 막는다', () => {
     const backends = [];
     const backendModes = ['fail-first-spawn', 'normal', 'fail-first-spawn'];
+    const hostileDirectors = createTrackingHostileAttackDirectorFactory();
     let legacyClearCount = 0;
     const dependencies = {
         inputActionSource: {
@@ -458,6 +672,7 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
             backends.push(backend);
             return backend;
         },
+        hostileAttackDirectorFactory: hostileDirectors.factory,
         legacyWorldPort: {
             clear() {
                 legacyClearCount++;
@@ -477,6 +692,7 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
     const initialEndpoint = initialObjectSystem.getGpuSimulationEndpoint();
     const initialRegistry = initialObjectSystem.getWorldRegistry();
     const initialSessionGeneration = initialEndpoint.getStatus().sessionGeneration;
+    const initialHostileDirector = initialObjectSystem.hostileAttackDirector;
     const maxIntegrity = initialCoreIntegrity.getMaxIntegrity();
     const appliedDamage = initialCoreIntegrity.applyIntegrityDamage(37);
     const damagedIntegrity = initialCoreIntegrity.getCurrentIntegrity();
@@ -488,6 +704,9 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
         initialCoreIntegrity
     );
     assert.equal(legacyClearCount, 1);
+    assert.strictEqual(hostileDirectors.instances[0], initialHostileDirector);
+    assert.equal(initialGameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(initialGameSystem.getHostileAttackStatus().pendingShotCount, 0);
 
     assert.equal(scene.getNextGpuLifecycleFixedTick(), 1);
     assert.equal(scene.getNextEnemyLifecycleFixedTick(), 1);
@@ -498,6 +717,21 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
 
     assert.equal(backends.length, 2);
     assert.equal(backends[0].destroyCount, 1);
+    assert.equal(hostileDirectors.instances.length, 2);
+    assert.equal(initialHostileDirector.destroyCount, 1);
+    assert.equal(initialHostileDirector.getStatus().destroyed, true);
+    assert.equal(initialHostileDirector.completedEventCalls.length, 0);
+    assert.equal(initialHostileDirector.stageCalls.length, 0);
+    assert.equal(initialHostileDirector.fixedCommitCalls.length, 0);
+    assert.strictEqual(
+        initialObjectSystem.hostileAttackDirector,
+        hostileDirectors.instances[1]
+    );
+    assert.equal(hostileDirectors.instances[1].getStatus().stageCallCount, 0);
+    assert.equal(hostileDirectors.instances[1].completedEventCalls.length, 0);
+    assert.equal(hostileDirectors.instances[1].fixedCommitCalls.length, 0);
+    assert.equal(initialGameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(initialGameSystem.getHostileAttackStatus().pendingShotCount, 0);
     assert.strictEqual(scene.getGameSystem(), initialGameSystem);
     assert.strictEqual(initialGameSystem.getObjectSystem(), initialObjectSystem);
     assert.strictEqual(initialGameSystem.getCoreIntegrity(), initialCoreIntegrity);
@@ -548,6 +782,20 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
 
     assert.equal(backends.length, 3);
     assert.equal(backends[1].destroyCount, 1);
+    assert.equal(hostileDirectors.instances.length, 3);
+    assert.equal(hostileDirectors.instances[1].destroyCount, 1);
+    assert.equal(hostileDirectors.instances[1].completedEventCalls.length, 0);
+    assert.equal(hostileDirectors.instances[1].stageCalls.length, 0);
+    assert.equal(hostileDirectors.instances[1].fixedCommitCalls.length, 0);
+    assert.strictEqual(
+        initialObjectSystem.hostileAttackDirector,
+        hostileDirectors.instances[2]
+    );
+    assert.equal(hostileDirectors.instances[2].getStatus().stageCallCount, 0);
+    assert.equal(hostileDirectors.instances[2].completedEventCalls.length, 0);
+    assert.equal(hostileDirectors.instances[2].fixedCommitCalls.length, 0);
+    assert.equal(initialGameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(initialGameSystem.getHostileAttackStatus().pendingShotCount, 0);
     assert.strictEqual(scene.getGameSystem(), initialGameSystem);
     assert.strictEqual(initialGameSystem.getObjectSystem(), initialObjectSystem);
     assert.strictEqual(initialGameSystem.getCoreIntegrity(), initialCoreIntegrity);
@@ -590,12 +838,21 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
     scene.destroy();
     scene.destroy();
     assert.equal(backends[2].destroyCount, 1);
+    assert.equal(hostileDirectors.instances[2].destroyCount, 1);
     assert.equal(legacyClearCount, 2);
 });
 
-test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으로 보존한다', () => {
+test('replacement init false/예외와 Director factory 예외는 기존 GPU world와 CPU domain을 원자적으로 보존한다', () => {
     const backends = [];
-    const backendModes = ['normal', 'init-throws'];
+    const backendModes = [
+        'normal',
+        'init-throws',
+        'init-returns-false',
+        'normal'
+    ];
+    const hostileDirectors = createTrackingHostileAttackDirectorFactory({
+        throwOnCall: 2
+    });
     const dependencies = {
         inputActionSource: {
             isPressed() {
@@ -647,7 +904,8 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
             );
             backends.push(backend);
             return backend;
-        }
+        },
+        hostileAttackDirectorFactory: hostileDirectors.factory
     };
     const gameSystem = new GameSystem(dependencies);
     assert.equal(gameSystem.enter(), true);
@@ -665,6 +923,7 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
     const registry = objectSystem.getWorldRegistry();
     const backend = objectSystem.getEnemySimulationBackend();
     const waveDirector = objectSystem.waveDirector;
+    const hostileAttackDirector = objectSystem.hostileAttackDirector;
     const sessionGeneration = endpoint.getStatus().sessionGeneration;
     const actorStatus = objectSystem.getGpuWorldActorStatus();
     const towerHandle = actorStatus.towerHandle;
@@ -674,6 +933,8 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
     const damagedIntegrity = coreIntegrity.getCurrentIntegrity();
 
     assert.equal(backends.length, 1);
+    assert.equal(hostileDirectors.calls.length, 1);
+    assert.equal(hostileDirectors.instances.length, 1);
     assert.strictEqual(backend, backends[0]);
     assert.equal(backend.initCount, 1);
     assert.equal(backend.destroyCount, 0);
@@ -681,6 +942,17 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
     assert.ok(coreProxyHandle);
     assert.equal(registry.getActiveCount(), 3);
     assert.equal(damagedIntegrity < maxIntegrity, true);
+
+    hostileAttackDirector.recoveryRequired = true;
+    assert.equal(gameSystem.getHostileAttackStatus().recoveryRequired, true);
+    assert.equal(gameSystem.isEnemySimulationRecoveryRequired(), true);
+    assert.equal(gameSystem.drawEnemySimulation(), true);
+    assert.equal(gameSystem.isEnemySimulationRecoveryRequired(), true);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
+    hostileAttackDirector.recoveryRequired = false;
+    assert.equal(gameSystem.drawEnemySimulation(), true);
+    assert.equal(gameSystem.isEnemySimulationRecoveryRequired(), false);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
 
     backend.hardFailNextFixed = true;
     assert.equal(gameSystem.fixedUpdate(), false);
@@ -704,6 +976,10 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
     assert.strictEqual(objectSystem.getWorldRegistry(), registry);
     assert.strictEqual(objectSystem.getEnemySimulationBackend(), backend);
     assert.strictEqual(objectSystem.waveDirector, waveDirector);
+    assert.strictEqual(objectSystem.hostileAttackDirector, hostileAttackDirector);
+    assert.equal(hostileAttackDirector.destroyCount, 0);
+    assert.equal(hostileAttackDirector.getStatus().destroyed, false);
+    assert.equal(gameSystem.getHostileAttackStatus().recoveryRequired, false);
     assert.equal(endpoint.getStatus().sessionGeneration, sessionGeneration);
     assert.equal(endpoint.getStatus().destroyed, false);
     assert.equal(gameSystem.getFixedTick(), 1);
@@ -724,15 +1000,59 @@ test('replacement init 예외는 기존 GPU world와 CPU domain을 원자적으�
     assert.equal(coreIntegrity.getCurrentIntegrity(), damagedIntegrity);
     assert.equal(coreIntegrity.getMaxIntegrity(), maxIntegrity);
 
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+    assert.equal(backends.length, 3);
+    assert.equal(backends[2].initCount, 1);
+    assert.equal(backends[2].destroyCount, 1);
+    assert.equal(hostileDirectors.calls.length, 1);
+    assert.equal(hostileDirectors.instances.length, 1);
+    assert.strictEqual(objectSystem.getGpuSimulationEndpoint(), endpoint);
+    assert.strictEqual(objectSystem.getWorldRegistry(), registry);
+    assert.strictEqual(objectSystem.getEnemySimulationBackend(), backend);
+    assert.strictEqual(objectSystem.waveDirector, waveDirector);
+    assert.strictEqual(objectSystem.hostileAttackDirector, hostileAttackDirector);
+    assert.equal(hostileAttackDirector.destroyCount, 0);
+    assert.equal(hostileAttackDirector.getStatus().destroyed, false);
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 0);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
+    assert.equal(registry.getActiveCount(), 3);
+    assert.strictEqual(objectSystem.getGpuWorldActorStatus().towerHandle, towerHandle);
+    assert.strictEqual(
+        objectSystem.getGpuWorldActorStatus().coreProxyHandle,
+        coreProxyHandle
+    );
+    assert.equal(coreIntegrity.getCurrentIntegrity(), damagedIntegrity);
+
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+    assert.equal(backends.length, 4);
+    assert.equal(backends[3].initCount, 1);
+    assert.equal(backends[3].destroyCount, 1);
+    assert.equal(hostileDirectors.calls.length, 2);
+    assert.equal(hostileDirectors.instances.length, 1);
+    assert.strictEqual(objectSystem.getGpuSimulationEndpoint(), endpoint);
+    assert.strictEqual(objectSystem.getWorldRegistry(), registry);
+    assert.strictEqual(objectSystem.getEnemySimulationBackend(), backend);
+    assert.strictEqual(objectSystem.waveDirector, waveDirector);
+    assert.strictEqual(objectSystem.hostileAttackDirector, hostileAttackDirector);
+    assert.equal(hostileAttackDirector.destroyCount, 0);
+    assert.equal(hostileAttackDirector.getStatus().destroyed, false);
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 0);
+
     gameSystem.destroy();
     gameSystem.destroy();
     assert.equal(backends[0].destroyCount, 1);
     assert.equal(backends[1].destroyCount, 1);
+    assert.equal(backends[2].destroyCount, 1);
+    assert.equal(backends[3].destroyCount, 1);
+    assert.equal(hostileAttackDirector.destroyCount, 1);
 });
 
 test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-only recovery를 보존한다', () => {
     const backends = [];
     const backendModes = ['normal', 'init-throws', 'normal', 'normal'];
+    const hostileDirectors = createTrackingHostileAttackDirectorFactory();
     let throwNextBackendFactory = false;
     let backendFactoryThrowCount = 0;
     const pointer = { pressed: false };
@@ -793,7 +1113,8 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
             );
             backends.push(backend);
             return backend;
-        }
+        },
+        hostileAttackDirectorFactory: hostileDirectors.factory
     };
     const gameSystem = new GameSystem(dependencies, {
         enemyWaveEnabled: false
@@ -805,6 +1126,7 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
     const corePresentation = objectSystem.getCore();
     const towerFacade = objectSystem.getTower();
     const primaryController = objectSystem.primaryProjectileController;
+    const initialHostileDirector = objectSystem.hostileAttackDirector;
     const inputRouter = gameSystem.playerControlRouter;
     const inputMapper = gameSystem.inputActionMapper;
     const cameraController = gameSystem.getCameraZoomController();
@@ -824,10 +1146,20 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
     });
     assert.equal(backends[0].spawnBatches.length, 1);
     assert.equal(backends[0].spawnBatches[0].length, 2);
+    assert.equal(hostileDirectors.instances.length, 1);
+    assert.strictEqual(hostileDirectors.instances[0], initialHostileDirector);
+    assert.equal(initialHostileDirector.stageCalls.length, 1);
+    assert.equal(initialHostileDirector.stageCalls[0].targetHandle, null);
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 0);
 
     const firstHostileHandle = requestHostileProjectileForNextTick(
         gameSystem,
         0
+    );
+    assert.deepEqual(
+        { ...initialHostileDirector.stageCalls.at(-1).targetHandle },
+        { ...initialTowerHandle }
     );
     backends[0].queueCompletedEvents(2, createTowerDamageEvents(
         firstHostileHandle,
@@ -845,6 +1177,10 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
         'runtime-hostile-fixture'
     );
     assert.equal(coreIntegrity.getCurrentIntegrity(), coreCurrent);
+    assert.deepEqual(
+        { ...initialHostileDirector.stageCalls.at(-1).targetHandle },
+        { ...initialTowerHandle }
+    );
 
     const oldBinding = damagedStatus.boundGpuBody;
     backends[0].hardFailNextFixed = true;
@@ -871,6 +1207,8 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
     assert.strictEqual(gameSystem.inputActionMapper, inputMapper);
     assert.strictEqual(gameSystem.getCameraZoomController(), cameraController);
     assert.strictEqual(objectSystem.primaryProjectileController, primaryController);
+    assert.strictEqual(objectSystem.hostileAttackDirector, initialHostileDirector);
+    assert.equal(initialHostileDirector.destroyCount, 0);
     assert.equal(coreIntegrity.getCurrentIntegrity(), coreCurrent);
     assert.equal(coreIntegrity.getMaxIntegrity(), coreMax);
     assert.equal(backends[0].destroyCount, 0);
@@ -887,11 +1225,24 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
     assert.strictEqual(gameSystem.getTowerCombatStatus().boundGpuBody, oldBinding);
     assert.equal(gameSystem.getTowerCombatStatus().currentHp, 17);
     assert.equal(backends[0].destroyCount, 0);
+    assert.strictEqual(objectSystem.hostileAttackDirector, initialHostileDirector);
+    assert.equal(initialHostileDirector.destroyCount, 0);
 
     assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), true);
     const aliveReplacementEndpoint = gameSystem.getGpuSimulationEndpoint();
+    const aliveReplacementHostileDirector = objectSystem.hostileAttackDirector;
     assert.notStrictEqual(aliveReplacementEndpoint, initialEndpoint);
     assert.equal(backends[0].destroyCount, 1);
+    assert.notStrictEqual(aliveReplacementHostileDirector, initialHostileDirector);
+    assert.equal(initialHostileDirector.destroyCount, 1);
+    assert.equal(initialHostileDirector.completedEventCalls.length, 0);
+    assert.equal(initialHostileDirector.stageCalls.length, 0);
+    assert.equal(initialHostileDirector.fixedCommitCalls.length, 0);
+    assert.equal(aliveReplacementHostileDirector.getStatus().stageCallCount, 0);
+    assert.equal(aliveReplacementHostileDirector.completedEventCalls.length, 0);
+    assert.equal(aliveReplacementHostileDirector.fixedCommitCalls.length, 0);
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 0);
     assert.equal(gameSystem.getTowerCombatStatus().currentHp, 17);
     assert.equal(gameSystem.getTowerCombatStatus().boundGpuBody, null);
 
@@ -917,10 +1268,15 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
         gameSystem.getTowerCombatStatus().boundGpuBody.sessionGeneration,
         aliveReplacementEndpoint.getStatus().sessionGeneration
     );
+    assert.equal(aliveReplacementHostileDirector.stageCalls.at(-1).targetHandle, null);
 
     const secondHostileHandle = requestHostileProjectileForNextTick(
         gameSystem,
         1
+    );
+    assert.deepEqual(
+        { ...aliveReplacementHostileDirector.stageCalls.at(-1).targetHandle },
+        { ...restoredTowerHandle }
     );
     const fixedPlanCountBeforeDeath = backends[2].fixedProgramPlans.length;
     pointer.pressed = true;
@@ -961,6 +1317,8 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
     assert.equal(primaryController.getStatus().enabled, false);
     assert.equal(backends[2].trackedHandle, null);
     assert.equal(backends[2].fixedProgramPlans.length, fixedPlanCountBeforeDeath);
+    assert.equal(aliveReplacementHostileDirector.stageCalls.at(-1).targetHandle, null);
+    assert.equal(gameSystem.getHostileAttackStatus().lastTargetHandle, null);
     assert.equal(
         objectSystem.getWorldRegistry().getActiveCount('tower'),
         0
@@ -987,10 +1345,27 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
         1
     );
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+    assert.equal(
+        aliveReplacementHostileDirector.stageCalls.slice(-10)
+            .every(({ targetHandle }) => targetHandle === null),
+        true
+    );
 
     backends[2].hardFailNextFixed = true;
     assert.equal(gameSystem.fixedUpdate(), false);
     assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), true);
+    const deadReplacementHostileDirector = objectSystem.hostileAttackDirector;
+    assert.notStrictEqual(
+        deadReplacementHostileDirector,
+        aliveReplacementHostileDirector
+    );
+    assert.equal(aliveReplacementHostileDirector.destroyCount, 1);
+    assert.equal(aliveReplacementHostileDirector.completedEventCalls.length, 0);
+    assert.equal(aliveReplacementHostileDirector.stageCalls.length, 0);
+    assert.equal(aliveReplacementHostileDirector.fixedCommitCalls.length, 0);
+    assert.equal(deadReplacementHostileDirector.getStatus().stageCallCount, 0);
+    assert.equal(deadReplacementHostileDirector.completedEventCalls.length, 0);
+    assert.equal(deadReplacementHostileDirector.fixedCommitCalls.length, 0);
     assert.equal(gameSystem.getTowerCombatStatus().alive, false);
     assert.equal(gameSystem.getTowerCombatStatus().currentHp, 0);
     assert.equal(gameSystem.fixedUpdate(), true);
@@ -1011,6 +1386,9 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
     );
     assert.equal(primaryController.getStatus().enabled, false);
     assert.equal(backends[3].trackedHandle, null);
+    assert.equal(deadReplacementHostileDirector.stageCalls.at(-1).targetHandle, null);
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 0);
 
     assert.strictEqual(gameSystem.getObjectSystem(), objectSystem);
     assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
@@ -1025,6 +1403,7 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
 
     gameSystem.destroy();
     assert.equal(backends[3].destroyCount, 1);
+    assert.equal(deadReplacementHostileDirector.destroyCount, 1);
 });
 
 test('선택한 enemy presentation profile을 소유한 같은 GameSystem이 GPU world만 재시작한다', async () => {

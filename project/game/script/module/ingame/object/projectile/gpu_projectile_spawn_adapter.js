@@ -344,7 +344,7 @@ export function createGpuProjectileSpawnIntent(options = {}) {
 
 /**
  * caller identity와 fixed tick/sequence로 재시도에도 동일한 command ID를 만듭니다.
- * @param {{definitionId:string,targetFixedTick:number,spawnSequence:number,sourceHandle?:object|null,commandNamespace?:string}} options
+ * @param {{definitionId:string,targetFixedTick:number,spawnSequence:number,sourceHandle?:object|null,targetHandle?:object|null,commandNamespace?:string}} options
  * @returns {string}
  */
 export function createGpuProjectileCommandId(options = {}) {
@@ -365,6 +365,10 @@ export function createGpuProjectileCommandId(options = {}) {
     const sourceKey = sourceHandle
         ? `${sourceHandle.entityId}:${sourceHandle.incarnation}`
         : 'session';
+    const targetHandle = normalizeEntityHandle(options.targetHandle, 'targetHandle');
+    if (targetHandle) {
+        return `${encodeURIComponent(namespace)}:${sourceKey}:target:${targetHandle.entityId}:${targetHandle.incarnation}:${targetFixedTick}:${spawnSequence}:${encodeURIComponent(definitionId)}`;
+    }
     return `${encodeURIComponent(namespace)}:${sourceKey}:${targetFixedTick}:${spawnSequence}:${encodeURIComponent(definitionId)}`;
 }
 
@@ -534,6 +538,7 @@ export function requestGpuProjectile(options = {}) {
             targetFixedTick,
             spawnSequence,
             sourceHandle,
+            targetHandle,
             commandNamespace: options.commandNamespace
         })
         : requireNonEmptyString(options.commandId, 'commandId');

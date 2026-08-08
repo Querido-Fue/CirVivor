@@ -422,7 +422,12 @@ test('adapter aim-point mode는 CPU pose 없이 world aim/speed만 source-relati
     assert.equal(result.accepted, true);
     assert.equal(endpoint.calls.length, 0);
     assert.equal(endpoint.sourceRelativeCalls.length, 1);
-    const intent = endpoint.sourceRelativeCalls[0].intent;
+    const call = endpoint.sourceRelativeCalls[0];
+    assert.equal(
+        call.commandId,
+        'tower-primary:17:5:21:7:benchmark_round_01'
+    );
+    const intent = call.intent;
     assert.equal(intent.modeFlags, GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT);
     assert.deepEqual({ ...intent.aimWorldPoint }, { x: -8, y: 3 });
     assert.equal(intent.launchSpeed, 18);
@@ -467,7 +472,7 @@ test('target-entity mode는 exact aim handle/provenance와 default targetOffset�
     const call = endpoint.sourceRelativeCalls[0];
     assert.equal(
         call.commandId,
-        'hostile-targeted:31:2:25:6:benchmark_round_01'
+        'hostile-targeted:31:2:target:47:9:25:6:benchmark_round_01'
     );
     assert.equal(
         call.intent.modeFlags,
@@ -504,6 +509,40 @@ test('target-entity mode는 exact aim handle/provenance와 default targetOffset�
     assert.equal(Object.isFrozen(call.intent.positionOffset), true);
     assert.equal(Object.isFrozen(call.intent.targetOffset), true);
     assert.equal(Object.isFrozen(call.intent.destinationSpawn), true);
+});
+
+test('target-entity default command ID는 동일 source/shot의 exact target identity를 구분한다', () => {
+    const endpoint = createFakeEndpoint();
+    const common = {
+        endpoint,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        definition: createDefinition(),
+        sourceHandle: { entityId: 31, incarnation: 2 },
+        positionOffset: { x: 0, y: 0 },
+        launchSpeed: 12,
+        targetFixedTick: 25,
+        spawnSequence: 6,
+        commandNamespace: 'hostile-targeted'
+    };
+
+    const first = requestGpuProjectile({
+        ...common,
+        targetHandle: { entityId: 47, incarnation: 9 }
+    });
+    const second = requestGpuProjectile({
+        ...common,
+        targetHandle: { entityId: 48, incarnation: 10 }
+    });
+
+    assert.equal(
+        first.commandId,
+        'hostile-targeted:31:2:target:47:9:25:6:benchmark_round_01'
+    );
+    assert.equal(
+        second.commandId,
+        'hostile-targeted:31:2:target:48:10:25:6:benchmark_round_01'
+    );
+    assert.notEqual(first.commandId, second.commandId);
 });
 
 test('target-entity public raw Proxy는 ownKeys/source/target getter를 한 번만 materialize한다', () => {
