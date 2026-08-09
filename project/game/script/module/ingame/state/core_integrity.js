@@ -32,6 +32,9 @@ export class CoreIntegrity {
         this.currentIntegrity = Number.isFinite(requestedCurrent)
             ? Math.min(maxIntegrity, Math.max(0, requestedCurrent))
             : maxIntegrity;
+        // Core가 한 번 소진된 run은 회복으로 다시 열리지 않습니다. 비-terminal
+        // 회복은 이전처럼 허용하되, depletion은 RunOutcome과 같은 단방향 경계입니다.
+        this.terminalSealed = this.currentIntegrity <= 0;
         assertCoreIntegrity(this);
     }
 
@@ -50,15 +53,27 @@ export class CoreIntegrity {
         return this.currentIntegrity <= 0;
     }
 
+    /** @returns {boolean} Core depletion으로 더 이상 회복할 수 없는 terminal 상태인지 여부입니다. */
+    isTerminallySealed() {
+        return this.terminalSealed === true;
+    }
+
     /**
      * 검증된 전투 경계가 전달한 damage를 반영합니다.
      * @param {*} amount - 피해량입니다.
      * @returns {number} 실제 감소한 Integrity입니다.
      */
     applyIntegrityDamage(amount) {
+        if (this.terminalSealed) {
+            return 0;
+        }
         const safeAmount = normalizeIntegrityAmount(amount);
         const applied = Math.min(this.currentIntegrity, safeAmount);
         this.currentIntegrity -= applied;
+        if (this.currentIntegrity <= 0) {
+            this.currentIntegrity = 0;
+            this.terminalSealed = true;
+        }
         return applied;
     }
 
@@ -68,6 +83,9 @@ export class CoreIntegrity {
      * @returns {number} 실제 회복한 Integrity입니다.
      */
     restoreIntegrity(amount) {
+        if (this.terminalSealed) {
+            return 0;
+        }
         const safeAmount = normalizeIntegrityAmount(amount);
         const restored = Math.min(this.maxIntegrity - this.currentIntegrity, safeAmount);
         this.currentIntegrity += restored;

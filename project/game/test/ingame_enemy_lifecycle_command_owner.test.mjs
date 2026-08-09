@@ -198,6 +198,7 @@ test('request는 fixed 경계 전 backend를 호출하지 않고 due command를 
         backend.events[1].bodies[0].interactionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
     );
     assert.equal('layerMask' in backend.events[1].bodies[0], false);
     assert.equal('sensorMask' in backend.events[1].bodies[0], false);
@@ -657,4 +658,157 @@ test('backend 성공 응답 handle 계약이 깨져도 예약을 남기지 않�
     assert.equal(registry.getReservedCount(), 0);
     assert.equal(registry.getActiveCount(), 1);
     assert.equal(owner.getStatus().recoveryRequired, true);
+});
+
+test('terminal close는 raw owner ingress를 닫고 gpu-death cleanup의 identity를 CORE_IMPACT로 one-shot 승격한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 8 });
+    const genuineGpuDeathPermit = Object.freeze({});
+    const genuineCoreImpactPermit = Object.freeze({});
+    const availablePermits = new Set([
+        genuineGpuDeathPermit,
+        genuineCoreImpactPermit
+    ]);
+    const owner = new EnemyLifecycleCommandOwner(backend, registry, {
+        terminalCleanupAuthority: Object.freeze({
+            consumePermit(candidate) {
+                if (!availablePermits.has(candidate)) {
+                    return false;
+                }
+                availablePermits.delete(candidate);
+                return true;
+            }
+        })
+    });
+
+    for (let sequence = 0; sequence < 4; sequence++) {
+        assert.equal(owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: sequence }),
+            1,
+            `terminal:active:${sequence}`
+        ).accepted, true);
+    }
+    const handles = owner.commitAtFixedBoundary(1)
+        .spawned.map(({ handle }) => handle);
+    assert.equal(handles.length, 4);
+
+    assert.equal(owner.requestSpawn(
+        createProjectileIntent({ spawnSequence: 10 }),
+        5,
+        'terminal:future:single'
+    ).accepted, true);
+    assert.equal(owner.requestSpawnBatch([
+        {
+            intent: createProjectileIntent({ spawnSequence: 11 }),
+            targetFixedTick: 5,
+            commandId: 'terminal:future:batch:0'
+        },
+        {
+            intent: createProjectileIntent({ spawnSequence: 12 }),
+            targetFixedTick: 5,
+            commandId: 'terminal:future:batch:1'
+        }
+    ]).accepted, true);
+    assert.equal(owner.requestDespawn(
+        handles[0],
+        'scripted-cleanup',
+        5,
+        'terminal:future:despawn'
+    ).accepted, true);
+    assert.equal(owner.requestDespawn(
+        handles[1],
+        'gpu-death',
+        2,
+        'gpu-death:terminal:enemy',
+        null,
+        genuineGpuDeathPermit
+    ).accepted, true);
+    assert.equal(owner.requestDespawn(
+        handles[2],
+        'gpu-death',
+        2,
+        'gpu-death:public-forgery'
+    ).accepted, true);
+    assert.equal(owner.requestDespawn(
+        handles[3],
+        'core-impact',
+        2,
+        'core-impact:public-forgery',
+        { disposition: 'CORE_IMPACT' }
+    ).accepted, true);
+
+    // Permit은 ingress가 열린 동안에도 consume되어 command provenance와
+    // same-tick gpu-death → Core disposition 승격을 함께 인증합니다.
+    const upgraded = owner.requestDespawn(
+        handles[1],
+        'core-impact',
+        2,
+        'core-impact:replacement-id-must-not-win',
+        { disposition: 'CORE_IMPACT' },
+        genuineCoreImpactPermit
+    );
+    assert.deepEqual({ ...upgraded }, {
+        accepted: false,
+        reason: 'duplicate-despawn',
+        commandId: 'gpu-death:terminal:enemy',
+        targetFixedTick: 2,
+        disposition: 'CORE_IMPACT',
+        dispositionUpgraded: true
+    });
+    assert.equal(owner.getPendingCount(), 7);
+
+    assert.deepEqual({ ...owner.closeIngress('run-defeated') }, {
+        closed: true,
+        reason: 'run-defeated',
+        cancelledCount: 6,
+        preservedCleanupCount: 1
+    });
+    assert.equal(owner.getPendingCount(), 1);
+    assert.equal(owner.getStatus().ingressOpen, false);
+    assert.equal(owner.requestSpawn({}, 2).accepted, false);
+    assert.deepEqual({ ...owner.requestSpawnBatch([]) }, {
+        accepted: false,
+        requestedCount: 0,
+        queuedCount: 0,
+        reason: 'run-defeated'
+    });
+    assert.equal(owner.requestDespawn(
+        handles[0],
+        'cleanup',
+        2,
+        'terminal:raw-despawn'
+    ).accepted, false);
+    assert.equal(owner.requestDespawn(
+        handles[0],
+        'core-impact',
+        2,
+        'core-impact:missing-permit',
+        { disposition: 'CORE_IMPACT' }
+    ).accepted, false);
+    assert.equal(owner.requestDespawn(
+        handles[0],
+        'core-impact',
+        2,
+        'core-impact:forged-permit',
+        { disposition: 'CORE_IMPACT' },
+        Object.freeze({})
+    ).accepted, false);
+
+    assert.equal(owner.requestDespawn(
+        handles[0],
+        'core-impact',
+        2,
+        'core-impact:reused-permit',
+        { disposition: 'CORE_IMPACT' },
+        genuineCoreImpactPermit
+    ).accepted, false);
+
+    const committed = owner.commitAtFixedBoundary(2);
+    assert.equal(committed.despawned.length, 1);
+    assert.equal(committed.despawned[0].commandId, 'gpu-death:terminal:enemy');
+    assert.equal(committed.despawned[0].reason, 'gpu-death');
+    assert.equal(committed.despawned[0].disposition, 'CORE_IMPACT');
+    assert.equal(committed.despawned[0].bountyEligible, false);
+    assert.equal(owner.finalizeClosedIngress(), 0);
+    assert.equal(owner.getPendingCount(), 0);
 });

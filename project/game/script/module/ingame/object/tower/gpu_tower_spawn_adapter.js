@@ -11,6 +11,7 @@ import {
 import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
 
@@ -49,15 +50,21 @@ export function createGpuTowerSpawnIntent(options) {
         definitionId: GPU_TOWER_DEFINITION_ID,
         teamId: GAMEPLAY_TEAM_ID.PLAYER,
         damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        damageResolutionPolicyId:
+            GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.MAXIMUM_DAMAGE_WINDOW,
+        maximumDamageWindowDurationTicks:
+            THE_TOWER_COMBAT_DATA.MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS,
         allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER,
         position,
         velocity: Object.freeze({ x: 0, y: 0 }),
         radius: THE_TOWER_DATA.RADIUS_TILES,
-        inverseMass: 1 / THE_TOWER_DATA.MASS,
+        inverseMass: 1 / THE_TOWER_DATA.WEIGHT,
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
-        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE,
-        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
+        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         health: currentHp,
         lifetime: GPU_CIRCLE_BODY_LIFETIME.IMMORTAL,
         alive: true,

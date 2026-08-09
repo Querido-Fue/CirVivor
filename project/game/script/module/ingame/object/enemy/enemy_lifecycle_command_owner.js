@@ -2,9 +2,17 @@ import {
     createGpuRegistryMetadata,
     normalizeGpuSpawnIntent
 } from '../gpu_spawn_intent.js';
+import {
+    ENEMY_LIFECYCLE_DISPOSITION_ID,
+    assertEnemyLifecycleDisposition,
+    isEnemyDispositionBountyEligible
+} from '../../contract/enemy_lifecycle_disposition_contract.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
+// 외부 options/reason이나 reflection으로 재현할 수 없는 command identity marker입니다.
+// fixed commit payload에는 노출하지 않고 terminal close의 보존 여부만 지배합니다.
+const AUTHENTIC_TERMINAL_CLEANUP_COMMANDS = new WeakSet();
 
 function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
@@ -102,10 +110,12 @@ function assertRegistry(registry) {
  * despawn batch와 spawn batch는 각각이 원자적이며 두 batch 전체는 하나의 transaction이 아닙니다.
  */
 export class EnemyLifecycleCommandOwner {
+    #terminalCleanupAuthority;
+
     /**
      * @param {object} backend - EnemySimulationBackend public port입니다.
      * @param {object} registry - WorldRegistry입니다.
-     * @param {{commandHistoryCapacity?:number}} [options={}] - 중복 command 억제 범위입니다.
+     * @param {{commandHistoryCapacity?:number,terminalCleanupAuthority?:object|null}} [options={}] - 중복 command 억제 범위와 비공개 terminal cleanup authority입니다.
      */
     constructor(backend, registry, options = {}) {
         this.backend = assertBackend(backend);
@@ -114,6 +124,14 @@ export class EnemyLifecycleCommandOwner {
             options.commandHistoryCapacity ?? DEFAULT_COMMAND_HISTORY_CAPACITY,
             'commandHistoryCapacity'
         );
+        const terminalCleanupAuthority = options.terminalCleanupAuthority ?? null;
+        if (terminalCleanupAuthority !== null
+            && typeof terminalCleanupAuthority?.consumePermit !== 'function') {
+            throw new TypeError(
+                'terminalCleanupAuthority.consumePermit()가 필요합니다.'
+            );
+        }
+        this.#terminalCleanupAuthority = terminalCleanupAuthority;
         this.pendingCommands = [];
         this.knownCommandIds = new Set();
         this.completedCommandIds = [];
@@ -122,12 +140,18 @@ export class EnemyLifecycleCommandOwner {
         this.nextCommandSequence = 1;
         this.lastCommitResult = null;
         this.recoveryRequired = false;
+        this.ingressOpen = true;
+        this.ingressCloseReason = null;
         this.destroyed = false;
     }
 
     /** spawn intent를 target fixed tick까지 불변 snapshot으로 보관합니다. */
     requestSpawn(intent, targetFixedTick, commandId = null) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedIngress();
+        if (rejected) {
+            return rejected;
+        }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const normalizedIntent = normalizeSpawnIntent(intent);
         const normalizedCommandId = this.#claimCommandId(commandId);
@@ -156,6 +180,13 @@ export class EnemyLifecycleCommandOwner {
      */
     requestSpawnBatch(requests) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedIngress({
+            requestedCount: Array.isArray(requests) ? requests.length : 0,
+            queuedCount: 0
+        });
+        if (rejected) {
+            return rejected;
+        }
         if (!Array.isArray(requests) || requests.length === 0) {
             throw new TypeError('spawn batch는 하나 이상의 request 배열이어야 합니다.');
         }
@@ -213,36 +244,154 @@ export class EnemyLifecycleCommandOwner {
     }
 
     /** stable handle despawn을 target fixed tick까지 보관합니다. */
-    requestDespawn(handle, reason, targetFixedTick, commandId = null) {
+    requestDespawn(
+        handle,
+        reason,
+        targetFixedTick,
+        commandId = null,
+        options = null,
+        terminalCleanupPermit = null
+    ) {
         this.#assertUsable();
+        const validTerminalCleanupPermit = terminalCleanupPermit !== null
+            && this.#terminalCleanupAuthority?.consumePermit(
+                terminalCleanupPermit
+            ) === true;
+        const requestedCoreImpactCleanup = reason === 'core-impact'
+            && options?.disposition
+                === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+            && typeof commandId === 'string'
+            && commandId.startsWith('core-impact:');
+        const requestedGpuDeathCleanup = reason === 'gpu-death'
+            && (options?.disposition === undefined
+                || options?.disposition === null)
+            && typeof commandId === 'string'
+            && commandId.startsWith('gpu-death:');
+        const authenticCoreImpactCleanup = validTerminalCleanupPermit
+            && requestedCoreImpactCleanup;
+        const authenticGpuDeathCleanup = validTerminalCleanupPermit
+            && requestedGpuDeathCleanup;
+        const authenticTerminalCleanup = authenticCoreImpactCleanup
+            || authenticGpuDeathCleanup;
+        const privilegedTerminalCleanup = !this.ingressOpen
+            && authenticTerminalCleanup;
+        if (!this.ingressOpen && !privilegedTerminalCleanup) {
+            return this.#rejectClosedIngress();
+        }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const normalizedHandle = normalizeHandle(handle, 'despawnHandle');
         const key = handleKey(normalizedHandle);
-        if (this.pendingDespawnKeys.has(key)) {
-            return Object.freeze({ accepted: false, reason: 'duplicate-despawn' });
-        }
         const normalizedReason = reason === undefined || reason === null
             ? null
             : requireNonEmptyString(reason, 'despawnReason');
+        const disposition = options?.disposition === undefined
+            || options?.disposition === null
+            ? null
+            : assertEnemyLifecycleDisposition(options.disposition);
+        const pendingDespawnIndex = this.#findPendingDespawnIndex(key);
+        if (pendingDespawnIndex >= 0) {
+            const existing = this.pendingCommands[pendingDespawnIndex];
+            const sameFixedTick = existing.targetFixedTick === tick;
+            const shouldUpgradeCoreImpact = authenticCoreImpactCleanup
+                && existing.reason === 'gpu-death'
+                && sameFixedTick
+                && normalizedReason === 'core-impact'
+                && disposition === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
+            const shouldAuthenticateExisting = sameFixedTick && (
+                (authenticGpuDeathCleanup
+                    && existing.reason === 'gpu-death')
+                || (authenticCoreImpactCleanup
+                    && (existing.reason === 'gpu-death'
+                        || (existing.reason === 'core-impact'
+                            && existing.disposition
+                                === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT)))
+            );
+            const dispositionUpgraded = shouldUpgradeCoreImpact
+                && existing.disposition
+                    !== ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
+            const provenanceUpgraded = shouldAuthenticateExisting
+                && !AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.has(existing);
+            if (dispositionUpgraded || provenanceUpgraded) {
+                const upgradedCommand = Object.freeze({
+                    ...existing,
+                    ...(dispositionUpgraded
+                        ? {
+                            disposition:
+                                ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                        }
+                        : null)
+                });
+                AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.add(upgradedCommand);
+                this.pendingCommands[pendingDespawnIndex] = upgradedCommand;
+            }
+            const resolvedExisting = this.pendingCommands[pendingDespawnIndex];
+            return Object.freeze({
+                accepted: false,
+                reason: 'duplicate-despawn',
+                commandId: existing.commandId,
+                targetFixedTick: existing.targetFixedTick,
+                disposition: dispositionUpgraded
+                    ? ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                    : resolvedExisting.disposition,
+                dispositionUpgraded
+            });
+        }
         const normalizedCommandId = this.#claimCommandId(commandId);
         if (!normalizedCommandId) {
             return Object.freeze({ accepted: false, reason: 'duplicate-command' });
         }
         const sequence = this.nextCommandSequence++;
-        this.pendingCommands.push(Object.freeze({
+        const command = Object.freeze({
             type: 'despawn',
             commandId: normalizedCommandId,
             targetFixedTick: tick,
             sequence,
             handle: normalizedHandle,
-            reason: normalizedReason
-        }));
+            reason: normalizedReason,
+            disposition
+        });
+        if (authenticTerminalCleanup) {
+            AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.add(command);
+        }
+        this.pendingCommands.push(command);
         this.pendingDespawnKeys.add(key);
         return Object.freeze({
             accepted: true,
             commandId: normalizedCommandId,
             targetFixedTick: tick
         });
+    }
+
+    /**
+     * terminal 전이에서 새 lifecycle ingress를 영구히 닫습니다. 아직 commit되지 않은
+     * spawn/일반 despawn은 즉시 취소하고, committed-event cleanup만 마지막 경계까지
+     * 잠시 보존합니다.
+     */
+    closeIngress(reason = 'gameplay-ingress-closed') {
+        this.#assertUsable();
+        let cancelledCount = 0;
+        if (this.ingressOpen) {
+            this.ingressOpen = false;
+            this.ingressCloseReason = typeof reason === 'string' && reason.length > 0
+                ? reason
+                : 'gameplay-ingress-closed';
+            cancelledCount = this.#cancelCommands((command) => (
+                command.type !== 'despawn'
+                || !AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.has(command)
+            ));
+        }
+        return Object.freeze({
+            closed: !this.ingressOpen,
+            reason: this.ingressCloseReason,
+            cancelledCount,
+            preservedCleanupCount: this.pendingCommands.length
+        });
+    }
+
+    /** 마지막 terminal commit 시도 뒤 남은 cleanup을 모두 회수합니다. */
+    finalizeClosedIngress() {
+        this.#assertUsable();
+        return this.ingressOpen ? 0 : this.cancelAll();
     }
 
     /**
@@ -335,6 +484,8 @@ export class EnemyLifecycleCommandOwner {
             pendingCount: this.pendingCommands.length,
             lastCommitResult: this.lastCommitResult,
             recoveryRequired: this.recoveryRequired,
+            ingressOpen: this.ingressOpen,
+            ingressCloseReason: this.ingressCloseReason,
             destroyed: this.destroyed
         });
     }
@@ -361,7 +512,29 @@ export class EnemyLifecycleCommandOwner {
         this.destroyed = true;
         this.backend = null;
         this.registry = null;
+        this.#terminalCleanupAuthority = null;
         this.lastCommitResult = null;
+    }
+
+    #findPendingDespawnIndex(key) {
+        if (!this.pendingDespawnKeys.has(key)) {
+            return -1;
+        }
+        return this.pendingCommands.findIndex((command) => (
+            command.type === 'despawn'
+            && handleKey(command.handle) === key
+        ));
+    }
+
+    #cancelCommands(shouldCancel) {
+        const cancelledCommandIds = new Set();
+        for (const command of this.pendingCommands) {
+            if (shouldCancel(command)) {
+                cancelledCommandIds.add(command.commandId);
+            }
+        }
+        this.#consumeCommands(cancelledCommandIds);
+        return cancelledCommandIds.size;
     }
 
     #commitDespawns(commands, result, consumedCommandIds) {
@@ -420,11 +593,18 @@ export class EnemyLifecycleCommandOwner {
                     result.recoveryRequired = true;
                 }
                 removedThisBatch++;
-                result.despawned.push({
+                const despawned = {
                     commandId: command.commandId,
                     handle: command.handle,
                     reason: command.reason
-                });
+                };
+                if (command.disposition !== null) {
+                    despawned.disposition = command.disposition;
+                    despawned.bountyEligible = isEnemyDispositionBountyEligible(
+                        command.disposition
+                    );
+                }
+                result.despawned.push(despawned);
                 consumedCommandIds.add(command.commandId);
             }
         }
@@ -656,6 +836,17 @@ export class EnemyLifecycleCommandOwner {
         result.registryRevision = this.registry.getRevision();
         this.lastCommitResult = freezeCommitResult(result);
         return this.lastCommitResult;
+    }
+
+    #rejectClosedIngress(extra = null) {
+        if (this.ingressOpen) {
+            return null;
+        }
+        return Object.freeze({
+            accepted: false,
+            reason: this.ingressCloseReason ?? 'gameplay-ingress-closed',
+            ...(extra ?? {})
+        });
     }
 
     #assertUsable() {

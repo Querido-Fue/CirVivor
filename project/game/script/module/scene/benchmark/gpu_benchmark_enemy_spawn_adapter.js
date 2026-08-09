@@ -11,11 +11,6 @@ const GPU_SPAWNABLE_STATES = new Set([
     'gpu-backpressure'
 ]);
 const GPU_BENCHMARK_ENEMY_RADIUS_FACTOR = 0.5;
-const GPU_BENCHMARK_ENEMY_DEFINITION = Object.freeze({
-    ...BASIC_CIRCLE_ENEMY_DATA,
-    collisionRadiusTiles: BASIC_CIRCLE_ENEMY_DATA.collisionRadiusTiles
-        * GPU_BENCHMARK_ENEMY_RADIUS_FACTOR
-});
 const LANE_OFFSETS_TILES = Object.freeze([-3, -1.5, 0, 1.5, 3]);
 const LONGITUDINAL_SPACING_TILES = 1.5;
 
@@ -162,10 +157,13 @@ function createDistributedSpawnIntent(route, spawnSequence, routeLocalIndex) {
         routeLocalIndex / LANE_OFFSETS_TILES.length
     );
     const intent = createGpuEnemySpawnIntent({
-        definition: GPU_BENCHMARK_ENEMY_DEFINITION,
+        definition: BASIC_CIRCLE_ENEMY_DATA,
         route,
         spawnSequence,
-        laneOffsetTiles: LANE_OFFSETS_TILES[laneIndex]
+        laneOffsetTiles: LANE_OFFSETS_TILES[laneIndex],
+        // Benchmark spawn geometry만 축소합니다. Definition/profile flat field를 덮지 않습니다.
+        collisionRadiusTilesOverride: BASIC_CIRCLE_ENEMY_DATA.collisionRadiusTiles
+            * GPU_BENCHMARK_ENEMY_RADIUS_FACTOR
     });
     const entry = route.waypoints[0];
     const next = route.waypoints[1];

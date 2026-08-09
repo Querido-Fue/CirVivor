@@ -12,7 +12,7 @@ import { PhysicsBody2D } from '../physics/physics_body_2d.js';
  */
 export class TheTower {
     /**
-     * @param {{x?:number,y?:number,radius?:number,moveSpeed?:number,controlAcceleration?:number,linearFriction?:number,sleepSpeed?:number,mass?:number,maxLinearSpeed?:number}} [options={}] - 생성 옵션입니다.
+     * @param {{x?:number,y?:number,radius?:number,moveSpeed?:number,controlAcceleration?:number,linearFriction?:number,sleepSpeed?:number,weight?:number,maxLinearSpeed?:number}} [options={}] - 생성 옵션입니다.
      */
     constructor(options = {}) {
         const radius = Number(options.radius);
@@ -20,7 +20,7 @@ export class TheTower {
         const controlAcceleration = Number(options.controlAcceleration);
         const linearFriction = Number(options.linearFriction);
         const sleepSpeed = Number(options.sleepSpeed);
-        const mass = Number(options.mass);
+        const weight = Number(options.weight);
         const maxLinearSpeed = Number(options.maxLinearSpeed);
         const x = Number(options.x);
         const y = Number(options.y);
@@ -47,7 +47,9 @@ export class TheTower {
             bodyType: PHYSICS_BODY_TYPES.DYNAMIC,
             x: Number.isFinite(x) ? x : 0,
             y: Number.isFinite(y) ? y : 0,
-            mass: Number.isFinite(mass) && mass > 0 ? mass : THE_TOWER_DATA.MASS,
+            mass: Number.isFinite(weight) && weight > 0
+                ? weight
+                : THE_TOWER_DATA.WEIGHT,
             linearFriction: this.linearFriction,
             sleepSpeed: Number.isFinite(sleepSpeed) && sleepSpeed >= 0
                 ? sleepSpeed

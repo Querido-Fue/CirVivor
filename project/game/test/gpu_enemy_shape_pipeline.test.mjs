@@ -275,19 +275,19 @@ test('enemy spawn adapter는 지원 shape만 숫자 render style code로 전달�
     assert.throws(() => createGpuEnemySpawnIntent({
         definition: {
             ...BASIC_SQUARE_ENEMY_DATA,
-            shapeType: 'octa'
+            shapeDefinitionId: 'octa'
         },
         route: FIXTURE_ROUTE,
         spawnSequence: 99
-    }), /지원하지 않는 GPU enemy shapeType/);
+    }), /지원하지 않는 GPU enemy shapeDefinitionId/);
     assert.throws(() => createGpuEnemySpawnIntent({
         definition: {
             ...BASIC_SQUARE_ENEMY_DATA,
-            shapeType: null
+            shapeDefinitionId: null
         },
         route: FIXTURE_ROUTE,
         spawnSequence: 100
-    }), /enemy shapeType/);
+    }), /enemy shapeDefinitionId/);
     assert.throws(() => createGpuEnemySpawnIntent({
         definition: BASIC_SQUARE_ENEMY_DATA,
         route: {

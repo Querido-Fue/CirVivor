@@ -14,6 +14,11 @@ import {
     PROJECTILE_TARGET_POLICY_ID
 } from '../../contract/projectile_target_policy_contract.js';
 import {
+    createEnemyCapabilityMask,
+    ENEMY_CAPABILITY_ID,
+    hasEnemyCapability
+} from '../../contract/enemy_capability_contract.js';
+import {
     GPU_PROJECTILE_SPAWN_MODE,
     GpuProjectileSpawnAdapter
 } from '../projectile/gpu_projectile_spawn_adapter.js';
@@ -219,6 +224,19 @@ function compileAttackDefinitions(
             || enemyDefinition.attackDefinitionId !== attack.id) {
             throw new RangeError(
                 `attack source enemy catalog 연결이 올바르지 않습니다: ${attack.id}`
+            );
+        }
+        const capabilityMask = createEnemyCapabilityMask(
+            enemyDefinition.capabilityIds,
+            `enemyDefinitions.${attack.sourceEnemyDefinitionId}.capabilityIds`
+        );
+        if (!hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.TARGETING,
+            `enemyDefinitions.${attack.sourceEnemyDefinitionId}.capabilityMask`
+        )) {
+            throw new RangeError(
+                `attack source enemy에는 TARGETING capability가 필요합니다: ${attack.id}`
             );
         }
         const projectileDefinition = projectileDefinitions[
@@ -951,6 +969,26 @@ export class HostileAttackDirector {
             return false;
         }
         if (view.kindId !== 'enemy') {
+            this.telemetry.nonAttackSpawnsIgnored++;
+            return false;
+        }
+        let runtimeTargetingEnabled = false;
+        try {
+            runtimeTargetingEnabled = view.metadata?.capabilityMask !== undefined
+                && hasEnemyCapability(
+                    view.metadata.capabilityMask,
+                    ENEMY_CAPABILITY_ID.TARGETING,
+                    'spawned.metadata.capabilityMask'
+                );
+        } catch (error) {
+            this.#fail(
+                'lifecycle-spawn',
+                'spawn-capability-mask-contract',
+                String(error?.message ?? error)
+            );
+            return false;
+        }
+        if (!runtimeTargetingEnabled) {
             this.telemetry.nonAttackSpawnsIgnored++;
             return false;
         }

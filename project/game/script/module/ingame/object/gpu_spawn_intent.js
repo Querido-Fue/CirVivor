@@ -9,6 +9,9 @@ import {
     normalizeGameplayDamagePolicyId,
     resolveGameplayAllegianceTeam
 } from '../contract/gameplay_team_contract.js';
+import {
+    normalizeEnemyCapabilityMask
+} from '../contract/enemy_capability_contract.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 
@@ -43,6 +46,70 @@ function requireNonEmptyString(value, label) {
         throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
     }
     return value;
+}
+
+function requireNonNegativeFinite(value, label) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0) {
+        throw new RangeError(`${label}은 0 이상의 유한 숫자여야 합니다.`);
+    }
+    return number;
+}
+
+function copyOptionalEnemyProfileMetadata(intent) {
+    const fields = [
+        'physicsProfileId',
+        'combatProfileId',
+        'behaviorProfileId'
+    ];
+    const hasAny = fields.some((field) => intent[field] !== undefined);
+    if (!hasAny) {
+        return {};
+    }
+    const metadata = {};
+    for (const field of fields) {
+        metadata[field] = requireNonEmptyString(
+            intent[field],
+            `spawnIntent.${field}`
+        );
+    }
+    return metadata;
+}
+
+function copyOptionalEnemyCapabilityMetadata(intent) {
+    if (intent.capabilityMask === undefined || intent.capabilityMask === null) {
+        return {};
+    }
+    return {
+        capabilityMask: normalizeEnemyCapabilityMask(
+            intent.capabilityMask,
+            'spawnIntent.capabilityMask'
+        )
+    };
+}
+
+function copyOptionalResolvedEnemyStatMetadata(intent) {
+    const fields = [
+        'coreImpactDamage',
+        'towerContactDamage',
+        'bountyBudget',
+        'weight'
+    ];
+    const hasAny = fields.some((field) => intent[field] !== undefined);
+    if (!hasAny) {
+        return {};
+    }
+    const metadata = {};
+    for (const field of fields) {
+        metadata[field] = requireNonNegativeFinite(
+            intent[field],
+            `spawnIntent.${field}`
+        );
+    }
+    if (!(metadata.weight > 0)) {
+        throw new RangeError('spawnIntent.weight은 양의 유한 숫자여야 합니다.');
+    }
+    return metadata;
 }
 
 function materializeGpuPlainDataValue(source, label, ancestors, opaqueKeys = null) {
@@ -211,6 +278,13 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
         requireNonEmptyString(snapshot.pathId, 'spawnIntent.pathId');
         requireNonNegativeSafeInteger(snapshot.waypointIndex, 'spawnIntent.waypointIndex');
         requirePositiveFinite(snapshot.flowSpeed, 'spawnIntent.flowSpeed');
+        if (snapshot.capabilityMask !== undefined
+            && snapshot.capabilityMask !== null) {
+            normalizeEnemyCapabilityMask(
+                snapshot.capabilityMask,
+                'spawnIntent.capabilityMask'
+            );
+        }
     }
     const {
         layerMask: _legacyLayerMask,
@@ -255,7 +329,12 @@ export function createGpuRegistryMetadata(intent) {
             initialWaypointIndex: intent.waypointIndex,
             spawnSequence: intent.spawnSequence,
             waveId: intent.waveId,
-            policyId: intent.policyId
+            policyId: intent.policyId,
+            // Stable capability mask, profile ID와 final resolved primitive만 보존합니다.
+            // capability ID 배열이나 content object는 registry에 직렬화하지 않습니다.
+            ...copyOptionalEnemyCapabilityMetadata(intent),
+            ...copyOptionalEnemyProfileMetadata(intent),
+            ...copyOptionalResolvedEnemyStatMetadata(intent)
         };
     }
     return {

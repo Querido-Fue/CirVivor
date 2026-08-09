@@ -1,24 +1,29 @@
 import {
-    LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES
-} from './enemy_shape_geometry_data.js';
+    ENEMY_CAPABILITY_ID
+} from 'ingame/contract/enemy_capability_contract.js';
+import {
+    normalizeEnemyDefinition
+} from 'ingame/contract/enemy_profile_contract.js';
+import {
+    CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
+    ENEMY_PROFILE_CATALOG,
+    MAIN_GPU_ENEMY_COLOR_RGBA,
+    MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
+    MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
+    MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
+    MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID
+} from './enemy_profile_catalog_data.js';
 
-/**
- * 신규 플레이의 GPU 적이 공유하는 원형 collider 반경입니다.
- * legacy 1타일 square 외접 원 반경의 0.65배를 단일 권위로 유지합니다.
- */
-export const MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES = (
-    LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES / 2
-) * 1.3;
+export {
+    MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
+    MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
+    MAIN_GPU_ENEMY_COLOR_RGBA
+} from './enemy_profile_catalog_data.js';
 
-/** 적-적 physical solve에서 각 적의 기본 body radius 중 사용하는 비율입니다. */
-export const MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE = 0.8;
-
-/** main GPU enemy archetype이 공유하는 불변 hostile color입니다. */
-export const MAIN_GPU_ENEMY_COLOR_RGBA = Object.freeze([
-    1,
-    0.4235294117647059,
-    0.4235294117647059,
-    1
+/** 모든 main GPU enemy가 실제로 사용하는 공통 runtime capability입니다. */
+export const MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS = Object.freeze([
+    ENEMY_CAPABILITY_ID.NAVIGATION,
+    ENEMY_CAPABILITY_ID.CONTACT_COMBAT
 ]);
 
 /**
@@ -27,19 +32,37 @@ export const MAIN_GPU_ENEMY_COLOR_RGBA = Object.freeze([
  */
 export function createMainGpuEnemyDefinition(
     id,
-    shapeType,
-    contentFields = {}
+    shapeDefinitionId,
+    options = {}
 ) {
-    return Object.freeze({
-        ...contentFields,
-        id,
-        shapeType,
-        // legacy 기본 steering의 40 px/s와 16 px navigation cell을 타일 grid로 환산합니다.
-        moveSpeedTilesPerSecond: 2.5,
-        collisionRadiusTiles: MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
-        collisionWeight: 1,
-        maxHealth: 1,
+    const allowedOptionKeys = new Set([
+        'behaviorProfileId',
+        'capabilityIds',
+        'render'
+    ]);
+    if (!options
+        || typeof options !== 'object'
+        || Array.isArray(options)) {
+        throw new TypeError('main GPU enemy definition options는 plain object여야 합니다.');
+    }
+    for (const key of Object.keys(options)) {
+        if (!allowedOptionKeys.has(key)) {
+            throw new RangeError(`main GPU enemy definition option은 지원하지 않습니다: ${key}`);
+        }
+    }
+    const render = options.render ?? {
         colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,
         radiusScale: 1
-    });
+    };
+    return normalizeEnemyDefinition({
+        id,
+        shapeDefinitionId,
+        physicsProfileId: MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID,
+        combatProfileId: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
+        behaviorProfileId: options.behaviorProfileId
+            ?? CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
+        capabilityIds: options.capabilityIds
+            ?? MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
+        render
+    }, ENEMY_PROFILE_CATALOG);
 }

@@ -196,6 +196,8 @@ test('GPU benchmark 적은 production 정의를 바꾸지 않고 물리·렌더 
     assert.equal(intent.definitionId, BASIC_CIRCLE_ENEMY_DATA.id);
     assert.equal(intent.enemyDefinitionId, BASIC_CIRCLE_ENEMY_DATA.id);
     assert.equal(intent.radius, productionRadius * 0.5);
+    assert.equal(intent.physicsProfileId, BASIC_CIRCLE_ENEMY_DATA.physicsProfileId);
+    assert.equal(intent.weight, BASIC_CIRCLE_ENEMY_DATA.collisionWeight);
     assert.equal(intent.renderStyle.radiusScale, productionRadiusScale);
     assert.equal(
         intent.radius * intent.renderStyle.radiusScale,

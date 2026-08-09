@@ -1735,3 +1735,77 @@ test('backend control domain reject는 spawn 정상 거부와 달리 protocol fa
     assert.equal(owner.getPendingCount(), 0);
     assert.equal(owner.getStatus().recoveryRequired, true);
 });
+
+test('cancelAll은 pending fixed command와 destination reservation을 idempotent하게 회수하고 owner binding을 유지한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 3 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    assert.equal(owner.requestBodyControl({
+        handle: source,
+        moveIntentX: 1,
+        moveIntentY: 0
+    }, 40, 'control:terminal-cancel').accepted, true);
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        40,
+        'spawn:terminal-cancel'
+    ).accepted, true);
+    assert.equal(owner.getPendingCount(), 2);
+    assert.equal(registry.getReservedCount(), 0);
+
+    assert.deepEqual({ ...owner.cancelAll() }, {
+        cancelledCommandCount: 2,
+        releasedDestinationCount: 0,
+        failedDestinationCount: 0
+    });
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(owner.getStatus().pendingControlCount, 0);
+    assert.equal(owner.getStatus().pendingSourceRelativeSpawnCount, 0);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.deepEqual({ ...owner.cancelAll() }, {
+        cancelledCommandCount: 0,
+        releasedDestinationCount: 0,
+        failedDestinationCount: 0
+    });
+
+    const emptyFinal = owner.commitAtFixedBoundary(40);
+    assert.equal(emptyFinal.state, 'committed');
+    assert.deepEqual(Array.from(emptyFinal.controls), []);
+    assert.deepEqual(Array.from(emptyFinal.sourceRelativeSpawns), []);
+    assert.deepEqual(Array.from(emptyFinal.rejected), []);
+    assert.equal(backend.stagedPlans.length, 0);
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        41,
+        'spawn:terminal-reservation'
+    ).accepted, true);
+    const staged = owner.commitAtFixedBoundary(41);
+    assert.equal(staged.sourceRelativeSpawns.length, 1);
+    assert.equal(owner.getStatus().pendingDestinationCount, 1);
+    assert.equal(registry.getReservedCount(), 1);
+    assert.deepEqual({ ...owner.cancelAll() }, {
+        cancelledCommandCount: 0,
+        releasedDestinationCount: 1,
+        failedDestinationCount: 0
+    });
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(owner.getStatus().pendingDestinationCount, 0);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.deepEqual({ ...owner.cancelAll() }, {
+        cancelledCommandCount: 0,
+        releasedDestinationCount: 0,
+        failedDestinationCount: 0
+    });
+
+    // cancel은 owner/runtime protocol binding을 파괴하지 않습니다.
+    assert.equal(owner.requestBodyControl({
+        handle: source,
+        moveIntentX: 0,
+        moveIntentY: 1
+    }, 42, 'control:after-terminal-cancel').accepted, true);
+    assert.equal(owner.commitAtFixedBoundary(42).controls.length, 1);
+    assert.equal(backend.stagedPlans.length, 2);
+});

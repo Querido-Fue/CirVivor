@@ -15,6 +15,7 @@ const {
     GPU_CIRCLE_BODY_FLOW,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_IDENTITY,
+    GPU_CIRCLE_BODY_INTERACTION_LAYER,
     GPU_CIRCLE_BODY_LAYER,
     GPU_CIRCLE_BODY_LIFETIME,
     GPU_CIRCLE_BODY_META,
@@ -28,6 +29,7 @@ const {
     encodeGpuCircleBodyFixedPoint,
     normalizeGpuCircleBodyContactHandler,
     normalizeGpuCircleBodyLifetime,
+    normalizeGpuCircleBodyMaximumDamageWindowDurationTicks,
     normalizeGpuCircleBodyRenderShapeCode,
     normalizeGpuCircleBodyMetadata,
     packGpuCircleAppliedEventMeta,
@@ -36,26 +38,31 @@ const {
     packGpuCirclePhysicsMeta,
     packGpuCircleSimulationMeta,
     readGpuCircleBody,
+    readGpuCircleBodyCombatState,
     readGpuCircleBodyCounts,
     readGpuCircleContactHandler,
     readGpuCircleGridBody,
+    resolveGpuCircleBodyMaximumDamageWindow,
     unpackGpuCircleAppliedEventMeta,
     unpackGpuCircleGameplayMeta,
     unpackGpuCircleInteractionMeta,
     unpackGpuCirclePhysicsMeta,
     unpackGpuCircleSimulationMeta,
     writeGpuCircleBodyCounts,
+    writeGpuCircleBodyCombatState,
     writeGpuCircleBodySpawn,
     writeGpuCircleContactHandler,
     writeGpuCircleGridBody
 } = abi;
 const {
     GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY, 1);
 assert.equal(GPU_CIRCLE_BODY_COLLISION_LAYER, GPU_CIRCLE_BODY_LAYER);
+assert.equal(GPU_CIRCLE_BODY_INTERACTION_LAYER, GPU_CIRCLE_BODY_LAYER);
 assert.equal(GPU_CIRCLE_BODY_LAYER.PROJECTILE, 2);
 assert.equal(GPU_CIRCLE_BODY_LAYER.EXPLOSION, 4);
 assert.equal(GPU_CIRCLE_BODY_LAYER.EFFECT, 8);
@@ -109,7 +116,7 @@ function assertThrowsNamed(callback, expectedName) {
 }
 
 // std430/WGSL과 공유할 stride 및 모든 field offset을 고정합니다.
-assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 3);
+assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 5);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.BODY_COUNT, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.ADDITION_COUNT, 4);
@@ -162,6 +169,16 @@ assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FLAGS, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.CHAINING, 20);
 assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_REPORT_ID, 24);
 assert.equal(GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.SLOW_TIMER, 28);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE, 40);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.TARGET_INTERACTION_LAYER_MASK, 0);
+assert.equal(
+    GPU_CIRCLE_BODY_ABI.COMBAT_STATE.MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS,
+    4
+);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_FINAL_DAMAGE_FIXED_POINT, 8);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.EXPIRES_AT_FIXED_TICK, 12);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_ENTITY_ID, 16);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION, 20);
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.STRIDE, 32);
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_RED, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_GREEN, 4);
@@ -189,7 +206,7 @@ assert.equal(
     GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
 );
 
-// V3 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
+// V5 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
 const physicsMeta = packGpuCirclePhysicsMeta(0xa5, 0x81);
 const interactionMeta = packGpuCircleInteractionMeta(0x42, 0xa5);
 const gameplayMeta = packGpuCircleGameplayMeta(
@@ -204,7 +221,9 @@ assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT, 0);
 assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK, 0xff);
 assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT, 8);
 assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_MASK, 0xff);
-assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK, 0xffff0000);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_RESOLUTION_POLICY_SHIFT, 16);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_RESOLUTION_POLICY_MASK, 0xff);
+assert.equal(GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK, 0xff000000);
 assert.equal(simulationMeta, 0x05);
 assert.equal(GPU_CIRCLE_BODY_META.ALIVE_BIT, 0x01);
 assert.equal(GPU_CIRCLE_BODY_META.USE_FLOW_BIT, 0x02);
@@ -245,7 +264,8 @@ assert.deepEqual({ ...unpackGpuCircleInteractionMeta(towerInteractionMeta) }, {
 });
 assert.deepEqual({ ...unpackGpuCircleGameplayMeta(gameplayMeta) }, {
     teamId: GAMEPLAY_TEAM_ID.HOSTILE,
-    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+    damageResolutionPolicyId: GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.DIRECT
 });
 const unpackedSimulation = unpackGpuCircleSimulationMeta(simulationMeta);
 assert.equal(unpackedSimulation.flags, 0x05);
@@ -262,10 +282,15 @@ assert.equal(
     storage.contactHandlerBuffer.byteLength,
     GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * storage.capacity
 );
+assert.equal(
+    storage.combatStateBuffer.byteLength,
+    GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * storage.capacity
+);
 new Uint8Array(storage.physicsBuffer).fill(0xff);
 new Uint8Array(storage.simulationBuffer).fill(0xff);
 new Uint8Array(storage.temporaryBuffer).fill(0xff);
 new Uint8Array(storage.contactHandlerBuffer).fill(0xff);
+new Uint8Array(storage.combatStateBuffer).fill(0xff);
 writeGpuCircleBodyCounts(storage, {
     bodyCount: 1,
     additionCount: 2,
@@ -330,6 +355,15 @@ assert.equal(packedBody.contactHandler.flags, 0);
 assert.equal(packedBody.contactHandler.chaining, 0);
 assert.equal(packedBody.contactHandler.damageReportId, -1);
 assert.equal(packedBody.contactHandler.slowTimer, 0);
+assert.equal(packedBody.contactHandler.targetInteractionLayerMask, 0x42);
+assert.deepEqual({ ...packedBody.combatState }, {
+    targetInteractionLayerMask: 0x42,
+    maximumDamageWindowDurationTicks: 0,
+    peakFinalDamageFixedPoint: 0,
+    expiresAtFixedTick: 0,
+    peakSourceEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+});
 const physicsView = new DataView(storage.physicsBuffer);
 const simulationView = new DataView(storage.simulationBuffer);
 const temporaryView = new DataView(storage.temporaryBuffer);
@@ -399,6 +433,44 @@ assert.equal(
     GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
 );
 
+// side-plane은 handler/effect record와 분리되어 peak/provenance를 보관하고 재spawn에서 clear됩니다.
+writeGpuCircleBodyCombatState(storage, 1, {
+    targetInteractionLayerMask: 0x42,
+    maximumDamageWindowDurationTicks: 60,
+    peakFinalDamageFixedPoint: 600,
+    expiresAtFixedTick: 67,
+    peakSourceEntityId: 9,
+    peakSourceIncarnation: 3
+});
+assert.deepEqual({ ...readGpuCircleBodyCombatState(storage, 1) }, {
+    targetInteractionLayerMask: 0x42,
+    maximumDamageWindowDurationTicks: 60,
+    peakFinalDamageFixedPoint: 600,
+    expiresAtFixedTick: 67,
+    peakSourceEntityId: 9,
+    peakSourceIncarnation: 3
+});
+writeGpuCircleBodySpawn(storage, 1, {
+    position: { x: 12.25, y: -3.5 },
+    radius: 1.125,
+    inverseMass: 0.5,
+    bodyLayer: 1,
+    collisionMask: 0x81,
+    interactionLayer: 2,
+    interactionMask: 0x42,
+    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+    alive: true
+});
+assert.deepEqual({ ...readGpuCircleBodyCombatState(storage, 1) }, {
+    targetInteractionLayerMask: 0x42,
+    maximumDamageWindowDurationTicks: 0,
+    peakFinalDamageFixedPoint: 0,
+    expiresAtFixedTick: 0,
+    peakSourceEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+});
+
 // route field index와 speed는 source-compatible simulation stride 안에서 round trip합니다.
 writeGpuCircleBodySpawn(storage, 0, {
     position: { x: 1, y: 2 },
@@ -425,6 +497,36 @@ assert.equal(flowBody.previousFlowFieldIndex, 7);
 assert.equal(
     unpackGpuCircleSimulationMeta(flowBody.simulationMeta).flags,
     GPU_CIRCLE_BODY_META.ALIVE_FLAG | GPU_CIRCLE_BODY_META.USE_FLOW_FLAG
+);
+
+writeGpuCircleBodySpawn(storage, 0, {
+    position: { x: 1, y: 2 },
+    radius: 0.25,
+    inverseMass: 0.1,
+    bodyLayer: GPU_CIRCLE_BODY_LAYER.KINEMATIC_OBSTACLE,
+    collisionMask: GPU_CIRCLE_BODY_LAYER.ENEMY,
+    interactionLayer: GPU_CIRCLE_BODY_LAYER.PLAYER_DAMAGEABLE,
+    interactionMask: GPU_CIRCLE_BODY_LAYER.PROJECTILE | GPU_CIRCLE_BODY_LAYER.ENEMY,
+    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+    damageResolutionPolicyId:
+        GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.MAXIMUM_DAMAGE_WINDOW,
+    maximumDamageWindowDurationTicks: 60,
+    entityId: 31,
+    incarnation: 2
+});
+const maximumDamageWindowBody = readGpuCircleBody(storage, 0);
+assert.equal(
+    maximumDamageWindowBody.damageResolutionPolicyId,
+    GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.MAXIMUM_DAMAGE_WINDOW
+);
+assert.equal(
+    maximumDamageWindowBody.combatState.maximumDamageWindowDurationTicks,
+    60
+);
+assert.equal(
+    maximumDamageWindowBody.combatState.targetInteractionLayerMask,
+    GPU_CIRCLE_BODY_LAYER.PROJECTILE | GPU_CIRCLE_BODY_LAYER.ENEMY
 );
 assert.equal(
     temporaryView.getUint32(
@@ -595,6 +697,238 @@ assert.equal(
 assert.equal(decodeGpuCircleBodyFixedPoint(125), 1.25);
 assert.equal(normalizeGpuCircleBodyLifetime(-1), GPU_CIRCLE_BODY_LIFETIME.IMMORTAL);
 assertNear(normalizeGpuCircleBodyLifetime(2.5), 2.5, 'finite lifetime');
+assert.equal(normalizeGpuCircleBodyMaximumDamageWindowDurationTicks(60), 60);
+
+// GPU serial scan과 같은 (damage desc, entityId asc, incarnation asc) host oracle입니다.
+const maximumDamageWindowCandidates = (values) => values.map((value, index) => ({
+    finalDamageFixedPoint: encodeGpuCircleBodyFixedPoint(value),
+    sourceEntityId: index + 10,
+    sourceIncarnation: index + 1
+}));
+const firstPermutation = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 7,
+    maximumDamageWindowDurationTicks: 60,
+    candidates: maximumDamageWindowCandidates([0.1, 6])
+});
+const secondPermutation = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 7,
+    maximumDamageWindowDurationTicks: 60,
+    candidates: maximumDamageWindowCandidates([6, 0.1]).map((candidate, index) => ({
+        ...candidate,
+        sourceEntityId: index === 0 ? 11 : 10,
+        sourceIncarnation: index === 0 ? 2 : 1
+    }))
+});
+assert.equal(firstPermutation.appliedDamageFixedPoint, 600);
+assert.equal(firstPermutation.peakFinalDamageFixedPoint, 600);
+assert.equal(firstPermutation.expiresAtFixedTick, 67);
+assert.equal(secondPermutation.appliedDamageFixedPoint, 600);
+assert.equal(secondPermutation.peakFinalDamageFixedPoint, 600);
+assert.equal(secondPermutation.expiresAtFixedTick, 67);
+const threeCandidatePermutation = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 7,
+    maximumDamageWindowDurationTicks: 60,
+    candidates: maximumDamageWindowCandidates([2, 4, 3])
+});
+assert.equal(threeCandidatePermutation.appliedDamageFixedPoint, 400);
+assert.equal(threeCandidatePermutation.peakFinalDamageFixedPoint, 400);
+const tieProvenance = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 9,
+    maximumDamageWindowDurationTicks: 60,
+    candidates: [
+        { finalDamageFixedPoint: 600, sourceEntityId: 2, sourceIncarnation: 1 },
+        { finalDamageFixedPoint: 600, sourceEntityId: 1, sourceIncarnation: 9 }
+    ]
+});
+assert.equal(tieProvenance.peakSourceEntityId, 1);
+assert.equal(tieProvenance.peakSourceIncarnation, 9);
+const suppressedSmaller = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 10,
+    maximumDamageWindowDurationTicks: 60,
+    peakFinalDamageFixedPoint: 600,
+    expiresAtFixedTick: 69,
+    peakSourceEntityId: 1,
+    peakSourceIncarnation: 9,
+    candidates: [{ finalDamageFixedPoint: 10, sourceEntityId: 7, sourceIncarnation: 3 }]
+});
+assert.equal(suppressedSmaller.appliedDamageFixedPoint, 0);
+assert.equal(suppressedSmaller.peakFinalDamageFixedPoint, 600);
+assert.equal(suppressedSmaller.expiresAtFixedTick, 69);
+assert.equal(suppressedSmaller.damageAppliedEvent.valueFixedPoint, 0);
+assert.equal(suppressedSmaller.damageAppliedEvent.sourceEntityId, 7);
+assert.equal(suppressedSmaller.damageAppliedEvent.sourceIncarnation, 3);
+const largerReset = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 10,
+    maximumDamageWindowDurationTicks: 60,
+    peakFinalDamageFixedPoint: 600,
+    expiresAtFixedTick: 69,
+    peakSourceEntityId: 1,
+    peakSourceIncarnation: 9,
+    candidates: [{ finalDamageFixedPoint: 700, sourceEntityId: 7, sourceIncarnation: 3 }]
+});
+assert.equal(largerReset.appliedDamageFixedPoint, 100);
+assert.equal(largerReset.peakFinalDamageFixedPoint, 700);
+assert.equal(largerReset.expiresAtFixedTick, 70);
+assert.equal(largerReset.peakSourceEntityId, 7);
+const clampedWinner = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 11,
+    maximumDamageWindowDurationTicks: 60,
+    currentHealthFixedPoint: 125,
+    candidates: [{ finalDamageFixedPoint: 600, sourceEntityId: 8, sourceIncarnation: 4 }]
+});
+assert.equal(clampedWinner.appliedDamageFixedPoint, 125);
+assert.equal(clampedWinner.remainingHealthFixedPoint, 0);
+assert.equal(clampedWinner.damageAppliedEvent.valueFixedPoint, 125);
+assert.equal(clampedWinner.damageAppliedEvent.sourceEntityId, 8);
+assert.equal(clampedWinner.damageAppliedEvent.sourceIncarnation, 4);
+const expiredWithoutCandidate = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 70,
+    maximumDamageWindowDurationTicks: 60,
+    peakFinalDamageFixedPoint: 700,
+    expiresAtFixedTick: 70,
+    peakSourceEntityId: 7,
+    peakSourceIncarnation: 3
+});
+assert.equal(expiredWithoutCandidate.peakFinalDamageFixedPoint, 0);
+assert.equal(expiredWithoutCandidate.expiresAtFixedTick, 0);
+assert.equal(
+    expiredWithoutCandidate.peakSourceEntityId,
+    GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+);
+
+// 실제 연속 fixed tick 산술: 0.1→6→4→8→만료 뒤 0.1을 state chaining으로 고정합니다.
+const chainedWindowFirst = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 100,
+    maximumDamageWindowDurationTicks: 60,
+    currentHealthFixedPoint: 3000,
+    candidates: [{ finalDamageFixedPoint: 10, sourceEntityId: 1, sourceIncarnation: 1 }]
+});
+assert.deepEqual({
+    applied: chainedWindowFirst.appliedDamageFixedPoint,
+    health: chainedWindowFirst.remainingHealthFixedPoint,
+    peak: chainedWindowFirst.peakFinalDamageFixedPoint,
+    expires: chainedWindowFirst.expiresAtFixedTick,
+    source: [
+        chainedWindowFirst.peakSourceEntityId,
+        chainedWindowFirst.peakSourceIncarnation
+    ],
+    event: chainedWindowFirst.damageAppliedEvent.valueFixedPoint
+}, {
+    applied: 10,
+    health: 2990,
+    peak: 10,
+    expires: 160,
+    source: [1, 1],
+    event: 10
+});
+const chainedWindowSix = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 101,
+    maximumDamageWindowDurationTicks: 60,
+    currentHealthFixedPoint: chainedWindowFirst.remainingHealthFixedPoint,
+    peakFinalDamageFixedPoint: chainedWindowFirst.peakFinalDamageFixedPoint,
+    expiresAtFixedTick: chainedWindowFirst.expiresAtFixedTick,
+    peakSourceEntityId: chainedWindowFirst.peakSourceEntityId,
+    peakSourceIncarnation: chainedWindowFirst.peakSourceIncarnation,
+    candidates: [{ finalDamageFixedPoint: 600, sourceEntityId: 2, sourceIncarnation: 1 }]
+});
+assert.deepEqual({
+    applied: chainedWindowSix.appliedDamageFixedPoint,
+    health: chainedWindowSix.remainingHealthFixedPoint,
+    peak: chainedWindowSix.peakFinalDamageFixedPoint,
+    expires: chainedWindowSix.expiresAtFixedTick,
+    source: [chainedWindowSix.peakSourceEntityId, chainedWindowSix.peakSourceIncarnation],
+    event: chainedWindowSix.damageAppliedEvent.valueFixedPoint
+}, {
+    applied: 590,
+    health: 2400,
+    peak: 600,
+    expires: 161,
+    source: [2, 1],
+    event: 590
+});
+const chainedWindowFour = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 102,
+    maximumDamageWindowDurationTicks: 60,
+    currentHealthFixedPoint: chainedWindowSix.remainingHealthFixedPoint,
+    peakFinalDamageFixedPoint: chainedWindowSix.peakFinalDamageFixedPoint,
+    expiresAtFixedTick: chainedWindowSix.expiresAtFixedTick,
+    peakSourceEntityId: chainedWindowSix.peakSourceEntityId,
+    peakSourceIncarnation: chainedWindowSix.peakSourceIncarnation,
+    candidates: [{ finalDamageFixedPoint: 400, sourceEntityId: 3, sourceIncarnation: 1 }]
+});
+assert.deepEqual({
+    applied: chainedWindowFour.appliedDamageFixedPoint,
+    health: chainedWindowFour.remainingHealthFixedPoint,
+    peak: chainedWindowFour.peakFinalDamageFixedPoint,
+    expires: chainedWindowFour.expiresAtFixedTick,
+    source: [chainedWindowFour.peakSourceEntityId, chainedWindowFour.peakSourceIncarnation],
+    event: chainedWindowFour.damageAppliedEvent.valueFixedPoint,
+    eventSource: [
+        chainedWindowFour.damageAppliedEvent.sourceEntityId,
+        chainedWindowFour.damageAppliedEvent.sourceIncarnation
+    ]
+}, {
+    applied: 0,
+    health: 2400,
+    peak: 600,
+    expires: 161,
+    source: [2, 1],
+    event: 0,
+    eventSource: [3, 1]
+});
+const chainedWindowEight = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 103,
+    maximumDamageWindowDurationTicks: 60,
+    currentHealthFixedPoint: chainedWindowFour.remainingHealthFixedPoint,
+    peakFinalDamageFixedPoint: chainedWindowFour.peakFinalDamageFixedPoint,
+    expiresAtFixedTick: chainedWindowFour.expiresAtFixedTick,
+    peakSourceEntityId: chainedWindowFour.peakSourceEntityId,
+    peakSourceIncarnation: chainedWindowFour.peakSourceIncarnation,
+    candidates: [{ finalDamageFixedPoint: 800, sourceEntityId: 4, sourceIncarnation: 1 }]
+});
+assert.deepEqual({
+    applied: chainedWindowEight.appliedDamageFixedPoint,
+    health: chainedWindowEight.remainingHealthFixedPoint,
+    peak: chainedWindowEight.peakFinalDamageFixedPoint,
+    expires: chainedWindowEight.expiresAtFixedTick,
+    source: [chainedWindowEight.peakSourceEntityId, chainedWindowEight.peakSourceIncarnation],
+    event: chainedWindowEight.damageAppliedEvent.valueFixedPoint
+}, {
+    applied: 200,
+    health: 2200,
+    peak: 800,
+    expires: 163,
+    source: [4, 1],
+    event: 200
+});
+const chainedWindowExpiry = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 163,
+    maximumDamageWindowDurationTicks: 60,
+    currentHealthFixedPoint: chainedWindowEight.remainingHealthFixedPoint,
+    peakFinalDamageFixedPoint: chainedWindowEight.peakFinalDamageFixedPoint,
+    expiresAtFixedTick: chainedWindowEight.expiresAtFixedTick,
+    peakSourceEntityId: chainedWindowEight.peakSourceEntityId,
+    peakSourceIncarnation: chainedWindowEight.peakSourceIncarnation,
+    candidates: [{ finalDamageFixedPoint: 10, sourceEntityId: 5, sourceIncarnation: 1 }]
+});
+assert.deepEqual({
+    applied: chainedWindowExpiry.appliedDamageFixedPoint,
+    health: chainedWindowExpiry.remainingHealthFixedPoint,
+    peak: chainedWindowExpiry.peakFinalDamageFixedPoint,
+    expires: chainedWindowExpiry.expiresAtFixedTick,
+    source: [
+        chainedWindowExpiry.peakSourceEntityId,
+        chainedWindowExpiry.peakSourceIncarnation
+    ],
+    event: chainedWindowExpiry.damageAppliedEvent.valueFixedPoint
+}, {
+    applied: 10,
+    health: 2190,
+    peak: 10,
+    expires: 223,
+    source: [5, 1],
+    event: 10
+});
 
 const counts = readGpuCircleBodyCounts(storage);
 assert.equal(counts.bodyCount, 1);
@@ -728,6 +1062,19 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
 }), 'RangeError');
 assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
     ...spawn,
+    damageResolutionPolicyId: 2
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    damageResolutionPolicyId:
+        GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.MAXIMUM_DAMAGE_WINDOW
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
+    maximumDamageWindowDurationTicks: 60
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
+    ...spawn,
     gameplayMeta: 0x00010000
 }), 'RangeError');
 assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
@@ -740,7 +1087,7 @@ assertThrowsNamed(() => packGpuCircleGameplayMeta(
     GAMEPLAY_TEAM_ID.PLAYER,
     1
 ), 'RangeError');
-assertThrowsNamed(() => unpackGpuCircleGameplayMeta(0x00010000), 'RangeError');
+assertThrowsNamed(() => unpackGpuCircleGameplayMeta(0x01000000), 'RangeError');
 assertThrowsNamed(() => unpackGpuCircleGameplayMeta(3), 'RangeError');
 assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
     damageOther: -0.01
@@ -838,12 +1185,22 @@ assert.deepEqual({ ...unpackGpuCircleAppliedEventMeta(appliedMeta) }, {
     type: GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
     flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
 });
+const maximumDamageWindowAppliedMeta = packGpuCircleAppliedEventMeta(
+    GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
+    GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY
+        | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
+);
+assert.deepEqual({ ...unpackGpuCircleAppliedEventMeta(maximumDamageWindowAppliedMeta) }, {
+    type: GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
+    flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY
+        | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
+});
 assert.equal(
     appliedMeta & GPU_CIRCLE_APPLIED_EVENT_META.TYPE_MASK,
     GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED
 );
 
-// Physics plane의 V3 binary fixture는 정확히 32 bytes이며 +24/+28 word를 보존합니다.
+// Physics plane의 V5 binary fixture는 정확히 32 bytes이며 +24/+28 word를 보존합니다.
 const fixtureStorage = createGpuCircleBodyAbiStorage(1);
 writeGpuCircleBodySpawn(fixtureStorage, 0, {
     position: { x: 1, y: -2 },

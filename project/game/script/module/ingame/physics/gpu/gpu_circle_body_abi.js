@@ -1,6 +1,8 @@
 import {
     GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID,
     normalizeGameplayDamagePolicyId,
+    normalizeGameplayDamageResolutionPolicyId,
     normalizeGameplayTeamId
 } from '../../contract/gameplay_team_contract.js';
 
@@ -81,6 +83,23 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         SLOW_TIMER: 28
     }),
     /**
+     * Contact handler/effect record와 분리된 generic per-body combat state입니다.
+     * pending candidate는 contact buffer scan으로만 유지하므로 reserved word는 항상 0입니다.
+     */
+    COMBAT_STATE: Object.freeze({
+        STRIDE: 40,
+        TARGET_INTERACTION_LAYER_MASK: 0,
+        MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS: 4,
+        PEAK_FINAL_DAMAGE_FIXED_POINT: 8,
+        EXPIRES_AT_FIXED_TICK: 12,
+        PEAK_SOURCE_ENTITY_ID: 16,
+        PEAK_SOURCE_INCARNATION: 20,
+        RESERVED_0: 24,
+        RESERVED_1: 28,
+        RESERVED_2: 32,
+        RESERVED_3: 36
+    }),
+    /**
      * presentation 전용 32-byte storage layout입니다. 물리/시뮬레이션 ABI와
      * 분리되지만 host writer와 render WGSL이 이 offset을 함께 사용합니다.
      */
@@ -116,7 +135,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
 });
 
 /** Host buffer header와 모든 WGSL module이 공유하는 session 단위 ABI version입니다. */
-export const GPU_CIRCLE_BODY_ABI_VERSION = 3;
+export const GPU_CIRCLE_BODY_ABI_VERSION = 5;
 
 /**
  * GPU circle body presentation의 분석형 silhouette 코드입니다.
@@ -168,7 +187,9 @@ export const GPU_CIRCLE_BODY_GAMEPLAY_META = Object.freeze({
     TEAM_MASK: UINT8_MAX,
     DAMAGE_POLICY_SHIFT: 8,
     DAMAGE_POLICY_MASK: UINT8_MAX,
-    RESERVED_MASK: 0xffff0000
+    DAMAGE_RESOLUTION_POLICY_SHIFT: 16,
+    DAMAGE_RESOLUTION_POLICY_MASK: UINT8_MAX,
+    RESERVED_MASK: 0xff000000
 });
 
 /**
@@ -191,6 +212,9 @@ export const GPU_CIRCLE_BODY_LAYER = Object.freeze({
     // Team/kind/physical obstacle과 분리된 player actor damage-candidate capability입니다.
     PLAYER_DAMAGEABLE: 1 << 9
 });
+
+/** Gameplay interaction target-layer vocabulary의 명시적인 public 이름입니다. */
+export const GPU_CIRCLE_BODY_INTERACTION_LAYER = GPU_CIRCLE_BODY_LAYER;
 
 /** 기존 enemy-only import 이름을 유지하는 호환 alias입니다. */
 export const GPU_CIRCLE_BODY_COLLISION_LAYER = GPU_CIRCLE_BODY_LAYER;
@@ -219,7 +243,9 @@ export const GPU_CIRCLE_APPLIED_EVENT_FLAG = Object.freeze({
     TERRAIN_KILL: 1 << 9,
     ENTER_POLICY: 1 << 10,
     CONTINUOUS_POLICY: 1 << 11,
-    TERRAIN_CONTACT: 1 << 12
+    TERRAIN_CONTACT: 1 << 12,
+    /** Maximum Damage Window winner; value 0은 억제된 valid winner의 actual HP delta입니다. */
+    MAXIMUM_DAMAGE_WINDOW: 1 << 13
 });
 
 export const GPU_CIRCLE_BODY_FIXED_POINT = Object.freeze({
@@ -373,6 +399,168 @@ export function decodeGpuCircleBodyFixedPoint(
     return fixedPoint / scaleValue;
 }
 
+function compareMaximumDamageWindowCandidates(left, right) {
+    if (left.finalDamageFixedPoint !== right.finalDamageFixedPoint) {
+        return right.finalDamageFixedPoint - left.finalDamageFixedPoint;
+    }
+    if (left.sourceEntityId !== right.sourceEntityId) {
+        return left.sourceEntityId - right.sourceEntityId;
+    }
+    return left.sourceIncarnation - right.sourceIncarnation;
+}
+
+/**
+ * GPU commit과 동일한 Maximum Damage Window host oracle입니다. 입력 candidates는 이미
+ * raw→source modifier→mitigation→final damage를 통과한 유효 후보만 허용합니다.
+ */
+export function resolveGpuCircleBodyMaximumDamageWindow(options = {}) {
+    const fixedTick = requireUint32(options.fixedTick, 'fixedTick');
+    const duration = normalizeGpuCircleBodyMaximumDamageWindowDurationTicks(
+        options.maximumDamageWindowDurationTicks,
+        'maximumDamageWindowDurationTicks'
+    );
+    if (duration === 0) {
+        throw new RangeError('Maximum Damage Window duration은 1 이상이어야 합니다.');
+    }
+    let peakFinalDamageFixedPoint = requireInt32(
+        options.peakFinalDamageFixedPoint ?? 0,
+        'peakFinalDamageFixedPoint'
+    );
+    if (peakFinalDamageFixedPoint < 0) {
+        throw new RangeError('peakFinalDamageFixedPoint는 0 이상이어야 합니다.');
+    }
+    let expiresAtFixedTick = requireUint32(
+        options.expiresAtFixedTick ?? 0,
+        'expiresAtFixedTick'
+    );
+    let peakSourceEntityId = requireUint32(
+        options.peakSourceEntityId ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'peakSourceEntityId'
+    );
+    let peakSourceIncarnation = requireUint32(
+        options.peakSourceIncarnation ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'peakSourceIncarnation'
+    );
+    if ((peakSourceEntityId === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)
+        !== (peakSourceIncarnation === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)) {
+        throw new RangeError('peak source identity는 모두 valid 또는 모두 invalid여야 합니다.');
+    }
+    const candidates = options.candidates ?? [];
+    if (!Array.isArray(candidates)) {
+        throw new TypeError('Maximum Damage Window candidates는 배열이어야 합니다.');
+    }
+    const validCandidates = candidates.map((candidate, index) => {
+        if (!candidate || typeof candidate !== 'object') {
+            throw new TypeError(`candidates[${index}]는 객체여야 합니다.`);
+        }
+        const finalDamageFixedPoint = requireInt32(
+            candidate.finalDamageFixedPoint,
+            `candidates[${index}].finalDamageFixedPoint`
+        );
+        if (finalDamageFixedPoint <= 0) {
+            throw new RangeError(
+                `candidates[${index}].finalDamageFixedPoint는 양의 int32여야 합니다.`
+            );
+        }
+        const sourceEntityId = requireUint32(
+            candidate.sourceEntityId,
+            `candidates[${index}].sourceEntityId`
+        );
+        const sourceIncarnation = requireUint32(
+            candidate.sourceIncarnation,
+            `candidates[${index}].sourceIncarnation`
+        );
+        if (sourceEntityId === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+            || sourceIncarnation === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT) {
+            throw new RangeError(`candidates[${index}] source identity는 valid여야 합니다.`);
+        }
+        return { finalDamageFixedPoint, sourceEntityId, sourceIncarnation };
+    });
+    let currentHealthFixedPoint = requireInt32(
+        options.currentHealthFixedPoint ?? INT32_MAX,
+        'currentHealthFixedPoint'
+    );
+    if (currentHealthFixedPoint < 0) {
+        throw new RangeError('currentHealthFixedPoint는 0 이상이어야 합니다.');
+    }
+
+    // T >= expires이면 candidate 유무와 무관하게 stale peak/provenance를 clear합니다.
+    if (fixedTick >= expiresAtFixedTick) {
+        peakFinalDamageFixedPoint = 0;
+        expiresAtFixedTick = 0;
+        peakSourceEntityId = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+        peakSourceIncarnation = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+    }
+    if (validCandidates.length === 0) {
+        return Object.freeze({
+            appliedDamageFixedPoint: 0,
+            remainingHealthFixedPoint: currentHealthFixedPoint,
+            peakFinalDamageFixedPoint,
+            expiresAtFixedTick,
+            peakSourceEntityId,
+            peakSourceIncarnation,
+            candidate: null,
+            damageAppliedEvent: null
+        });
+    }
+    validCandidates.sort(compareMaximumDamageWindowCandidates);
+    const candidate = validCandidates[0];
+    if (fixedTick > UINT32_MAX - duration) {
+        throw new RangeError('Maximum Damage Window expiry가 uint32 tick 범위를 초과합니다.');
+    }
+    const active = expiresAtFixedTick !== 0 && fixedTick < expiresAtFixedTick;
+    if (currentHealthFixedPoint === 0) {
+        return Object.freeze({
+            appliedDamageFixedPoint: 0,
+            remainingHealthFixedPoint: 0,
+            peakFinalDamageFixedPoint,
+            expiresAtFixedTick,
+            peakSourceEntityId,
+            peakSourceIncarnation,
+            candidate: Object.freeze({ ...candidate }),
+            damageAppliedEvent: null
+        });
+    }
+    if (active && candidate.finalDamageFixedPoint <= peakFinalDamageFixedPoint) {
+        return Object.freeze({
+            appliedDamageFixedPoint: 0,
+            remainingHealthFixedPoint: currentHealthFixedPoint,
+            peakFinalDamageFixedPoint,
+            expiresAtFixedTick,
+            peakSourceEntityId,
+            peakSourceIncarnation,
+            candidate: Object.freeze({ ...candidate }),
+            damageAppliedEvent: Object.freeze({
+                valueFixedPoint: 0,
+                sourceEntityId: candidate.sourceEntityId,
+                sourceIncarnation: candidate.sourceIncarnation
+            })
+        });
+    }
+    const requestedDamageFixedPoint = active
+        ? candidate.finalDamageFixedPoint - peakFinalDamageFixedPoint
+        : candidate.finalDamageFixedPoint;
+    const appliedDamageFixedPoint = Math.min(
+        requestedDamageFixedPoint,
+        currentHealthFixedPoint
+    );
+    currentHealthFixedPoint -= appliedDamageFixedPoint;
+    return Object.freeze({
+        appliedDamageFixedPoint,
+        remainingHealthFixedPoint: currentHealthFixedPoint,
+        peakFinalDamageFixedPoint: candidate.finalDamageFixedPoint,
+        expiresAtFixedTick: fixedTick + duration,
+        peakSourceEntityId: candidate.sourceEntityId,
+        peakSourceIncarnation: candidate.sourceIncarnation,
+        candidate: Object.freeze({ ...candidate }),
+        damageAppliedEvent: Object.freeze({
+            valueFixedPoint: appliedDamageFixedPoint,
+            sourceEntityId: candidate.sourceEntityId,
+            sourceIncarnation: candidate.sourceIncarnation
+        })
+    });
+}
+
 /**
  * uint8 값을 검증합니다.
  * @param {*} value - 검사할 값입니다.
@@ -488,15 +676,22 @@ export function unpackGpuCircleInteractionMeta(meta) {
 /** gameplay team과 damage policy를 BodySimulation +8 uint32 word로 pack합니다. */
 export function packGpuCircleGameplayMeta(
     teamId,
-    damagePolicyId = GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+    damagePolicyId = GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+    damageResolutionPolicyId = GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.DIRECT
 ) {
     const team = normalizeGameplayTeamId(teamId, 'teamId');
     const damagePolicy = normalizeGameplayDamagePolicyId(
         damagePolicyId,
         'damagePolicyId'
     );
+    const damageResolutionPolicy = normalizeGameplayDamageResolutionPolicyId(
+        damageResolutionPolicyId,
+        'damageResolutionPolicyId'
+    );
     return ((team << GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT)
-        | (damagePolicy << GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT)) >>> 0;
+        | (damagePolicy << GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT)
+        | (damageResolutionPolicy
+            << GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_RESOLUTION_POLICY_SHIFT)) >>> 0;
 }
 
 /** BodySimulation +8 gameplay word를 검증하고 unpack합니다. */
@@ -515,7 +710,12 @@ export function unpackGpuCircleGameplayMeta(meta) {
             & GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_MASK,
         'gameplayMeta.damagePolicyId'
     );
-    return { teamId, damagePolicyId };
+    const damageResolutionPolicyId = normalizeGameplayDamageResolutionPolicyId(
+        (packed >>> GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_RESOLUTION_POLICY_SHIFT)
+            & GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_RESOLUTION_POLICY_MASK,
+        'gameplayMeta.damageResolutionPolicyId'
+    );
+    return { teamId, damagePolicyId, damageResolutionPolicyId };
 }
 
 /**
@@ -552,7 +752,7 @@ export function unpackGpuCircleSimulationMeta(meta) {
 }
 
 /**
- * lifecycle/low-level public ingress에서만 legacy metadata alias를 V3로 승격합니다.
+ * lifecycle/low-level public ingress에서만 legacy metadata alias를 V4로 승격합니다.
  * 반환값에는 legacy 이름이 절대 포함되지 않습니다.
  */
 export function normalizeGpuCircleBodyMetadata(source, options = {}) {
@@ -649,7 +849,7 @@ export function unpackGpuCircleAppliedEventMeta(meta) {
  * collision-only ABI storage를 생성합니다.
  * @param {*} capacity - 최대 body 수입니다.
  * 반환 buffer들은 GPU 업로드 전 CPU 권위 mirror입니다.
- * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer}}
+ * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer,combatStateBuffer:ArrayBuffer}}
  * 생성된 CPU mirror storage입니다.
  */
 export function createGpuCircleBodyAbiStorage(capacity) {
@@ -666,6 +866,9 @@ export function createGpuCircleBodyAbiStorage(capacity) {
         ),
         contactHandlerBuffer: new ArrayBuffer(
             GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * safeCapacity
+        ),
+        combatStateBuffer: new ArrayBuffer(
+            GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * safeCapacity
         )
     };
     new DataView(storage.countsBuffer).setUint32(
@@ -698,7 +901,10 @@ function requireStorage(storage) {
             !== GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * capacity
         || !(storage.contactHandlerBuffer instanceof ArrayBuffer)
         || storage.contactHandlerBuffer.byteLength
-            !== GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * capacity) {
+            !== GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * capacity
+        || !(storage.combatStateBuffer instanceof ArrayBuffer)
+        || storage.combatStateBuffer.byteLength
+            !== GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * capacity) {
         throw new TypeError('GPU circle body storage의 buffer 크기 또는 타입이 ABI와 다릅니다.');
     }
     return capacity;
@@ -876,7 +1082,7 @@ function assertOptionalFlagMatches(spawn, fieldNames, flags, flag, label) {
 }
 
 /**
- * spawn metadata를 V3 physical/interaction/gameplay/simulation word로 검증합니다.
+ * spawn metadata를 V5 physical/interaction/gameplay/simulation word로 검증합니다.
  * @param {*} spawn - spawn 입력입니다.
  * @returns {{physicsMeta:number,interactionMeta:number,simulationMeta:number,metadata:object}} packed meta입니다.
  */
@@ -895,15 +1101,24 @@ function resolveSpawnMeta(spawn, useFlow, contactHandler) {
         )
         : requireUint32(spawn.interactionMeta, 'interactionMeta');
     if (Object.prototype.hasOwnProperty.call(spawn, 'timer')) {
-        throw new TypeError('Body ABI v3에서는 timer 대신 gameplayMeta/teamId를 사용합니다.');
+        throw new TypeError('Body ABI v4에서는 timer 대신 gameplayMeta/teamId를 사용합니다.');
     }
     const teamId = normalizeGameplayTeamId(spawn.teamId, 'teamId');
     const damagePolicyId = normalizeGameplayDamagePolicyId(
         spawn.damagePolicyId ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         'damagePolicyId'
     );
+    const damageResolutionPolicyId = normalizeGameplayDamageResolutionPolicyId(
+        spawn.damageResolutionPolicyId
+            ?? GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.DIRECT,
+        'damageResolutionPolicyId'
+    );
     const gameplayMeta = spawn.gameplayMeta === undefined
-        ? packGpuCircleGameplayMeta(teamId, damagePolicyId)
+        ? packGpuCircleGameplayMeta(
+            teamId,
+            damagePolicyId,
+            damageResolutionPolicyId
+        )
         : requireUint32(spawn.gameplayMeta, 'gameplayMeta');
     const simulationMeta = spawn.simulationMeta === undefined
         ? packGpuCircleSimulationMeta(resolveSpawnSimulationFlags(
@@ -926,9 +1141,10 @@ function resolveSpawnMeta(spawn, useFlow, contactHandler) {
     }
     const unpackedGameplay = unpackGpuCircleGameplayMeta(gameplayMeta);
     if (unpackedGameplay.teamId !== teamId
-        || unpackedGameplay.damagePolicyId !== damagePolicyId) {
+        || unpackedGameplay.damagePolicyId !== damagePolicyId
+        || unpackedGameplay.damageResolutionPolicyId !== damageResolutionPolicyId) {
         throw new RangeError(
-            'gameplayMeta와 canonical team/damage policy metadata가 일치해야 합니다.'
+            'gameplayMeta와 canonical team/damage resolution policy metadata가 일치해야 합니다.'
         );
     }
     const simulationFlags = unpackGpuCircleSimulationMeta(simulationMeta).flags;
@@ -986,7 +1202,8 @@ function resolveSpawnMeta(spawn, useFlow, contactHandler) {
         interactionMeta,
         gameplayMeta,
         simulationMeta,
-        metadata
+        metadata,
+        damageResolutionPolicyId
     };
 }
 
@@ -1175,6 +1392,8 @@ export function readGpuCircleContactHandler(storage, index) {
     const slot = requireSlotIndex(index, capacity);
     const offset = slot * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE;
     const view = new DataView(storage.contactHandlerBuffer);
+    const combatOffset = slot * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE;
+    const combatView = new DataView(storage.combatStateBuffer);
     return {
         damageSelf: view.getFloat32(
             offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.DAMAGE_SELF,
@@ -1206,6 +1425,184 @@ export function readGpuCircleContactHandler(storage, index) {
         ),
         slowTimer: view.getFloat32(
             offset + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.SLOW_TIMER,
+            LITTLE_ENDIAN
+        ),
+        targetInteractionLayerMask: combatView.getUint32(
+            combatOffset
+                + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.TARGET_INTERACTION_LAYER_MASK,
+            LITTLE_ENDIAN
+        )
+    };
+}
+
+/** Maximum Damage Window duration의 fixed tick uint32 계약을 검증합니다. */
+export function normalizeGpuCircleBodyMaximumDamageWindowDurationTicks(
+    value = 0,
+    fieldName = 'maximumDamageWindowDurationTicks'
+) {
+    return requireUint32(value, fieldName);
+}
+
+function resolveSpawnCombatState(
+    spawn,
+    contactHandler,
+    metadata,
+    damageResolutionPolicyId
+) {
+    const targetInteractionLayerMask = requireUint16(
+        readContactHandlerValue(
+            contactHandler,
+            'targetInteractionLayerMask',
+            'target_interaction_layer_mask',
+            metadata.interactionMask
+        ),
+        'contactHandler.targetInteractionLayerMask'
+    );
+    if ((targetInteractionLayerMask & ~metadata.interactionMask) !== 0) {
+        throw new RangeError(
+            'contactHandler.targetInteractionLayerMask는 interactionMask의 부분집합이어야 합니다.'
+        );
+    }
+    const maximumDamageWindowDurationTicks
+        = normalizeGpuCircleBodyMaximumDamageWindowDurationTicks(
+            spawn.maximumDamageWindowDurationTicks ?? 0
+        );
+    if (damageResolutionPolicyId
+            === GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.MAXIMUM_DAMAGE_WINDOW
+        && maximumDamageWindowDurationTicks === 0) {
+        throw new RangeError(
+            'MAXIMUM_DAMAGE_WINDOW resolution에는 양의 maximumDamageWindowDurationTicks가 필요합니다.'
+        );
+    }
+    if (damageResolutionPolicyId === GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.DIRECT
+        && maximumDamageWindowDurationTicks !== 0) {
+        throw new RangeError(
+            'DIRECT resolution에는 maximumDamageWindowDurationTicks 0이 필요합니다.'
+        );
+    }
+    return {
+        targetInteractionLayerMask,
+        maximumDamageWindowDurationTicks
+    };
+}
+
+/**
+ * generic combat-state side-plane 한 slot을 씁니다. Spawn/recovery path는 항상
+ * peak/expiry transient를 0으로 재초기화합니다.
+ */
+export function writeGpuCircleBodyCombatState(storage, index, state = {}) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const offset = slot * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE;
+    const view = new DataView(storage.combatStateBuffer);
+    const targetInteractionLayerMask = requireUint16(
+        state.targetInteractionLayerMask ?? 0,
+        'combatState.targetInteractionLayerMask'
+    );
+    const maximumDamageWindowDurationTicks
+        = normalizeGpuCircleBodyMaximumDamageWindowDurationTicks(
+            state.maximumDamageWindowDurationTicks ?? 0,
+            'combatState.maximumDamageWindowDurationTicks'
+        );
+    const peakFinalDamageFixedPoint = requireInt32(
+        state.peakFinalDamageFixedPoint ?? 0,
+        'combatState.peakFinalDamageFixedPoint'
+    );
+    if (peakFinalDamageFixedPoint < 0) {
+        throw new RangeError('combatState.peakFinalDamageFixedPoint는 0 이상이어야 합니다.');
+    }
+    const expiresAtFixedTick = requireUint32(
+        state.expiresAtFixedTick ?? 0,
+        'combatState.expiresAtFixedTick'
+    );
+    const peakSourceEntityId = requireUint32(
+        state.peakSourceEntityId ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'combatState.peakSourceEntityId'
+    );
+    const peakSourceIncarnation = requireUint32(
+        state.peakSourceIncarnation ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'combatState.peakSourceIncarnation'
+    );
+    if ((peakSourceEntityId === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)
+        !== (peakSourceIncarnation === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)) {
+        throw new RangeError('combatState peak source identity는 모두 valid 또는 모두 invalid여야 합니다.');
+    }
+    view.setUint32(
+        offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.TARGET_INTERACTION_LAYER_MASK,
+        targetInteractionLayerMask,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset
+            + GPU_CIRCLE_BODY_ABI.COMBAT_STATE
+                .MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS,
+        maximumDamageWindowDurationTicks,
+        LITTLE_ENDIAN
+    );
+    view.setInt32(
+        offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_FINAL_DAMAGE_FIXED_POINT,
+        peakFinalDamageFixedPoint,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.EXPIRES_AT_FIXED_TICK,
+        expiresAtFixedTick,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_ENTITY_ID,
+        peakSourceEntityId,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION,
+        peakSourceIncarnation,
+        LITTLE_ENDIAN
+    );
+    for (const reservedOffset of [
+        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_0,
+        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_1,
+        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_2,
+        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_3
+    ]) {
+        view.setUint32(offset + reservedOffset, 0, LITTLE_ENDIAN);
+    }
+    return slot;
+}
+
+/** generic combat-state side-plane 한 slot을 읽습니다. */
+export function readGpuCircleBodyCombatState(storage, index) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const offset = slot * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE;
+    const view = new DataView(storage.combatStateBuffer);
+    return {
+        targetInteractionLayerMask: view.getUint32(
+            offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.TARGET_INTERACTION_LAYER_MASK,
+            LITTLE_ENDIAN
+        ),
+        maximumDamageWindowDurationTicks: view.getUint32(
+            offset
+                + GPU_CIRCLE_BODY_ABI.COMBAT_STATE
+                    .MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS,
+            LITTLE_ENDIAN
+        ),
+        peakFinalDamageFixedPoint: view.getInt32(
+            offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_FINAL_DAMAGE_FIXED_POINT,
+            LITTLE_ENDIAN
+        ),
+        expiresAtFixedTick: view.getUint32(
+            offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.EXPIRES_AT_FIXED_TICK,
+            LITTLE_ENDIAN
+        ),
+        peakSourceEntityId: view.getUint32(
+            offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_ENTITY_ID,
+            LITTLE_ENDIAN
+        ),
+        peakSourceIncarnation: view.getUint32(
+            offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION,
             LITTLE_ENDIAN
         )
     };
@@ -1242,7 +1639,9 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
         physicsMeta,
         interactionMeta,
         gameplayMeta,
-        simulationMeta
+        simulationMeta,
+        metadata,
+        damageResolutionPolicyId
     } = resolveSpawnMeta(
         spawn,
         useFlow,
@@ -1252,6 +1651,12 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
         spawn.lifetime ?? GPU_CIRCLE_BODY_LIFETIME.IMMORTAL
     );
     const healthFixedPoint = resolveSpawnHealthFixedPoint(spawn);
+    const combatState = resolveSpawnCombatState(
+        spawn,
+        contactHandler,
+        metadata,
+        damageResolutionPolicyId
+    );
     const physicsOffset = slot * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
     const simulationOffset = slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
     const temporaryOffset = slot * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE;
@@ -1382,6 +1787,7 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
         LITTLE_ENDIAN
     );
     writeGpuCircleContactHandler(storage, slot, contactHandler);
+    writeGpuCircleBodyCombatState(storage, slot, combatState);
     return slot;
 }
 
@@ -1537,7 +1943,8 @@ export function readGpuCircleBody(storage, index) {
             temporaryOffset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_FLOW_FIELD_INDEX,
             LITTLE_ENDIAN
         ),
-        contactHandler: readGpuCircleContactHandler(storage, slot)
+        contactHandler: readGpuCircleContactHandler(storage, slot),
+        combatState: readGpuCircleBodyCombatState(storage, slot)
     };
 }
 

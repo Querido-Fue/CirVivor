@@ -13,6 +13,9 @@ const {
 } = await loadGameModule(
     'ingame/gpu_simulation_endpoint.js'
 );
+const {
+    GPU_CIRCLE_APPLIED_EVENT_FLAG
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -105,6 +108,9 @@ function createFakeBackend(options = {}) {
             };
         },
         hasBody(handle) {
+            return bodies.has(handleKey(handle));
+        },
+        canControlBody(handle) {
             return bodies.has(handleKey(handle));
         },
         hasActiveBodies() {
@@ -653,6 +659,95 @@ test('typed interaction event 방향과 exact duplicate key는 body 배열 순�
     endpoint.destroy();
 });
 
+test('Maximum Damage Window zero-value damage event는 marker/flag 일치 시에만 정규화한다', () => {
+    const createEndpointWithPair = (label) => {
+        const backend = createFakeBackend({ capacity: 4 });
+        const endpoint = createGpuEnemySimulationEndpoint({
+            enemySimulationBackend: backend
+        });
+        endpoint.init({ id: `maximum-damage-window-${label}` });
+        endpoint.requestSpawn(createSpawnIntent(0), 1, `${label}:spawn:0`);
+        endpoint.requestSpawn(createSpawnIntent(1), 1, `${label}:spawn:1`);
+        const [subject, other] = endpoint.commitAtFixedBoundary(1)
+            .spawned.map(({ handle }) => handle);
+        return {
+            backend,
+            endpoint,
+            protocol: setCurrentEventProtocol(endpoint, backend),
+            subject,
+            other
+        };
+    };
+    const maximumDamageWindowFlags = GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY
+        | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW;
+    const valid = createEndpointWithPair('valid');
+    valid.backend.completedEventBatches.push(createCompletedBatch(valid.protocol, {
+        sourceTick: 1,
+        submittedTick: 1,
+        events: [{
+            type: 'contact',
+            eventType: 'damage-applied',
+            sequence: 0,
+            entityId: valid.subject.entityId,
+            incarnation: valid.subject.incarnation,
+            otherEntityId: valid.other.entityId,
+            otherIncarnation: valid.other.incarnation,
+            valueFixedPoint: 0,
+            flags: maximumDamageWindowFlags,
+            maximumDamageWindow: true
+        }]
+    }));
+    const validSnapshot = valid.endpoint.commitCompletedEventsAtFixedBoundary(2);
+    assert.equal(validSnapshot.protocolFailure, null);
+    assert.equal(validSnapshot.contactEvents.length, 1);
+    assert.equal(validSnapshot.contactEvents[0].eventType, 'damage-applied');
+    assert.equal(validSnapshot.contactEvents[0].valueFixedPoint, 0);
+    assert.equal(validSnapshot.contactEvents[0].damageFixedPoint, 0);
+    assert.equal(validSnapshot.contactEvents[0].maximumDamageWindow, true);
+    assert.equal(validSnapshot.contactEvents[0].flags, maximumDamageWindowFlags);
+    assert.equal(valid.endpoint.requiresRecovery(), false);
+    valid.endpoint.destroy();
+
+    const assertRejected = (label, overrides) => {
+        const fixture = createEndpointWithPair(label);
+        fixture.backend.completedEventBatches.push(createCompletedBatch(fixture.protocol, {
+            sourceTick: 1,
+            submittedTick: 1,
+            events: [{
+                type: 'contact',
+                eventType: 'damage-applied',
+                sequence: 0,
+                entityId: fixture.subject.entityId,
+                incarnation: fixture.subject.incarnation,
+                otherEntityId: fixture.other.entityId,
+                otherIncarnation: fixture.other.incarnation,
+                valueFixedPoint: 0,
+                flags: maximumDamageWindowFlags,
+                maximumDamageWindow: true,
+                ...overrides
+            }]
+        }));
+        const snapshot = fixture.endpoint.commitCompletedEventsAtFixedBoundary(2);
+        assert.equal(snapshot.events.length, 0, label);
+        assert.equal(snapshot.protocolFailure?.code, 'event-contract', label);
+        assert.equal(fixture.endpoint.requiresRecovery(), true, label);
+        fixture.endpoint.destroy();
+    };
+
+    assertRejected('direct-zero', {
+        flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY,
+        maximumDamageWindow: false
+    });
+    assertRejected('negative-window', { valueFixedPoint: -1 });
+    assertRejected('spoofed-marker', {
+        flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY
+    });
+    assertRejected('inconsistent-marker', { maximumDamageWindow: false });
+    assertRejected('non-damage-window', {
+        eventType: 'interaction-continuous'
+    });
+});
+
 test('sequence gap과 conflicting duplicate는 watermark/side effect 없이 recovery를 latch한다', () => {
     const backend = createFakeBackend({ capacity: 2 });
     const endpoint = createGpuEnemySimulationEndpoint({ enemySimulationBackend: backend });
@@ -1042,5 +1137,257 @@ test('동일 future batch가 두 번 defer돼도 due prepare 안에서 exact ded
     assert.equal(due.protocolFailure, null);
     assert.equal(due.completedThroughTick, 5);
     assert.equal(endpoint.requiresRecovery(), false);
+    endpoint.destroy();
+});
+
+test('terminal close는 pending gameplay command와 raw lifecycle 우회를 제거하고 전용 Core cleanup port만 허용한다', () => {
+    const backend = createFakeBackend({ capacity: 8 });
+    backend.stageFixedPrograms = (plan) => {
+        backend.calls.push({ type: 'stageFixedPrograms', plan });
+        return Object.freeze({
+            accepted: plan.controls.length + plan.sourceRelativeSpawns.length,
+            rejected: 0
+        });
+    };
+    let cleanupBinding = null;
+    const endpoint = createGpuSimulationEndpoint({
+        gpuSimulationBackend: backend,
+        coreImpactCleanupPortReceiver(binding) {
+            assert.equal(cleanupBinding, null);
+            cleanupBinding = binding;
+        }
+    });
+    assert.ok(cleanupBinding);
+    assert.equal('coreImpactCleanupPort' in endpoint, false);
+    endpoint.init({ id: 'terminal-close-map' });
+    const protocol = setCurrentEventProtocol(endpoint, backend);
+    assert.equal(endpoint.requestSpawnBatch([
+        ...Array.from({ length: 5 }, (_, spawnSequence) => ({
+            intent: createSpawnIntent(spawnSequence),
+            targetFixedTick: 1,
+            commandId: `terminal-close:active:${spawnSequence}`
+        }))
+    ]).accepted, true);
+    const [
+        handle,
+        gpuDeathHandle,
+        gpuDeathOnlyHandle,
+        forgedGpuDeathHandle,
+        forgedCoreImpactHandle
+    ] = endpoint.commitAtFixedBoundary(1).spawned.map(({ handle: entry }) => entry);
+    const rawLifecycleOwner = endpoint.getLifecycleCommandOwner();
+
+    backend.completedEventBatches.push(createCompletedBatch(protocol, {
+        sourceTick: 1,
+        submittedTick: 1,
+        events: [{
+            type: 'death',
+            eventType: 'death',
+            sequence: 0,
+            entityId: gpuDeathHandle.entityId,
+            incarnation: gpuDeathHandle.incarnation,
+            reasonFlags: 1
+        }, {
+            type: 'death',
+            eventType: 'death',
+            sequence: 1,
+            entityId: gpuDeathOnlyHandle.entityId,
+            incarnation: gpuDeathOnlyHandle.incarnation,
+            reasonFlags: 1
+        }]
+    }));
+    const completed = endpoint.commitCompletedEventsAtFixedBoundary(3);
+    assert.equal(completed.deathEvents[0].disposition, 'despawn-requested');
+    const precloseUpgrade = cleanupBinding.port
+        .requestCommittedCoreImpactCleanup(
+            gpuDeathHandle,
+            3,
+            'core-impact:terminal-close:preclose-upgrade'
+        );
+    assert.equal(precloseUpgrade.accepted, false);
+    assert.equal(precloseUpgrade.reason, 'duplicate-despawn');
+    assert.equal(precloseUpgrade.disposition, 'CORE_IMPACT');
+    assert.equal(precloseUpgrade.dispositionUpgraded, true);
+    assert.equal(
+        precloseUpgrade.commandId,
+        `gpu-death:${completed.deathEvents[0].key}`
+    );
+    assert.equal(endpoint.requestDespawn(
+        forgedGpuDeathHandle,
+        'gpu-death',
+        3,
+        'gpu-death:public-preclose-forgery'
+    ).accepted, true);
+    assert.equal(endpoint.requestDespawn(
+        forgedCoreImpactHandle,
+        'core-impact',
+        3,
+        'core-impact:public-preclose-forgery',
+        { disposition: 'CORE_IMPACT' }
+    ).accepted, true);
+
+    assert.equal(endpoint.requestSourceRelativeSpawn({
+        sourceHandle: handle,
+        destinationSpawn: createSpawnIntent(7),
+        positionOffset: { x: 0, y: 0 },
+        launchVelocity: { x: 1, y: 0 },
+        sourceVelocityScale: 0
+    }, 2, 'terminal-close:staged-source-relative').accepted, true);
+    const staged = endpoint.commitAtFixedBoundary(2);
+    assert.equal(staged.fixedCommands.sourceRelativeSpawns.length, 1);
+    assert.equal(endpoint.getStatus().pendingSourceRelativeDestinationCount, 1);
+    assert.equal(endpoint.getRegistry().getReservedCount(), 1);
+
+    assert.equal(endpoint.requestSpawn(
+        createSpawnIntent(4),
+        5,
+        'terminal-close:future:single'
+    ).accepted, true);
+    assert.equal(endpoint.requestSpawnBatch([
+        {
+            intent: createSpawnIntent(5),
+            targetFixedTick: 5,
+            commandId: 'terminal-close:future:batch:0'
+        },
+        {
+            intent: createSpawnIntent(6),
+            targetFixedTick: 5,
+            commandId: 'terminal-close:future:batch:1'
+        }
+    ]).accepted, true);
+    assert.equal(endpoint.requestBodyControl({
+        handle,
+        moveIntentX: 1,
+        moveIntentY: 0
+    }, 5, 'terminal-close:control').accepted, true);
+    assert.equal(endpoint.requestSourceRelativeSpawn({
+        sourceHandle: handle,
+        destinationSpawn: createSpawnIntent(8),
+        positionOffset: { x: 0, y: 0 },
+        launchVelocity: { x: 1, y: 0 },
+        sourceVelocityScale: 0
+    }, 5, 'terminal-close:source-relative').accepted, true);
+    assert.equal(endpoint.getPendingCommandCount(), 10);
+
+    const closed = endpoint.closeGameplayIngress('run-defeated');
+    assert.deepEqual({ ...closed }, { closed: true, reason: 'run-defeated' });
+    const closedStatus = endpoint.getStatus();
+    assert.equal(closedStatus.pendingCommandCount, 2);
+    assert.equal(closedStatus.lifecycle.pendingCount, 2);
+    assert.equal(closedStatus.fixedCommands.pendingCommandCount, 0);
+    assert.equal(closedStatus.fixedCommands.pendingDestinationCount, 0);
+    assert.equal(
+        closedStatus.gameplayIngressCloseCleanup.lifecycle.cancelledCount,
+        5
+    );
+    assert.equal(
+        closedStatus.gameplayIngressCloseCleanup.lifecycle
+            .preservedCleanupCount,
+        2
+    );
+    assert.equal(
+        closedStatus.gameplayIngressCloseCleanup.fixedCommands
+            .cancelledCommandCount,
+        2
+    );
+    assert.equal(
+        closedStatus.gameplayIngressCloseCleanup.fixedCommands
+            .releasedDestinationCount,
+        1
+    );
+    assert.equal(endpoint.getRegistry().getReservedCount(), 0);
+
+    assert.equal(endpoint.requestSpawn({}, 3).accepted, false);
+    assert.equal(endpoint.requestSpawnBatch([]).accepted, false);
+    assert.equal(endpoint.requestBodyControl({}, 3, 'terminal-close:late-control').accepted, false);
+    assert.equal(endpoint.requestSourceRelativeSpawn(
+        {},
+        3,
+        'terminal-close:late-source'
+    ).accepted, false);
+    assert.equal(endpoint.requestDespawn(
+        handle,
+        'core-impact',
+        3,
+        'core-impact:public-forgery',
+        { disposition: 'CORE_IMPACT' }
+    ).accepted, false);
+    assert.equal(rawLifecycleOwner.requestSpawn({}, 3).accepted, false);
+    assert.equal(rawLifecycleOwner.requestSpawnBatch([]).accepted, false);
+    assert.equal(rawLifecycleOwner.requestDespawn(
+        handle,
+        'cleanup',
+        3,
+        'terminal-close:raw-despawn'
+    ).accepted, false);
+
+    const privileged = cleanupBinding.port
+        .requestCommittedCoreImpactCleanup(
+            handle,
+            3,
+            'core-impact:terminal-close'
+        );
+    assert.equal(privileged.accepted, true);
+    const duplicate = cleanupBinding.port
+        .requestCommittedCoreImpactCleanup(
+            handle,
+            3,
+            'core-impact:terminal-close:duplicate'
+        );
+    assert.equal(duplicate.accepted, false);
+    assert.equal(duplicate.reason, 'duplicate-despawn');
+
+    const finalCommit = endpoint.commitAtFixedBoundary(3);
+    assert.equal(finalCommit.spawned.length, 0);
+    assert.equal(finalCommit.despawned.length, 3);
+    const gpuDeathCleanup = finalCommit.despawned.find(({ handle: entry }) => (
+        entry.entityId === gpuDeathHandle.entityId
+            && entry.incarnation === gpuDeathHandle.incarnation
+    ));
+    assert.equal(gpuDeathCleanup.reason, 'gpu-death');
+    assert.equal(
+        gpuDeathCleanup.commandId,
+        `gpu-death:${completed.deathEvents[0].key}`
+    );
+    assert.equal(gpuDeathCleanup.disposition, 'CORE_IMPACT');
+    assert.equal(gpuDeathCleanup.bountyEligible, false);
+    const gpuDeathOnlyCleanup = finalCommit.despawned.find(({ handle: entry }) => (
+        entry.entityId === gpuDeathOnlyHandle.entityId
+            && entry.incarnation === gpuDeathOnlyHandle.incarnation
+    ));
+    assert.equal(gpuDeathOnlyCleanup.reason, 'gpu-death');
+    assert.equal(
+        gpuDeathOnlyCleanup.commandId,
+        `gpu-death:${completed.deathEvents[1].key}`
+    );
+    assert.equal('disposition' in gpuDeathOnlyCleanup, false);
+    assert.equal('bountyEligible' in gpuDeathOnlyCleanup, false);
+    const coreImpactCleanup = finalCommit.despawned.find(({ handle: entry }) => (
+        entry.entityId === handle.entityId
+            && entry.incarnation === handle.incarnation
+    ));
+    assert.equal(coreImpactCleanup.reason, 'core-impact');
+    assert.equal(coreImpactCleanup.disposition, 'CORE_IMPACT');
+    assert.equal(coreImpactCleanup.bountyEligible, false);
+    assert.equal(endpoint.hasBody(forgedGpuDeathHandle), true);
+    assert.equal(endpoint.hasBody(forgedCoreImpactHandle), true);
+    assert.deepEqual(Array.from(finalCommit.fixedCommands.controls), []);
+    assert.deepEqual(Array.from(finalCommit.fixedCommands.sourceRelativeSpawns), []);
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(endpoint.getRegistry().getReservedCount(), 0);
+    const finalized = endpoint.finalizeClosedGameplayIngress();
+    assert.equal(finalized.lifecycleCancelledCount, 0);
+    assert.deepEqual({ ...finalized.fixedCommands }, {
+        cancelledCommandCount: 0,
+        releasedDestinationCount: 0,
+        failedDestinationCount: 0
+    });
+
+    cleanupBinding.revoke();
+    assert.equal(cleanupBinding.port.requestCommittedCoreImpactCleanup(
+        { entityId: 99, incarnation: 1 },
+        4,
+        'core-impact:revoked'
+    ).reason, 'core-impact-cleanup-port-revoked');
     endpoint.destroy();
 });

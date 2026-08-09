@@ -1,5 +1,8 @@
 import { INGAME_MAP_DATA } from 'data/scene/game/corridor_eight_map_data.js';
 import { assertTileNavigationSource } from '../contract/tile_navigation_contract.js';
+import {
+    normalizeEnemyModifierSet
+} from '../object/enemy/resolved_enemy_spawn_stats.js';
 
 const MAX_TILE_CELLS = 1000000;
 
@@ -147,6 +150,9 @@ export class TileMap {
         assertMapDefinition(definition);
 
         this.mapId = definition.id;
+        this.enemyModifiers = normalizeEnemyModifierSet(definition.enemyModifiers, {
+            label: `${definition.id}.enemyModifiers`
+        });
         this.pathWidthTiles = definition.pathWidthTiles;
         this.tileSize = TILE_WORLD_SIZE;
         this.rows = definition.macroRows * this.pathWidthTiles;
@@ -223,6 +229,11 @@ export class TileMap {
     /** @returns {object} 월드 경계입니다. */
     getWorldBounds() {
         return this.worldBounds;
+    }
+
+    /** @returns {object} map-owned immutable Enemy modifier snapshot입니다. */
+    getEnemyModifiers() {
+        return this.enemyModifiers;
     }
 
     /**

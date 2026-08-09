@@ -15,6 +15,25 @@ const CORRIDOR_EIGHT_PREVIEW_TILES = Object.freeze([
 ]);
 
 /**
+ * 첫 production map의 Enemy modifier는 의도적으로 identity입니다.
+ * 값은 queue-time ResolvedEnemySpawnStats가 profile base와 곱한 뒤 해석합니다.
+ */
+const CORRIDOR_EIGHT_MAP_ENEMY_MODIFIERS = Object.freeze({
+    global: Object.freeze({
+        multipliers: Object.freeze({
+            maxHealth: 1,
+            moveSpeedTilesPerSecond: 1,
+            weight: 1,
+            towerContactDamage: 1,
+            coreImpactDamage: 1,
+            bountyBudget: 1
+        }),
+        absolute: Object.freeze({})
+    }),
+    byEnemyDefinitionId: Object.freeze({})
+});
+
+/**
  * ASCII의 문자 순서를 실제 인접한 매크로 셀 경로로 풀어 쓴 목록입니다.
  *
  * 중앙 교차점 `(2, 2)`와 `(2, 4)`는 경로 진행 중 다시 통과합니다.
@@ -65,6 +84,7 @@ export const CORRIDOR_EIGHT_MAP_DATA = Object.freeze({
     pathWidthTiles: 6,
     directionBlueprint: CORRIDOR_EIGHT_DIRECTION_BLUEPRINT,
     previewTiles: CORRIDOR_EIGHT_PREVIEW_TILES,
+    enemyModifiers: CORRIDOR_EIGHT_MAP_ENEMY_MODIFIERS,
     coreMacroCell: Object.freeze([4, 8]),
     towerSpawnMacroCell: Object.freeze([2, 7]),
     enemySpawnRoutes: Object.freeze([

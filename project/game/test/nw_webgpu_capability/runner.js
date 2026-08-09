@@ -7,6 +7,7 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
+    GPU_CIRCLE_BODY_IDENTITY,
     packGpuCircleGameplayMeta,
     unpackGpuCircleInteractionMeta,
     unpackGpuCircleGameplayMeta
@@ -87,6 +88,19 @@ import {
 import {
     createGpuCoreProxySpawnIntent
 } from './production/script/module/ingame/object/core/gpu_core_proxy_spawn_adapter.js';
+import {
+    CORE_IMPACT_FACT_TYPE,
+    EnemyCoreImpactDirector
+} from './production/script/module/ingame/object/enemy/enemy_core_impact_director.js';
+import {
+    ENEMY_LIFECYCLE_DISPOSITION_ID
+} from './production/script/module/ingame/contract/enemy_lifecycle_disposition_contract.js';
+import {
+    CoreIntegrity
+} from './production/script/module/ingame/state/core_integrity.js';
+import {
+    RunOutcome
+} from './production/script/module/ingame/state/run_outcome.js';
 import {
     createGpuTowerSpawnIntent
 } from './production/script/module/ingame/object/tower/gpu_tower_spawn_adapter.js';
@@ -7442,9 +7456,9 @@ async function runProductionTowerCombatHardwareSmoke(device) {
         id: 'nw_tower_combat_hostile_lethal',
         collisionRadius: 0.18,
         inverseMass: 1,
-        penetration: 17,
-        damage: 17,
-        damageSelf: 17,
+        penetration: 30,
+        damage: 30,
+        damageSelf: 30,
         lifetimeSeconds: 5,
         killOnTerrain: false,
         closestOnly: true,
@@ -8186,6 +8200,1001 @@ async function runProductionTowerCombatHardwareSmoke(device) {
         endpoint.destroy();
         await device.queue.onSubmittedWorkDone();
         context.unconfigure();
+    }
+}
+
+/**
+ * 실제 GPU 경로에서 Tower의 Maximum Damage Window와 Enemy 접촉 후보가 같은
+ * fixed tick에 모이는지 검증합니다. readback은 이 capability fixture의 bounded
+ * diagnostic에만 사용하며 frame 권위에는 연결하지 않습니다.
+ */
+async function runProductionMaximumDamageWindowHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 8,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const fixedDelta = 1 / 60;
+    // route의 진행선(y=8)에 Tower를 두고, 더 가벼운 Enemy가 Core 방향으로
+    // 연속 압착하게 만들어 physical separation 뒤에도 contact가 매 fixed tick 재성립한다.
+    const towerPosition = Object.freeze({ x: 4, y: 8 });
+    const sourceEnemyPosition = Object.freeze({ x: 10, y: 8 });
+    const contactEnemyInitialPosition = Object.freeze({
+        x: towerPosition.x - 0.8,
+        y: towerPosition.y
+    });
+    const numericTicks = [];
+    const completedBatches = [];
+    let towerHandle = null;
+    const contactEnemyDefinition = Object.freeze({
+        id: 'nw-maximum-damage-window-contact-enemy',
+        shapeType: 'circle',
+        colorRgba: [0.95, 0.22, 0.22, 1],
+        radiusScale: 1,
+        collisionRadiusTiles: 0.35,
+        collisionWeight: 1,
+        maxHealth: 20,
+        moveSpeedTilesPerSecond: 1,
+        towerContactDamage: 0.1,
+        coreImpactDamage: 0,
+        bountyBudget: 0,
+        pairCollisionRadiusScale: 1
+    });
+    // heavy, damage-zero pusher는 light Enemy가 solver correction으로 Tower에서
+    // 떨어지지 않게만 하며 Window candidate/provenance에는 들어오지 않습니다.
+    const contactPusherDefinition = Object.freeze({
+        ...contactEnemyDefinition,
+        id: 'nw-maximum-damage-window-contact-pusher',
+        collisionWeight: 30,
+        moveSpeedTilesPerSecond: 0.1,
+        towerContactDamage: 0
+    });
+    const createProjectileDefinition = (id, damage, penetration) => Object.freeze({
+        id,
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration,
+        damage,
+        damageSelf: damage,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [1, 0.12, 0.12, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const firstProjectileDefinition = createProjectileDefinition(
+        'nw-maximum-damage-window-projectile-first',
+        6,
+        7
+    );
+    const suppressedProjectileDefinition = createProjectileDefinition(
+        'nw-maximum-damage-window-projectile-suppressed',
+        4,
+        6
+    );
+    const largerProjectileDefinition = createProjectileDefinition(
+        'nw-maximum-damage-window-projectile-larger',
+        8,
+        9
+    );
+    const tieProjectileDefinition = createProjectileDefinition(
+        'nw-maximum-damage-window-projectile-tie',
+        5,
+        6
+    );
+    const lethalProjectileDefinition = createProjectileDefinition(
+        'nw-maximum-damage-window-projectile-lethal',
+        30,
+        30
+    );
+    const friendlyProjectileDefinition = Object.freeze({
+        ...createProjectileDefinition(
+            'nw-maximum-damage-window-projectile-friendly',
+            4,
+            4
+        ),
+        colorRgba: [0.2, 0.85, 1, 1]
+    });
+    const eventMatches = (event, subject, other) => (
+        event?.entityId === subject.entityId
+        && event?.incarnation === subject.incarnation
+        && event?.otherEntityId === other.entityId
+        && event?.otherIncarnation === other.incarnation
+    );
+    const exactHandleMatches = (left, right) => (
+        left?.entityId === right.entityId
+        && left?.incarnation === right.incarnation
+    );
+    const createEnemyIntent = (
+        position,
+        spawnSequence,
+        definition = contactEnemyDefinition
+    ) => Object.freeze({
+        ...createGpuEnemySpawnIntent({
+            definition,
+            route: navigationSource.route,
+            spawnSequence,
+            waveId: 'nw-maximum-damage-window',
+            policyId: 'hardware-fixture'
+        }),
+        // adapter가 route→Core 방향의 flow velocity를 설정한다. 이를 덮어쓰지 않아
+        // light Enemy가 Tower를 지속적으로 압착하는 실제 GPU contact를 검증한다.
+        position: Object.freeze({ ...position })
+    });
+    const createHostileProjectileIntent = (
+        definition,
+        sourceHandle,
+        spawnSequence,
+        position = towerPosition
+    ) => createGpuProjectileSpawnIntent({
+        definition,
+        position: Object.freeze({ ...position }),
+        velocity: { x: 0, y: 0 },
+        sourceHandle,
+        ownerHandle: sourceHandle,
+        producerId: 'nw-maximum-damage-window-hostile',
+        sourceAbilityId: definition.id,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        targetPolicyId: PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+        spawnSequence
+    });
+    const runFixed = async (tick, label) => {
+        assert(endpoint.fixedUpdate(fixedDelta, tick), `${label} fixed submit 실패`);
+        await settlePhase5Endpoint(endpoint, label);
+        const simulation = endpoint.getBackend().simulation;
+        assert(
+            simulation?.device?.queue,
+            `${label} GPU device가 idle release되었습니다: ${JSON.stringify(endpoint.getStatus())}`
+        );
+        numericTicks.push(tick);
+    };
+    const readTower = async (towerHandle, label) => findPhase5Body(
+        await readPhase5Bodies(endpoint),
+        towerHandle,
+        label
+    );
+    const assertWindow = (
+        tower,
+        expectedHp,
+        expectedPeak,
+        expectedExpiry,
+        expectedSource,
+        label
+    ) => {
+        assertNear(tower.health, expectedHp, 0.000001, `${label} Tower HP`);
+        assert(
+            tower.combatState?.peakFinalDamageFixedPoint === expectedPeak
+                && tower.combatState?.expiresAtFixedTick === expectedExpiry
+                && tower.combatState?.peakSourceEntityId === expectedSource.entityId
+                && tower.combatState?.peakSourceIncarnation
+                    === expectedSource.incarnation,
+            `${label} Maximum Damage Window 상태 불일치: ${JSON.stringify(tower.combatState)}`
+        );
+    };
+    const requestTowerPressureControl = (tick) => {
+        const receipt = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: -1,
+            moveIntentY: 0
+        }, tick, `maximum-damage-window:pressure:${tick}`);
+        assert(receipt.accepted,
+            `Maximum Damage Window pressure control 요청 실패(tick=${tick}): ${JSON.stringify(receipt)}`);
+        return receipt;
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Maximum Damage Window endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const initialRequests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                1,
+                'maximum-damage-window:initial-tower'
+            ),
+            endpoint.requestSpawn(
+                createEnemyIntent(sourceEnemyPosition, 0),
+                1,
+                'maximum-damage-window:source-enemy'
+            )
+        ];
+        assert(initialRequests.every(({ accepted }) => accepted),
+            `Maximum Damage Window 초기 spawn 요청 실패: ${JSON.stringify(initialRequests)}`);
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        towerHandle = initialHandles.get('maximum-damage-window:initial-tower');
+        const sourceEnemyHandle = initialHandles.get(
+            'maximum-damage-window:source-enemy'
+        );
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 2
+                && towerHandle
+                && sourceEnemyHandle,
+            `Maximum Damage Window 초기 commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        await runFixed(1, 'Maximum Damage Window 초기 완료');
+        const initialTower = await readTower(towerHandle, 'Maximum Damage Window 초기 Tower');
+        assert(
+            initialTower.combatState?.peakFinalDamageFixedPoint === 0
+                && initialTower.combatState?.expiresAtFixedTick === 0,
+            `Maximum Damage Window 초기 상태가 0이 아닙니다: ${JSON.stringify(initialTower.combatState)}`
+        );
+
+        const tickTwoRequests = [
+            endpoint.requestSpawn(
+                createEnemyIntent(contactEnemyInitialPosition, 1),
+                2,
+                'maximum-damage-window:contact-enemy'
+            ),
+            endpoint.requestSpawn(
+                createEnemyIntent(
+                    Object.freeze({
+                        x: contactEnemyInitialPosition.x - 0.6,
+                        y: contactEnemyInitialPosition.y
+                    }),
+                    2,
+                    contactPusherDefinition
+                ),
+                2,
+                'maximum-damage-window:contact-pusher'
+            ),
+            endpoint.requestSpawn(
+                createHostileProjectileIntent(
+                    firstProjectileDefinition,
+                    sourceEnemyHandle,
+                    1
+                ),
+                2,
+                'maximum-damage-window:first-projectile'
+            ),
+            endpoint.requestSpawn(
+                createGpuProjectileSpawnIntent({
+                    definition: friendlyProjectileDefinition,
+                    position: towerPosition,
+                    velocity: { x: 0, y: 0 },
+                    sourceHandle: towerHandle,
+                    ownerHandle: towerHandle,
+                    producerId: 'nw-maximum-damage-window-friendly',
+                    sourceAbilityId: friendlyProjectileDefinition.id,
+                    teamId: GAMEPLAY_TEAM_ID.PLAYER,
+                    allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+                    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+                    targetPolicyId:
+                        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+                    spawnSequence: 2
+                }),
+                2,
+                'maximum-damage-window:friendly-projectile'
+            ),
+            requestTowerPressureControl(2)
+        ];
+        assert(tickTwoRequests.every(({ accepted }) => accepted),
+            `Maximum Damage Window tick 2 spawn 요청 실패: ${JSON.stringify(tickTwoRequests)}`);
+        const tickTwoCommit = endpoint.commitAtFixedBoundary(2);
+        const tickTwoHandles = new Map(
+            tickTwoCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const contactEnemyHandle = tickTwoHandles.get(
+            'maximum-damage-window:contact-enemy'
+        );
+        const contactPusherHandle = tickTwoHandles.get(
+            'maximum-damage-window:contact-pusher'
+        );
+        const firstProjectileHandle = tickTwoHandles.get(
+            'maximum-damage-window:first-projectile'
+        );
+        const friendlyProjectileHandle = tickTwoHandles.get(
+            'maximum-damage-window:friendly-projectile'
+        );
+        assert(
+            tickTwoCommit.state === 'committed'
+                && tickTwoCommit.spawned.length === 4
+                && tickTwoCommit.fixedCommands.controls.length === 1
+                && contactEnemyHandle
+                && contactPusherHandle
+                && firstProjectileHandle
+                && friendlyProjectileHandle,
+            `Maximum Damage Window tick 2 commit 실패: ${JSON.stringify(tickTwoCommit)}`
+        );
+        await runFixed(2, 'Maximum Damage Window projectile+Enemy 접촉 완료');
+        const afterFirstBodies = await readPhase5Bodies(endpoint);
+        const towerAfterFirst = findPhase5Body(
+            afterFirstBodies,
+            towerHandle,
+            'Maximum Damage Window 첫 피해 Tower'
+        );
+        const firstProjectileAfter = findPhase5Body(
+            afterFirstBodies,
+            firstProjectileHandle,
+            'Maximum Damage Window 첫 발사체'
+        );
+        const friendlyProjectileAfter = findPhase5Body(
+            afterFirstBodies,
+            friendlyProjectileHandle,
+            'Maximum Damage Window friendly 발사체'
+        );
+        const contactEnemyAfter = findPhase5Body(
+            afterFirstBodies,
+            contactEnemyHandle,
+            'Maximum Damage Window Enemy 접촉 body'
+        );
+        assertWindow(
+            towerAfterFirst,
+            24,
+            600,
+            62,
+            firstProjectileHandle,
+            'Maximum Damage Window 첫 후보'
+        );
+        assertNear(firstProjectileAfter.health, 1, 0.000001,
+            'Maximum Damage Window 첫 유효 발사체 penetration 7→1');
+        assertNear(friendlyProjectileAfter.health, 4, 0.000001,
+            'Maximum Damage Window friendly fire penetration 보존');
+        const firstDisplacements = Object.freeze({
+            tower: Math.hypot(
+                towerAfterFirst.position.x - towerPosition.x,
+                towerAfterFirst.position.y - towerPosition.y
+            ),
+            enemy: Math.hypot(
+                contactEnemyAfter.position.x - towerPosition.x,
+                contactEnemyAfter.position.y - towerPosition.y
+            )
+        });
+        assert(
+            Number.isFinite(firstDisplacements.tower)
+                && Number.isFinite(firstDisplacements.enemy)
+                && firstDisplacements.tower > 0
+                && firstDisplacements.enemy > firstDisplacements.tower,
+            `Tower/Enemy inverse-mass displacement 비율 불일치: ${JSON.stringify(firstDisplacements)}`
+        );
+        const firstCompleted = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        completedBatches.push(firstCompleted);
+        const firstDamageEvent = firstCompleted.contactEvents.find((event) => (
+            eventMatches(event, firstProjectileHandle, towerHandle)
+        ));
+        assert(
+            firstCompleted.protocolFailure === null
+                && firstDamageEvent?.eventType === 'damage-applied'
+                && firstDamageEvent.damageFixedPoint === 600
+                && !firstCompleted.contactEvents.some((event) => (
+                    eventMatches(event, contactEnemyHandle, towerHandle)
+                    && event.eventType === 'damage-applied'
+                )),
+            `Maximum Damage Window projectile+Enemy winner event 불일치: ${JSON.stringify(firstCompleted)}`
+        );
+
+        const suppressedRequest = endpoint.requestSpawn(
+            createHostileProjectileIntent(
+                suppressedProjectileDefinition,
+                sourceEnemyHandle,
+                3
+            ),
+            3,
+            'maximum-damage-window:suppressed-projectile'
+        );
+        const suppressedControl = requestTowerPressureControl(3);
+        assert(suppressedRequest.accepted && suppressedControl.accepted,
+            `Maximum Damage Window 억제 발사체/control 요청 실패: ${JSON.stringify({ suppressedRequest, suppressedControl })}`);
+        const suppressedCommit = endpoint.commitAtFixedBoundary(3);
+        const suppressedHandle = suppressedCommit.spawned.find(({ commandId }) => (
+            commandId === 'maximum-damage-window:suppressed-projectile'
+        ))?.handle;
+        assert(
+            suppressedCommit.state === 'committed'
+                && suppressedCommit.fixedCommands.controls.length === 1
+                && suppressedHandle,
+            `Maximum Damage Window 억제 발사체 commit 실패: ${JSON.stringify(suppressedCommit)}`
+        );
+        await runFixed(3, 'Maximum Damage Window 억제 후보 완료');
+        const afterSuppressedBodies = await readPhase5Bodies(endpoint);
+        const towerAfterSuppressed = findPhase5Body(
+            afterSuppressedBodies,
+            towerHandle,
+            'Maximum Damage Window 억제 후 Tower'
+        );
+        const suppressedProjectileAfter = findPhase5Body(
+            afterSuppressedBodies,
+            suppressedHandle,
+            'Maximum Damage Window 억제 발사체'
+        );
+        assertWindow(
+            towerAfterSuppressed,
+            24,
+            600,
+            62,
+            firstProjectileHandle,
+            'Maximum Damage Window 작거나 같은 후보'
+        );
+        assertNear(suppressedProjectileAfter.health, 2, 0.000001,
+            'Maximum Damage Window 억제된 유효 발사체 penetration 6→2');
+        const suppressedCompleted = endpoint.commitCompletedEventsAtFixedBoundary(4);
+        completedBatches.push(suppressedCompleted);
+        const suppressedDamageEvent = suppressedCompleted.contactEvents.find((event) => (
+            eventMatches(event, suppressedHandle, towerHandle)
+        ));
+        assert(
+            suppressedCompleted.protocolFailure === null
+                && suppressedDamageEvent?.eventType === 'damage-applied'
+                && suppressedDamageEvent.damageFixedPoint === 0
+                && suppressedDamageEvent.entityId === suppressedHandle.entityId
+                && suppressedDamageEvent.incarnation === suppressedHandle.incarnation,
+            `Maximum Damage Window 억제 후보 zero-value/provenance event 불일치: ${JSON.stringify(suppressedCompleted)}`
+        );
+
+        const largerRequest = endpoint.requestSpawn(
+            createHostileProjectileIntent(
+                largerProjectileDefinition,
+                sourceEnemyHandle,
+                4
+            ),
+            4,
+            'maximum-damage-window:larger-projectile'
+        );
+        const largerControl = requestTowerPressureControl(4);
+        assert(largerRequest.accepted && largerControl.accepted,
+            `Maximum Damage Window 큰 발사체/control 요청 실패: ${JSON.stringify({ largerRequest, largerControl })}`);
+        const largerCommit = endpoint.commitAtFixedBoundary(4);
+        const largerHandle = largerCommit.spawned.find(({ commandId }) => (
+            commandId === 'maximum-damage-window:larger-projectile'
+        ))?.handle;
+        assert(
+            largerCommit.state === 'committed'
+                && largerCommit.fixedCommands.controls.length === 1
+                && largerHandle,
+            `Maximum Damage Window 큰 발사체 commit 실패: ${JSON.stringify(largerCommit)}`
+        );
+        await runFixed(4, 'Maximum Damage Window 큰 후보 완료');
+        const towerAfterLarger = await readTower(
+            towerHandle,
+            'Maximum Damage Window 큰 후보 후 Tower'
+        );
+        assertWindow(
+            towerAfterLarger,
+            22,
+            800,
+            64,
+            largerHandle,
+            'Maximum Damage Window 큰 후보'
+        );
+        const largerCompleted = endpoint.commitCompletedEventsAtFixedBoundary(5);
+        completedBatches.push(largerCompleted);
+        const largerDamageEvent = largerCompleted.contactEvents.find((event) => (
+            eventMatches(event, largerHandle, towerHandle)
+        ));
+        assert(
+            largerCompleted.protocolFailure === null
+                && largerDamageEvent?.eventType === 'damage-applied'
+                && largerDamageEvent.damageFixedPoint === 200,
+            `Maximum Damage Window 큰 후보 actual delta event 불일치: ${JSON.stringify(largerCompleted)}`
+        );
+
+        const cleanupHandles = [
+            firstProjectileHandle,
+            friendlyProjectileHandle,
+            suppressedHandle,
+            largerHandle
+        ];
+        const cleanupRequests = cleanupHandles.map((handle, index) => (
+            endpoint.requestDespawn(
+                handle,
+                'maximum-damage-window-expiry-cleanup',
+                5,
+                `maximum-damage-window:cleanup:${index}`
+            )
+        ));
+        assert(cleanupRequests.every(({ accepted }) => accepted),
+            `Maximum Damage Window expiry cleanup 요청 실패: ${JSON.stringify(cleanupRequests)}`);
+        const cleanupControl = requestTowerPressureControl(5);
+        const cleanupCommit = endpoint.commitAtFixedBoundary(5);
+        assert(
+            cleanupCommit.state === 'committed'
+                && cleanupCommit.despawned.length === cleanupHandles.length
+                && cleanupControl.accepted
+                && cleanupCommit.fixedCommands.controls.length === 1,
+            `Maximum Damage Window expiry cleanup commit 실패: ${JSON.stringify(cleanupCommit)}`
+        );
+        const continuousContactEvents = [];
+        for (let tick = 5; tick < 64; tick++) {
+            if (tick > 5) {
+                requestTowerPressureControl(tick);
+                const pressureCommit = endpoint.commitAtFixedBoundary(tick);
+                assert(
+                    pressureCommit.state === 'committed'
+                        && pressureCommit.fixedCommands.controls.length === 1,
+                    `Maximum Damage Window pressure control commit 실패(tick=${tick}): ${JSON.stringify(pressureCommit)}`
+                );
+            }
+            await runFixed(tick, `Maximum Damage Window 연속 Enemy 압착 ${tick}`);
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick + 1);
+            completedBatches.push(completed);
+            const suppressedContactEvent = completed.contactEvents.find((event) => (
+                eventMatches(event, contactEnemyHandle, towerHandle)
+            ));
+            const continuousContactDiagnostic = suppressedContactEvent
+                ? null
+                : (await readPhase5Bodies(endpoint)).map((body) => Object.freeze({
+                    handle: body.handle,
+                    position: body.position,
+                    velocity: body.velocity,
+                    health: body.health
+                }));
+            assert(
+                completed.protocolFailure === null
+                    && suppressedContactEvent?.eventType === 'damage-applied'
+                    && suppressedContactEvent.damageFixedPoint === 0
+                    && suppressedContactEvent.entityId === contactEnemyHandle.entityId
+                    && suppressedContactEvent.incarnation === contactEnemyHandle.incarnation,
+                `Maximum Damage Window 연속 Enemy zero-value event 불일치(tick=${tick}): ${JSON.stringify({ completed, continuousContactDiagnostic })}`
+            );
+            continuousContactEvents.push(Object.freeze({
+                tick,
+                valueFixedPoint: suppressedContactEvent.damageFixedPoint,
+                source: Object.freeze({
+                    entityId: suppressedContactEvent.entityId,
+                    incarnation: suppressedContactEvent.incarnation
+                })
+            }));
+        }
+        const towerBeforeExpiry = await readTower(
+            towerHandle,
+            'Maximum Damage Window exact expiry 직전 Tower'
+        );
+        assertWindow(
+            towerBeforeExpiry,
+            22,
+            800,
+            64,
+            largerHandle,
+            'Maximum Damage Window exact expiry 직전'
+        );
+        requestTowerPressureControl(64);
+        const expiryPressureCommit = endpoint.commitAtFixedBoundary(64);
+        assert(
+            expiryPressureCommit.state === 'committed'
+                && expiryPressureCommit.fixedCommands.controls.length === 1,
+            `Maximum Damage Window exact expiry pressure control commit 실패: ${JSON.stringify(expiryPressureCommit)}`
+        );
+        await runFixed(64, 'Maximum Damage Window exact expiry 연속 접촉 완료');
+        const towerAfterExpiry = await readTower(
+            towerHandle,
+            'Maximum Damage Window exact expiry Tower'
+        );
+        assertWindow(
+            towerAfterExpiry,
+            21.9,
+            10,
+            124,
+            contactEnemyHandle,
+            'Maximum Damage Window T>=expires Enemy full 재적용'
+        );
+        const expiryCompleted = endpoint.commitCompletedEventsAtFixedBoundary(65);
+        completedBatches.push(expiryCompleted);
+        const expiryDamageEvent = expiryCompleted.contactEvents.find((event) => (
+            eventMatches(event, contactEnemyHandle, towerHandle)
+        ));
+        assert(
+            expiryCompleted.protocolFailure === null
+                && expiryDamageEvent?.eventType === 'damage-applied'
+                && expiryDamageEvent.damageFixedPoint === 10
+                && expiryDamageEvent.entityId === contactEnemyHandle.entityId
+                && expiryDamageEvent.incarnation === contactEnemyHandle.incarnation,
+            `Maximum Damage Window T>=expires Enemy full delta event 불일치: ${JSON.stringify(expiryCompleted)}`
+        );
+
+        const tieRequests = [0, 1].map((spawnSequence) => endpoint.requestSpawn(
+            createHostileProjectileIntent(
+                tieProjectileDefinition,
+                sourceEnemyHandle,
+                10 + spawnSequence,
+                towerAfterExpiry.position
+            ),
+            65,
+            `maximum-damage-window:tie-projectile:${spawnSequence}`
+        ));
+        assert(tieRequests.every(({ accepted }) => accepted),
+            `Maximum Damage Window tie 발사체 요청 실패: ${JSON.stringify(tieRequests)}`);
+        const tieCommit = endpoint.commitAtFixedBoundary(65);
+        const tieHandles = tieCommit.spawned
+            .filter(({ commandId }) => commandId.startsWith('maximum-damage-window:tie-projectile:'))
+            .map(({ handle }) => handle);
+        assert(
+            tieCommit.state === 'committed' && tieHandles.length === 2,
+            `Maximum Damage Window tie commit 실패: ${JSON.stringify(tieCommit)}`
+        );
+        const tieWinner = [...tieHandles].sort((left, right) => (
+            left.entityId - right.entityId || left.incarnation - right.incarnation
+        ))[0];
+        await runFixed(65, 'Maximum Damage Window tie 후보 완료');
+        const towerAfterTie = await readTower(
+            towerHandle,
+            'Maximum Damage Window tie 후 Tower'
+        );
+        assertWindow(
+            towerAfterTie,
+            17,
+            500,
+            125,
+            tieWinner,
+            'Maximum Damage Window tie provenance'
+        );
+        const tieCompleted = endpoint.commitCompletedEventsAtFixedBoundary(66);
+        completedBatches.push(tieCompleted);
+        const tieDamageEvent = tieCompleted.contactEvents.find((event) => (
+            eventMatches(event, tieWinner, towerHandle)
+        ));
+        assert(
+            tieCompleted.protocolFailure === null
+                && tieDamageEvent?.eventType === 'damage-applied'
+                && tieDamageEvent.damageFixedPoint === 490,
+            `Maximum Damage Window tie event provenance 불일치: ${JSON.stringify(tieCompleted)}`
+        );
+
+        const lethalRequest = endpoint.requestSpawn(
+            createHostileProjectileIntent(
+                lethalProjectileDefinition,
+                sourceEnemyHandle,
+                20,
+                towerAfterTie.position
+            ),
+            66,
+            'maximum-damage-window:lethal-projectile'
+        );
+        assert(lethalRequest.accepted,
+            `Maximum Damage Window lethal 발사체 요청 실패: ${JSON.stringify(lethalRequest)}`);
+        const lethalCommit = endpoint.commitAtFixedBoundary(66);
+        const lethalHandle = lethalCommit.spawned.find(({ commandId }) => (
+            commandId === 'maximum-damage-window:lethal-projectile'
+        ))?.handle;
+        assert(
+            lethalCommit.state === 'committed' && lethalHandle,
+            `Maximum Damage Window lethal commit 실패: ${JSON.stringify(lethalCommit)}`
+        );
+        await runFixed(66, 'Maximum Damage Window lethal 후보 완료');
+        const afterLethalBodies = await readPhase5Bodies(endpoint);
+        assert(
+            !afterLethalBodies.some((body) => exactHandleMatches(body.handle, towerHandle))
+                && endpoint.getRegistry().has(towerHandle)
+                && endpoint.hasBody(towerHandle),
+            `Maximum Damage Window lethal Tower lifecycle 불일치: ${JSON.stringify(afterLethalBodies)}`
+        );
+        const lethalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(67);
+        completedBatches.push(lethalCompleted);
+        const lethalDamageEvent = lethalCompleted.contactEvents.find((event) => (
+            eventMatches(event, lethalHandle, towerHandle)
+        ));
+        const towerDeaths = lethalCompleted.deathEvents.filter((event) => (
+            event.entityId === towerHandle.entityId
+            && event.incarnation === towerHandle.incarnation
+            && event.disposition === 'despawn-requested'
+        ));
+        assert(
+            lethalCompleted.protocolFailure === null
+                && lethalDamageEvent?.eventType === 'damage-applied'
+                && lethalDamageEvent.damageFixedPoint === 1700
+                && towerDeaths.length === 1,
+            `Maximum Damage Window Tower death once 불일치: ${JSON.stringify(lethalCompleted)}`
+        );
+
+        const finalStatus = endpoint.getStatus();
+        const gpuStatus = finalStatus.backend?.gpu ?? finalStatus.backend;
+        const storageProfile = gpuStatus.fixedPrimitives.storageProfile;
+        const errors = Object.freeze({
+            protocolFailures: completedBatches.filter(
+                ({ protocolFailure }) => protocolFailure !== null
+            ).length,
+            contactOverflow: gpuStatus.contact.lastOverflowCount,
+            eventOverflow: gpuStatus.events.lastAppliedOverflowCount,
+            deathOverflow: gpuStatus.events.lastDeathOverflowCount
+        });
+        assert(
+            !finalStatus.recoveryRequired
+                && !endpoint.requiresRecovery()
+                && storageProfile.requiredMaximum === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+                && storageProfile.maximumDamageWindow === 7
+                && gpuStatus.fixedPrimitives.windowStorageBuffersPerStage === 7
+                && Object.values(errors).every((value) => value === 0),
+            `Maximum Damage Window status/storage/error 불일치: ${JSON.stringify({ finalStatus, storageProfile, errors })}`
+        );
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+        const teardownStatus = endpoint.getStatus();
+        assert(
+            teardownStatus.destroyed && !teardownStatus.recoveryRequired,
+            `Maximum Damage Window teardown destroyed/recovery 불일치: ${JSON.stringify(teardownStatus)}`
+        );
+        return Object.freeze({
+            ticks: Object.freeze([...numericTicks]),
+            hp: Object.freeze({
+                initial: initialTower.health,
+                first: towerAfterFirst.health,
+                suppressed: towerAfterSuppressed.health,
+                larger: towerAfterLarger.health,
+                beforeExpiry: towerBeforeExpiry.health,
+                expired: towerAfterExpiry.health,
+                tie: towerAfterTie.health,
+                lethalAppliedFixedPoint: lethalDamageEvent.damageFixedPoint
+            }),
+            window: Object.freeze({
+                first: Object.freeze({ ...towerAfterFirst.combatState }),
+                suppressed: Object.freeze({ ...towerAfterSuppressed.combatState }),
+                larger: Object.freeze({ ...towerAfterLarger.combatState }),
+                beforeExpiry: Object.freeze({ ...towerBeforeExpiry.combatState }),
+                expired: Object.freeze({ ...towerAfterExpiry.combatState }),
+                tie: Object.freeze({ ...towerAfterTie.combatState })
+            }),
+            sources: Object.freeze({
+                first: firstProjectileHandle,
+                enemy: contactEnemyHandle,
+                pusher: contactPusherHandle,
+                tieWinner,
+                lethal: lethalHandle
+            }),
+            penetration: Object.freeze({
+                first: firstProjectileAfter.health,
+                friendly: friendlyProjectileAfter.health,
+                suppressed: suppressedProjectileAfter.health
+            }),
+            suppressedDamageEvent,
+            continuousContactEvents: Object.freeze(continuousContactEvents),
+            displacements: firstDisplacements,
+            deathEventCount: towerDeaths.length,
+            errors,
+            storageProfile,
+            teardown: Object.freeze({
+                destroyed: teardownStatus.destroyed,
+                recoveryRequired: teardownStatus.recoveryRequired
+            })
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+/** 실제 GPU Core-proxy contact를 CoreIntegrity/RunOutcome terminal path까지 연결합니다. */
+async function runProductionCoreImpactDefeatHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    let coreImpactCleanupPort = null;
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device),
+        coreImpactCleanupPortReceiver: ({ port }) => {
+            coreImpactCleanupPort = port;
+        }
+    }, {
+        capacity: 4,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const coreIntegrity = new CoreIntegrity({ maxIntegrity: 5 });
+    const runOutcome = new RunOutcome();
+    const coreImpactDirector = new EnemyCoreImpactDirector({
+        endpoint,
+        coreImpactCleanupPort,
+        coreIntegrity,
+        eventHistoryCapacity: 8,
+        factCapacity: 8
+    });
+    const fixedDelta = 1 / 60;
+    const corePosition = Object.freeze({ x: 7, y: 4 });
+    const coreEntryPosition = Object.freeze({
+        x: corePosition.x - 0.9,
+        y: corePosition.y
+    });
+    const enemyDefinition = Object.freeze({
+        id: 'nw-core-impact-terminal-enemy',
+        shapeType: 'circle',
+        colorRgba: [1, 0.18, 0.18, 1],
+        radiusScale: 1,
+        collisionRadiusTiles: 0.35,
+        collisionWeight: 1,
+        maxHealth: 10,
+        moveSpeedTilesPerSecond: 4,
+        towerContactDamage: 0,
+        coreImpactDamage: 5,
+        bountyBudget: 3,
+        pairCollisionRadiusScale: 1
+    });
+    const createCoreImpactEnemyIntent = (spawnSequence) => Object.freeze({
+        ...createGpuEnemySpawnIntent({
+            definition: enemyDefinition,
+            route: navigationSource.route,
+            spawnSequence,
+            waveId: 'nw-core-impact-terminal',
+            policyId: 'hardware-fixture'
+        }),
+        // Core enter-only policy가 tick-start overlap을 억제하므로 radius 합 밖에서
+        // production route flow로 정확히 경계를 crossing하게 spawn합니다.
+        position: coreEntryPosition
+    });
+    const eventMatches = (event, subject, other) => (
+        event?.entityId === subject.entityId
+        && event?.incarnation === subject.incarnation
+        && event?.otherEntityId === other.entityId
+        && event?.otherIncarnation === other.incarnation
+    );
+    const runFixed = async (tick, label) => {
+        assert(endpoint.fixedUpdate(fixedDelta, tick), `${label} fixed submit 실패`);
+        await settlePhase5Endpoint(endpoint, label);
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Core impact endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const initialRequests = [
+            endpoint.requestSpawn(
+                createGpuCoreProxySpawnIntent({ position: corePosition }),
+                1,
+                'core-impact-terminal:core'
+            ),
+            endpoint.requestSpawn(
+                createCoreImpactEnemyIntent(0),
+                1,
+                'core-impact-terminal:enemy'
+            )
+        ];
+        assert(initialRequests.every(({ accepted }) => accepted),
+            `Core impact 초기 spawn 요청 실패: ${JSON.stringify(initialRequests)}`);
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const coreHandle = initialHandles.get('core-impact-terminal:core');
+        const enemyHandle = initialHandles.get('core-impact-terminal:enemy');
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 2
+                && coreHandle
+                && enemyHandle,
+            `Core impact 초기 commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        await runFixed(1, 'Core impact GPU contact 완료');
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(2);
+        const coreContact = completed.contactEvents.find((event) => (
+            eventMatches(event, coreHandle, enemyHandle)
+        ));
+        const observation = coreImpactDirector.observeCompletedEvents(
+            completed,
+            endpoint.getRegistry()
+        );
+        const impactFact = observation.facts.find(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.IMPACT
+        );
+        const depletedFact = observation.facts.find(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.DEPLETED
+        );
+        assert(
+            completed.protocolFailure === null
+                && coreContact?.eventType === 'interaction-enter'
+                && coreContact.disposition === 'applied'
+                && impactFact?.disposition
+                    === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                && impactFact?.bountyEligible === false
+                && impactFact?.coreImpactDamage === 5
+                && impactFact.appliedDamage === 5
+                && impactFact.bountyBudget === 3
+                && depletedFact?.currentIntegrity === 0
+                && coreIntegrity.isDepleted()
+                && coreIntegrity.isTerminallySealed(),
+            `Core impact GPU→CoreIntegrity fact 불일치: ${JSON.stringify({ completed, observation })}`
+        );
+        const runFailure = runOutcome.transitionToDefeated({
+            fixedTick: 2,
+            sourceType: depletedFact.type,
+            sourceEventKey: depletedFact.eventKey,
+            coreImpactKey: depletedFact.impactKey
+        });
+        const ingressClosed = endpoint.closeGameplayIngress('run-defeated');
+        const rejectedSpawn = endpoint.requestSpawn(
+            createCoreImpactEnemyIntent(1),
+            3,
+            'core-impact-terminal:rejected-after-defeat'
+        );
+        const cleanupStage = coreImpactDirector.stageForFixedTick({
+            endpoint,
+            targetFixedTick: 2
+        });
+        const cleanupCommit = endpoint.commitAtFixedBoundary(2);
+        const cleanupObservation = coreImpactDirector.observeFixedCommit(
+            cleanupCommit,
+            2
+        );
+        assert(
+            runFailure.transitioned
+                && runOutcome.isDefeated()
+                && runFailure.fact?.fixedTick === 2
+                && ingressClosed.closed
+                && rejectedSpawn.accepted === false
+                && rejectedSpawn.reason === 'run-defeated'
+                && cleanupStage.requested === 1
+                && cleanupCommit.despawned.length === 1
+                && cleanupCommit.despawned[0].handle.entityId === enemyHandle.entityId
+                && cleanupCommit.despawned[0].handle.incarnation === enemyHandle.incarnation
+                && cleanupCommit.despawned[0].disposition
+                    === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                && cleanupCommit.despawned[0].bountyEligible === false
+                && cleanupObservation.recoveryRequired === false,
+            `Core impact defeat/ingress/cleanup contract 불일치: ${JSON.stringify({ runFailure, ingressClosed, rejectedSpawn, cleanupStage, cleanupCommit, cleanupObservation })}`
+        );
+        await runFixed(2, 'Core impact terminal cleanup 완료');
+        const bodiesAfterCleanup = await readPhase5Bodies(endpoint);
+        const coreAfterCleanup = findPhase5Body(
+            bodiesAfterCleanup,
+            coreHandle,
+            'Core impact cleanup 후 Core'
+        );
+        const retryFailure = runOutcome.transitionToDefeated({ fixedTick: 3 });
+        const endpointStatus = endpoint.getStatus();
+        assert(
+            coreAfterCleanup.handle?.entityId === coreHandle.entityId
+                && !endpoint.getRegistry().has(enemyHandle)
+                && !endpoint.hasBody(enemyHandle)
+                && coreIntegrity.getCurrentIntegrity() === 0
+                && coreIntegrity.restoreIntegrity(1) === 0
+                && retryFailure.transitioned === false
+                && retryFailure.fact === runFailure.fact
+                && !endpointStatus.recoveryRequired
+                && !endpoint.requiresRecovery()
+                && !coreImpactDirector.requiresRecovery(),
+            `Core impact terminal state/recovery 불일치: ${JSON.stringify({ coreAfterCleanup, endpointStatus, core: coreIntegrity.getCurrentIntegrity(), runOutcome: runOutcome.getStatus(), coreImpact: coreImpactDirector.getStatus() })}`
+        );
+        endpoint.destroy();
+        coreImpactDirector.destroy();
+        runOutcome.destroy();
+        await device.queue.onSubmittedWorkDone();
+        const teardownStatus = endpoint.getStatus();
+        assert(
+            teardownStatus.destroyed
+                && coreImpactDirector.getStatus().destroyed
+                && runOutcome.getStatus().destroyed,
+            `Core impact teardown destroyed 불일치: ${JSON.stringify({ endpoint: teardownStatus, coreImpact: coreImpactDirector.getStatus(), runOutcome: runOutcome.getStatus() })}`
+        );
+        return Object.freeze({
+            ticks: Object.freeze([1, 2]),
+            handles: Object.freeze({ core: coreHandle, enemy: enemyHandle }),
+            contact: coreContact,
+            facts: observation.facts,
+            coreIntegrity: Object.freeze({
+                max: 5,
+                afterImpact: 0,
+                terminalSealed: true
+            }),
+            runOutcome: Object.freeze({
+                state: runFailure.fact?.outcome,
+                runFailedFact: runFailure.fact,
+                repeatedTransitioned: retryFailure.transitioned
+            }),
+            cleanup: Object.freeze({
+                stage: cleanupStage,
+                commit: cleanupCommit,
+                observation: cleanupObservation,
+                rejectedSpawn
+            }),
+            teardown: Object.freeze({
+                endpointDestroyed: teardownStatus.destroyed,
+                directorDestroyed: coreImpactDirector.getStatus().destroyed,
+                outcomeDestroyed: runOutcome.getStatus().destroyed
+            })
+        });
+    } finally {
+        endpoint.destroy();
+        coreImpactDirector.destroy();
+        runOutcome.destroy();
+        await device.queue.onSubmittedWorkDone();
     }
 }
 
@@ -10480,7 +11489,7 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
                 position: targetPosition,
                 velocity: { x: 0, y: 0 },
                 radius: THE_TOWER_DATA.RADIUS_TILES,
-                inverseMass: 1 / THE_TOWER_DATA.MASS,
+                inverseMass: 1 / THE_TOWER_DATA.WEIGHT,
                 bodyLayer:
                     GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
                 collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
@@ -14474,6 +15483,10 @@ async function runProductionFixedPrimitiveSmoke(device) {
     const targetEntityInvalid =
         await runProductionTargetEntityInvalidHardwareSmoke(device);
     const towerCombat = await runProductionTowerCombatHardwareSmoke(device);
+    const maximumDamageWindow =
+        await runProductionMaximumDamageWindowHardwareSmoke(device);
+    const coreImpactDefeat =
+        await runProductionCoreImpactDefeatHardwareSmoke(device);
     const deadControlRace =
         await runProductionDeadControlRaceHardwareSmoke(device);
     const hostileAttackLifecycle =
@@ -14499,6 +15512,8 @@ async function runProductionFixedPrimitiveSmoke(device) {
         targetEntityAim,
         targetEntityInvalid,
         towerCombat,
+        maximumDamageWindow,
+        coreImpactDefeat,
         deadControlRace,
         hostileAttackLifecycle,
         phase5ProjectileLifecycle,
@@ -14552,20 +15567,32 @@ async function run() {
             device,
             navigator.gpu.getPreferredCanvasFormat()
         );
-        result.productionSimulation = await runProductionSimulationSmoke(device);
-        result.productionFlowAtlas = await runProductionFlowAtlasSmoke(device);
-        result.productionShapeFlowAtlas = await runProductionShapeFlowAtlasSmoke(device);
-        result.productionEnemyAdapter = await runProductionEnemyAdapterGpuSmoke(device);
-        result.productionEnemyShapePixels = await runProductionEnemyShapePixelSmoke(device);
-        result.productionMixedBodyContactEvent = await runProductionMixedBodyContactEventSmoke(device);
-        result.productionBenchmarkEndpoint = await runProductionBenchmarkEndpointSmoke(device);
-        result.productionEndpointDeathLifecycle = await runProductionEndpointDeathLifecycleSmoke(device);
-        result.productionFixedPrimitives = await runProductionFixedPrimitiveSmoke(device);
-        result.productionStableSlotLifecycle = await runProductionStableSlotLifecycleSmoke(device);
-        result.productionFixedSubmitFailure = await runProductionFixedSubmitFailureSmoke(device);
-        result.productionSparseCollisionHole = await runProductionSparseCollisionHoleSmoke(device);
-        result.productionSparseRenderHole = await runProductionSparseRenderHoleSmoke(device);
-        result.productionOverflow = await runProductionOverflowSmoke(device);
+        const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE ?? 'full';
+        if (fixtureStage === 'maximum-damage-window') {
+            result.productionMaximumDamageWindow =
+                await runProductionMaximumDamageWindowHardwareSmoke(device);
+            result.productionCoreImpactDefeat =
+                await runProductionCoreImpactDefeatHardwareSmoke(device);
+        } else {
+            assert(
+                fixtureStage === 'full',
+                `지원하지 않는 WebGPU fixture stage입니다: ${fixtureStage}`
+            );
+            result.productionSimulation = await runProductionSimulationSmoke(device);
+            result.productionFlowAtlas = await runProductionFlowAtlasSmoke(device);
+            result.productionShapeFlowAtlas = await runProductionShapeFlowAtlasSmoke(device);
+            result.productionEnemyAdapter = await runProductionEnemyAdapterGpuSmoke(device);
+            result.productionEnemyShapePixels = await runProductionEnemyShapePixelSmoke(device);
+            result.productionMixedBodyContactEvent = await runProductionMixedBodyContactEventSmoke(device);
+            result.productionBenchmarkEndpoint = await runProductionBenchmarkEndpointSmoke(device);
+            result.productionEndpointDeathLifecycle = await runProductionEndpointDeathLifecycleSmoke(device);
+            result.productionFixedPrimitives = await runProductionFixedPrimitiveSmoke(device);
+            result.productionStableSlotLifecycle = await runProductionStableSlotLifecycleSmoke(device);
+            result.productionFixedSubmitFailure = await runProductionFixedSubmitFailureSmoke(device);
+            result.productionSparseCollisionHole = await runProductionSparseCollisionHoleSmoke(device);
+            result.productionSparseRenderHole = await runProductionSparseRenderHoleSmoke(device);
+            result.productionOverflow = await runProductionOverflowSmoke(device);
+        }
         await device.queue.onSubmittedWorkDone();
         result.uncapturedErrorCount = uncapturedErrors.length;
         assert(uncapturedErrors.length === 0, `uncaptured WebGPU error: ${uncapturedErrors.join(' | ')}`);

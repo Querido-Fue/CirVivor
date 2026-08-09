@@ -1,6 +1,7 @@
 import { assertCollidable2D } from '../contract/collidable_contract.js';
 import { assertCameraFollowTarget2D } from '../contract/camera_control_contract.js';
 import { assertCoreIntegrity } from '../contract/core_integrity_contract.js';
+import { assertRunOutcome } from '../contract/run_outcome_contract.js';
 import { assertPhysicsBody2D } from '../contract/physics_body_contract.js';
 import { assertTileNavigationSource } from '../contract/tile_navigation_contract.js';
 import {
@@ -25,6 +26,9 @@ import {
 import {
     HostileAttackDirector
 } from './enemy/hostile_attack_director.js';
+import {
+    EnemyCoreImpactDirector
+} from './enemy/enemy_core_impact_director.js';
 import { TheCore } from './the_core.js';
 import { TheCoreRenderer } from './the_core_renderer.js';
 import { TheTower } from './the_tower.js';
@@ -41,12 +45,21 @@ import {
 import {
     TowerCoreCameraFollowTarget
 } from './tower_core_camera_follow_target.js';
+import { RunOutcome } from '../state/run_outcome.js';
 
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
+const EMPTY_CORE_IMPACT_FACTS = Object.freeze([]);
 const REPLACEMENT_GPU_ENDPOINT_INITIALIZED_STATES = new Set([
     'gpu-deferred',
     'gpu-ready'
 ]);
+
+const GPU_WORLD_TERMINAL_STATE = Object.freeze({
+    RUNNING: 'RUNNING',
+    FINAL_COMMIT_PENDING: 'FINAL_COMMIT_PENDING',
+    SEALED: 'SEALED',
+    SEALED_FAILED: 'SEALED_FAILED'
+});
 
 function syncWorldViewport(target, source = {}) {
     const ww = Number(source.ww);
@@ -94,6 +107,8 @@ function freezeHandle(handle) {
  * @description 한 session mode의 CPU fallback world 또는 mixed-body GPU world를 소유합니다.
  */
 export class GameObjectSystem {
+    #coreImpactCleanupBinding;
+
     constructor(dependencies, options) {
         const inferredMode = options?.sessionMode
             ?? selectGameWorldSessionMode(dependencies?.webGpuPlatformPort);
@@ -113,6 +128,10 @@ export class GameObjectSystem {
         this.requestedMapId = typeof options?.mapId === 'string' ? options.mapId : null;
         this.injectedTileNavigationSource = options?.tileNavigationSource ?? null;
         this.coreIntegrity = assertCoreIntegrity(options?.coreIntegrity);
+        this.runOutcomeOwned = !options?.runOutcome;
+        this.runOutcome = options?.runOutcome
+            ? assertRunOutcome(options.runOutcome)
+            : new RunOutcome();
         this.towerCombatRoster = options?.towerCombatRoster ?? null;
         if (this.towerCombatRoster !== null
             && (typeof this.towerCombatRoster.commitCompletedEvents !== 'function'
@@ -143,6 +162,12 @@ export class GameObjectSystem {
         if (typeof this.hostileAttackDirectorFactory !== 'function') {
             throw new TypeError('hostileAttackDirectorFactory는 함수여야 합니다.');
         }
+        this.enemyCoreImpactDirectorFactory
+            = dependencies?.enemyCoreImpactDirectorFactory
+                ?? ((directorOptions) => new EnemyCoreImpactDirector(directorOptions));
+        if (typeof this.enemyCoreImpactDirectorFactory !== 'function') {
+            throw new TypeError('enemyCoreImpactDirectorFactory는 함수여야 합니다.');
+        }
         this.endpointSessionCount = 0;
         this.enemySimulationEndpoint = null;
         this.enemySimulationBackend = null;
@@ -150,10 +175,15 @@ export class GameObjectSystem {
         this.enemyLifecycleCommandOwner = null;
         this.#installGpuEndpoint(this.#createGpuEndpoint(true));
         this.hostileAttackDirector = null;
-        if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
-            && this.gameplayWorldActorsEnabled) {
+        this.enemyCoreImpactDirector = null;
+        if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD) {
             try {
-                this.hostileAttackDirector = this.#createHostileAttackDirector(
+                if (this.gameplayWorldActorsEnabled) {
+                    this.hostileAttackDirector = this.#createHostileAttackDirector(
+                        this.enemySimulationEndpoint
+                    );
+                }
+                this.enemyCoreImpactDirector = this.#createEnemyCoreImpactDirector(
                     this.enemySimulationEndpoint
                 );
             } catch (error) {
@@ -162,7 +192,14 @@ export class GameObjectSystem {
                 } catch {
                     // 최초 Director 생성 실패의 원래 오류를 보존합니다.
                 }
+                try {
+                    this.enemyCoreImpactDirector?.destroy();
+                } catch {
+                    // 최초 Core director 생성 실패가 endpoint 정리를 가리지 않게 합니다.
+                }
+                this.#revokeCoreImpactCleanupBinding();
                 this.hostileAttackDirector = null;
+                this.enemyCoreImpactDirector = null;
                 this.enemySimulationEndpoint = null;
                 this.enemySimulationBackend = null;
                 this.worldRegistry = null;
@@ -194,6 +231,10 @@ export class GameObjectSystem {
         this.enemySimulationPaused = false;
         this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(this.initialFixedTick);
         this.lastTowerCombatFacts = EMPTY_TOWER_COMBAT_FACTS;
+        this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
+        this.terminalState = GPU_WORLD_TERMINAL_STATE.RUNNING;
+        this.terminalDiagnostic = null;
+        this.terminalFinalizationTick = 0;
         this.enemyPresentationFrame = {
             frameDelta: 0,
             fixedDelta: 0,
@@ -226,6 +267,10 @@ export class GameObjectSystem {
                 ?? createTileMap(this.requestedMapId)
         );
         this.enemySimulationEndpoint.init(this.tileMap);
+        this.enemyCoreImpactDirector?.resetGpuBinding?.(
+            this.enemySimulationEndpoint,
+            this.#coreImpactCleanupBinding?.port ?? null
+        );
         this.waveDirector?.init(this.tileMap);
 
         const towerSpawn = this.tileMap.getTowerSpawnPosition();
@@ -363,6 +408,22 @@ export class GameObjectSystem {
         return this.hostileAttackDirector?.getStatus() ?? null;
     }
 
+    /** Core arrival/disposition CPU domain의 bounded facts와 cleanup 상태입니다. */
+    getCoreImpactStatus() {
+        return this.enemyCoreImpactDirector?.getStatus() ?? null;
+    }
+
+    /** defeat 이후에도 presentation이 읽을 수 있는 terminal lifecycle 상태입니다. */
+    getTerminalStatus() {
+        return Object.freeze({
+            state: this.terminalState,
+            finalizationTick: this.terminalFinalizationTick,
+            diagnostic: this.terminalDiagnostic,
+            outcome: this.runOutcome.getStatus(),
+            lastCoreImpactFacts: this.lastCoreImpactFacts
+        });
+    }
+
     getGpuWorldActorStatus() {
         return Object.freeze({
             enabled: this.gameplayWorldActorsEnabled,
@@ -374,7 +435,9 @@ export class GameObjectSystem {
             towerAlive: this.#isPrimaryTowerAlive(),
             towerCurrentHp: this.towerCombatRoster
                 ?.getPrimaryTowerCurrentHp() ?? null,
-            lastTowerCombatFacts: this.lastTowerCombatFacts
+            lastTowerCombatFacts: this.lastTowerCombatFacts,
+            lastCoreImpactFacts: this.lastCoreImpactFacts,
+            terminal: this.getTerminalStatus()
         });
     }
 
@@ -395,8 +458,12 @@ export class GameObjectSystem {
     }
 
     isEnemySimulationRecoveryRequired() {
+        if (this.runOutcome.isDefeated()) {
+            return false;
+        }
         return this.enemySimulationRecoveryRequired
-            || this.hostileAttackDirector?.requiresRecovery() === true;
+            || this.hostileAttackDirector?.requiresRecovery() === true
+            || this.enemyCoreImpactDirector?.requiresRecovery() === true;
     }
 
     isGpuWorldRecoveryRequired() {
@@ -414,6 +481,14 @@ export class GameObjectSystem {
         if (!Number.isSafeInteger(proposedFixedTick) || proposedFixedTick <= 0) {
             throw new RangeError('proposedFixedTick은 양의 안전한 정수여야 합니다.');
         }
+        // Terminal은 presentation/status를 살려 둔 채 endpoint mutation/submit/recovery를
+        // 전혀 다시 시도하지 않는 성공 no-op입니다.
+        if (this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED
+            || this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED_FAILED) {
+            this.lastCompletedEnemyFixedTick = proposedFixedTick;
+            this.pendingEnemyFixedTick = 0;
+            return true;
+        }
         if (this.pendingEnemyFixedTick !== 0
             && this.pendingEnemyFixedTick !== proposedFixedTick) {
             throw new RangeError(
@@ -425,12 +500,17 @@ export class GameObjectSystem {
             || this.gameplayWorldActorsEnabled
             || this.enemySimulationEndpoint.getPendingCommandCount() > 0
             || this.enemySimulationEndpoint.hasActiveBodies();
-        if (gpuRequired
+        if (!this.runOutcome.isDefeated()
+            && !this.coreIntegrity.isDepleted()
+            && gpuRequired
             && this.enemySimulationEndpoint.requiresRecovery()
             && gpuState !== 'gpu-backpressure') {
             return this.#pauseForGpuRecovery();
         }
-        if (this.hostileAttackDirector?.requiresRecovery() === true) {
+        if (!this.runOutcome.isDefeated()
+            && !this.coreIntegrity.isDepleted()
+            && (this.hostileAttackDirector?.requiresRecovery() === true
+                || this.enemyCoreImpactDirector?.requiresRecovery() === true)) {
             return this.#pauseForGpuRecovery();
         }
 
@@ -438,6 +518,13 @@ export class GameObjectSystem {
             const completedEvents = this.enemySimulationEndpoint
                 .commitCompletedEventsAtFixedBoundary(proposedFixedTick);
             if (completedEvents.protocolFailure) {
+                if (this.runOutcome.isDefeated() || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'completed-event-protocol',
+                        proposedFixedTick,
+                        completedEvents.protocolFailure
+                    );
+                }
                 return this.#pauseForGpuRecovery();
             }
             this.lastCompletedGpuEvents = completedEvents;
@@ -447,52 +534,108 @@ export class GameObjectSystem {
             if (!this.#isPrimaryTowerAlive() && this.towerHandle) {
                 this.#cutoverCommittedTowerDeath();
             }
+            const coreCompletedObservation = this.enemyCoreImpactDirector
+                ?.observeCompletedEvents(completedEvents, this.worldRegistry) ?? null;
+            this.lastCoreImpactFacts = coreCompletedObservation?.facts
+                ?? EMPTY_CORE_IMPACT_FACTS;
+            if (coreCompletedObservation?.recoveryRequired === true) {
+                if (this.runOutcome.isDefeated() || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'core-impact-observe',
+                        proposedFixedTick,
+                        this.enemyCoreImpactDirector.getStatus().cleanupFailure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
+            this.#transitionRunOutcomeForCore(
+                proposedFixedTick,
+                coreCompletedObservation?.coreDepletedFact ?? null
+            );
             const hostileCompletedObservation = this.hostileAttackDirector
                 ?.observeCompletedEvents(completedEvents) ?? null;
             if (hostileCompletedObservation?.recoveryRequired === true) {
-                return this.#pauseForGpuRecovery();
-            }
-            this.waveDirector?.queueSpawnsForFixedTick(
-                proposedFixedTick,
-                this.enemySimulationEndpoint
-            );
-            if (!this.#queueGpuWorldActorsForFixedTick(proposedFixedTick)) {
+                if (this.runOutcome.isDefeated()) {
+                    return this.#sealTerminalFailure(
+                        'hostile-observe-after-defeat',
+                        proposedFixedTick,
+                        hostileCompletedObservation
+                    );
+                }
                 return this.#pauseForGpuRecovery();
             }
 
             let expectedControlCommandId = null;
             let primaryProjectileShotReceipt = null;
-            if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
-                && this.towerHandle) {
-                const targetFixedTick = this.getNextGpuLifecycleFixedTick();
-                if (targetFixedTick !== proposedFixedTick) {
-                    throw new RangeError('Tower control과 lifecycle fixed 경계가 다릅니다.');
-                }
-                const receipt = this.tower.stageControlForFixedTick(
-                    this.enemySimulationEndpoint,
-                    targetFixedTick
+            if (this.runOutcome.isRunning()) {
+                this.waveDirector?.queueSpawnsForFixedTick(
+                    proposedFixedTick,
+                    this.enemySimulationEndpoint
                 );
-                if (!receipt?.accepted) {
+                if (!this.#queueGpuWorldActorsForFixedTick(proposedFixedTick)) {
                     return this.#pauseForGpuRecovery();
                 }
-                expectedControlCommandId = receipt.commandId;
-                primaryProjectileShotReceipt = this.primaryProjectileController
-                    ?.stageShotForFixedTick(targetFixedTick) ?? null;
+
+                if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+                    && this.towerHandle) {
+                    const targetFixedTick = this.getNextGpuLifecycleFixedTick();
+                    if (targetFixedTick !== proposedFixedTick) {
+                        throw new RangeError('Tower control과 lifecycle fixed 경계가 다릅니다.');
+                    }
+                    const receipt = this.tower.stageControlForFixedTick(
+                        this.enemySimulationEndpoint,
+                        targetFixedTick
+                    );
+                    if (!receipt?.accepted) {
+                        return this.#pauseForGpuRecovery();
+                    }
+                    expectedControlCommandId = receipt.commandId;
+                    primaryProjectileShotReceipt = this.primaryProjectileController
+                        ?.stageShotForFixedTick(targetFixedTick) ?? null;
+                }
+
+                const hostileStage = this.hostileAttackDirector?.stageForFixedTick({
+                    targetFixedTick: proposedFixedTick,
+                    targetHandle: this.#isPrimaryTowerAlive()
+                        ? this.towerHandle
+                        : null
+                }) ?? null;
+                if (hostileStage?.recoveryRequired === true) {
+                    return this.#pauseForGpuRecovery();
+                }
             }
 
-            const hostileStage = this.hostileAttackDirector?.stageForFixedTick({
-                targetFixedTick: proposedFixedTick,
-                targetHandle: this.#isPrimaryTowerAlive()
-                    ? this.towerHandle
-                    : null
+            // Core arrival cleanup은 outcome 전이 뒤에도 endpoint가 주입한 전용
+            // opaque cleanup port로 한 번 stage됩니다.
+            const coreStage = this.enemyCoreImpactDirector?.stageForFixedTick({
+                endpoint: this.enemySimulationEndpoint,
+                targetFixedTick: proposedFixedTick
             }) ?? null;
-            if (hostileStage?.recoveryRequired === true) {
+            if (coreStage?.recoveryRequired === true) {
+                if (this.runOutcome.isDefeated()) {
+                    return this.#sealTerminalFailure(
+                        'core-impact-stage',
+                        proposedFixedTick,
+                        this.enemyCoreImpactDirector.getStatus().cleanupFailure
+                    );
+                }
                 return this.#pauseForGpuRecovery();
             }
 
             const lifecycleResult = this.enemySimulationEndpoint
                 .commitAtFixedBoundary(proposedFixedTick);
             if (lifecycleResult.recoveryRequired) {
+                if (this.runOutcome.isDefeated()) {
+                    this.enemyCoreImpactDirector?.observeFixedCommit(
+                        lifecycleResult,
+                        proposedFixedTick
+                    );
+                    return this.#sealTerminalFailure(
+                        'terminal-lifecycle-commit',
+                        proposedFixedTick,
+                        lifecycleResult
+                    );
+                }
                 this.enemySimulationRecoveryRequired
                     = lifecycleResult.state !== 'stalled';
                 if (!this.enemySimulationPaused) {
@@ -501,7 +644,8 @@ export class GameObjectSystem {
                 this.enemySimulationPaused = true;
                 return false;
             }
-            if (!this.#bindCommittedGpuWorldActors(lifecycleResult, proposedFixedTick)) {
+            if (this.runOutcome.isRunning()
+                && !this.#bindCommittedGpuWorldActors(lifecycleResult, proposedFixedTick)) {
                 return this.#pauseForGpuRecovery();
             }
             if (expectedControlCommandId) {
@@ -521,6 +665,25 @@ export class GameObjectSystem {
             const hostileCommitObservation = this.hostileAttackDirector
                 ?.observeFixedCommit(lifecycleResult, proposedFixedTick) ?? null;
             if (hostileCommitObservation?.recoveryRequired === true) {
+                if (this.runOutcome.isDefeated()) {
+                    return this.#sealTerminalFailure(
+                        'hostile-commit-after-defeat',
+                        proposedFixedTick,
+                        hostileCommitObservation
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
+            const coreCommitObservation = this.enemyCoreImpactDirector
+                ?.observeFixedCommit(lifecycleResult, proposedFixedTick) ?? null;
+            if (coreCommitObservation?.recoveryRequired === true) {
+                if (this.runOutcome.isDefeated()) {
+                    return this.#sealTerminalFailure(
+                        'core-impact-commit',
+                        proposedFixedTick,
+                        this.enemyCoreImpactDirector.getStatus().cleanupFailure
+                    );
+                }
                 return this.#pauseForGpuRecovery();
             }
             this.pendingEnemyFixedTick = proposedFixedTick;
@@ -536,9 +699,18 @@ export class GameObjectSystem {
             || this.gameplayWorldActorsEnabled
             || hasActiveBodies
             || this.enemySimulationEndpoint.getPendingCommandCount() > 0;
-        this.enemySimulationRecoveryRequired = gpuStillRequired
+        const terminalFinalization = this.runOutcome.isDefeated();
+        this.enemySimulationRecoveryRequired = !terminalFinalization
+            && gpuStillRequired
             && this.enemySimulationEndpoint.requiresRecovery()
             && postSubmitState !== 'gpu-backpressure';
+        if (terminalFinalization && !gpuSubmitted) {
+            return this.#sealTerminalFailure(
+                'terminal-fixed-submit',
+                proposedFixedTick,
+                Object.freeze({ runtimeState: postSubmitState })
+            );
+        }
         if (hasActiveBodies && !gpuSubmitted) {
             if (!this.enemySimulationPaused) {
                 this.enemySimulationEndpoint.synchronizePresentation();
@@ -551,6 +723,10 @@ export class GameObjectSystem {
         this.enemySimulationRecoveryRequired = false;
         this.lastCompletedEnemyFixedTick = proposedFixedTick;
         this.pendingEnemyFixedTick = 0;
+        if (terminalFinalization) {
+            this.#sealTerminalSuccess(proposedFixedTick);
+            return true;
+        }
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
             this.tower.fixedUpdate(delta);
             this.tileCollisionResolver.resolve(this.tower.getCollider());
@@ -610,10 +786,13 @@ export class GameObjectSystem {
             || this.gameplayWorldActorsEnabled
             || this.enemySimulationEndpoint.getPendingCommandCount() > 0
             || this.enemySimulationEndpoint.hasActiveBodies();
-        this.enemySimulationRecoveryRequired = (gpuRequired
-            && this.enemySimulationEndpoint.requiresRecovery()
-            && gpuState !== 'gpu-backpressure')
-            || this.hostileAttackDirector?.requiresRecovery() === true;
+        this.enemySimulationRecoveryRequired = this.runOutcome.isDefeated()
+            ? false
+            : (gpuRequired
+                && this.enemySimulationEndpoint.requiresRecovery()
+                && gpuState !== 'gpu-backpressure')
+                || this.hostileAttackDirector?.requiresRecovery() === true
+                || this.enemyCoreImpactDirector?.requiresRecovery() === true;
         return submitted;
     }
 
@@ -626,6 +805,7 @@ export class GameObjectSystem {
     restartGpuWorldAtSafeWaveBoundary() {
         if (this.destroyed
             || !this.initialized
+            || this.runOutcome.isDefeated()
             || this.sessionMode !== GAME_WORLD_SESSION_MODE.GPU_WORLD) {
             return false;
         }
@@ -636,10 +816,15 @@ export class GameObjectSystem {
         }
 
         let replacementEndpoint = null;
+        let replacementCoreImpactCleanupBinding = null;
         let replacementWaveDirector = null;
         let replacementHostileAttackDirector = null;
+        let replacementEnemyCoreImpactDirector = null;
         try {
-            replacementEndpoint = this.#createGpuEndpoint(false);
+            const replacement = this.#createGpuEndpoint(false);
+            replacementEndpoint = replacement.endpoint;
+            replacementCoreImpactCleanupBinding
+                = replacement.coreImpactCleanupBinding;
             replacementWaveDirector = this.enemyWaveEnabled
                 ? new WaveDirector({
                     waveDefinition: this.waveDefinition,
@@ -662,7 +847,18 @@ export class GameObjectSystem {
             replacementHostileAttackDirector = this.hostileAttackDirector
                 ? this.#createHostileAttackDirector(replacementEndpoint)
                 : null;
+            replacementEnemyCoreImpactDirector = this.enemyCoreImpactDirector
+                ? this.#createEnemyCoreImpactDirector(
+                    replacementEndpoint,
+                    replacementCoreImpactCleanupBinding.port
+                )
+                : null;
         } catch {
+            try {
+                replacementEnemyCoreImpactDirector?.destroy();
+            } catch {
+                // 실패한 replacement 정리가 old GPU world 보존 경계를 깨지 않게 합니다.
+            }
             try {
                 replacementHostileAttackDirector?.destroy();
             } catch {
@@ -674,6 +870,11 @@ export class GameObjectSystem {
                 // 실패한 replacement 정리가 old GPU world 보존 경계를 깨지 않게 합니다.
             }
             try {
+                replacementCoreImpactCleanupBinding?.revoke();
+            } catch {
+                // 실패한 replacement capability만 폐기하고 old binding은 보존합니다.
+            }
+            try {
                 replacementEndpoint?.destroy();
             } catch {
                 // 실패한 replacement 정리가 recovery caller까지 전파되지 않게 합니다.
@@ -681,17 +882,23 @@ export class GameObjectSystem {
             return false;
         }
         this.enemySimulationEndpoint.synchronizePresentation();
+        this.enemyCoreImpactDirector?.destroy();
         this.hostileAttackDirector?.destroy();
         this.waveDirector?.destroy();
         this.primaryProjectileController?.resetGpuBinding();
+        this.#revokeCoreImpactCleanupBinding();
         this.enemySimulationEndpoint.destroy();
         this.tower.resetGpuBinding();
         this.towerCombatRoster?.releaseGpuBinding();
-        this.#installGpuEndpoint(replacementEndpoint);
+        this.#installGpuEndpoint(Object.freeze({
+            endpoint: replacementEndpoint,
+            coreImpactCleanupBinding: replacementCoreImpactCleanupBinding
+        }));
         if (this.#isPrimaryTowerAlive()) {
             this.primaryProjectileController?.bindGpuEndpoint(replacementEndpoint);
         }
         this.hostileAttackDirector = replacementHostileAttackDirector;
+        this.enemyCoreImpactDirector = replacementEnemyCoreImpactDirector;
         this.waveDirector = replacementWaveDirector;
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
@@ -701,6 +908,7 @@ export class GameObjectSystem {
         );
         this.lastTowerCombatFacts = this.towerCombatRoster
             ?.getLastCommittedFacts?.() ?? EMPTY_TOWER_COMBAT_FACTS;
+        this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
         this.#armGpuWorldActors(this.lastCompletedEnemyFixedTick);
         return true;
     }
@@ -731,6 +939,15 @@ export class GameObjectSystem {
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = false;
+        this.enemyCoreImpactDirector?.destroy();
+        this.enemyCoreImpactDirector = null;
+        this.#revokeCoreImpactCleanupBinding();
+        this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
+        this.terminalDiagnostic = null;
+        this.terminalState = GPU_WORLD_TERMINAL_STATE.SEALED;
+        if (this.runOutcomeOwned) {
+            this.runOutcome.destroy();
+        }
         if (this.cameraFollowTarget !== this.tower) {
             this.cameraFollowTarget?.destroy?.();
         }
@@ -750,11 +967,90 @@ export class GameObjectSystem {
         this.towerCombatRoster = null;
     }
 
+    #transitionRunOutcomeForCore(fixedTick, coreDepletedFact) {
+        if (!this.coreIntegrity.isDepleted()) {
+            return false;
+        }
+        let fact = this.runOutcome.getRunFailedFact();
+        if (this.runOutcome.isRunning()) {
+            fact = this.runOutcome.transitionToDefeated({
+                fixedTick,
+                sourceType: coreDepletedFact?.type ?? 'CoreDepleted',
+                sourceEventKey: coreDepletedFact?.eventKey ?? null,
+                coreImpactKey: coreDepletedFact?.impactKey ?? null
+            }).fact;
+        }
+        this.#beginTerminalFinalization(fixedTick, fact);
+        return true;
+    }
+
+    #beginTerminalFinalization(fixedTick, runFailedFact) {
+        if (this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED
+            || this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED_FAILED) {
+            return;
+        }
+        this.terminalState = GPU_WORLD_TERMINAL_STATE.FINAL_COMMIT_PENDING;
+        this.terminalFinalizationTick = fixedTick;
+        this.enemySimulationEndpoint.closeGameplayIngress?.('run-defeated');
+        // runFailedFact는 RunOutcome의 immutable single fact이며 상태 snapshot에서 보존됩니다.
+        void runFailedFact;
+    }
+
+    #sealTerminalSuccess(fixedTick) {
+        this.enemySimulationEndpoint.finalizeClosedGameplayIngress?.();
+        this.terminalState = GPU_WORLD_TERMINAL_STATE.SEALED;
+        this.terminalFinalizationTick = fixedTick;
+        this.terminalDiagnostic = null;
+        this.enemySimulationRecoveryRequired = false;
+        this.enemySimulationPaused = false;
+    }
+
+    #sealTerminalFailure(stage, fixedTick, detail = null) {
+        // completed-event protocol failure처럼 Core director observe 이전에 terminal
+        // 경로로 들어오는 경우에도 Core depletion은 반드시 immutable RunFailed를
+        // 한 번 남겨야 합니다.
+        this.#transitionRunOutcomeForCore(fixedTick, null);
+        this.#beginTerminalFinalization(
+            fixedTick,
+            this.runOutcome.getRunFailedFact()
+        );
+        this.enemySimulationEndpoint.finalizeClosedGameplayIngress?.();
+        this.terminalState = GPU_WORLD_TERMINAL_STATE.SEALED_FAILED;
+        this.terminalFinalizationTick = fixedTick;
+        this.terminalDiagnostic = Object.freeze({
+            stage,
+            fixedTick,
+            reason: typeof detail?.code === 'string'
+                ? detail.code
+                : typeof detail?.reason === 'string'
+                    ? detail.reason
+                    : typeof detail?.state === 'string'
+                        ? detail.state
+                        : 'terminal-finalization-failed'
+        });
+        this.pendingEnemyFixedTick = 0;
+        this.enemySimulationRecoveryRequired = false;
+        this.enemySimulationPaused = true;
+        return false;
+    }
+
     #createGpuEndpoint(allowInjectedBackend) {
+        let coreImpactCleanupBinding = null;
         const dependencies = {
             webGpuPlatformPort: this.endpointDependencies.webGpuPlatformPort,
             enemySimulationBackendFactory:
-                this.endpointDependencies.enemySimulationBackendFactory
+                this.endpointDependencies.enemySimulationBackendFactory,
+            coreImpactCleanupPortReceiver: (binding) => {
+                if (coreImpactCleanupBinding !== null
+                    || typeof binding?.port
+                        ?.requestCommittedCoreImpactCleanup !== 'function'
+                    || typeof binding?.revoke !== 'function') {
+                    throw new TypeError(
+                        'endpoint Core-impact cleanup binding 계약이 올바르지 않습니다.'
+                    );
+                }
+                coreImpactCleanupBinding = binding;
+            }
         };
         if (allowInjectedBackend
             && !dependencies.enemySimulationBackendFactory
@@ -765,15 +1061,21 @@ export class GameObjectSystem {
         const endpoint = createGpuSimulationEndpoint(dependencies, {
             presentationProfile: this.enemyPresentationProfile
         });
+        if (coreImpactCleanupBinding === null) {
+            endpoint.destroy();
+            throw new TypeError('endpoint가 Core-impact cleanup port를 제공하지 않았습니다.');
+        }
         this.endpointSessionCount++;
-        return endpoint;
+        return Object.freeze({ endpoint, coreImpactCleanupBinding });
     }
 
-    #installGpuEndpoint(endpoint) {
+    #installGpuEndpoint(bundle) {
+        const endpoint = bundle.endpoint;
         this.enemySimulationEndpoint = endpoint;
         this.enemySimulationBackend = endpoint.getBackend();
         this.worldRegistry = endpoint.getRegistry();
         this.enemyLifecycleCommandOwner = endpoint.getLifecycleCommandOwner();
+        this.#coreImpactCleanupBinding = bundle.coreImpactCleanupBinding;
     }
 
     #createHostileAttackDirector(endpoint) {
@@ -797,6 +1099,40 @@ export class GameObjectSystem {
             throw new TypeError('HostileAttackDirector contract가 올바르지 않습니다.');
         }
         return director;
+    }
+
+    #createEnemyCoreImpactDirector(
+        endpoint,
+        coreImpactCleanupPort = this.#coreImpactCleanupBinding?.port ?? null
+    ) {
+        const director = this.enemyCoreImpactDirectorFactory({
+            endpoint,
+            coreIntegrity: this.coreIntegrity,
+            coreImpactCleanupPort
+        });
+        if (!director
+            || typeof director.observeCompletedEvents !== 'function'
+            || typeof director.stageForFixedTick !== 'function'
+            || typeof director.observeFixedCommit !== 'function'
+            || typeof director.requiresRecovery !== 'function'
+            || typeof director.getStatus !== 'function'
+            || typeof director.destroy !== 'function') {
+            try {
+                director?.destroy?.();
+            } catch {
+                // 잘못된 director contract가 old GPU world 원자성을 깨지 않게 합니다.
+            }
+            throw new TypeError('EnemyCoreImpactDirector contract가 올바르지 않습니다.');
+        }
+        return director;
+    }
+
+    #revokeCoreImpactCleanupBinding() {
+        if (this.#coreImpactCleanupBinding !== null
+            && this.#coreImpactCleanupBinding !== undefined) {
+            this.#coreImpactCleanupBinding.revoke();
+            this.#coreImpactCleanupBinding = null;
+        }
     }
 
     #armGpuWorldActors(fixedTickOffset) {

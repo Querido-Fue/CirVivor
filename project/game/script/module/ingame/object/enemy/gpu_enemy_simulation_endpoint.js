@@ -4,11 +4,20 @@ import {
     EnemyLifecycleCommandOwner
 } from './enemy_lifecycle_command_owner.js';
 import { EnemySimulationBackend } from './enemy_simulation_backend.js';
+import {
+    ENEMY_LIFECYCLE_DISPOSITION_ID
+} from '../../contract/enemy_lifecycle_disposition_contract.js';
+import {
+    GPU_CIRCLE_APPLIED_EVENT_FLAG
+} from '../../physics/gpu/gpu_circle_body_abi.js';
 
 const DEFAULT_ENEMY_CAPACITY = 16384;
 const DEFAULT_COMPLETED_EVENT_SNAPSHOT_CAPACITY = 2048;
 const DEFAULT_COMPLETED_EVENT_KEY_HISTORY_CAPACITY = 65536;
 let nextGpuSimulationSessionGeneration = 1;
+const CORE_IMPACT_CLEANUP_OPTIONS = Object.freeze({
+    disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+});
 
 function allocateSessionGeneration() {
     if (!Number.isSafeInteger(nextGpuSimulationSessionGeneration)) {
@@ -117,6 +126,34 @@ function createFixedPrimitiveBackendPort(backend, sessionGeneration) {
     });
 }
 
+function createTerminalCleanupAuthority() {
+    const issuedPermits = new WeakSet();
+    let revoked = false;
+    return Object.freeze({
+        issuePermit() {
+            if (revoked) {
+                return null;
+            }
+            const permit = Object.freeze({});
+            issuedPermits.add(permit);
+            return permit;
+        },
+        consumePermit(permit) {
+            if (revoked
+                || !permit
+                || typeof permit !== 'object'
+                || !issuedPermits.has(permit)) {
+                return false;
+            }
+            issuedPermits.delete(permit);
+            return true;
+        },
+        revoke() {
+            revoked = true;
+        }
+    });
+}
+
 /**
  * @class GpuEnemySimulationEndpoint
  * @description 게임 코드가 적·투사체를 공유하는 GPU 물리의 lifecycle·fixed tick·presentation을
@@ -124,11 +161,18 @@ function createFixedPrimitiveBackendPort(backend, sessionGeneration) {
  * 기존 class 이름은 호환을 위해 유지하며 `GpuSimulationEndpoint`가 canonical alias입니다.
  */
 export class GpuEnemySimulationEndpoint {
+    #terminalCleanupAuthority;
+    #coreImpactCleanupPortState;
+
     /**
-     * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object}} [dependencies={}]
+     * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object,coreImpactCleanupPortReceiver?:(binding:object)=>void}} [dependencies={}]
      * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number}} [options={}]
      */
     constructor(dependencies = {}, options = {}) {
+        if (dependencies.coreImpactCleanupPortReceiver !== undefined
+            && typeof dependencies.coreImpactCleanupPortReceiver !== 'function') {
+            throw new TypeError('coreImpactCleanupPortReceiver는 함수여야 합니다.');
+        }
         this.sessionGeneration = allocateSessionGeneration();
         const backendDependencies = {
             webGpuPlatformPort: dependencies.webGpuPlatformPort ?? null
@@ -156,10 +200,41 @@ export class GpuEnemySimulationEndpoint {
         );
         this.capacity = resolveCapacity(this.backend, options);
         this.registry = new WorldRegistry({ capacity: this.capacity });
+        this.#terminalCleanupAuthority = createTerminalCleanupAuthority();
         this.lifecycleCommandOwner = new EnemyLifecycleCommandOwner(
             this.backend,
-            this.registry
+            this.registry,
+            { terminalCleanupAuthority: this.#terminalCleanupAuthority }
         );
+        this.#coreImpactCleanupPortState = { revoked: false };
+        const cleanupPortState = this.#coreImpactCleanupPortState;
+        const cleanupPort = Object.freeze({
+            requestCommittedCoreImpactCleanup: (
+                handle,
+                targetFixedTick,
+                commandId
+            ) => {
+                if (cleanupPortState.revoked || this.destroyed) {
+                    return Object.freeze({
+                        accepted: false,
+                        reason: 'core-impact-cleanup-port-revoked'
+                    });
+                }
+                const permit = this.#terminalCleanupAuthority.issuePermit();
+                return this.lifecycleCommandOwner.requestDespawn(
+                    handle,
+                    'core-impact',
+                    targetFixedTick,
+                    commandId,
+                    CORE_IMPACT_CLEANUP_OPTIONS,
+                    permit
+                );
+            }
+        });
+        const coreImpactCleanupBinding = Object.freeze({
+            port: cleanupPort,
+            revoke: () => this.#revokeCoreImpactCleanupPort()
+        });
         this.fixedPrimitiveBackendPort = createFixedPrimitiveBackendPort(
             this.backend,
             this.sessionGeneration
@@ -205,8 +280,19 @@ export class GpuEnemySimulationEndpoint {
         this.completedEventProtocolFailure = null;
         this.deferredCompletedEventBatches = [];
         this.lastCompletedSimulationEvents = createEmptyCompletedEventSnapshot();
+        this.gameplayIngressOpen = true;
+        this.gameplayIngressCloseReason = null;
+        this.gameplayIngressCloseCleanup = null;
         this.initialized = false;
         this.destroyed = false;
+        try {
+            dependencies.coreImpactCleanupPortReceiver?.(
+                coreImpactCleanupBinding
+            );
+        } catch (error) {
+            this.destroy();
+            throw error;
+        }
     }
 
     /** 맵 topology를 GPU backend에 컴파일합니다. */
@@ -223,6 +309,10 @@ export class GpuEnemySimulationEndpoint {
     /** 다음 fixed 경계에 적용할 spawn을 예약합니다. */
     requestSpawn(intent, targetFixedTick, commandId = null) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress();
+        if (rejected) {
+            return rejected;
+        }
         return this.lifecycleCommandOwner.requestSpawn(
             intent,
             targetFixedTick,
@@ -233,23 +323,35 @@ export class GpuEnemySimulationEndpoint {
     /** 다음 fixed 경계들에 적용할 spawn batch를 ingress에서 원자적으로 예약합니다. */
     requestSpawnBatch(requests) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress({
+            requestedCount: Array.isArray(requests) ? requests.length : 0,
+            queuedCount: 0
+        });
+        if (rejected) {
+            return rejected;
+        }
         return this.lifecycleCommandOwner.requestSpawnBatch(requests);
     }
 
     /** 다음 fixed 경계에 적용할 despawn을 예약합니다. */
-    requestDespawn(handle, reason, targetFixedTick, commandId = null) {
+    requestDespawn(handle, reason, targetFixedTick, commandId = null, options = null) {
         this.#assertUsable();
         return this.lifecycleCommandOwner.requestDespawn(
             handle,
             reason,
             targetFixedTick,
-            commandId
+            commandId,
+            options
         );
     }
 
     /** Exact active body에 move-only command를 다음 fixed tick 한 번 예약합니다. */
     requestBodyControl(command, targetFixedTick, commandId) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress();
+        if (rejected) {
+            return rejected;
+        }
         return this.fixedCommandOwner.requestBodyControl(
             command,
             targetFixedTick,
@@ -260,6 +362,10 @@ export class GpuEnemySimulationEndpoint {
     /** CPU pose를 거치지 않는 tick-start source-relative spawn을 예약합니다. */
     requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress();
+        if (rejected) {
+            return rejected;
+        }
         return this.fixedCommandOwner.requestSourceRelativeSpawn(
             intent,
             targetFixedTick,
@@ -294,6 +400,50 @@ export class GpuEnemySimulationEndpoint {
             ?? Object.freeze({ accepted: false, reason: 'fixed-primitives-unsupported' });
     }
 
+    /**
+     * 새 gameplay producer ingress를 영구히 닫고 이미 예약된 gameplay command도
+     * 회수합니다. committed GPU-death와 전용 port의 Core-impact cleanup만 마지막
+     * lifecycle commit까지 보존됩니다.
+     */
+    closeGameplayIngress(reason = 'run-defeated') {
+        this.#assertUsable();
+        if (this.gameplayIngressOpen) {
+            this.gameplayIngressOpen = false;
+            this.gameplayIngressCloseReason = typeof reason === 'string' && reason.length > 0
+                ? reason
+                : 'run-defeated';
+            const lifecycle = this.lifecycleCommandOwner.closeIngress(
+                this.gameplayIngressCloseReason
+            );
+            const fixedCommands = this.fixedCommandOwner.cancelAll();
+            this.gameplayIngressCloseCleanup = Object.freeze({
+                lifecycle,
+                fixedCommands
+            });
+        }
+        return Object.freeze({
+            closed: !this.gameplayIngressOpen,
+            reason: this.gameplayIngressCloseReason
+        });
+    }
+
+    /** @returns {boolean} public spawn/control/source-relative ingress가 열려 있는지 여부입니다. */
+    isGameplayIngressOpen() {
+        return !this.destroyed && this.gameplayIngressOpen;
+    }
+
+    /** terminal success/failure sealing에서 남은 privileged cleanup까지 회수합니다. */
+    finalizeClosedGameplayIngress() {
+        this.#assertUsable();
+        if (this.gameplayIngressOpen) {
+            return Object.freeze({ lifecycleCancelledCount: 0, fixedCommands: null });
+        }
+        const lifecycleCancelledCount
+            = this.lifecycleCommandOwner.finalizeClosedIngress();
+        const fixedCommands = this.fixedCommandOwner.cancelAll();
+        return Object.freeze({ lifecycleCancelledCount, fixedCommands });
+    }
+
     /** GPU authority가 아닌 최신 bounded observed pose snapshot입니다. */
     getObservedTrackedPose() {
         return this.destroyed
@@ -312,9 +462,15 @@ export class GpuEnemySimulationEndpoint {
     commitAtFixedBoundary(fixedTick) {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
+        if (!this.gameplayIngressOpen) {
+            // close 이후 raw fixed-owner reference로 들어온 command도 terminal final
+            // commit plan에는 절대 섞이지 않게 경계 직전에 한 번 더 회수합니다.
+            this.fixedCommandOwner.cancelAll();
+        }
         if (this.completedEventRecoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
+            this.#finalizeClosedLifecycleIngress();
             return Object.freeze({
                 fixedTick: tick,
                 state: 'failed',
@@ -329,12 +485,14 @@ export class GpuEnemySimulationEndpoint {
         }
         const lifecycle = this.lifecycleCommandOwner.commitAtFixedBoundary(tick);
         if (lifecycle.recoveryRequired) {
+            this.#finalizeClosedLifecycleIngress();
             return Object.freeze({
                 ...lifecycle,
                 fixedCommands: null
             });
         }
         const fixedCommands = this.fixedCommandOwner.commitAtFixedBoundary(tick);
+        this.#finalizeClosedLifecycleIngress();
         const recoveryRequired = fixedCommands.recoveryRequired === true;
         const state = recoveryRequired
             ? fixedCommands.state === 'stalled' ? 'stalled' : 'failed'
@@ -447,7 +605,9 @@ export class GpuEnemySimulationEndpoint {
                         handle,
                         'gpu-death',
                         tick,
-                        `gpu-death:${normalized.key}`
+                        `gpu-death:${normalized.key}`,
+                        null,
+                        this.#terminalCleanupAuthority.issuePermit()
                     );
                     if (requested.accepted) {
                         disposition = 'despawn-requested';
@@ -611,6 +771,9 @@ export class GpuEnemySimulationEndpoint {
             pendingFixedCommandCount: fixedCommands.pendingCommandCount,
             pendingSourceRelativeDestinationCount:
                 fixedCommands.pendingDestinationCount,
+            gameplayIngressOpen: this.gameplayIngressOpen,
+            gameplayIngressCloseReason: this.gameplayIngressCloseReason,
+            gameplayIngressCloseCleanup: this.gameplayIngressCloseCleanup,
             completedThroughTick: this.completedThroughTick,
             recoveryRequired: !this.destroyed && (
                 this.completedEventRecoveryRequired
@@ -632,6 +795,7 @@ export class GpuEnemySimulationEndpoint {
             return;
         }
         this.destroyed = true;
+        this.#revokeCoreImpactCleanupPort();
         this.fixedCommandOwner.destroy();
         this.lifecycleCommandOwner.destroy();
         this.registry.destroy();
@@ -645,6 +809,11 @@ export class GpuEnemySimulationEndpoint {
         this.completedEventKeys.length = 0;
         this.completedEventKeyHead = 0;
         this.initialized = false;
+    }
+
+    /** production Core director가 전용 cleanup port 주입을 요구하는지 식별합니다. */
+    requiresPrivilegedCoreImpactCleanupPort() {
+        return true;
     }
 
     #prepareCompletedEventCommit(targetFixedTick) {
@@ -1093,9 +1262,26 @@ export class GpuEnemySimulationEndpoint {
         const valueFixedPoint = Number(
             event.valueFixedPoint ?? event.damageFixedPoint ?? 0
         );
+        const flags = toNonNegativeSafeInteger(event.flags);
+        const maximumDamageWindow = event.maximumDamageWindow === true;
+        const encodedMaximumDamageWindow = (
+            flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
+        ) !== 0;
+        if (maximumDamageWindow !== encodedMaximumDamageWindow) {
+            throw new RangeError(
+                'Maximum Damage Window event flag와 public marker가 일치하지 않습니다.'
+            );
+        }
+        const allowsZeroDamage = eventType === 'damage-applied'
+            && maximumDamageWindow;
         if (!Number.isSafeInteger(valueFixedPoint)
-            || (eventType === 'damage-applied' && valueFixedPoint <= 0)
-            || (eventType !== 'damage-applied' && valueFixedPoint !== 0)) {
+            || (eventType === 'damage-applied' && (
+                valueFixedPoint < 0
+                || (valueFixedPoint === 0 && !allowsZeroDamage)
+            ))
+            || (eventType !== 'damage-applied' && (
+                valueFixedPoint !== 0 || maximumDamageWindow
+            ))) {
             throw new RangeError(
                 `event value/type contract가 잘못되었습니다: type=${eventType}, value=${valueFixedPoint}`
             );
@@ -1141,7 +1327,8 @@ export class GpuEnemySimulationEndpoint {
                 && Number.isFinite(Number(event.damage))
                 ? Number(event.damage)
                 : 0,
-            flags: toNonNegativeSafeInteger(event.flags),
+            flags,
+            maximumDamageWindow,
             reasonFlags: toNonNegativeSafeInteger(
                 event.reasonFlags ?? (type === 'death' ? event.flags : 0)
             ),
@@ -1157,6 +1344,7 @@ export class GpuEnemySimulationEndpoint {
             normalized.bodyId,
             normalized.valueFixedPoint,
             normalized.flags,
+            normalized.maximumDamageWindow,
             normalized.reasonFlags,
             normalized.position?.x ?? null,
             normalized.position?.y ?? null
@@ -1219,6 +1407,30 @@ export class GpuEnemySimulationEndpoint {
     #assertUsable() {
         if (this.destroyed) {
             throw new Error('destroy된 GpuEnemySimulationEndpoint는 사용할 수 없습니다.');
+        }
+    }
+
+    #rejectClosedGameplayIngress(extra = null) {
+        if (this.gameplayIngressOpen) {
+            return null;
+        }
+        return Object.freeze({
+            accepted: false,
+            reason: this.gameplayIngressCloseReason ?? 'gameplay-ingress-closed',
+            ...(extra ?? {})
+        });
+    }
+
+    #finalizeClosedLifecycleIngress() {
+        if (!this.gameplayIngressOpen) {
+            this.lifecycleCommandOwner.finalizeClosedIngress();
+        }
+    }
+
+    #revokeCoreImpactCleanupPort() {
+        if (this.#coreImpactCleanupPortState?.revoked !== true) {
+            this.#coreImpactCleanupPortState.revoked = true;
+            this.#terminalCleanupAuthority?.revoke();
         }
     }
 }

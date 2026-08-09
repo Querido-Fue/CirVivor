@@ -290,7 +290,10 @@ test('1/60 oracle은 zero, cardinal, diagonal normalization과 max-speed clamp�
             y: 0
         }
     });
-    capped.tower.getPhysicsBody().applyImpulse(5, 0);
+    capped.tower.getPhysicsBody().applyImpulse(
+        THE_TOWER_DATA.WEIGHT * 5,
+        0
+    );
     capped.gpu.velocity.x = f32(
         THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND + 5
     );

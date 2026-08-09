@@ -489,6 +489,16 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
         body.interactionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+    );
+    assert.equal(body.contactHandler.damageSelf, 0);
+    assert.equal(
+        body.contactHandler.damageOther,
+        Math.fround(BASIC_SQUARE_ENEMY_DATA.towerContactDamage)
+    );
+    assert.equal(
+        body.contactHandler.targetInteractionLayerMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
     );
     assert.equal('layerMask' in body, false);
     assert.equal('sensorMask' in body, false);

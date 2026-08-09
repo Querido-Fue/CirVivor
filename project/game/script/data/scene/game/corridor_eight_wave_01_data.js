@@ -26,6 +26,22 @@ const ENEMY_DEFINITION_ID_CYCLE = Object.freeze([
     ARCHER_ENEMY_DATA.id
 ]);
 
+/** Production wave는 profile base를 바꾸지 않는 explicit identity modifier를 갖습니다. */
+const CORRIDOR_EIGHT_WAVE_01_ENEMY_MODIFIERS = Object.freeze({
+    global: Object.freeze({
+        multipliers: Object.freeze({
+            maxHealth: 1,
+            moveSpeedTilesPerSecond: 1,
+            weight: 1,
+            towerContactDamage: 1,
+            coreImpactDamage: 1,
+            bountyBudget: 1
+        }),
+        absolute: Object.freeze({})
+    }),
+    byEnemyDefinitionId: Object.freeze({})
+});
+
 const CORRIDOR_EIGHT_WAVE_01_PHASES = Object.freeze([
     Object.freeze({
         startTick: 1,
@@ -54,5 +70,6 @@ const CORRIDOR_EIGHT_WAVE_01_PHASES = Object.freeze([
 export const CORRIDOR_EIGHT_WAVE_01_DATA = Object.freeze({
     waveId: 'corridor_eight_wave_01',
     mapId: CORRIDOR_EIGHT_MAP_DATA.id,
+    enemyModifiers: CORRIDOR_EIGHT_WAVE_01_ENEMY_MODIFIERS,
     phases: CORRIDOR_EIGHT_WAVE_01_PHASES
 });

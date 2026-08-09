@@ -5,6 +5,7 @@ import { PlayerControlRouter } from './input/player_control_router.js';
 import { GameObjectSystem } from './object/game_object_system.js';
 import { TowerCombatRoster } from './object/tower/tower_combat_roster.js';
 import { CoreIntegrity } from './state/core_integrity.js';
+import { RunOutcome } from './state/run_outcome.js';
 import {
     GAME_WORLD_SESSION_MODE,
     selectGameWorldSessionMode
@@ -60,6 +61,26 @@ function createCoreDiagnosticStatus(coreIntegrity) {
             coreIntegrity.getMaxIntegrity()
         ),
         depleted: coreIntegrity.isDepleted() === true
+    });
+}
+
+function createRunOutcomeDiagnosticStatus(runOutcome) {
+    if (!runOutcome) {
+        return Object.freeze({
+            available: false,
+            state: null,
+            running: null,
+            defeated: null,
+            runFailedFact: null
+        });
+    }
+    const status = runOutcome.getStatus();
+    return Object.freeze({
+        available: true,
+        state: status.state,
+        running: status.running === true,
+        defeated: status.defeated === true,
+        runFailedFact: status.runFailedFact
     });
 }
 
@@ -148,11 +169,13 @@ export class GameSystem {
         this.coreIntegrity = new CoreIntegrity({
             maxIntegrity: THE_CORE_DATA.MAX_INTEGRITY
         });
+        this.runOutcome = new RunOutcome();
         this.initialCameraZoom = options.initialCameraZoom;
         this.objectSystemOptions = Object.freeze({
             mapId: options.mapId,
             tileNavigationSource: options.tileNavigationSource,
             coreIntegrity: this.coreIntegrity,
+            runOutcome: this.runOutcome,
             enemyWaveEnabled: options.enemyWaveEnabled,
             gameplayWorldActorsEnabled: options.gameplayWorldActorsEnabled,
             waveDefinition: options.waveDefinition,
@@ -235,6 +258,19 @@ export class GameSystem {
         if (!this.entered || this.destroyed) {
             return false;
         }
+        const proposedFixedTick = this.fixedTick + 1;
+        // Terminal run은 input semantics를 새 gameplay request로 materialize하지 않습니다.
+        // GameObjectSystem은 마지막 cleanup submit 또는 sealed no-op만 수행합니다.
+        if (this.runOutcome.isDefeated()) {
+            const advanced = this.objectSystem.fixedUpdate(
+                this.dependencies.timePort.getFixedDelta(),
+                proposedFixedTick
+            );
+            if (advanced) {
+                this.fixedTick = proposedFixedTick;
+            }
+            return advanced;
+        }
         const moveAction = this.inputActionMapper.mapMoveAction(
             this.dependencies.inputActionSource
         );
@@ -242,7 +278,6 @@ export class GameSystem {
             .mapPrimaryPointerFireAction(this.dependencies.inputActionSource);
         this.playerControlRouter.dispatch(moveAction);
         this.playerControlRouter.dispatch(primaryPointerFireAction);
-        const proposedFixedTick = this.fixedTick + 1;
         const advanced = this.objectSystem.fixedUpdate(
             this.dependencies.timePort.getFixedDelta(),
             proposedFixedTick
@@ -361,6 +396,11 @@ export class GameSystem {
         return this.coreIntegrity;
     }
 
+    /** @returns {RunOutcome} GameSystem CPU run-domain의 단방향 outcome component입니다. */
+    getRunOutcome() {
+        return this.runOutcome;
+    }
+
     /**
      * HUD·테스트가 읽을 수 있는 불변 GPU Tower combat snapshot입니다.
      * CPU fallback의 Tower HP 정책은 아직 OPEN이므로 해당 mode에서는 null입니다.
@@ -388,6 +428,8 @@ export class GameSystem {
             recoveryRequired: this.isGpuWorldRecoveryRequired(),
             tower: createTowerDiagnosticStatus(this.getTowerCombatStatus()),
             core: createCoreDiagnosticStatus(this.coreIntegrity),
+            outcome: createRunOutcomeDiagnosticStatus(this.runOutcome),
+            terminal: this.objectSystem?.getTerminalStatus?.() ?? null,
             hostileAttack: createHostileAttackDiagnosticStatus(
                 hostileAttackStatus
             ),
@@ -440,7 +482,7 @@ export class GameSystem {
 
     /** CPU domain을 유지한 채 restartable GPU world만 safe boundary에서 교체합니다. */
     restartGpuWorldAtSafeWaveBoundary() {
-        if (!this.entered || this.destroyed) {
+        if (!this.entered || this.destroyed || this.runOutcome.isDefeated()) {
             return false;
         }
         return this.objectSystem.restartGpuWorldAtSafeWaveBoundary();
@@ -477,6 +519,7 @@ export class GameSystem {
         this.objectSystem = null;
         this.towerCombatRoster?.destroy();
         this.towerCombatRoster = null;
+        this.runOutcome.destroy();
         this.fixedTick = 0;
         this.entered = false;
     }

@@ -32,10 +32,21 @@ const {
     'ingame/contract/projectile_target_policy_contract.js'
 );
 const {
+    createEnemyCapabilityMask,
+    ENEMY_CAPABILITY_ID
+} = await loadGameModule('ingame/contract/enemy_capability_contract.js');
+const {
     GPU_PROJECTILE_SPAWN_MODE
 } = await loadGameModule('ingame/gpu_simulation_endpoint.js');
 
 const SESSION_GENERATION = 7;
+const ARCHER_CAPABILITY_MASK = createEnemyCapabilityMask(
+    ARCHER_ENEMY_DATA.capabilityIds
+);
+const BASIC_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
+    ENEMY_CAPABILITY_ID.NAVIGATION,
+    ENEMY_CAPABILITY_ID.CONTACT_COMBAT
+]);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -51,15 +62,22 @@ class ExactRegistryFixture {
         kindId = 'enemy',
         definitionId = ARCHER_ENEMY_DATA.id,
         createdAtTick = 1,
-        metadata = null
+        metadata = undefined
     } = {}) {
+        const resolvedMetadata = metadata === undefined && kindId === 'enemy'
+            ? Object.freeze({
+                capabilityMask: definitionId === ARCHER_ENEMY_DATA.id
+                    ? ARCHER_CAPABILITY_MASK
+                    : BASIC_ENEMY_CAPABILITY_MASK
+            })
+            : metadata ?? null;
         this.records.set(handleKey(handle), {
             entityId: handle.entityId,
             incarnation: handle.incarnation,
             kindId,
             definitionId,
             createdAtTick,
-            metadata
+            metadata: resolvedMetadata
         });
     }
 
@@ -141,7 +159,8 @@ function createFixture(options = {}) {
         backend,
         projectileSpawnAdapter: adapter,
         sessionGeneration: SESSION_GENERATION,
-        historyCapacity: options.historyCapacity ?? 16
+        historyCapacity: options.historyCapacity ?? 16,
+        enemyDefinitions: options.enemyDefinitions
     });
     return { registry, backend, adapter, director };
 }
@@ -342,6 +361,60 @@ test('lifecycle roster는 Archer만 exact 등록하고 duplicate/stale incarnati
     assert.equal(oldRemoval.removedArcherCount, 0);
     assert.equal(fixture.director.getStatus().activeArcherCount, 1);
     assert.equal(fixture.registry.fullScanCallCount, 0);
+});
+
+test('Hostile roster와 attack catalog는 TARGETING capability bit를 runtime authority로 사용한다', () => {
+    const missingTargetingDefinition = Object.freeze({
+        ...ARCHER_ENEMY_DATA,
+        capabilityIds: Object.freeze(
+            ARCHER_ENEMY_DATA.capabilityIds.filter(
+                (id) => id !== ENEMY_CAPABILITY_ID.TARGETING
+            )
+        )
+    });
+    assert.throws(() => createFixture({
+        enemyDefinitions: Object.freeze({
+            [missingTargetingDefinition.id]: missingTargetingDefinition
+        })
+    }), /TARGETING capability/);
+
+    const fixture = createFixture();
+    const annotationOnly = addExactBody(
+        fixture,
+        { entityId: 7, incarnation: 1 },
+        {
+            createdAtTick: 2,
+            metadata: Object.freeze({
+                capabilityMask: BASIC_ENEMY_CAPABILITY_MASK
+            })
+        }
+    );
+    const targetingArcher = addExactBody(
+        fixture,
+        { entityId: 8, incarnation: 1 },
+        {
+            createdAtTick: 2,
+            metadata: Object.freeze({
+                capabilityMask: ARCHER_CAPABILITY_MASK
+            })
+        }
+    );
+    const observed = observeLifecycle(fixture, 2, {
+        spawned: [
+            { commandId: 'spawn:annotation-only-archer', handle: annotationOnly },
+            { commandId: 'spawn:targeting-archer', handle: targetingArcher }
+        ]
+    });
+    assert.equal(observed.spawnedArcherCount, 1);
+    assert.equal(observed.recoveryRequired, false);
+    assert.deepEqual(
+        { ...fixture.director.getStatus().archers[0].handle },
+        targetingArcher
+    );
+    assert.equal(
+        fixture.director.getStatus().telemetry.nonAttackSpawnsIgnored,
+        1
+    );
 });
 
 test('completed death와 lifecycle despawn은 exact Archer를 staging 전에 제거한다', () => {

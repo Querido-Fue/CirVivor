@@ -72,10 +72,11 @@ const COMPUTE_PARAMS_MAX_EVENTS_OFFSET = COMPUTE_PARAMS_MAX_CONTACTS_OFFSET + 4;
 const COMPUTE_PARAMS_MAX_DEATH_EVENTS_OFFSET = COMPUTE_PARAMS_MAX_EVENTS_OFFSET + 4;
 const COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFSET
     = COMPUTE_PARAMS_MAX_DEATH_EVENTS_OFFSET + 4;
-const COMPUTE_PARAMS_BYTE_SIZE = COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFSET + 4;
+const COMPUTE_PARAMS_FIXED_TICK_OFFSET = COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFSET + 4;
+const COMPUTE_PARAMS_BYTE_SIZE = COMPUTE_PARAMS_FIXED_TICK_OFFSET + 16;
 const RENDER_PARAMS_BYTE_SIZE = 32;
 const GRID_OVERFLOW_BYTE_SIZE = 16;
-const CONTACT_STATE_BYTE_SIZE = 32;
+const CONTACT_STATE_BYTE_SIZE = 48;
 const CONTACT_RECORD_BYTE_SIZE = 32;
 const APPLIED_EVENT_BYTE_SIZE = GPU_CIRCLE_BODY_ABI.APPLIED_EVENT.STRIDE;
 const DEATH_EVENT_BYTE_SIZE = GPU_CIRCLE_BODY_ABI.DEATH_EVENT.STRIDE;
@@ -97,14 +98,18 @@ const DEATH_EVENT_FLAG_HEALTH = 1 << 0;
 const DEATH_EVENT_FLAG_LIFETIME = 1 << 1;
 const CONTACT_STATE_ABI_STATUS_OFFSET = 24;
 const CONTACT_STATE_EVENT_ENCODING_VERSION_OFFSET = 28;
-const EVENT_READBACK_CONTROL_HEADER_OFFSET = 32;
+const CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_EVENT_COUNT_OFFSET = 32;
+const CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OFFSET = 36;
+const EVENT_READBACK_CONTROL_HEADER_OFFSET = 64;
 const CONTACT_STATE_ABI_STATUS_OK = 1;
+const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK = 0;
 const APPLIED_EVENT_POLICY_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY;
 const APPLIED_EVENT_KNOWN_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_KILL
     | APPLIED_EVENT_POLICY_FLAGS
-    | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT;
+    | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT
+    | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW;
 
 const COMPUTE_ENTRY_POINTS = Object.freeze([
     'validate_source_relative_spawns',
@@ -120,6 +125,9 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'generate_body_contacts',
     'generate_world_contacts',
     'handle_contacts',
+    'preflight_maximum_damage_window',
+    'finalize_maximum_damage_window_preflight',
+    'resolve_maximum_damage_window',
     'mark_dead',
     'clear_position_deltas',
     'solve_body_body',
@@ -135,6 +143,7 @@ const COMPUTE_PIPELINE_PROFILE = Object.freeze({
     BODY_CONTACTS: 'body-contacts',
     WORLD_CONTACTS: 'world-contacts',
     CONTACT_HANDLING: 'contact-handling',
+    MAXIMUM_DAMAGE_WINDOW: 'maximum-damage-window',
     FIXED_CONTROL: 'fixed-control',
     SOURCE_RESOLVE: 'source-resolve',
     TRACKED_POSE: 'tracked-pose'
@@ -153,6 +162,10 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     generate_body_contacts: COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS,
     generate_world_contacts: COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS,
     handle_contacts: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
+    preflight_maximum_damage_window: COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
+    finalize_maximum_damage_window_preflight:
+        COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
+    resolve_maximum_damage_window: COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
     mark_dead: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
     clear_position_deltas: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     solve_body_body: COMPUTE_PIPELINE_PROFILE.PHYSICS,
@@ -296,6 +309,9 @@ function decodeAppliedEvent(view, offset, sequence) {
     const { type: eventTypeCode, flags } = unpackGpuCircleAppliedEventMeta(eventMeta);
     const eventType = appliedEventTypeName(eventTypeCode);
     const isDamage = eventTypeCode === GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED;
+    const maximumDamageWindow = (
+        flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
+    ) !== 0;
     const policyFlags = flags & APPLIED_EVENT_POLICY_FLAGS;
     const expectedPolicyFlags = eventTypeCode
         === GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER
@@ -309,12 +325,15 @@ function decodeAppliedEvent(view, offset, sequence) {
             && policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY)
         || policyFlags !== expectedPolicyFlags
         || (!isDamage
-            && (flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0)) {
+            && ((flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0
+                || maximumDamageWindow))) {
         throw new RangeError(
             `GPU applied event type/flags contract가 잘못되었습니다: type=${eventTypeCode}, flags=${flags}`
         );
     }
-    if ((!isDamage && valueFixedPoint !== 0) || (isDamage && valueFixedPoint <= 0)) {
+    if ((!isDamage && valueFixedPoint !== 0)
+        || (isDamage && (valueFixedPoint < 0
+            || (valueFixedPoint === 0 && !maximumDamageWindow)))) {
         throw new RangeError(
             `GPU applied event value/type contract가 잘못되었습니다: type=${eventTypeCode}, value=${valueFixedPoint}`
         );
@@ -351,6 +370,7 @@ function decodeAppliedEvent(view, offset, sequence) {
         damage: isDamage ? decodeGpuCircleBodyFixedPoint(valueFixedPoint) : 0,
         eventMeta,
         flags,
+        maximumDamageWindow,
         reason: appliedEventReason(eventTypeCode, flags)
     });
 }
@@ -617,7 +637,8 @@ function copyBodySlot(sourceStorage, sourceIndex, targetStorage, targetIndex) {
         ['physicsBuffer', GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE],
         ['simulationBuffer', GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE],
         ['temporaryBuffer', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE],
-        ['contactHandlerBuffer', GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE]
+        ['contactHandlerBuffer', GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE],
+        ['combatStateBuffer', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE]
     ]) {
         new Uint8Array(targetStorage[bufferName], targetIndex * stride, stride).set(
             new Uint8Array(sourceStorage[bufferName], sourceIndex * stride, stride)
@@ -945,6 +966,7 @@ export class GpuCircleBodySimulation {
         this.overflowResetData = new Uint32Array(4);
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedMaximumBodyRadius = NaN;
+        this.uploadedComputeFixedTick = -1;
     }
 
     /**
@@ -1967,7 +1989,7 @@ export class GpuCircleBodySimulation {
         const trackedPoseLease = this.trackedPoseReadbackLease;
         let encoder;
         try {
-            this.#writeComputeParams(delta);
+            this.#writeComputeParams(delta, resolvedSourceTick);
             if (stagedPrograms) {
                 this.device.queue.writeBuffer(
                     this.buffers.bodyControlProgram,
@@ -2055,6 +2077,14 @@ export class GpuCircleBodySimulation {
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING);
             pass.setPipeline(this.pipelines.compute.handle_contacts);
             pass.dispatchWorkgroups(Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE));
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW);
+            this.#dispatchBodies(pass, 'preflight_maximum_damage_window');
+            pass.setPipeline(
+                this.pipelines.compute.finalize_maximum_damage_window_preflight
+            );
+            pass.dispatchWorkgroups(1);
+            this.#dispatchBodies(pass, 'resolve_maximum_damage_window');
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING);
             this.#dispatchBodies(pass, 'mark_dead');
 
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
@@ -2496,7 +2526,8 @@ export class GpuCircleBodySimulation {
         const planes = [
             ['physicsBuffer', 'physics', GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE],
             ['simulationBuffer', 'simulation', GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE],
-            ['temporaryBuffer', 'temporary', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE]
+            ['temporaryBuffer', 'temporary', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE],
+            ['combatStateBuffer', 'combatStates', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE]
         ].map(([hostKey, gpuKey, stride]) => ({
             hostKey,
             gpuKey,
@@ -2659,11 +2690,13 @@ export class GpuCircleBodySimulation {
                     storageBuffersPerStage: 6,
                     latest: this.getLatestTrackedPose()
                 }),
+                windowStorageBuffersPerStage: 7,
                 storageProfile: Object.freeze({
                     physics: 8,
                     bodyContacts: 9,
                     worldContacts: 7,
                     contactHandling: 9,
+                    maximumDamageWindow: 7,
                     fixedControl: 5,
                     sourceResolve: 5,
                     trackedPose: 6,
@@ -2841,6 +2874,7 @@ export class GpuCircleBodySimulation {
         this.eventProducingBodyCount = eventProducingBodyCount;
         this.maximumBodyRadius = maximumBodyRadius;
         this.uploadedComputeFixedDelta = NaN;
+        this.uploadedComputeFixedTick = -1;
     }
 
     #uploadSlotRanges(slots) {
@@ -2857,6 +2891,11 @@ export class GpuCircleBodySimulation {
                     'contactHandlers',
                     'contactHandlerBuffer',
                     GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE
+                ],
+                [
+                    'combatStates',
+                    'combatStateBuffer',
+                    GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
                 ],
                 [
                     'bodyControlStates',
@@ -3412,6 +3451,8 @@ export class GpuCircleBodySimulation {
             let appliedOverflow = 0;
             let rawDeathCount = 0;
             let deathOverflow = 0;
+            let maximumDamageWindowEventCount = 0;
+            let maximumDamageWindowProtocolStatus = MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK;
             let events;
             try {
                 const view = new DataView(slot.buffer.getMappedRange());
@@ -3427,6 +3468,20 @@ export class GpuCircleBodySimulation {
                     || eventEncodingVersion !== GPU_CIRCLE_BODY_ABI_VERSION) {
                     throw new RangeError(
                         `GPU contact ABI status mismatch: status=${abiStatus}, eventVersion=${eventEncodingVersion}, expected=${GPU_CIRCLE_BODY_ABI_VERSION}`
+                    );
+                }
+                maximumDamageWindowEventCount = view.getUint32(
+                    CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_EVENT_COUNT_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                maximumDamageWindowProtocolStatus = view.getUint32(
+                    CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                if (maximumDamageWindowProtocolStatus
+                    !== MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK) {
+                    throw new RangeError(
+                        `GPU Maximum Damage Window protocol failure: status=${maximumDamageWindowProtocolStatus}, preflightEvents=${maximumDamageWindowEventCount}`
                     );
                 }
                 if (queueEntry.expectedControlCount > 0) {
@@ -3519,7 +3574,9 @@ export class GpuCircleBodySimulation {
                         rawAppliedCount,
                         appliedOverflow,
                         rawDeathCount,
-                        deathOverflow
+                        deathOverflow,
+                        maximumDamageWindowEventCount,
+                        maximumDamageWindowProtocolStatus
                     }
                 );
                 return;
@@ -3760,6 +3817,7 @@ export class GpuCircleBodySimulation {
             gridBodyBytes,
             this.capacity * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE,
+            this.capacity * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE,
             this.contactCapacity * CONTACT_RECORD_BYTE_SIZE,
             this.eventCapacity * APPLIED_EVENT_BYTE_SIZE,
             this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE,
@@ -3835,6 +3893,12 @@ export class GpuCircleBodySimulation {
                 device,
                 'cirvivor-gpu-circle-contact-handlers',
                 GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * this.capacity,
+                storageUsage
+            ),
+            combatStates: createBuffer(
+                device,
+                'cirvivor-gpu-circle-combat-states',
+                GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
             bodyControlStates: createBuffer(
@@ -4045,6 +4109,25 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(4, 'read-only-storage')
             ]
         });
+        const computeContactHandlingBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-contact-handling-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(4, 'read-only-storage'),
+                storageLayoutEntry(10)
+            ]
+        });
+        const computeMaximumDamageWindowBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-maximum-damage-window-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(10)
+            ]
+        });
         const computeWorldFullLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-world-full-layout',
             entries: [
@@ -4086,6 +4169,10 @@ export class GpuCircleBodySimulation {
         const computeAllEventsLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-all-events-layout',
             entries: [0, 1, 2, 3].map((binding) => storageLayoutEntry(binding))
+        });
+        const computeMaximumDamageWindowEventsLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-maximum-damage-window-events-layout',
+            entries: [0, 1, 2].map((binding) => storageLayoutEntry(binding))
         });
         const computeFixedControlLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-fixed-control-layout',
@@ -4161,10 +4248,16 @@ export class GpuCircleBodySimulation {
                 computeContactEventsLayout
             ],
             [COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING]: [
-                computeBodiesWithHandlersLayout,
+                computeContactHandlingBodiesLayout,
                 computeEmptyLayout,
                 computeParamsLayout,
                 computeAllEventsLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW]: [
+                computeMaximumDamageWindowBodiesLayout,
+                computeEmptyLayout,
+                computeParamsLayout,
+                computeMaximumDamageWindowEventsLayout
             ],
             [COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL]: [
                 computeFixedControlLayout,
@@ -4275,6 +4368,27 @@ export class GpuCircleBodySimulation {
                 { binding: 4, resource: resource(this.buffers.contactHandlers) }
             ]
         });
+        const computeContactHandlingBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-contact-handling-bodies',
+            layout: computeContactHandlingBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 4, resource: resource(this.buffers.contactHandlers) },
+                { binding: 10, resource: resource(this.buffers.combatStates) }
+            ]
+        });
+        const computeMaximumDamageWindowBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-maximum-damage-window-bodies',
+            layout: computeMaximumDamageWindowBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 10, resource: resource(this.buffers.combatStates) }
+            ]
+        });
         const computeWorldFull = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-world-full',
             layout: computeWorldFullLayout,
@@ -4328,6 +4442,15 @@ export class GpuCircleBodySimulation {
                 { binding: 1, resource: resource(this.buffers.contacts) },
                 { binding: 2, resource: resource(this.buffers.appliedEvents) },
                 { binding: 3, resource: resource(this.buffers.deathEvents) }
+            ]
+        });
+        const computeMaximumDamageWindowEvents = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-maximum-damage-window-events',
+            layout: computeMaximumDamageWindowEventsLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.contactState) },
+                { binding: 1, resource: resource(this.buffers.contacts) },
+                { binding: 2, resource: resource(this.buffers.appliedEvents) }
             ]
         });
         const computeFixedControl = device.createBindGroup({
@@ -4384,10 +4507,16 @@ export class GpuCircleBodySimulation {
                     computeContactEvents
                 ],
                 [COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING]: [
-                    computeBodiesWithHandlers,
+                    computeContactHandlingBodies,
                     computeEmpty,
                     computeParams,
                     computeAllEvents
+                ],
+                [COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW]: [
+                    computeMaximumDamageWindowBodies,
+                    computeEmpty,
+                    computeParams,
+                    computeMaximumDamageWindowEvents
                 ],
                 [COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL]: [
                     computeFixedControl,
@@ -4485,6 +4614,13 @@ export class GpuCircleBodySimulation {
                 bodyCount * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE
             );
             queue.writeBuffer(
+                this.buffers.combatStates,
+                0,
+                this.hostStorage.combatStateBuffer,
+                0,
+                bodyCount * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+            );
+            queue.writeBuffer(
                 this.buffers.renderStyles,
                 0,
                 this.hostRenderStyles,
@@ -4516,14 +4652,17 @@ export class GpuCircleBodySimulation {
         this.drawIndirectArgs[3] = 0;
         queue.writeBuffer(this.buffers.drawIndirect, 0, this.drawIndirectArgs);
         this.uploadedComputeFixedDelta = NaN;
-        this.#writeComputeParams(this.lastFixedDelta);
+        this.uploadedComputeFixedTick = -1;
+        this.#writeComputeParams(this.lastFixedDelta, 0);
     }
 
-    #writeComputeParams(fixedDelta) {
+    #writeComputeParams(fixedDelta, fixedTick = 0) {
         const uploadedDelta = Math.fround(fixedDelta);
         const uploadedMaximumBodyRadius = Math.fround(this.maximumBodyRadius);
+        const uploadedFixedTick = requireNonNegativeInteger(fixedTick, 'fixedTick');
         if (Object.is(uploadedDelta, this.uploadedComputeFixedDelta)
-            && Object.is(uploadedMaximumBodyRadius, this.uploadedMaximumBodyRadius)) {
+            && Object.is(uploadedMaximumBodyRadius, this.uploadedMaximumBodyRadius)
+            && uploadedFixedTick === this.uploadedComputeFixedTick) {
             return;
         }
         const view = this.computeParamsView;
@@ -4580,9 +4719,14 @@ export class GpuCircleBodySimulation {
             uploadedMaximumBodyRadius,
             LITTLE_ENDIAN
         );
+        view.setUint32(COMPUTE_PARAMS_FIXED_TICK_OFFSET, uploadedFixedTick, LITTLE_ENDIAN);
+        view.setUint32(COMPUTE_PARAMS_FIXED_TICK_OFFSET + 4, 0, LITTLE_ENDIAN);
+        view.setUint32(COMPUTE_PARAMS_FIXED_TICK_OFFSET + 8, 0, LITTLE_ENDIAN);
+        view.setUint32(COMPUTE_PARAMS_FIXED_TICK_OFFSET + 12, 0, LITTLE_ENDIAN);
         this.device.queue.writeBuffer(this.buffers.computeParams, 0, this.computeParamsBytes);
         this.uploadedComputeFixedDelta = uploadedDelta;
         this.uploadedMaximumBodyRadius = uploadedMaximumBodyRadius;
+        this.uploadedComputeFixedTick = uploadedFixedTick;
     }
 
     #writeRenderParams(camera, target) {
@@ -4683,5 +4827,6 @@ export class GpuCircleBodySimulation {
         this.mapReadMode = null;
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedMaximumBodyRadius = NaN;
+        this.uploadedComputeFixedTick = -1;
     }
 }

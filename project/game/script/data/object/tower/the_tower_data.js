@@ -11,7 +11,7 @@
  * CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED:number,
  * LINEAR_FRICTION_PER_SECOND:number,
  * SLEEP_SPEED_TILES_PER_SECOND:number,
- * MASS:number,
+ * WEIGHT:number,
  * MAX_LINEAR_SPEED_TILES_PER_SECOND:number
  * }>}
  */
@@ -21,14 +21,15 @@ export const THE_TOWER_DATA = Object.freeze({
     CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED: 78,
     LINEAR_FRICTION_PER_SECOND: 10,
     SLEEP_SPEED_TILES_PER_SECOND: 1 / 96,
-    MASS: 1,
+    WEIGHT: 10,
     MAX_LINEAR_SPEED_TILES_PER_SECOND: 25
 });
 
 /** GPU_WORLD R1 single-Tower combat baseline의 단일 수치 권위입니다. */
 export const THE_TOWER_COMBAT_DATA = Object.freeze({
     MAX_HEALTH: 30,
-    BASE_POWER: 10
+    BASE_POWER: 10,
+    MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS: 60
 });
 
 /** CPU fallback renderer와 GPU direct renderer가 공유하는 Tower presentation data입니다. */

@@ -1182,21 +1182,56 @@ export class GpuFixedCommandOwner {
         });
     }
 
+    /**
+     * GPU에 아직 stage되지 않은 fixed command와 unresolved destination reservation만
+     * 취소합니다. protocol binding과 completed command history는 그대로 유지하므로
+     * terminal final boundary가 같은 owner에서 빈 commit을 만들 수 있습니다.
+     */
+    cancelAll() {
+        if (this.destroyed) {
+            return Object.freeze({
+                cancelledCommandCount: 0,
+                releasedDestinationCount: 0,
+                failedDestinationCount: 0
+            });
+        }
+
+        const pendingCommandIds = new Set();
+        for (const command of this.pending) {
+            if (command) {
+                pendingCommandIds.add(command.commandId);
+            }
+        }
+        this.#consume(pendingCommandIds);
+
+        let releasedDestinationCount = 0;
+        let failedDestinationCount = 0;
+        for (const pending of this.pendingDestinations.values()) {
+            if (this.registry.cancelReservation(pending.handle)) {
+                releasedDestinationCount++;
+            } else {
+                failedDestinationCount++;
+            }
+        }
+        this.pendingDestinations.clear();
+        this.spawnCompletionScratch.length = 0;
+        if (failedDestinationCount > 0) {
+            this.recoveryRequired = true;
+        }
+        return Object.freeze({
+            cancelledCommandCount: pendingCommandIds.size,
+            releasedDestinationCount,
+            failedDestinationCount
+        });
+    }
+
     destroy() {
         if (this.destroyed) {
             return;
         }
-        for (const pending of this.pendingDestinations.values()) {
-            this.registry.cancelReservation(pending.handle);
-        }
-        this.pendingDestinations.clear();
-        this.pending.fill(null);
-        this.pendingCount = 0;
-        this.pendingControlCount = 0;
-        this.pendingSourceRelativeSpawnCount = 0;
+        this.cancelAll();
         this.knownCommands.clear();
         this.controlTargetKeys.clear();
-        this.spawnCompletionScratch.length = 0;
         this.destroyed = true;
     }
 

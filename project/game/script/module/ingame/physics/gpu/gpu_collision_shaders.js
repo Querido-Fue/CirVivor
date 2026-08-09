@@ -7,6 +7,7 @@ import {
 } from './gpu_circle_body_abi.js';
 import {
     GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
 import { THE_TOWER_DATA } from '../../../../data/object/tower/the_tower_data.js';
@@ -98,10 +99,14 @@ const GAMEPLAY_TEAM_NEUTRAL: u32 = ${GAMEPLAY_TEAM_ID.NEUTRAL}u;
 const GAMEPLAY_TEAM_PLAYER: u32 = ${GAMEPLAY_TEAM_ID.PLAYER}u;
 const GAMEPLAY_TEAM_HOSTILE: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
 const GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX: u32 = ${GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX}u;
+const GAMEPLAY_DAMAGE_RESOLUTION_POLICY_DIRECT: u32 = ${GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.DIRECT}u;
+const GAMEPLAY_DAMAGE_RESOLUTION_POLICY_MAXIMUM_DAMAGE_WINDOW: u32 = ${GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.MAXIMUM_DAMAGE_WINDOW}u;
 const GAMEPLAY_META_TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
 const GAMEPLAY_META_TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
 const GAMEPLAY_META_DAMAGE_POLICY_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_SHIFT}u;
 const GAMEPLAY_META_DAMAGE_POLICY_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_POLICY_MASK}u;
+const GAMEPLAY_META_DAMAGE_RESOLUTION_POLICY_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_RESOLUTION_POLICY_SHIFT}u;
+const GAMEPLAY_META_DAMAGE_RESOLUTION_POLICY_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.DAMAGE_RESOLUTION_POLICY_MASK}u;
 const GAMEPLAY_META_RESERVED_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.RESERVED_MASK}u;
 const ENEMY_PAIR_COLLISION_RADIUS_SCALE: f32 = ${toWgslFloat(
     MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
@@ -110,6 +115,15 @@ const CONTACT_HANDLER_FLAG_KILL_IF_OTHER_TERRAIN: u32 = 1u;
 const CONTACT_HANDLER_FLAG_CLOSEST_ONLY: u32 = 2u;
 const CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY: u32 = 8u;
 const CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS: u32 = 16u;
+const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK: u32 = 0u;
+const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE: u32 = 1u;
+// contact.normal은 handle_contacts 이후 physical solver가 다시 읽지 않습니다. 이 marker는
+// finite normalized normal과 구조적으로 겹치지 않는 quiet-NaN namespace를 사용합니다.
+const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC: u32 = 0x7fc00000u;
+const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;
+const MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_MASK: u32 = 0x0000000fu;
+const MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_ENTER: u32 = 1u;
+const MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_CONTINUOUS: u32 = 2u;
 const APPLIED_EVENT_TYPE_DAMAGE_APPLIED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED}u;
 const APPLIED_EVENT_TYPE_INTERACTION_ENTER: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER}u;
 const APPLIED_EVENT_TYPE_INTERACTION_CONTINUOUS: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_CONTINUOUS}u;
@@ -118,6 +132,7 @@ const APPLIED_EVENT_FLAG_TERRAIN_KILL: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TER
 const APPLIED_EVENT_FLAG_ENTER_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY}u;
 const APPLIED_EVENT_FLAG_CONTINUOUS_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY}u;
 const APPLIED_EVENT_FLAG_TERRAIN_CONTACT: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT}u;
+const APPLIED_EVENT_FLAG_MAXIMUM_DAMAGE_WINDOW: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW}u;
 const DEATH_EVENT_FLAG_HEALTH: u32 = 1u;
 const DEATH_EVENT_FLAG_LIFETIME: u32 = 2u;
 const EPSILON_MASS: f32 = 0.000001;
@@ -189,6 +204,21 @@ struct ContactHandler {
 
 struct ContactHandlerBuffer { values: array<ContactHandler> }
 
+struct CombatState {
+    target_interaction_layer_mask: u32,
+    maximum_damage_window_duration_fixed_ticks: u32,
+    peak_final_damage_fixed_point: atomic<i32>,
+    expires_at_fixed_tick: atomic<u32>,
+    peak_source_entity_id: atomic<u32>,
+    peak_source_incarnation: atomic<u32>,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
+    reserved_3: u32,
+}
+
+struct CombatStateBuffer { values: array<CombatState> }
+
 struct ContactState {
     contact_count: atomic<u32>,
     contact_overflow: atomic<u32>,
@@ -198,6 +228,10 @@ struct ContactState {
     death_overflow: atomic<u32>,
     abi_status: atomic<u32>,
     event_encoding_version: atomic<u32>,
+    maximum_damage_window_event_count: atomic<u32>,
+    maximum_damage_window_protocol_status: atomic<u32>,
+    reserved_0: u32,
+    reserved_1: u32,
 }
 
 struct Contact {
@@ -338,6 +372,10 @@ struct SimulationParams {
     max_events: u32,
     max_death_events: u32,
     maximum_body_radius: f32,
+    fixed_tick: u32,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> counts: BodyCounts;
@@ -350,6 +388,7 @@ struct SimulationParams {
 @group(0) @binding(7) var<storage, read_write> spawn_program: SpawnProgram;
 @group(0) @binding(8) var<storage, read> tracked_pose_config: TrackedPoseConfig;
 @group(0) @binding(9) var<storage, read_write> tracked_pose_output: TrackedPoseRecord;
+@group(0) @binding(10) var<storage, read_write> combat_states: CombatStateBuffer;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read_write> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read> sdf_values: SdfBuffer;
@@ -402,13 +441,22 @@ fn gameplay_damage_policy_id(gameplay_meta: u32) -> u32 {
         & GAMEPLAY_META_DAMAGE_POLICY_MASK;
 }
 
+fn gameplay_damage_resolution_policy_id(gameplay_meta: u32) -> u32 {
+    return (gameplay_meta >> GAMEPLAY_META_DAMAGE_RESOLUTION_POLICY_SHIFT)
+        & GAMEPLAY_META_DAMAGE_RESOLUTION_POLICY_MASK;
+}
+
 fn gameplay_meta_is_valid(gameplay_meta: u32) -> bool {
     let team_id = gameplay_team_id(gameplay_meta);
     return (gameplay_meta & GAMEPLAY_META_RESERVED_MASK) == 0u
         && team_id >= GAMEPLAY_TEAM_NEUTRAL
         && team_id <= GAMEPLAY_TEAM_HOSTILE
         && gameplay_damage_policy_id(gameplay_meta)
-            == GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX;
+            == GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX
+        && (gameplay_damage_resolution_policy_id(gameplay_meta)
+                == GAMEPLAY_DAMAGE_RESOLUTION_POLICY_DIRECT
+            || gameplay_damage_resolution_policy_id(gameplay_meta)
+                == GAMEPLAY_DAMAGE_RESOLUTION_POLICY_MAXIMUM_DAMAGE_WINDOW);
 }
 
 fn gameplay_damage_is_allowed(source_meta: u32, target_meta: u32) -> bool {
@@ -1240,6 +1288,11 @@ fn clear_contact_state() {
     atomicStore(&contact_state.event_overflow, 0u);
     atomicStore(&contact_state.death_count, 0u);
     atomicStore(&contact_state.death_overflow, 0u);
+    atomicStore(&contact_state.maximum_damage_window_event_count, 0u);
+    atomicStore(
+        &contact_state.maximum_damage_window_protocol_status,
+        MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK
+    );
     atomicStore(
         &contact_state.abi_status,
         select(CONTACT_ABI_STATUS_MISMATCH, CONTACT_ABI_STATUS_OK, abi_is_current())
@@ -1545,6 +1598,353 @@ fn append_death_event(body_id: u32, reason_flags: u32) {
     );
 }
 
+fn contact_handler_accepts_target(self_body_id: u32, other_body_id: u32) -> bool {
+    let target_interaction_layer = body_interaction_layer(
+        physics.values[other_body_id].interaction_meta
+    );
+    let target_mask = combat_states.values[self_body_id]
+        .target_interaction_layer_mask;
+    return target_mask != 0u
+        && (target_mask & target_interaction_layer) != 0u;
+}
+
+fn resolve_contact_source_modified_damage(
+    self_body_id: u32,
+    contact: Contact,
+    handler: ContactHandler
+) -> i32 {
+    var source_modified_damage = handler.damage_other;
+    if (handler.damage_falloff > 0.0) {
+        let self_radius = physics.values[self_body_id].radius;
+        if (self_radius > EPSILON_MASS) {
+            let distance_from_self = length(
+                contact.world_position - physics.values[self_body_id].position
+            );
+            let falloff_t = clamp(distance_from_self / self_radius, 0.0, 1.0);
+            source_modified_damage *= 1.0 - pow(falloff_t, handler.damage_falloff);
+        }
+    }
+    return max(i32(source_modified_damage * 100.0), 0);
+}
+
+fn resolve_contact_target_mitigation(
+    _self_body_id: u32,
+    _other_body_id: u32,
+    source_modified_damage: i32
+) -> i32 {
+    // Future armor/resistance resolution seam. Turn 1 is identity by contract.
+    return source_modified_damage;
+}
+
+fn resolve_final_contact_damage(
+    self_body_id: u32,
+    other_body_id: u32,
+    contact: Contact,
+    handler: ContactHandler
+) -> i32 {
+    let source_modified_damage = resolve_contact_source_modified_damage(
+        self_body_id,
+        contact,
+        handler
+    );
+    return resolve_contact_target_mitigation(
+        self_body_id,
+        other_body_id,
+        source_modified_damage
+    );
+}
+
+fn mark_maximum_damage_window_candidate(
+    contact_index: u32,
+    final_damage: i32,
+    policy_event_flag: u32
+) {
+    // handle_contacts 뒤에는 contact.normal을 physical solve가 읽지 않습니다. 따라서
+    // final damage와 quiet-NaN namespace marker를 이 tick 한정으로 재사용해 window
+    // pass가 contact-handler storage를 추가로 bind하지 않게 합니다.
+    let policy_marker = maximum_damage_window_marker_for_policy(policy_event_flag);
+    contacts.values[contact_index].normal = vec2f(
+        bitcast<f32>(final_damage),
+        bitcast<f32>(policy_marker)
+    );
+}
+
+fn maximum_damage_window_marker_for_policy(policy_event_flag: u32) -> u32 {
+    if (policy_event_flag == APPLIED_EVENT_FLAG_ENTER_POLICY) {
+        return MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC
+            | MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_ENTER;
+    }
+    if (policy_event_flag == APPLIED_EVENT_FLAG_CONTINUOUS_POLICY) {
+        return MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC
+            | MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_CONTINUOUS;
+    }
+    return 0u;
+}
+
+fn maximum_damage_window_policy_from_marker(marker: u32) -> u32 {
+    if ((marker & MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC_MASK)
+        != MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC) {
+        return 0u;
+    }
+    let policy = marker & MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_MASK;
+    if (policy == MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_ENTER) {
+        return APPLIED_EVENT_FLAG_ENTER_POLICY;
+    }
+    if (policy == MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_CONTINUOUS) {
+        return APPLIED_EVENT_FLAG_CONTINUOUS_POLICY;
+    }
+    return 0u;
+}
+
+struct MaximumDamageWindowCandidate {
+    found: u32,
+    final_damage: i32,
+    source_entity_id: u32,
+    source_incarnation: u32,
+    policy_event_flag: u32,
+}
+
+fn empty_maximum_damage_window_candidate() -> MaximumDamageWindowCandidate {
+    return MaximumDamageWindowCandidate(
+        0u,
+        0,
+        INVALID_IDENTITY_COMPONENT,
+        INVALID_IDENTITY_COMPONENT,
+        0u
+    );
+}
+
+fn maximum_damage_window_candidate_is_better(
+    candidate: MaximumDamageWindowCandidate,
+    current: MaximumDamageWindowCandidate
+) -> bool {
+    return current.found == 0u
+        || candidate.final_damage > current.final_damage
+        || (candidate.final_damage == current.final_damage
+            && (candidate.source_entity_id < current.source_entity_id
+                || (candidate.source_entity_id == current.source_entity_id
+                    && candidate.source_incarnation < current.source_incarnation)));
+}
+
+fn find_maximum_damage_window_candidate(
+    target_body_id: u32
+) -> MaximumDamageWindowCandidate {
+    var result = empty_maximum_damage_window_candidate();
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    for (var contact_index = 0u;
+        contact_index < contact_count;
+        contact_index += 1u) {
+        let contact = contacts.values[contact_index];
+        let policy_event_flag = maximum_damage_window_policy_from_marker(
+            bitcast<u32>(contact.normal.y)
+        );
+        if (policy_event_flag == 0u
+            || contact.other_body_id < 0
+            || u32(contact.other_body_id) != target_body_id
+            || contact.other_incarnation
+                != simulations.values[target_body_id].incarnation) {
+            continue;
+        }
+        let source_body_id = contact.self_body_id;
+        if (source_body_id >= counts.body_count
+            || simulations.values[source_body_id].incarnation
+                != contact.self_incarnation) {
+            continue;
+        }
+        let final_damage = bitcast<i32>(contact.normal.x);
+        if (final_damage <= 0) {
+            continue;
+        }
+        let candidate = MaximumDamageWindowCandidate(
+            1u,
+            final_damage,
+            simulations.values[source_body_id].entity_id,
+            contact.self_incarnation,
+            policy_event_flag
+        );
+        if (maximum_damage_window_candidate_is_better(candidate, result)) {
+            result = candidate;
+        }
+    }
+    return result;
+}
+
+fn maximum_damage_window_target_is_configured(body_id: u32) -> bool {
+    return gameplay_damage_resolution_policy_id(
+        simulations.values[body_id].gameplay_meta
+    ) == GAMEPLAY_DAMAGE_RESOLUTION_POLICY_MAXIMUM_DAMAGE_WINDOW;
+}
+
+fn clear_maximum_damage_window_state(body_id: u32) {
+    atomicStore(
+        &combat_states.values[body_id].peak_final_damage_fixed_point,
+        0
+    );
+    atomicStore(&combat_states.values[body_id].expires_at_fixed_tick, 0u);
+    atomicStore(
+        &combat_states.values[body_id].peak_source_entity_id,
+        INVALID_IDENTITY_COMPONENT
+    );
+    atomicStore(
+        &combat_states.values[body_id].peak_source_incarnation,
+        INVALID_IDENTITY_COMPONENT
+    );
+}
+
+fn maximum_damage_window_tick_is_representable(duration: u32) -> bool {
+    return duration > 0u && params.fixed_tick <= (0xffffffffu - duration);
+}
+
+@compute @workgroup_size(256)
+fn preflight_maximum_damage_window(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u
+        || atomicLoad(&contact_state.event_overflow) != 0u
+        || atomicLoad(&contact_state.maximum_damage_window_protocol_status)
+            != MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count
+        || !body_id_is_alive(body_id)
+        || !maximum_damage_window_target_is_configured(body_id)) {
+        return;
+    }
+    let duration = combat_states.values[body_id]
+        .maximum_damage_window_duration_fixed_ticks;
+    if (!maximum_damage_window_tick_is_representable(duration)) {
+        atomicStore(
+            &contact_state.maximum_damage_window_protocol_status,
+            MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE
+        );
+        return;
+    }
+    let candidate = find_maximum_damage_window_candidate(body_id);
+    if (candidate.found == 0u) {
+        return;
+    }
+    // 유효 winner는 delta가 0이어도 exact provenance의 DAMAGE_APPLIED fact를 남긴다.
+    if (atomicLoad(&simulations.values[body_id].health) > 0) {
+        atomicAdd(&contact_state.maximum_damage_window_event_count, 1u);
+    }
+}
+
+// preflight의 body-parallel count가 모두 끝난 뒤 단 한 invocation이 global event
+// capacity를 확정합니다. resolver는 이 barrier 뒤에는 HP/window만 mutate하므로
+// 여러 Tower가 같은 tick에 있어도 late failure가 부분 mutation을 만들 수 없습니다.
+@compute @workgroup_size(1)
+fn finalize_maximum_damage_window_preflight() {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u
+        || atomicLoad(&contact_state.event_overflow) != 0u
+        || atomicLoad(&contact_state.maximum_damage_window_protocol_status)
+            != MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK) {
+        atomicStore(
+            &contact_state.maximum_damage_window_protocol_status,
+            MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE
+        );
+        return;
+    }
+    let existing_event_count = atomicLoad(&contact_state.event_count);
+    let maximum_damage_window_event_count = atomicLoad(
+        &contact_state.maximum_damage_window_event_count
+    );
+    if (maximum_damage_window_event_count > params.max_events
+        || existing_event_count > params.max_events - maximum_damage_window_event_count) {
+        atomicStore(
+            &contact_state.maximum_damage_window_protocol_status,
+            MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE
+        );
+        atomicAdd(&contact_state.event_overflow, 1u);
+    }
+}
+
+@compute @workgroup_size(256)
+fn resolve_maximum_damage_window(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u
+        || atomicLoad(&contact_state.event_overflow) != 0u
+        || atomicLoad(&contact_state.maximum_damage_window_protocol_status)
+            != MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count
+        || !body_id_is_alive(body_id)
+        || !maximum_damage_window_target_is_configured(body_id)) {
+        return;
+    }
+    let duration = combat_states.values[body_id]
+        .maximum_damage_window_duration_fixed_ticks;
+    let expires_at_fixed_tick = atomicLoad(
+        &combat_states.values[body_id].expires_at_fixed_tick
+    );
+    let window_is_active = params.fixed_tick < expires_at_fixed_tick;
+    if (!window_is_active) {
+        clear_maximum_damage_window_state(body_id);
+    }
+    let candidate = find_maximum_damage_window_candidate(body_id);
+    if (candidate.found == 0u) {
+        return;
+    }
+    if (atomicLoad(&simulations.values[body_id].health) <= 0) {
+        return;
+    }
+    let current_peak = select(
+        0,
+        atomicLoad(&combat_states.values[body_id].peak_final_damage_fixed_point),
+        window_is_active
+    );
+    let requested_damage = select(
+        candidate.final_damage,
+        max(candidate.final_damage - current_peak, 0),
+        window_is_active
+    );
+    if (!window_is_active || candidate.final_damage > current_peak) {
+        atomicStore(
+            &combat_states.values[body_id].peak_final_damage_fixed_point,
+            candidate.final_damage
+        );
+        atomicStore(
+            &combat_states.values[body_id].expires_at_fixed_tick,
+            params.fixed_tick + duration
+        );
+        atomicStore(
+            &combat_states.values[body_id].peak_source_entity_id,
+            candidate.source_entity_id
+        );
+        atomicStore(
+            &combat_states.values[body_id].peak_source_incarnation,
+            candidate.source_incarnation
+        );
+    }
+    let damage = apply_target_damage(body_id, requested_damage);
+    let target_died_flag = select(
+        0u,
+        APPLIED_EVENT_FLAG_TARGET_DIED,
+        damage.target_died != 0u
+    );
+    append_applied_event(AppliedEvent(
+        candidate.source_entity_id,
+        candidate.source_incarnation,
+        simulations.values[body_id].entity_id,
+        simulations.values[body_id].incarnation,
+        damage.applied,
+        APPLIED_EVENT_TYPE_DAMAGE_APPLIED
+            | candidate.policy_event_flag
+            | APPLIED_EVENT_FLAG_MAXIMUM_DAMAGE_WINDOW
+            | target_died_flag,
+        physics.values[body_id].position
+    ));
+}
+
 @compute @workgroup_size(256)
 fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     if (!abi_is_current()) {
@@ -1612,19 +2012,26 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let damage_self = max(i32(handler.damage_self * 100.0), 0);
-    var damage_other_value = handler.damage_other;
-    if (handler.damage_falloff > 0.0) {
-        let self_radius = physics.values[self_body_id].radius;
-        if (self_radius > EPSILON_MASS) {
-            let distance_from_self = length(
-                contact.world_position - physics.values[self_body_id].position
-            );
-            let falloff_t = clamp(distance_from_self / self_radius, 0.0, 1.0);
-            damage_other_value *= 1.0 - pow(falloff_t, handler.damage_falloff);
-        }
+    let final_damage = resolve_final_contact_damage(
+        self_body_id,
+        other_body_id,
+        contact,
+        handler
+    );
+    if (final_damage <= 0) {
+        append_applied_event(AppliedEvent(
+            simulations.values[self_body_id].entity_id,
+            contact.self_incarnation,
+            simulations.values[other_body_id].entity_id,
+            contact.other_incarnation,
+            0,
+            policy_event_type | policy_event_flag,
+            contact.world_position
+        ));
+        return;
     }
-    let damage_other = max(i32(damage_other_value * 100.0), 0);
-    if (damage_other <= 0) {
+
+    if (!contact_handler_accepts_target(self_body_id, other_body_id)) {
         append_applied_event(AppliedEvent(
             simulations.values[self_body_id].entity_id,
             contact.self_incarnation,
@@ -1660,7 +2067,18 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     if (!self_budget_reserved) {
         return;
     }
-    let damage = apply_target_damage(other_body_id, damage_other);
+    if (gameplay_damage_resolution_policy_id(
+            simulations.values[other_body_id].gameplay_meta
+        ) == GAMEPLAY_DAMAGE_RESOLUTION_POLICY_MAXIMUM_DAMAGE_WINDOW) {
+        // Valid hit의 source budget은 이미 reserve되어 window가 0을 적용해도 소모됩니다.
+        mark_maximum_damage_window_candidate(
+            contact_index,
+            final_damage,
+            policy_event_flag
+        );
+        return;
+    }
+    let damage = apply_target_damage(other_body_id, final_damage);
     if (damage.applied <= 0) {
         if (damage_self > 0) {
             atomicAdd(&simulations.values[self_body_id].health, damage_self);

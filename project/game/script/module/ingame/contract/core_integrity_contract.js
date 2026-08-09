@@ -12,6 +12,7 @@ export function isCoreIntegrity(integrity) {
         && typeof integrity.getCurrentIntegrity === 'function'
         && typeof integrity.getMaxIntegrity === 'function'
         && typeof integrity.isDepleted === 'function'
+        && typeof integrity.isTerminallySealed === 'function'
         && typeof integrity.applyIntegrityDamage === 'function'
         && typeof integrity.restoreIntegrity === 'function'
     );

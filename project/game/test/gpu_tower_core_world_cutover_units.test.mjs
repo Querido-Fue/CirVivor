@@ -18,7 +18,8 @@ const {
     'ingame/object/tower/gpu_tower_spawn_adapter.js'
 );
 const {
-    THE_TOWER_COMBAT_DATA
+    THE_TOWER_COMBAT_DATA,
+    THE_TOWER_DATA
 } = await loadGameModule('data/object/tower/the_tower_data.js');
 const {
     GPU_CORE_PROXY_DEFINITION_ID,
@@ -84,6 +85,7 @@ const {
 const {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
@@ -267,6 +269,9 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
     assert.equal(Object.isFrozen(THE_TOWER_COMBAT_DATA), true);
     assert.equal(THE_TOWER_COMBAT_DATA.MAX_HEALTH, 30);
     assert.equal(THE_TOWER_COMBAT_DATA.BASE_POWER, 10);
+    assert.equal(THE_TOWER_COMBAT_DATA.MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS, 60);
+    assert.equal(THE_TOWER_DATA.WEIGHT, 10);
+    assert.equal('MASS' in THE_TOWER_DATA, false);
     assert.equal(tower.kindId, GPU_TOWER_WORLD_KIND_ID);
     assert.equal(tower.kindId, 'tower');
     assert.equal(tower.definitionId, GPU_TOWER_DEFINITION_ID);
@@ -276,6 +281,11 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
         tower.damagePolicyId,
         GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
     );
+    assert.equal(
+        tower.damageResolutionPolicyId,
+        GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.MAXIMUM_DAMAGE_WINDOW
+    );
+    assert.equal(tower.maximumDamageWindowDurationTicks, 60);
     assert.equal(
         tower.allegiancePolicy,
         GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
@@ -288,17 +298,18 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
     assert.deepEqual({ ...tower.position }, authoredPosition);
     assert.notStrictEqual(tower.position, authoredPosition);
     assert.deepEqual({ ...tower.velocity }, { x: 0, y: 0 });
-    assert.equal(tower.inverseMass, 1);
+    assert.equal(tower.inverseMass, 0.1);
     assert.equal(
         tower.bodyLayer,
         GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
     );
     assert.equal(
         tower.collisionMask,
-        GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+        GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
     );
     assert.equal(tower.bodyLayer, 64);
-    assert.equal(tower.collisionMask, 128);
+    assert.equal(tower.collisionMask, 129);
     assert.equal(
         tower.interactionLayer,
         GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
@@ -307,8 +318,9 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
     assert.equal(
         tower.interactionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
     );
-    assert.equal(tower.interactionMask, 2);
+    assert.equal(tower.interactionMask, 3);
     assert.equal('contactHandler' in tower, false);
     assert.equal(tower.health, THE_TOWER_COMBAT_DATA.MAX_HEALTH);
     assert.equal(tower.health, 30);
@@ -322,8 +334,8 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
     assert.equal('bounty' in tower, false);
     assert.equal(
         tower.collisionMask & enemy.bodyLayer,
-        0,
-        'enemy layer는 Tower physical acceptance 대상이 아니다.'
+        enemy.bodyLayer,
+        'Tower는 Enemy를 physical acceptance 대상으로 포함한다.'
     );
     assert.equal(
         isReciprocalInteractionPairEnabled(basicBullet, enemy),

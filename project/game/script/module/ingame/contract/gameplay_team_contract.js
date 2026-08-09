@@ -13,6 +13,16 @@ export const GAMEPLAY_DAMAGE_POLICY_ID = Object.freeze({
     DEFAULT_TEAM_MATRIX: 0
 });
 
+/**
+ * Damage policy와 별개인 target-side resolution seam입니다. DIRECT는 기존 per-hit
+ * semantics를 유지하고, MAXIMUM_DAMAGE_WINDOW만 같은 fixed tick 후보를 한 번으로
+ * 집계합니다.
+ */
+export const GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID = Object.freeze({
+    DIRECT: 0,
+    MAXIMUM_DAMAGE_WINDOW: 1
+});
+
 /** Spawn producer가 resolved team을 결정하는 host-side allegiance vocabulary입니다. */
 export const GAMEPLAY_ALLEGIANCE_POLICY = Object.freeze({
     FIXED_PLAYER: 'fixed-player',
@@ -23,6 +33,9 @@ export const GAMEPLAY_ALLEGIANCE_POLICY = Object.freeze({
 
 const VALID_TEAM_IDS = new Set(Object.values(GAMEPLAY_TEAM_ID));
 const VALID_DAMAGE_POLICY_IDS = new Set(Object.values(GAMEPLAY_DAMAGE_POLICY_ID));
+const VALID_DAMAGE_RESOLUTION_POLICY_IDS = new Set(
+    Object.values(GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID)
+);
 const VALID_ALLEGIANCE_POLICIES = new Set(
     Object.values(GAMEPLAY_ALLEGIANCE_POLICY)
 );
@@ -42,6 +55,18 @@ export function normalizeGameplayDamagePolicyId(
 ) {
     if (!Number.isSafeInteger(value) || !VALID_DAMAGE_POLICY_IDS.has(value)) {
         throw new RangeError(`${label}은 알려진 gameplay damage policy ID여야 합니다.`);
+    }
+    return value;
+}
+
+/** @returns {number} 검증된 target-side damage resolution policy ID입니다. */
+export function normalizeGameplayDamageResolutionPolicyId(
+    value = GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID.DIRECT,
+    label = 'damageResolutionPolicyId'
+) {
+    if (!Number.isSafeInteger(value)
+        || !VALID_DAMAGE_RESOLUTION_POLICY_IDS.has(value)) {
+        throw new RangeError(`${label}은 알려진 gameplay damage resolution policy ID여야 합니다.`);
     }
     return value;
 }

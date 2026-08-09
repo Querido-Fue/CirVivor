@@ -82,9 +82,9 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
         ARCHER_ENEMY_DATA.attackDefinitionId,
         ARCHER_ATTACK_DEFINITION_ID
     );
-    assert.strictEqual(
-        ARCHER_ENEMY_DATA.colorRgba,
-        sharedEnemyData.MAIN_GPU_ENEMY_COLOR_RGBA
+    assert.deepEqual(
+        Array.from(ARCHER_ENEMY_DATA.colorRgba),
+        Array.from(sharedEnemyData.MAIN_GPU_ENEMY_COLOR_RGBA)
     );
     assert.equal(Object.isFrozen(ARCHER_ENEMY_DATA), true);
     assert.equal(Object.isFrozen(ARCHER_ENEMY_DATA.colorRgba), true);
@@ -145,13 +145,14 @@ test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추
     for (let index = 0; index < director.schedule.length; index++) {
         const entry = director.schedule[index];
         assert.equal(entry.targetFixedTick, 1 + (index * 5));
-        assert.equal(entry.intent.spawnSequence, index);
+        assert.equal(entry.spawnSequence, index);
         assert.equal(
-            entry.intent.definitionId,
+            entry.definition.id,
             PRODUCTION_WAVE_DEFINITION_IDS[
                 index % PRODUCTION_WAVE_DEFINITION_IDS.length
             ]
         );
+        assert.equal('intent' in entry, false);
         assert.equal(
             entry.commandId,
             `corridor_eight_wave_01:0:0:${index}`
@@ -159,7 +160,7 @@ test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추
     }
     const archerEntries = director.schedule
         .map((entry, index) => ({ entry, index }))
-        .filter(({ entry }) => entry.intent.definitionId === ARCHER_ENEMY_DATA.id);
+        .filter(({ entry }) => entry.definition.id === ARCHER_ENEMY_DATA.id);
     assert.deepEqual(
         Array.from(archerEntries, ({ index }) => index),
         Array.from(PRODUCTION_ARCHER_SPAWN_INDEXES)
@@ -170,15 +171,15 @@ test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추
     );
     assert.equal(archerEntries.length, 4);
     assert.equal(
-        director.schedule.filter(({ intent }) => (
-            intent.definitionId === basicEnemyData.BASIC_ARROW_ENEMY_DATA.id
+        director.schedule.filter(({ definition: scheduledDefinition }) => (
+            scheduledDefinition.id === basicEnemyData.BASIC_ARROW_ENEMY_DATA.id
         )).length,
         5,
         'basic_arrow_01과 Archer는 별도 cycle identity여야 합니다.'
     );
     assert.strictEqual(
         basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID[
-            archerEntries[0].entry.intent.definitionId
+            archerEntries[0].entry.definition.id
         ],
         ARCHER_ENEMY_DATA
     );
@@ -192,7 +193,7 @@ test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추
     );
     const replacementArcherEntries = replacementDirector.schedule
         .map((entry, index) => ({ entry, index }))
-        .filter(({ entry }) => entry.intent.definitionId === ARCHER_ENEMY_DATA.id);
+        .filter(({ entry }) => entry.definition.id === ARCHER_ENEMY_DATA.id);
     assert.deepEqual(
         Array.from(replacementArcherEntries, ({ index }) => index),
         Array.from(PRODUCTION_ARCHER_SPAWN_INDEXES)

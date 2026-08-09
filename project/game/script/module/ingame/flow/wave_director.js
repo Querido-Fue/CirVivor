@@ -4,7 +4,20 @@ import {
 import {
     CORRIDOR_EIGHT_WAVE_01_DATA
 } from 'data/scene/game/corridor_eight_wave_01_data.js';
-import { createGpuEnemySpawnIntent } from '../object/enemy/gpu_enemy_spawn_adapter.js';
+import {
+    normalizeEnemyDefinition
+} from '../contract/enemy_profile_contract.js';
+import {
+    ENEMY_PROFILE_CATALOG
+} from 'data/object/enemy/enemy_profile_catalog_data.js';
+import {
+    assertGpuEnemyDefinitionCapabilities,
+    createGpuEnemySpawnIntent
+} from '../object/enemy/gpu_enemy_spawn_adapter.js';
+import {
+    normalizeEnemyModifierSet,
+    resolveEnemySpawnStats
+} from '../object/enemy/resolved_enemy_spawn_stats.js';
 
 function requireNonEmptyString(value, label) {
     if (typeof value !== 'string' || value.length === 0) {
@@ -42,6 +55,51 @@ function requireFiniteOffsets(source, label) {
     }));
 }
 
+function requireFinite(value, label) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+        throw new TypeError(`${label}은 유한 숫자여야 합니다.`);
+    }
+    return number;
+}
+
+function snapshotRoute(source, label) {
+    if (!source || typeof source !== 'object') {
+        throw new TypeError(`${label} route가 필요합니다.`);
+    }
+    const gateId = requireNonEmptyString(source.gateId, `${label}.gateId`);
+    const pathId = requireNonEmptyString(source.pathId, `${label}.pathId`);
+    if (!Array.isArray(source.waypoints) || source.waypoints.length < 2) {
+        throw new TypeError(`${label}.waypoints에는 두 개 이상의 waypoint가 필요합니다.`);
+    }
+    const waypoints = Object.freeze(source.waypoints.map((point, index) => Object.freeze({
+        x: requireFinite(point?.x, `${label}.waypoints[${index}].x`),
+        y: requireFinite(point?.y, `${label}.waypoints[${index}].y`)
+    })));
+    return Object.freeze({
+        gateId,
+        pathId,
+        waypoints
+    });
+}
+
+function snapshotEnemyDefinition(source, label) {
+    if (!source || typeof source !== 'object') {
+        throw new TypeError(`${label} enemy definition이 필요합니다.`);
+    }
+    const definition = normalizeEnemyDefinition({
+        id: source.id,
+        shapeDefinitionId: source.shapeDefinitionId,
+        physicsProfileId: source.physicsProfileId,
+        combatProfileId: source.combatProfileId,
+        behaviorProfileId: source.behaviorProfileId,
+        capabilityIds: source.capabilityIds,
+        render: source.render
+    }, ENEMY_PROFILE_CATALOG, label);
+    assertGpuEnemyDefinitionCapabilities(definition);
+    return definition;
+}
+
 function resolveEnemyDefinitionCycle(group, definitions, label) {
     const fallbackId = requireNonEmptyString(
         group?.enemyDefinitionId,
@@ -56,7 +114,10 @@ function resolveEnemyDefinitionCycle(group, definitions, label) {
         ? null
         : source;
     if (definitionIds === null) {
-        return Object.freeze([fallbackDefinition]);
+        return Object.freeze([snapshotEnemyDefinition(
+            fallbackDefinition,
+            `${label}.enemyDefinitionId`
+        )]);
     }
     if (!Array.isArray(definitionIds) || definitionIds.length === 0) {
         throw new TypeError(`${label}.enemyDefinitionIds는 하나 이상의 ID 배열이어야 합니다.`);
@@ -70,7 +131,7 @@ function resolveEnemyDefinitionCycle(group, definitions, label) {
         if (!definition) {
             throw new RangeError(`등록되지 않은 enemy definition입니다: ${definitionId}`);
         }
-        return definition;
+        return snapshotEnemyDefinition(definition, `${label}.enemyDefinitionIds[${index}]`);
     }));
 }
 
@@ -92,11 +153,14 @@ export class WaveDirector {
         );
         this.schedule = Object.freeze([]);
         this.nextScheduleIndex = 0;
+        this.knownEnemyDefinitionIds = Object.freeze(
+            Object.keys(this.enemyDefinitions)
+        );
         this.initialized = false;
         this.destroyed = false;
     }
 
-    /** 실제 TileMap route를 검증하고 모든 spawn record를 결정적으로 컴파일합니다. */
+    /** 실제 TileMap route와 immutable spawn input만 결정적으로 컴파일합니다. */
     init(tileMap) {
         if (this.initialized || this.destroyed) {
             return false;
@@ -121,8 +185,25 @@ export class WaveDirector {
             if (routeByGateId.has(gateId)) {
                 throw new RangeError(`중복 Gate route입니다: ${gateId}`);
             }
-            routeByGateId.set(gateId, route);
+            routeByGateId.set(gateId, snapshotRoute(route, `route.${gateId}`));
         }
+
+        const mapEnemyModifiers = normalizeEnemyModifierSet(
+            typeof tileMap.getEnemyModifiers === 'function'
+                ? tileMap.getEnemyModifiers()
+                : undefined,
+            {
+                label: 'mapEnemyModifiers',
+                knownDefinitionIds: this.knownEnemyDefinitionIds
+            }
+        );
+        const waveEnemyModifiers = normalizeEnemyModifierSet(
+            definition.enemyModifiers,
+            {
+                label: 'waveEnemyModifiers',
+                knownDefinitionIds: this.knownEnemyDefinitionIds
+            }
+        );
 
         const schedule = [];
         let spawnSequence = 0;
@@ -193,14 +274,14 @@ export class WaveDirector {
                     schedule.push(Object.freeze({
                         commandId,
                         targetFixedTick,
-                        intent: createGpuEnemySpawnIntent({
-                            definition: enemyDefinition,
-                            route,
-                            spawnSequence,
-                            laneOffsetTiles: laneOffsets[spawnIndex % laneOffsets.length],
-                            waveId,
-                            policyId
-                        })
+                        definition: enemyDefinition,
+                        route,
+                        spawnSequence,
+                        laneOffsetTiles: laneOffsets[spawnIndex % laneOffsets.length],
+                        waveId,
+                        policyId,
+                        mapEnemyModifiers,
+                        waveEnemyModifiers
                     }));
                     spawnSequence++;
                 }
@@ -208,7 +289,7 @@ export class WaveDirector {
         }
         schedule.sort((left, right) => (
             left.targetFixedTick - right.targetFixedTick
-            || left.intent.spawnSequence - right.intent.spawnSequence
+            || left.spawnSequence - right.spawnSequence
         ));
         this.schedule = Object.freeze(schedule);
         this.nextScheduleIndex = 0;
@@ -238,8 +319,25 @@ export class WaveDirector {
             if (entry.targetFixedTick !== tick) {
                 break;
             }
+            // Profile base와 immutable map/wave input을 이 queue boundary에서 정확히 한 번
+            // resolve한 뒤 intent를 만듭니다. init은 resolved numeric stat을 저장하지 않습니다.
+            const resolvedStats = resolveEnemySpawnStats({
+                definition: entry.definition,
+                mapEnemyModifiers: entry.mapEnemyModifiers,
+                waveEnemyModifiers: entry.waveEnemyModifiers,
+                knownDefinitionIds: this.knownEnemyDefinitionIds
+            });
+            const intent = createGpuEnemySpawnIntent({
+                definition: entry.definition,
+                route: entry.route,
+                spawnSequence: entry.spawnSequence,
+                laneOffsetTiles: entry.laneOffsetTiles,
+                waveId: entry.waveId,
+                policyId: entry.policyId,
+                resolvedStats
+            });
             const result = commandOwner.requestSpawn(
-                entry.intent,
+                intent,
                 tick,
                 entry.commandId
             );
