@@ -9,6 +9,8 @@ import {
 } from '../../contract/gameplay_team_contract.js';
 import {
     assertEnemyDefinitionCapabilityImplementations,
+    assertEnemyFixedCommandProducer,
+    assertEnemyGameplayEventConsumer,
     createEnemyCapabilityMask,
     createEnemyCapabilityImplementationRegistry,
     ENEMY_CAPABILITY_ID,
@@ -24,6 +26,7 @@ import {
     assertResolvedEnemySpawnStats,
     resolveEnemySpawnStats
 } from './resolved_enemy_spawn_stats.js';
+import { EnemyCoreImpactDirector } from './enemy_core_impact_director.js';
 
 export const GPU_ENEMY_WORLD_KIND_ID = 'enemy';
 export const GPU_ENEMY_FIRST_TARGET_WAYPOINT_INDEX = 1;
@@ -39,7 +42,8 @@ const GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE = Object.freeze({
 });
 const LEGACY_GPU_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
     ENEMY_CAPABILITY_ID.NAVIGATION,
-    ENEMY_CAPABILITY_ID.CONTACT_COMBAT
+    ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
+    ENEMY_CAPABILITY_ID.CORE_IMPACT
 ]);
 
 function assertNavigationCapabilityDefinition(definition) {
@@ -63,6 +67,27 @@ function assertContactCombatCapabilityDefinition(definition) {
     );
 }
 
+function assertCoreImpactCapabilityDefinition(definition) {
+    requireNonEmptyString(
+        definition.combatProfileId,
+        'enemy Core impact combatProfileId'
+    );
+    requireNonEmptyString(
+        definition.behaviorProfileId,
+        'enemy Core impact behaviorProfileId'
+    );
+}
+
+/** 실제 EnemyCoreImpactDirector method family를 가리키는 class-free roster seam입니다. */
+export const GPU_ENEMY_CORE_IMPACT_ROSTER_PORT = Object.freeze({
+    observeCompletedEvents:
+        EnemyCoreImpactDirector.prototype.observeCompletedEvents,
+    stageForFixedTick: EnemyCoreImpactDirector.prototype.stageForFixedTick,
+    observeFixedCommit: EnemyCoreImpactDirector.prototype.observeFixedCommit
+});
+assertEnemyGameplayEventConsumer(GPU_ENEMY_CORE_IMPACT_ROSTER_PORT);
+assertEnemyFixedCommandProducer(GPU_ENEMY_CORE_IMPACT_ROSTER_PORT);
+
 /**
  * GPU spawn path가 실제로 연결한 capability implementation seam입니다.
  * future capability는 비어 있는 class/registry entry를 만들지 않습니다.
@@ -83,6 +108,12 @@ export const GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY = (
             capabilityId: ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
             implementationId: 'gpu-continuous-contact-combat',
             assertDefinition: assertContactCombatCapabilityDefinition
+        }),
+        Object.freeze({
+            capabilityId: ENEMY_CAPABILITY_ID.CORE_IMPACT,
+            implementationId: 'enemy-core-impact-director',
+            assertDefinition: assertCoreImpactCapabilityDefinition,
+            rosterPort: GPU_ENEMY_CORE_IMPACT_ROSTER_PORT
         })
     ])
 );
@@ -307,11 +338,23 @@ export function createGpuEnemySpawnIntent(options) {
         ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
         'enemy capabilityMask'
     );
+    const hasCoreImpact = hasEnemyCapability(
+        capabilityMask,
+        ENEMY_CAPABILITY_ID.CORE_IMPACT,
+        'enemy capabilityMask'
+    );
     if (canonicalDefinition
         && !hasContactCombat
         && resolvedStats.towerContactDamage > 0) {
         throw new RangeError(
             'positive towerContactDamage canonical enemy에는 CONTACT_COMBAT capability가 필요합니다.'
+        );
+    }
+    if (canonicalDefinition
+        && !hasCoreImpact
+        && resolvedStats.coreImpactDamage > 0) {
+        throw new RangeError(
+            'positive coreImpactDamage canonical enemy에는 CORE_IMPACT capability가 필요합니다.'
         );
     }
     const flowSpeed = requirePositiveFinite(
@@ -372,7 +415,9 @@ export function createGpuEnemySpawnIntent(options) {
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
-            | GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | (hasCoreImpact
+                ? GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+                : 0)
             | (hasContactCombat
                 ? GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
                 : 0),

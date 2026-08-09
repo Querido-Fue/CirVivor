@@ -11,7 +11,8 @@ export const ENEMY_CAPABILITY_ID = Object.freeze({
     ATOMIC_TRANSFORM: 'enemy-atomic-transform',
     DIRECTIONAL_DEFENSE: 'enemy-directional-defense',
     PROJECTILE_CAPTURE: 'enemy-projectile-capture',
-    ROUTE_CLOSURE: 'enemy-route-closure'
+    ROUTE_CLOSURE: 'enemy-route-closure',
+    CORE_IMPACT: 'enemy-core-impact'
 });
 
 /** Runtime/WorldRegistry 경계에서 capability를 primitive로 보존하는 stable bit입니다. */
@@ -24,7 +25,9 @@ export const ENEMY_CAPABILITY_BIT = Object.freeze({
     ATOMIC_TRANSFORM: 0x020,
     DIRECTIONAL_DEFENSE: 0x040,
     PROJECTILE_CAPTURE: 0x080,
-    ROUTE_CLOSURE: 0x100
+    ROUTE_CLOSURE: 0x100,
+    // 기존 stable bit를 이동시키지 않는 append-only Turn 1 bit입니다.
+    CORE_IMPACT: 0x200
 });
 
 export const ENEMY_CAPABILITY_BIT_BY_ID = Object.freeze({
@@ -36,7 +39,8 @@ export const ENEMY_CAPABILITY_BIT_BY_ID = Object.freeze({
     [ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM]: ENEMY_CAPABILITY_BIT.ATOMIC_TRANSFORM,
     [ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE]: ENEMY_CAPABILITY_BIT.DIRECTIONAL_DEFENSE,
     [ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE]: ENEMY_CAPABILITY_BIT.PROJECTILE_CAPTURE,
-    [ENEMY_CAPABILITY_ID.ROUTE_CLOSURE]: ENEMY_CAPABILITY_BIT.ROUTE_CLOSURE
+    [ENEMY_CAPABILITY_ID.ROUTE_CLOSURE]: ENEMY_CAPABILITY_BIT.ROUTE_CLOSURE,
+    [ENEMY_CAPABILITY_ID.CORE_IMPACT]: ENEMY_CAPABILITY_BIT.CORE_IMPACT
 });
 
 export const ENEMY_CAPABILITY_ALL_MASK = Object.values(ENEMY_CAPABILITY_BIT)
@@ -169,6 +173,51 @@ export function assertEnemyCapabilityExactHandleRosterPort(
     return port;
 }
 
+function assertRequiredPortMethods(source, methodNames, label) {
+    const port = requirePlainObject(source, label);
+    for (const methodName of methodNames) {
+        if (typeof port[methodName] !== 'function') {
+            throw new TypeError(`${label}.${methodName}()가 필요합니다.`);
+        }
+    }
+    return port;
+}
+
+/** IEnemyLifecycleObserver 최소 port assertion입니다. */
+export function assertEnemyLifecycleObserver(
+    source,
+    label = 'enemyLifecycleObserver'
+) {
+    return assertRequiredPortMethods(
+        source,
+        [ENEMY_CAPABILITY_ROSTER_PORT_METHOD.OBSERVE_LIFECYCLE],
+        label
+    );
+}
+
+/** IEnemyFixedCommandProducer 최소 stage/commit family assertion입니다. */
+export function assertEnemyFixedCommandProducer(
+    source,
+    label = 'enemyFixedCommandProducer'
+) {
+    return assertRequiredPortMethods(source, [
+        ENEMY_CAPABILITY_ROSTER_PORT_METHOD.STAGE_FOR_FIXED_TICK,
+        ENEMY_CAPABILITY_ROSTER_PORT_METHOD.OBSERVE_FIXED_COMMIT
+    ], label);
+}
+
+/** IEnemyGameplayEventConsumer 최소 completed-event port assertion입니다. */
+export function assertEnemyGameplayEventConsumer(
+    source,
+    label = 'enemyGameplayEventConsumer'
+) {
+    return assertRequiredPortMethods(
+        source,
+        [ENEMY_CAPABILITY_ROSTER_PORT_METHOD.OBSERVE_COMPLETED_EVENTS],
+        label
+    );
+}
+
 /**
  * Content를 mutation하지 않는 capability implementation registry를 생성합니다.
  * 각 구현은 definition assertion 또는 실제 exact-handle roster port 중 하나를 가져야 합니다.
@@ -263,6 +312,12 @@ export function assertEnemyCapabilityImplementationRegistry(
     }
     return registry;
 }
+
+/** Turn 1 named EnemyCapabilityRegistry seam은 검증된 implementation registry를 재사용합니다. */
+export const createEnemyCapabilityRegistry
+    = createEnemyCapabilityImplementationRegistry;
+export const assertEnemyCapabilityRegistry
+    = assertEnemyCapabilityImplementationRegistry;
 
 /**
  * Definition의 모든 capability가 runtime registry에 실제 implementation으로 등록됐는지

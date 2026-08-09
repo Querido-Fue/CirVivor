@@ -23,12 +23,19 @@ const {
 } = await loadGameModule('ingame/object/core/gpu_core_proxy_spawn_adapter.js');
 const { WorldRegistry } = await loadGameModule('ingame/object/world_registry.js');
 const { CoreIntegrity } = await loadGameModule('ingame/state/core_integrity.js');
+const {
+    ENEMY_CAPABILITY_ID,
+    createEnemyCapabilityMask
+} = await loadGameModule('ingame/contract/enemy_capability_contract.js');
 
 const PROTOCOL = Object.freeze({
     sessionGeneration: 71,
     deviceGeneration: 4,
     authoritativeEpoch: 9
 });
+const CORE_IMPACT_CAPABILITY_MASK = createEnemyCapabilityMask([
+    ENEMY_CAPABILITY_ID.CORE_IMPACT
+]);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -42,7 +49,16 @@ function createRegistry(records) {
             incarnation: record.incarnation,
             kindId: record.kindId,
             definitionId: record.definitionId ?? null,
-            metadata: Object.freeze({ ...(record.metadata ?? {}) })
+            metadata: Object.freeze({
+                ...(record.kindId === 'enemy'
+                    && !Object.prototype.hasOwnProperty.call(
+                        record.metadata ?? {},
+                        'capabilityMask'
+                    )
+                    ? { capabilityMask: CORE_IMPACT_CAPABILITY_MASK }
+                    : null),
+                ...(record.metadata ?? {})
+            })
         })
     ]));
     return Object.freeze({
@@ -403,7 +419,15 @@ test('같은 snapshot의 첫 impact가 Core를 소진해도 후속 impact는 app
 test('old protocol/stale event는 Core를 건드리지 않고 same-tick GPU death cleanup duplicate는 정상 성공이다', () => {
     const core = new CoreIntegrity({ maxIntegrity: 9 });
     const endpoint = createEndpoint([
-        Object.freeze({ accepted: false, reason: 'duplicate-despawn' })
+        Object.freeze({
+            accepted: false,
+            reason: 'duplicate-despawn',
+            commandId: 'gpu-death:exact-fixture',
+            handle: Object.freeze({ entityId: 2, incarnation: 3 }),
+            targetFixedTick: 18,
+            disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT,
+            authenticTerminalCleanup: true
+        })
     ]);
     const registry = createRegistry([
         { entityId: 1, incarnation: 1, kindId: 'core-proxy' },
@@ -449,6 +473,13 @@ test('old protocol/stale event는 Core를 건드리지 않고 same-tick GPU deat
     assert.equal(staged.requested, 0);
     assert.equal(staged.cleanupDeduped, 1);
     assert.equal(director.requiresRecovery(), false);
+    assert.equal(director.getStatus().trackedCleanupCount, 1);
+    director.observeFixedCommit({
+        despawned: Object.freeze([Object.freeze({
+            commandId: 'gpu-death:exact-fixture'
+        })]),
+        rejected: Object.freeze([])
+    }, 18);
     assert.equal(director.getStatus().trackedCleanupCount, 0);
 
     // GPU death event가 먼저 auto-queue한 despawn과 director request가 겹쳐도 damage는 한 번입니다.
@@ -463,6 +494,60 @@ test('old protocol/stale event는 Core를 건드리지 않고 same-tick GPU deat
     ]), registry);
     assert.equal(core.getCurrentIntegrity(), 5);
     assert.equal(director.getStatus().cleanupDedupedCount, 1);
+});
+
+test('Core director는 exact registry CORE_IMPACT bit를 요구하고 bare duplicate-command를 recovery로 올린다', () => {
+    const core = new CoreIntegrity({ maxIntegrity: 5 });
+    const endpoint = createEndpoint([
+        Object.freeze({ accepted: false, reason: 'duplicate-command' })
+    ]);
+    const noCapabilityRegistry = createRegistry([
+        { entityId: 1, incarnation: 1, kindId: 'core-proxy' },
+        {
+            entityId: 2,
+            incarnation: 1,
+            kindId: 'enemy',
+            metadata: {
+                capabilityMask: 0,
+                coreImpactDamage: 2,
+                bountyBudget: 1
+            }
+        }
+    ]);
+    const director = new EnemyCoreImpactDirector({ coreIntegrity: core, endpoint });
+    const noCapability = director.observeCompletedEvents(snapshot([
+        coreEnter({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 2,
+            otherIncarnation: 1,
+            sequence: 0
+        })
+    ]), noCapabilityRegistry);
+    assert.equal(noCapability.facts.length, 0);
+    assert.equal(core.getCurrentIntegrity(), 5);
+
+    const capableRegistry = createRegistry([
+        { entityId: 1, incarnation: 1, kindId: 'core-proxy' },
+        {
+            entityId: 3,
+            incarnation: 1,
+            kindId: 'enemy',
+            metadata: { coreImpactDamage: 2, bountyBudget: 1 }
+        }
+    ]);
+    director.observeCompletedEvents(snapshot([
+        coreEnter({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 3,
+            otherIncarnation: 1,
+            sequence: 1
+        })
+    ]), capableRegistry);
+    const staged = director.stageForFixedTick({ targetFixedTick: 18, endpoint });
+    assert.equal(staged.recoveryRequired, true);
+    assert.equal(director.getStatus().cleanupFailure.reason, 'duplicate-command');
 });
 
 test('committed current-device forward epoch은 rebind하고 prior epoch callback은 다시 damage하지 않는다', () => {
@@ -522,6 +607,127 @@ test('production endpoint는 주입되지 않은 Core cleanup capability를 lega
         () => new EnemyCoreImpactDirector({ coreIntegrity: core, endpoint }),
         /전용 Core-impact cleanup port/
     );
+    endpoint.destroy();
+});
+
+test('Director는 일반 same/future despawn과 commandId 선점 경합의 actual owner ID를 commit까지 추적한다', () => {
+    const backend = createCommittedEventBackend();
+    let cleanupBinding = null;
+    const endpoint = createGpuSimulationEndpoint({
+        enemySimulationBackend: backend,
+        coreImpactCleanupPortReceiver(binding) {
+            cleanupBinding = binding;
+        }
+    });
+    assert.equal(endpoint.init({ id: 'core-impact-race-map' }), true);
+    const protocol = Object.freeze({
+        sessionGeneration: endpoint.getStatus().sessionGeneration,
+        deviceGeneration: 8,
+        authoritativeEpoch: 3
+    });
+    backend.setProtocol(protocol);
+    assert.equal(endpoint.requestSpawn(
+        createGpuCoreProxySpawnIntent({ position: { x: 0, y: 0 } }),
+        1,
+        'core-impact-race:core'
+    ).accepted, true);
+    for (let spawnSequence = 0; spawnSequence < 3; spawnSequence++) {
+        assert.equal(endpoint.requestSpawn(createGpuEnemySpawnIntent({
+            definition: {
+                id: `core-impact-race-enemy-${spawnSequence}`,
+                shapeType: 'square',
+                maxHealth: 1,
+                moveSpeedTilesPerSecond: 1,
+                collisionRadiusTiles: 0.5,
+                collisionWeight: 1,
+                coreImpactDamage: 1,
+                towerContactDamage: 0,
+                bountyBudget: 1,
+                colorRgba: [1, 0, 0, 1],
+                radiusScale: 1
+            },
+            route: {
+                gateId: 'core-impact-race-gate',
+                pathId: 'core-impact-race-path',
+                waypoints: [{ x: 0, y: 0 }, { x: 1, y: 0 }]
+            },
+            spawnSequence,
+            policyId: 'corebound'
+        }), 1, `core-impact-race:enemy:${spawnSequence}`).accepted, true);
+    }
+    const setup = endpoint.commitAtFixedBoundary(1).spawned;
+    const coreHandle = setup[0].handle;
+    const enemies = setup.slice(1).map(({ handle }) => handle);
+    assert.equal(endpoint.requestDespawn(
+        enemies[0],
+        'scripted-cleanup',
+        2,
+        'core-impact-race:same'
+    ).accepted, true);
+    assert.equal(endpoint.requestDespawn(
+        enemies[1],
+        'player-kill',
+        5,
+        'core-impact-race:future'
+    ).accepted, true);
+    const collisionImpactKey = [
+        protocol.sessionGeneration,
+        protocol.deviceGeneration,
+        protocol.authoritativeEpoch,
+        coreHandle.entityId,
+        coreHandle.incarnation,
+        enemies[2].entityId,
+        enemies[2].incarnation,
+        'interaction-enter'
+    ].join(':');
+    const predictableCommandId = `core-impact:${collisionImpactKey}`;
+    assert.equal(endpoint.requestDespawn(
+        coreHandle,
+        'scripted-preclaim',
+        2,
+        predictableCommandId
+    ).accepted, true);
+
+    const core = new CoreIntegrity({ maxIntegrity: 10 });
+    const director = new EnemyCoreImpactDirector({
+        coreIntegrity: core,
+        endpoint,
+        coreImpactCleanupPort: cleanupBinding.port
+    });
+    director.observeCompletedEvents(snapshot(enemies.map((enemy, sequence) => (
+        coreEnter({
+            entityId: coreHandle.entityId,
+            incarnation: coreHandle.incarnation,
+            otherEntityId: enemy.entityId,
+            otherIncarnation: enemy.incarnation,
+            sequence,
+            protocol
+        })
+    ))), endpoint.getRegistry());
+    assert.equal(core.getCurrentIntegrity(), 7);
+    const staged = director.stageForFixedTick({ targetFixedTick: 2, endpoint });
+    assert.equal(staged.requested, 1);
+    assert.equal(staged.cleanupDeduped, 2);
+    assert.equal(staged.pendingCleanupCount, 3);
+
+    const committed = endpoint.commitAtFixedBoundary(2);
+    const byHandle = new Map(committed.despawned.map((entry) => [
+        handleKey(entry.handle),
+        entry
+    ]));
+    assert.equal(byHandle.get(handleKey(enemies[0])).commandId, 'core-impact-race:same');
+    assert.equal(byHandle.get(handleKey(enemies[0])).reason, 'scripted-cleanup');
+    assert.equal(byHandle.get(handleKey(enemies[1])).commandId, 'core-impact-race:future');
+    assert.equal(byHandle.get(handleKey(enemies[1])).reason, 'player-kill');
+    const collisionCleanup = byHandle.get(handleKey(enemies[2]));
+    assert.notEqual(collisionCleanup.commandId, predictableCommandId);
+    assert.match(collisionCleanup.commandId, /^enemy-terminal-cleanup:/u);
+    assert.equal(collisionCleanup.disposition, ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT);
+    assert.equal(collisionCleanup.bountyEligible, false);
+    director.observeFixedCommit(committed, 2);
+    assert.equal(director.getStatus().cleanupCommittedCount, 3);
+    assert.equal(director.getStatus().trackedCleanupCount, 0);
+    assert.equal(director.requiresRecovery(), false);
     endpoint.destroy();
 });
 

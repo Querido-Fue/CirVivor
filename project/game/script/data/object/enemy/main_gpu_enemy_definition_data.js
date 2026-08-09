@@ -23,7 +23,8 @@ export {
 /** 모든 main GPU enemy가 실제로 사용하는 공통 runtime capability입니다. */
 export const MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS = Object.freeze([
     ENEMY_CAPABILITY_ID.NAVIGATION,
-    ENEMY_CAPABILITY_ID.CONTACT_COMBAT
+    ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
+    ENEMY_CAPABILITY_ID.CORE_IMPACT
 ]);
 
 /**

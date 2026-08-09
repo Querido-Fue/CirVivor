@@ -1809,3 +1809,65 @@ test('cancelAll은 pending fixed command와 destination reservation을 idempoten
     assert.equal(owner.commitAtFixedBoundary(42).controls.length, 1);
     assert.equal(backend.stagedPlans.length, 2);
 });
+
+test('closeIngress는 pending/reservation을 한 번 회수하고 raw fixed ingress를 영구히 닫는다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        40,
+        'spawn:close-ingress:reservation'
+    ).accepted, true);
+    assert.equal(owner.commitAtFixedBoundary(40).sourceRelativeSpawns.length, 1);
+    assert.equal(registry.getReservedCount(), 1);
+    assert.equal(owner.requestBodyControl({
+        handle: source,
+        moveIntentX: 1,
+        moveIntentY: 0
+    }, 41, 'control:close-ingress').accepted, true);
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        41,
+        'spawn:close-ingress:pending'
+    ).accepted, true);
+
+    assert.deepEqual({ ...owner.closeIngress('run-defeated') }, {
+        closed: true,
+        reason: 'run-defeated',
+        cancelledCommandCount: 2,
+        releasedDestinationCount: 1,
+        failedDestinationCount: 0
+    });
+    assert.equal(owner.getStatus().ingressOpen, false);
+    assert.equal(owner.getStatus().ingressCloseReason, 'run-defeated');
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.deepEqual({ ...owner.requestBodyControl({}, 41, 'forged-control') }, {
+        accepted: false,
+        reason: 'run-defeated'
+    });
+    assert.deepEqual({ ...owner.requestSourceRelativeSpawn(
+        {},
+        41,
+        'forged-source-relative'
+    ) }, {
+        accepted: false,
+        reason: 'run-defeated'
+    });
+    assert.deepEqual({ ...owner.closeIngress('different-reason-is-ignored') }, {
+        closed: true,
+        reason: 'run-defeated',
+        cancelledCommandCount: 0,
+        releasedDestinationCount: 0,
+        failedDestinationCount: 0
+    });
+    const finalBoundary = owner.commitAtFixedBoundary(41);
+    assert.equal(finalBoundary.state, 'committed');
+    assert.equal(finalBoundary.controls.length, 0);
+    assert.equal(finalBoundary.sourceRelativeSpawns.length, 0);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(registry.getReservedCount(), 0);
+});

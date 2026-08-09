@@ -751,9 +751,12 @@ test('terminal close는 raw owner ingress를 닫고 gpu-death cleanup의 identit
         accepted: false,
         reason: 'duplicate-despawn',
         commandId: 'gpu-death:terminal:enemy',
+        handle: handles[1],
         targetFixedTick: 2,
         disposition: 'CORE_IMPACT',
-        dispositionUpgraded: true
+        dispositionUpgraded: true,
+        targetFixedTickRetargeted: false,
+        authenticTerminalCleanup: true
     });
     assert.equal(owner.getPendingCount(), 7);
 
@@ -811,4 +814,155 @@ test('terminal close는 raw owner ingress를 닫고 gpu-death cleanup의 identit
     assert.equal(committed.despawned[0].bountyEligible, false);
     assert.equal(owner.finalizeClosedIngress(), 0);
     assert.equal(owner.getPendingCount(), 0);
+});
+
+test('authentic Core cleanup은 일반 same/future despawn을 승격·retarget하고 commandId 선점을 내부 ID로 우회한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const permits = Array.from({ length: 3 }, () => Object.freeze({}));
+    const availablePermits = new Set(permits);
+    const owner = new EnemyLifecycleCommandOwner(backend, registry, {
+        terminalCleanupAuthority: Object.freeze({
+            consumePermit(candidate) {
+                if (!availablePermits.delete(candidate)) {
+                    return false;
+                }
+                return true;
+            }
+        })
+    });
+    for (let sequence = 0; sequence < 4; sequence++) {
+        assert.equal(owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: sequence }),
+            1,
+            `core-race:spawn:${sequence}`
+        ).accepted, true);
+    }
+    const handles = owner.commitAtFixedBoundary(1)
+        .spawned.map(({ handle }) => handle);
+
+    assert.equal(owner.requestDespawn(
+        handles[0],
+        'scripted-cleanup',
+        2,
+        'core-race:same-tick'
+    ).accepted, true);
+    const sameTick = owner.requestDespawn(
+        handles[0],
+        'core-impact',
+        2,
+        'core-impact:same-tick-request',
+        { disposition: 'CORE_IMPACT' },
+        permits[0]
+    );
+    assert.equal(sameTick.commandId, 'core-race:same-tick');
+    assert.equal(sameTick.targetFixedTick, 2);
+    assert.equal(sameTick.disposition, 'CORE_IMPACT');
+    assert.equal(sameTick.authenticTerminalCleanup, true);
+
+    assert.equal(owner.requestDespawn(
+        handles[1],
+        'player-kill',
+        5,
+        'core-race:future'
+    ).accepted, true);
+    const retargeted = owner.requestDespawn(
+        handles[1],
+        'core-impact',
+        2,
+        'core-impact:future-request',
+        { disposition: 'CORE_IMPACT' },
+        permits[1]
+    );
+    assert.equal(retargeted.commandId, 'core-race:future');
+    assert.equal(retargeted.targetFixedTick, 2);
+    assert.equal(retargeted.targetFixedTickRetargeted, true);
+    assert.equal(retargeted.authenticTerminalCleanup, true);
+
+    assert.equal(owner.requestDespawn(
+        handles[2],
+        'scripted-preclaim',
+        2,
+        'core-impact:predictable-id'
+    ).accepted, true);
+    const collisionFallback = owner.requestDespawn(
+        handles[3],
+        'core-impact',
+        2,
+        'core-impact:predictable-id',
+        { disposition: 'CORE_IMPACT' },
+        permits[2]
+    );
+    assert.equal(collisionFallback.accepted, true);
+    assert.equal(collisionFallback.commandIdReassigned, true);
+    assert.notEqual(collisionFallback.commandId, 'core-impact:predictable-id');
+    assert.match(collisionFallback.commandId, /^enemy-terminal-cleanup:/u);
+
+    const closed = owner.closeIngress('run-defeated');
+    assert.equal(closed.cancelledCount, 1);
+    assert.equal(closed.preservedCleanupCount, 3);
+    const committed = owner.commitAtFixedBoundary(2);
+    assert.equal(committed.despawned.length, 3);
+    assert.deepEqual(
+        Array.from(committed.despawned, ({ commandId, reason, disposition }) => ({
+            commandId,
+            reason,
+            disposition
+        })),
+        [{
+            commandId: 'core-race:same-tick',
+            reason: 'scripted-cleanup',
+            disposition: 'CORE_IMPACT'
+        }, {
+            commandId: 'core-race:future',
+            reason: 'player-kill',
+            disposition: 'CORE_IMPACT'
+        }, {
+            commandId: collisionFallback.commandId,
+            reason: 'core-impact',
+            disposition: 'CORE_IMPACT'
+        }]
+    );
+    assert.ok(committed.despawned.every(({ bountyEligible }) => (
+        bountyEligible === false
+    )));
+    assert.equal(owner.getPendingCount(), 0);
+});
+
+test('authentic Core cleanup보다 과거인 pending despawn은 missed-boundary recovery로 fail-closed한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 1 });
+    const permit = Object.freeze({});
+    let available = true;
+    const owner = new EnemyLifecycleCommandOwner(backend, registry, {
+        terminalCleanupAuthority: Object.freeze({
+            consumePermit(candidate) {
+                if (!available || candidate !== permit) {
+                    return false;
+                }
+                available = false;
+                return true;
+            }
+        })
+    });
+    assert.equal(owner.requestSpawn(createProjectileIntent(), 1).accepted, true);
+    const handle = owner.commitAtFixedBoundary(1).spawned[0].handle;
+    assert.equal(owner.requestDespawn(
+        handle,
+        'scripted-cleanup',
+        2,
+        'core-race:past'
+    ).accepted, true);
+    const conflict = owner.requestDespawn(
+        handle,
+        'core-impact',
+        3,
+        'core-impact:past-request',
+        { disposition: 'CORE_IMPACT' },
+        permit
+    );
+    assert.equal(conflict.accepted, false);
+    assert.equal(conflict.reason, 'despawn-target-tick-conflict');
+    assert.equal(conflict.recoveryRequired, true);
+    assert.equal(owner.getStatus().recoveryRequired, true);
 });

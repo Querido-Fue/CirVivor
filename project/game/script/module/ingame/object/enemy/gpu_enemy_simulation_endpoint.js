@@ -415,7 +415,9 @@ export class GpuEnemySimulationEndpoint {
             const lifecycle = this.lifecycleCommandOwner.closeIngress(
                 this.gameplayIngressCloseReason
             );
-            const fixedCommands = this.fixedCommandOwner.cancelAll();
+            const fixedCommands = this.fixedCommandOwner.closeIngress(
+                this.gameplayIngressCloseReason
+            );
             this.gameplayIngressCloseCleanup = Object.freeze({
                 lifecycle,
                 fixedCommands
@@ -438,9 +440,19 @@ export class GpuEnemySimulationEndpoint {
         if (this.gameplayIngressOpen) {
             return Object.freeze({ lifecycleCancelledCount: 0, fixedCommands: null });
         }
-        const lifecycleCancelledCount
-            = this.lifecycleCommandOwner.finalizeClosedIngress();
-        const fixedCommands = this.fixedCommandOwner.cancelAll();
+        let lifecycleCancelledCount = 0;
+        let fixedCommands = null;
+        try {
+            lifecycleCancelledCount
+                = this.lifecycleCommandOwner.finalizeClosedIngress();
+            fixedCommands = this.fixedCommandOwner.closeIngress(
+                this.gameplayIngressCloseReason
+            );
+        } finally {
+            // SEALED/SEALED_FAILED 뒤 stale stored port가 새 authentic cleanup을
+            // 만들지 못하도록 permit authority까지 terminal finalizer가 닫습니다.
+            this.#revokeCoreImpactCleanupPort();
+        }
         return Object.freeze({ lifecycleCancelledCount, fixedCommands });
     }
 

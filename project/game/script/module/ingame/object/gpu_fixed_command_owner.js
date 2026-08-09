@@ -465,11 +465,17 @@ export class GpuFixedCommandOwner {
             completedTargetInvalid: 0
         };
         this.recoveryRequired = false;
+        this.ingressOpen = true;
+        this.ingressCloseReason = null;
         this.destroyed = false;
     }
 
     requestBodyControl(command, targetFixedTick, commandId) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedIngress();
+        if (rejected) {
+            return rejected;
+        }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
         const payload = normalizeMoveIntent(command);
@@ -562,6 +568,10 @@ export class GpuFixedCommandOwner {
 
     requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
         this.#assertUsable();
+        const rejected = this.#rejectClosedIngress();
+        if (rejected) {
+            return rejected;
+        }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
         const snapshot = materializeGpuPlainDataSnapshot(
@@ -1175,6 +1185,8 @@ export class GpuFixedCommandOwner {
             pendingSourceRelativeSpawnCount: this.pendingSourceRelativeSpawnCount,
             pendingDestinationCount: this.pendingDestinations.size,
             recoveryRequired: this.recoveryRequired,
+            ingressOpen: this.ingressOpen,
+            ingressCloseReason: this.ingressCloseReason,
             lastCommitResult: this.lastCommitResult,
             lastCompletionResult: this.lastCompletionResult,
             telemetry: Object.freeze({ ...this.telemetry }),
@@ -1225,11 +1237,33 @@ export class GpuFixedCommandOwner {
         });
     }
 
+    /** terminal 전이 뒤 raw owner reference까지 영구히 닫고 pending을 회수합니다. */
+    closeIngress(reason = 'gameplay-ingress-closed') {
+        this.#assertUsable();
+        let cleanup = Object.freeze({
+            cancelledCommandCount: 0,
+            releasedDestinationCount: 0,
+            failedDestinationCount: 0
+        });
+        if (this.ingressOpen) {
+            this.ingressOpen = false;
+            this.ingressCloseReason = typeof reason === 'string' && reason.length > 0
+                ? reason
+                : 'gameplay-ingress-closed';
+            cleanup = this.cancelAll();
+        }
+        return Object.freeze({
+            closed: !this.ingressOpen,
+            reason: this.ingressCloseReason,
+            ...cleanup
+        });
+    }
+
     destroy() {
         if (this.destroyed) {
             return;
         }
-        this.cancelAll();
+        this.closeIngress('destroyed');
         this.knownCommands.clear();
         this.controlTargetKeys.clear();
         this.destroyed = true;
@@ -1394,6 +1428,16 @@ export class GpuFixedCommandOwner {
         }
         this.lastCommitResult = freezeResult(result);
         return this.lastCommitResult;
+    }
+
+    #rejectClosedIngress() {
+        if (this.ingressOpen) {
+            return null;
+        }
+        return Object.freeze({
+            accepted: false,
+            reason: this.ingressCloseReason ?? 'gameplay-ingress-closed'
+        });
     }
 
     #assertUsable() {

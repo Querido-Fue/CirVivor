@@ -23,8 +23,13 @@ const {
     ENEMY_CAPABILITY_BIT_BY_ID,
     ENEMY_CAPABILITY_ID,
     ENEMY_CAPABILITY_ROSTER_PORT_METHOD,
+    assertEnemyCapabilityRegistry,
     assertEnemyCapabilityExactHandleRosterPort,
     assertEnemyDefinitionCapabilityImplementations,
+    assertEnemyFixedCommandProducer,
+    assertEnemyGameplayEventConsumer,
+    assertEnemyLifecycleObserver,
+    createEnemyCapabilityRegistry,
     createEnemyCapabilityMask,
     hasEnemyCapability,
     createEnemyCapabilityImplementationRegistry
@@ -43,6 +48,7 @@ const {
 const { WaveDirector } = await loadGameModule('ingame/flow/wave_director.js');
 const {
     GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY,
+    GPU_ENEMY_CORE_IMPACT_ROSTER_PORT,
     createGpuEnemySpawnIntent
 } = await loadGameModule('ingame/object/enemy/gpu_enemy_spawn_adapter.js');
 const {
@@ -126,7 +132,8 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
         'enemy-atomic-transform',
         'enemy-directional-defense',
         'enemy-projectile-capture',
-        'enemy-route-closure'
+        'enemy-route-closure',
+        'enemy-core-impact'
     ]);
     assert.equal(Object.isFrozen(ENEMY_CAPABILITY_ROSTER_PORT_METHOD), true);
     assert.equal(Object.isFrozen(ENEMY_CAPABILITY_BIT), true);
@@ -140,7 +147,8 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
         0x020,
         0x040,
         0x080,
-        0x100
+        0x100,
+        0x200
     ]);
     const archerCapabilityMask = createEnemyCapabilityMask(
         ARCHER_DEFINITION.capabilityIds
@@ -193,6 +201,31 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
         [ENEMY_CAPABILITY_ROSTER_PORT_METHOD.OBSERVE_LIFECYCLE]() {}
     };
     assert.strictEqual(assertEnemyCapabilityExactHandleRosterPort(port), port);
+    assert.strictEqual(assertEnemyLifecycleObserver(port), port);
+    const fixedAndEventPort = {
+        [ENEMY_CAPABILITY_ROSTER_PORT_METHOD.OBSERVE_COMPLETED_EVENTS]() {},
+        [ENEMY_CAPABILITY_ROSTER_PORT_METHOD.STAGE_FOR_FIXED_TICK]() {},
+        [ENEMY_CAPABILITY_ROSTER_PORT_METHOD.OBSERVE_FIXED_COMMIT]() {}
+    };
+    assert.strictEqual(
+        assertEnemyFixedCommandProducer(fixedAndEventPort),
+        fixedAndEventPort
+    );
+    assert.strictEqual(
+        assertEnemyGameplayEventConsumer(fixedAndEventPort),
+        fixedAndEventPort
+    );
+    const namedRegistry = createEnemyCapabilityRegistry([{
+        capabilityId: ENEMY_CAPABILITY_ID.CORE_IMPACT,
+        implementationId: 'test-core-impact',
+        rosterPort: fixedAndEventPort
+    }]);
+    assert.strictEqual(assertEnemyCapabilityRegistry(namedRegistry), namedRegistry);
+    assert.strictEqual(
+        GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY
+            .byCapabilityId[ENEMY_CAPABILITY_ID.CORE_IMPACT].rosterPort,
+        GPU_ENEMY_CORE_IMPACT_ROSTER_PORT
+    );
     assert.doesNotThrow(() => assertEnemyDefinitionCapabilityImplementations(
         ARCHER_DEFINITION,
         GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY
@@ -213,6 +246,7 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
         assert.equal(Object.isFrozen(profiles.behavior), true);
         assert.ok(definition.capabilityIds.includes(ENEMY_CAPABILITY_ID.NAVIGATION));
         assert.ok(definition.capabilityIds.includes(ENEMY_CAPABILITY_ID.CONTACT_COMBAT));
+        assert.ok(definition.capabilityIds.includes(ENEMY_CAPABILITY_ID.CORE_IMPACT));
         assert.doesNotThrow(() => assertEnemyDefinitionCapabilityImplementations(
             definition,
             GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY
@@ -271,6 +305,15 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
             )
         }
     ), ENEMY_PROFILE_CATALOG), /CONTACT_COMBAT capability/);
+    assert.throws(() => normalizeEnemyDefinition(canonicalSource(
+        BASIC_SQUARE_ENEMY_DATA,
+        {
+            id: 'positive-core-impact-without-capability',
+            capabilityIds: BASIC_SQUARE_ENEMY_DATA.capabilityIds.filter(
+                (id) => id !== ENEMY_CAPABILITY_ID.CORE_IMPACT
+            )
+        }
+    ), ENEMY_PROFILE_CATALOG), /CORE_IMPACT capability/);
 });
 
 test('resolved stats는 identity, modifier precedence, absolute 마지막 승자와 final-only float32를 보장한다', () => {

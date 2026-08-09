@@ -1176,6 +1176,7 @@ test('terminal close는 pending gameplay command와 raw lifecycle 우회를 제�
         forgedCoreImpactHandle
     ] = endpoint.commitAtFixedBoundary(1).spawned.map(({ handle: entry }) => entry);
     const rawLifecycleOwner = endpoint.getLifecycleCommandOwner();
+    const rawFixedOwner = endpoint.fixedCommandOwner;
 
     backend.completedEventBatches.push(createCompletedBatch(protocol, {
         sourceTick: 1,
@@ -1320,6 +1321,16 @@ test('terminal close는 pending gameplay command와 raw lifecycle 우회를 제�
         3,
         'terminal-close:raw-despawn'
     ).accepted, false);
+    assert.equal(rawFixedOwner.requestBodyControl(
+        {},
+        3,
+        'terminal-close:raw-control'
+    ).accepted, false);
+    assert.equal(rawFixedOwner.requestSourceRelativeSpawn(
+        {},
+        3,
+        'terminal-close:raw-source-relative'
+    ).accepted, false);
 
     const privileged = cleanupBinding.port
         .requestCommittedCoreImpactCleanup(
@@ -1378,16 +1389,29 @@ test('terminal close는 pending gameplay command와 raw lifecycle 우회를 제�
     const finalized = endpoint.finalizeClosedGameplayIngress();
     assert.equal(finalized.lifecycleCancelledCount, 0);
     assert.deepEqual({ ...finalized.fixedCommands }, {
+        closed: true,
+        reason: 'run-defeated',
         cancelledCommandCount: 0,
         releasedDestinationCount: 0,
         failedDestinationCount: 0
     });
 
-    cleanupBinding.revoke();
     assert.equal(cleanupBinding.port.requestCommittedCoreImpactCleanup(
         { entityId: 99, incarnation: 1 },
         4,
         'core-impact:revoked'
     ).reason, 'core-impact-cleanup-port-revoked');
+    assert.equal(rawFixedOwner.requestBodyControl(
+        {},
+        4,
+        'terminal-close:raw-control-after-finalize'
+    ).accepted, false);
+    assert.equal(rawFixedOwner.requestSourceRelativeSpawn(
+        {},
+        4,
+        'terminal-close:raw-source-after-finalize'
+    ).accepted, false);
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(endpoint.getRegistry().getReservedCount(), 0);
     endpoint.destroy();
 });

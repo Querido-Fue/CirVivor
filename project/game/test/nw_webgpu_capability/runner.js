@@ -8204,11 +8204,421 @@ async function runProductionTowerCombatHardwareSmoke(device) {
 }
 
 /**
+ * Window 연속 압착 fixture와 분리된 실제 GPU 물리 pair입니다. Tower의 WEIGHT=10과
+ * light Enemy weight=.6의 동일 penetration 보정만 측정하므로 route/control/초기
+ * offset가 displacement 수치에 섞이지 않습니다.
+ */
+async function runProductionMaximumDamageWindowWeightHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const fixedDelta = 1 / 60;
+    const worldSize = Object.freeze({ x: 16, y: 16 });
+    const towerHandle = Object.freeze({ entityId: 9101, incarnation: 1 });
+    const lightEnemyHandle = Object.freeze({ entityId: 9102, incarnation: 1 });
+    const towerInitialPosition = Object.freeze({ x: 8, y: 8 });
+    const lightEnemyInitialPosition = Object.freeze({ x: 8.7, y: 8 });
+    const lightEnemyDefinition = Object.freeze({
+        id: 'nw-maximum-damage-window-isolated-light-enemy',
+        shapeType: 'circle',
+        colorRgba: [0.95, 0.22, 0.22, 1],
+        radiusScale: 1,
+        collisionRadiusTiles: 0.35,
+        collisionWeight: 0.6,
+        maxHealth: 20,
+        // adapter ingress는 양수 speed를 요구하지만 raw physical pair는 flow를 끈다.
+        moveSpeedTilesPerSecond: 1,
+        towerContactDamage: 0,
+        coreImpactDamage: 0,
+        bountyBudget: 0,
+        pairCollisionRadiusScale: 1
+    });
+    const tower = Object.freeze({
+        ...createGpuTowerSpawnIntent({ position: towerInitialPosition }),
+        entityId: towerHandle.entityId,
+        incarnation: towerHandle.incarnation
+    });
+    const enemyIntent = createGpuEnemySpawnIntent({
+        definition: lightEnemyDefinition,
+        route: navigationSource.route,
+        spawnSequence: 0,
+        waveId: 'nw-maximum-damage-window-isolated-weight',
+        policyId: 'hardware-fixture'
+    });
+    const lightEnemy = Object.freeze({
+        ...enemyIntent,
+        entityId: lightEnemyHandle.entityId,
+        incarnation: lightEnemyHandle.incarnation,
+        position: lightEnemyInitialPosition,
+        velocity: Object.freeze({ x: 0, y: 0 }),
+        // flow field / authored velocity / body control은 모두 0인 raw pair이다.
+        useFlow: false,
+        flowFieldIndex: null
+    });
+    const reciprocalInteractionEnabled = (
+        (tower.interactionMask & lightEnemy.interactionLayer) !== 0
+        && (lightEnemy.interactionMask & tower.interactionLayer) !== 0
+    );
+    assert(
+        reciprocalInteractionEnabled,
+        `isolated weight pair interaction mask가 reciprocal하지 않습니다: ${JSON.stringify({ tower, lightEnemy })}`
+    );
+    const simulation = new GpuCircleBodySimulation(
+        createPhase3PlatformPort(device),
+        {
+            capacity: 2,
+            contactCapacity: 16,
+            eventCapacity: 16,
+            deathEventCapacity: 2,
+            worldSize,
+            gridCellSize: { x: 2, y: 2 }
+        }
+    );
+    const findBody = (bodies, handle, label) => {
+        const body = bodies.find((candidate) => (
+            candidate.handle?.entityId === handle.entityId
+            && candidate.handle?.incarnation === handle.incarnation
+        ));
+        assert(body, `${label} body가 없습니다: ${JSON.stringify({ bodies, handle })}`);
+        return body;
+    };
+
+    try {
+        assert(simulation.init(), 'isolated weight pair simulation init 실패');
+        const spawned = simulation.spawnBodies([tower, lightEnemy]);
+        assert(
+            spawned.accepted === 2 && spawned.rejected === 0,
+            `isolated weight pair spawn 실패: ${JSON.stringify(spawned)}`
+        );
+        assert(
+            simulation.fixedUpdate(fixedDelta, 1),
+            `isolated weight pair fixed submit 실패: ${JSON.stringify(simulation.getStatus())}`
+        );
+        // event protocol failure가 자원을 release하기 전에 copy를 queue에 넣는다.
+        const afterBodiesPromise = simulation.readbackBodies();
+        await device.queue.onSubmittedWorkDone();
+        const afterBodies = await afterBodiesPromise;
+        const status = await waitForSimulationStatus(
+            simulation,
+            (candidate) => candidate.overflow.pendingReadbacks === 0
+                && candidate.events.pendingReadbacks === 0,
+            'isolated weight pair telemetry'
+        );
+        const towerAfter = findBody(
+            afterBodies,
+            towerHandle,
+            'isolated weight Tower'
+        );
+        const lightEnemyAfter = findBody(
+            afterBodies,
+            lightEnemyHandle,
+            'isolated weight light Enemy'
+        );
+        const towerCorrection = towerInitialPosition.x - towerAfter.position.x;
+        const lightEnemyCorrection = lightEnemyAfter.position.x
+            - lightEnemyInitialPosition.x;
+        const measuredCorrectionRatio = lightEnemyCorrection / towerCorrection;
+        const expectedCorrectionRatio = lightEnemy.inverseMass / tower.inverseMass;
+        const events = simulation.drainCompletedEventBatches([])
+            .flatMap((batch) => batch.events);
+        const interactionEvent = events.find((event) => (
+            event.entityId === lightEnemyHandle.entityId
+            && event.incarnation === lightEnemyHandle.incarnation
+            && event.otherEntityId === towerHandle.entityId
+            && event.otherIncarnation === towerHandle.incarnation
+        ));
+        const bodiesAreFiniteAndInMap = [towerAfter, lightEnemyAfter].every((body) => (
+            Number.isFinite(body.position.x)
+            && Number.isFinite(body.position.y)
+            && body.position.x >= 0
+            && body.position.x <= worldSize.x
+            && body.position.y >= 0
+            && body.position.y <= worldSize.y
+        ));
+        assert(
+            status.state === 'ready'
+                && !status.requiresAuthoritativeRebuild
+                && towerAfter.inverseMass === Math.fround(1 / THE_TOWER_DATA.WEIGHT)
+                && lightEnemyAfter.inverseMass === Math.fround(1 / 0.6)
+                && towerCorrection > 0
+                && lightEnemyCorrection > towerCorrection
+                && Number.isFinite(measuredCorrectionRatio)
+                && bodiesAreFiniteAndInMap
+                && interactionEvent?.eventType === 'interaction-continuous',
+            `isolated weight pair physical/interaction contract 불일치: ${JSON.stringify({ status, towerAfter, lightEnemyAfter, towerCorrection, lightEnemyCorrection, measuredCorrectionRatio, interactionEvent })}`
+        );
+        assertNear(
+            measuredCorrectionRatio,
+            expectedCorrectionRatio,
+            0.05,
+            'isolated weight pair correction ratio'
+        );
+        return Object.freeze({
+            towerWeight: THE_TOWER_DATA.WEIGHT,
+            lightEnemyWeight: lightEnemyDefinition.collisionWeight,
+            inverseMass: Object.freeze({
+                tower: towerAfter.inverseMass,
+                lightEnemy: lightEnemyAfter.inverseMass
+            }),
+            initialPositions: Object.freeze({
+                tower: towerInitialPosition,
+                lightEnemy: lightEnemyInitialPosition
+            }),
+            finalPositions: Object.freeze({
+                tower: Object.freeze({ ...towerAfter.position }),
+                lightEnemy: Object.freeze({ ...lightEnemyAfter.position })
+            }),
+            displacements: Object.freeze({
+                tower: towerCorrection,
+                lightEnemy: lightEnemyCorrection,
+                ratio: measuredCorrectionRatio,
+                expectedRatio: expectedCorrectionRatio
+            }),
+            interaction: Object.freeze({
+                reciprocal: reciprocalInteractionEnabled,
+                eventType: interactionEvent.eventType,
+                source: Object.freeze({
+                    entityId: interactionEvent.entityId,
+                    incarnation: interactionEvent.incarnation
+                })
+            }),
+            controlsRequested: 0,
+            flowEnabled: false,
+            finiteAndInMap: bodiesAreFiniteAndInMap
+        });
+    } finally {
+        simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+/**
+ * Window preflight/finalize barrier가 event capacity를 전역으로 확정하는지 실제 GPU에서
+ * 확인한다. exact-fit에서는 두 Tower가 함께 commit되고 one-short에서는 어느 Tower도
+ * HP/window를 바꾸지 않는다.
+ */
+async function runProductionMaximumDamageWindowCapacityAtomicityHardwareSmoke(device) {
+    const fixedDelta = 1 / 60;
+    const targetPositions = Object.freeze([
+        Object.freeze({ x: 4, y: 4 }),
+        Object.freeze({ x: 12, y: 4 })
+    ]);
+    const towerHandles = Object.freeze([
+        Object.freeze({ entityId: 9201, incarnation: 1 }),
+        Object.freeze({ entityId: 9202, incarnation: 1 })
+    ]);
+    const projectileHandles = Object.freeze([
+        Object.freeze({ entityId: 9301, incarnation: 1 }),
+        Object.freeze({ entityId: 9302, incarnation: 1 })
+    ]);
+    const projectileDefinition = Object.freeze({
+        id: 'nw-maximum-damage-window-capacity-projectile',
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: 7,
+        damage: 6,
+        damageSelf: 6,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [1, 0.12, 0.12, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const findBody = (bodies, handle, label) => {
+        const body = bodies.find((candidate) => (
+            candidate.handle?.entityId === handle.entityId
+            && candidate.handle?.incarnation === handle.incarnation
+        ));
+        assert(body, `${label} body가 없습니다: ${JSON.stringify({ bodies, handle })}`);
+        return body;
+    };
+    const createBodies = () => {
+        const towers = targetPositions.map((position, index) => Object.freeze({
+            ...createGpuTowerSpawnIntent({ position, currentHp: 30 }),
+            entityId: towerHandles[index].entityId,
+            incarnation: towerHandles[index].incarnation
+        }));
+        const projectiles = targetPositions.map((position, index) => {
+            const sourceHandle = Object.freeze({
+                entityId: 9401 + index,
+                incarnation: 1
+            });
+            return Object.freeze({
+                ...createGpuProjectileSpawnIntent({
+                    definition: projectileDefinition,
+                    position,
+                    velocity: { x: 0, y: 0 },
+                    sourceHandle,
+                    ownerHandle: sourceHandle,
+                    producerId: 'nw-maximum-damage-window-capacity',
+                    sourceAbilityId: projectileDefinition.id,
+                    teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+                    allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+                    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+                    targetPolicyId:
+                        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+                    spawnSequence: index
+                }),
+                entityId: projectileHandles[index].entityId,
+                incarnation: projectileHandles[index].incarnation
+            });
+        });
+        return Object.freeze([...towers, ...projectiles]);
+    };
+    const runCase = async (eventCapacity, label) => {
+        const simulation = new GpuCircleBodySimulation(
+            createPhase3PlatformPort(device),
+            {
+                capacity: 4,
+                contactCapacity: 16,
+                eventCapacity,
+                deathEventCapacity: 4,
+                worldSize: { x: 16, y: 16 },
+                gridCellSize: { x: 2, y: 2 }
+            }
+        );
+        try {
+            assert(simulation.init(), `${label} simulation init 실패`);
+            const spawned = simulation.spawnBodies(createBodies());
+            assert(
+                spawned.accepted === 4 && spawned.rejected === 0,
+                `${label} spawn 실패: ${JSON.stringify(spawned)}`
+            );
+            assert(
+                simulation.fixedUpdate(fixedDelta, 1),
+                `${label} fixed submit 실패: ${JSON.stringify(simulation.getStatus())}`
+            );
+            // one-short protocol failure의 async resource release 전에도 target state를 읽는다.
+            const afterBodiesPromise = simulation.readbackBodies();
+            await device.queue.onSubmittedWorkDone();
+            const afterBodies = await afterBodiesPromise;
+            return Object.freeze({ simulation, afterBodies });
+        } catch (error) {
+            simulation.destroy();
+            await device.queue.onSubmittedWorkDone();
+            throw error;
+        }
+    };
+
+    const exactFit = await runCase(2, 'Maximum Damage Window 2-Tower exact-fit');
+    try {
+        const exactStatus = await waitForSimulationStatus(
+            exactFit.simulation,
+            (status) => status.overflow.pendingReadbacks === 0
+                && status.events.pendingReadbacks === 0,
+            'Maximum Damage Window 2-Tower exact-fit telemetry'
+        );
+        const exactEvents = exactFit.simulation.drainCompletedEventBatches([])
+            .flatMap((batch) => batch.events);
+        const exactTowers = towerHandles.map((handle, index) => findBody(
+            exactFit.afterBodies,
+            handle,
+            `Maximum Damage Window exact-fit Tower ${index}`
+        ));
+        const exactDamageEvents = exactEvents.filter((event) => (
+            event.eventType === 'damage-applied'
+            && event.maximumDamageWindow === true
+        ));
+        assert(
+            exactStatus.state === 'ready'
+                && !exactStatus.requiresAuthoritativeRebuild
+                && exactStatus.events.capacity === 2
+                && exactStatus.events.lastAppliedCount === 2
+                && exactStatus.events.lastAppliedOverflowCount === 0
+                && exactTowers.every((tower) => (
+                    tower.health === 24
+                    && tower.combatState?.peakFinalDamageFixedPoint === 600
+                    && tower.combatState?.expiresAtFixedTick === 61
+                ))
+                && exactDamageEvents.length === 2
+                && towerHandles.every((towerHandle, index) => exactDamageEvents.some((event) => (
+                    event.entityId === projectileHandles[index].entityId
+                    && event.incarnation === projectileHandles[index].incarnation
+                    && event.otherEntityId === towerHandle.entityId
+                    && event.otherIncarnation === towerHandle.incarnation
+                    && event.damageFixedPoint === 600
+                ))),
+            `Maximum Damage Window 2-Tower exact-fit atomic commit 불일치: ${JSON.stringify({ exactStatus, exactTowers, exactDamageEvents })}`
+        );
+        const exactResult = Object.freeze({
+            eventCapacity: exactStatus.events.capacity,
+            appliedEventCount: exactDamageEvents.length,
+            towerHealth: Object.freeze(exactTowers.map(({ health }) => health)),
+            peaks: Object.freeze(exactTowers.map(
+                ({ combatState }) => combatState.peakFinalDamageFixedPoint
+            )),
+            expiresAtFixedTick: Object.freeze(exactTowers.map(
+                ({ combatState }) => combatState.expiresAtFixedTick
+            )),
+            recoveryRequired: exactStatus.requiresAuthoritativeRebuild
+        });
+        exactFit.simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+
+        const oneShort = await runCase(1, 'Maximum Damage Window 2-Tower one-short');
+        try {
+            const oneShortStatus = await waitForSimulationStatus(
+                oneShort.simulation,
+                (status) => status.requiresAuthoritativeRebuild === true
+                    && status.events.pendingReadbacks === 0,
+                'Maximum Damage Window 2-Tower one-short protocol failure'
+            );
+            const oneShortTowers = towerHandles.map((handle, index) => findBody(
+                oneShort.afterBodies,
+                handle,
+                `Maximum Damage Window one-short Tower ${index}`
+            ));
+            const oneShortBatches = oneShort.simulation.drainCompletedEventBatches([]);
+            assert(
+                oneShortStatus.events.capacity === 1
+                    && oneShortStatus.requiresAuthoritativeRebuild
+                    && oneShortStatus.failure?.stage === 'event-readback'
+                    && oneShortTowers.every((tower) => (
+                        tower.health === 30
+                        && tower.combatState?.peakFinalDamageFixedPoint === 0
+                        && tower.combatState?.expiresAtFixedTick === 0
+                    ))
+                    && oneShortBatches.length === 0,
+                `Maximum Damage Window 2-Tower one-short fail-close 불일치: ${JSON.stringify({ oneShortStatus, oneShortTowers, oneShortBatches })}`
+            );
+            return Object.freeze({
+                exactFit: exactResult,
+                oneShort: Object.freeze({
+                    eventCapacity: oneShortStatus.events.capacity,
+                    towerHealth: Object.freeze(oneShortTowers.map(({ health }) => health)),
+                    peaks: Object.freeze(oneShortTowers.map(
+                        ({ combatState }) => combatState.peakFinalDamageFixedPoint
+                    )),
+                    expiresAtFixedTick: Object.freeze(oneShortTowers.map(
+                        ({ combatState }) => combatState.expiresAtFixedTick
+                    )),
+                    recoveryRequired: oneShortStatus.requiresAuthoritativeRebuild,
+                    failureStage: oneShortStatus.failure?.stage ?? null
+                })
+            });
+        } finally {
+            oneShort.simulation.destroy();
+            await device.queue.onSubmittedWorkDone();
+        }
+    } catch (error) {
+        exactFit.simulation.destroy();
+        await device.queue.onSubmittedWorkDone();
+        throw error;
+    }
+}
+
+/**
  * 실제 GPU 경로에서 Tower의 Maximum Damage Window와 Enemy 접촉 후보가 같은
  * fixed tick에 모이는지 검증합니다. readback은 이 capability fixture의 bounded
  * diagnostic에만 사용하며 frame 권위에는 연결하지 않습니다.
  */
 async function runProductionMaximumDamageWindowHardwareSmoke(device) {
+    const isolatedWeight = await runProductionMaximumDamageWindowWeightHardwareSmoke(
+        device
+    );
+    const capacityAtomicity = (
+        await runProductionMaximumDamageWindowCapacityAtomicityHardwareSmoke(device)
+    );
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
         webGpuPlatformPort: createPhase3PlatformPort(device)
@@ -8525,11 +8935,6 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             friendlyProjectileHandle,
             'Maximum Damage Window friendly 발사체'
         );
-        const contactEnemyAfter = findPhase5Body(
-            afterFirstBodies,
-            contactEnemyHandle,
-            'Maximum Damage Window Enemy 접촉 body'
-        );
         assertWindow(
             towerAfterFirst,
             24,
@@ -8542,23 +8947,6 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             'Maximum Damage Window 첫 유효 발사체 penetration 7→1');
         assertNear(friendlyProjectileAfter.health, 4, 0.000001,
             'Maximum Damage Window friendly fire penetration 보존');
-        const firstDisplacements = Object.freeze({
-            tower: Math.hypot(
-                towerAfterFirst.position.x - towerPosition.x,
-                towerAfterFirst.position.y - towerPosition.y
-            ),
-            enemy: Math.hypot(
-                contactEnemyAfter.position.x - towerPosition.x,
-                contactEnemyAfter.position.y - towerPosition.y
-            )
-        });
-        assert(
-            Number.isFinite(firstDisplacements.tower)
-                && Number.isFinite(firstDisplacements.enemy)
-                && firstDisplacements.tower > 0
-                && firstDisplacements.enemy > firstDisplacements.tower,
-            `Tower/Enemy inverse-mass displacement 비율 불일치: ${JSON.stringify(firstDisplacements)}`
-        );
         const firstCompleted = endpoint.commitCompletedEventsAtFixedBoundary(3);
         completedBatches.push(firstCompleted);
         const firstDamageEvent = firstCompleted.contactEvents.find((event) => (
@@ -8948,7 +9336,8 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             }),
             suppressedDamageEvent,
             continuousContactEvents: Object.freeze(continuousContactEvents),
-            displacements: firstDisplacements,
+            physicalWeight: isolatedWeight,
+            capacityAtomicity,
             deathEventCount: towerDeaths.length,
             errors,
             storageProfile,

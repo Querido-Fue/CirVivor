@@ -175,49 +175,57 @@ function createTrackingCoreDirectorFactory() {
 }
 
 function createDirectorFactory({ depleteOnFirstObserve }) {
-    const state = { observations: 0, stages: 0, commits: 0 };
-    return Object.assign((options) => ({
-        observeCompletedEvents() {
-            state.observations++;
-            if (depleteOnFirstObserve && state.observations === 1) {
-                options.coreIntegrity.applyIntegrityDamage(
-                    options.coreIntegrity.getCurrentIntegrity()
-                );
-                const depleted = Object.freeze({
-                    type: 'CoreDepleted',
-                    eventKey: 'core-terminal:1',
-                    impactKey: 'core-impact:1'
-                });
+    const state = {
+        observations: 0,
+        stages: 0,
+        commits: 0,
+        coreImpactCleanupPort: null
+    };
+    return Object.assign((options) => {
+        state.coreImpactCleanupPort = options.coreImpactCleanupPort;
+        return ({
+            observeCompletedEvents() {
+                state.observations++;
+                if (depleteOnFirstObserve && state.observations === 1) {
+                    options.coreIntegrity.applyIntegrityDamage(
+                        options.coreIntegrity.getCurrentIntegrity()
+                    );
+                    const depleted = Object.freeze({
+                        type: 'CoreDepleted',
+                        eventKey: 'core-terminal:1',
+                        impactKey: 'core-impact:1'
+                    });
+                    return Object.freeze({
+                        facts: Object.freeze([depleted]),
+                        coreDepletedFact: depleted,
+                        recoveryRequired: false
+                    });
+                }
                 return Object.freeze({
-                    facts: Object.freeze([depleted]),
-                    coreDepletedFact: depleted,
+                    facts: Object.freeze([]),
+                    coreDepletedFact: null,
                     recoveryRequired: false
                 });
-            }
-            return Object.freeze({
-                facts: Object.freeze([]),
-                coreDepletedFact: null,
-                recoveryRequired: false
-            });
-        },
-        stageForFixedTick() {
-            state.stages++;
-            return Object.freeze({ recoveryRequired: false });
-        },
-        observeFixedCommit() {
-            state.commits++;
-            return Object.freeze({ recoveryRequired: false });
-        },
-        getStatus() {
-            return Object.freeze({
-                pendingCleanupCount: 0,
-                cleanupFailure: null,
-                recoveryRequired: false
-            });
-        },
-        requiresRecovery() { return false; },
-        destroy() {}
-    }), { state });
+            },
+            stageForFixedTick() {
+                state.stages++;
+                return Object.freeze({ recoveryRequired: false });
+            },
+            observeFixedCommit() {
+                state.commits++;
+                return Object.freeze({ recoveryRequired: false });
+            },
+            getStatus() {
+                return Object.freeze({
+                    pendingCleanupCount: 0,
+                    cleanupFailure: null,
+                    recoveryRequired: false
+                });
+            },
+            requiresRecovery() { return false; },
+            destroy() {}
+        });
+    }, { state });
 }
 
 function createGameSystem({
@@ -292,6 +300,8 @@ test('Core depletion은 RunFailed 한 번, public ingress 즉시 gate, 마지막
     const endpoint = gameSystem.getGpuSimulationEndpoint();
     const outcome = gameSystem.getRunOutcome();
     const rawLifecycleOwner = endpoint.getLifecycleCommandOwner();
+    const rawFixedOwner = endpoint.fixedCommandOwner;
+    const cleanupPort = directorFactory.state.coreImpactCleanupPort;
     assert.equal(endpoint.requestSpawn(createGpuEnemySpawnIntent({
         definition: {
             id: 'terminal-pending-enemy',
@@ -344,6 +354,21 @@ test('Core depletion은 RunFailed 한 번, public ingress 즉시 gate, 마지막
     assert.equal(endpoint.getStatus().lifecycle.pendingCount, 0);
     assert.equal(endpoint.getStatus().fixedCommands.pendingCommandCount, 0);
     assert.equal(endpoint.getStatus().fixedCommands.pendingDestinationCount, 0);
+    assert.equal(cleanupPort.requestCommittedCoreImpactCleanup(
+        { entityId: 99, incarnation: 1 },
+        2,
+        'core-impact:sealed-stale-port'
+    ).reason, 'core-impact-cleanup-port-revoked');
+    assert.equal(rawFixedOwner.requestBodyControl(
+        {},
+        2,
+        'sealed:raw-control'
+    ).accepted, false);
+    assert.equal(rawFixedOwner.requestSourceRelativeSpawn(
+        {},
+        2,
+        'sealed:raw-source-relative'
+    ).accepted, false);
 
     const gameplayStatus = gameSystem.getGameplayStatus();
     assert.equal(gameplayStatus.outcome.state, RUN_OUTCOME_STATE.DEFEATED);
@@ -405,6 +430,13 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
         kindId: 'enemy'
     }).at(0);
     assert.ok(enemyHandle);
+    const terminalFixedTick = gameSystem.getNextGpuLifecycleFixedTick();
+    assert.equal(endpoint.requestDespawn(
+        enemyHandle,
+        'player-kill',
+        terminalFixedTick,
+        'terminal-core-impact:prequeued-general'
+    ).accepted, true);
     backend.completedEventBatches.push(Object.freeze({
         ...backend.protocol,
         previousSourceTick: 0,
@@ -431,6 +463,12 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     assert.equal(endpoint.getStatus().gameplayIngressOpen, false);
     assert.equal(endpoint.getRegistry().has(enemyHandle), false);
     assert.equal(endpoint.getPendingCommandCount(), 0);
+    const committedCleanup = endpoint.getStatus().lifecycle.lastCommitResult
+        .despawned.find(({ handle }) => handleKey(handle) === handleKey(enemyHandle));
+    assert.equal(committedCleanup.commandId, 'terminal-core-impact:prequeued-general');
+    assert.equal(committedCleanup.reason, 'player-kill');
+    assert.equal(committedCleanup.disposition, 'CORE_IMPACT');
+    assert.equal(committedCleanup.bountyEligible, false);
     const coreImpactStatus = objectSystem.getCoreImpactStatus();
     assert.equal(coreImpactStatus.cleanupCommittedCount, 1);
     assert.equal(coreImpactStatus.trackedCleanupCount, 0);
@@ -448,7 +486,12 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
 });
 
 test('마지막 terminal fixed submit 실패는 retry/recovery 없이 SEALED_FAILED diagnostic을 남기고 이후 true no-op이다', () => {
-    const { backend, gameSystem } = createGameSystem({ fixedResult: false });
+    const { backend, directorFactory, gameSystem } = createGameSystem({
+        fixedResult: false
+    });
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const rawFixedOwner = endpoint.fixedCommandOwner;
+    const cleanupPort = directorFactory.state.coreImpactCleanupPort;
 
     assert.equal(gameSystem.fixedUpdate(), false);
     const terminal = gameSystem.getGameplayStatus().terminal;
@@ -456,7 +499,23 @@ test('마지막 terminal fixed submit 실패는 retry/recovery 없이 SEALED_FAI
     assert.equal(terminal.diagnostic.stage, 'terminal-fixed-submit');
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
     assert.equal(backend.calls.filter((call) => call === 'fixed').length, 1);
-    assert.equal(gameSystem.getGpuSimulationEndpoint().getPendingCommandCount(), 0);
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(endpoint.getRegistry().getReservedCount(), 0);
+    assert.equal(cleanupPort.requestCommittedCoreImpactCleanup(
+        { entityId: 99, incarnation: 1 },
+        2,
+        'core-impact:sealed-failed-stale-port'
+    ).reason, 'core-impact-cleanup-port-revoked');
+    assert.equal(rawFixedOwner.requestBodyControl(
+        {},
+        2,
+        'sealed-failed:raw-control'
+    ).accepted, false);
+    assert.equal(rawFixedOwner.requestSourceRelativeSpawn(
+        {},
+        2,
+        'sealed-failed:raw-source'
+    ).accepted, false);
 
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.equal(backend.calls.filter((call) => call === 'fixed').length, 1);
@@ -464,9 +523,12 @@ test('마지막 terminal fixed submit 실패는 retry/recovery 없이 SEALED_FAI
 });
 
 test('Core가 이미 depleted인 protocol-failure 경로도 RunFailed를 한 번 생성하고 재시도 없이 seal한다', () => {
-    const { backend, gameSystem } = createGameSystem({
+    const { backend, directorFactory, gameSystem } = createGameSystem({
         depleteOnFirstObserve: false
     });
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const rawFixedOwner = endpoint.fixedCommandOwner;
+    const cleanupPort = directorFactory.state.coreImpactCleanupPort;
     const core = gameSystem.getCoreIntegrity();
     const outcome = gameSystem.getRunOutcome();
     assert.equal(core.applyIntegrityDamage(core.getMaxIntegrity()), core.getMaxIntegrity());
@@ -495,7 +557,23 @@ test('Core가 이미 depleted인 protocol-failure 경로도 RunFailed를 한 번
         'completed-event-protocol'
     );
     assert.equal(backend.calls.filter((call) => call === 'fixed').length, 0);
-    assert.equal(gameSystem.getGpuSimulationEndpoint().getPendingCommandCount(), 0);
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(endpoint.getRegistry().getReservedCount(), 0);
+    assert.equal(cleanupPort.requestCommittedCoreImpactCleanup(
+        { entityId: 99, incarnation: 1 },
+        2,
+        'core-impact:protocol-failed-stale-port'
+    ).reason, 'core-impact-cleanup-port-revoked');
+    assert.equal(rawFixedOwner.requestBodyControl(
+        {},
+        2,
+        'protocol-failed:raw-control'
+    ).accepted, false);
+    assert.equal(rawFixedOwner.requestSourceRelativeSpawn(
+        {},
+        2,
+        'protocol-failed:raw-source'
+    ).accepted, false);
 
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.strictEqual(outcome.getRunFailedFact(), fact);

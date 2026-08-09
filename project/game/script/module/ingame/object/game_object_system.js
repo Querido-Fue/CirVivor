@@ -548,6 +548,23 @@ export class GameObjectSystem {
                 }
                 return this.#pauseForGpuRecovery();
             }
+            // Committed Core arrival cleanup을 terminal close보다 먼저 stage해야
+            // same-handle 일반/future despawn을 현재 boundary의 authentic CORE
+            // command로 승격·retarget하면서 기존 identity를 보존할 수 있습니다.
+            const coreStage = this.enemyCoreImpactDirector?.stageForFixedTick({
+                endpoint: this.enemySimulationEndpoint,
+                targetFixedTick: proposedFixedTick
+            }) ?? null;
+            if (coreStage?.recoveryRequired === true) {
+                if (this.runOutcome.isDefeated() || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'core-impact-stage',
+                        proposedFixedTick,
+                        this.enemyCoreImpactDirector.getStatus().cleanupFailure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
             this.#transitionRunOutcomeForCore(
                 proposedFixedTick,
                 coreCompletedObservation?.coreDepletedFact ?? null
@@ -603,23 +620,6 @@ export class GameObjectSystem {
                 if (hostileStage?.recoveryRequired === true) {
                     return this.#pauseForGpuRecovery();
                 }
-            }
-
-            // Core arrival cleanup은 outcome 전이 뒤에도 endpoint가 주입한 전용
-            // opaque cleanup port로 한 번 stage됩니다.
-            const coreStage = this.enemyCoreImpactDirector?.stageForFixedTick({
-                endpoint: this.enemySimulationEndpoint,
-                targetFixedTick: proposedFixedTick
-            }) ?? null;
-            if (coreStage?.recoveryRequired === true) {
-                if (this.runOutcome.isDefeated()) {
-                    return this.#sealTerminalFailure(
-                        'core-impact-stage',
-                        proposedFixedTick,
-                        this.enemyCoreImpactDirector.getStatus().cleanupFailure
-                    );
-                }
-                return this.#pauseForGpuRecovery();
             }
 
             const lifecycleResult = this.enemySimulationEndpoint

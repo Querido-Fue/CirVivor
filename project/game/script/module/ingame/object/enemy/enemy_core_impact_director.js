@@ -4,6 +4,10 @@ import {
 } from '../../contract/enemy_lifecycle_disposition_contract.js';
 import { assertCoreIntegrity } from '../../contract/core_integrity_contract.js';
 import {
+    ENEMY_CAPABILITY_ID,
+    hasEnemyCapability
+} from '../../contract/enemy_capability_contract.js';
+import {
     GPU_CORE_PROXY_WORLD_KIND_ID
 } from '../core/gpu_core_proxy_spawn_adapter.js';
 
@@ -234,10 +238,20 @@ function createCleanupCommandId(impactKey) {
     return `core-impact:${impactKey}`;
 }
 
-function isNormalCleanupDedup(receipt) {
+function isExactAuthenticatedCleanupDedup(
+    receipt,
+    cleanup,
+    targetFixedTick
+) {
     return receipt?.accepted !== true
-        && (receipt?.reason === 'duplicate-despawn'
-            || receipt?.reason === 'duplicate-command');
+        && receipt?.reason === 'duplicate-despawn'
+        && receipt?.authenticTerminalCleanup === true
+        && receipt?.disposition
+            === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+        && receipt?.targetFixedTick === targetFixedTick
+        && typeof receipt?.commandId === 'string'
+        && receipt.commandId.length > 0
+        && sameHandle(receipt.handle, cleanup.enemyHandle);
 }
 
 /**
@@ -422,19 +436,39 @@ export class EnemyCoreImpactDirector {
                 targetFixedTick
             );
             if (receipt?.accepted === true) {
+                if (typeof receipt.commandId !== 'string'
+                    || receipt.commandId.length === 0
+                    || receipt.targetFixedTick !== targetFixedTick) {
+                    this.pendingCleanupByImpactKey.delete(impactKey);
+                    this.cleanupFailure = Object.freeze({
+                        impactKey,
+                        targetFixedTick,
+                        reason: 'despawn-receipt-contract'
+                    });
+                    continue;
+                }
                 this.pendingCleanupByImpactKey.set(impactKey, Object.freeze({
                     ...cleanup,
+                    commandId: receipt.commandId,
                     state: 'STAGED',
                     targetFixedTick
                 }));
                 requested++;
                 continue;
             }
-            if (isNormalCleanupDedup(receipt)) {
-                // gpu-death가 먼저 exact despawn을 보유한 정상 경합은 이 director가
-                // 더 추적할 일이 없습니다. semantic impact key만 bounded history에
-                // 남기고 settled cleanup record는 즉시 버려 누적 leak을 막습니다.
-                this.pendingCleanupByImpactKey.delete(impactKey);
+            if (isExactAuthenticatedCleanupDedup(
+                receipt,
+                cleanup,
+                targetFixedTick
+            )) {
+                // same-handle/current-tick command의 authentic CORE 승격만 정상
+                // dedupe입니다. 실제 owner command ID로 STAGED 추적해 commit을 증명합니다.
+                this.pendingCleanupByImpactKey.set(impactKey, Object.freeze({
+                    ...cleanup,
+                    commandId: receipt.commandId,
+                    state: 'STAGED',
+                    targetFixedTick
+                }));
                 this.cleanupDedupedCount++;
                 cleanupDeduped++;
                 continue;
@@ -613,9 +647,21 @@ export class EnemyCoreImpactDirector {
         const enemyHandle = coreIsSubject ? otherHandle : subjectHandle;
         const enemy = coreIsSubject ? other : subject;
         const metadata = enemy.metadata;
+        let hasCoreImpactCapability = false;
+        try {
+            hasCoreImpactCapability = hasEnemyCapability(
+                metadata?.capabilityMask,
+                ENEMY_CAPABILITY_ID.CORE_IMPACT,
+                'enemy registry metadata capabilityMask'
+            );
+        } catch {
+            hasCoreImpactCapability = false;
+        }
         const coreImpactDamage = nonNegativeFinite(metadata?.coreImpactDamage, -1);
         const bountyBudget = nonNegativeFinite(metadata?.bountyBudget, -1);
-        if (coreImpactDamage < 0 || bountyBudget < 0) {
+        if (!hasCoreImpactCapability
+            || coreImpactDamage < 0
+            || bountyBudget < 0) {
             this.ignoredCount++;
             return null;
         }

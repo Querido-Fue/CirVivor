@@ -138,6 +138,7 @@ export class EnemyLifecycleCommandOwner {
         this.completedCommandHead = 0;
         this.pendingDespawnKeys = new Set();
         this.nextCommandSequence = 1;
+        this.nextTerminalCleanupCommandSequence = 1;
         this.lastCommitResult = null;
         this.recoveryRequired = false;
         this.ingressOpen = true;
@@ -292,28 +293,46 @@ export class EnemyLifecycleCommandOwner {
         if (pendingDespawnIndex >= 0) {
             const existing = this.pendingCommands[pendingDespawnIndex];
             const sameFixedTick = existing.targetFixedTick === tick;
+            if (authenticCoreImpactCleanup
+                && existing.targetFixedTick < tick) {
+                // committed Core arrival의 current boundary보다 앞선 command는 이미
+                // missed-boundary desync입니다. 과거로 retarget하지 않고 recovery합니다.
+                this.recoveryRequired = true;
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'despawn-target-tick-conflict',
+                    commandId: existing.commandId,
+                    handle: normalizedHandle,
+                    targetFixedTick: existing.targetFixedTick,
+                    requestedTargetFixedTick: tick,
+                    authenticTerminalCleanup: true,
+                    recoveryRequired: true
+                });
+            }
+            const shouldRetargetCoreImpact = authenticCoreImpactCleanup
+                && existing.targetFixedTick > tick;
             const shouldUpgradeCoreImpact = authenticCoreImpactCleanup
-                && existing.reason === 'gpu-death'
-                && sameFixedTick
                 && normalizedReason === 'core-impact'
-                && disposition === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
-            const shouldAuthenticateExisting = sameFixedTick && (
-                (authenticGpuDeathCleanup
-                    && existing.reason === 'gpu-death')
-                || (authenticCoreImpactCleanup
-                    && (existing.reason === 'gpu-death'
-                        || (existing.reason === 'core-impact'
-                            && existing.disposition
-                                === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT)))
-            );
+                && disposition === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                && existing.disposition
+                    !== ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
+            const shouldAuthenticateExisting = authenticCoreImpactCleanup
+                || (sameFixedTick
+                    && authenticGpuDeathCleanup
+                    && existing.reason === 'gpu-death');
             const dispositionUpgraded = shouldUpgradeCoreImpact
                 && existing.disposition
                     !== ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
             const provenanceUpgraded = shouldAuthenticateExisting
                 && !AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.has(existing);
-            if (dispositionUpgraded || provenanceUpgraded) {
+            if (shouldRetargetCoreImpact
+                || dispositionUpgraded
+                || provenanceUpgraded) {
                 const upgradedCommand = Object.freeze({
                     ...existing,
+                    ...(shouldRetargetCoreImpact
+                        ? { targetFixedTick: tick }
+                        : null),
                     ...(dispositionUpgraded
                         ? {
                             disposition:
@@ -329,14 +348,25 @@ export class EnemyLifecycleCommandOwner {
                 accepted: false,
                 reason: 'duplicate-despawn',
                 commandId: existing.commandId,
-                targetFixedTick: existing.targetFixedTick,
+                handle: normalizedHandle,
+                targetFixedTick: resolvedExisting.targetFixedTick,
                 disposition: dispositionUpgraded
                     ? ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
                     : resolvedExisting.disposition,
-                dispositionUpgraded
+                dispositionUpgraded,
+                targetFixedTickRetargeted: shouldRetargetCoreImpact,
+                authenticTerminalCleanup: shouldAuthenticateExisting
+                    && AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.has(
+                        resolvedExisting
+                    )
             });
         }
-        const normalizedCommandId = this.#claimCommandId(commandId);
+        let normalizedCommandId = this.#claimCommandId(commandId);
+        let commandIdReassigned = false;
+        if (!normalizedCommandId && authenticTerminalCleanup) {
+            normalizedCommandId = this.#claimTerminalCleanupCommandId();
+            commandIdReassigned = true;
+        }
         if (!normalizedCommandId) {
             return Object.freeze({ accepted: false, reason: 'duplicate-command' });
         }
@@ -358,7 +388,13 @@ export class EnemyLifecycleCommandOwner {
         return Object.freeze({
             accepted: true,
             commandId: normalizedCommandId,
-            targetFixedTick: tick
+            targetFixedTick: tick,
+            ...(authenticTerminalCleanup ? {
+                handle: normalizedHandle,
+                disposition,
+                authenticTerminalCleanup: true,
+                commandIdReassigned
+            } : null)
         });
     }
 
@@ -789,6 +825,18 @@ export class EnemyLifecycleCommandOwner {
         }
         this.knownCommandIds.add(resolved);
         return resolved;
+    }
+
+    #claimTerminalCleanupCommandId() {
+        while (Number.isSafeInteger(this.nextTerminalCleanupCommandSequence)) {
+            const sequence = this.nextTerminalCleanupCommandSequence++;
+            const commandId = `enemy-terminal-cleanup:${sequence}`;
+            if (!this.knownCommandIds.has(commandId)) {
+                this.knownCommandIds.add(commandId);
+                return commandId;
+            }
+        }
+        throw new RangeError('terminal cleanup command ID 공간이 고갈되었습니다.');
     }
 
     #normalizeCommandId(commandId, sequence) {

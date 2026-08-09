@@ -298,7 +298,8 @@ export function resolveEnemyDefinitionProfiles(
 /**
  * Profile가 실제 runtime capability 선언과 양방향으로 일치하는지 검증합니다.
  * attack-linked behavior는 TARGETING을, positive contact damage는 CONTACT_COMBAT을,
- * route navigation mode는 NAVIGATION을 반드시 선언해야 합니다.
+ * route navigation mode는 NAVIGATION을, positive Core impact와 its policy는
+ * CORE_IMPACT를 반드시 선언해야 합니다.
  */
 export function assertEnemyDefinitionProfileCapabilityConsistency(
     definition,
@@ -329,6 +330,16 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
         && !capabilityIdSet.has(ENEMY_CAPABILITY_ID.NAVIGATION)) {
         throw new RangeError(
             `${label}의 navigationMode에는 NAVIGATION capability가 필요합니다.`
+        );
+    }
+    const hasCoreImpact = capabilityIdSet.has(ENEMY_CAPABILITY_ID.CORE_IMPACT);
+    const hasCoreImpactPolicy = profiles.behavior.coreImpactPolicy !== 'none';
+    const hasPositiveCoreImpactDamage = profiles.combat.coreImpactDamage > 0;
+    if (hasCoreImpact !== hasCoreImpactPolicy
+        || hasCoreImpact !== hasPositiveCoreImpactDamage) {
+        throw new RangeError(
+            `${label}의 CORE_IMPACT capability, positive coreImpactDamage, `
+                + 'behavior coreImpactPolicy가 일치해야 합니다.'
         );
     }
     return profiles;
