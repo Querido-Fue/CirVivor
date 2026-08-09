@@ -1,8 +1,15 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render, shadowOn, shadowOff } from "display/display_system.js";
-import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
+import {
+    consumeKeyboardPress,
+    getMouseInput,
+    getMouseFocus,
+    hasMouseState,
+    isMousePressing
+} from "input/input_system.js";
+import { INPUT_ACTION_IDS } from "input/_input_binding_constants.js";
 import { ColorSchemes } from "display/_theme_handler.js";
-import { animate, remove } from "animation/animation_system.js";
+import { ANIMATION_CATEGORY, animate, remove } from "animation/animation_system.js";
 import { colorUtil } from "util/color_util.js";
 import { mathUtil } from "util/math_util.js";
 import { clamp01 } from "util/number_util.js";
@@ -217,6 +224,14 @@ export class SliderElement extends BaseUIElement {
         const isOverSlider = mx >= hitX - hitBufferX && mx <= hitX + currentWidth + hitBufferX &&
             my >= drawY - hitBuffer && my <= drawY + hitBuffer;
 
+        if (this.clickAble && !this.dragging && isOverSlider) {
+            const decreaseRequested = consumeKeyboardPress(INPUT_ACTION_IDS.MOVE_LEFT);
+            const increaseRequested = consumeKeyboardPress(INPUT_ACTION_IDS.MOVE_RIGHT);
+            if (decreaseRequested !== increaseRequested) {
+                this.#applyKeyboardStep(increaseRequested ? 1 : -1);
+            }
+        }
+
         // 눌림 시작 프레임에 슬라이더 위였다면 드래그를 개시합니다.
         if (isLeftClick && getMouseFocus().includes(this.layer) && isOverSlider) {
             if (!this.dragging) {
@@ -234,6 +249,7 @@ export class SliderElement extends BaseUIElement {
                 this.#commitDragValue();
                 this.dragging = false;
                 this.#overflowAnim = animate(this, {
+                    animationCategory: ANIMATION_CATEGORY.UI,
                     variable: '_overflow',
                     endValue: 0,
                     duration: 0.3,
@@ -371,6 +387,7 @@ export class SliderElement extends BaseUIElement {
         }
 
         const displayAnimation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: 'displayValue',
             startValue: 'current',
             endValue: targetValue,
@@ -386,6 +403,32 @@ export class SliderElement extends BaseUIElement {
             this.displayValue = targetValue;
             this.#valueAnim = null;
         });
+    }
+
+    /**
+     * 현재 hover로 입력 소유권을 가진 slider를 의미 left/right action 한 칸만큼 변경합니다.
+     * 키보드 edge 하나는 즉시 raw 값을 확정하므로 change와 commit을 같은 순서로 한 번씩 보냅니다.
+     * @param {-1|1} direction - 감소(-1) 또는 증가(1) 방향입니다.
+     * @returns {boolean} 실제 값이 변경되었으면 true입니다.
+     * @private
+     */
+    #applyKeyboardStep(direction) {
+        const nextValue = this.#quantizeValue(this.value + (direction * this.step));
+        if (Object.is(nextValue, this.value)) {
+            return false;
+        }
+
+        this.value = nextValue;
+        this.dragging = false;
+        this.dragChanged = false;
+        void this.#animateDisplayValueTo(nextValue);
+        if (this.onChange) {
+            this.onChange(nextValue);
+        }
+        if (this.onCommit) {
+            this.onCommit(nextValue);
+        }
+        return true;
     }
 
     /**

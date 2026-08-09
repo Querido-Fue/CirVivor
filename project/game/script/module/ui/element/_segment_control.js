@@ -1,7 +1,7 @@
 import { BaseUIElement } from "./_base_element.js";
 import { render, shadowOn, shadowOff } from "display/display_system.js";
 import { getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
-import { animate } from "animation/animation_system.js";
+import { ANIMATION_CATEGORY, animate } from "animation/animation_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
 import { DropdownElement } from "./_dropdown.js";
 import { createFontString } from "util/font_util.js";
@@ -82,6 +82,7 @@ export class SegmentControlElement extends BaseUIElement {
 
             if (this.visible && Math.abs(this.selectionProgress - this.selectedIndex) > 0.01) {
                 animate(this, {
+                    animationCategory: ANIMATION_CATEGORY.UI,
                     variable: 'selectionProgress',
                     startValue: this.selectionProgress,
                     endValue: this.selectedIndex,

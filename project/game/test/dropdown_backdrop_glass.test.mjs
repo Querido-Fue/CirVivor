@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ UI: 'ui' });
+
 const source = await readFile(new URL('../script/module/ui/element/_dropdown.js', import.meta.url), 'utf8');
 const renderCalls = [];
 const glassCalls = [];
@@ -42,7 +44,11 @@ const context = vm.createContext({ console });
 const dropdownModule = new vm.SourceTextModule(source, { context, identifier: '_dropdown.js' });
 const dependencies = new Map([
     ['./_base_element.js', createSyntheticModule(context, { BaseUIElement: BaseUIElementStub })],
-    ['animation/animation_system.js', createSyntheticModule(context, { animate: () => ({ id: 1, promise: Promise.resolve() }), remove: () => {} })],
+    ['animation/animation_system.js', createSyntheticModule(context, {
+        ANIMATION_CATEGORY,
+        animate: () => ({ id: 1, promise: Promise.resolve() }),
+        remove: () => {}
+    })],
     ['display/display_system.js', createSyntheticModule(context, {
         render: (layer, command) => renderCalls.push({ layer, command: { ...command } }),
         shadowOn: () => {}, shadowOff: () => {}, measureText: (text) => text.length * 8

@@ -3,6 +3,8 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ UI: 'ui' });
+
 function createSyntheticModule(context, exports) {
     return new vm.SyntheticModule(Object.keys(exports), function initialize() {
         for (const [name, value] of Object.entries(exports)) {
@@ -45,6 +47,7 @@ async function loadOverlaySession() {
             renderGL: (layer, command) => renders.push({ type: 'webgl', layer, command })
         })],
         ['animation/animation_system.js', createSyntheticModule(context, {
+            ANIMATION_CATEGORY,
             animate: () => ({ id: 1, promise: new Promise(() => {}) }),
             remove: () => {}
         })],

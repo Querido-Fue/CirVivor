@@ -1,4 +1,4 @@
-import { animateMixed, remove } from 'animation/animation_system.js';
+import { ANIMATION_CATEGORY, animateMixed, remove } from 'animation/animation_system.js';
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { TitleSceneContent } from './_title_scene_content.js';
 import { buildTitleLoadingLogoPlacement } from './loading/_title_loading_logo_placement.js';
@@ -166,7 +166,9 @@ export class TitleSceneIntroSequence {
         const transitionAnimation = animateMixed(this, [{
             variable: 'sceneTransitionProgress',
             animations: transitionSegments
-        }]);
+        }], {
+            animationCategory: ANIMATION_CATEGORY.EFFECT
+        });
         const glowAnimation = animateMixed(this.centerCircle, [{
             variable: 'glowCompensationScale',
             animations: buildTitleSceneTransitionSegments({
@@ -174,7 +176,9 @@ export class TitleSceneIntroSequence {
                 endValue: TITLE_LOADING.GLOW_COMPENSATION_SCALE,
                 motion: TITLE_LOADING.SCENE_TRANSITION_MOTION
             })
-        }]);
+        }], {
+            animationCategory: ANIMATION_CATEGORY.EFFECT
+        });
         this.sceneTransitionAnimIds = [
             ...(transitionAnimation.ids || []),
             ...(glowAnimation.ids || [])

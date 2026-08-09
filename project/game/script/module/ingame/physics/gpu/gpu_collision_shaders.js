@@ -599,7 +599,6 @@ fn validate_body_control_commands(@builtin(global_invocation_id) global_id: vec3
         || command.destination_slot >= counts.body_count
         || simulations.values[command.destination_slot].entity_id != command.entity_id
         || simulations.values[command.destination_slot].incarnation != command.incarnation
-        || !body_id_is_alive(command.destination_slot)
         || body_has_flag(
             load_simulation_flags(command.destination_slot),
             BODY_FLAG_USE_FLOW
@@ -609,6 +608,12 @@ fn validate_body_control_commands(@builtin(global_invocation_id) global_id: vec3
             &body_control_program.header.status,
             FIXED_PROGRAM_STATUS_RECORD_INVALID
         );
+        return;
+    }
+    // GPU death와 async death-event commit 사이에는 host exact handle이 잠시
+    // active일 수 있습니다. 같은 identity의 dead target은 bounded no-op입니다.
+    if (!body_id_is_alive(command.destination_slot)) {
+        return;
     }
 }
 
@@ -627,6 +632,14 @@ fn apply_body_control_commands(@builtin(global_invocation_id) global_id: vec3u) 
         return;
     }
     let command = body_control_program.records[command_index];
+    if (command.destination_slot >= counts.body_count
+        || simulations.values[command.destination_slot].entity_id != command.entity_id
+        || simulations.values[command.destination_slot].incarnation != command.incarnation) {
+        return;
+    }
+    if (!body_id_is_alive(command.destination_slot)) {
+        return;
+    }
     body_control_states.values[command.destination_slot] = BodyControlState(
         command.move_intent,
         command.entity_id,

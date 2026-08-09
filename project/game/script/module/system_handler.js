@@ -144,7 +144,11 @@ export class SystemHandler {
         this.logDebugInfo("DisplaySystem 로드");
 
         // 4. AnimationSystem (애니메이션 초기화)
-        this.animationSystem = new AnimationSystem();
+        this.animationSystem = new AnimationSystem({
+            getUiAnimationDurationScale: () => (
+                this.saveSystem.getSetting('uiAnimationDurationScale')
+            )
+        });
         await this.animationSystem.init();
         this.displaySystem.initializeThemeTransition();
         this.logDebugInfo("AnimationSystem 로드");

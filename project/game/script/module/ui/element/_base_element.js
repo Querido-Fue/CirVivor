@@ -1,4 +1,4 @@
-import { animate } from 'animation/animation_system.js';
+import { ANIMATION_CATEGORY, animate } from 'animation/animation_system.js';
 import { requestTooltip } from 'ui/ui_system.js';
 
 const NO_ANIMATION_ID = -1;
@@ -161,6 +161,7 @@ export class BaseUIElement {
         }
 
         const animationHandle = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable,
             startValue,
             endValue,

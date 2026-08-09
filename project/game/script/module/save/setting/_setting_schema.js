@@ -112,6 +112,31 @@ export function createSettingSchema(defaultLanguage) {
 }
 
 /**
+ * 이미 범위 제한된 숫자를 설정 정의의 step 격자와 canonical 정밀도로 정규화합니다.
+ * step midpoint는 SliderElement와 동일하게 `Math.round()` 규칙을 사용합니다.
+ * @param {number} cappedValue - min/max 범위로 제한된 유한 숫자입니다.
+ * @param {{min?:number,step?:number,precision?:number}} entry - 숫자 설정 스키마 항목입니다.
+ * @returns {number} step과 precision이 적용된 숫자입니다.
+ */
+export function quantizeSettingNumericValue(cappedValue, entry) {
+    const step = Number(entry?.step);
+    const precision = Number(entry?.precision);
+    let quantizedValue = cappedValue;
+
+    if (Number.isFinite(step) && step > 0) {
+        const origin = Number.isFinite(entry?.min) && entry.min !== -1
+            ? entry.min
+            : 0;
+        quantizedValue = origin + (Math.round((cappedValue - origin) / step) * step);
+    }
+
+    if (Number.isInteger(precision) && precision >= 0 && precision <= 100) {
+        return Number(quantizedValue.toFixed(precision));
+    }
+    return quantizedValue;
+}
+
+/**
  * @class SettingValueCoercer
  * @description 런타임 설정 스키마를 기준으로 외부 값을 타입·열거형·범위 규칙에 맞게 보정합니다.
  */
@@ -177,10 +202,8 @@ export class SettingValueCoercer {
 
         if (entry.type === 'int' || entry.type === 'float') {
             const cappedValue = this.#mathUtil.cap(processedValue, entry.min, entry.max);
-            if (key === 'tooltipDelaySeconds') {
-                return Number(cappedValue.toFixed(1));
-            }
-            return cappedValue;
+            const quantizedValue = quantizeSettingNumericValue(cappedValue, entry);
+            return this.#mathUtil.cap(quantizedValue, entry.min, entry.max);
         }
 
         return processedValue;

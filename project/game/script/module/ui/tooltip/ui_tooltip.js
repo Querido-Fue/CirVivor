@@ -9,6 +9,7 @@ import { ColorSchemes } from 'display/_theme_handler.js';
 import { getDelta } from 'game/time_handler.js';
 import { getMouseInput } from 'input/input_system.js';
 import { getSetting } from 'save/save_system.js';
+import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
 import { resolveTypography } from 'ui/style/_typography_resolver.js';
 import { TYPOGRAPHY } from 'ui/style/typography.js';
@@ -30,6 +31,7 @@ const TOOLTIP_CONSTANTS = Object.freeze({
     MAX_LINES: 10
 });
 const TOOLTIP_FADE_DURATION_SECONDS = 0.2;
+const TOOLTIP_DELAY_DEFAULT_SECONDS = SETTING_DEFINITIONS.tooltipDelaySeconds.defaultValue;
 
 /**
  * @class UITooltipSystem
@@ -284,7 +286,7 @@ export class UITooltipSystem {
     #getTooltipDelaySeconds() {
         const delaySeconds = Number(getSetting('tooltipDelaySeconds'));
         if (!Number.isFinite(delaySeconds)) {
-            return 0.7;
+            return TOOLTIP_DELAY_DEFAULT_SECONDS;
         }
 
         return Math.max(0, delaySeconds);

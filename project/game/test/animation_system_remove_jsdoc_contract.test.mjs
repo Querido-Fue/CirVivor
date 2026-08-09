@@ -13,7 +13,7 @@ const STANDARD_ANIMATION_PATH = path.join(ANIMATION_ROOT, '_standard_animation.j
 const CONSTANTS_PATH = path.join(ANIMATION_ROOT, '_constants.js');
 const animationSystemSource = await readFile(ANIMATION_SYSTEM_PATH, 'utf8');
 
-const EXECUTABLE_SOURCE_HASH = '82648b19651046fb8712e3583cf3e3527e36b92800ebd2e24a69b515b2755e8a';
+const EXECUTABLE_SOURCE_HASH = '5428453a7d18511ad207f4e0c8e17304fc88b1959f0477c5190edc4acb309927';
 const SYNTHETIC_PREFIX = 'synthetic:';
 const ALIAS_ROOTS = Object.freeze({
     'object/': path.join(SCRIPT_ROOT, 'module', 'object'),
@@ -119,6 +119,17 @@ async function createAnimationHarness() {
 
     const standardAnimationModule = await getModule(STANDARD_ANIMATION_PATH);
     const constantsModule = await getModule(CONSTANTS_PATH);
+    // 이 파일은 remove/retarget legacy 계약만 검증하므로 test-only helper에서 필수 category를 주입합니다.
+    const originalAnimate = animationSystemModule.namespace.AnimationSystem.prototype.animate;
+    animationSystemModule.namespace.AnimationSystem.prototype.animate = function animateWithCategory(
+        owner,
+        properties
+    ) {
+        return originalAnimate.call(this, owner, {
+            animationCategory: constantsModule.namespace.ANIMATION_CATEGORY.UI,
+            ...properties
+        });
+    };
     return {
         namespace: animationSystemModule.namespace,
         standardAnimationPool: standardAnimationModule.namespace.standardAnimationPool,
@@ -133,7 +144,7 @@ async function createAnimationHarness() {
 }
 
 test('AnimationSystem 구현 상수는 production 모듈에 있고 data registry에 의존하지 않는다', () => {
-    assert.equal(hashExecutableSource(animationSystemSource, 22), EXECUTABLE_SOURCE_HASH);
+    assert.equal(hashExecutableSource(animationSystemSource, 27), EXECUTABLE_SOURCE_HASH);
     assert.doesNotMatch(animationSystemSource, /data\/data_handler\.js/);
     assert.match(animationSystemSource, /const ANIMATOR_POOL_WARMUP_COUNT = 500;/);
 });

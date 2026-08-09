@@ -33,6 +33,7 @@ const {
 } = await loadGameModule('ingame/game_system.js');
 const {
     HOSTILE_ATTACK_COMMAND_NAMESPACE,
+    HOSTILE_ATTACK_SHOT_STATE,
     computeHostileAttackPhaseOffset
 } = await loadGameModule(
     'ingame/object/enemy/hostile_attack_director.js'
@@ -66,6 +67,11 @@ const CUSTOM_ARCHER_WAVE = Object.freeze({
         })
     ])
 });
+const FAILED_REPLACEMENT_BACKEND_INIT = Object.freeze({
+    initResult: false,
+    runtimeState: 'gpu-unavailable',
+    requiresRecovery: true
+});
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -89,11 +95,26 @@ function assertNear(actual, expected, epsilon = 1e-6) {
     );
 }
 
+function assertCameraDrawSnapshot(snapshot, expectedCenter, cameraScale) {
+    const halfWorldWidth = 960 / cameraScale;
+    const halfWorldHeight = 540 / cameraScale;
+    assertNear(snapshot.cameraCenter.x, expectedCenter.x);
+    assertNear(snapshot.cameraCenter.y, expectedCenter.y);
+    assertNear(snapshot.viewTopLeft.x, expectedCenter.x - halfWorldWidth);
+    assertNear(snapshot.viewTopLeft.y, expectedCenter.y - halfWorldHeight);
+    assertNear(snapshot.viewBottomRight.x, expectedCenter.x + halfWorldWidth);
+    assertNear(snapshot.viewBottomRight.y, expectedCenter.y + halfWorldHeight);
+}
+
 class ArcherIntegrationBackend {
-    constructor(sessionGeneration, initResult = true) {
+    constructor(sessionGeneration, initConfiguration = true) {
+        const configuration = typeof initConfiguration === 'object'
+            ? initConfiguration
+            : { initResult: initConfiguration };
         this.capacity = 128;
         this.sessionGeneration = sessionGeneration;
-        this.initResult = initResult;
+        this.initResult = configuration.initResult;
+        this.recoveryRequired = configuration.requiresRecovery === true;
         this.initCount = 0;
         this.eventProtocol = Object.freeze({
             sessionGeneration,
@@ -114,8 +135,9 @@ class ArcherIntegrationBackend {
         this.controlAcceptedCount = 0;
         this.fixedUpdateCount = 0;
         this.destroyCount = 0;
+        this.drawSnapshots = [];
         this.trackedHandle = null;
-        this.runtimeState = 'gpu-ready';
+        this.runtimeState = configuration.runtimeState ?? 'gpu-ready';
     }
 
     getCapacity() {
@@ -406,7 +428,45 @@ class ArcherIntegrationBackend {
 
     synchronizePresentation() {}
 
-    draw() {
+    draw(camera) {
+        const renderedEnemyHandles = [];
+        const visibleEnemyHandles = [];
+        for (const body of this.bodies.values()) {
+            if (body.kindId !== 'enemy') {
+                continue;
+            }
+            const handle = exactHandle(body);
+            renderedEnemyHandles.push(handle);
+            if (camera?.worldToViewport) {
+                const viewport = camera.worldToViewport(
+                    body.position.x,
+                    body.position.y,
+                    {}
+                );
+                const radius = typeof camera.worldLengthToViewport === 'function'
+                    ? camera.worldLengthToViewport(body.radius ?? 0)
+                    : 0;
+                if (viewport.x + radius >= 0
+                    && viewport.x - radius <= 1920
+                    && viewport.y + radius >= 0
+                    && viewport.y - radius <= 1080) {
+                    visibleEnemyHandles.push(handle);
+                }
+            }
+        }
+        this.drawSnapshots.push(Object.freeze({
+            renderedEnemyHandles: Object.freeze(renderedEnemyHandles),
+            visibleEnemyHandles: Object.freeze(visibleEnemyHandles),
+            cameraCenter: camera?.viewportToWorld
+                ? Object.freeze(camera.viewportToWorld(960, 540, {}))
+                : null,
+            viewTopLeft: camera?.viewportToWorld
+                ? Object.freeze(camera.viewportToWorld(0, 0, {}))
+                : null,
+            viewBottomRight: camera?.viewportToWorld
+                ? Object.freeze(camera.viewportToWorld(1920, 1080, {}))
+                : null
+        }));
         return this.bodies.size > 0;
     }
 
@@ -415,7 +475,7 @@ class ArcherIntegrationBackend {
     }
 
     requiresRecovery() {
-        return false;
+        return this.recoveryRequired;
     }
 
     getStatus() {
@@ -517,6 +577,44 @@ function createDependencies(backends, inputState, backendInitResults = []) {
     };
 }
 
+class GameSceneLikeHarness {
+    constructor(dependencies, options = {}) {
+        this.gameSystem = new GameSystem(dependencies, options);
+        this.recoveryRestartCount = 0;
+        assert.equal(this.gameSystem.enter(), true);
+    }
+
+    fixedUpdate() {
+        const advanced = this.gameSystem.fixedUpdate();
+        if (!advanced && this.gameSystem.isEnemySimulationRecoveryRequired()) {
+            if (this.gameSystem.restartGpuWorldAtSafeWaveBoundary()) {
+                this.recoveryRestartCount++;
+            }
+        }
+        return advanced;
+    }
+
+    update() {
+        this.gameSystem.update();
+    }
+
+    draw() {
+        this.gameSystem.draw();
+    }
+
+    getGameSystem() {
+        return this.gameSystem;
+    }
+
+    getEnemyRecoveryStatus() {
+        return Object.freeze({ restartCount: this.recoveryRestartCount });
+    }
+
+    destroy() {
+        this.gameSystem.destroy();
+    }
+}
+
 function advanceThrough(gameSystem, targetFixedTick) {
     while (gameSystem.getFixedTick() < targetFixedTick) {
         assert.equal(gameSystem.fixedUpdate(), true);
@@ -535,6 +633,161 @@ function findProjectileHandleByDefinition(registry, definitionId) {
             registry.copyEntityView(handle, {})?.definitionId === definitionId
         ));
 }
+
+function prepareCustomArcherAtFiveTowerHp() {
+    const inputState = { moveRight: false, primaryPressed: false };
+    const backends = [];
+    const gameSystem = new GameSystem(
+        createDependencies(backends, inputState),
+        { waveDefinition: CUSTOM_ARCHER_WAVE }
+    );
+    assert.equal(gameSystem.enter(), true);
+    const objectSystem = gameSystem.getObjectSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const registry = endpoint.getRegistry();
+    const backend = backends[0];
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const initialStatus = gameSystem.getHostileAttackStatus();
+    const archerHandle = initialStatus.archers[0].handle;
+    const towerHandle = objectSystem.getGpuWorldActorStatus().towerHandle;
+    for (let hitIndex = 0; hitIndex < 5; hitIndex++) {
+        backend.queueTowerDamageEvents(
+            archerHandle,
+            towerHandle,
+            gameSystem.getFixedTick(),
+            false
+        );
+        assert.equal(gameSystem.fixedUpdate(), true);
+    }
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 5);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, true);
+    return {
+        inputState,
+        gameSystem,
+        objectSystem,
+        endpoint,
+        registry,
+        backend,
+        archerHandle,
+        towerHandle,
+        shotTick: initialStatus.archers[0].nextEligibleFixedTick
+    };
+}
+
+function assertTowerDeathPendingFixtureHealthy(fixture) {
+    assert.equal(fixture.gameSystem.getTowerCombatStatus().alive, false);
+    assert.equal(fixture.registry.has(fixture.archerHandle), true);
+    assert.equal(fixture.backend.hasBody(fixture.archerHandle), true);
+    assert.equal(fixture.registry.getActiveCount('enemy'), 1);
+    assert.equal(fixture.gameSystem.isGpuWorldRecoveryRequired(), false);
+    assert.equal(fixture.gameSystem.getHostileAttackStatus().recoveryRequired, false);
+}
+
+test('Tower death 경계의 pending Archer 3-state는 정상 target-invalid 또는 resolved projectile 계속 진행으로 끝난다', async (t) => {
+    await t.test('REQUESTED_FOR_FIXED_TICK은 dead target commit에서 정상 target-invalid로 정리된다', () => {
+        const fixture = prepareCustomArcherAtFiveTowerHp();
+        advanceThrough(fixture.gameSystem, fixture.shotTick - 1);
+        const staged = fixture.objectSystem.hostileAttackDirector.stageForFixedTick({
+            targetFixedTick: fixture.shotTick,
+            targetHandle: fixture.towerHandle
+        });
+        assert.equal(staged.acceptedCount, 1);
+        assert.equal(
+            fixture.gameSystem.getHostileAttackStatus().archers[0].state,
+            HOSTILE_ATTACK_SHOT_STATE.REQUESTED_FOR_FIXED_TICK
+        );
+
+        fixture.backend.queueTowerDamageEvents(
+            fixture.archerHandle,
+            fixture.towerHandle,
+            fixture.gameSystem.getFixedTick(),
+            true
+        );
+        assert.equal(fixture.gameSystem.fixedUpdate(), true);
+        assertTowerDeathPendingFixtureHealthy(fixture);
+        const invalidShot = fixture.backend.materializedShots.find(({ sourceTick }) => (
+            sourceTick === fixture.shotTick
+        ));
+        const statusAtDeath = fixture.gameSystem.getHostileAttackStatus();
+        assert.equal(invalidShot, undefined);
+        assert.equal(statusAtDeath.pendingShotCount, 0);
+        assert.equal(statusAtDeath.telemetry.fixedRejected, 1);
+        assert.equal(statusAtDeath.archers[0].shotSequence, 0);
+        assert.equal(fixture.gameSystem.fixedUpdate(), true);
+        const status = fixture.gameSystem.getHostileAttackStatus();
+        assert.equal(status.pendingShotCount, 0);
+        assert.equal(status.telemetry.completedTargetInvalid, 0);
+        assert.equal(status.archers[0].shotSequence, 0);
+        assertTowerDeathPendingFixtureHealthy(fixture);
+        fixture.gameSystem.destroy();
+    });
+
+    await t.test('GPU_RESOLVE_PENDING의 target-invalid completion은 death와 같은 경계에서 정상 clear된다', () => {
+        const fixture = prepareCustomArcherAtFiveTowerHp();
+        advanceThrough(fixture.gameSystem, fixture.shotTick - 1);
+        fixture.backend.targetInvalidHostileTicks.add(fixture.shotTick);
+        assert.equal(fixture.gameSystem.fixedUpdate(), true);
+        assert.equal(
+            fixture.gameSystem.getHostileAttackStatus().archers[0].state,
+            HOSTILE_ATTACK_SHOT_STATE.GPU_RESOLVE_PENDING
+        );
+        fixture.backend.queueTowerDamageEvents(
+            fixture.archerHandle,
+            fixture.towerHandle,
+            fixture.gameSystem.getFixedTick(),
+            true
+        );
+        assert.equal(fixture.gameSystem.fixedUpdate(), true);
+        const status = fixture.gameSystem.getHostileAttackStatus();
+        assert.equal(status.pendingShotCount, 0);
+        assert.equal(status.telemetry.completedTargetInvalid, 1);
+        assert.equal(status.archers[0].shotSequence, 0);
+        assertTowerDeathPendingFixtureHealthy(fixture);
+        fixture.gameSystem.destroy();
+    });
+
+    await t.test('resolved projectile exact handle은 Tower death 뒤에도 유지되고 이동한다', () => {
+        const fixture = prepareCustomArcherAtFiveTowerHp();
+        advanceThrough(fixture.gameSystem, fixture.shotTick - 1);
+        assert.equal(fixture.gameSystem.fixedUpdate(), true);
+        assert.equal(fixture.gameSystem.fixedUpdate(), true);
+        const resolvedShot = fixture.backend.materializedShots.find(({ sourceTick }) => (
+            sourceTick === fixture.shotTick
+        ));
+        assert.equal(resolvedShot?.outcome, 'resolved');
+        const projectileHandle = resolvedShot.destinationHandle;
+        const projectilePositionBeforeDeath = copyVector(
+            fixture.backend.bodies.get(handleKey(projectileHandle)).position
+        );
+        const acceptedAtDeath = fixture.gameSystem.getHostileAttackStatus()
+            .shotRequestAcceptedCount;
+        fixture.backend.queueTowerDamageEvents(
+            projectileHandle,
+            fixture.towerHandle,
+            fixture.gameSystem.getFixedTick(),
+            true
+        );
+        assert.equal(fixture.gameSystem.fixedUpdate(), true);
+        assertTowerDeathPendingFixtureHealthy(fixture);
+        advanceThrough(fixture.gameSystem, fixture.gameSystem.getFixedTick() + 5);
+        assert.equal(fixture.registry.has(projectileHandle), true);
+        assert.equal(fixture.backend.hasBody(projectileHandle), true);
+        const projectilePositionAfterDeath = fixture.backend.bodies.get(
+            handleKey(projectileHandle)
+        ).position;
+        assert.ok(Math.hypot(
+            projectilePositionAfterDeath.x - projectilePositionBeforeDeath.x,
+            projectilePositionAfterDeath.y - projectilePositionBeforeDeath.y
+        ) > 0);
+        assert.equal(
+            fixture.gameSystem.getHostileAttackStatus().shotRequestAcceptedCount,
+            acceptedAtDeath
+        );
+        assertTowerDeathPendingFixtureHealthy(fixture);
+        fixture.gameSystem.destroy();
+    });
+});
 
 test('custom Archer는 lifecycle roster와 completion 기반 cooldown으로 Tower만 공격하고 death 뒤 route를 계속 간다', () => {
     const inputState = { moveRight: true, primaryPressed: false };
@@ -845,7 +1098,7 @@ test('custom Archer는 lifecycle roster와 completion 기반 cooldown으로 Towe
 
 test('pending Archer shot recovery는 failed replacement를 원자적으로 보존하고 새 session에서 stale completion을 격리한다', () => {
     const inputState = { moveRight: false, primaryPressed: false };
-    const backendInitResults = [true, false, true];
+    const backendInitResults = [true, FAILED_REPLACEMENT_BACKEND_INIT, true];
     const backends = [];
     const gameSystem = new GameSystem(
         createDependencies(backends, inputState, backendInitResults),
@@ -1012,7 +1265,7 @@ test('pending Archer shot recovery는 failed replacement를 원자적으로 보�
 
 test('production wave alive recovery는 HP와 failed replacement를 보존하고 새 Archer를 sequence 0으로 재등록한다', () => {
     const inputState = { moveRight: false, primaryPressed: false };
-    const backendInitResults = [true, false, true];
+    const backendInitResults = [true, FAILED_REPLACEMENT_BACKEND_INIT, true];
     const backends = [];
     const gameSystem = new GameSystem(
         createDependencies(backends, inputState, backendInitResults)
@@ -1165,10 +1418,10 @@ test('production wave alive recovery는 HP와 failed replacement를 보존하고
 test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 계속하고 dead recovery에서 target 없이 재등록된다', () => {
     const inputState = { moveRight: true, primaryPressed: false };
     const backends = [];
-    const gameSystem = new GameSystem(
+    const scene = new GameSceneLikeHarness(
         createDependencies(backends, inputState)
     );
-    assert.equal(gameSystem.enter(), true);
+    const gameSystem = scene.getGameSystem();
     const objectSystem = gameSystem.getObjectSystem();
     const endpoint = gameSystem.getGpuSimulationEndpoint();
     const registry = endpoint.getRegistry();
@@ -1324,6 +1577,82 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     );
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
 
+    const camera = objectSystem.getWorldViewProjection();
+    const cameraController = gameSystem.getCameraZoomController();
+    const cameraFollowTarget = objectSystem.getCameraFollowTarget();
+    const corePosition = copyVector(objectSystem.getCore().position);
+    inputState.moveRight = false;
+    const towerBodyBeforeDeath = backend.bodies.get(handleKey(towerHandle));
+    const authoredTowerPosition = objectSystem.getTileMap()
+        .getTowerSpawnPosition();
+    towerBodyBeforeDeath.position.x = authoredTowerPosition.x;
+    towerBodyBeforeDeath.position.y = authoredTowerPosition.y;
+    towerBodyBeforeDeath.velocity.x = 0;
+    towerBodyBeforeDeath.velocity.y = 0;
+    const archerHandleKeys = new Set(productionArchers.map(({ handle }) => (
+        handleKey(handle)
+    )));
+    const cameraVisibilityHandles = registry
+        .copyActiveHandlesInto([], { kindId: 'enemy' })
+        .filter((handle) => !archerHandleKeys.has(handleKey(handle)))
+        .slice(0, 2);
+    assert.equal(cameraVisibilityHandles.length, 2);
+    const towerCameraEnemy = backend.bodies.get(
+        handleKey(cameraVisibilityHandles[0])
+    );
+    towerCameraEnemy.position.x = authoredTowerPosition.x;
+    towerCameraEnemy.position.y = authoredTowerPosition.y;
+    towerCameraEnemy.velocity.x = 0;
+    towerCameraEnemy.velocity.y = 0;
+    const coreCameraEnemy = backend.bodies.get(
+        handleKey(cameraVisibilityHandles[1])
+    );
+    coreCameraEnemy.position.x = corePosition.x;
+    coreCameraEnemy.position.y = corePosition.y;
+    coreCameraEnemy.velocity.x = 0;
+    coreCameraEnemy.velocity.y = 0;
+    const towerPositionBeforeDeath = copyVector(
+        towerBodyBeforeDeath.position
+    );
+    const endpointStatusBeforeDeath = endpoint.getStatus();
+    const worldBounds = objectSystem.getTileMap().getWorldBounds();
+    const expectedTowerCameraCenter = Object.freeze({
+        x: Math.max(0, Math.min(worldBounds.width, towerPositionBeforeDeath.x)),
+        y: Math.max(0, Math.min(worldBounds.height, towerPositionBeforeDeath.y))
+    });
+    const enemyHandlesBeforeDeath = registry
+        .copyActiveHandlesInto([], { kindId: 'enemy' })
+        .map(handleKey)
+        .sort();
+    assert.equal(enemyHandlesBeforeDeath.length, 32);
+    camera.zoom = 3;
+    cameraController.targetZoom = 3;
+    cameraController.followBlend = 1;
+    cameraController.targetFollowBlend = 1;
+    cameraController.followPosition.x = towerPositionBeforeDeath.x;
+    cameraController.followPosition.y = towerPositionBeforeDeath.y;
+    cameraController.hasFollowPosition = true;
+    camera.centerOnWorldPoint(
+        towerPositionBeforeDeath.x,
+        towerPositionBeforeDeath.y,
+        1
+    );
+    scene.draw();
+    const drawBeforeDeath = backend.drawSnapshots.at(-1);
+    assert.deepEqual(
+        drawBeforeDeath.renderedEnemyHandles.map(handleKey).sort(),
+        enemyHandlesBeforeDeath
+    );
+    assert.ok(drawBeforeDeath.visibleEnemyHandles.length > 0);
+    assert.ok(drawBeforeDeath.visibleEnemyHandles.some((handle) => (
+        handleKey(handle) === handleKey(cameraVisibilityHandles[0])
+    )));
+    assertCameraDrawSnapshot(
+        drawBeforeDeath,
+        expectedTowerCameraCenter,
+        camera.getScale()
+    );
+
     const hostileEnemyHealthBefore = new Map(
         registry.copyActiveHandlesInto([], { kindId: 'enemy' }).map((handle) => (
             [handleKey(handle), backend.bodies.get(handleKey(handle)).health]
@@ -1368,6 +1697,45 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     }
     assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
     assert.equal(coreIntegrity.getMaxIntegrity(), initialCoreMaximum);
+
+    scene.update();
+    cameraController.followBlend = 1;
+    scene.update();
+    scene.draw();
+    const drawAtDeath = backend.drawSnapshots.at(-1);
+    const cameraCenterAtDeath = copyVector(drawAtDeath.cameraCenter);
+    assert.deepEqual(
+        drawAtDeath.renderedEnemyHandles.map(handleKey).sort(),
+        enemyHandlesBeforeDeath
+    );
+    assert.ok(drawAtDeath.visibleEnemyHandles.length > 0);
+    assert.ok(drawAtDeath.visibleEnemyHandles.some((handle) => (
+        handleKey(handle) === handleKey(cameraVisibilityHandles[1])
+    )));
+    assertCameraDrawSnapshot(drawAtDeath, corePosition, camera.getScale());
+    assert.strictEqual(objectSystem.getCameraFollowTarget(), cameraFollowTarget);
+    assert.equal(cameraFollowTarget.isCameraFollowEnabled(), true);
+    assert.deepEqual(
+        cameraFollowTarget.copyCameraFollowPositionInto({}),
+        corePosition
+    );
+    assert.ok(Math.hypot(
+        drawAtDeath.cameraCenter.x - drawBeforeDeath.cameraCenter.x,
+        drawAtDeath.cameraCenter.y - drawBeforeDeath.cameraCenter.y
+    ) > 0);
+    assert.notDeepEqual(drawAtDeath.viewTopLeft, drawBeforeDeath.viewTopLeft);
+    assert.notDeepEqual(
+        drawAtDeath.viewBottomRight,
+        drawBeforeDeath.viewBottomRight
+    );
+    assert.strictEqual(gameSystem.getGpuSimulationEndpoint(), endpoint);
+    assert.strictEqual(objectSystem.getWorldRegistry(), registry);
+    assert.strictEqual(objectSystem.getEnemySimulationBackend(), backend);
+    assert.equal(
+        endpoint.getStatus().sessionGeneration,
+        endpointStatusBeforeDeath.sessionGeneration
+    );
+    assert.equal(scene.getEnemyRecoveryStatus().restartCount, 0);
 
     hostileStatus = gameSystem.getHostileAttackStatus();
     const deathFixedTick = gameSystem.getFixedTick();
@@ -1429,6 +1797,49 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     assert.equal(backend.pendingFixedPlan, null);
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
     assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+    assert.equal(registry.getActiveCount('enemy'), 32);
+    assert.deepEqual(
+        registry.copyActiveHandlesInto([], { kindId: 'enemy' })
+            .map(handleKey)
+            .sort(),
+        enemyHandlesBeforeDeath
+    );
+    scene.update();
+    cameraController.followBlend = 1;
+    scene.update();
+    scene.draw();
+    const drawAfterThirtyTicks = backend.drawSnapshots.at(-1);
+    assert.deepEqual(
+        drawAfterThirtyTicks.renderedEnemyHandles.map(handleKey).sort(),
+        enemyHandlesBeforeDeath
+    );
+    assert.ok(drawAfterThirtyTicks.visibleEnemyHandles.length > 0);
+    assert.ok(drawAfterThirtyTicks.visibleEnemyHandles.some((handle) => (
+        handleKey(handle) === handleKey(cameraVisibilityHandles[1])
+    )));
+    assertCameraDrawSnapshot(
+        drawAfterThirtyTicks,
+        corePosition,
+        camera.getScale()
+    );
+    assert.strictEqual(objectSystem.getCameraFollowTarget(), cameraFollowTarget);
+    assert.equal(cameraFollowTarget.isCameraFollowEnabled(), true);
+    assert.deepEqual(
+        cameraFollowTarget.copyCameraFollowPositionInto({}),
+        corePosition
+    );
+    assert.strictEqual(gameSystem.getGpuSimulationEndpoint(), endpoint);
+    assert.strictEqual(objectSystem.getWorldRegistry(), registry);
+    assert.strictEqual(objectSystem.getEnemySimulationBackend(), backend);
+    assert.equal(
+        endpoint.getStatus().sessionGeneration,
+        endpointStatusBeforeDeath.sessionGeneration
+    );
+    assert.equal(scene.getEnemyRecoveryStatus().restartCount, 0);
+    assertNear(cameraCenterAtDeath.x, corePosition.x);
+    assertNear(cameraCenterAtDeath.y, corePosition.y);
+    assertNear(drawAfterThirtyTicks.cameraCenter.x, corePosition.x);
+    assertNear(drawAfterThirtyTicks.cameraCenter.y, corePosition.y);
 
     const deadRecoveryOffset = gameSystem.getFixedTick();
     const oldEndpoint = gameSystem.getGpuSimulationEndpoint();
@@ -1437,6 +1848,12 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     const replacementEndpoint = gameSystem.getGpuSimulationEndpoint();
     const replacementBackend = backends[1];
     assert.notStrictEqual(replacementEndpoint, oldEndpoint);
+    assert.strictEqual(objectSystem.getCameraFollowTarget(), cameraFollowTarget);
+    assert.equal(cameraFollowTarget.isCameraFollowEnabled(), true);
+    assert.deepEqual(
+        cameraFollowTarget.copyCameraFollowPositionInto({}),
+        corePosition
+    );
     assert.equal(oldBackend.destroyCount, 1);
     assert.equal(gameSystem.getTowerCombatStatus().alive, false);
     assert.equal(gameSystem.getTowerCombatStatus().currentHp, 0);
@@ -1474,7 +1891,7 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
     assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
 
-    gameSystem.destroy();
-    gameSystem.destroy();
+    scene.destroy();
+    scene.destroy();
     assert.equal(replacementBackend.destroyCount, 1);
 });

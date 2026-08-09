@@ -27,6 +27,7 @@ const {
     isPhysicsBodyOwner
 } = await loadGameModule('ingame/contract/physics_body_contract.js');
 const { InputActionMapper } = await loadGameModule('ingame/input/input_action_mapper.js');
+const { ANIMATION_CATEGORY } = await loadGameModule('animation/_constants.js');
 const { INPUT_ACTION_IDS } = await loadGameModule(
     'input/_input_binding_constants.js'
 );
@@ -480,6 +481,14 @@ const followAnimation = cameraAnimations.find(
 );
 assert.ok(zoomAnimation);
 assert.ok(followAnimation);
+assert.equal(
+    zoomAnimation.properties.animationCategory,
+    ANIMATION_CATEGORY.GAME_MECHANIC
+);
+assert.equal(
+    followAnimation.properties.animationCategory,
+    ANIMATION_CATEGORY.GAME_MECHANIC
+);
 assert.equal(zoomAnimation.properties.duration, 0.4);
 assert.equal(zoomAnimation.properties.type, 'easeOutExpo');
 assert.equal(followAnimation.properties.duration, 0.4);
@@ -587,6 +596,9 @@ wheelTotals.y = -2;
 gameSystem.update();
 assert.equal(cameraAnimations.length, 2);
 assert.equal(zoomAnimation.retargets.length, 1);
+assert.ok(zoomAnimation.retargets.every(
+    (properties) => properties.animationCategory === ANIMATION_CATEGORY.GAME_MECHANIC
+));
 assert.equal(
     followAnimation.retargets.length,
     recoveredFollowRetargetCount

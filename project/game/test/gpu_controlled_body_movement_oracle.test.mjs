@@ -447,3 +447,66 @@ test('control marker는 FLOW_FIELD validation과 기존 ballistic prepare branch
         'marker는 선언/clear/apply/finalize 외 flow·ballistic 경로에 나타나면 안 됩니다.'
     );
 });
+
+test('async death readback 전 exact dead body control은 hard protocol failure 없이 no-op한다', () => {
+    const validateControl = extractWgslFunction(
+        GPU_COLLISION_COMPUTE_WGSL,
+        'validate_body_control_commands'
+    );
+    const applyControl = extractWgslFunction(
+        GPU_COLLISION_COMPUTE_WGSL,
+        'apply_body_control_commands'
+    );
+    const recordInvalidIndex = validateControl.indexOf(
+        'FIXED_PROGRAM_STATUS_RECORD_INVALID'
+    );
+    const deadNoOpIndex = validateControl.indexOf(
+        'if (!body_id_is_alive(command.destination_slot))'
+    );
+
+    assert.ok(
+        recordInvalidIndex >= 0,
+        '구조/identity/flow/move 위반은 RECORD_INVALID를 유지해야 합니다.'
+    );
+    for (const requiredHardValidation of [
+        'command.flags != 0u',
+        'command.reserved_0 != 0u',
+        'command.reserved_1 != 0u',
+        'command.destination_slot >= counts.body_count',
+        'entity_id != command.entity_id',
+        'incarnation != command.incarnation',
+        'BODY_FLAG_USE_FLOW',
+        'dot(command.move_intent, command.move_intent) > 1.000002'
+    ]) {
+        const validationIndex = validateControl.indexOf(requiredHardValidation);
+        assert.ok(
+            validationIndex >= 0 && validationIndex < recordInvalidIndex,
+            requiredHardValidation + ' 위반은 dead no-op보다 먼저 hard reject해야 합니다.'
+        );
+    }
+    assert.ok(
+        deadNoOpIndex > recordInvalidIndex,
+        'exact identity의 GPU-dead command는 RECORD_INVALID 이후 별도 no-op branch여야 합니다.'
+    );
+    assert.match(
+        validateControl.slice(deadNoOpIndex),
+        /^if \(!body_id_is_alive\(command\.destination_slot\)\) \{\s*return;\s*\}/
+    );
+
+    const applyDeadGuardIndex = applyControl.indexOf(
+        'if (!body_id_is_alive(command.destination_slot))'
+    );
+    const applyIdentityGuardIndex = applyControl.indexOf(
+        'entity_id != command.entity_id'
+    );
+    const controlStateWriteIndex = applyControl.indexOf(
+        'body_control_states.values[command.destination_slot]'
+    );
+    assert.ok(
+        applyIdentityGuardIndex >= 0
+            && applyIdentityGuardIndex < applyDeadGuardIndex
+            && applyDeadGuardIndex >= 0
+            && applyDeadGuardIndex < controlStateWriteIndex,
+        'apply는 exact identity를 재확인하고 dead record만 건너뛰어야 합니다.'
+    );
+});

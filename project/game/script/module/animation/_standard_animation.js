@@ -23,6 +23,7 @@ export class StandardAnimation extends AnimationBase {
      * 애니메이션 상태를 초기화합니다.
      */
     reset() {
+        super.reset();
         this.startValue = 0;
         this.endValue = 0;
         this.rawStartValue = null;
@@ -42,6 +43,7 @@ export class StandardAnimation extends AnimationBase {
      * @param {number} id - 애니메이션 ID
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
+     * @param {string} animationCategory - 애니메이션 시간 축 카테고리입니다.
      * @param {number|string|Function} startValue - 시작 값 (숫자, 'current', 또는 함수)
      * @param {number|string|Function} endValue - 종료 값
      * @param {string} type - 이징 함수 이름
@@ -49,8 +51,8 @@ export class StandardAnimation extends AnimationBase {
      * @param {number} delay - 시작 지연 (초)
      * @param {boolean} [useFixedTick=false] - 고정 틱 업데이트 사용 여부
      */
-    init(id, owner, variable, startValue, endValue, type, duration, delay, useFixedTick = false) {
-        super.init(id, owner, variable, useFixedTick);
+    init(id, owner, variable, animationCategory, startValue, endValue, type, duration, delay, useFixedTick = false) {
+        super.init(id, owner, variable, animationCategory, useFixedTick);
         this.rawStartValue = startValue;
         this.rawEndValue = endValue;
         this.duration = duration;
@@ -71,7 +73,9 @@ export class StandardAnimation extends AnimationBase {
      */
     retarget(properties = {}, speedEasing = false) {
         if (this.state !== ANIMATION_STATE.RUNNING
-            || properties.endValue === undefined) {
+            || properties.endValue === undefined
+            || (Object.prototype.hasOwnProperty.call(properties, 'animationCategory')
+                && properties.animationCategory !== this.animationCategory)) {
             return false;
         }
 

@@ -20,6 +20,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/tower/the_tower_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'data/scene/game/corridor_eight_wave_01_data.js',
+    'module/ingame/contract/camera_control_contract.js',
     'module/ingame/contract/tile_navigation_contract.js',
     'module/ingame/contract/gameplay_team_contract.js',
     'module/ingame/contract/player_controllable_contract.js',
@@ -28,6 +29,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/flow/wave_director.js',
     'module/ingame/gpu_simulation_endpoint.js',
     'module/ingame/map/tile_map.js',
+    'module/ingame/map/world_camera_2d.js',
     'module/ingame/navigation/route_flow_field_atlas.js',
     'module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
     'module/ingame/object/enemy/enemy_simulation_backend.js',
@@ -39,8 +41,10 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/gpu_spawn_intent.js',
     'module/ingame/object/projectile/gpu_primary_projectile_controller.js',
     'module/ingame/object/projectile/gpu_projectile_spawn_adapter.js',
+    'module/ingame/object/tower/gpu_tower_actor_facade.js',
     'module/ingame/object/tower/gpu_tower_spawn_adapter.js',
     'module/ingame/object/tower/tower_combat_roster.js',
+    'module/ingame/object/tower_core_camera_follow_target.js',
     'module/ingame/object/world_registry.js',
     'module/ingame/physics/gpu/gpu_body_presentation_clock.js',
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
@@ -85,6 +89,40 @@ const NW_RUNTIME_ROOT_FILES = Object.freeze([
     'vulkan-1.dll'
 ]);
 const NW_RUNTIME_DIRECTORIES = Object.freeze(['Dictionaries', 'locales', 'swiftshader']);
+
+function assertDeadControlRaceResult(result) {
+    const fixture = result?.productionFixedPrimitives?.deadControlRace;
+    const valid = fixture?.scenario
+            === 'tower-lethal-then-exact-dead-control-two-submit'
+        && fixture.settledBetweenSubmits === false
+        && fixture.deadControlSubmitted === true
+        && fixture.sourceTicks?.deadControl === fixture.sourceTicks?.lethal + 1
+        && fixture.submissions?.deadControl?.fixedCommandCount === 2
+        && fixture.submissions.deadControl.completedBatchCountBeforeSubmit === 0
+        && fixture.towerDeath?.observed === true
+        && fixture.towerDeath.towerRegistryPresentAfterCleanup === false
+        && fixture.towerDeath.towerBackendPresentAfterCleanup === false
+        && fixture.liveControl?.moved === true
+        && fixture.enemyPersistence?.identityPreserved === true
+        && fixture.enemyPersistence.flowProgressed === true
+        && fixture.enemyPersistence.renderAlphaAfterRace > 0
+        && fixture.enemyPersistence.renderAlphaAfterCleanup > 0
+        && fixture.backend?.failure === null
+        && fixture.backend.recoveryRequired === false
+        && fixture.backend.requiresAuthoritativeRebuild === false
+        && fixture.storageProfile?.requiredMaximum === 9
+        && result.uncapturedErrorCount === 0
+        && result.deviceLostReason === 'destroyed';
+    if (!valid) {
+        throw new Error(
+            `NW dead-control race 결과 계약 실패: ${JSON.stringify({
+                fixture,
+                uncapturedErrorCount: result?.uncapturedErrorCount,
+                deviceLostReason: result?.deviceLostReason
+            })}`
+        );
+    }
+}
 
 function waitForChild(child) {
     return new Promise((resolve, reject) => {
@@ -292,6 +330,7 @@ async function runHarness() {
                 || `NW.js WebGPU capability 실패: exit=${exit.exitCode}, signal=${exit.signal}`
             );
         }
+        assertDeadControlRaceResult(result);
 
         console.log(JSON.stringify(result, null, 2));
         await removeRunDirectory(runDirectory);

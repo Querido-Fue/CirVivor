@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ EFFECT: 'effect' });
+
 const source = await readFile(
     new URL('../script/module/scene/title/_title_scene_intro_sequence.js', import.meta.url),
     'utf8'
@@ -14,13 +16,18 @@ const module = new vm.SourceTextModule(source, {
 
 const animationCalls = [];
 const removedAnimationIds = [];
-const animationModule = new vm.SyntheticModule(['animateMixed', 'remove'], function init() {
-    this.setExport('animateMixed', (owner, definitions) => {
-        animationCalls.push({ owner, definitions });
+const animationModule = new vm.SyntheticModule(
+    ['ANIMATION_CATEGORY', 'animateMixed', 'remove'],
+    function init() {
+    this.setExport('ANIMATION_CATEGORY', ANIMATION_CATEGORY);
+    this.setExport('animateMixed', (owner, definitions, properties) => {
+        animationCalls.push({ owner, definitions, properties });
         return { ids: animationCalls.length === 1 ? [11] : [12] };
     });
     this.setExport('remove', (animationId) => removedAnimationIds.push(animationId));
-}, { context });
+    },
+    { context }
+);
 const titleLoading = {
     SCENE_TRANSITION_MOTION: {},
     GLOW_COMPENSATION_SCALE: 1.25,
@@ -110,6 +117,9 @@ const sequence = new TitleSceneIntroSequence({}, {
 assert.equal(animationCalls.length, 2);
 assert.strictEqual(animationCalls[0].owner, sequence);
 assert.strictEqual(animationCalls[1].owner, centerCircle);
+assert.ok(animationCalls.every(
+    ({ properties }) => properties.animationCategory === ANIMATION_CATEGORY.EFFECT
+));
 assert.equal(sequence.sceneTransitionProgress, 0);
 assert.equal(sequence.isEnemySpawnReady(), false);
 sequence.sceneTransitionProgress = 0.2;

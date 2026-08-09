@@ -1,5 +1,5 @@
 import { BaseUIElement } from "./_base_element.js";
-import { animate, remove } from "animation/animation_system.js";
+import { ANIMATION_CATEGORY, animate, remove } from "animation/animation_system.js";
 import { render, shadowOn, shadowOff, measureText } from "display/display_system.js";
 import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMousePressing } from "input/input_system.js";
 import { ColorSchemes } from "display/_theme_handler.js";
@@ -228,6 +228,7 @@ export class DropdownElement extends BaseUIElement {
             ? options.easing
             : 'easeOutExpo';
         const animation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: 'selectionProgress',
             startValue: 0,
             endValue: 1,
@@ -283,6 +284,7 @@ export class DropdownElement extends BaseUIElement {
             this.#openAnimId = -1;
         }
         this.#openAnimId = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: "openProgress",
             startValue: "current",
             endValue: open ? 1 : 0,

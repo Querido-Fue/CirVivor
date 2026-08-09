@@ -1,4 +1,4 @@
-import { animate, remove } from 'animation/animation_system.js';
+import { ANIMATION_CATEGORY, animate, remove } from 'animation/animation_system.js';
 import { getUIOffsetX, getUIWW, getWH } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { TitleCenterCircle } from './_title_center_circle.js';
@@ -194,6 +194,7 @@ export class TitleLoadingSequence {
         if (this.introStarted) return;
         this.introStarted = true;
         this.centerIntroBlurAnimId = animate(this.centerCircle, {
+            animationCategory: ANIMATION_CATEGORY.EFFECT,
             variable: 'introBlur',
             startValue: TITLE_LOADING.INTRO_BLUR_START_PX,
             endValue: 0,

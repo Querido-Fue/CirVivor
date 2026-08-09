@@ -49,7 +49,16 @@ export const SETTING_DEFINITIONS = Object.freeze({
         type: 'int', defaultValue: 100, min: 75, max: 150, hidden: false
     }),
     tooltipDelaySeconds: Object.freeze({
-        type: 'float', defaultValue: 0.3, min: 0, max: 2, hidden: false
+        type: 'float',
+        defaultValue: 0.3,
+        min: 0,
+        max: 2,
+        step: 0.01,
+        precision: 2,
+        hidden: false
+    }),
+    uiAnimationDurationScale: Object.freeze({
+        type: 'float', defaultValue: 1, min: 0.1, max: 4, hidden: true
     }),
     inputBindings: Object.freeze({
         type: 'object', defaultValue: Object.freeze({}), min: -1, max: -1, hidden: false

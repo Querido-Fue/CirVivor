@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ UI: 'ui' });
+
 const [baseOverlaySource, panelInteractionSource] = await Promise.all([
     readFile(new URL('../script/module/overlay/_base_overlay.js', import.meta.url), 'utf8'),
     readFile(new URL('../script/module/overlay/overlay_panel_interaction_update.js', import.meta.url), 'utf8')
@@ -37,6 +39,7 @@ const baseModule = new vm.SourceTextModule(baseOverlaySource, {
 });
 const baseDependencies = new Map([
     ['animation/animation_system.js', createSyntheticModule(baseContext, {
+        ANIMATION_CATEGORY,
         animate: () => ({ id: animationId++, promise: new Promise(() => {}) }),
         remove: () => {}
     })],

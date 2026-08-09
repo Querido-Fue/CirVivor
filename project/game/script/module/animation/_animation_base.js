@@ -1,10 +1,11 @@
-import { ANIMATION_STATE } from './_constants.js';
+import { ANIMATION_STATE, isAnimationCategory } from './_constants.js';
 
 /**
  * @class AnimationBase
  * @description 모든 애니메이션 구현체가 공유하는 공통 상태와 생명주기 인터페이스를 정의합니다.
  */
 export class AnimationBase {
+    #animationCategory;
     #promise;
     #resolve;
 
@@ -12,6 +13,7 @@ export class AnimationBase {
         this.id = -1;
         this.owner = null;
         this.variable = null;
+        this.#animationCategory = null;
         this.useFixedTick = false;
         this.state = ANIMATION_STATE.IDLE;
         this.#promise = null;
@@ -26,12 +28,17 @@ export class AnimationBase {
      * @param {number} id - 애니메이션 ID
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
+     * @param {string} animationCategory - 애니메이션 시간 축 카테고리입니다.
      * @param {boolean} [useFixedTick=false] - 고정 틱 업데이트 사용 여부
      */
-    init(id, owner, variable, useFixedTick = false) {
+    init(id, owner, variable, animationCategory, useFixedTick = false) {
+        if (!isAnimationCategory(animationCategory)) {
+            throw new TypeError(`지원하지 않는 animationCategory입니다: ${String(animationCategory)}`);
+        }
         this.id = id;
         this.owner = owner;
         this.variable = variable;
+        this.#animationCategory = animationCategory;
         this.useFixedTick = useFixedTick === true;
         this.state = ANIMATION_STATE.RUNNING;
         this.next = null;
@@ -40,6 +47,31 @@ export class AnimationBase {
         // 재초기화를 위해 내부 프로미스/resolve 참조 초기화
         this.#promise = null;
         this.#resolve = null;
+    }
+
+    /**
+     * 풀 재사용 전에 공통 상태와 완료 Promise 참조를 초기화합니다.
+     * @returns {void}
+     */
+    reset() {
+        this.id = -1;
+        this.owner = null;
+        this.variable = null;
+        this.#animationCategory = null;
+        this.useFixedTick = false;
+        this.state = ANIMATION_STATE.IDLE;
+        this.#promise = null;
+        this.#resolve = null;
+        this.next = null;
+        this.prev = null;
+    }
+
+    /**
+     * 애니메이션 생성 시 고정된 시간 축 카테고리를 반환합니다.
+     * @returns {string|null} 활성 카테고리 또는 초기화 전 null입니다.
+     */
+    get animationCategory() {
+        return this.#animationCategory;
     }
 
     /**

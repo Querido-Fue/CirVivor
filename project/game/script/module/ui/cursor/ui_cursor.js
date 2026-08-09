@@ -1,6 +1,11 @@
 import { getCanvas, getDisplaySystem, getWW, getWH, render, shadowOn, shadowOff } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
-import { animate, remove } from 'animation/animation_system.js';
+import {
+    ANIMATION_CATEGORY,
+    animate,
+    getResolvedUiAnimationDurationScale,
+    remove
+} from 'animation/animation_system.js';
 import { getMouseInput, isMousePressing } from 'input/input_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { toRadians } from 'util/math_util.js';
@@ -117,7 +122,7 @@ export class UICursor {
                         duration
                     );
                 }
-                this.#normalAnimTime += getDelta();
+                this.#normalAnimTime += this.#getNormalAnimationDelta();
                 if (this.#normalAnimTime >= this.#normalAnimDuration) {
                     this.#normalAnimTime = this.#normalAnimDuration;
                 }
@@ -139,7 +144,7 @@ export class UICursor {
                         this.#normalAnimTime
                     );
                 }
-                this.#normalAnimTime -= getDelta();
+                this.#normalAnimTime -= this.#getNormalAnimationDelta();
                 if (this.#normalAnimTime <= 0) {
                     this.#normalAnimTime = 0;
                 }
@@ -194,12 +199,28 @@ export class UICursor {
      */
     _startNormalCursorAnimation(variable, endValue, duration) {
         return animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable,
             startValue: 'current',
             endValue,
             type: NORMAL_CURSOR_ANIMATION_TYPE,
             duration: clampFiniteNumber(Number(duration), 0, Infinity, 0)
         }).id;
+    }
+
+    /**
+     * AnimationSystem과 같은 authored-time delta로 커서 역전 진행 시간을 갱신합니다.
+     * @returns {number} 현재 프레임의 UI animation-time delta입니다.
+     * @private
+     */
+    #getNormalAnimationDelta() {
+        const baseDelta = clampFiniteNumber(Number(getDelta()), 0, Infinity, 0);
+        const resolvedDurationScale = getResolvedUiAnimationDurationScale();
+        const durationScale = typeof resolvedDurationScale === 'number'
+            && Number.isFinite(resolvedDurationScale)
+            ? clampFiniteNumber(resolvedDurationScale, 0.1, 4, 1)
+            : 1;
+        return baseDelta / durationScale;
     }
 
     /**

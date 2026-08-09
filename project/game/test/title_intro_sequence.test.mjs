@@ -17,6 +17,9 @@ const { advanceTitleIntroDelay } = await loadGameModule(
 const { MixedAnimation } = await loadGameModule(
     'animation/_mixed_animation.js'
 );
+const { ANIMATION_CATEGORY } = await loadGameModule(
+    'animation/_constants.js'
+);
 
 const sequenceSource = await readFile(
     new URL('../script/module/scene/title/_title_loading_sequence.js', import.meta.url),
@@ -135,7 +138,13 @@ assert.ok(Math.abs(cruiseVelocity - decelBoundaryVelocity) < 1e-10);
 
 const transitionOwner = { progress: 0 };
 const transitionAnimation = new MixedAnimation();
-transitionAnimation.init(0, transitionOwner, 'progress', transitionSegments);
+transitionAnimation.init(
+    0,
+    transitionOwner,
+    'progress',
+    ANIMATION_CATEGORY.EFFECT,
+    transitionSegments
+);
 transitionAnimation.update(0.3);
 assert.ok(Math.abs(transitionOwner.progress - transitionSegments[0].endValue) < 1e-10);
 transitionAnimation.update(0.2);

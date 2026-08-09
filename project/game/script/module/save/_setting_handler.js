@@ -18,6 +18,8 @@ import { SettingRepository } from './setting/_setting_repository.js';
  * @property {*} value - 현재 메모리에 보관된 값입니다.
  * @property {number} min - 숫자 하한이며 `-1`은 제한 없음입니다.
  * @property {number} max - 숫자 상한이며 `-1`은 제한 없음입니다.
+ * @property {number} [step] - 숫자 설정의 양자화 간격입니다.
+ * @property {number} [precision] - 숫자 canonicalization에 사용할 소수 자릿수입니다.
  * @property {boolean} hidden - 옵션 UI 비노출 및 조건부 파일 저장 여부입니다.
  * @property {*} defaultValue - 설정 정의에 선언된 정적 기본값입니다.
  * @property {ReadonlyArray<*>} [allowedValues] - 허용된 열거형 값 목록입니다.

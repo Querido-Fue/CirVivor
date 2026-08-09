@@ -17,6 +17,7 @@ export class PersistentAnimation extends AnimationBase {
      * 애니메이션 상태를 초기화합니다.
      */
     reset() {
+        super.reset();
         this.startValue = 0;
         this.endValue = 0;
         this.easings = [];
@@ -31,6 +32,7 @@ export class PersistentAnimation extends AnimationBase {
      * @param {number} id - 애니메이션 ID
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
+     * @param {string} animationCategory - 애니메이션 시간 축 카테고리입니다.
      * @param {number} startValue - 시작 값
      * @param {number} endValue - 종료 값
      * @param {string|string[]} easings - 사용할 이징 함수 이름 또는 배열
@@ -38,8 +40,8 @@ export class PersistentAnimation extends AnimationBase {
      * @param {string} onCompleteAction - 완료 시 동작 ('stop', 'reset', 'return')
      * @param {boolean} [useFixedTick=false] - 고정 틱 업데이트 사용 여부
      */
-    init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction, useFixedTick = false) {
-        super.init(id, owner, variable, useFixedTick);
+    init(id, owner, variable, animationCategory, startValue, endValue, easings, duration, onCompleteAction, useFixedTick = false) {
+        super.init(id, owner, variable, animationCategory, useFixedTick);
         this.startValue = startValue;
         this.endValue = endValue;
         this.easings = Array.isArray(easings) ? easings : [easings];

@@ -8,6 +8,7 @@ import {
     assertCameraControl2D,
     assertCameraFollowTarget2D
 } from '../contract/camera_control_contract.js';
+import { ANIMATION_CATEGORY } from 'animation/_constants.js';
 
 const ZOOM_RATIO_PER_WHEEL_UNIT = 1.16;
 const ZOOM_ANIMATION_DURATION_SECONDS = 0.4;
@@ -53,7 +54,7 @@ function clampCameraFollowBlend(value, fallback) {
 export class CameraZoomController {
     /**
      * @param {object} camera - ICameraControl2D입니다.
-     * @param {{animate:(owner:object,properties:object)=>object}} animationPort - 애니메이션 포트입니다.
+     * @param {{animate:(owner:object,properties:{animationCategory:string})=>object}} animationPort - 카테고리 포함 속성을 받는 애니메이션 포트입니다.
      * @param {object} followTarget - 보간 월드 좌표를 제공하는 ICameraFollowTarget2D입니다.
      */
     constructor(camera, animationPort, followTarget) {
@@ -82,6 +83,7 @@ export class CameraZoomController {
         this.targetFollowBlend = this.followBlend;
         this.enabled = true;
         this.animationProperties = {
+            animationCategory: ANIMATION_CATEGORY.GAME_MECHANIC,
             variable: 'zoom',
             startValue: 'current',
             endValue: this.targetZoom,
@@ -89,6 +91,7 @@ export class CameraZoomController {
             type: ZOOM_ANIMATION_EASING
         };
         this.followAnimationProperties = {
+            animationCategory: ANIMATION_CATEGORY.GAME_MECHANIC,
             variable: 'followBlend',
             startValue: 'current',
             endValue: this.targetFollowBlend,

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ EFFECT: 'effect' });
+
 const [source, displaySystemSource, colorUtilSource] = await Promise.all([
     readFile(new URL('../script/module/display/_theme_transition_controller.js', import.meta.url), 'utf8'),
     readFile(new URL('../script/module/display/display_system.js', import.meta.url), 'utf8'),
@@ -49,7 +51,11 @@ new colorUtilModule.namespace.ColorUtil();
 
 const controllerModule = new vm.SourceTextModule(source, { context, identifier: '_theme_transition_controller.js' });
 const dependencies = new Map([
-    ['animation/animation_system.js', createSyntheticModule(context, { animate, remove })],
+    ['animation/animation_system.js', createSyntheticModule(context, {
+        ANIMATION_CATEGORY,
+        animate,
+        remove
+    })],
     ['util/color_util.js', colorUtilModule]
 ]);
 await controllerModule.link((specifier) => dependencies.get(specifier));
@@ -67,6 +73,7 @@ const controller = new ThemeTransitionController({
 assert.equal(controller.start(''), false);
 assert.equal(controller.start('#111111'), true);
 assert.deepEqual({ ...animations[0].properties }, {
+    animationCategory: ANIMATION_CATEGORY.EFFECT,
     variable: 'alpha', startValue: 0.82, endValue: 0, duration: 0.4, type: 'linear'
 });
 controller.draw();

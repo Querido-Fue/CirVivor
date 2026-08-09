@@ -8,6 +8,7 @@ const BASE_ELEMENT_URL = new URL(
     import.meta.url
 );
 const baseElementSource = await readFile(BASE_ELEMENT_URL, 'utf8');
+const ANIMATION_CATEGORY = Object.freeze({ UI: 'ui' });
 
 /**
  * VM SyntheticModule을 생성합니다.
@@ -47,6 +48,7 @@ async function createInteractionHarness() {
             context,
             'animation/animation_system.js',
             {
+                ANIMATION_CATEGORY,
                 animate(owner, properties) {
                     const record = {
                         owner,
@@ -125,6 +127,9 @@ test('설정 공통 UI 호버·이탈 반복은 같은 scale/hover handle을 spe
     element.setInteraction(true, false);
     assert.equal(harness.animationRecords.length, 2);
     const [scaleAnimation, hoverAnimation] = harness.animationRecords;
+    assert.ok(harness.animationRecords.every(
+        ({ properties }) => properties.animationCategory === ANIMATION_CATEGORY.UI
+    ));
     const scaleAnimationId = element.scaleAnimId;
     const hoverAnimationId = element.hoverAnimId;
 
@@ -148,6 +153,12 @@ test('설정 공통 UI 호버·이탈 반복은 같은 scale/hover handle을 spe
     );
     assert.ok(scaleAnimation.retargetCalls.every(call => call.speedEasing === false));
     assert.ok(hoverAnimation.retargetCalls.every(call => call.speedEasing === false));
+    assert.ok(scaleAnimation.retargetCalls.every(
+        call => !Object.prototype.hasOwnProperty.call(call.properties, 'animationCategory')
+    ));
+    assert.ok(hoverAnimation.retargetCalls.every(
+        call => !Object.prototype.hasOwnProperty.call(call.properties, 'animationCategory')
+    ));
 
     element.setInteraction(true, true);
     assert.equal(element.isPressed, true);

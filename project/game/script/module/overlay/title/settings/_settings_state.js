@@ -1,6 +1,10 @@
 import { getLangString } from 'ui/ui_system.js';
 import { getSetting } from 'save/save_system.js';
+import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
+import { quantizeSettingNumericValue } from 'save/setting/_setting_schema.js';
 import { clampNumber } from 'util/number_util.js';
+
+const TOOLTIP_DELAY_DEFINITION = SETTING_DEFINITIONS.tooltipDelaySeconds;
 
 export const SETTING_LABEL_KEYS = Object.freeze({
     windowMode: 'title_settings_window_mode',
@@ -23,6 +27,7 @@ export const SETTING_LABEL_KEYS = Object.freeze({
 export function createSettingsInitialState(options) {
     const availableLanguages = Array.isArray(options?.availableLanguages) ? options.availableLanguages : [];
     const savedLanguage = getSetting('language');
+    const savedTooltipDelaySeconds = getSetting('tooltipDelaySeconds');
     const fallbackLanguage = availableLanguages.length > 0 ? availableLanguages[0].key : 'korean';
     const normalizedLanguage = availableLanguages.some((lang) => lang.key === savedLanguage)
         ? savedLanguage
@@ -35,7 +40,9 @@ export function createSettingsInitialState(options) {
         uiScale: getSetting('uiScale') || 100,
         disableTransparency: getSetting('disableTransparency') || false,
         tooltipDelaySeconds: normalizeTooltipDelaySeconds(
-            getSetting('tooltipDelaySeconds') !== undefined ? getSetting('tooltipDelaySeconds') : 0.7
+            savedTooltipDelaySeconds !== undefined
+                ? savedTooltipDelaySeconds
+                : TOOLTIP_DELAY_DEFINITION.defaultValue
         ),
         language: normalizedLanguage,
         theme: getSetting('theme') || options?.defaultThemeKey,
@@ -142,19 +149,23 @@ export function getSettingLabelText(initialSettings, tempSettings, settingKey, l
 export function formatTooltipDelayValue(value, language) {
     const normalizedValue = normalizeTooltipDelaySeconds(value);
     const suffix = language === 'korean' ? '초' : 's';
-    return `${normalizedValue.toFixed(1)}${suffix}`;
+    return `${normalizedValue.toFixed(TOOLTIP_DELAY_DEFINITION.precision)}${suffix}`;
 }
 
 /**
- * 툴팁 지연 시간을 0.1초 단위 값으로 정규화합니다.
+ * 툴팁 지연 시간을 canonical schema의 범위와 step 단위 값으로 정규화합니다.
  * @param {number} value - 정규화할 값입니다.
- * @returns {number} 0.1초 단위로 보정된 값입니다.
+ * @returns {number} canonical step 단위로 보정된 값입니다.
  */
 export function normalizeTooltipDelaySeconds(value) {
     const numericValue = Number(value);
-    if (!Number.isFinite(numericValue)) {
-        return 0.7;
-    }
-
-    return Number(clampNumber(numericValue, 0, 2).toFixed(1));
+    const finiteValue = Number.isFinite(numericValue)
+        ? numericValue
+        : TOOLTIP_DELAY_DEFINITION.defaultValue;
+    const cappedValue = clampNumber(
+        finiteValue,
+        TOOLTIP_DELAY_DEFINITION.min,
+        TOOLTIP_DELAY_DEFINITION.max
+    );
+    return quantizeSettingNumericValue(cappedValue, TOOLTIP_DELAY_DEFINITION);
 }

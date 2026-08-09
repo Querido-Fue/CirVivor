@@ -138,7 +138,12 @@ class RecoveryBackend {
         if (this.mode === 'init-throws') {
             throw new Error('replacement backend init failure');
         }
+        if (this.mode === 'init-deferred') {
+            this.runtimeState = 'gpu-deferred';
+            return false;
+        }
         if (this.mode === 'init-returns-false') {
+            this.runtimeState = 'gpu-unavailable';
             return false;
         }
         return true;
@@ -615,9 +620,13 @@ test('최초 hostile Director factory throw/invalid contract는 설치된 GPU en
     }
 });
 
-test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무한 restart를 막는다', () => {
+test('hard GPU failure는 lazy-deferred replacement로 한 번 재시작하고 성공 전 무한 restart를 막는다', () => {
     const backends = [];
-    const backendModes = ['fail-first-spawn', 'normal', 'fail-first-spawn'];
+    const backendModes = [
+        'fail-first-spawn',
+        'init-deferred',
+        'fail-first-spawn'
+    ];
     const hostileDirectors = createTrackingHostileAttackDirectorFactory();
     let legacyClearCount = 0;
     const dependencies = {
@@ -716,6 +725,7 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
     const firstReplacementRegistry = initialObjectSystem.getWorldRegistry();
 
     assert.equal(backends.length, 2);
+    assert.equal(backends[1].initCount, 1);
     assert.equal(backends[0].destroyCount, 1);
     assert.equal(hostileDirectors.instances.length, 2);
     assert.equal(initialHostileDirector.destroyCount, 1);
@@ -842,7 +852,7 @@ test('hard GPU failure는 wave session을 한 번 재시작하고 성공 전 무
     assert.equal(legacyClearCount, 2);
 });
 
-test('replacement init false/예외와 Director factory 예외는 기존 GPU world와 CPU domain을 원자적으로 보존한다', () => {
+test('replacement gpu-unavailable/예외와 Director factory 예외는 기존 GPU world와 CPU domain을 원자적으로 보존한다', () => {
     const backends = [];
     const backendModes = [
         'normal',

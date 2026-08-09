@@ -1,12 +1,19 @@
 import { StandardAnimation, standardAnimationPool } from './_standard_animation.js';
 import { PersistentAnimation } from './_persistent_animation.js';
 import { MixedAnimation } from './_mixed_animation.js';
-import { ANIMATION_STATE } from './_constants.js';
+import {
+    ANIMATION_CATEGORY,
+    ANIMATION_STATE,
+    isAnimationCategory
+} from './_constants.js';
 import { getDelta, getFixedDelta } from 'game/time_handler.js';
 import { errThrow } from 'debug/debug_system.js';
 import { clampFiniteNumber } from 'util/number_util.js';
 
 const ANIMATOR_POOL_WARMUP_COUNT = 500;
+const DEFAULT_UI_ANIMATION_DURATION_SCALE = 1;
+const MIN_UI_ANIMATION_DURATION_SCALE = 0.1;
+const MAX_UI_ANIMATION_DURATION_SCALE = 4;
 
 let animationSystemInstance = null;
 
@@ -65,11 +72,22 @@ const INVALID_ANIMATION_HANDLE = Object.freeze({
  * @description 애니메이션 생성/업데이트/제거와 객체 풀 워밍업을 담당하는 시스템입니다.
  */
 export class AnimationSystem {
-    constructor() {
+    #getUiAnimationDurationScale;
+    #resolvedUiAnimationDurationScale;
+
+    /**
+     * @param {object} [options={}] - 애니메이션 런타임 의존성입니다.
+     * @param {()=>number} [options.getUiAnimationDurationScale] - 현재 UI duration scale resolver입니다.
+     */
+    constructor(options = {}) {
         animationSystemInstance = this;
         this.idCounter = 0;
         this.animationsById = new Map();
         this.activeAnimations = [];
+        this.#getUiAnimationDurationScale = typeof options?.getUiAnimationDurationScale === 'function'
+            ? options.getUiAnimationDurationScale
+            : null;
+        this.#resolvedUiAnimationDurationScale = DEFAULT_UI_ANIMATION_DURATION_SCALE;
     }
 
     async init() {
@@ -81,10 +99,14 @@ export class AnimationSystem {
      * @param {object} [options={}] - 업데이트 옵션
      * @param {boolean} [options.useFixedTick=false] - 고정 틱 업데이트 모드 여부
      * @param {number} [options.delta] - 외부에서 주입하는 델타(초)
+     * UI category만 같은 update에서 한 번 해석한 duration scale로 base delta를 나눕니다.
      */
     update(options = {}) {
         const useFixedTick = options.useFixedTick === true;
-        const delta = this.#resolveUpdateDelta(options.delta, useFixedTick);
+        const baseDelta = this.#resolveUpdateDelta(options.delta, useFixedTick);
+        const uiAnimationDurationScale = this.#resolveUiAnimationDurationScale();
+        this.#resolvedUiAnimationDurationScale = uiAnimationDurationScale;
+        const uiDelta = baseDelta / uiAnimationDurationScale;
 
         // 안전한 제거를 위해 역순으로 순회
         for (let i = this.activeAnimations.length - 1; i >= 0; i--) {
@@ -99,11 +121,14 @@ export class AnimationSystem {
                 continue;
             }
 
-            if (delta <= 0) {
+            if (baseDelta <= 0) {
                 continue;
             }
 
-            anim.update(delta);
+            const animationDelta = anim.animationCategory === ANIMATION_CATEGORY.UI
+                ? uiDelta
+                : baseDelta;
+            anim.update(animationDelta);
 
             if (anim.state === ANIMATION_STATE.FINISHED) {
                 this.#removeAnimationAtIndex(i, anim);
@@ -124,11 +149,12 @@ export class AnimationSystem {
     /**
      * 단일 변수에 대한 표준 애니메이션을 생성합니다.
      * @param {object} owner - 애니메이션 대상 객체
-     * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type, useFixedTick 등)
+     * @param {object} properties - animationCategory와 variable을 포함하는 애니메이션 속성입니다.
      * @returns {{id:number,promise:Promise,retarget:(properties:object,speedEasing?:boolean)=>boolean,remove:()=>void,isActive:()=>boolean}} 풀 객체와 분리된 표준 animation handle입니다.
      */
     animate(owner, properties) {
-        if (!this.#validateProperties(properties, ['variable'])) {
+        if (!this.#validateProperties(properties, ['variable'])
+            || !this.#validateAnimationCategory(properties.animationCategory)) {
             return INVALID_ANIMATION_HANDLE;
         }
 
@@ -143,11 +169,23 @@ export class AnimationSystem {
         const delay = properties.delay !== undefined
             ? clampFiniteNumber(Number(properties.delay), 0, Infinity, 0)
             : 0;
+        const animationCategory = properties.animationCategory;
         const useFixedTick = properties.useFixedTick === true;
 
         // 객체 풀 사용
         const animation = standardAnimationPool.get();
-        animation.init(id, owner, variable, startValue, endValue, type, duration, delay, useFixedTick);
+        animation.init(
+            id,
+            owner,
+            variable,
+            animationCategory,
+            startValue,
+            endValue,
+            type,
+            duration,
+            delay,
+            useFixedTick
+        );
 
         this.activeAnimations.push(animation);
         this.animationsById.set(id, animation);
@@ -159,7 +197,7 @@ export class AnimationSystem {
      * 실행 중인 StandardAnimation을 현재 표시값에서 새 목표로 재지정합니다.
      * 같은 ID와 완료 Promise를 유지하며 완료·제거 대기 상태나 다른 animation 종류는 거부합니다.
      * @param {number} id - 재지정할 표준 애니메이션 ID입니다.
-     * @param {object} properties - endValue와 선택적인 duration, delay, type입니다.
+     * @param {object} properties - endValue와 선택적인 duration, delay, type, 기존과 같은 animationCategory입니다.
      * @param {boolean} [speedEasing=false] - 직전 순간 속도를 유지하는 Hermite 보간을 사용할지 여부입니다.
      * @returns {boolean} 재지정 성공 여부입니다.
      */
@@ -171,6 +209,11 @@ export class AnimationSystem {
         const animation = this.animationsById.get(id);
         if (!(animation instanceof StandardAnimation)
             || animation.state !== ANIMATION_STATE.RUNNING) {
+            return false;
+        }
+        if (Object.prototype.hasOwnProperty.call(properties, 'animationCategory')
+            && (!this.#validateAnimationCategory(properties.animationCategory)
+                || properties.animationCategory !== animation.animationCategory)) {
             return false;
         }
 
@@ -200,13 +243,18 @@ export class AnimationSystem {
      * 병렬로 실행되는 혼합 애니메이션을 생성합니다.
      * @param {object} owner - 애니메이션 대상 객체
      * @param {Array} mixedDefs - 애니메이션 정의 배열
-     * @param {object} [properties={}] - 공통 속성
+     * @param {object} properties - 필수 animationCategory와 공통 속성입니다.
      * @param {boolean} [properties.useFixedTick=false] - 고정 틱 업데이트 사용 여부
      * @returns {{id:null, ids:number[], promise:Promise}} 생성된 하위 ID와 완료 Promise입니다.
      */
     animateMixed(owner, mixedDefs, properties = {}) {
         const promises = [];
         const ids = [];
+        if (!properties
+            || !this.#validateAnimationCategory(properties.animationCategory)) {
+            return { id: null, ids, promise: Promise.resolve() };
+        }
+        const animationCategory = properties.animationCategory;
         const useFixedTick = properties.useFixedTick === true;
 
         if (!Array.isArray(mixedDefs)) {
@@ -220,7 +268,14 @@ export class AnimationSystem {
 
             const subId = this.idCounter++;
             const anim = new MixedAnimation();
-            anim.init(subId, owner, def.variable, def.animations, useFixedTick);
+            anim.init(
+                subId,
+                owner,
+                def.variable,
+                animationCategory,
+                def.animations,
+                useFixedTick
+            );
 
             this.activeAnimations.push(anim);
             this.animationsById.set(subId, anim);
@@ -234,12 +289,13 @@ export class AnimationSystem {
     /**
      * 지속적인(Persistent) 애니메이션을 생성합니다.
      * @param {object} owner - 애니메이션 대상 객체
-     * @param {object} properties - 애니메이션 속성
+     * @param {object} properties - animationCategory를 포함하는 애니메이션 속성입니다.
      * @param {boolean} [properties.useFixedTick=false] - 고정 틱 업데이트 사용 여부
      * @returns {number} 애니메이션 ID
      */
     animatePersist(owner, properties) {
-        if (!this.#validateProperties(properties, ['variable', 'easings', 'duration'])) return -1;
+        if (!this.#validateProperties(properties, ['variable', 'easings', 'duration'])
+            || !this.#validateAnimationCategory(properties.animationCategory)) return -1;
 
         const id = this.idCounter++;
         const variable = properties.variable;
@@ -248,10 +304,22 @@ export class AnimationSystem {
         const easings = properties.easings;
         const duration = properties.duration;
         const onCompleteAction = properties.onCompleteAction || 'stop';
+        const animationCategory = properties.animationCategory;
         const useFixedTick = properties.useFixedTick === true;
 
         const animation = new PersistentAnimation();
-        animation.init(id, owner, variable, startValue, endValue, easings, duration, onCompleteAction, useFixedTick);
+        animation.init(
+            id,
+            owner,
+            variable,
+            animationCategory,
+            startValue,
+            endValue,
+            easings,
+            duration,
+            onCompleteAction,
+            useFixedTick
+        );
 
         this.activeAnimations.push(animation);
         this.animationsById.set(id, animation);
@@ -350,6 +418,16 @@ export class AnimationSystem {
     }
 
     /**
+     * 애니메이션 생성 또는 retarget 요청의 카테고리를 검증합니다.
+     * @param {*} animationCategory - 검증할 카테고리 ID입니다.
+     * @returns {boolean} 지원되는 카테고리이면 true입니다.
+     * @private
+     */
+    #validateAnimationCategory(animationCategory) {
+        return isAnimationCategory(animationCategory);
+    }
+
+    /**
      * 주입된 델타 또는 현재 프레임 델타를 애니메이션 갱신에 사용할 값으로 정규화합니다.
      * @param {number|undefined} injectedDelta - 외부에서 주입한 델타입니다.
      * @param {boolean} useFixedTick - 고정 틱 델타 사용 여부입니다.
@@ -365,12 +443,48 @@ export class AnimationSystem {
         const frameDelta = useFixedTick ? getFixedDelta() : getDelta();
         return clampFiniteNumber(frameDelta, 0, Infinity, 0);
     }
+
+    /**
+     * 현재 UI duration scale을 한 번 읽어 안전한 런타임 범위로 정규화합니다.
+     * @returns {number} 0.1 이상 4 이하의 UI duration scale입니다.
+     * @private
+     */
+    #resolveUiAnimationDurationScale() {
+        if (!this.#getUiAnimationDurationScale) {
+            return DEFAULT_UI_ANIMATION_DURATION_SCALE;
+        }
+
+        let scale;
+        try {
+            scale = this.#getUiAnimationDurationScale();
+        } catch (error) {
+            return DEFAULT_UI_ANIMATION_DURATION_SCALE;
+        }
+
+        if (typeof scale !== 'number' || !Number.isFinite(scale)) {
+            return DEFAULT_UI_ANIMATION_DURATION_SCALE;
+        }
+        return Math.min(
+            MAX_UI_ANIMATION_DURATION_SCALE,
+            Math.max(MIN_UI_ANIMATION_DURATION_SCALE, scale)
+        );
+    }
+
+    /**
+     * 마지막 update에서 해석한 UI duration scale을 반환합니다.
+     * @returns {number} 안전한 UI duration scale입니다.
+     */
+    getResolvedUiAnimationDurationScale() {
+        return this.#resolvedUiAnimationDurationScale;
+    }
 }
+
+export { ANIMATION_CATEGORY };
 
 /**
  * 단일 변수에 대한 표준 애니메이션을 실행합니다.
  * @param {object} owner - 애니메이션 대상 객체
- * @param {object} properties - 애니메이션 속성 (variable, startValue, endValue, duration, type, useFixedTick 등)
+ * @param {object} properties - animationCategory와 variable을 포함하는 애니메이션 속성입니다.
  * @returns {{id:number,promise:Promise,retarget:(properties:object,speedEasing?:boolean)=>boolean,remove:()=>void,isActive:()=>boolean}} 풀 객체와 분리된 표준 animation handle입니다.
  */
 export const animate = (owner, properties) => animationSystemInstance.animate(owner, properties);
@@ -378,7 +492,7 @@ export const animate = (owner, properties) => animationSystemInstance.animate(ow
 /**
  * 가장 최근 AnimationSystem의 실행 중인 표준 애니메이션을 현재 값에서 새 목표로 재지정합니다.
  * @param {number} id - 표준 애니메이션 ID입니다.
- * @param {object} properties - endValue와 선택적인 duration, delay, type입니다.
+ * @param {object} properties - endValue와 선택적인 duration, delay, type, 기존과 같은 animationCategory입니다.
  * @param {boolean} [speedEasing=false] - 직전 순간 속도를 유지하는 Hermite 보간을 사용할지 여부입니다.
  * @returns {boolean} 재지정 성공 여부입니다.
  */
@@ -390,7 +504,7 @@ export const retarget = (id, properties, speedEasing = false) => (
  * 여러 변수에 대한 혼합(병렬) 애니메이션을 실행합니다.
  * @param {object} owner - 애니메이션 대상 객체
  * @param {Array} mixedDefs - 각 변수별 애니메이션 정의 배열
- * @param {object} [properties={}] - 공통 애니메이션 속성
+ * @param {object} properties - 필수 animationCategory와 공통 애니메이션 속성입니다.
  * @returns {{id:null, ids:number[], promise:Promise}} 하위 애니메이션 ID와 전체 완료 Promise입니다.
  */
 export const animateMixed = (owner, mixedDefs, properties = {}) => animationSystemInstance.animateMixed(owner, mixedDefs, properties);
@@ -398,7 +512,7 @@ export const animateMixed = (owner, mixedDefs, properties = {}) => animationSyst
 /**
  * 지속형 애니메이션을 등록합니다. forward()/backward()로 재생 방향을 제어할 수 있습니다.
  * @param {object} owner - 애니메이션 대상 객체
- * @param {object} properties - 애니메이션 속성
+ * @param {object} properties - animationCategory를 포함하는 애니메이션 속성입니다.
  * @returns {number} 애니메이션 ID
  */
 export const animatePersist = (owner, properties) => animationSystemInstance.animatePersist(owner, properties);
@@ -431,3 +545,13 @@ export const forward = (id, duration, speed = 1, cancelOldProgress = false) => a
  * @returns {void}
  */
 export const backward = (id, duration, speed = 1, cancelOldProgress = false) => animationSystemInstance.backward(id, duration, speed, cancelOldProgress);
+
+/**
+ * 가장 최근 AnimationSystem update가 해석한 UI duration scale을 반환합니다.
+ * AnimationSystem 생성 전에는 authored duration과 같은 1을 반환합니다.
+ * @returns {number} 안전한 UI duration scale입니다.
+ */
+export const getResolvedUiAnimationDurationScale = () => (
+    animationSystemInstance?.getResolvedUiAnimationDurationScale()
+    ?? DEFAULT_UI_ANIMATION_DURATION_SCALE
+);

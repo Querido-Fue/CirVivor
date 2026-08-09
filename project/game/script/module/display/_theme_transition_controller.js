@@ -1,4 +1,4 @@
-import { animate, remove } from 'animation/animation_system.js';
+import { ANIMATION_CATEGORY, animate, remove } from 'animation/animation_system.js';
 import { colorUtil } from 'util/color_util.js';
 
 const THEME_TRANSITION_DATA = Object.freeze({
@@ -89,6 +89,7 @@ export class ThemeTransitionController {
         this.active = true;
 
         const animation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.EFFECT,
             variable: 'alpha',
             startValue: startAlpha,
             endValue: THEME_TRANSITION_DATA.END_ALPHA,

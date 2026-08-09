@@ -1,4 +1,4 @@
-import { animate, remove } from 'animation/animation_system.js';
+import { ANIMATION_CATEGORY, animate, remove } from 'animation/animation_system.js';
 import { beginPerformanceSection, endPerformanceSection } from 'debug/debug_system.js';
 import { getWH, getUIWW, getWW, render, shadowOff, shadowOn } from 'display/display_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
@@ -401,6 +401,7 @@ export class BaseOverlay {
         const presentationAnimationToken = this.#presentationAnimationToken;
 
         const alphaAnimation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: 'alpha',
             startValue: options.alphaStart,
             endValue: options.alphaEnd,
@@ -408,6 +409,7 @@ export class BaseOverlay {
             duration: options.alphaDuration
         });
         const dimAnimation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: 'dimAlpha',
             startValue: options.dimStart,
             endValue: options.dimEnd,
@@ -415,6 +417,7 @@ export class BaseOverlay {
             duration: options.alphaDuration
         });
         const scaleAnimation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: 'contentScale',
             startValue: options.scaleStart,
             endValue: options.scaleEnd,
@@ -422,6 +425,7 @@ export class BaseOverlay {
             duration: options.scaleDuration
         });
         const blurAnimation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: 'contentBlur',
             startValue: options.blurStart,
             endValue: options.blurEnd,

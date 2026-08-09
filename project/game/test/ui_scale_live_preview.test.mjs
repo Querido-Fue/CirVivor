@@ -256,7 +256,9 @@ const dependencies = new Map([
     ['save/save_system.js', createSyntheticModule(context, {
         previewSettingBatch: (settings) => memoryPreviewCalls.push({ ...settings }),
         setSettingBatch: async (settings) => { fileSaveCalls.push({ ...settings }); },
-        getSettingSchema: () => ({ min: 50, max: 200 })
+        getSettingSchema: (key) => key === 'tooltipDelaySeconds'
+            ? { min: 0, max: 2, step: 0.01, precision: 2 }
+            : { min: 50, max: 200 }
     })],
     ['ui/layout/_layout_handler.js', createSyntheticModule(context, { LayoutHandler: LayoutHandlerStub })],
     ['ui/_ui_pool.js', createSyntheticModule(context, { releaseUIItem })],
@@ -314,6 +316,9 @@ const titleScene = {
 overlay = new SettingsOverlay(titleScene);
 
 overlay.resize();
+assert.equal(overlay.settingComponents.control_tooltipDelaySeconds.min, 0);
+assert.equal(overlay.settingComponents.control_tooltipDelaySeconds.max, 2);
+assert.equal(overlay.settingComponents.control_tooltipDelaySeconds.step, 0.01);
 const retainedRenderSlider = overlay.settingComponents.control_renderScale;
 retainedRenderSlider.value = 125;
 retainedRenderSlider.displayValue = 117;
@@ -346,6 +351,21 @@ assert.deepEqual(runtimeCalls, [{ disableTransparency: true }]);
 assert.strictEqual(overlay.settingComponents.control_disableTransparency, retainedTransparencyToggle);
 assert.equal(retainedTransparencyToggle.reconcileCount, 1);
 assert.equal(releasedItems.includes(retainedTransparencyToggle), false);
+
+runtimeCalls.length = 0;
+memoryPreviewCalls.length = 0;
+releasedItems.length = 0;
+const retainedTooltipSlider = overlay.settingComponents.control_tooltipDelaySeconds;
+retainedTooltipSlider.value = 0.27;
+retainedTooltipSlider.displayValue = 0.27;
+retainedTooltipSlider.onChange(0.27);
+await new Promise((resolve) => setImmediate(resolve));
+assert.deepEqual(memoryPreviewCalls, [{ tooltipDelaySeconds: 0.27 }]);
+assert.deepEqual(runtimeCalls, [{ tooltipDelaySeconds: 0.27 }]);
+assert.strictEqual(overlay.settingComponents.control_tooltipDelaySeconds, retainedTooltipSlider);
+assert.equal(retainedTooltipSlider.displayValue, 0.27);
+assert.equal(retainedTooltipSlider.reconcileCount ?? 0, 0);
+assert.equal(releasedItems.includes(retainedTooltipSlider), false);
 
 overlay.tempSettings.renderScale = 100;
 runtimeCalls.length = 0;
@@ -399,15 +419,32 @@ assert.deepEqual(
         options: { duration: 0.4, easing: 'easeOutExpo', notify: false }
     }
 );
+assert.deepEqual(
+    rollbackAnimations.find(({ id }) => id === 'control_tooltipDelaySeconds'),
+    {
+        id: 'control_tooltipDelaySeconds',
+        value: 0.5,
+        options: { duration: 0.4, easing: 'easeOutExpo', notify: false }
+    }
+);
 assert.deepEqual(memoryPreviewCalls.at(-1), { uiScale: 87 });
 overlay.onCloseComplete();
 await new Promise((resolve) => setImmediate(resolve));
 await new Promise((resolve) => setImmediate(resolve));
-assert.deepEqual(memoryPreviewCalls.at(-1), { uiScale: 100, disableTransparency: false });
-assert.deepEqual(runtimeCalls.at(-1), { uiScale: 100, disableTransparency: false });
+assert.deepEqual(memoryPreviewCalls.at(-1), {
+    uiScale: 100,
+    disableTransparency: false,
+    tooltipDelaySeconds: 0.5
+});
+assert.deepEqual(runtimeCalls.at(-1), {
+    uiScale: 100,
+    disableTransparency: false,
+    tooltipDelaySeconds: 0.5
+});
 
 const saveOverlay = new SettingsOverlay(titleScene);
 saveOverlay.resize();
+const writesBeforeUnchangedSave = fileSaveCalls.length;
 await Promise.all([
     saveOverlay.settingComponents.save_btn.onClick(),
     saveOverlay.settingComponents.save_btn.onClick()
@@ -415,6 +452,18 @@ await Promise.all([
 assert.equal(saveOverlay.interactionsLocked, true);
 assert.equal(saveOverlay.interactionLockAttempts, 2);
 assert.equal(saveOverlay.closeCalls, 1);
+assert.equal(fileSaveCalls.length, writesBeforeUnchangedSave);
+
+const tooltipSaveOverlay = new SettingsOverlay(titleScene);
+overlay = tooltipSaveOverlay;
+tooltipSaveOverlay.resize();
+tooltipSaveOverlay.settingComponents.control_tooltipDelaySeconds.onChange(0.27);
+await new Promise((resolve) => setImmediate(resolve));
+await tooltipSaveOverlay.save();
+assert.deepEqual(fileSaveCalls.at(-1), {
+    tooltipDelaySeconds: 0.27,
+    screenModeChanged: false
+});
 
 assert.match(baseOverlaySource, /const runtimeUiScale = Number\(changedSettings\.uiScale\) \/ 100;/);
 assert.match(baseOverlaySource, /Number\.isFinite\(runtimeUiScale\) && runtimeUiScale > 0/);
@@ -437,5 +486,6 @@ assert.doesNotMatch(
     settingsSource,
     /onCommit\(\(val\) => \{ this\.#handleSettingInput\('(tooltipDelaySeconds|bgmVolume|sfxVolume)'/
 );
+assert.doesNotMatch(settingsSource, /control_uiAnimationDurationScale/);
 
 console.log('ui scale live preview contract: ok');

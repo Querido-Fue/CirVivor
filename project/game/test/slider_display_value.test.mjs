@@ -15,7 +15,15 @@ const mouse = {
 };
 const renderCalls = [];
 const animations = [];
+const keyboardPresses = new Set();
 let nextAnimationId = 1;
+const ANIMATION_CATEGORY = Object.freeze({
+    UI: 'ui'
+});
+const INPUT_ACTION_IDS = Object.freeze({
+    MOVE_LEFT: 'moveLeft',
+    MOVE_RIGHT: 'moveRight'
+});
 
 class BaseUIElementStub {
     constructor(properties = {}) {
@@ -109,7 +117,11 @@ const dependencies = new Map([
         getMouseInput: (axis) => mouse[axis],
         getMouseFocus: () => ['ui'],
         hasMouseState: (_button, state) => state === 'click' && mouse.click,
-        isMousePressing: () => mouse.pressing
+        isMousePressing: () => mouse.pressing,
+        consumeKeyboardPress: (actionId) => keyboardPresses.delete(actionId)
+    })],
+    ['input/_input_binding_constants.js', createSyntheticModule(context, {
+        INPUT_ACTION_IDS
     })],
     ['display/_theme_handler.js', createSyntheticModule(context, {
         ColorSchemes: {
@@ -124,7 +136,11 @@ const dependencies = new Map([
             }
         }
     })],
-    ['animation/animation_system.js', createSyntheticModule(context, { animate, remove })],
+    ['animation/animation_system.js', createSyntheticModule(context, {
+        ANIMATION_CATEGORY,
+        animate,
+        remove
+    })],
     ['util/color_util.js', createSyntheticModule(context, {
         colorUtil: () => ({ lerpColor: (start) => start })
     })],
@@ -191,6 +207,7 @@ mouse.click = false;
 assert.equal(slider.value, 80);
 assert.deepEqual(changedValues, [80]);
 assert.deepEqual({ ...animations[0].properties }, {
+    animationCategory: ANIMATION_CATEGORY.UI,
     variable: 'displayValue',
     startValue: 'current',
     endValue: 80,
@@ -238,6 +255,7 @@ const rollbackAnimation = animations.at(-1);
 assert.equal(slider.value, 20);
 assert.equal(slider.dragging, false);
 assert.deepEqual({ ...rollbackAnimation.properties }, {
+    animationCategory: ANIMATION_CATEGORY.UI,
     variable: 'displayValue',
     startValue: 'current',
     endValue: 20,
@@ -247,5 +265,105 @@ assert.deepEqual({ ...rollbackAnimation.properties }, {
 rollbackAnimation.finish();
 await rollbackPromise;
 assert.equal(slider.displayValue, 20);
+
+for (const [input, expected] of [
+    [0.005, 0.01],
+    [0.015, 0.02],
+    [0.345, 0.35]
+]) {
+    const midpointSlider = new SliderElement({
+        min: 0,
+        max: 2,
+        step: 0.01,
+        value: input
+    });
+    assert.equal(midpointSlider.value, expected, `${input}`);
+    assert.equal(midpointSlider.displayValue, expected, `${input}`);
+}
+
+const precisionChanges = [];
+const precisionCommits = [];
+const precisionSlider = new SliderElement({
+    id: 'tooltip-delay',
+    layer: 'ui',
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 20,
+    trackHeight: 4,
+    knobRadius: 2,
+    min: 0,
+    max: 2,
+    step: 0.01,
+    value: 0.3,
+    onChange: (value) => precisionChanges.push(value),
+    onCommit: (value) => precisionCommits.push(value)
+});
+
+mouse.x = 13.5;
+mouse.y = 8;
+mouse.pressing = true;
+mouse.click = true;
+precisionSlider.update();
+mouse.click = false;
+assert.equal(precisionSlider.value, 0.27);
+assert.deepEqual(precisionChanges, [0.27]);
+
+const precisionDisplayAnimation = animations.at(-1);
+mouse.x = 14;
+precisionSlider.update();
+assert.equal(precisionSlider.value, 0.28);
+assert.deepEqual(precisionChanges, [0.27, 0.28]);
+assert.deepEqual(precisionDisplayAnimation.retargets, [{
+    endValue: 0.28,
+    duration: 0.2,
+    type: 'easeOutExpo'
+}]);
+
+const precisionSettle = precisionSlider.waitForDisplayValueSettle();
+precisionDisplayAnimation.finish();
+await precisionSettle;
+assert.equal(precisionSlider.displayValue, 0.28);
+
+mouse.pressing = false;
+precisionSlider.update();
+assert.deepEqual(precisionCommits, [0.28]);
+
+const precisionRollback = precisionSlider.animateToValue(0.27, {
+    duration: 0.4,
+    easing: 'easeOutExpo'
+});
+const precisionRollbackAnimation = animations.at(-1);
+assert.equal(precisionSlider.value, 0.27);
+assert.equal(precisionRollbackAnimation.properties.endValue, 0.27);
+precisionRollbackAnimation.finish();
+await precisionRollback;
+assert.equal(precisionSlider.displayValue, 0.27);
+
+mouse.x = 13.5;
+mouse.y = 8;
+mouse.pressing = false;
+mouse.click = false;
+keyboardPresses.add(INPUT_ACTION_IDS.MOVE_RIGHT);
+precisionSlider.update();
+assert.equal(precisionSlider.value, 0.28);
+assert.deepEqual(precisionChanges, [0.27, 0.28, 0.28]);
+assert.deepEqual(precisionCommits, [0.28, 0.28]);
+const keyboardIncrementAnimation = animations.at(-1);
+assert.equal(keyboardIncrementAnimation.properties.endValue, 0.28);
+keyboardIncrementAnimation.finish();
+await precisionSlider.waitForDisplayValueSettle();
+assert.equal(precisionSlider.displayValue, 0.28);
+
+keyboardPresses.add(INPUT_ACTION_IDS.MOVE_LEFT);
+precisionSlider.update();
+assert.equal(precisionSlider.value, 0.27);
+assert.deepEqual(precisionChanges, [0.27, 0.28, 0.28, 0.27]);
+assert.deepEqual(precisionCommits, [0.28, 0.28, 0.27]);
+const keyboardDecrementAnimation = animations.at(-1);
+assert.equal(keyboardDecrementAnimation.properties.endValue, 0.27);
+keyboardDecrementAnimation.finish();
+await precisionSlider.waitForDisplayValueSettle();
+assert.equal(precisionSlider.displayValue, 0.27);
 
 console.log('slider display value contract: ok');

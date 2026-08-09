@@ -111,7 +111,7 @@ export class GameSystem {
     /**
      * @param {object} dependencies - 엔진 adapter로부터 주입된 의존성입니다.
      * @param {{isPressed:(actionId:string)=>boolean,getPointerPosition:(out:{x:number,y:number})=>{x:number,y:number},isPrimaryPointerPressed:()=>boolean,getWheelTotals:(out:object)=>object}} dependencies.inputActionSource - 의미 입력 소스입니다.
-     * @param {{animate:(owner:object,properties:object)=>object}} dependencies.animationPort - 표현 애니메이션 포트입니다.
+     * @param {{animate:(owner:object,properties:{animationCategory:string})=>object}} dependencies.animationPort - 카테고리 포함 속성을 받는 표현 애니메이션 포트입니다.
      * @param {{getDelta?:()=>number,getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
      * @param {{draw?:(status:object,viewport:object)=>boolean,destroy?:()=>void,createSession?:()=>object}} [dependencies.gameplayStatusRenderPort] - read-only gameplay status 표현 포트 또는 session factory입니다.

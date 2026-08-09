@@ -1,5 +1,5 @@
 import { render, renderGL } from 'display/display_system.js';
-import { animate, remove } from 'animation/animation_system.js';
+import { ANIMATION_CATEGORY, animate, remove } from 'animation/animation_system.js';
 import { resolveOverlayContentSurfaceStyles } from 'display/webgl/_overlay_render_geometry.js';
 import { OVERLAY_RENDER_CONSTANTS } from 'display/webgl/_webgl_constants.js';
 import { clampFiniteNumber, clampNumber } from 'util/number_util.js';
@@ -264,6 +264,7 @@ export class OverlaySession {
         }
 
         const animation = animate(this, {
+            animationCategory: ANIMATION_CATEGORY.UI,
             variable: 'glassMix',
             startValue: 'current',
             endValue: nextGlassTarget,

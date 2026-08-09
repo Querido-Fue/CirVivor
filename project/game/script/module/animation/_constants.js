@@ -50,6 +50,27 @@ export const OVERFLOW_TYPES = Object.freeze([
 ]);
 
 /**
+ * 애니메이션이 사용하는 시간 축의 의미를 나타내는 안정적인 카테고리 ID입니다.
+ * @type {Readonly<{UI:string, GAME_MECHANIC:string, EFFECT:string}>}
+ */
+export const ANIMATION_CATEGORY = Object.freeze({
+    UI: 'ui',
+    GAME_MECHANIC: 'game-mechanic',
+    EFFECT: 'effect'
+});
+
+/**
+ * 값이 지원되는 애니메이션 카테고리 ID인지 확인합니다.
+ * @param {*} value - 확인할 값입니다.
+ * @returns {boolean} 지원되는 카테고리이면 true입니다.
+ */
+export function isAnimationCategory(value) {
+    return value === ANIMATION_CATEGORY.UI
+        || value === ANIMATION_CATEGORY.GAME_MECHANIC
+        || value === ANIMATION_CATEGORY.EFFECT;
+}
+
+/**
  * 애니메이션의 현재 실행 상태를 나타내는 열거형 상수
  * @type {Readonly<{IDLE:number, RUNNING:number, PAUSED:number, FINISHED:number}>}
  */

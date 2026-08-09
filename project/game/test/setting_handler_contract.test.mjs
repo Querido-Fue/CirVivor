@@ -47,7 +47,16 @@ const SETTING_DEFINITIONS = Object.freeze({
         type: 'int', defaultValue: 100, min: 75, max: 150, hidden: false
     }),
     tooltipDelaySeconds: Object.freeze({
-        type: 'float', defaultValue: 0.3, min: 0, max: 2, hidden: false
+        type: 'float',
+        defaultValue: 0.3,
+        min: 0,
+        max: 2,
+        step: 0.01,
+        precision: 2,
+        hidden: false
+    }),
+    uiAnimationDurationScale: Object.freeze({
+        type: 'float', defaultValue: 1, min: 0.1, max: 4, hidden: true
     }),
     bgmVolume: Object.freeze({
         type: 'int', defaultValue: 25, min: 0, max: 100, hidden: false
@@ -277,6 +286,10 @@ test('constructor preserves runtime schema defaults and coercion rules', async (
     assert.equal(handler.filePath, harness.filePath);
     assert.equal(handler.get('language'), 'korean');
     assert.equal(handler.getSchema('uiScale'), handler.schema.uiScale);
+    assert.equal(handler.getSchema('tooltipDelaySeconds').defaultValue, 0.3);
+    assert.equal(handler.getSchema('tooltipDelaySeconds').step, 0.01);
+    assert.equal(handler.getSchema('tooltipDelaySeconds').precision, 2);
+    assert.equal(handler.get('uiAnimationDurationScale'), 1);
     assert.deepEqual(eventNames(harness.trace), ['math-constructor']);
 
     handler.previewBatch({
@@ -294,10 +307,36 @@ test('constructor preserves runtime schema defaults and coercion rules', async (
     assert.equal(handler.get('height'), 900);
     assert.equal(handler.get('renderScale'), 100);
     assert.equal(handler.get('uiScale'), 100);
-    assert.equal(handler.get('tooltipDelaySeconds'), 0.3);
+    assert.equal(handler.get('tooltipDelaySeconds'), 0.26);
     assert.equal(handler.get('disableTransparency'), true);
     assert.equal(handler.get('windowMode'), 'fullscreen');
     assert.equal(handler.get('language'), 'english');
+
+    for (const [input, expected] of [
+        [-1, 0],
+        [0.004, 0],
+        [0.005, 0.01],
+        [0.014, 0.01],
+        [0.015, 0.02],
+        [0.345, 0.35],
+        [2.001, 2]
+    ]) {
+        handler.previewBatch({ tooltipDelaySeconds: input });
+        assert.equal(handler.get('tooltipDelaySeconds'), expected, `${input}`);
+    }
+
+    handler.previewBatch({ tooltipDelaySeconds: 0.27 });
+    handler.previewBatch({ tooltipDelaySeconds: Number.NaN });
+    assert.equal(handler.get('tooltipDelaySeconds'), 0.27);
+
+    handler.previewBatch({ uiAnimationDurationScale: 'invalid' });
+    assert.equal(handler.get('uiAnimationDurationScale'), 1);
+    handler.previewBatch({ uiAnimationDurationScale: 0 });
+    assert.equal(handler.get('uiAnimationDurationScale'), 0.1);
+    handler.previewBatch({ uiAnimationDurationScale: 5 });
+    assert.equal(handler.get('uiAnimationDurationScale'), 4);
+    handler.previewBatch({ uiAnimationDurationScale: 0.5 });
+    assert.equal(handler.get('uiAnimationDurationScale'), 0.5);
 
     const inheritedSettings = Object.create({ bgmVolume: 80 });
     handler.previewBatch(inheritedSettings);
@@ -341,8 +380,10 @@ test('init migrates legacy values, retains loaded hidden keys, saves, then appli
     const persisted = readPersistedSettings(harness);
     assert.equal(persisted.theme, 'light');
     assert.equal(persisted.windowMode, 'fullscreen');
-    assert.equal(persisted.tooltipDelaySeconds, 0.3);
+    assert.equal(persisted.tooltipDelaySeconds, 0.26);
     assert.equal(persisted.debugMode, false);
+    assert.equal(handler.get('uiAnimationDurationScale'), 1);
+    assert.equal('uiAnimationDurationScale' in persisted, false);
     assert.equal('screenModeChanged' in persisted, false);
     for (const legacyKey of [
         'darkMode',
@@ -372,9 +413,42 @@ test('missing settings file saves public defaults before applying the default th
     assert.equal(persisted.theme, 'dark');
     assert.equal('screenModeChanged' in persisted, false);
     assert.equal('debugMode' in persisted, false);
+    assert.equal('uiAnimationDurationScale' in persisted, false);
     const significantEvents = harness.trace
         .filter(([name]) => name === 'write' || name === 'theme');
     assert.deepEqual(eventNames(significantEvents), ['write', 'theme']);
+});
+
+test('tooltip precision previews without I/O, saves canonical numbers, and reloads legacy 0.3', async () => {
+    const harness = await createHarness();
+    const handler = new harness.SettingHandler(harness.dataDir);
+
+    harness.trace.length = 0;
+    handler.previewBatch({ tooltipDelaySeconds: 0.27 });
+    assert.equal(handler.get('tooltipDelaySeconds'), 0.27);
+    assert.equal(harness.trace.some(([name]) => name === 'write'), false);
+
+    await handler.setBatch({ tooltipDelaySeconds: 0.27 });
+    assert.equal(readPersistedSettings(harness).tooltipDelaySeconds, 0.27);
+
+    const reloadedHandler = new harness.SettingHandler(harness.dataDir);
+    harness.trace.length = 0;
+    await reloadedHandler.init();
+    assert.equal(reloadedHandler.get('tooltipDelaySeconds'), 0.27);
+    assert.equal(harness.trace.some(([name]) => name === 'write'), false);
+
+    const legacyHarness = await createHarness();
+    const legacyHandler = new legacyHarness.SettingHandler(legacyHarness.dataDir);
+    legacyHarness.files.set(
+        legacyHarness.filePath,
+        JSON.stringify(createCompletePublicSettings(legacyHandler, {
+            tooltipDelaySeconds: 0.3
+        }))
+    );
+    legacyHarness.trace.length = 0;
+    await legacyHandler.init();
+    assert.equal(legacyHandler.get('tooltipDelaySeconds'), 0.3);
+    assert.equal(legacyHarness.trace.some(([name]) => name === 'write'), false);
 });
 
 test('load re-reads the live filePath after its deferred existence check', async () => {
@@ -423,6 +497,7 @@ test('load re-reads the live filePath after its deferred existence check', async
     );
     assert.equal(handler.get('theme'), 'light');
     assert.equal(handler.get('width'), 1777);
+    assert.equal(handler.get('uiAnimationDurationScale'), 1);
     assert.equal(harness.trace.some(([name]) => name === 'write'), false);
 });
 
@@ -542,9 +617,10 @@ test('hidden persistence state is owned by explicit load/set history, not previe
     const harness = await createHarness();
     const handler = new harness.SettingHandler(harness.dataDir);
 
-    handler.previewBatch({ debugMode: true });
+    handler.previewBatch({ debugMode: true, uiAnimationDurationScale: 2 });
     await handler.save();
     assert.equal('debugMode' in readPersistedSettings(harness), false);
+    assert.equal('uiAnimationDurationScale' in readPersistedSettings(harness), false);
 
     const writesBeforeUnknownSet = harness.trace.filter(([name]) => name === 'write').length;
     await handler.set('unknownSetting', 1);
@@ -562,9 +638,40 @@ test('hidden persistence state is owned by explicit load/set history, not previe
     await handler.set('debugMode', false);
     assert.equal(readPersistedSettings(harness).debugMode, false);
 
+    await handler.setBatch({ uiAnimationDurationScale: 2 });
+    assert.equal(readPersistedSettings(harness).uiAnimationDurationScale, 2);
+
+    const reloadedHandler = new harness.SettingHandler(harness.dataDir);
+    harness.trace.length = 0;
+    await reloadedHandler.init();
+    assert.equal(reloadedHandler.get('uiAnimationDurationScale'), 2);
+    assert.equal(harness.trace.some(([name]) => name === 'write'), false);
+
     handler.previewBatch({ debugMode: true });
     await handler.save();
     assert.equal(readPersistedSettings(harness).debugMode, true);
+});
+
+test('loaded malformed UI animation scale falls back safely and stays hidden', async () => {
+    const harness = await createHarness();
+    const handler = new harness.SettingHandler(harness.dataDir);
+    harness.files.set(
+        harness.filePath,
+        JSON.stringify({
+            ...createCompletePublicSettings(handler),
+            uiAnimationDurationScale: 'malformed'
+        })
+    );
+
+    harness.trace.length = 0;
+    await handler.init();
+
+    assert.equal(handler.get('uiAnimationDurationScale'), 1);
+    assert.equal(handler.getSchema('uiAnimationDurationScale').hidden, true);
+    assert.equal(harness.trace.some(([name]) => name === 'write'), false);
+
+    await handler.save();
+    assert.equal(readPersistedSettings(harness).uiAnimationDurationScale, 1);
 });
 
 test('theme transition and application happen before persistence while unrelated settings do not transition', async () => {

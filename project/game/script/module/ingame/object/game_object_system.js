@@ -38,8 +38,15 @@ import {
     GPU_TOWER_WORLD_KIND_ID,
     createGpuTowerSpawnIntent
 } from './tower/gpu_tower_spawn_adapter.js';
+import {
+    TowerCoreCameraFollowTarget
+} from './tower_core_camera_follow_target.js';
 
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
+const REPLACEMENT_GPU_ENDPOINT_INITIALIZED_STATES = new Set([
+    'gpu-deferred',
+    'gpu-ready'
+]);
 
 function syncWorldViewport(target, source = {}) {
     const ww = Number(source.ww);
@@ -240,7 +247,15 @@ export class GameObjectSystem {
                     });
                 this.playerControllables.push(this.primaryProjectileController);
             }
-            this.cameraFollowTarget = assertCameraFollowTarget2D(this.tower);
+            this.cameraFollowTarget = assertCameraFollowTarget2D(
+                this.towerCombatRoster
+                    ? new TowerCoreCameraFollowTarget({
+                        tower: this.tower,
+                        core: this.core,
+                        towerCombatRoster: this.towerCombatRoster
+                    })
+                    : this.tower
+            );
             this.#armGpuWorldActors(this.lastCompletedEnemyFixedTick);
         } else {
             this.tileCollisionResolver = new TileMapCollisionResolver(this.tileMap);
@@ -631,8 +646,14 @@ export class GameObjectSystem {
                     fixedTickOffset: this.lastCompletedEnemyFixedTick
                 })
                 : null;
-            if (replacementEndpoint.init(this.tileMap) !== true) {
-                throw new Error('replacement GPU endpoint 초기화가 완료되지 않았습니다.');
+            replacementEndpoint.init(this.tileMap);
+            const replacementState = replacementEndpoint.getRuntimeState();
+            if (!REPLACEMENT_GPU_ENDPOINT_INITIALIZED_STATES.has(
+                replacementState
+            ) || replacementEndpoint.requiresRecovery()) {
+                throw new Error(
+                    `replacement GPU endpoint 초기화가 완료되지 않았습니다: ${replacementState}`
+                );
             }
             if (replacementWaveDirector
                 && replacementWaveDirector.init(this.tileMap) !== true) {
@@ -710,9 +731,12 @@ export class GameObjectSystem {
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = false;
+        if (this.cameraFollowTarget !== this.tower) {
+            this.cameraFollowTarget?.destroy?.();
+        }
+        this.cameraFollowTarget = null;
         this.tower?.destroy();
         this.tower = null;
-        this.cameraFollowTarget = null;
         this.core?.destroy();
         this.core = null;
         this.tileCollisionResolver = null;

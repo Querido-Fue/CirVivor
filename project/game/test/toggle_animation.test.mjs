@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ UI: 'ui' });
+
 const source = await readFile(
     new URL('../script/module/ui/element/_toggle.js', import.meta.url),
     'utf8'
@@ -73,7 +75,11 @@ const dependencies = new Map([
             Active: '#0000ff', Inactive: '#808080', Knob: '#ffffff', Shadow: '#000000'
         } } }
     })],
-    ['animation/animation_system.js', createSyntheticModule(context, { animate, remove })],
+    ['animation/animation_system.js', createSyntheticModule(context, {
+        ANIMATION_CATEGORY,
+        animate,
+        remove
+    })],
     ['util/color_util.js', createSyntheticModule(context, {
         colorUtil: () => ({
             cssToRgb: (color) => color === '#0000ff'
@@ -105,6 +111,7 @@ const toggle = new ToggleElement({
 toggle.setValue(true);
 assert.deepEqual(changes, [true]);
 assert.deepEqual({ ...animations[0].properties }, {
+    animationCategory: ANIMATION_CATEGORY.UI,
     variable: 'animValue',
     startValue: 'current',
     endValue: 1,
@@ -145,6 +152,7 @@ const rollbackPromise = toggle.animateToValue(true, {
 });
 assert.deepEqual(changes, [true, false]);
 assert.deepEqual({ ...animations[2].properties }, {
+    animationCategory: ANIMATION_CATEGORY.UI,
     variable: 'animValue',
     startValue: 'current',
     endValue: 1,

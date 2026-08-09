@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ UI: 'ui' });
+
 const source = await readFile(new URL('../script/module/overlay/_overlay_session.js', import.meta.url), 'utf8');
 const renders = [];
 const created = [];
@@ -40,7 +42,11 @@ const dependencies = new Map([
         render: (layer, command) => renders.push({ type: '2d', layer, command }),
         renderGL: (layer, command) => renders.push({ type: 'webgl', layer, command })
     })],
-    ['animation/animation_system.js', createSyntheticModule(context, { animate, remove })],
+    ['animation/animation_system.js', createSyntheticModule(context, {
+        ANIMATION_CATEGORY,
+        animate,
+        remove
+    })],
     ['display/webgl/_overlay_render_geometry.js', createSyntheticModule(context, {
         resolveOverlayContentSurfaceStyles: () => ({
             transformOrigin: 'center', uiTransform: 'none', effectTransform: 'none', uiFilter: 'none', effectFilter: 'none'
@@ -103,6 +109,7 @@ assert.equal(floatingGlass.layer, 'surface-3');
 assert.equal(floatingGlass.command.sourceProvider().snapshotIdentity, 'before:surface-3');
 
 session.setDisableTransparency(true);
+assert.equal(animations.at(-1).properties.animationCategory, ANIMATION_CATEGORY.UI);
 assert.equal(session.getGlassMix(), 1);
 assert.equal(session.getGlassPanelAlpha(), 1);
 assert.equal(session.getOpaquePanelAlpha(), 0);
@@ -119,6 +126,7 @@ assert.equal(session.requiresBackdropComposite(), false);
 assert.deepEqual(released, ['surface-1', 'surface-3', 'surface-4']);
 
 session.setDisableTransparency(false);
+assert.equal(animations.at(-1).properties.animationCategory, ANIMATION_CATEGORY.UI);
 assert.equal(session.getGlassMix(), 0);
 assert.equal(session.getGlassPanelAlpha(), 1);
 assert.equal(session.getOpaquePanelAlpha(), 1);

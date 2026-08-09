@@ -17,6 +17,7 @@ export class MixedAnimation extends AnimationBase {
      * 애니메이션 상태를 초기화합니다.
      */
     reset() {
+        super.reset();
         this.animationDefs = [];
         this.baseValue = 0;
     }
@@ -26,11 +27,12 @@ export class MixedAnimation extends AnimationBase {
      * @param {number} id - 애니메이션 ID
      * @param {object} owner - 대상 객체
      * @param {string} variable - 대상 속성 이름
+     * @param {string} animationCategory - 애니메이션 시간 축 카테고리입니다.
      * @param {Array} animationDefs - 애니메이션 정의 배열
      * @param {boolean} [useFixedTick=false] - 고정 틱 업데이트 사용 여부
      */
-    init(id, owner, variable, animationDefs, useFixedTick = false) {
-        super.init(id, owner, variable, useFixedTick);
+    init(id, owner, variable, animationCategory, animationDefs, useFixedTick = false) {
+        super.init(id, owner, variable, animationCategory, useFixedTick);
         this.animationDefs = animationDefs;
 
         try {

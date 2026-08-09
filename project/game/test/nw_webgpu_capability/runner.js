@@ -66,6 +66,9 @@ import {
 } from './production/script/data/scene/game/corridor_eight_wave_01_data.js';
 import { createTileMap } from './production/script/module/ingame/map/tile_map.js';
 import {
+    WorldCamera2D
+} from './production/script/module/ingame/map/world_camera_2d.js';
+import {
     WaveDirector
 } from './production/script/module/ingame/flow/wave_director.js';
 import {
@@ -88,9 +91,15 @@ import {
     createGpuTowerSpawnIntent
 } from './production/script/module/ingame/object/tower/gpu_tower_spawn_adapter.js';
 import {
+    GpuTowerActorFacade
+} from './production/script/module/ingame/object/tower/gpu_tower_actor_facade.js';
+import {
     TOWER_COMBAT_FACT_TYPE,
     TowerCombatRoster
 } from './production/script/module/ingame/object/tower/tower_combat_roster.js';
+import {
+    TowerCoreCameraFollowTarget
+} from './production/script/module/ingame/object/tower_core_camera_follow_target.js';
 import {
     createGpuSimulationEndpoint,
     createGpuEnemySimulationEndpoint,
@@ -11982,6 +11991,22 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
         y: towerRenderCenterPixel.y + 0.5
     });
     const corePosition = tileMap.getCorePosition();
+    const cameraTowerFacade = new GpuTowerActorFacade();
+    const cameraCorePresentation = {
+        active: true,
+        position: corePosition
+    };
+    const towerCoreCameraTarget = new TowerCoreCameraFollowTarget({
+        tower: cameraTowerFacade,
+        core: cameraCorePresentation,
+        towerCombatRoster: towerRoster
+    });
+    const productionCamera = new WorldCamera2D();
+    productionCamera.init(tileMap.getWorldBounds(), {
+        ww: canvas.width,
+        wh: canvas.height
+    });
+    productionCamera.zoom = 3;
     const expectedCycle = Object.freeze([
         BASIC_SQUARE_ENEMY_DATA.id,
         BASIC_TRIANGLE_ENEMY_DATA.id,
@@ -12039,6 +12064,11 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
     let towerAlphaAfterLethal = null;
     let towerRenderExclusion = null;
     let towerPreLethalRenderCapture = null;
+    let selectedEnemyRenderBeforeDeath = null;
+    let selectedEnemyRenderAfterDeath = null;
+    let selectedEnemyRenderAfterThirtyTicks = null;
+    let productionCameraBeforeDeath = null;
+    let towerDeathCameraFallback = null;
     let towerRemovedAtDeathBoundary = false;
     let trackedDisableReceipt = null;
     let firstArcherAtTowerDeath = null;
@@ -12059,6 +12089,84 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
     let cleanup = null;
     let result = null;
     let teardown = null;
+
+    const captureSelectedEnemyRender = async (
+        handle,
+        body,
+        phase,
+        renderFrameId
+    ) => {
+        const cameraScale = 16;
+        const viewportCenter = Object.freeze({
+            x: Math.floor(canvas.width / 2) + 0.5,
+            y: Math.floor(canvas.height / 2) + 0.5
+        });
+        const viewportOrigin = Object.freeze({
+            x: viewportCenter.x - (body.position.x * cameraScale),
+            y: viewportCenter.y - (body.position.y * cameraScale)
+        });
+        const registryView = endpoint.getRegistry().copyEntityView(handle, {});
+        assert(
+            registryView?.kindId === 'enemy'
+                && endpoint.getRegistry().has(handle)
+                && endpoint.hasBody(handle),
+            `Production-wave selected Enemy exact liveness 실패: ${JSON.stringify({ phase, handle, registryView })}`
+        );
+        const drawMarksBefore = drawMarks;
+        endpoint.updatePresentation({
+            frameDelta: 0,
+            fixedDelta,
+            fixedAlpha: 1,
+            renderFrameId
+        });
+        assert(endpoint.draw({
+            worldToViewport(x, y, out) {
+                out.x = viewportOrigin.x + (x * cameraScale);
+                out.y = viewportOrigin.y + (y * cameraScale);
+                return out;
+            },
+            getScale: () => cameraScale
+        }), `Production-wave selected Enemy ${phase} render submit 실패`);
+        assert(lastFrameTexture, `Production-wave selected Enemy ${phase} texture가 없습니다.`);
+        const alpha = await readPhase5WorldAlpha(
+            device,
+            lastFrameTexture,
+            body.position,
+            cameraScale,
+            `production-wave-selected-enemy-${phase}-readback`,
+            viewportOrigin
+        );
+        const endpointStatus = endpoint.getStatus();
+        const capture = Object.freeze({
+            phase,
+            handle: Object.freeze({ ...handle }),
+            definitionId: registryView.definitionId,
+            position: Object.freeze({ ...body.position }),
+            viewportCenter,
+            viewportOrigin,
+            viewBounds: Object.freeze({
+                left: (0 - viewportOrigin.x) / cameraScale,
+                top: (0 - viewportOrigin.y) / cameraScale,
+                right: (canvas.width - viewportOrigin.x) / cameraScale,
+                bottom: (canvas.height - viewportOrigin.y) / cameraScale
+            }),
+            cameraScale,
+            drawCount: drawMarks - drawMarksBefore,
+            alpha,
+            activeEnemyCount: endpointStatus.activeEnemyCount,
+            registryHas: endpoint.getRegistry().has(handle),
+            backendHas: endpoint.hasBody(handle)
+        });
+        assert(
+            capture.drawCount === 1
+                && capture.alpha > 0
+                && capture.activeEnemyCount > 0
+                && capture.registryHas
+                && capture.backendHas,
+            `Production-wave selected Enemy ${phase} render/liveness 실패: ${JSON.stringify(capture)}`
+        );
+        return capture;
+    };
 
     try {
         const phase = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0];
@@ -12331,6 +12439,80 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                         && towerAlphaAfterLethal === 0,
                     `Production-wave dead Tower exact render exclusion 실패: ${JSON.stringify(towerRenderExclusion)}`
                 );
+                assert(
+                    cameraTowerFacade.deactivateForDeath() === true
+                        && towerCoreCameraTarget.isCameraFollowEnabled(),
+                    'Production-wave Tower death Core camera fallback 활성화 실패'
+                );
+                const fallbackPosition = towerCoreCameraTarget
+                    .copyCameraFollowPositionInto({});
+                productionCamera.centerOnWorldPoint(
+                    fallbackPosition.x,
+                    fallbackPosition.y,
+                    1
+                );
+                const fallbackCenter = productionCamera.viewportToWorld(
+                    canvas.width * 0.5,
+                    canvas.height * 0.5,
+                    {}
+                );
+                const fallbackViewBounds = {
+                    ...productionCamera.getViewBounds()
+                };
+                towerDeathCameraFallback = Object.freeze({
+                    followTargetId: towerCoreCameraTarget.cameraFollowTargetId,
+                    position: Object.freeze({ ...fallbackPosition }),
+                    center: Object.freeze({ ...fallbackCenter }),
+                    viewBounds: Object.freeze(fallbackViewBounds),
+                    zoom: productionCamera.getZoom()
+                });
+                assert(
+                    productionCameraBeforeDeath,
+                    'Production-wave pre-death production camera snapshot이 없습니다.'
+                );
+                assertNear(
+                    towerDeathCameraFallback.center.x,
+                    corePosition.x,
+                    0.000001,
+                    'Production-wave Tower death camera center.x'
+                );
+                assertNear(
+                    towerDeathCameraFallback.center.y,
+                    corePosition.y,
+                    0.000001,
+                    'Production-wave Tower death camera center.y'
+                );
+                assert(
+                    fallbackViewBounds.left <= corePosition.x
+                        && fallbackViewBounds.right >= corePosition.x
+                        && fallbackViewBounds.top <= corePosition.y
+                        && fallbackViewBounds.bottom >= corePosition.y,
+                    `Production-wave Tower death Core camera bounds 실패: ${JSON.stringify(towerDeathCameraFallback)}`
+                );
+                assert(
+                    Math.hypot(
+                        towerDeathCameraFallback.center.x
+                            - productionCameraBeforeDeath.center.x,
+                        towerDeathCameraFallback.center.y
+                            - productionCameraBeforeDeath.center.y
+                    ) > 0
+                        && JSON.stringify(towerDeathCameraFallback.viewBounds)
+                            !== JSON.stringify(
+                                productionCameraBeforeDeath.viewBounds
+                            ),
+                    `Production-wave Tower→Core camera 전환 실패: ${JSON.stringify({ productionCameraBeforeDeath, towerDeathCameraFallback })}`
+                );
+                const selectedEnemyAfterDeath = findPhase5Body(
+                    deathBodies,
+                    firstArcherHandle,
+                    'Production-wave selected Enemy after death'
+                );
+                selectedEnemyRenderAfterDeath = await captureSelectedEnemyRender(
+                    firstArcherHandle,
+                    selectedEnemyAfterDeath,
+                    'after-death',
+                    93_000 + tick
+                );
             }
 
             if (!towerPreLethalRenderCapture
@@ -12383,6 +12565,68 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 assert(
                     towerPreLethalRenderCapture.drawCount === 1,
                     `Production-wave pre-lethal draw count 불일치: ${JSON.stringify({ drawMarksBefore, drawMarks })}`
+                );
+                productionCamera.centerOnWorldPoint(
+                    productionTowerSpawnPosition.x,
+                    productionTowerSpawnPosition.y,
+                    1
+                );
+                const productionCameraCenterBeforeDeath =
+                    productionCamera.viewportToWorld(
+                        canvas.width * 0.5,
+                        canvas.height * 0.5,
+                        {}
+                    );
+                const productionCameraViewBoundsBeforeDeath = {
+                    ...productionCamera.getViewBounds()
+                };
+                productionCameraBeforeDeath = Object.freeze({
+                    authority: 'production-tower-spawn',
+                    position: Object.freeze({
+                        ...productionTowerSpawnPosition
+                    }),
+                    center: Object.freeze({
+                        ...productionCameraCenterBeforeDeath
+                    }),
+                    viewBounds: Object.freeze(
+                        productionCameraViewBoundsBeforeDeath
+                    ),
+                    zoom: productionCamera.getZoom()
+                });
+                assertNear(
+                    productionCameraBeforeDeath.center.x,
+                    productionTowerSpawnPosition.x,
+                    0.000001,
+                    'Production-wave pre-death camera center.x'
+                );
+                assertNear(
+                    productionCameraBeforeDeath.center.y,
+                    productionTowerSpawnPosition.y,
+                    0.000001,
+                    'Production-wave pre-death camera center.y'
+                );
+                assert(
+                    productionCameraViewBoundsBeforeDeath.left
+                            <= productionTowerSpawnPosition.x
+                        && productionCameraViewBoundsBeforeDeath.right
+                            >= productionTowerSpawnPosition.x
+                        && productionCameraViewBoundsBeforeDeath.top
+                            <= productionTowerSpawnPosition.y
+                        && productionCameraViewBoundsBeforeDeath.bottom
+                            >= productionTowerSpawnPosition.y,
+                    `Production-wave pre-death Tower camera bounds 실패: ${JSON.stringify(productionCameraBeforeDeath)}`
+                );
+                const selectedEnemyBodies = await readPhase5Bodies(endpoint);
+                const selectedEnemy = findPhase5Body(
+                    selectedEnemyBodies,
+                    firstArcherHandle,
+                    'Production-wave selected Enemy pre-death'
+                );
+                selectedEnemyRenderBeforeDeath = await captureSelectedEnemyRender(
+                    firstArcherHandle,
+                    selectedEnemy,
+                    'before-death',
+                    92_000 + tick
                 );
             }
 
@@ -12575,6 +12819,10 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 towerRoster.bindGpuBody(
                     towerHandle,
                     readHostileAttackLifecycleProtocol(endpoint)
+                );
+                cameraTowerFacade.bindGpuBody(
+                    towerHandle,
+                    endpoint.getStatus().sessionGeneration
                 );
                 assert(
                     endpoint.configureTrackedBody(towerHandle).accepted,
@@ -13074,6 +13322,18 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                         'Production-wave first Archer post-death'
                     ).position
                 });
+                const selectedEnemyPostDeath = findPhase5Body(
+                    postDeathBodies,
+                    firstArcherHandle,
+                    'Production-wave selected Enemy post-death render'
+                );
+                selectedEnemyRenderAfterThirtyTicks =
+                    await captureSelectedEnemyRender(
+                        firstArcherHandle,
+                        selectedEnemyPostDeath,
+                        'after-30-ticks',
+                        94_000 + tick
+                    );
                 postDeathFixedTick = tick;
             }
 
@@ -13226,6 +13486,48 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 && controlRequestCount === controlRequestCountAtTowerDeath
                 && playerShotRequestCount === playerShotRequestCountAtTowerDeath,
             `Production-wave repeat/zero-Tower continuation 실패: ${JSON.stringify({ repeatedArcherRecord, archerFlowThroughAttack, archerPostDeathDisplacement, postDeathFixedTick, towerDeathBoundaryTick, postDeathStageAttemptCount, directorStatus, acceptedShotCountAtTowerDeath, controlRequestCount, controlRequestCountAtTowerDeath, playerShotRequestCount, playerShotRequestCountAtTowerDeath })}`
+        );
+        assert(
+            selectedEnemyRenderBeforeDeath?.alpha > 0
+                && selectedEnemyRenderAfterDeath?.alpha > 0
+                && selectedEnemyRenderAfterThirtyTicks?.alpha > 0
+                && hostileAttackLifecycleHandleMatches(
+                    selectedEnemyRenderBeforeDeath.handle,
+                    firstArcherHandle
+                )
+                && hostileAttackLifecycleHandleMatches(
+                    selectedEnemyRenderAfterDeath.handle,
+                    firstArcherHandle
+                )
+                && hostileAttackLifecycleHandleMatches(
+                    selectedEnemyRenderAfterThirtyTicks.handle,
+                    firstArcherHandle
+                )
+                && selectedEnemyRenderBeforeDeath.activeEnemyCount
+                    === selectedEnemyRenderAfterDeath.activeEnemyCount
+                && selectedEnemyRenderAfterDeath.activeEnemyCount
+                    === selectedEnemyRenderAfterThirtyTicks.activeEnemyCount
+                && productionCameraBeforeDeath?.authority
+                    === 'production-tower-spawn'
+                && Math.abs(
+                    productionCameraBeforeDeath.center.x
+                        - productionTowerSpawnPosition.x
+                ) <= 0.000001
+                && Math.abs(
+                    productionCameraBeforeDeath.center.y
+                        - productionTowerSpawnPosition.y
+                ) <= 0.000001
+                && towerDeathCameraFallback?.followTargetId
+                    === 'tower-core-camera-follow'
+                && Math.abs(
+                    towerDeathCameraFallback.center.x - corePosition.x
+                ) <= 0.000001
+                && Math.abs(
+                    towerDeathCameraFallback.center.y - corePosition.y
+                ) <= 0.000001
+                && JSON.stringify(productionCameraBeforeDeath.viewBounds)
+                    !== JSON.stringify(towerDeathCameraFallback.viewBounds),
+            `Production-wave selected Enemy render isolation/camera transition 실패: ${JSON.stringify({ selectedEnemyRenderBeforeDeath, selectedEnemyRenderAfterDeath, selectedEnemyRenderAfterThirtyTicks, productionCameraBeforeDeath, towerDeathCameraFallback })}`
         );
         assert(
             hostileIsolationDamageEvents.length === 0
@@ -13426,7 +13728,19 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                     - controlRequestCountAtTowerDeath,
                 playerShotRequestCountAfterDeath: playerShotRequestCount
                     - playerShotRequestCountAtTowerDeath,
-                trackedTowerEnabled: trackedDisableReceipt.tracked
+                trackedTowerEnabled: trackedDisableReceipt.tracked,
+                cameraFallback: towerDeathCameraFallback,
+                productionCameraTransition: Object.freeze({
+                    beforeDeath: productionCameraBeforeDeath,
+                    afterDeath: towerDeathCameraFallback
+                })
+            }),
+            enemyPersistence: Object.freeze({
+                renderEvidence: 'selected-enemy-centered-camera-isolation',
+                selectedHandle: Object.freeze({ ...firstArcherHandle }),
+                beforeDeath: selectedEnemyRenderBeforeDeath,
+                afterDeath: selectedEnemyRenderAfterDeath,
+                afterThirtyTicks: selectedEnemyRenderAfterThirtyTicks
             }),
             flow: Object.freeze({
                 firstArcherHandle,
@@ -13481,6 +13795,9 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
         });
     } finally {
         primaryController?.destroy();
+        towerCoreCameraTarget.destroy();
+        cameraTowerFacade.destroy();
+        cameraCorePresentation.active = false;
         towerRoster.destroy();
         waveDirector.destroy();
         director.destroy();
@@ -13550,6 +13867,47 @@ async function runProductionHostileAttackLifecycleHardwareSmoke(device) {
             && productionWave.towerDeath.renderExclusion
                 .nearestActiveBodyClearancePixels >= 2
             && productionWave.towerDeath.fixedProgressAfterDeath >= 30
+            && productionWave.towerDeath.productionCameraTransition.beforeDeath
+                .authority === 'production-tower-spawn'
+            && Math.abs(
+                productionWave.towerDeath.productionCameraTransition.beforeDeath
+                    .center.x
+                    - productionWave.towerDeath.productionCameraTransition
+                        .beforeDeath.position.x
+            ) <= 0.000001
+            && Math.abs(
+                productionWave.towerDeath.productionCameraTransition.beforeDeath
+                    .center.y
+                    - productionWave.towerDeath.productionCameraTransition
+                        .beforeDeath.position.y
+            ) <= 0.000001
+            && productionWave.towerDeath.cameraFallback.followTargetId
+                === 'tower-core-camera-follow'
+            && Math.abs(
+                productionWave.towerDeath.cameraFallback.center.x
+                    - productionWave.towerDeath.cameraFallback.position.x
+            ) <= 0.000001
+            && Math.abs(
+                productionWave.towerDeath.cameraFallback.center.y
+                    - productionWave.towerDeath.cameraFallback.position.y
+            ) <= 0.000001
+            && JSON.stringify(
+                productionWave.towerDeath.productionCameraTransition.beforeDeath
+                    .viewBounds
+            ) !== JSON.stringify(
+                productionWave.towerDeath.productionCameraTransition.afterDeath
+                    .viewBounds
+            )
+            && productionWave.enemyPersistence.renderEvidence
+                === 'selected-enemy-centered-camera-isolation'
+            && productionWave.enemyPersistence.beforeDeath.alpha > 0
+            && productionWave.enemyPersistence.afterDeath.alpha > 0
+            && productionWave.enemyPersistence.afterThirtyTicks.alpha > 0
+            && productionWave.enemyPersistence.beforeDeath.activeEnemyCount
+                === productionWave.enemyPersistence.afterDeath.activeEnemyCount
+            && productionWave.enemyPersistence.afterDeath.activeEnemyCount
+                === productionWave.enemyPersistence.afterThirtyTicks
+                    .activeEnemyCount
             && productionWave.cleanup.activeCount === 0
             && productionWave.cleanup.reservedCount === 0
             && productionWave.cleanup.pendingCommandCount === 0
@@ -13563,6 +13921,548 @@ async function runProductionHostileAttackLifecycleHardwareSmoke(device) {
     return Object.freeze({ main, targetInvalid, productionWave });
 }
 
+async function runProductionDeadControlRaceHardwareSmoke(device) {
+    const context = canvas.getContext('webgpu');
+    assert(context, 'Dead-control race canvas WebGPU context가 없습니다.');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+    });
+    let lastFrameTexture = null;
+    let drawMarks = 0;
+    const platformPort = {
+        getState: () => Object.freeze({ ready: true, status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget() {
+            const texture = context.getCurrentTexture();
+            lastFrameTexture = texture;
+            return {
+                device,
+                context,
+                texture,
+                view: texture.createView(),
+                format,
+                deviceGeneration: 1,
+                width: canvas.width,
+                height: canvas.height
+            };
+        },
+        clearCanvas: () => false,
+        markCanvasDrawn() {
+            drawMarks++;
+            return true;
+        },
+        markCanvasCleared: () => false
+    };
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({ webGpuPlatformPort: platformPort }, {
+        capacity: 8,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const towerRoster = new TowerCombatRoster({
+        maxHp: THE_TOWER_COMBAT_DATA.MAX_HEALTH
+    });
+    const fixedDelta = 1 / 60;
+    const initialFixedTick = 1;
+    const lethalSourceTick = 2;
+    const deadControlSourceTick = 3;
+    const cleanupFixedTick = 4;
+    const towerPosition = Object.freeze({ x: 5, y: 8 });
+    const liveControlPosition = Object.freeze({ x: 9, y: 8 });
+    const enemyPosition = Object.freeze({ x: 2, y: 8 });
+    const lethalDefinition = Object.freeze({
+        id: 'nw_dead_control_race_lethal_projectile',
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+        damage: THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+        damageSelf: THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [1, 0.05, 0.05, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const exactHandleMatches = (value, handle) => {
+        const candidate = value?.handle ?? value;
+        return candidate?.entityId === handle.entityId
+            && candidate?.incarnation === handle.incarnation;
+    };
+    const requestControlPair = (fixedTick, phase, towerHandle, liveHandle) => {
+        const deadCandidate = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, fixedTick, `dead-control-race:${phase}:tower`);
+        const live = endpoint.requestBodyControl({
+            handle: liveHandle,
+            moveIntentX: 1,
+            moveIntentY: 0
+        }, fixedTick, `dead-control-race:${phase}:live`);
+        assert(
+            deadCandidate.accepted && live.accepted,
+            `Dead-control race ${phase} control request 실패: ${JSON.stringify({ deadCandidate, live })}`
+        );
+        return Object.freeze({ deadCandidate, live });
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Dead-control race endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const enemyIntent = Object.freeze({
+            ...createGpuEnemySpawnIntent({
+                definition: {
+                    ...BASIC_CIRCLE_ENEMY_DATA,
+                    id: 'nw_dead_control_race_enemy',
+                    maxHealth: 100
+                },
+                route: navigationSource.route,
+                spawnSequence: 0,
+                waveId: 'nw-dead-control-race',
+                policyId: 'hardware-fixture'
+            }),
+            position: enemyPosition,
+            velocity: Object.freeze({ x: 0, y: 0 })
+        });
+        const initialRequests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                initialFixedTick,
+                'dead-control-race:initial:tower'
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: liveControlPosition }),
+                initialFixedTick,
+                'dead-control-race:initial:live-control'
+            ),
+            endpoint.requestSpawn(
+                enemyIntent,
+                initialFixedTick,
+                'dead-control-race:initial:enemy'
+            )
+        ];
+        assert(
+            initialRequests.every(({ accepted }) => accepted),
+            `Dead-control race initial request 실패: ${JSON.stringify(initialRequests)}`
+        );
+        const initialCommit = endpoint.commitAtFixedBoundary(initialFixedTick);
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        const towerHandle = initialHandles.get('dead-control-race:initial:tower');
+        const liveControlHandle = initialHandles.get(
+            'dead-control-race:initial:live-control'
+        );
+        const enemyHandle = initialHandles.get('dead-control-race:initial:enemy');
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 3
+                && initialCommit.rejected.length === 0
+                && towerHandle
+                && liveControlHandle
+                && enemyHandle,
+            `Dead-control race initial commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, initialFixedTick),
+            'Dead-control race initial fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Dead-control race initial completion');
+        const initialBodies = await readPhase5Bodies(endpoint);
+        const initialTower = findPhase5Body(
+            initialBodies,
+            towerHandle,
+            'dead-control race initial Tower'
+        );
+        const initialLiveControl = findPhase5Body(
+            initialBodies,
+            liveControlHandle,
+            'dead-control race initial live control'
+        );
+        const initialEnemy = findPhase5Body(
+            initialBodies,
+            enemyHandle,
+            'dead-control race initial Enemy'
+        );
+        assertNear(
+            initialTower.health,
+            THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+            0.000001,
+            'Dead-control race initial Tower HP'
+        );
+        towerRoster.bindGpuBody(
+            towerHandle,
+            readHostileAttackLifecycleProtocol(endpoint)
+        );
+        const initialCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            lethalSourceTick
+        );
+        assert(
+            initialCompleted.protocolFailure === null
+                && initialCompleted.deathEvents.length === 0,
+            `Dead-control race initial completed event 실패: ${JSON.stringify(initialCompleted)}`
+        );
+
+        const lethalRequest = endpoint.requestSpawn(
+            createGpuProjectileSpawnIntent({
+                definition: lethalDefinition,
+                position: towerPosition,
+                velocity: { x: 0, y: 0 },
+                sourceHandle: enemyHandle,
+                ownerHandle: enemyHandle,
+                producerId: 'nw-dead-control-race-producer',
+                sourceAbilityId: 'dead-control-race-lethal',
+                teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+                allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+                damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+                targetPolicyId:
+                    PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+                spawnSequence: 1
+            }),
+            lethalSourceTick,
+            'dead-control-race:lethal-projectile'
+        );
+        const lethalControls = requestControlPair(
+            lethalSourceTick,
+            'lethal',
+            towerHandle,
+            liveControlHandle
+        );
+        assert(
+            lethalRequest.accepted,
+            `Dead-control race lethal request 실패: ${JSON.stringify(lethalRequest)}`
+        );
+        const lethalCommit = endpoint.commitAtFixedBoundary(lethalSourceTick);
+        const lethalHandle = lethalCommit.spawned.find(
+            ({ commandId }) => commandId === 'dead-control-race:lethal-projectile'
+        )?.handle;
+        assert(
+            lethalCommit.state === 'committed'
+                && lethalHandle
+                && lethalCommit.fixedCommands.controls.length === 2
+                && lethalCommit.fixedCommands.rejected.length === 0
+                && !lethalCommit.recoveryRequired,
+            `Dead-control race lethal commit 실패: ${JSON.stringify(lethalCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, lethalSourceTick),
+            'Dead-control race lethal fixed submit 실패'
+        );
+
+        // 의도적으로 await/queue settle을 두지 않습니다. CPU는 아직 Tower를
+        // exact-active로 보지만 GPU는 앞 submit에서 ALIVE를 끌 수 있습니다.
+        const beforeDeadControlCompleted = endpoint
+            .commitCompletedEventsAtFixedBoundary(deadControlSourceTick);
+        assert(
+            beforeDeadControlCompleted.protocolFailure === null
+                && beforeDeadControlCompleted.batchCount === 0
+                && endpoint.getRegistry().has(towerHandle)
+                && endpoint.hasBody(towerHandle),
+            `Dead-control race no-settle 경계가 깨졌습니다: ${JSON.stringify(beforeDeadControlCompleted)}`
+        );
+        const deadControls = requestControlPair(
+            deadControlSourceTick,
+            'gpu-dead-in-flight',
+            towerHandle,
+            liveControlHandle
+        );
+        const deadControlCommit = endpoint.commitAtFixedBoundary(
+            deadControlSourceTick
+        );
+        assert(
+            deadControlCommit.state === 'committed'
+                && deadControlCommit.fixedCommands.controls.length === 2
+                && deadControlCommit.fixedCommands.controls.some(({ commandId }) => (
+                    commandId === deadControls.deadCandidate.commandId
+                ))
+                && deadControlCommit.fixedCommands.controls.some(({ commandId }) => (
+                    commandId === deadControls.live.commandId
+                ))
+                && deadControlCommit.fixedCommands.rejected.length === 0
+                && !deadControlCommit.recoveryRequired,
+            `Dead-control race in-flight control commit 실패: ${JSON.stringify(deadControlCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, deadControlSourceTick),
+            'Dead-control race second fixed submit 실패'
+        );
+
+        const settledGpuStatus = await settlePhase5Endpoint(
+            endpoint,
+            'Dead-control race two-submit completion'
+        );
+        const raceStatus = endpoint.getStatus();
+        assert(
+            settledGpuStatus.state === 'ready'
+                && settledGpuStatus.failure === null
+                && !settledGpuStatus.requiresAuthoritativeRebuild
+                && raceStatus.state === 'gpu-ready'
+                && raceStatus.backend.gpu.failure === null
+                && !raceStatus.recoveryRequired
+                && !endpoint.requiresRecovery(),
+            `Dead-control race가 recovery로 전이했습니다: ${JSON.stringify({ settledGpuStatus, raceStatus })}`
+        );
+        const raceBodies = await readPhase5Bodies(endpoint);
+        const liveControlAfterRace = findPhase5Body(
+            raceBodies,
+            liveControlHandle,
+            'dead-control race live control after race'
+        );
+        const enemyAfterRace = findPhase5Body(
+            raceBodies,
+            enemyHandle,
+            'dead-control race Enemy after race'
+        );
+        assert(
+            !raceBodies.some((body) => exactHandleMatches(body, towerHandle))
+                && !raceBodies.some((body) => exactHandleMatches(body, lethalHandle))
+                && endpoint.getRegistry().has(towerHandle)
+                && endpoint.hasBody(towerHandle)
+                && liveControlAfterRace.position.x > initialLiveControl.position.x
+                && liveControlAfterRace.velocity.x > 0
+                && enemyAfterRace.flowFieldIndex >= 0
+                && Math.hypot(
+                    enemyAfterRace.position.x - initialEnemy.position.x,
+                    enemyAfterRace.position.y - initialEnemy.position.y
+                ) > 0,
+            `Dead-control race live/Enemy 진행 불일치: ${JSON.stringify({ initialLiveControl, liveControlAfterRace, initialEnemy, enemyAfterRace, raceBodies })}`
+        );
+
+        const cameraScale = 4;
+        const camera = {
+            worldToViewport(x, y, out) {
+                out.x = x * cameraScale;
+                out.y = y * cameraScale;
+                return out;
+            },
+            getScale: () => cameraScale
+        };
+        endpoint.updatePresentation({
+            frameDelta: 0,
+            fixedDelta,
+            fixedAlpha: 1,
+            renderFrameId: 95_001
+        });
+        assert(endpoint.draw(camera), 'Dead-control race post-death draw 실패');
+        assert(lastFrameTexture, 'Dead-control race post-death texture가 없습니다.');
+        const enemyAlphaAfterRace = await readPhase5WorldAlpha(
+            device,
+            lastFrameTexture,
+            enemyAfterRace.position,
+            cameraScale,
+            'dead-control-race-enemy-after-race'
+        );
+        assert(
+            drawMarks === 1 && enemyAlphaAfterRace > 0,
+            `Dead-control race Enemy render가 사라졌습니다: ${JSON.stringify({ drawMarks, enemyAlphaAfterRace })}`
+        );
+
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(
+            cleanupFixedTick
+        );
+        const towerDeath = completed.deathEvents.find((event) => (
+            event.entityId === towerHandle.entityId
+            && event.incarnation === towerHandle.incarnation
+            && event.disposition === 'despawn-requested'
+        ));
+        const lethalDeath = completed.deathEvents.find((event) => (
+            event.entityId === lethalHandle.entityId
+            && event.incarnation === lethalHandle.incarnation
+            && event.disposition === 'despawn-requested'
+        ));
+        const lethalContact = completed.contactEvents.find((event) => (
+            hostileAttackLifecyclePairMatches(event, lethalHandle, towerHandle)
+            && event.eventType === 'damage-applied'
+        ));
+        assert(
+            completed.protocolFailure === null
+                && completed.batchCount === 2
+                && towerDeath
+                && lethalDeath
+                && lethalContact?.reason === 'target-died'
+                && lethalContact.damageFixedPoint
+                    === THE_TOWER_COMBAT_DATA.MAX_HEALTH * 100,
+            `Dead-control race death event 불일치: ${JSON.stringify(completed)}`
+        );
+        const towerFacts = towerRoster.commitCompletedEvents(
+            completed,
+            endpoint.getRegistry()
+        );
+        assert(
+            towerFacts.some(({ type }) => type === TOWER_COMBAT_FACT_TYPE.DIED)
+                && towerFacts.some(
+                    ({ type }) => type === TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS
+                )
+                && towerRoster.getPrimaryTowerCurrentHp() === 0
+                && towerRoster.getLivingTowerCount() === 0,
+            `Dead-control race Tower roster death 실패: ${JSON.stringify(towerFacts)}`
+        );
+        const cleanupCommit = endpoint.commitAtFixedBoundary(cleanupFixedTick);
+        assert(
+            cleanupCommit.state === 'committed'
+                && cleanupCommit.despawned.length === 2
+                && cleanupCommit.despawned.some((entry) => (
+                    exactHandleMatches(entry, towerHandle)
+                ))
+                && cleanupCommit.despawned.some((entry) => (
+                    exactHandleMatches(entry, lethalHandle)
+                ))
+                && cleanupCommit.rejected.length === 0
+                && !cleanupCommit.recoveryRequired,
+            `Dead-control race cleanup commit 실패: ${JSON.stringify(cleanupCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, cleanupFixedTick),
+            'Dead-control race cleanup fixed submit 실패'
+        );
+        await settlePhase5Endpoint(endpoint, 'Dead-control race cleanup completion');
+        const finalBodies = await readPhase5Bodies(endpoint);
+        const finalEnemy = findPhase5Body(
+            finalBodies,
+            enemyHandle,
+            'dead-control race final Enemy'
+        );
+        const finalLiveControl = findPhase5Body(
+            finalBodies,
+            liveControlHandle,
+            'dead-control race final live control'
+        );
+        endpoint.updatePresentation({
+            frameDelta: 0,
+            fixedDelta,
+            fixedAlpha: 1,
+            renderFrameId: 95_002
+        });
+        assert(endpoint.draw(camera), 'Dead-control race post-cleanup draw 실패');
+        assert(lastFrameTexture, 'Dead-control race post-cleanup texture가 없습니다.');
+        const enemyAlphaAfterCleanup = await readPhase5WorldAlpha(
+            device,
+            lastFrameTexture,
+            finalEnemy.position,
+            cameraScale,
+            'dead-control-race-enemy-after-cleanup'
+        );
+        const finalStatus = endpoint.getStatus();
+        const storageProfile = finalStatus.backend.gpu.fixedPrimitives.storageProfile;
+        assert(
+            !endpoint.getRegistry().has(towerHandle)
+                && !endpoint.hasBody(towerHandle)
+                && !endpoint.getRegistry().has(lethalHandle)
+                && !endpoint.hasBody(lethalHandle)
+                && endpoint.getRegistry().has(enemyHandle)
+                && endpoint.hasBody(enemyHandle)
+                && endpoint.getRegistry().has(liveControlHandle)
+                && endpoint.hasBody(liveControlHandle)
+                && exactHandleMatches(finalEnemy, enemyHandle)
+                && exactHandleMatches(finalLiveControl, liveControlHandle)
+                && drawMarks === 2
+                && enemyAlphaAfterCleanup > 0
+                && finalStatus.activeEnemyCount === 1
+                && finalStatus.activeCount === 2
+                && finalStatus.reservedCount === 0
+                && finalStatus.pendingCommandCount === 0
+                && finalStatus.backend.gpu.failure === null
+                && !finalStatus.backend.gpu.requiresAuthoritativeRebuild
+                && !finalStatus.recoveryRequired
+                && !endpoint.requiresRecovery()
+                && storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `Dead-control race final invariant 실패: ${JSON.stringify({ finalStatus, finalBodies, storageProfile, drawMarks, enemyAlphaAfterCleanup })}`
+        );
+
+        return Object.freeze({
+            scenario: 'tower-lethal-then-exact-dead-control-two-submit',
+            settledBetweenSubmits: false,
+            deadControlSubmitted: true,
+            handles: Object.freeze({
+                tower: Object.freeze({ ...towerHandle }),
+                liveControl: Object.freeze({ ...liveControlHandle }),
+                enemy: Object.freeze({ ...enemyHandle }),
+                lethalProjectile: Object.freeze({ ...lethalHandle })
+            }),
+            sourceTicks: Object.freeze({
+                initial: initialFixedTick,
+                lethal: lethalSourceTick,
+                deadControl: deadControlSourceTick,
+                cleanup: cleanupFixedTick
+            }),
+            submissions: Object.freeze({
+                lethal: Object.freeze({
+                    towerControlCommandId: lethalControls.deadCandidate.commandId,
+                    liveControlCommandId: lethalControls.live.commandId,
+                    fixedCommandCount: lethalCommit.fixedCommands.controls.length
+                }),
+                deadControl: Object.freeze({
+                    towerControlCommandId: deadControls.deadCandidate.commandId,
+                    liveControlCommandId: deadControls.live.commandId,
+                    fixedCommandCount:
+                        deadControlCommit.fixedCommands.controls.length,
+                    completedBatchCountBeforeSubmit:
+                        beforeDeadControlCompleted.batchCount
+                })
+            }),
+            towerDeath: Object.freeze({
+                observed: true,
+                contact: lethalContact,
+                towerEvent: towerDeath,
+                projectileEvent: lethalDeath,
+                rosterFacts: towerFacts,
+                cleanup: cleanupCommit,
+                towerRegistryPresentAfterCleanup:
+                    endpoint.getRegistry().has(towerHandle),
+                towerBackendPresentAfterCleanup: endpoint.hasBody(towerHandle)
+            }),
+            liveControl: Object.freeze({
+                handle: Object.freeze({ ...liveControlHandle }),
+                positionBefore: Object.freeze({ ...initialLiveControl.position }),
+                positionAfterRace: Object.freeze({ ...liveControlAfterRace.position }),
+                velocityAfterRace: Object.freeze({ ...liveControlAfterRace.velocity }),
+                moved: liveControlAfterRace.position.x > initialLiveControl.position.x
+            }),
+            enemyPersistence: Object.freeze({
+                handle: Object.freeze({ ...enemyHandle }),
+                identityPreserved: exactHandleMatches(finalEnemy, enemyHandle),
+                flowFieldIndexBefore: initialEnemy.flowFieldIndex,
+                flowFieldIndexAfter: finalEnemy.flowFieldIndex,
+                positionBefore: Object.freeze({ ...initialEnemy.position }),
+                positionAfterRace: Object.freeze({ ...enemyAfterRace.position }),
+                positionAfterCleanup: Object.freeze({ ...finalEnemy.position }),
+                flowProgressed: Math.hypot(
+                    finalEnemy.position.x - initialEnemy.position.x,
+                    finalEnemy.position.y - initialEnemy.position.y
+                ) > 0,
+                renderAlphaAfterRace: enemyAlphaAfterRace,
+                renderAlphaAfterCleanup: enemyAlphaAfterCleanup
+            }),
+            backend: Object.freeze({
+                state: finalStatus.state,
+                gpuState: finalStatus.backend.gpu.state,
+                failure: finalStatus.backend.gpu.failure,
+                recoveryRequired: finalStatus.recoveryRequired,
+                requiresAuthoritativeRebuild:
+                    finalStatus.backend.gpu.requiresAuthoritativeRebuild
+            }),
+            storageProfile
+        });
+    } finally {
+        towerRoster.destroy();
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+        context.unconfigure();
+    }
+}
+
 async function runProductionFixedPrimitiveSmoke(device) {
     const endpoint = await runProductionFixedPrimitiveEndpointSmoke(device);
     const isolation = await runProductionFixedPrimitiveIsolationSmoke(device);
@@ -13574,6 +14474,8 @@ async function runProductionFixedPrimitiveSmoke(device) {
     const targetEntityInvalid =
         await runProductionTargetEntityInvalidHardwareSmoke(device);
     const towerCombat = await runProductionTowerCombatHardwareSmoke(device);
+    const deadControlRace =
+        await runProductionDeadControlRaceHardwareSmoke(device);
     const hostileAttackLifecycle =
         await runProductionHostileAttackLifecycleHardwareSmoke(device);
     const phase5ProjectileLifecycle =
@@ -13597,6 +14499,7 @@ async function runProductionFixedPrimitiveSmoke(device) {
         targetEntityAim,
         targetEntityInvalid,
         towerCombat,
+        deadControlRace,
         hostileAttackLifecycle,
         phase5ProjectileLifecycle,
         phase5FailureDomains,

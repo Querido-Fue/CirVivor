@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const ANIMATION_CATEGORY = Object.freeze({ UI: 'ui' });
+
 const source = await readFile(
     new URL('../script/module/ui/element/_dropdown.js', import.meta.url),
     'utf8'
@@ -62,7 +64,11 @@ const context = vm.createContext({ console });
 const dropdownModule = new vm.SourceTextModule(source, { context, identifier: '_dropdown.js' });
 const dependencies = new Map([
     ['./_base_element.js', createSyntheticModule(context, { BaseUIElement: BaseUIElementStub })],
-    ['animation/animation_system.js', createSyntheticModule(context, { animate, remove })],
+    ['animation/animation_system.js', createSyntheticModule(context, {
+        ANIMATION_CATEGORY,
+        animate,
+        remove
+    })],
     ['display/display_system.js', createSyntheticModule(context, {
         render: (_layer, command) => renderCalls.push({ ...command }),
         shadowOn: () => {}, shadowOff: () => {}, measureText: (text) => text.length * 8
@@ -107,6 +113,7 @@ const rollbackPromise = dropdown.animateToValue('original', {
 });
 assert.equal(dropdown.value, 'original');
 assert.deepEqual({ ...animations[0].properties }, {
+    animationCategory: ANIMATION_CATEGORY.UI,
     variable: 'selectionProgress',
     startValue: 0,
     endValue: 1,

@@ -740,7 +740,7 @@ export class SettingsOverlay extends TitleOverlay {
         const tooltipDelaySchema = getSettingSchema('tooltipDelaySeconds');
         handler.width("parent", controlWrapWidth).item("slider", "control_tooltipDelaySeconds").width("parent", controlMaxWidth)
             .prop("trackHeight", this.WH * SLIDER.TRACK_HEIGHT_WH_RATIO * this.uiScale).prop("knobRadius", this.WH * SLIDER.KNOB_RADIUS_WH_RATIO * this.uiScale)
-            .prop("min", tooltipDelaySchema.min).prop("max", tooltipDelaySchema.max).prop("step", 0.1).setValue(this.tempSettings.tooltipDelaySeconds)
+            .prop("min", tooltipDelaySchema.min).prop("max", tooltipDelaySchema.max).prop("step", tooltipDelaySchema.step).setValue(this.tempSettings.tooltipDelaySeconds)
             .prop("valueOffsetX", this.UIWW * SLIDER.VALUE_OFFSET_X_UIWW_RATIO * this.uiScale)
             .valueTextStyle(TYPOGRAPHY.SLIDER_VALUE)
             .prop("valueOffsetY", this.WH * SLIDER.VALUE_OFFSET_Y_WH_RATIO * this.uiScale)
