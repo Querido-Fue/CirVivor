@@ -161,8 +161,13 @@ function requireGpuPresentationProfile(profile) {
 }
 
 function createBenchmarkGameSceneDependencies(dependencies) {
+    const {
+        gameplayStatusRenderPort: omittedGameplayStatusRenderPort,
+        ...benchmarkDependencies
+    } = dependencies;
+    void omittedGameplayStatusRenderPort;
     return {
-        ...dependencies,
+        ...benchmarkDependencies,
         inputActionSource: BENCHMARK_CHILD_INPUT_ACTION_SOURCE,
         legacyWorldPort: BENCHMARK_CHILD_LEGACY_WORLD_PORT
     };

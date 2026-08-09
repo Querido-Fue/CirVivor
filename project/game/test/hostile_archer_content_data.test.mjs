@@ -45,6 +45,12 @@ const NORMAL_WAVE_DEFINITION_IDS = Object.freeze([
     basicEnemyData.BASIC_HEXA_ENEMY_DATA.id,
     basicEnemyData.BASIC_GEN_ENEMY_DATA.id
 ]);
+const PRODUCTION_WAVE_DEFINITION_IDS = Object.freeze([
+    ...NORMAL_WAVE_DEFINITION_IDS,
+    ARCHER_ENEMY_DATA.id
+]);
+const PRODUCTION_ARCHER_SPAWN_INDEXES = Object.freeze([6, 13, 20, 27]);
+const PRODUCTION_ARCHER_LOCAL_FIXED_TICKS = Object.freeze([31, 66, 101, 136]);
 
 test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으로 catalog에만 등록된다', () => {
     assert.strictEqual(
@@ -113,7 +119,7 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     assert.equal(basicEnemyData.BASIC_ARROW_ENEMY_DATA.id, 'basic_arrow_01');
 });
 
-test('normal corridor wave는 기존 six-ID cycle과 32개 fixed schedule을 유지하고 Archer를 참조하지 않는다', () => {
+test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추가한다', () => {
     const phase = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0];
     const group = phase.spawnGroups[0];
     assert.equal(phase.startTick, 1);
@@ -122,14 +128,15 @@ test('normal corridor wave는 기존 six-ID cycle과 32개 fixed schedule을 유
     assert.equal(group.intervalTicks, 5);
     assert.deepEqual(
         Array.from(group.enemyDefinitionIds),
+        Array.from(PRODUCTION_WAVE_DEFINITION_IDS)
+    );
+    assert.deepEqual(
+        Array.from(group.enemyDefinitionIds).slice(0, 6),
         Array.from(NORMAL_WAVE_DEFINITION_IDS)
     );
-    assert.equal(
-        Array.from(group.enemyDefinitionIds)
-            .filter((definitionId) => definitionId === ARCHER_ENEMY_DATA.id)
-            .length,
-        0
-    );
+    assert.equal(group.enemyDefinitionId, basicEnemyData.BASIC_SQUARE_ENEMY_DATA.id);
+    assert.equal(group.policyId, 'corebound');
+    assert.deepEqual(Array.from(group.laneOffsetsTiles), [-1.8, -0.6, 0.6, 1.8]);
 
     const director = new WaveDirector();
     assert.equal(director.init(createTileMap(CORRIDOR_EIGHT_MAP_DATA.id)), true);
@@ -141,15 +148,69 @@ test('normal corridor wave는 기존 six-ID cycle과 32개 fixed schedule을 유
         assert.equal(entry.intent.spawnSequence, index);
         assert.equal(
             entry.intent.definitionId,
-            NORMAL_WAVE_DEFINITION_IDS[index % NORMAL_WAVE_DEFINITION_IDS.length]
+            PRODUCTION_WAVE_DEFINITION_IDS[
+                index % PRODUCTION_WAVE_DEFINITION_IDS.length
+            ]
         );
-        assert.notEqual(entry.intent.definitionId, ARCHER_ENEMY_DATA.id);
         assert.equal(
             entry.commandId,
             `corridor_eight_wave_01:0:0:${index}`
         );
     }
+    const archerEntries = director.schedule
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry.intent.definitionId === ARCHER_ENEMY_DATA.id);
+    assert.deepEqual(
+        Array.from(archerEntries, ({ index }) => index),
+        Array.from(PRODUCTION_ARCHER_SPAWN_INDEXES)
+    );
+    assert.deepEqual(
+        Array.from(archerEntries, ({ entry }) => entry.targetFixedTick),
+        Array.from(PRODUCTION_ARCHER_LOCAL_FIXED_TICKS)
+    );
+    assert.equal(archerEntries.length, 4);
+    assert.equal(
+        director.schedule.filter(({ intent }) => (
+            intent.definitionId === basicEnemyData.BASIC_ARROW_ENEMY_DATA.id
+        )).length,
+        5,
+        'basic_arrow_01과 Archer는 별도 cycle identity여야 합니다.'
+    );
+    assert.strictEqual(
+        basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID[
+            archerEntries[0].entry.intent.definitionId
+        ],
+        ARCHER_ENEMY_DATA
+    );
     director.destroy();
+
+    const fixedTickOffset = 500;
+    const replacementDirector = new WaveDirector({ fixedTickOffset });
+    assert.equal(
+        replacementDirector.init(createTileMap(CORRIDOR_EIGHT_MAP_DATA.id)),
+        true
+    );
+    const replacementArcherEntries = replacementDirector.schedule
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry.intent.definitionId === ARCHER_ENEMY_DATA.id);
+    assert.deepEqual(
+        Array.from(replacementArcherEntries, ({ index }) => index),
+        Array.from(PRODUCTION_ARCHER_SPAWN_INDEXES)
+    );
+    assert.deepEqual(
+        Array.from(
+            replacementArcherEntries,
+            ({ entry }) => entry.targetFixedTick
+        ),
+        PRODUCTION_ARCHER_LOCAL_FIXED_TICKS.map((tick) => tick + fixedTickOffset)
+    );
+    assert.deepEqual(
+        Array.from(replacementArcherEntries, ({ entry }) => entry.commandId),
+        PRODUCTION_ARCHER_SPAWN_INDEXES.map(
+            (index) => `corridor_eight_wave_01:0:0:${index}`
+        )
+    );
+    replacementDirector.destroy();
 });
 
 test('Archer attack baseline과 exact-ID catalog는 deep immutable data contract를 유지한다', () => {

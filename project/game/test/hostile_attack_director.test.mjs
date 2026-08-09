@@ -847,3 +847,99 @@ test('fixed acceptance state와 rejection domain 누락은 exact contract failur
     assert.equal(missingDomain.protocolFailure.code, 'rejected-domain-contract');
     assert.equal(rejectionFixture.director.getStatus().pendingShotCount, 1);
 });
+
+test('production Archer moderate churn은 exact incarnation과 SpawnProgram result ring을 격리하고 history를 bounded 유지한다', () => {
+    const historyCapacity = 4;
+    const fixture = createFixture({ historyCapacity });
+    const tower = addTower(fixture);
+    const rejectedCommands = [];
+    const retiredHandles = [];
+    let createdAtTick = 2;
+
+    for (let incarnation = 1; incarnation <= 12; incarnation++) {
+        const archer = { entityId: 301, incarnation };
+        const initial = registerArcher(fixture, archer, createdAtTick);
+        const view = fixture.registry.copyEntityView(archer, {});
+        assert.equal(view.definitionId, ARCHER_ENEMY_DATA.id);
+        assert.equal(fixture.backend.hasBody(archer), true);
+
+        const shotTick = initial.nextEligibleFixedTick;
+        const staged = fixture.director.stageForFixedTick({
+            targetFixedTick: shotTick,
+            targetHandle: tower
+        });
+        assert.equal(staged.acceptedCount, 1);
+        const commandId = staged.commandIds[0];
+        assert.match(
+            commandId,
+            new RegExp(`^${HOSTILE_ATTACK_COMMAND_NAMESPACE}:${SESSION_GENERATION}:301:${incarnation}:`)
+        );
+        const rejected = observeLifecycle(fixture, shotTick, {
+            fixedCommands: emptyFixedCommands({
+                rejected: [{
+                    commandId,
+                    domain: 'spawn',
+                    code: 'spawn-program-capacity'
+                }]
+            })
+        });
+        assert.equal(rejected.fixedRejectedCount, 1);
+        assert.equal(rejected.recoveryRequired, false);
+        assert.equal(fixture.director.getStatus().pendingShotCount, 0);
+        assert.equal(fixture.director.getStatus().archers[0].shotSequence, 0);
+        rejectedCommands.push(commandId);
+
+        fixture.registry.remove(archer);
+        fixture.backend.remove(archer);
+        const removed = observeLifecycle(fixture, shotTick + 1, {
+            despawned: [{ commandId: `retire:${incarnation}`, handle: archer }]
+        });
+        assert.equal(removed.removedArcherCount, 1);
+        assert.equal(fixture.director.getStatus().activeArcherCount, 0);
+        retiredHandles.push(archer);
+        createdAtTick = shotTick + 2;
+    }
+
+    const replacement = { entityId: 301, incarnation: 13 };
+    registerArcher(fixture, replacement, createdAtTick);
+    const lateRetirements = observeLifecycle(fixture, createdAtTick + 1, {
+        despawned: retiredHandles.map((handle, index) => ({
+            commandId: `late-retire:${index}`,
+            handle
+        }))
+    });
+    assert.equal(lateRetirements.removedArcherCount, 0);
+    assert.equal(fixture.registry.has(replacement), true);
+    assert.equal(fixture.backend.hasBody(replacement), true);
+    assert.equal(fixture.director.getStatus().activeArcherCount, 1);
+    assert.deepEqual(
+        { ...fixture.director.getStatus().archers[0].handle },
+        replacement
+    );
+
+    const duplicateCountBefore = fixture.director.getStatus().telemetry
+        .duplicateResults;
+    const recentRejectedCommands = rejectedCommands.slice(-historyCapacity);
+    const replay = observeLifecycle(fixture, createdAtTick + 2, {
+        fixedCommands: emptyFixedCommands({
+            rejected: recentRejectedCommands.map((commandId) => ({
+                commandId,
+                domain: 'spawn',
+                code: 'spawn-program-capacity'
+            }))
+        })
+    });
+    assert.equal(replay.fixedRejectedCount, 0);
+    assert.equal(replay.recoveryRequired, false);
+    const status = fixture.director.getStatus();
+    assert.equal(
+        status.telemetry.duplicateResults,
+        duplicateCountBefore + historyCapacity
+    );
+    assert.equal(status.terminalHistoryCapacity, historyCapacity);
+    assert.equal(status.terminalHistoryCount <= historyCapacity, true);
+    assert.equal(status.pendingShotCount, 0);
+    assert.equal(status.activeArcherCount, 1);
+    assert.equal(status.recoveryRequired, false);
+    assert.equal(fixture.registry.fullScanCallCount, 0);
+});

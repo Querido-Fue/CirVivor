@@ -10,6 +10,99 @@ import {
     selectGameWorldSessionMode
 } from './game_world_session_mode.js';
 
+function normalizeDiagnosticCount(value) {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+}
+
+function normalizeDiagnosticValue(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function createTowerDiagnosticStatus(status) {
+    if (!status || status.destroyed === true) {
+        return Object.freeze({
+            available: false,
+            state: 'N/A',
+            alive: null,
+            currentHp: null,
+            maxHp: null,
+            livingTowerCount: null
+        });
+    }
+    const alive = status.alive === true;
+    return Object.freeze({
+        available: true,
+        state: alive ? 'ALIVE' : 'DEAD',
+        alive,
+        currentHp: normalizeDiagnosticValue(status.currentHp),
+        maxHp: normalizeDiagnosticValue(status.maxHp),
+        livingTowerCount: normalizeDiagnosticCount(status.livingTowerCount)
+    });
+}
+
+function createCoreDiagnosticStatus(coreIntegrity) {
+    if (!coreIntegrity) {
+        return Object.freeze({
+            available: false,
+            currentIntegrity: null,
+            maxIntegrity: null,
+            depleted: null
+        });
+    }
+    return Object.freeze({
+        available: true,
+        currentIntegrity: normalizeDiagnosticValue(
+            coreIntegrity.getCurrentIntegrity()
+        ),
+        maxIntegrity: normalizeDiagnosticValue(
+            coreIntegrity.getMaxIntegrity()
+        ),
+        depleted: coreIntegrity.isDepleted() === true
+    });
+}
+
+function createHostileAttackDiagnosticStatus(status) {
+    const telemetry = status?.telemetry ?? null;
+    return Object.freeze({
+        available: status !== null && status !== undefined,
+        registeredArcherCount: normalizeDiagnosticCount(
+            status?.activeArcherCount
+        ),
+        pendingShotCount: normalizeDiagnosticCount(status?.pendingShotCount),
+        requestAttempts: normalizeDiagnosticCount(
+            telemetry?.requestAttempts ?? status?.shotStartAttemptCount
+        ),
+        requestAccepted: normalizeDiagnosticCount(
+            telemetry?.requestAccepted ?? status?.shotRequestAcceptedCount
+        ),
+        fixedAccepted: normalizeDiagnosticCount(telemetry?.fixedAccepted),
+        completedResolved: normalizeDiagnosticCount(
+            telemetry?.completedResolved ?? status?.shotResolvedCount
+        ),
+        completedSourceInvalid: normalizeDiagnosticCount(
+            telemetry?.completedSourceInvalid
+        ),
+        completedTargetInvalid: normalizeDiagnosticCount(
+            telemetry?.completedTargetInvalid
+        ),
+        noTargetTicks: normalizeDiagnosticCount(telemetry?.noTargetTicks),
+        recoveryRequired: status?.recoveryRequired === true
+    });
+}
+
+function createWaveDiagnosticStatus(status) {
+    return Object.freeze({
+        available: status !== null && status !== undefined,
+        totalSpawnCount: normalizeDiagnosticCount(status?.totalSpawnCount),
+        queuedSpawnCount: normalizeDiagnosticCount(status?.queuedSpawnCount),
+        remainingSpawnCount: normalizeDiagnosticCount(
+            status?.remainingSpawnCount
+        )
+    });
+}
+
 /**
  * @class GameSystem
  * @description 한 인게임 세션의 현재 최소 구현을 소유하고 입력·오브젝트 실행 순서를 조정합니다.
@@ -21,6 +114,7 @@ export class GameSystem {
      * @param {{animate:(owner:object,properties:object)=>object}} dependencies.animationPort - 표현 애니메이션 포트입니다.
      * @param {{getDelta?:()=>number,getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
+     * @param {{draw?:(status:object,viewport:object)=>boolean,destroy?:()=>void,createSession?:()=>object}} [dependencies.gameplayStatusRenderPort] - read-only gameplay status 표현 포트 또는 session factory입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
      * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 세션 시작 옵션입니다.
      */
@@ -40,6 +134,15 @@ export class GameSystem {
         }
 
         this.dependencies = dependencies;
+        const gameplayStatusRenderPort = dependencies.gameplayStatusRenderPort;
+        this.gameplayStatusRendererOwned = (
+            typeof gameplayStatusRenderPort?.createSession === 'function'
+        );
+        this.gameplayStatusRenderer = (
+            this.gameplayStatusRendererOwned
+            ? gameplayStatusRenderPort.createSession()
+            : gameplayStatusRenderPort ?? null
+        );
         this.inputActionMapper = new InputActionMapper();
         this.playerControlRouter = new PlayerControlRouter();
         this.coreIntegrity = new CoreIntegrity({
@@ -60,7 +163,13 @@ export class GameSystem {
         this.sessionMode = null;
         this.cameraZoomController = null;
         this.registrationTokens = [];
-        this.viewportSnapshot = { ww: 0, wh: 0 };
+        this.viewportSnapshot = {
+            ww: 0,
+            wh: 0,
+            uiww: 0,
+            uiOffsetX: 0,
+            uiScale: 1
+        };
         this.fixedTick = 0;
         this.entered = false;
         this.destroyed = false;
@@ -178,6 +287,10 @@ export class GameSystem {
             return;
         }
         this.objectSystem.draw();
+        this.gameplayStatusRenderer?.draw?.(
+            this.getGameplayStatus(),
+            this.viewportSnapshot
+        );
     }
 
     /**
@@ -262,6 +375,28 @@ export class GameSystem {
         return this.objectSystem?.getHostileAttackStatus() ?? null;
     }
 
+    /**
+     * HUD·manual QA가 raw GPU readback 없이 읽는 bounded scalar snapshot입니다.
+     * Tower는 committed roster mirror, Core는 run-domain CoreIntegrity가 authority입니다.
+     * @returns {Readonly<object>} 중첩 값까지 동결된 gameplay status입니다.
+     */
+    getGameplayStatus() {
+        const hostileAttackStatus = this.getHostileAttackStatus();
+        return Object.freeze({
+            fixedTick: this.fixedTick,
+            sessionMode: this.sessionMode,
+            recoveryRequired: this.isGpuWorldRecoveryRequired(),
+            tower: createTowerDiagnosticStatus(this.getTowerCombatStatus()),
+            core: createCoreDiagnosticStatus(this.coreIntegrity),
+            hostileAttack: createHostileAttackDiagnosticStatus(
+                hostileAttackStatus
+            ),
+            wave: createWaveDiagnosticStatus(
+                this.objectSystem?.getEnemyWaveStatus?.() ?? null
+            )
+        });
+    }
+
     /** @returns {number} 세션 전체가 완료한 fixed tick입니다. */
     getFixedTick() {
         return this.fixedTick;
@@ -331,6 +466,11 @@ export class GameSystem {
         }
         this.registrationTokens.length = 0;
         this.playerControlRouter.destroy();
+        if (this.gameplayStatusRendererOwned) {
+            this.gameplayStatusRenderer?.destroy?.();
+        }
+        this.gameplayStatusRenderer = null;
+        this.gameplayStatusRendererOwned = false;
         this.cameraZoomController?.destroy();
         this.cameraZoomController = null;
         this.objectSystem?.destroy();
@@ -351,6 +491,9 @@ export class GameSystem {
         if (snapshot && snapshot !== this.viewportSnapshot) {
             this.viewportSnapshot.ww = snapshot.ww;
             this.viewportSnapshot.wh = snapshot.wh;
+            this.viewportSnapshot.uiww = snapshot.uiww;
+            this.viewportSnapshot.uiOffsetX = snapshot.uiOffsetX;
+            this.viewportSnapshot.uiScale = snapshot.uiScale;
         }
     }
 }

@@ -21,6 +21,9 @@ import {
     PROJECTILE_TARGET_POLICY_ID
 } from './production/script/module/ingame/contract/projectile_target_policy_contract.js';
 import {
+    PLAYER_ACTION_TYPES
+} from './production/script/module/ingame/contract/player_controllable_contract.js';
+import {
     GPU_FIXED_PRIMITIVE_ABI,
     GPU_SPAWN_PROGRAM_MODE,
     GPU_SPAWN_PROGRAM_RESULT
@@ -58,7 +61,13 @@ import {
 import {
     HOSTILE_BASIC_BULLET_DATA
 } from './production/script/data/object/projectile/hostile_basic_bullet_data.js';
+import {
+    CORRIDOR_EIGHT_WAVE_01_DATA
+} from './production/script/data/scene/game/corridor_eight_wave_01_data.js';
 import { createTileMap } from './production/script/module/ingame/map/tile_map.js';
+import {
+    WaveDirector
+} from './production/script/module/ingame/flow/wave_director.js';
 import {
     createRouteFlowFieldAtlas
 } from './production/script/module/ingame/navigation/route_flow_field_atlas.js';
@@ -69,6 +78,9 @@ import {
     HostileAttackDirector,
     computeHostileAttackPhaseOffset
 } from './production/script/module/ingame/object/enemy/hostile_attack_director.js';
+import {
+    GpuPrimaryProjectileController
+} from './production/script/module/ingame/object/projectile/gpu_primary_projectile_controller.js';
 import {
     createGpuCoreProxySpawnIntent
 } from './production/script/module/ingame/object/core/gpu_core_proxy_spawn_adapter.js';
@@ -4968,7 +4980,14 @@ async function readPhase5Bodies(endpoint) {
     return bodiesPromise;
 }
 
-async function readPhase5WorldAlpha(device, texture, worldPosition, cameraScale, label) {
+async function readPhase5WorldAlpha(
+    device,
+    texture,
+    worldPosition,
+    cameraScale,
+    label,
+    viewportOrigin = null
+) {
     const bytesPerRow = 256;
     const readback = device.createBuffer({
         label,
@@ -4985,9 +5004,55 @@ async function readPhase5WorldAlpha(device, texture, worldPosition, cameraScale,
         device.queue.submit([encoder.finish()]);
         await readback.mapAsync(GPUMapMode.READ);
         const pixels = new Uint8Array(readback.getMappedRange());
-        const x = Math.floor(worldPosition.x * cameraScale);
-        const y = Math.floor(worldPosition.y * cameraScale);
+        const originX = Number(viewportOrigin?.x ?? 0);
+        const originY = Number(viewportOrigin?.y ?? 0);
+        const x = Math.floor(originX + (worldPosition.x * cameraScale));
+        const y = Math.floor(originY + (worldPosition.y * cameraScale));
+        assert(
+            Number.isFinite(originX)
+                && Number.isFinite(originY)
+                && x >= 0
+                && x < canvas.width
+                && y >= 0
+                && y < canvas.height,
+            `${label} alpha sample이 canvas bounds 밖입니다: ${JSON.stringify({ x, y, width: canvas.width, height: canvas.height, worldPosition, cameraScale, viewportOrigin })}`
+        );
         return pixels[(y * bytesPerRow) + (x * 4) + 3];
+    } finally {
+        try {
+            readback.unmap();
+        } catch {
+            // map 실패 또는 이미 unmap된 diagnostic buffer입니다.
+        }
+        readback.destroy();
+    }
+}
+
+async function readPhase5CanvasAlphaPlane(device, texture, label) {
+    const bytesPerRow = 256;
+    const readback = device.createBuffer({
+        label,
+        size: bytesPerRow * canvas.height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    try {
+        const encoder = device.createCommandEncoder({ label: `${label}-copy` });
+        encoder.copyTextureToBuffer(
+            { texture },
+            { buffer: readback, bytesPerRow, rowsPerImage: canvas.height },
+            [canvas.width, canvas.height]
+        );
+        device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const pixels = new Uint8Array(readback.getMappedRange());
+        const alpha = new Uint8Array(canvas.width * canvas.height);
+        for (let y = 0; y < canvas.height; y++) {
+            for (let x = 0; x < canvas.width; x++) {
+                alpha[(y * canvas.width) + x] =
+                    pixels[(y * bytesPerRow) + (x * 4) + 3];
+            }
+        }
+        return alpha;
     } finally {
         try {
             readback.unmap();
@@ -10218,6 +10283,10 @@ function hostileAttackLifecycleHandleMatches(value, handle) {
         && candidate?.incarnation === handle.incarnation;
 }
 
+function hostileAttackLifecycleHandleKey(handle) {
+    return `${handle.entityId}:${handle.incarnation}`;
+}
+
 function hostileAttackLifecyclePairMatches(event, sourceHandle, targetHandle) {
     return event?.entityId === sourceHandle.entityId
         && event?.incarnation === sourceHandle.incarnation
@@ -11777,10 +11846,1666 @@ async function runProductionHostileAttackLifecycleMainHardwareSmoke(device) {
     }
 }
 
+function createProductionWaveHostileProjectileIntent(
+    sourceHandle,
+    position,
+    velocity,
+    spawnSequence
+) {
+    return createGpuProjectileSpawnIntent({
+        definition: HOSTILE_BASIC_BULLET_DATA,
+        position,
+        velocity,
+        sourceHandle,
+        ownerHandle: sourceHandle,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+        producerId: ARCHER_ATTACK_DATA.producerId,
+        sourceAbilityId: ARCHER_ATTACK_DATA.sourceAbilityId,
+        spawnSequence
+    });
+}
+
+function parseProductionWaveHostileCommandId(commandId) {
+    const parts = String(commandId).split(':');
+    assert(
+        parts.length === 9 && parts[0] === 'gpu-hostile-archer-shot',
+        `Production-wave hostile command ID가 유효하지 않습니다: ${commandId}`
+    );
+    const result = Object.freeze({
+        sessionGeneration: Number(parts[1]),
+        sourceHandle: Object.freeze({
+            entityId: Number(parts[2]),
+            incarnation: Number(parts[3])
+        }),
+        targetHandle: Object.freeze({
+            entityId: Number(parts[4]),
+            incarnation: Number(parts[5])
+        }),
+        targetFixedTick: Number(parts[6]),
+        shotSequence: Number(parts[7]),
+        attackDefinitionId: parts[8]
+    });
+    assert(
+        Number.isSafeInteger(result.sessionGeneration)
+            && result.sessionGeneration > 0
+            && Number.isSafeInteger(result.sourceHandle.entityId)
+            && result.sourceHandle.entityId > 0
+            && Number.isSafeInteger(result.sourceHandle.incarnation)
+            && result.sourceHandle.incarnation > 0
+            && Number.isSafeInteger(result.targetHandle.entityId)
+            && result.targetHandle.entityId > 0
+            && Number.isSafeInteger(result.targetHandle.incarnation)
+            && result.targetHandle.incarnation > 0
+            && Number.isSafeInteger(result.targetFixedTick)
+            && result.targetFixedTick > 0
+            && Number.isSafeInteger(result.shotSequence)
+            && result.shotSequence >= 0
+            && result.attackDefinitionId === ARCHER_ATTACK_DATA.id,
+        `Production-wave hostile command provenance가 유효하지 않습니다: ${commandId}`
+    );
+    return result;
+}
+
+async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
+    const context = canvas.getContext('webgpu');
+    assert(context, 'Production-wave Archer canvas WebGPU context가 없습니다.');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+    });
+    let lastFrameTexture = null;
+    let drawMarks = 0;
+    const platformPort = {
+        getState: () => Object.freeze({ ready: true, status: 'ready' }),
+        getDevice: () => device,
+        getCanvasFormat: () => format,
+        getDeviceGeneration: () => 1,
+        acquireFrameTarget() {
+            const texture = context.getCurrentTexture();
+            lastFrameTexture = texture;
+            return {
+                device,
+                context,
+                texture,
+                view: texture.createView(),
+                format,
+                deviceGeneration: 1,
+                width: canvas.width,
+                height: canvas.height
+            };
+        },
+        clearCanvas: () => false,
+        markCanvasDrawn() {
+            drawMarks++;
+            return true;
+        },
+        markCanvasCleared: () => false
+    };
+    const tileMap = createTileMap(CORRIDOR_EIGHT_WAVE_01_DATA.mapId);
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: platformPort
+    }, {
+        capacity: 128,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 4,
+        spawnProgramCapacity: 4
+    });
+    const director = new HostileAttackDirector({ endpoint });
+    const waveDirector = new WaveDirector({
+        waveDefinition: CORRIDOR_EIGHT_WAVE_01_DATA
+    });
+    const towerRoster = new TowerCombatRoster({
+        maxHp: THE_TOWER_COMBAT_DATA.MAX_HEALTH
+    });
+    const fixedDelta = 1 / 60;
+    const maximumFixedTick = 600;
+    const towerPosition = Object.freeze({ x: 3, y: 12 });
+    const productionTowerSpawnPosition = Object.freeze({
+        ...tileMap.getTowerSpawnPosition()
+    });
+    const usesProductionTowerSpawnPosition =
+        towerPosition.x === productionTowerSpawnPosition.x
+        && towerPosition.y === productionTowerSpawnPosition.y;
+    const towerRenderCameraScale = 16;
+    const towerRenderCenterPixel = Object.freeze({
+        x: Math.floor(canvas.width / 2),
+        y: Math.floor(canvas.height / 2)
+    });
+    const towerRenderCenterViewport = Object.freeze({
+        x: towerRenderCenterPixel.x + 0.5,
+        y: towerRenderCenterPixel.y + 0.5
+    });
+    const corePosition = tileMap.getCorePosition();
+    const expectedCycle = Object.freeze([
+        BASIC_SQUARE_ENEMY_DATA.id,
+        BASIC_TRIANGLE_ENEMY_DATA.id,
+        BASIC_ARROW_ENEMY_DATA.id,
+        BASIC_PENTA_ENEMY_DATA.id,
+        BASIC_HEXA_ENEMY_DATA.id,
+        BASIC_GEN_ENEMY_DATA.id,
+        ARCHER_ENEMY_DATA.id
+    ]);
+    const expectedArcherSpawnIndexes = Object.freeze([6, 13, 20, 27]);
+    const expectedArcherSpawnTicks = Object.freeze([31, 66, 101, 136]);
+    const domainSentinel = {
+        coreIntegrity: { current: 100, max: 100 },
+        gold: 0,
+        reward: 0,
+        waveCompletion: 0,
+        runFailed: 0
+    };
+    const domainSentinelBefore = JSON.stringify(domainSentinel);
+    const observedContactEvents = [];
+    const observedDeathEvents = [];
+    const towerDamageFacts = [];
+    const towerDeathFacts = [];
+    const noLivingTowerFacts = [];
+    const towerHpTimeline = [THE_TOWER_COMBAT_DATA.MAX_HEALTH];
+    const productionSpawnRecords = [];
+    const archerRecords = new Map();
+    const resolvedShotRecords = [];
+    const auxiliaryCommandIds = Object.freeze({
+        hostileIsolation: 'production-wave:aux:hostile-isolation',
+        coreIsolation: 'production-wave:aux:core-isolation',
+        terrain: 'production-wave:aux:terrain',
+        lifetime: 'production-wave:aux:lifetime'
+    });
+    const auxiliaryHandles = new Map();
+    let towerHandle = null;
+    let coreHandle = null;
+    let firstArcherHandle = null;
+    let firstTargetedShot = null;
+    let firstTargetedShotPending = null;
+    let primaryController = null;
+    let primaryProjectileHandle = null;
+    let primaryProjectileMaterialized = null;
+    let primaryShotCommittedCount = 0;
+    let firstResolvedArcherPosition = null;
+    let initialTowerBody = null;
+    let initialCoreBody = null;
+    let hostileIsolationBefore = null;
+    let hostileIsolationAfter = null;
+    let coreIsolationAfter = null;
+    let terrainDeath = null;
+    let lifetimeDeath = null;
+    let towerDeathBoundaryTick = null;
+    let towerDeathSourceTick = null;
+    let towerAlphaAfterLethal = null;
+    let towerRenderExclusion = null;
+    let towerPreLethalRenderCapture = null;
+    let towerRemovedAtDeathBoundary = false;
+    let trackedDisableReceipt = null;
+    let firstArcherAtTowerDeath = null;
+    let firstArcherPostDeath = null;
+    let postDeathFixedTick = null;
+    let fixedSubmitCount = 0;
+    let controlRequestCount = 0;
+    let controlRequestCountAtTowerDeath = null;
+    let playerShotRequestCount = 0;
+    let playerShotRequestCountAtTowerDeath = null;
+    let acceptedShotCountAtTowerDeath = null;
+    let postDeathStageAttemptCount = 0;
+    let commitRejectedCount = 0;
+    let fixedRejectedCount = 0;
+    let peakActiveCount = 0;
+    let peakReservedCount = 0;
+    let finalObservedFixedTick = 0;
+    let cleanup = null;
+    let result = null;
+    let teardown = null;
+
+    try {
+        const phase = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0];
+        const group = phase.spawnGroups[0];
+        assert(
+            phase.startTick === 1
+                && phase.durationTicks === 156
+                && group.count === 32
+                && group.intervalTicks === 5
+                && JSON.stringify(group.enemyDefinitionIds)
+                    === JSON.stringify(expectedCycle)
+                && group.enemyDefinitionId === BASIC_SQUARE_ENEMY_DATA.id
+                && !Object.hasOwn(BASIC_ARROW_ENEMY_DATA, 'attackDefinitionId'),
+            `Production-wave authored cycle이 정확하지 않습니다: ${JSON.stringify({ phase, group, expectedCycle })}`
+        );
+        assert(
+            waveDirector.init(tileMap),
+            'Production-wave WaveDirector init 실패'
+        );
+        const scheduledArcherEntries = waveDirector.schedule
+            .map((entry, spawnIndex) => ({ entry, spawnIndex }))
+            .filter(({ entry }) => (
+                entry.intent.definitionId === ARCHER_ENEMY_DATA.id
+            ));
+        assert(
+            waveDirector.schedule.length === 32
+                && JSON.stringify(scheduledArcherEntries.map(({ spawnIndex }) => (
+                    spawnIndex
+                ))) === JSON.stringify(expectedArcherSpawnIndexes)
+                && JSON.stringify(scheduledArcherEntries.map(({ entry }) => (
+                    entry.targetFixedTick
+                ))) === JSON.stringify(expectedArcherSpawnTicks)
+                && waveDirector.schedule.every((entry, spawnIndex) => (
+                    entry.commandId
+                        === `corridor_eight_wave_01:0:0:${spawnIndex}`
+                )),
+            `Production-wave deterministic schedule 불일치: ${JSON.stringify(waveDirector.schedule)}`
+        );
+        assert(
+            endpoint.init(tileMap) === false,
+            'Production-wave endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+
+        for (let tick = 1; tick <= maximumFixedTick; tick++) {
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+            assert(
+                completed.protocolFailure === null,
+                `Production-wave completed event protocol 실패: tick=${tick}, result=${JSON.stringify(completed)}`
+            );
+            observedContactEvents.push(...completed.contactEvents);
+            observedDeathEvents.push(...completed.deathEvents);
+            const towerFacts = towerRoster.commitCompletedEvents(
+                completed,
+                endpoint.getRegistry()
+            );
+            for (const fact of towerFacts) {
+                if (fact.type === TOWER_COMBAT_FACT_TYPE.DAMAGE_APPLIED) {
+                    towerDamageFacts.push(fact);
+                    towerHpTimeline.push(fact.currentHp);
+                } else if (fact.type === TOWER_COMBAT_FACT_TYPE.DIED) {
+                    towerDeathFacts.push(fact);
+                } else if (fact.type
+                    === TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS) {
+                    noLivingTowerFacts.push(fact);
+                }
+            }
+            const terrainHandle = auxiliaryHandles.get(
+                auxiliaryCommandIds.terrain
+            );
+            if (!terrainDeath && terrainHandle) {
+                terrainDeath = observedDeathEvents.find((event) => (
+                    hostileAttackLifecycleHandleMatches(event, terrainHandle)
+                )) ?? null;
+            }
+            const lifetimeHandle = auxiliaryHandles.get(
+                auxiliaryCommandIds.lifetime
+            );
+            if (!lifetimeDeath && lifetimeHandle) {
+                lifetimeDeath = observedDeathEvents.find((event) => (
+                    hostileAttackLifecycleHandleMatches(event, lifetimeHandle)
+                )) ?? null;
+            }
+
+            if (towerDeathFacts.length > 0 && towerDeathBoundaryTick === null) {
+                towerDeathBoundaryTick = tick;
+                towerDeathSourceTick = completed.deathEvents.find((event) => (
+                    hostileAttackLifecycleHandleMatches(event, towerHandle)
+                ))?.sourceTick ?? null;
+                controlRequestCountAtTowerDeath = controlRequestCount;
+                playerShotRequestCountAtTowerDeath = playerShotRequestCount;
+                acceptedShotCountAtTowerDeath = director.getStatus()
+                    .shotRequestAcceptedCount;
+                assert(
+                    primaryController?.deactivateForTowerDeath() === true,
+                    'Production-wave Tower death primary controller cutover 실패'
+                );
+                trackedDisableReceipt = endpoint.configureTrackedBody(null);
+                assert(
+                    trackedDisableReceipt.accepted
+                        && trackedDisableReceipt.tracked === false,
+                    `Production-wave Tower tracking 해제 실패: ${JSON.stringify(trackedDisableReceipt)}`
+                );
+                const deathBodies = await readPhase5Bodies(endpoint);
+                firstArcherAtTowerDeath = Object.freeze({
+                    ...findPhase5Body(
+                        deathBodies,
+                        firstArcherHandle,
+                        'Production-wave Archer at Tower death'
+                    ).position
+                });
+                assert(
+                    towerPreLethalRenderCapture,
+                    'Production-wave pre-lethal Tower alpha plane이 없습니다.'
+                );
+                const towerRadiusPixels = THE_TOWER_DATA.RADIUS_TILES
+                    * towerRenderCameraScale;
+                const requiredInteriorMarginPixels = 2;
+                const maximumOffsetPixels = Math.floor(
+                    towerRadiusPixels - requiredInteriorMarginPixels
+                );
+                let towerRenderSample = null;
+                for (let offsetY = -maximumOffsetPixels;
+                    offsetY <= maximumOffsetPixels;
+                    offsetY++) {
+                    for (let offsetX = -maximumOffsetPixels;
+                        offsetX <= maximumOffsetPixels;
+                        offsetX++) {
+                        const distanceFromTowerCenterPixels = Math.hypot(
+                            offsetX,
+                            offsetY
+                        );
+                        const towerInteriorMarginPixels = towerRadiusPixels
+                            - distanceFromTowerCenterPixels;
+                        if (towerInteriorMarginPixels
+                            < requiredInteriorMarginPixels) {
+                            continue;
+                        }
+                        const worldPosition = {
+                            x: towerPosition.x
+                                + (offsetX / towerRenderCameraScale),
+                            y: towerPosition.y
+                                + (offsetY / towerRenderCameraScale)
+                        };
+                        let nearestActiveBody = null;
+                        let nearestActiveBodyClearance =
+                            Number.POSITIVE_INFINITY;
+                        for (const body of deathBodies) {
+                            const clearance = Math.hypot(
+                                body.position.x - worldPosition.x,
+                                body.position.y - worldPosition.y
+                            ) - body.radius;
+                            if (clearance < nearestActiveBodyClearance) {
+                                nearestActiveBodyClearance = clearance;
+                                nearestActiveBody = body;
+                            }
+                        }
+                        const nearestActiveBodyClearancePixels =
+                            nearestActiveBodyClearance
+                                * towerRenderCameraScale;
+                        if (!towerRenderSample
+                            || nearestActiveBodyClearancePixels
+                                > towerRenderSample
+                                    .nearestActiveBodyClearancePixels) {
+                            towerRenderSample = {
+                                offsetPixels: { x: offsetX, y: offsetY },
+                                worldPosition,
+                                towerInteriorMarginPixels,
+                                nearestActiveBody,
+                                nearestActiveBodyClearance,
+                                nearestActiveBodyClearancePixels
+                            };
+                        }
+                    }
+                }
+                assert(
+                    towerRenderSample?.nearestActiveBody
+                        && towerRenderSample.towerInteriorMarginPixels
+                            >= requiredInteriorMarginPixels
+                        && towerRenderSample.nearestActiveBodyClearancePixels
+                            >= 2,
+                    `Production-wave Tower 내부 render sample을 다른 active body와 분리할 수 없습니다: ${JSON.stringify(towerRenderSample)}`
+                );
+                const preLethalSamplePixel = Object.freeze({
+                    x: towerRenderCenterPixel.x
+                        + towerRenderSample.offsetPixels.x,
+                    y: towerRenderCenterPixel.y
+                        + towerRenderSample.offsetPixels.y
+                });
+                const preLethalAlpha = towerPreLethalRenderCapture.alphaPlane[
+                    (preLethalSamplePixel.y * canvas.width)
+                        + preLethalSamplePixel.x
+                ];
+                assert(
+                    towerPreLethalRenderCapture.drawCount === 1
+                        && preLethalAlpha > 0,
+                    `Production-wave selected Tower sample의 pre-lethal alpha가 없습니다: ${JSON.stringify({ preLethalSamplePixel, preLethalAlpha, towerRenderSample })}`
+                );
+                const viewportOrigin = Object.freeze({
+                    x: towerRenderCenterViewport.x
+                        - (towerRenderSample.worldPosition.x
+                            * towerRenderCameraScale),
+                    y: towerRenderCenterViewport.y
+                        - (towerRenderSample.worldPosition.y
+                            * towerRenderCameraScale)
+                });
+                const drawMarksBefore = drawMarks;
+                endpoint.updatePresentation({
+                    frameDelta: 0,
+                    fixedDelta,
+                    fixedAlpha: 1,
+                    renderFrameId: 91_000 + tick
+                });
+                assert(endpoint.draw({
+                    worldToViewport(x, y, out) {
+                        out.x = viewportOrigin.x
+                            + (x * towerRenderCameraScale);
+                        out.y = viewportOrigin.y
+                            + (y * towerRenderCameraScale);
+                        return out;
+                    },
+                    getScale: () => towerRenderCameraScale
+                }), 'Production-wave lethal render submit 실패');
+                assert(lastFrameTexture, 'Production-wave lethal render texture가 없습니다.');
+                towerAlphaAfterLethal = await readPhase5WorldAlpha(
+                    device,
+                    lastFrameTexture,
+                    towerRenderSample.worldPosition,
+                    towerRenderCameraScale,
+                    'production-wave-tower-lethal-render-readback',
+                    viewportOrigin
+                );
+                towerRenderExclusion = Object.freeze({
+                    sampleWorldPosition: Object.freeze({
+                        ...towerRenderSample.worldPosition
+                    }),
+                    sampleOffsetPixels: Object.freeze({
+                        ...towerRenderSample.offsetPixels
+                    }),
+                    towerInteriorMarginPixels:
+                        towerRenderSample.towerInteriorMarginPixels,
+                    samplePixel: towerRenderCenterPixel,
+                    viewportCenter: towerRenderCenterViewport,
+                    viewportOrigin,
+                    cameraScale: towerRenderCameraScale,
+                    nearestActiveBody: Object.freeze({
+                        handle: towerRenderSample.nearestActiveBody.handle,
+                        position: Object.freeze({
+                            ...towerRenderSample.nearestActiveBody.position
+                        }),
+                        radius: towerRenderSample.nearestActiveBody.radius
+                    }),
+                    nearestActiveBodyClearance:
+                        towerRenderSample.nearestActiveBodyClearance,
+                    nearestActiveBodyClearancePixels:
+                        towerRenderSample.nearestActiveBodyClearancePixels,
+                    preLethal: Object.freeze({
+                        boundaryTick:
+                            towerPreLethalRenderCapture.boundaryTick,
+                        towerHp: towerPreLethalRenderCapture.towerHp,
+                        samplePixel: preLethalSamplePixel,
+                        drawCount: towerPreLethalRenderCapture.drawCount,
+                        alpha: preLethalAlpha
+                    }),
+                    drawCount: drawMarks - drawMarksBefore,
+                    alpha: towerAlphaAfterLethal
+                });
+                assert(
+                    towerRenderExclusion.preLethal.alpha > 0
+                        && towerRenderExclusion.drawCount === 1
+                        && towerAlphaAfterLethal === 0,
+                    `Production-wave dead Tower exact render exclusion 실패: ${JSON.stringify(towerRenderExclusion)}`
+                );
+            }
+
+            if (!towerPreLethalRenderCapture
+                && towerDeathBoundaryTick === null
+                && towerHpTimeline[towerHpTimeline.length - 1] === 5) {
+                assert(
+                    towerRoster.isPrimaryTowerAlive(),
+                    'Production-wave pre-lethal render에서 Tower가 살아 있지 않습니다.'
+                );
+                const viewportOrigin = Object.freeze({
+                    x: towerRenderCenterViewport.x
+                        - (towerPosition.x * towerRenderCameraScale),
+                    y: towerRenderCenterViewport.y
+                        - (towerPosition.y * towerRenderCameraScale)
+                });
+                const drawMarksBefore = drawMarks;
+                endpoint.updatePresentation({
+                    frameDelta: 0,
+                    fixedDelta,
+                    fixedAlpha: 1,
+                    renderFrameId: 90_000 + tick
+                });
+                assert(endpoint.draw({
+                    worldToViewport(x, y, out) {
+                        out.x = viewportOrigin.x
+                            + (x * towerRenderCameraScale);
+                        out.y = viewportOrigin.y
+                            + (y * towerRenderCameraScale);
+                        return out;
+                    },
+                    getScale: () => towerRenderCameraScale
+                }), 'Production-wave pre-lethal render submit 실패');
+                assert(
+                    lastFrameTexture,
+                    'Production-wave pre-lethal render texture가 없습니다.'
+                );
+                const alphaPlane = await readPhase5CanvasAlphaPlane(
+                    device,
+                    lastFrameTexture,
+                    'production-wave-tower-pre-lethal-render-readback'
+                );
+                towerPreLethalRenderCapture = Object.freeze({
+                    boundaryTick: tick,
+                    towerHp: towerHpTimeline[towerHpTimeline.length - 1],
+                    viewportOrigin,
+                    cameraScale: towerRenderCameraScale,
+                    drawCount: drawMarks - drawMarksBefore,
+                    alphaPlane
+                });
+                assert(
+                    towerPreLethalRenderCapture.drawCount === 1,
+                    `Production-wave pre-lethal draw count 불일치: ${JSON.stringify({ drawMarksBefore, drawMarks })}`
+                );
+            }
+
+            const completedObservation = director.observeCompletedEvents(completed);
+            assert(
+                !completedObservation.recoveryRequired,
+                `Production-wave Director completed observation 실패: tick=${tick}, result=${JSON.stringify(completedObservation)}`
+            );
+            const queuedWaveSpawnCount = waveDirector.queueSpawnsForFixedTick(
+                tick,
+                endpoint
+            );
+            if (tick === 1) {
+                const actorRequests = [
+                    endpoint.requestSpawn(
+                        createGpuTowerSpawnIntent({ position: towerPosition }),
+                        tick,
+                        'production-wave:actor:tower'
+                    ),
+                    endpoint.requestSpawn(
+                        createGpuCoreProxySpawnIntent({ position: corePosition }),
+                        tick,
+                        'production-wave:actor:core'
+                    )
+                ];
+                assert(
+                    queuedWaveSpawnCount === 1
+                        && actorRequests.every(({ accepted }) => accepted),
+                    `Production-wave initial actor request 실패: ${JSON.stringify(actorRequests)}`
+                );
+            }
+
+            if (tick === 32) {
+                assert(firstArcherHandle, 'Production-wave tick 32 Archer가 없습니다.');
+                const bodiesBeforeAuxiliary = await readPhase5Bodies(endpoint);
+                const ordinaryEnemyHandle = endpoint.getRegistry()
+                    .copyActiveHandlesInto([], { kindId: 'enemy' })
+                    .find((handle) => (
+                        !hostileAttackLifecycleHandleMatches(
+                            handle,
+                            firstArcherHandle
+                        )
+                    ));
+                const ordinaryEnemy = findPhase5Body(
+                    bodiesBeforeAuxiliary,
+                    ordinaryEnemyHandle,
+                    'Production-wave hostile-isolation target'
+                );
+                const coreBody = findPhase5Body(
+                    bodiesBeforeAuxiliary,
+                    coreHandle,
+                    'Production-wave Core isolation target'
+                );
+                hostileIsolationBefore = Object.freeze({
+                    targetHandle: Object.freeze({ ...ordinaryEnemyHandle }),
+                    targetHealth: ordinaryEnemy.health
+                });
+                const requests = [
+                    [
+                        auxiliaryCommandIds.hostileIsolation,
+                        createProductionWaveHostileProjectileIntent(
+                            firstArcherHandle,
+                            ordinaryEnemy.position,
+                            ordinaryEnemy.velocity,
+                            1_000
+                        )
+                    ],
+                    [
+                        auxiliaryCommandIds.coreIsolation,
+                        createProductionWaveHostileProjectileIntent(
+                            firstArcherHandle,
+                            coreBody.position,
+                            { x: 0, y: 0 },
+                            1_001
+                        )
+                    ],
+                    [
+                        auxiliaryCommandIds.terrain,
+                        createProductionWaveHostileProjectileIntent(
+                            firstArcherHandle,
+                            { x: 5.5, y: 3 },
+                            { x: 12, y: 0 },
+                            1_002
+                        )
+                    ],
+                    [
+                        auxiliaryCommandIds.lifetime,
+                        createProductionWaveHostileProjectileIntent(
+                            firstArcherHandle,
+                            { x: 3, y: 15.5 },
+                            { x: 0, y: 0 },
+                            1_003
+                        )
+                    ]
+                ].map(([commandId, intent]) => ({
+                    commandId,
+                    receipt: endpoint.requestSpawn(intent, tick, commandId)
+                }));
+                assert(
+                    requests.every(({ receipt }) => receipt.accepted),
+                    `Production-wave auxiliary projectile request 실패: ${JSON.stringify(requests)}`
+                );
+            }
+
+            const liveTowerTarget = towerRoster.isPrimaryTowerAlive()
+                && towerHandle
+                && endpoint.getRegistry().has(towerHandle)
+                && endpoint.hasBody(towerHandle)
+                ? towerHandle
+                : null;
+            let controlReceipt = null;
+            if (liveTowerTarget) {
+                controlReceipt = endpoint.requestBodyControl({
+                    handle: towerHandle,
+                    moveIntentX: 0,
+                    moveIntentY: 0
+                }, tick, `production-wave:tower-control:${tick}`);
+                assert(
+                    controlReceipt.accepted,
+                    `Production-wave Tower control request 실패: tick=${tick}`
+                );
+                controlRequestCount++;
+            }
+            if (tick === 2) {
+                assert(
+                    primaryController?.handlePlayerAction({
+                        type: PLAYER_ACTION_TYPES.PRIMARY_POINTER_FIRE,
+                        payload: {
+                            pressed: true,
+                            viewportX: 5.5,
+                            viewportY: 12
+                        }
+                    }) === 'consumed',
+                    'Production-wave pre-death LMB semantic action 실패'
+                );
+            }
+            const primaryShotReceipt = primaryController
+                ?.stageShotForFixedTick(tick) ?? null;
+            if (primaryShotReceipt?.accepted === true) {
+                playerShotRequestCount++;
+            }
+            if (towerDeathBoundaryTick !== null) {
+                assert(
+                    primaryShotReceipt === null,
+                    `Production-wave Tower death 후 LMB shot이 stage됐습니다: ${JSON.stringify(primaryShotReceipt)}`
+                );
+            }
+            const directorBeforeStage = director.getStatus();
+            let tickStartBodies = null;
+            if (liveTowerTarget && directorBeforeStage.archers.some((record) => (
+                record.state === 'IDLE'
+                    && record.nextEligibleFixedTick <= tick
+            ))) {
+                tickStartBodies = await readPhase5Bodies(endpoint);
+            }
+            const stage = director.stageForFixedTick({
+                targetFixedTick: tick,
+                targetHandle: liveTowerTarget
+            });
+            assert(
+                !stage.recoveryRequired,
+                `Production-wave hostile stage recovery: tick=${tick}, result=${JSON.stringify(stage)}`
+            );
+            if (towerDeathBoundaryTick !== null) {
+                postDeathStageAttemptCount += stage.attemptedCount;
+            }
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            commitRejectedCount += commit.rejected.length;
+            fixedRejectedCount += commit.fixedCommands?.rejected?.length ?? 0;
+            assert(
+                !commit.recoveryRequired
+                    && commit.rejected.length === 0
+                    && commit.fixedCommands
+                    && commit.fixedCommands.rejected.length === 0,
+                `Production-wave lifecycle/fixed commit 실패: tick=${tick}, result=${JSON.stringify(commit)}`
+            );
+
+            if (tick === 1) {
+                const initialHandles = new Map(
+                    commit.spawned.map(({ commandId, handle }) => (
+                        [commandId, handle]
+                    ))
+                );
+                towerHandle = initialHandles.get('production-wave:actor:tower');
+                coreHandle = initialHandles.get('production-wave:actor:core');
+                assert(
+                    towerHandle && coreHandle,
+                    `Production-wave initial actor handle 누락: ${JSON.stringify(commit)}`
+                );
+                towerRoster.bindGpuBody(
+                    towerHandle,
+                    readHostileAttackLifecycleProtocol(endpoint)
+                );
+                assert(
+                    endpoint.configureTrackedBody(towerHandle).accepted,
+                    'Production-wave Tower tracking bind 실패'
+                );
+                const towerFacade = {
+                    getGpuBodyHandle() {
+                        return towerRoster.isPrimaryTowerAlive()
+                            ? towerHandle
+                            : null;
+                    },
+                    getStatus() {
+                        return {
+                            sessionGeneration:
+                                endpoint.getStatus().sessionGeneration
+                        };
+                    }
+                };
+                primaryController = new GpuPrimaryProjectileController({
+                    tower: towerFacade,
+                    camera: {
+                        viewportToWorld(viewportX, viewportY, out) {
+                            out.x = viewportX;
+                            out.y = viewportY;
+                            return out;
+                        }
+                    },
+                    endpoint
+                });
+            }
+            if (controlReceipt) {
+                assert(
+                    commit.fixedCommands.controls.filter(({ commandId }) => (
+                        commandId === controlReceipt.commandId
+                    )).length === 1,
+                    `Production-wave Tower control commit 누락: tick=${tick}`
+                );
+            }
+            if (primaryShotReceipt?.accepted === true) {
+                const committedPrimary = primaryController.finalizeFixedCommit(
+                    commit.fixedCommands,
+                    tick
+                );
+                const primarySpawn = commit.fixedCommands
+                    .sourceRelativeSpawns.find(({ commandId }) => (
+                        commandId === primaryShotReceipt.commandId
+                    ));
+                assert(
+                    committedPrimary && primarySpawn,
+                    `Production-wave pre-death LMB fixed commit 실패: ${JSON.stringify({ primaryShotReceipt, commit })}`
+                );
+                primaryShotCommittedCount++;
+                primaryProjectileHandle = Object.freeze({
+                    ...primarySpawn.handle
+                });
+                assert(
+                    primaryController.handlePlayerAction({
+                        type: PLAYER_ACTION_TYPES.PRIMARY_POINTER_FIRE,
+                        payload: {
+                            pressed: false,
+                            viewportX: 5.5,
+                            viewportY: 12
+                        }
+                    }) === 'consumed',
+                    'Production-wave pre-death LMB release 실패'
+                );
+            }
+
+            const commitObservation = director.observeFixedCommit(commit, tick);
+            assert(
+                !commitObservation.recoveryRequired,
+                `Production-wave Director fixed observation 실패: tick=${tick}, result=${JSON.stringify(commitObservation)}`
+            );
+            const scheduledByCommandId = new Map(
+                waveDirector.schedule.map((entry, spawnIndex) => (
+                    [entry.commandId, { entry, spawnIndex }]
+                ))
+            );
+            const spawnedArchersThisTick = [];
+            for (const spawned of commit.spawned) {
+                if (Object.values(auxiliaryCommandIds).includes(
+                    spawned.commandId
+                )) {
+                    auxiliaryHandles.set(spawned.commandId, spawned.handle);
+                }
+                const scheduled = scheduledByCommandId.get(spawned.commandId);
+                if (!scheduled) {
+                    continue;
+                }
+                const view = endpoint.getRegistry().copyEntityView(
+                    spawned.handle,
+                    {}
+                );
+                productionSpawnRecords.push(Object.freeze({
+                    spawnIndex: scheduled.spawnIndex,
+                    targetFixedTick: scheduled.entry.targetFixedTick,
+                    commandId: spawned.commandId,
+                    definitionId: view.definitionId,
+                    handle: Object.freeze({ ...spawned.handle })
+                }));
+                if (view.definitionId === ARCHER_ENEMY_DATA.id) {
+                    spawnedArchersThisTick.push(spawned.handle);
+                    firstArcherHandle ??= Object.freeze({ ...spawned.handle });
+                    const status = director.getStatus().archers.find((record) => (
+                        hostileAttackLifecycleHandleMatches(
+                            record,
+                            spawned.handle
+                        )
+                    ));
+                    const expectedPhaseOffset = computeHostileAttackPhaseOffset({
+                        ...spawned.handle,
+                        phaseSpreadTicks: ARCHER_ATTACK_DATA.phaseSpreadTicks
+                    });
+                    assert(
+                        status
+                            && status.createdAtTick === tick
+                            && status.phaseOffsetTicks === expectedPhaseOffset
+                            && status.nextEligibleFixedTick === tick
+                                + ARCHER_ATTACK_DATA.initialDelayTicks
+                                + expectedPhaseOffset,
+                        `Production-wave Archer deterministic registration 실패: ${JSON.stringify({ spawned, status })}`
+                    );
+                    archerRecords.set(hostileAttackLifecycleHandleKey(spawned.handle), {
+                        handle: Object.freeze({ ...spawned.handle }),
+                        spawnIndex: scheduled.spawnIndex,
+                        createdAtTick: tick,
+                        phaseOffsetTicks: expectedPhaseOffset,
+                        firstEligibleFixedTick: status.nextEligibleFixedTick,
+                        positionAfterSpawnFixed: null,
+                        resolvedShots: []
+                    });
+                }
+            }
+            for (const completion of commit.fixedCommands.completed) {
+                if (completion.outcome !== 'resolved'
+                    || !String(completion.commandId).startsWith(
+                        'gpu-hostile-archer-shot:'
+                    )) {
+                    continue;
+                }
+                const parsed = parseProductionWaveHostileCommandId(
+                    completion.commandId
+                );
+                const archerRecord = archerRecords.get(
+                    hostileAttackLifecycleHandleKey(parsed.sourceHandle)
+                );
+                assert(
+                    archerRecord
+                        && Number.isSafeInteger(completion.handle?.entityId)
+                        && completion.handle.entityId > 0
+                        && Number.isSafeInteger(
+                            completion.handle?.incarnation
+                        )
+                        && completion.handle.incarnation > 0,
+                    `Production-wave resolved shot source가 roster에 없습니다: ${JSON.stringify(completion)}`
+                );
+                const resolvedRecord = Object.freeze({
+                    commandId: completion.commandId,
+                    sourceHandle: parsed.sourceHandle,
+                    targetHandle: parsed.targetHandle,
+                    projectileHandle: Object.freeze({ ...completion.handle }),
+                    targetFixedTick: parsed.targetFixedTick,
+                    completionBoundaryTick: tick,
+                    shotSequence: parsed.shotSequence
+                });
+                archerRecord.resolvedShots.push(resolvedRecord);
+                resolvedShotRecords.push(resolvedRecord);
+                if (!firstTargetedShot
+                    && completion.commandId
+                        === firstTargetedShotPending?.commandId) {
+                    const projectileView = endpoint.getRegistry()
+                        .copyEntityView(completion.handle, {});
+                    const materialized = firstTargetedShotPending.materialized;
+                    assert(
+                        materialized
+                            && projectileView?.metadata?.teamId
+                                === GAMEPLAY_TEAM_ID.HOSTILE
+                            && projectileView.metadata.targetPolicyId
+                                === PROJECTILE_TARGET_POLICY_ID
+                                    .PLAYER_DAMAGEABLE_AND_TERRAIN
+                            && projectileView.metadata.sourceEntityId
+                                === parsed.sourceHandle.entityId
+                            && projectileView.metadata.sourceIncarnation
+                                === parsed.sourceHandle.incarnation
+                            && projectileView.metadata.targetEntityId
+                                === towerHandle.entityId
+                            && projectileView.metadata.targetIncarnation
+                                === towerHandle.incarnation,
+                        `Production-wave targeted projectile completion provenance 실패: ${JSON.stringify({ completion, projectileView, materialized })}`
+                    );
+                    firstTargetedShot = Object.freeze({
+                        commandId: firstTargetedShotPending.commandId,
+                        sourceHandle: parsed.sourceHandle,
+                        targetHandle: parsed.targetHandle,
+                        projectileHandle: Object.freeze({
+                            ...completion.handle
+                        }),
+                        targetFixedTick: parsed.targetFixedTick,
+                        completionBoundaryTick: tick,
+                        sourceTickStart:
+                            firstTargetedShotPending.sourceTickStart,
+                        targetTickStart:
+                            firstTargetedShotPending.targetTickStart,
+                        origin: materialized.origin,
+                        velocity: materialized.velocity,
+                        speed: materialized.speed,
+                        launchSpeed: ARCHER_ATTACK_DATA.launchSpeed,
+                        projectileTeamId: projectileView.metadata.teamId,
+                        targetPolicyId: projectileView.metadata.targetPolicyId
+                    });
+                }
+                if (!firstResolvedArcherPosition
+                    && hostileAttackLifecycleHandleMatches(
+                        parsed.sourceHandle,
+                        firstArcherHandle
+                    )) {
+                    firstResolvedArcherPosition = 'pending-readback';
+                }
+            }
+
+            if (!firstTargetedShotPending && stage.commandIds.length > 0) {
+                const commandId = stage.commandIds[0];
+                const parsed = parseProductionWaveHostileCommandId(commandId);
+                const spawnEntry = commit.fixedCommands.sourceRelativeSpawns
+                    .find((entry) => entry.commandId === commandId);
+                const sourceTickStart = findPhase5Body(
+                    tickStartBodies,
+                    parsed.sourceHandle,
+                    'Production-wave targeted source tick-start'
+                );
+                const targetTickStart = findPhase5Body(
+                    tickStartBodies,
+                    parsed.targetHandle,
+                    'Production-wave targeted Tower tick-start'
+                );
+                assert(
+                    spawnEntry
+                        && hostileAttackLifecycleHandleMatches(
+                            parsed.targetHandle,
+                            towerHandle
+                        ),
+                    `Production-wave targeted fixed acceptance 실패: ${JSON.stringify({ stage, commit })}`
+                );
+                firstTargetedShotPending = {
+                    commandId,
+                    parsed,
+                    projectileHandle: Object.freeze({ ...spawnEntry.handle }),
+                    sourceTickStart: Object.freeze({
+                        position: Object.freeze({ ...sourceTickStart.position }),
+                        velocity: Object.freeze({ ...sourceTickStart.velocity })
+                    }),
+                    targetTickStart: Object.freeze({
+                        position: Object.freeze({ ...targetTickStart.position }),
+                        velocity: Object.freeze({ ...targetTickStart.velocity })
+                    })
+                };
+            }
+
+            if (towerDeathBoundaryTick !== null) {
+                towerRemovedAtDeathBoundary = !endpoint.getRegistry().has(
+                    towerHandle
+                ) && !endpoint.hasBody(towerHandle);
+            }
+            assert(
+                endpoint.fixedUpdate(fixedDelta, tick),
+                `Production-wave fixed submit 실패: tick=${tick}`
+            );
+            fixedSubmitCount++;
+            await settlePhase5Endpoint(
+                endpoint,
+                `Production-wave fixed tick ${tick}`,
+                {
+                    spawnProgram:
+                        commit.fixedCommands.sourceRelativeSpawns.length > 0
+                }
+            );
+            finalObservedFixedTick = tick;
+
+            const endpointStatus = endpoint.getStatus();
+            peakActiveCount = Math.max(
+                peakActiveCount,
+                endpointStatus.activeCount
+            );
+            peakReservedCount = Math.max(
+                peakReservedCount,
+                endpointStatus.reservedCount
+            );
+            assert(
+                !endpointStatus.recoveryRequired
+                    && !director.requiresRecovery(),
+                `Production-wave normal load가 recovery를 요구합니다: tick=${tick}, status=${JSON.stringify({ endpointStatus, director: director.getStatus() })}`
+            );
+
+            if (tick === 1) {
+                const initialBodies = await readPhase5Bodies(endpoint);
+                initialTowerBody = Object.freeze({
+                    ...findPhase5Body(
+                        initialBodies,
+                        towerHandle,
+                        'Production-wave initial Tower'
+                    )
+                });
+                initialCoreBody = Object.freeze({
+                    ...findPhase5Body(
+                        initialBodies,
+                        coreHandle,
+                        'Production-wave initial Core'
+                    )
+                });
+                assert(
+                    initialTowerBody.health
+                        === THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+                    `Production-wave Tower initial HP 불일치: ${JSON.stringify(initialTowerBody)}`
+                );
+            }
+            if (tick === 2) {
+                const bodiesAfterPrimaryShot = await readPhase5Bodies(endpoint);
+                const primaryProjectile = findPhase5Body(
+                    bodiesAfterPrimaryShot,
+                    primaryProjectileHandle,
+                    'Production-wave pre-death LMB Basic Bullet'
+                );
+                primaryProjectileMaterialized = Object.freeze({
+                    commandId: primaryShotReceipt.commandId,
+                    targetFixedTick: tick,
+                    handle: primaryProjectileHandle,
+                    previousPosition: Object.freeze({
+                        ...primaryProjectile.previousPosition
+                    }),
+                    velocity: Object.freeze({ ...primaryProjectile.velocity }),
+                    speed: Math.hypot(
+                        primaryProjectile.velocity.x,
+                        primaryProjectile.velocity.y
+                    )
+                });
+                assert(
+                    playerShotRequestCount === 1
+                        && primaryShotCommittedCount === 1
+                        && primaryProjectileMaterialized.speed > 0,
+                    `Production-wave pre-death LMB materialization 실패: ${JSON.stringify(primaryProjectileMaterialized)}`
+                );
+                assertNear(
+                    primaryProjectileMaterialized.previousPosition.x,
+                    initialTowerBody.position.x
+                        + BASIC_BULLET_WEAPON_DATA.positionOffsetTiles,
+                    0.00005,
+                    'Production-wave pre-death LMB origin.x'
+                );
+                assertNear(
+                    primaryProjectileMaterialized.previousPosition.y,
+                    initialTowerBody.position.y,
+                    0.00005,
+                    'Production-wave pre-death LMB origin.y'
+                );
+                assertNear(
+                    primaryProjectileMaterialized.velocity.x,
+                    BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+                    0.00005,
+                    'Production-wave pre-death LMB velocity.x'
+                );
+                assertNear(
+                    primaryProjectileMaterialized.velocity.y,
+                    0,
+                    0.00005,
+                    'Production-wave pre-death LMB velocity.y'
+                );
+            }
+            if (spawnedArchersThisTick.length > 0) {
+                const bodiesAfterArcherSpawn = await readPhase5Bodies(endpoint);
+                for (const handle of spawnedArchersThisTick) {
+                    const record = archerRecords.get(
+                        hostileAttackLifecycleHandleKey(handle)
+                    );
+                    record.positionAfterSpawnFixed = Object.freeze({
+                        ...findPhase5Body(
+                            bodiesAfterArcherSpawn,
+                            handle,
+                            'Production-wave spawned Archer'
+                        ).position
+                    });
+                }
+            }
+            if (tick === 32) {
+                const bodiesAfterAuxiliary = await readPhase5Bodies(endpoint);
+                const hostileTargetAfter = findPhase5Body(
+                    bodiesAfterAuxiliary,
+                    hostileIsolationBefore.targetHandle,
+                    'Production-wave hostile target after isolation probe'
+                );
+                const hostileBulletAfter = findPhase5Body(
+                    bodiesAfterAuxiliary,
+                    auxiliaryHandles.get(auxiliaryCommandIds.hostileIsolation),
+                    'Production-wave hostile-isolation Bullet'
+                );
+                const coreAfter = findPhase5Body(
+                    bodiesAfterAuxiliary,
+                    coreHandle,
+                    'Production-wave Core after isolation probe'
+                );
+                const coreBulletAfter = findPhase5Body(
+                    bodiesAfterAuxiliary,
+                    auxiliaryHandles.get(auxiliaryCommandIds.coreIsolation),
+                    'Production-wave Core-isolation Bullet'
+                );
+                hostileIsolationAfter = Object.freeze({
+                    targetHealth: hostileTargetAfter.health,
+                    projectilePenetration: hostileBulletAfter.health
+                });
+                coreIsolationAfter = Object.freeze({
+                    coreHealth: coreAfter.health,
+                    projectilePenetration: coreBulletAfter.health
+                });
+            }
+            if (firstTargetedShotPending
+                && !firstTargetedShotPending.materialized) {
+                const bodiesAfterShot = await readPhase5Bodies(endpoint);
+                const projectile = findPhase5Body(
+                    bodiesAfterShot,
+                    firstTargetedShotPending.projectileHandle,
+                    'Production-wave first targeted Bullet'
+                );
+                const aimX = firstTargetedShotPending.targetTickStart.position.x
+                    + ARCHER_ATTACK_DATA.targetOffset.x
+                    - firstTargetedShotPending.sourceTickStart.position.x
+                    - ARCHER_ATTACK_DATA.positionOffset.x;
+                const aimY = firstTargetedShotPending.targetTickStart.position.y
+                    + ARCHER_ATTACK_DATA.targetOffset.y
+                    - firstTargetedShotPending.sourceTickStart.position.y
+                    - ARCHER_ATTACK_DATA.positionOffset.y;
+                const aimLength = Math.hypot(aimX, aimY);
+                const expectedOrigin = Object.freeze({
+                    x: firstTargetedShotPending.sourceTickStart.position.x
+                        + ARCHER_ATTACK_DATA.positionOffset.x,
+                    y: firstTargetedShotPending.sourceTickStart.position.y
+                        + ARCHER_ATTACK_DATA.positionOffset.y
+                });
+                const expectedVelocity = Object.freeze({
+                    x: (aimX / aimLength) * ARCHER_ATTACK_DATA.launchSpeed,
+                    y: (aimY / aimLength) * ARCHER_ATTACK_DATA.launchSpeed
+                });
+                assertNear(
+                    projectile.previousPosition.x,
+                    expectedOrigin.x,
+                    0.00005,
+                    'Production-wave targeted origin.x'
+                );
+                assertNear(
+                    projectile.previousPosition.y,
+                    expectedOrigin.y,
+                    0.00005,
+                    'Production-wave targeted origin.y'
+                );
+                assertNear(
+                    projectile.velocity.x,
+                    expectedVelocity.x,
+                    0.00005,
+                    'Production-wave targeted velocity.x'
+                );
+                assertNear(
+                    projectile.velocity.y,
+                    expectedVelocity.y,
+                    0.00005,
+                    'Production-wave targeted velocity.y'
+                );
+                assertNear(
+                    Math.hypot(projectile.velocity.x, projectile.velocity.y),
+                    ARCHER_ATTACK_DATA.launchSpeed,
+                    0.00005,
+                    'Production-wave targeted speed'
+                );
+                firstTargetedShotPending.materialized = Object.freeze({
+                    origin: Object.freeze({ ...projectile.previousPosition }),
+                    velocity: Object.freeze({ ...projectile.velocity }),
+                    speed: Math.hypot(
+                        projectile.velocity.x,
+                        projectile.velocity.y
+                    )
+                });
+            }
+            if (firstResolvedArcherPosition === 'pending-readback') {
+                const bodiesAfterFirstResolved = await readPhase5Bodies(endpoint);
+                firstResolvedArcherPosition = Object.freeze({
+                    ...findPhase5Body(
+                        bodiesAfterFirstResolved,
+                        firstArcherHandle,
+                        'Production-wave first Archer after resolved attack'
+                    ).position
+                });
+            }
+            if (towerDeathBoundaryTick !== null
+                && tick === towerDeathBoundaryTick + 30) {
+                const postDeathBodies = await readPhase5Bodies(endpoint);
+                firstArcherPostDeath = Object.freeze({
+                    ...findPhase5Body(
+                        postDeathBodies,
+                        firstArcherHandle,
+                        'Production-wave first Archer post-death'
+                    ).position
+                });
+                postDeathFixedTick = tick;
+            }
+
+            const repeatedResolved = Array.from(archerRecords.values())
+                .some(({ resolvedShots }) => (
+                    resolvedShots.length >= 2
+                        && resolvedShots[1].targetFixedTick
+                            - resolvedShots[0].targetFixedTick
+                            === ARCHER_ATTACK_DATA.intervalTicks
+                ));
+            if (towerDeathBoundaryTick !== null
+                && tick >= towerDeathBoundaryTick + 30
+                && waveDirector.getStatus().allSpawnsQueued
+                && terrainDeath
+                && lifetimeDeath
+                && repeatedResolved
+                && director.getStatus().pendingShotCount === 0) {
+                break;
+            }
+        }
+
+        const waveStatus = waveDirector.getStatus();
+        const directorStatus = director.getStatus();
+        const endpointStatusBeforeCleanup = endpoint.getStatus();
+        const bodiesBeforeCleanup = await readPhase5Bodies(endpoint);
+        const coreBeforeCleanup = findPhase5Body(
+            bodiesBeforeCleanup,
+            coreHandle,
+            'Production-wave final Core'
+        );
+        const firstArcherRecord = archerRecords.get(
+            hostileAttackLifecycleHandleKey(firstArcherHandle)
+        );
+        const repeatedArcherRecord = Array.from(archerRecords.values())
+            .find(({ resolvedShots }) => resolvedShots.length >= 2);
+        const hostileIsolationDamageEvents = observedContactEvents.filter((event) => (
+            hostileAttackLifecyclePairMatches(
+                event,
+                auxiliaryHandles.get(auxiliaryCommandIds.hostileIsolation),
+                hostileIsolationBefore.targetHandle
+            )
+            && event.eventType === 'damage-applied'
+        ));
+        const coreIsolationEvents = observedContactEvents.filter((event) => (
+            hostileAttackLifecyclePairMatches(
+                event,
+                auxiliaryHandles.get(auxiliaryCommandIds.coreIsolation),
+                coreHandle
+            )
+        ));
+        const firstDamageContact = observedContactEvents.find((event) => (
+            firstTargetedShot
+                && hostileAttackLifecyclePairMatches(
+                    event,
+                    firstTargetedShot.projectileHandle,
+                    towerHandle
+                )
+                && event.eventType === 'damage-applied'
+        ));
+        const firstDamageFact = towerDamageFacts.find((fact) => (
+            firstTargetedShot
+                && hostileAttackLifecycleHandleMatches(
+                    fact.sourceHandle,
+                    firstTargetedShot.projectileHandle
+                )
+        ));
+        const archerFlowBeforeAttack = firstArcherRecord.positionAfterSpawnFixed;
+        const archerFlowThroughAttack = Object.freeze({
+            x: firstResolvedArcherPosition.x - archerFlowBeforeAttack.x,
+            y: firstResolvedArcherPosition.y - archerFlowBeforeAttack.y
+        });
+        const archerPostDeathDisplacement = Object.freeze({
+            x: firstArcherPostDeath.x - firstArcherAtTowerDeath.x,
+            y: firstArcherPostDeath.y - firstArcherAtTowerDeath.y
+        });
+        const primaryControllerStatusAfterDeath = primaryController.getStatus();
+        assert(
+            productionSpawnRecords.length === 32
+                && archerRecords.size === 4
+                && JSON.stringify(Array.from(
+                    archerRecords.values(),
+                    ({ spawnIndex }) => spawnIndex
+                )) === JSON.stringify(expectedArcherSpawnIndexes)
+                && JSON.stringify(Array.from(
+                    archerRecords.values(),
+                    ({ createdAtTick }) => createdAtTick
+                )) === JSON.stringify(expectedArcherSpawnTicks)
+                && waveStatus.totalSpawnCount === 32
+                && waveStatus.queuedSpawnCount === 32
+                && waveStatus.remainingSpawnCount === 0
+                && directorStatus.activeArcherCount === 4,
+            `Production-wave 32/4 lifecycle 결과 불일치: ${JSON.stringify({ productionSpawnRecords, archers: Array.from(archerRecords.values()), waveStatus })}`
+        );
+        assert(
+            playerShotRequestCount === 1
+                && primaryShotCommittedCount === 1
+                && primaryProjectileMaterialized
+                && hostileAttackLifecycleHandleMatches(
+                    primaryProjectileMaterialized.handle,
+                    primaryProjectileHandle
+                )
+                && playerShotRequestCountAtTowerDeath === 1
+                && primaryControllerStatusAfterDeath.enabled === false
+                && primaryControllerStatusAfterDeath.primaryPressed === false
+                && primaryControllerStatusAfterDeath.pendingShot === null
+                && primaryController.isControlEnabled() === false,
+            `Production-wave actual LMB/death cutover 실패: ${JSON.stringify({ playerShotRequestCount, primaryShotCommittedCount, primaryProjectileMaterialized, playerShotRequestCountAtTowerDeath, primaryControllerStatusAfterDeath })}`
+        );
+        assert(
+            firstTargetedShot
+                && firstTargetedShot.completionBoundaryTick
+                    === firstTargetedShot.targetFixedTick + 1
+                && firstDamageContact?.damage === 5
+                && firstDamageContact.damageFixedPoint === 500
+                && firstDamageFact?.damage === 5
+                && firstDamageFact.damageFixedPoint === 500
+                && JSON.stringify(towerHpTimeline)
+                    === JSON.stringify([30, 25, 20, 15, 10, 5, 0])
+                && towerDeathFacts.length === 1
+                && noLivingTowerFacts.length === 1
+                && towerRoster.getLivingTowerCount() === 0
+                && !towerRoster.isPrimaryTowerAlive()
+                && towerDeathSourceTick !== null
+                && towerDeathBoundaryTick === towerDeathSourceTick + 1
+                && towerAlphaAfterLethal === 0
+                && towerRenderExclusion?.drawCount === 1
+                && towerRenderExclusion.alpha === 0
+                && towerRemovedAtDeathBoundary
+                && trackedDisableReceipt?.accepted === true
+                && trackedDisableReceipt.tracked === false,
+            `Production-wave Tower damage/death contract 실패: ${JSON.stringify({ firstTargetedShot, firstDamageContact, firstDamageFact, towerHpTimeline, towerDeathFacts, noLivingTowerFacts, towerDeathSourceTick, towerDeathBoundaryTick, towerAlphaAfterLethal, towerRemovedAtDeathBoundary })}`
+        );
+        assert(
+            repeatedArcherRecord
+                && repeatedArcherRecord.resolvedShots[1].targetFixedTick
+                    - repeatedArcherRecord.resolvedShots[0].targetFixedTick
+                    === ARCHER_ATTACK_DATA.intervalTicks
+                && Math.hypot(
+                    archerFlowThroughAttack.x,
+                    archerFlowThroughAttack.y
+                ) > 0
+                && Math.hypot(
+                    archerPostDeathDisplacement.x,
+                    archerPostDeathDisplacement.y
+                ) > 0
+                && postDeathFixedTick >= towerDeathBoundaryTick + 30
+                && postDeathStageAttemptCount === 0
+                && directorStatus.shotRequestAcceptedCount
+                    === acceptedShotCountAtTowerDeath
+                && controlRequestCount === controlRequestCountAtTowerDeath
+                && playerShotRequestCount === playerShotRequestCountAtTowerDeath,
+            `Production-wave repeat/zero-Tower continuation 실패: ${JSON.stringify({ repeatedArcherRecord, archerFlowThroughAttack, archerPostDeathDisplacement, postDeathFixedTick, towerDeathBoundaryTick, postDeathStageAttemptCount, directorStatus, acceptedShotCountAtTowerDeath, controlRequestCount, controlRequestCountAtTowerDeath, playerShotRequestCount, playerShotRequestCountAtTowerDeath })}`
+        );
+        assert(
+            hostileIsolationDamageEvents.length === 0
+                && hostileIsolationAfter.targetHealth
+                    === hostileIsolationBefore.targetHealth
+                && hostileIsolationAfter.projectilePenetration
+                    === HOSTILE_BASIC_BULLET_DATA.penetration
+                && coreIsolationEvents.length === 0
+                && coreIsolationAfter.coreHealth === initialCoreBody.health
+                && coreIsolationAfter.projectilePenetration
+                    === HOSTILE_BASIC_BULLET_DATA.penetration
+                && coreBeforeCleanup.health === initialCoreBody.health
+                && endpoint.getRegistry().has(coreHandle)
+                && endpoint.hasBody(coreHandle)
+                && terrainDeath?.reason === 'health'
+                && lifetimeDeath?.reason === 'lifetime',
+            `Production-wave isolation/Core/cleanup contract 실패: ${JSON.stringify({ hostileIsolationDamageEvents, hostileIsolationBefore, hostileIsolationAfter, coreIsolationEvents, coreIsolationAfter, initialCoreBody, coreBeforeCleanup, terrainDeath, lifetimeDeath })}`
+        );
+        assert(
+            JSON.stringify(domainSentinel) === domainSentinelBefore
+                && domainSentinel.coreIntegrity.current === 100
+                && domainSentinel.coreIntegrity.max === 100
+                && domainSentinel.gold === 0
+                && domainSentinel.reward === 0
+                && domainSentinel.waveCompletion === 0
+                && domainSentinel.runFailed === 0
+                && waveStatus.completionOwned === false
+                && commitRejectedCount === 0
+                && fixedRejectedCount === 0
+                && endpointStatusBeforeCleanup.reservedCount === 0
+                && endpointStatusBeforeCleanup
+                    .pendingSourceRelativeDestinationCount === 0
+                && !endpointStatusBeforeCleanup.recoveryRequired
+                && !directorStatus.recoveryRequired,
+            `Production-wave domain/pressure 상태 실패: ${JSON.stringify({ domainSentinel, waveStatus, commitRejectedCount, fixedRejectedCount, endpointStatusBeforeCleanup, directorStatus })}`
+        );
+
+        const cleanupFixedTick = finalObservedFixedTick + 1;
+        const cleanupCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            cleanupFixedTick
+        );
+        assert(
+            cleanupCompleted.protocolFailure === null
+                && !director.observeCompletedEvents(cleanupCompleted)
+                    .recoveryRequired,
+            `Production-wave cleanup completion 실패: ${JSON.stringify(cleanupCompleted)}`
+        );
+        const cleanupStage = director.stageForFixedTick({
+            targetFixedTick: cleanupFixedTick,
+            targetHandle: null
+        });
+        const cleanupHandles = endpoint.getRegistry().copyActiveHandlesInto([]);
+        const cleanupReceipts = cleanupHandles.map((handle, index) => (
+            endpoint.requestDespawn(
+                handle,
+                'production-wave-hardware-cleanup',
+                cleanupFixedTick,
+                `production-wave:cleanup:${index}`
+            )
+        ));
+        assert(
+            cleanupStage.attemptedCount === 0
+                && cleanupReceipts.every(({ accepted }) => accepted),
+            `Production-wave cleanup request 실패: ${JSON.stringify({ cleanupStage, cleanupReceipts })}`
+        );
+        const cleanupCommit = endpoint.commitAtFixedBoundary(cleanupFixedTick);
+        const cleanupObservation = director.observeFixedCommit(
+            cleanupCommit,
+            cleanupFixedTick
+        );
+        await device.queue.onSubmittedWorkDone();
+        const cleanupStatus = endpoint.getStatus();
+        const gpuCleanupStatus = endpoint.getBackend().simulation.getStatus();
+        const storageProfile = cleanupStatus.backend.gpu.fixedPrimitives
+            .storageProfile;
+        cleanup = Object.freeze({
+            activeCount: cleanupStatus.activeCount,
+            activeEnemyCount: cleanupStatus.activeEnemyCount,
+            activeProjectileCount: cleanupStatus.activeProjectileCount,
+            reservedCount: cleanupStatus.reservedCount,
+            pendingCommandCount: cleanupStatus.pendingCommandCount,
+            pendingDestinationCount:
+                cleanupStatus.pendingSourceRelativeDestinationCount,
+            activeBodyCount: gpuCleanupStatus.activeBodyCount,
+            pendingBodyCount: gpuCleanupStatus.pendingBodyCount,
+            directorActiveArcherCount:
+                director.getStatus().activeArcherCount,
+            directorPendingShotCount: director.getStatus().pendingShotCount,
+            recoveryRequired: cleanupStatus.recoveryRequired
+        });
+        assert(
+            cleanupCommit.despawned.length === cleanupHandles.length
+                && cleanupObservation.removedArcherCount === 4
+                && cleanup.activeCount === 0
+                && cleanup.activeEnemyCount === 0
+                && cleanup.activeProjectileCount === 0
+                && cleanup.reservedCount === 0
+                && cleanup.pendingCommandCount === 0
+                && cleanup.pendingDestinationCount === 0
+                && cleanup.activeBodyCount === 0
+                && cleanup.pendingBodyCount === 0
+                && cleanup.directorActiveArcherCount === 0
+                && cleanup.directorPendingShotCount === 0
+                && !cleanup.recoveryRequired
+                && storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `Production-wave final cleanup/leak/storage 실패: ${JSON.stringify({ cleanupCommit, cleanupObservation, cleanup, storageProfile })}`
+        );
+
+        result = Object.freeze({
+            wave: Object.freeze({
+                waveId: waveStatus.waveId,
+                totalSpawnCount: waveStatus.totalSpawnCount,
+                queuedSpawnCount: waveStatus.queuedSpawnCount,
+                remainingSpawnCount: waveStatus.remainingSpawnCount,
+                completionOwned: waveStatus.completionOwned,
+                definitionIdCycle: expectedCycle,
+                archerSpawnIndexes: expectedArcherSpawnIndexes,
+                archerSpawnTicks: expectedArcherSpawnTicks,
+                commandIds: Object.freeze(productionSpawnRecords.map(
+                    ({ commandId }) => commandId
+                ))
+            }),
+            fixtureGeometry: Object.freeze({
+                towerPlacement: 'technical-corridor-contact-fixture',
+                towerPosition,
+                productionTowerSpawnPosition,
+                usesProductionTowerSpawnPosition
+            }),
+            archers: Object.freeze(Array.from(
+                archerRecords.values(),
+                (record) => Object.freeze({
+                    handle: record.handle,
+                    spawnIndex: record.spawnIndex,
+                    createdAtTick: record.createdAtTick,
+                    phaseOffsetTicks: record.phaseOffsetTicks,
+                    firstEligibleFixedTick: record.firstEligibleFixedTick,
+                    positionAfterSpawnFixed:
+                        record.positionAfterSpawnFixed,
+                    resolvedShots: Object.freeze([...record.resolvedShots])
+                })
+            )),
+            targetedShot: firstTargetedShot,
+            playerPrimaryShot: Object.freeze({
+                commandId: primaryProjectileMaterialized.commandId,
+                targetFixedTick: primaryProjectileMaterialized.targetFixedTick,
+                projectileHandle: primaryProjectileMaterialized.handle,
+                requestCount: playerShotRequestCount,
+                committedCount: primaryShotCommittedCount,
+                origin: primaryProjectileMaterialized.previousPosition,
+                velocity: primaryProjectileMaterialized.velocity,
+                speed: primaryProjectileMaterialized.speed,
+                launchSpeed:
+                    BASIC_BULLET_WEAPON_DATA.projectileSpeedTilesPerSecond,
+                requestCountAtTowerDeath: playerShotRequestCountAtTowerDeath,
+                requestCountAfterDeath: playerShotRequestCount
+                    - playerShotRequestCountAtTowerDeath,
+                controllerEnabledAfterDeath:
+                    primaryControllerStatusAfterDeath.enabled,
+                primaryPressedAfterDeath:
+                    primaryControllerStatusAfterDeath.primaryPressed,
+                pendingShotAfterDeath:
+                    primaryControllerStatusAfterDeath.pendingShot
+            }),
+            combat: Object.freeze({
+                towerInitialHp: initialTowerBody.health,
+                towerHpTimeline: Object.freeze([...towerHpTimeline]),
+                damage: firstDamageContact.damage,
+                damageFixedPoint: firstDamageContact.damageFixedPoint,
+                towerDiedCount: towerDeathFacts.length,
+                noLivingTowersCount: noLivingTowerFacts.length,
+                hostileOnHostileDamageCount:
+                    hostileIsolationDamageEvents.length,
+                hostileTargetHealthBefore:
+                    hostileIsolationBefore.targetHealth,
+                hostileTargetHealthAfter:
+                    hostileIsolationAfter.targetHealth,
+                hostileProjectilePenetrationAfter:
+                    hostileIsolationAfter.projectilePenetration,
+                coreInteractionCount: coreIsolationEvents.length,
+                coreHealthBefore: initialCoreBody.health,
+                coreHealthAfter: coreBeforeCleanup.health
+            }),
+            towerDeath: Object.freeze({
+                sourceTick: towerDeathSourceTick,
+                boundaryTick: towerDeathBoundaryTick,
+                renderAlphaAfterLethal: towerAlphaAfterLethal,
+                renderExclusion: towerRenderExclusion,
+                removedAtNextBoundary: towerRemovedAtDeathBoundary,
+                livingTowerCount: towerRoster.getLivingTowerCount(),
+                postDeathFixedTick,
+                fixedProgressAfterDeath:
+                    postDeathFixedTick - towerDeathBoundaryTick,
+                newShotCount: directorStatus.shotRequestAcceptedCount
+                    - acceptedShotCountAtTowerDeath,
+                postDeathStageAttemptCount,
+                controlRequestCountAfterDeath: controlRequestCount
+                    - controlRequestCountAtTowerDeath,
+                playerShotRequestCountAfterDeath: playerShotRequestCount
+                    - playerShotRequestCountAtTowerDeath,
+                trackedTowerEnabled: trackedDisableReceipt.tracked
+            }),
+            flow: Object.freeze({
+                firstArcherHandle,
+                positionAfterSpawnFixed: archerFlowBeforeAttack,
+                positionAfterResolvedAttack: firstResolvedArcherPosition,
+                displacementThroughAttack: archerFlowThroughAttack,
+                positionAtTowerDeath: firstArcherAtTowerDeath,
+                positionPostDeath: firstArcherPostDeath,
+                postDeathDisplacement: archerPostDeathDisplacement
+            }),
+            projectileCleanup: Object.freeze({
+                terrain: Object.freeze({
+                    handle: auxiliaryHandles.get(auxiliaryCommandIds.terrain),
+                    deathSourceTick: terrainDeath.sourceTick,
+                    reason: terrainDeath.reason
+                }),
+                lifetime: Object.freeze({
+                    handle: auxiliaryHandles.get(auxiliaryCommandIds.lifetime),
+                    authoredSeconds:
+                        HOSTILE_BASIC_BULLET_DATA.lifetimeSeconds,
+                    deathSourceTick: lifetimeDeath.sourceTick,
+                    reason: lifetimeDeath.reason
+                })
+            }),
+            domain: Object.freeze({
+                coreProxyHandle: Object.freeze({ ...coreHandle }),
+                coreProxyRemainedThroughPostDeath: true,
+                coreIntegrityRuntimeBound: false,
+                coreIntegrityCurrentMutation: 0,
+                coreIntegrityMaxMutation: 0,
+                goldMutation: domainSentinel.gold,
+                rewardMutation: domainSentinel.reward,
+                waveCompletionMutation: domainSentinel.waveCompletion,
+                runFailedMutation: domainSentinel.runFailed
+            }),
+            pressure: Object.freeze({
+                capacity: endpointStatusBeforeCleanup.capacity,
+                peakActiveCount,
+                peakReservedCount,
+                lifecycleRejectedCount: commitRejectedCount,
+                fixedRejectedCount,
+                controlRequestCount,
+                fixedSubmitCount,
+                fixedProgressContinued: fixedSubmitCount
+                    === finalObservedFixedTick,
+                recoveryRequired:
+                    endpointStatusBeforeCleanup.recoveryRequired
+                        || directorStatus.recoveryRequired
+            }),
+            cleanup,
+            storageProfile
+        });
+    } finally {
+        primaryController?.destroy();
+        towerRoster.destroy();
+        waveDirector.destroy();
+        director.destroy();
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+        const endpointAfterDestroy = endpoint.getStatus();
+        teardown = Object.freeze({
+            endpointDestroyed: endpointAfterDestroy.destroyed,
+            directorDestroyed: director.getStatus().destroyed,
+            waveDestroyed: waveDirector.getStatus().initialized === false,
+            activeCount: endpointAfterDestroy.activeCount,
+            reservedCount: endpointAfterDestroy.reservedCount,
+            pendingCommandCount: endpointAfterDestroy.pendingCommandCount
+        });
+        context.unconfigure();
+    }
+    return Object.freeze({ ...result, teardown });
+}
+
 async function runProductionHostileAttackLifecycleHardwareSmoke(device) {
     const main = await runProductionHostileAttackLifecycleMainHardwareSmoke(device);
     const targetInvalid =
         await runProductionHostileAttackTargetInvalidHardwareSmoke(device);
+    const productionWave =
+        await runProductionHostileAttackProductionWaveHardwareSmoke(device);
     assert(
         main.timeline.secondEligibleFixedTick
                 - main.timeline.firstEligibleFixedTick
@@ -11798,11 +13523,44 @@ async function runProductionHostileAttackLifecycleHardwareSmoke(device) {
             && targetInvalid.cleanup.pendingCommandCount === 0
             && targetInvalid.cleanup.pendingDestinationCount === 0
             && targetInvalid.cleanup.pendingBodyCount === 0
+            && productionWave.wave.totalSpawnCount === 32
+            && productionWave.archers.length === 4
+            && productionWave.fixtureGeometry.towerPlacement
+                === 'technical-corridor-contact-fixture'
+            && !productionWave.fixtureGeometry.usesProductionTowerSpawnPosition
+            && productionWave.combat.towerDiedCount === 1
+            && productionWave.combat.noLivingTowersCount === 1
+            && productionWave.playerPrimaryShot.requestCount === 1
+            && productionWave.playerPrimaryShot.committedCount === 1
+            && Math.abs(
+                productionWave.playerPrimaryShot.speed
+                    - productionWave.playerPrimaryShot.launchSpeed
+            ) <= 0.00005
+            && productionWave.playerPrimaryShot.requestCountAtTowerDeath === 1
+            && productionWave.playerPrimaryShot.requestCountAfterDeath === 0
+            && !productionWave.playerPrimaryShot.controllerEnabledAfterDeath
+            && !productionWave.playerPrimaryShot.primaryPressedAfterDeath
+            && productionWave.playerPrimaryShot.pendingShotAfterDeath === null
+            && productionWave.towerDeath.newShotCount === 0
+            && productionWave.towerDeath.renderExclusion.drawCount === 1
+            && productionWave.towerDeath.renderExclusion.alpha === 0
+            && productionWave.towerDeath.renderExclusion.preLethal.alpha > 0
+            && productionWave.towerDeath.renderExclusion
+                .towerInteriorMarginPixels >= 2
+            && productionWave.towerDeath.renderExclusion
+                .nearestActiveBodyClearancePixels >= 2
+            && productionWave.towerDeath.fixedProgressAfterDeath >= 30
+            && productionWave.cleanup.activeCount === 0
+            && productionWave.cleanup.reservedCount === 0
+            && productionWave.cleanup.pendingCommandCount === 0
+            && productionWave.cleanup.pendingDestinationCount === 0
+            && productionWave.cleanup.pendingBodyCount === 0
             && !main.cleanup.recoveryRequired
-            && !targetInvalid.cleanup.recoveryRequired,
-        `Hostile attack actual lifecycle aggregate gate 실패: ${JSON.stringify({ main, targetInvalid })}`
+            && !targetInvalid.cleanup.recoveryRequired
+            && !productionWave.cleanup.recoveryRequired,
+        `Hostile attack actual lifecycle aggregate gate 실패: ${JSON.stringify({ main, targetInvalid, productionWave })}`
     );
-    return Object.freeze({ main, targetInvalid });
+    return Object.freeze({ main, targetInvalid, productionWave });
 }
 
 async function runProductionFixedPrimitiveSmoke(device) {

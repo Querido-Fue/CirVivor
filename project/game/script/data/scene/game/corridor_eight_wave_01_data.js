@@ -6,6 +6,9 @@ import {
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA
 } from 'data/object/enemy/basic_circle_enemy_data.js';
+import {
+    ARCHER_ENEMY_DATA
+} from 'data/object/enemy/archer_enemy_data.js';
 import { CORRIDOR_EIGHT_MAP_DATA } from './corridor_eight_map_data.js';
 
 const FIRST_ROUTE = CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0];
@@ -19,7 +22,8 @@ const ENEMY_DEFINITION_ID_CYCLE = Object.freeze([
     BASIC_ARROW_ENEMY_DATA.id,
     BASIC_PENTA_ENEMY_DATA.id,
     BASIC_HEXA_ENEMY_DATA.id,
-    BASIC_GEN_ENEMY_DATA.id
+    BASIC_GEN_ENEMY_DATA.id,
+    ARCHER_ENEMY_DATA.id
 ]);
 
 const CORRIDOR_EIGHT_WAVE_01_PHASES = Object.freeze([

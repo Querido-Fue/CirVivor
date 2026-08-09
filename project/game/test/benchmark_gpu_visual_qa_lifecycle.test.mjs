@@ -471,6 +471,11 @@ test('GPU-only benchmark는 기능 명령을 GPU 적과 CPU 보조 월드에 적
     const gameDependencies = {
         webGpuPlatformPort: {
             getState: () => ({ ready: true, status: 'ready' })
+        },
+        gameplayStatusRenderPort: {
+            createSession() {
+                throw new Error('benchmark child는 production status HUD를 받으면 안 됩니다.');
+            }
         }
     };
     const children = [];
@@ -495,6 +500,16 @@ test('GPU-only benchmark는 기능 명령을 GPU 적과 CPU 보조 월드에 적
     assert.strictEqual(
         children[0].options.dependencies.webGpuPlatformPort,
         gameDependencies.webGpuPlatformPort
+    );
+    assert.equal(
+        'gameplayStatusRenderPort' in children[0].options.dependencies,
+        false,
+        'benchmark child dependency에는 production status HUD port가 없어야 합니다.'
+    );
+    assert.equal(
+        typeof gameDependencies.gameplayStatusRenderPort.createSession,
+        'function',
+        'benchmark adapter는 원본 dependency bundle을 변형하면 안 됩니다.'
     );
     assert.equal(
         typeof children[0].options.dependencies.legacyWorldPort?.clear,
@@ -675,6 +690,13 @@ test('profile 전환은 GPU child와 보조 월드를 재설정하고 CPU fallba
         dependencies: {
             webGpuPlatformPort: {
                 getState: () => ({ ready: true, status: 'ready' })
+            },
+            gameplayStatusRenderPort: {
+                createSession() {
+                    throw new Error(
+                        'restart child는 production status HUD를 받으면 안 됩니다.'
+                    );
+                }
             }
         },
         gameSceneFactory(handler, options) {
@@ -723,6 +745,10 @@ test('profile 전환은 GPU child와 보조 월드를 재설정하고 CPU fallba
     assert.equal(children[1].options.enemyWaveEnabled, false);
     assert.equal(children[1].options.enemyRecoveryEnabled, false);
     assert.equal(children[1].options.initialCameraZoom, 1);
+    assert.equal(
+        'gameplayStatusRenderPort' in children[1].options.dependencies,
+        false
+    );
     assert.notStrictEqual(
         children[1].options.tileNavigationSource,
         firstChild.options.tileNavigationSource,

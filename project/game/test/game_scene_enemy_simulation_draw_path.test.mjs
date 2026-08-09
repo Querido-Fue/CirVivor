@@ -145,7 +145,19 @@ class DrawTraceEnemySimulationBackend {
 
 function createGameSceneHarness(options = {}) {
     const trace = [];
+    const statusDraws = [];
+    const statusRendererLifecycle = {
+        createCount: 0,
+        destroyCount: 0
+    };
     const backend = new DrawTraceEnemySimulationBackend(trace);
+    const viewport = {
+        ww: 1920,
+        wh: 1080,
+        uiww: 1920,
+        uiOffsetX: 0,
+        uiScale: 1
+    };
     const dependencies = {
         inputActionSource: {
             isPressed: () => false,
@@ -180,9 +192,26 @@ function createGameSceneHarness(options = {}) {
         },
         viewportPort: {
             getSnapshot(out) {
-                out.ww = 1920;
-                out.wh = 1080;
+                Object.assign(out, viewport);
                 return out;
+            }
+        },
+        gameplayStatusRenderPort: {
+            createSession() {
+                statusRendererLifecycle.createCount++;
+                return {
+                    draw(status, statusViewport) {
+                        statusDraws.push({
+                            status,
+                            viewport: { ...statusViewport }
+                        });
+                        trace.push({ type: 'game-status' });
+                        return true;
+                    },
+                    destroy() {
+                        statusRendererLifecycle.destroyCount++;
+                    }
+                };
             }
         },
         worldRenderPort: {
@@ -216,11 +245,24 @@ function createGameSceneHarness(options = {}) {
         enemyRecoveryEnabled: false,
         ...options
     });
-    return { backend, scene, trace };
+    return {
+        backend,
+        scene,
+        statusDraws,
+        statusRendererLifecycle,
+        trace,
+        viewport
+    };
 }
 
-test('enemy-only draw는 owner camera로 GPU만 한 번 그리고 draw 실패를 recovery 상태에 반영한다', () => {
-    const { backend, scene, trace } = createGameSceneHarness();
+test('benchmark/tool enemy-only draw는 owner camera로 GPU만 그리고 gameplay status를 그리지 않는다', () => {
+    const {
+        backend,
+        scene,
+        statusDraws,
+        statusRendererLifecycle,
+        trace
+    } = createGameSceneHarness();
     try {
         const gameSystem = scene.getGameSystem();
         const objectSystem = gameSystem.getObjectSystem();
@@ -228,6 +270,7 @@ test('enemy-only draw는 owner camera로 GPU만 한 번 그리고 draw 실패를
 
         assert.equal(scene.drawEnemySimulation(), true);
         assert.deepEqual(trace.map(({ type }) => type), ['gpu-enemies']);
+        assert.equal(statusDraws.length, 0);
         assert.strictEqual(trace[0].camera, camera);
         assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), false);
         assert.equal(gameSystem.isEnemySimulationRecoveryRequired(), false);
@@ -236,39 +279,155 @@ test('enemy-only draw는 owner camera로 GPU만 한 번 그리고 draw 실패를
         backend.failNextDraw = true;
         assert.equal(scene.drawEnemySimulation(), false);
         assert.deepEqual(trace.map(({ type }) => type), ['gpu-enemies']);
+        assert.equal(statusDraws.length, 0);
         assert.strictEqual(trace[0].camera, camera);
         assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), true);
         assert.equal(gameSystem.isEnemySimulationRecoveryRequired(), true);
+        assert.equal(statusRendererLifecycle.createCount, 1);
+        assert.equal(statusRendererLifecycle.destroyCount, 0);
     } finally {
         scene.destroy();
     }
+    assert.equal(statusRendererLifecycle.destroyCount, 1);
 });
 
 test('GPU world full draw는 TileMap, GPU world, CPU Core만 그리고 CPU Tower를 그리지 않는다', () => {
-    const { scene, trace } = createGameSceneHarness();
+    const { scene, statusDraws, trace } = createGameSceneHarness();
     try {
         scene.draw();
         assert.deepEqual(
             trace.map(({ type }) => type),
-            ['tile-map', 'gpu-enemies', 'core']
+            ['tile-map', 'gpu-enemies', 'core', 'game-status']
         );
         assert.strictEqual(
             trace[1].camera,
             scene.getGameSystem().getObjectSystem().getWorldViewProjection()
         );
+        assert.equal(statusDraws.length, 1);
+        const [{ status, viewport }] = statusDraws;
+        assert.equal(Object.isFrozen(status), true);
+        assert.equal(Object.isFrozen(status.tower), true);
+        assert.equal(Object.isFrozen(status.core), true);
+        assert.equal(Object.isFrozen(status.hostileAttack), true);
+        assert.equal(Object.isFrozen(status.wave), true);
+        assert.deepEqual({ ...status.tower }, {
+            available: true,
+            state: 'ALIVE',
+            alive: true,
+            currentHp: 30,
+            maxHp: 30,
+            livingTowerCount: 1
+        });
+        assert.deepEqual({ ...status.core }, {
+            available: true,
+            currentIntegrity: 100,
+            maxIntegrity: 100,
+            depleted: false
+        });
+        assert.deepEqual({ ...status.hostileAttack }, {
+            available: true,
+            registeredArcherCount: 0,
+            pendingShotCount: 0,
+            requestAttempts: 0,
+            requestAccepted: 0,
+            fixedAccepted: 0,
+            completedResolved: 0,
+            completedSourceInvalid: 0,
+            completedTargetInvalid: 0,
+            noTargetTicks: 0,
+            recoveryRequired: false
+        });
+        assert.deepEqual({ ...status.wave }, {
+            available: false,
+            totalSpawnCount: 0,
+            queuedSpawnCount: 0,
+            remainingSpawnCount: 0
+        });
+        assert.equal('archers' in status.hostileAttack, false);
+        assert.equal('pendingShots' in status.hostileAttack, false);
+        assert.equal('lastCommittedFacts' in status.tower, false);
+        assert.equal(status.fixedTick, 0);
+        assert.equal(status.recoveryRequired, false);
+        assert.deepEqual(viewport, {
+            ww: 1920,
+            wh: 1080,
+            uiww: 1920,
+            uiOffsetX: 0,
+            uiScale: 1
+        });
     } finally {
         scene.destroy();
     }
 });
 
 test('CPU fallback full draw는 기존 TileMap, GPU no-op layer, Core, Tower 순서를 유지한다', () => {
-    const { scene, trace } = createGameSceneHarness({ platformReady: false });
+    const { scene, statusDraws, trace } = createGameSceneHarness({
+        platformReady: false
+    });
     try {
         scene.draw();
         assert.deepEqual(
             trace.map(({ type }) => type),
-            ['tile-map', 'gpu-enemies', 'core', 'tower']
+            ['tile-map', 'gpu-enemies', 'core', 'tower', 'game-status']
         );
+        assert.equal(statusDraws.length, 1);
+        assert.deepEqual({ ...statusDraws[0].status.tower }, {
+            available: false,
+            state: 'N/A',
+            alive: null,
+            currentHp: null,
+            maxHp: null,
+            livingTowerCount: null
+        });
+        assert.equal(statusDraws[0].status.core.currentIntegrity, 100);
+    } finally {
+        scene.destroy();
+    }
+});
+
+test('resize·pause sync·recovery draw는 committed status를 재계산하지 않고 최신 UI viewport만 전달한다', () => {
+    const {
+        backend,
+        scene,
+        statusDraws,
+        trace,
+        viewport
+    } = createGameSceneHarness();
+    try {
+        const gameSystem = scene.getGameSystem();
+        const before = gameSystem.getGameplayStatus();
+        scene.synchronizePresentation();
+        scene.draw();
+        const pausedDraw = statusDraws.at(-1).status;
+        assert.equal(pausedDraw.fixedTick, before.fixedTick);
+        assert.equal(pausedDraw.tower.currentHp, before.tower.currentHp);
+        assert.equal(pausedDraw.core.currentIntegrity, before.core.currentIntegrity);
+
+        viewport.ww = 1600;
+        viewport.wh = 900;
+        viewport.uiww = 1440;
+        viewport.uiOffsetX = 80;
+        viewport.uiScale = 1.25;
+        scene.resize();
+        trace.length = 0;
+        backend.failNextDraw = true;
+        scene.draw();
+
+        assert.deepEqual(trace.map(({ type }) => type), [
+            'tile-map',
+            'gpu-enemies',
+            'core',
+            'game-status'
+        ]);
+        const recoveryDraw = statusDraws.at(-1);
+        assert.equal(recoveryDraw.status.recoveryRequired, true);
+        assert.equal(recoveryDraw.status.fixedTick, before.fixedTick);
+        assert.equal(recoveryDraw.status.tower.currentHp, 30);
+        assert.equal(recoveryDraw.status.tower.state, 'ALIVE');
+        assert.equal(recoveryDraw.status.core.currentIntegrity, 100);
+        assert.deepEqual(recoveryDraw.viewport, viewport);
+        assert.equal(gameSystem.getTowerCombatStatus().currentHp, 30);
+        assert.equal(gameSystem.getCoreIntegrity().getCurrentIntegrity(), 100);
     } finally {
         scene.destroy();
     }

@@ -15,6 +15,9 @@ const {
     INGAME_ENEMY_DEFINITION_BY_ID,
     MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES
 } = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
+const { ARCHER_ENEMY_DATA } = await loadGameModule(
+    'data/object/enemy/archer_enemy_data.js'
+);
 const {
     ENEMY_ASPECT_RATIO,
     ENEMY_HEIGHT_SCALE,
@@ -77,6 +80,14 @@ const EXPECTED_ARCHETYPES = Object.freeze([
         definition: BASIC_GEN_ENEMY_DATA,
         shapeType: 'gen',
         shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+    })
+]);
+const EXPECTED_PRODUCTION_WAVE_ARCHETYPES = Object.freeze([
+    ...EXPECTED_ARCHETYPES,
+    Object.freeze({
+        definition: ARCHER_ENEMY_DATA,
+        shapeType: 'arrow',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.ARROW
     })
 ]);
 const EXPECTED_LANE_OFFSETS = Object.freeze([-1.8, -0.6, 0.6, 1.8]);
@@ -157,7 +168,9 @@ test('main GPU enemy catalog과 단일 wave phase는 65% radius·shape cycle·la
     assert.equal(group.enemyDefinitionId, BASIC_SQUARE_ENEMY_DATA.id);
     assert.deepEqual(
         Array.from(group.enemyDefinitionIds),
-        EXPECTED_ARCHETYPES.map(({ definition }) => definition.id)
+        EXPECTED_PRODUCTION_WAVE_ARCHETYPES.map(
+            ({ definition }) => definition.id
+        )
     );
     assert.deepEqual(Array.from(group.laneOffsetsTiles), EXPECTED_LANE_OFFSETS);
     const sameLaneTravel = BASIC_SQUARE_ENEMY_DATA.moveSpeedTilesPerSecond
@@ -313,7 +326,9 @@ test('WaveDirector는 단일 phase를 tick 1 + 5n에서 shape/lane 순서대로 
     assert.equal(scheduled.length, 32);
     for (let index = 0; index < scheduled.length; index++) {
         const entry = scheduled[index];
-        const expected = EXPECTED_ARCHETYPES[index % EXPECTED_ARCHETYPES.length];
+        const expected = EXPECTED_PRODUCTION_WAVE_ARCHETYPES[
+            index % EXPECTED_PRODUCTION_WAVE_ARCHETYPES.length
+        ];
         assert.equal(entry.targetFixedTick, 1 + (index * 5));
         assert.equal(entry.intent.spawnSequence, index);
         assert.equal(entry.intent.definitionId, expected.definition.id);

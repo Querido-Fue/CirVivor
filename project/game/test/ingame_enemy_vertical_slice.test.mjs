@@ -47,6 +47,8 @@ class FakeEnemySimulationBackend {
         this.runtimeState = 'gpu-ready';
         this.recovering = false;
         this.completedEventBatches = [];
+        this.spawnCompletionBatches = [];
+        this.pendingSourceRelativePlan = null;
         this.eventProtocolState = null;
         this.replaceBodiesCallCount = 0;
         this.readbackBodiesCallCount = 0;
@@ -150,9 +152,26 @@ class FakeEnemySimulationBackend {
                 requiresRecovery: false
             };
         }
+        assert.equal(this.pendingSourceRelativePlan, null);
+        if (sourceRelativeSpawns.length > 0) {
+            this.pendingSourceRelativePlan = {
+                targetFixedTick: plan.targetFixedTick,
+                sourceRelativeSpawns
+            };
+        }
         return {
             accepted: commandCount,
             rejected: 0,
+            controls: {
+                accepted: controls.length,
+                rejected: 0,
+                reason: null
+            },
+            sourceRelativeSpawns: {
+                accepted: sourceRelativeSpawns.length,
+                rejected: 0,
+                reason: null
+            },
             requiresRecovery: false
         };
     }
@@ -187,6 +206,35 @@ class FakeEnemySimulationBackend {
             this.fixedUpdateMode = 'accept';
             this.runtimeState = 'gpu-ready';
             this.recovering = false;
+        }
+        const plan = this.pendingSourceRelativePlan;
+        if (plan) {
+            assert.equal(plan.targetFixedTick, sourceTick);
+            const outcomes = [];
+            for (const spawn of plan.sourceRelativeSpawns) {
+                const source = this.bodiesByHandle.get(handleKey(spawn.sourceHandle));
+                assert.ok(source);
+                this.bodiesByHandle.set(handleKey(spawn.destinationHandle), {
+                    ...spawn.destinationSpawn,
+                    ...spawn.destinationHandle,
+                    position: { ...source.position },
+                    velocity: { x: 0, y: 0 }
+                });
+                outcomes.push(Object.freeze({
+                    sourceHandle: { ...spawn.sourceHandle },
+                    targetHandle: spawn.targetHandle
+                        ? { ...spawn.targetHandle }
+                        : null,
+                    destinationHandle: { ...spawn.destinationHandle },
+                    reason: 'resolved'
+                }));
+            }
+            this.spawnCompletionBatches.push(Object.freeze({
+                ...this.eventProtocolState,
+                sourceTick,
+                outcomes: Object.freeze(outcomes)
+            }));
+            this.pendingSourceRelativePlan = null;
         }
         return true;
     }
@@ -233,6 +281,15 @@ class FakeEnemySimulationBackend {
         return out;
     }
 
+    drainCompletedSpawnProgramBatches(out = []) {
+        out.push(...this.spawnCompletionBatches.splice(0));
+        return out;
+    }
+
+    hasPendingSpawnProgramThroughTick() {
+        return false;
+    }
+
     replaceBodies() {
         this.replaceBodiesCallCount++;
         throw new Error('live enemy 경로에서 replaceBodies()를 호출하면 안 됩니다.');
@@ -249,6 +306,8 @@ class FakeEnemySimulationBackend {
         }
         this.calls.push({ type: 'destroy' });
         this.bodiesByHandle.clear();
+        this.spawnCompletionBatches.length = 0;
+        this.pendingSourceRelativePlan = null;
         this.destroyed = true;
         this.initialized = false;
     }
@@ -340,6 +399,11 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     objectSystem.init({ ww: 1920, wh: 1080 });
     const tileMap = objectSystem.getTileMap();
     const endpoint = objectSystem.getEnemySimulationEndpoint();
+    backend.setEventProtocolState({
+        sessionGeneration: endpoint.getStatus().sessionGeneration,
+        deviceGeneration: 0,
+        authoritativeEpoch: 0
+    });
     assert.strictEqual(objectSystem.getGpuSimulationEndpoint(), endpoint);
     const [route] = tileMap.getSpawnRoutes();
     const waveGroup = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0].spawnGroups[0];
@@ -486,10 +550,11 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
     );
     const hostileAttackStatus = objectSystem.getHostileAttackStatus();
     assert.equal(Object.isFrozen(hostileAttackStatus), true);
-    assert.equal(hostileAttackStatus.activeArcherCount, 0);
-    assert.equal(hostileAttackStatus.pendingShotCount, 0);
-    assert.equal(hostileAttackStatus.shotStartAttemptCount, 0);
-    assert.equal(hostileAttackStatus.shotResolvedCount, 0);
+    assert.equal(hostileAttackStatus.activeArcherCount, 4);
+    assert.ok(hostileAttackStatus.shotStartAttemptCount > 0);
+    assert.ok(hostileAttackStatus.shotResolvedCount > 0);
+    assert.equal(hostileAttackStatus.recoveryRequired, false);
+    assert.equal(endpoint.getStatus().reservedCount, hostileAttackStatus.pendingShotCount);
 
     backend.calls.length = 0;
     objectSystem.update(0.75, 1 / 144, 1 / 60);

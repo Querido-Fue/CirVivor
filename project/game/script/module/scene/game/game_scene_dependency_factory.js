@@ -7,7 +7,10 @@ import { getObjectSystem } from 'object/object_system.js';
 import {
     copySimulationMousePositionInto,
     copySimulationWheelTotalsInto,
+    getSimulationSetting,
     getSimulationWH,
+    getSimulationUIOffsetX,
+    getSimulationUIWW,
     getSimulationWW,
     isSimulationInputActionPressed,
     isSimulationMousePressing
@@ -18,6 +21,13 @@ import {
     getFixedInterpolationAlpha
 } from 'game/time_handler.js';
 import { animate } from 'animation/animation_system.js';
+import {
+    createGameSceneStatusRenderer
+} from './render/game_scene_status_renderer.js';
+
+const GAME_SCENE_STATUS_RENDER_PORT = Object.freeze({
+    createSession: createGameSceneStatusRenderer
+});
 
 /**
  * 현재 런타임 뷰포트를 호출자 소유 객체에 복사합니다.
@@ -27,6 +37,12 @@ import { animate } from 'animation/animation_system.js';
 function getGameViewportSnapshot(out = {}) {
     out.ww = getSimulationWW();
     out.wh = getSimulationWH();
+    out.uiww = getSimulationUIWW();
+    out.uiOffsetX = getSimulationUIOffsetX();
+    const configuredUiScale = Number(getSimulationSetting('uiScale', 100));
+    out.uiScale = Number.isFinite(configuredUiScale) && configuredUiScale > 0
+        ? configuredUiScale / 100
+        : 1;
     return out;
 }
 
@@ -89,6 +105,7 @@ export function createGameSceneDependencies() {
         viewportPort: {
             getSnapshot: getGameViewportSnapshot
         },
+        gameplayStatusRenderPort: GAME_SCENE_STATUS_RENDER_PORT,
         worldRenderPort: {
             drawCircle(options) {
                 circleRenderOptions.x = options.x;

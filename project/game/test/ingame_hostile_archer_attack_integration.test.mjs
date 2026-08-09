@@ -32,7 +32,8 @@ const {
     GameSystem
 } = await loadGameModule('ingame/game_system.js');
 const {
-    HOSTILE_ATTACK_COMMAND_NAMESPACE
+    HOSTILE_ATTACK_COMMAND_NAMESPACE,
+    computeHostileAttackPhaseOffset
 } = await loadGameModule(
     'ingame/object/enemy/hostile_attack_director.js'
 );
@@ -1007,4 +1008,473 @@ test('pending Archer shot recovery는 failed replacement를 원자적으로 보�
     assert.equal(newBackend.destroyCount, 1);
     assert.equal(newBackend.bodies.size, 0);
     assert.equal(newDirector.getStatus().destroyed, true);
+});
+
+test('production wave alive recovery는 HP와 failed replacement를 보존하고 새 Archer를 sequence 0으로 재등록한다', () => {
+    const inputState = { moveRight: false, primaryPressed: false };
+    const backendInitResults = [true, false, true];
+    const backends = [];
+    const gameSystem = new GameSystem(
+        createDependencies(backends, inputState, backendInitResults)
+    );
+    assert.equal(gameSystem.enter(), true);
+    const objectSystem = gameSystem.getObjectSystem();
+    const coreIntegrity = gameSystem.getCoreIntegrity();
+    const initialCoreIntegrity = coreIntegrity.getCurrentIntegrity();
+    const oldEndpoint = gameSystem.getGpuSimulationEndpoint();
+    const oldRegistry = oldEndpoint.getRegistry();
+    const oldBackend = backends[0];
+    const oldDirector = objectSystem.hostileAttackDirector;
+
+    advanceThrough(gameSystem, 31);
+    let hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(hostileStatus.activeArcherCount, 1);
+    const firstArcherHandle = hostileStatus.archers[0].handle;
+    advanceThrough(gameSystem, hostileStatus.archers[0].nextEligibleFixedTick);
+    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 1);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(hostileStatus.shotResolvedCount, 1);
+    const firstHostileHandle = findProjectileHandleByDefinition(
+        oldRegistry,
+        HOSTILE_BASIC_BULLET_DATA.id
+    );
+    const oldTowerHandle = objectSystem.getGpuWorldActorStatus().towerHandle;
+    assert.ok(firstHostileHandle);
+    assert.ok(oldTowerHandle);
+
+    oldBackend.queueTowerDamageEvents(
+        firstHostileHandle,
+        oldTowerHandle,
+        gameSystem.getFixedTick(),
+        false
+    );
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, true);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 25);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+
+    const firstRecord = findArcherStatus(
+        gameSystem.getHostileAttackStatus(),
+        firstArcherHandle
+    );
+    advanceThrough(gameSystem, firstRecord.nextEligibleFixedTick - 1);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const pendingStatusBeforeRecovery = gameSystem.getHostileAttackStatus();
+    assert.equal(pendingStatusBeforeRecovery.activeArcherCount, 4);
+    assert.ok(pendingStatusBeforeRecovery.pendingShotCount >= 1);
+    const firstPending = pendingStatusBeforeRecovery.pendingShots.find(
+        ({ sourceHandle }) => handleKey(sourceHandle) === handleKey(firstArcherHandle)
+    );
+    assert.ok(firstPending);
+    const oldCompletionBatch = oldBackend.spawnCompletionBatches[0];
+    const oldCompletionOutcome = oldCompletionBatch.outcomes.find(
+        ({ destinationHandle }) => (
+            handleKey(destinationHandle) === handleKey(firstPending.destinationHandle)
+        )
+    );
+    assert.ok(oldCompletionOutcome);
+    const oldSessionCompletion = Object.freeze({
+        commandId: firstPending.commandId,
+        outcome: oldCompletionOutcome.reason,
+        sourceHandle: oldCompletionOutcome.sourceHandle,
+        targetHandle: oldCompletionOutcome.targetHandle,
+        destinationHandle: oldCompletionOutcome.destinationHandle
+    });
+    const oldRoster = pendingStatusBeforeRecovery.archers;
+    const oldPendingShots = pendingStatusBeforeRecovery.pendingShots;
+
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+    assert.equal(backends.length, 2);
+    assert.equal(backends[1].destroyCount, 1);
+    assert.strictEqual(gameSystem.getGpuSimulationEndpoint(), oldEndpoint);
+    assert.strictEqual(objectSystem.getWorldRegistry(), oldRegistry);
+    assert.strictEqual(objectSystem.getEnemySimulationBackend(), oldBackend);
+    assert.strictEqual(objectSystem.hostileAttackDirector, oldDirector);
+    assert.equal(oldBackend.destroyCount, 0);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.deepEqual(hostileStatus.archers, oldRoster);
+    assert.deepEqual(hostileStatus.pendingShots, oldPendingShots);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 25);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, true);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+
+    const recoveryOffset = gameSystem.getFixedTick();
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), true);
+    const newBackend = backends[2];
+    const newEndpoint = gameSystem.getGpuSimulationEndpoint();
+    const newDirector = objectSystem.hostileAttackDirector;
+    assert.notStrictEqual(newEndpoint, oldEndpoint);
+    assert.notStrictEqual(newDirector, oldDirector);
+    assert.equal(oldBackend.destroyCount, 1);
+    assert.equal(oldRegistry.getStatus().destroyed, true);
+    assert.equal(oldDirector.getStatus().destroyed, true);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 25);
+    assert.equal(gameSystem.getTowerCombatStatus().boundGpuBody, null);
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 25);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, true);
+    assert.equal(
+        gameSystem.getTowerCombatStatus().boundGpuBody.sessionGeneration,
+        newEndpoint.getStatus().sessionGeneration
+    );
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+    advanceThrough(gameSystem, recoveryOffset + 31);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(hostileStatus.activeArcherCount, 1);
+    assert.equal(hostileStatus.archers[0].createdAtTick, recoveryOffset + 31);
+    assert.equal(hostileStatus.archers[0].shotSequence, 0);
+    assert.equal(hostileStatus.archers[0].state, 'IDLE');
+    assert.equal(hostileStatus.pendingShotCount, 0);
+    assert.equal(hostileStatus.shotResolvedCount, 0);
+    assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 7);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 25);
+    assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+
+    const staleSummary = newDirector.observeFixedCommit({
+        fixedTick: gameSystem.getFixedTick(),
+        fixedCommands: {
+            state: 'committed',
+            completed: [oldSessionCompletion],
+            sourceRelativeSpawns: [],
+            rejected: [],
+            protocolFailure: null,
+            recoveryRequired: false
+        },
+        spawned: [],
+        despawned: []
+    }, gameSystem.getFixedTick());
+    assert.equal(staleSummary.staleResultCount, 1);
+    assert.equal(staleSummary.completedCount, 0);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(hostileStatus.activeArcherCount, 1);
+    assert.equal(hostileStatus.archers[0].shotSequence, 0);
+    assert.equal(hostileStatus.pendingShotCount, 0);
+    assert.equal(hostileStatus.telemetry.staleOldSessionResults, 1);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+
+    gameSystem.destroy();
+    gameSystem.destroy();
+    assert.equal(newBackend.destroyCount, 1);
+});
+
+test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 계속하고 dead recovery에서 target 없이 재등록된다', () => {
+    const inputState = { moveRight: true, primaryPressed: false };
+    const backends = [];
+    const gameSystem = new GameSystem(
+        createDependencies(backends, inputState)
+    );
+    assert.equal(gameSystem.enter(), true);
+    const objectSystem = gameSystem.getObjectSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const registry = endpoint.getRegistry();
+    const backend = backends[0];
+    const coreIntegrity = gameSystem.getCoreIntegrity();
+    const initialCoreIntegrity = coreIntegrity.getCurrentIntegrity();
+    const initialCoreMaximum = coreIntegrity.getMaxIntegrity();
+
+    advanceThrough(gameSystem, 31);
+    let hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(hostileStatus.activeArcherCount, 1);
+    const firstArcherAtSpawn = hostileStatus.archers[0];
+    const firstArcherHandle = firstArcherAtSpawn.handle;
+    const firstEligibleFixedTick = firstArcherAtSpawn.nextEligibleFixedTick;
+    const towerHandle = objectSystem.getGpuWorldActorStatus().towerHandle;
+    assert.equal(firstArcherAtSpawn.createdAtTick, 31);
+    assert.equal(
+        firstArcherAtSpawn.phaseOffsetTicks,
+        computeHostileAttackPhaseOffset({
+            ...firstArcherHandle,
+            phaseSpreadTicks: ARCHER_ATTACK_DATA.phaseSpreadTicks
+        })
+    );
+    assert.equal(
+        firstEligibleFixedTick,
+        firstArcherAtSpawn.createdAtTick
+            + ARCHER_ATTACK_DATA.initialDelayTicks
+            + firstArcherAtSpawn.phaseOffsetTicks
+    );
+    assert.ok(firstEligibleFixedTick >= 61 && firstEligibleFixedTick <= 90);
+    const firstArcherPositionAtSpawn = copyVector(
+        backend.bodies.get(handleKey(firstArcherHandle)).position
+    );
+
+    advanceThrough(gameSystem, firstEligibleFixedTick - 1);
+    const firstArcherPositionBeforeAttack = copyVector(
+        backend.bodies.get(handleKey(firstArcherHandle)).position
+    );
+    assert.ok(
+        Math.hypot(
+            firstArcherPositionBeforeAttack.x - firstArcherPositionAtSpawn.x,
+            firstArcherPositionBeforeAttack.y - firstArcherPositionAtSpawn.y
+        ) > 0
+    );
+
+    const controlCountBeforePressure = backend.controlAcceptedCount;
+    const fixedCountBeforePressure = backend.fixedUpdateCount;
+    backend.rejectSpawnProgramTicks.add(firstEligibleFixedTick);
+    inputState.primaryPressed = true;
+    assert.equal(gameSystem.fixedUpdate(), true);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(gameSystem.getFixedTick(), firstEligibleFixedTick);
+    assert.equal(hostileStatus.telemetry.fixedRejected, 1);
+    assert.equal(hostileStatus.pendingShotCount, 0);
+    assert.equal(hostileStatus.archers.find(({ handle }) => (
+        handleKey(handle) === handleKey(firstArcherHandle)
+    )).shotSequence, 0);
+    assert.equal(backend.controlAcceptedCount, controlCountBeforePressure + 1);
+    assert.equal(backend.fixedUpdateCount, fixedCountBeforePressure + 1);
+    assert.equal(endpoint.getStatus().reservedCount, 0);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+
+    const firstAcceptedFixedTick = firstEligibleFixedTick + 1;
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), firstAcceptedFixedTick);
+    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 1);
+    inputState.primaryPressed = false;
+    assert.equal(gameSystem.fixedUpdate(), true);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(hostileStatus.pendingShotCount, 0);
+    assert.equal(hostileStatus.shotResolvedCount >= 1, true);
+    const firstHostileShot = backend.materializedShots.find((shot) => (
+        shot.definitionId === HOSTILE_BASIC_BULLET_DATA.id
+            && handleKey(shot.sourceHandle) === handleKey(firstArcherHandle)
+            && shot.sourceTick === firstAcceptedFixedTick
+    ));
+    assert.ok(firstHostileShot);
+    assert.deepEqual({ ...firstHostileShot.targetHandle }, { ...towerHandle });
+    assert.equal(firstHostileShot.destinationSpawn.teamId, GAMEPLAY_TEAM_ID.HOSTILE);
+    assert.equal(
+        firstHostileShot.destinationSpawn.targetPolicyId,
+        PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    );
+    assertNear(
+        Math.hypot(firstHostileShot.velocity.x, firstHostileShot.velocity.y),
+        ARCHER_ATTACK_DATA.launchSpeed
+    );
+    const playerProjectileHandle = findProjectileHandleByDefinition(
+        registry,
+        BASIC_BULLET_PROJECTILE_DATA.id
+    );
+    assert.ok(playerProjectileHandle, 'pressure retry 뒤 Player projectile이 materialize되어야 합니다.');
+
+    advanceThrough(gameSystem, 156);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    const productionArchers = [...hostileStatus.archers].sort((left, right) => (
+        left.createdAtTick - right.createdAtTick
+    ));
+    assert.equal(objectSystem.getEnemyWaveStatus().totalSpawnCount, 32);
+    assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 32);
+    assert.equal(objectSystem.getEnemyWaveStatus().remainingSpawnCount, 0);
+    assert.equal(registry.getActiveCount('enemy'), 32);
+    assert.equal(productionArchers.length, 4);
+    assert.deepEqual(
+        productionArchers.map(({ createdAtTick }) => createdAtTick),
+        [31, 66, 101, 136]
+    );
+    for (const record of productionArchers) {
+        const expectedPhase = computeHostileAttackPhaseOffset({
+            ...record.handle,
+            phaseSpreadTicks: ARCHER_ATTACK_DATA.phaseSpreadTicks
+        });
+        assert.equal(record.phaseOffsetTicks, expectedPhase);
+        assert.ok(
+            record.createdAtTick + ARCHER_ATTACK_DATA.initialDelayTicks
+                + expectedPhase
+                >= record.createdAtTick + 30
+        );
+        const view = registry.copyEntityView(record.handle, {});
+        assert.equal(view.definitionId, ARCHER_ENEMY_DATA.id);
+        assert.equal(view.kindId, 'enemy');
+        assert.equal(typeof view.metadata.pathId, 'string');
+    }
+    assert.equal(
+        registry.copyActiveHandlesInto([], { kindId: 'enemy' })
+            .filter((handle) => (
+                registry.copyEntityView(handle, {})?.definitionId
+                    === ARCHER_ENEMY_DATA.id
+            )).length,
+        4
+    );
+
+    const firstArcherShots = () => backend.materializedShots.filter((shot) => (
+        shot.definitionId === HOSTILE_BASIC_BULLET_DATA.id
+            && handleKey(shot.sourceHandle) === handleKey(firstArcherHandle)
+    ));
+    const hostileShots = () => backend.materializedShots.filter((shot) => (
+        shot.definitionId === HOSTILE_BASIC_BULLET_DATA.id
+            && shot.outcome === 'resolved'
+    ));
+    while ((hostileShots().length < 6 || firstArcherShots().length < 2)
+        && gameSystem.getFixedTick() < 260) {
+        assert.equal(gameSystem.fixedUpdate(), true);
+    }
+    assert.ok(hostileShots().length >= 6);
+    assert.ok(firstArcherShots().length >= 2);
+    assert.deepEqual(
+        firstArcherShots().slice(0, 2).map(({ sourceTick }) => sourceTick),
+        [
+            firstAcceptedFixedTick,
+            firstAcceptedFixedTick + ARCHER_ATTACK_DATA.intervalTicks
+        ]
+    );
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+
+    const hostileEnemyHealthBefore = new Map(
+        registry.copyActiveHandlesInto([], { kindId: 'enemy' }).map((handle) => (
+            [handleKey(handle), backend.bodies.get(handleKey(handle)).health]
+        ))
+    );
+    const towerHpTimeline = [gameSystem.getTowerCombatStatus().currentHp];
+    const committedFactTypes = [];
+    for (let hitIndex = 0; hitIndex < 6; hitIndex++) {
+        const shot = hostileShots()[hitIndex];
+        backend.queueTowerDamageEvents(
+            shot.destinationHandle,
+            towerHandle,
+            gameSystem.getFixedTick(),
+            hitIndex === 5
+        );
+        assert.equal(gameSystem.fixedUpdate(), true);
+        towerHpTimeline.push(gameSystem.getTowerCombatStatus().currentHp);
+        committedFactTypes.push(...objectSystem.getGpuWorldActorStatus()
+            .lastTowerCombatFacts.map(({ type }) => type));
+    }
+    assert.deepEqual(towerHpTimeline, [30, 25, 20, 15, 10, 5, 0]);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, false);
+    assert.equal(gameSystem.getTowerCombatStatus().livingTowerCount, 0);
+    assert.equal(
+        committedFactTypes.filter((type) => type === 'TowerDied').length,
+        1
+    );
+    assert.equal(
+        committedFactTypes.filter((type) => type === 'NoLivingTowers').length,
+        1
+    );
+    assert.equal(
+        committedFactTypes.filter((type) => type === 'RunFailed').length,
+        0
+    );
+    for (const [key, health] of hostileEnemyHealthBefore) {
+        assert.equal(
+            backend.bodies.get(key)?.health,
+            health,
+            `HOSTILE projectile가 HOSTILE enemy ${key}를 피해선 안 됩니다.`
+        );
+    }
+    assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+    assert.equal(coreIntegrity.getMaxIntegrity(), initialCoreMaximum);
+
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    const deathFixedTick = gameSystem.getFixedTick();
+    const attemptsAtDeath = hostileStatus.shotStartAttemptCount;
+    const acceptedAtDeath = hostileStatus.shotRequestAcceptedCount;
+    const hostileMaterializationsAtDeath = hostileShots().length;
+    const playerMaterializationsAtDeath = backend.materializedShots.filter(
+        ({ definitionId }) => definitionId === BASIC_BULLET_PROJECTILE_DATA.id
+    ).length;
+    const playerProjectilePositionAtDeath = copyVector(
+        backend.bodies.get(handleKey(playerProjectileHandle)).position
+    );
+    const controlsAtDeath = backend.controlAcceptedCount;
+    const archerPositionsAtDeath = new Map(productionArchers.map(({ handle }) => (
+        [handleKey(handle), copyVector(backend.bodies.get(handleKey(handle)).position)]
+    )));
+    const postDeathFixedTick = Math.max(
+        deathFixedTick + 30,
+        ...hostileStatus.archers.map(({ nextEligibleFixedTick }) => (
+            nextEligibleFixedTick + 1
+        ))
+    );
+    inputState.primaryPressed = true;
+    advanceThrough(gameSystem, postDeathFixedTick);
+    hostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(gameSystem.getFixedTick() - deathFixedTick >= 30, true);
+    assert.equal(hostileStatus.shotStartAttemptCount, attemptsAtDeath);
+    assert.equal(hostileStatus.shotRequestAcceptedCount, acceptedAtDeath);
+    assert.equal(hostileShots().length, hostileMaterializationsAtDeath);
+    assert.equal(
+        backend.materializedShots.filter(
+            ({ definitionId }) => definitionId === BASIC_BULLET_PROJECTILE_DATA.id
+        ).length,
+        playerMaterializationsAtDeath
+    );
+    assert.equal(backend.controlAcceptedCount, controlsAtDeath);
+    assert.equal(objectSystem.primaryProjectileController.getStatus().enabled, false);
+    assert.equal(registry.has(playerProjectileHandle), true);
+    const playerProjectilePositionAfterDeath = backend.bodies.get(
+        handleKey(playerProjectileHandle)
+    ).position;
+    assert.ok(
+        Math.hypot(
+            playerProjectilePositionAfterDeath.x - playerProjectilePositionAtDeath.x,
+            playerProjectilePositionAfterDeath.y - playerProjectilePositionAtDeath.y
+        ) > 0,
+        'Tower source death 뒤에도 이미 materialize된 Player projectile은 계속 진행해야 합니다.'
+    );
+    for (const record of productionArchers) {
+        const before = archerPositionsAtDeath.get(handleKey(record.handle));
+        const after = backend.bodies.get(handleKey(record.handle)).position;
+        assert.ok(Math.hypot(after.x - before.x, after.y - before.y) > 0);
+        assert.equal(registry.has(record.handle), true);
+        assert.equal(backend.hasBody(record.handle), true);
+    }
+    assert.equal(endpoint.getStatus().reservedCount, 0);
+    assert.equal(endpoint.getStatus().pendingCommandCount, 0);
+    assert.equal(endpoint.getStatus().pendingSourceRelativeDestinationCount, 0);
+    assert.equal(backend.pendingFixedPlan, null);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+
+    const deadRecoveryOffset = gameSystem.getFixedTick();
+    const oldEndpoint = gameSystem.getGpuSimulationEndpoint();
+    const oldBackend = backend;
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), true);
+    const replacementEndpoint = gameSystem.getGpuSimulationEndpoint();
+    const replacementBackend = backends[1];
+    assert.notStrictEqual(replacementEndpoint, oldEndpoint);
+    assert.equal(oldBackend.destroyCount, 1);
+    assert.equal(gameSystem.getTowerCombatStatus().alive, false);
+    assert.equal(gameSystem.getTowerCombatStatus().currentHp, 0);
+    assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+    assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.deepEqual(
+        replacementBackend.spawnBatches[0]
+            .map(({ kindId }) => kindId)
+            .sort(),
+        ['core-proxy', 'enemy']
+    );
+    assert.equal(
+        replacementEndpoint.getRegistry().getActiveCount('tower'),
+        0
+    );
+    advanceThrough(gameSystem, deadRecoveryOffset + 31);
+    const deadRecoveryHostileStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(deadRecoveryHostileStatus.activeArcherCount, 1);
+    assert.equal(deadRecoveryHostileStatus.archers[0].createdAtTick, deadRecoveryOffset + 31);
+    assert.equal(deadRecoveryHostileStatus.archers[0].shotSequence, 0);
+    assert.equal(deadRecoveryHostileStatus.shotStartAttemptCount, 0);
+    assert.equal(deadRecoveryHostileStatus.shotRequestAcceptedCount, 0);
+    assert.equal(replacementBackend.materializedShots.length, 0);
+    assert.equal(objectSystem.getEnemyWaveStatus().fixedTickOffset, deadRecoveryOffset);
+    assert.equal(objectSystem.getEnemyWaveStatus().totalSpawnCount, 32);
+    assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 7);
+    advanceThrough(gameSystem, deadRecoveryOffset + 36);
+    assert.equal(gameSystem.getHostileAttackStatus().shotStartAttemptCount, 0);
+    assert.equal(replacementEndpoint.getStatus().reservedCount, 0);
+    assert.equal(replacementEndpoint.getStatus().pendingCommandCount, 0);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+    assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
+
+    gameSystem.destroy();
+    gameSystem.destroy();
+    assert.equal(replacementBackend.destroyCount, 1);
 });

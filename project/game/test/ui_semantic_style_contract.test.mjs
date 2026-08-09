@@ -36,7 +36,8 @@ const LEGACY_UI_CONSTANTS_PATH = path.join(
 const FEATURE_ROOTS = Object.freeze([
     path.join(SCRIPT_ROOT, 'module', 'overlay'),
     path.join(SCRIPT_ROOT, 'module', 'ui', 'tooltip'),
-    path.join(SCRIPT_ROOT, 'module', 'scene', 'title')
+    path.join(SCRIPT_ROOT, 'module', 'scene', 'title'),
+    path.join(SCRIPT_ROOT, 'module', 'scene', 'game', 'render')
 ]);
 const FEATURE_EXCLUDED_FILES = new Set([
     path.join(SCRIPT_ROOT, 'module', 'overlay', '_debug_overlay.js')
